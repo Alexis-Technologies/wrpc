@@ -1,7 +1,6 @@
 'use strict';
 
 const timers = require('node:timers/promises');
-const { randomUUID } = require('node:crypto');
 const { Blob } = require('node:buffer');
 const { test } = require('node:test');
 const assert = require('node:assert');
@@ -46,7 +45,6 @@ const createApplication = (api) => {
 
   return {
     console: { log: noop, info: noop, warn: noop, error: noop, debug: noop },
-    static: { constructor: { name: 'Static' } },
     auth: { saveSession: async () => {} },
     getMethod: (unit, _ver, method) => {
       if (unit === 'system' && method === 'introspect') {
@@ -67,8 +65,6 @@ const createServer = async (api) => {
     port: 0,
     protocol: 'http',
     timeouts: { bind: 100 },
-    queue: { concurrency: 100, size: 100, timeout: 5_000 },
-    generateId: randomUUID,
   };
   const server = new Server(createApplication(api), options);
   await server.listen();

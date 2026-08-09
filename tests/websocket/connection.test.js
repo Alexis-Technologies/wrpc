@@ -161,6 +161,30 @@ test('Connection: client-mode sendPing/sendPong use the masked empty-frame fast 
   conn.terminate();
 });
 
+test('Connection: send methods return uniform booleans', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { closeTimeout: 50 });
+
+  assert.strictEqual(conn.sendPing(), true);
+  assert.strictEqual(conn.sendPing(Buffer.from('x')), true);
+  assert.strictEqual(conn.sendPong(), true);
+  assert.strictEqual(conn.sendPong(Buffer.from('x')), true);
+  assert.strictEqual(conn.sendText('x'), true);
+  assert.strictEqual(conn.sendBinary(Buffer.from('x')), true);
+
+  conn.sendClose(1000, 'bye');
+
+  assert.strictEqual(conn.sendPing(), false);
+  assert.strictEqual(conn.sendPing(Buffer.from('x')), false);
+  assert.strictEqual(conn.sendText('x'), false);
+  assert.strictEqual(conn.sendBinary(Buffer.from('x')), false);
+  // Pong stays available during the close handshake (RFC 6455 5.5.3)
+  assert.strictEqual(conn.sendPong(), true);
+  assert.strictEqual(conn.sendPong(Buffer.from('x')), true);
+
+  conn.terminate();
+});
+
 test('Connection: send() rejects non-string/non-Buffer payloads', () => {
   const socket = new MockSocket();
   const conn = new Connection(socket, Buffer.alloc(0));

@@ -54,12 +54,9 @@ test('Server / calls', async (t) => {
     port: 8003,
     protocol: 'http',
     timeouts: { bind: 100 },
-    queue: { concurrency: 100, size: 100, timeout: 5_000 },
-    generateId: randomUUID,
   };
   const application = {
     console: { log: noop, info: noop, warn: noop, error: noop, debug: noop },
-    static: { constructor: { name: 'Static' } },
     auth: { saveSession: async () => {} },
     getMethod: (unit, _version, method) => new ProcedureMock(api[unit][method]),
   };
@@ -119,6 +116,34 @@ test('Server / calls', async (t) => {
     assert.strictEqual(response.id, id);
     assert.strictEqual(response.type, 'callback');
     assert.strictEqual(response.result, `Hello, ${args.name}`);
+  });
+
+  await t.test('responds 404 on non-/api HTTP path instead of hanging', async () => {
+    const res = await fetch(`http://${options.host}:${options.port}/health`);
+    assert.strictEqual(res.status, 404);
+    const packet = await res.json();
+    assert.strictEqual(packet.type, 'callback');
+    assert.strictEqual(packet.error.code, 404);
+  });
+
+  await t.test('listen() works without the timeouts option', async () => {
+    const extra = new Server(application, { host: 'localhost', port: 0, protocol: 'http' });
+    await extra.listen();
+    await extra.close();
+  });
+
+  await t.test('listen() retry path works without the timeouts option', async () => {
+    // The bind-retry handler used to dereference options.timeouts.bind, so a
+    // server without `timeouts` crashed with a TypeError on EADDRINUSE.
+    const blocker = new Server(application, { host: 'localhost', port: 0, protocol: 'http' });
+    await blocker.listen();
+    const { port } = blocker.httpServer.address();
+    const extra = new Server(application, { host: 'localhost', port, protocol: 'http' });
+    const listening = extra.listen();
+    await timers.setTimeout(50); // first bind fails with EADDRINUSE, a retry is scheduled
+    await blocker.close(); // free the port so the scheduled retry succeeds
+    await listening;
+    await extra.close();
   });
 
   await t.test('rejects websocket upgrade on invalid path', async () => {

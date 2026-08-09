@@ -186,6 +186,26 @@ test('WrpcClientProxy', async (t) => {
     proxy.close();
   });
 
+  await t.test('open() skips reopening while the connection is active', async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const proxy = new WrpcClientProxy();
+    await proxy.open();
+    const originalOpen = WrpcClient.prototype.open;
+    let reopens = 0;
+    WrpcClient.prototype.open = function (...args) {
+      reopens++;
+      return originalOpen.apply(this, args);
+    };
+    try {
+      await proxy.open();
+    } finally {
+      WrpcClient.prototype.open = originalOpen;
+    }
+    assert.strictEqual(reopens, 0);
+    proxy.close();
+  });
+
   await t.test('#handleMessage forwards port calls and #proxyPacket routes responses back', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();

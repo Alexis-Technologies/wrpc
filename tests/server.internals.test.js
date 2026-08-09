@@ -55,6 +55,15 @@ test('Client over HTTP transport', async (t) => {
     assert.doesNotThrow(() => client.emit('close'));
   });
 
+  await t.test('emit keeps the base Emitter Promise contract', async () => {
+    const closing = new Client(fakeHttpTransport(), fakeContext()).emit('close');
+    assert.ok(closing instanceof Promise);
+    await closing;
+    const sending = new Client(fakeWsTransport(), fakeContext()).emit('room/event', { x: 1 });
+    assert.ok(sending instanceof Promise);
+    await sending;
+  });
+
   await t.test('getStream throws over HTTP', () => {
     const client = new Client(fakeHttpTransport(), fakeContext());
     assert.throws(() => client.getStream('id'), /Can't receive stream from http transport/);
@@ -162,7 +171,6 @@ const createApplication = (api) => {
   const introspect = () => api;
   return {
     console: { log: noop, info: noop, warn: noop, error: noop, debug: noop },
-    static: { constructor: { name: 'Static' } },
     auth: { saveSession: async () => {} },
     getMethod: (unit, _ver, method) => {
       if (unit === 'system' && method === 'introspect') {

@@ -67,8 +67,9 @@ class WebsocketServer extends EventEmitter {
     this.#pingTimer = setInterval(() => {
       for (const ws of this.#connections) {
         const heartbeat = this.#heartbeats.get(ws);
-        if (heartbeat.awaiting) {
+        if (!heartbeat || heartbeat.awaiting) {
           ws.terminate();
+          this.#connections.delete(ws);
           this.#heartbeats.delete(ws);
           continue;
         }
@@ -76,6 +77,7 @@ class WebsocketServer extends EventEmitter {
         ws.sendPing();
       }
     }, pingInterval);
+    this.#pingTimer.unref();
     server.on('upgrade', (req, socket, head) => {
       socket.on('error', () => {
         socket.destroy();

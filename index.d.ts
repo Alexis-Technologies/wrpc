@@ -50,7 +50,11 @@ export class WrpcReadable extends Emitter {
   toBlob(type?: string): Promise<Blob>;
   close(): Promise<void>;
   terminate(): Promise<void>;
+  stop(force?: boolean): Promise<void>;
   read(): Promise<ArrayBufferView | null>;
+  pull(): ArrayBufferView | undefined;
+  checkStreamLimits(): void;
+  waitEvent(event: PropertyKey): Promise<unknown>;
   [Symbol.asyncIterator](): AsyncIterableIterator<ArrayBufferView>;
 }
 
@@ -65,6 +69,7 @@ export class WrpcWritable extends Emitter {
   size: number;
   transport: Transport;
   constructor(id: string, name: string, size: number, transport: Transport);
+  init(): void;
   write(data: ArrayBufferView): boolean;
   end(): void;
   terminate(): void;
@@ -75,7 +80,7 @@ export interface BlobUploader {
   upload(): Promise<void>;
 }
 
-export class ClientTransport extends Emitter {
+declare class ClientTransport extends Emitter {
   url: string;
   active: boolean;
   constructor(url: string);
@@ -86,6 +91,7 @@ export class ClientTransport extends Emitter {
   online(): void;
   offline(): void;
 }
+export type { ClientTransport };
 
 export class WrpcClient extends Emitter {
   static connections: Set<WrpcClient>;
@@ -98,10 +104,10 @@ export class WrpcClient extends Emitter {
     options?: WrpcClientOptions,
   ): Promise<WrpcClient>;
   static transport: {
-    ws: new (url: string) => Transport;
-    http: new (url: string) => Transport;
+    ws: new (url: string) => ClientTransport;
+    http: new (url: string) => ClientTransport;
     event: {
-      getInstance(url: string): Transport;
+      getInstance(url: string): ClientTransport;
     };
   };
 
@@ -109,7 +115,11 @@ export class WrpcClient extends Emitter {
   api: Record<string, Emitter>;
   readonly active: boolean;
 
-  constructor(url: string, transport: Transport, options?: WrpcClientOptions);
+  constructor(
+    url: string,
+    transport: ClientTransport,
+    options?: WrpcClientOptions,
+  );
   open(): Promise<void>;
   close(): void;
   load(...units: Array<string>): Promise<void>;
@@ -124,10 +134,7 @@ export interface WrpcClientOptions {
   callTimeout?: number;
   reconnectTimeout?: number;
   worker?: ServiceWorker;
-  packetHandler?: (data: string) => void | Promise<void>;
-  binaryHandler?: (
-    input: ArrayBuffer | ArrayBufferView | Blob,
-  ) => void | Promise<void>;
+  proxy?: (data: string) => void;
 }
 
 export class WrpcClientProxy extends Emitter {
@@ -139,25 +146,19 @@ export class WrpcClientProxy extends Emitter {
 export interface ApplicationContext {
   console: Console;
   auth: Auth;
-  static: {
-    constructor: { name: string };
-    serve(path: string, transport: Transport): void;
-  };
   getMethod(unit: string, version: string, methodName: string): object | null;
 }
 
 export interface Options {
   host: string;
   port: number;
-  kind?: 'server' | 'balancer';
   protocol?: string;
-  ports?: Array<number>;
   cors?: { origin: string };
   nagle?: boolean;
   key?: string;
   cert?: string;
   SNICallback?: Function;
-  timeouts?: { bind: number };
+  timeouts?: { bind?: number };
   retry?: number;
   websocketPath?: string;
 }
@@ -186,7 +187,7 @@ export class Client extends Emitter {
   error(code: number, options?: ErrorOptions): void;
   send(obj: object, options?: { code?: number; method?: string }): void;
   createContext(): Context;
-  emit(name: EventName, data: unknown): Promise<void>;
+  emit(name: EventName, data?: unknown): Promise<void>;
   sendEvent(name: string, data?: unknown): void;
   getStream(id: string): WrpcReadable | WrpcWritable;
   createStream(name: string, size: number): WrpcWritable;
@@ -214,7 +215,7 @@ export class ServerTransport extends Emitter {
   send(obj: object, code?: number): void;
 }
 
-export class ServerHttpTransport extends ServerTransport {
+declare class ServerHttpTransport extends ServerTransport {
   req: IncomingMessage;
   res: ServerResponse;
   headers: Record<string, string>;
@@ -228,19 +229,25 @@ export class ServerHttpTransport extends ServerTransport {
   getCookies(): Record<string, string>;
   sendSessionCookie(token: string): void;
   removeSessionCookie(): void;
+  close(): void;
 }
+export type { ServerHttpTransport };
 
-export class ServerWsTransport extends ServerTransport {
+declare class ServerWsTransport extends ServerTransport {
   connection: Connection;
   constructor(req: IncomingMessage, connection: Connection);
   write(data: string | Buffer): void;
+  close(): void;
 }
+export type { ServerWsTransport };
 
-export class ServerEventTransport extends ServerTransport {
+declare class ServerEventTransport extends ServerTransport {
   port: MessagePort;
   constructor(port: MessagePort);
   write(data: string | Buffer): void;
+  close(): void;
 }
+export type { ServerEventTransport };
 
 export function buildHeaders(cors?: { origin: string }): Record<string, string>;
 
@@ -259,7 +266,7 @@ export interface StreamPacket {
   status?: 'end' | 'terminate';
 }
 
-export class Server {
+export class Server extends Emitter {
   httpServer: HttpServer;
   wsServer: WebsocketServer | null;
   constructor(context: ApplicationContext, options: Options);
@@ -337,7 +344,7 @@ export declare class Connection extends EventEmitter {
   sendBinary(buffer: Buffer): boolean;
   sendPing(payload?: Buffer | string): boolean;
   sendPong(payload?: Buffer | string): boolean;
-  sendClose(code?: number, reason?: string): boolean;
+  sendClose(code?: number, reason?: string): void;
   terminate(): void;
 
   on(

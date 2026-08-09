@@ -15,6 +15,7 @@ const { WrpcReadable, WrpcWritable } = require('./streams.js');
 const { chunkDecode } = require('./chunks.js');
 
 const DEFAULT_LISTEN_RETRY = 3;
+const DEFAULT_BIND_TIMEOUT = 2000;
 const MAX_BODY_SIZE = 10 * 1024 * 1024;
 
 const isError = (err) => err?.constructor?.name?.includes('Error') || false;
@@ -119,8 +120,9 @@ class Client extends Emitter {
   }
 
   emit(name, data) {
-    if (name === 'close') return void super.emit(name, data);
+    if (name === 'close') return super.emit(name, data);
     this.sendEvent(name, data);
+    return Promise.resolve();
   }
 
   sendEvent(name, data) {
@@ -340,9 +342,11 @@ class Server extends Emitter {
   }
 
   async #handleHttpRequest(req, res) {
-    if (!req.url.startsWith('/api')) return;
     const options = { headers: this.#headers };
     const transport = new ServerHttpTransport(req, res, options);
+    if (!req.url.startsWith('/api')) {
+      return void transport.error(404);
+    }
     if (res.writableEnded) return;
 
     const client = this.#addClient(transport);
@@ -388,7 +392,7 @@ class Server extends Emitter {
   }
 
   listen() {
-    const { host, port, timeouts, retry } = this.#options;
+    const { host, port, timeouts = {}, retry } = this.#options;
 
     let count = retry || DEFAULT_LISTEN_RETRY;
     let listen = null;
@@ -404,7 +408,7 @@ class Server extends Emitter {
         count--;
         if (count === 0) return void reject(error);
         this.#context.console.warn(`Address in use: ${host}:${port}, retry...`);
-        setTimeout(listen, timeouts.bind);
+        setTimeout(listen, timeouts.bind ?? DEFAULT_BIND_TIMEOUT);
       };
 
       listen = () => {

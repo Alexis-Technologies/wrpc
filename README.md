@@ -40,7 +40,6 @@ const api = {
 
 const application = {
   console,
-  static: { constructor: { name: 'Static' } },
   auth: { saveSession: async () => {} },
   getMethod: (unit, _version, method) => {
     const def = api[unit]?.[method];
@@ -48,12 +47,16 @@ const application = {
   },
 };
 
-const server = new Server(application, { host: '127.0.0.1', port: 8000, protocol: 'http' });
-await server.listen();
+const main = async () => {
+  const server = new Server(application, { host: '127.0.0.1', port: 8000, protocol: 'http' });
+  await server.listen();
 
-const client = await WrpcClient.connect('ws://127.0.0.1:8000/');
-await client.load('greeting');
-const result = await client.api.greeting.hello({ name: 'World' });
+  const client = await WrpcClient.connect('ws://127.0.0.1:8000/');
+  await client.load('greeting');
+  console.log(await client.api.greeting.hello({ name: 'World' }));
+};
+
+main();
 ```
 
 ## API Reference

@@ -452,7 +452,7 @@ class WrpcClientProxy extends Emitter {
 
   async open() {
     if (this.#connection) {
-      if (this.#connection.connected) return;
+      if (this.#connection.active) return;
       await this.#connection.open();
       return;
     }

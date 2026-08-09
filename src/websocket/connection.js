@@ -220,25 +220,27 @@ class Connection extends EventEmitter {
 
   sendPing(payload) {
     if (this.#closing) return false;
-    if (!payload) return this.#fastPing();
-    this.#writeFrame(Frame.ping(payload));
+    if (payload) this.#writeFrame(Frame.ping(payload));
+    else this.#fastPing();
     return true;
   }
 
+  // No #closing guard: RFC 6455 5.5.3 requires a pong unless a Close frame was
+  // received, and #receive stops processing input once #closeReceived is set.
   sendPong(payload) {
-    if (!payload) return this.#fastPong();
-    this.#writeFrame(Frame.pong(payload));
+    if (payload) this.#writeFrame(Frame.pong(payload));
+    else this.#fastPong();
     return true;
   }
 
   #fastPing() {
     const buf = this.#isClient ? Frame.emptyClientPingBuffer() : EMPTY_PING;
-    return this.#socket.write(buf);
+    this.#socket.write(buf);
   }
 
   #fastPong() {
     const buf = this.#isClient ? Frame.emptyClientPongBuffer() : EMPTY_PONG;
-    return this.#socket.write(buf);
+    this.#socket.write(buf);
   }
 
   #close(frameBuffer) {
