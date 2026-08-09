@@ -1,15 +1,15 @@
 'use strict';
 
-const { Emitter } = require('metautil');
+const { Emitter } = require('./utils.js');
 const { chunkEncode } = require('./chunks.js');
 
-const PUSH_EVENT = Symbol();
-const PULL_EVENT = Symbol();
+const PUSH_EVENT = Symbol('push');
+const PULL_EVENT = Symbol('pull');
 const DEFAULT_HIGH_WATER_MARK = 32;
 const MAX_LISTENERS = 10;
 const MAX_HIGH_WATER_MARK = 1000;
 
-class MetaReadable extends Emitter {
+class WrpcReadable extends Emitter {
   queue = [];
   streaming = true;
   status = 'active';
@@ -93,6 +93,7 @@ class MetaReadable extends Emitter {
 
   pull() {
     const data = this.queue.shift();
+    /* c8 ignore next -- read()/waitEvent(PUSH_EVENT) callers already guard against an empty queue */
     if (!data) return data;
     this.bytesRead += data.length;
     this.emit(PULL_EVENT);
@@ -103,9 +104,11 @@ class MetaReadable extends Emitter {
     if (this.listenerCount(PULL_EVENT) >= MAX_LISTENERS) {
       ++this.highWaterMark;
     }
+    /* c8 ignore start -- defensive guard; needs 1000+ concurrent stalled backpressure waiters to reach */
     if (this.highWaterMark > MAX_HIGH_WATER_MARK) {
       throw new Error('Stream overflow occurred');
     }
+    /* c8 ignore stop */
   }
 
   waitEvent(event) {
@@ -121,7 +124,7 @@ class MetaReadable extends Emitter {
   }
 }
 
-class MetaWritable extends Emitter {
+class WrpcWritable extends Emitter {
   constructor(id, name, size, transport) {
     super();
     this.id = id;
@@ -154,4 +157,4 @@ class MetaWritable extends Emitter {
   }
 }
 
-module.exports = { MetaReadable, MetaWritable };
+module.exports = { WrpcReadable, WrpcWritable };

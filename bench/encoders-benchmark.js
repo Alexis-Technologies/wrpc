@@ -2,8 +2,8 @@
 
 const { performance } = require('node:perf_hooks');
 const crypto = require('node:crypto');
-const nodeEncoders = require('../lib/chunks.js');
-const browserEncoders = require('../lib/chunks-browser.js');
+const nodeEncoders = require('../src/chunks.js');
+const browserEncoders = require('../src/chunks.browser.js');
 
 const ITERATIONS = 100000;
 const WARMUP_ITERATIONS = 10000;
@@ -92,38 +92,19 @@ const runBenchmarks = () => {
 
     // Prepare chunks for decode tests
     const nodeChunk = nodeEncoders.chunkEncode(testCase.id, testCase.payload);
-    const browserChunk = browserEncoders.chunkEncode(
-      testCase.id,
-      testCase.payload,
-    );
+    const browserChunk = browserEncoders.chunkEncode(testCase.id, testCase.payload);
 
     // Node decode (same origin)
-    results.nodeDecode = benchmark(
-      'Node decode',
-      () => nodeEncoders.chunkDecode(nodeChunk),
-      ITERATIONS,
-    );
+    results.nodeDecode = benchmark('Node decode', () => nodeEncoders.chunkDecode(nodeChunk), ITERATIONS);
 
     // Browser decode (same origin)
-    results.browserDecode = benchmark(
-      'Browser decode',
-      () => browserEncoders.chunkDecode(browserChunk),
-      ITERATIONS,
-    );
+    results.browserDecode = benchmark('Browser decode', () => browserEncoders.chunkDecode(browserChunk), ITERATIONS);
 
     // Cross-compatibility: Browser encode → Node decode
-    results.browserToNode = benchmark(
-      'Browser→Node decode',
-      () => nodeEncoders.chunkDecode(browserChunk),
-      ITERATIONS,
-    );
+    results.browserToNode = benchmark('Browser→Node decode', () => nodeEncoders.chunkDecode(browserChunk), ITERATIONS);
 
     // Cross-compatibility: Node encode → Browser decode
-    results.nodeToBrowser = benchmark(
-      'Node→Browser decode',
-      () => browserEncoders.chunkDecode(nodeChunk),
-      ITERATIONS,
-    );
+    results.nodeToBrowser = benchmark('Node→Browser decode', () => browserEncoders.chunkDecode(nodeChunk), ITERATIONS);
 
     // Node round-trip (same origin)
     results.nodeRoundTrip = benchmark(
@@ -139,10 +120,7 @@ const runBenchmarks = () => {
     results.browserRoundTrip = benchmark(
       'Browser round-trip',
       () => {
-        const chunk = browserEncoders.chunkEncode(
-          testCase.id,
-          testCase.payload,
-        );
+        const chunk = browserEncoders.chunkEncode(testCase.id, testCase.payload);
         browserEncoders.chunkDecode(chunk);
       },
       ITERATIONS,
@@ -159,14 +137,8 @@ const runBenchmarks = () => {
       `    Browser: ${formatOps(results.browserEncode.opsPerSec).padEnd(20)} ` +
         `(${formatNumber(results.browserEncode.duration)}ms)`,
     );
-    const encodeDiff =
-      (results.browserEncode.opsPerSec / results.nodeEncode.opsPerSec - 1) *
-      100;
-    console.log(
-      `    Difference: ${encodeDiff > 0 ? '+' : ''}` +
-        `${formatNumber(encodeDiff)}% ` +
-        `(Browser vs Node)`,
-    );
+    const encodeDiff = (results.browserEncode.opsPerSec / results.nodeEncode.opsPerSec - 1) * 100;
+    console.log(`    Difference: ${encodeDiff > 0 ? '+' : ''}` + `${formatNumber(encodeDiff)}% ` + `(Browser vs Node)`);
 
     console.log();
     console.log('  Decoding (same origin):');
@@ -178,14 +150,8 @@ const runBenchmarks = () => {
       `    Browser: ${formatOps(results.browserDecode.opsPerSec).padEnd(20)} ` +
         `(${formatNumber(results.browserDecode.duration)}ms)`,
     );
-    const decodeDiff =
-      (results.browserDecode.opsPerSec / results.nodeDecode.opsPerSec - 1) *
-      100;
-    console.log(
-      `    Difference: ${decodeDiff > 0 ? '+' : ''}` +
-        `${formatNumber(decodeDiff)}% ` +
-        `(Browser vs Node)`,
-    );
+    const decodeDiff = (results.browserDecode.opsPerSec / results.nodeDecode.opsPerSec - 1) * 100;
+    console.log(`    Difference: ${decodeDiff > 0 ? '+' : ''}` + `${formatNumber(decodeDiff)}% ` + `(Browser vs Node)`);
 
     console.log();
     console.log('  Cross-compatibility decoding:');
@@ -199,13 +165,9 @@ const runBenchmarks = () => {
         `${formatOps(results.nodeToBrowser.opsPerSec).padEnd(20)} ` +
         `(${formatNumber(results.nodeToBrowser.duration)}ms)`,
     );
-    const crossDiff =
-      (results.nodeToBrowser.opsPerSec / results.browserToNode.opsPerSec - 1) *
-      100;
+    const crossDiff = (results.nodeToBrowser.opsPerSec / results.browserToNode.opsPerSec - 1) * 100;
     console.log(
-      `    Difference: ${crossDiff > 0 ? '+' : ''}` +
-        `${formatNumber(crossDiff)}% ` +
-        `(Node→Browser vs Browser→Node)`,
+      `    Difference: ${crossDiff > 0 ? '+' : ''}` + `${formatNumber(crossDiff)}% ` + `(Node→Browser vs Browser→Node)`,
     );
 
     console.log();
@@ -219,14 +181,9 @@ const runBenchmarks = () => {
         `${formatOps(results.browserRoundTrip.opsPerSec).padEnd(20)} ` +
         `(${formatNumber(results.browserRoundTrip.duration)}ms)`,
     );
-    const roundTripDiff =
-      (results.browserRoundTrip.opsPerSec / results.nodeRoundTrip.opsPerSec -
-        1) *
-      100;
+    const roundTripDiff = (results.browserRoundTrip.opsPerSec / results.nodeRoundTrip.opsPerSec - 1) * 100;
     console.log(
-      `    Difference: ${roundTripDiff > 0 ? '+' : ''}` +
-        `${formatNumber(roundTripDiff)}% ` +
-        `(Browser vs Node)`,
+      `    Difference: ${roundTripDiff > 0 ? '+' : ''}` + `${formatNumber(roundTripDiff)}% ` + `(Browser vs Node)`,
     );
 
     console.log();

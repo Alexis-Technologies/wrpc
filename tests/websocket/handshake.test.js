@@ -67,10 +67,7 @@ test('handshake: negative cases', async (t) => {
     // Accept either an explicit non-101 response or immediate
     // socket close without headers
     const code = parseStatusCode(res.statusLine);
-    assert.ok(
-      res.statusLine === '' || code !== 101,
-      `expected no upgrade, got: ${res.statusLine}`,
-    );
+    assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
 
     await new Promise((resolve) => httpServer.close(resolve));
   });
@@ -95,10 +92,7 @@ test('handshake: negative cases', async (t) => {
     });
 
     const code = parseStatusCode(res.statusLine);
-    assert.ok(
-      res.statusLine === '' || code !== 101,
-      `expected no upgrade, got: ${res.statusLine}`,
-    );
+    assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
 
     await new Promise((resolve) => httpServer.close(resolve));
   });
@@ -124,10 +118,7 @@ test('handshake: negative cases', async (t) => {
     });
 
     const code = parseStatusCode(res.statusLine);
-    assert.ok(
-      res.statusLine === '' || code !== 101,
-      `expected no upgrade, got: ${res.statusLine}`,
-    );
+    assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
 
     await new Promise((resolve) => httpServer.close(resolve));
   });
@@ -153,10 +144,7 @@ test('handshake: negative cases', async (t) => {
     });
 
     const code = parseStatusCode(res.statusLine);
-    assert.ok(
-      res.statusLine === '' || code !== 101,
-      `expected no upgrade, got: ${res.statusLine}`,
-    );
+    assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
 
     await new Promise((resolve) => httpServer.close(resolve));
   });
@@ -183,10 +171,7 @@ test('handshake: negative cases', async (t) => {
     });
 
     const code = parseStatusCode(res.statusLine);
-    assert.ok(
-      res.statusLine === '' || code !== 101,
-      `expected no upgrade, got: ${res.statusLine}`,
-    );
+    assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
 
     await new Promise((resolve) => httpServer.close(resolve));
   });
@@ -212,10 +197,7 @@ test('handshake: negative cases', async (t) => {
     });
 
     const code = parseStatusCode(res.statusLine);
-    assert.ok(
-      res.statusLine === '' || code !== 101,
-      `expected no upgrade, got: ${res.statusLine}`,
-    );
+    assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
 
     await new Promise((resolve) => httpServer.close(resolve));
   });
@@ -241,10 +223,7 @@ test('handshake: negative cases', async (t) => {
     });
 
     const code = parseStatusCode(res.statusLine);
-    assert.ok(
-      res.statusLine === '' || code !== 101,
-      `expected no upgrade, got: ${res.statusLine}`,
-    );
+    assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
 
     await new Promise((resolve) => httpServer.close(resolve));
   });
@@ -271,10 +250,7 @@ test('handshake: negative cases', async (t) => {
     });
 
     const code = parseStatusCode(res.statusLine);
-    assert.ok(
-      res.statusLine === '' || code !== 101,
-      `expected no upgrade, got: ${res.statusLine}`,
-    );
+    assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
 
     await new Promise((resolve) => httpServer.close(resolve));
   });
@@ -301,10 +277,7 @@ test('handshake: negative cases', async (t) => {
     });
 
     const code = parseStatusCode(res.statusLine);
-    assert.ok(
-      res.statusLine === '' || code !== 101,
-      `expected no upgrade, got: ${res.statusLine}`,
-    );
+    assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
 
     await new Promise((resolve) => httpServer.close(resolve));
   });
@@ -331,10 +304,7 @@ test('handshake: negative cases', async (t) => {
     });
 
     const code = parseStatusCode(res.statusLine);
-    assert.ok(
-      res.statusLine === '' || code !== 101,
-      `expected no upgrade, got: ${res.statusLine}`,
-    );
+    assert.ok(res.statusLine === '' || code !== 101, `expected no upgrade, got: ${res.statusLine}`);
 
     await new Promise((resolve) => httpServer.close(resolve));
   });
@@ -364,11 +334,7 @@ test('handshake: Sec-WebSocket-Accept correct, no subprotocol', async () => {
   });
 
   // Compute expected accept
-  const expected = crypto
-    .createHash('sha1')
-    .update(key)
-    .update(MAGIC)
-    .digest('base64');
+  const expected = crypto.createHash('sha1').update(key).update(MAGIC).digest('base64');
 
   const code = parseStatusCode(res.statusLine);
   assert.strictEqual(code, 101);

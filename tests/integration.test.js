@@ -6,8 +6,8 @@ const { Blob } = require('node:buffer');
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { Server } = require('../lib/server.js');
-const { Metacom } = require('../lib/metacom.js');
+const { Server } = require('../src/server.js');
+const { WrpcClient } = require('../src/client.js');
 
 const { emitWarning } = process;
 process.emitWarning = (warning, type, ...args) => {
@@ -76,7 +76,7 @@ const createServer = async (api) => {
   return { server, port };
 };
 
-test('Integration / Metacom client with Server', async (t) => {
+test('Integration / WrpcClient with Server', async (t) => {
   const api = {
     test: {
       hello: {
@@ -134,7 +134,7 @@ test('Integration / Metacom client with Server', async (t) => {
   });
 
   await t.test('WS RPC: load and call public method', async () => {
-    const client = await Metacom.connect(`ws://127.0.0.1:${port}/`);
+    const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
     t.after(() => void client.close());
     await client.load('test');
     const result = await client.api.test.hello({ name: 'Max' });
@@ -142,7 +142,7 @@ test('Integration / Metacom client with Server', async (t) => {
   });
 
   await t.test('HTTP RPC: load and call public method', async () => {
-    const client = await Metacom.connect(`http://127.0.0.1:${port}/api`);
+    const client = await WrpcClient.connect(`http://127.0.0.1:${port}/api`);
     t.after(() => void client.close());
     await client.load('test');
     const result = await client.api.test.hello({ name: 'Ada' });
@@ -150,27 +150,21 @@ test('Integration / Metacom client with Server', async (t) => {
   });
 
   await t.test('WS RPC: propagates method errors', async () => {
-    const client = await Metacom.connect(`ws://127.0.0.1:${port}/`);
+    const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
     t.after(() => void client.close());
     await client.load('test');
-    await assert.rejects(
-      client.api.test.fail(),
-      (error) => error.message === 'Boom' && error.code === 400,
-    );
+    await assert.rejects(client.api.test.fail(), (error) => error.message === 'Boom' && error.code === 400);
   });
 
   await t.test('WS RPC: rejects private method without session', async () => {
-    const client = await Metacom.connect(`ws://127.0.0.1:${port}/`);
+    const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
     t.after(() => void client.close());
     await client.load('test');
-    await assert.rejects(
-      client.api.test.secret(),
-      (error) => error.code === 403,
-    );
+    await assert.rejects(client.api.test.secret(), (error) => error.code === 403);
   });
 
   await t.test('WS events: server emit reaches client unit', async () => {
-    const client = await Metacom.connect(`ws://127.0.0.1:${port}/`);
+    const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
     t.after(() => void client.close());
     await client.load('test');
     const ping = new Promise((resolve) => client.api.test.on('ping', resolve));
@@ -180,7 +174,7 @@ test('Integration / Metacom client with Server', async (t) => {
   });
 
   await t.test('WS streams: client upload is readable on server', async () => {
-    const client = await Metacom.connect(`ws://127.0.0.1:${port}/`);
+    const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
     t.after(() => void client.close());
     await client.load('test');
     const data = 'Some random data for upload to the server';
@@ -196,7 +190,7 @@ test('Integration / Metacom client with Server', async (t) => {
   });
 
   await t.test('WS streams: server download readable on client', async () => {
-    const client = await Metacom.connect(`ws://127.0.0.1:${port}/`);
+    const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
     t.after(() => void client.close());
     await client.load('test');
     const { id } = await client.api.test.download({ name: 'download-stream' });

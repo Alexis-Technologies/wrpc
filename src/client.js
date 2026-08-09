@@ -1,9 +1,10 @@
 'use strict';
 
-const { Emitter, generateUUID, jsonParse } = require('metautil');
+const { Emitter, jsonParse } = require('./utils.js');
+const { generateUUID } = require('./runtime/node.js');
 const { WebSocket } = globalThis;
 const { chunkDecode } = require('./chunks.js');
-const { MetaReadable, MetaWritable } = require('./streams.js');
+const { WrpcReadable, WrpcWritable } = require('./streams.js');
 
 const CALL_TIMEOUT = 7 * 1000;
 const RECONNECT_TIMEOUT = 2 * 1000;
@@ -16,7 +17,7 @@ const toByteView = async (input) => {
   return new Uint8Array(input);
 };
 
-class MetacomError extends Error {
+class WrpcError extends Error {
   constructor({ message, code }) {
     super(message);
     this.code = code;
@@ -42,13 +43,13 @@ class ClientTransport extends Emitter {
   offline() {}
 }
 
-class Metacom extends Emitter {
+class WrpcClient extends Emitter {
   static connections = new Set();
   static isOnline = true;
 
   static online() {
-    Metacom.isOnline = true;
-    for (const connection of Metacom.connections) {
+    WrpcClient.isOnline = true;
+    for (const connection of WrpcClient.connections) {
       connection.#transport.online();
       if (!connection.active) {
         connection.open().catch((error) => {
@@ -59,21 +60,21 @@ class Metacom extends Emitter {
   }
 
   static offline() {
-    Metacom.isOnline = false;
-    for (const connection of Metacom.connections) {
+    WrpcClient.isOnline = false;
+    for (const connection of WrpcClient.connections) {
       connection.#transport.offline();
     }
   }
 
   static initialize() {
     if (typeof window !== 'undefined') {
-      window.addEventListener('online', Metacom.online);
-      window.addEventListener('offline', Metacom.offline);
+      window.addEventListener('online', WrpcClient.online);
+      window.addEventListener('offline', WrpcClient.offline);
       return;
     }
     if (typeof self !== 'undefined') {
-      self.addEventListener('online', Metacom.online);
-      self.addEventListener('offline', Metacom.offline);
+      self.addEventListener('online', WrpcClient.online);
+      self.addEventListener('offline', WrpcClient.offline);
     }
   }
 
@@ -105,17 +106,17 @@ class Metacom extends Emitter {
 
   static async connect(url, options = {}) {
     if (options.worker) {
-      const transport = Metacom.transport.event.getInstance(url);
-      const metacom = new Metacom(url, transport, options);
-      await metacom.open();
-      return metacom;
+      const transport = WrpcClient.transport.event.getInstance(url);
+      const client = new WrpcClient(url, transport, options);
+      await client.open();
+      return client;
     }
     const isHttp = url.startsWith('http');
-    const Transport = isHttp ? Metacom.transport.http : Metacom.transport.ws;
+    const Transport = isHttp ? WrpcClient.transport.http : WrpcClient.transport.ws;
     const transport = new Transport(url);
-    const metacom = new Metacom(url, transport, options);
-    await metacom.open();
-    return metacom;
+    const client = new WrpcClient(url, transport, options);
+    await client.open();
+    return client;
   }
 
   #bindTransport() {
@@ -143,7 +144,7 @@ class Metacom extends Emitter {
 
   #scheduleReconnect() {
     if (this.active) return;
-    if (!Metacom.connections.has(this)) return;
+    if (!WrpcClient.connections.has(this)) return;
     if (this.#reconnectTimer) return;
     this.#reconnectTimer = setTimeout(() => {
       this.#reconnectTimer = null;
@@ -152,14 +153,14 @@ class Metacom extends Emitter {
   }
 
   async open() {
-    Metacom.connections.add(this);
+    WrpcClient.connections.add(this);
     await this.#transport.open(this.#options);
   }
 
   close() {
     clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = null;
-    Metacom.connections.delete(this);
+    WrpcClient.connections.delete(this);
     this.#transport.close();
   }
 
@@ -179,7 +180,7 @@ class Metacom extends Emitter {
 
   createStream(name, size) {
     const id = generateUUID();
-    return new MetaWritable(id, name, size, this);
+    return new WrpcWritable(id, name, size, this);
   }
 
   createBlobUploader(blob) {
@@ -204,8 +205,8 @@ class Metacom extends Emitter {
       const parts = name.split('/');
       const unit = parts[0];
       const eventName = parts[1];
-      const metacomUnit = this.api[unit];
-      if (metacomUnit) metacomUnit.emit(eventName, packet.data);
+      const apiUnit = this.api[unit];
+      if (apiUnit) apiUnit.emit(eventName, packet.data);
       return;
     }
     if (!id) throw new Error('Packet structure error');
@@ -218,7 +219,7 @@ class Metacom extends Emitter {
       this.#calls.delete(id);
       clearTimeout(timeout);
       if (packet.error) {
-        return void reject(new MetacomError(packet.error));
+        return void reject(new WrpcError(packet.error));
       }
       resolve(packet.result);
       return;
@@ -233,7 +234,7 @@ class Metacom extends Emitter {
       if (stream) {
         throw new Error(`Stream ${name} is already initialized`);
       }
-      const readableStream = new MetaReadable(id, name, size);
+      const readableStream = new WrpcReadable(id, name, size);
       this.#streams.set(id, readableStream);
       return;
     }
@@ -402,7 +403,7 @@ class ClientEventTransport extends ClientTransport {
       this.emit('message', data);
     });
     port1.start();
-    this.#worker.postMessage({ type: 'metacom:connect' }, [port2]);
+    this.#worker.postMessage({ type: 'wrpc:connect' }, [port2]);
     this.active = true;
     this.emit('open');
   }
@@ -415,11 +416,11 @@ class ClientEventTransport extends ClientTransport {
   }
 
   online() {
-    if (this.#worker) this.#worker.postMessage({ type: 'metacom:online' });
+    if (this.#worker) this.#worker.postMessage({ type: 'wrpc:online' });
   }
 
   offline() {
-    if (this.#worker) this.#worker.postMessage({ type: 'metacom:offline' });
+    if (this.#worker) this.#worker.postMessage({ type: 'wrpc:offline' });
   }
 
   write(data) {
@@ -428,7 +429,7 @@ class ClientEventTransport extends ClientTransport {
   }
 }
 
-class MetacomProxy extends Emitter {
+class WrpcClientProxy extends Emitter {
   #ports = new Set();
   #pending = new Map();
   #connection = null;
@@ -441,11 +442,11 @@ class MetacomProxy extends Emitter {
     if (callTimeout) this.#callTimeout = callTimeout;
     if (reconnectTimeout) this.#reconnectTimeout = reconnectTimeout;
     if (typeof self === 'undefined') {
-      throw new Error('MetacomProxy must run in ServiceWorker context');
+      throw new Error('WrpcClientProxy must run in ServiceWorker context');
     }
     self.addEventListener('message', (event) => {
       const { type } = event.data;
-      if (type?.startsWith('metacom')) this.#handleEvent(event);
+      if (type?.startsWith('wrpc')) this.#handleEvent(event);
     });
   }
 
@@ -462,7 +463,7 @@ class MetacomProxy extends Emitter {
       reconnectTimeout: this.#reconnectTimeout,
       proxy: (data) => this.#proxyPacket(data),
     };
-    this.#connection = await Metacom.connect(url, options);
+    this.#connection = await WrpcClient.connect(url, options);
   }
 
   close() {
@@ -473,7 +474,7 @@ class MetacomProxy extends Emitter {
 
   #handleEvent(event) {
     const { type } = event.data;
-    if (type === 'metacom:connect') {
+    if (type === 'wrpc:connect') {
       const port = event.ports[0];
       if (!port) throw new Error('MessagePort not provided');
       this.#ports.add(port);
@@ -483,8 +484,8 @@ class MetacomProxy extends Emitter {
       port.start();
       return;
     }
-    if (type === 'metacom:online') Metacom.online();
-    else if (type === 'metacom:offline') Metacom.offline();
+    if (type === 'wrpc:online') WrpcClient.online();
+    else if (type === 'wrpc:offline') WrpcClient.offline();
     else throw new Error(`Unknown event: ${type}`);
   }
 
@@ -524,12 +525,12 @@ class MetacomProxy extends Emitter {
   }
 }
 
-Metacom.transport = {
+WrpcClient.transport = {
   ws: ClientWsTransport,
   http: ClientHttpTransport,
   event: ClientEventTransport,
 };
 
-Metacom.initialize();
+WrpcClient.initialize();
 
-module.exports = { Metacom, MetacomProxy };
+module.exports = { WrpcClient, WrpcClientProxy, WrpcError };

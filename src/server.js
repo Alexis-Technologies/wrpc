@@ -3,28 +3,50 @@
 const http = require('node:http');
 const https = require('node:https');
 
-const metautil = require('metautil');
-const { Emitter, jsonParse, parseParams, split } = metautil;
-const { isError, receiveBody, delay, generateUUID } = metautil;
+const { Emitter, jsonParse } = require('./utils.js');
+const { generateUUID } = require('./runtime/node.js');
 
 const { WebsocketServer } = require('./websocket/ws.js');
 const { ServerTransport, buildHeaders } = require('./transport.js');
 const ServerHttpTransport = ServerTransport.transport.http;
 const ServerWsTransport = ServerTransport.transport.ws;
 const ServerEventTransport = ServerTransport.transport.event;
-const { MetaReadable, MetaWritable } = require('./streams.js');
+const { WrpcReadable, WrpcWritable } = require('./streams.js');
 const { chunkDecode } = require('./chunks.js');
 
-const SHORT_TIMEOUT = 500;
 const DEFAULT_LISTEN_RETRY = 3;
+const MAX_BODY_SIZE = 10 * 1024 * 1024;
+
+const isError = (err) => err?.constructor?.name?.includes('Error') || false;
+
+const split = (s, separator) => {
+  const i = s.indexOf(separator);
+  if (i < 0) return [s, ''];
+  return [s.slice(0, i), s.slice(i + separator.length)];
+};
+
+const parseParams = (params) => Object.fromEntries(new URLSearchParams(params));
+
+const receiveBody = async (stream, limit = MAX_BODY_SIZE) => {
+  if (!Number.isSafeInteger(limit) || limit < 0) {
+    throw new TypeError('Body size limit must be a non-negative safe integer');
+  }
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of stream) {
+    size += chunk.length;
+    if (size > limit) throw new Error('Body size limit exceeded');
+    chunks.push(chunk);
+  }
+  if (chunks.length === 1) return chunks[0];
+  return Buffer.concat(chunks, size);
+};
 
 const getPathname = (url) => (url ? url.split('?')[0] : '/');
 
-const isMetacomWebSocketPath = (url) => {
+const isWrpcWebSocketPath = (url) => {
   const pathname = getPathname(url);
-  return (
-    pathname === '/' || pathname === '/api' || pathname.startsWith('/api/')
-  );
+  return pathname === '/' || pathname === '/api' || pathname.startsWith('/api/');
 };
 
 const createProxy = (data, save) =>
@@ -104,7 +126,7 @@ class Client extends Emitter {
   sendEvent(name, data) {
     const packet = { type: 'event', name, data };
     if (!this.#transport.connection) {
-      throw new Error(`Can't send metacom event to http transport`);
+      throw new Error(`Can't send wrpc event to http transport`);
     }
     this.send(packet);
   }
@@ -120,12 +142,12 @@ class Client extends Emitter {
 
   createStream(name, size) {
     if (!this.#transport.connection) {
-      throw new Error(`Can't send metacom streams to http transport`);
+      throw new Error(`Can't send wrpc streams to http transport`);
     }
     if (!name) throw new Error('Stream name is not provided');
     if (!size) throw new Error('Stream size is not provided');
     const id = generateUUID();
-    const stream = new MetaWritable(id, name, size, this.#transport);
+    const stream = new WrpcWritable(id, name, size, this.#transport);
     this.streams.set(id, stream);
     return stream;
   }
@@ -210,7 +232,7 @@ const handleStream = async (client, packet) => {
     if (!valid) throw new Error('Stream packet structure error');
     if (stream) throw new Error(`Stream ${tag} is already initialized`);
     {
-      const stream = new MetaReadable(id, name, size);
+      const stream = new WrpcReadable(id, name, size);
       client.streams.set(id, stream);
     }
   } catch (error) {
@@ -312,7 +334,7 @@ class Server extends Emitter {
     if (websocketPath !== undefined) {
       options.path = websocketPath;
     } else {
-      options.verifyClient = ({ req }) => isMetacomWebSocketPath(req.url);
+      options.verifyClient = ({ req }) => isWrpcWebSocketPath(req.url);
     }
     return options;
   }
@@ -422,13 +444,15 @@ class Server extends Emitter {
   }
 
   async close() {
-    if (!this.httpServer.listening) return;
-    this.httpServer.close((error) => {
-      if (error) this.#context.console.error(error);
+    const closed = new Promise((resolve) => {
+      this.httpServer.close((error) => {
+        if (error) this.#context.console.error(error);
+        resolve();
+      });
     });
-    if (this.#clients.size === 0) return;
     for (const client of this.#clients) client.close();
-    while (this.#clients.size > 0) await delay(SHORT_TIMEOUT);
+    this.httpServer.closeAllConnections();
+    await closed;
   }
 }
 

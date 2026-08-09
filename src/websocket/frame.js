@@ -102,11 +102,7 @@ class Frame {
   }
 
   static protocolErrorClose(type, isClient = false) {
-    return Frame.#closeBuffer(
-      CLOSE_CODES.PROTOCOL_ERROR,
-      PROTOCOL_ERROR_REASONS[type],
-      isClient,
-    );
+    return Frame.#closeBuffer(CLOSE_CODES.PROTOCOL_ERROR, PROTOCOL_ERROR_REASONS[type], isClient);
   }
 
   static close(code = 1000, reason = '') {
@@ -147,10 +143,7 @@ class Frame {
 
   getCloseDetails() {
     const code = this.payload.length >= 2 ? this.payload.readUInt16BE(0) : null;
-    const reason =
-      this.payload.length > 2
-        ? this.payload.subarray(2).toString(ENCODING)
-        : '';
+    const reason = this.payload.length > 2 ? this.payload.subarray(2).toString(ENCODING) : '';
 
     return Result.from({ code, reason });
   }

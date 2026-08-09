@@ -73,3 +73,18 @@ test('Frame: truncates close reason to 123 bytes', () => {
   const check = FrameParser.checkControlFrame(parsed);
   assert.strictEqual(check.error, null);
 });
+
+test('Frame: ping/pong accept a string payload', () => {
+  const ping = Frame.ping('hi');
+  assert.strictEqual(ping.opcode, OPCODES.PING);
+  assert.deepStrictEqual(ping.payload, Buffer.from('hi'));
+
+  const pong = Frame.pong('yo');
+  assert.strictEqual(pong.opcode, OPCODES.PONG);
+  assert.deepStrictEqual(pong.payload, Buffer.from('yo'));
+});
+
+test('Frame: toString returns null for non-text frames', () => {
+  const frame = Frame.binary(Buffer.from([1, 2, 3]));
+  assert.strictEqual(frame.toString(), null);
+});

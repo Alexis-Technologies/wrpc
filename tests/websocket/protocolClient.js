@@ -51,12 +51,7 @@ class ProtocolClient extends EventEmitter {
       // Reduce Nagle latency for faster test handshakes/frames
       socket.setNoDelay(true);
       const key = crypto.randomBytes(16).toString('base64');
-      const req = ProtocolClient.#buildUpgradeRequest(
-        host,
-        port,
-        url.pathname,
-        key,
-      );
+      const req = ProtocolClient.#buildUpgradeRequest(host, port, url.pathname, key);
       socket.write(req);
     });
     return socket;
@@ -134,10 +129,7 @@ class ProtocolClient extends EventEmitter {
       const maskLen = masked ? 4 : 0;
       if (this._buffer.length < offset + maskLen + len) break;
 
-      const payload = this._buffer.subarray(
-        offset + maskLen,
-        offset + maskLen + len,
-      );
+      const payload = this._buffer.subarray(offset + maskLen, offset + maskLen + len);
       if (masked) {
         const mask = this._buffer.subarray(offset, offset + 4);
         for (let i = 0; i < payload.length; i++) {
@@ -276,10 +268,7 @@ class ProtocolClient extends EventEmitter {
     if (Buffer.isBuffer(data)) return this.sendBinary(data, opts);
     if (data && ArrayBuffer.isView(data)) {
       const view = data; // TypedArray/DataView
-      return this.sendBinary(
-        Buffer.from(view.buffer, view.byteOffset, view.byteLength),
-        opts,
-      );
+      return this.sendBinary(Buffer.from(view.buffer, view.byteOffset, view.byteLength), opts);
     }
     if (data instanceof ArrayBuffer) {
       return this.sendBinary(Buffer.from(data), opts);

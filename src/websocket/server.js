@@ -16,8 +16,7 @@ const UPGRADE = [
   'Sec-WebSocket-Accept: ',
 ].join(EOL);
 
-const hasToken = (value, token) =>
-  !!value && value.toLowerCase().includes(token);
+const hasToken = (value, token) => !!value && value.toLowerCase().includes(token);
 
 const writeResponse = (socket, headerLines) => {
   socket.cork();
@@ -35,19 +34,13 @@ const sendUpgrade = (socket, accept) => {
 };
 
 const abort = (socket, code, message, { extraHeaders = [] } = {}) => {
-  const lines = [
-    `HTTP/1.1 ${code} ${message}`,
-    'Connection: close',
-    ...extraHeaders,
-  ];
+  const lines = [`HTTP/1.1 ${code} ${message}`, 'Connection: close', ...extraHeaders];
   writeResponse(socket, lines);
   socket.destroy();
 };
 
 const isValidSecWebSocketKey = (key) =>
-  typeof key === 'string' &&
-  key.length === 24 &&
-  Buffer.from(key, 'base64').length === 16;
+  typeof key === 'string' && key.length === 24 && Buffer.from(key, 'base64').length === 16;
 
 const getPathname = (url) => (url ? url.split('?')[0] : '/');
 
@@ -60,9 +53,7 @@ class WebsocketServer extends EventEmitter {
   constructor({ server, ...opts } = {}) {
     super();
     if (!server || typeof server.on !== 'function') {
-      throw new TypeError(
-        'WebsocketServer: options.server (instance of http.Server) is required',
-      );
+      throw new TypeError('WebsocketServer: options.server (instance of http.Server) is required');
     }
     this.#options = {
       pingInterval: PING_INTERVAL,
@@ -155,11 +146,7 @@ class WebsocketServer extends EventEmitter {
     if (!isValidSecWebSocketKey(key)) {
       return void abort(socket, 400, 'Invalid Sec-WebSocket-Key');
     }
-    const accept = crypto
-      .createHash('sha1')
-      .update(key)
-      .update(MAGIC)
-      .digest('base64');
+    const accept = crypto.createHash('sha1').update(key).update(MAGIC).digest('base64');
     sendUpgrade(socket, accept);
 
     const ws = new Connection(socket, head, {

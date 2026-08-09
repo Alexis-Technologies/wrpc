@@ -5,9 +5,9 @@ const { randomUUID } = require('node:crypto');
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const metautil = require('metautil');
-const { MetaReadable, MetaWritable } = require('../lib/streams.js');
-const { chunkEncode, chunkDecode } = require('../lib/chunks.js');
+const random = (max) => Math.floor(Math.random() * (max + 1));
+const { WrpcReadable, WrpcWritable } = require('../src/streams.js');
+const { chunkEncode, chunkDecode } = require('../src/chunks.js');
 
 const UINT_8_MAX = 255;
 
@@ -19,14 +19,14 @@ process.emitWarning = (warning, type, ...args) => {
 
 const generatePacket = () => ({
   id: randomUUID(),
-  name: metautil.random(UINT_8_MAX).toString(),
-  size: metautil.random(UINT_8_MAX),
+  name: random(UINT_8_MAX).toString(),
+  size: random(UINT_8_MAX),
 });
 
 const generateDataView = () => {
   const encoder = new TextEncoder();
-  const randomString = [...new Array(metautil.random(UINT_8_MAX))]
-    .map(() => metautil.random(UINT_8_MAX))
+  const randomString = [...new Array(random(UINT_8_MAX))]
+    .map(() => random(UINT_8_MAX))
     .map((num) => String.fromCharCode(num))
     .join('');
   return encoder.encode(randomString);
@@ -38,7 +38,7 @@ const createWritable = (id, name, size) => {
     send: (packet) => writeBuffer.push(JSON.stringify(packet)),
     write: (data) => writeBuffer.push(data),
   };
-  const stream = new MetaWritable(id, name, size, transport);
+  const stream = new WrpcWritable(id, name, size, transport);
   return [stream, writeBuffer];
 };
 
@@ -99,7 +99,7 @@ test('Chunk / encode / decode', async (t) => {
   });
 });
 
-test('MetaWritable', async (t) => {
+test('WrpcWritable', async (t) => {
   await t.test('constructor', () => {
     const { id, name, size } = generatePacket();
     const [, writeBuffer] = createWritable(id, name, size);
@@ -158,12 +158,12 @@ test('MetaWritable', async (t) => {
   });
 });
 
-test('MetaReadable', async (t) => {
+test('WrpcReadable', async (t) => {
   await t.test('iterates stream', async () => {
     const dataView = generateDataView();
     const { id, name } = generatePacket();
     const size = dataView.buffer.byteLength;
-    const stream = new MetaReadable(id, name, size);
+    const stream = new WrpcReadable(id, name, size);
     const buffer = Buffer.from(dataView.buffer);
     populateStream(stream).with(buffer);
     const chunks = [];
@@ -176,7 +176,7 @@ test('MetaReadable', async (t) => {
     const dataView = generateDataView();
     const { id, name } = generatePacket();
     const size = dataView.buffer.byteLength;
-    const stream = new MetaReadable(id, name, size);
+    const stream = new WrpcReadable(id, name, size);
     const buffer = Buffer.from(dataView.buffer);
     populateStream(stream).with(buffer);
     const blob = await stream.toBlob();

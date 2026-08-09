@@ -203,7 +203,6 @@
     "no-useless-escape": "error",
     "no-useless-rename": "error",
     "no-useless-return": "error",
-    "no-void": "error",
     "no-with": "error",
     "prefer-const": [
       "error",

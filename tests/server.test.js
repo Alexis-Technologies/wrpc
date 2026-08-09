@@ -5,7 +5,7 @@ const { randomUUID } = require('node:crypto');
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { Server } = require('../lib/server.js');
+const { Server } = require('../src/server.js');
 const { ProtocolClient } = require('./websocket/protocolClient.js');
 
 const parseStatusCode = (statusLine) => {
@@ -96,9 +96,9 @@ test('Server / calls', async (t) => {
     const args = { name: 'Max' };
     const packet = { type: 'call', id, method: 'test/hello', args };
     const socket = new ProtocolClient(`ws://${options.host}:${options.port}`);
-    await new Promise((res) => socket.once('open', res));
+    await new Promise((resolve) => socket.once('open', resolve));
     socket.send(JSON.stringify(packet));
-    const resPacket = await new Promise((res) => socket.once('message', res));
+    const resPacket = await new Promise((resolve) => socket.once('message', resolve));
     const response = JSON.parse(resPacket.toString());
     socket.close();
     assert.strictEqual(response.id, id);
@@ -110,12 +110,10 @@ test('Server / calls', async (t) => {
     const id = randomUUID();
     const args = { name: 'Max' };
     const packet = { type: 'call', id, method: 'test/hello', args };
-    const socket = new ProtocolClient(
-      `ws://${options.host}:${options.port}/api`,
-    );
-    await new Promise((res) => socket.once('open', res));
+    const socket = new ProtocolClient(`ws://${options.host}:${options.port}/api`);
+    await new Promise((resolve) => socket.once('open', resolve));
     socket.send(JSON.stringify(packet));
-    const resPacket = await new Promise((res) => socket.once('message', res));
+    const resPacket = await new Promise((resolve) => socket.once('message', resolve));
     const response = JSON.parse(resPacket.toString());
     socket.close();
     assert.strictEqual(response.id, id);

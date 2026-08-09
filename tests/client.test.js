@@ -7,10 +7,10 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { randomUUID } = require('node:crypto');
 
-const metautil = require('metautil');
+const { jsonParse } = require('../src/utils.js');
 const { WebsocketServer } = require('#ws');
-const { Metacom } = require('../lib/metacom.js');
-const { chunkEncode, chunkDecode } = require('../lib/chunks.js');
+const { WrpcClient } = require('../src/client.js');
+const { chunkEncode, chunkDecode } = require('../src/chunks.js');
 
 const { emitWarning } = process;
 process.emitWarning = (warning, type, ...args) => {
@@ -61,7 +61,7 @@ test('Client / calls', async (t) => {
   mockServer.on('connection', (ws) => {
     serverWs = ws;
     ws.on('message', async (raw) => {
-      const packet = metautil.jsonParse(raw.toString()) || {};
+      const packet = jsonParse(raw.toString()) || {};
       const { type, id, method } = packet;
       const [unit, name] = method.split('/');
       if (type !== 'call') return;
@@ -81,7 +81,7 @@ test('Client / calls', async (t) => {
 
   t.beforeEach(async () => {
     const options = { callTimeout: 300 };
-    client = await Metacom.connect('ws://localhost:8000/', options);
+    client = await WrpcClient.connect('ws://localhost:8000/', options);
     await client.load('test');
   });
 
@@ -105,10 +105,7 @@ test('Client / calls', async (t) => {
   });
 
   await t.test('handles api errors', async () => {
-    await assert.rejects(
-      client.api.test.error(),
-      (error) => error.message === 'Error message' && error.code === 400,
-    );
+    await assert.rejects(client.api.test.error(), (error) => error.message === 'Error message' && error.code === 400);
   });
 
   await t.test('emits error when server sends invalid JSON', async () => {
@@ -141,7 +138,7 @@ test('Client / stale callback', async (t) => {
   await listen(httpServer, 8010);
   mockServer.on('connection', (ws) => {
     ws.on('message', async (raw) => {
-      const packet = metautil.jsonParse(raw.toString()) || {};
+      const packet = jsonParse(raw.toString()) || {};
       const { type, id, method } = packet;
       const [unit, name] = method?.split('/') || [];
       if (type !== 'call') return;
@@ -170,7 +167,7 @@ test('Client / stale callback', async (t) => {
   t.after(() => void httpServer.close());
 
   await t.test('throws on stale callback for unknown id', async () => {
-    const client = await Metacom.connect('ws://localhost:8010/');
+    const client = await WrpcClient.connect('ws://localhost:8010/');
     const promise1 = new Promise((resolve) => {
       client.once('error', (error) => {
         assert.match(error.message, /Callback stale-id-not-in-calls not found/);
@@ -214,7 +211,7 @@ test('Client / events', async (t) => {
     }, 100);
     ws.on('close', () => void clearInterval(pingInterval));
     ws.on('message', async (raw) => {
-      const packet = metautil.jsonParse(raw.toString()) || {};
+      const packet = jsonParse(raw.toString()) || {};
       if (packet.type === 'call' && packet.method === 'system/introspect') {
         const introspection = { type: 'callback', id: packet.id, result: api };
         ws.send(JSON.stringify(introspection));
@@ -233,16 +230,14 @@ test('Client / events', async (t) => {
   t.after(() => void httpServer.close());
 
   t.beforeEach(async () => {
-    client = await Metacom.connect('ws://localhost:8001/');
+    client = await WrpcClient.connect('ws://localhost:8001/');
     await client.load('test');
   });
 
   t.afterEach(() => void client.close());
 
   await t.test('handles events from server', async () => {
-    const ping = await new Promise((resolve) =>
-      client.api.test.on('ping', resolve),
-    );
+    const ping = await new Promise((resolve) => client.api.test.on('ping', resolve));
     assert.deepStrictEqual(ping, { ping: true });
   });
 });
@@ -317,7 +312,7 @@ test('Client / stream', async (t) => {
     ws.on('close', () => void clearInterval(pingInterval));
     ws.on('message', async (raw, isBinary) => {
       if (isBinary) return void handleBinary(new Uint8Array(raw));
-      const packet = metautil.jsonParse(raw.toString()) || {};
+      const packet = jsonParse(raw.toString()) || {};
       if (packet.type === 'call' && packet.method === 'system/introspect') {
         const introspection = { type: 'callback', id: packet.id, result: api };
         return void ws.send(JSON.stringify(introspection));
@@ -336,7 +331,7 @@ test('Client / stream', async (t) => {
   t.after(() => void httpServer.close());
 
   t.beforeEach(async () => {
-    client = await Metacom.connect('ws://localhost:8002/');
+    client = await WrpcClient.connect('ws://localhost:8002/');
     await client.load('test');
   });
 
@@ -385,7 +380,7 @@ test('Client / different ID generation strategies', async (t) => {
   await listen(httpServer, 8004);
   mockServer.on('connection', (ws) => {
     ws.on('message', async (raw) => {
-      const packet = metautil.jsonParse(raw.toString()) || {};
+      const packet = jsonParse(raw.toString()) || {};
       const { type, id, method } = packet;
       const [unit, name] = method.split('/');
       if (type !== 'call') return;
@@ -402,7 +397,7 @@ test('Client / different ID generation strategies', async (t) => {
   t.after(() => void httpServer.close());
 
   await t.test('works with UUID generation', async () => {
-    const client = await Metacom.connect('ws://localhost:8004/');
+    const client = await WrpcClient.connect('ws://localhost:8004/');
     await client.load('test');
     const result = await client.api.test.test();
     assert.deepStrictEqual(result, { success: true });

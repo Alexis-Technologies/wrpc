@@ -2,7 +2,26 @@
 
 const http = require('node:http');
 
-const { Emitter, parseCookies, parseHost } = require('metautil');
+const { Emitter } = require('./utils.js');
+
+const parseHost = (host) => {
+  if (!host) return 'no-host-name-in-http-headers';
+  const portOffset = host.indexOf(':');
+  if (portOffset > -1) return host.substring(0, portOffset);
+  return host;
+};
+
+const parseCookies = (cookie) => {
+  const values = [];
+  const items = cookie.split(';');
+  for (const item of items) {
+    const parts = item.split('=');
+    const key = parts[0].trim();
+    const val = (parts[1] ?? '').trim();
+    values.push([key, val]);
+  }
+  return Object.fromEntries(values);
+};
 
 const HEADERS = {
   'X-XSS-Protection': '1; mode=block',

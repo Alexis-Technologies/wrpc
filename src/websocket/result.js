@@ -10,10 +10,7 @@ class Result {
   }
 
   static from(input) {
-    const res =
-      input instanceof globalThis.Error
-        ? { value: null, error: input }
-        : { value: input, error: null };
+    const res = input instanceof globalThis.Error ? { value: null, error: input } : { value: input, error: null };
     return new this(res);
   }
 

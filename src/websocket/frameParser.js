@@ -1,11 +1,6 @@
 'use strict';
 
-const {
-  CONTROL_OPCODES,
-  DATA_OPCODES,
-  OPCODES,
-  CLOSE_CODES,
-} = require('./constants.js');
+const { CONTROL_OPCODES, DATA_OPCODES, OPCODES, CLOSE_CODES } = require('./constants.js');
 const { Frame } = require('./frame.js');
 const { Result } = require('./result.js');
 
@@ -59,8 +54,7 @@ const isValidUTF8 = (buf) => {
       const byte3 = buf[i + 2];
       if ((byte2 & 0xc0) !== 0x80 || (byte3 & 0xc0) !== 0x80) return false;
 
-      const codePoint =
-        ((byte1 & 0x0f) << 12) | ((byte2 & 0x3f) << 6) | (byte3 & 0x3f);
+      const codePoint = ((byte1 & 0x0f) << 12) | ((byte2 & 0x3f) << 6) | (byte3 & 0x3f);
       // Overlong encoding check: minimum code point for 3-byte is 0x800
       if (codePoint < 0x800) return false;
       // Check for surrogate halves (U+D800 to U+DFFF)
@@ -73,19 +67,11 @@ const isValidUTF8 = (buf) => {
       const byte2 = buf[i + 1];
       const byte3 = buf[i + 2];
       const byte4 = buf[i + 3];
-      if (
-        (byte2 & 0xc0) !== 0x80 ||
-        (byte3 & 0xc0) !== 0x80 ||
-        (byte4 & 0xc0) !== 0x80
-      ) {
+      if ((byte2 & 0xc0) !== 0x80 || (byte3 & 0xc0) !== 0x80 || (byte4 & 0xc0) !== 0x80) {
         return false;
       }
 
-      const codePoint =
-        ((byte1 & 0x07) << 18) |
-        ((byte2 & 0x3f) << 12) |
-        ((byte3 & 0x3f) << 6) |
-        (byte4 & 0x3f);
+      const codePoint = ((byte1 & 0x07) << 18) | ((byte2 & 0x3f) << 12) | ((byte3 & 0x3f) << 6) | (byte4 & 0x3f);
       // Overlong encoding check: minimum code point for 4-byte is 0x10000
       if (codePoint < 0x10000) return false;
       // Maximum valid code point is 0x10FFFF
@@ -103,8 +89,7 @@ const isValidUTF8 = (buf) => {
 
 const isValidCloseCode = (code) => {
   if (VALID_CLOSE_CODES.has(code)) return true;
-  const isValidUserCode =
-    code >= VALID_USER_CLOSE_CODES.MIN && code <= VALID_USER_CLOSE_CODES.MAX;
+  const isValidUserCode = code >= VALID_USER_CLOSE_CODES.MIN && code <= VALID_USER_CLOSE_CODES.MAX;
   if (isValidUserCode) return true;
   return false;
 };
@@ -137,12 +122,7 @@ class FrameParser {
     let offset = 2;
 
     if (rsv !== 0) {
-      return Result.from(
-        new ParseError(
-          PARSE_ERR_CODES.PROTOCOL_ERROR_RSV,
-          'RSV bits must be 0',
-        ),
-      );
+      return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_RSV, 'RSV bits must be 0'));
     }
 
     if (length === LEN_16_BIT) {
@@ -156,12 +136,7 @@ class FrameParser {
       offset += 8;
       const isSafeHigh = (high & MAX_SAFE_HIGH_MASK) === 0;
       if (!isSafeHigh) {
-        return Result.from(
-          new ParseError(
-            PARSE_ERR_CODES.MESSAGE_TOO_BIG,
-            'Payload length exceeds MAX_SAFE_INTEGER',
-          ),
-        );
+        return Result.from(new ParseError(PARSE_ERR_CODES.MESSAGE_TOO_BIG, 'Payload length exceeds MAX_SAFE_INTEGER'));
       }
       length = high * TWO_32 + low;
     }
@@ -182,45 +157,23 @@ class FrameParser {
   static checkControlFrame(frame) {
     const { fin, opcode, payload } = frame;
     if (!CONTROL_OPCODES.has(opcode) || !fin) {
-      return Result.from(
-        new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON, 'Protocol error'),
-      );
+      return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON, 'Protocol error'));
     }
     if (payload.length > 125) {
-      return Result.from(
-        new ParseError(
-          PARSE_ERR_CODES.PROTOCOL_ERROR_CTRL_TOO_LONG,
-          'Control frame too long',
-        ),
-      );
+      return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_CTRL_TOO_LONG, 'Control frame too long'));
     }
     if (opcode === OPCODES.CLOSE) {
       if (payload.length === 0) return Result.from(true);
       if (payload.length === 1) {
-        return Result.from(
-          new ParseError(
-            PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON,
-            'Protocol error',
-          ),
-        );
+        return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON, 'Protocol error'));
       }
       const code = payload.readUInt16BE(0);
       const reason = payload.subarray(2);
       if (!isValidCloseCode(code)) {
-        return Result.from(
-          new ParseError(
-            PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON,
-            `Invalid close code: ${code}`,
-          ),
-        );
+        return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON, `Invalid close code: ${code}`));
       }
       if (!isValidUTF8(reason)) {
-        return Result.from(
-          new ParseError(
-            PARSE_ERR_CODES.INVALID_PAYLOAD,
-            'Invalid UTF-8 in close reason',
-          ),
-        );
+        return Result.from(new ParseError(PARSE_ERR_CODES.INVALID_PAYLOAD, 'Invalid UTF-8 in close reason'));
       }
     }
     return Result.from(true);
@@ -229,18 +182,11 @@ class FrameParser {
   static checkDataFrame(frame) {
     const { fin, opcode, payload } = frame;
     if (!DATA_OPCODES.has(opcode)) {
-      return Result.from(
-        new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON, 'Protocol error'),
-      );
+      return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON, 'Protocol error'));
     }
     const isText = opcode === OPCODES.TEXT;
     if (isText && fin && !isValidUTF8(payload)) {
-      return Result.from(
-        new ParseError(
-          PARSE_ERR_CODES.INVALID_PAYLOAD,
-          'Invalid UTF-8 in text frame',
-        ),
-      );
+      return Result.from(new ParseError(PARSE_ERR_CODES.INVALID_PAYLOAD, 'Invalid UTF-8 in text frame'));
     }
     return Result.from(true);
   }

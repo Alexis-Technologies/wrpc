@@ -3,7 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { chunkEncode, chunkDecode } = require('../lib/chunks-browser.js');
+const { chunkEncode, chunkDecode } = require('../src/chunks.js');
 
 test('Chunk / chunkEncode', async (t) => {
   await t.test('encodes string ID and payload', () => {
@@ -48,10 +48,7 @@ test('Chunk / chunkEncode', async (t) => {
     const id = 'a'.repeat(256);
     const payload = new Uint8Array([1]);
 
-    assert.throws(
-      () => chunkEncode(id, payload),
-      /ID length \d+ exceeds maximum of 255 characters/,
-    );
+    assert.throws(() => chunkEncode(id, payload), /ID length \d+ exceeds maximum of 255 characters/);
   });
 
   await t.test('accepts maximum ID length of 255 bytes', () => {
@@ -145,36 +142,5 @@ test('Chunk / encode-decode', async (t) => {
     for (let i = 0; i < 256; i++) {
       assert.strictEqual(payload[i], i);
     }
-  });
-});
-
-test('Chunk / browser-node compatibility', async (t) => {
-  await t.test('produces identical output', () => {
-    const nodeEncoders = require('../lib/chunks.js');
-    const id = 'compat-test';
-    const payload = new Uint8Array([10, 20, 30, 40, 50]);
-
-    const browserChunk = chunkEncode(id, payload);
-    const nodeChunk = nodeEncoders.chunkEncode(id, payload);
-
-    assert.deepStrictEqual(browserChunk, nodeChunk);
-  });
-
-  await t.test('can decode each others output', () => {
-    const nodeEncoders = require('../lib/chunks.js');
-    const id = 'cross-decode';
-    const payload = new Uint8Array([100, 200]);
-
-    const browserChunk = chunkEncode(id, payload);
-    const nodeDecoded = nodeEncoders.chunkDecode(browserChunk);
-
-    assert.strictEqual(nodeDecoded.id, id);
-    assert.deepStrictEqual(nodeDecoded.payload, payload);
-
-    const nodeChunk = nodeEncoders.chunkEncode(id, payload);
-    const browserDecoded = chunkDecode(nodeChunk);
-
-    assert.strictEqual(browserDecoded.id, id);
-    assert.deepStrictEqual(browserDecoded.payload, payload);
   });
 });

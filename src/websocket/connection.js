@@ -26,11 +26,7 @@ class Connection extends EventEmitter {
     this.#socket = socket;
     this.#recvBuffer = null;
 
-    const {
-      isClient = false,
-      maxBuffer = MAX_BUFFER,
-      closeTimeout = CLOSE_TIMEOUT,
-    } = options;
+    const { isClient = false, maxBuffer = MAX_BUFFER, closeTimeout = CLOSE_TIMEOUT } = options;
     this.#isClient = isClient;
     this.#maxBuffer = maxBuffer;
     this.#closeTimeout = closeTimeout;
@@ -56,18 +52,13 @@ class Connection extends EventEmitter {
   #receive(data) {
     if (this.#closeReceived && this.#closing) return;
 
-    this.#recvBuffer = this.#recvBuffer
-      ? Buffer.concat([this.#recvBuffer, data])
-      : data;
+    this.#recvBuffer = this.#recvBuffer ? Buffer.concat([this.#recvBuffer, data]) : data;
 
     if (this.#recvBuffer.length > this.#maxBuffer) {
       const error = new Error('Buffer overflow, closing connection');
       this.emit('error', error);
       if (this.#isClient) {
-        return void this.sendClose(
-          CLOSE_CODES.MESSAGE_TOO_BIG,
-          'Message too big',
-        );
+        return void this.sendClose(CLOSE_CODES.MESSAGE_TOO_BIG, 'Message too big');
       }
       const frame = Frame.errorClose('MESSAGE_TOO_BIG');
       return void this.#close(frame);
@@ -158,9 +149,7 @@ class Connection extends EventEmitter {
     if (!this.#fragments) {
       // Continuation frame without a started fragmented message
       if (opcode === OPCODES.CONTINUATION) {
-        const error = new Error(
-          'Protocol error: Unexpected CONTINUATION without start',
-        );
+        const error = new Error('Protocol error: Unexpected CONTINUATION without start');
         this.emit('error', error);
         const frame = Frame.protocolErrorClose('COMMON', this.#isClient);
         return void this.#close(frame);
@@ -196,9 +185,7 @@ class Connection extends EventEmitter {
       this.#fragments = null;
       this.emit('message', fullPayload, isBinary);
     } else {
-      const error = new Error(
-        'Protocol error: Unexpected data frame during fragments',
-      );
+      const error = new Error('Protocol error: Unexpected data frame during fragments');
       this.emit('error', error);
       const frame = Frame.protocolErrorClose('COMMON', this.#isClient);
       return void this.#close(frame);
