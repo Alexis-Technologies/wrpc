@@ -32,7 +32,7 @@ pnpm test:types        # type-check tests/*.test-d.ts against index.d.ts via tsd
 pnpm test:coverage     # c8 coverage over src/ (thresholds: 95% lines/statements, 90% branches, 95% functions)
 pnpm lint               # oxlint src tests scripts bench
 pnpm format             # oxfmt src tests scripts bench (format:check for CI)
-pnpm bench              # ops/sec benchmark harness (bench/bench.js)
+pnpm bench              # runs every script in bench/ (bench/run-all.js), not just bench.js
 pnpm size                # bundle-size report (scripts/size.js), also run in CI's lint job
 pnpm docs:dev            # VitePress dev server for docs/ (docs:build / docs:preview too)
 ```
