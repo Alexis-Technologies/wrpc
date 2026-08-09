@@ -7,88 +7,9 @@
  * against it, then measures round-trip call/event throughput end to end —
  * the same path exercised by tests/integration.test.js.
  */
-const { performance } = require('node:perf_hooks');
-const { randomUUID } = require('node:crypto');
-
-const { Server } = require('../src/server.js');
 const { WrpcClient } = require('../src/client.js');
-
-const WARMUP_ITERATIONS = 200;
-const MEASURE_MS = 1_000;
-
-async function bench(name, fn) {
-  for (let i = 0; i < WARMUP_ITERATIONS; i++) await fn();
-
-  let iterations = 0;
-  const start = performance.now();
-  while (performance.now() - start < MEASURE_MS) {
-    await fn();
-    iterations += 1;
-  }
-  const elapsed = performance.now() - start;
-  const opsPerSec = Math.round((iterations / elapsed) * 1000);
-  console.log(`${name.padEnd(52)} ${opsPerSec.toLocaleString('en-US').padStart(12)} ops/sec`);
-  return { name, opsPerSec };
-}
-
-const noop = () => {};
-
-class ProcedureMock {
-  constructor({ access = 'public', handler }) {
-    this.access = access;
-    this.handler = handler;
-  }
-
-  // eslint-disable-next-line class-methods-use-this
-  async enter() {}
-  // eslint-disable-next-line class-methods-use-this
-  leave() {}
-  invoke(context, args) {
-    return this.handler(args, context);
-  }
-}
-
-const createApplication = (api) => {
-  const introspect = (units = []) => {
-    const result = {};
-    for (const unit of units) {
-      if (!api[unit]) continue;
-      const methods = {};
-      for (const name of Object.keys(api[unit])) methods[name] = {};
-      result[unit] = methods;
-    }
-    return result;
-  };
-
-  return {
-    console: { log: noop, info: noop, warn: noop, error: noop, debug: noop },
-    static: { constructor: { name: 'Static' } },
-    auth: { saveSession: async () => {} },
-    getMethod: (unit, _ver, method) => {
-      if (unit === 'system' && method === 'introspect') {
-        return new ProcedureMock({ handler: async (units) => introspect(units) });
-      }
-      const def = api[unit]?.[method];
-      if (!def) return null;
-      return new ProcedureMock(def);
-    },
-  };
-};
-
-const createServer = async (api) => {
-  const options = {
-    host: '127.0.0.1',
-    port: 0,
-    protocol: 'http',
-    timeouts: { bind: 100 },
-    queue: { concurrency: 100, size: 100, timeout: 5_000 },
-    generateId: randomUUID,
-  };
-  const server = new Server(createApplication(api), options);
-  await server.listen();
-  const { port } = server.httpServer.address();
-  return { server, port };
-};
+const { bench } = require('./support/harness.js');
+const { createWrpcServer } = require('./support/wrpc-echo.js');
 
 const smallPayload = { name: 'Ada' };
 const largePayload = { text: 'x'.repeat(10_000) };
@@ -109,7 +30,7 @@ async function main() {
     },
   };
 
-  const { server, port } = await createServer(api);
+  const { server, port } = await createWrpcServer(api);
 
   const wsClient = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
   await wsClient.load('bench');
