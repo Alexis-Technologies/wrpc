@@ -1,0 +1,98 @@
+{
+  "name": "@alexify/wrpc",
+  "version": "1.0.0",
+  "description": "Fast and low overhead, zero-dependency, WebSocket-based RPC protocol for Node.js and browsers",
+  "main": "index.js",
+  "browser": {
+    "./index.js": "./browser.js",
+    "./src/runtime/node.js": "./src/runtime/browser.js"
+  },
+  "types": "index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./index.d.ts",
+      "browser": "./browser.js",
+      "default": "./index.js"
+    }
+  },
+  "directories": {
+    "test": "tests"
+  },
+  "scripts": {
+    "test": "node --test tests/*.test.js",
+    "test:coverage": "c8 --all --include 'src/**' --check-coverage --lines 95 --statements 95 --branches 90 --functions 95 --reporter text --reporter lcov node --test tests/*.test.js",
+    "test:types": "tsd",
+    "bench": "node bench/bench.js",
+    "lint": "oxlint src tests scripts bench",
+    "format": "oxfmt src tests scripts bench",
+    "format:check": "oxfmt --check src tests scripts bench",
+    "size": "node scripts/size.js",
+    "docs:dev": "vitepress dev docs",
+    "docs:build": "vitepress build docs",
+    "docs:preview": "vitepress preview docs"
+  },
+  "tsd": {
+    "directory": "tests"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/Alexis-Technologies/wrpc.git"
+  },
+  "keywords": [
+    "wrpc",
+    "websocket",
+    "rpc",
+    "protocol",
+    "nodejs",
+    "browser",
+    "fast",
+    "low-overhead",
+    "zero-dependency",
+    "realtime",
+    "communication",
+    "messaging",
+    "remote-procedure-call",
+    "rpc-framework",
+    "websocket-rpc",
+    "typescript",
+    "javascript",
+    "node",
+    "browser"
+  ],
+  "author": "Alex Dolid <dolid.sasha@gmail.com>",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/Alexis-Technologies/wrpc/issues"
+  },
+  "homepage": "https://wrpc.vercel.app",
+  "devDependencies": {
+    "c8": "^10.1.3",
+    "esbuild": "^0.28.1",
+    "mermaid": "^11.16.0",
+    "oxfmt": "^0.62.0",
+    "oxlint": "^1.77.0",
+    "pino": "^10.3.1",
+    "tsd": "^0.33.0",
+    "typescript": "^7.0.2",
+    "vitepress": "^1.6.4",
+    "vitepress-plugin-mermaid": "^2.0.17"
+  },
+  "engines": {
+    "node": ">=22"
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "packageManager": "pnpm@10.34.5",
+  "files": [
+    "index.js",
+    "index.d.ts",
+    "browser.js",
+    "src/",
+    "LICENSE",
+    "README.md",
+    "CHANGELOG.md",
+    "SECURITY.md",
+    "package.json"
+  ]
+}
