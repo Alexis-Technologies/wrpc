@@ -1,6 +1,6 @@
 'use strict';
 
-const { CONTROL_OPCODES, DATA_OPCODES, OPCODES, CLOSE_CODES } = require('./constants.js');
+const { CONTROL_OPCODES, DATA_OPCODES, OPCODES, CLOSE_CODES, RSV1 } = require('./constants.js');
 const { Frame } = require('./frame.js');
 const { Result } = require('./result.js');
 
@@ -111,7 +111,12 @@ const PARSE_ERR_CODES = {
 };
 
 class FrameParser {
-  static parse(buffer) {
+  // Parses only the frame header (through the mask key, when present).
+  // Returns { fin, rsv, opcode, masked, mask, length, headerSize } or an
+  // empty Result when more bytes are needed. `allowedRsv` is a bitmask of
+  // RSV bits negotiated via extensions (RFC 6455 5.2) — any other set RSV
+  // bit is a protocol error.
+  static parseHeader(buffer, options = {}) {
     if (buffer.length < 2) return Result.empty();
 
     const fin = (buffer[0] & FIN_MASK) !== 0;
@@ -121,7 +126,8 @@ class FrameParser {
     let length = buffer[1] & PAYLOAD_LEN_MASK;
     let offset = 2;
 
-    if (rsv !== 0) {
+    const allowedRsv = options.allowedRsv ?? 0;
+    if ((rsv & ~allowedRsv) !== 0) {
       return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_RSV, 'RSV bits must be 0'));
     }
 
@@ -141,22 +147,31 @@ class FrameParser {
       length = high * TWO_32 + low;
     }
 
-    let mask;
+    let mask = null;
     if (masked) {
       if (buffer.length < offset + 4) return Result.empty();
-      mask = buffer.subarray(offset, offset + 4);
+      mask = Buffer.from(buffer.subarray(offset, offset + 4));
       offset += 4;
     }
 
-    if (buffer.length < offset + length) return Result.empty();
-    const payload = buffer.subarray(offset, offset + length);
+    return Result.from({ fin, rsv, opcode, masked, mask, length, headerSize: offset });
+  }
+
+  static parse(buffer, options = {}) {
+    const headerResult = FrameParser.parseHeader(buffer, options);
+    const { value, error } = headerResult;
+    if (error || !value) return headerResult;
+
+    const { fin, rsv, opcode, masked, mask, length, headerSize } = value;
+    if (buffer.length < headerSize + length) return Result.empty();
+    const payload = buffer.subarray(headerSize, headerSize + length);
     const frame = new Frame(fin, opcode, masked, payload, mask, rsv);
-    return Result.from({ frame, bytesUsed: offset + length });
+    return Result.from({ frame, bytesUsed: headerSize + length });
   }
 
   static checkControlFrame(frame) {
-    const { fin, opcode, payload } = frame;
-    if (!CONTROL_OPCODES.has(opcode) || !fin) {
+    const { fin, rsv, opcode, payload } = frame;
+    if (!CONTROL_OPCODES.has(opcode) || !fin || rsv !== 0) {
       return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON, 'Protocol error'));
     }
     if (payload.length > 125) {
@@ -180,12 +195,18 @@ class FrameParser {
   }
 
   static checkDataFrame(frame) {
-    const { fin, opcode, payload } = frame;
+    const { fin, rsv, opcode, payload } = frame;
     if (!DATA_OPCODES.has(opcode)) {
       return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON, 'Protocol error'));
     }
+    // RSV1 (compression) may only start a message, never continue one
+    if (opcode === OPCODES.CONTINUATION && rsv !== 0) {
+      return Result.from(new ParseError(PARSE_ERR_CODES.PROTOCOL_ERROR_COMMON, 'Protocol error'));
+    }
+    // Compressed text is validated after inflation, not on the wire bytes
+    const isCompressed = (rsv & RSV1) !== 0;
     const isText = opcode === OPCODES.TEXT;
-    if (isText && fin && !isValidUTF8(payload)) {
+    if (isText && fin && !isCompressed && !isValidUTF8(payload)) {
       return Result.from(new ParseError(PARSE_ERR_CODES.INVALID_PAYLOAD, 'Invalid UTF-8 in text frame'));
     }
     return Result.from(true);

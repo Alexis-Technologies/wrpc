@@ -79,22 +79,39 @@ test('WrpcReadable.pipe surfaces finalize() rejections as an error event', async
   assert.match(error.message, /sink exploded/);
 });
 
-test('WrpcReadable.push applies backpressure once the high water mark is exceeded', async () => {
+test('WrpcReadable.push applies backpressure once a consumer attached and the high water mark is exceeded', async () => {
   const readable = new WrpcReadable('id', 'name', 10, { highWaterMark: 1 });
+  // The high-water mark only applies after the first read: the consumer
+  // attaches, and PULL_EVENTs become possible.
   await readable.push(Buffer.from('a'));
-  await readable.push(Buffer.from('b'));
+  assert.strictEqual((await readable.read()).toString(), 'a');
 
-  let thirdResolved = false;
-  const third = readable.push(Buffer.from('c')).then(() => (thirdResolved = true));
+  await readable.push(Buffer.from('b'));
+  await readable.push(Buffer.from('c'));
+
+  let fourthResolved = false;
+  const fourth = readable.push(Buffer.from('d')).then(() => (fourthResolved = true));
 
   await new Promise((resolve) => setImmediate(resolve));
-  assert.strictEqual(thirdResolved, false);
+  assert.strictEqual(fourthResolved, false);
 
-  assert.strictEqual((await readable.read()).toString(), 'a');
-  await third;
-  assert.strictEqual(thirdResolved, true);
   assert.strictEqual((await readable.read()).toString(), 'b');
+  await fourth;
+  assert.strictEqual(fourthResolved, true);
   assert.strictEqual((await readable.read()).toString(), 'c');
+  assert.strictEqual((await readable.read()).toString(), 'd');
+});
+
+test('WrpcReadable.push buffers freely before any consumer attaches', async () => {
+  const readable = new WrpcReadable('id', 'name', 10, { highWaterMark: 1 });
+  // No consumer yet: pushes far beyond the high-water mark must resolve
+  // immediately — blocking here would deadlock the upload-then-call wire
+  // pattern (chunks arrive before the call that starts the consumer).
+  for (let i = 0; i < 40; i++) {
+    await readable.push(Buffer.from(String(i)));
+  }
+  assert.strictEqual(readable.queue.length, 40);
+  assert.strictEqual((await readable.read()).toString(), '0');
 });
 
 test('WrpcReadable.terminate marks the stream terminated without waiting for all bytes', async () => {
@@ -106,6 +123,8 @@ test('WrpcReadable.terminate marks the stream terminated without waiting for all
 
 test('WrpcReadable.checkStreamLimits grows the high water mark under listener pressure', async () => {
   const readable = new WrpcReadable('id', 'name', 100, { highWaterMark: 1 });
+  await readable.push(Buffer.from('0'));
+  assert.strictEqual((await readable.read()).toString(), '0'); // attach a consumer
   await readable.push(Buffer.from('a'));
   await readable.push(Buffer.from('b'));
 

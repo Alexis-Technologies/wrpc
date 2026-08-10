@@ -371,9 +371,19 @@ class Server extends Emitter {
     const transport = new ServerWsTransport(req, connection, options);
     const client = this.#addClient(transport);
 
+    // Receive-side flow control: while binary chunks are being consumed
+    // (WrpcReadable.push applies its high-water mark), stop reading from
+    // the socket so the pressure reaches the peer through TCP.
+    let inflight = 0;
+    const done = () => {
+      inflight--;
+      if (inflight === 0) connection.resume();
+    };
     connection.on('message', (data, isBinary) => {
-      if (isBinary) handleBinary(client, new Uint8Array(data));
-      else this.#message(client, data);
+      if (!isBinary) return void this.#message(client, data);
+      inflight++;
+      if (inflight === 1) connection.pause();
+      handleBinary(client, new Uint8Array(data)).then(done, done);
     });
     connection.on('error', () => transport.emit('close'));
   }

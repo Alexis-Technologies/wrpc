@@ -17,6 +17,10 @@
       "types": "./index.d.ts",
       "browser": "./browser.js",
       "default": "./index.js"
+    },
+    "./ws": {
+      "types": "./ws.d.ts",
+      "default": "./ws.js"
     }
   },
   "directories": {
@@ -26,6 +30,7 @@
     "test": "node --test",
     "test:coverage": "c8 --all --include 'src/**' --check-coverage --lines 95 --statements 95 --branches 90 --functions 95 --reporter text --reporter lcov node --test",
     "test:types": "tsd",
+    "test:perf": "node tests/perf/stream-memory.perf.js",
     "bench": "node bench/run-all.js",
     "lint": "oxlint src tests scripts bench",
     "format": "oxfmt src tests scripts bench",
@@ -98,6 +103,8 @@
     "index.js",
     "index.d.ts",
     "browser.js",
+    "ws.js",
+    "ws.d.ts",
     "src/",
     "LICENSE",
     "README.md",

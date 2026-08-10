@@ -43,6 +43,37 @@ const truncateCloseReason = (reason) => {
   return bytes.subarray(0, end).toString(ENCODING);
 };
 
+// Uint32Array element order follows the host CPU; the word-XOR fast path
+// composes its mask for little-endian layout, so big-endian hosts (Node
+// supports linux-s390x) must take the byte-wise path or corrupt payloads.
+const LITTLE_ENDIAN = new Uint8Array(Uint32Array.of(1).buffer)[0] === 1;
+
+// XOR-masks `payload` in place: byte-wise head up to 4-byte alignment, then
+// 32 bits per iteration through a Uint32Array view (~8x the naive loop —
+// see bench/unmask.js; readUInt32LE/writeUInt32LE lose to both), byte-wise
+// tail. The alignment head matters: payloads are often subarray views at
+// arbitrary byte offsets.
+const applyMask = (payload, mask) => {
+  const length = payload.length;
+  let i = 0;
+  if (LITTLE_ENDIAN) {
+    const misalign = payload.byteOffset & 3;
+    if (misalign !== 0) {
+      const prefix = Math.min(4 - misalign, length);
+      for (; i < prefix; i++) payload[i] ^= mask[i & 3];
+    }
+    const words = (length - i) >> 2;
+    if (words > 0) {
+      const view = new Uint32Array(payload.buffer, payload.byteOffset + i, words);
+      const mask32 =
+        (mask[i & 3] | (mask[(i + 1) & 3] << 8) | (mask[(i + 2) & 3] << 16) | (mask[(i + 3) & 3] << 24)) >>> 0;
+      for (let w = 0; w < words; w++) view[w] ^= mask32;
+      i += words << 2;
+    }
+  }
+  for (; i < length; i++) payload[i] ^= mask[i & 3];
+};
+
 class Frame {
   constructor(fin, opcode, masked, payload, mask, rsv = RSV) {
     this.fin = fin;
@@ -119,18 +150,14 @@ class Frame {
 
   unmaskPayload() {
     if (!this.masked) return;
-    for (let i = 0; i < this.payload.length; i++) {
-      this.payload[i] ^= this.mask[i & 0x03];
-    }
+    applyMask(this.payload, this.mask);
     this.masked = false;
   }
 
   maskPayload() {
     if (this.masked) return;
     this.mask = crypto.randomBytes(4);
-    for (let i = 0; i < this.payload.length; i++) {
-      this.payload[i] ^= this.mask[i & 0x03];
-    }
+    applyMask(this.payload, this.mask);
     this.masked = true;
   }
 
@@ -193,4 +220,4 @@ class Frame {
   }
 }
 
-module.exports = { Frame, EMPTY_PING, EMPTY_PONG };
+module.exports = { Frame, EMPTY_PING, EMPTY_PONG, applyMask };

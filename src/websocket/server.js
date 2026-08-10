@@ -4,6 +4,7 @@ const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 
 const { Connection } = require('./connection.js');
+const permessageDeflate = require('./permessageDeflate.js');
 
 const MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
 const PING_INTERVAL = 10000;
@@ -25,10 +26,11 @@ const writeResponse = (socket, headerLines) => {
   socket.uncork();
 };
 
-const sendUpgrade = (socket, accept) => {
+const sendUpgrade = (socket, accept, extraHeaders = []) => {
   socket.cork();
   socket.write(UPGRADE);
   socket.write(accept);
+  for (const line of extraHeaders) socket.write(EOL + line);
   socket.write(EOL2);
   socket.uncork();
 };
@@ -49,6 +51,7 @@ class WebsocketServer extends EventEmitter {
   #connections = new Set();
   #heartbeats = new Map(); // { awaiting: boolean }
   #pingTimer;
+  #closed = false;
 
   constructor({ server, ...opts } = {}) {
     super();
@@ -62,10 +65,18 @@ class WebsocketServer extends EventEmitter {
     this.#init(server);
   }
 
+  // Snapshot of the live connections (mutations do not affect the server)
+  get connections() {
+    return new Set(this.#connections);
+  }
+
   #init(server) {
     const { pingInterval } = this.#options;
     this.#pingTimer = setInterval(() => {
       for (const ws of this.#connections) {
+        // A paused connection cannot read pongs — skip it instead of
+        // terminating a healthy peer that is merely applying backpressure.
+        if (ws.isPaused) continue;
         const heartbeat = this.#heartbeats.get(ws);
         if (!heartbeat || heartbeat.awaiting) {
           ws.terminate();
@@ -100,18 +111,50 @@ class WebsocketServer extends EventEmitter {
       }
     });
     server.on('close', () => {
-      clearInterval(this.#pingTimer);
-      for (const ws of this.#connections) {
-        ws.sendClose(1001, 'Server is closing');
-      }
-      this.#connections.clear();
-      this.#heartbeats.clear();
-      this.emit('close');
+      this.close();
     });
   }
 
+  close({ code = 1001, reason = 'Server is closing' } = {}) {
+    if (this.#closed) return;
+    this.#closed = true;
+    clearInterval(this.#pingTimer);
+    for (const ws of this.#connections) {
+      ws.sendClose(code, reason);
+    }
+    this.#connections.clear();
+    this.#heartbeats.clear();
+    this.emit('close');
+  }
+
+  #negotiateProtocol(req, socket) {
+    const header = req.headers['sec-websocket-protocol'];
+    if (!header) return { protocol: '' };
+    const offered = header
+      .split(',')
+      .map((token) => token.trim())
+      .filter(Boolean);
+    const { protocols, handleProtocols } = this.#options;
+    if (handleProtocols) {
+      const selected = handleProtocols(offered, req);
+      if (selected === false) {
+        abort(socket, 400, 'Subprotocol negotiation failed');
+        return null;
+      }
+      return { protocol: selected || '' };
+    }
+    if (protocols) {
+      const selected = offered.find((name) => protocols.includes(name));
+      return { protocol: selected ?? '' };
+    }
+    return { protocol: '' };
+  }
+
   #handleUpgrade(req, socket, head) {
-    const { path, verifyClient } = this.#options;
+    if (this.#closed) {
+      return void abort(socket, 503, 'Service Unavailable');
+    }
+    const { path, verifyClient, perMessageDeflate } = this.#options;
     const pathname = getPathname(req.url);
     if (path !== undefined && pathname !== path) {
       return void abort(socket, 404, 'Not Found');
@@ -148,12 +191,32 @@ class WebsocketServer extends EventEmitter {
     if (!isValidSecWebSocketKey(key)) {
       return void abort(socket, 400, 'Invalid Sec-WebSocket-Key');
     }
+
+    const negotiated = this.#negotiateProtocol(req, socket);
+    if (!negotiated) return;
+    const { protocol } = negotiated;
+
+    let deflate = null;
+    if (perMessageDeflate) {
+      const deflateOptions = perMessageDeflate === true ? {} : perMessageDeflate;
+      deflate = permessageDeflate.negotiate(req.headers['sec-websocket-extensions'], deflateOptions);
+      if (deflate && deflate.malformed) {
+        return void abort(socket, 400, 'Invalid Sec-WebSocket-Extensions header');
+      }
+    }
+
+    const extraHeaders = [];
+    if (protocol) extraHeaders.push(`Sec-WebSocket-Protocol: ${protocol}`);
+    if (deflate) extraHeaders.push(`Sec-WebSocket-Extensions: ${deflate.response}`);
+
     const accept = crypto.createHash('sha1').update(key).update(MAGIC).digest('base64');
-    sendUpgrade(socket, accept);
+    sendUpgrade(socket, accept, extraHeaders);
 
     const ws = new Connection(socket, head, {
       ...this.#options,
       isClient: false,
+      protocol,
+      deflate,
     });
     this.#setupHeartbeat(ws);
     this.emit('connection', ws, req);

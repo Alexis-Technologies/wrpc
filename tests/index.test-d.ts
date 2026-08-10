@@ -12,10 +12,6 @@ import type {
   ServerTransport,
   WrpcReadable,
   WrpcWritable,
-  WebsocketServer,
-  Connection,
-  Frame,
-  FrameParser,
   ClientTransport,
   ServerHttpTransport,
 } from '../index.js';
@@ -31,19 +27,12 @@ expectType<typeof Session>(wrpc.Session);
 expectType<typeof ServerTransport>(wrpc.ServerTransport);
 expectType<typeof WrpcReadable>(wrpc.WrpcReadable);
 expectType<typeof WrpcWritable>(wrpc.WrpcWritable);
-expectType<typeof WebsocketServer>(wrpc.WebsocketServer);
-expectType<typeof Connection>(wrpc.Connection);
-expectType<typeof Frame>(wrpc.Frame);
-expectType<typeof FrameParser>(wrpc.FrameParser);
 
-// Connection send methods: sendClose is void, the rest report acceptance
-declare const connection: Connection;
-expectType<void>(connection.sendClose());
-expectType<void>(connection.sendClose(1000, 'bye'));
-expectType<boolean>(connection.sendText('x'));
-expectType<boolean>(connection.sendBinary(Buffer.alloc(0)));
-expectType<boolean>(connection.sendPing());
-expectType<boolean>(connection.sendPong());
+// Engine internals moved to the '@alexify/wrpc/ws' subpath (see ws.test-d.ts)
+expectError(wrpc.WebsocketServer);
+expectError(wrpc.Connection);
+expectError(wrpc.Frame);
+expectError(wrpc.FrameParser);
 
 // Server is an Emitter
 declare const server: Server;
@@ -89,3 +78,5 @@ expectType<void>(readable.checkStreamLimits());
 expectType<Promise<unknown>>(readable.waitEvent('pull'));
 declare const writable: WrpcWritable;
 expectType<void>(writable.init());
+expectType<boolean>(writable.write(new Uint8Array(1)));
+expectType<boolean>(writable.closed);

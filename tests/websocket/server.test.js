@@ -91,6 +91,44 @@ test('WebsocketServer: heartbeat tick survives a peer with no close event', (t) 
   fakeServer.emit('close');
 });
 
+test('WebsocketServer: heartbeat spares paused connections and resumes checks after resume', (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const { EventEmitter } = require('node:events');
+  const { MockSocket } = require('./mockSocket.js');
+
+  const fakeServer = new EventEmitter();
+  const wsServer = new WebsocketServer({ server: fakeServer, pingInterval: 20 });
+  let conn = null;
+  wsServer.on('connection', (ws) => (conn = ws));
+
+  const socket = new MockSocket();
+  const req = {
+    httpVersion: '1.1',
+    method: 'GET',
+    url: '/',
+    headers: {
+      host: 'localhost',
+      upgrade: 'websocket',
+      connection: 'Upgrade',
+      'sec-websocket-version': '13',
+      'sec-websocket-key': Buffer.from('0123456789abcdef').toString('base64'),
+    },
+  };
+  fakeServer.emit('upgrade', req, socket, Buffer.alloc(0));
+
+  t.mock.timers.tick(20); // ping sent, awaiting = true
+  conn.pause(); // backpressure kicks in before the pong could be read
+  t.mock.timers.tick(20); // would have terminated pre-fix: awaiting still true
+  t.mock.timers.tick(20);
+  assert.strictEqual(socket.destroyed, false);
+
+  conn.resume(); // still no pong read: the next tick may terminate again
+  t.mock.timers.tick(20);
+  assert.strictEqual(socket.destroyed, true);
+
+  fakeServer.emit('close');
+});
+
 test('WebsocketServer: constructor requires an http(s) server instance', () => {
   assert.throws(() => new WebsocketServer({}), /options\.server .* is required/);
   assert.throws(() => new WebsocketServer({ server: {} }), /options\.server .* is required/);

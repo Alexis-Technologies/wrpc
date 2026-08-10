@@ -47,7 +47,11 @@ const COOKIE_HOST = `Expires=${FUTURE}; ${LOCATION}`;
 
 class ServerTransport extends Emitter {
   constructor(source) {
-    super();
+    // No listener cap: transports are fan-out points — every backpressured
+    // outbound stream on the connection parks a once('drain'|'close')
+    // listener here, and the default cap of 10 would throw on the 11th
+    // concurrently stalled stream.
+    super({ maxListeners: Number.MAX_SAFE_INTEGER });
     this.source = source;
   }
 
@@ -117,13 +121,14 @@ class ServerWsTransport extends ServerTransport {
     super(req.socket.remoteAddress);
     this.connection = connection;
     connection.on('close', () => void this.emit('close'));
+    connection.on('drain', () => void this.emit('drain'));
   }
 
   write(data) {
     if (typeof data !== 'string' && !Buffer.isBuffer(data)) {
       data = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     }
-    this.connection.send(data);
+    return this.connection.send(data);
   }
 
   close() {

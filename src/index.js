@@ -6,19 +6,9 @@ const { Server, Client, Context, Session, createProxy } = require('./server.js')
 const { ServerTransport, buildHeaders } = require('./transport.js');
 const { WrpcReadable, WrpcWritable } = require('./streams.js');
 const { chunkEncode, chunkDecode } = require('./chunks.js');
-const {
-  OPCODES,
-  CLOSE_CODES,
-  CLOSE_TIMEOUT,
-  MAGIC,
-  WebsocketServer,
-  Connection,
-  Frame,
-  FrameParser,
-  ParseError,
-  PARSE_ERR_CODES,
-} = require('./websocket/ws.js');
 
+// The WebSocket engine internals (WebsocketServer, Connection, Frame,
+// FrameParser, ...) are published via the '@alexify/wrpc/ws' subpath.
 module.exports = {
   Emitter,
   WrpcClient,
@@ -35,14 +25,4 @@ module.exports = {
   WrpcWritable,
   chunkEncode,
   chunkDecode,
-  OPCODES,
-  CLOSE_CODES,
-  CLOSE_TIMEOUT,
-  MAGIC,
-  WebsocketServer,
-  Connection,
-  Frame,
-  FrameParser,
-  ParseError,
-  PARSE_ERR_CODES,
 };

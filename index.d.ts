@@ -1,12 +1,10 @@
-import { EventEmitter } from 'node:events';
 import {
   IncomingMessage,
   Server as HttpServer,
   ServerResponse,
 } from 'node:http';
-import { Server as HttpsServer } from 'node:https';
-import { Socket } from 'node:net';
 import { Writable } from 'node:stream';
+import type { Connection, WebsocketServer } from './ws.js';
 
 export declare class Emitter {
   constructor(options?: { maxListeners?: number });
@@ -68,6 +66,8 @@ export class WrpcWritable extends Emitter {
   name: string;
   size: number;
   transport: Transport;
+  /** True once the transport closed: write() reports false, no 'drain' follows. */
+  readonly closed: boolean;
   constructor(id: string, name: string, size: number, transport: Transport);
   init(): void;
   write(data: ArrayBufferView): boolean;
@@ -236,7 +236,7 @@ export type { ServerHttpTransport };
 declare class ServerWsTransport extends ServerTransport {
   connection: Connection;
   constructor(req: IncomingMessage, connection: Connection);
-  write(data: string | Buffer): void;
+  write(data: string | Buffer): boolean;
   close(): void;
 }
 export type { ServerWsTransport };
@@ -272,144 +272,6 @@ export class Server extends Emitter {
   constructor(context: ApplicationContext, options: Options);
   listen(): Promise<Server>;
   close(): Promise<void>;
-}
-
-export declare const MAGIC: string;
-export declare const CLOSE_TIMEOUT: number;
-
-export declare const OPCODES: {
-  readonly CONTINUATION: 0x00;
-  readonly TEXT: 0x01;
-  readonly BINARY: 0x02;
-  readonly CLOSE: 0x08;
-  readonly PING: 0x09;
-  readonly PONG: 0x0a;
-};
-
-export declare const CLOSE_CODES: {
-  readonly NORMAL_CLOSE: 1000;
-  readonly GOING_AWAY: 1001;
-  readonly PROTOCOL_ERROR: 1002;
-  readonly UNSUPPORTED_DATA: 1003;
-  readonly RESERVED: 1004;
-  readonly NO_CODE_RECEIVED: 1005;
-  readonly CONNECTION_CLOSED_ABNORMALLY: 1006;
-  readonly INVALID_PAYLOAD: 1007;
-  readonly POLICY_VIOLATED: 1008;
-  readonly MESSAGE_TOO_BIG: 1009;
-  readonly MANDATORY_EXTENSION: 1010;
-  readonly INTERNAL_SERVER_ERROR: 1011;
-  readonly TLS_HANDSHAKE: 1015;
-};
-
-export interface VerifyClientInfo {
-  req: IncomingMessage;
-  socket: Socket;
-  head: Buffer;
-}
-
-export interface WebsocketServerOptions {
-  server: HttpServer | HttpsServer;
-  pingInterval?: number;
-  maxBuffer?: number;
-  closeTimeout?: number;
-  path?: string;
-  verifyClient?: (info: VerifyClientInfo) => boolean;
-}
-
-export declare class WebsocketServer extends EventEmitter {
-  constructor(options: WebsocketServerOptions);
-
-  on(
-    event: 'connection',
-    listener: (ws: Connection, req: IncomingMessage) => void,
-  ): this;
-
-  on(event: 'error', listener: (error: Error) => void): this;
-  on(event: 'close', listener: () => void): this;
-  on(event: string | symbol, listener: (...args: unknown[]) => void): this;
-}
-
-export interface ConnectionOptions {
-  isClient?: boolean;
-  maxBuffer?: number;
-  closeTimeout?: number;
-}
-
-export declare class Connection extends EventEmitter {
-  constructor(socket: Socket, head: Buffer, options?: ConnectionOptions);
-
-  send(data: string | Buffer): boolean;
-  sendText(message: string): boolean;
-  sendBinary(buffer: Buffer): boolean;
-  sendPing(payload?: Buffer | string): boolean;
-  sendPong(payload?: Buffer | string): boolean;
-  sendClose(code?: number, reason?: string): void;
-  terminate(): void;
-
-  on(
-    event: 'message',
-    listener: (data: Buffer, isBinary: boolean) => void,
-  ): this;
-  on(event: 'error', listener: (error: Error) => void): this;
-  on(event: 'close', listener: () => void): this;
-  on(event: 'pong', listener: (payload: Buffer) => void): this;
-}
-
-export declare class Frame {
-  fin: boolean;
-  rsv: number;
-  opcode: number;
-  masked: boolean;
-  payload: Buffer;
-  mask: Buffer | null;
-  constructor(
-    fin: boolean,
-    opcode: number,
-    masked: boolean,
-    payload: Buffer,
-    mask: Buffer | null,
-    rsv?: number,
-  );
-  static text(message: string, fin?: boolean, masked?: boolean): Frame;
-  static binary(buffer: Buffer, fin?: boolean, masked?: boolean): Frame;
-  static ping(payload?: Buffer | string): Frame;
-  static pong(payload?: Buffer | string): Frame;
-  static close(code?: number | null, reason?: string): Frame;
-  unmaskPayload(): void;
-  maskPayload(): void;
-  toString(): string | null;
-  toBuffer(): Buffer;
-  readonly header: Buffer;
-  readonly isControlFrame: boolean;
-}
-
-export declare class ParseError extends Error {
-  code: string;
-  constructor(code: string, message: string);
-}
-
-export declare const PARSE_ERR_CODES: {
-  readonly MESSAGE_TOO_BIG: 'MESSAGE_TOO_BIG';
-  readonly PROTOCOL_ERROR_COMMON: 'PROTOCOL_ERROR-COMMON';
-  readonly PROTOCOL_ERROR_RSV: 'PROTOCOL_ERROR-RSV';
-  readonly PROTOCOL_ERROR_CTRL_TOO_LONG: 'PROTOCOL_ERROR-CTRL_TOO_LONG';
-  readonly INVALID_PAYLOAD: 'INVALID_PAYLOAD';
-};
-
-export declare class FrameParser {
-  static parse(buffer: Buffer): {
-    value: { frame: Frame; bytesUsed: number } | null;
-    error: ParseError | null;
-  };
-  static checkControlFrame(frame: Frame): {
-    value: boolean | null;
-    error: ParseError | null;
-  };
-  static checkDataFrame(frame: Frame): {
-    value: boolean | null;
-    error: ParseError | null;
-  };
 }
 
 export interface State {

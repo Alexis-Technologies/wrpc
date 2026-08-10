@@ -5,6 +5,27 @@ const assert = require('node:assert');
 const crypto = require('node:crypto');
 
 const { Frame, FrameParser, OPCODES } = require('#ws');
+const { applyMask } = require('../../src/websocket/frame.js');
+
+test('applyMask: word-XOR fast path matches the byte-wise reference for every length and alignment', () => {
+  const reference = (payload, mask) => {
+    for (let i = 0; i < payload.length; i++) payload[i] ^= mask[i & 3];
+  };
+  const lengths = [0, 1, 2, 3, 4, 5, 7, 8, 9, 63, 64, 65, 1027];
+  for (const length of lengths) {
+    const mask = crypto.randomBytes(4);
+    const data = crypto.randomBytes(length);
+    const expected = Buffer.from(data);
+    reference(expected, mask);
+    // subarray views at every alignment — SegmentQueue hands out arbitrary offsets
+    for (let offset = 0; offset < 4; offset++) {
+      const buffer = Buffer.from(new ArrayBuffer(length + offset), offset, length);
+      data.copy(buffer);
+      applyMask(buffer, mask);
+      assert.deepStrictEqual(buffer, expected, `length ${length}, byteOffset ${offset}`);
+    }
+  }
+});
 
 test('Frame: create and parse text frame', () => {
   const message = 'Hello tinyWS';

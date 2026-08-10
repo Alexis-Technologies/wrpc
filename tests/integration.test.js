@@ -185,6 +185,25 @@ test('Integration / WrpcClient with Server', async (t) => {
     assert.strictEqual(uploaded.data, data);
   });
 
+  await t.test('WS streams: upload before the reading call does not deadlock', async () => {
+    // Regression: all chunks (past the 32-chunk high-water mark) arrive
+    // before the call that starts the consumer. The receive-side pause
+    // used to deadlock here: pushes blocked on the high-water mark, the
+    // socket stayed paused, and the consumer-starting call was never read.
+    const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
+    t.after(() => void client.close());
+    await client.load('test');
+    const chunk = 'x'.repeat(1024);
+    const chunkCount = 48;
+    const consumer = client.createStream('bulk-upload', chunk.length * chunkCount);
+    for (let i = 0; i < chunkCount; i++) consumer.write(Buffer.from(chunk));
+    consumer.end();
+    const uploaded = await client.api.test.readUpload({ id: consumer.id });
+    assert.strictEqual(uploaded.name, 'bulk-upload');
+    assert.strictEqual(uploaded.size, chunk.length * chunkCount);
+    assert.strictEqual(uploaded.data, chunk.repeat(chunkCount));
+  });
+
   await t.test('WS streams: server download readable on client', async () => {
     const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
     t.after(() => void client.close());

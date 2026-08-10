@@ -13,10 +13,10 @@ wrpc (`@alexify/wrpc`) is a fast, low-overhead, zero-dependency, WebSocket-based
 - `src/transport.js` — `ServerTransport` and its http/ws/event subclasses; CORS headers, session cookies.
 - `src/streams.js` — `WrpcReadable`/`WrpcWritable`: chunked binary stream classes shared by client and server.
 - `src/chunks.js` / `src/chunks.browser.js` — binary chunk framing (Node `Buffer` vs `TextEncoder`/`TextDecoder`), swapped via `package.json#browser`.
-- `src/websocket/` — a small from-scratch WebSocket server implementation (handshake, framing, `WebsocketServer`, `Connection`) used by `src/transport.js`; Node-only, never bundled for the browser.
+- `src/websocket/` — a from-scratch WebSocket server implementation (handshake, framing, `WebsocketServer`, `Connection`, `SegmentQueue` O(n) receive buffering in `segments.js`, RFC 7692 permessage-deflate in `permessageDeflate.js`) used by `src/transport.js`; Node-only, never bundled for the browser. Published as the `@alexify/wrpc/ws` subpath (root `ws.js` shim + hand-maintained `ws.d.ts`) — engine internals are NOT exported from the main barrel.
 - `src/utils.js` — cross-platform primitives ported from `metautil` (`Emitter`, `jsonParse`) — see "No runtime dependencies" below.
 - `src/runtime/node.js` / `src/runtime/browser.js` — the one platform split needed beyond chunks: `generateUUID` (`node:crypto` vs `globalThis.crypto`), swapped via `package.json#browser`.
-- `src/index.js` — the full barrel (client + server + websocket + utils). `src/index.browser.js` — a slimmer barrel excluding server/transport/websocket-server (anything touching `node:http`/`node:https`).
+- `src/index.js` — the RPC-level barrel (client + server + streams + utils; websocket engine lives in the `./ws` subpath). `src/index.browser.js` — a slimmer barrel excluding server/transport (anything touching `node:http`/`node:https`).
 
 **No runtime dependencies.** An earlier pass ported code structurally from `metarhia/metacom`, which depends on `metautil`. Rather than install `metautil` (breaking the zero-dependency guarantee), the handful of functions actually used (`Emitter`, `jsonParse`, `generateUUID`, plus a few single-file-use helpers like `parseCookies`/`parseHost`/`receiveBody`/`split`/`parseParams`/`isError`) were copied in directly and adapted. `package.json` has no `dependencies` field at all — keep it that way; anything reused from another package must be copied in, not installed.
 
@@ -30,6 +30,7 @@ node --test tests/smoke.test.js            # run a single test file
 node --test --test-name-pattern="..."      # filter tests by name
 pnpm test:types        # type-check tests/*.test-d.ts against index.d.ts via tsd
 pnpm test:coverage     # c8 coverage over src/ (thresholds: 95% lines/statements, 90% branches, 95% functions)
+pnpm test:perf         # 1 GiB stream memory guard (tests/perf/, non-.test.js so node --test skips it)
 pnpm lint               # oxlint src tests scripts bench
 pnpm format             # oxfmt src tests scripts bench (format:check for CI)
 pnpm bench              # runs every script in bench/ (bench/run-all.js), not just bench.js
@@ -46,6 +47,7 @@ Style: 2-space indent, single quotes, semicolons, 120-char lines (see `.editorco
 Mirrors the `@alexify/kerberos` entry-point pattern:
 
 - `index.js` → `require('./src/index.js')` — the Node/default entry.
+- `ws.js` → `require('./src/websocket/ws.js')` + `ws.d.ts` — the `./ws` subpath (WebSocket engine). New subpaths follow the same pattern: root shim + hand-written root `<name>.d.ts` + `exports` entry + `files` additions + `tests/<name>.test-d.ts`.
 - `browser.js` → `require('./src/index.browser.js')`; resolved via the `package.json#browser` field map and the `browser` condition in `exports`. Do not deduplicate the two files even once they look similar — the browser entry intentionally excludes server-only modules.
 - `index.d.ts` — hand-maintained types (not generated), covering the full `src/index.js` surface.
 - `src/index.js` — the full barrel; `src/index.browser.js` — the browser-safe subset (see above).
