@@ -59,8 +59,8 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
   engine now has its own entry point with full typings for the new
   surface, covered by `tests/ws.test-d.ts`.
 - Engine benchmarks (`bench/unmask.js`, `bench/parser-throughput.js`), an
-  Autobahn Testsuite harness (`scripts/autobahn/`), a 1 GiB stream memory
-  guard (`pnpm test:perf`), and a nightly CI workflow running both.
+  Autobahn Testsuite harness (`scripts/autobahn/`), and a 1 GiB stream
+  memory guard (`pnpm test:perf`).
 - Initial project scaffolding: package metadata, oxlint/oxfmt tooling,
   CI (lint/test/docs), `node --test` + c8 coverage setup, `tsd` type-test
   setup, bundle-size reporting (`pnpm size`), and a minimal VitePress docs
