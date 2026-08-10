@@ -9,6 +9,78 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Server-agnostic RPC core (Ф2):
+  - **Router/procedures** (`defineRouter`, `procedure`, `Router`,
+    `Procedure`): units defined declaratively with versions as
+    `'unit.version'` keys, bare-function shorthand, per-procedure
+    `access` (default `'session'`), `input`/`output` validators (plain
+    functions or Standard Schema objects; failures map to 400/500),
+    `timeout` (408), `queue` concurrency limits backed by a `Semaphore`
+    (503), `meta` and `signature` descriptors. `system/introspect` is
+    auto-registered from the router, so `client.load()` works without
+    hand-rolled introspection.
+  - **`RpcServer`** — an engine-agnostic core with no `node:http` on the
+    request path: `attachSocket(socket, meta)` accepts any
+    WrpcSocket-shaped connection, `handleHttpCall(call)` consumes an
+    abstract `{ method, url, headers, body, respond }` description
+    (the seam for the Ф3 framework adapters), `attachPort` covers worker
+    transports. The `Server` shell composes it with `node:http(s)` and a
+    WebSocket engine.
+  - **`@alexify/wrpc/engine` subpath**: the replaceable engine contract
+    (`WrpcSocket`, `Engine`, capability flags) plus `createNodeEngine()`
+    wrapping the built-in RFC 6455 implementation, and a shared engine
+    contract test suite (`tests/engine/engineContract.js`) that Ф3 will
+    run against the uWebSockets.js adapter. `Connection` gained the
+    contract surface: a `close(code, reason)` alias, `remoteAddress`,
+    and a `'close'` event carrying `(code, reason)`.
+  - **CSRF protection for REST calls**: because HTTP calls now restore the
+    session from the `SameSite=Lax` cookie, a cross-site top-level `GET`
+    would otherwise run session procedures with ambient authority. Safe
+    methods (`GET`/`HEAD`) therefore dispatch *without* the cookie session
+    unless the request proves same-origin intent via Fetch metadata
+    (`Sec-Fetch-Site`); non-browser peers, which send no such header, are
+    unaffected.
+  - **Store-backed sessions**: the module-global session `Map` is gone —
+    each server owns a `SessionManager` over a structural `SessionStore`
+    (`{ get, set, delete }`, `MemorySessionStore` built in, anything
+    store-shaped injects via `sessions.store`). Session cookies are now
+    actually read back: HTTP calls and WS upgrades restore the session
+    automatically (`client.sessionReady` settles before access checks),
+    cookies default to `HttpOnly; Secure; SameSite=Lax; Path=/`, and
+    sessions survive disconnects (only `finalizeSession` or store expiry
+    end them). Since sessions now outlive their connection,
+    `MemorySessionStore` is bounded — LRU (`maxSessions`, default 10000)
+    plus expiry (`ttl`, default 24h) — so an unauthenticated peer cannot
+    grow it without limit.
+  - **`basePath`** (default `'/api'`) applied uniformly: packet endpoint
+    at `POST <basePath>`, REST at `<basePath>/unit/method`, WS upgrades
+    gated to `'/'` and basePath paths; `''` serves from the root.
+  - **CORS v2**: `cors: { origins: string[] | (origin) => boolean,
+    credentials, headers, methods }` with per-request origin echo,
+    `Vary: Origin`, credentials only for allowed origins, and an origin
+    gate on WS upgrades; without the option the previous wildcard
+    behavior is kept.
+
+### Changed (breaking)
+
+- `new Server(application, options)` is gone: the server takes a single
+  options object with `router` (`new Server({ router, host, port,
+  protocol, sessions, cors, basePath, console, engine, ws })`), and the
+  metarhia-style `application.getMethod()` coupling is fully removed —
+  procedures come from `defineRouter`, handlers receive
+  `(context, args)`.
+- `ServerWsTransport` is constructed as `(connection, meta)`;
+  `ServerHttpTransport` now wraps an abstract call description instead
+  of node `req`/`res`; `buildHeaders(cors, origin)` computes
+  per-request CORS headers.
+- `Client.restoreSession`/`finalizeSession` are async (store-backed);
+  dropping a connection no longer deletes the session.
+- The `utils` `Emitter` warns instead of throwing when `maxListeners`
+  is exceeded (fan-out to many stalled streams is legitimate); the
+  duplicate-listener and unhandled-`'error'` throws remain.
+- `websocketPath` option removed — path gating follows `basePath` (or
+  pass `ws: { path }` / `ws: { verifyClient }` through to the engine).
+
 - WebSocket engine hardening (Ф1):
   - **Write backpressure**: `Connection` tracks the socket's writable
     buffer — data sends (`send`/`sendText`/`sendBinary`) return `false`

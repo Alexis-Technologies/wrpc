@@ -99,6 +99,7 @@ export declare class Connection extends EventEmitter {
   readonly bufferedAmount: number;
   /** True while socket reads are paused via pause(). */
   readonly isPaused: boolean;
+  readonly remoteAddress: string | undefined;
 
   send(data: string | Buffer): boolean;
   sendText(message: string): boolean;
@@ -106,6 +107,8 @@ export declare class Connection extends EventEmitter {
   sendPing(payload?: Buffer | string): boolean;
   sendPong(payload?: Buffer | string): boolean;
   sendClose(code?: number, reason?: string): void;
+  /** WrpcSocket engine-contract alias for sendClose. */
+  close(code?: number, reason?: string): void;
   terminate(): void;
   pause(): void;
   resume(): void;
@@ -119,7 +122,7 @@ export declare class Connection extends EventEmitter {
     listener: (data: Buffer, isBinary: boolean) => void,
   ): this;
   on(event: 'error', listener: (error: Error) => void): this;
-  on(event: 'close', listener: () => void): this;
+  on(event: 'close', listener: (code: number, reason: string) => void): this;
   on(event: 'ping', listener: (payload: Buffer) => void): this;
   on(event: 'pong', listener: (payload: Buffer) => void): this;
   on(event: 'drain', listener: () => void): this;

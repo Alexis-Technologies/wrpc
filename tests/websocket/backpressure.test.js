@@ -10,7 +10,7 @@ const { WrpcWritable } = require('../../src/streams.js');
 
 const ServerWsTransport = ServerTransport.transport.ws;
 
-const wsTransport = (connection) => new ServerWsTransport({ socket: { remoteAddress: '127.0.0.1' } }, connection);
+const wsTransport = (connection) => new ServerWsTransport(connection, { remoteAddress: '127.0.0.1' });
 
 test('Connection: bufferedAmount mirrors the socket writable buffer', () => {
   const socket = new MockSocket();

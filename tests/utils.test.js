@@ -3,7 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { Emitter, jsonParse } = require('../src/utils.js');
+const { Emitter, jsonParse, Semaphore } = require('../src/utils.js');
 
 test('Emitter', async (t) => {
   await t.test('emit resolves without listeners for non-error events', async () => {
@@ -53,10 +53,19 @@ test('Emitter', async (t) => {
     assert.throws(() => emitter.on('data', listener), /Duplicate listeners detected/);
   });
 
-  await t.test('addListener throws past maxListeners', () => {
+  await t.test('addListener warns past maxListeners instead of throwing', () => {
     const emitter = new Emitter({ maxListeners: 1 });
     emitter.on('data', () => {});
-    assert.throws(() => emitter.on('data', () => {}), /MaxListenersExceededWarning/);
+    const warnings = [];
+    const originalWarn = globalThis.console.warn;
+    globalThis.console.warn = (message) => warnings.push(message);
+    try {
+      assert.doesNotThrow(() => emitter.on('data', () => {}));
+    } finally {
+      globalThis.console.warn = originalWarn;
+    }
+    assert.strictEqual(emitter.listenerCount('data'), 2);
+    assert.ok(warnings.some((message) => /MaxListenersExceededWarning/.test(message)));
   });
 
   await t.test('off removes a specific listener', async () => {
@@ -139,4 +148,57 @@ test('jsonParse', () => {
   assert.deepStrictEqual(jsonParse('{"a":1}'), { a: 1 });
   assert.strictEqual(jsonParse(null), null);
   assert.strictEqual(jsonParse('not json'), null);
+});
+
+test('Semaphore', async (t) => {
+  await t.test('grants slots up to concurrency without waiting', async () => {
+    const semaphore = new Semaphore({ concurrency: 2 });
+    await semaphore.enter();
+    await semaphore.enter();
+    assert.strictEqual(semaphore.empty, false);
+    semaphore.leave();
+    semaphore.leave();
+    assert.strictEqual(semaphore.empty, true);
+  });
+
+  await t.test('queues waiters and wakes them on leave in FIFO order', async () => {
+    const semaphore = new Semaphore({ concurrency: 1, size: 2 });
+    await semaphore.enter();
+    const order = [];
+    const second = semaphore.enter().then(() => order.push('second'));
+    const third = semaphore.enter().then(() => order.push('third'));
+    semaphore.leave();
+    await second;
+    semaphore.leave();
+    await third;
+    assert.deepStrictEqual(order, ['second', 'third']);
+    semaphore.leave();
+  });
+
+  await t.test('rejects when the queue is full', async () => {
+    const semaphore = new Semaphore({ concurrency: 1, size: 0 });
+    await semaphore.enter();
+    await assert.rejects(semaphore.enter(), /Semaphore queue is full/);
+    semaphore.leave();
+  });
+
+  await t.test('rejects a queued waiter after the timeout', async () => {
+    const semaphore = new Semaphore({ concurrency: 1, size: 1, timeout: 20 });
+    await semaphore.enter();
+    await assert.rejects(semaphore.enter(), /Semaphore timeout/);
+    semaphore.leave();
+    // the timed-out waiter must not have been left in the queue
+    await semaphore.enter();
+    semaphore.leave();
+  });
+
+  await t.test('leave without waiters restores capacity, never above concurrency', async () => {
+    const semaphore = new Semaphore({ concurrency: 1 });
+    semaphore.leave();
+    semaphore.leave();
+    await semaphore.enter();
+    assert.strictEqual(semaphore.empty, false);
+    semaphore.leave();
+    assert.strictEqual(semaphore.empty, true);
+  });
 });

@@ -21,6 +21,10 @@
     "./ws": {
       "types": "./ws.d.ts",
       "default": "./ws.js"
+    },
+    "./engine": {
+      "types": "./engine.d.ts",
+      "default": "./engine.js"
     }
   },
   "directories": {
@@ -105,6 +109,8 @@
     "browser.js",
     "ws.js",
     "ws.d.ts",
+    "engine.js",
+    "engine.d.ts",
     "src/",
     "LICENSE",
     "README.md",

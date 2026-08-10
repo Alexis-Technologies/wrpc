@@ -47,9 +47,13 @@ class Emitter {
       event.on.push(listener);
       if (once) event.once.add(listener);
     }
+    // A warning, not a throw: exceeding the cap usually signals a leak,
+    // but killing legitimate fan-out (many streams awaiting one 'drain')
+    // is worse than a noisy console (cross-platform, so no process API).
     if (event.on.length > this.#maxListeners) {
-      throw new Error(
-        `MaxListenersExceededWarning: Possible memory leak. ` + `Current maxListeners is ${this.#maxListeners}.`,
+      globalThis.console.warn(
+        `MaxListenersExceededWarning: Possible ${String(eventName)} memory leak. ` +
+          `${event.on.length} listeners added, current maxListeners is ${this.#maxListeners}.`,
       );
     }
   }
@@ -102,4 +106,57 @@ const jsonParse = (data = null) => {
   }
 };
 
-module.exports = { Emitter, jsonParse };
+// Counting semaphore with a bounded wait queue (ported from metautil):
+// enter() resolves when a slot frees up, rejects on queue overflow or
+// after `timeout` ms in the queue.
+class Semaphore {
+  #concurrency;
+  #counter;
+  #size;
+  #timeout;
+  #queue = [];
+
+  constructor({ concurrency, size = 0, timeout = 0 } = {}) {
+    this.#concurrency = concurrency;
+    this.#counter = concurrency;
+    this.#size = size;
+    this.#timeout = timeout;
+  }
+
+  get empty() {
+    return this.#counter === this.#concurrency;
+  }
+
+  enter() {
+    return new Promise((resolve, reject) => {
+      if (this.#counter > 0) {
+        this.#counter--;
+        return void resolve();
+      }
+      if (this.#queue.length >= this.#size) {
+        return void reject(new Error('Semaphore queue is full'));
+      }
+      const waiter = { resolve, reject, timer: null };
+      if (this.#timeout > 0) {
+        waiter.timer = setTimeout(() => {
+          const index = this.#queue.indexOf(waiter);
+          if (index > -1) this.#queue.splice(index, 1);
+          reject(new Error('Semaphore timeout'));
+        }, this.#timeout);
+      }
+      this.#queue.push(waiter);
+    });
+  }
+
+  leave() {
+    const waiter = this.#queue.shift();
+    if (!waiter) {
+      if (this.#counter < this.#concurrency) this.#counter++;
+      return;
+    }
+    if (waiter.timer) clearTimeout(waiter.timer);
+    waiter.resolve();
+  }
+}
+
+module.exports = { Emitter, jsonParse, Semaphore };

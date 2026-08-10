@@ -136,13 +136,19 @@ test('WrpcReadable.checkStreamLimits grows the high water mark under listener pr
   }
   await new Promise((resolve) => setImmediate(resolve));
 
-  // An 11th waiter trips checkStreamLimits' threshold (raising highWaterMark)
-  // and then immediately hits the Emitter's own identical default maxListeners
-  // cap when it tries to register itself, rejecting this specific push().
-  const eleventh = await readable.push(Buffer.from('x')).catch((error) => error);
-  assert.strictEqual(readable.highWaterMark, 2);
-  assert.match(eleventh.message, /MaxListenersExceededWarning/);
+  // An 11th waiter trips checkStreamLimits' threshold (raising highWaterMark).
+  // Since Ф2 the Emitter's listener cap only warns instead of throwing, so
+  // the push stalls like the others rather than rejecting.
+  const warnings = [];
+  const originalWarn = globalThis.console.warn;
+  globalThis.console.warn = (message) => warnings.push(message);
+  const eleventh = readable.push(Buffer.from('x'));
+  await new Promise((resolve) => setImmediate(resolve));
+  globalThis.console.warn = originalWarn;
 
-  for (let i = 0; i < 12; i++) await readable.read();
-  await Promise.all(stalled);
+  assert.strictEqual(readable.highWaterMark, 2);
+  assert.ok(warnings.some((message) => /MaxListenersExceededWarning/.test(message)));
+
+  for (let i = 0; i < 13; i++) await readable.read();
+  await Promise.all([...stalled, eleventh]);
 });

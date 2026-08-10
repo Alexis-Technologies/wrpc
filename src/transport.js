@@ -4,46 +4,59 @@ const http = require('node:http');
 
 const { Emitter } = require('./utils.js');
 
-const parseHost = (host) => {
-  if (!host) return 'no-host-name-in-http-headers';
-  const portOffset = host.indexOf(':');
-  if (portOffset > -1) return host.substring(0, portOffset);
-  return host;
-};
-
+// RFC 6265 permits '=' inside cookie values (base64, JWT) — split each
+// pair on the FIRST '=' only, or the value gets silently truncated.
 const parseCookies = (cookie) => {
   const values = [];
   const items = cookie.split(';');
   for (const item of items) {
-    const parts = item.split('=');
-    const key = parts[0].trim();
-    const val = (parts[1] ?? '').trim();
+    const eq = item.indexOf('=');
+    const key = (eq < 0 ? item : item.slice(0, eq)).trim();
+    const val = eq < 0 ? '' : item.slice(eq + 1).trim();
     values.push([key, val]);
   }
   return Object.fromEntries(values);
 };
 
-const HEADERS = {
-  'X-XSS-Protection': '1; mode=block',
+const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Strict-Transport-Security': 'max-age=31536000; includeSubdomains; preload',
-  'Access-Control-Allow-Origin': '*',
-  'Access-Control-Allow-Methods': 'POST, GET, OPTIONS',
-  'Access-Control-Allow-Headers': 'Content-Type',
   'Content-Type': 'application/json',
 };
 
-const buildHeaders = (cors) => {
-  if (!cors || !cors.origin) return HEADERS;
-  return { ...HEADERS, 'Access-Control-Allow-Origin': cors.origin };
+const DEFAULT_CORS_METHODS = 'POST, GET, OPTIONS';
+const DEFAULT_CORS_HEADERS = 'Content-Type';
+
+// CORS v2: `cors` is { origins: string[] | (origin) => boolean, credentials?,
+// headers?, methods? }. Without a `cors` option every origin is allowed
+// (wildcard, credentials-less) — the pre-Ф2 behavior. With `origins`, the
+// request origin is echoed back only when allowed, plus `Vary: Origin`.
+const buildHeaders = (cors, origin) => {
+  const headers = {
+    ...SECURITY_HEADERS,
+    'Access-Control-Allow-Methods': cors?.methods ?? DEFAULT_CORS_METHODS,
+    'Access-Control-Allow-Headers': cors?.headers ?? DEFAULT_CORS_HEADERS,
+  };
+  if (!cors || !cors.origins) {
+    headers['Access-Control-Allow-Origin'] = '*';
+    return headers;
+  }
+  headers['Vary'] = 'Origin';
+  const allowed =
+    typeof cors.origins === 'function' ? Boolean(origin && cors.origins(origin)) : cors.origins.includes(origin);
+  if (allowed) {
+    headers['Access-Control-Allow-Origin'] = origin;
+    if (cors.credentials) headers['Access-Control-Allow-Credentials'] = 'true';
+  }
+  return headers;
 };
 
-const TOKEN = 'token';
-const EPOCH = 'Thu, 01 Jan 1970 00:00:00 GMT';
-const FUTURE = 'Fri, 01 Jan 2100 00:00:00 GMT';
-const LOCATION = 'Path=/; Domain';
-const COOKIE_DELETE = `${TOKEN}=deleted; Expires=${EPOCH}; ${LOCATION}=`;
-const COOKIE_HOST = `Expires=${FUTURE}; ${LOCATION}`;
+const isOriginAllowed = (cors, origin) => {
+  if (!cors || !cors.origins) return true;
+  if (!origin) return true; // non-browser peers send no Origin header
+  if (typeof cors.origins === 'function') return Boolean(cors.origins(origin));
+  return cors.origins.includes(origin);
+};
 
 class ServerTransport extends Emitter {
   constructor(source) {
@@ -67,58 +80,53 @@ class ServerTransport extends Emitter {
   }
 }
 
+// Net-free HTTP transport over an abstract call description:
+// { method, url, headers, body?, remoteAddress?, respond({ status, headers, body }) }.
+// The node Server shell and the framework adapters both speak this shape.
 class ServerHttpTransport extends ServerTransport {
-  constructor(req, res, options = {}) {
-    super(req.socket.remoteAddress);
-    this.req = req;
-    this.res = res;
-    this.headers = options.headers ?? HEADERS;
-    if (req.method === 'OPTIONS') this.options();
-    req.on('close', () => void this.emit('close'));
+  #respond;
+  #responded = false;
+  #setCookies = [];
+
+  constructor(call, options = {}) {
+    super(call.remoteAddress ?? '');
+    this.call = call;
+    this.headers = options.headers ?? { ...SECURITY_HEADERS };
+    this.#respond = call.respond;
+  }
+
+  get responded() {
+    return this.#responded;
   }
 
   write(data, httpCode = 200) {
-    const { res } = this;
-    if (res.writableEnded) return;
-    const buf = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    const headers = { ...this.headers, 'Content-Length': buf.length };
-    res.writeHead(httpCode, headers);
-    res.end(buf);
-  }
-
-  options() {
-    const { res } = this;
-    if (res.headersSent) return;
-    res.writeHead(200, this.headers);
-    res.end();
+    if (this.#responded) return;
+    this.#responded = true;
+    const body = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    const headers = { ...this.headers, 'Content-Length': body.length };
+    if (this.#setCookies.length > 0) headers['Set-Cookie'] = this.#setCookies;
+    this.#respond({ status: httpCode, headers, body });
+    this.emit('close');
   }
 
   getCookies() {
-    const { cookie } = this.req.headers;
+    const { cookie } = this.call.headers;
     if (!cookie) return {};
     return parseCookies(cookie);
   }
 
-  sendSessionCookie(token) {
-    const host = parseHost(this.req.headers.host);
-    const cookie = `${TOKEN}=${token}; ${COOKIE_HOST}=${host}`;
-    this.res.setHeader('Set-Cookie', cookie);
-  }
-
-  removeSessionCookie() {
-    const host = parseHost(this.req.headers.host);
-    this.res.setHeader('Set-Cookie', COOKIE_DELETE + host);
+  sendSessionCookie(cookieHeader) {
+    this.#setCookies.push(cookieHeader);
   }
 
   close() {
     this.error(503);
-    this.req.socket.destroy();
   }
 }
 
 class ServerWsTransport extends ServerTransport {
-  constructor(req, connection) {
-    super(req.socket.remoteAddress);
+  constructor(connection, meta = {}) {
+    super(meta.remoteAddress ?? connection.remoteAddress ?? '');
     this.connection = connection;
     connection.on('close', () => void this.emit('close'));
     connection.on('drain', () => void this.emit('drain'));
@@ -161,4 +169,7 @@ ServerTransport.transport = {
 module.exports = {
   ServerTransport,
   buildHeaders,
+  isOriginAllowed,
+  parseCookies,
+  SECURITY_HEADERS,
 };

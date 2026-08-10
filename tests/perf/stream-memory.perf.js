@@ -69,7 +69,7 @@ class PressureSocket extends MockSocket {
 const main = async () => {
   const socket = new PressureSocket();
   const connection = new Connection(socket, Buffer.alloc(0));
-  const transport = new ServerWsTransport({ socket: { remoteAddress: '127.0.0.1' } }, connection);
+  const transport = new ServerWsTransport(connection, { remoteAddress: '127.0.0.1' });
   const writable = new WrpcWritable(STREAM_ID, STREAM_NAME, TOTAL_BYTES, transport);
 
   // Harness adapters for WrpcReadable.finalize's writable contract: the real

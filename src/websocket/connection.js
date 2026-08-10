@@ -30,6 +30,8 @@ class Connection extends EventEmitter {
   #closeTimer = null;
   #needsDrain = false;
   #paused = false;
+  #closeCode = CLOSE_CODES.CONNECTION_CLOSED_ABNORMALLY;
+  #closeReason = '';
 
   constructor(socket, head, options = {}) {
     super();
@@ -59,6 +61,10 @@ class Connection extends EventEmitter {
     return this.#socket.writableLength ?? 0;
   }
 
+  get remoteAddress() {
+    return this.#socket.remoteAddress;
+  }
+
   #init(head) {
     this.#socket.on('data', (data) => this.#receive(data));
     this.#socket.on('drain', () => {
@@ -73,7 +79,7 @@ class Connection extends EventEmitter {
     });
     this.#socket.on('close', () => {
       if (this.#closeTimer) clearTimeout(this.#closeTimer);
-      this.emit('close');
+      this.emit('close', this.#closeCode, this.#closeReason);
     });
 
     // received data before upgrade
@@ -172,6 +178,8 @@ class Connection extends EventEmitter {
     if (opcode === OPCODES.CLOSE) {
       this.#closeReceived = true;
       const { code, reason } = frame.getCloseDetails().value;
+      this.#closeCode = code ?? CLOSE_CODES.NO_CODE_RECEIVED;
+      this.#closeReason = reason;
       if (!this.#closeSent) {
         return void this.sendClose(code, reason);
       }
@@ -394,6 +402,11 @@ class Connection extends EventEmitter {
     const frame = Frame.close(code, reason);
     if (this.#isClient) frame.maskPayload();
     this.#close(frame.toBuffer());
+  }
+
+  // WrpcSocket engine-contract alias for sendClose
+  close(code, reason) {
+    this.sendClose(code, reason);
   }
 
   terminate() {
