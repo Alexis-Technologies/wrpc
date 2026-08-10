@@ -1,64 +1,43 @@
 'use strict';
 
-const { randomUUID } = require('node:crypto');
 const { Server } = require('../../src/server.js');
+const { defineRouter, procedure } = require('../../src/rpc/router.js');
 
 const noop = () => {};
+const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
 
-class ProcedureMock {
-  constructor({ access = 'public', handler }) {
-    this.access = access;
-    this.handler = handler;
-  }
-
-  // eslint-disable-next-line class-methods-use-this
-  async enter() {}
-  // eslint-disable-next-line class-methods-use-this
-  leave() {}
-  invoke(context, args) {
-    return this.handler(args, context);
-  }
-}
-
-const createApplication = (api) => {
-  const introspect = (units = []) => {
-    const result = {};
-    for (const unit of units) {
-      if (!api[unit]) continue;
-      const methods = {};
-      for (const name of Object.keys(api[unit])) methods[name] = {};
-      result[unit] = methods;
+// `api` is the bench-local shorthand every stack under bench/ shares:
+// { unit: { method: { access?, handler(args, context) } } }. Adapt it onto
+// the real router — procedure() handlers take (context, args), the default
+// access here is 'public' since these benchmarks measure an unauthenticated
+// echo, and system/introspect no longer needs a hand-rolled stand-in:
+// RpcServer registers it itself.
+const toRouter = (api) => {
+  const definition = {};
+  for (const [unit, methods] of Object.entries(api)) {
+    const unitDef = {};
+    for (const [name, def] of Object.entries(methods)) {
+      unitDef[name] = procedure({
+        access: def.access ?? 'public',
+        handler: (context, args) => def.handler(args, context),
+      });
     }
-    return result;
-  };
-
-  return {
-    console: { log: noop, info: noop, warn: noop, error: noop, debug: noop },
-    static: { constructor: { name: 'Static' } },
-    auth: { saveSession: async () => {} },
-    getMethod: (unit, _ver, method) => {
-      if (unit === 'system' && method === 'introspect') {
-        return new ProcedureMock({ handler: async (units) => introspect(units) });
-      }
-      const def = api[unit]?.[method];
-      if (!def) return null;
-      return new ProcedureMock(def);
-    },
-  };
+    definition[unit] = unitDef;
+  }
+  return defineRouter(definition);
 };
 
 const createWrpcServer = async (api) => {
-  const options = {
+  const server = new Server({
+    router: toRouter(api),
     host: '127.0.0.1',
     port: 0,
     protocol: 'http',
     timeouts: { bind: 100 },
-    queue: { concurrency: 100, size: 100, timeout: 5_000 },
-    generateId: randomUUID,
-  };
-  const server = new Server(createApplication(api), options);
+    console: quiet,
+  });
   await server.listen();
-  const { port } = server.httpServer.address();
+  const { port } = server.address();
   return { server, port };
 };
 
