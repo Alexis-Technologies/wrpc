@@ -7,31 +7,21 @@ const { Emitter } = require('./utils.js');
 const { RpcServer } = require('./rpc/core.js');
 const { isOriginAllowed } = require('./transport.js');
 const { createNodeEngine, isEngine } = require('./engine/index.js');
+const { receiveBody } = require('./adapters/common.js');
 
 const DEFAULT_LISTEN_RETRY = 3;
 const DEFAULT_BIND_TIMEOUT = 2000;
-const MAX_BODY_SIZE = 10 * 1024 * 1024;
-
-const receiveBody = async (stream, limit = MAX_BODY_SIZE) => {
-  if (!Number.isSafeInteger(limit) || limit < 0) {
-    throw new TypeError('Body size limit must be a non-negative safe integer');
-  }
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of stream) {
-    size += chunk.length;
-    if (size > limit) throw new Error('Body size limit exceeded');
-    chunks.push(chunk);
-  }
-  if (chunks.length === 1) return chunks[0];
-  return Buffer.concat(chunks, size);
-};
 
 const getPathname = (url) => (url ? url.split('?')[0] : '/');
 
 // Batteries-included shell over the engine-agnostic RpcServer core:
 // creates the node http(s) server, attaches a WebSocket engine (the
 // built-in one by default), and feeds HTTP requests into the core.
+//
+// With a standalone engine (uWebSockets.js) there is no node http server at
+// all: `httpServer` stays null and the engine owns listening plus the HTTP
+// request path. Read the bound address through `server.address()`, which
+// covers both shapes.
 class Server extends Emitter {
   httpServer = null;
   wsServer = null;
@@ -39,6 +29,7 @@ class Server extends Emitter {
   #engine;
   #options;
   #console;
+  #address = null;
 
   constructor(options = {}) {
     super();
@@ -58,7 +49,45 @@ class Server extends Emitter {
     this.#console = console;
     this.#engine = engine;
     this.rpc = new RpcServer({ router, sessions, cors, basePath, console });
-    this.#init(ws, cors);
+    if (engine.standalone) this.#initStandalone(ws, cors);
+    else this.#init(ws, cors);
+  }
+
+  // The bound address, whichever side owns the listener.
+  address() {
+    if (this.httpServer) return this.httpServer.address();
+    return this.#address;
+  }
+
+  #upgradeGate(wsOptions, cors) {
+    // With an explicit ws.path the engine already gates the pathname, and
+    // the default RPC-path gate would 403 every upgrade to a custom path —
+    // keep only the origin check in that case.
+    const checkPath = wsOptions.path === undefined;
+    return wsOptions.verifyClient ?? (({ req }) => this.#verifyUpgrade(req, cors, checkPath));
+  }
+
+  #onConnection(socket, req) {
+    this.rpc.attachSocket(socket, {
+      headers: req.headers,
+      remoteAddress: req.socket?.remoteAddress ?? socket.remoteAddress,
+    });
+  }
+
+  // Standalone engines own node:http too, so the shell creates no server
+  // and hands the core's HTTP entry point to the engine instead.
+  #initStandalone(wsOptions, cors) {
+    this.wsServer = this.#engine.attach({
+      ...wsOptions,
+      verifyClient: this.#upgradeGate(wsOptions, cors),
+      onHttpCall: (call) => this.rpc.handleHttpCall(call),
+    });
+    this.wsServer.on('connection', (socket, req) => {
+      this.#onConnection(socket, req);
+    });
+    this.on('port', (port) => {
+      this.rpc.attachPort(port);
+    });
   }
 
   #init(wsOptions, cors) {
@@ -71,17 +100,10 @@ class Server extends Emitter {
       this.#handleHttpRequest(req, res);
     });
 
-    // With an explicit ws.path the engine already gates the pathname, and
-    // the default RPC-path gate would 403 every upgrade to a custom path —
-    // keep only the origin check in that case.
-    const checkPath = wsOptions.path === undefined;
-    const verifyClient = wsOptions.verifyClient ?? (({ req }) => this.#verifyUpgrade(req, cors, checkPath));
+    const verifyClient = this.#upgradeGate(wsOptions, cors);
     this.wsServer = this.#engine.attach({ server: this.httpServer, ...wsOptions, verifyClient });
     this.wsServer.on('connection', (socket, req) => {
-      this.rpc.attachSocket(socket, {
-        headers: req.headers,
-        remoteAddress: req.socket?.remoteAddress,
-      });
+      this.#onConnection(socket, req);
     });
 
     this.on('port', (port) => {
@@ -129,37 +151,56 @@ class Server extends Emitter {
     });
   }
 
-  listen() {
-    const { host, port, timeouts = {}, retry } = this.#options;
-
-    let count = retry || DEFAULT_LISTEN_RETRY;
-    let listen = null;
-
+  // One bind attempt; rejects with the bind error (EADDRINUSE included) so
+  // the retry loop above can decide, and detaches both listeners either way
+  // so a retried listen() does not stack them.
+  #bindOnce(host, port) {
+    if (!this.httpServer) return this.#engine.listen({ host, port });
     return new Promise((resolve, reject) => {
       const onListening = () => {
-        this.#console.info(`Listen port ${port}`);
-        resolve(this);
+        this.httpServer.off('error', onError);
+        resolve(this.httpServer.address());
       };
-
       const onError = (error) => {
-        if (error.code !== 'EADDRINUSE') return void reject(error);
-        count--;
-        if (count === 0) return void reject(error);
-        this.#console.warn(`Address in use: ${host}:${port}, retry...`);
-        setTimeout(listen, timeouts.bind ?? DEFAULT_BIND_TIMEOUT);
+        this.httpServer.off('listening', onListening);
+        reject(error);
       };
+      this.httpServer.once('listening', onListening);
+      this.httpServer.once('error', onError);
+      this.httpServer.listen(port, host);
+    });
+  }
 
-      listen = () => {
-        this.httpServer.once('listening', onListening);
-        this.httpServer.once('error', onError);
-        this.httpServer.listen(port, host);
+  listen() {
+    const { host, port, timeouts = {}, retry } = this.#options;
+    let count = retry || DEFAULT_LISTEN_RETRY;
+
+    return new Promise((resolve, reject) => {
+      const attempt = () => {
+        this.#bindOnce(host, port).then(
+          (address) => {
+            this.#address = address;
+            this.#console.info(`Listen port ${address?.port ?? port}`);
+            resolve(this);
+          },
+          (error) => {
+            if (error.code !== 'EADDRINUSE') return void reject(error);
+            count--;
+            if (count === 0) return void reject(error);
+            this.#console.warn(`Address in use: ${host}:${port}, retry...`);
+            setTimeout(attempt, timeouts.bind ?? DEFAULT_BIND_TIMEOUT);
+          },
+        );
       };
-
-      listen();
+      attempt();
     });
   }
 
   async close() {
+    if (!this.httpServer) {
+      await this.rpc.close();
+      return void this.#engine.close();
+    }
     const closed = new Promise((resolve) => {
       this.httpServer.close((error) => {
         if (error) this.#console.error(error);

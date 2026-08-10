@@ -1,7 +1,32 @@
 import { EventEmitter } from 'node:events';
 import { IncomingMessage, Server as HttpServer } from 'node:http';
 import { Server as HttpsServer } from 'node:https';
-import type { VerifyClientInfo, PerMessageDeflateOptions } from './ws.js';
+import type { Duplex } from 'node:stream';
+import type { PerMessageDeflateOptions } from './ws.js';
+import type { HttpCall } from './index.js';
+
+/**
+ * The upgrade request an engine hands to `verifyClient`, `handleProtocols`
+ * and the 'connection' listener.
+ *
+ * The built-in engine passes a real node `IncomingMessage`; a standalone
+ * engine (uWebSockets.js) never sees one and synthesizes a look-alike, so
+ * the port promises only what both provide. Narrow with a cast when an
+ * engine's concrete request type is known.
+ */
+export interface EngineRequest {
+  method?: string;
+  url?: string;
+  headers: Record<string, string | Array<string> | undefined>;
+  socket: { remoteAddress?: string };
+}
+
+export interface EngineVerifyClientInfo {
+  req: EngineRequest;
+  /** Null for engines that own their network stack instead of node:http. */
+  socket: Duplex | null;
+  head: Buffer | null;
+}
 
 /**
  * The server-side socket contract every engine adapter yields for each
@@ -34,35 +59,59 @@ export interface EngineCapabilities {
 }
 
 export interface EngineAttachOptions {
-  server: HttpServer | HttpsServer;
+  /**
+   * Required for hosted engines, absent for standalone ones and for the
+   * manual-upgrade mode middleware adapters use.
+   */
+  server?: HttpServer | HttpsServer;
   path?: string;
-  verifyClient?: (info: VerifyClientInfo) => boolean;
+  verifyClient?: (info: EngineVerifyClientInfo) => boolean;
   protocols?: Array<string>;
-  handleProtocols?: (offered: Array<string>, req: IncomingMessage) => string | false;
+  handleProtocols?: (offered: Array<string>, req: EngineRequest) => string | false;
   perMessageDeflate?: boolean | PerMessageDeflateOptions;
   pingInterval?: number;
   maxBuffer?: number;
   maxBackpressure?: number;
   fragmentThreshold?: number;
   closeTimeout?: number;
+  /**
+   * Standalone engines only: the core's HTTP entry point, invoked with the
+   * same abstract call description RpcServer.handleHttpCall consumes.
+   */
+  onHttpCall?: (call: HttpCall) => unknown;
 }
 
 export interface EngineConnectionSource extends EventEmitter {
   on(
     event: 'connection',
-    listener: (socket: WrpcSocket, req: IncomingMessage) => void,
+    listener: (socket: WrpcSocket, req: EngineRequest) => void,
   ): this;
   on(event: string | symbol, listener: (...args: unknown[]) => void): this;
+  /**
+   * Present when the engine can be driven from the app's own 'upgrade'
+   * listener instead of binding to a server (the express adapter's mode).
+   * Only node-hosted engines offer it, so the request is a real one.
+   */
+  handleUpgrade?(req: IncomingMessage, socket: Duplex, head: Buffer): void;
 }
 
 /**
- * The replaceable server-side engine contract: attach() binds to an http
- * server's upgrade flow and emits 'connection'(WrpcSocket, req).
+ * The replaceable server-side engine contract.
+ *
+ * A *hosted* engine (the default) attaches to a node http server's upgrade
+ * flow: `attach({ server })`. The Server shell owns the listener and the
+ * HTTP request path.
+ *
+ * A *standalone* engine (`standalone: true`, e.g. uWebSockets.js) owns the
+ * whole network stack instead: it is attached without a server, receives the
+ * core's HTTP entry point as `onHttpCall`, and must implement `listen()`.
  */
 export interface Engine {
   name: string;
+  standalone?: boolean;
   capabilities: EngineCapabilities;
   attach(options: EngineAttachOptions): EngineConnectionSource;
+  listen?(options: { host?: string; port?: number }): Promise<unknown>;
   close(options?: { code?: number; reason?: string }): void;
 }
 

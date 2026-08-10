@@ -2,6 +2,7 @@ import { EventEmitter } from 'node:events';
 import { IncomingMessage, Server as HttpServer } from 'node:http';
 import { Server as HttpsServer } from 'node:https';
 import { Socket } from 'node:net';
+import type { Duplex } from 'node:stream';
 
 export declare const MAGIC: string;
 export declare const CLOSE_TIMEOUT: number;
@@ -49,7 +50,12 @@ export interface PerMessageDeflateOptions {
 }
 
 export interface WebsocketServerOptions {
-  server: HttpServer | HttpsServer;
+  /**
+   * Binds to this server's 'upgrade' event. Omit it to drive handshakes by
+   * hand through handleUpgrade() — how middleware adapters (express) attach
+   * to a listener they do not own.
+   */
+  server?: HttpServer | HttpsServer;
   pingInterval?: number;
   maxBuffer?: number;
   closeTimeout?: number;
@@ -63,10 +69,16 @@ export interface WebsocketServerOptions {
 }
 
 export declare class WebsocketServer extends EventEmitter {
-  constructor(options: WebsocketServerOptions);
+  constructor(options?: WebsocketServerOptions);
 
   /** Snapshot of the live connections (mutations do not affect the server). */
   readonly connections: Set<Connection>;
+
+  /**
+   * Performs one handshake on a raw socket. Use it from your own 'upgrade'
+   * listener when the server was constructed without `options.server`.
+   */
+  handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
 
   close(options?: { code?: number; reason?: string }): void;
 

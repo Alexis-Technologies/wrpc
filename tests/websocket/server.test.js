@@ -129,9 +129,55 @@ test('WebsocketServer: heartbeat spares paused connections and resumes checks af
   fakeServer.emit('close');
 });
 
-test('WebsocketServer: constructor requires an http(s) server instance', () => {
-  assert.throws(() => new WebsocketServer({}), /options\.server .* is required/);
-  assert.throws(() => new WebsocketServer({ server: {} }), /options\.server .* is required/);
+test('WebsocketServer: an explicit server must be an http(s) server instance', () => {
+  assert.throws(() => new WebsocketServer({ server: {} }), /options\.server must be an http\.Server/);
+  assert.throws(() => new WebsocketServer({ server: null }), /options\.server must be an http\.Server/);
+});
+
+test('WebsocketServer: without a server, upgrades are driven by handleUpgrade', async () => {
+  // Middleware adapters (express) own the 'upgrade' listener themselves.
+  const wsServer = new WebsocketServer({ pingInterval: 50 });
+  const httpServer = http.createServer();
+  httpServer.on('upgrade', (req, socket, head) => {
+    wsServer.handleUpgrade(req, socket, head);
+  });
+  await new Promise((resolve) => httpServer.listen(0, resolve));
+  const { port } = httpServer.address();
+
+  const connected = new Promise((resolve) => wsServer.once('connection', resolve));
+  const peer = new ProtocolClient(`ws://127.0.0.1:${port}`);
+  await new Promise((resolve) => peer.on('open', resolve));
+  const conn = await connected;
+
+  const echoed = new Promise((resolve) => peer.once('message', resolve));
+  conn.sendText('manual upgrade');
+  assert.strictEqual((await echoed).toString(), 'manual upgrade');
+
+  peer.close();
+  wsServer.close();
+  await new Promise((resolve) => httpServer.close(resolve));
+});
+
+test('WebsocketServer: handleUpgrade answers 500 when the handshake throws', async () => {
+  const wsServer = new WebsocketServer({ pingInterval: 50 });
+  wsServer.on('error', () => {}); // otherwise EventEmitter rethrows
+  const written = [];
+  const socket = {
+    on: () => {},
+    // A getter that throws inside #handleUpgrade's header inspection
+    write: (data) => void written.push(String(data)),
+    destroy: () => {},
+    cork: () => {},
+    uncork: () => {},
+  };
+  const req = {
+    get httpVersion() {
+      throw new Error('boom');
+    },
+  };
+  wsServer.handleUpgrade(req, socket, Buffer.alloc(0));
+  assert.match(written.join(''), /^HTTP\/1\.1 500 Internal Server Error/);
+  wsServer.close();
 });
 
 test('WebsocketServer: forwards http server errors when it has its own listeners', async () => {

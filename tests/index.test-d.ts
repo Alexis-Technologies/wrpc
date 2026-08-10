@@ -20,6 +20,7 @@ import type {
   SessionStore,
   HttpCall,
 } from '../index.js';
+import type { Engine, EngineConnectionSource } from '../engine.js';
 
 expectType<typeof Emitter>(wrpc.Emitter);
 expectType<typeof WrpcClient>(wrpc.WrpcClient);
@@ -113,6 +114,21 @@ expectAssignable<HttpCall>({
 declare const server: Server;
 expectAssignable<Emitter>(server);
 expectType<RpcServer>(server.rpc);
+expectType<Promise<Server>>(server.listen());
+expectType<Promise<void>>(server.close());
+
+// A standalone engine (uWebSockets.js) owns the network stack, so there is
+// no node http server: read the bound address through server.address().
+expectType<import('node:http').Server | null>(server.httpServer);
+expectType<EngineConnectionSource | null>(server.wsServer);
+expectType<{ address: string; family: string; port: number } | string | null>(server.address());
+expectError(server.address('http'));
+
+// Engines are injected through ServerOptions.engine
+declare const engine: Engine;
+expectAssignable<wrpc.ServerOptions>({ router, engine });
+expectAssignable<wrpc.ServerOptions>({ router, engine, ws: { path: '/ws' } });
+expectError<wrpc.ServerOptions>({ router, engine: { name: 'broken' } });
 
 // Client sessions are store-backed and async where they touch the store
 declare const client: Client;

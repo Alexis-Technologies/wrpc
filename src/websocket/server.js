@@ -53,16 +53,20 @@ class WebsocketServer extends EventEmitter {
   #pingTimer;
   #closed = false;
 
+  // `server` is optional: without it nothing is bound and upgrades are
+  // driven manually through handleUpgrade(req, socket, head) — that is how
+  // middleware adapters (express) hook their own 'upgrade' listener.
   constructor({ server, ...opts } = {}) {
     super();
-    if (!server || typeof server.on !== 'function') {
-      throw new TypeError('WebsocketServer: options.server (instance of http.Server) is required');
+    if (server !== undefined && (!server || typeof server.on !== 'function')) {
+      throw new TypeError('WebsocketServer: options.server must be an http.Server');
     }
     this.#options = {
       pingInterval: PING_INTERVAL,
       ...opts,
     };
-    this.#init(server);
+    this.#startHeartbeat();
+    if (server) this.#bind(server);
   }
 
   // Snapshot of the live connections (mutations do not affect the server)
@@ -70,7 +74,22 @@ class WebsocketServer extends EventEmitter {
     return new Set(this.#connections);
   }
 
-  #init(server) {
+  // Drives one upgrade by hand. Same guarantees as the bound path: the raw
+  // socket gets an error handler before parsing, and a throwing handshake
+  // answers 500 instead of leaving the socket dangling.
+  handleUpgrade(req, socket, head) {
+    socket.on('error', () => {
+      socket.destroy();
+    });
+    try {
+      this.#handleUpgrade(req, socket, head);
+    } catch (error) {
+      this.emit('error', error);
+      abort(socket, 500, 'Internal Server Error');
+    }
+  }
+
+  #startHeartbeat() {
     const { pingInterval } = this.#options;
     this.#pingTimer = setInterval(() => {
       for (const ws of this.#connections) {
@@ -89,16 +108,11 @@ class WebsocketServer extends EventEmitter {
       }
     }, pingInterval);
     this.#pingTimer.unref();
+  }
+
+  #bind(server) {
     server.on('upgrade', (req, socket, head) => {
-      socket.on('error', () => {
-        socket.destroy();
-      });
-      try {
-        this.#handleUpgrade(req, socket, head);
-      } catch (error) {
-        this.emit('error', error);
-        abort(socket, 500, 'Internal Server Error');
-      }
+      this.handleUpgrade(req, socket, head);
     });
     server.on('error', (error) => {
       // Forward error to WebsocketServer if:

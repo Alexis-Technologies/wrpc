@@ -23,6 +23,10 @@ jobs:
 
   test:
     runs-on: ubuntu-latest
+    # A leaked native listen socket (a uws engine that a failing test never
+    # tore down) wedges `node --test` instead of failing it — cap the job
+    # rather than let a hang burn the six-hour default.
+    timeout-minutes: 20
     strategy:
       matrix:
         node-version: [22, 24]

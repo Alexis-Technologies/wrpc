@@ -25,6 +25,18 @@
     "./engine": {
       "types": "./engine.d.ts",
       "default": "./engine.js"
+    },
+    "./uws": {
+      "types": "./uws.d.ts",
+      "default": "./uws.js"
+    },
+    "./fastify": {
+      "types": "./fastify.d.ts",
+      "default": "./fastify.js"
+    },
+    "./express": {
+      "types": "./express.d.ts",
+      "default": "./express.js"
     }
   },
   "directories": {
@@ -83,6 +95,7 @@
     "@types/node": "^22.10.0",
     "c8": "^10.1.3",
     "esbuild": "^0.28.1",
+    "express": "^5.2.1",
     "fastify": "^5.11.3",
     "fastify-uws": "^2.0.0",
     "mermaid": "^11.16.0",
@@ -111,6 +124,12 @@
     "ws.d.ts",
     "engine.js",
     "engine.d.ts",
+    "uws.js",
+    "uws.d.ts",
+    "fastify.js",
+    "fastify.d.ts",
+    "express.js",
+    "express.d.ts",
     "src/",
     "LICENSE",
     "README.md",

@@ -29,7 +29,7 @@ const DEFAULT_CORS_HEADERS = 'Content-Type';
 
 // CORS v2: `cors` is { origins: string[] | (origin) => boolean, credentials?,
 // headers?, methods? }. Without a `cors` option every origin is allowed
-// (wildcard, credentials-less) — the pre-Ф2 behavior. With `origins`, the
+// (wildcard, credentials-less) — the pre-F2 behavior. With `origins`, the
 // request origin is echoed back only when allowed, plus `Vary: Origin`.
 const buildHeaders = (cors, origin) => {
   const headers = {

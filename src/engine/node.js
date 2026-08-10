@@ -10,6 +10,8 @@ const createNodeEngine = (engineOptions = {}) => {
   let wss = null;
   return {
     name: 'node',
+    // Hosted engine: the Server shell owns node:http(s) and the listener.
+    standalone: false,
     capabilities: {
       backpressure: true,
       ping: true,

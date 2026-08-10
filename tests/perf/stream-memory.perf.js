@@ -1,6 +1,6 @@
 'use strict';
 
-// Perf/memory guard for the Ф1 claim: "1 GiB stream without memory growth".
+// Perf/memory guard for the F1 claim: "1 GiB stream without memory growth".
 //
 // Streams 1 GiB in 64 KiB chunks through the real backpressure chain:
 //   WrpcReadable.finalize -> WrpcWritable -> ServerWsTransport -> Connection -> socket

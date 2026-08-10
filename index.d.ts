@@ -407,10 +407,13 @@ export interface ServerOptions extends RpcServerOptions {
 }
 
 export class Server extends Emitter {
-  httpServer: HttpServer;
+  /** Null with a standalone engine, which owns the network stack itself. */
+  httpServer: HttpServer | null;
   wsServer: EngineConnectionSource | null;
   rpc: RpcServer;
   constructor(options: ServerOptions);
+  /** The bound address, whichever side owns the listener. */
+  address(): { address: string; family: string; port: number } | string | null;
   listen(): Promise<Server>;
   close(): Promise<void>;
 }

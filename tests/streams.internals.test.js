@@ -137,7 +137,7 @@ test('WrpcReadable.checkStreamLimits grows the high water mark under listener pr
   await new Promise((resolve) => setImmediate(resolve));
 
   // An 11th waiter trips checkStreamLimits' threshold (raising highWaterMark).
-  // Since Ф2 the Emitter's listener cap only warns instead of throwing, so
+  // Since F2 the Emitter's listener cap only warns instead of throwing, so
   // the push stalls like the others rather than rejecting.
   const warnings = [];
   const originalWarn = globalThis.console.warn;
