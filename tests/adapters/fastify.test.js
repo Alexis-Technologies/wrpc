@@ -53,9 +53,15 @@ const postPacket = (url, method, args) =>
     body: JSON.stringify({ type: 'call', id: '1', method, args }),
   });
 
+// `bodyLimit` is a fastify CONSTRUCTOR option, not a plugin one — it has to
+// be split out here or it would be forwarded to wrpcFastify and ignored.
 const boot = async (t, options = {}) => {
-  const { serverFactory = null, hooks = null, ...pluginOptions } = options;
-  const app = fastify({ ...(serverFactory ? { serverFactory } : {}), logger: false });
+  const { serverFactory = null, hooks = null, bodyLimit, ...pluginOptions } = options;
+  const app = fastify({
+    ...(serverFactory ? { serverFactory } : {}),
+    ...(bodyLimit === undefined ? {} : { bodyLimit }),
+    logger: false,
+  });
   // Teardown is registered before anything can throw: a leaked app keeps a
   // listening socket (a native one under uws) and would wedge the whole run
   // instead of failing the test.
@@ -337,4 +343,50 @@ test('a logger with neither log nor info falls back to the global console', { sk
   await wrpcFastify(app, { router: createRouter(), engine });
   assert.ok(app.decorations.get('wrpc') instanceof RpcServer);
   t.after(() => engine.close());
+});
+
+test("body limits are fastify's, not the adapter's", { skip: noFastify }, async (t) => {
+  // This plugin never touches the request stream — fastify parses the body
+  // and hands over request.body — so unlike the express and uws adapters
+  // there is nothing here to meter. fastify's own bodyLimit guards the RPC
+  // routes and answers 413 before the handler runs.
+  const oversized = (bytes) =>
+    JSON.stringify({ type: 'call', id: '1', method: 'probe/echo', args: { big: 'x'.repeat(bytes) } });
+
+  await t.test('the app-wide bodyLimit applies to the RPC routes', async (sub) => {
+    const { origin } = await boot(sub, { router: createRouter(), bodyLimit: 512 });
+    const res = await fetch(`${origin}/api`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Connection: 'close' },
+      body: oversized(4096),
+    });
+    assert.strictEqual(res.status, 413);
+    assert.strictEqual((await res.json()).code, 'FST_ERR_CTP_BODY_TOO_LARGE');
+  });
+
+  await t.test('maxBodySize narrows it per route', async (sub) => {
+    const { origin } = await boot(sub, { router: createRouter(), maxBodySize: 512 });
+    const res = await fetch(`${origin}/api`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Connection: 'close' },
+      body: oversized(4096),
+    });
+    assert.strictEqual(res.status, 413);
+
+    const ok = await postPacket(`${origin}/api`, 'probe/echo', { small: true });
+    assert.strictEqual(ok.status, 200);
+  });
+
+  await t.test('unset, the app keeps its own limit — a plugin must not raise it', async (sub) => {
+    // MAX_BODY_SIZE (10 MiB) is deliberately NOT applied as a default here:
+    // silently loosening the host's 1 MiB limit would be a regression the
+    // app never asked for.
+    const { origin } = await boot(sub, { router: createRouter(), bodyLimit: 512 });
+    const res = await fetch(`${origin}/api`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', Connection: 'close' },
+      body: oversized(4096),
+    });
+    assert.strictEqual(res.status, 413);
+  });
 });

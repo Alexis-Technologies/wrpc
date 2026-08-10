@@ -32,6 +32,14 @@ export interface WrpcFastifyOptions extends Partial<RpcServerOptions> {
   engine?: Engine;
   /** Forwarded to the engine's attach() (path, protocols, verifyClient, ...). */
   ws?: Omit<EngineAttachOptions, 'server'>;
+  /**
+   * Per-route `bodyLimit` for the RPC routes. Unlike the express and uws
+   * adapters this plugin never reads the request stream — fastify parses the
+   * body, so its own `bodyLimit` (1 MiB by default) already guards these
+   * routes and answers `413 FST_ERR_CTP_BODY_TOO_LARGE`. Set this only to
+   * narrow that limit; leaving it unset keeps the app's own.
+   */
+  maxBodySize?: number;
 }
 
 /**

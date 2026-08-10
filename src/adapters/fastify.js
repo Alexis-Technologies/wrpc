@@ -66,7 +66,7 @@ const toConsole = (logger) => {
 };
 
 const wrpcFastify = async (fastify, options = {}) => {
-  const { router, sessions, cors = null, basePath, ws = {} } = options;
+  const { router, sessions, cors = null, basePath, ws = {}, maxBodySize } = options;
   const console = options.console ?? toConsole(fastify.log);
   const rpc = options.rpc ?? new RpcServer({ router, sessions, cors, basePath, console });
   const base = rpc.basePath;
@@ -118,9 +118,21 @@ const wrpcFastify = async (fastify, options = {}) => {
     return reply;
   };
 
+  // Unlike the express and uws adapters, nothing here reads the request
+  // stream — fastify parses the body and hands over `request.body`, so its
+  // own `bodyLimit` (1 MiB by default) already guards these routes and
+  // rejects an oversized call with 413 FST_ERR_CTP_BODY_TOO_LARGE before the
+  // handler runs. `maxBodySize` only narrows that per route; left unset, the
+  // app's limit stands, because a plugin silently RAISING the host's body
+  // limit would be a security regression the app never asked for.
   const routes = base === '' ? ['/', '/:unit/:method'] : [base, `${base}/:unit/:method`];
   for (const url of routes) {
-    fastify.route({ method: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'], url, handler: handle });
+    fastify.route({
+      method: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
+      url,
+      ...(maxBodySize === undefined ? {} : { bodyLimit: maxBodySize }),
+      handler: handle,
+    });
   }
 
   // ---- WebSocket: engine attach ------------------------------------------
