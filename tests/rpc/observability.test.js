@@ -141,3 +141,120 @@ test('a logger that throws never breaks a call', async (t) => {
   await assert.rejects(client.api.probe.boom(), /handler exploded/);
   await client.close();
 });
+
+test('the client logger is off by default and complete when on', async (t) => {
+  await t.test('no logger means nothing is written', async () => {
+    const url = await boot(t, { logger: false });
+    const written = [];
+    const original = globalThis.console;
+    globalThis.console = { log: (...a) => written.push(a), error: (...a) => written.push(a) };
+    try {
+      const client = await WrpcClient.connect(url, { reconnect: false });
+      await client.load('probe');
+      await assert.rejects(client.api.probe.boom());
+      await client.close();
+    } finally {
+      globalThis.console = original;
+    }
+    assert.deepStrictEqual(written, [], 'a client without a logger stays silent');
+  });
+
+  await t.test('open and close are logged with the url', async () => {
+    const url = await boot(t, { logger: false });
+    const { logger, entries } = collector();
+    const WsTransport = WrpcClient.transport.ws;
+    const transport = new WsTransport(url);
+    const client = new WrpcClient(url, transport, { reconnect: false, logger });
+    await client.open();
+    const open = entries.find((entry) => entry.event === 'open');
+    assert.ok(open, 'the open was logged');
+    assert.strictEqual(open.url, url);
+    await new Promise((resolve) => {
+      transport.once('close', resolve);
+      client.close();
+    });
+    assert.ok(
+      entries.some((entry) => entry.event === 'close'),
+      'the close was logged',
+    );
+  });
+
+  await t.test('a client error is logged AND emitted, not one or the other', async () => {
+    const url = await boot(t, { logger: false });
+    const { logger, entries } = collector();
+    const WsTransport = WrpcClient.transport.ws;
+    const transport = new WsTransport(url);
+    const client = new WrpcClient(url, transport, { reconnect: false, logger });
+    await client.open();
+    const seen = [];
+    client.on('error', (error) => seen.push(error));
+    const boom = new Error('transport blew up');
+    await transport.emit('error', boom);
+    client.close();
+    assert.deepStrictEqual(seen, [boom], 'the listener still ran');
+    const logged = entries.find((entry) => entry.event === 'transport.error');
+    assert.ok(logged, 'and the logger observed it too');
+    assert.strictEqual(logged.err, boom);
+  });
+});
+
+test('a subscription that dies server-side is logged', async (t) => {
+  const { logger, entries } = collector();
+  const server = new Server({
+    router: defineRouter({
+      feed: {
+        broken: procedure({
+          access: 'public',
+          subscription: true,
+          handler: async function* () {
+            yield 1;
+            throw new Error('feed collapsed');
+          },
+        }),
+      },
+    }),
+    host: '127.0.0.1',
+    port: 0,
+    protocol: 'http',
+    timeouts: { bind: 100 },
+    logger,
+  });
+  await server.listen();
+  t.after(() => server.close());
+
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${server.address().port}/api`, { reconnect: false });
+  await client.load('feed');
+  const errors = [];
+  await new Promise((resolve) => {
+    client.api.feed.broken.subscribe(
+      {},
+      {
+        onError: (error) => {
+          errors.push(error);
+          resolve();
+        },
+      },
+    );
+  });
+  await client.close();
+
+  assert.strictEqual(errors.length, 1);
+  const ended = entries.find((entry) => entry.event === 'subscribe.end' && entry.code === 500);
+  assert.ok(ended, 'the dead subscription was logged with its code');
+  assert.strictEqual(ended.method, 'feed/broken');
+});
+
+test('a malformed packet is reported through the one funnel it passes', async (t) => {
+  const { logger, entries } = collector();
+  const url = await boot(t, { logger });
+  const client = await WrpcClient.connect(url, { reconnect: false });
+  // The server answers the garbage with a 500 the client cannot route; a
+  // listener keeps that expected escalation out of the test run's output.
+  client.on('error', () => {});
+  client.write('this is not json'); // straight onto the wire, bypassing send()
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  client.close();
+  const malformed = entries.find((entry) => entry.event === 'packet.malformed');
+  assert.ok(malformed, 'the unparseable frame was reported');
+  assert.ok(malformed.bytes > 0);
+});

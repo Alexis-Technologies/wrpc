@@ -413,6 +413,13 @@ export interface WrpcClientOptions {
   reconnectTimeout?: number;
   heartbeat?: HeartbeatOptions | false;
   worker?: ServiceWorker;
+  /**
+   * Off by default, unlike the server: a client that printed on every
+   * reconnect would be noise in a browser console nobody asked for. A logger
+   * observes errors in addition to the `'error'` event, it does not replace
+   * it.
+   */
+  logger?: WrpcLogger | boolean;
   /** Jitter source; injectable so tests can pin the backoff schedule. */
   random?: () => number;
   proxy?: (data: string, packet: object | null) => void;

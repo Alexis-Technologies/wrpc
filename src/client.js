@@ -5,6 +5,7 @@ const { generateUUID } = require('./runtime/node.js');
 const { WebSocket } = globalThis;
 const { chunkDecode } = require('./chunks.js');
 const { WrpcReadable, WrpcWritable } = require('./streams.js');
+const { createLoggerWriter } = require('./logging.js');
 
 const CALL_TIMEOUT = 7 * 1000;
 const RECONNECT_TIMEOUT = 2 * 1000;
@@ -163,6 +164,7 @@ class WrpcClient extends Emitter {
   }
 
   api = {};
+  #log = null;
   #transport = null;
   #calls = new Map();
   #cancelled = new Set();
@@ -197,7 +199,10 @@ class WrpcClient extends Emitter {
 
   constructor(url, transport, options = {}) {
     super();
-    const { callTimeout, proxy, random } = options;
+    const { callTimeout, proxy, random, logger } = options;
+    // Off by default, unlike the server: a client that printed on every
+    // reconnect would be noise in a browser console nobody asked for.
+    this.#log = createLoggerWriter(logger);
     if (callTimeout) this.#callTimeout = callTimeout;
     if (proxy) this.#proxyPacket = proxy;
     if (random) this.#random = random; // deterministic jitter in tests
@@ -234,7 +239,10 @@ class WrpcClient extends Emitter {
   // right for a synchronous mistake and wrong for a background failure: a
   // throw out of a timer or a promise chain would take the process down for
   // a reconnect that is about to be retried anyway.
-  #escalate(error) {
+  #escalate(error, event = 'client.error') {
+    // A logger observes; a listener handles. Both run — the log line is not
+    // a fallback for a missing listener.
+    this.#log.error({ err: error, event });
     if (this.listenerCount('error') > 0) return void this.emit('error', error);
     globalThis.console?.error?.(error);
   }
@@ -248,22 +256,24 @@ class WrpcClient extends Emitter {
       this.#startHeartbeat();
       const reconnected = this.#connected;
       this.#connected = true;
+      this.#log.info({ event: reconnected ? 'reconnected' : 'open', url: this.url, attempts });
       this.emit('open');
-      if (reconnected) this.#restore(attempts).catch((error) => this.#escalate(error));
+      if (reconnected) this.#restore(attempts).catch((error) => this.#escalate(error, 'reconnect.restore'));
     });
 
     this.#transport.on('close', () => {
       this.#stopHeartbeat();
+      this.#log.info({ event: 'close', url: this.url });
       this.emit('close');
       this.#scheduleReconnect();
     });
 
     this.#transport.on('error', (error) => {
-      this.#escalate(error);
+      this.#escalate(error, 'transport.error');
     });
 
     this.#transport.on('message', (data) => {
-      const escalate = (error) => this.#escalate(error);
+      const escalate = (error) => this.#escalate(error, 'message');
       if (typeof data === 'string') this.#handlePacket(data).catch(escalate);
       else this.#handleBinary(data).catch(escalate);
     });
@@ -292,10 +302,12 @@ class WrpcClient extends Emitter {
     if (this.#reconnectTimer) return;
     const { retries } = this.#reconnect;
     if (this.#attempt >= retries) {
+      this.#log.warn({ event: 'reconnect.failed', attempts: this.#attempt, url: this.url });
       return void this.emit('reconnect-failed', { attempts: this.#attempt });
     }
     const delay = backoffDelay({ ...this.#reconnect, attempt: this.#attempt, random: this.#random });
     this.#attempt++;
+    this.#log.debug({ event: 'reconnecting', attempt: this.#attempt, delay, url: this.url });
     this.emit('reconnecting', { attempt: this.#attempt, delay });
     // Not unref'd: see the note on `unref` above.
     this.#reconnectTimer = setTimeout(() => {
@@ -303,7 +315,7 @@ class WrpcClient extends Emitter {
       this.open().catch((error) => {
         // A rejected open never emitted 'close', so nothing else would
         // schedule the next attempt — the loop has to continue here.
-        this.#escalate(error);
+        this.#escalate(error, 'reconnect.open');
         this.#scheduleReconnect();
       });
     }, delay);
@@ -340,7 +352,7 @@ class WrpcClient extends Emitter {
     try {
       this.send({ type: 'ping' });
     } catch (error) {
-      return void this.#escalate(error);
+      return void this.#escalate(error, 'heartbeat.ping');
     }
     this.#pongTimer = unref(
       setTimeout(() => {
@@ -360,11 +372,12 @@ class WrpcClient extends Emitter {
   // The peer stopped answering: close so the transport reports 'close' and
   // the normal reconnect path takes over.
   #onHeartbeatTimeout() {
+    this.#log.warn({ event: 'heartbeat.timeout', url: this.url });
     this.emit('heartbeat-timeout');
     try {
       this.#transport.terminate();
     } catch (error) {
-      this.#escalate(error);
+      this.#escalate(error, 'heartbeat.terminate');
     }
   }
 
@@ -410,7 +423,7 @@ class WrpcClient extends Emitter {
       record.onRelease?.();
       record.onEnd?.();
     } catch (error) {
-      this.#escalate(error);
+      this.#escalate(error, 'subscription.listener');
     }
     // Always, even if a listener threw: an `iterate()` consumer is parked in
     // next() and would otherwise wait there forever.
@@ -461,7 +474,7 @@ class WrpcClient extends Emitter {
     try {
       this.#transport.send(payload);
     } catch (error) {
-      this.#escalate(error);
+      this.#escalate(error, 'batch.flush');
     }
   }
 
@@ -517,7 +530,7 @@ class WrpcClient extends Emitter {
         try {
           await this.#dispatch(item ?? {});
         } catch (error) {
-          this.#escalate(error);
+          this.#escalate(error, 'batch.dispatch');
         }
       }
       return;
@@ -578,7 +591,7 @@ class WrpcClient extends Emitter {
     if (record.onError) return void record.onError(error);
     // Nobody asked to hear about it, but a subscription that died must not
     // die quietly.
-    if (!record.stream) this.#escalate(error);
+    if (!record.stream) this.#escalate(error, 'subscription.error');
   }
 
   // Events are addressed 'unit/event'. One that reaches no listener — an
@@ -992,13 +1005,17 @@ class WrpcClientProxy extends Emitter {
   #callTimeout = CALL_TIMEOUT;
   #reconnect = null;
   #heartbeat = undefined;
+  #logger = undefined;
 
   constructor(options = {}) {
     super();
-    const { callTimeout, heartbeat } = options;
+    const { callTimeout, heartbeat, logger } = options;
     if (callTimeout) this.#callTimeout = callTimeout;
     this.#reconnect = normalizeReconnect(options);
     this.#heartbeat = heartbeat;
+    // The proxy rebuilds its own options bag, so anything not forwarded here
+    // is silently lost on the connection it owns.
+    this.#logger = logger;
     if (typeof self === 'undefined') {
       throw new Error('WrpcClientProxy must run in ServiceWorker context');
     }
@@ -1020,6 +1037,7 @@ class WrpcClientProxy extends Emitter {
       callTimeout: this.#callTimeout,
       reconnect: this.#reconnect,
       heartbeat: this.#heartbeat,
+      logger: this.#logger,
       proxy: (data, packet) => this.#proxyPacket(data, packet),
     };
     this.#connection = await WrpcClient.connect(url, options);

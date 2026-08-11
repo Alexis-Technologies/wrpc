@@ -128,6 +128,10 @@ const runSubscription = async (client, { id, procedure, context, args, lastEvent
     if (!signal.aborted) {
       const code = typeof error.code === 'number' ? error.code : 500;
       terminal = { type: 'end', id, error: { message: error.message, code } };
+    } else {
+      // Aborted: the terminal packet stays clean because the peer asked to
+      // stop, so this error reaches nobody unless it is logged here.
+      client.log.debug({ err: error, event: 'subscription.aborted', id });
     }
   }
   // Close the generator so its `finally` runs — that is where a handler
@@ -136,7 +140,9 @@ const runSubscription = async (client, { id, procedure, context, args, lastEvent
   // hostage, and the peer has already been told to stop.
   void Promise.resolve()
     .then(() => iterator.return?.())
-    .catch((error) => client.warn(`SUBSCRIPTION\t${id}\t${error?.stack ?? error}`));
+    .catch((error) =>
+      client.warn(`SUBSCRIPTION\t${id}\t${error?.stack ?? error}`, { event: 'subscription.return', id, err: error }),
+    );
   return terminal;
 };
 

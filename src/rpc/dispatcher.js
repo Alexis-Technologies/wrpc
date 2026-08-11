@@ -95,7 +95,7 @@ const handleCancel = (client, packet) => {
 // with a `callback` would make the client look for a call it never made.
 const refuse = (client, id, code, message) => {
   client.send({ type: 'end', id, error: { message, code } });
-  client.warn(`SUBSCRIBE\t${id}\t${code}\t${message}`);
+  client.warn(`SUBSCRIBE\t${id}\t${code}\t${message}`, { event: 'subscribe.refused', id, code });
 };
 
 const handleSubscribe = async (client, packet, router) => {
@@ -142,6 +142,11 @@ const handleSubscribe = async (client, packet, router) => {
   } finally {
     if (client.subscriptions.get(id) === controller) client.subscriptions.delete(id);
   }
+  // The peer is told, but nobody was: a subscription that dies server-side
+  // used to leave no trace at all on this side of the wire.
+  const entry = { event: 'subscribe.end', id, method, code: terminal.error?.code };
+  if (terminal.error) client.log.warn(entry, `${client.source}\tSUBSCRIBE\t${id}\t${terminal.error.code}`);
+  else client.log.debug(entry);
   client.send(terminal);
 };
 
@@ -287,7 +292,12 @@ const handlePacket = (client, packet, router) => {
 // answered on its own (on a request/response transport the answers come
 // back as an array in the same order — see ServerHttpTransport).
 const handleMessage = (client, data, router, options = {}) => {
-  const packet = jsonParse(data) || {};
+  const parsed = jsonParse(data);
+  // jsonParse answers null for both "malformed" and "the literal null", and
+  // the `|| {}` below hides the difference. This is the single funnel every
+  // unparseable packet in the system passes through, so it is worth a line.
+  if (parsed === null) client.log.warn({ event: 'packet.malformed', bytes: data?.length ?? 0 });
+  const packet = parsed || {};
   if (!Array.isArray(packet)) return void handlePacket(client, packet, router);
   const { maxBatch = DEFAULT_MAX_BATCH } = options;
   if (packet.length === 0 || packet.length > maxBatch) {

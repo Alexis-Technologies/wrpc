@@ -187,6 +187,8 @@ expectAssignable<wrpc.ServerOptions>({ router, logger: false });
 expectAssignable<wrpc.ServerOptions>({ router, logger: pinoLike });
 expectAssignable<wrpc.RpcServerOptions>({ router, logger: globalThis.console });
 expectError<wrpc.ServerOptions>({ router, logger: 'verbose' });
+expectAssignable<wrpc.WrpcClientOptions>({ logger: pinoLike });
+expectAssignable<wrpc.WrpcClientOptions>({ logger: false });
 
 // RpcServer core surface
 declare const rpc: RpcServer;
