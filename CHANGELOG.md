@@ -9,6 +9,100 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Typed client, codegen and TanStack Query bindings (F6) — the DX phase, with
+  **no TypeScript at runtime**: everything below is either a type or a
+  dependency-free JavaScript file.
+  - **Contract-first typed client.** Declare the api once as an ordinary
+    interface and thread it through `connect<Api>()`:
+    ```ts
+    interface Api {
+      chat: {
+        send(args: { text: string }): Promise<{ id: string }>;
+        onMessage: SubscriptionContract<{ room: string }, { text: string }>;
+      };
+      'auth.1': { signIn(args: { login: string }): Promise<{ token: string }> };
+    }
+
+    const client = await connect<Api>('wss://host');
+    await client.load('chat');
+    const { id } = await client.api.chat.send({ text: 'hi' });
+    ```
+    Nothing is generated and nothing is checked at runtime — `connect` is a
+    one-line alias of `WrpcClient.connect`, added because a *function* is
+    where a type argument reads naturally. A call keeps its declared arguments
+    and gains the trailing `CallOptions` that carries `{ signal }`; its result
+    is awaited whether the contract promised one or not. A member declared as
+    `SubscriptionContract<Args, Data>` becomes `subscribe`/`iterate` rather
+    than something callable, so calling a subscription is a compile error.
+    `load()` only accepts unit keys the contract declares. Utilities:
+    `TypedApi`, `TypedUnit`, `TypedMethod`, `TypedParams`,
+    `TypedSubscriptionMethod`, `InferArgs`, `InferResult`, `FirstArg`,
+    `UntypedApi`, `IsAny`, `InvalidContractMember`.
+    **Without** a contract everything is exactly as loose as before — that is
+    what the `IsAny` guard is for, and `tests/index.test-d.ts` asserts it.
+    Three sharp edges the types deliberately handle:
+    - A **zero-argument** member keeps its args slot — `ping(undefined, {
+      signal })`, never `ping({ signal })`. Slot 0 on the wire is always the
+      procedure's arguments, so collapsing the tuple would compile a call that
+      ships `{"signal":{}}` as the args and silently drops the cancellation.
+    - A member declared with **two parameters** (or a rest parameter, or as
+      something that is not a function) maps to `InvalidContractMember`, whose
+      text the compiler quotes back — a wrpc procedure receives exactly one
+      args object.
+    - A contract key named **`on`** is not mapped: a unit is an `Emitter` at
+      runtime, so `api.chat.on` stays the listener registration. (An optional
+      `on?: {...}` used to reduce the whole unit to `never`.)
+  - **`wrpc types` — the codegen CLI.** `npx wrpc types http://host:8000/api
+    --out api.d.ts [--units chat,auth.1] [--interface Api] [--package ...]`
+    (`--out -` writes to stdout) turns `system/introspect` into exactly the
+    kind of interface above. The two halves meet in the middle: hand-write the
+    contract for exact types, generate it when you would rather not write it.
+    Output is sorted, so re-running produces byte-identical bytes and a diff
+    means the server changed.
+  - **The `signature` descriptor is now specified** (it had been carried but
+    never interpreted) — see `docs/reference/protocol.md`. A shape is a type
+    name (`'string'`, `'number[]'`, `'string|null'`), a field map whose keys
+    may end in `?`, or a one-element array meaning "an array of that";
+    `args`/`returns`/`data` are the three slots. It is deliberately a **closed**
+    format: it crosses the network and lands in a file someone compiles, so
+    names are quoted through JSON escaping and type names are matched against
+    an allowlist — anything unrecognised becomes `unknown` with a warning on
+    stderr, nesting is depth-capped, and a `__proto__` key is data. A method
+    with no signature still generates, as `(args?: unknown) => Promise<unknown>`.
+    `Signature`/`SignatureShape` type the descriptor, so a tuple where an array
+    belongs is a compile error rather than a silent `unknown`.
+  - **`@alexify/wrpc/query` subpath** — TanStack Query bindings as option
+    *factories* in the style of tRPC v11, never hooks, so one file serves
+    React/Solid/Svelte/Vue Query and query-core alike:
+    ```js
+    const wq = createQueryUtils(client, { queryClient });
+    useQuery(wq.queryOptions(['chat', 'list'], { room: 'a' }));
+    useMutation(wq.mutationOptions(['chat', 'send']));
+    const feed = wq.subscriptionHandler(['chat', 'onMessage'], { room: 'a' });
+    ```
+    It `require()`s **nothing** — 1.0 KB min+gzip, browser-safe, with the
+    client and the `QueryClient` injected and duck-typed like every other
+    optional integration here. The `AbortSignal` TanStack hands `queryFn` is
+    forwarded into the call, so a cancelled query reaches the server as
+    `{type:'cancel'}`. `queryKey` is `[...prefix, unit, method, args]` —
+    args last, so `invalidateQueries({ queryKey: ['chat'] })` matches by
+    prefix. `subscriptionHandler` writes every value through `setQueryData`
+    (replacing by default; pass `update` to accumulate) and needs nothing on
+    reconnect, because the client re-opens subscriptions on the same record.
+    Paths resolve *lazily* inside `queryFn`, since `client.api` only exists
+    after `load()` and is rebuilt on every reconnect — and resolution uses
+    own-property lookups on both hops, so `['chat', 'on']` cannot reach
+    `Emitter.prototype.on` and be called as though it were a procedure.
+  - **Bundle-size budgets, and a real self-containment gate.**
+    `scripts/size.js` now carries a min+gzip budget on every browser-reachable
+    entry and **fails** when one is exceeded, so CI notices bundle growth
+    instead of merely printing it. The old "does the output contain the string
+    `node:crypto`" check is replaced by an esbuild **resolve plugin**: a browser
+    entry may only import relative paths, so a stray `node:*` *or a package*
+    fails the build naming the import and its importer. That second half
+    matters — esbuild resolves devDependencies happily, so
+    `require('@tanstack/query-core')` in `src/query/` would otherwise have been
+    inlined into a browser bundle and shown up only as a few extra KB.
 - Subscriptions, batching, cancellation and SSE (F5) — **wire protocol v2**:
   `subscribe` / `data` / `end` / `unsubscribe` / `cancel` packets, plus a
   JSON array as a batch frame. All of it is in

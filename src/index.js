@@ -1,7 +1,7 @@
 'use strict';
 
 const { Emitter, createEventStream, EventStream } = require('./utils.js');
-const { WrpcClient, WrpcClientProxy, WrpcError } = require('./client.js');
+const { WrpcClient, WrpcClientProxy, WrpcError, connect } = require('./client.js');
 const { Server } = require('./server.js');
 const { RpcServer, Client, Context } = require('./rpc/core.js');
 const { defineRouter, procedure, Router, Procedure } = require('./rpc/router.js');
@@ -19,6 +19,7 @@ module.exports = {
   WrpcClient,
   WrpcClientProxy,
   WrpcError,
+  connect,
   Server,
   RpcServer,
   Client,

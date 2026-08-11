@@ -17,9 +17,11 @@ test('browser barrel exposes only browser-safe exports', () => {
     'WrpcWritable',
     'chunkDecode',
     'chunkEncode',
+    'connect',
     'createEventStream',
   ]);
   assert.strictEqual(typeof wrpcBrowser.Emitter, 'function');
+  assert.strictEqual(typeof wrpcBrowser.connect, 'function');
   assert.strictEqual(typeof wrpcBrowser.EventStream, 'function');
   assert.strictEqual(typeof wrpcBrowser.createEventStream, 'function');
   assert.strictEqual(typeof wrpcBrowser.WrpcClient, 'function');

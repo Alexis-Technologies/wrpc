@@ -95,16 +95,22 @@ declare class ClientTransport extends Emitter {
 }
 export type { ClientTransport };
 
-export class WrpcClient extends Emitter {
+export class WrpcClient<Api = UntypedApi> extends Emitter {
   static connections: Set<WrpcClient>;
   static isOnline: boolean;
   static online(): void;
   static offline(): void;
   static initialize(): void;
-  static connect(
+  /**
+   * With a contract — `WrpcClient.connect<Api>(url)` — the whole `api` is
+   * typed. Without one it behaves exactly as it always did. See
+   * {@link connect}, which is the same call under a name that reads better
+   * with a type argument.
+   */
+  static connect<Api = UntypedApi>(
     url: string,
     options?: WrpcClientOptions,
-  ): Promise<WrpcClient>;
+  ): Promise<WrpcClient<Api>>;
   static transport: {
     ws: new (url: string) => ClientTransport;
     http: new (url: string) => ClientTransport;
@@ -115,11 +121,15 @@ export class WrpcClient extends Emitter {
 
   url: string;
   /**
-   * Loaded units. A method is a function for a call and a
+   * The loaded units. A method is a function for a call and a
    * {@link SubscriptionMethod} for a subscription — a subscription answers
    * with a stream, so it is not callable.
+   *
+   * With a contract type this is {@link TypedApi}; note that it types what
+   * the contract DECLARES, not what has been `load()`ed yet — a unit read
+   * before its `load()` is `undefined` at runtime.
    */
-  api: Record<string, Emitter & Record<string, any>>;
+  api: TypedApi<Api>;
   readonly active: boolean;
 
   constructor(
@@ -132,7 +142,7 @@ export class WrpcClient extends Emitter {
 
   open(): Promise<void>;
   close(): void;
-  load(...units: Array<string>): Promise<void>;
+  load(...units: Array<Extract<keyof Api, string>>): Promise<void>;
   getStream(id: string): WrpcReadable | WrpcWritable;
   createStream(name: string, size: number): WrpcWritable;
   createBlobUploader(blob: Blob): BlobUploader;
@@ -202,15 +212,15 @@ export interface Subscription {
   unsubscribe(): boolean;
 }
 
-export interface SubscribeOptions {
+export interface SubscribeOptions<Data = any> {
   /** Where to resume from; the server decides what that means. */
   lastEventId?: string;
-  onData?(data: any): void;
+  onData?(data: Data): void;
   onError?(error: WrpcError): void;
   onEnd?(): void;
 }
 
-export interface IterateOptions extends SubscribeOptions {
+export interface IterateOptions<Data = any> extends SubscribeOptions<Data> {
   /** Aborting unsubscribes and ends the iterator. */
   signal?: AbortSignal;
   highWaterMark?: number;
@@ -222,6 +232,162 @@ export interface SubscriptionMethod {
   subscribe(args?: object, options?: SubscribeOptions): Subscription;
   iterate(args?: object, options?: IterateOptions): AsyncIterableIterator<any> & { subscription: Subscription };
 }
+
+// ---------------------------------------------------------------------------
+// Contract-first typed client
+//
+// The contract is written ONCE, as an ordinary TypeScript interface, and
+// threaded through `connect<Api>()`. Nothing is generated and nothing is
+// checked at runtime: these types describe the api the server already
+// introspects, so they buy autocompletion and a compile error on a typo —
+// not a guarantee that the server agrees. (`wrpc types`, the codegen CLI,
+// writes exactly this shape of interface FROM a running server.)
+//
+//   interface Api {
+//     chat: {
+//       send(args: { text: string }): Promise<{ id: string }>;
+//       onMessage: SubscriptionContract<{ room: string }, { text: string }>;
+//     };
+//     'auth.1': { signIn(args: { login: string }): Promise<{ token: string }> };
+//   }
+//
+//   const client = await connect<Api>('wss://host');
+//   await client.load('chat');
+//   const { id } = await client.api.chat.send({ text: 'hi' });
+
+/**
+ * Declares a contract member as a subscription rather than a call: it answers
+ * with a stream, so on the client it becomes a {@link TypedSubscriptionMethod}
+ * (`subscribe`/`iterate`) instead of something callable.
+ *
+ * Declaration-only — there is no runtime value to construct, and the phantom
+ * key exists so a plain object type can never be mistaken for one. (The
+ * `~`-prefixed key is the same idiom Standard Schema uses for `~standard`.)
+ * Not to be confused with {@link Subscription}, which is the live handle
+ * `subscribe()` hands back.
+ */
+export interface SubscriptionContract<Args = void, Data = unknown> {
+  readonly '~wrpc.subscription': (args: Args) => Data;
+}
+
+/**
+ * No contract given: `api` keeps the loose, runtime-shaped record it has
+ * always had, so nothing about an untyped client changes.
+ */
+export type UntypedApi = Record<string, Record<string, any>>;
+
+/**
+ * `any` has to be caught before any conditional type sees it: `any extends X`
+ * matches BOTH branches, which would turn an untyped unit into a union of
+ * "callable" and "subscription" and make it neither.
+ */
+export type IsAny<T> = 0 extends 1 & T ? true : false;
+
+/** `[args]` when args are required, `[args?]` when the contract says `void`. */
+export type ContractArgs<Args, Rest extends Array<unknown>> = [Args] extends [void]
+  ? [args?: Args, ...rest: Rest]
+  : [args: Args, ...rest: Rest];
+
+/**
+ * What an unusable contract member maps to. A wrpc procedure receives exactly
+ * ONE args object, so a member declared with two parameters (or a rest
+ * parameter, or as something that is not a function at all) cannot be called:
+ * slot 1 on the client is {@link CallOptions}, not a second argument. The text
+ * is what the compiler quotes back at the call site.
+ */
+export type InvalidContractMember = ['wrpc: a contract member is `(args) => Promise<T>` or a SubscriptionContract'];
+
+/**
+ * A contract member's parameters, as the client takes them.
+ *
+ * A zero-argument member KEEPS its args slot: `#scaffold` builds
+ * `(args = {}, options = {})`, so slot 0 is always the wire args. Collapsing
+ * the tuple would make `ping({ signal })` compile and then ship `{"signal":{}}`
+ * to the server as the procedure's arguments, silently dropping the
+ * cancellation the caller asked for — `ping(undefined, { signal })` is the
+ * spelling that works.
+ */
+export type TypedParams<Params extends Array<unknown>> = Params extends readonly [] ? [args?: undefined]
+  : Params extends readonly [unknown?] ? Params
+  : [args: InvalidContractMember];
+
+/** What a subscription member of a contract becomes on the client. */
+export interface TypedSubscriptionMethod<Args, Data> {
+  readonly kind: 'subscription';
+  subscribe(...params: ContractArgs<Args, [options?: SubscribeOptions<Data>]>): Subscription;
+  iterate(
+    ...params: ContractArgs<Args, [options?: IterateOptions<Data>]>
+  ): AsyncIterableIterator<Data> & { subscription: Subscription };
+}
+
+/**
+ * One contract member, translated. A call keeps its declared parameters and
+ * gains the trailing {@link CallOptions} the client accepts, which is what
+ * carries `{ signal }`; its result is awaited, since the wire always answers
+ * with a promise whether the handler did or not.
+ */
+export type TypedMethod<T> = IsAny<T> extends true ? any
+  : T extends SubscriptionContract<infer Args, infer Data> ? TypedSubscriptionMethod<Args, Data>
+  : T extends (...args: infer Params) => infer Result
+    ? (...args: [...TypedParams<Params>, options?: CallOptions]) => Promise<Awaited<Result>>
+  : InvalidContractMember;
+
+/**
+ * One contract unit, translated.
+ *
+ * `on` is dropped: a unit IS an {@link Emitter} at runtime, so `api.chat.on`
+ * has to stay the listener registration. Mapping a contract key called `on`
+ * would shadow it with an overload — and an *optional* one reduces the whole
+ * intersection to `never`, which turns every member access on that unit into
+ * an error pointing nowhere.
+ */
+export type TypedUnit<Unit> = IsAny<Unit> extends true ? Record<string, any>
+  : { [Method in keyof Unit as Method extends 'on' ? never : Method]: TypedMethod<Unit[Method]> };
+
+/**
+ * The whole contract, translated. Each unit is also an {@link Emitter} — that
+ * is where server → client events for the unit arrive.
+ */
+export type TypedApi<Api> = { [Unit in keyof Api]: Emitter & TypedUnit<Api[Unit]> };
+
+/**
+ * The first parameter of a parameter tuple. Projected from the tuple rather
+ * than inferred from `(args: infer A) => any`, because a zero-parameter
+ * function IS assignable to a one-parameter target — so that inference
+ * succeeds with `unknown` where the honest answer is `void`.
+ */
+export type FirstArg<Params extends Array<unknown>> = Params extends readonly [] ? void
+  : Params extends readonly [infer Arg] ? Arg
+  : Params extends readonly [(infer Arg)?] ? Arg | undefined
+  : Params extends readonly [infer Arg, ...Array<any>] ? Arg
+  : void;
+
+/**
+ * The argument type of a contract member, call or subscription — declared
+ * ({@link SubscriptionContract}) or already mapped
+ * ({@link TypedSubscriptionMethod}).
+ */
+export type InferArgs<T> = T extends SubscriptionContract<infer Args, any> ? Args
+  : T extends TypedSubscriptionMethod<infer Args, any> ? Args
+  : T extends (...args: infer Params) => any ? FirstArg<Params>
+  : void;
+
+/** What a contract member answers with: a call's result, a subscription's value. */
+export type InferResult<T> = T extends SubscriptionContract<any, infer Data> ? Data
+  : T extends TypedSubscriptionMethod<any, infer Data> ? Data
+  : T extends (...args: Array<any>) => infer Result ? Awaited<Result>
+  : never;
+
+/**
+ * Opens a connection. The same call as {@link WrpcClient.connect}, spelled as
+ * a function because that is where the contract type argument reads naturally:
+ * `connect<Api>('wss://host')`. Without one, the client is untyped exactly as
+ * before.
+ */
+export declare function connect<Api = UntypedApi>(
+  url: string,
+  options?: WrpcClientOptions,
+): Promise<WrpcClient<Api>>;
 
 export interface WrpcClientOptions {
   callTimeout?: number;
@@ -283,6 +449,27 @@ export interface QueueOptions {
   concurrency: number;
   size?: number;
   timeout?: number;
+}
+
+/**
+ * One node of a {@link Signature}: a type name (`'string'`, `'number[]'`,
+ * `'string|null'`), a field map whose keys may end in `?`, or a one-element
+ * array meaning "an array of that". Deliberately closed — it crosses the wire
+ * and ends up in a file someone compiles, so `wrpc types` renders anything it
+ * does not recognise as `unknown`. See docs/reference/protocol.md.
+ */
+export type SignatureShape = string | [SignatureShape] | { [field: string]: SignatureShape };
+
+/**
+ * What a procedure looks like, for codegen. Not validation — `input`/`output`
+ * are what enforce anything.
+ */
+export interface Signature {
+  args?: SignatureShape;
+  /** A call's result. Ignored on a subscription, which yields `data`. */
+  returns?: SignatureShape;
+  /** A subscription's value. Ignored on a call, which answers `returns`. */
+  data?: SignatureShape;
 }
 
 // ---------------------------------------------------------------------------
@@ -359,8 +546,8 @@ export interface ProcedureOptions {
   /** Concurrency limit; overflow/starvation fails with code 503. */
   queue?: QueueOptions;
   meta?: Record<string, unknown>;
-  /** Flat descriptor consumed by the type-codegen CLI. */
-  signature?: Record<string, unknown>;
+  /** Descriptor consumed by `wrpc types`; see {@link Signature}. */
+  signature?: Signature;
   /** Inferred from an async generator handler; rarely written by hand. */
   kind?: 'call' | 'subscription';
 }
@@ -375,7 +562,7 @@ export declare class Procedure {
   output: Validator | null;
   timeout: number;
   meta: Record<string, unknown>;
-  signature: Record<string, unknown> | null;
+  signature: Signature | null;
   kind: 'call' | 'subscription';
   readonly subscription: boolean;
   constructor(options: ProcedureOptions);
@@ -425,7 +612,7 @@ export interface MethodInfo {
   /** Present only on subscriptions; a client scaffolds a call otherwise. */
   kind?: 'subscription';
   meta?: Record<string, unknown>;
-  signature?: Record<string, unknown>;
+  signature?: Signature;
 }
 
 export declare class Router {

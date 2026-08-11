@@ -1,7 +1,7 @@
 'use strict';
 
 const { Emitter, createEventStream, EventStream } = require('./utils.js');
-const { WrpcClient, WrpcClientProxy, WrpcError } = require('./client.js');
+const { WrpcClient, WrpcClientProxy, WrpcError, connect } = require('./client.js');
 const { WrpcReadable, WrpcWritable } = require('./streams.js');
 const { chunkEncode, chunkDecode } = require('./chunks.browser.js');
 
@@ -12,6 +12,7 @@ module.exports = {
   WrpcClient,
   WrpcClientProxy,
   WrpcError,
+  connect,
   WrpcReadable,
   WrpcWritable,
   chunkEncode,

@@ -189,6 +189,88 @@ Each binary frame is one chunk of one stream:
 Prefixing the id rather than opening a frame per stream is what lets several
 streams interleave over one connection without head-of-line blocking.
 
+## Introspection
+
+Every server answers one procedure it did not declare: `system/introspect`,
+injected unless the router already defines it. It is `access: 'public'` — a
+client has to be able to ask what it may call before it has a session.
+
+```jsonc
+// -> { "type": "call", "id": "1", "method": "system/introspect", "args": ["chat"] }
+// <- { "type": "callback", "id": "1", "result": { ... } }
+{
+  "chat": {
+    "send":      { "access": "public", "meta": { "description": "Post a message" } },
+    "onMessage": { "access": "session", "kind": "subscription" }
+  },
+  "auth.1": { "signIn": { "access": "public" } }
+}
+```
+
+`args` is an array of unit keys to filter by; **anything else means no
+filter** (REST-mode calls deliver a plain object here). A unit key is `unit`
+for the default version and `unit.ver` otherwise — the same string
+`client.load()` takes.
+
+Each method carries:
+
+| Key | Meaning |
+| --- | --- |
+| `access` | `'public'`, `'session'`, or whatever the router declared |
+| `kind` | `'subscription'`, and **only** then — a client scaffolds a call unless told otherwise |
+| `meta` | The procedure's `meta`, when it is not empty. `meta.description` is the **one** home for prose — `wrpc types` turns it into a doc comment, so it does not also live in `signature` |
+| `signature` | An optional descriptor, below |
+
+This is what `load()` consumes to build `client.api`, and what the `wrpc types`
+CLI consumes to generate a contract interface — where a `kind: 'subscription'`
+method becomes a `SubscriptionContract<Args, Data>` member rather than a
+callable one.
+
+Being an ordinary procedure, it is reachable over **every** transport: a
+WebSocket frame, a plain `POST {basePath}` with the packet as the body (which
+is how the CLI asks, needing no socket), an SSE channel, or a worker port. It
+also answers in REST mode at `{basePath}/system/introspect`.
+
+### The `signature` descriptor
+
+`signature` describes a procedure's arguments and result well enough to
+generate TypeScript from. It is deliberately a small **closed** format rather
+than a schema language: it crosses the network and ends up inside a file
+someone compiles, so a generator must be able to reject everything it does
+not recognise.
+
+```js
+procedure({
+  signature: { args: { room: 'string', 'limit?': 'number' }, returns: [{ id: 'string', text: 'string' }] },
+  handler: async (context, { room }) => [...],
+})
+```
+
+* `args` — what the procedure takes. Omitted means undescribed.
+* `returns` — what a **call** answers with.
+* `data` — what a **subscription** yields. (`returns` on a subscription and
+  `data` on a call are both ignored, with a warning.)
+
+Each of those is a *shape*, and a shape is one of three things:
+
+| Shape | Example | TypeScript |
+| --- | --- | --- |
+| a type name | `'string'`, `'number[]'`, `'string\|null'` | `string`, `number[]`, `string \| null` |
+| a field map | `{ id: 'string', 'note?': 'string' }` | `{ id: string; note?: string }` |
+| a one-element array | `[{ id: 'string' }]` | `Array<{ id: string }>` |
+
+A field name ending in `?` is optional. Field maps nest. The type names are
+exactly `string`, `number`, `boolean`, `object`, `null`, `unknown`, `any` and
+`never` — there is no `Date`, because there is no `Date` in JSON — plus `[]`
+suffixes and `|` unions of those. **Anything else generates `unknown`**, so a
+descriptor can never widen what a generator is willing to emit.
+
+Validation is not part of it. A signature says what a procedure looks like;
+`input`/`output` (a function or a
+[Standard Schema](https://standardschema.dev)) are what actually enforce it,
+and the two are deliberately separate — a schema library is the user's choice,
+while this has to survive a JSON round trip.
+
 ## Sessions
 
 A session is a token plus a state object held in a `SessionStore`. The token

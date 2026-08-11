@@ -5,7 +5,7 @@ const { Blob } = require('node:buffer');
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { Server, WrpcClient, defineRouter, procedure } = require('../index.js');
+const { Server, WrpcClient, connect, defineRouter, procedure } = require('../index.js');
 
 const { emitWarning } = process;
 process.emitWarning = (warning, type, ...args) => {
@@ -175,5 +175,16 @@ test('Integration / WrpcClient with Server', async (t) => {
     const readable = client.getStream(id);
     const blob = await readable.toBlob();
     assert.strictEqual(await blob.text(), 'hello from server');
+  });
+
+  // The typed-client entry point. `connect` exists so a contract type has a
+  // natural place to go (`connect<Api>(url)`); at runtime it must be the very
+  // same call, options and all.
+  await t.test('connect() is WrpcClient.connect', async (sub) => {
+    const client = await connect(`ws://127.0.0.1:${port}/`, { callTimeout: 3000 });
+    sub.after(() => void client.close());
+    assert.ok(client instanceof WrpcClient);
+    await client.load('test');
+    assert.strictEqual(await client.api.test.hello({ name: 'World' }), 'Hello, World');
   });
 });

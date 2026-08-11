@@ -90,6 +90,21 @@ expectAssignable<wrpc.ProcedureOptions>({
   meta: { description: 'x' },
 });
 
+// The codegen descriptor: a closed shape language, so a typo is a type error
+// rather than a silent `unknown` in whatever the CLI generates.
+expectAssignable<wrpc.Signature>({ args: { room: 'string', 'limit?': 'number' }, returns: 'boolean' });
+expectAssignable<wrpc.Signature>({ args: 'object', data: [{ id: 'string', tags: 'string[]' }] });
+expectAssignable<wrpc.Signature>({});
+expectAssignable<wrpc.SignatureShape>({ nested: { deeper: ['string'] } });
+// An array describes an array OF one shape, so a tuple is not a descriptor
+expectError<wrpc.Signature>({ args: ['string', 'number'] });
+expectError<wrpc.Signature>({ args: 42 });
+expectError<wrpc.Signature>({ nonsense: 'string' });
+expectAssignable<wrpc.ProcedureOptions>({
+  handler: async () => 1,
+  signature: { args: { text: 'string' }, returns: { id: 'string' } },
+});
+
 // Subscriptions: an async generator handler is one, and so is the explicit
 // spelling; both scaffold subscribe/iterate on the client.
 const feed = wrpc.defineRouter({
@@ -254,6 +269,123 @@ expectError<wrpc.WrpcClientOptions>({ reconnect: { minDelay: '100' } });
 declare const wsClient: WrpcClient;
 expectType<number>(wsClient.attempt);
 expectType<void>(wsClient.sendEvent('chat/typing', { on: true }));
+
+// ---------------------------------------------------------------------------
+// Contract-first typed client. The contract is a plain interface; nothing is
+// generated, and an UNtyped client must keep behaving exactly as it did.
+
+interface Contract {
+  chat: {
+    send(args: { text: string }): Promise<{ id: string }>;
+    ping(): Promise<void>;
+    find(args?: { q: string }): Promise<Array<string>>;
+    /** A handler declared without a promise is still awaited on the wire. */
+    sync(args: { a: 1 }): { done: true };
+    onMessage: wrpc.SubscriptionContract<{ room: string }, { text: string }>;
+    onTick: wrpc.SubscriptionContract<void, number>;
+  };
+  'auth.1': {
+    signIn(args: { login: string }): Promise<{ token: string }>;
+  };
+}
+
+declare const typed: WrpcClient<Contract>;
+
+// A call keeps its declared argument and gains the trailing CallOptions
+expectType<Promise<{ id: string }>>(typed.api.chat.send({ text: 'hi' }));
+expectType<Promise<{ id: string }>>(typed.api.chat.send({ text: 'hi' }, { signal: AbortSignal.timeout(1) }));
+expectType<Promise<Array<string>>>(typed.api.chat.find());
+expectType<Promise<Array<string>>>(typed.api.chat.find({ q: 'x' }, {}));
+expectType<Promise<{ done: true }>>(typed.api.chat.sync({ a: 1 }));
+expectType<Promise<{ token: string }>>(typed.api['auth.1'].signIn({ login: 'a' }));
+expectError(typed.api.chat.send({ text: 42 }));
+expectError(typed.api.chat.send());
+expectError(typed.api.chat.missing({}));
+expectError(typed.api.missing);
+expectError(typed.api.chat.send({ text: 'x' }, { signal: 'now' }));
+
+// A zero-argument member KEEPS its args slot, because slot 0 on the wire is
+// always the procedure's arguments. Typing it away would make `ping({signal})`
+// compile and then send `{"signal":{}}` as the args, dropping the cancellation.
+expectType<Promise<void>>(typed.api.chat.ping());
+expectType<Promise<void>>(typed.api.chat.ping(undefined));
+expectType<Promise<void>>(typed.api.chat.ping(undefined, { signal: AbortSignal.timeout(1) }));
+expectError(typed.api.chat.ping({ signal: AbortSignal.timeout(1) }));
+
+// A procedure takes ONE args object, so these cannot be called as declared
+interface Malformed {
+  unit: {
+    two(a: number, b: string): Promise<void>;
+    variadic(...args: Array<number>): Promise<void>;
+    notAMethod: string;
+  };
+}
+declare const malformed: WrpcClient<Malformed>;
+expectError(malformed.api.unit.two(1, 'a'));
+expectError(malformed.api.unit.variadic(1, 2, 3));
+expectError(malformed.api.unit.notAMethod());
+expectType<wrpc.InvalidContractMember>(malformed.api.unit.notAMethod);
+
+// `load` only accepts unit keys the contract declares
+expectType<Promise<void>>(typed.load('chat', 'auth.1'));
+expectError(typed.load('missing'));
+
+// A subscription is NOT callable: it answers with a stream
+expectType<'subscription'>(typed.api.chat.onMessage.kind);
+expectError(typed.api.chat.onMessage({ room: 'a' }));
+expectType<wrpc.Subscription>(typed.api.chat.onMessage.subscribe({ room: 'a' }));
+expectType<wrpc.Subscription>(
+  typed.api.chat.onMessage.subscribe({ room: 'a' }, { onData: (data) => expectType<{ text: string }>(data) }),
+);
+// `void` args mean the argument may be left out entirely
+expectType<wrpc.Subscription>(typed.api.chat.onTick.subscribe());
+expectType<wrpc.Subscription>(
+  typed.api.chat.onTick.subscribe(undefined, { onData: (data) => expectType<number>(data) }),
+);
+expectError(typed.api.chat.onMessage.subscribe({ room: 42 }));
+expectType<AsyncIterableIterator<{ text: string }> & { subscription: wrpc.Subscription }>(
+  typed.api.chat.onMessage.iterate({ room: 'a' }),
+);
+// A unit is still an Emitter — that is where server -> client events arrive
+expectType<void>(typed.api.chat.on('message', () => {}));
+
+// connect() is WrpcClient.connect under a name that carries the type argument
+expectType<Promise<WrpcClient<Contract>>>(wrpc.connect<Contract>('wss://host'));
+expectType<Promise<WrpcClient<Contract>>>(wrpc.WrpcClient.connect<Contract>('wss://host'));
+// ...and with no contract, nothing changes: `api` stays the loose record
+expectType<Promise<WrpcClient>>(wrpc.connect('ws://host'));
+declare const untyped: WrpcClient;
+expectType<Emitter & Record<string, any>>(untyped.api.anything);
+// Deliberately `any`, not `Promise<unknown>`: an untyped client cannot know
+// what a method takes or answers, and a cast at every call site is worse.
+expectType<any>(untyped.api.anything.whatever({ x: 1 }));
+expectType<Promise<void>>(untyped.load('anything'));
+
+// Inference utilities, on the declared side...
+expectType<{ text: string }>(null as unknown as wrpc.InferArgs<Contract['chat']['send']>);
+expectType<{ id: string }>(null as unknown as wrpc.InferResult<Contract['chat']['send']>);
+expectType<{ room: string }>(null as unknown as wrpc.InferArgs<Contract['chat']['onMessage']>);
+expectType<{ text: string }>(null as unknown as wrpc.InferResult<Contract['chat']['onMessage']>);
+// A zero-arg member takes `void`, NOT `unknown` — a zero-parameter function is
+// assignable to a one-parameter target, so naive inference lands on `unknown`.
+expectType<void>(null as unknown as wrpc.InferArgs<Contract['chat']['ping']>);
+expectType<{ q: string } | undefined>(null as unknown as wrpc.InferArgs<Contract['chat']['find']>);
+// ...and on the mapped side
+expectType<{ room: string }>(null as unknown as wrpc.InferArgs<typeof typed.api.chat.onMessage>);
+expectType<{ text: string }>(null as unknown as wrpc.InferResult<typeof typed.api.chat.onMessage>);
+
+// A contract key named `on` is NOT mapped: a unit is an Emitter at runtime, so
+// `api.chat.on` has to stay the listener registration. An optional one used to
+// reduce the whole unit to `never` and break every member access on it.
+interface WithOn {
+  chat: {
+    send(args: { text: string }): Promise<void>;
+    on?: { typing: (data: unknown) => void };
+  };
+}
+declare const withOn: WrpcClient<WithOn>;
+expectType<Promise<void>>(withOn.api.chat.send({ text: 'x' }));
+expectType<void>(withOn.api.chat.on('typing', () => {}));
 
 // Stream surface
 declare const readable: WrpcReadable;
