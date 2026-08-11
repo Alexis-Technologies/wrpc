@@ -85,6 +85,29 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 Found by an adversarial review of F5 itself, each reproduced before fixing:
 
+- **Cross-origin SSE could not work at all.** The channel POST answered its
+  `202`/`404` without the CORS headers every other HTTP response carries, so
+  a browser on another origin could not read the result — and the default
+  `Access-Control-Allow-Headers` was `Content-Type` alone, which failed the
+  preflight before the POST was ever sent, since neither `x-wrpc-channel` nor
+  the `last-event-id` resume header is CORS-safelisted. Both are now in the
+  default and the channel POST carries the same headers as everything else.
+- **An aborted HTTP batch never answered.** `ServerHttpTransport.close()`
+  called `error(503)`, which in batch mode only *collects* one more answer and
+  keeps waiting for the rest — so a shutdown mid-batch hung the request and
+  never evicted the client. It now responds immediately, filling every
+  still-unanswered id with its own error packet rather than emitting a single
+  id-less one the caller cannot route.
+- **A malformed element in a batch lost its id.** A structure error answered
+  with no id, so the response array's positional ordering — the guarantee the
+  protocol makes about a batch — broke for that slot and shifted every answer
+  after it. The packet's own id now travels with the refusal.
+- **An SSE channel's client never restored its session cookie.** The channel
+  was created without the opening GET's headers, so a browser holding a valid
+  session started the stream anonymous and every `access: 'session'` procedure
+  on it answered 403 until it signed in again on that channel. Those headers
+  are now handed on and the session is restored exactly as `attachSocket`
+  does for an upgrade.
 - **An SSE reconnect killed every subscription instead of resuming it.** A
   channel outlives its stream, so a reconnecting peer re-opens its
   subscriptions on the very client that still holds them — and the

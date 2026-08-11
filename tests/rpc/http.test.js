@@ -146,7 +146,11 @@ test('OPTIONS preflight: 200 with CORS headers, no body processing', async (t) =
   assert.strictEqual(res.status, 200);
   assert.strictEqual(res.headers.get('access-control-allow-origin'), '*');
   assert.strictEqual(res.headers.get('access-control-allow-methods'), 'POST, GET, OPTIONS');
-  assert.strictEqual(res.headers.get('access-control-allow-headers'), 'Content-Type');
+  assert.strictEqual(
+    res.headers.get('access-control-allow-headers'),
+    'Content-Type, x-wrpc-channel, last-event-id',
+    'the SSE transport sends two headers a preflight has to name explicitly',
+  );
   assert.strictEqual(await res.text(), '');
 
   const anywhere = await fetch(`${origin}/definitely/not/an/api/path`, { method: 'OPTIONS' });

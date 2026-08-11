@@ -25,7 +25,10 @@ const SECURITY_HEADERS = {
 };
 
 const DEFAULT_CORS_METHODS = 'POST, GET, OPTIONS';
-const DEFAULT_CORS_HEADERS = 'Content-Type';
+// `x-wrpc-channel` (which event stream a POST belongs to) and `last-event-id`
+// (the SSE resume header) are not CORS-safelisted, so a cross-origin peer's
+// preflight fails before the request is ever sent unless they are named here.
+const DEFAULT_CORS_HEADERS = 'Content-Type, x-wrpc-channel, last-event-id';
 
 // CORS v2: `cors` is { origins: string[] | (origin) => boolean, credentials?,
 // headers?, methods? }. Without a `cors` option every origin is allowed
@@ -156,8 +159,22 @@ class ServerHttpTransport extends ServerTransport {
     this.#setCookies.push(cookieHeader);
   }
 
+  // Closed before every answer arrived — a shutdown, an evicted client. In
+  // batch mode `error()` would only collect ONE more answer and then keep
+  // waiting for the rest, which are never coming, so the request hangs. Fill
+  // every still-unanswered slot with its own error packet instead: an
+  // id-less packet is one the caller cannot route back to a pending call.
   close() {
-    this.error(503);
+    if (this.#responded) return;
+    if (!this.#batch) return void this.error(503);
+    const message = http.STATUS_CODES[503];
+    const answered = new Set(this.#collected.map((packet) => packet.id));
+    for (const id of this.#batch) {
+      if (answered.has(id)) continue;
+      answered.add(id);
+      this.#collected.push({ type: 'callback', id: typeof id === 'string' ? id : '', error: { message, code: 503 } });
+    }
+    this.write(JSON.stringify(this.#ordered()), 503);
   }
 }
 

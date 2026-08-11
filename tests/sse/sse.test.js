@@ -142,6 +142,19 @@ const router = defineRouter({
       },
     }),
   },
+  auth: {
+    // Signing in happens over a PLAIN POST — the one half of this transport
+    // that can set a cookie, since a channel's transport looks persistent.
+    signin: procedure({
+      access: 'public',
+      handler: async (context) => {
+        context.client.startSession(undefined, { user: 'ada' });
+        return { ok: true };
+      },
+    }),
+    // `access` defaults to 'session': this is 403 without one.
+    whoami: procedure({ handler: async (context) => context.session.state.user }),
+  },
 });
 
 const publish = (text) => {
@@ -331,6 +344,130 @@ test('sse: Last-Event-ID replays what the dropped stream missed', async (t) => {
     ['Hello, Two'],
     'only what was missed is replayed, not what was already seen',
   );
+});
+
+// A reader that pumps one event stream into an array, for the tests that
+// need to watch what came back rather than drive a whole client.
+const readStream = async (url, headers = {}) => {
+  const controller = new AbortController();
+  const res = await fetch(url, { headers: { accept: 'text/event-stream', ...headers }, signal: controller.signal });
+  const events = [];
+  const pump = (async () => {
+    const reader = res.body.getReader();
+    const decoder = new TextDecoder();
+    const parser = new SseParser();
+    try {
+      while (true) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        events.push(...parser.push(decoder.decode(value, { stream: true })));
+      }
+    } catch {
+      // aborted
+    }
+  })();
+  return { res, controller, events, pump };
+};
+
+test('sse: a channel restores the session its GET arrived with', async (t) => {
+  const { server, port } = await createServer();
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${port}/api`;
+
+  const login = await fetch(base, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'call', id: 'in', method: 'auth/signin', args: {} }),
+  });
+  const [cookie] = login.headers.getSetCookie();
+  const token = cookie.match(/^token=([^;]+)/)[1];
+
+  const call = async (channel, id, method) => {
+    const res = await fetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', [CHANNEL_HEADER]: channel },
+      body: JSON.stringify({ type: 'call', id, method, args: {} }),
+    });
+    assert.strictEqual(res.status, 202);
+  };
+
+  await t.test('a cookie on the stream signs the channel in', async () => {
+    const stream = await readStream(`${base}/events?channel=signed`, { cookie: `token=${token}` });
+    t.after(() => stream.controller.abort());
+    await call('signed', 'w1', 'auth/whoami');
+    await waitFor(() => stream.events.some((event) => event.event === 'message'), 'nothing came back');
+    const answer = JSON.parse(stream.events.find((event) => event.event === 'message').data);
+    assert.strictEqual(answer.error, undefined, 'a valid cookie must not have to sign in again per channel');
+    assert.strictEqual(answer.result, 'ada');
+  });
+
+  await t.test('without one the channel is anonymous and a session call is 403', async () => {
+    const stream = await readStream(`${base}/events?channel=bare`);
+    t.after(() => stream.controller.abort());
+    await call('bare', 'w2', 'auth/whoami');
+    await waitFor(() => stream.events.some((event) => event.event === 'message'), 'nothing came back');
+    const answer = JSON.parse(stream.events.find((event) => event.event === 'message').data);
+    assert.strictEqual(answer.error.code, 403);
+  });
+});
+
+test('sse: a cross-origin channel is granted, not silently blocked', async (t) => {
+  const origin = 'https://app.example';
+  const cors = { origins: [origin], credentials: true };
+  const { server, port } = await createServer({ cors });
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${port}/api`;
+
+  await t.test('the preflight allows the headers this transport actually sends', async () => {
+    const res = await fetch(base, {
+      method: 'OPTIONS',
+      headers: { origin, 'access-control-request-method': 'POST', 'access-control-request-headers': CHANNEL_HEADER },
+    });
+    assert.strictEqual(res.status, 200);
+    const allowed = res.headers.get('access-control-allow-headers').toLowerCase();
+    // Neither is CORS-safelisted, so a browser never sends the request at all
+    // unless the preflight names them.
+    assert.match(allowed, /x-wrpc-channel/);
+    assert.match(allowed, /last-event-id/);
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), origin);
+  });
+
+  await t.test('the stream and the POST that feeds it are both readable', async () => {
+    const stream = await readStream(`${base}/events?channel=cross`, { origin });
+    t.after(() => stream.controller.abort());
+    assert.strictEqual(stream.res.headers.get('access-control-allow-origin'), origin);
+    assert.strictEqual(stream.res.headers.get('access-control-allow-credentials'), 'true');
+
+    const res = await fetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', origin, [CHANNEL_HEADER]: 'cross' },
+      body: JSON.stringify({ type: 'call', id: 'x1', method: 'test/hello', args: { name: 'Cross' } }),
+    });
+    assert.strictEqual(res.status, 202);
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), origin, 'the 202 is unreadable without this');
+    assert.strictEqual(res.headers.get('access-control-allow-credentials'), 'true');
+    await waitFor(() => stream.events.some((event) => event.event === 'message'), 'the answer never arrived');
+  });
+
+  await t.test('an unknown channel refuses in a way the page can read', async () => {
+    const res = await fetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', origin, [CHANNEL_HEADER]: 'gone' },
+      body: JSON.stringify({ type: 'call', id: 'x2', method: 'test/hello', args: { name: 'x' } }),
+    });
+    assert.strictEqual(res.status, 404);
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), origin);
+  });
+
+  await t.test('a disallowed origin is still not granted one', async () => {
+    const res = await fetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', origin: 'https://evil.example', [CHANNEL_HEADER]: 'cross' },
+      body: JSON.stringify({ type: 'call', id: 'x3', method: 'test/hello', args: { name: 'x' } }),
+    });
+    assert.strictEqual(res.headers.get('access-control-allow-origin'), null);
+    assert.strictEqual(res.headers.get('vary'), 'Origin');
+  });
 });
 
 test('sse: a host that cannot stream says so', async (t) => {

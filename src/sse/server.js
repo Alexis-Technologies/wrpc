@@ -167,6 +167,9 @@ class SseChannels {
    * Opens (or re-attaches) the server -> client half.
    * `call.stream` is the seam every adapter implements; a host that cannot
    * stream gets an honest 501 instead of a response that never arrives.
+   *
+   * `headers` are RESPONSE headers (CORS and the rest); the REQUEST headers a
+   * new channel's client is built from come off `call` itself.
    */
   open(call, { channelId = generateUUID(), lastEventId = null, headers = {} } = {}) {
     if (typeof call.stream !== 'function') {
@@ -179,7 +182,7 @@ class SseChannels {
       });
     }
     const existing = this.#channels.get(channelId);
-    const channel = existing ?? this.#create(channelId, call.remoteAddress);
+    const channel = existing ?? this.#create(channelId, call);
     if (existing && channel.timer) {
       clearTimeout(channel.timer);
       channel.timer = null;
@@ -216,9 +219,12 @@ class SseChannels {
     return channel;
   }
 
-  #create(channelId, remoteAddress) {
-    const transport = new ServerSseTransport(channelId, remoteAddress ?? '');
-    const client = this.#addClient(transport);
+  // The GET that opens a channel is the channel's only handshake, so its
+  // headers are handed on: they carry the cookie the client's session is
+  // restored from, exactly as an upgrade's headers do for a socket.
+  #create(channelId, call) {
+    const transport = new ServerSseTransport(channelId, call.remoteAddress ?? '');
+    const client = this.#addClient(transport, call.headers ?? {});
     const channel = new SseChannel({ id: channelId, client, transport, ...this.#options });
     this.#channels.set(channelId, channel);
     transport.once('close', () => this.#channels.delete(channelId));

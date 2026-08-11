@@ -578,7 +578,14 @@ export declare class Broadcast {
 export interface CorsOptions {
   origins?: Array<string> | ((origin: string) => boolean);
   credentials?: boolean;
+  /**
+   * `Access-Control-Allow-Headers`. Replaces the default,
+   * `'Content-Type, x-wrpc-channel, last-event-id'` — the last two are what
+   * the SSE transport's POSTs and resumes send, and neither is
+   * CORS-safelisted, so dropping them disables cross-origin SSE.
+   */
   headers?: string;
+  /** `Access-Control-Allow-Methods`; default `'POST, GET, OPTIONS'`. */
   methods?: string;
 }
 

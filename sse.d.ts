@@ -125,7 +125,12 @@ export declare class SseChannel {
 export declare class SseChannels {
   constructor(
     options: SseOptions & {
-      addClient(transport: ServerSseTransport): Client;
+      /**
+       * Builds the one `Client` both halves of a channel share. `headers` are
+       * the request headers of the GET that opened the stream — a channel's
+       * only handshake, and where its session cookie comes from.
+       */
+      addClient(transport: ServerSseTransport, headers: Record<string, string>): Client;
       console?: Console;
     },
   );
@@ -134,6 +139,9 @@ export declare class SseChannels {
   /**
    * Opens or re-attaches the server -> client half. The call must provide
    * `stream`; a host that cannot keep a response open gets a 501.
+   *
+   * `headers` are RESPONSE headers (CORS and the rest); the request headers a
+   * new channel's client is built from come off `call` itself.
    */
   open(
     call: HttpCall,

@@ -204,6 +204,8 @@ const router = defineRouter({
         throw error;
       },
     }),
+    // Answers only when the connection outlives it, which it will not.
+    hang: procedure({ access: 'public', handler: () => new Promise(() => {}) }),
   },
 });
 
@@ -259,6 +261,24 @@ test('batching: over HTTP the answers come back as one array', async (t) => {
     assert.strictEqual(body[1].error.code, 500);
   });
 
+  await t.test('a malformed element with an id keeps its slot', async () => {
+    // Positional zipping is the guarantee the protocol makes about a batch,
+    // so a structure error has to answer ON the id it was sent with —
+    // otherwise it lands at the end and shifts every answer after it.
+    const { body } = await post([
+      { type: 'call', id: 'a', method: 'math/double', args: { n: 1 } },
+      { type: 'junk', id: 'b' },
+      { type: 'call', id: 'c', method: 'math/double', args: { n: 3 } },
+    ]);
+    assert.deepStrictEqual(
+      body.map((packet) => packet.id),
+      ['a', 'b', 'c'],
+    );
+    assert.strictEqual(body[0].result, 2);
+    assert.strictEqual(body[1].error.code, 500);
+    assert.strictEqual(body[2].result, 6);
+  });
+
   await t.test('an empty batch is refused', async () => {
     const { status, body } = await post([]);
     assert.strictEqual(status, 400);
@@ -288,6 +308,43 @@ test('batching: over HTTP the answers come back as one array', async (t) => {
     await timers.setTimeout(20);
     assert.strictEqual(server.rpc.clients.size, 0);
   });
+});
+
+// Timed out on purpose: the failure this guards against is a request that
+// never answers, and without a bound that wedges the whole run.
+test('batching: a batch closed before it finished still answers', { timeout: 10000 }, async (t) => {
+  const { server, port } = await createServer();
+  t.after(() => server.close());
+
+  const pending = fetch(`http://127.0.0.1:${port}/api`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify([
+      { type: 'call', id: 'a', method: 'math/double', args: { n: 1 } },
+      { type: 'call', id: 'b', method: 'math/hang', args: {} },
+      { type: 'call', id: 'c', method: 'math/hang', args: {} },
+    ]),
+  });
+
+  // Let 'a' answer and be collected, then evict the client out from under
+  // the two that never will — a shutdown, or any other close.
+  await timers.setTimeout(50);
+  assert.strictEqual(server.rpc.clients.size, 1, 'the batch is still in flight');
+  for (const client of server.rpc.clients) client.close();
+
+  const res = await pending;
+  assert.strictEqual(res.status, 503);
+  const body = await res.json();
+  assert.deepStrictEqual(
+    body.map((packet) => packet.id),
+    ['a', 'b', 'c'],
+    'every id is answered, in request order — one id-less packet is unroutable',
+  );
+  assert.strictEqual(body[0].result, 2, 'an answer already collected is not thrown away');
+  assert.strictEqual(body[1].error.code, 503);
+  assert.strictEqual(body[2].error.code, 503);
+  await timers.setTimeout(20);
+  assert.strictEqual(server.rpc.clients.size, 0, 'responding is what evicts the client');
 });
 
 test('batching: a real client over a real websocket', async (t) => {

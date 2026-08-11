@@ -326,8 +326,16 @@ class RpcServer extends Emitter {
     this.#limits = { maxBatch, maxSubscriptions };
     this.#router = this.#withIntrospection(router);
     this.#initRooms(backplane);
-    this.#sse =
-      sse === false ? null : new SseChannels({ ...sse, console, addClient: (transport) => this.#addClient(transport) });
+    // A channel's client is built from the GET that opened the stream, so it
+    // restores the session from that request's cookie the way attachSocket
+    // does — otherwise a browser holding a valid cookie starts the channel
+    // anonymous and every `access: 'session'` procedure on it answers 403.
+    const addClient = (transport, headers) => {
+      const client = this.#addClient(transport);
+      client.sessionReady = this.#restoreFromCookie(client, headers);
+      return client;
+    };
+    this.#sse = sse === false ? null : new SseChannels({ ...sse, console, addClient });
   }
 
   #initRooms(backplane) {
@@ -518,17 +526,21 @@ class RpcServer extends Emitter {
   // to a fresh request/response one: that is what lets a subscription opened
   // by a POST deliver its values down the peer's event stream. The POST
   // itself answers 202 — every reply travels on the stream.
-  #handleChannelPost(call, channelId) {
+  //
+  // `headers` are the same CORS-bearing response headers every other HTTP
+  // answer carries: without them a browser on another origin cannot read
+  // this response at all, which makes cross-origin SSE impossible.
+  #handleChannelPost(call, channelId, headers) {
     const channel = this.#sse.get(channelId);
     const respond = (status, packet) => {
       const body = Buffer.from(JSON.stringify(packet));
-      call.respond({ status, headers: { 'Content-Type': 'application/json', 'Content-Length': body.length }, body });
+      call.respond({ status, headers: { ...headers, 'Content-Length': body.length }, body });
     };
     if (!channel) {
       return void respond(404, { type: 'callback', id: '', error: { message: 'Unknown channel', code: 404 } });
     }
     handleMessage(channel.client, call.body, this.#router, this.#limits);
-    call.respond({ status: 202, headers: { 'Content-Length': 0 } });
+    call.respond({ status: 202, headers: { ...headers, 'Content-Length': 0 } });
   }
 
   async handleHttpCall(call) {
@@ -546,7 +558,7 @@ class RpcServer extends Emitter {
       }
       const channelId = call.headers?.[CHANNEL_HEADER];
       if (channelId && call.method === 'POST' && this.matchPath(pathname)?.mode === 'packet') {
-        return void this.#handleChannelPost(call, channelId);
+        return void this.#handleChannelPost(call, channelId, headers);
       }
     }
     const isPacketPost = call.method === 'POST' && this.matchPath(pathname)?.mode === 'packet';

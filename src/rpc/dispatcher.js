@@ -276,8 +276,11 @@ const handlePacket = (client, packet, router) => {
   } else if (type === 'pong' && client.persistent) {
     return; // answer to a server-initiated ping; liveness is the transport's
   }
+  // The id travels with the refusal when the packet carried one: an HTTP
+  // batch answers positionally, so an id-less error would lose this slot and
+  // shift every answer after it.
   const error = new Error('Packet structure error');
-  client.error(500, { error });
+  client.error(500, { id: typeof id === 'string' ? id : '', error });
 };
 
 // A JSON array is a batch frame: several packets in one message, each
