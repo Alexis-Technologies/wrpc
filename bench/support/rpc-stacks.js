@@ -157,10 +157,76 @@ async function startFastifyUws() {
   };
 }
 
+// Socket.io: a real RPC framework rather than a raw transport, so it pays for
+// its own envelope, its acknowledgement bookkeeping and its engine.io layer —
+// the same kinds of cost wrpc pays. `emitWithAck` is the request/response
+// shape closest to a call.
+async function startSocketIo() {
+  const { Server } = require('socket.io');
+  const { io } = require('socket.io-client');
+  const httpServer = http.createServer();
+  const server = new Server(httpServer, { serveClient: false });
+  server.on('connection', (socket) => {
+    socket.on('echo', (args, ack) => ack(args));
+  });
+  await new Promise((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+  const { port } = httpServer.address();
+  // websocket only: the default starts on HTTP long-polling and upgrades,
+  // which would measure the upgrade rather than the steady state.
+  const client = io(`http://127.0.0.1:${port}`, { transports: ['websocket'] });
+  await new Promise((resolve, reject) => {
+    client.once('connect', resolve);
+    client.once('connect_error', reject);
+  });
+  return {
+    call: (args) => client.emitWithAck('echo', args),
+    stop: async () => {
+      client.close();
+      await server.close();
+      await new Promise((resolve) => httpServer.close(resolve));
+    },
+  };
+}
+
+// tRPC over WebSocket (httpSubscriptionLink's sibling, wsLink) — the closest
+// comparison to wrpc's own positioning. The function parser keeps the input
+// validator free, so the number is transport plus tRPC's own envelope rather
+// than someone's schema library.
+async function startTrpcWs() {
+  const { initTRPC } = require('@trpc/server');
+  const { applyWSSHandler } = require('@trpc/server/adapters/ws');
+  const { createTRPCClient, createWSClient, wsLink } = require('@trpc/client');
+
+  const t = initTRPC.create();
+  const appRouter = t.router({
+    echo: t.procedure.input((value) => value).query(({ input }) => input),
+  });
+
+  const httpServer = http.createServer();
+  const wss = new WebSocket.Server({ server: httpServer });
+  const handler = applyWSSHandler({ wss, router: appRouter });
+  await new Promise((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+  const { port } = httpServer.address();
+
+  const wsClient = createWSClient({ url: `ws://127.0.0.1:${port}` });
+  const client = createTRPCClient({ links: [wsLink({ client: wsClient })] });
+  return {
+    call: (args) => client.echo.query(args),
+    stop: async () => {
+      wsClient.close();
+      handler.broadcastReconnectNotification();
+      wss.close();
+      await new Promise((resolve) => httpServer.close(resolve));
+    },
+  };
+}
+
 module.exports = {
   wrpc: { label: 'wrpc (own WS + RPC dispatch)', start: startWrpc },
   ws: { label: 'ws (raw echo RPC)', start: startWs },
   uws: { label: 'uWebSockets.js (raw echo RPC)', start: startUws },
   'fastify-websocket': { label: '@fastify/websocket (raw echo RPC)', start: startFastifyWebsocket },
   'fastify-uws': { label: 'fastify-uws (raw echo RPC)', start: startFastifyUws },
+  'socket.io': { label: 'socket.io (framework RPC via emitWithAck)', start: startSocketIo },
+  'trpc-ws': { label: 'tRPC (framework RPC over wsLink)', start: startTrpcWs },
 };

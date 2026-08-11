@@ -89,6 +89,19 @@ Three jobs (`.github/workflows/ci.yml`):
 Lint and format deliberately target `src tests scripts bench bin` only, so
 `docs/` is not covered by them.
 
+Three checks are deliberately **not** in CI — run them by hand:
+
+- `node scripts/autobahn/run.js` — the RFC 6455/7692 conformance suite against
+  the engine in `src/websocket/`. Needs docker; several minutes for 500+
+  cases. `FAILED` and `WRONG CODE` fail the run, `NON-STRICT` and
+  `INFORMATIONAL` do not.
+- `pnpm test:perf` — the 1 GiB stream memory guard.
+- `REDIS_URL=redis://127.0.0.1:6379 node --test tests/scaling/redis.integration.test.js`
+  — the scaling backplane against a real Redis. `pnpm test` already covers the
+  adapter's contract through an in-repo ioredis-shaped fake
+  (`tests/scaling/redis.test.js`); this is only useful when you want to check
+  a live server, and the file skips itself without `REDIS_URL`.
+
 ## Release checklist
 
 Releases are **manual**. Nothing in the tooling bumps a version, tags, or

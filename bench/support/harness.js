@@ -8,6 +8,9 @@ const MEASURE_MS = 1_000;
 async function bench(name, fn, options = {}) {
   const warmup = options.warmup ?? WARMUP_ITERATIONS;
   const measureMs = options.measureMs ?? MEASURE_MS;
+  // A pipelined fn issues several calls per iteration, so ops and iterations
+  // stop being the same number.
+  const opsPerIteration = options.opsPerIteration ?? 1;
 
   for (let i = 0; i < warmup; i++) await fn();
 
@@ -18,8 +21,8 @@ async function bench(name, fn, options = {}) {
     iterations += 1;
   }
   const elapsed = performance.now() - start;
-  const opsPerSec = Math.round((iterations / elapsed) * 1000);
-  console.log(`${name.padEnd(52)} ${opsPerSec.toLocaleString('en-US').padStart(12)} ops/sec`);
+  const opsPerSec = Math.round(((iterations * opsPerIteration) / elapsed) * 1000);
+  console.log(`${name.padEnd(60)} ${opsPerSec.toLocaleString('en-US').padStart(12)} ops/sec`);
   return { name, opsPerSec };
 }
 

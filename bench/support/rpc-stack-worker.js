@@ -13,6 +13,14 @@ const stacks = require('./rpc-stacks.js');
 const smallPayload = { name: 'Ada' };
 const largePayload = { text: 'x'.repeat(10_000) };
 
+// One call at a time measures LATENCY: a stack with a fixed per-call delay
+// looks catastrophic here however cheap its per-call work is. PIPELINE calls
+// in flight at once measures THROUGHPUT, where that delay overlaps away. Both
+// are reported because a stack can be fast at one and slow at the other.
+const PIPELINE = 64;
+
+const pipelined = (call, payload) => () => Promise.all(Array.from({ length: PIPELINE }, () => call(payload)));
+
 async function main() {
   const key = process.argv[2];
   const stack = stacks[key];
@@ -26,6 +34,12 @@ async function main() {
   const results = [];
   results.push(await bench(`${stack.label} — small payload`, () => handle.call(smallPayload)));
   results.push(await bench(`${stack.label} — 10KB payload`, () => handle.call(largePayload)));
+  results.push(
+    await bench(`${stack.label} — small payload ×${PIPELINE}`, pipelined(handle.call, smallPayload), {
+      warmup: 4,
+      opsPerIteration: PIPELINE,
+    }),
+  );
   await handle.stop();
 
   console.log(`RESULT_JSON:${JSON.stringify(results)}`);

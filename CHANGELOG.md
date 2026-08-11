@@ -73,6 +73,26 @@ narrower promise — see
 
 ### Added
 
+- A **real Redis** integration test, `tests/scaling/redis.integration.test.js`:
+  two independent `createRedisAdapter` instances over separate connections —
+  what two processes sharing a Redis actually look like, unlike
+  `MemoryBackplane` where both hold the same object — checking cross-instance
+  room delivery, echo suppression, broadcast, and prefix isolation. This is a
+  manual/local run (`REDIS_URL=redis://127.0.0.1:6379 node --test
+  tests/scaling/redis.integration.test.js`), not a CI job: `pnpm test` already
+  covers the adapter's contract through the in-repo ioredis-shaped fake in
+  `tests/scaling/redis.test.js`, and the file skips itself without
+  `REDIS_URL`. `ioredis` joins the devDependencies for it and nothing else.
+- **`socket.io` and `tRPC` (over `wsLink`) join `bench/rpc-comparison.js`.**
+    Until now every compared stack was a raw transport running a minimal echo
+    envelope — a useful floor, but not a comparison against anything that does
+    wrpc's job. Each measurement also runs **pipelined at 64 calls in flight**
+    alongside the sequential one, because the two answer different questions:
+    sequential measures latency, pipelined measures throughput, and a stack
+    with a fixed per-call delay reads very differently under them (tRPC's
+    wsLink is ~0.2x of wrpc pipelined and ~0.03x sequential — the gap is
+    latency, not per-call cost). All four packages are devDependencies used
+    only by the benchmark.
 - Typed client, codegen and TanStack Query bindings (F6) — the DX phase, with
   **no TypeScript at runtime**: everything below is either a type or a
   dependency-free JavaScript file.
