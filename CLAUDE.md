@@ -4,7 +4,7 @@ This file provides guidance to Claude Code (claude.ai/code) when working with co
 
 ## Project
 
-wrpc (`@alexify/wrpc`) is a fast, low-overhead, zero-dependency, WebSocket-based RPC protocol for Node.js and browsers.
+wrpc (`@alexify/wrpc`) is a fast, zero-dependency, WebSocket-based RPC protocol for Node.js and browsers.
 
 **Protocol architecture.** The wire protocol is JSON packets (`{ type: 'call' | 'callback' | 'event' | 'stream' | 'ping' | 'pong', ... }`) over WebSocket or HTTP, plus a small binary framing (`chunkEncode`/`chunkDecode`) for streamed uploads/downloads. It is documented in `docs/reference/protocol.md`, which is updated per phase and frozen at 1.0. Module layout under `src/`:
 

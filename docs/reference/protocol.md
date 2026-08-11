@@ -6,11 +6,27 @@ WebSocket, an HTTP request/response pair, or a `MessagePort` to a Service
 Worker — the packets are identical on all three, which is what lets the same
 client code work offline behind a worker.
 
-::: warning Pre-1.0
-The package is not published yet and the protocol is still moving. It is
-documented per phase and frozen at 1.0. Do not build an independent
-implementation against this page and expect it to keep working.
-:::
+## Stability
+
+**This page is the frozen 1.0 protocol.** Everything below is what
+`@alexify/wrpc@1.x` speaks, and an independent implementation written against
+it will keep working for the life of the major version.
+
+What that promise covers, and what it does not:
+
+- **Packet types, their fields and their meanings do not change** in 1.x. A
+  new optional field may be added; an existing one will not change shape or
+  disappear.
+- **Unknown packet types are answered with a `callback` carrying code 500**,
+  and unknown fields are ignored — which is what makes an additive change safe
+  for an older peer.
+- **Error codes keep their meanings.** New codes may appear for new failure
+  modes.
+- The **JavaScript API** on top of this is versioned by the package's own
+  semver and is a separate promise from the wire format.
+
+A change to any of the above is a major version, with the reasoning in the
+[CHANGELOG](https://github.com/Alexis-Technologies/wrpc/blob/main/CHANGELOG.md).
 
 ## Framing
 
@@ -187,7 +203,9 @@ Each binary frame is one chunk of one stream:
 ```
 
 Prefixing the id rather than opening a frame per stream is what lets several
-streams interleave over one connection without head-of-line blocking.
+streams interleave over one connection without head-of-line blocking. Byte
+layout and the `chunkEncode`/`chunkDecode` helpers are in
+[the wire format reference](./wire-format#binary-chunks).
 
 ## Introspection
 
