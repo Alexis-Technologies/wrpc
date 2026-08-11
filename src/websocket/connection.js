@@ -10,6 +10,8 @@ const permessageDeflate = require('./permessageDeflate.js');
 
 const MAX_BUFFER = 1024 * 1024 * 100;
 const CLOSE_TIMEOUT = 1000;
+// How long the answering side waits for the peer's FIN before destroying.
+const CLOSE_GRACE = 200;
 const MAX_HEADER_SIZE = 14; // 2 base + 8 extended length + 4 mask key
 
 class Connection extends EventEmitter {
@@ -126,6 +128,11 @@ class Connection extends EventEmitter {
 
   #processFrames() {
     while (true) {
+      // RFC 6455 5.5.2 exempts an endpoint from answering a Ping received
+      // after a Close, and #answerClose has already half-closed the socket —
+      // so anything pipelined behind the peer's Close in the same segment is
+      // not just pointless to handle, it would write past end().
+      if (this.#closeReceived) break;
       if (!this.#pendingHeader) {
         const headerBytes = this.#queue.peek(MAX_HEADER_SIZE);
         const result = FrameParser.parseHeader(headerBytes, { allowedRsv: this.#allowedRsv });
@@ -181,7 +188,7 @@ class Connection extends EventEmitter {
       this.#closeCode = code ?? CLOSE_CODES.NO_CODE_RECEIVED;
       this.#closeReason = reason;
       if (!this.#closeSent) {
-        return void this.sendClose(code, reason);
+        return void this.#answerClose(code, reason);
       }
       return void this.terminate();
     }
@@ -362,8 +369,9 @@ class Connection extends EventEmitter {
     return this.#fastPing();
   }
 
-  // No #closing guard: RFC 6455 5.5.3 requires a pong unless a Close frame was
-  // received, and #receive stops processing input once #closeReceived is set.
+  // No #closing guard: RFC 6455 5.5.3 requires a pong unless a Close frame
+  // was received, and #processFrames stops draining input once
+  // #closeReceived is set — including frames already queued behind the Close.
   sendPong(payload) {
     if (payload) return this.#writeFrame(Frame.pong(payload));
     return this.#fastPong();
@@ -396,6 +404,31 @@ class Connection extends EventEmitter {
         this.#socket.destroy();
       }, 200);
     }, this.#closeTimeout);
+  }
+
+  // Answers a peer-initiated Close and hangs up.
+  //
+  // RFC 6455 5.5.1: the side ANSWERING a Close closes the TCP connection
+  // immediately — it does not wait for the initiator to do it. Arming the
+  // full close timeout here instead left both peers waiting for the other
+  // to hang up, so every graceful disconnect cost `closeTimeout` (a second
+  // of latency on top of each reconnect, and on every test teardown).
+  //
+  // end() rather than destroy(): the echo has to flush before the FIN, and
+  // the short grace timer only covers a peer that never answers the FIN.
+  #answerClose(code = 1000, reason = '') {
+    if (this.#closing) return;
+    this.#closing = true;
+    this.#closeSent = true;
+    this.#fragments = null;
+    const frame = Frame.close(code, reason);
+    if (this.#isClient) frame.maskPayload();
+    this.#socket.write(frame.toBuffer());
+    this.#socket.end();
+    if (this.#closeTimer) clearTimeout(this.#closeTimer);
+    this.#closeTimer = setTimeout(() => {
+      this.#socket.destroy();
+    }, CLOSE_GRACE);
   }
 
   sendClose(code = 1000, reason = '') {

@@ -6,6 +6,7 @@ import {
 import { Writable } from 'node:stream';
 import type { Connection } from './ws.js';
 import type { Engine, EngineConnectionSource, WrpcSocket, EngineAttachOptions } from './engine.js';
+import type { Backplane } from './scaling.js';
 
 export declare class Emitter {
   constructor(options?: { maxListeners?: number });
@@ -121,6 +122,9 @@ export class WrpcClient extends Emitter {
     transport: ClientTransport,
     options?: WrpcClientOptions,
   );
+  /** Reconnect attempts made since the last successful open. */
+  readonly attempt: number;
+
   open(): Promise<void>;
   close(): void;
   load(...units: Array<string>): Promise<void>;
@@ -128,14 +132,51 @@ export class WrpcClient extends Emitter {
   createStream(name: string, size: number): WrpcWritable;
   createBlobUploader(blob: Blob): BlobUploader;
   send(obj: object): void;
+  /** Fire-and-forget event to the server; `name` is 'unit/event'. */
+  sendEvent(name: string, data?: unknown): void;
   write(data: string | ArrayBufferView): void;
+}
+
+/**
+ * Truncated exponential backoff with full jitter:
+ * `delay = random(0, min(maxDelay, minDelay * factor ** attempt))`.
+ */
+export interface ReconnectOptions {
+  /** First retry window in ms; default 2000. */
+  minDelay?: number;
+  /** Cap in ms; default 30000. */
+  maxDelay?: number;
+  /** Window growth per attempt; default 2. */
+  factor?: number;
+  /** Spread the delay over the whole window; default true. */
+  jitter?: boolean;
+  /** Attempts before giving up and emitting 'reconnect-failed'. */
+  retries?: number;
+}
+
+/**
+ * App-level heartbeat: `{ type: 'ping' }` out, `{ type: 'pong' }` back.
+ * A browser WebSocket exposes no protocol ping, so this is the only way to
+ * notice a connection that died without a close frame. WebSocket transport
+ * only; `false` disables it.
+ */
+export interface HeartbeatOptions {
+  /** Milliseconds between pings; default 30000. */
+  interval?: number;
+  /** Milliseconds to wait for the pong before reconnecting; default 10000. */
+  timeout?: number;
 }
 
 export interface WrpcClientOptions {
   callTimeout?: number;
+  reconnect?: ReconnectOptions | false;
+  /** Shorthand for `reconnect.minDelay`. */
   reconnectTimeout?: number;
+  heartbeat?: HeartbeatOptions | false;
   worker?: ServiceWorker;
-  proxy?: (data: string) => void;
+  /** Jitter source; injectable so tests can pin the backoff schedule. */
+  random?: () => number;
+  proxy?: (data: string, packet: object | null) => void;
 }
 
 export class WrpcClientProxy extends Emitter {
@@ -202,14 +243,29 @@ export declare function procedure(
   options: ProcedureOptions | ProcedureHandler,
 ): Procedure;
 
+export type MethodDefinition = Procedure | ProcedureHandler | ProcedureOptions;
+
+/**
+ * Inbound (client -> server) event handlers. An event is a call that never
+ * answers, so handlers are procedures too: access, input validation and
+ * queueing all work the same way.
+ */
+export type EventsDefinition = Record<string, MethodDefinition>;
+
+/**
+ * A unit's methods, plus the reserved `on` key holding its event handlers.
+ * `on` is therefore NOT usable as a method name.
+ */
+export interface UnitDefinition {
+  on?: EventsDefinition;
+  [method: string]: MethodDefinition | EventsDefinition | undefined;
+}
+
 /**
  * Unit keys are 'unit' or 'unit.version'; method values are procedures,
  * bare handler functions, or procedure option objects.
  */
-export type RouterDefinition = Record<
-  string,
-  Record<string, Procedure | ProcedureHandler | ProcedureOptions>
->;
+export type RouterDefinition = Record<string, UnitDefinition>;
 
 export interface MethodInfo {
   access: string;
@@ -223,6 +279,12 @@ export declare class Router {
     unit: string,
     version: string | undefined,
     method: string,
+  ): Procedure | null;
+  /** Handler for an inbound `{ type: 'event' }` packet, if the unit declares one. */
+  getEventHandler(
+    unit: string,
+    version: string | undefined,
+    name: string,
   ): Procedure | null;
   introspect(units?: Array<string> | null): Record<string, Record<string, MethodInfo>>;
   /** Returns a NEW router; on collision the other router's procedure wins. */
@@ -301,6 +363,61 @@ export function createProxy<T extends object>(
 ): T;
 
 // ---------------------------------------------------------------------------
+// Rooms
+
+/**
+ * Named groups of clients, on top of the ordinary `{ type: 'event' }`
+ * packets. The registry owns both directions — which clients a room holds
+ * and which rooms a client joined — so a disconnect only has to call
+ * `leaveAll`.
+ */
+export declare class RoomRegistry {
+  constructor(options?: {
+    /** Fires when a room gains its first member (backplane subscribe). */
+    onSubscribe?: (room: string) => void;
+    /** Fires when a room loses its last member (backplane unsubscribe). */
+    onUnsubscribe?: (room: string) => void;
+  });
+  /** Number of non-empty rooms. */
+  readonly size: number;
+  list(): Array<string>;
+  members(room: string): Set<Client>;
+  count(room: string): number;
+  has(room: string): boolean;
+  roomsOf(client: Client): Set<string>;
+  /** True when the client was not already a member. */
+  join(client: Client, room: string): boolean;
+  leave(client: Client, room: string): boolean;
+  leaveAll(client: Client): void;
+  clear(): void;
+}
+
+/**
+ * An immutable, chainable delivery target: every modifier returns a NEW
+ * Broadcast, so a stored `server.to('chat')` cannot be mutated by a later
+ * `.except()` elsewhere.
+ */
+export declare class Broadcast {
+  /**
+   * Union, not intersection: `to('a').to('b')` reaches either room.
+   * `to()` with no rooms narrows to NOBODY — a computed room list that came
+   * back empty must not fall back to every connected client.
+   */
+  to(...rooms: Array<string>): Broadcast;
+  except(...clients: Array<Client>): Broadcast;
+  /** Suppresses the backplane publish; the event stays on this instance. */
+  local(): Broadcast;
+  /** The targeted rooms, or null when the target is every client. */
+  readonly rooms: Array<string> | null;
+  /**
+   * Sends `{ type: 'event', name, data }` and returns how many clients
+   * received it LOCALLY — remote instances are reached through the
+   * backplane, whose delivery this number says nothing about.
+   */
+  emit(name: string, data?: unknown): number;
+}
+
+// ---------------------------------------------------------------------------
 // Server core
 
 export interface CorsOptions {
@@ -320,6 +437,12 @@ export declare class Context {
   uuid: string;
   state: Record<string, unknown>;
   readonly session: Session | null;
+  /**
+   * The server this call arrived on — how a handler reaches rooms
+   * (`context.server.to(room).emit(...)`) without closing over a server
+   * that could not exist before the router it was built from.
+   */
+  readonly server: RpcServer | null;
   constructor(client: Client);
 }
 
@@ -328,6 +451,8 @@ export class Client extends Emitter {
   session: Session | null;
   /** True for transports that stay open (WebSocket, worker port). */
   readonly persistent: boolean;
+  /** The RpcServer this client belongs to; null for a standalone Client. */
+  readonly server: RpcServer | null;
   /** Settles once the cookie-based session restore (if any) finished. */
   sessionReady: Promise<unknown>;
   streams: Map<string, WrpcReadable | WrpcWritable>;
@@ -336,6 +461,14 @@ export class Client extends Emitter {
   createContext(): Context;
   emit(name: EventName, data?: unknown): Promise<void>;
   sendEvent(name: string, data?: unknown): void;
+  /** Diagnostics for inbound packets with no id to answer on. */
+  warn(message: string): void;
+  /** Joins a room; false when already a member. */
+  join(room: string): boolean;
+  leave(room: string): boolean;
+  in(room: string): boolean;
+  /** The rooms this client is in — a copy, safe to iterate while leaving. */
+  readonly rooms: Set<string>;
   getStream(id: string): WrpcReadable | WrpcWritable;
   createStream(name: string, size: number): WrpcWritable;
   initializeSession(token?: string, data?: State): boolean;
@@ -373,14 +506,29 @@ export interface RpcServerOptions {
   /** Default '/api'; '' serves from the root. */
   basePath?: string;
   console?: Console;
+  /**
+   * Carries room events between instances. Optional: without one, rooms
+   * work identically inside a single instance.
+   */
+  backplane?: Backplane | null;
+  /** Identifies this instance on the backplane; a uuid by default. */
+  instanceId?: string;
 }
 
 export declare class RpcServer extends Emitter {
   readonly router: Router;
   readonly sessions: SessionManager;
+  readonly rooms: RoomRegistry;
+  readonly instanceId: string;
   readonly basePath: string;
   readonly clients: Set<Client>;
   constructor(options: RpcServerOptions);
+  /** Everyone in any of `rooms`, each client once; with no rooms, nobody. */
+  to(...rooms: Array<string>): Broadcast;
+  /** Everyone connected, minus `clients`. */
+  except(...clients: Array<Client>): Broadcast;
+  /** Everyone connected; returns the number of LOCAL recipients. */
+  broadcast(name: string, data?: unknown): number;
   attachSocket(
     socket: WrpcSocket | Connection,
     meta?: { headers?: Record<string, string | undefined>; remoteAddress?: string },
@@ -414,6 +562,12 @@ export class Server extends Emitter {
   constructor(options: ServerOptions);
   /** The bound address, whichever side owns the listener. */
   address(): { address: string; family: string; port: number } | string | null;
+  /** Rooms, forwarded to the core. */
+  readonly rooms: RoomRegistry;
+  readonly clients: Set<Client>;
+  to(...rooms: Array<string>): Broadcast;
+  except(...clients: Array<Client>): Broadcast;
+  broadcast(name: string, data?: unknown): number;
   listen(): Promise<Server>;
   close(): Promise<void>;
 }
@@ -487,6 +641,18 @@ export interface StreamPacket {
   name?: string;
   size?: number;
   status?: 'end' | 'terminate';
+}
+
+/** Fire-and-forget, both directions; `name` is 'unit/event'. */
+export interface EventPacket {
+  type: 'event';
+  name: string;
+  data?: unknown;
+}
+
+/** App-level heartbeat; see HeartbeatOptions. */
+export interface HeartbeatPacket {
+  type: 'ping' | 'pong';
 }
 
 export function chunkEncode(id: string, payload: Uint8Array): Uint8Array;

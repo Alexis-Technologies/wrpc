@@ -106,6 +106,26 @@ const jsonParse = (data = null) => {
   }
 };
 
+// Reconnect pacing: truncated exponential backoff with AWS "full jitter"
+// (https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/).
+//
+//   window = min(maxDelay, minDelay * factor ** attempt)
+//   delay  = jitter ? random_between(0, window) : window
+//
+// Jittering the WHOLE window rather than adding a small offset is what
+// actually breaks up the thundering herd: after a server restart, a thousand
+// clients that all disconnected in the same millisecond would otherwise all
+// come back in the same millisecond. `attempt` is 0-based, so the first
+// retry waits inside the minDelay window.
+const backoffDelay = ({ attempt = 0, minDelay, maxDelay, factor = 2, jitter = true, random = Math.random }) => {
+  const growth = factor > 0 ? factor ** attempt : 1;
+  // Infinity * 0 is NaN, and an overflowing exponential must still cap.
+  const window = Math.min(maxDelay, minDelay * growth);
+  const capped = Number.isFinite(window) ? window : maxDelay;
+  if (!jitter) return Math.round(capped);
+  return Math.round(random() * capped);
+};
+
 // Counting semaphore with a bounded wait queue (ported from metautil):
 // enter() resolves when a slot frees up, rejects on queue overflow or
 // after `timeout` ms in the queue.
@@ -159,4 +179,4 @@ class Semaphore {
   }
 }
 
-module.exports = { Emitter, jsonParse, Semaphore };
+module.exports = { Emitter, jsonParse, Semaphore, backoffDelay };

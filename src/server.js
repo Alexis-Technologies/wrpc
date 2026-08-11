@@ -41,6 +41,8 @@ class Server extends Emitter {
       console = globalThis.console,
       engine = createNodeEngine(),
       ws = {},
+      backplane = null,
+      instanceId,
     } = options;
     if (!isEngine(engine)) {
       throw new TypeError('Server: options.engine does not implement the Engine contract');
@@ -48,7 +50,7 @@ class Server extends Emitter {
     this.#options = options;
     this.#console = console;
     this.#engine = engine;
-    this.rpc = new RpcServer({ router, sessions, cors, basePath, console });
+    this.rpc = new RpcServer({ router, sessions, cors, basePath, console, backplane, instanceId });
     if (engine.standalone) this.#initStandalone(ws, cors);
     else this.#init(ws, cors);
   }
@@ -57,6 +59,29 @@ class Server extends Emitter {
   address() {
     if (this.httpServer) return this.httpServer.address();
     return this.#address;
+  }
+
+  // Rooms, forwarded to the core so `server.to('chat').emit(...)` reads the
+  // same whether wrpc owns the listener or an adapter does.
+
+  get rooms() {
+    return this.rpc.rooms;
+  }
+
+  get clients() {
+    return this.rpc.clients;
+  }
+
+  to(...rooms) {
+    return this.rpc.to(...rooms);
+  }
+
+  except(...clients) {
+    return this.rpc.except(...clients);
+  }
+
+  broadcast(name, data) {
+    return this.rpc.broadcast(name, data);
   }
 
   #upgradeGate(wsOptions, cors) {

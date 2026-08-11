@@ -28,13 +28,22 @@ export default withMermaid(
     ],
 
     themeConfig: {
-      nav: [{ text: 'Guide', link: '/guide/getting-started', activeMatch: '/guide/' }],
+      nav: [
+        { text: 'Guide', link: '/guide/getting-started', activeMatch: '/guide/' },
+        { text: 'Reference', link: '/reference/protocol', activeMatch: '/reference/' },
+      ],
 
       sidebar: {
         '/guide/': [
           {
             text: 'Introduction',
             items: [{ text: 'Getting Started', link: '/guide/getting-started' }],
+          },
+        ],
+        '/reference/': [
+          {
+            text: 'Reference',
+            items: [{ text: 'Wire protocol', link: '/reference/protocol' }],
           },
         ],
       },

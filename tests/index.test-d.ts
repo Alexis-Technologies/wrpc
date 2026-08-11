@@ -17,6 +17,8 @@ import type {
   ServerHttpTransport,
   Router,
   Procedure,
+  RoomRegistry,
+  Broadcast,
   SessionStore,
   HttpCall,
 } from '../index.js';
@@ -61,6 +63,22 @@ const router = wrpc.defineRouter({
 });
 expectType<Router>(router);
 expectType<Procedure | null>(router.getProcedure('chat', '*', 'send'));
+
+// Inbound events: the reserved `on` key, handlers shaped like procedures
+const eventful = wrpc.defineRouter({
+  chat: {
+    send: async () => ({ ok: true }),
+    on: {
+      typing: async (context, data) => {
+        expectType<Context>(context);
+        void data;
+      },
+      seen: { access: 'session', handler: async () => {} },
+    },
+  },
+});
+expectType<Procedure | null>(eventful.getEventHandler('chat', '*', 'typing'));
+expectType<Procedure | null>(eventful.getEventHandler('chat', undefined, 'typing'));
 expectType<Router>(router.merge(router));
 expectType<Procedure>(wrpc.procedure(async () => 1));
 expectError(wrpc.procedure({ access: 'public' })); // handler is required
@@ -100,6 +118,20 @@ expectType<Router>(rpc.router);
 expectType<string>(rpc.basePath);
 expectType<Set<Client>>(rpc.clients);
 expectType<Promise<void>>(rpc.close());
+
+// Rooms: chainable targets, a local recipient count
+declare const someClient: Client;
+expectType<Broadcast>(rpc.to('chat'));
+expectType<Broadcast>(rpc.to('chat', 'lobby').except(someClient).local());
+expectType<number>(rpc.to('chat').emit('message', { text: 'hi' }));
+expectType<number>(rpc.broadcast('announce'));
+expectType<Array<string> | null>(rpc.to('chat').rooms);
+expectType<RoomRegistry>(rpc.rooms);
+expectType<Set<Client>>(rpc.rooms.members('chat'));
+expectType<string>(rpc.instanceId);
+expectType<boolean>(someClient.join('chat'));
+expectType<boolean>(someClient.leave('chat'));
+expectType<Set<string>>(someClient.rooms);
 expectAssignable<HttpCall>({
   method: 'POST',
   url: '/api',
@@ -142,6 +174,9 @@ expectType<Promise<void>>(client.emit('room/event', { x: 1 }));
 // Context.session mirrors the live client session
 declare const context: Context;
 expectType<Session | null>(context.session);
+// ...and Context.server is how a handler reaches rooms
+expectType<RpcServer | null>(context.server);
+expectType<RpcServer | null>(client.server);
 
 // Transport subclasses are type-only: not reachable as runtime values...
 expectError(wrpc.ClientTransport);
@@ -163,6 +198,18 @@ expectType<Record<string, string>>(wrpc.buildHeaders({ origins: ['https://a'] },
 // WrpcClientOptions: real proxy option is typed, phantom handlers are gone
 expectAssignable<wrpc.WrpcClientOptions>({ proxy: (data: string) => void data });
 expectError<wrpc.WrpcClientOptions>({ packetHandler: (data: string) => void data });
+
+// Resilience options: backoff, heartbeat, and their off switches
+expectAssignable<wrpc.WrpcClientOptions>({
+  reconnect: { minDelay: 100, maxDelay: 5000, factor: 1.5, jitter: false, retries: 10 },
+  heartbeat: { interval: 1000, timeout: 200 },
+  random: () => 0.5,
+});
+expectAssignable<wrpc.WrpcClientOptions>({ reconnect: false, heartbeat: false });
+expectError<wrpc.WrpcClientOptions>({ reconnect: { minDelay: '100' } });
+declare const wsClient: WrpcClient;
+expectType<number>(wsClient.attempt);
+expectType<void>(wsClient.sendEvent('chat/typing', { on: true }));
 
 // Stream surface
 declare const readable: WrpcReadable;

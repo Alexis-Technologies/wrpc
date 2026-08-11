@@ -28,8 +28,10 @@ const createWrpc = (options = {}) => {
     console = globalThis.console,
     ws = {},
     maxBodySize = MAX_BODY_SIZE,
+    backplane = null,
+    instanceId,
   } = options;
-  const rpc = options.rpc ?? new RpcServer({ router, sessions, cors, basePath, console });
+  const rpc = options.rpc ?? new RpcServer({ router, sessions, cors, basePath, console, backplane, instanceId });
   const engine = options.engine ?? createNodeEngine(ws);
   if (!isEngine(engine)) {
     throw new TypeError('createWrpc: options.engine does not implement the Engine contract');

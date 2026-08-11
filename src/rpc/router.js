@@ -137,8 +137,14 @@ const toProcedure = (value, unitKey, methodName) => {
   );
 };
 
+// `on` is reserved inside a unit definition: it declares the unit's inbound
+// (client -> server) event handlers rather than a method named 'on'.
+const EVENTS_KEY = 'on';
+
 class Router {
-  #units = new Map(); // unit -> Map(version -> Map(method -> Procedure))
+  // unit -> Map(version -> { methods: Map(name -> Procedure),
+  //                          events:  Map(name -> Procedure) })
+  #units = new Map();
 
   constructor(definition = {}) {
     for (const [unitKey, methods] of Object.entries(definition)) {
@@ -146,11 +152,11 @@ class Router {
     }
   }
 
-  #addUnit(unitKey, methods) {
+  #addUnit(unitKey, definition) {
     const [unit, version = DEFAULT_VERSION, ...extra] = unitKey.split('.');
     // A silent split would truncate 'unit.1.2' into unit.1 and merge
     // colliding registrations — reject anything but 'unit' / 'unit.ver'
-    if (!unit || version === '' || extra.length > 0 || typeof methods !== 'object' || methods === null) {
+    if (!unit || version === '' || extra.length > 0 || typeof definition !== 'object' || definition === null) {
       throw new TypeError(`Invalid router unit definition: ${unitKey}`);
     }
     let versions = this.#units.get(unit);
@@ -158,19 +164,39 @@ class Router {
       versions = new Map();
       this.#units.set(unit, versions);
     }
-    let unitMethods = versions.get(version);
-    if (!unitMethods) {
-      unitMethods = new Map();
-      versions.set(version, unitMethods);
+    let entry = versions.get(version);
+    if (!entry) {
+      entry = { methods: new Map(), events: new Map() };
+      versions.set(version, entry);
     }
-    for (const [methodName, value] of Object.entries(methods)) {
-      unitMethods.set(methodName, toProcedure(value, unitKey, methodName));
+    for (const [name, value] of Object.entries(definition)) {
+      if (name === EVENTS_KEY) {
+        this.#addEvents(unitKey, entry.events, value);
+        continue;
+      }
+      entry.methods.set(name, toProcedure(value, unitKey, name));
+    }
+  }
+
+  // Event handlers reuse Procedure: an inbound event is a call that never
+  // answers, so access control, input validation and queueing come for free.
+  #addEvents(unitKey, events, definition) {
+    if (typeof definition !== 'object' || definition === null) {
+      throw new TypeError(`Router definition ${unitKey}.on must be an object of event handlers`);
+    }
+    for (const [name, value] of Object.entries(definition)) {
+      events.set(name, toProcedure(value, unitKey, `on.${name}`));
     }
   }
 
   getProcedure(unit, version = DEFAULT_VERSION, method) {
-    const unitMethods = this.#units.get(unit)?.get(version);
-    return unitMethods?.get(method) ?? null;
+    const entry = this.#units.get(unit)?.get(version);
+    return entry?.methods.get(method) ?? null;
+  }
+
+  getEventHandler(unit, version = DEFAULT_VERSION, name) {
+    const entry = this.#units.get(unit)?.get(version);
+    return entry?.events.get(name) ?? null;
   }
 
   // Introspection v2: { unitKey: { method: { access, meta?, signature? } } }
@@ -181,11 +207,11 @@ class Router {
     const filter = Array.isArray(units) ? units : null;
     const result = {};
     for (const [unit, versions] of this.#units) {
-      for (const [version, methods] of versions) {
+      for (const [version, entry] of versions) {
         const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
         if (filter && !filter.includes(unitKey)) continue;
         const methodsInfo = {};
-        for (const [methodName, proc] of methods) {
+        for (const [methodName, proc] of entry.methods) {
           const info = { access: proc.access };
           if (Object.keys(proc.meta).length > 0) info.meta = proc.meta;
           if (proc.signature) info.signature = proc.signature;
@@ -202,9 +228,11 @@ class Router {
     const merged = new Router();
     for (const source of [this, other]) {
       for (const [unit, versions] of source.#units) {
-        for (const [version, methods] of versions) {
+        for (const [version, entry] of versions) {
           const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
-          merged.#addUnit(unitKey, Object.fromEntries(methods));
+          const definition = Object.fromEntries(entry.methods);
+          if (entry.events.size > 0) definition[EVENTS_KEY] = Object.fromEntries(entry.events);
+          merged.#addUnit(unitKey, definition);
         }
       }
     }

@@ -8,6 +8,8 @@ const { ServerTransport, buildHeaders, parseCookies } = require('../transport.js
 const { WrpcWritable } = require('../streams.js');
 const { SessionManager } = require('./sessions.js');
 const { defineRouter, procedure } = require('./router.js');
+const { RoomRegistry, Broadcast, RoomsBackplane } = require('./rooms.js');
+const { isBackplane } = require('../scaling/index.js');
 const { handleMessage, handleBinary, handleRpc, split, parseParams } = require('./dispatcher.js');
 
 const ServerHttpTransport = ServerTransport.transport.http;
@@ -24,17 +26,29 @@ class Context {
   get session() {
     return this.client.session;
   }
+
+  // Rooms are reached from a handler through here — `ctx.server.to(room)` —
+  // rather than by closing over a server the router had to exist before.
+  get server() {
+    return this.client.server;
+  }
 }
 
 class Client extends Emitter {
   #transport = null;
   #sessions = null;
+  #rooms = null;
+  #server = null;
   #console = null;
 
-  constructor(transport, { sessions, console }) {
+  constructor(transport, { sessions, rooms, server, console } = {}) {
     super();
     this.#transport = transport;
     this.#sessions = sessions;
+    // A Client built outside an RpcServer still has working rooms; it just
+    // has nobody to share them with.
+    this.#rooms = rooms ?? new RoomRegistry();
+    this.#server = server ?? null;
     this.#console = console;
     this.source = transport.source;
     this.session = null;
@@ -50,6 +64,12 @@ class Client extends Emitter {
     this.#console.error(`${this.source}\t${code}\t${info}`);
   }
 
+  // Diagnostics for packets that carry no id to answer on (inbound events):
+  // the log is the only channel left.
+  warn(message) {
+    this.#console.warn(`${this.source}\t${message}`);
+  }
+
   send(obj, options = {}) {
     const { code, method } = options;
     this.#transport.send(obj, code);
@@ -62,6 +82,11 @@ class Client extends Emitter {
   // those can carry events and streams.
   get persistent() {
     return Boolean(this.#transport.connection);
+  }
+
+  /** The RpcServer this client belongs to; null for a standalone Client. */
+  get server() {
+    return this.#server;
   }
 
   createContext() {
@@ -80,6 +105,27 @@ class Client extends Emitter {
       throw new Error(`Can't send wrpc event to http transport`);
     }
     this.send(packet);
+  }
+
+  // ---------------------------------------------------------------------
+  // Rooms. The registry owns both directions, so this client keeps no room
+  // state of its own that a missed leave could leave stale.
+
+  join(room) {
+    return this.#rooms.join(this, room);
+  }
+
+  leave(room) {
+    return this.#rooms.leave(this, room);
+  }
+
+  /** The rooms this client is in — a copy, safe to iterate while leaving. */
+  get rooms() {
+    return new Set(this.#rooms.roomsOf(this));
+  }
+
+  in(room) {
+    return this.#rooms.members(room).has(this);
   }
 
   getStream(id) {
@@ -144,6 +190,7 @@ class Client extends Emitter {
   // Sessions end via finalizeSession or store-side expiry only.
   destroy() {
     const console = this.#console;
+    this.#rooms.leaveAll(this);
     this.emit('close');
     for (const stream of this.streams.values()) {
       if (typeof stream.terminate !== 'function') continue;
@@ -171,6 +218,9 @@ const normalizeBasePath = (basePath) => {
 class RpcServer extends Emitter {
   #router;
   #sessions;
+  #rooms;
+  #backplane = null;
+  #instance;
   #cors;
   #basePath;
   #console;
@@ -178,15 +228,52 @@ class RpcServer extends Emitter {
 
   constructor(options = {}) {
     super();
-    const { router, sessions, cors = null, basePath = DEFAULT_BASE_PATH, console = globalThis.console } = options;
+    const {
+      router,
+      sessions,
+      cors = null,
+      basePath = DEFAULT_BASE_PATH,
+      console = globalThis.console,
+      backplane = null,
+      instanceId = generateUUID(),
+    } = options;
     if (!router || typeof router.getProcedure !== 'function') {
       throw new TypeError('RpcServer: options.router (a Router from defineRouter) is required');
+    }
+    if (backplane && !isBackplane(backplane)) {
+      throw new TypeError('RpcServer: options.backplane does not implement the backplane contract');
     }
     this.#sessions = new SessionManager(sessions, console);
     this.#cors = cors;
     this.#basePath = normalizeBasePath(basePath);
     this.#console = console;
+    this.#instance = instanceId;
     this.#router = this.#withIntrospection(router);
+    this.#initRooms(backplane);
+  }
+
+  #initRooms(backplane) {
+    if (!backplane) {
+      this.#rooms = new RoomRegistry();
+      return;
+    }
+    const binder = new RoomsBackplane({
+      backplane,
+      instance: this.#instance,
+      console: this.#console,
+      // A replayed event is delivered LOCALLY: publishing it again would
+      // bounce it between instances forever.
+      deliver: (rooms, name, data) => {
+        const target = rooms ? this.#target().to(...rooms) : this.#target();
+        target.local().emit(name, data);
+      },
+    });
+    this.#backplane = binder;
+    this.#rooms = new RoomRegistry({
+      onSubscribe: (room) => binder.joinRoom(room),
+      onUnsubscribe: (room) => binder.leaveRoom(room),
+    });
+    binder.start();
   }
 
   get router() {
@@ -197,12 +284,45 @@ class RpcServer extends Emitter {
     return this.#sessions;
   }
 
+  get rooms() {
+    return this.#rooms;
+  }
+
+  /** Identifies this instance on the backplane (echo suppression). */
+  get instanceId() {
+    return this.#instance;
+  }
+
   get basePath() {
     return this.#basePath;
   }
 
   get clients() {
     return new Set(this.#clients);
+  }
+
+  #target() {
+    return new Broadcast({
+      registry: this.#rooms,
+      clients: () => this.#clients,
+      publish: this.#backplane ? (envelope) => this.#backplane.publish(envelope) : null,
+      console: this.#console,
+    });
+  }
+
+  /** Everyone in any of `rooms`, each client once. */
+  to(...rooms) {
+    return this.#target().to(...rooms);
+  }
+
+  /** Everyone connected, minus `clients`. */
+  except(...clients) {
+    return this.#target().except(...clients);
+  }
+
+  /** Everyone connected; returns the number of LOCAL recipients. */
+  broadcast(name, data) {
+    return this.#target().emit(name, data);
   }
 
   #withIntrospection(router) {
@@ -219,7 +339,8 @@ class RpcServer extends Emitter {
   }
 
   #addClient(transport) {
-    const client = new Client(transport, { sessions: this.#sessions, console: this.#console });
+    const options = { sessions: this.#sessions, rooms: this.#rooms, server: this, console: this.#console };
+    const client = new Client(transport, options);
     this.#clients.add(client);
     transport.once('close', () => {
       client.destroy();
@@ -339,6 +460,11 @@ class RpcServer extends Emitter {
   async close() {
     for (const client of this.#clients) client.close();
     this.#clients.clear();
+    // Unsubscribe before dropping the rooms, so the registry's last-member
+    // callbacks have nothing left to do. The injected backplane itself is
+    // never closed here: its lifetime belongs to whoever created it.
+    if (this.#backplane) this.#backplane.close();
+    this.#rooms.clear();
   }
 }
 

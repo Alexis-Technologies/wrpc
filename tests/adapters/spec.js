@@ -24,6 +24,9 @@ const { WrpcClient, defineRouter, procedure } = require('../../index.js');
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
+// Filled by the `chat.on.typing` event handler, drained by `chat/typed`.
+const typedEvents = [];
+
 // The single router definition every boot shares.
 const router = defineRouter({
   test: {
@@ -78,6 +81,46 @@ const router = defineRouter({
       },
     }),
   },
+  // Rooms and inbound events are core behavior, so every boot has to answer
+  // for them too. `typed` drains what the event handler recorded — an event
+  // never answers on the wire, so a call is the only way to observe it.
+  chat: {
+    join: procedure({
+      access: 'public',
+      handler: async (context, { room }) => {
+        context.client.join(room);
+        return { rooms: [...context.client.rooms] };
+      },
+    }),
+    leave: procedure({
+      access: 'public',
+      handler: async (context, { room }) => ({ left: context.client.leave(room) }),
+    }),
+    shout: procedure({
+      access: 'public',
+      handler: async (context, { room, text, self = true }) => {
+        const target = self ? context.server.to(room) : context.server.to(room).except(context.client);
+        return { sent: target.emit('chat/message', { text }) };
+      },
+    }),
+    members: procedure({
+      access: 'public',
+      handler: async (context, { room }) => ({ count: context.server.rooms.count(room) }),
+    }),
+    typed: procedure({
+      access: 'public',
+      handler: async () => {
+        const seen = typedEvents.splice(0, typedEvents.length);
+        return { seen };
+      },
+    }),
+    on: {
+      typing: procedure({
+        access: 'public',
+        handler: async (_context, data) => void typedEvents.push(data),
+      }),
+    },
+  },
   auth: {
     login: procedure({
       access: 'public',
@@ -94,6 +137,18 @@ const router = defineRouter({
 });
 
 const callPacket = (method, args = {}) => ({ type: 'call', id: randomUUID(), method, args });
+
+// Events travel one way, so there is no reply to await: give the fan-out a
+// round trip to land before asserting on it.
+const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
+
+const waitFor = async (predicate, message) => {
+  for (let i = 0; i < 100; i++) {
+    if (await predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  assert.fail(message);
+};
 
 // A packet-mode POST: the wire form every transport shares.
 const rpcPost = async (url, method, args = {}, headers = {}) => {
@@ -330,6 +385,54 @@ const runAdapterSpec = async (entry, t) => {
     const readable = client.getStream(id);
     const downloaded = await readable.toBlob();
     assert.strictEqual(await downloaded.text(), 'payload from the server');
+  });
+
+  await t.test('rooms and inbound events over two connections', async (sub) => {
+    const url = `ws://127.0.0.1:${main.port}/api`;
+    const [ada, grace] = await Promise.all([WrpcClient.connect(url), WrpcClient.connect(url)]);
+    sub.after(() => {
+      ada.close();
+      grace.close();
+    });
+    await Promise.all([ada.load('chat'), grace.load('chat')]);
+
+    const received = { ada: [], grace: [] };
+    ada.api.chat.on('message', (data) => void received.ada.push(data));
+    grace.api.chat.on('message', (data) => void received.grace.push(data));
+
+    assert.deepStrictEqual(await ada.api.chat.join({ room: 'lobby' }), { rooms: ['lobby'] });
+    await grace.api.chat.join({ room: 'lobby' });
+    assert.deepStrictEqual(await ada.api.chat.members({ room: 'lobby' }), { count: 2 });
+
+    // A room broadcast reaches every member, the sender included...
+    assert.deepStrictEqual(await ada.api.chat.shout({ room: 'lobby', text: 'hello' }), { sent: 2 });
+    await settle();
+    assert.deepStrictEqual(received.ada, [{ text: 'hello' }]);
+    assert.deepStrictEqual(received.grace, [{ text: 'hello' }]);
+
+    // ...unless it is excluded.
+    assert.deepStrictEqual(await ada.api.chat.shout({ room: 'lobby', text: 'psst', self: false }), { sent: 1 });
+    await settle();
+    assert.strictEqual(received.ada.length, 1, 'except() drops the sender');
+    assert.deepStrictEqual(received.grace.at(-1), { text: 'psst' });
+
+    // A client -> server event is fire-and-forget: nothing comes back on the
+    // wire, and the handler's effect is observed through a call.
+    ada.sendEvent('chat/typing', { who: 'ada' });
+    await settle();
+    assert.deepStrictEqual(await ada.api.chat.typed(), { seen: [{ who: 'ada' }] });
+
+    assert.deepStrictEqual(await grace.api.chat.leave({ room: 'lobby' }), { left: true });
+    assert.deepStrictEqual(await ada.api.chat.members({ room: 'lobby' }), { count: 1 });
+
+    // A dropped connection releases its rooms without anyone calling leave.
+    grace.close();
+    await waitFor(
+      async () => (await ada.api.chat.members({ room: 'lobby' })).count === 1,
+      'a disconnect must not change a room it had already left',
+    );
+    ada.close();
+    await waitFor(() => main.rpc.rooms.has('lobby') === false, 'the last member disconnecting must drop the room');
   });
 };
 

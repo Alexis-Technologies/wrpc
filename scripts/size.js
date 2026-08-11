@@ -34,6 +34,7 @@ const ENTRIES = [
   { label: 'uWebSockets.js adapter (@alexify/wrpc/uws)', entry: 'uws.js', platform: 'node' },
   { label: 'fastify adapter (@alexify/wrpc/fastify)', entry: 'fastify.js', platform: 'node' },
   { label: 'express adapter (@alexify/wrpc/express)', entry: 'express.js', platform: 'node' },
+  { label: 'rooms backplane (@alexify/wrpc/scaling)', entry: 'scaling.js', platform: 'node' },
 ];
 
 async function bundle(entry, platform, minify) {

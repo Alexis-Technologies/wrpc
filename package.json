@@ -37,6 +37,10 @@
     "./express": {
       "types": "./express.d.ts",
       "default": "./express.js"
+    },
+    "./scaling": {
+      "types": "./scaling.d.ts",
+      "default": "./scaling.js"
     }
   },
   "directories": {
@@ -130,6 +134,8 @@
     "fastify.d.ts",
     "express.js",
     "express.d.ts",
+    "scaling.js",
+    "scaling.d.ts",
     "src/",
     "LICENSE",
     "README.md",

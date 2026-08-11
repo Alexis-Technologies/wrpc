@@ -9,6 +9,140 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Realtime and scaling (F4):
+  - **Rooms in the core** (`src/rpc/rooms.js`) — named groups of clients on
+    top of the existing `{ type: 'event' }` packets, so no new wire type was
+    needed. `ctx.client.join(room)` / `.leave(room)` / `.rooms` / `.in(room)`
+    on the client side; `server.to(room).emit(name, data)`,
+    `.to(a, b)` (a union, each client once), `.except(client)`, `.local()`
+    and `server.broadcast(name, data)` on the server. `emit()` returns how
+    many clients received the event **on this instance**. A `RoomRegistry`
+    owns both directions — which clients a room holds and which rooms a
+    client joined — so a disconnect only has to call `leaveAll`, and there is
+    no per-client room state left to drift. `Broadcast` is immutable: every
+    modifier returns a new target, so a stored `server.to('chat')` cannot be
+    narrowed by an `.except()` somewhere else. `to()` with no rooms reaches
+    **nobody** rather than everybody — `to(...list)` with a list that came
+    back empty is the `WHERE id IN ()` mistake, and broadcasting to the whole
+    server is the wrong way to lose that argument. A client on a transport
+    that cannot carry events (HTTP) is skipped rather than throwing
+    mid-fan-out, and one dead socket does not truncate the rest of the
+    delivery.
+  - **`Context.server` / `Client.server`** — how a handler reaches rooms
+    (`ctx.server.to(room).emit(...)`) without closing over a server that
+    could not exist before the router it was built from.
+  - **Client → server events**: a unit definition's reserved **`on`** key
+    declares inbound event handlers
+    (`defineRouter({ chat: { on: { typing: handler } } })`), reachable from
+    the client with `client.sendEvent('chat/typing', data)`. Handlers are
+    ordinary procedures, so `access`, `input` validation, `timeout` and
+    `queue` all apply. Events stay fire-and-forget in both directions: a
+    rejected one (unknown handler, missing session, failing handler, invalid
+    input) is recorded in the server log, because a packet with no id has
+    nothing to answer on. `on` is consequently **not** usable as a method
+    name, and it is not introspected.
+  - **`@alexify/wrpc/scaling` subpath** — the rooms backplane. The contract
+    is structural (`publish(channel, message)`,
+    `subscribe(channel, handler) -> unsubscribe`, `close()`), with a built-in
+    `MemoryBackplane` and an ioredis-shaped `createRedisAdapter({ pub, sub,
+    prefix })` that defaults `sub` to `pub.duplicate()`. Per the
+    zero-dependency rule the Redis clients are **injected and validated
+    structurally** — `ioredis` is not even a devDependency; an in-repo fake
+    encodes the contract the adapter actually depends on. `close()` releases
+    the adapter's own subscriptions and listener but never quits the injected
+    clients.
+  - **Cross-instance fan-out**: `new Server({ backplane })` /
+    `new RpcServer({ backplane, instanceId })` publishes every non-local emit
+    as `{ v, instance, rooms, name, data }`. Each instance drops its own
+    envelopes (echo suppression by instance id). Channel scheme: an emit
+    targeting exactly one room goes to that room's channel — subscribed only
+    while the room has local members — and everything else to the single
+    `broadcast` channel every instance holds, so an envelope reaches an
+    instance through exactly one channel and needs no receiver-side
+    deduplication. Backplane failures are isolated in every direction: a
+    broker that throws, rejects, or refuses a subscription is reported and
+    local delivery continues. Delivery is honestly documented as
+    **at-most-once**.
+  - **Client resilience** (`src/client.js`):
+    - Reconnect is now truncated exponential backoff with **full jitter**
+      (`reconnect: { minDelay, maxDelay, factor, jitter, retries }`) instead
+      of a fixed 2 s, with `reconnecting` / `reconnect-failed` events and a
+      `client.attempt` counter. A rejected `open()` never emitted `'close'`,
+      so nothing rescheduled the next try — the loop used to give up after
+      one retry; it now continues from the failure itself.
+    - **App-level heartbeat** (`{type:'ping'}` / `{type:'pong'}`,
+      `heartbeat: { interval, timeout }`). A browser `WebSocket` exposes no
+      protocol-level ping, so a connection that died without a close frame
+      stays "open" until the first call times out. Only the WebSocket
+      transport starts one; both sides answer an inbound ping.
+    - **`'reconnect'` fires after the api is rebuilt**: every loaded unit is
+      reloaded (the new connection is a new server-side client), methods the
+      server no longer exposes are removed, and the `api` unit objects are
+      **reused** so listeners registered on them survive the outage — the
+      "api quietly went stale after a reconnect" bug.
+    - An event that reaches no listener — an unloaded unit, or a loaded one
+      nobody subscribed to — now surfaces as **`'unhandled-event'`** instead
+      of vanishing.
+    - A background failure with no `'error'` listener is logged rather than
+      thrown: an `Emitter` throw out of a reconnect timer would take the
+      process down for a retry that was about to happen anyway.
+  - `docs/reference/protocol.md` documents the wire protocol, including the
+    new event/heartbeat packets, the room envelope and the reconnect
+    schedule.
+
+### Fixed
+
+- **A graceful WebSocket close cost a full second.** Answering a peer's Close
+  frame armed the same `closeTimeout` the initiating side uses, so both peers
+  sat waiting for the other to hang up. RFC 6455 5.5.1 puts that duty on the
+  side *answering* the Close: it now writes the echo, half-closes so the echo
+  flushes, and destroys after a short grace. Every graceful disconnect —
+  including each reconnect and each test teardown — drops from ~1 s to a few
+  milliseconds. Frames pipelined behind that Close in the same TCP segment
+  are no longer acted on either (RFC 6455 5.5.2 exempts an endpoint from
+  answering a Ping received after a Close) — answering one would have written
+  past the half-close.
+- **An `event` or `pong` packet over HTTP hung the request.** Both are
+  fire-and-forget, and an `ServerHttpTransport` only answers when something
+  writes — so the response was never sent and the server-side `Client` was
+  never evicted, letting an unauthenticated peer pin clients and sockets for
+  as long as it held the connection. Events now require a persistent
+  transport (a 400, mirroring the guard `stream` packets already had) and a
+  stray `pong` falls through to the usual structure error.
+- **A malformed packet target could take the process down.** `handleMessage`
+  checked `method`/`name` for truthiness only, so `{"type":"event","name":42}`
+  threw inside an un-awaited async dispatch — an unhandled rejection, which
+  node terminates on by default. Targets are now type-checked, and every
+  fire-and-forget dispatch has a terminal catch.
+- **A socket abandoned by `terminate()` could close its own replacement.**
+  The transport's close handler was scoped to the transport, not to the
+  socket it was registered for, so the late `'close'` of a socket the
+  heartbeat had walked away from cleared the `#socket` of the connection the
+  reconnect had already established. It is now ignored by socket identity,
+  which also subsumes the `'close'`-plus-`'error'` double fire.
+- **A wire event named after an `Object.prototype` key was misrouted.** The
+  client's `api` is a plain object, so `constructor/ping` resolved up the
+  prototype chain and `listenerCount` was called on `Object`. Only an
+  `Emitter` the client put there itself counts as a unit now, and `load()`
+  defines its units instead of assigning them (a unit named `__proto__` went
+  through the prototype setter).
+- **`reconnectTimeout` above the default cap reconnected faster than asked.**
+  The shorthand skipped the `maxDelay >= minDelay` clamp that the explicit
+  `reconnect` object gets, so `reconnectTimeout: 60000` was silently capped
+  back to 30 s. Both spellings now mean the same thing.
+- **The reconnect timer is no longer `unref`'d.** During an outage there is
+  no socket left holding the event loop open, so a process whose only work is
+  a wrpc client exited mid-reconnect. Heartbeat timers stay unref'd: a live
+  socket is already a ref'd handle.
+- **`createRedisAdapter` stranded the subscriber it created.** When `sub` is
+  omitted the adapter opens one through `pub.duplicate()`, and that
+  connection is reachable from nowhere else — `close()` now quits it. An
+  injected client is still never quit.
+- `ClientWsTransport.terminate()` drops a connection without waiting for a
+  close handshake, and the heartbeat uses it: a peer that stopped answering
+  will never complete one, so waiting would gate the reconnect on the
+  socket's own timeout.
+
 - Server adapters (F3):
   - **`@alexify/wrpc/uws`, `@alexify/wrpc/fastify`,
     `@alexify/wrpc/express` subpaths**, each following the established

@@ -1,6 +1,6 @@
 'use strict';
 
-const { Emitter, jsonParse } = require('./utils.js');
+const { Emitter, jsonParse, backoffDelay } = require('./utils.js');
 const { generateUUID } = require('./runtime/node.js');
 const { WebSocket } = globalThis;
 const { chunkDecode } = require('./chunks.js');
@@ -8,6 +8,54 @@ const { WrpcReadable, WrpcWritable } = require('./streams.js');
 
 const CALL_TIMEOUT = 7 * 1000;
 const RECONNECT_TIMEOUT = 2 * 1000;
+
+const RECONNECT = {
+  minDelay: RECONNECT_TIMEOUT,
+  maxDelay: 30 * 1000,
+  factor: 2,
+  jitter: true,
+  retries: Infinity,
+};
+
+// App-level heartbeat. A browser WebSocket exposes no protocol-level ping,
+// so a connection that died without a close frame (dropped NAT mapping,
+// suspended laptop, a proxy that stopped forwarding) looks perfectly open
+// from JavaScript until the first call times out. Sending `{type:'ping'}`
+// and expecting `{type:'pong'}` is the only liveness signal available.
+const HEARTBEAT = { interval: 30 * 1000, timeout: 10 * 1000 };
+
+// Heartbeat timers are unref'd so the beat itself never keeps a process
+// alive — the live socket is already a ref'd handle, so an idle-but-connected
+// client still holds the loop open. The RECONNECT timer is deliberately NOT
+// unref'd: during an outage there is no socket left to hold the loop, and a
+// process whose only work is a wrpc client must not exit mid-reconnect.
+// (In a browser setTimeout returns a number and there is nothing to unref.)
+const unref = (timer) => {
+  if (timer && typeof timer.unref === 'function') timer.unref();
+  return timer;
+};
+
+const normalizeReconnect = (options) => {
+  const { reconnect, reconnectTimeout } = options;
+  if (reconnect === false) return { ...RECONNECT, retries: 0 };
+  const base = reconnectTimeout ? { ...RECONNECT, minDelay: reconnectTimeout } : RECONNECT;
+  // Both paths share the invariants: a `reconnectTimeout` above the default
+  // cap would otherwise silently reconnect FASTER than asked, since the cap
+  // wins inside backoffDelay.
+  const merged = reconnect ? { ...base, ...reconnect } : { ...base };
+  if (!(merged.minDelay > 0)) merged.minDelay = RECONNECT.minDelay;
+  if (!(merged.maxDelay >= merged.minDelay)) merged.maxDelay = merged.minDelay;
+  return merged;
+};
+
+const normalizeHeartbeat = (options) => {
+  const { heartbeat } = options;
+  if (heartbeat === false || heartbeat === 0) return null;
+  if (!heartbeat) return HEARTBEAT;
+  const merged = { ...HEARTBEAT, ...heartbeat };
+  if (!(merged.interval > 0) || !(merged.timeout > 0)) return null;
+  return merged;
+};
 
 const toByteView = async (input) => {
   if (typeof input.arrayBuffer === 'function') {
@@ -26,6 +74,10 @@ class WrpcError extends Error {
 
 class ClientTransport extends Emitter {
   active = false;
+  // Opt-in: only a transport that can silently die needs an app-level
+  // heartbeat. A request/response transport has nothing to keep alive, and
+  // a MessagePort to a Service Worker cannot half-close.
+  heartbeat = false;
 
   constructor(url) {
     super();
@@ -34,6 +86,13 @@ class ClientTransport extends Emitter {
 
   send(obj) {
     this.write(JSON.stringify(obj));
+  }
+
+  // Drop the connection without waiting for a close handshake. The default
+  // is a graceful close; transports that can hang on an unresponsive peer
+  // override it.
+  terminate() {
+    this.close();
   }
 
   // eslint-disable-next-line class-methods-use-this
@@ -83,8 +142,16 @@ class WrpcClient extends Emitter {
   #calls = new Map();
   #streams = new Map();
   #callTimeout = CALL_TIMEOUT;
-  #reconnectTimeout = RECONNECT_TIMEOUT;
+  #reconnect = RECONNECT;
   #reconnectTimer = null;
+  #attempt = 0;
+  #connected = false;
+  #random = Math.random;
+  #heartbeat = null;
+  #pingTimer = null;
+  #pongTimer = null;
+  #loaded = new Set();
+  #unitMethods = new Map();
   #proxyPacket = null;
   #options = {};
 
@@ -92,12 +159,19 @@ class WrpcClient extends Emitter {
     return this.#transport.active;
   }
 
+  /** How many reconnect attempts have been made since the last open. */
+  get attempt() {
+    return this.#attempt;
+  }
+
   constructor(url, transport, options = {}) {
     super();
-    const { callTimeout, reconnectTimeout, proxy } = options;
+    const { callTimeout, proxy, random } = options;
     if (callTimeout) this.#callTimeout = callTimeout;
-    if (reconnectTimeout) this.#reconnectTimeout = reconnectTimeout;
     if (proxy) this.#proxyPacket = proxy;
+    if (random) this.#random = random; // deterministic jitter in tests
+    this.#reconnect = normalizeReconnect(options);
+    this.#heartbeat = normalizeHeartbeat(options);
     this.url = url;
     this.#transport = transport;
     this.#options = options;
@@ -119,37 +193,137 @@ class WrpcClient extends Emitter {
     return client;
   }
 
+  // An 'error' with no listener throws by design (see Emitter), which is
+  // right for a synchronous mistake and wrong for a background failure: a
+  // throw out of a timer or a promise chain would take the process down for
+  // a reconnect that is about to be retried anyway.
+  #escalate(error) {
+    if (this.listenerCount('error') > 0) return void this.emit('error', error);
+    globalThis.console?.error?.(error);
+  }
+
   #bindTransport() {
     this.#transport.on('open', () => {
       clearTimeout(this.#reconnectTimer);
       this.#reconnectTimer = null;
+      const attempts = this.#attempt;
+      this.#attempt = 0;
+      this.#startHeartbeat();
+      const reconnected = this.#connected;
+      this.#connected = true;
       this.emit('open');
+      if (reconnected) this.#restore(attempts).catch((error) => this.#escalate(error));
     });
 
     this.#transport.on('close', () => {
+      this.#stopHeartbeat();
       this.emit('close');
       this.#scheduleReconnect();
     });
 
     this.#transport.on('error', (error) => {
-      this.emit('error', error);
+      this.#escalate(error);
     });
 
     this.#transport.on('message', (data) => {
-      const escalate = (error) => this.emit('error', error);
+      const escalate = (error) => this.#escalate(error);
       if (typeof data === 'string') this.#handlePacket(data).catch(escalate);
       else this.#handleBinary(data).catch(escalate);
     });
+  }
+
+  // A reconnected socket is a NEW server-side client: whatever `load()` set
+  // up (the introspected method list) belongs to the connection that just
+  // died, so it is rebuilt before 'reconnect' is announced. The api unit
+  // objects themselves are reused, so event listeners registered on them
+  // survive — that is the whole point of reloading rather than reconnecting
+  // and leaving `api` quietly stale.
+  async #restore(attempts) {
+    const units = Array.from(this.#loaded);
+    if (units.length > 0) await this.load(...units);
+    await this.emit('reconnect', { units, attempts });
   }
 
   #scheduleReconnect() {
     if (this.active) return;
     if (!WrpcClient.connections.has(this)) return;
     if (this.#reconnectTimer) return;
+    const { retries } = this.#reconnect;
+    if (this.#attempt >= retries) {
+      return void this.emit('reconnect-failed', { attempts: this.#attempt });
+    }
+    const delay = backoffDelay({ ...this.#reconnect, attempt: this.#attempt, random: this.#random });
+    this.#attempt++;
+    this.emit('reconnecting', { attempt: this.#attempt, delay });
+    // Not unref'd: see the note on `unref` above.
     this.#reconnectTimer = setTimeout(() => {
       this.#reconnectTimer = null;
-      this.open().catch((error) => this.emit('error', error));
-    }, this.#reconnectTimeout);
+      this.open().catch((error) => {
+        // A rejected open never emitted 'close', so nothing else would
+        // schedule the next attempt — the loop has to continue here.
+        this.#escalate(error);
+        this.#scheduleReconnect();
+      });
+    }, delay);
+  }
+
+  // ---------------------------------------------------------------------
+  // Heartbeat: ping -> await pong -> ping. One timer is armed at a time, so
+  // a stalled connection cannot pile pings up behind the missing pong.
+
+  #startHeartbeat() {
+    this.#stopHeartbeat();
+    if (!this.#heartbeat || !this.#transport.heartbeat) return;
+    this.#armPing();
+  }
+
+  #stopHeartbeat() {
+    if (this.#pingTimer) clearTimeout(this.#pingTimer);
+    if (this.#pongTimer) clearTimeout(this.#pongTimer);
+    this.#pingTimer = null;
+    this.#pongTimer = null;
+  }
+
+  #armPing() {
+    this.#pingTimer = unref(
+      setTimeout(() => {
+        this.#pingTimer = null;
+        this.#sendPing();
+      }, this.#heartbeat.interval),
+    );
+  }
+
+  #sendPing() {
+    if (!this.active) return;
+    try {
+      this.send({ type: 'ping' });
+    } catch (error) {
+      return void this.#escalate(error);
+    }
+    this.#pongTimer = unref(
+      setTimeout(() => {
+        this.#pongTimer = null;
+        this.#onHeartbeatTimeout();
+      }, this.#heartbeat.timeout),
+    );
+  }
+
+  #onPong() {
+    if (!this.#pongTimer) return; // unsolicited pong: nothing was waiting
+    clearTimeout(this.#pongTimer);
+    this.#pongTimer = null;
+    if (this.#heartbeat && this.active) this.#armPing();
+  }
+
+  // The peer stopped answering: close so the transport reports 'close' and
+  // the normal reconnect path takes over.
+  #onHeartbeatTimeout() {
+    this.emit('heartbeat-timeout');
+    try {
+      this.#transport.terminate();
+    } catch (error) {
+      this.#escalate(error);
+    }
   }
 
   async open() {
@@ -160,6 +334,11 @@ class WrpcClient extends Emitter {
   close() {
     clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = null;
+    this.#stopHeartbeat();
+    // An explicit close ends the session: a later open() is a fresh start,
+    // not a reconnect, so it must not replay 'reconnect'.
+    this.#connected = false;
+    this.#attempt = 0;
     WrpcClient.connections.delete(this);
     this.#transport.close();
   }
@@ -197,18 +376,18 @@ class WrpcClient extends Emitter {
   }
 
   async #handlePacket(data) {
-    if (this.#proxyPacket) return void this.#proxyPacket(data);
     const packet = jsonParse(data);
-    if (!packet) throw new Error('Invalid JSON packet');
-    const { type, id, name } = packet;
-    if (type === 'event') {
-      const parts = name.split('/');
-      const unit = parts[0];
-      const eventName = parts[1];
-      const apiUnit = this.api[unit];
-      if (apiUnit) apiUnit.emit(eventName, packet.data);
-      return;
+    if (!packet) {
+      if (this.#proxyPacket) return void this.#proxyPacket(data, null);
+      throw new Error('Invalid JSON packet');
     }
+    const { type, id, name } = packet;
+    // Heartbeat first, and before the proxy hand-off: the pong answers a
+    // ping this client sent, so it is never anyone else's packet.
+    if (type === 'pong') return void this.#onPong();
+    if (type === 'ping') return void this.send({ type: 'pong' });
+    if (this.#proxyPacket) return void this.#proxyPacket(data, packet);
+    if (type === 'event') return void (await this.#handleEvent(name, packet.data));
     if (!id) throw new Error('Packet structure error');
     if (type === 'callback') {
       const promised = this.#calls.get(id);
@@ -225,6 +404,29 @@ class WrpcClient extends Emitter {
       return;
     }
     if (type === 'stream') await this.#handleStream(packet);
+  }
+
+  // Events are addressed 'unit/event'. One that reaches no listener — an
+  // unloaded unit, or a loaded one nobody subscribed to — surfaces as
+  // 'unhandled-event' rather than vanishing: a silently dropped broadcast is
+  // indistinguishable from a broken server.
+  async #handleEvent(name, data) {
+    if (typeof name === 'string') {
+      const slash = name.indexOf('/');
+      if (slash > 0) {
+        const unit = name.slice(0, slash);
+        const eventName = name.slice(slash + 1);
+        // `api` is a plain object, so a wire-supplied unit like 'constructor'
+        // or 'toString' resolves up the prototype chain. Only an Emitter this
+        // client put there itself is a real unit — anything else is an event
+        // nobody is listening for.
+        const apiUnit = this.api[unit];
+        if (eventName && apiUnit instanceof Emitter && apiUnit.listenerCount(eventName) > 0) {
+          return void (await apiUnit.emit(eventName, data));
+        }
+      }
+    }
+    await this.emit('unhandled-event', { name, data });
   }
 
   async #handleStream(packet) {
@@ -262,18 +464,45 @@ class WrpcClient extends Emitter {
     if (!this.active) throw new Error('Not connected');
     const introspect = this.#scaffold('system')('introspect');
     const introspection = await introspect(units);
-    const available = Object.keys(introspection);
     for (const unit of units) {
-      if (!available.includes(unit)) continue;
-      const methods = new Emitter();
       const instance = introspection[unit];
+      if (!instance) continue;
+      this.#loaded.add(unit);
+      // Reuse the unit's emitter when it already exists: a reconnect reloads
+      // every unit, and replacing the object would silently drop every event
+      // listener the caller registered on it.
+      let methods = this.api[unit];
+      if (!(methods instanceof Emitter)) {
+        methods = new Emitter();
+        // defineProperty, not assignment: a unit named '__proto__' would go
+        // through Object.prototype's setter and mutate the prototype instead
+        // of becoming a unit.
+        Object.defineProperty(this.api, unit, {
+          value: methods,
+          enumerable: true,
+          writable: true,
+          configurable: true,
+        });
+      }
       const request = this.#scaffold(unit);
       const methodNames = Object.keys(instance);
+      const previous = this.#unitMethods.get(unit);
+      if (previous) {
+        // A method the server no longer exposes must stop being callable.
+        for (const methodName of previous) {
+          if (!methodNames.includes(methodName)) delete methods[methodName];
+        }
+      }
       for (const methodName of methodNames) {
         methods[methodName] = request(methodName);
       }
-      this.api[unit] = methods;
+      this.#unitMethods.set(unit, new Set(methodNames));
     }
+  }
+
+  /** Sends a fire-and-forget event to the server; `name` is 'unit/event'. */
+  sendEvent(name, data) {
+    this.send({ type: 'event', name, data });
   }
 
   #scaffold(unit, version) {
@@ -300,6 +529,9 @@ class WrpcClient extends Emitter {
 }
 
 class ClientWsTransport extends ClientTransport {
+  // The one transport that can die without saying so.
+  heartbeat = true;
+
   #socket = null;
   #opening = null;
 
@@ -310,12 +542,18 @@ class ClientWsTransport extends ClientTransport {
       const socket = new WebSocket(this.url);
       this.#socket = socket;
       const onClose = (error) => {
+        // Scoped to the socket it was registered for. Both 'close' and
+        // 'error' route here, and terminate() abandons a socket while it is
+        // still alive — its later close must not clear the #socket of the
+        // replacement a reconnect has already installed.
+        if (this.#socket !== socket) return;
         this.#socket = null;
         if (this.#opening) {
           this.#opening = null;
           this.emit('error', error);
           return void reject(new Error('Connection closed'));
         }
+        if (!this.active) return;
         this.active = false;
         this.emit('close', error);
       };
@@ -339,6 +577,18 @@ class ClientWsTransport extends ClientTransport {
   close() {
     if (!this.active) return;
     this.#socket.close();
+  }
+
+  // A peer that stopped answering will never complete a close handshake, so
+  // waiting for one would gate the reconnect on the socket's own timeout.
+  // Report the close now; the socket's later 'close' is then a no-op.
+  terminate() {
+    if (!this.active) return;
+    const socket = this.#socket;
+    this.active = false;
+    this.#socket = null;
+    this.emit('close');
+    socket?.close();
   }
 
   write(data) {
@@ -434,13 +684,15 @@ class WrpcClientProxy extends Emitter {
   #pending = new Map();
   #connection = null;
   #callTimeout = CALL_TIMEOUT;
-  #reconnectTimeout = RECONNECT_TIMEOUT;
+  #reconnect = null;
+  #heartbeat = undefined;
 
   constructor(options = {}) {
     super();
-    const { callTimeout, reconnectTimeout } = options;
+    const { callTimeout, heartbeat } = options;
     if (callTimeout) this.#callTimeout = callTimeout;
-    if (reconnectTimeout) this.#reconnectTimeout = reconnectTimeout;
+    this.#reconnect = normalizeReconnect(options);
+    this.#heartbeat = heartbeat;
     if (typeof self === 'undefined') {
       throw new Error('WrpcClientProxy must run in ServiceWorker context');
     }
@@ -460,8 +712,9 @@ class WrpcClientProxy extends Emitter {
     const url = `${protocol}//${self.location.host}`;
     const options = {
       callTimeout: this.#callTimeout,
-      reconnectTimeout: this.#reconnectTimeout,
-      proxy: (data) => this.#proxyPacket(data),
+      reconnect: this.#reconnect,
+      heartbeat: this.#heartbeat,
+      proxy: (data, packet) => this.#proxyPacket(data, packet),
     };
     this.#connection = await WrpcClient.connect(url, options);
   }
@@ -497,16 +750,23 @@ class WrpcClientProxy extends Emitter {
       throw new Error('Not connected to server');
     }
     const packet = jsonParse(data);
-    if (!packet || !packet.id) throw new Error('Invalid JSON packet');
+    if (!packet) throw new Error('Invalid JSON packet');
+    // The worker is the page's peer: it answers the page's heartbeat itself
+    // rather than paying for a round trip to the server for every port.
+    if (packet.type === 'ping') return void port.postMessage(JSON.stringify({ type: 'pong' }));
+    if (packet.type === 'pong') return;
+    if (!packet.id) throw new Error('Invalid JSON packet');
     this.#pending.set(packet.id, port);
     this.#connection.write(data);
   }
 
-  #proxyPacket(data) {
+  // `packet` is the already-parsed form of `data` (the client parses once);
+  // it is null when the frame was not JSON at all.
+  #proxyPacket(data, packet) {
     if (typeof data !== 'string') return void this.#broadcast(data);
-    const packet = jsonParse(data);
-    if (!packet) return void this.#broadcast(data);
-    const { type, id, status } = packet;
+    const parsed = packet ?? jsonParse(data);
+    if (!parsed) return void this.#broadcast(data);
+    const { type, id, status } = parsed;
     if (type === 'event') return void this.#broadcast(data);
     const port = this.#pending.get(id);
     if (!port) return void this.#broadcast(data);

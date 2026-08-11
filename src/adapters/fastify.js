@@ -66,9 +66,9 @@ const toConsole = (logger) => {
 };
 
 const wrpcFastify = async (fastify, options = {}) => {
-  const { router, sessions, cors = null, basePath, ws = {}, maxBodySize } = options;
+  const { router, sessions, cors = null, basePath, ws = {}, maxBodySize, backplane = null, instanceId } = options;
   const console = options.console ?? toConsole(fastify.log);
-  const rpc = options.rpc ?? new RpcServer({ router, sessions, cors, basePath, console });
+  const rpc = options.rpc ?? new RpcServer({ router, sessions, cors, basePath, console, backplane, instanceId });
   const base = rpc.basePath;
   const engine = resolveEngine(fastify, options);
 

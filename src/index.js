@@ -5,6 +5,7 @@ const { WrpcClient, WrpcClientProxy, WrpcError } = require('./client.js');
 const { Server } = require('./server.js');
 const { RpcServer, Client, Context } = require('./rpc/core.js');
 const { defineRouter, procedure, Router, Procedure } = require('./rpc/router.js');
+const { RoomRegistry, Broadcast } = require('./rpc/rooms.js');
 const { Session, MemorySessionStore, createProxy } = require('./rpc/sessions.js');
 const { ServerTransport, buildHeaders } = require('./transport.js');
 const { WrpcReadable, WrpcWritable } = require('./streams.js');
@@ -27,6 +28,8 @@ module.exports = {
   procedure,
   Router,
   Procedure,
+  RoomRegistry,
+  Broadcast,
   MemorySessionStore,
   ServerTransport,
   buildHeaders,
