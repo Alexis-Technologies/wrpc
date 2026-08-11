@@ -218,7 +218,37 @@ for await (const message of client.api.chat.onMessage.iterate()) {
 | **Transports** | WebSocket, plain HTTP, [Server-Sent Events](https://wrpc.vercel.app/guide/sse), Service Worker `MessagePort` |
 | **Hosts** | Batteries-included [server](https://wrpc.vercel.app/guide/server), or [fastify](https://wrpc.vercel.app/guide/adapters/fastify) / [express](https://wrpc.vercel.app/guide/adapters/express) / [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws) / bare `node:http` |
 | **Client** | Exponential backoff with full jitter, app-level heartbeat, automatic re-`load()` and re-subscribe, offline/online |
+| **Observability** | [Structured logging](https://wrpc.vercel.app/guide/logging) into your pino, [OpenTelemetry](https://wrpc.vercel.app/guide/telemetry) spans and metrics, W3C trace context across the wire |
 | **DX** | [Contract-first typed client](https://wrpc.vercel.app/guide/typed-client), [`wrpc types` codegen](https://wrpc.vercel.app/guide/cli), [TanStack Query bindings](https://wrpc.vercel.app/guide/query), hand-maintained `.d.ts` for every subpath |
+
+## Observability
+
+Both are **injected, never depended on** — the package still has no
+dependencies. Your logger and your OpenTelemetry SDK are duck-typed.
+
+```js
+const pino = require('pino');
+const api = require('@opentelemetry/api');
+
+const server = new Server({ router, logger: pino(), telemetry: { api } });
+```
+
+`logger` takes a structured logger (pino, bunyan, winston), a `Console`, or
+`false` to go silent. wrpc binds children for you — `component`, `peer` and a
+per-call `callId` — and `context.log` inside a handler is already scoped to
+that call.
+
+`telemetry` takes the `@opentelemetry/api` module or your own
+`{ tracer, meter }`. Spans follow the OTel `rpc.*` convention, fourteen metrics
+cover calls, connections, subscriptions, broadcasts and streams, and `call`
+packets carry W3C trace context so a client span parents the server's across
+the network hop.
+
+Neither can break a request: a logger that throws, a broken exporter or a meter
+that dies is contained at the call site.
+
+See [Logging](https://wrpc.vercel.app/guide/logging) and
+[OpenTelemetry](https://wrpc.vercel.app/guide/telemetry).
 
 ## Exports
 
@@ -252,7 +282,9 @@ Every subpath ships hand-maintained TypeScript declarations — no generation, n
   [typed client](https://wrpc.vercel.app/guide/typed-client),
   [CLI](https://wrpc.vercel.app/guide/cli),
   [TanStack Query](https://wrpc.vercel.app/guide/query),
-  [SSE](https://wrpc.vercel.app/guide/sse), adapters.
+  [SSE](https://wrpc.vercel.app/guide/sse),
+  [logging](https://wrpc.vercel.app/guide/logging),
+  [OpenTelemetry](https://wrpc.vercel.app/guide/telemetry), adapters.
 - **Reference** — [wire protocol](https://wrpc.vercel.app/reference/protocol)
   (frozen at 1.0), [wire format](https://wrpc.vercel.app/reference/wire-format),
   [engine port](https://wrpc.vercel.app/reference/engine).

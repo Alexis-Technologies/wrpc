@@ -56,8 +56,9 @@ Everything [`RpcServer`](../server#rpc-options) takes, plus:
 | `ws` | Forwarded to the engine's `attach()` — `path`, `protocols`, `verifyClient`, … |
 | `maxBodySize` | A per-route `bodyLimit` for the RPC routes. |
 
-`console` defaults to fastify's own logger, adapted: pino has `info`/`warn`/
-`error` but no `log`, which the core calls on every successful invocation.
+`logger` defaults to `fastify.log`. That is a pino, which wrpc detects as a
+[structured logger](../logging) and calls natively — so your RPC entries land
+in fastify's own stream, with its bindings, and no adapter in between.
 
 ::: tip `maxBodySize` only narrows
 Unlike the express and uws adapters, this plugin never reads the request

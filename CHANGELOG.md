@@ -11,6 +11,63 @@ narrower promise — see
 
 ## [Unreleased]
 
+### Added
+
+- **A structured `logger` option, replacing `console`.** Every component writes
+  through one injected writer built by `src/logging.js` — a zero-import module
+  that normalizes three shapes into one: a structured logger called as
+  `(entry, message)` (pino, bunyan, winston — identified by `child` or
+  `level`), a `Console` called as `(message)`, or nothing at all. `false`
+  silences a server outright, which the old option could not express; an
+  object matching neither shape disables logging rather than throwing, because
+  observability must never be why a server fails to boot. wrpc binds children
+  itself — `component` per subsystem, `peer` per connection, and a lazily built
+  `callId` per call, reachable from a handler as `context.log`. A logger that
+  throws is contained inside the writer, so a broken sink costs the line, not
+  the call. **`console` is gone**, not deprecated: the package has never been
+  published, so there is nobody to migrate. The fastify adapter's `toConsole`
+  shim went with it — `fastify.log` is a pino and now goes in as one.
+- **Client logging.** `WrpcClient` takes a `logger` too, **off by default**: a
+  browser console filling with reconnect noise is not a sensible default. When
+  on, an error is logged *and* emitted as `'error'` — a logger observes, a
+  listener handles, and having one does not silence the other.
+  `WrpcClientProxy` forwards the option, so a Service Worker proxy keeps it.
+- **Three silent failure paths now report.** A subscription that died
+  server-side answered `end` and logged nothing; `runSubscription` dropped the
+  generator's error entirely when aborted; and `jsonParse(data) || {}`
+  conflated "malformed" with "empty", hiding every unparseable packet in the
+  system behind one `||`.
+- **OpenTelemetry traces and metrics.** `telemetry` accepts the
+  `@opentelemetry/api` module or your own `{ tracer, meter }`; tracer-only and
+  meter-only both work, and neither is ever imported — the constants that would
+  require it (`SpanStatusCode.ERROR`, the `SpanKind` values) are frozen by the
+  specification and hardcoded. Spans follow the OTel `rpc.*` convention and
+  bracket the *whole* invocation, so an argument error gets an error span and a
+  duration sample exactly as a slow handler does. Fourteen instruments cover
+  calls, durations, connections, subscriptions and values yielded, broadcasts
+  and fan-out size, stream bytes, backpressure, sessions and SSE channels.
+  `includeIdentity: false` drops the peer address; a session token is never
+  recorded at any setting, because a credential and an identity do not share a
+  switch. Every recording path contains its own failures.
+- **W3C trace context across the wire.** `call`, `subscribe` and `event`
+  packets may carry optional `tp` (traceparent) and `ts` (tracestate) fields,
+  so a client span parents the server span through the network hop — the thing
+  an in-process context manager cannot do. Context is per *packet*, so each
+  call in a batch keeps its own parent. wrpc does not parse the W3C format: it
+  hands the field to your propagator, which is why propagation needs `{ api }`
+  (or an explicit `propagation`) rather than a bare tracer.
+  `trustRemoteContext` defaults to true, as in gRPC and HTTP instrumentation;
+  set it false when peers are untrusted and can forge trace ids.
+
+### Changed
+
+- Server transports carry a `kind` — `ws`, `http`, `sse` or `event` — the
+  metric attribute and log field identifying which wire a client is on.
+- `src/telemetry/` is three files rather than one. Putting the client half in
+  the same module as the server's twelve instruments pushed the browser bundle
+  to 10.1 KB, over its 10 KB budget; splitting shared/server/client so
+  `src/client.js` requires only what a client needs brought it back to 9.2 KB.
+
 ### Documentation
 
 - **The wire protocol is frozen as 1.0.** `docs/reference/protocol.md` was
@@ -20,6 +77,9 @@ narrower promise — see
   be added, and an unknown packet type is still answered with a `callback`
   carrying code 500, which is what makes an additive change safe for an older
   peer. Error codes keep their meanings. Anything else is a major version.
+- Two new guide pages — **Logging** and **OpenTelemetry** — under a new
+  *Operations* sidebar group, and a **Trace context** section in the wire
+  protocol reference documenting the `tp`/`ts` fields.
 - **The documentation site is the full structure**, not a skeleton. Sixteen
   guide pages — getting started, server, router, sessions, rooms,
   subscriptions, streams, scaling, client, typed client, CLI, TanStack Query,

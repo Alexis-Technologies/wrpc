@@ -31,6 +31,11 @@ const keywords = [
   'javascript',
   'node',
   'browser',
+  'opentelemetry',
+  'observability',
+  'tracing',
+  'logging',
+  'pino',
   '@alexify/wrpc',
 ].join(', ');
 
@@ -141,6 +146,13 @@ export default withMermaid(
               { text: 'uWebSockets.js', link: '/guide/adapters/uws' },
               { text: 'Fastify', link: '/guide/adapters/fastify' },
               { text: 'Express', link: '/guide/adapters/express' },
+            ],
+          },
+          {
+            text: 'Operations',
+            items: [
+              { text: 'Logging', link: '/guide/logging' },
+              { text: 'OpenTelemetry', link: '/guide/telemetry' },
             ],
           },
         ],
