@@ -7,6 +7,31 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ## [Unreleased]
 
+### Fixed
+
+- **`client.close()` now ends every live subscription, not just the iterated
+  ones.** It called `record.stream?.end()`, so an `iterate()` consumer's
+  `for await` finished — while a `subscribe()` consumer that passed
+  `onData`/`onEnd`/`onError` was told nothing at all. Its `onEnd` never fired,
+  so a listener-based caller (the `@alexify/wrpc/query` cache bridge, or any
+  React effect) had no signal that its feed was dead.
+  `close()` now delivers the same terminal callback an `end` packet does.
+  `unsubscribe()` stays silent on purpose — the caller named that one feed and
+  already knows, whereas `close()` is usually called by something else
+  entirely (a page teardown, a shutdown hook), so the code owning the feed
+  never asked for it to stop. Exactly one of `onEnd`/`onError` fires, and only
+  for an ending the caller did not ask for; a reconnect is not an ending.
+  Two smaller defects fell out of the same path:
+  - A **throwing terminal listener no longer skips `stream.end()`** — on the
+    ordinary `end` packet too, not only on close. It used to leave an
+    `iterate()` consumer parked in `next()` with nothing else coming. Each
+    listener is now contained and escalated through the client's `'error'`
+    channel, so one bad listener cannot rob the next of its signal or abandon
+    the rest of `close()`'s teardown.
+  - `close()` did not call the internal `onRelease` hook, so an `iterate()`
+    passed a caller-supplied `AbortSignal` left its `'abort'` listener
+    registered on that signal after the client was gone.
+
 ### Added
 
 - Typed client, codegen and TanStack Query bindings (F6) — the DX phase, with

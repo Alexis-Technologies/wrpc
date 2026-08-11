@@ -216,7 +216,17 @@ export interface SubscribeOptions<Data = any> {
   /** Where to resume from; the server decides what that means. */
   lastEventId?: string;
   onData?(data: Data): void;
+  /** The subscription died: the handler threw, or the server refused it. */
   onError?(error: WrpcError): void;
+  /**
+   * The subscription ended cleanly — the handler finished, or
+   * {@link WrpcClient.close} took the whole client down under it.
+   *
+   * Exactly one of `onEnd`/`onError` fires, and only for an ending the caller
+   * did not ask for: calling `unsubscribe()` yourself is silent, because you
+   * already know. A reconnect is not an ending either — the client re-opens
+   * its subscriptions from the last eventId it saw.
+   */
   onEnd?(): void;
 }
 

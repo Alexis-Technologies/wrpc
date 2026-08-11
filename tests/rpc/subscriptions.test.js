@@ -251,6 +251,30 @@ test('subscriptions: the wire lifecycle', async (t) => {
     assert.deepStrictEqual(seen, [{ n: 1 }, { n: 2 }]);
   });
 
+  await t.test('an onEnd that throws still ends the iterator', async () => {
+    // The stream has to be ended even when a terminal listener blew up:
+    // skipping it leaves a for-await parked in next() with nothing coming.
+    const escalated = [];
+    const onError = (error) => void escalated.push(error.message);
+    client.on('error', onError);
+    const seen = [];
+    const consume = (async () => {
+      const values = client.api.feed.count.iterate(
+        { to: 2 },
+        {
+          onEnd: () => {
+            throw new Error('terminal listener blew up');
+          },
+        },
+      );
+      for await (const value of values) seen.push(value);
+    })();
+    await within(consume, 'the iterator to finish despite a throwing onEnd');
+    assert.deepStrictEqual(seen, [{ n: 1 }, { n: 2 }]);
+    assert.deepStrictEqual(escalated, ['terminal listener blew up']);
+    client.off('error', onError);
+  });
+
   await t.test('the handle reports the last tracked eventId', async () => {
     const values = [];
     let handle = null;
@@ -369,6 +393,85 @@ test('subscriptions: unsubscribe runs the generator finally', async (t) => {
     await waitFor(() => ticks >= 2, 'the subscriptions never produced');
     other.close();
     await waitFor(() => closed >= before + 2, 'a dropped connection left generators running');
+  });
+
+  // close() used to end an iterate() consumer's stream and tell a
+  // subscribe() consumer nothing at all, so a listener-based caller never
+  // learned its feed was dead.
+  await t.test('close() ends every live subscription, both flavours', async () => {
+    const other = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, { heartbeat: false });
+    await other.load('feed');
+
+    const ends = [];
+    const handles = [
+      other.api.feed.forever.subscribe({}, { onEnd: () => void ends.push('first') }),
+      other.api.feed.forever.subscribe({}, { onEnd: () => void ends.push('second') }),
+    ];
+    // ...and an iterator, which was already being told
+    const iterated = (async () => {
+      for await (const _value of other.api.feed.forever.iterate()) void _value;
+      return 'iterator';
+    })();
+    let ticks = 0;
+    other.api.feed.forever.subscribe({}, { onData: () => void ticks++ });
+    await waitFor(() => ticks >= 1, 'the subscriptions never produced');
+
+    other.close();
+
+    assert.deepStrictEqual(ends, ['first', 'second'], 'every callback subscriber is told, in order');
+    assert.strictEqual(await within(iterated, 'the iterator to finish'), 'iterator');
+    for (const handle of handles) {
+      assert.strictEqual(handle.closed, true);
+      assert.strictEqual(handle.unsubscribe(), false, 'nothing is left to unsubscribe');
+    }
+  });
+
+  await t.test('close() is not an unsubscribe: onError stays quiet', async () => {
+    const other = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, { heartbeat: false });
+    await other.load('feed');
+    const seen = [];
+    other.api.feed.forever.subscribe(
+      {},
+      {
+        onEnd: () => void seen.push('end'),
+        onError: (error) => void seen.push(`error:${error.message}`),
+      },
+    );
+    // An explicit unsubscribe is silent — the caller already knows
+    const quietHandle = other.api.feed.forever.subscribe({}, { onEnd: () => void seen.push('unsubscribed') });
+    quietHandle.unsubscribe();
+    other.close();
+    assert.deepStrictEqual(seen, ['end'], 'a clean close is an end, never an error');
+  });
+
+  await t.test('a listener that throws does not strand the others or the teardown', async () => {
+    const other = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, { heartbeat: false });
+    await other.load('feed');
+    const escalated = [];
+    other.on('error', (error) => void escalated.push(error.message));
+    const ends = [];
+    other.api.feed.forever.subscribe(
+      {},
+      {
+        onEnd: () => {
+          throw new Error('listener blew up');
+        },
+      },
+    );
+    other.api.feed.forever.subscribe({}, { onEnd: () => void ends.push('after') });
+    const iterated = (async () => {
+      for await (const _value of other.api.feed.forever.iterate()) void _value;
+    })();
+
+    assert.doesNotThrow(() => other.close());
+    assert.deepStrictEqual(ends, ['after'], 'one bad listener must not rob the next of its signal');
+    assert.deepStrictEqual(escalated, ['listener blew up']);
+    // ...and the stream still ends, or an iterate() consumer waits forever
+    await within(iterated, 'the iterator to finish despite a throwing listener');
+    // The teardown ran past the throw: deregistering happens before the
+    // transport is closed, and the socket itself closes a tick later.
+    assert.strictEqual(WrpcClient.connections.has(other), false);
+    await waitFor(() => other.active === false, 'the transport stayed open');
   });
 
   assert.ok(opened >= 4);

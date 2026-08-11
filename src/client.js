@@ -380,7 +380,11 @@ class WrpcClient extends Emitter {
     // Anything still queued leaves before the socket does; a call whose
     // packet never shipped would otherwise wait out its whole timeout.
     this.flush();
-    for (const record of this.#subscriptions.values()) record.stream?.end();
+    // Snapshotted and cleared BEFORE anyone is told: a listener that reacts by
+    // unsubscribing, or by closing again, then finds nothing left to do
+    // instead of mutating the map being walked — and `handle.closed` already
+    // reads true by the time it is asked.
+    const ended = Array.from(this.#subscriptions.values());
     this.#subscriptions.clear();
     // An explicit close ends the session: a later open() is a fresh start,
     // not a reconnect, so it must not replay 'reconnect'.
@@ -388,6 +392,29 @@ class WrpcClient extends Emitter {
     this.#attempt = 0;
     WrpcClient.connections.delete(this);
     this.#transport.close();
+    // Last, with nothing left to tear down. Closing the client ends every
+    // subscription it carried, and a subscription that ended has to say so:
+    // `unsubscribe()` stays silent because the caller named that one feed,
+    // whereas close() is usually called by something else entirely (a page
+    // teardown, a shutdown hook), so the code owning the feed never asked.
+    for (const record of ended) this.#endSubscription(record);
+  }
+
+  /**
+   * The terminal signal for one subscription, in the order the `end` packet
+   * delivers it. A listener that throws is contained rather than allowed to
+   * rob the rest of theirs — or, inside close(), to abandon the teardown.
+   */
+  #endSubscription(record) {
+    try {
+      record.onRelease?.();
+      record.onEnd?.();
+    } catch (error) {
+      this.#escalate(error);
+    }
+    // Always, even if a listener threw: an `iterate()` consumer is parked in
+    // next() and would otherwise wait there forever.
+    record.stream?.end();
   }
 
   write(data) {
@@ -544,12 +571,8 @@ class WrpcClient extends Emitter {
       return;
     }
     this.#subscriptions.delete(id);
+    if (!packet.error) return void this.#endSubscription(record);
     record.onRelease?.();
-    if (!packet.error) {
-      record.onEnd?.();
-      record.stream?.end();
-      return;
-    }
     const error = new WrpcError(packet.error);
     record.stream?.fail(error);
     if (record.onError) return void record.onError(error);
