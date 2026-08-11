@@ -15,9 +15,6 @@ const {
 } = require('../../index.js');
 const { MemoryBackplane } = require('../../scaling.js');
 
-const noop = () => {};
-const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
-
 const waitFor = async (predicate, message = 'condition never held') => {
   for (let i = 0; i < 300; i++) {
     if (predicate()) return;
@@ -82,7 +79,7 @@ const createInstance = async (backplane, instanceId) => {
     host: '127.0.0.1',
     port: 0,
     protocol: 'http',
-    console: quiet,
+    logger: false,
     timeouts: { bind: 50 },
     backplane,
     instanceId,

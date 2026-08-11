@@ -8,7 +8,7 @@ const { EventEmitter } = require('node:events');
 const { WrpcClient, defineRouter, procedure } = require('../../index.js');
 const { createWrpc } = require('../../express.js');
 const { createUwsEngine } = require('../../uws.js');
-const { optional, quiet, requireUws } = require('./boots.js');
+const { optional, requireUws } = require('./boots.js');
 
 const express = optional('express');
 const uws = requireUws();
@@ -35,7 +35,7 @@ const postPacket = (url, method, args) =>
 const boot = async (t, options = {}) => {
   const { parseJson = false, ...wrpcOptions } = options;
   const app = express();
-  const wrpc = createWrpc({ router: createRouter(), console: quiet, ...wrpcOptions });
+  const wrpc = createWrpc({ router: createRouter(), logger: false, ...wrpcOptions });
   const bodies = [];
   if (parseJson) app.use(express.json());
   // Records what the wrpc handler is about to see: `undefined` on the raw
@@ -101,7 +101,7 @@ test('a body over maxBodySize gets the 400 error packet', { skip: noExpress }, a
 test('a standalone engine cannot be driven as middleware', { skip: noUws }, () => {
   const engine = createUwsEngine({ uws });
   try {
-    assert.throws(() => createWrpc({ router: createRouter(), console: quiet, engine }), /owns its own network stack/);
+    assert.throws(() => createWrpc({ router: createRouter(), logger: false, engine }), /owns its own network stack/);
   } finally {
     engine.close();
   }
@@ -109,7 +109,7 @@ test('a standalone engine cannot be driven as middleware', { skip: noUws }, () =
 
 test('a non-Engine options.engine is refused at the boundary', () => {
   assert.throws(
-    () => createWrpc({ router: createRouter(), console: quiet, engine: {} }),
+    () => createWrpc({ router: createRouter(), logger: false, engine: {} }),
     /does not implement the Engine contract/,
   );
 });
@@ -120,7 +120,7 @@ test('an engine that cannot be upgraded by hand is refused', () => {
   const source = new EventEmitter();
   const engine = { name: 'fake', attach: () => source, close: () => {} };
   assert.throws(
-    () => createWrpc({ router: createRouter(), console: quiet, engine }),
+    () => createWrpc({ router: createRouter(), logger: false, engine }),
     /does not support manual upgrades/,
   );
 });

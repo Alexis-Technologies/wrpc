@@ -883,13 +883,39 @@ export interface HttpCall {
   }): import('./sse.js').SseWriter | null;
 }
 
+// ---------------------------------------------------------------------------
+// Logging
+
+/**
+ * A logger to inject. Every member is optional so that both shapes are
+ * structurally assignable without importing anybody's types:
+ *
+ * - a **structured** logger (pino, bunyan, winston) — identified by `child`
+ *   or `level`, and called as `(entry, message)`
+ * - a **Console** — called as `(message)`, with the entry dropped
+ *
+ * `true` logs to the global console; `false` disables logging outright. An
+ * object that matches neither shape disables it too: an observability option
+ * never throws.
+ */
+export interface WrpcLogger {
+  child?(bindings: Record<string, unknown>): WrpcLogger;
+  level?: unknown;
+  log?(...args: any[]): void;
+  info?(...args: any[]): void;
+  debug?(...args: any[]): void;
+  warn?(...args: any[]): void;
+  error?(...args: any[]): void;
+}
+
 export interface RpcServerOptions {
   router: Router;
   sessions?: SessionsOptions;
   cors?: CorsOptions | null;
   /** Default '/api'; '' serves from the root. */
   basePath?: string;
-  console?: Console;
+  /** Defaults to the global console; `false` silences the server. */
+  logger?: WrpcLogger | boolean;
   /**
    * Carries room events between instances. Optional: without one, rooms
    * work identically inside a single instance.

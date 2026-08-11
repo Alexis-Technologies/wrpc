@@ -207,8 +207,8 @@ test('RpcServer session isolation', async (t) => {
     });
 
   await t.test('default stores are per-server', async () => {
-    const serverA = new RpcServer({ router: makeRouter(), console: quiet });
-    const serverB = new RpcServer({ router: makeRouter(), console: quiet });
+    const serverA = new RpcServer({ router: makeRouter(), logger: false });
+    const serverB = new RpcServer({ router: makeRouter(), logger: false });
     serverA.sessions.create('tokA', { user: 'alex' });
     await settle();
     assert.ok(await serverA.sessions.restore('tokA'));
@@ -219,8 +219,8 @@ test('RpcServer session isolation', async (t) => {
 
   await t.test('a shared store is shared', async () => {
     const store = new MemorySessionStore();
-    const serverA = new RpcServer({ router: makeRouter(), sessions: { store }, console: quiet });
-    const serverB = new RpcServer({ router: makeRouter(), sessions: { store }, console: quiet });
+    const serverA = new RpcServer({ router: makeRouter(), sessions: { store }, logger: false });
+    const serverB = new RpcServer({ router: makeRouter(), sessions: { store }, logger: false });
     serverA.sessions.create('tokA', { user: 'alex' });
     await settle();
     const restored = await serverB.sessions.restore('tokA');
@@ -251,7 +251,7 @@ test('initializeSession with the same token does not race delete against set', a
   const quiet = { log: noop, info: noop, warn: noop, error: noop };
   const sessions = new SessionManager({ store }, quiet);
   const transport = { source: 'x', connection: {}, send: noop, error: noop, close: noop, once: noop };
-  const client = new Client(transport, { sessions, console: quiet });
+  const client = new Client(transport, { sessions, logger: false });
 
   client.initializeSession('same-token', { round: 1 });
   client.initializeSession('same-token', { round: 2 }); // refresh, no finalize

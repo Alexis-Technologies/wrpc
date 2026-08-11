@@ -64,8 +64,8 @@ const attach = (rpc) => {
 };
 
 const createPair = (backplane) => {
-  const first = new RpcServer({ router, console: quiet, backplane, instanceId: 'node-1' });
-  const second = new RpcServer({ router, console: quiet, backplane, instanceId: 'node-2' });
+  const first = new RpcServer({ router, logger: false, backplane, instanceId: 'node-1' });
+  const second = new RpcServer({ router, logger: false, backplane, instanceId: 'node-2' });
   return { first, second };
 };
 
@@ -208,7 +208,7 @@ test('backplane: a broken backplane never breaks local delivery', async (t) => {
   const rpc = new RpcServer({
     router,
     backplane: broken,
-    console: { ...quiet, error: (error) => errors.push(error) },
+    logger: { ...quiet, error: (error) => errors.push(error) },
   });
   t.after(() => rpc.close());
 
@@ -223,7 +223,7 @@ test('backplane: a broken backplane never breaks local delivery', async (t) => {
 
 test('backplane: malformed envelopes are ignored', async (t) => {
   const backplane = new MemoryBackplane();
-  const rpc = new RpcServer({ router, console: quiet, backplane, instanceId: 'node-1' });
+  const rpc = new RpcServer({ router, logger: false, backplane, instanceId: 'node-1' });
   t.after(async () => {
     await rpc.close();
     backplane.close();
@@ -249,11 +249,11 @@ test('backplane: malformed envelopes are ignored', async (t) => {
 });
 
 test('backplane: a non-conforming backplane is rejected at construction', () => {
-  assert.throws(() => new RpcServer({ router, console: quiet, backplane: { publish: noop } }), TypeError);
+  assert.throws(() => new RpcServer({ router, logger: false, backplane: { publish: noop } }), TypeError);
 });
 
 test('backplane: rooms work identically without one', async (t) => {
-  const rpc = new RpcServer({ router, console: quiet });
+  const rpc = new RpcServer({ router, logger: false });
   t.after(() => rpc.close());
   const a = attach(rpc);
   const b = attach(rpc);

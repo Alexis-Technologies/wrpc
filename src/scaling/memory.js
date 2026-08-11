@@ -1,5 +1,7 @@
 'use strict';
 
+const { createLoggerWriter } = require('../logging.js');
+
 const DEFAULT_PREFIX = 'wrpc';
 
 // In-process backplane: the reference implementation of the contract, and
@@ -13,12 +15,12 @@ const DEFAULT_PREFIX = 'wrpc';
 class MemoryBackplane {
   #channels = new Map(); // channel -> Set<handler>
   #prefix;
-  #console;
+  #log;
   #closed = false;
 
-  constructor({ prefix = DEFAULT_PREFIX, console = globalThis.console } = {}) {
+  constructor({ prefix = DEFAULT_PREFIX, logger = globalThis.console } = {}) {
     this.#prefix = prefix;
-    this.#console = console;
+    this.#log = createLoggerWriter(logger);
   }
 
   get name() {
@@ -45,7 +47,7 @@ class MemoryBackplane {
         try {
           handler(message);
         } catch (error) {
-          this.#console.error(error);
+          this.#log.error({ err: error, event: 'backplane.handler', channel });
         }
       });
     }

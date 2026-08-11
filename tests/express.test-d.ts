@@ -45,7 +45,7 @@ expectAssignable<CreateWrpcOptions>({
   sessions: { cookie: { name: 'sid', maxAge: 3600 } },
   cors: { origins: ['https://app.example'], credentials: true },
   basePath: '/rpc',
-  console: globalThis.console,
+  logger: globalThis.console,
 });
 expectAssignable<CreateWrpcOptions>({ rpc });
 expectAssignable<CreateWrpcOptions>({ router, engine, maxBodySize: 1024 });

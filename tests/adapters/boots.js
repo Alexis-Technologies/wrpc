@@ -65,7 +65,7 @@ const rpcOptions = (options) => ({
   sessions: options.sessions,
   cors: options.cors ?? null,
   basePath: options.basePath,
-  console: quiet,
+  logger: false,
 });
 
 // ---------------------------------------------------------------------------
@@ -94,7 +94,7 @@ const bootServer = (createEngine) => async (options) => {
 const bootFastify = (serverFactory) => async (options) => {
   const fastify = optional('fastify');
   const app = fastify({ ...(serverFactory ? { serverFactory } : {}), logger: false });
-  await app.register(wrpcFastify, { ...rpcOptions(options), console: quiet });
+  await app.register(wrpcFastify, { ...rpcOptions(options), logger: false });
   await app.listen({ host: '127.0.0.1', port: 0 });
   const address = app.server.address();
   return { port: address.port, rpc: app.wrpc, close: () => app.close() };

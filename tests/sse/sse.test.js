@@ -7,9 +7,6 @@ const assert = require('node:assert');
 const { Server, WrpcClient, defineRouter, procedure, createEventStream, tracked } = require('../../index.js');
 const { SseParser, CHANNEL_HEADER } = require('../../sse.js');
 
-const noop = () => {};
-const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
-
 const waitFor = async (predicate, message = 'condition never held') => {
   for (let i = 0; i < 300; i++) {
     if (predicate()) return;
@@ -168,7 +165,7 @@ const createServer = async (options = {}) => {
     host: '127.0.0.1',
     port: 0,
     protocol: 'http',
-    console: quiet,
+    logger: false,
     timeouts: { bind: 50 },
     ...options,
   });

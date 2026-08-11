@@ -20,9 +20,6 @@ const ROOT = path.join(__dirname, '..', '..');
 const BIN = path.join(ROOT, 'bin', 'wrpc.js');
 const TSC = path.join(ROOT, 'node_modules', '.bin', 'tsc');
 
-const noop = () => {};
-const quietConsole = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
-
 const run = (file, args, options = {}) =>
   new Promise((resolve) => {
     execFile(file, args, { cwd: ROOT, ...options }, (error, stdout, stderr) => {
@@ -79,7 +76,7 @@ test('CLI e2e: generates a contract from a live server and type-checks it', asyn
     host: '127.0.0.1',
     port: 0,
     protocol: 'http',
-    console: quietConsole,
+    logger: false,
     timeouts: { bind: 100 },
   });
   await server.listen();
@@ -226,7 +223,7 @@ test('CLI e2e: --out - writes the contract to stdout', async (t) => {
     host: '127.0.0.1',
     port: 0,
     protocol: 'http',
-    console: quietConsole,
+    logger: false,
     timeouts: { bind: 100 },
   });
   await server.listen();

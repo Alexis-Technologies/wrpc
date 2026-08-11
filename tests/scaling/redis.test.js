@@ -158,7 +158,7 @@ test('createRedisAdapter: failures are isolated, never thrown at the caller', as
     const errors = [];
     const pub = new FakeRedis();
     pub.failPublish = true;
-    const adapter = createRedisAdapter({ pub, console: { ...quiet, error: (e) => errors.push(e) } });
+    const adapter = createRedisAdapter({ pub, logger: { ...quiet, error: (e) => errors.push(e) } });
     assert.doesNotThrow(() => adapter.publish('room:chat', 'x'));
     await null;
     await null;
@@ -169,7 +169,7 @@ test('createRedisAdapter: failures are isolated, never thrown at the caller', as
   await t.test('a throwing handler does not stop the others', async () => {
     const errors = [];
     const pub = new FakeRedis();
-    const adapter = createRedisAdapter({ pub, console: { ...quiet, error: (e) => errors.push(e) } });
+    const adapter = createRedisAdapter({ pub, logger: { ...quiet, error: (e) => errors.push(e) } });
     const seen = [];
     adapter.subscribe('chan', () => {
       throw new Error('handler blew up');
@@ -210,7 +210,7 @@ test('createRedisAdapter: tolerates the thinner ends of the client contract', as
 
   await t.test('a synchronously throwing client is reported, not propagated', async () => {
     const errors = [];
-    const console = { ...quiet, error: (error) => errors.push(error) };
+    const logger = { ...quiet, error: (error) => errors.push(error) };
     const sub = {
       subscribe() {
         throw new Error('subscribe blew up');
@@ -225,7 +225,7 @@ test('createRedisAdapter: tolerates the thinner ends of the client contract', as
         throw new Error('publish blew up');
       },
     };
-    const adapter = createRedisAdapter({ pub, sub, console });
+    const adapter = createRedisAdapter({ pub, sub, logger });
     const off = adapter.subscribe('room:chat', noop);
     assert.strictEqual(errors.length, 1, 'the failed subscribe is reported');
     adapter.publish('room:chat', 'x');
@@ -296,7 +296,7 @@ test('createRedisAdapter: close releases the subscriber it opened itself', async
       };
       return sub;
     };
-    const adapter = createRedisAdapter({ pub, console: { ...quiet, error: (e) => errors.push(e) } });
+    const adapter = createRedisAdapter({ pub, logger: { ...quiet, error: (e) => errors.push(e) } });
     assert.doesNotThrow(() => adapter.close());
     assert.strictEqual(errors.length, 1);
   });

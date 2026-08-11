@@ -1,6 +1,7 @@
 'use strict';
 
 const { DEFAULT_PREFIX } = require('./memory.js');
+const { createLoggerWriter } = require('../logging.js');
 
 // Redis backplane, modelled on the ioredis API — `publish(channel, message)`,
 // `subscribe(channel)` plus an `'message'(channel, message)` event, and
@@ -44,7 +45,7 @@ const detach = (client, event, listener) => {
 };
 
 const createRedisAdapter = (options = {}) => {
-  const { pub, sub, prefix = DEFAULT_PREFIX, console = globalThis.console } = options;
+  const { pub, sub, prefix = DEFAULT_PREFIX, logger = globalThis.console } = options;
   checkPub(pub);
   // A subscriber this adapter duplicated for itself is a connection nobody
   // else holds a reference to, so close() has to release it. An INJECTED one
@@ -55,7 +56,8 @@ const createRedisAdapter = (options = {}) => {
   const handlers = new Map(); // full channel name -> Set<handler>
   let closed = false;
 
-  const report = (error) => void console.error(error);
+  const log = createLoggerWriter(logger);
+  const report = (error) => void log.error({ err: error, component: 'redis' });
   const settle = (result) => {
     if (result && isFunction(result.catch)) result.catch(report);
   };

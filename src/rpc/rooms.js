@@ -1,6 +1,7 @@
 'use strict';
 
 const { jsonParse } = require('../utils.js');
+const { createLoggerWriter } = require('../logging.js');
 
 // Rooms: named groups of clients, layered on top of the existing
 // `{ type: 'event' }` packets — no new wire type is needed, a room broadcast
@@ -130,13 +131,13 @@ class Broadcast {
   #targets;
   #excluded;
   #localOnly;
-  #console;
+  #log;
 
   constructor({
     registry,
     clients,
     publish = null,
-    console = globalThis.console,
+    log = globalThis.console,
     targets = null,
     excluded = null,
     localOnly = false,
@@ -144,7 +145,7 @@ class Broadcast {
     this.#registry = registry;
     this.#clients = clients;
     this.#publish = publish;
-    this.#console = console;
+    this.#log = createLoggerWriter(log);
     this.#targets = targets;
     this.#excluded = excluded;
     this.#localOnly = localOnly;
@@ -155,7 +156,7 @@ class Broadcast {
       registry: this.#registry,
       clients: this.#clients,
       publish: this.#publish,
-      console: this.#console,
+      log: this.#log,
       targets: this.#targets,
       excluded: this.#excluded,
       localOnly: this.#localOnly,
@@ -225,7 +226,7 @@ class Broadcast {
         sent++;
       } catch (error) {
         // One dead socket must not truncate the fan-out.
-        this.#console.error(error);
+        this.#log.error({ err: error, event: 'broadcast.send', name });
       }
     }
     if (!this.#localOnly && this.#publish) {
@@ -247,15 +248,15 @@ class RoomsBackplane {
   #backplane;
   #instance;
   #deliver;
-  #console;
+  #log;
   #channels = new Map(); // channel -> { count, off, stale }
   #closed = false;
 
-  constructor({ backplane, instance, deliver, console = globalThis.console }) {
+  constructor({ backplane, instance, deliver, log = globalThis.console }) {
     this.#backplane = backplane;
     this.#instance = instance;
     this.#deliver = deliver;
-    this.#console = console;
+    this.#log = createLoggerWriter(log);
   }
 
   // The broadcast channel is retained for the process' whole life: an
@@ -286,7 +287,7 @@ class RoomsBackplane {
         },
         (error) => {
           this.#channels.delete(channel);
-          this.#console.error(error);
+          this.#log.error({ err: error, event: 'backplane.subscribe', channel });
         },
       );
   }
@@ -309,10 +310,10 @@ class RoomsBackplane {
     try {
       const result = record.off();
       if (result && typeof result.catch === 'function') {
-        result.catch((error) => this.#console.error(error));
+        result.catch((error) => this.#log.error({ err: error, event: 'backplane.unsubscribe', channel }));
       }
     } catch (error) {
-      this.#console.error(error);
+      this.#log.error({ err: error, event: 'backplane.unsubscribe', channel });
     }
   }
 
@@ -333,18 +334,18 @@ class RoomsBackplane {
     } catch (error) {
       // Non-serializable payload: local delivery already happened, so this
       // is a cross-instance loss, not a lost event.
-      return void this.#console.error(error);
+      return void this.#log.error({ err: error, event: 'backplane.serialize', name });
     }
     const single = rooms && rooms.length === 1;
     const channel = single ? roomChannel(rooms[0]) : BROADCAST_CHANNEL;
     try {
       const result = this.#backplane.publish(channel, message);
       if (result && typeof result.catch === 'function') {
-        result.catch((error) => this.#console.error(error));
+        result.catch((error) => this.#log.error({ err: error, event: 'backplane.publish', channel }));
       }
     } catch (error) {
       // A broken backplane must never break local delivery.
-      this.#console.error(error);
+      this.#log.error({ err: error, event: 'backplane.publish', channel });
     }
   }
 
@@ -360,7 +361,7 @@ class RoomsBackplane {
     try {
       this.#deliver(rooms ?? null, name, data);
     } catch (error) {
-      this.#console.error(error);
+      this.#log.error({ err: error, event: 'backplane.deliver', name });
     }
   }
 

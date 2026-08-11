@@ -7,7 +7,6 @@ const assert = require('node:assert');
 const { Server, WrpcClient, defineRouter, procedure, createEventStream } = require('../../index.js');
 
 const noop = () => {};
-const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
 
 const waitFor = async (predicate, message = 'condition never held') => {
   for (let i = 0; i < 200; i++) {
@@ -56,7 +55,7 @@ const createServer = async (options = {}) => {
     host: '127.0.0.1',
     port: 0,
     protocol: 'http',
-    console: quiet,
+    logger: false,
     timeouts: { bind: 50 },
     ...options,
   });
@@ -194,7 +193,7 @@ test('subscriptions: ctx.signal reaches a subscription handler too', async (t) =
     host: '127.0.0.1',
     port: 0,
     protocol: 'http',
-    console: quiet,
+    logger: false,
     timeouts: { bind: 50 },
   });
   await server.listen();

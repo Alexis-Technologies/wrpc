@@ -12,6 +12,7 @@ const { RoomRegistry, Broadcast, RoomsBackplane } = require('./rooms.js');
 const { SseChannels, CHANNEL_HEADER } = require('../sse/server.js');
 const { isBackplane } = require('../scaling/index.js');
 const { handleMessage, handleBinary, handleRpc, split, parseParams, DEFAULT_MAX_BATCH } = require('./dispatcher.js');
+const { createLoggerWriter } = require('../logging.js');
 
 // One peer holding thousands of open generators is a denial of service the
 // application never opted into; the cap is generous but present.
@@ -22,6 +23,8 @@ const ServerWsTransport = ServerTransport.transport.ws;
 const ServerEventTransport = ServerTransport.transport.event;
 
 class Context {
+  #log = null;
+
   constructor(client, signal = null) {
     this.client = client;
     this.uuid = generateUUID();
@@ -36,6 +39,13 @@ class Context {
     return this.client.session;
   }
 
+  // Bound lazily: a Context is allocated for every call, subscribe and
+  // inbound event, and most handlers never log. `uuid` is already there, so
+  // the correlation id exists whether or not anyone asks for the child.
+  get log() {
+    return (this.#log ??= this.client.log.child({ callId: this.uuid }));
+  }
+
   // Rooms are reached from a handler through here — `ctx.server.to(room)` —
   // rather than by closing over a server the router had to exist before.
   get server() {
@@ -48,9 +58,9 @@ class Client extends Emitter {
   #sessions = null;
   #rooms = null;
   #server = null;
-  #console = null;
+  #log = null;
 
-  constructor(transport, { sessions, rooms, server, console, maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS } = {}) {
+  constructor(transport, { sessions, rooms, server, log, maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS } = {}) {
     super();
     this.#transport = transport;
     this.#sessions = sessions;
@@ -58,7 +68,9 @@ class Client extends Emitter {
     // has nobody to share them with.
     this.#rooms = rooms ?? new RoomRegistry();
     this.#server = server ?? null;
-    this.#console = console ?? globalThis.console;
+    // Connection-scoped, bound once: a connection lives for minutes, and the
+    // binding hoists the peer id out of every line logged for it.
+    this.#log = createLoggerWriter(log ?? globalThis.console).child({ peer: transport.source });
     this.source = transport.source;
     this.session = null;
     this.sessionReady = Promise.resolve();
@@ -74,13 +86,18 @@ class Client extends Emitter {
     const status = http.STATUS_CODES[httpCode];
     const info = error ? error.stack : status || 'Unknown error';
     this.#transport.error(code, { id, error });
-    this.#console.error(`${this.source}\t${code}\t${info}`);
+    this.#log.error({ event: 'rpc.error', code, id, err: error }, `${this.source}\t${code}\t${info}`);
+  }
+
+  /** The connection-scoped writer, reached by the dispatcher and handlers. */
+  get log() {
+    return this.#log;
   }
 
   // Diagnostics for packets that carry no id to answer on (inbound events):
   // the log is the only channel left.
-  warn(message) {
-    this.#console.warn(`${this.source}\t${message}`);
+  warn(message, entry = {}) {
+    this.#log.warn({ event: 'rpc.warn', ...entry }, `${this.source}\t${message}`);
   }
 
   /** Returns false when the transport is above its high-water mark. */
@@ -88,7 +105,9 @@ class Client extends Emitter {
     const { code, method } = options;
     const flushed = this.#transport.send(obj, code);
     const isSuccessCallback = obj.type === 'callback' && !obj.error;
-    if (isSuccessCallback) this.#console.log(`${this.source}\tCALL\t${method}\tOK`);
+    if (isSuccessCallback) {
+      this.#log.log({ event: 'call.ok', method, id: obj.id }, `${this.source}\tCALL\t${method}\tOK`);
+    }
     return flushed;
   }
 
@@ -227,7 +246,7 @@ class Client extends Emitter {
   // that is what makes restoreSession after a reconnect possible.
   // Sessions end via finalizeSession or store-side expiry only.
   destroy() {
-    const console = this.#console;
+    const log = this.#log;
     this.#rooms.leaveAll(this);
     // A gone peer cannot receive an answer, so everything still running on
     // its behalf is told to stop — this is what runs a subscription
@@ -241,7 +260,7 @@ class Client extends Emitter {
     for (const stream of this.streams.values()) {
       if (typeof stream.terminate !== 'function') continue;
       Promise.resolve(stream.terminate()).catch((error) => {
-        console.error(error);
+        log.error({ err: error, event: 'stream.terminate', stream: stream.id });
       });
     }
     this.streams.clear();
@@ -258,7 +277,7 @@ const RPC_OPTION_KEYS = [
   'sessions',
   'cors',
   'basePath',
-  'console',
+  'logger',
   'backplane',
   'instanceId',
   'maxBatch',
@@ -293,7 +312,9 @@ class RpcServer extends Emitter {
   #instance;
   #cors;
   #basePath;
-  #console;
+  #log;
+  #roomsLog;
+  #sseLog;
   #limits;
   #sse = null;
   #clients = new Set();
@@ -305,7 +326,7 @@ class RpcServer extends Emitter {
       sessions,
       cors = null,
       basePath = DEFAULT_BASE_PATH,
-      console = globalThis.console,
+      logger = globalThis.console,
       backplane = null,
       instanceId = generateUUID(),
       maxBatch = DEFAULT_MAX_BATCH,
@@ -318,10 +339,14 @@ class RpcServer extends Emitter {
     if (backplane && !isBackplane(backplane)) {
       throw new TypeError('RpcServer: options.backplane does not implement the backplane contract');
     }
-    this.#sessions = new SessionManager(sessions, console);
+    this.#log = createLoggerWriter(logger);
+    // Built once here rather than per broadcast or per channel: Broadcast is
+    // constructed on every to()/except()/broadcast().
+    this.#roomsLog = this.#log.child({ component: 'rooms' });
+    this.#sseLog = this.#log.child({ component: 'sse' });
+    this.#sessions = new SessionManager(sessions, this.#log.child({ component: 'sessions' }));
     this.#cors = cors;
     this.#basePath = normalizeBasePath(basePath);
-    this.#console = console;
     this.#instance = instanceId;
     this.#limits = { maxBatch, maxSubscriptions };
     this.#router = this.#withIntrospection(router);
@@ -335,7 +360,7 @@ class RpcServer extends Emitter {
       client.sessionReady = this.#restoreFromCookie(client, headers);
       return client;
     };
-    this.#sse = sse === false ? null : new SseChannels({ ...sse, console, addClient });
+    this.#sse = sse === false ? null : new SseChannels({ ...sse, log: this.#sseLog, addClient });
   }
 
   #initRooms(backplane) {
@@ -346,7 +371,7 @@ class RpcServer extends Emitter {
     const binder = new RoomsBackplane({
       backplane,
       instance: this.#instance,
-      console: this.#console,
+      log: this.#roomsLog,
       // A replayed event is delivered LOCALLY: publishing it again would
       // bounce it between instances forever.
       deliver: (rooms, name, data) => {
@@ -392,7 +417,7 @@ class RpcServer extends Emitter {
       registry: this.#rooms,
       clients: () => this.#clients,
       publish: this.#backplane ? (envelope) => this.#backplane.publish(envelope) : null,
-      console: this.#console,
+      log: this.#roomsLog,
     });
   }
 
@@ -429,7 +454,7 @@ class RpcServer extends Emitter {
       sessions: this.#sessions,
       rooms: this.#rooms,
       server: this,
-      console: this.#console,
+      log: this.#log,
       maxSubscriptions: this.#limits.maxSubscriptions,
     };
     const client = new Client(transport, options);
@@ -447,7 +472,7 @@ class RpcServer extends Emitter {
     const token = this.#sessions.readToken(parseCookies(cookie));
     if (!token) return Promise.resolve(false);
     return client.restoreSession(token).catch((error) => {
-      this.#console.error(error);
+      this.#log.error({ err: error, event: 'session.restore' });
       return false;
     });
   }

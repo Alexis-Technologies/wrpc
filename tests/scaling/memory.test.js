@@ -107,7 +107,7 @@ test('MemoryBackplane: isolation and lifecycle', async (t) => {
 
   await t.test('a throwing handler is isolated and reported', async () => {
     const errors = [];
-    const backplane = new MemoryBackplane({ console: { ...quiet, error: (e) => errors.push(e) } });
+    const backplane = new MemoryBackplane({ logger: { ...quiet, error: (e) => errors.push(e) } });
     t.after(() => backplane.close());
     const seen = [];
     backplane.subscribe('chan', () => {

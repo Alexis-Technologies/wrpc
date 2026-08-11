@@ -49,26 +49,12 @@ const resolveEngine = (fastify, options) => {
   );
 };
 
-// fastify's logger is pino: it has info/warn/error/debug but no `log`, which
-// the RPC core calls on every successful invocation. Adapt rather than hand
-// it over raw (that crashed on the first successful call).
-const toConsole = (logger) => {
-  if (!logger) return globalThis.console;
-  if (typeof logger.log === 'function') return logger;
-  if (typeof logger.info !== 'function') return globalThis.console;
-  return {
-    log: (...args) => logger.info(...args),
-    info: (...args) => logger.info(...args),
-    warn: (...args) => logger.warn(...args),
-    error: (...args) => logger.error(...args),
-    debug: (...args) => logger.debug?.(...args),
-  };
-};
-
 const wrpcFastify = async (fastify, options = {}) => {
   const { cors = null, ws = {}, maxBodySize } = options;
-  const console = options.console ?? toConsole(fastify.log);
-  const rpc = options.rpc ?? new RpcServer(rpcOptions({ ...options, cors, console }));
+  // fastify's logger IS a pino, so it goes straight in: the core detects the
+  // structured shape and calls child()/info(entry, message) natively.
+  const logger = options.logger ?? fastify.log;
+  const rpc = options.rpc ?? new RpcServer(rpcOptions({ ...options, cors, logger }));
   const base = rpc.basePath;
   const engine = resolveEngine(fastify, options);
 

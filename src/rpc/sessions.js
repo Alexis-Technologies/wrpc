@@ -1,6 +1,7 @@
 'use strict';
 
 const { generateUUID } = require('../runtime/node.js');
+const { createLoggerWriter } = require('../logging.js');
 
 const createProxy = (data, save) =>
   new Proxy(data, {
@@ -113,20 +114,20 @@ const buildCookie = (name, value, options) => {
 // Per-server session facility (replaces the old module-global Map shared
 // by every Server in the process).
 class SessionManager {
-  #console;
+  #log;
 
-  constructor(options = {}, console = globalThis.console) {
+  constructor(options = {}, logger = globalThis.console) {
     const { store = new MemorySessionStore(), generateToken = generateUUID, cookie = {} } = options;
     this.store = store;
     this.generateToken = generateToken;
     this.cookie = { ...DEFAULT_COOKIE, ...cookie };
-    this.#console = console;
+    this.#log = createLoggerWriter(logger);
   }
 
   #saver(token) {
     return (state) => {
       Promise.resolve(this.store.set(token, state)).catch((error) => {
-        this.#console.error(error);
+        this.#log.error({ err: error, event: 'session.save' });
       });
     };
   }

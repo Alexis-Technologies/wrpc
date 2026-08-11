@@ -1,4 +1,4 @@
-import type { Client, HttpCall } from './index.js';
+import type { Client, HttpCall, WrpcLogger } from './index.js';
 
 /**
  * `@alexify/wrpc/sse` — Server-Sent Events as a wrpc transport.
@@ -131,7 +131,8 @@ export declare class SseChannels {
        * only handshake, and where its session cookie comes from.
        */
       addClient(transport: ServerSseTransport, headers: Record<string, string>): Client;
-      console?: Console;
+      /** Internal: the channel registry's writer, built by RpcServer. */
+      log?: WrpcLogger | boolean;
     },
   );
   readonly size: number;

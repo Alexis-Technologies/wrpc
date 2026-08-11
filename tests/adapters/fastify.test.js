@@ -70,7 +70,7 @@ const boot = async (t, options = {}) => {
     await app.close().catch(() => {});
   });
   if (hooks) for (const [name, handler] of Object.entries(hooks)) app.addHook(name, handler);
-  await app.register(wrpcFastify, { console: quiet, ...pluginOptions });
+  await app.register(wrpcFastify, { logger: false, ...pluginOptions });
   await app.listen({ host: '127.0.0.1', port: 0 });
   const { port } = app.server.address();
   return { app, port, origin: `http://127.0.0.1:${port}` };
@@ -172,7 +172,7 @@ test('options.engine short-circuits detection and preClose owns teardown', async
   const engine = fakeEngine();
   // A server nothing can detect: without the explicit engine this throws.
   const instance = fakeFastify({ notDetectable: true });
-  await wrpcFastify(instance, { router: createRouter(), console: quiet, engine });
+  await wrpcFastify(instance, { router: createRouter(), logger: false, engine });
 
   assert.ok(engine.attached, 'the injected engine was attached');
   assert.strictEqual(engine.attached.server, instance.server, 'a hosted engine gets the fastify server');
@@ -192,7 +192,7 @@ test('options.engine short-circuits detection and preClose owns teardown', async
 test('a non-Engine options.engine is refused at the boundary', async () => {
   const instance = fakeFastify(http.createServer());
   await assert.rejects(
-    wrpcFastify(instance, { router: createRouter(), console: quiet, engine: {} }),
+    wrpcFastify(instance, { router: createRouter(), logger: false, engine: {} }),
     /does not implement the Engine contract/,
   );
   assert.strictEqual(instance.routes.length, 0, 'nothing is registered when the engine is rejected');
@@ -201,7 +201,7 @@ test('a non-Engine options.engine is refused at the boundary', async () => {
 test('a fastify instance with no detectable backend fails loudly', async () => {
   const instance = fakeFastify({ neitherNodeNorUws: true });
   await assert.rejects(
-    wrpcFastify(instance, { router: createRouter(), console: quiet }),
+    wrpcFastify(instance, { router: createRouter(), logger: false }),
     /could not detect a WebSocket backend/,
   );
 });
@@ -340,12 +340,34 @@ test("fastify's own logger is adapted, not handed to the core raw", { skip: noFa
   assert.deepStrictEqual(frames, [{ type: 'callback', id: '9', result: { via: 'ws' } }]);
 });
 
-test('a logger with neither log nor info falls back to the global console', { skip: noFastify }, async (t) => {
+test('a partial fastify logger is accepted rather than rejected', { skip: noFastify }, async (t) => {
   const app = fakeFastify({});
-  app.log = { warn: () => {} }; // not a console, not a pino
+  app.log = { warn: () => {} }; // neither a full console nor a pino
   const engine = fakeEngine();
   await wrpcFastify(app, { router: createRouter(), engine });
   assert.ok(app.decorations.get('wrpc') instanceof RpcServer);
+  t.after(() => engine.close());
+});
+
+test('a fastify pino goes in as a structured logger', { skip: noFastify }, async (t) => {
+  const entries = [];
+  const app = fakeFastify({});
+  // The shape fastify's default logger actually has: `child`/`level` and no
+  // `log`, which used to need an adapter in between.
+  const pinoLike = {
+    level: 'info',
+    child: () => pinoLike,
+    info: (entry, message) => entries.push([entry, message]),
+    debug: () => {},
+    warn: () => {},
+    error: () => {},
+  };
+  app.log = pinoLike;
+  const engine = fakeEngine();
+  await wrpcFastify(app, { router: createRouter(), engine });
+  const rpc = app.decorations.get('wrpc');
+  assert.ok(rpc instanceof RpcServer);
+  rpc.broadcast('ping', 1);
   t.after(() => engine.close());
 });
 

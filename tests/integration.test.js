@@ -13,16 +13,13 @@ process.emitWarning = (warning, type, ...args) => {
   emitWarning(warning, type, ...args);
 };
 
-const noop = () => {};
-const quietConsole = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
-
 const createServer = async (router) => {
   const server = new Server({
     router,
     host: '127.0.0.1',
     port: 0,
     protocol: 'http',
-    console: quietConsole,
+    logger: false,
     timeouts: { bind: 100 },
   });
   await server.listen();

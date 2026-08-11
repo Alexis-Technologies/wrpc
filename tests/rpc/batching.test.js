@@ -7,9 +7,6 @@ const assert = require('node:assert');
 const { Server, WrpcClient, Emitter, defineRouter, procedure } = require('../../index.js');
 const { jsonParse } = require('../../src/utils.js');
 
-const noop = () => {};
-const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
-
 const settle = async () => {
   for (let i = 0; i < 8; i++) await Promise.resolve();
 };
@@ -215,7 +212,7 @@ const createServer = async (options = {}) => {
     host: '127.0.0.1',
     port: 0,
     protocol: 'http',
-    console: quiet,
+    logger: false,
     timeouts: { bind: 50 },
     ...options,
   });

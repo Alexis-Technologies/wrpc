@@ -20,8 +20,8 @@ const { receiveBody, normalizeBody, nodeStream, MAX_BODY_SIZE } = require('./com
 const getPathname = (url) => (url ? url.split('?')[0] : '/');
 
 const createWrpc = (options = {}) => {
-  const { cors = null, console = globalThis.console, ws = {}, maxBodySize = MAX_BODY_SIZE } = options;
-  const rpc = options.rpc ?? new RpcServer(rpcOptions({ ...options, cors, console }));
+  const { cors = null, logger = globalThis.console, ws = {}, maxBodySize = MAX_BODY_SIZE } = options;
+  const rpc = options.rpc ?? new RpcServer(rpcOptions({ ...options, cors, logger }));
   const engine = options.engine ?? createNodeEngine(ws);
   if (!isEngine(engine)) {
     throw new TypeError('createWrpc: options.engine does not implement the Engine contract');

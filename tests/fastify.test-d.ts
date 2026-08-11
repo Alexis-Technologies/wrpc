@@ -29,7 +29,7 @@ expectAssignable<WrpcFastifyOptions>({
   sessions: { cookie: { name: 'sid', sameSite: 'Strict' }, generateToken: () => 'token' },
   cors: { origins: ['https://app.example'], credentials: true },
   basePath: '/rpc',
-  console: globalThis.console,
+  logger: globalThis.console,
 });
 // `rpc` reuses an existing core, `engine` skips backend detection
 expectAssignable<WrpcFastifyOptions>({ rpc });

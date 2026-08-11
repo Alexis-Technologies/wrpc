@@ -9,7 +9,7 @@ const { isEngine } = require('../../engine.js');
 const { runEngineContract, standaloneHarness } = require('../engine/engineContract.js');
 const { Server, defineRouter, procedure } = require('../../index.js');
 const { ProtocolClient } = require('../websocket/protocolClient.js');
-const { requireUws, quiet } = require('./boots.js');
+const { requireUws } = require('./boots.js');
 
 const uws = requireUws();
 
@@ -148,7 +148,7 @@ test(
       router: defineRouter({ unit: { noop: procedure({ access: 'public', handler: async () => null }) } }),
       host: '127.0.0.1',
       port,
-      console: quiet,
+      logger: false,
       engine: createUwsEngine({ uws }),
       timeouts: { bind: 20 },
       retry: 2,
@@ -166,7 +166,7 @@ test(
       router: defineRouter({ echo: { args: procedure({ access: 'public', handler: async (_c, args) => args }) } }),
       host: '127.0.0.1',
       port: 0,
-      console: quiet,
+      logger: false,
       engine: createUwsEngine({ uws, maxBodySize: 256 }),
     });
     t.after(() => server.close());

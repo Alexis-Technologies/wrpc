@@ -11,6 +11,8 @@
  * fan-out mechanism, not a queue.
  */
 
+import type { WrpcLogger } from './index.js';
+
 /** Removes one subscription; safe to call more than once. */
 export type Unsubscribe = () => void | Promise<unknown>;
 
@@ -36,7 +38,8 @@ export interface Backplane {
 export interface MemoryBackplaneOptions {
   /** Channel namespace; default 'wrpc'. */
   prefix?: string;
-  console?: Console;
+  /** Defaults to the global console; `false` silences the backplane. */
+  logger?: WrpcLogger | boolean;
 }
 
 /**
@@ -85,7 +88,8 @@ export interface RedisAdapterOptions {
   sub?: RedisSubscriber;
   /** Channel namespace; default 'wrpc'. */
   prefix?: string;
-  console?: Console;
+  /** Defaults to the global console; `false` silences the adapter. */
+  logger?: WrpcLogger | boolean;
 }
 
 /**

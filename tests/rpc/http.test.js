@@ -8,9 +8,6 @@ const { EventEmitter } = require('node:events');
 const { Server, defineRouter, procedure } = require('../../index.js');
 const { ProtocolClient } = require('../websocket/protocolClient.js');
 
-const noop = () => {};
-const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
-
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const COOKIE_RE = /^token=([^;]+); Path=\/; HttpOnly; Secure; SameSite=Lax$/;
 
@@ -44,7 +41,7 @@ const startServer = async (t, options = {}) => {
     protocol: 'http',
     host: '127.0.0.1',
     port: 0,
-    console: quiet,
+    logger: false,
     ...options,
   });
   await server.listen();

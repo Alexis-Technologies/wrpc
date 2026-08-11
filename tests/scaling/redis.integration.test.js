@@ -33,9 +33,6 @@ if (REDIS_URL) {
 
 const skip = !REDIS_URL ? 'REDIS_URL is not set' : !Redis ? 'ioredis is not installed' : false;
 
-const noop = () => {};
-const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
-
 const router = defineRouter({ test: { ping: procedure({ access: 'public', handler: async () => 'pong' }) } });
 
 // A socket-shaped stub: attachSocket only needs the events and a send().
@@ -95,8 +92,8 @@ const prefix = () => `wrpc-test:${process.pid}:${Number(process.hrtime.bigint() 
 
 const createNode = (t, { instanceId, prefix: keyPrefix }) => {
   const pub = new Redis(REDIS_URL, { lazyConnect: false, maxRetriesPerRequest: 1 });
-  const backplane = createRedisAdapter({ pub, prefix: keyPrefix, console: quiet });
-  const rpc = new RpcServer({ router, console: quiet, backplane, instanceId });
+  const backplane = createRedisAdapter({ pub, prefix: keyPrefix, logger: false });
+  const rpc = new RpcServer({ router, logger: false, backplane, instanceId });
   t.after(async () => {
     await rpc.close();
     backplane.close(); // quits the subscriber it duplicated, not `pub`

@@ -21,7 +21,7 @@ const fakeClient = (name, { persistent = true, broken = false } = {}) => ({
 });
 
 const target = (registry, clients, options = {}) =>
-  new Broadcast({ registry, clients: () => clients, console: quiet, ...options });
+  new Broadcast({ registry, clients: () => clients, log: quiet, ...options });
 
 test('RoomRegistry: join, leave and the reverse index', async (t) => {
   const registry = new RoomRegistry();
@@ -168,8 +168,8 @@ test('Broadcast: non-persistent and broken clients', () => {
   for (const client of clients) registry.join(client, 'chat');
 
   const errors = [];
-  const console = { ...quiet, error: (error) => errors.push(error) };
-  const sent = new Broadcast({ registry, clients: () => clients, console }).to('chat').emit('msg', 1);
+  const log = { ...quiet, error: (error) => errors.push(error) };
+  const sent = new Broadcast({ registry, clients: () => clients, log }).to('chat').emit('msg', 1);
 
   assert.strictEqual(sent, 1, 'only the live persistent client counts');
   assert.deepStrictEqual(http.received, [], 'an http client cannot carry events');

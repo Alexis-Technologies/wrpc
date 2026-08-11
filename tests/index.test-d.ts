@@ -171,6 +171,23 @@ expectAssignable<wrpc.ServerOptions>({
 expectAssignable<wrpc.CorsOptions>({ origins: (origin: string) => origin.endsWith('.example') });
 expectError<wrpc.ServerOptions>({ router, kind: 'server' });
 
+// The logger option: a Console and a structured logger both fit the same
+// all-optional shape, and `false` is the way to silence a server outright.
+expectAssignable<wrpc.WrpcLogger>(globalThis.console);
+declare const pinoLike: {
+  level: string;
+  child(bindings: Record<string, unknown>): typeof pinoLike;
+  info(entry: object, message?: string): void;
+  debug(entry: object, message?: string): void;
+  warn(entry: object, message?: string): void;
+  error(entry: object, message?: string): void;
+};
+expectAssignable<wrpc.WrpcLogger>(pinoLike);
+expectAssignable<wrpc.ServerOptions>({ router, logger: false });
+expectAssignable<wrpc.ServerOptions>({ router, logger: pinoLike });
+expectAssignable<wrpc.RpcServerOptions>({ router, logger: globalThis.console });
+expectError<wrpc.ServerOptions>({ router, logger: 'verbose' });
+
 // RpcServer core surface
 declare const rpc: RpcServer;
 expectType<Router>(rpc.router);

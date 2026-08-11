@@ -8,6 +8,7 @@ const { RpcServer, rpcOptions } = require('./rpc/core.js');
 const { isOriginAllowed } = require('./transport.js');
 const { createNodeEngine, isEngine } = require('./engine/index.js');
 const { receiveBody, nodeStream } = require('./adapters/common.js');
+const { createLoggerWriter } = require('./logging.js');
 
 const DEFAULT_LISTEN_RETRY = 3;
 const DEFAULT_BIND_TIMEOUT = 2000;
@@ -28,19 +29,19 @@ class Server extends Emitter {
   rpc = null;
   #engine;
   #options;
-  #console;
+  #log;
   #address = null;
 
   constructor(options = {}) {
     super();
-    const { cors = null, console = globalThis.console, engine = createNodeEngine(), ws = {} } = options;
+    const { cors = null, logger = globalThis.console, engine = createNodeEngine(), ws = {} } = options;
     if (!isEngine(engine)) {
       throw new TypeError('Server: options.engine does not implement the Engine contract');
     }
     this.#options = options;
-    this.#console = console;
+    this.#log = createLoggerWriter(logger);
     this.#engine = engine;
-    this.rpc = new RpcServer(rpcOptions({ ...options, cors, console }));
+    this.rpc = new RpcServer(rpcOptions({ ...options, cors, logger }));
     if (engine.standalone) this.#initStandalone(ws, cors);
     else this.#init(ws, cors);
   }
@@ -197,14 +198,14 @@ class Server extends Emitter {
         this.#bindOnce(host, port).then(
           (address) => {
             this.#address = address;
-            this.#console.info(`Listen port ${address?.port ?? port}`);
+            this.#log.info({ event: 'listen', port: address?.port ?? port }, `Listen port ${address?.port ?? port}`);
             resolve(this);
           },
           (error) => {
             if (error.code !== 'EADDRINUSE') return void reject(error);
             count--;
             if (count === 0) return void reject(error);
-            this.#console.warn(`Address in use: ${host}:${port}, retry...`);
+            this.#log.warn({ event: 'listen.retry', host, port }, `Address in use: ${host}:${port}, retry...`);
             setTimeout(attempt, timeouts.bind ?? DEFAULT_BIND_TIMEOUT);
           },
         );
@@ -220,7 +221,7 @@ class Server extends Emitter {
     }
     const closed = new Promise((resolve) => {
       this.httpServer.close((error) => {
-        if (error) this.#console.error(error);
+        if (error) this.#log.error({ err: error, event: 'close' });
         resolve();
       });
     });

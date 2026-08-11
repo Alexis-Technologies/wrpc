@@ -1,5 +1,5 @@
 import type { Engine, EngineAttachOptions } from './engine.js';
-import type { RpcServer, RpcServerOptions } from './index.js';
+import type { RpcServer, RpcServerOptions, WrpcLogger } from './index.js';
 import type { UwsApp } from './uws.js';
 
 /**
@@ -10,11 +10,11 @@ import type { UwsApp } from './uws.js';
 export interface FastifyLike {
   server: unknown;
   /**
-   * fastify's logger, reused as the core's console when `console` is not
-   * passed. Typed as a partial Console because fastify's default is pino,
-   * which shares only part of the Console surface.
+   * fastify's logger, used as the core's logger when `logger` is not passed.
+   * fastify's default is a pino, which the core detects as structured and
+   * calls natively — no adaptation in between.
    */
-  log?: Partial<Console>;
+  log?: WrpcLogger;
   /**
    * Loosely typed on purpose: fastify's own RouteOptions is generic over the
    * server/request/reply/schema quintet, so a concrete parameter type here

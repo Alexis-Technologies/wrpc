@@ -10,7 +10,6 @@ const { Server, WrpcClient, defineRouter, procedure } = require('../index.js');
 const { backoffDelay, jsonParse } = require('../src/utils.js');
 
 const noop = () => {};
-const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
 
 const waitFor = async (predicate, message = 'condition never held') => {
   for (let i = 0; i < 100; i++) {
@@ -41,7 +40,7 @@ const createServer = async (definition, port = 0) => {
     host: '127.0.0.1',
     port,
     protocol: 'http',
-    console: quiet,
+    logger: false,
     timeouts: { bind: 50 },
     retry: 20,
   });

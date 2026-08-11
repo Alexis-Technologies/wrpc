@@ -72,13 +72,13 @@ test('router: the reserved `on` key holds event handlers', async (t) => {
 // ---------------------------------------------------------------------------
 // Wire level: client -> server events over a live connection
 
-const createServer = async (router, console) => {
+const createServer = async (router, logger) => {
   const server = new Server({
     router,
     host: '127.0.0.1',
     port: 0,
     protocol: 'http',
-    console,
+    logger,
     timeouts: { bind: 100 },
   });
   await server.listen();
@@ -116,8 +116,8 @@ test('events: a client event reaches its router handler', async (t) => {
       },
     },
   });
-  const console = { ...quiet, warn: (message) => warnings.push(message) };
-  const { server, port } = await createServer(router, console);
+  const logger = { ...quiet, warn: (message) => warnings.push(message) };
+  const { server, port } = await createServer(router, logger);
   t.after(() => server.close());
 
   const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`);

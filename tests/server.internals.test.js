@@ -51,8 +51,8 @@ const fakeWsTransport = () => ({
   },
 });
 
-const createClient = (transport, sessions = new SessionManager({}, quiet), console = quiet) =>
-  new Client(transport, { sessions, console });
+const createClient = (transport, sessions = new SessionManager({}, quiet), log = quiet) =>
+  new Client(transport, { sessions, log });
 
 const recordingStore = () => {
   const map = new Map();
@@ -179,9 +179,9 @@ test('Client over WS transport', async (t) => {
 
   await t.test('destroy terminates open streams but keeps the stored session', async () => {
     const errors = [];
-    const console = { ...quiet, error: (error) => errors.push(error) };
+    const log = { ...quiet, error: (error) => errors.push(error) };
     const sessions = new SessionManager({}, quiet);
-    const client = createClient(fakeWsTransport(), sessions, console);
+    const client = createClient(fakeWsTransport(), sessions, log);
     const token = randomUUID();
     client.initializeSession(token, {});
 
@@ -405,7 +405,7 @@ const createServer = async (options = {}) => {
     host: '127.0.0.1',
     port: 0,
     protocol: 'http',
-    console: quiet,
+    logger: false,
     timeouts: { bind: 50 },
     ...options,
   });
@@ -433,7 +433,7 @@ test('Server internals', async (t) => {
       host: '127.0.0.1',
       port: blocker.port,
       protocol: 'http',
-      console: quiet,
+      logger: false,
       timeouts: { bind: 20 },
       retry: 2,
     });

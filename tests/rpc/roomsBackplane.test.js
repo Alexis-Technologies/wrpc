@@ -38,13 +38,13 @@ const createBackplane = (overrides = {}) => {
   return backplane;
 };
 
-const createBinder = (backplane, { deliver = noop, console } = {}) => {
+const createBinder = (backplane, { deliver = noop, log } = {}) => {
   const errors = [];
   const binder = new RoomsBackplane({
     backplane,
     instance: 'node-1',
     deliver,
-    console: console ?? { error: (error) => errors.push(error) },
+    log: log ?? { log: noop, error: (error) => errors.push(error) },
   });
   return { binder, errors };
 };

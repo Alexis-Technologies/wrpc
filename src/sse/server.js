@@ -2,6 +2,7 @@
 
 const { ServerTransport } = require('../transport.js');
 const { generateUUID } = require('../runtime/node.js');
+const { createLoggerWriter } = require('../logging.js');
 
 // Server-Sent Events as a wrpc transport.
 //
@@ -142,11 +143,11 @@ class SseChannels {
   #channels = new Map();
   #options;
   #addClient;
-  #console;
+  #log;
 
-  constructor({ addClient, console = globalThis.console, ...options } = {}) {
+  constructor({ addClient, log = globalThis.console, ...options } = {}) {
     this.#addClient = addClient;
-    this.#console = console;
+    this.#log = createLoggerWriter(log);
     this.#options = {
       retention: options.retention ?? DEFAULT_RETENTION,
       replay: options.replay ?? DEFAULT_REPLAY,
@@ -203,7 +204,7 @@ class SseChannels {
       try {
         previous.end();
       } catch (error) {
-        this.#console.error(error);
+        this.#log.error({ err: error, event: 'sse.supersede', channel: channel.id });
       }
     }
     channel.transport.attach(writer);
@@ -276,7 +277,7 @@ class SseChannels {
         channel.transport.detach();
         channel.transport.close();
       } catch (error) {
-        this.#console.error(error);
+        this.#log.error({ err: error, event: 'sse.close', channel: channel.id });
       }
     }
   }

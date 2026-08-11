@@ -21,9 +21,6 @@ process.emitWarning = (warning, type, ...args) => {
   emitWarning(warning, type, ...args);
 };
 
-const noop = () => {};
-const quietConsole = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
-
 const router = defineRouter({
   test: {
     hello: procedure({
@@ -42,7 +39,7 @@ test('Server / calls', async (t) => {
     host: 'localhost',
     port: 8003,
     protocol: 'http',
-    console: quietConsole,
+    logger: false,
     timeouts: { bind: 100 },
   };
 
@@ -112,7 +109,7 @@ test('Server / calls', async (t) => {
   });
 
   await t.test('listen() works without the timeouts option', async () => {
-    const extra = new Server({ router, host: 'localhost', port: 0, protocol: 'http', console: quietConsole });
+    const extra = new Server({ router, host: 'localhost', port: 0, protocol: 'http', logger: false });
     await extra.listen();
     await extra.close();
   });
@@ -120,10 +117,10 @@ test('Server / calls', async (t) => {
   await t.test('listen() retry path works without the timeouts option', async () => {
     // The bind-retry handler used to dereference options.timeouts.bind, so a
     // server without `timeouts` crashed with a TypeError on EADDRINUSE.
-    const blocker = new Server({ router, host: 'localhost', port: 0, protocol: 'http', console: quietConsole });
+    const blocker = new Server({ router, host: 'localhost', port: 0, protocol: 'http', logger: false });
     await blocker.listen();
     const { port } = blocker.httpServer.address();
-    const extra = new Server({ router, host: 'localhost', port, protocol: 'http', console: quietConsole });
+    const extra = new Server({ router, host: 'localhost', port, protocol: 'http', logger: false });
     const listening = extra.listen();
     await timers.setTimeout(50); // first bind fails with EADDRINUSE, a retry is scheduled
     await blocker.close(); // free the port so the scheduled retry succeeds
@@ -155,7 +152,7 @@ test('Server / calls', async (t) => {
       host: 'localhost',
       port: 0,
       protocol: 'http',
-      console: quietConsole,
+      logger: false,
       ws: { path: '/socket' },
     });
     await custom.listen();

@@ -12,9 +12,6 @@ const assert = require('node:assert');
 const { Server, connect, defineRouter, procedure, tracked } = require('../../index.js');
 const { createQueryUtils } = require('../../query.js');
 
-const noop = () => {};
-const quietConsole = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
-
 // The two methods of QueryClient this needs, with real hashing semantics: keys
 // are compared by value, so a write and a read of the same path meet.
 const cache = () => {
@@ -68,7 +65,7 @@ const boot = async (t) => {
     host: '127.0.0.1',
     port: 0,
     protocol: 'http',
-    console: quietConsole,
+    logger: false,
     timeouts: { bind: 100 },
   });
   await server.listen();
