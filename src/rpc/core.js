@@ -13,7 +13,7 @@ const { SseChannels, CHANNEL_HEADER } = require('../sse/server.js');
 const { isBackplane } = require('../scaling/index.js');
 const { handleMessage, handleBinary, handleRpc, split, parseParams, DEFAULT_MAX_BATCH } = require('./dispatcher.js');
 const { createLoggerWriter } = require('../logging.js');
-const { createServerTelemetry } = require('../telemetry.js');
+const { createServerTelemetry } = require('../telemetry/server.js');
 
 // One peer holding thousands of open generators is a denial of service the
 // application never opted into; the cap is generous but present.

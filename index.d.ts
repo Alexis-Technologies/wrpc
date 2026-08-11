@@ -420,6 +420,12 @@ export interface WrpcClientOptions {
    * it.
    */
   logger?: WrpcLogger | boolean;
+  /**
+   * Off unless a tracer, a meter, or the OTel api module is supplied. With a
+   * propagator, outgoing packets carry `tp`/`ts` so the server's span becomes
+   * a child of this client's.
+   */
+  telemetry?: WrpcTelemetryOptions | null;
   /** Jitter source; injectable so tests can pin the backoff schedule. */
   random?: () => number;
   proxy?: (data: string, packet: object | null) => void;
@@ -950,9 +956,20 @@ export interface WrpcMeter {
   createUpDownCounter?(name: string, options?: unknown): WrpcCounter;
 }
 
+export interface WrpcPropagation {
+  inject(context: unknown, carrier: object, setter: unknown): void;
+  extract(context: unknown, carrier: object, getter: unknown): unknown;
+}
+
+export interface WrpcContextApi {
+  active(): unknown;
+}
+
 export interface WrpcTelemetryApi {
   trace?: { getTracer(name: string, version?: string): WrpcTracer };
   metrics?: { getMeter(name: string, version?: string): WrpcMeter };
+  propagation?: WrpcPropagation;
+  context?: WrpcContextApi;
 }
 
 /**
@@ -973,6 +990,20 @@ export interface WrpcTelemetryOptions {
    * identity, and the two do not share a switch.
    */
   includeIdentity?: boolean;
+  /**
+   * Trace context is written to, and read from, the packet's `tp`/`ts`
+   * fields through these. `api` supplies both; pass them explicitly when
+   * injecting a bare `tracer`/`meter`. Without a propagator wrpc emits local
+   * spans only — it will not hand-roll the W3C format.
+   */
+  propagation?: WrpcPropagation;
+  context?: WrpcContextApi;
+  /**
+   * Default true, as in gRPC and HTTP instrumentation: an inbound
+   * `traceparent` becomes the server span's parent. Set false when peers are
+   * untrusted — a hostile client can otherwise forge trace ids.
+   */
+  trustRemoteContext?: boolean;
 }
 
 export interface RpcServerOptions {

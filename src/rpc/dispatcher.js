@@ -4,7 +4,7 @@ const { jsonParse } = require('../utils.js');
 const { WrpcReadable } = require('../streams.js');
 const { chunkDecode } = require('../chunks.js');
 const { runSubscription } = require('./subscriptions.js');
-const { SPAN_KIND_CONSUMER } = require('../telemetry.js');
+const { SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
 
 const DEFAULT_VERSION = '*';
 

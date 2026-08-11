@@ -1,72 +1,19 @@
 'use strict';
 
-// OpenTelemetry with no dependency on OpenTelemetry.
-//
-// Like src/logging.js this file imports nothing: the caller injects either
-// the `@opentelemetry/api` module or pre-built tracer/meter instances, and
-// everything here is duck-typed. The writer that comes back always has the
-// same shape, disabled or not, so no call site branches on whether telemetry
-// is configured.
-//
-// Every recording method contains its own failures. A broken exporter, a
-// meter that throws, a span implementation missing half its methods — none
-// of them may turn a working RPC call into a failed one.
+// The server half: spans for calls, subscriptions and inbound events, plus
+// the twelve instruments a server has anything to say about. Node-only —
+// nothing browser-reachable requires this file.
 
-// 0 = UNSET, 1 = OK, 2 = ERROR. Frozen by the OTel specification, so
-// hardcoding it is what avoids importing @opentelemetry/api for a constant.
-const SPAN_STATUS_ERROR = 2;
-
-// Instrumentation scope. The version argument of getTracer/getMeter is
-// deliberately omitted: reading it would mean requiring package.json, which
-// would drag this file's whole dependency graph into browser bundles.
-const SCOPE_NAME = '@alexify/wrpc';
-
-// SpanKind, also frozen by the spec: 0 INTERNAL, 1 SERVER, 2 CLIENT,
-// 3 PRODUCER, 4 CONSUMER.
-const SPAN_KIND_SERVER = 1;
-const SPAN_KIND_CONSUMER = 4;
-
-const hasMethod = (value, name) => typeof value?.[name] === 'function';
-
-/**
- * Two injection modes:
- * - `{ api }` — the @opentelemetry/api module, from which wrpc derives its
- *   own tracer and meter so spans carry the right instrumentation scope.
- * - `{ tracer, meter }` — pre-built instances; either may be absent, and a
- *   tracer-only or meter-only configuration is fully supported.
- */
-const resolveTracerAndMeter = (telemetry) => {
-  if (telemetry.api) {
-    const { api } = telemetry;
-    return {
-      tracer: hasMethod(api.trace, 'getTracer') ? api.trace.getTracer(SCOPE_NAME) : null,
-      meter: hasMethod(api.metrics, 'getMeter') ? api.metrics.getMeter(SCOPE_NAME) : null,
-    };
-  }
-  return { tracer: telemetry.tracer ?? null, meter: telemetry.meter ?? null };
-};
-
-const noop = () => {};
-
-const DISABLED = Object.freeze({
-  enabled: false,
-  // The lifecycle wrapper still runs its callback — that is what lets the
-  // dispatcher bracket a call the same way whether telemetry is on or off.
-  withSpan(_options, fn) {
-    return fn(null);
-  },
-  recordError: noop,
-  endSpan: noop,
-  recordCall: noop,
-  recordConnection: noop,
-  recordSubscription: noop,
-  recordSubscriptionValues: noop,
-  recordBroadcast: noop,
-  recordStreamBytes: noop,
-  recordBackpressure: noop,
-  recordSession: noop,
-  recordSseChannel: noop,
-});
+const {
+  SPAN_STATUS_ERROR,
+  SPAN_KIND_SERVER,
+  TRACEPARENT,
+  GETTER,
+  hasMethod,
+  resolvePropagation,
+  resolveTracerAndMeter,
+  DISABLED,
+} = require('./shared.js');
 
 // A target is the wire `method` string: 'unit/name' or 'unit.ver/name'. The
 // span name is that string verbatim, following the OTel `rpc.*` convention
@@ -103,6 +50,12 @@ const createServerTelemetry = (telemetry) => {
   if (!tracer && !meter) return DISABLED;
 
   const includeIdentity = telemetry.includeIdentity !== false;
+  // Accepting an inbound traceparent means trusting a peer not to forge one.
+  // gRPC and every HTTP instrumentation make the same call, and the
+  // mitigation belongs at ingress; defaulting to false would mean end-to-end
+  // tracing did nothing out of the box.
+  const trustRemote = telemetry.trustRemoteContext !== false;
+  const propagator = resolvePropagation(telemetry);
 
   let duration = null;
   let calls = null;
@@ -186,15 +139,35 @@ const createServerTelemetry = (telemetry) => {
     }
   }
 
-  const startSpan = (name, options, handle, fn) => {
+  // The parent context carried by the packet, or null. Extraction is what
+  // links a client span in one process to the server span in another.
+  const extract = (packet) => {
+    if (!propagator || !trustRemote) return null;
+    if (typeof packet?.[TRACEPARENT] !== 'string') return null;
+    try {
+      const root = propagator.context?.active?.() ?? undefined;
+      return propagator.propagation.extract(root, packet, GETTER) ?? null;
+    } catch {
+      return null;
+    }
+  };
+
+  const startSpan = (name, options, parent, handle, fn) => {
     if (hasMethod(tracer, 'startActiveSpan')) {
       let invoked = false;
       try {
-        return tracer.startActiveSpan(name, options, (span) => {
+        const run = (span) => {
           handle.span = span ?? null;
           invoked = true;
           return fn(handle);
-        });
+        };
+        // The 4-argument overload is not universal: handing four arguments
+        // to a 3-argument implementation means the callback is never called
+        // at all, so the arity is checked rather than assumed.
+        const withParent = parent && tracer.startActiveSpan.length >= 4;
+        return withParent
+          ? tracer.startActiveSpan(name, options, parent, run)
+          : tracer.startActiveSpan(name, options, run);
       } catch (error) {
         // An error thrown by `fn` itself must propagate untouched; only a
         // tracer that broke BEFORE running the callback is swallowed.
@@ -203,7 +176,8 @@ const createServerTelemetry = (telemetry) => {
       }
     }
     try {
-      handle.span = hasMethod(tracer, 'startSpan') ? tracer.startSpan(name, options) : null;
+      if (!hasMethod(tracer, 'startSpan')) handle.span = null;
+      else handle.span = parent ? tracer.startSpan(name, options, parent) : tracer.startSpan(name, options);
     } catch {
       handle.span = null;
     }
@@ -224,7 +198,7 @@ const createServerTelemetry = (telemetry) => {
       const handle = { span: null, error: false };
       if (!tracer) return fn(handle);
       const attributes = buildCallAttributes(client, packet, target, includeIdentity);
-      return startSpan(`${target}${suffix}`, { kind, attributes }, handle, fn);
+      return startSpan(`${target}${suffix}`, { kind, attributes }, extract(packet), handle, fn);
     },
 
     recordError(handle, error, code) {
@@ -316,10 +290,4 @@ const createServerTelemetry = (telemetry) => {
   };
 };
 
-module.exports = {
-  createServerTelemetry,
-  SCOPE_NAME,
-  SPAN_STATUS_ERROR,
-  SPAN_KIND_SERVER,
-  SPAN_KIND_CONSUMER,
-};
+module.exports = { createServerTelemetry };

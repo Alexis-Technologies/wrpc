@@ -6,8 +6,12 @@ const { WebSocket } = globalThis;
 const { chunkDecode } = require('./chunks.js');
 const { WrpcReadable, WrpcWritable } = require('./streams.js');
 const { createLoggerWriter } = require('./logging.js');
+const { createClientTelemetry } = require('./telemetry/client.js');
 
 const CALL_TIMEOUT = 7 * 1000;
+
+// Monotonic where available; Date.now is the fallback for a host without it.
+const now = () => (typeof performance === 'object' ? performance.now() : Date.now());
 const RECONNECT_TIMEOUT = 2 * 1000;
 
 // 499, nginx's "client closed request": the caller took the call back, so
@@ -165,6 +169,7 @@ class WrpcClient extends Emitter {
 
   api = {};
   #log = null;
+  #otel = null;
   #transport = null;
   #calls = new Map();
   #cancelled = new Set();
@@ -199,10 +204,11 @@ class WrpcClient extends Emitter {
 
   constructor(url, transport, options = {}) {
     super();
-    const { callTimeout, proxy, random, logger } = options;
+    const { callTimeout, proxy, random, logger, telemetry } = options;
     // Off by default, unlike the server: a client that printed on every
     // reconnect would be noise in a browser console nobody asked for.
     this.#log = createLoggerWriter(logger);
+    this.#otel = createClientTelemetry(telemetry);
     if (callTimeout) this.#callTimeout = callTimeout;
     if (proxy) this.#proxyPacket = proxy;
     if (random) this.#random = random; // deterministic jitter in tests
@@ -257,6 +263,8 @@ class WrpcClient extends Emitter {
       const reconnected = this.#connected;
       this.#connected = true;
       this.#log.info({ event: reconnected ? 'reconnected' : 'open', url: this.url, attempts });
+      this.#otel.recordConnection(1);
+      if (reconnected) this.#otel.recordReconnect('recovered', attempts);
       this.emit('open');
       if (reconnected) this.#restore(attempts).catch((error) => this.#escalate(error, 'reconnect.restore'));
     });
@@ -264,6 +272,7 @@ class WrpcClient extends Emitter {
     this.#transport.on('close', () => {
       this.#stopHeartbeat();
       this.#log.info({ event: 'close', url: this.url });
+      this.#otel.recordConnection(-1);
       this.emit('close');
       this.#scheduleReconnect();
     });
@@ -303,6 +312,7 @@ class WrpcClient extends Emitter {
     const { retries } = this.#reconnect;
     if (this.#attempt >= retries) {
       this.#log.warn({ event: 'reconnect.failed', attempts: this.#attempt, url: this.url });
+      this.#otel.recordReconnect('exhausted', this.#attempt);
       return void this.emit('reconnect-failed', { attempts: this.#attempt });
     }
     const delay = backoffDelay({ ...this.#reconnect, attempt: this.#attempt, random: this.#random });
@@ -701,6 +711,29 @@ class WrpcClient extends Emitter {
     const id = generateUUID();
     const { signal } = options;
     const packet = { type: 'call', id, method: target, args };
+    if (!this.#otel.enabled) return this.#dispatchCall(target, packet, id, signal);
+    const started = now();
+    return this.#otel.withSpan({ packet, target }, (handle) => {
+      // Injected INSIDE the span so the traceparent names this call's span,
+      // which is what the server will pick up as its parent.
+      this.#otel.inject(packet);
+      return this.#dispatchCall(target, packet, id, signal).then(
+        (result) => {
+          this.#otel.endSpan(handle, { 'wrpc.status': 'ok' });
+          this.#otel.recordCall(target, 'ok', now() - started);
+          return result;
+        },
+        (error) => {
+          this.#otel.recordError(handle, error);
+          this.#otel.endSpan(handle, { 'wrpc.status': 'error', 'rpc.wrpc.status_code': error?.code });
+          this.#otel.recordCall(target, 'error', now() - started);
+          throw error;
+        },
+      );
+    });
+  }
+
+  #dispatchCall(target, packet, id, signal) {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) return void reject(new WrpcError(CANCELLED_ERROR));
       const timeout = setTimeout(() => {
@@ -1006,16 +1039,18 @@ class WrpcClientProxy extends Emitter {
   #reconnect = null;
   #heartbeat = undefined;
   #logger = undefined;
+  #telemetry = undefined;
 
   constructor(options = {}) {
     super();
-    const { callTimeout, heartbeat, logger } = options;
+    const { callTimeout, heartbeat, logger, telemetry } = options;
     if (callTimeout) this.#callTimeout = callTimeout;
     this.#reconnect = normalizeReconnect(options);
     this.#heartbeat = heartbeat;
     // The proxy rebuilds its own options bag, so anything not forwarded here
     // is silently lost on the connection it owns.
     this.#logger = logger;
+    this.#telemetry = telemetry;
     if (typeof self === 'undefined') {
       throw new Error('WrpcClientProxy must run in ServiceWorker context');
     }
@@ -1038,6 +1073,7 @@ class WrpcClientProxy extends Emitter {
       reconnect: this.#reconnect,
       heartbeat: this.#heartbeat,
       logger: this.#logger,
+      telemetry: this.#telemetry,
       proxy: (data, packet) => this.#proxyPacket(data, packet),
     };
     this.#connection = await WrpcClient.connect(url, options);

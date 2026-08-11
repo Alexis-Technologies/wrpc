@@ -178,6 +178,41 @@ so a caller can zip requests to responses positionally. The server caps a
 frame at `maxBatch` packets (128 by default); one frame asking for unbounded
 work is otherwise a denial of service.
 
+### Trace context
+
+`call`, `subscribe` and `event` packets may carry two optional fields that
+link a client's span to the server's, so one distributed trace spans both
+sides of the wire:
+
+| Field | Carries |
+| ----- | ------- |
+| `tp` | W3C [`traceparent`](https://www.w3.org/TR/trace-context/#traceparent-header) |
+| `ts` | W3C `tracestate`; omitted when empty |
+
+```json
+{ "type": "call", "id": "b1f0", "method": "chat/send", "args": { "text": "hi" },
+  "tp": "00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01" }
+```
+
+They are short because they ride on every call packet: `"traceparent"` would
+cost eleven more bytes per call than `"tp"` for nothing.
+
+Both fields are **optional in both directions**. A peer that does not send
+one leaves the receiver to start a root span; a peer that does not understand
+one ignores it, like any other unknown field. The context is **per packet,
+not per frame**, so each call in a batch keeps its own parent.
+
+An implementation is not required to parse these — wrpc itself does not. It
+hands the field to whatever OpenTelemetry propagator the application
+configured, which is also why a wrpc server only reads `tp` when it was given
+the `@opentelemetry/api` module (or an explicit propagator) rather than a
+bare tracer.
+
+A server accepts an inbound `tp` by default, exactly as gRPC and HTTP
+instrumentations do. Since a hostile peer can forge trace ids, a server that
+faces untrusted clients can refuse them with `telemetry.trustRemoteContext:
+false` and start every trace itself.
+
 ### `stream` — both directions
 
 ```json

@@ -13,7 +13,7 @@ const {
 } = require('@opentelemetry/sdk-metrics');
 const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks');
 
-const { createServerTelemetry, SCOPE_NAME } = require('../src/telemetry.js');
+const { createServerTelemetry, createClientTelemetry, SCOPE_NAME, TRACEPARENT } = require('../src/telemetry/index.js');
 
 // A real SDK, exporting into memory. Anything less would not prove that what
 // wrpc emits is actually a valid span or a valid metric.
@@ -513,5 +513,207 @@ test('a live server emits spans and metrics for real traffic', async (t) => {
     );
     assert.ok(connections, 'the connection gauge was recorded');
     assert.strictEqual(connections.dataPoints[0].attributes['wrpc.transport'], 'ws');
+  });
+});
+
+test('createClientTelemetry', async (t) => {
+  await t.test('what disables it', () => {
+    for (const value of [undefined, null, false, 'otel', 42, {}]) {
+      assert.strictEqual(createClientTelemetry(value).enabled, false, String(value));
+    }
+    assert.strictEqual(createClientTelemetry({ api: { trace: {}, metrics: {} } }).enabled, false);
+    const throwing = {
+      get api() {
+        throw new Error('exploded');
+      },
+    };
+    assert.strictEqual(createClientTelemetry(throwing).enabled, false);
+  });
+
+  await t.test('the disabled writer answers to everything the client calls', () => {
+    const otel = createClientTelemetry(null);
+    assert.strictEqual(
+      otel.withSpan({ packet: {}, target: 'a/b' }, () => 'value'),
+      'value',
+    );
+    const packet = { type: 'call' };
+    assert.doesNotThrow(() => otel.inject(packet));
+    assert.deepStrictEqual(packet, { type: 'call' }, 'no fields were added');
+    assert.doesNotThrow(() => otel.recordCall('a/b', 'ok', 1));
+    assert.doesNotThrow(() => otel.recordReconnect('recovered', 2));
+    assert.doesNotThrow(() => otel.recordConnection(1));
+  });
+
+  await t.test('a call span is a CLIENT span with the rpc attributes', () => {
+    const { tracer, spans } = createTracing();
+    const otel = createClientTelemetry({ tracer });
+    otel.withSpan({ packet: { type: 'call', id: 'p9' }, target: 'chat/send' }, (handle) =>
+      otel.endSpan(handle, { 'wrpc.status': 'ok' }),
+    );
+    const [span] = spans();
+    assert.strictEqual(span.name, 'chat/send');
+    assert.strictEqual(span.kind, 2);
+    assert.strictEqual(span.attributes['rpc.system'], 'wrpc');
+    assert.strictEqual(span.attributes['rpc.method'], 'chat/send');
+    assert.strictEqual(span.attributes['wrpc.packet.id'], 'p9');
+    assert.strictEqual(span.attributes['wrpc.status'], 'ok');
+  });
+
+  await t.test('an error sets status 2 and the error type', () => {
+    const { tracer, spans } = createTracing();
+    const otel = createClientTelemetry({ tracer });
+    otel.withSpan({ packet: { type: 'call' }, target: 'a/b' }, (handle) => {
+      otel.recordError(handle, new RangeError('too big'));
+      otel.endSpan(handle);
+    });
+    const [span] = spans();
+    assert.strictEqual(span.status.code, 2);
+    assert.strictEqual(span.attributes['error.type'], 'RangeError');
+  });
+
+  await t.test('inject without a propagator writes nothing', () => {
+    const { tracer } = createTracing();
+    const otel = createClientTelemetry({ tracer });
+    const packet = { type: 'call', id: '1' };
+    otel.inject(packet);
+    assert.strictEqual(packet[TRACEPARENT], undefined);
+  });
+
+  await t.test('a propagator that throws is contained', () => {
+    const { tracer } = createTracing();
+    const otel = createClientTelemetry({
+      tracer,
+      propagation: {
+        inject() {
+          throw new Error('propagator exploded');
+        },
+        extract: () => undefined,
+      },
+    });
+    assert.doesNotThrow(() => otel.inject({ type: 'call' }));
+  });
+
+  await t.test('a tracer that throws before the callback still runs it', () => {
+    const otel = createClientTelemetry({
+      tracer: {
+        startActiveSpan() {
+          throw new Error('tracer exploded');
+        },
+      },
+    });
+    let ran = false;
+    const result = otel.withSpan({ packet: {}, target: 'a/b' }, (handle) => {
+      ran = true;
+      assert.strictEqual(handle.span, null);
+      return 'value';
+    });
+    assert.strictEqual(ran, true);
+    assert.strictEqual(result, 'value');
+  });
+
+  await t.test('an error thrown by the callback propagates untouched', () => {
+    const { tracer } = createTracing();
+    const otel = createClientTelemetry({ tracer });
+    const boom = new Error('caller exploded');
+    assert.throws(
+      () =>
+        otel.withSpan({ packet: {}, target: 'a/b' }, () => {
+          throw boom;
+        }),
+      (error) => error === boom,
+    );
+  });
+
+  await t.test('startSpan fallback, and a startSpan that throws', () => {
+    const names = [];
+    const viaStartSpan = createClientTelemetry({
+      tracer: {
+        startSpan(name) {
+          names.push(name);
+          return { end() {}, setAttribute() {} };
+        },
+      },
+    });
+    viaStartSpan.withSpan({ packet: {}, target: 'a/b' }, (handle) => {
+      assert.ok(handle.span);
+      viaStartSpan.endSpan(handle, { 'wrpc.status': 'ok' });
+    });
+    assert.deepStrictEqual(names, ['a/b']);
+
+    const broken = createClientTelemetry({
+      tracer: {
+        startSpan() {
+          throw new Error('startSpan exploded');
+        },
+      },
+    });
+    broken.withSpan({ packet: {}, target: 'a/b' }, (handle) => {
+      assert.strictEqual(handle.span, null);
+      assert.doesNotThrow(() => broken.recordError(handle, new Error('x')));
+      assert.doesNotThrow(() => broken.endSpan(handle, { 'wrpc.status': 'error' }));
+    });
+
+    const useless = createClientTelemetry({ tracer: { name: 'nothing' } });
+    useless.withSpan({ packet: {}, target: 'a/b' }, (handle) => assert.strictEqual(handle.span, null));
+  });
+
+  await t.test('client metrics reach the meter', async () => {
+    const { meter, collect, provider } = createMetrics();
+    t.after(() => provider.shutdown());
+    const otel = createClientTelemetry({ meter });
+    otel.recordCall('chat/send', 'ok', 9);
+    otel.recordReconnect('recovered', 3);
+    otel.recordConnection(1);
+    const names = (await collect()).map((metric) => metric.descriptor.name);
+    for (const name of ['rpc.client.duration', 'wrpc.client.reconnects', 'wrpc.client.connections']) {
+      assert.ok(names.includes(name), `${name} was exported`);
+    }
+  });
+
+  await t.test('broken and partial meters are contained', () => {
+    const explode = () => {
+      throw new Error('meter exploded');
+    };
+    const factoriesThrow = createClientTelemetry({
+      meter: { createHistogram: explode, createCounter: explode, createUpDownCounter: explode },
+    });
+    assert.strictEqual(factoriesThrow.enabled, true);
+    assert.doesNotThrow(() => factoriesThrow.recordCall('a/b', 'ok', 1));
+    assert.doesNotThrow(() => factoriesThrow.recordConnection(1));
+
+    const instrumentsThrow = createClientTelemetry({
+      meter: {
+        createHistogram: () => ({ record: explode }),
+        createCounter: () => ({ add: explode }),
+        createUpDownCounter: () => ({ add: explode }),
+      },
+    });
+    assert.doesNotThrow(() => instrumentsThrow.recordCall('a/b', 'ok', 1));
+    assert.doesNotThrow(() => instrumentsThrow.recordReconnect('exhausted', 5));
+    assert.doesNotThrow(() => instrumentsThrow.recordConnection(-1));
+
+    const noGauge = createClientTelemetry({
+      meter: { createHistogram: () => ({ record() {} }), createCounter: () => ({ add() {} }) },
+    });
+    assert.strictEqual(noGauge.enabled, true);
+    assert.doesNotThrow(() => noGauge.recordConnection(1));
+
+    const gaugeFactoryThrows = createClientTelemetry({
+      meter: {
+        createHistogram: () => ({ record() {} }),
+        createCounter: () => ({ add() {} }),
+        createUpDownCounter: explode,
+      },
+    });
+    assert.doesNotThrow(() => gaugeFactoryThrows.recordConnection(1));
+  });
+
+  await t.test('recordCall without an elapsed value records nothing', async () => {
+    const { meter, collect, provider } = createMetrics();
+    t.after(() => provider.shutdown());
+    const otel = createClientTelemetry({ meter });
+    otel.recordCall('a/b', 'ok');
+    const names = (await collect()).map((metric) => metric.descriptor.name);
+    assert.strictEqual(names.includes('rpc.client.duration'), false);
   });
 });
