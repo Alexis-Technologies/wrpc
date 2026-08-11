@@ -18,11 +18,15 @@ implementation against this page and expect it to keep working.
 | --------- | ------------ | ------------- |
 | WebSocket | text frames | binary frames |
 | HTTP | request body / response body | not available |
+| SSE | `POST` body out, `data:` lines back | not available |
 | Service Worker port | `postMessage(string)` | `postMessage(Uint8Array)` |
 
-A transport that cannot stay open (HTTP) carries calls only: events and
-streams need a persistent connection, and asking for one over HTTP is an
-error rather than a silent no-op.
+A transport that cannot stay open (plain HTTP) carries calls only: events,
+subscriptions, cancellation and streams need a persistent connection, and
+asking for one over HTTP is an error rather than a silent no-op.
+
+SSE is persistent but text-only, so it carries everything except binary
+streams — see [Server-Sent Events](#server-sent-events) below.
 
 ## Packets
 
@@ -96,6 +100,67 @@ looks perfectly open from JavaScript until the first call times out. Both
 sides answer a `ping` with a `pong` immediately; the client additionally
 measures the round trip and reconnects when the answer does not arrive
 within its timeout.
+
+### `subscribe` / `data` / `end` / `unsubscribe` — a stream of values
+
+A subscription is a procedure that answers with many values instead of one.
+It needs a connection that stays open, so it is refused (400) on HTTP.
+
+```json
+{ "type": "subscribe", "id": "b1f0…", "method": "chat/onMessage", "args": {}, "lastEventId": "41" }
+```
+
+```json
+{ "type": "data", "id": "b1f0…", "eventId": "42", "data": { "text": "hi" } }
+```
+
+```json
+{ "type": "end", "id": "b1f0…" }
+```
+
+`end` is the terminal packet in every case — normal completion, a generator
+that threw (`error: { message, code }`), and refusals such as 404, 403 or
+429. `{"type":"unsubscribe","id"}` ends one early; the server aborts the
+handler's `signal`, runs its `finally`, and answers `end`.
+
+`eventId` appears only on values the handler wrapped in `tracked(id, data)`.
+The client remembers the last one and sends it back as `lastEventId` when it
+re-subscribes, which the handler uses to replay what was missed —
+`createEventLog({ size })` is the ring buffer for exactly that. A feed of
+untracked values simply has no resume point and picks up live.
+
+Server-side backpressure is real: the pump waits for the transport to drain
+before pulling the next value, so a slow consumer stops the producer instead
+of filling memory.
+
+### `cancel` — taking a call back
+
+```json
+{ "type": "cancel", "id": "b1f0…" }
+```
+
+Cancellation is best-effort by nature — a handler that never looks at
+`ctx.signal` keeps running. What is guaranteed is that the caller is
+rejected immediately with code **499** and that whatever the handler
+eventually returns is dropped rather than delivered late. Like
+`unsubscribe`, it needs a persistent connection.
+
+### Batch frames
+
+A JSON **array** in place of a packet is a batch: several packets in one
+frame. Each is dispatched and answered on its own, so a failure inside a
+batch stays attached to its own id.
+
+```json
+[{ "type": "call", "id": "a", "method": "math/double", "args": { "n": 1 } },
+ { "type": "call", "id": "b", "method": "math/double", "args": { "n": 2 } }]
+```
+
+On a WebSocket the answers come back individually. On HTTP — where a request
+has exactly one response — they come back as one array **in request order**,
+so a caller can zip requests to responses positionally. The server caps a
+frame at `maxBatch` packets (128 by default); one frame asking for unbounded
+work is otherwise a denial of service.
 
 ### `stream` — both directions
 
@@ -177,6 +242,32 @@ non-local emit is published as an envelope:
 Delivery is **at-most-once**. A message published while an instance is
 between subscriptions, or dropped by the broker, is gone: rooms are a fan-out
 mechanism, not a queue.
+
+## Server-Sent Events
+
+SSE is one-way, so a channel is two halves that find each other by id:
+
+```
+GET  {basePath}/events?channel=<id>      server -> client stream
+POST {basePath}   x-wrpc-channel: <id>   client -> server
+```
+
+Both halves belong to **one** server-side client, which is what lets a
+subscription opened by a POST deliver its values down the stream. A POST
+answers `202` with no body: every reply, callbacks included, travels on the
+stream — the same shape the Service Worker port transport has.
+
+Each frame carries the channel's own monotonic `id:`, and a dropped stream
+does not destroy the channel. It is held for `retention` (30 s by default),
+so a reconnect with `Last-Event-ID` re-attaches and replays the frames it
+missed instead of starting over — subscriptions and all. Comment frames
+(`: ping`) keep proxies from deciding an idle response is a dead one, and
+`X-Accel-Buffering: no` keeps nginx from buffering the stream into oblivion.
+
+Serverless-friendly by construction: no upgrade, no socket beyond the
+response body, nothing but HTTP in either direction. What it cannot carry is
+binary — SSE frames are text, so wrpc's binary streams are refused on this
+transport rather than silently corrupted.
 
 ## Reconnect
 

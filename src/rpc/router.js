@@ -1,8 +1,18 @@
 'use strict';
 
 const { Semaphore } = require('../utils.js');
+const { isTracked, tracked } = require('./subscriptions.js');
 
 const DEFAULT_VERSION = '*';
+
+const CALL = 'call';
+const SUBSCRIPTION = 'subscription';
+
+const AsyncGeneratorFunction = Object.getPrototypeOf(async function* () {}).constructor;
+
+// An async generator handler IS the subscription declaration: writing
+// `procedure.subscription({...})` around one is allowed but never required.
+const isGeneratorHandler = (handler) => handler instanceof AsyncGeneratorFunction;
 
 // Dispatcher maps `error.code` (number) onto the wire error code:
 // 400 invalid input, 408 timeout, 500 invalid output, 503 queue overflow.
@@ -60,6 +70,7 @@ class Procedure {
       queue = null,
       meta = {},
       signature = null,
+      kind = null,
     } = options;
     if (typeof handler !== 'function') {
       throw new TypeError('procedure() requires a handler function');
@@ -69,6 +80,10 @@ class Procedure {
     }
     if (output !== null && !isValidator(output)) {
       throw new TypeError('procedure() output must be a function or a Standard Schema');
+    }
+    this.kind = kind ?? (isGeneratorHandler(handler) ? SUBSCRIPTION : CALL);
+    if (this.kind !== CALL && this.kind !== SUBSCRIPTION) {
+      throw new TypeError(`procedure() kind must be '${CALL}' or '${SUBSCRIPTION}'`);
     }
     this.handler = handler;
     this.access = access;
@@ -80,10 +95,58 @@ class Procedure {
     if (queue && !(Number.isInteger(queue.concurrency) && queue.concurrency > 0)) {
       throw new TypeError('procedure() queue.concurrency must be a positive integer');
     }
+    // A subscription lives until it is cancelled, so both of these would
+    // mean something different from what they mean for a call — and quietly
+    // meaning something else is worse than refusing.
+    if (this.kind === SUBSCRIPTION && (queue || timeout)) {
+      throw new TypeError('procedure.subscription() does not support queue or timeout');
+    }
     this.semaphore = queue ? new Semaphore(queue) : null;
   }
 
+  get subscription() {
+    return this.kind === SUBSCRIPTION;
+  }
+
+  /**
+   * The value stream behind `{type:'subscribe'}`. Input validation and the
+   * per-value output validation happen here, so a subscription gets the same
+   * guarantees a call does; `lastEventId` and `signal` reach the handler as
+   * its third argument.
+   */
+  async *subscribe(context, args, options = {}) {
+    if (this.kind !== SUBSCRIPTION) {
+      throw codedError('Not a subscription', 400);
+    }
+    let input = args;
+    if (this.input) {
+      input = await runValidator(this.input, args).catch((error) => {
+        throw codedError(`Invalid arguments: ${error.message}`, 400);
+      });
+    }
+    const source = this.handler(context, input, options);
+    if (!source || typeof source[Symbol.asyncIterator] !== 'function') {
+      throw codedError('Subscription handler must return an async iterable', 500);
+    }
+    for await (const value of source) {
+      if (!this.output) {
+        yield value;
+        continue;
+      }
+      // Validate the payload, not the tracking wrapper: an output schema
+      // describes what the client receives, not how it is labelled.
+      const payload = isTracked(value) ? value.data : value;
+      const checked = await runValidator(this.output, payload).catch((error) => {
+        throw codedError(`Invalid subscription value: ${error.message}`, 500);
+      });
+      yield isTracked(value) ? tracked(value.id, checked) : checked;
+    }
+  }
+
   async invoke(context, args) {
+    if (this.kind === SUBSCRIPTION) {
+      throw codedError('This procedure is a subscription: use {type:"subscribe"}', 400);
+    }
     if (this.semaphore) {
       try {
         await this.semaphore.enter();
@@ -124,6 +187,14 @@ class Procedure {
 const procedure = (options) => {
   if (typeof options === 'function') return new Procedure({ handler: options });
   return new Procedure(options);
+};
+
+// Explicit spelling for a subscription. Redundant when the handler is an
+// async generator (which is detected), required when it is a plain function
+// returning an async iterable.
+procedure.subscription = (options) => {
+  if (typeof options === 'function') return new Procedure({ handler: options, kind: SUBSCRIPTION });
+  return new Procedure({ ...options, kind: SUBSCRIPTION });
 };
 
 const toProcedure = (value, unitKey, methodName) => {
@@ -213,6 +284,9 @@ class Router {
         const methodsInfo = {};
         for (const [methodName, proc] of entry.methods) {
           const info = { access: proc.access };
+          // Only subscriptions carry `kind`: a client scaffolds a call
+          // unless told otherwise, so the common case stays one key.
+          if (proc.subscription) info.kind = proc.kind;
           if (Object.keys(proc.meta).length > 0) info.meta = proc.meta;
           if (proc.signature) info.signature = proc.signature;
           assignKey(methodsInfo, methodName, info);

@@ -177,7 +177,11 @@ test('options.engine short-circuits detection and preClose owns teardown', async
   assert.ok(engine.attached, 'the injected engine was attached');
   assert.strictEqual(engine.attached.server, instance.server, 'a hosted engine gets the fastify server');
   assert.ok(instance.decorations.get('wrpc') instanceof RpcServer);
-  assert.strictEqual(instance.routes.length, 2, 'packet route + REST route');
+  assert.deepStrictEqual(
+    instance.routes.map((route) => route.url),
+    ['/api', '/api/events', '/api/:unit/:method'],
+    'packet route + SSE stream + REST route',
+  );
   assert.ok(instance.hooks.has('preClose'));
 
   assert.strictEqual(engine.closed, false);

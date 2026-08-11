@@ -114,7 +114,12 @@ export class WrpcClient extends Emitter {
   };
 
   url: string;
-  api: Record<string, Emitter>;
+  /**
+   * Loaded units. A method is a function for a call and a
+   * {@link SubscriptionMethod} for a subscription — a subscription answers
+   * with a stream, so it is not callable.
+   */
+  api: Record<string, Emitter & Record<string, any>>;
   readonly active: boolean;
 
   constructor(
@@ -134,6 +139,8 @@ export class WrpcClient extends Emitter {
   send(obj: object): void;
   /** Fire-and-forget event to the server; `name` is 'unit/event'. */
   sendEvent(name: string, data?: unknown): void;
+  /** Sends whatever calls are waiting to be batched. Safe to call anytime. */
+  flush(): void;
   write(data: string | ArrayBufferView): void;
 }
 
@@ -167,8 +174,64 @@ export interface HeartbeatOptions {
   timeout?: number;
 }
 
+/**
+ * Call batching: several calls issued in the same tick travel as ONE frame
+ * (a JSON array). Only `call` packets batch — a ping, a cancel or an
+ * unsubscribe is a control packet whose whole point is to arrive now.
+ */
+export interface BatchOptions {
+  /** 'microtask' (default) or a delay in ms. */
+  flush?: 'microtask' | number;
+  /** Packets per frame before an early flush; default 16. */
+  maxSize?: number;
+  /** Bytes per frame before an early flush; default 65536. */
+  maxBytes?: number;
+}
+
+export interface CallOptions {
+  /** Aborting sends `{type:'cancel'}` and rejects with code 499. */
+  signal?: AbortSignal;
+}
+
+/** A live subscription, as seen by the caller that opened it. */
+export interface Subscription {
+  readonly id: string;
+  /** The last tracked eventId seen; what a reconnect resumes from. */
+  readonly lastEventId: string | undefined;
+  readonly closed: boolean;
+  unsubscribe(): boolean;
+}
+
+export interface SubscribeOptions {
+  /** Where to resume from; the server decides what that means. */
+  lastEventId?: string;
+  onData?(data: any): void;
+  onError?(error: WrpcError): void;
+  onEnd?(): void;
+}
+
+export interface IterateOptions extends SubscribeOptions {
+  /** Aborting unsubscribes and ends the iterator. */
+  signal?: AbortSignal;
+  highWaterMark?: number;
+}
+
+/** What `client.api[unit][method]` is when the method is a subscription. */
+export interface SubscriptionMethod {
+  readonly kind: 'subscription';
+  subscribe(args?: object, options?: SubscribeOptions): Subscription;
+  iterate(args?: object, options?: IterateOptions): AsyncIterableIterator<any> & { subscription: Subscription };
+}
+
 export interface WrpcClientOptions {
   callTimeout?: number;
+  /** Coalesce calls into batch frames; `true` takes the defaults. */
+  batch?: BatchOptions | boolean;
+  /**
+   * Which registered transport to use. Defaults to the URL scheme; 'sse'
+   * exists once '@alexify/wrpc/sse' has been required.
+   */
+  transport?: 'ws' | 'http' | 'sse' | string;
   reconnect?: ReconnectOptions | false;
   /** Shorthand for `reconnect.minDelay`. */
   reconnectTimeout?: number;
@@ -202,16 +265,89 @@ export type Validator<T = unknown> =
   | ((value: T) => T | undefined | Promise<T | undefined>)
   | { '~standard': { validate(value: unknown): unknown } };
 
+/**
+ * One handler signature for both kinds, so a bare function still gets its
+ * parameters contextually typed. A call ignores the third argument; a
+ * subscription (an async generator) reads `lastEventId` and `signal` from it.
+ */
 export type ProcedureHandler = (
   context: Context,
   args: any,
-) => unknown | Promise<unknown>;
+  subscription: SubscriptionOptions,
+) => unknown | Promise<unknown> | AsyncIterable<unknown>;
+
+/** A handler that answers with a stream of values. */
+export type SubscriptionHandler = ProcedureHandler;
 
 export interface QueueOptions {
   concurrency: number;
   size?: number;
   timeout?: number;
 }
+
+// ---------------------------------------------------------------------------
+// Subscriptions
+
+/** A value labelled with the id a resuming client will send back. */
+export interface Tracked<T = unknown> {
+  id: string;
+  data: T;
+}
+
+/** Labels one yielded value so a reconnect can resume after it. */
+export declare function tracked<T>(eventId: string | number, data: T): Tracked<T>;
+
+export declare function isTracked(value: unknown): boolean;
+
+/**
+ * A bounded replay buffer. `since()` answers with what a client missed —
+ * or `null` when the id has fallen out of the buffer, so a caller can
+ * choose between a snapshot and an error instead of silently skipping a gap.
+ */
+export declare class EventLog<T = unknown> {
+  constructor(options?: { size?: number; start?: number });
+  readonly size: number;
+  readonly length: number;
+  readonly lastEventId: string | null;
+  push(data: T): string;
+  since(lastEventId?: string | null): Array<Tracked<T>> | null;
+  clear(): void;
+}
+
+export declare function createEventLog<T = unknown>(options?: { size?: number; start?: number }): EventLog<T>;
+
+/**
+ * Push -> pull adapter: the bridge between "something calls me with a
+ * value" and "someone is `for await`-ing values". The queue is bounded —
+ * a producer that outruns the consumer drops the OLDEST value and says so
+ * through `dropped`.
+ */
+export declare class EventStream<T = unknown> implements AsyncIterableIterator<T> {
+  constructor(options?: { signal?: AbortSignal; highWaterMark?: number });
+  readonly length: number;
+  readonly closed: boolean;
+  dropped: number;
+  push(value: T): boolean;
+  end(): void;
+  fail(error: Error): void;
+  next(): Promise<IteratorResult<T>>;
+  return(): Promise<IteratorResult<T>>;
+  [Symbol.asyncIterator](): AsyncIterableIterator<T>;
+}
+
+export declare function createEventStream<T = unknown>(options?: {
+  signal?: AbortSignal;
+  highWaterMark?: number;
+}): EventStream<T>;
+
+/** The third argument every subscription handler receives. */
+export interface SubscriptionOptions {
+  /** What the client says it last saw; undefined on a fresh subscribe. */
+  lastEventId?: string;
+  /** Aborted on unsubscribe or disconnect. Honour it, or the feed leaks. */
+  signal: AbortSignal;
+}
+
 
 export interface ProcedureOptions {
   handler: ProcedureHandler;
@@ -225,7 +361,12 @@ export interface ProcedureOptions {
   meta?: Record<string, unknown>;
   /** Flat descriptor consumed by the type-codegen CLI. */
   signature?: Record<string, unknown>;
+  /** Inferred from an async generator handler; rarely written by hand. */
+  kind?: 'call' | 'subscription';
 }
+
+/** Same as ProcedureOptions minus the two a stream cannot mean. */
+export type SubscriptionProcedureOptions = Omit<ProcedureOptions, 'queue' | 'timeout'>;
 
 export declare class Procedure {
   handler: ProcedureHandler;
@@ -235,13 +376,25 @@ export declare class Procedure {
   timeout: number;
   meta: Record<string, unknown>;
   signature: Record<string, unknown> | null;
+  kind: 'call' | 'subscription';
+  readonly subscription: boolean;
   constructor(options: ProcedureOptions);
   invoke(context: Context, args: unknown): Promise<unknown>;
+  /** The value stream behind `{type:'subscribe'}`. */
+  subscribe(context: Context, args: unknown, options?: Partial<SubscriptionOptions>): AsyncIterableIterator<unknown>;
 }
 
-export declare function procedure(
-  options: ProcedureOptions | ProcedureHandler,
-): Procedure;
+export interface ProcedureFactory {
+  (options: ProcedureOptions | ProcedureHandler): Procedure;
+  /**
+   * Explicit spelling for a subscription — redundant when the handler is an
+   * async generator (which is detected), required when it is a plain
+   * function returning an async iterable.
+   */
+  subscription(options: SubscriptionProcedureOptions | SubscriptionHandler): Procedure;
+}
+
+export declare const procedure: ProcedureFactory;
 
 export type MethodDefinition = Procedure | ProcedureHandler | ProcedureOptions;
 
@@ -269,6 +422,8 @@ export type RouterDefinition = Record<string, UnitDefinition>;
 
 export interface MethodInfo {
   access: string;
+  /** Present only on subscriptions; a client scaffolds a call otherwise. */
+  kind?: 'subscription';
   meta?: Record<string, unknown>;
   signature?: Record<string, unknown>;
 }
@@ -436,6 +591,12 @@ export declare class Context {
   client: Client;
   uuid: string;
   state: Record<string, unknown>;
+  /**
+   * Aborted when the caller cancels, unsubscribes, or disconnects. A handler
+   * that awaits anything long-lived should pass it along; one that ignores
+   * it runs to completion and has its result dropped.
+   */
+  readonly signal: AbortSignal | null;
   readonly session: Session | null;
   /**
    * The server this call arrived on — how a handler reaches rooms
@@ -456,9 +617,19 @@ export class Client extends Emitter {
   /** Settles once the cookie-based session restore (if any) finished. */
   sessionReady: Promise<unknown>;
   streams: Map<string, WrpcReadable | WrpcWritable>;
+  /** In-flight calls, by id — what `{type:'cancel'}` reaches. */
+  calls: Map<string, AbortController>;
+  /** Live subscriptions, by id — what `{type:'unsubscribe'}` reaches. */
+  subscriptions: Map<string, AbortController>;
+  maxSubscriptions: number;
+  /** False on a text-only transport (SSE), where binary streams cannot go. */
+  readonly binary: boolean;
+  /** Resolves when the transport drained, or when it closed. */
+  drain(): Promise<void>;
   error(code: number, options?: ErrorOptions): void;
-  send(obj: object, options?: { code?: number; method?: string }): void;
-  createContext(): Context;
+  /** Returns false when the transport is above its high-water mark. */
+  send(obj: object, options?: { code?: number; method?: string }): boolean;
+  createContext(signal?: AbortSignal | null): Context;
   emit(name: EventName, data?: unknown): Promise<void>;
   sendEvent(name: string, data?: unknown): void;
   /** Diagnostics for inbound packets with no id to answer on. */
@@ -497,6 +668,15 @@ export interface HttpCall {
    * request/response close signal.
    */
   onAbort?(listener: () => void): void;
+  /**
+   * Keeps the response open and writes into it, instead of answering with a
+   * body. This is what SSE rides on; a host that cannot stream simply omits
+   * it and the events endpoint answers 501.
+   */
+  stream?(response: {
+    status: number;
+    headers: Record<string, string | number | Array<string>>;
+  }): import('./sse.js').SseWriter | null;
 }
 
 export interface RpcServerOptions {
@@ -513,6 +693,12 @@ export interface RpcServerOptions {
   backplane?: Backplane | null;
   /** Identifies this instance on the backplane; a uuid by default. */
   instanceId?: string;
+  /** Packets accepted in one batch frame; default 128. */
+  maxBatch?: number;
+  /** Concurrent subscriptions per client; default 256. */
+  maxSubscriptions?: number;
+  /** SSE channel options, or `false` to remove the events endpoint. */
+  sse?: import('./sse.js').SseOptions | false;
 }
 
 export declare class RpcServer extends Emitter {
@@ -521,6 +707,10 @@ export declare class RpcServer extends Emitter {
   readonly rooms: RoomRegistry;
   readonly instanceId: string;
   readonly basePath: string;
+  /** Where the SSE stream lives: `${basePath}/events`. */
+  readonly eventsPath: string;
+  /** The SSE channel registry, or null when `sse: false`. */
+  readonly sse: import('./sse.js').SseChannels | null;
   readonly clients: Set<Client>;
   constructor(options: RpcServerOptions);
   /** Everyone in any of `rooms`, each client once; with no rooms, nobody. */
@@ -587,8 +777,9 @@ export class ServerTransport extends Emitter {
   };
   source: string;
   constructor(source: string);
-  error(code?: number, options?: ErrorOptions): void;
-  send(obj: object, code?: number): void;
+  error(code?: number, options?: ErrorOptions): boolean;
+  /** Returns the transport's backpressure signal (false = above the mark). */
+  send(obj: object, code?: number): boolean;
 }
 
 declare class ServerHttpTransport extends ServerTransport {
@@ -596,7 +787,9 @@ declare class ServerHttpTransport extends ServerTransport {
   headers: Record<string, string>;
   readonly responded: boolean;
   constructor(call: HttpCall, options?: TransportOptions);
-  write(data: string | Buffer, httpCode?: number): void;
+  write(data: string | Buffer, httpCode?: number): boolean;
+  /** True when this transport collects a batch frame's answers. */
+  readonly batched: boolean;
   getCookies(): Record<string, string>;
   sendSessionCookie(cookieHeader: string): void;
   close(): void;
@@ -649,6 +842,44 @@ export interface EventPacket {
   name: string;
   data?: unknown;
 }
+
+export interface SubscribePacket {
+  type: 'subscribe';
+  id: string;
+  method: string;
+  args?: object;
+  lastEventId?: string;
+}
+
+/** One value of a subscription; `eventId` only for tracked values. */
+export interface DataPacket {
+  type: 'data';
+  id: string;
+  eventId?: string;
+  data?: unknown;
+}
+
+/** A subscription's terminal packet — refusals included. */
+export interface EndPacket {
+  type: 'end';
+  id: string;
+  error?: { message: string; code: number };
+}
+
+export interface UnsubscribePacket {
+  type: 'unsubscribe';
+  id: string;
+}
+
+export interface CancelPacket {
+  type: 'cancel';
+  id: string;
+}
+
+/** A JSON array of packets: several requests, or several answers, in one frame. */
+export type BatchFrame = Array<
+  CallPacket | SubscribePacket | UnsubscribePacket | CancelPacket | StreamPacket | EventPacket
+>;
 
 /** App-level heartbeat; see HeartbeatOptions. */
 export interface HeartbeatPacket {

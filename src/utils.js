@@ -106,6 +106,124 @@ const jsonParse = (data = null) => {
   }
 };
 
+const DEFAULT_HIGH_WATER_MARK = 1024;
+
+// Push -> pull adapter: the missing primitive between "something calls me
+// with a value" (an emitter, a backplane message, a websocket frame) and
+// "someone is `for await`-ing values". Used on the server to feed a
+// subscription handler and on the client to back `subscription.iterate()`.
+//
+// The queue is bounded: a producer that outruns the consumer drops the
+// OLDEST pending value rather than growing without limit, and says so
+// through `dropped`. Silent unbounded buffering is how a slow consumer
+// takes a process down.
+class EventStream {
+  #queue = [];
+  #waiting = null;
+  #done = false;
+  #error = null;
+  #highWaterMark;
+  #onAbort = null;
+  #signal = null;
+
+  constructor({ signal = null, highWaterMark = DEFAULT_HIGH_WATER_MARK } = {}) {
+    this.#highWaterMark = highWaterMark;
+    this.dropped = 0;
+    if (!signal) return;
+    this.#signal = signal;
+    if (signal.aborted) {
+      this.#done = true;
+      return;
+    }
+    this.#onAbort = () => this.end();
+    signal.addEventListener('abort', this.#onAbort, { once: true });
+  }
+
+  get length() {
+    return this.#queue.length;
+  }
+
+  get closed() {
+    return this.#done;
+  }
+
+  push(value) {
+    if (this.#done) return false;
+    if (this.#waiting) {
+      const { resolve } = this.#waiting;
+      this.#waiting = null;
+      resolve({ value, done: false });
+      return true;
+    }
+    this.#queue.push(value);
+    if (this.#queue.length > this.#highWaterMark) {
+      this.#queue.shift();
+      this.dropped++;
+    }
+    return true;
+  }
+
+  /** Ends the stream; a pending next() resolves as done. */
+  end() {
+    if (this.#done) return;
+    this.#done = true;
+    this.#detach();
+    if (!this.#waiting) return;
+    const { resolve } = this.#waiting;
+    this.#waiting = null;
+    resolve({ value: undefined, done: true });
+  }
+
+  /** Ends the stream by throwing into the consumer. */
+  fail(error) {
+    if (this.#done) return;
+    this.#error = error;
+    this.#done = true;
+    this.#detach();
+    if (!this.#waiting) return;
+    const { reject } = this.#waiting;
+    this.#waiting = null;
+    reject(error);
+  }
+
+  #detach() {
+    if (!this.#onAbort || !this.#signal) return;
+    this.#signal.removeEventListener('abort', this.#onAbort);
+    this.#onAbort = null;
+  }
+
+  next() {
+    if (this.#queue.length > 0) {
+      return Promise.resolve({ value: this.#queue.shift(), done: false });
+    }
+    if (this.#error) {
+      const error = this.#error;
+      this.#error = null;
+      return Promise.reject(error);
+    }
+    if (this.#done) return Promise.resolve({ value: undefined, done: true });
+    if (this.#waiting) {
+      return Promise.reject(new Error('EventStream: concurrent next() is not supported'));
+    }
+    return new Promise((resolve, reject) => {
+      this.#waiting = { resolve, reject };
+    });
+  }
+
+  // Consumers that break out of `for await` land here: the stream has to
+  // release its abort listener, or a long-lived signal pins it forever.
+  return() {
+    this.end();
+    return Promise.resolve({ value: undefined, done: true });
+  }
+
+  [Symbol.asyncIterator]() {
+    return this;
+  }
+}
+
+const createEventStream = (options) => new EventStream(options);
+
 // Reconnect pacing: truncated exponential backoff with AWS "full jitter"
 // (https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/).
 //
@@ -179,4 +297,4 @@ class Semaphore {
   }
 }
 
-module.exports = { Emitter, jsonParse, Semaphore, backoffDelay };
+module.exports = { Emitter, jsonParse, Semaphore, backoffDelay, EventStream, createEventStream };

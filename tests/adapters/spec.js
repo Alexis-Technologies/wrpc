@@ -20,12 +20,15 @@ const assert = require('node:assert');
 const { randomUUID } = require('node:crypto');
 const { Blob } = require('node:buffer');
 
-const { WrpcClient, defineRouter, procedure } = require('../../index.js');
+const { WrpcClient, defineRouter, procedure, createEventStream, tracked } = require('../../index.js');
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
 // Filled by the `chat.on.typing` event handler, drained by `chat/typed`.
 const typedEvents = [];
+
+// Open `chat/forever` subscriptions, so a spec can watch one being released.
+const liveSubscriptions = new Set();
 
 // The single router definition every boot shares.
 const router = defineRouter({
@@ -112,6 +115,28 @@ const router = defineRouter({
       handler: async () => {
         const seen = typedEvents.splice(0, typedEvents.length);
         return { seen };
+      },
+    }),
+    // A subscription: opened with {type:'subscribe'}, answered with a
+    // stream of {type:'data'} and one {type:'end'}. Every boot must carry it.
+    ticks: procedure.subscription({
+      access: 'public',
+      handler: async function* (_context, { to = 3, from = 0 } = {}) {
+        for (let i = from + 1; i <= to; i++) yield tracked(String(i), { n: i });
+      },
+    }),
+    forever: procedure.subscription({
+      access: 'public',
+      handler: async function* (_context, _args, { signal }) {
+        const stream = createEventStream({ signal });
+        liveSubscriptions.add(stream);
+        const timer = setInterval(() => stream.push({ tick: true }), 5);
+        try {
+          yield* stream;
+        } finally {
+          clearInterval(timer);
+          liveSubscriptions.delete(stream);
+        }
       },
     }),
     on: {
@@ -433,6 +458,48 @@ const runAdapterSpec = async (entry, t) => {
     );
     ada.close();
     await waitFor(() => main.rpc.rooms.has('lobby') === false, 'the last member disconnecting must drop the room');
+  });
+
+  await t.test('subscriptions, resume and cancellation over one connection', async (sub) => {
+    const client = await WrpcClient.connect(`ws://127.0.0.1:${main.port}/api`);
+    sub.after(() => void client.close());
+    await client.load('chat');
+
+    // subscribe -> data* -> end
+    const seen = [];
+    const ended = new Promise((resolve) => {
+      client.api.chat.ticks.subscribe({ to: 3 }, { onData: (data) => seen.push(data), onEnd: resolve });
+    });
+    await ended;
+    assert.deepStrictEqual(seen, [{ n: 1 }, { n: 2 }, { n: 3 }]);
+
+    // The same feed resumed from an eventId yields only what came after.
+    const resumed = [];
+    let handle = null;
+    const done = new Promise((resolve) => {
+      handle = client.api.chat.ticks.subscribe(
+        { to: 3, from: 2 },
+        { lastEventId: '2', onData: (data) => resumed.push(data), onEnd: resolve },
+      );
+    });
+    await done;
+    assert.deepStrictEqual(resumed, [{ n: 3 }]);
+    assert.strictEqual(handle.lastEventId, '3');
+
+    // for await, and breaking out of it, reaches the server
+    const before = liveSubscriptions.size;
+    for await (const value of client.api.chat.forever.iterate()) {
+      assert.deepStrictEqual(value, { tick: true });
+      break;
+    }
+    await waitFor(() => liveSubscriptions.size === before, 'breaking the loop never released the generator');
+
+    // A dropped connection releases whatever is still running.
+    const handle2 = client.api.chat.forever.subscribe();
+    await waitFor(() => liveSubscriptions.size === before + 1, 'the subscription never opened');
+    assert.strictEqual(handle2.closed, false);
+    client.close();
+    await waitFor(() => liveSubscriptions.size === before, 'a disconnect left a generator running');
   });
 };
 

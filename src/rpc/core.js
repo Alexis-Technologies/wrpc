@@ -9,18 +9,27 @@ const { WrpcWritable } = require('../streams.js');
 const { SessionManager } = require('./sessions.js');
 const { defineRouter, procedure } = require('./router.js');
 const { RoomRegistry, Broadcast, RoomsBackplane } = require('./rooms.js');
+const { SseChannels, CHANNEL_HEADER } = require('../sse/server.js');
 const { isBackplane } = require('../scaling/index.js');
-const { handleMessage, handleBinary, handleRpc, split, parseParams } = require('./dispatcher.js');
+const { handleMessage, handleBinary, handleRpc, split, parseParams, DEFAULT_MAX_BATCH } = require('./dispatcher.js');
+
+// One peer holding thousands of open generators is a denial of service the
+// application never opted into; the cap is generous but present.
+const DEFAULT_MAX_SUBSCRIPTIONS = 256;
 
 const ServerHttpTransport = ServerTransport.transport.http;
 const ServerWsTransport = ServerTransport.transport.ws;
 const ServerEventTransport = ServerTransport.transport.event;
 
 class Context {
-  constructor(client) {
+  constructor(client, signal = null) {
     this.client = client;
     this.uuid = generateUUID();
     this.state = {};
+    // Aborted when the caller cancels, unsubscribes, or disconnects. A
+    // handler that awaits anything long-lived should pass it along; one
+    // that ignores it simply runs to completion and has its result dropped.
+    this.signal = signal;
   }
 
   get session() {
@@ -41,7 +50,7 @@ class Client extends Emitter {
   #server = null;
   #console = null;
 
-  constructor(transport, { sessions, rooms, server, console } = {}) {
+  constructor(transport, { sessions, rooms, server, console, maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS } = {}) {
     super();
     this.#transport = transport;
     this.#sessions = sessions;
@@ -49,11 +58,15 @@ class Client extends Emitter {
     // has nobody to share them with.
     this.#rooms = rooms ?? new RoomRegistry();
     this.#server = server ?? null;
-    this.#console = console;
+    this.#console = console ?? globalThis.console;
     this.source = transport.source;
     this.session = null;
     this.sessionReady = Promise.resolve();
     this.streams = new Map();
+    // id -> AbortController, for the two things a peer can take back.
+    this.calls = new Map();
+    this.subscriptions = new Map();
+    this.maxSubscriptions = maxSubscriptions;
   }
 
   error(code, { id = '', error = null } = {}) {
@@ -70,12 +83,30 @@ class Client extends Emitter {
     this.#console.warn(`${this.source}\t${message}`);
   }
 
+  /** Returns false when the transport is above its high-water mark. */
   send(obj, options = {}) {
     const { code, method } = options;
-    this.#transport.send(obj, code);
+    const flushed = this.#transport.send(obj, code);
     const isSuccessCallback = obj.type === 'callback' && !obj.error;
-    if (!isSuccessCallback) return;
-    this.#console.log(`${this.source}\tCALL\t${method}\tOK`);
+    if (isSuccessCallback) this.#console.log(`${this.source}\tCALL\t${method}\tOK`);
+    return flushed;
+  }
+
+  /**
+   * Resolves when the transport has drained — or when it closes, so a
+   * producer waiting on a peer that never reads is released by the
+   * disconnect rather than parked forever.
+   */
+  drain() {
+    return new Promise((resolve) => {
+      const done = () => {
+        this.#transport.off('drain', done);
+        this.#transport.off('close', done);
+        resolve();
+      };
+      this.#transport.on('drain', done);
+      this.#transport.on('close', done);
+    });
   }
 
   // True for transports that stay open (WebSocket, worker port): only
@@ -89,8 +120,13 @@ class Client extends Emitter {
     return this.#server;
   }
 
-  createContext() {
-    return new Context(this);
+  /** False on a text-only transport (SSE), where binary streams cannot go. */
+  get binary() {
+    return this.#transport.binary !== false;
+  }
+
+  createContext(signal = null) {
+    return new Context(this, signal);
   }
 
   emit(name, data) {
@@ -132,6 +168,7 @@ class Client extends Emitter {
     if (!this.#transport.connection) {
       throw new Error(`Can't receive stream from http transport`);
     }
+    if (!this.binary) throw new Error(`Can't receive stream over a text-only transport`);
     const stream = this.streams.get(id);
     if (stream) return stream;
     throw new Error(`Stream ${id} is not initialized`);
@@ -141,6 +178,7 @@ class Client extends Emitter {
     if (!this.#transport.connection) {
       throw new Error(`Can't send wrpc streams to http transport`);
     }
+    if (!this.binary) throw new Error(`Can't send wrpc streams over a text-only transport`);
     if (!name) throw new Error('Stream name is not provided');
     if (!size) throw new Error('Stream size is not provided');
     const id = generateUUID();
@@ -191,6 +229,14 @@ class Client extends Emitter {
   destroy() {
     const console = this.#console;
     this.#rooms.leaveAll(this);
+    // A gone peer cannot receive an answer, so everything still running on
+    // its behalf is told to stop — this is what runs a subscription
+    // handler's `finally`, releasing whatever it had open.
+    const disconnected = new Error('Client disconnected');
+    for (const controller of this.calls.values()) controller.abort(disconnected);
+    for (const controller of this.subscriptions.values()) controller.abort(disconnected);
+    this.calls.clear();
+    this.subscriptions.clear();
     this.emit('close');
     for (const stream of this.streams.values()) {
       if (typeof stream.terminate !== 'function') continue;
@@ -203,6 +249,30 @@ class Client extends Emitter {
 }
 
 const DEFAULT_BASE_PATH = '/api';
+
+// The options the core owns. Every shell and adapter funnels its own option
+// bag through here, so adding a core option cannot be silently dropped by
+// one of the four places that construct an RpcServer.
+const RPC_OPTION_KEYS = [
+  'router',
+  'sessions',
+  'cors',
+  'basePath',
+  'console',
+  'backplane',
+  'instanceId',
+  'maxBatch',
+  'maxSubscriptions',
+  'sse',
+];
+
+const rpcOptions = (options = {}) => {
+  const picked = {};
+  for (const key of RPC_OPTION_KEYS) {
+    if (options[key] !== undefined) picked[key] = options[key];
+  }
+  return picked;
+};
 
 const normalizeBasePath = (basePath) => {
   if (!basePath) return '';
@@ -224,6 +294,8 @@ class RpcServer extends Emitter {
   #cors;
   #basePath;
   #console;
+  #limits;
+  #sse = null;
   #clients = new Set();
 
   constructor(options = {}) {
@@ -236,6 +308,9 @@ class RpcServer extends Emitter {
       console = globalThis.console,
       backplane = null,
       instanceId = generateUUID(),
+      maxBatch = DEFAULT_MAX_BATCH,
+      maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
+      sse = {},
     } = options;
     if (!router || typeof router.getProcedure !== 'function') {
       throw new TypeError('RpcServer: options.router (a Router from defineRouter) is required');
@@ -248,8 +323,11 @@ class RpcServer extends Emitter {
     this.#basePath = normalizeBasePath(basePath);
     this.#console = console;
     this.#instance = instanceId;
+    this.#limits = { maxBatch, maxSubscriptions };
     this.#router = this.#withIntrospection(router);
     this.#initRooms(backplane);
+    this.#sse =
+      sse === false ? null : new SseChannels({ ...sse, console, addClient: (transport) => this.#addClient(transport) });
   }
 
   #initRooms(backplane) {
@@ -339,7 +417,13 @@ class RpcServer extends Emitter {
   }
 
   #addClient(transport) {
-    const options = { sessions: this.#sessions, rooms: this.#rooms, server: this, console: this.#console };
+    const options = {
+      sessions: this.#sessions,
+      rooms: this.#rooms,
+      server: this,
+      console: this.#console,
+      maxSubscriptions: this.#limits.maxSubscriptions,
+    };
     const client = new Client(transport, options);
     this.#clients.add(client);
     transport.once('close', () => {
@@ -374,7 +458,7 @@ class RpcServer extends Emitter {
       if (inflight === 0 && typeof socket.resume === 'function') socket.resume();
     };
     socket.on('message', (data, isBinary) => {
-      if (!isBinary) return void handleMessage(client, data, this.#router);
+      if (!isBinary) return void handleMessage(client, data, this.#router, this.#limits);
       inflight++;
       if (inflight === 1 && typeof socket.pause === 'function') socket.pause();
       handleBinary(client, new Uint8Array(data)).then(done, done);
@@ -388,7 +472,7 @@ class RpcServer extends Emitter {
     const client = this.#addClient(transport);
     port.on('message', (data) => {
       if (typeof data === 'string' || Buffer.isBuffer(data)) {
-        handleMessage(client, data, this.#router);
+        handleMessage(client, data, this.#router, this.#limits);
       } else if (data instanceof Uint8Array) {
         handleBinary(client, data);
       }
@@ -410,13 +494,64 @@ class RpcServer extends Emitter {
     return null;
   }
 
+  // A batch frame needs to be recognized BEFORE the transport exists: the
+  // transport has to know how many answers to collect and in which order to
+  // emit them, which only the request's own id list can tell it.
+  #batchIds(body) {
+    const packet = jsonParse(body);
+    if (!Array.isArray(packet)) return null;
+    if (packet.length === 0 || packet.length > this.#limits.maxBatch) return null;
+    return packet.map((item) => (item && typeof item === 'object' ? item.id : undefined));
+  }
+
+  get sse() {
+    return this.#sse;
+  }
+
+  // The SSE endpoint sits just under basePath so it moves with it, and it is
+  // the one route whose response is a stream rather than a body.
+  get eventsPath() {
+    return `${this.#basePath}/events`;
+  }
+
+  // A POST carrying a live channel id belongs to that channel's client, not
+  // to a fresh request/response one: that is what lets a subscription opened
+  // by a POST deliver its values down the peer's event stream. The POST
+  // itself answers 202 — every reply travels on the stream.
+  #handleChannelPost(call, channelId) {
+    const channel = this.#sse.get(channelId);
+    const respond = (status, packet) => {
+      const body = Buffer.from(JSON.stringify(packet));
+      call.respond({ status, headers: { 'Content-Type': 'application/json', 'Content-Length': body.length }, body });
+    };
+    if (!channel) {
+      return void respond(404, { type: 'callback', id: '', error: { message: 'Unknown channel', code: 404 } });
+    }
+    handleMessage(channel.client, call.body, this.#router, this.#limits);
+    call.respond({ status: 202, headers: { 'Content-Length': 0 } });
+  }
+
   async handleHttpCall(call) {
     const headers = buildHeaders(this.#cors, call.headers?.origin);
     if (call.method === 'OPTIONS') {
       return void call.respond({ status: 200, headers });
     }
-    const transport = new ServerHttpTransport(call, { headers });
     const [pathname, params] = split(call.url ?? '/', '?');
+    if (this.#sse) {
+      if (pathname === this.eventsPath && (call.method ?? 'GET').toUpperCase() === 'GET') {
+        const query = parseParams(params);
+        const channelId = query.channel || call.headers?.[CHANNEL_HEADER] || undefined;
+        const lastEventId = call.headers?.['last-event-id'] ?? query.lastEventId ?? null;
+        return void this.#sse.open(call, { channelId, lastEventId, headers });
+      }
+      const channelId = call.headers?.[CHANNEL_HEADER];
+      if (channelId && call.method === 'POST' && this.matchPath(pathname)?.mode === 'packet') {
+        return void this.#handleChannelPost(call, channelId);
+      }
+    }
+    const isPacketPost = call.method === 'POST' && this.matchPath(pathname)?.mode === 'packet';
+    const batch = isPacketPost ? this.#batchIds(call.body) : null;
+    const transport = new ServerHttpTransport(call, { headers, batch });
     const match = this.matchPath(pathname);
     if (!match) return void transport.error(404);
 
@@ -428,7 +563,7 @@ class RpcServer extends Emitter {
     if (match.mode === 'packet') {
       if (call.method !== 'POST') return void transport.error(403);
       await this.#restoreFromCookie(client, call.headers);
-      return void handleMessage(client, call.body, this.#router);
+      return void handleMessage(client, call.body, this.#router, this.#limits);
     }
     // REST mode: a cross-site GET/HEAD carries the SameSite=Lax session
     // cookie on top-level navigation, so ambient-authority dispatch of
@@ -458,6 +593,7 @@ class RpcServer extends Emitter {
   }
 
   async close() {
+    if (this.#sse) this.#sse.close();
     for (const client of this.#clients) client.close();
     this.#clients.clear();
     // Unsubscribe before dropping the rooms, so the registry's last-member
@@ -468,4 +604,4 @@ class RpcServer extends Emitter {
   }
 }
 
-module.exports = { RpcServer, Client, Context };
+module.exports = { RpcServer, Client, Context, rpcOptions, DEFAULT_MAX_SUBSCRIPTIONS };

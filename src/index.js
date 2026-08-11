@@ -1,11 +1,12 @@
 'use strict';
 
-const { Emitter } = require('./utils.js');
+const { Emitter, createEventStream, EventStream } = require('./utils.js');
 const { WrpcClient, WrpcClientProxy, WrpcError } = require('./client.js');
 const { Server } = require('./server.js');
 const { RpcServer, Client, Context } = require('./rpc/core.js');
 const { defineRouter, procedure, Router, Procedure } = require('./rpc/router.js');
 const { RoomRegistry, Broadcast } = require('./rpc/rooms.js');
+const { tracked, isTracked, createEventLog, EventLog } = require('./rpc/subscriptions.js');
 const { Session, MemorySessionStore, createProxy } = require('./rpc/sessions.js');
 const { ServerTransport, buildHeaders } = require('./transport.js');
 const { WrpcReadable, WrpcWritable } = require('./streams.js');
@@ -30,6 +31,12 @@ module.exports = {
   Procedure,
   RoomRegistry,
   Broadcast,
+  tracked,
+  isTracked,
+  createEventLog,
+  EventLog,
+  createEventStream,
+  EventStream,
   MemorySessionStore,
   ServerTransport,
   buildHeaders,

@@ -5,6 +5,7 @@
   "main": "index.js",
   "browser": {
     "./index.js": "./browser.js",
+    "./sse.js": "./sse.browser.js",
     "./src/chunks.js": "./src/chunks.browser.js",
     "./src/runtime/node.js": "./src/runtime/browser.js"
   },
@@ -41,6 +42,11 @@
     "./scaling": {
       "types": "./scaling.d.ts",
       "default": "./scaling.js"
+    },
+    "./sse": {
+      "types": "./sse.d.ts",
+      "browser": "./sse.browser.js",
+      "default": "./sse.js"
     }
   },
   "directories": {
@@ -136,6 +142,9 @@
     "express.d.ts",
     "scaling.js",
     "scaling.d.ts",
+    "sse.js",
+    "sse.browser.js",
+    "sse.d.ts",
     "src/",
     "LICENSE",
     "README.md",

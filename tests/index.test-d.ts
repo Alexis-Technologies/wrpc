@@ -90,6 +90,50 @@ expectAssignable<wrpc.ProcedureOptions>({
   meta: { description: 'x' },
 });
 
+// Subscriptions: an async generator handler is one, and so is the explicit
+// spelling; both scaffold subscribe/iterate on the client.
+const feed = wrpc.defineRouter({
+  chat: {
+    onMessage: {
+      access: 'public',
+      handler: async function* (context, args, options) {
+        expectType<Context>(context);
+        expectType<AbortSignal>(options.signal);
+        expectType<string | undefined>(options.lastEventId);
+        void args;
+        yield wrpc.tracked('1', { text: 'hi' });
+      },
+    },
+    onTyping: wrpc.procedure.subscription({
+      access: 'public',
+      handler: async function* () {
+        yield { typing: true };
+      },
+    }),
+  },
+});
+expectType<Procedure | null>(feed.getProcedure('chat', '*', 'onMessage'));
+// queue and timeout mean something else for a stream, so they are refused
+expectError(wrpc.procedure.subscription({ handler: async function* () {}, timeout: 100 }));
+
+declare const subscriptionMethod: wrpc.SubscriptionMethod;
+expectType<'subscription'>(subscriptionMethod.kind);
+const subscription = subscriptionMethod.subscribe({ room: 'a' }, { lastEventId: '3', onData: () => {} });
+expectType<string>(subscription.id);
+expectType<string | undefined>(subscription.lastEventId);
+expectType<boolean>(subscription.closed);
+expectType<boolean>(subscription.unsubscribe());
+
+// The resume primitives
+const log = wrpc.createEventLog<{ text: string }>({ size: 10 });
+expectType<string>(log.push({ text: 'hi' }));
+expectType<Array<wrpc.Tracked<{ text: string }>> | null>(log.since('2'));
+expectType<string | null>(log.lastEventId);
+const stream = wrpc.createEventStream<number>({ highWaterMark: 4 });
+expectType<boolean>(stream.push(1));
+expectType<void>(stream.end());
+expectType<number>(stream.dropped);
+
 // Sessions
 expectAssignable<SessionStore>(new wrpc.MemorySessionStore());
 expectAssignable<wrpc.SessionsOptions>({

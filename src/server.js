@@ -4,10 +4,10 @@ const http = require('node:http');
 const https = require('node:https');
 
 const { Emitter } = require('./utils.js');
-const { RpcServer } = require('./rpc/core.js');
+const { RpcServer, rpcOptions } = require('./rpc/core.js');
 const { isOriginAllowed } = require('./transport.js');
 const { createNodeEngine, isEngine } = require('./engine/index.js');
-const { receiveBody } = require('./adapters/common.js');
+const { receiveBody, nodeStream } = require('./adapters/common.js');
 
 const DEFAULT_LISTEN_RETRY = 3;
 const DEFAULT_BIND_TIMEOUT = 2000;
@@ -33,24 +33,14 @@ class Server extends Emitter {
 
   constructor(options = {}) {
     super();
-    const {
-      router,
-      sessions,
-      cors = null,
-      basePath,
-      console = globalThis.console,
-      engine = createNodeEngine(),
-      ws = {},
-      backplane = null,
-      instanceId,
-    } = options;
+    const { cors = null, console = globalThis.console, engine = createNodeEngine(), ws = {} } = options;
     if (!isEngine(engine)) {
       throw new TypeError('Server: options.engine does not implement the Engine contract');
     }
     this.#options = options;
     this.#console = console;
     this.#engine = engine;
-    this.rpc = new RpcServer({ router, sessions, cors, basePath, console, backplane, instanceId });
+    this.rpc = new RpcServer(rpcOptions({ ...options, cors, console }));
     if (engine.standalone) this.#initStandalone(ws, cors);
     else this.#init(ws, cors);
   }
@@ -171,6 +161,8 @@ class Server extends Emitter {
       body,
       remoteAddress: req.socket.remoteAddress,
       respond,
+      // Keeps the response open and writes into it — how SSE is served.
+      stream: nodeStream(res),
       // Lets the core evict clients for requests that never get a response
       onAbort: (listener) => void res.on('close', listener),
     });

@@ -1,5 +1,27 @@
 'use strict';
 
+// The streaming half of the abstract HTTP call, implemented once for every
+// host that hands over a node ServerResponse (the built-in shell, express
+// and fastify all do). Returning null means the response is already gone.
+//
+// It is what SSE rides on: `respond` answers with a body, `stream` keeps the
+// response open and writes into it.
+const nodeStream =
+  (res) =>
+  ({ status, headers }) => {
+    if (res.writableEnded || res.destroyed) return null;
+    res.writeHead(status, headers);
+    // Without this the first frame can sit in node's header buffer until
+    // enough body accumulates — which for a live stream is forever.
+    res.flushHeaders?.();
+    return {
+      write: (chunk) => res.write(chunk),
+      end: () => res.end(),
+      onClose: (listener) => void res.on('close', listener),
+      onDrain: (listener) => void res.on('drain', listener),
+    };
+  };
+
 const http = require('node:http');
 
 // Shared plumbing for everything that turns a host framework's request into
@@ -54,4 +76,4 @@ const eachHeader = (headers, visit) => {
   }
 };
 
-module.exports = { MAX_BODY_SIZE, receiveBody, normalizeBody, statusLine, eachHeader };
+module.exports = { MAX_BODY_SIZE, receiveBody, normalizeBody, statusLine, eachHeader, nodeStream };

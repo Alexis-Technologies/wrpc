@@ -9,6 +9,7 @@ const { generateUUID } = require('../src/runtime/browser.js');
 test('browser barrel exposes only browser-safe exports', () => {
   assert.deepStrictEqual(Object.keys(wrpcBrowser).sort(), [
     'Emitter',
+    'EventStream',
     'WrpcClient',
     'WrpcClientProxy',
     'WrpcError',
@@ -16,8 +17,11 @@ test('browser barrel exposes only browser-safe exports', () => {
     'WrpcWritable',
     'chunkDecode',
     'chunkEncode',
+    'createEventStream',
   ]);
   assert.strictEqual(typeof wrpcBrowser.Emitter, 'function');
+  assert.strictEqual(typeof wrpcBrowser.EventStream, 'function');
+  assert.strictEqual(typeof wrpcBrowser.createEventStream, 'function');
   assert.strictEqual(typeof wrpcBrowser.WrpcClient, 'function');
   assert.strictEqual(typeof wrpcBrowser.WrpcClientProxy, 'function');
   assert.strictEqual(typeof wrpcBrowser.WrpcError, 'function');

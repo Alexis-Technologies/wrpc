@@ -2,11 +2,11 @@
 
 const http = require('node:http');
 
-const { RpcServer } = require('../rpc/core.js');
+const { RpcServer, rpcOptions } = require('../rpc/core.js');
 const { createNodeEngine, isEngine } = require('../engine/index.js');
 const { createUwsEngine } = require('./uws.js');
 const { isOriginAllowed } = require('../transport.js');
-const { normalizeBody, eachHeader } = require('./common.js');
+const { normalizeBody, eachHeader, nodeStream } = require('./common.js');
 
 // Fastify plugin. One plugin, two backends, picked by looking at what
 // fastify is actually running on:
@@ -66,9 +66,9 @@ const toConsole = (logger) => {
 };
 
 const wrpcFastify = async (fastify, options = {}) => {
-  const { router, sessions, cors = null, basePath, ws = {}, maxBodySize, backplane = null, instanceId } = options;
+  const { cors = null, ws = {}, maxBodySize } = options;
   const console = options.console ?? toConsole(fastify.log);
-  const rpc = options.rpc ?? new RpcServer({ router, sessions, cors, basePath, console, backplane, instanceId });
+  const rpc = options.rpc ?? new RpcServer(rpcOptions({ ...options, cors, console }));
   const base = rpc.basePath;
   const engine = resolveEngine(fastify, options);
 
@@ -105,6 +105,15 @@ const wrpcFastify = async (fastify, options = {}) => {
         // (rpc.clients was empty mid-call and handlers saw a false abort).
         // The response closes when it is written or the peer disconnects,
         // which is the signal the node shell uses too.
+        // Streaming bypasses fastify's reply machinery and writes straight
+        // to the raw response: an SSE body has no end for `reply.send` to
+        // wait for. `hijack()` tells fastify not to answer it as well.
+        stream(options) {
+          if (typeof reply.hijack === 'function') reply.hijack();
+          settled = true;
+          resolve();
+          return nodeStream(reply.raw)(options);
+        },
         onAbort(listener) {
           reply.raw?.on?.('close', listener);
         },
@@ -125,7 +134,11 @@ const wrpcFastify = async (fastify, options = {}) => {
   // handler runs. `maxBodySize` only narrows that per route; left unset, the
   // app's limit stands, because a plugin silently RAISING the host's body
   // limit would be a security regression the app never asked for.
-  const routes = base === '' ? ['/', '/:unit/:method'] : [base, `${base}/:unit/:method`];
+  // The SSE endpoint is a static segment, so find-my-way prefers it over
+  // the parametric '/:unit/:method' it would otherwise fall into — where the
+  // core never sees it as an events request.
+  const routes =
+    base === '' ? ['/', rpc.eventsPath, '/:unit/:method'] : [base, rpc.eventsPath, `${base}/:unit/:method`];
   for (const url of routes) {
     fastify.route({
       method: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],

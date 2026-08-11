@@ -9,6 +9,129 @@ and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0
 
 ### Added
 
+- Subscriptions, batching, cancellation and SSE (F5) — **wire protocol v2**:
+  `subscribe` / `data` / `end` / `unsubscribe` / `cancel` packets, plus a
+  JSON array as a batch frame. All of it is in
+  `docs/reference/protocol.md`.
+  - **Subscription procedures** — a procedure that answers with a *stream*
+    of values, written as an async generator:
+    ```js
+    onMessage: procedure.subscription({
+      handler: async function* (ctx, args, { lastEventId, signal }) {
+        for (const missed of log.since(lastEventId) ?? []) yield missed;
+        yield* createEventStream({ signal });
+      },
+    })
+    ```
+    An async generator handler IS the declaration — `procedure.subscription`
+    is only needed for a plain function returning an async iterable — and
+    introspection carries `kind`, so the client scaffolds `subscribe`/
+    `iterate` instead of a callable. `queue` and `timeout` are *refused* on a
+    subscription rather than quietly meaning something else. The pump
+    respects transport backpressure (it waits for `'drain'` before pulling
+    the next value), and always answers `end` exactly once — completion,
+    a generator that threw, an unsubscribe, or a disconnect — after which
+    the generator is closed so its `finally` runs.
+  - **Resume**: `tracked(eventId, data)` labels a value, and the client sends
+    the last one back as `lastEventId` after a reconnect. `createEventLog({
+    size })` is the ring buffer behind that: `since(lastEventId)` returns
+    what was missed, or **`null`** when the id has fallen out of the buffer —
+    an honest "cannot resume" instead of a silently truncated history.
+  - **`createEventStream()`** (also on the browser entry) — the push→pull
+    adapter between "something calls me with a value" and "someone is
+    `for await`-ing values". Bounded: a producer that outruns its consumer
+    drops the *oldest* value and reports it through `dropped`.
+  - **Cancellation**: `client.api.unit.method(args, { signal })` sends
+    `{type:'cancel'}`, the caller is rejected with **499**, and
+    `ctx.signal` is aborted. Best-effort by nature — a handler that ignores
+    its signal keeps running — but its late result is *dropped*, never
+    delivered to a caller that already gave up. A call cancelled while still
+    in a batch queue is removed rather than racing a `cancel` ahead of the
+    `call` it refers to. A disconnect aborts everything still running for
+    that peer.
+  - **Batching**: `batch: { flush: 'microtask' | ms, maxSize, maxBytes }`
+    coalesces calls issued in one tick into a single frame. Only `call`
+    packets batch — a ping, a cancel or an unsubscribe is a control packet
+    whose whole point is to arrive now — and a batch of one is sent bare.
+    The server accepts arrays on every transport; on HTTP the answers come
+    back as one array **in request order**, so requests and responses zip
+    positionally. `maxBatch` (128) caps a frame, because one frame asking
+    for unbounded work is otherwise a denial of service, and
+    `maxSubscriptions` (256) caps concurrent generators per client.
+  - **`@alexify/wrpc/sse` subpath** — Server-Sent Events as a full transport,
+    not just a one-way feed. A channel is two halves joined by an id:
+    `GET {basePath}/events?channel=<id>` for the server→client stream and
+    `POST {basePath}` with `x-wrpc-channel` for the other direction, both
+    belonging to ONE server-side client — which is what lets a subscription
+    opened by a POST deliver its values down the stream. The POST answers
+    `202`; every reply travels on the stream. A dropped stream does not
+    destroy the channel: it is held for `retention` (30 s), so a reconnect
+    with **`Last-Event-ID`** re-attaches and replays the frames it missed,
+    subscriptions included. Comment frames keep proxies from timing an idle
+    stream out and `X-Accel-Buffering: no` keeps nginx from buffering it.
+    The client half is browser-safe (`fetch` + a hand-written incremental
+    parser, deliberately **not** `EventSource`, which cannot set headers or
+    be aborted cleanly) and registers as `WrpcClient.transport.sse`;
+    `connect(url, { transport: 'sse' })` selects it. Binary streams are
+    *refused* on it rather than silently corrupted — SSE frames are text.
+  - `HttpCall` grew an optional **`stream({ status, headers })`**: the seam
+    that lets a host keep a response open. The node shell, express and
+    fastify all implement it; a host that cannot answers the events endpoint
+    with 501 rather than a response that never arrives.
+  - `Context.signal`, `Client.calls`, `Client.subscriptions`, `Client.drain()`
+    and `Client.binary`; `RpcServer.eventsPath` and `RpcServer.sse`.
+
+### Fixed
+
+Found by an adversarial review of F5 itself, each reproduced before fixing:
+
+- **An SSE reconnect killed every subscription instead of resuming it.** A
+  channel outlives its stream, so a reconnecting peer re-opens its
+  subscriptions on the very client that still holds them — and the
+  duplicate-id guard refused them, orphaning the old generator. Re-subscribing
+  an id the same client already has is now a *resume*: the previous run is
+  aborted and replaced.
+- **The subscription pump parked forever after an SSE stream re-attached.**
+  While detached, `writeFrame` reports backpressure, so the pump waited on
+  `'drain'` — which the new response could never emit, because the parked
+  pump was what would have triggered it. A fresh sink now announces itself.
+- **A stale SSE writer's close tore down the live one.** `#detach` could not
+  tell which writer had closed, so the late close of a response already
+  replaced by a reconnect detached the healthy stream. Detach and the
+  heartbeat are now scoped by writer identity, and a replaced response is
+  ended rather than leaked open.
+- **`SseChannels.close()` left its responses open**, so a host waiting on
+  `server.close()` waited forever; a channel whose host could not start the
+  stream at all was left behind unreachable.
+- **The fastify plugin never routed `{basePath}/events`** — it fell into the
+  `/:unit/:method` route, where the core never saw it as an events request.
+- **Cancel and unsubscribe were registered after the first `await`**, so one
+  dispatched in the same turn (batched behind its own call) found nothing to
+  cancel. Both controllers are now registered synchronously.
+- **One unroutable answer stranded the rest of a batch**: the client's array
+  loop had no per-item containment, contradicting the guarantee the protocol
+  makes about a failure inside a batch.
+- **Cancelling a call over HTTP threw at the client**, which sent a `cancel`
+  the transport cannot carry and then could not route the 400. A transport
+  now declares whether it is persistent, and the 499 acknowledging a cancel
+  is recognized rather than reported as an unknown callback.
+- **`iterate()` leaked an abort listener** on every natural end, and opening
+  it with an already-aborted signal started a subscription nobody could stop.
+- **`WrpcClientProxy` leaked a pending-port entry per subscription**: `end`
+  is a terminal packet and now releases its slot like `callback` does.
+- `index.d.ts` caught up with the backpressure booleans (`Client.send`,
+  `ServerTransport.send`/`error`, `ServerHttpTransport.write`) and
+  `createContext(signal)`.
+
+### Changed
+
+- `ServerTransport.send()` now returns the transport's backpressure signal,
+  so a producer can wait for `'drain'` instead of buffering without limit.
+- Every shell and adapter now funnels its option bag through `rpcOptions()`
+  rather than re-listing the core's options by hand — adding a core option
+  had silently required editing four files, and `maxSubscriptions` was
+  dropped by all of them on the first try.
+
 - Realtime and scaling (F4):
   - **Rooms in the core** (`src/rpc/rooms.js`) — named groups of clients on
     top of the existing `{ type: 'event' }` packets, so no new wire type was

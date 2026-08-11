@@ -1,9 +1,9 @@
 'use strict';
 
-const { RpcServer } = require('../rpc/core.js');
+const { RpcServer, rpcOptions } = require('../rpc/core.js');
 const { createNodeEngine, isEngine } = require('../engine/index.js');
 const { isOriginAllowed } = require('../transport.js');
-const { receiveBody, normalizeBody, MAX_BODY_SIZE } = require('./common.js');
+const { receiveBody, normalizeBody, nodeStream, MAX_BODY_SIZE } = require('./common.js');
 
 // express (and bare node:http) adapter. Unlike the batteries-included
 // Server, nothing here owns the listener — the app does:
@@ -20,18 +20,8 @@ const { receiveBody, normalizeBody, MAX_BODY_SIZE } = require('./common.js');
 const getPathname = (url) => (url ? url.split('?')[0] : '/');
 
 const createWrpc = (options = {}) => {
-  const {
-    router,
-    sessions,
-    cors = null,
-    basePath,
-    console = globalThis.console,
-    ws = {},
-    maxBodySize = MAX_BODY_SIZE,
-    backplane = null,
-    instanceId,
-  } = options;
-  const rpc = options.rpc ?? new RpcServer({ router, sessions, cors, basePath, console, backplane, instanceId });
+  const { cors = null, console = globalThis.console, ws = {}, maxBodySize = MAX_BODY_SIZE } = options;
+  const rpc = options.rpc ?? new RpcServer(rpcOptions({ ...options, cors, console }));
   const engine = options.engine ?? createNodeEngine(ws);
   if (!isEngine(engine)) {
     throw new TypeError('createWrpc: options.engine does not implement the Engine contract');
@@ -85,6 +75,7 @@ const createWrpc = (options = {}) => {
         body,
         remoteAddress: req.socket?.remoteAddress,
         respond,
+        stream: nodeStream(res),
         onAbort: (listener) => void res.on('close', listener),
       });
 

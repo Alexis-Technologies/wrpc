@@ -1,6 +1,6 @@
 'use strict';
 
-const { Emitter, jsonParse, backoffDelay } = require('./utils.js');
+const { Emitter, jsonParse, backoffDelay, createEventStream } = require('./utils.js');
 const { generateUUID } = require('./runtime/node.js');
 const { WebSocket } = globalThis;
 const { chunkDecode } = require('./chunks.js');
@@ -8,6 +8,10 @@ const { WrpcReadable, WrpcWritable } = require('./streams.js');
 
 const CALL_TIMEOUT = 7 * 1000;
 const RECONNECT_TIMEOUT = 2 * 1000;
+
+// 499, nginx's "client closed request": the caller took the call back, so
+// it is neither a server fault nor a success.
+const CANCELLED_ERROR = { message: 'Cancelled by the caller', code: 499 };
 
 const RECONNECT = {
   minDelay: RECONNECT_TIMEOUT,
@@ -48,6 +52,24 @@ const normalizeReconnect = (options) => {
   return merged;
 };
 
+// Call batching. Several calls issued in the same tick travel as ONE frame
+// (a JSON array), which on HTTP is one request instead of N and on a
+// WebSocket is one frame instead of N. Only `call` packets batch: a ping, a
+// cancel or an unsubscribe is a control packet whose whole point is to
+// arrive now.
+const BATCH = { flush: 'microtask', maxSize: 16, maxBytes: 64 * 1024 };
+
+const normalizeBatch = (options) => {
+  const { batch } = options;
+  if (!batch) return null;
+  const merged = { ...BATCH, ...(batch === true ? {} : batch) };
+  const timed = typeof merged.flush === 'number' && merged.flush >= 0;
+  if (!timed && merged.flush !== 'microtask') merged.flush = BATCH.flush;
+  if (!(merged.maxSize > 1)) merged.maxSize = BATCH.maxSize;
+  if (!(merged.maxBytes > 0)) merged.maxBytes = BATCH.maxBytes;
+  return merged;
+};
+
 const normalizeHeartbeat = (options) => {
   const { heartbeat } = options;
   if (heartbeat === false || heartbeat === 0) return null;
@@ -74,6 +96,9 @@ class WrpcError extends Error {
 
 class ClientTransport extends Emitter {
   active = false;
+  // Whether the connection stays open: only a persistent one can carry a
+  // cancel, an unsubscribe or a subscription's values.
+  persistent = true;
   // Opt-in: only a transport that can silently die needs an app-level
   // heartbeat. A request/response transport has nothing to keep alive, and
   // a MessagePort to a Service Worker cannot half-close.
@@ -140,6 +165,12 @@ class WrpcClient extends Emitter {
   api = {};
   #transport = null;
   #calls = new Map();
+  #cancelled = new Set();
+  #subscriptions = new Map();
+  #batch = null;
+  #pending = [];
+  #pendingBytes = 0;
+  #flushTimer = null;
   #streams = new Map();
   #callTimeout = CALL_TIMEOUT;
   #reconnect = RECONNECT;
@@ -172,6 +203,7 @@ class WrpcClient extends Emitter {
     if (random) this.#random = random; // deterministic jitter in tests
     this.#reconnect = normalizeReconnect(options);
     this.#heartbeat = normalizeHeartbeat(options);
+    this.#batch = normalizeBatch(options);
     this.url = url;
     this.#transport = transport;
     this.#options = options;
@@ -185,8 +217,13 @@ class WrpcClient extends Emitter {
       await client.open();
       return client;
     }
-    const isHttp = url.startsWith('http');
-    const Transport = isHttp ? WrpcClient.transport.http : WrpcClient.transport.ws;
+    // The scheme picks the transport unless one is named. 'sse' only exists
+    // once '@alexify/wrpc/sse' has been required, which is what registers it.
+    const name = options.transport ?? (url.startsWith('http') ? 'http' : 'ws');
+    const Transport = WrpcClient.transport[name];
+    if (typeof Transport !== 'function') {
+      throw new Error(`Unknown transport '${name}'`);
+    }
     const transport = new Transport(url);
     const client = new WrpcClient(url, transport, options);
     await client.open();
@@ -241,7 +278,12 @@ class WrpcClient extends Emitter {
   async #restore(attempts) {
     const units = Array.from(this.#loaded);
     if (units.length > 0) await this.load(...units);
-    await this.emit('reconnect', { units, attempts });
+    // Each subscription is re-opened from the last eventId it saw, so the
+    // server can replay what was missed instead of starting over. A feed
+    // that yields untracked values has no eventId and simply resumes live.
+    const subscriptions = Array.from(this.#subscriptions.values());
+    for (const record of subscriptions) this.#openSubscription(record);
+    await this.emit('reconnect', { units, attempts, subscriptions: subscriptions.length });
   }
 
   #scheduleReconnect() {
@@ -335,6 +377,11 @@ class WrpcClient extends Emitter {
     clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = null;
     this.#stopHeartbeat();
+    // Anything still queued leaves before the socket does; a call whose
+    // packet never shipped would otherwise wait out its whole timeout.
+    this.flush();
+    for (const record of this.#subscriptions.values()) record.stream?.end();
+    this.#subscriptions.clear();
     // An explicit close ends the session: a later open() is a fresh start,
     // not a reconnect, so it must not replay 'reconnect'.
     this.#connected = false;
@@ -348,7 +395,58 @@ class WrpcClient extends Emitter {
   }
 
   send(data) {
+    // Only calls batch: everything else is a control packet whose value is
+    // that it leaves now.
+    if (this.#batch && data?.type === 'call') return void this.#enqueue(data);
     this.#transport.send(data);
+  }
+
+  #enqueue(packet) {
+    const size = JSON.stringify(packet).length;
+    this.#pending.push({ packet, size });
+    this.#pendingBytes += size;
+    const { maxSize, maxBytes } = this.#batch;
+    if (this.#pending.length >= maxSize || this.#pendingBytes >= maxBytes) return void this.flush();
+    this.#schedule();
+  }
+
+  #schedule() {
+    if (this.#flushTimer !== null) return;
+    const { flush } = this.#batch;
+    if (flush === 'microtask') {
+      this.#flushTimer = 'microtask';
+      queueMicrotask(() => this.flush());
+      return;
+    }
+    this.#flushTimer = unref(setTimeout(() => this.flush(), flush));
+  }
+
+  /** Sends whatever calls are waiting to be batched. Safe to call anytime. */
+  flush() {
+    if (this.#flushTimer !== null && this.#flushTimer !== 'microtask') clearTimeout(this.#flushTimer);
+    this.#flushTimer = null;
+    if (this.#pending.length === 0) return;
+    const pending = this.#pending;
+    this.#pending = [];
+    this.#pendingBytes = 0;
+    // A batch of one is that packet: no reason to make the peer unwrap it.
+    const payload = pending.length === 1 ? pending[0].packet : pending.map((entry) => entry.packet);
+    try {
+      this.#transport.send(payload);
+    } catch (error) {
+      this.#escalate(error);
+    }
+  }
+
+  // A call cancelled before its batch left never has to be cancelled on the
+  // wire — dropping it here is both cheaper and safer than racing a `cancel`
+  // packet ahead of the `call` it refers to.
+  #unqueue(id) {
+    const index = this.#pending.findIndex((entry) => entry.packet.id === id);
+    if (index < 0) return false;
+    const [entry] = this.#pending.splice(index, 1);
+    this.#pendingBytes -= entry.size;
+    return true;
   }
 
   getStream(id) {
@@ -381,29 +479,83 @@ class WrpcClient extends Emitter {
       if (this.#proxyPacket) return void this.#proxyPacket(data, null);
       throw new Error('Invalid JSON packet');
     }
-    const { type, id, name } = packet;
+    // A batch frame answers several packets at once; each one is dispatched
+    // exactly as it would have been on its own.
+    if (Array.isArray(packet)) {
+      if (this.#proxyPacket) return void this.#proxyPacket(data, packet);
+      // Contained per item: one answer this client cannot route must not
+      // strand the rest of the batch, which is the guarantee the protocol
+      // makes about a failure inside a batch.
+      for (const item of packet) {
+        try {
+          await this.#dispatch(item ?? {});
+        } catch (error) {
+          this.#escalate(error);
+        }
+      }
+      return;
+    }
+    const { type } = packet;
     // Heartbeat first, and before the proxy hand-off: the pong answers a
     // ping this client sent, so it is never anyone else's packet.
     if (type === 'pong') return void this.#onPong();
     if (type === 'ping') return void this.send({ type: 'pong' });
     if (this.#proxyPacket) return void this.#proxyPacket(data, packet);
+    await this.#dispatch(packet);
+  }
+
+  async #dispatch(packet) {
+    const { type, id, name } = packet;
     if (type === 'event') return void (await this.#handleEvent(name, packet.data));
     if (!id) throw new Error('Packet structure error');
-    if (type === 'callback') {
-      const promised = this.#calls.get(id);
-      if (!promised) throw new Error(`Callback ${id} not found`);
-      const resolve = promised[0];
-      const reject = promised[1];
-      const timeout = promised[2];
-      this.#calls.delete(id);
-      clearTimeout(timeout);
-      if (packet.error) {
-        return void reject(new WrpcError(packet.error));
-      }
-      resolve(packet.result);
+    if (type === 'callback') return void this.#settle(packet);
+    if (type === 'data' || type === 'end') return void this.#handleSubscriptionPacket(packet);
+    if (type === 'stream') await this.#handleStream(packet);
+  }
+
+  #settle(packet) {
+    const { id } = packet;
+    const call = this.#calls.get(id);
+    // The 499 acknowledging a cancel this client sent: the caller was
+    // rejected the moment it aborted, so the ack is expected, not an error.
+    if (!call && this.#cancelled.delete(id)) return;
+    if (!call) throw new Error(`Callback ${id} not found`);
+    this.#calls.delete(id);
+    clearTimeout(call.timeout);
+    call.release?.();
+    if (packet.error) return void call.reject(new WrpcError(packet.error));
+    call.resolve(packet.result);
+  }
+
+  // `data` carries one value of a subscription; `end` closes it, with an
+  // `error` when the server-side generator threw. A packet for a
+  // subscription this client already dropped is ignored: the unsubscribe and
+  // the last values in flight cross on the wire, and that is normal.
+  #handleSubscriptionPacket(packet) {
+    const { type, id } = packet;
+    const record = this.#subscriptions.get(id);
+    if (!record) return;
+    if (type === 'data') {
+      // Remembered for the resume after a reconnect. Untracked values leave
+      // it alone: a feed with no ids simply has no resume point.
+      if (packet.eventId !== undefined) record.lastEventId = packet.eventId;
+      record.onData?.(packet.data);
+      record.stream?.push(packet.data);
       return;
     }
-    if (type === 'stream') await this.#handleStream(packet);
+    this.#subscriptions.delete(id);
+    record.onRelease?.();
+    if (!packet.error) {
+      record.onEnd?.();
+      record.stream?.end();
+      return;
+    }
+    const error = new WrpcError(packet.error);
+    record.stream?.fail(error);
+    if (record.onError) return void record.onError(error);
+    // Nobody asked to hear about it, but a subscription that died must not
+    // die quietly.
+    if (!record.stream) this.#escalate(error);
   }
 
   // Events are addressed 'unit/event'. One that reaches no listener — an
@@ -462,8 +614,7 @@ class WrpcClient extends Emitter {
 
   async load(...units) {
     if (!this.active) throw new Error('Not connected');
-    const introspect = this.#scaffold('system')('introspect');
-    const introspection = await introspect(units);
+    const introspection = await this.#call('system/introspect', units);
     for (const unit of units) {
       const instance = introspection[unit];
       if (!instance) continue;
@@ -494,7 +645,7 @@ class WrpcClient extends Emitter {
         }
       }
       for (const methodName of methodNames) {
-        methods[methodName] = request(methodName);
+        methods[methodName] = request(methodName, instance[methodName]);
       }
       this.#unitMethods.set(unit, new Set(methodNames));
     }
@@ -505,26 +656,155 @@ class WrpcClient extends Emitter {
     this.send({ type: 'event', name, data });
   }
 
-  #scaffold(unit, version) {
-    const createMethod = (methodName) => {
-      const method = async (args = {}) => {
-        const id = generateUUID();
-        const ver = version ? `.${version}` : '';
-        const target = `${unit}${ver}/${methodName}`;
-        const packet = { type: 'call', id, method: target, args };
-        return new Promise((resolve, reject) => {
-          const timeout = setTimeout(() => {
-            if (!this.#calls.has(id)) return;
-            this.#calls.delete(id);
-            reject(new Error('Request timeout'));
-          }, this.#callTimeout);
-          this.#calls.set(id, [resolve, reject, timeout]);
-          this.send(packet);
-        });
+  #target(unit, version, methodName) {
+    const ver = version ? `.${version}` : '';
+    return `${unit}${ver}/${methodName}`;
+  }
+
+  #call(target, args, options = {}) {
+    const id = generateUUID();
+    const { signal } = options;
+    const packet = { type: 'call', id, method: target, args };
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) return void reject(new WrpcError(CANCELLED_ERROR));
+      const timeout = setTimeout(() => {
+        if (!this.#calls.has(id)) return;
+        this.#calls.delete(id);
+        this.#unqueue(id);
+        release();
+        reject(new Error('Request timeout'));
+      }, this.#callTimeout);
+      const onAbort = () => {
+        if (!this.#calls.has(id)) return;
+        this.#calls.delete(id);
+        clearTimeout(timeout);
+        // Still queued: drop it instead of racing a cancel ahead of the
+        // call. And a request/response transport cannot carry a cancel at
+        // all — sending one there only earns a 400 nobody can route.
+        if (!this.#unqueue(id) && this.active && this.#transport.persistent !== false) {
+          this.#cancelled.add(id);
+          this.send({ type: 'cancel', id });
+        }
+        reject(new WrpcError(CANCELLED_ERROR));
       };
-      return method;
+      const release = () => signal?.removeEventListener('abort', onAbort);
+      signal?.addEventListener('abort', onAbort, { once: true });
+      this.#calls.set(id, { resolve, reject, timeout, release });
+      this.send(packet);
+    });
+  }
+
+  /**
+   * Opens a subscription. `onData` receives every value; the returned handle
+   * carries the last seen eventId and can stop it. The subscription is
+   * re-opened from that eventId automatically after a reconnect.
+   */
+  #subscribe(target, args, options = {}) {
+    const id = generateUUID();
+    const record = {
+      id,
+      target,
+      args,
+      lastEventId: options.lastEventId,
+      onData: options.onData ?? null,
+      onError: options.onError ?? null,
+      onEnd: options.onEnd ?? null,
+      stream: options.stream ?? null,
+      // Lets iterate() drop its abort listener however the subscription ends.
+      onRelease: options.onRelease ?? null,
+    };
+    const live = this.#subscriptions;
+    live.set(id, record);
+    this.#openSubscription(record);
+    return {
+      id,
+      unsubscribe: () => this.#unsubscribe(id),
+      get lastEventId() {
+        return record.lastEventId;
+      },
+      get closed() {
+        return !live.has(id);
+      },
+    };
+  }
+
+  #openSubscription(record) {
+    const packet = { type: 'subscribe', id: record.id, method: record.target, args: record.args };
+    if (record.lastEventId !== undefined && record.lastEventId !== null) {
+      packet.lastEventId = record.lastEventId;
+    }
+    this.send(packet);
+  }
+
+  #unsubscribe(id) {
+    const record = this.#subscriptions.get(id);
+    if (!record) return false;
+    this.#subscriptions.delete(id);
+    record.onRelease?.();
+    record.stream?.end();
+    // The server answers with `end`, which lands on a record that is gone —
+    // ignored on purpose, the caller already knows.
+    if (this.active) this.send({ type: 'unsubscribe', id });
+    return true;
+  }
+
+  #scaffold(unit, version) {
+    const createMethod = (methodName, info = {}) => {
+      const target = this.#target(unit, version, methodName);
+      if (info.kind !== 'subscription') {
+        return (args = {}, options = {}) => this.#call(target, args, options);
+      }
+      // A subscription is not callable: it answers with a stream, so it
+      // exposes the two ways to consume one instead of pretending to be a
+      // function that resolves once.
+      return {
+        kind: 'subscription',
+        subscribe: (args = {}, options = {}) => this.#subscribe(target, args, options),
+        iterate: (args = {}, options = {}) => this.#iterate(target, args, options),
+      };
     };
     return createMethod;
+  }
+
+  #iterate(target, args, options = {}) {
+    const { signal } = options;
+    const stream = createEventStream({ signal, highWaterMark: options.highWaterMark });
+    // An already-aborted signal means the caller is gone before it started:
+    // opening a subscription nobody will consume would leave a generator
+    // running on the server with no handle to stop it.
+    if (signal?.aborted) {
+      const iterator = stream[Symbol.asyncIterator]();
+      iterator.subscription = { id: null, lastEventId: undefined, closed: true, unsubscribe: () => false };
+      return iterator;
+    }
+    // Breaking out of `for await` (or aborting) has to reach the server, and
+    // whichever ends it first has to release the listener the other used.
+    let stop = null;
+    const release = () => {
+      if (!stop) return;
+      signal?.removeEventListener('abort', stop);
+      stop = null;
+    };
+    const handle = this.#subscribe(target, args, {
+      ...options,
+      stream,
+      onData: options.onData ?? null,
+      onRelease: release,
+    });
+    stop = () => {
+      stop = null;
+      handle.unsubscribe();
+    };
+    signal?.addEventListener('abort', stop, { once: true });
+    const iterator = stream[Symbol.asyncIterator]();
+    const originalReturn = iterator.return.bind(iterator);
+    iterator.return = () => {
+      release();
+      handle.unsubscribe();
+      return originalReturn();
+    };
+    iterator.subscription = handle;
+    return iterator;
   }
 }
 
@@ -598,6 +878,9 @@ class ClientWsTransport extends ClientTransport {
 }
 
 class ClientHttpTransport extends ClientTransport {
+  // One request, one response: nothing to cancel or subscribe on.
+  persistent = false;
+
   async open() {
     if (this.active) return;
     this.active = true;
@@ -771,7 +1054,10 @@ class WrpcClientProxy extends Emitter {
     const port = this.#pending.get(id);
     if (!port) return void this.#broadcast(data);
     port.postMessage(data);
-    if (type === 'callback') return void this.#pending.delete(id);
+    // `end` is a subscription's terminal packet, so it releases its slot the
+    // same way a callback does — otherwise every subscription a page opens
+    // pins a port reference in the worker for the life of the connection.
+    if (type === 'callback' || type === 'end') return void this.#pending.delete(id);
     if (type !== 'stream') return;
     const streamDone = status === 'end' || status === 'terminate';
     if (streamDone) this.#pending.delete(id);
@@ -793,4 +1079,7 @@ WrpcClient.transport = {
 
 WrpcClient.initialize();
 
-module.exports = { WrpcClient, WrpcClientProxy, WrpcError };
+// ClientTransport is exported for transports that live in their own subpath
+// (see src/sse/client.js); it is deliberately NOT re-exported from the
+// package barrel, where transports stay type-only.
+module.exports = { WrpcClient, WrpcClientProxy, WrpcError, ClientTransport };

@@ -35,6 +35,8 @@ const ENTRIES = [
   { label: 'fastify adapter (@alexify/wrpc/fastify)', entry: 'fastify.js', platform: 'node' },
   { label: 'express adapter (@alexify/wrpc/express)', entry: 'express.js', platform: 'node' },
   { label: 'rooms backplane (@alexify/wrpc/scaling)', entry: 'scaling.js', platform: 'node' },
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser' },
+  { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
 ];
 
 async function bundle(entry, platform, minify) {

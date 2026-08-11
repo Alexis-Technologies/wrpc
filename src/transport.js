@@ -72,11 +72,14 @@ class ServerTransport extends Emitter {
     const status = http.STATUS_CODES[code] || 'Unknown error';
     const info = error ? error.message : status;
     const packet = { type: 'callback', id, error: { message: info, code } };
-    this.send(packet, code);
+    return this.send(packet, code);
   }
 
+  // Returns the transport's backpressure signal (false = above the
+  // high-water mark) so a producer — a subscription pump, a stream — can
+  // wait for 'drain' instead of buffering without limit.
   send(obj, code = 200) {
-    this.write(JSON.stringify(obj), code);
+    return this.write(JSON.stringify(obj), code);
   }
 }
 
@@ -87,26 +90,60 @@ class ServerHttpTransport extends ServerTransport {
   #respond;
   #responded = false;
   #setCookies = [];
+  #batch = null; // requested ids, in order — null outside batch mode
+  #collected = [];
 
   constructor(call, options = {}) {
     super(call.remoteAddress ?? '');
     this.call = call;
     this.headers = options.headers ?? { ...SECURITY_HEADERS };
     this.#respond = call.respond;
+    if (Array.isArray(options.batch)) this.#batch = options.batch;
   }
 
   get responded() {
     return this.#responded;
   }
 
+  get batched() {
+    return this.#batch !== null;
+  }
+
+  // A batch frame gets ONE response carrying every answer. They are held
+  // until the last one arrives and then emitted in the order the packets
+  // were sent, so a caller can zip requests to responses positionally
+  // without depending on how fast each handler happened to be.
+  send(obj, code = 200) {
+    if (!this.#batch) return super.send(obj, code);
+    if (this.#responded) return true;
+    this.#collected.push(obj);
+    if (this.#collected.length < this.#batch.length) return true;
+    return this.write(JSON.stringify(this.#ordered()), 200);
+  }
+
+  #ordered() {
+    const pending = this.#collected.slice();
+    const answers = [];
+    for (const id of this.#batch) {
+      const index = pending.findIndex((packet) => packet.id === id);
+      if (index < 0) continue;
+      answers.push(...pending.splice(index, 1));
+    }
+    // Anything with no matching id (a structure error carries an empty one)
+    // still has to be reported, so it goes at the end rather than nowhere.
+    answers.push(...pending);
+    return answers;
+  }
+
   write(data, httpCode = 200) {
-    if (this.#responded) return;
+    if (this.#responded) return true;
     this.#responded = true;
     const body = Buffer.isBuffer(data) ? data : Buffer.from(data);
     const headers = { ...this.headers, 'Content-Length': body.length };
     if (this.#setCookies.length > 0) headers['Set-Cookie'] = this.#setCookies;
     this.#respond({ status: httpCode, headers, body });
     this.emit('close');
+    return true;
   }
 
   getCookies() {
@@ -153,6 +190,7 @@ class ServerEventTransport extends ServerTransport {
 
   write(data) {
     this.port.postMessage(data);
+    return true; // a MessagePort has no backpressure to report
   }
 
   close() {
