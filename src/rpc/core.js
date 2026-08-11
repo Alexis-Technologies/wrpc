@@ -13,6 +13,7 @@ const { SseChannels, CHANNEL_HEADER } = require('../sse/server.js');
 const { isBackplane } = require('../scaling/index.js');
 const { handleMessage, handleBinary, handleRpc, split, parseParams, DEFAULT_MAX_BATCH } = require('./dispatcher.js');
 const { createLoggerWriter } = require('../logging.js');
+const { createServerTelemetry } = require('../telemetry.js');
 
 // One peer holding thousands of open generators is a denial of service the
 // application never opted into; the cap is generous but present.
@@ -59,8 +60,9 @@ class Client extends Emitter {
   #rooms = null;
   #server = null;
   #log = null;
+  #otel = null;
 
-  constructor(transport, { sessions, rooms, server, log, maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS } = {}) {
+  constructor(transport, { sessions, rooms, server, log, otel, maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS } = {}) {
     super();
     this.#transport = transport;
     this.#sessions = sessions;
@@ -71,6 +73,7 @@ class Client extends Emitter {
     // Connection-scoped, bound once: a connection lives for minutes, and the
     // binding hoists the peer id out of every line logged for it.
     this.#log = createLoggerWriter(log ?? globalThis.console).child({ peer: transport.source });
+    this.#otel = otel ?? createServerTelemetry(null);
     this.source = transport.source;
     this.session = null;
     this.sessionReady = Promise.resolve();
@@ -92,6 +95,16 @@ class Client extends Emitter {
   /** The connection-scoped writer, reached by the dispatcher and handlers. */
   get log() {
     return this.#log;
+  }
+
+  /** The server's telemetry writer; disabled-shaped when unconfigured. */
+  get otel() {
+    return this.#otel;
+  }
+
+  /** 'ws' | 'http' | 'sse' | 'event' — a metric attribute and a log field. */
+  get transportKind() {
+    return this.#transport.kind;
   }
 
   // Diagnostics for packets that carry no id to answer on (inbound events):
@@ -278,6 +291,7 @@ const RPC_OPTION_KEYS = [
   'cors',
   'basePath',
   'logger',
+  'telemetry',
   'backplane',
   'instanceId',
   'maxBatch',
@@ -315,6 +329,7 @@ class RpcServer extends Emitter {
   #log;
   #roomsLog;
   #sseLog;
+  #otel;
   #limits;
   #sse = null;
   #clients = new Set();
@@ -327,6 +342,7 @@ class RpcServer extends Emitter {
       cors = null,
       basePath = DEFAULT_BASE_PATH,
       logger = globalThis.console,
+      telemetry = null,
       backplane = null,
       instanceId = generateUUID(),
       maxBatch = DEFAULT_MAX_BATCH,
@@ -340,6 +356,7 @@ class RpcServer extends Emitter {
       throw new TypeError('RpcServer: options.backplane does not implement the backplane contract');
     }
     this.#log = createLoggerWriter(logger);
+    this.#otel = createServerTelemetry(telemetry);
     // Built once here rather than per broadcast or per channel: Broadcast is
     // constructed on every to()/except()/broadcast().
     this.#roomsLog = this.#log.child({ component: 'rooms' });
@@ -360,7 +377,7 @@ class RpcServer extends Emitter {
       client.sessionReady = this.#restoreFromCookie(client, headers);
       return client;
     };
-    this.#sse = sse === false ? null : new SseChannels({ ...sse, log: this.#sseLog, addClient });
+    this.#sse = sse === false ? null : new SseChannels({ ...sse, log: this.#sseLog, otel: this.#otel, addClient });
   }
 
   #initRooms(backplane) {
@@ -418,6 +435,7 @@ class RpcServer extends Emitter {
       clients: () => this.#clients,
       publish: this.#backplane ? (envelope) => this.#backplane.publish(envelope) : null,
       log: this.#roomsLog,
+      otel: this.#otel,
     });
   }
 
@@ -455,13 +473,16 @@ class RpcServer extends Emitter {
       rooms: this.#rooms,
       server: this,
       log: this.#log,
+      otel: this.#otel,
       maxSubscriptions: this.#limits.maxSubscriptions,
     };
     const client = new Client(transport, options);
     this.#clients.add(client);
+    this.#otel.recordConnection(1, transport.kind);
     transport.once('close', () => {
       client.destroy();
       this.#clients.delete(client);
+      this.#otel.recordConnection(-1, transport.kind);
     });
     return client;
   }
@@ -471,10 +492,17 @@ class RpcServer extends Emitter {
     if (!cookie) return Promise.resolve(false);
     const token = this.#sessions.readToken(parseCookies(cookie));
     if (!token) return Promise.resolve(false);
-    return client.restoreSession(token).catch((error) => {
-      this.#log.error({ err: error, event: 'session.restore' });
-      return false;
-    });
+    return client.restoreSession(token).then(
+      (restored) => {
+        this.#otel.recordSession('restore', restored ? 'hit' : 'miss');
+        return restored;
+      },
+      (error) => {
+        this.#log.error({ err: error, event: 'session.restore' });
+        this.#otel.recordSession('restore', 'error');
+        return false;
+      },
+    );
   }
 
   attachSocket(socket, meta = {}) {

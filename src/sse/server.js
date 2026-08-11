@@ -39,6 +39,8 @@ const SSE_HEADERS = {
 const frame = (id, payload) => `id: ${id}\ndata: ${payload}\n\n`;
 
 class ServerSseTransport extends ServerTransport {
+  kind = 'sse';
+
   // Persistent — it carries events and subscriptions — but text-only.
   binary = false;
 
@@ -144,10 +146,12 @@ class SseChannels {
   #options;
   #addClient;
   #log;
+  #otel;
 
-  constructor({ addClient, log = globalThis.console, ...options } = {}) {
+  constructor({ addClient, log = globalThis.console, otel = null, ...options } = {}) {
     this.#addClient = addClient;
     this.#log = createLoggerWriter(log);
+    this.#otel = otel;
     this.#options = {
       retention: options.retention ?? DEFAULT_RETENTION,
       replay: options.replay ?? DEFAULT_REPLAY,
@@ -228,7 +232,14 @@ class SseChannels {
     const client = this.#addClient(transport, call.headers ?? {});
     const channel = new SseChannel({ id: channelId, client, transport, ...this.#options });
     this.#channels.set(channelId, channel);
-    transport.once('close', () => this.#channels.delete(channelId));
+    // Every teardown path — retention timeout, close(), a dead response —
+    // ends at transport.close(), which is idempotent, so this is the one
+    // place the gauge can come back down exactly once.
+    this.#otel?.recordSseChannel(1);
+    transport.once('close', () => {
+      this.#channels.delete(channelId);
+      this.#otel?.recordSseChannel(-1);
+    });
     return channel;
   }
 

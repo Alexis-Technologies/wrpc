@@ -62,6 +62,10 @@ const isOriginAllowed = (cors, origin) => {
 };
 
 class ServerTransport extends Emitter {
+  // Which wire this is, for log entries and metric attributes. Subclasses
+  // override it; the base value covers a transport nobody labelled.
+  kind = 'unknown';
+
   constructor(source) {
     // No listener cap: transports are fan-out points — every backpressured
     // outbound stream on the connection parks a once('drain'|'close')
@@ -90,6 +94,8 @@ class ServerTransport extends Emitter {
 // { method, url, headers, body?, remoteAddress?, respond({ status, headers, body }) }.
 // The node Server shell and the framework adapters both speak this shape.
 class ServerHttpTransport extends ServerTransport {
+  kind = 'http';
+
   #respond;
   #responded = false;
   #setCookies = [];
@@ -179,6 +185,8 @@ class ServerHttpTransport extends ServerTransport {
 }
 
 class ServerWsTransport extends ServerTransport {
+  kind = 'ws';
+
   constructor(connection, meta = {}) {
     super(meta.remoteAddress ?? connection.remoteAddress ?? '');
     this.connection = connection;
@@ -199,6 +207,8 @@ class ServerWsTransport extends ServerTransport {
 }
 
 class ServerEventTransport extends ServerTransport {
+  kind = 'event';
+
   constructor(port) {
     super('event transport');
     this.port = port;

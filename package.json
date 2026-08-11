@@ -108,6 +108,10 @@
   "homepage": "https://wrpc.vercel.app",
   "devDependencies": {
     "@fastify/websocket": "^11.3.0",
+    "@opentelemetry/api": "^1.9.1",
+    "@opentelemetry/context-async-hooks": "^2.10.0",
+    "@opentelemetry/sdk-metrics": "^2.10.0",
+    "@opentelemetry/sdk-trace-base": "^2.10.0",
     "@tanstack/query-core": "^5.101.4",
     "@trpc/client": "^11.18.0",
     "@trpc/server": "^11.18.0",

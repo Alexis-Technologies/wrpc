@@ -132,12 +132,14 @@ class Broadcast {
   #excluded;
   #localOnly;
   #log;
+  #otel;
 
   constructor({
     registry,
     clients,
     publish = null,
     log = globalThis.console,
+    otel = null,
     targets = null,
     excluded = null,
     localOnly = false,
@@ -146,6 +148,7 @@ class Broadcast {
     this.#clients = clients;
     this.#publish = publish;
     this.#log = createLoggerWriter(log);
+    this.#otel = otel;
     this.#targets = targets;
     this.#excluded = excluded;
     this.#localOnly = localOnly;
@@ -157,6 +160,7 @@ class Broadcast {
       clients: this.#clients,
       publish: this.#publish,
       log: this.#log,
+      otel: this.#otel,
       targets: this.#targets,
       excluded: this.#excluded,
       localOnly: this.#localOnly,
@@ -229,9 +233,11 @@ class Broadcast {
         this.#log.error({ err: error, event: 'broadcast.send', name });
       }
     }
-    if (!this.#localOnly && this.#publish) {
+    const published = Boolean(!this.#localOnly && this.#publish);
+    if (published) {
       this.#publish({ rooms: this.#targets, name, data });
     }
+    this.#otel?.recordBroadcast(name, sent, published);
     return sent;
   }
 }

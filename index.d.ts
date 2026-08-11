@@ -915,6 +915,66 @@ export interface WrpcLogger {
   error?(...args: any[]): void;
 }
 
+// ---------------------------------------------------------------------------
+// OpenTelemetry
+//
+// Structural views of the OTel objects, so a real SDK is assignable without
+// wrpc importing (or depending on) @opentelemetry/api. Only `Span.end` is
+// required — everything a span might not implement is optional, and wrpc
+// calls it optionally.
+
+export interface WrpcSpan {
+  setAttribute?(key: string, value: unknown): unknown;
+  addEvent?(name: string, attributes?: Record<string, unknown>): unknown;
+  recordException?(error: unknown): void;
+  setStatus?(status: { code: number; message?: string }): unknown;
+  end(): void;
+}
+
+export interface WrpcTracer {
+  startSpan?(name: string, options?: unknown): WrpcSpan;
+  startActiveSpan?<T>(name: string, options: unknown, fn: (span: WrpcSpan) => T): T;
+}
+
+export interface WrpcCounter {
+  add(value: number, attributes?: Record<string, unknown>): void;
+}
+
+export interface WrpcHistogram {
+  record(value: number, attributes?: Record<string, unknown>): void;
+}
+
+export interface WrpcMeter {
+  createCounter(name: string, options?: unknown): WrpcCounter;
+  createHistogram(name: string, options?: unknown): WrpcHistogram;
+  createUpDownCounter?(name: string, options?: unknown): WrpcCounter;
+}
+
+export interface WrpcTelemetryApi {
+  trace?: { getTracer(name: string, version?: string): WrpcTracer };
+  metrics?: { getMeter(name: string, version?: string): WrpcMeter };
+}
+
+/**
+ * Two injection modes. `{ api }` — the `@opentelemetry/api` module, from
+ * which wrpc derives its own tracer and meter so spans carry the
+ * `@alexify/wrpc` instrumentation scope. `{ tracer, meter }` — pre-built
+ * instances; either alone is a supported configuration.
+ *
+ * With neither, telemetry is off and every recording path is a no-op.
+ */
+export interface WrpcTelemetryOptions {
+  api?: WrpcTelemetryApi;
+  tracer?: WrpcTracer;
+  meter?: WrpcMeter;
+  /**
+   * Default true. When false, the peer address is left off spans. A session
+   * token is never recorded at any setting — that is a credential, not an
+   * identity, and the two do not share a switch.
+   */
+  includeIdentity?: boolean;
+}
+
 export interface RpcServerOptions {
   router: Router;
   sessions?: SessionsOptions;
@@ -923,6 +983,8 @@ export interface RpcServerOptions {
   basePath?: string;
   /** Defaults to the global console; `false` silences the server. */
   logger?: WrpcLogger | boolean;
+  /** Off unless a tracer, a meter, or the OTel api module is supplied. */
+  telemetry?: WrpcTelemetryOptions | null;
   /**
    * Carries room events between instances. Optional: without one, rooms
    * work identically inside a single instance.

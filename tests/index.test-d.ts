@@ -190,6 +190,18 @@ expectError<wrpc.ServerOptions>({ router, logger: 'verbose' });
 expectAssignable<wrpc.WrpcClientOptions>({ logger: pinoLike });
 expectAssignable<wrpc.WrpcClientOptions>({ logger: false });
 
+// Telemetry: both injection modes, and a real OTel span shape assignable to
+// the structural view without importing @opentelemetry/api.
+declare const tracer: wrpc.WrpcTracer;
+declare const meter: wrpc.WrpcMeter;
+declare const otelApi: wrpc.WrpcTelemetryApi;
+expectAssignable<wrpc.ServerOptions>({ router, telemetry: { api: otelApi } });
+expectAssignable<wrpc.ServerOptions>({ router, telemetry: { tracer, meter, includeIdentity: false } });
+expectAssignable<wrpc.RpcServerOptions>({ router, telemetry: { tracer } });
+expectAssignable<wrpc.RpcServerOptions>({ router, telemetry: null });
+expectAssignable<wrpc.WrpcSpan>({ end: () => {} });
+expectError<wrpc.ServerOptions>({ router, telemetry: { tracer: 'a tracer' } });
+
 // RpcServer core surface
 declare const rpc: RpcServer;
 expectType<Router>(rpc.router);
