@@ -58,7 +58,7 @@ const router = defineRouter({
     notify: procedure({
       access: 'public',
       handler: async (context) => {
-        await context.client.emit('test/ping', { ping: true });
+        context.client.sendEvent('test/ping', { ping: true });
         return { ok: true };
       },
     }),
@@ -341,8 +341,9 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(allowed.res.headers.get('access-control-allow-credentials'), 'true');
 
     const denied = await rpcPost(corsBase, 'test/hello', { name: 'CORS' }, { origin: 'https://evil.example' });
-    // CORS is enforced by the browser: the call still runs, the grant is withheld.
-    assert.strictEqual(denied.res.status, 200);
+    // Refused server-side, not just denied the grant: the page could not
+    // read the answer either way, but the call itself must not run.
+    assert.strictEqual(denied.res.status, 403);
     assert.strictEqual(denied.res.headers.get('access-control-allow-origin'), null);
     assert.strictEqual(denied.res.headers.get('vary'), 'Origin');
 

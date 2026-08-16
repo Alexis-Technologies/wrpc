@@ -1,7 +1,7 @@
 'use strict';
 
 const { WrpcClient, ClientTransport } = require('../client.js');
-const { generateUUID } = require('../runtime/node.js');
+const { CHANNEL_HEADER } = require('./constants.js');
 
 // The client half of the SSE transport. Browser-safe: `fetch`, streams and
 // TextDecoder only — no node builtins, and deliberately not `EventSource`,
@@ -12,8 +12,13 @@ const { generateUUID } = require('../runtime/node.js');
 //   await WrpcClient.connect(url, { transport: 'sse' });
 //
 // Calls go out as POSTs; every answer comes back down the one event stream.
-
-const CHANNEL_HEADER = 'x-wrpc-channel';
+//
+// The channel id is SERVER-minted: the first GET carries none, the server
+// answers with a `ready` frame naming the channel, and only then can this
+// transport POST. A reconnect presents the id again (by header — URLs end
+// up in logs) together with the same cookies; a 409 means the channel is
+// gone (retention expired, another instance), and the transport starts
+// over with a fresh one.
 
 // Incremental SSE parser (WHATWG "event stream" rules): fields are
 // `field: value` lines, a blank line dispatches, `data:` lines accumulate
@@ -94,43 +99,71 @@ class ClientSseTransport extends ClientTransport {
   #lastEventId = null;
   #parser = null;
   #reading = null;
-
-  constructor(url) {
-    super(url);
-    this.channelId = generateUUID();
-  }
+  #onReady = null;
 
   get eventsUrl() {
-    return `${joinUrl(this.url, '/events')}?channel=${encodeURIComponent(this.channelId)}`;
+    return joinUrl(this.url, '/events');
   }
 
   async open() {
     if (this.active) return;
     if (this.#reading) return this.#reading;
-    const controller = new AbortController();
-    this.#controller = controller;
-    this.#parser = new SseParser();
-    const headers = { accept: 'text/event-stream' };
-    // The native resume header: on a re-open the server replays what this
-    // channel did not acknowledge.
-    if (this.#lastEventId !== null) headers['last-event-id'] = this.#lastEventId;
-    const opening = (async () => {
-      const response = await fetch(this.eventsUrl, { headers, signal: controller.signal, cache: 'no-store' });
-      if (!response.ok || !response.body) {
-        throw new Error(`SSE stream refused with ${response.status}`);
-      }
-      this.active = true;
-      this.emit('open');
-      void this.#consume(response.body).catch((error) => {
-        if (!controller.signal.aborted) this.emit('error', error);
-      });
-    })();
+    const opening = this.#open(true);
     this.#reading = opening;
     try {
       await opening;
     } finally {
       this.#reading = null;
     }
+  }
+
+  async #open(retryOnGone) {
+    const controller = new AbortController();
+    this.#controller = controller;
+    this.#parser = new SseParser();
+    const headers = { accept: 'text/event-stream' };
+    // A reconnect presents the channel and where it stopped; the server
+    // replays what this channel did not acknowledge.
+    if (this.#channel !== null) headers[CHANNEL_HEADER] = this.#channel;
+    if (this.#lastEventId !== null) headers['last-event-id'] = this.#lastEventId;
+    const response = await fetch(this.eventsUrl, { headers, signal: controller.signal, cache: 'no-store' });
+    // 409: the channel this transport remembers no longer exists. Its
+    // replay state is worthless now — drop it and start a fresh channel;
+    // the WrpcClient above re-loads and re-subscribes on 'open'/'reconnect'.
+    if (response.status === 409 && retryOnGone && this.#channel !== null) {
+      await response.body?.cancel?.();
+      this.#channel = null;
+      this.#lastEventId = null;
+      return this.#open(false);
+    }
+    if (!response.ok || !response.body) {
+      throw new Error(`SSE stream refused with ${response.status}`);
+    }
+    // Not connected until the server names the channel: a POST before the
+    // `ready` frame would have no channel to belong to.
+    const consuming = this.#consume(response.body);
+    void consuming.catch((error) => {
+      if (!controller.signal.aborted) this.emit('error', error);
+    });
+    await new Promise((resolve, reject) => {
+      let settled = false;
+      const fail = (error) => {
+        if (settled) return;
+        settled = true;
+        reject(error);
+      };
+      this.#onReady = () => {
+        if (settled) return;
+        settled = true;
+        resolve();
+      };
+      controller.signal.addEventListener('abort', () => fail(new Error('SSE stream aborted')), { once: true });
+      // A stream that ends (or dies) before `ready` never connected. After
+      // `ready` both callbacks are no-ops: the consume loop owns the stream.
+      consuming.then(() => fail(new Error('SSE stream ended before ready')), fail);
+    });
+    this.active = true;
+    this.emit('open');
   }
 
   async #consume(body) {
@@ -151,10 +184,24 @@ class ClientSseTransport extends ClientTransport {
 
   #receive(event) {
     if (event.id !== null) this.#lastEventId = event.id;
+    if (event.event === 'gap') {
+      // The server no longer holds what this channel missed: resuming would
+      // silently skip frames. Drop the channel state and start over — the
+      // client above re-loads and re-subscribes, and each subscription
+      // resumes (or honestly refuses to) from its own lastEventId.
+      this.#channel = null;
+      this.#lastEventId = null;
+      this.close();
+      return;
+    }
     if (event.event === 'ready') {
       const ready = JSON.parse(event.data);
-      // The server may hand back a different channel than requested.
+      // The server mints the id; this frame is the only place it is learned.
       if (ready.channel) this.#channel = ready.channel;
+      if (this.#onReady) {
+        this.#onReady();
+        this.#onReady = null;
+      }
       return;
     }
     this.emit('message', event.data);
@@ -179,8 +226,8 @@ class ClientSseTransport extends ClientTransport {
   }
 
   write(data) {
-    if (!this.active) throw new Error('Not connected');
-    const headers = { 'Content-Type': 'application/json', [CHANNEL_HEADER]: this.#channel ?? this.channelId };
+    if (!this.active || this.#channel === null) throw new Error('Not connected');
+    const headers = { 'Content-Type': 'application/json', [CHANNEL_HEADER]: this.#channel };
     const post = async () => {
       const response = await fetch(this.url, { method: 'POST', headers, body: data });
       // 202 is the expected answer: everything a call produces comes back
@@ -188,6 +235,10 @@ class ClientSseTransport extends ClientTransport {
       if (response.status === 202) return void (await response.body?.cancel?.());
       const text = await response.text();
       if (response.ok) return void (text && this.emit('message', text));
+      // 409: the channel died server-side (retention, restart, another
+      // instance). This stream is now an orphan — close it so the client
+      // above reconnects and starts a fresh channel.
+      if (response.status === 409) return void this.close();
       this.emit('error', new Error(`SSE post failed with ${response.status}: ${text}`));
     };
     post().catch((error) => this.emit('error', error));

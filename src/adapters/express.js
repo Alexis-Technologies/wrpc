@@ -2,8 +2,15 @@
 
 const { RpcServer, rpcOptions } = require('../rpc/core.js');
 const { createNodeEngine, isEngine } = require('../engine/index.js');
-const { isOriginAllowed } = require('../transport.js');
-const { receiveBody, normalizeBody, nodeStream, MAX_BODY_SIZE } = require('./common.js');
+const {
+  receiveBody,
+  normalizeBody,
+  nodeStream,
+  getPathname,
+  createUpgradeGate,
+  respondBodyError,
+  MAX_BODY_SIZE,
+} = require('./common.js');
 
 // express (and bare node:http) adapter. Unlike the batteries-included
 // Server, nothing here owns the listener — the app does:
@@ -16,8 +23,6 @@ const { receiveBody, normalizeBody, nodeStream, MAX_BODY_SIZE } = require('./com
 // Middleware semantics: a request outside basePath is passed to next()
 // rather than answered with 404, so wrpc composes with the rest of the app
 // instead of swallowing its routes.
-
-const getPathname = (url) => (url ? url.split('?')[0] : '/');
 
 const createWrpc = (options = {}) => {
   const { cors = null, logger = globalThis.console, ws = {}, maxBodySize = MAX_BODY_SIZE } = options;
@@ -33,17 +38,9 @@ const createWrpc = (options = {}) => {
     );
   }
 
-  const verifyUpgrade = ({ req }) => {
-    if (ws.path === undefined) {
-      const pathname = getPathname(req.url);
-      if (pathname !== '/' && rpc.matchPath(pathname) === null) return false;
-    }
-    return isOriginAllowed(cors, req.headers.origin);
-  };
-
   // No `server`: this engine is driven by hand from the app's own 'upgrade'
   // listener (see `upgrade` below).
-  const source = engine.attach({ ...ws, verifyClient: ws.verifyClient ?? verifyUpgrade });
+  const source = engine.attach({ ...ws, verifyClient: createUpgradeGate({ rpc, cors, ws }) });
   source.on('connection', (socket, req) => {
     rpc.attachSocket(socket, {
       headers: req.headers,
@@ -82,10 +79,7 @@ const createWrpc = (options = {}) => {
     // A body parser upstream (express.json()) already drained the stream;
     // without one, read it here.
     if (req.body !== undefined) return void dispatch(normalizeBody(req.body));
-    receiveBody(req, maxBodySize).then(dispatch, (error) => {
-      const packet = { type: 'callback', id: '', error: { message: error.message, code: 400 } };
-      respond({ status: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(packet) });
-    });
+    receiveBody(req, maxBodySize).then(dispatch, (error) => respondBodyError(respond, error));
   };
 
   const upgrade = (req, socket, head) => {

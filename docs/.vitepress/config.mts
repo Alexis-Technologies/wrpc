@@ -35,6 +35,7 @@ const keywords = [
   'observability',
   'tracing',
   'logging',
+  'hooks',
   'pino',
   '@alexify/wrpc',
 ].join(', ');
@@ -123,6 +124,7 @@ export default withMermaid(
             items: [
               { text: 'Server', link: '/guide/server' },
               { text: 'Router & procedures', link: '/guide/router' },
+              { text: 'Hooks', link: '/guide/hooks' },
               { text: 'Sessions', link: '/guide/sessions' },
               { text: 'Rooms', link: '/guide/rooms' },
               { text: 'Subscriptions', link: '/guide/subscriptions' },

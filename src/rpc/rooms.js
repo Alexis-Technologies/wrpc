@@ -220,14 +220,29 @@ class Broadcast {
     // Narrowed to no rooms at all: nobody here, nobody anywhere — so there
     // is nothing to publish either.
     if (this.#targets && this.#targets.length === 0) return 0;
+    // Serialized ONCE for the whole fan-out: a room of N used to pay
+    // JSON.stringify (and utf8 encoding downstream) N times for one emit.
+    // A payload that cannot serialize (circular) is reported, not thrown:
+    // the broadcaster is usually far from whoever built the value.
+    let text;
+    try {
+      text = JSON.stringify({ type: 'event', name, data });
+    } catch (error) {
+      this.#log.error({ err: error, event: 'broadcast.serialize', name });
+      return 0;
+    }
     let sent = 0;
     for (const client of this.#recipients()) {
       if (this.#excluded?.has(client)) continue;
       // HTTP clients cannot carry events; skipping beats throwing mid-fan-out.
       if (!client.persistent) continue;
       try {
-        client.sendEvent(name, data);
+        const flushed = client.sendRaw(text);
         sent++;
+        // Not silently discarded any more: a recipient above its high-water
+        // mark is visible in the metrics, and the engine's maxBackpressure
+        // cap is what disconnects one that never drains.
+        if (flushed === false) this.#otel?.recordBackpressure(client.transportKind);
       } catch (error) {
         // One dead socket must not truncate the fan-out.
         this.#log.error({ err: error, event: 'broadcast.send', name });

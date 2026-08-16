@@ -15,8 +15,11 @@
   "types": "index.d.ts",
   "exports": {
     ".": {
+      "browser": {
+        "types": "./browser.d.ts",
+        "default": "./browser.js"
+      },
       "types": "./index.d.ts",
-      "browser": "./browser.js",
       "default": "./index.js"
     },
     "./ws": {
@@ -44,14 +47,18 @@
       "default": "./scaling.js"
     },
     "./sse": {
+      "browser": {
+        "types": "./sse.browser.d.ts",
+        "default": "./sse.browser.js"
+      },
       "types": "./sse.d.ts",
-      "browser": "./sse.browser.js",
       "default": "./sse.js"
     },
     "./query": {
       "types": "./query.d.ts",
       "default": "./query.js"
-    }
+    },
+    "./package.json": "./package.json"
   },
   "bin": {
     "wrpc": "bin/wrpc.js"
@@ -151,7 +158,9 @@
   "files": [
     "index.js",
     "index.d.ts",
+    "client.d.ts",
     "browser.js",
+    "browser.d.ts",
     "ws.js",
     "ws.d.ts",
     "engine.js",
@@ -167,6 +176,7 @@
     "sse.js",
     "sse.browser.js",
     "sse.d.ts",
+    "sse.browser.d.ts",
     "query.js",
     "query.d.ts",
     "bin/",

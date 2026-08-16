@@ -52,7 +52,7 @@ test('Integration / WrpcClient with Server', async (t) => {
       notify: procedure({
         access: 'public',
         handler: async (context) => {
-          await context.client.emit('test/ping', { ping: true });
+          context.client.sendEvent('test/ping', { ping: true });
           return { ok: true };
         },
       }),

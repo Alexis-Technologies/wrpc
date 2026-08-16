@@ -11,7 +11,7 @@ delivered to every member.
 
 ```js
 // one client
-context.client.emit('chat/message', { text: 'hi' });
+context.client.sendEvent('chat/message', { text: 'hi' });
 
 // a room
 context.server.to('lobby').emit('chat/message', { text: 'hi' });
@@ -123,7 +123,7 @@ sessions:
 
 | Member | What it is |
 | --- | --- |
-| `client.emit(name, data)` / `sendEvent(name, data)` | Send an event to this peer. |
+| `client.sendEvent(name, data)` | Send an event to this peer (`emit` is the local `Emitter` emit). |
 | `client.send(packet)` | Send a raw packet. `false` when the transport is above its high-water mark. |
 | `client.drain()` | Resolves when the transport drained — or when it closed. |
 | `client.persistent` | `false` on HTTP: no events, no subscriptions, no streams. |
@@ -134,3 +134,43 @@ sessions:
 `persistent` and `binary` are how a handler stays honest across transports: the
 same procedure can be reachable over HTTP for the call and skip the
 event-emitting half when it is.
+
+## Rooms and reconnects
+
+Membership is **per connection**: a reconnect is a NEW server-side client,
+and it is in no rooms — unlike subscriptions, which the client restores
+itself, nothing re-joins rooms automatically (the server cannot know which
+memberships were state and which were a one-off).
+
+The canonical pattern stores memberships in the session and re-applies them
+with a [hook](./hooks):
+
+```js
+const router = defineRouter(
+  {
+    chat: {
+      join: procedure({
+        handler: async (context, { room }) => {
+          context.client.join(room);
+          // The session is what survives the connection.
+          const rooms = new Set(context.session.state.rooms ?? []);
+          rooms.add(room);
+          context.session.state.rooms = [...rooms];
+          return { ok: true };
+        },
+      }),
+    },
+  },
+  {
+    hooks: {
+      onConnect: async (client) => {
+        await client.sessionReady;
+        for (const room of client.session?.state.rooms ?? []) client.join(room);
+      },
+    },
+  },
+);
+```
+
+The client sees a seamless story: reconnect, session restored from the
+cookie, `onConnect` re-joins, and the next room broadcast reaches it again.

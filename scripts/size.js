@@ -29,7 +29,12 @@ const ROOT = path.join(__dirname, '..');
 // everything else is Node-only and bundled with `platform: 'node'` so
 // `require('node:...')` stays a real require instead of failing to resolve.
 const ENTRIES = [
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 10 },
+  // Raised 10 -> 11 deliberately (the ratchet's documented escape hatch):
+  // the v1 hardening added client-side substance a browser genuinely ships —
+  // in-flight rejection on disconnect, restore decoupling, the wrpc.v1
+  // subprotocol offer, pluggable generateId, and synthesized answers for
+  // failed HTTP batches.
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 11 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },

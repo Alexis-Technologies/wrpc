@@ -26,6 +26,7 @@
 // needs the same primitive to back `subscription.iterate()`, and it is no
 // more subscription-specific than Emitter is.
 const { EventStream, createEventStream } = require('../utils.js');
+const { publicErrorMessage } = require('../transport.js');
 
 const TRACKED = Symbol.for('wrpc.tracked');
 
@@ -36,21 +37,29 @@ const isTracked = (value) => typeof value === 'object' && value !== null && valu
 
 const DEFAULT_LOG_SIZE = 100;
 
-// A bounded replay buffer. Ids are monotonic decimal strings, so "later than"
-// is a numeric comparison and a client that reconnects with an id the buffer
-// has already dropped gets an honest "cannot resume" rather than a silently
-// truncated history.
+// A bounded replay buffer. Ids are `<epoch>.<n>` — a monotonic counter
+// stamped with WHICH log minted it. The epoch is random per instance by
+// default, so after a restart (or on another node holding its own log) a
+// client's lastEventId belongs to a foreign epoch and since() answers
+// `null` — an honest "cannot resume, take a snapshot" — instead of a
+// numeric coincidence silently pretending nothing was missed. A persisted
+// or shared log passes its own stable `epoch`.
 class EventLog {
   #entries = [];
   #size;
   #next;
+  #epoch;
 
-  constructor({ size = DEFAULT_LOG_SIZE, start = 0 } = {}) {
+  constructor({ size = DEFAULT_LOG_SIZE, start = 0, epoch = null } = {}) {
     if (!(Number.isInteger(size) && size > 0)) {
       throw new TypeError('createEventLog: size must be a positive integer');
     }
     this.#size = size;
     this.#next = start;
+    this.#epoch = epoch === null || epoch === undefined ? Math.random().toString(36).slice(2, 10) : String(epoch);
+    if (this.#epoch.includes('.')) {
+      throw new TypeError('createEventLog: epoch must not contain a dot');
+    }
   }
 
   get size() {
@@ -61,34 +70,44 @@ class EventLog {
     return this.#entries.length;
   }
 
+  /** Which log incarnation mints this log's ids. */
+  get epoch() {
+    return this.#epoch;
+  }
+
   /** The id of the newest entry, or null while the log is empty. */
   get lastEventId() {
     return this.#entries.length > 0 ? this.#entries[this.#entries.length - 1].id : null;
   }
 
   push(data) {
-    const id = String(this.#next++);
-    this.#entries.push({ id, data });
+    const n = this.#next++;
+    const id = `${this.#epoch}.${n}`;
+    this.#entries.push({ id, n, data });
     if (this.#entries.length > this.#size) this.#entries.shift();
     return id;
   }
 
   /**
    * Everything after `lastEventId`, as tracked values ready to yield.
-   * `null` (not an empty array) means the id is no longer in the buffer, so
-   * the caller has to decide between a snapshot and an error — silently
-   * skipping the gap is the one thing that must not happen.
-   * With no `lastEventId` there is nothing to replay: `[]`.
+   * `null` (not an empty array) means the log cannot bridge the gap — the
+   * id fell out of the buffer, or it was minted by another epoch (another
+   * process, a restart) — so the caller has to decide between a snapshot
+   * and an error. Silently skipping the gap is the one thing that must not
+   * happen. With no `lastEventId` there is nothing to replay: `[]`.
    */
   since(lastEventId) {
     if (lastEventId === undefined || lastEventId === null || lastEventId === '') return [];
-    const cursor = Number(lastEventId);
+    const text = String(lastEventId);
+    const dot = text.lastIndexOf('.');
+    if (dot < 0 || text.slice(0, dot) !== this.#epoch) return null; // foreign epoch
+    const cursor = Number(text.slice(dot + 1));
     if (!Number.isFinite(cursor)) return null;
     // Everything asked for is newer than everything we hold: nothing missed.
     if (cursor >= this.#next - 1) return [];
-    const oldest = this.#entries.length > 0 ? Number(this.#entries[0].id) : this.#next;
+    const oldest = this.#entries.length > 0 ? this.#entries[0].n : this.#next;
     if (cursor < oldest - 1) return null; // the gap is older than the buffer
-    return this.#entries.filter((entry) => Number(entry.id) > cursor).map((entry) => tracked(entry.id, entry.data));
+    return this.#entries.filter((entry) => entry.n > cursor).map((entry) => tracked(entry.id, entry.data));
   }
 
   clear() {
@@ -106,8 +125,8 @@ const createEventLog = (options) => new EventLog(options);
 // mark, and the pump waits for 'drain' before pulling the next value. A
 // generator that ignores that would turn a slow consumer into unbounded
 // server-side memory.
-const runSubscription = async (client, { id, procedure, context, args, lastEventId, signal, stats = null }) => {
-  const iterator = procedure.subscribe(context, args, { lastEventId, signal });
+const runSubscription = async (client, { id, procedure, context, args, lastEventId, signal, stats = null, hooks }) => {
+  const iterator = procedure.subscribe(context, args, { lastEventId, signal }, hooks);
   let terminal = { type: 'end', id };
   try {
     while (true) {
@@ -131,7 +150,7 @@ const runSubscription = async (client, { id, procedure, context, args, lastEvent
   } catch (error) {
     if (!signal.aborted) {
       const code = typeof error.code === 'number' ? error.code : 500;
-      terminal = { type: 'end', id, error: { message: error.message, code } };
+      terminal = { type: 'end', id, error: { message: publicErrorMessage(code, error), code } };
     } else {
       // Aborted: the terminal packet stays clean because the peer asked to
       // stop, so this error reaches nobody unless it is logged here.

@@ -268,6 +268,48 @@ expectType<Session | null>(context.session);
 expectType<RpcServer | null>(context.server);
 expectType<RpcServer | null>(client.server);
 
+// Every public getter of Context and Client is typed: the documented
+// `context.log.info(...)` pattern must compile, and so must the rest —
+// this block is what makes .d.ts drift a CI failure instead of a user bug.
+expectType<Context['log']>(context.log);
+context.log.info({ event: 'probe' }, 'message');
+expectType<string>(context.uuid);
+expectType<Record<string, unknown>>(context.state);
+expectType<AbortSignal | null>(context.signal);
+expectType<Client>(context.client);
+expectType<Client['log']>(client.log);
+expectType<string>(client.transportKind);
+expectType<boolean>(client.persistent);
+expectType<boolean>(client.binary);
+expectType<string>(client.generateId());
+expectType<number>(client.maxCalls);
+expectType<number>(client.maxSubscriptions);
+expectType<Set<string>>(client.rooms);
+
+// The Phase-2 options compile everywhere they are accepted
+expectAssignable<wrpc.WrpcClientOptions>({ generateId: () => 'id-1', protocols: ['wrpc.v1'] });
+expectAssignable<wrpc.WrpcClientOptions>({ protocols: [] });
+expectAssignable<wrpc.RpcServerOptions>({ router, generateId: () => 'id-1' });
+expectAssignable<wrpc.RpcServerOptions>({ router, introspection: 'session', maxCalls: 64 });
+expectAssignable<wrpc.ServerOptions>({ router, maxBodySize: 1024 });
+
+// Hooks: three registration levels type-check, unknown phases do not
+const hook: wrpc.Hook = async (ctx, payload) => {
+  void ctx.state;
+  void payload;
+};
+expectAssignable<wrpc.RouterHooks>({ onRequest: hook, preHandler: [hook, hook] });
+expectAssignable<wrpc.RouterHooks>({ onConnect: async (c) => void c.transportKind });
+expectError<wrpc.RouterHooks>({ onRequets: hook });
+expectError<wrpc.UnitHooks>({ onConnect: hook });
+wrpc.defineRouter({}, { hooks: { onRequest: hook } }).addHook('onError', hook);
+expectAssignable<wrpc.ProcedureOptions>({
+  handler: async () => null,
+  preHandler: hook,
+  preSerialization: [hook],
+});
+expectError<wrpc.ProcedureOptions>({ handler: async () => null, access: 'admin' });
+
 // Transport subclasses are type-only: not reachable as runtime values...
 expectError(wrpc.ClientTransport);
 expectError(wrpc.ServerHttpTransport);

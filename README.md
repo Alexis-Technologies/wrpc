@@ -112,16 +112,16 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 20.8 KB | **7.1 KB** | 10 KB |
-| `@alexify/wrpc` — node (client + server) | 81.2 KB | 27.0 KB | — |
-| `@alexify/wrpc/ws` (WebSocket engine) | 20.4 KB | 7.4 KB | — |
-| `@alexify/wrpc/engine` (engine port) | 21.0 KB | 7.6 KB | — |
-| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 5.9 KB | 2.8 KB | — |
-| `@alexify/wrpc/fastify` | 70.5 KB | 24.4 KB | — |
-| `@alexify/wrpc/express` | 65.1 KB | 22.2 KB | — |
-| `@alexify/wrpc/scaling` (rooms backplane) | 2.8 KB | 1.2 KB | — |
-| `@alexify/wrpc/sse` — browser (client transport) | 23.1 KB | **7.9 KB** | 12 KB |
-| `@alexify/wrpc/sse` — node | 29.7 KB | 10.1 KB | — |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 29.3 KB | **10.1 KB** | 11 KB |
+| `@alexify/wrpc` — node (client + server) | 108.1 KB | 36.3 KB | — |
+| `@alexify/wrpc/ws` (WebSocket engine) | 20.6 KB | 7.5 KB | — |
+| `@alexify/wrpc/engine` (engine port) | 21.1 KB | 7.7 KB | — |
+| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 13.1 KB | 5.4 KB | — |
+| `@alexify/wrpc/fastify` | 86.9 KB | 30.0 KB | — |
+| `@alexify/wrpc/express` | 81.6 KB | 27.9 KB | — |
+| `@alexify/wrpc/scaling` (rooms backplane) | 3.9 KB | 1.7 KB | — |
+| `@alexify/wrpc/sse` — browser (client transport) | 32.0 KB | **11.0 KB** | 12 KB |
+| `@alexify/wrpc/sse` — node | 37.1 KB | 12.8 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 2.4 KB | **1.0 KB** | 2 KB |
 
 The Node-only rows are reported for visibility into what each subpath pulls in

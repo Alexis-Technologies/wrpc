@@ -17,9 +17,10 @@ expectType<string | null>(event.id);
 expectType<string>(event.event);
 expectType<string>(event.data);
 
-// The client transport is registered on require, and named at connect time
+// The client transport is registered on require, and named at connect time.
+// No channelId property: the id is server-minted and learned from the
+// `ready` frame, never generated (or exposed) client-side.
 const transport = new sse.ClientSseTransport('https://host/api');
-expectType<string>(transport.channelId);
 expectType<string>(transport.eventsUrl);
 expectType<boolean>(transport.active);
 expectAssignable<{ transport?: string }>({ transport: 'sse' });

@@ -24,12 +24,39 @@ const nodeStream =
 
 const http = require('node:http');
 
+const { isOriginAllowed } = require('../transport.js');
+
 // Shared plumbing for everything that turns a host framework's request into
 // the abstract call description RpcServer.handleHttpCall consumes:
 // { method, url, headers, body, remoteAddress, respond, onAbort }.
 // Node-only by construction — adapters are never bundled for the browser.
 
 const MAX_BODY_SIZE = 10 * 1024 * 1024;
+
+const getPathname = (url) => (url ? url.split('?')[0] : '/');
+
+// The one upgrade gate every host shares. With an explicit ws.path the
+// engine already gates the pathname, and the default RPC-path gate would
+// 403 every upgrade to a custom path — keep only the origin check then.
+// A ws.verifyClient supplied by the app replaces the gate entirely.
+const createUpgradeGate = ({ rpc, cors = null, ws = {} }) => {
+  if (ws.verifyClient) return ws.verifyClient;
+  const checkPath = ws.path === undefined;
+  return ({ req }) => {
+    if (checkPath) {
+      const pathname = getPathname(req.url);
+      if (pathname !== '/' && rpc.matchPath(pathname) === null) return false;
+    }
+    return isOriginAllowed(cors, req.headers.origin);
+  };
+};
+
+// The shared 400 for a body that could not be received (too big, aborted):
+// an id-less callback packet, same shape on every host.
+const respondBodyError = (respond, error) => {
+  const packet = { type: 'callback', id: '', error: { message: error.message, code: 400 } };
+  respond({ status: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(packet) });
+};
 
 const receiveBody = async (stream, limit = MAX_BODY_SIZE) => {
   if (!Number.isSafeInteger(limit) || limit < 0) {
@@ -76,4 +103,14 @@ const eachHeader = (headers, visit) => {
   }
 };
 
-module.exports = { MAX_BODY_SIZE, receiveBody, normalizeBody, statusLine, eachHeader, nodeStream };
+module.exports = {
+  MAX_BODY_SIZE,
+  receiveBody,
+  normalizeBody,
+  statusLine,
+  eachHeader,
+  nodeStream,
+  getPathname,
+  createUpgradeGate,
+  respondBodyError,
+};

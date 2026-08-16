@@ -5,13 +5,17 @@ import type { Client, HttpCall, WrpcLogger } from './index.js';
  *
  * SSE is one-way, so a channel is two halves that find each other by id:
  *
- *   GET  {basePath}/events?channel=<id>      server -> client stream
- *   POST {basePath} + x-wrpc-channel: <id>   client -> server
+ *   GET  {basePath}/events                        opens a NEW channel
+ *   GET  {basePath}/events  x-wrpc-channel: <id>  re-attaches to it
+ *   POST {basePath}         x-wrpc-channel: <id>  client -> server
  *
- * Both halves belong to ONE server-side `Client`, which is what lets a
- * subscription opened by a POST deliver its values down the stream. A POST
- * answers `202` with no body — every reply, callbacks included, travels on
- * the stream.
+ * The id is SERVER-minted and handed out once, in the `ready` frame; the
+ * channel is bound to the cookie identity of the GET that created it, and
+ * every re-attach and POST must present the same one (403 otherwise; 409
+ * when the id is unknown). Both halves belong to ONE server-side `Client`,
+ * which is what lets a subscription opened by a POST deliver its values
+ * down the stream. A POST answers `202` with no body — every reply,
+ * callbacks included, travels on the stream.
  *
  * Requiring this module registers the client transport:
  *
@@ -22,59 +26,16 @@ import type { Client, HttpCall, WrpcLogger } from './index.js';
  *
  * The server half is built into `RpcServer` and configured through its `sse`
  * option; what is exported here is the machinery behind it. In a browser
- * bundle this subpath resolves to the client half alone.
+ * bundle this subpath resolves to the client half alone (sse.browser.d.ts).
  *
  * **Text only.** SSE frames are text, so wrpc's binary streams are refused
  * on this transport rather than silently corrupted — use a WebSocket for
  * those.
  */
 
-/** One parsed event-stream event. */
-export interface SseEvent {
-  /** The last `id:` seen, or null if the stream has not sent one. */
-  id: string | null;
-  /** The `event:` name; 'message' when unnamed. */
-  event: string;
-  /** `data:` lines joined with newlines. */
-  data: string;
-}
-
-/**
- * Incremental WHATWG event-stream parser. Feed it decoded chunks; it
- * returns the events each chunk completed. Handles fields split across
- * chunks, CRLF/CR/LF line endings, comments (the proxy heartbeat) and
- * multi-line data.
- */
-export declare class SseParser {
-  push(chunk: string): Array<SseEvent>;
-}
-
-declare class ClientTransportBase {
-  url: string;
-  active: boolean;
-  heartbeat: boolean;
-  open(options?: object): Promise<void>;
-  close(): void;
-  terminate(): void;
-  send(obj: object): void;
-  write(data: string): boolean;
-}
-
-/**
- * The client half: a `fetch`-based transport, registered as
- * `WrpcClient.transport.sse` on require. Deliberately not `EventSource`,
- * which cannot set headers, cannot be aborted cleanly, and reconnects on its
- * own schedule instead of the client's.
- */
-export declare class ClientSseTransport extends ClientTransportBase {
-  constructor(url: string);
-  /** Identifies this channel to the server; sent on the stream and on POSTs. */
-  readonly channelId: string;
-  readonly eventsUrl: string;
-}
-
-/** The header a POST uses to say which event stream it belongs to. */
-export declare const CHANNEL_HEADER: string;
+// The client half (transport, parser, header) is shared with the browser
+// types condition verbatim.
+export * from './sse.browser.js';
 
 /** Response headers every event stream carries. */
 export declare const SSE_HEADERS: Record<string, string>;
@@ -99,6 +60,12 @@ export interface SseOptions {
   heartbeat?: number;
   /** The `retry:` value handed to the peer, in ms. Default 2000. */
   retry?: number;
+  /** Byte budget for the replay buffer; evicts oldest first. Default 1 MiB. */
+  replayBytes?: number;
+  /** Live channels per server; past it a new GET is 503. Default 10000. */
+  maxChannels?: number;
+  /** Live channels per remote address; past it 429. Default 100. */
+  maxChannelsPerAddress?: number;
 }
 
 /** The server-side transport behind one event stream. Text-only. */
@@ -112,6 +79,12 @@ export declare class ServerSseTransport {
 
 export declare class SseChannel {
   readonly id: string;
+  /**
+   * The identity the channel was created under: the session token read from
+   * the opening GET's cookie, or '' for an anonymous peer. Every re-attach
+   * and POST must present it again — the id alone is never enough.
+   */
+  readonly key: string;
   readonly client: Client;
   readonly transport: ServerSseTransport;
   /** Replays every buffered frame newer than `lastEventId`. */
@@ -131,22 +104,31 @@ export declare class SseChannels {
        * only handshake, and where its session cookie comes from.
        */
       addClient(transport: ServerSseTransport, headers: Record<string, string>): Client;
+      /**
+       * Extracts the identity a request presents (the session token from its
+       * cookie). Injected by RpcServer, which owns the SessionManager.
+       */
+      channelKey?(headers: Record<string, string | undefined>): string;
       /** Internal: the channel registry's writer, built by RpcServer. */
       log?: WrpcLogger | boolean;
     },
   );
   readonly size: number;
   get(channelId: string): SseChannel | null;
+  /** True when `headers` present the identity the channel was created under. */
+  authorized(channel: SseChannel, requestHeaders?: Record<string, string | undefined>): boolean;
   /**
    * Opens or re-attaches the server -> client half. The call must provide
-   * `stream`; a host that cannot keep a response open gets a 501.
+   * `stream`; a host that cannot keep a response open gets a 501. Ids are
+   * server-minted: an unknown `channelId` answers 409, a known one with the
+   * wrong cookie identity 403, and creation past the caps 503/429.
    *
    * `headers` are RESPONSE headers (CORS and the rest); the request headers a
    * new channel's client is built from come off `call` itself.
    */
   open(
     call: HttpCall,
-    options?: { channelId?: string; lastEventId?: string | null; headers?: Record<string, string> },
+    options?: { channelId?: string | null; lastEventId?: string | null; headers?: Record<string, string> },
   ): SseChannel | undefined;
   close(): void;
 }

@@ -5,13 +5,16 @@
 // Browser-reachable, which is why it does not require the server half.
 
 const {
-  SPAN_STATUS_ERROR,
   SPAN_KIND_CLIENT,
   SETTER,
   hasMethod,
   resolvePropagation,
   resolveTracerAndMeter,
   DISABLED,
+  targetAttributes,
+  startSpanWith,
+  recordSpanError,
+  endSpanHandle,
 } = require('./shared.js');
 
 /**
@@ -73,30 +76,11 @@ const createClientTelemetry = (telemetry) => {
       if (!tracer) return fn(handle);
       const attributes = {
         'rpc.system': 'wrpc',
-        'rpc.method': target,
+        ...targetAttributes(target),
         'wrpc.packet.type': packet?.type,
       };
       if (packet?.id) attributes['wrpc.packet.id'] = packet.id;
-      const options = { kind: SPAN_KIND_CLIENT, attributes };
-      if (hasMethod(tracer, 'startActiveSpan')) {
-        let invoked = false;
-        try {
-          return tracer.startActiveSpan(`${target}${suffix}`, options, (span) => {
-            handle.span = span ?? null;
-            invoked = true;
-            return fn(handle);
-          });
-        } catch (error) {
-          if (invoked) throw error;
-          return fn(handle);
-        }
-      }
-      try {
-        handle.span = hasMethod(tracer, 'startSpan') ? tracer.startSpan(`${target}${suffix}`, options) : null;
-      } catch {
-        handle.span = null;
-      }
-      return fn(handle);
+      return startSpanWith(tracer, `${target}${suffix}`, { kind: SPAN_KIND_CLIENT, attributes }, null, handle, fn);
     },
 
     /**
@@ -113,40 +97,28 @@ const createClientTelemetry = (telemetry) => {
     },
 
     recordError(handle, error) {
-      try {
-        handle.error = true;
-        const span = handle?.span;
-        if (!span) return;
-        span.recordException?.(error);
-        span.setStatus?.({ code: SPAN_STATUS_ERROR, message: error?.message });
-        if (error?.name) span.setAttribute?.('error.type', error.name);
-      } catch {}
+      recordSpanError(handle, error);
     },
 
     endSpan(handle, attributes) {
-      try {
-        const span = handle?.span;
-        if (!span) return;
-        if (attributes) {
-          for (const [key, value] of Object.entries(attributes)) {
-            if (value !== undefined && value !== null) span.setAttribute?.(key, value);
-          }
-        }
-        span.end();
-      } catch {}
+      endSpanHandle(handle, attributes);
     },
 
     recordCall(target, status, elapsed) {
       try {
         if (elapsed !== undefined) {
-          duration?.record(elapsed, { 'rpc.system': 'wrpc', 'rpc.method': target, 'wrpc.status': status });
+          duration?.record(elapsed, { 'rpc.system': 'wrpc', ...targetAttributes(target), 'wrpc.status': status });
         }
       } catch {}
     },
 
     recordReconnect(outcome, attempt) {
       try {
-        reconnects?.add(1, { 'wrpc.reconnect.outcome': outcome, 'wrpc.reconnect.attempt': attempt });
+        // The attempt COUNT stays off the attributes: an unbounded integer
+        // as a label is a new time series per value. The outcome is the
+        // dimension; the count is the metric's own value.
+        void attempt;
+        reconnects?.add(1, { 'wrpc.reconnect.outcome': outcome });
       } catch {}
     },
 

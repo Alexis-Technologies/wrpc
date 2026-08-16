@@ -171,8 +171,10 @@ test('cors origins list: allowed origin echoed with Vary, disallowed gets no ACA
   assert.strictEqual(allowed.headers.get('access-control-allow-origin'), 'http://app.example');
   assert.strictEqual(allowed.headers.get('vary'), 'Origin');
 
+  // Refused outright, not merely denied the header: the page could not read
+  // the answer either way, but the call itself must not run cross-site.
   const denied = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://evil.example' });
-  assert.strictEqual(denied.status, 200);
+  assert.strictEqual(denied.status, 403);
   assert.strictEqual(denied.headers.get('access-control-allow-origin'), null);
   assert.strictEqual(denied.headers.get('vary'), 'Origin');
 });
@@ -423,5 +425,33 @@ test('security regressions: CSRF gate, request cleanup, HTTP stream rejection', 
     await pending;
     await new Promise((resolve) => setTimeout(resolve, 50));
     assert.strictEqual(server.rpc.clients.size, 0);
+  });
+});
+
+test('maxBodySize on the built-in Server refuses an oversized body', async (t) => {
+  const { origin } = await startServer(t, { maxBodySize: 256 });
+  const res = await postPacket(`${origin}/api`, 'echo/args', { blob: 'x'.repeat(1024) });
+  assert.strictEqual(res.status, 400);
+  const body = await res.json();
+  assert.match(body.error.message, /Body size limit exceeded/);
+});
+
+test('introspection option', async (t) => {
+  const probe = (origin) =>
+    postPacket(`${origin}/api`, 'system/introspect', ['echo']).then(async (res) => (await res.json()).error?.code);
+
+  await t.test('false leaves the API surface unadvertised', async () => {
+    const { origin } = await startServer(t, { introspection: false });
+    assert.strictEqual(await probe(origin), 404);
+  });
+
+  await t.test("'session' gates it behind a session", async () => {
+    const { origin } = await startServer(t, { introspection: 'session' });
+    assert.strictEqual(await probe(origin), 403);
+  });
+
+  await t.test('true (the default) keeps it public', async () => {
+    const { origin } = await startServer(t);
+    assert.strictEqual(await probe(origin), undefined);
   });
 });

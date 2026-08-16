@@ -16,9 +16,13 @@ const isGeneratorHandler = (handler) => handler instanceof AsyncGeneratorFunctio
 
 // Dispatcher maps `error.code` (number) onto the wire error code:
 // 400 invalid input, 408 timeout, 500 invalid output, 503 queue overflow.
+// `expose` marks the message as protocol surface: these strings are written
+// for the caller, so the transport sends them verbatim even on a 5xx, where
+// an ordinary error's message is replaced by the status line.
 const codedError = (message, code) => {
   const error = new Error(message);
   error.code = code;
+  error.expose = true;
   return error;
 };
 
@@ -41,6 +45,81 @@ const runValidator = async (validator, value) => {
 
 const isValidator = (value) =>
   typeof value === 'function' || (typeof value === 'object' && value !== null && '~standard' in value);
+
+// ---------------------------------------------------------------------------
+// Hooks: named lifecycle phases, fastify-style. No `next` — a hook runs, and
+// either returns (letting the pipeline continue) or throws a coded error
+// (ending the call with that code). "After" is a later phase, not code after
+// a next() call, which is what keeps every hook a plain awaited function and
+// the empty case a skipped `if`.
+//
+// Registration is three-level — defineRouter(units, { hooks }), a unit's
+// reserved `hooks` key, and procedure({ preHandler }) — and the levels are
+// FLATTENED ONCE per procedure when the router is built: dispatch walks a
+// frozen array, never a chain of closures.
+
+// Phases that run around one invocation (call, subscribe, inbound event).
+const INVOCATION_PHASES = [
+  'onRequest', // packet accepted, before session restore and access
+  'preValidation', // after access, before input validation
+  'preHandler', // after input validation, before the handler
+  'preSerialization', // after the handler, before output validation
+  'onSend', // before the callback packet is written; may mutate it
+  'onResponse', // after the write; observational
+  'onError', // any failure; observational
+  'onTimeout', // a 408 specifically; observational, fires before onError
+  'onSubscribe', // after access, before a subscription starts
+  'onUnsubscribe', // after a subscription ended, whatever ended it
+];
+// Phases that run around a connection's lifetime (router-level only).
+const CONNECTION_PHASES = ['onConnect', 'onDisconnect'];
+const ROUTER_PHASES = [...INVOCATION_PHASES, ...CONNECTION_PHASES];
+// The subset a single procedure can carry in its own options.
+const PROCEDURE_PHASES = ['preValidation', 'preHandler', 'preSerialization', 'onError'];
+
+const toHookList = (value, phase, label) => {
+  if (value === undefined || value === null) return [];
+  const list = Array.isArray(value) ? value : [value];
+  for (const fn of list) {
+    if (typeof fn !== 'function') {
+      throw new TypeError(`${label}: hooks.${phase} must be a function or an array of functions`);
+    }
+  }
+  return list;
+};
+
+// Unknown phase names throw: a typo'd hook that silently never runs is an
+// authorization check that silently never runs.
+const normalizeHooks = (hooks, allowed, label) => {
+  if (hooks === undefined || hooks === null) hooks = {};
+  if (typeof hooks !== 'object') throw new TypeError(`${label}: hooks must be an object of phase handlers`);
+  for (const key of Object.keys(hooks)) {
+    if (!allowed.includes(key)) throw new TypeError(`${label}: unknown hook phase '${key}'`);
+  }
+  const result = {};
+  for (const phase of allowed) result[phase] = toHookList(hooks[phase], phase, label);
+  return result;
+};
+
+const EMPTY_LIST = Object.freeze([]);
+const EMPTY_HOOKS = Object.freeze(Object.fromEntries(INVOCATION_PHASES.map((phase) => [phase, EMPTY_LIST])));
+
+/** Runs one phase in order; a throw ends the call with the error's code. */
+const runHooks = async (hooks, context, payload) => {
+  for (const hook of hooks) await hook(context, payload);
+};
+
+// The observational phases must never break what they observe: a throwing
+// onResponse/onError/onDisconnect is reported to the log and contained.
+const runHooksSafe = async (hooks, context, payload, log, phase) => {
+  for (const hook of hooks) {
+    try {
+      await hook(context, payload);
+    } catch (error) {
+      log?.warn?.({ event: 'hook.error', phase, err: error }, `HOOK\t${phase}\t${error?.stack ?? error}`);
+    }
+  }
+};
 
 // Unit and method names come from user definitions: a '__proto__' key must
 // become an own property instead of mutating the result's prototype, which
@@ -71,9 +150,19 @@ class Procedure {
       meta = {},
       signature = null,
       kind = null,
+      preValidation = null,
+      preHandler = null,
+      preSerialization = null,
+      onError = null,
     } = options;
     if (typeof handler !== 'function') {
       throw new TypeError('procedure() requires a handler function');
+    }
+    // Anything but the two known levels used to silently mean 'session' —
+    // an access model that LOOKS custom but is not is an auth bug waiting.
+    // Custom policies are hooks' job (preValidation reads proc.meta).
+    if (access !== 'public' && access !== 'session') {
+      throw new TypeError(`procedure() access must be 'public' or 'session', got '${access}'`);
     }
     if (input !== null && !isValidator(input)) {
       throw new TypeError('procedure() input must be a function or a Standard Schema');
@@ -85,6 +174,13 @@ class Procedure {
     if (this.kind !== CALL && this.kind !== SUBSCRIPTION) {
       throw new TypeError(`procedure() kind must be '${CALL}' or '${SUBSCRIPTION}'`);
     }
+    // The procedure's own slice of the pipeline; router and unit levels are
+    // merged in front of these when the router is built.
+    this.hooks = normalizeHooks(
+      { preValidation, preHandler, preSerialization, onError },
+      PROCEDURE_PHASES,
+      'procedure()',
+    );
     this.handler = handler;
     this.access = access;
     this.input = input;
@@ -114,16 +210,18 @@ class Procedure {
    * guarantees a call does; `lastEventId` and `signal` reach the handler as
    * its third argument.
    */
-  async *subscribe(context, args, options = {}) {
+  async *subscribe(context, args, options = {}, hooks = EMPTY_HOOKS) {
     if (this.kind !== SUBSCRIPTION) {
       throw codedError('Not a subscription', 400);
     }
+    if (hooks.preValidation.length > 0) await runHooks(hooks.preValidation, context, args);
     let input = args;
     if (this.input) {
       input = await runValidator(this.input, args).catch((error) => {
         throw codedError(`Invalid arguments: ${error.message}`, 400);
       });
     }
+    if (hooks.preHandler.length > 0) await runHooks(hooks.preHandler, context, input);
     const source = this.handler(context, input, options);
     if (!source || typeof source[Symbol.asyncIterator] !== 'function') {
       throw codedError('Subscription handler must return an async iterable', 500);
@@ -143,24 +241,36 @@ class Procedure {
     }
   }
 
-  async invoke(context, args) {
+  async invoke(context, args, hooks = EMPTY_HOOKS) {
     if (this.kind === SUBSCRIPTION) {
       throw codedError('This procedure is a subscription: use {type:"subscribe"}', 400);
     }
+    // The procedure's deadline starts NOW, queue wait included: a caller
+    // that waited 900 ms of a 1000 ms timeout in the queue has 100 ms of
+    // handler budget left, not a fresh 1000 — overload must not do work for
+    // callers that already gave up.
+    const deadline = this.timeout > 0 ? Date.now() + this.timeout : 0;
     if (this.semaphore) {
       try {
-        await this.semaphore.enter();
+        // Abort-aware: a queued waiter whose caller cancelled or
+        // disconnected leaves the queue instead of taking a slot later.
+        await this.semaphore.enter(context.signal ?? null);
       } catch (error) {
         throw codedError(error.message, 503);
       }
     }
+    if (deadline > 0 && Date.now() >= deadline) {
+      throw codedError('Procedure timeout', 408);
+    }
     let handlerStarted = false;
     try {
+      if (hooks.preValidation.length > 0) await runHooks(hooks.preValidation, context, args);
       if (this.input) {
         args = await runValidator(this.input, args).catch((error) => {
           throw codedError(`Invalid arguments: ${error.message}`, 400);
         });
       }
+      if (hooks.preHandler.length > 0) await runHooks(hooks.preHandler, context, args);
       handlerStarted = true;
       const invocation = Promise.resolve().then(() => this.handler(context, args));
       if (this.semaphore) {
@@ -170,7 +280,14 @@ class Procedure {
         const release = () => this.semaphore.leave();
         invocation.then(release, release);
       }
-      let result = this.timeout > 0 ? await timeoutRace(invocation, this.timeout) : await invocation;
+      let result = deadline > 0 ? await timeoutRace(invocation, Math.max(1, deadline - Date.now())) : await invocation;
+      // A preSerialization hook that returns something replaces the result;
+      // one that returns undefined leaves it alone. Runs BEFORE the output
+      // validator, so what the hook shaped is what the schema checks.
+      for (const hook of hooks.preSerialization) {
+        const replaced = await hook(context, result);
+        if (replaced !== undefined) result = replaced;
+      }
       if (this.output) {
         result = await runValidator(this.output, result).catch((error) => {
           throw codedError(`Invalid procedure result: ${error.message}`, 500);
@@ -210,17 +327,76 @@ const toProcedure = (value, unitKey, methodName) => {
 
 // `on` is reserved inside a unit definition: it declares the unit's inbound
 // (client -> server) event handlers rather than a method named 'on'.
+// `hooks` is reserved too: the unit's slice of the lifecycle pipeline.
 const EVENTS_KEY = 'on';
+const HOOKS_KEY = 'hooks';
+
+// unit-level hooks may not carry the connection phases: a connection is not
+// scoped to a unit, so an onConnect there could never mean anything.
+const concatHooks = (base, extra, phases) => {
+  const result = {};
+  for (const phase of phases) result[phase] = [...(base?.[phase] ?? []), ...(extra?.[phase] ?? [])];
+  return result;
+};
 
 class Router {
   // unit -> Map(version -> { methods: Map(name -> Procedure),
-  //                          events:  Map(name -> Procedure) })
+  //                          events:  Map(name -> Procedure),
+  //                          hooks:   { phase: [fns] } })
   #units = new Map();
+  #hooks;
+  // Procedure -> frozen { phase: frozen [fns] }, the flattened pipeline the
+  // dispatcher walks. Kept on the ROUTER, not the procedure: the same
+  // Procedure instance may be registered in several routers (merge reuses
+  // them), each with different router-level hooks.
+  #chains = new Map();
 
-  constructor(definition = {}) {
+  constructor(definition = {}, options = {}) {
+    this.#hooks = normalizeHooks(options.hooks, ROUTER_PHASES, 'defineRouter');
     for (const [unitKey, methods] of Object.entries(definition)) {
       this.#addUnit(unitKey, methods);
     }
+    this.#rebuildChains();
+  }
+
+  /** Adds a router-level hook after construction. Returns the router. */
+  addHook(name, fn) {
+    if (!ROUTER_PHASES.includes(name)) {
+      throw new TypeError(`addHook: unknown hook phase '${name}'`);
+    }
+    if (typeof fn !== 'function') throw new TypeError('addHook: the hook must be a function');
+    this.#hooks[name] = [...this.#hooks[name], fn];
+    this.#rebuildChains();
+    return this;
+  }
+
+  /** The flattened pipeline for one procedure (router + unit + procedure). */
+  hooksFor(proc) {
+    return this.#chains.get(proc) ?? EMPTY_HOOKS;
+  }
+
+  /** Router-level connection lifecycle hooks, consumed by RpcServer. */
+  get connectionHooks() {
+    return { onConnect: this.#hooks.onConnect, onDisconnect: this.#hooks.onDisconnect };
+  }
+
+  #rebuildChains() {
+    this.#chains = new Map();
+    for (const versions of this.#units.values()) {
+      for (const entry of versions.values()) {
+        for (const proc of entry.methods.values()) this.#chains.set(proc, this.#chainFor(entry, proc));
+        for (const proc of entry.events.values()) this.#chains.set(proc, this.#chainFor(entry, proc));
+      }
+    }
+  }
+
+  #chainFor(entry, proc) {
+    const chain = {};
+    for (const phase of INVOCATION_PHASES) {
+      const merged = [...this.#hooks[phase], ...(entry.hooks?.[phase] ?? []), ...(proc.hooks[phase] ?? [])];
+      chain[phase] = merged.length > 0 ? Object.freeze(merged) : EMPTY_LIST;
+    }
+    return Object.freeze(chain);
   }
 
   #addUnit(unitKey, definition) {
@@ -237,12 +413,17 @@ class Router {
     }
     let entry = versions.get(version);
     if (!entry) {
-      entry = { methods: new Map(), events: new Map() };
+      entry = { methods: new Map(), events: new Map(), hooks: null };
       versions.set(version, entry);
     }
     for (const [name, value] of Object.entries(definition)) {
       if (name === EVENTS_KEY) {
         this.#addEvents(unitKey, entry.events, value);
+        continue;
+      }
+      if (name === HOOKS_KEY) {
+        const unitHooks = normalizeHooks(value, INVOCATION_PHASES, `${unitKey}.hooks`);
+        entry.hooks = entry.hooks ? concatHooks(entry.hooks, unitHooks, INVOCATION_PHASES) : unitHooks;
         continue;
       }
       entry.methods.set(name, toProcedure(value, unitKey, name));
@@ -297,23 +478,39 @@ class Router {
     return result;
   }
 
-  // Returns a NEW router; on collision the other router's procedure wins
+  // Returns a NEW router; on collision the other router's procedure wins.
+  // Hooks travel too: router-level hooks concatenate (this first), unit
+  // hooks ride with their unit, and the chains are rebuilt for the merged
+  // set — the shared Procedure instances themselves are never mutated.
   merge(other) {
-    const merged = new Router();
+    const hooks = concatHooks(this.#hooks, other.#hooks, ROUTER_PHASES);
+    const merged = new Router({}, { hooks });
     for (const source of [this, other]) {
       for (const [unit, versions] of source.#units) {
         for (const [version, entry] of versions) {
           const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
           const definition = Object.fromEntries(entry.methods);
           if (entry.events.size > 0) definition[EVENTS_KEY] = Object.fromEntries(entry.events);
+          if (entry.hooks) definition[HOOKS_KEY] = entry.hooks;
           merged.#addUnit(unitKey, definition);
         }
       }
     }
+    merged.#rebuildChains();
     return merged;
   }
 }
 
-const defineRouter = (definition) => new Router(definition);
+const defineRouter = (definition, options) => new Router(definition, options);
 
-module.exports = { Procedure, Router, procedure, defineRouter };
+module.exports = {
+  Procedure,
+  Router,
+  procedure,
+  defineRouter,
+  runHooks,
+  runHooksSafe,
+  EMPTY_HOOKS,
+  INVOCATION_PHASES,
+  CONNECTION_PHASES,
+};

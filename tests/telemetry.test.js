@@ -508,8 +508,10 @@ test('a live server emits spans and metrics for real traffic', async (t) => {
     const connections = exported.find((metric) => metric.descriptor.name === 'wrpc.server.connections');
     assert.ok(duration, 'call durations were recorded');
     assert.ok(
-      duration.dataPoints.some((point) => point.attributes['rpc.method'] === 'probe/echo'),
-      'including the echo call',
+      duration.dataPoints.some(
+        (point) => point.attributes['rpc.service'] === 'probe' && point.attributes['rpc.method'] === 'echo',
+      ),
+      'including the echo call — split per the RPC semconv, matching the spans',
     );
     assert.ok(connections, 'the connection gauge was recorded');
     assert.strictEqual(connections.dataPoints[0].attributes['wrpc.transport'], 'ws');
@@ -554,7 +556,8 @@ test('createClientTelemetry', async (t) => {
     assert.strictEqual(span.name, 'chat/send');
     assert.strictEqual(span.kind, 2);
     assert.strictEqual(span.attributes['rpc.system'], 'wrpc');
-    assert.strictEqual(span.attributes['rpc.method'], 'chat/send');
+    assert.strictEqual(span.attributes['rpc.service'], 'chat');
+    assert.strictEqual(span.attributes['rpc.method'], 'send');
     assert.strictEqual(span.attributes['wrpc.packet.id'], 'p9');
     assert.strictEqual(span.attributes['wrpc.status'], 'ok');
   });
@@ -716,4 +719,61 @@ test('createClientTelemetry', async (t) => {
     const names = (await collect()).map((metric) => metric.descriptor.name);
     assert.strictEqual(names.includes('rpc.client.duration'), false);
   });
+});
+
+test('unresolved names never mint metric series or spans', async (t) => {
+  const { Server, WrpcClient, defineRouter, procedure } = require('../index.js');
+  const { InMemorySpanExporter, BasicTracerProvider, SimpleSpanProcessor } = require('@opentelemetry/sdk-trace-base');
+  const {
+    MeterProvider,
+    InMemoryMetricExporter,
+    PeriodicExportingMetricReader,
+    AggregationTemporality,
+  } = require('@opentelemetry/sdk-metrics');
+  const spanExporter = new InMemorySpanExporter();
+  const tracerProvider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(spanExporter)] });
+  const metricExporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+  const reader = new PeriodicExportingMetricReader({ exporter: metricExporter, exportIntervalMillis: 60_000 });
+  const meterProvider = new MeterProvider({ readers: [reader] });
+
+  const server = new Server({
+    router: defineRouter({ probe: { echo: procedure({ access: 'public', handler: async (_c, a) => a }) } }),
+    host: '127.0.0.1',
+    port: 0,
+    protocol: 'http',
+    logger: false,
+    timeouts: { bind: 100 },
+    telemetry: {
+      tracer: tracerProvider.getTracer('@alexify/wrpc'),
+      meter: meterProvider.getMeter('@alexify/wrpc'),
+    },
+  });
+  await server.listen();
+  t.after(() => server.close());
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${server.address().port}/api`, {
+    heartbeat: false,
+    reconnect: false,
+  });
+  t.after(() => void client.close());
+
+  // A scanner spraying random names: every one must land in ONE bucket.
+  for (let i = 0; i < 30; i++) {
+    client.send({ type: 'call', id: `spray-${i}`, method: `guess_${i}/m${i}`, args: {} });
+    client.send({ type: 'event', name: `guess_${i}/e${i}`, data: {} });
+  }
+  await new Promise((resolve) => setTimeout(resolve, 100));
+
+  await reader.forceFlush();
+  const metrics = metricExporter.getMetrics().flatMap((rm) => rm.scopeMetrics.flatMap((sm) => sm.metrics));
+  const duration = metrics.find((metric) => metric.descriptor.name === 'rpc.server.duration');
+  const services = new Set(
+    (duration?.dataPoints ?? []).map((point) => point.attributes['rpc.service']).filter(Boolean),
+  );
+  for (const service of services) {
+    assert.ok(!service.startsWith('guess_'), `peer-controlled name '${service}' minted a metric series`);
+  }
+  assert.ok(services.has('<unknown>') || services.size <= 2, 'unresolved calls collapse into the bucket');
+
+  const sprayedSpans = spanExporter.getFinishedSpans().filter((span) => span.name.includes('guess_'));
+  assert.strictEqual(sprayedSpans.length, 0, 'an unresolved name must not become a span name');
 });

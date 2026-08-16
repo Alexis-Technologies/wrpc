@@ -28,7 +28,7 @@ const waitFor = async (predicate, message = 'condition never held') => {
 // them to whatever carries messages between processes, exactly as it does
 // with rooms.
 const createInstance = async (backplane, instanceId) => {
-  const log = createEventLog({ size: 50 });
+  const log = createEventLog({ size: 50, epoch: 'e' });
   const live = new Set();
 
   const publish = (text) => {
@@ -126,7 +126,7 @@ test('subscriptions: a feed spans instances through the backplane', async (t) =>
   });
 
   await t.test('the remote subscriber can resume from its own eventId', async () => {
-    assert.strictEqual(remote.lastEventId, '0');
+    assert.strictEqual(remote.lastEventId, 'e.0');
     remote.unsubscribe();
     await waitFor(() => second.live.size === 0, 'the unsubscribe never landed');
 
@@ -136,7 +136,7 @@ test('subscriptions: a feed spans instances through the backplane', async (t) =>
     await waitFor(() => second.log.length === 3, 'the instance did not keep receiving');
 
     const resumed = [];
-    there.api.feed.messages.subscribe({}, { lastEventId: '0', onData: (data) => resumed.push(data) });
+    there.api.feed.messages.subscribe({}, { lastEventId: 'e.0', onData: (data) => resumed.push(data) });
     await waitFor(() => resumed.length === 2, `only ${resumed.length} replayed`);
     assert.deepStrictEqual(resumed, ['second', 'third'], 'exactly what it missed');
   });

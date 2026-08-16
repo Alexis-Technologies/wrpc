@@ -186,3 +186,17 @@ feed that fans out from a room does. See [Scaling](./scaling) for the backplane
 that carries room events between instances, and note that its delivery is
 **at-most-once**: `lastEventId` and an event log are what turn that into a
 feed a client can trust.
+
+## Event log ids carry an epoch
+
+`createEventLog()` mints ids as `<epoch>.<n>` — a monotonic counter stamped
+with which log (which process incarnation) produced it. The epoch is random
+per instance by default: after a restart, or against another instance, a
+client's `lastEventId` belongs to a foreign epoch and `since()` answers
+`null` — the honest "cannot resume, take a snapshot" — instead of a numeric
+coincidence silently pretending nothing was missed. A log persisted or
+shared between processes passes its own stable `epoch`:
+
+```js
+const log = createEventLog({ size: 1000, epoch: 'feed-v1' });
+```

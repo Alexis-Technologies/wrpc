@@ -4,6 +4,8 @@ const { jsonParse } = require('../utils.js');
 const { WrpcReadable } = require('../streams.js');
 const { chunkDecode } = require('../chunks.js');
 const { runSubscription } = require('./subscriptions.js');
+const { runHooks, runHooksSafe } = require('./router.js');
+const { publicErrorMessage } = require('../transport.js');
 const { SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
 
 const DEFAULT_VERSION = '*';
@@ -16,6 +18,11 @@ const CANCELLED = 499;
 // for unbounded work — the cap is what keeps a single message from being a
 // denial of service.
 const DEFAULT_MAX_BATCH = 128;
+
+// What unresolved method/event names become in metric series and span
+// names. The raw string is peer-controlled: a scanner spraying random
+// method names used to mint a new time series per guess.
+const UNKNOWN_TARGET = '<unknown>';
 
 const isError = (err) => err?.constructor?.name?.includes('Error') || false;
 
@@ -46,12 +53,25 @@ const handleRpc = async (client, packet, router) => {
   const { unit, version, name: methodName } = parseTarget(method);
   const proc = router.getProcedure(unit, version, methodName);
   if (!proc) {
-    client.otel.recordCall(method, 'error', 404);
+    client.otel.recordCall(UNKNOWN_TARGET, 'error', 404);
     return void client.error(404, { id });
   }
   if (client.calls.has(id)) {
     client.otel.recordCall(method, 'error', 400);
     return void client.error(400, { id, error: new Error(`Call ${id} is already in flight`) });
+  }
+  // Subscriptions are capped, and calls have to be too: each in-flight call
+  // holds a controller, a context and (with a queue) a semaphore slot, so an
+  // unbounded burst from one connection is memory the app never agreed to.
+  if (client.calls.size >= client.maxCalls) {
+    client.otel.recordCall(method, 'error', 429);
+    return void client.error(429, { id });
+  }
+  // A draining server finishes what it started and takes nothing new: the
+  // 503 tells a well-behaved client to reconnect elsewhere.
+  if (client.server?.draining) {
+    client.otel.recordCall(method, 'error', 503);
+    return void client.error(503, { id });
   }
   // The controller is what `{type:'cancel'}` and a disconnect reach: the
   // handler sees it as ctx.signal, and once it is aborted the call has
@@ -62,7 +82,15 @@ const handleRpc = async (client, packet, router) => {
   // nothing to cancel.
   const controller = new AbortController();
   client.calls.set(id, controller);
-  const started = now();
+  // The disabled writer's recorders are no-ops, but the OPTIONS OBJECTS and
+  // the timestamp fed to them were still built per call — with telemetry
+  // off, the guards below skip the allocations, not just the calls.
+  const enabled = client.otel.enabled;
+  const started = enabled ? now() : 0;
+  const hooks = router.hooksFor(proc);
+  // Created before the first phase so onRequest can already enrich
+  // ctx.state — the context is what ties the phases of one call together.
+  const context = client.createContext(controller.signal);
   // The span covers the whole invocation including session wait, access
   // check, validation and the timeout race — an argument error deserves an
   // error span and a duration sample exactly as much as a slow handler does.
@@ -70,6 +98,7 @@ const handleRpc = async (client, packet, router) => {
     let status = 'ok';
     let code;
     try {
+      if (hooks.onRequest.length > 0) await runHooks(hooks.onRequest, context, packet);
       await client.sessionReady;
       if (controller.signal.aborted) return void (status = 'cancelled');
       if (!client.session && proc.access !== 'public') {
@@ -77,28 +106,40 @@ const handleRpc = async (client, packet, router) => {
         code = 403;
         return void client.error(403, { id });
       }
-      const context = client.createContext(controller.signal);
-      const result = await proc.invoke(context, args);
+      const result = await proc.invoke(context, args, hooks);
       if (controller.signal.aborted) return void (status = 'cancelled');
       if (isError(result)) {
         status = 'error';
         code = result.code;
         client.otel.recordError(handle, result, code);
+        if (hooks.onError.length > 0) await runHooksSafe(hooks.onError, context, result, client.log, 'onError');
         return void client.error(code, { id, error: result });
       }
-      client.send({ type: 'callback', id, result }, { method });
+      const callback = { type: 'callback', id, result };
+      // onSend sees (and may mutate) the exact packet about to be written —
+      // the last chance to redact or reshape a response.
+      if (hooks.onSend.length > 0) await runHooks(hooks.onSend, context, callback);
+      client.send(callback, { method });
+      if (hooks.onResponse.length > 0) {
+        await runHooksSafe(hooks.onResponse, context, callback, client.log, 'onResponse');
+      }
     } catch (error) {
       if (controller.signal.aborted) return void (status = 'cancelled');
       code = error.code === 'ETIMEOUT' ? 408 : 500;
       if (typeof error.code === 'number') code = error.code;
       status = code === 408 ? 'timeout' : 'error';
       client.otel.recordError(handle, error, code);
+      if (code === 408 && hooks.onTimeout.length > 0) {
+        await runHooksSafe(hooks.onTimeout, context, error, client.log, 'onTimeout');
+      }
+      if (hooks.onError.length > 0) await runHooksSafe(hooks.onError, context, error, client.log, 'onError');
       return void client.error(code, { id, error });
     } finally {
       if (client.calls.get(id) === controller) client.calls.delete(id);
-      const elapsed = now() - started;
-      client.otel.endSpan(handle, { 'rpc.wrpc.status_code': code, 'wrpc.status': status });
-      client.otel.recordCall(method, status, code, elapsed);
+      if (enabled) {
+        client.otel.endSpan(handle, { 'rpc.wrpc.status_code': code, 'wrpc.status': status });
+        client.otel.recordCall(method, status, code, now() - started);
+      }
     }
   });
 };
@@ -128,7 +169,7 @@ const handleSubscribe = async (client, packet, router) => {
   const { id, method, args, lastEventId } = packet;
   const { unit, version, name: methodName } = parseTarget(method);
   const proc = router.getProcedure(unit, version, methodName);
-  if (!proc) return void refuse(client, id, 404, `${method} not found`, method);
+  if (!proc) return void refuse(client, id, 404, `${method} not found`, UNKNOWN_TARGET);
   if (!proc.subscription) {
     return void refuse(client, id, 400, `${method} is not a subscription`, method);
   }
@@ -157,8 +198,18 @@ const handleSubscribe = async (client, packet, router) => {
     client.subscriptions.delete(id);
     return void refuse(client, id, 403, 'Forbidden', method);
   }
+  const hooks = router.hooksFor(proc);
   const context = client.createContext(controller.signal);
-  const options = { id, procedure: proc, context, args, lastEventId, signal: controller.signal };
+  if (hooks.onSubscribe.length > 0) {
+    try {
+      await runHooks(hooks.onSubscribe, context, packet);
+    } catch (error) {
+      client.subscriptions.delete(id);
+      const code = typeof error.code === 'number' ? error.code : 500;
+      return void refuse(client, id, code, publicErrorMessage(code, error), method);
+    }
+  }
+  const options = { id, procedure: proc, context, args, lastEventId, signal: controller.signal, hooks };
   // The span covers the subscription's whole life, not just its setup: the
   // interesting number is how long a feed ran and how much it yielded.
   const started = now();
@@ -172,7 +223,7 @@ const handleSubscribe = async (client, packet, router) => {
       terminal = await runSubscription(client, { ...options, stats });
     } catch (error) {
       const code = typeof error.code === 'number' ? error.code : 500;
-      terminal = { type: 'end', id, error: { message: error.message, code } };
+      terminal = { type: 'end', id, error: { message: publicErrorMessage(code, error), code } };
       client.otel.recordError(handle, error, code);
     } finally {
       if (client.subscriptions.get(id) === controller) client.subscriptions.delete(id);
@@ -185,6 +236,11 @@ const handleSubscribe = async (client, packet, router) => {
     let outcome = 'complete';
     if (terminal.error) outcome = 'error';
     else if (controller.signal.aborted) outcome = 'unsubscribed';
+    // Fires on EVERY end — completion, error, unsubscribe, disconnect — so
+    // a quota taken in onSubscribe always comes back.
+    if (hooks.onUnsubscribe.length > 0) {
+      await runHooksSafe(hooks.onUnsubscribe, context, terminal, client.log, 'onUnsubscribe');
+    }
     client.otel.recordSubscription(-1, method);
     client.otel.recordSubscriptionValues(stats.values, method);
     client.otel.endSpan(handle, {
@@ -254,24 +310,11 @@ const handleBinary = async (client, data) => {
 // no id, so there is nothing to answer on and nothing to answer with. A
 // rejected or failing event is therefore reported to the server log — the
 // wire stays silent, which is what makes an event an event.
+//
+// The handler is resolved BEFORE any span opens: an unresolved name is
+// peer-controlled text, and a span per random string is a cardinality bomb.
+// The log line keeps the raw target — logs are not aggregated by name.
 const handleEvent = async (client, packet, router) => {
-  const target = typeof packet.name === 'string' ? packet.name : '';
-  return client.otel.withSpan(
-    { client, packet, target, kind: SPAN_KIND_CONSUMER, suffix: ' event' },
-    async (handle) => {
-      try {
-        return await dispatchEvent(client, packet, router);
-      } catch (error) {
-        client.otel.recordError(handle, error);
-        throw error;
-      } finally {
-        client.otel.endSpan(handle);
-      }
-    },
-  );
-};
-
-const dispatchEvent = async (client, packet, router) => {
   const { name: target, data } = packet;
   // Request/response transports cannot carry events. Without this the
   // handler would run and the HTTP request would never be answered — the
@@ -288,12 +331,31 @@ const dispatchEvent = async (client, packet, router) => {
   if (!client.session && handler.access !== 'public') {
     return void client.warn(`EVENT\t${target}\tsession required`);
   }
-  try {
-    const context = client.createContext();
-    await handler.invoke(context, data);
-  } catch (error) {
-    client.warn(`EVENT\t${target}\t${error.stack ?? error.message}`);
-  }
+  // Events run the invocation phases (preValidation/preHandler/onError);
+  // onRequest/onSend do not apply — there is no packet to answer with.
+  const hooks = router.hooksFor(handler);
+  const context = client.createContext();
+  const run = async (handle) => {
+    try {
+      await handler.invoke(context, data, hooks);
+    } catch (error) {
+      client.otel.recordError(handle, error);
+      if (hooks.onError.length > 0) await runHooksSafe(hooks.onError, context, error, client.log, 'onError');
+      client.warn(`EVENT\t${target}\t${error.stack ?? error.message}`);
+    }
+  };
+  // Telemetry off: no span closure, no options object — just the work.
+  if (!client.otel.enabled) return run({ span: null, error: false });
+  return client.otel.withSpan(
+    { client, packet, target, kind: SPAN_KIND_CONSUMER, suffix: ' event' },
+    async (handle) => {
+      try {
+        return await run(handle);
+      } finally {
+        client.otel.endSpan(handle);
+      }
+    },
+  );
 };
 
 // Every dispatch below is fire-and-forget, so a rejection has nobody to
@@ -327,7 +389,7 @@ const handlePacket = (client, packet, router) => {
     return void handleRpc(client, packet, router).catch(contain(client, 'CALL'));
   } else if (type === 'subscribe' && id && typeof method === 'string') {
     if (!client.persistent) {
-      return void refuse(client, id, 400, 'Subscriptions require a persistent connection');
+      return void refuse(client, id, 400, 'Subscriptions require a persistent connection', UNKNOWN_TARGET);
     }
     return void handleSubscribe(client, packet, router).catch(contain(client, 'SUBSCRIBE'));
   } else if (type === 'unsubscribe' && id) {

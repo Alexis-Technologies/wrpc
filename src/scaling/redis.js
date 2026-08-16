@@ -78,6 +78,27 @@ const createRedisAdapter = (options = {}) => {
   };
   subscriber.on('message', onMessage);
 
+  // The subscriber this adapter duplicated has no other listeners: without
+  // this, its first network error is an 'error' event nobody handles — an
+  // uncaught exception that takes the process down for a Redis blip.
+  const onError = (error) => report(error);
+  subscriber.on('error', onError);
+
+  // ioredis re-emits 'ready' after every reconnect. Its own auto-resubscribe
+  // covers the common case; re-issuing the SUBSCRIBEs here also covers
+  // clients (or configurations) that do not, and a duplicate SUBSCRIBE is
+  // idempotent on the server side.
+  const onReady = () => {
+    for (const name of handlers.keys()) {
+      try {
+        settle(subscriber.subscribe(name));
+      } catch (error) {
+        report(error);
+      }
+    }
+  };
+  subscriber.on('ready', onReady);
+
   const unsubscribe = (name) => {
     if (!isFunction(subscriber.unsubscribe)) return;
     try {
@@ -134,6 +155,8 @@ const createRedisAdapter = (options = {}) => {
       for (const name of Array.from(handlers.keys())) unsubscribe(name);
       handlers.clear();
       detach(subscriber, 'message', onMessage);
+      detach(subscriber, 'error', onError);
+      detach(subscriber, 'ready', onReady);
       if (!owned) return;
       try {
         if (isFunction(subscriber.quit)) settle(subscriber.quit());

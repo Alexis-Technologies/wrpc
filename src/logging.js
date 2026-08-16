@@ -81,6 +81,14 @@ const createConsoleWriter = (sink) => {
     },
   };
   for (const level of LEVELS) {
+    // A Console has no level filter of its own, so `debug` — the per-call
+    // firehose (one line per successful RPC) — is dropped here: a default
+    // console server should say what went wrong, not narrate every call.
+    // A structured logger keeps all five levels; its own `level` decides.
+    if (level === 'debug') {
+      writer.debug = noop;
+      continue;
+    }
     const method = bindLevel(sink, level);
     writer[level] = method
       ? (entry, message) => {

@@ -45,8 +45,12 @@ const createUpgradeRequest = (path, query, headers, remoteAddress) => ({
   socket: { remoteAddress },
 });
 
+// The protocol revision marker; must match the built-in engine's.
+const WRPC_PROTOCOL = 'wrpc.v1';
+
 // Mirrors WebsocketServer's negotiation: `false` from handleProtocols
-// rejects the handshake, anything else selects (or declines) a subprotocol.
+// rejects the handshake, anything else selects (or declines) a subprotocol,
+// and with no app configuration the wrpc revision is echoed when offered.
 const negotiateProtocol = (header, { protocols, handleProtocols }, request) => {
   if (!header) return '';
   const offered = header
@@ -59,6 +63,7 @@ const negotiateProtocol = (header, { protocols, handleProtocols }, request) => {
     return selected || '';
   }
   if (protocols) return offered.find((name) => protocols.includes(name)) ?? '';
+  if (offered.includes(WRPC_PROTOCOL)) return WRPC_PROTOCOL;
   return '';
 };
 
@@ -147,7 +152,10 @@ const createUwsEngine = (engineOptions = {}) => {
     ssl = null,
     idleTimeout = DEFAULT_IDLE_TIMEOUT,
     maxPayloadLength = DEFAULT_MAX_PAYLOAD,
-    maxBackpressure = 0,
+    // Finite by default, matching the built-in engine: with 0 uws buffers an
+    // unresponsive peer without limit. One biggest-allowed message in
+    // flight; past it the adapter terminates loudly (see the DROPPED path).
+    maxBackpressure = maxPayloadLength,
     closeOnBackpressureLimit = false,
     maxLifetime = 0,
     compression = null,

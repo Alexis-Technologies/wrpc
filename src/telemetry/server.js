@@ -5,7 +5,6 @@
 // nothing browser-reachable requires this file.
 
 const {
-  SPAN_STATUS_ERROR,
   SPAN_KIND_SERVER,
   TRACEPARENT,
   GETTER,
@@ -13,6 +12,10 @@ const {
   resolvePropagation,
   resolveTracerAndMeter,
   DISABLED,
+  targetAttributes,
+  startSpanWith,
+  recordSpanError,
+  endSpanHandle,
 } = require('./shared.js');
 
 // A target is the wire `method` string: 'unit/name' or 'unit.ver/name'. The
@@ -20,11 +23,9 @@ const {
 // ($service/$method) rather than inventing a wrpc-specific scheme — APM
 // tools group RPC spans by exactly this.
 const buildCallAttributes = (client, packet, target, includeIdentity) => {
-  const slash = target.indexOf('/');
   const attributes = {
     'rpc.system': 'wrpc',
-    'rpc.service': slash > 0 ? target.slice(0, slash) : target,
-    'rpc.method': slash > 0 ? target.slice(slash + 1) : '',
+    ...targetAttributes(target),
     'wrpc.packet.type': packet.type,
     'wrpc.transport': client.transportKind,
     'wrpc.persistent': client.persistent,
@@ -152,38 +153,6 @@ const createServerTelemetry = (telemetry) => {
     }
   };
 
-  const startSpan = (name, options, parent, handle, fn) => {
-    if (hasMethod(tracer, 'startActiveSpan')) {
-      let invoked = false;
-      try {
-        const run = (span) => {
-          handle.span = span ?? null;
-          invoked = true;
-          return fn(handle);
-        };
-        // The 4-argument overload is not universal: handing four arguments
-        // to a 3-argument implementation means the callback is never called
-        // at all, so the arity is checked rather than assumed.
-        const withParent = parent && tracer.startActiveSpan.length >= 4;
-        return withParent
-          ? tracer.startActiveSpan(name, options, parent, run)
-          : tracer.startActiveSpan(name, options, run);
-      } catch (error) {
-        // An error thrown by `fn` itself must propagate untouched; only a
-        // tracer that broke BEFORE running the callback is swallowed.
-        if (invoked) throw error;
-        return fn(handle);
-      }
-    }
-    try {
-      if (!hasMethod(tracer, 'startSpan')) handle.span = null;
-      else handle.span = parent ? tracer.startSpan(name, options, parent) : tracer.startSpan(name, options);
-    } catch {
-      handle.span = null;
-    }
-    return fn(handle);
-  };
-
   return {
     enabled: true,
 
@@ -198,41 +167,22 @@ const createServerTelemetry = (telemetry) => {
       const handle = { span: null, error: false };
       if (!tracer) return fn(handle);
       const attributes = buildCallAttributes(client, packet, target, includeIdentity);
-      return startSpan(`${target}${suffix}`, { kind, attributes }, extract(packet), handle, fn);
+      return startSpanWith(tracer, `${target}${suffix}`, { kind, attributes }, extract(packet), handle, fn);
     },
 
     recordError(handle, error, code) {
-      try {
-        handle.error = true;
-        const span = handle?.span;
-        if (!span) return;
-        span.recordException?.(error);
-        span.setStatus?.({ code: SPAN_STATUS_ERROR, message: error?.message });
-        if (code !== undefined) span.setAttribute?.('rpc.wrpc.status_code', code);
-        if (error?.name) span.setAttribute?.('error.type', error.name);
-      } catch {
-        // Telemetry must never break the request path.
-      }
+      recordSpanError(handle, error, code);
     },
 
     endSpan(handle, attributes) {
-      try {
-        const span = handle?.span;
-        if (!span) return;
-        if (attributes) {
-          for (const [key, value] of Object.entries(attributes)) {
-            if (value !== undefined && value !== null) span.setAttribute?.(key, value);
-          }
-        }
-        span.end();
-      } catch {}
+      endSpanHandle(handle, attributes);
     },
 
     // Fires with or without a tracer: a meter-only configuration is a
     // supported way to run wrpc.
     recordCall(target, status, code, elapsed) {
       try {
-        const attributes = { 'rpc.system': 'wrpc', 'rpc.method': target, 'wrpc.status': status };
+        const attributes = { 'rpc.system': 'wrpc', ...targetAttributes(target), 'wrpc.status': status };
         if (code !== undefined) attributes['rpc.wrpc.status_code'] = code;
         calls?.add(1, attributes);
         if (elapsed !== undefined) duration?.record(elapsed, attributes);
@@ -247,13 +197,13 @@ const createServerTelemetry = (telemetry) => {
 
     recordSubscription(delta, target) {
       try {
-        subscriptions?.add(delta, { 'rpc.method': target });
+        subscriptions?.add(delta, targetAttributes(target));
       } catch {}
     },
 
     recordSubscriptionValues(count, target) {
       try {
-        if (count > 0) subscriptionValues?.add(count, { 'rpc.method': target });
+        if (count > 0) subscriptionValues?.add(count, targetAttributes(target));
       } catch {}
     },
 

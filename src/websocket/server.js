@@ -19,6 +19,13 @@ const UPGRADE = [
 
 const hasToken = (value, token) => !!value && value.toLowerCase().includes(token);
 
+// The protocol revision marker (see docs/reference/protocol.md#versioning).
+// A wrpc client OFFERS it; with no app-configured protocols the server
+// echoes it back, which is what stamps the wire with a version both sides
+// can rely on. A peer that offers nothing gets no subprotocol and speaks
+// 1.0 — additive, nothing breaks.
+const WRPC_PROTOCOL = 'wrpc.v1';
+
 const writeResponse = (socket, headerLines) => {
   socket.cork();
   socket.write(headerLines.join(EOL));
@@ -161,6 +168,10 @@ class WebsocketServer extends EventEmitter {
       const selected = offered.find((name) => protocols.includes(name));
       return { protocol: selected ?? '' };
     }
+    // No app configuration: answer the wrpc revision when it was offered.
+    // Required, not a nicety — a browser fails the whole connection when it
+    // offered subprotocols and the server selected none.
+    if (offered.includes(WRPC_PROTOCOL)) return { protocol: WRPC_PROTOCOL };
     return { protocol: '' };
   }
 
@@ -255,4 +266,4 @@ class WebsocketServer extends EventEmitter {
   }
 }
 
-module.exports = { WebsocketServer, MAGIC };
+module.exports = { WebsocketServer, MAGIC, WRPC_PROTOCOL };

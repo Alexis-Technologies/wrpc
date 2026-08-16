@@ -138,3 +138,29 @@ The backplane carries room events, not sessions. Two instances behind a load
 balancer need a shared [session store](./sessions#stores) as well — the default
 `MemorySessionStore` lives in one process, so a client that reconnects to a
 different instance would arrive anonymous.
+
+## What stays per-instance
+
+The backplane carries **events** between instances — nothing else. Three
+things deliberately stay local, and a deployment has to account for them:
+
+- **SSE channels.** A channel lives on the instance that created it, so SSE
+  needs sticky routing (cookie affinity). A misrouted request answers
+  `409` and the client starts over — see the [SSE guide](./sse).
+- **Room membership counts.** `rooms.count(room)` and `members(room)` read
+  THIS instance's registry. With a backplane the emit reaches every
+  instance, but the numbers a handler sees are local — treat them as such.
+- **Event logs.** `createEventLog()` is per-process memory, and its ids are
+  epoch-stamped so this is *visible*: a client resuming against another
+  instance (or a restarted one) presents a foreign epoch, `since()` answers
+  `null`, and the handler falls back to a snapshot instead of silently
+  missing events. A shared/persisted log passes its own stable `epoch`.
+
+## Multi-room emits use the broadcast channel
+
+An emit targeting **one** room travels on that room's own backplane channel
+(only instances holding members are subscribed). An emit targeting several
+rooms at once — `to('a', 'b').emit(...)` — degrades to the single broadcast
+channel every instance holds, because delivering through per-room channels
+would need receiver-side deduplication the protocol deliberately does not
+have. Prefer single-room emits in fan-out-heavy paths.

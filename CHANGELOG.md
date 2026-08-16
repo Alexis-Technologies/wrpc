@@ -13,6 +13,134 @@ narrower promise — see
 
 ### Added
 
+- **Lifecycle hooks, in the fastify tradition.** Named phases with no `next`:
+  `onRequest`, `preValidation`, `preHandler`, `preSerialization`, `onSend`,
+  `onResponse`, `onError`, `onTimeout`, `onSubscribe`, `onUnsubscribe`, plus
+  the router-level `onConnect`/`onDisconnect`. Registered at three levels —
+  `defineRouter(units, { hooks })`, a unit's reserved `hooks` key, and
+  `procedure({ preHandler })` — and flattened ONCE per procedure when the
+  router is built, so dispatch walks a frozen array and an empty phase costs
+  a length check. A hook throws a coded error to end the call with that code;
+  the observational phases are contained. `router.addHook(name, fn)` adds
+  after the fact; `merge()` carries all three levels. See the new
+  [Hooks guide](https://wrpc.vercel.app/guide/hooks), including the token-
+  bucket rate-limit and subscription-quota recipes.
+- **Pluggable id generation.** `generateId: () => string` on both the client
+  (packet, subscription and stream ids) and the server (context uuids,
+  server-side stream ids, synthetic REST packet ids) — bring cuid/ulid, or a
+  counter in tests for deterministic logs. Ids are correlation identifiers,
+  not secrets; the session token keeps its own `generateToken`. A stream id
+  is validated against the 255-byte chunk-header limit at the source. The
+  browser runtime also gained a `Math.random`-based uuid fallback for plain-
+  http pages, where `crypto.randomUUID` does not exist.
+- **A protocol revision on the wire.** The client offers the
+  `wrpc.v1` WebSocket subprotocol by default and both engines echo it back
+  when the app configured no protocols of its own — see
+  protocol.md#versioning for the compatibility rules. `protocols: []` opts
+  out; the selected protocol is exposed on the ws transport.
+- **`maxCalls`** (default 1000): in-flight calls per connection are now
+  capped like subscriptions always were; past the cap a call answers 429.
+- **`introspection` option**: `true` (default) keeps `system/introspect`
+  public, `'session'` gates it behind a session, `false` unmounts it.
+- **`maxBodySize`** on the built-in `Server`, aligned with the adapters.
+- **SSE channel caps**: `maxChannels` (10000) and `maxChannelsPerAddress`
+  (100) refuse channel creation past them with 503/429.
+- **`maxPayload`** on the websocket engine (default 16 MiB): a dedicated
+  inflated-size cap for permessage-deflate, separate from `maxBuffer` —
+  a compression bomb now costs at most `maxPayload` before the close.
+- **Browser type conditions.** The hand-maintained surface split into
+  `client.d.ts` (the browser-safe half, no node imports) re-exported by both
+  `index.d.ts` and the new `browser.d.ts`/`sse.browser.d.ts`, wired as
+  `types` under the `browser` condition — importing a server name in a
+  browser bundle is now a compile error instead of `undefined` at runtime,
+  and a TS project without `@types/node` compiles. Machine-checked by a tsc
+  fixture (`tests/package/browser-types.test.js`) compiled with `types: []`.
+- **Package consistency tests** (`tests/package/consistency.test.js`): every
+  exports target exists and ships, every subpath has a `types` condition
+  ordered before `default` and a tsd file, shims resolve, plus the
+  `./package.json` export.
+- **Graceful shutdown**: `server.close({ drain: ms })` stops intake, refuses
+  new calls with 503, waits for in-flight calls, sends every peer a 1001
+  "going away" close frame, and only then tears down. `RpcServer.drain()`
+  and `draining` are public. `ServerWsTransport.close()` is a graceful close
+  frame now; hard teardown stays `terminate()`.
+- **Encode-once fan-out**: `Broadcast.emit` serializes the packet ONCE and
+  hands every recipient the same text through the new `Client.sendRaw` —
+  room fan-out went from ~8k to ~30k emits/sec at 200 recipients in the new
+  send-path benchmark, and per-recipient backpressure is now visible in the
+  metrics instead of silently discarded. A payload that cannot serialize is
+  reported (`broadcast.serialize`), not thrown at the broadcaster.
+- **Honest SSE replay**: `replayBytes` (1 MiB) bounds the replay buffer by
+  bytes alongside the frame cap, and a `Last-Event-ID` older than the buffer
+  answers an `event: gap` frame instead of silently replaying a truncated
+  history — the built-in transport reacts by starting a fresh channel.
+- **Epoch-stamped event logs**: `createEventLog()` ids are `<epoch>.<n>`,
+  random epoch per instance — a resume against another process (or a
+  restart) is a foreign epoch and `since()` answers `null` honestly.
+  Persisted logs pass a stable `epoch`.
+- **`SessionStore.touch(token)`** (optional) slides the TTL on restore, so a
+  shared-store session cannot expire under a connected client;
+  `MemorySessionStore` implements it.
+- **Resilience**: in-flight calls reject with a coded 503 the moment the
+  connection dies (no more waiting out `callTimeout` on a corpse); client
+  streams terminate on disconnect; reconnect-restore re-opens subscriptions
+  BEFORE (and independently of) `load()` — a failing reload emits
+  `restore-failed` and forces a clean reconnect instead of silently killing
+  every subscription; the queue semaphore is abort-aware and the procedure
+  timeout covers queue wait; the HTTP client transport synthesizes error
+  callbacks for the exact calls a failed request carried; the Redis adapter
+  owns `error`/`ready` listeners on its subscriber.
+- **Telemetry discipline**: unresolved method/event names collapse into an
+  `<unknown>` bucket (metric series and span names are never minted from
+  peer-controlled text — regression-tested with a name spray); metric
+  attributes use the same `rpc.service`/`rpc.method` split as spans, per the
+  RPC semconv; the reconnect counter dropped its unbounded attempt
+  attribute; the span helpers live once in `telemetry/shared.js`; and the
+  server dispatch path skips telemetry allocations entirely when disabled.
+- **Hot path**: UTF-8 validation delegates to `node:buffer.isUtf8` above the
+  native-call threshold (the single biggest receive-path gap against `ws` —
+  up to 70x on large frames); the frame parser stopped copying the 4-byte
+  mask and allocating a `Result` per not-enough-bytes attempt; fragmented
+  sends cork once per message instead of per fragment; client batching
+  serializes each packet once (enqueue) instead of twice; error logging
+  materializes `error.stack` only when a logger is enabled.
+- **A real SECURITY.md** (scope, acknowledgement and fix windows, supported
+  versions) and a stability/deprecation policy in CONTRIBUTING, with
+  `@experimental` markers on the telemetry shapes and the engine-port
+  `capabilities`.
+
+### Changed (breaking)
+
+- **`Client.emit` is the local `Emitter` emit again.** It used to send a
+  wire event for every name except `'close'`, which made `client.on('x')`
+  dead code and the class unsubstitutable for its base. The wire send is
+  `client.sendEvent(name, data)`, as it always was.
+- **Server-minted SSE channel ids.** A channel id is no longer proposed by
+  the client: the server mints it and hands it out once, in the `ready`
+  frame. The channel is bound to the cookie identity that created it —
+  re-attaches and POSTs presenting a different identity answer 403, an
+  unknown id answers 409 (the client's signal to start a fresh channel).
+  Knowing an id is no longer enough to act on someone else's channel.
+- **5xx error messages no longer travel.** A 4xx message (validation,
+  quotas, refusals) is written for the caller and goes verbatim; a 5xx is a
+  server internal — the peer now gets the status line and the details stay
+  in the server log, correlated by packet id. `error.expose = true` opts a
+  message in; wrpc's own coded errors are marked.
+- **`cors.origins` is enforced on HTTP calls**, not only on the WebSocket
+  upgrade: a request from a disallowed browser origin is refused with 403
+  instead of running with the CORS grant withheld.
+- **Unknown `access` values throw at router construction.** Anything but
+  `'public'`/`'session'` used to silently mean "any session" — an access
+  model that looks custom but is not is an auth bug waiting. Custom policies
+  are hooks' job.
+- **The per-call success log line moved to `debug`**, and a Console sink
+  drops `debug` outright: a default console server reports what went wrong
+  instead of narrating every call. Structured loggers keep all five levels.
+- **`maxBackpressure` defaults to `maxBuffer`** (was: unbounded), arming the
+  terminate-on-exceed path out of the box; control frames (ping/pong) now
+  respect the cap too, so a ping flood cannot grow the write queue without
+  limit. `0` opts back into unbounded.
+
 - **A structured `logger` option, replacing `console`.** Every component writes
   through one injected writer built by `src/logging.js` — a zero-import module
   that normalizes three shapes into one: a structured logger called as

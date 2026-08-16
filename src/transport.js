@@ -61,6 +61,20 @@ const isOriginAllowed = (cors, origin) => {
   return cors.origins.includes(origin);
 };
 
+// What the peer is told. 4xx messages are written for the caller
+// (validation, quotas, refusals) and travel as-is; a 5xx message is a server
+// internal — an uncaught exception's text can carry paths, queries or stack
+// fragments — so the peer gets the status line and the details stay in the
+// server log, unless the error opts in with `expose = true` (which the
+// router's own coded errors do: their messages are part of the protocol).
+// The packet id is the correlation: the same id is on the server log line.
+const publicErrorMessage = (code, error) => {
+  const status = http.STATUS_CODES[code] || 'Unknown error';
+  if (!error) return status;
+  if (code < 500 || error.expose === true) return error.message;
+  return status;
+};
+
 class ServerTransport extends Emitter {
   // Which wire this is, for log entries and metric attributes. Subclasses
   // override it; the base value covers a transport nobody labelled.
@@ -76,9 +90,7 @@ class ServerTransport extends Emitter {
   }
 
   error(code = 500, { id = '', error = null } = {}) {
-    const status = http.STATUS_CODES[code] || 'Unknown error';
-    const info = error ? error.message : status;
-    const packet = { type: 'callback', id, error: { message: info, code } };
+    const packet = { type: 'callback', id, error: { message: publicErrorMessage(code, error), code } };
     return this.send(packet, code);
   }
 
@@ -201,8 +213,15 @@ class ServerWsTransport extends ServerTransport {
     return this.connection.send(data);
   }
 
+  // A graceful goodbye: the peer gets a close frame (1001 "going away") and
+  // the chance to finish the handshake; the engine's closeTimeout destroys
+  // one that never answers. Hard teardown stays spelled terminate().
   close() {
-    this.connection.terminate();
+    if (typeof this.connection.close === 'function') {
+      this.connection.close(1001, 'Server is closing');
+    } else {
+      this.connection.terminate();
+    }
   }
 }
 
@@ -236,5 +255,6 @@ module.exports = {
   buildHeaders,
   isOriginAllowed,
   parseCookies,
+  publicErrorMessage,
   SECURITY_HEADERS,
 };

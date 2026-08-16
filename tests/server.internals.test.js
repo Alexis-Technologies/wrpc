@@ -75,7 +75,7 @@ const recordingStore = () => {
 test('Client over HTTP transport', async (t) => {
   await t.test('emit (non-close) throws: HTTP has no persistent connection', () => {
     const client = createClient(fakeHttpTransport());
-    assert.throws(() => client.emit('ping', {}), /Can't send wrpc event to http transport/);
+    assert.throws(() => client.sendEvent('ping', {}), /Can't send wrpc event to http transport/);
   });
 
   await t.test('emit("close") does not throw', () => {
@@ -83,15 +83,22 @@ test('Client over HTTP transport', async (t) => {
     assert.doesNotThrow(() => client.emit('close'));
   });
 
-  await t.test('emit keeps the base Emitter Promise contract', async () => {
+  await t.test('emit is the LOCAL Emitter emit; sendEvent owns the wire', async () => {
     const closing = createClient(fakeHttpTransport()).emit('close');
     assert.ok(closing instanceof Promise);
     await closing;
+    // `client.on(...)`/`client.emit(...)` behave like any Emitter — nothing
+    // reaches the transport. That substitutability is the point of the
+    // rename; the network send is spelled `sendEvent`, as it always was.
     const transport = fakeWsTransport();
-    const sending = createClient(transport).emit('room/event', { x: 1 });
-    assert.ok(sending instanceof Promise);
-    await sending;
-    assert.deepStrictEqual(transport.sent, [{ type: 'event', name: 'room/event', data: { x: 1 } }]);
+    const client = createClient(transport);
+    const seen = [];
+    client.on('room/event', (data) => seen.push(data));
+    await client.emit('room/event', { x: 1 });
+    assert.deepStrictEqual(seen, [{ x: 1 }]);
+    assert.deepStrictEqual(transport.sent, [], 'a local emit must not touch the wire');
+    client.sendEvent('room/event', { x: 2 });
+    assert.deepStrictEqual(transport.sent, [{ type: 'event', name: 'room/event', data: { x: 2 } }]);
   });
 
   await t.test('getStream throws over HTTP', () => {

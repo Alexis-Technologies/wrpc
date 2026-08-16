@@ -139,8 +139,8 @@ class WrpcReadable extends Emitter {
 
 class WrpcWritable extends Emitter {
   #waitingDrain = false;
-  #closeArmed = false;
   #closed = false;
+  #ended = false;
 
   constructor(id, name, size, transport) {
     super();
@@ -148,11 +148,30 @@ class WrpcWritable extends Emitter {
     this.name = name;
     this.size = size;
     this.transport = transport;
+    // Armed HERE, not lazily inside the backpressure branch: a stream that
+    // never happened to stall used to learn nothing when the transport
+    // closed — `closed` stayed false and a producer loop kept writing into
+    // the void. Now every writable notices the disconnect, backpressured
+    // or not.
+    if (typeof transport.once === 'function') {
+      transport.once('close', () => {
+        if (this.#closed) return;
+        this.#closed = true;
+        this.#releaseDrain();
+        this.emit('close');
+      });
+    }
     this.init();
   }
 
   get closed() {
     return this.#closed;
+  }
+
+  #releaseDrain() {
+    if (!this.#waitingDrain) return;
+    this.#waitingDrain = false;
+    this.emit('drain');
   }
 
   init() {
@@ -168,35 +187,28 @@ class WrpcWritable extends Emitter {
   // Transports without flow-control reporting (browser WebSocket, HTTP)
   // always count as accepted.
   write(data) {
-    if (this.#closed) return false;
+    if (this.#closed || this.#ended) return false;
     const chunk = chunkEncode(this.id, data);
     const accepted = this.transport.write(chunk) !== false;
     if (!accepted && !this.#waitingDrain && typeof this.transport.once === 'function') {
       this.#waitingDrain = true;
-      const release = () => {
-        if (!this.#waitingDrain) return;
-        this.#waitingDrain = false;
-        this.emit('drain');
-      };
-      this.transport.once('drain', release);
-      if (!this.#closeArmed) {
-        this.#closeArmed = true;
-        this.transport.once('close', () => {
-          this.#closed = true;
-          release();
-          this.emit('close');
-        });
-      }
+      this.transport.once('drain', () => this.#releaseDrain());
     }
     return accepted;
   }
 
+  // Idempotent, and a no-op on a dead transport: the peer that would have
+  // read the status packet is gone.
   end() {
+    if (this.#closed || this.#ended) return;
+    this.#ended = true;
     const packet = { type: 'stream', id: this.id, status: 'end' };
     this.transport.send(packet);
   }
 
   terminate() {
+    if (this.#closed || this.#ended) return;
+    this.#ended = true;
     const packet = { type: 'stream', id: this.id, status: 'terminate' };
     this.transport.send(packet);
   }

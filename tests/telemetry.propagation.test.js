@@ -260,3 +260,64 @@ test('batching keeps trace context per packet, not per frame', async (t) => {
   const parentIds = serverSpans.map((span) => span.parentSpanContext?.spanId).sort();
   assert.deepStrictEqual(parentIds, clientIds, 'each batched packet kept its own parent');
 });
+
+test('subscribe and event packets carry trace context too', async (t) => {
+  withOtelGlobals(t);
+  const clientSide = createTracing();
+
+  // The wire is observed directly: what matters here is the packet fields,
+  // not a server span — so a plain router without telemetry suffices.
+  const router = defineRouter({
+    feed: {
+      ticks: procedure.subscription({
+        access: 'public',
+        handler: async function* () {
+          yield { n: 1 };
+        },
+      }),
+      on: {
+        nudge: procedure({ access: 'public', handler: async () => {} }),
+      },
+    },
+  });
+  const server = new Server({
+    router,
+    host: '127.0.0.1',
+    port: 0,
+    protocol: 'http',
+    timeouts: { bind: 100 },
+    logger: false,
+  });
+  await server.listen();
+  t.after(() => server.close());
+
+  const url = `ws://127.0.0.1:${server.address().port}/api`;
+  const client = await WrpcClient.connect(url, {
+    reconnect: false,
+    telemetry: { tracer: clientSide.tracer, propagation: otelApi.propagation, context: otelApi.context },
+  });
+  t.after(() => void client.close());
+  await client.load('feed');
+
+  const sent = [];
+  const rawSend = client.send.bind(client);
+  client.send = (packet) => {
+    sent.push(packet);
+    return rawSend(packet);
+  };
+
+  await clientSide.tracer.startActiveSpan('outer', async (span) => {
+    await new Promise((resolve) => {
+      client.api.feed.ticks.subscribe({}, { onEnd: resolve });
+    });
+    client.sendEvent('feed/nudge', { poke: true });
+    span.end();
+  });
+
+  const subscribe = sent.find((packet) => packet.type === 'subscribe');
+  assert.ok(subscribe, 'the subscribe packet was captured');
+  assert.match(subscribe[TRACEPARENT], /^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/);
+  const event = sent.find((packet) => packet.type === 'event');
+  assert.ok(event, 'the event packet was captured');
+  assert.match(event[TRACEPARENT], /^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/);
+});

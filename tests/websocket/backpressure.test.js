@@ -200,3 +200,30 @@ test('Connection: emits ping event for inbound pings and still auto-pongs', () =
   assert.strictEqual(pong.payload.toString(), 'hb');
   conn.terminate();
 });
+
+test('Connection: a ping flood cannot buffer pongs without limit', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { maxBackpressure: 100 });
+  const errors = [];
+  conn.on('error', (error) => errors.push(error));
+
+  // The peer floods pings but never reads: the write queue grows past the
+  // cap and the pong path must terminate instead of buffering forever.
+  socket.writableLength = 101;
+  assert.strictEqual(conn.sendPong(), false);
+  assert.strictEqual(errors.length, 1);
+  assert.match(errors[0].message, /Backpressure limit exceeded/);
+  assert.strictEqual(socket.destroyed, true);
+});
+
+test('Connection: maxBackpressure defaults to maxBuffer, finite out of the box', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { maxBuffer: 1000 });
+  const errors = [];
+  conn.on('error', (error) => errors.push(error));
+
+  socket.writableLength = 1001;
+  assert.strictEqual(conn.sendText('past the default cap'), false);
+  assert.strictEqual(errors.length, 1);
+  assert.strictEqual(socket.destroyed, true);
+});

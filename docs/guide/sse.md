@@ -31,9 +31,19 @@ registry never ships to a browser.
 SSE is one-way, so a channel is two halves that find each other by id:
 
 ```
-GET  {basePath}/events?channel=<id>      server -> client stream
-POST {basePath}   x-wrpc-channel: <id>   client -> server
+GET  {basePath}/events                        opens a NEW channel
+GET  {basePath}/events  x-wrpc-channel: <id>  re-attaches to an existing one
+POST {basePath}         x-wrpc-channel: <id>  client -> server
 ```
+
+**The server mints the id** and hands it out exactly once, in the `ready`
+frame that opens every stream — a client never proposes its own. The channel
+is bound to the cookie identity of the GET that created it, and every
+re-attach and POST must present the same one: a request naming a live id
+without it is refused with `403`, so a leaked id (URLs end up in logs) is
+not a bearer token for the channel's session. An id the server no longer
+holds answers `409` — the built-in transport reacts by starting a fresh
+channel and letting the client re-load and re-subscribe.
 
 Both halves belong to **one** server-side `Client`, which is what lets a
 subscription opened by a POST deliver its values down the stream. A POST
@@ -58,10 +68,35 @@ new Server({
 | --- | --- | --- |
 | `retention` | `30000` | How long a channel outlives its stream, in ms. |
 | `replay` | `100` | Outbound frames kept for `Last-Event-ID` replay. |
+| `replayBytes` | 1 MiB | Byte budget for that buffer; evicts oldest first. |
 | `heartbeat` | `15000` | Comment-frame interval in ms; `0` disables. |
 | `retry` | `2000` | The `retry:` value handed to the peer. |
+| `maxChannels` | `10000` | Live channels per server; past it a new GET is `503`. |
+| `maxChannelsPerAddress` | `100` | Live channels per remote address; past it `429`. |
 
 `sse: false` removes the endpoint entirely.
+
+## Replay is honest
+
+A reconnect with `Last-Event-ID` replays exactly what the buffer still
+holds. When the id is OLDER than the buffer — the outage outlived
+`replay`/`replayBytes` — the server does **not** silently replay a
+truncated history: it answers with an `event: gap` frame, and the built-in
+transport reacts by dropping the channel and starting a fresh one. The
+client re-loads and re-subscribes, and every subscription then resumes
+from its own `lastEventId` (or takes a snapshot when its
+[event log](./subscriptions#resume) answers `null`).
+
+## Multiple instances need sticky routing
+
+A channel lives in the memory of the ONE instance that created it: the GET
+and every POST of that channel must reach the same instance. Behind a load
+balancer this means **sticky sessions** (cookie affinity is the usual
+choice — the session cookie is already there). A POST or a re-attaching
+GET that lands on the wrong instance answers `409 Unknown channel`; the
+built-in transport recovers by starting a fresh channel — correct, but a
+reconnect-and-reload on every misrouted request is not a routing strategy.
+See [Scaling](./scaling) for the same rule stated from the deployment side.
 
 Comment frames (`: ping`) keep proxies from deciding an idle response is a dead
 one, and `X-Accel-Buffering: no` keeps nginx from buffering the stream into

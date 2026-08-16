@@ -9,6 +9,11 @@ const { SegmentQueue } = require('./segments.js');
 const permessageDeflate = require('./permessageDeflate.js');
 
 const MAX_BUFFER = 1024 * 1024 * 100;
+// The inflated-size cap for permessage-deflate, separate from MAX_BUFFER on
+// purpose: MAX_BUFFER bounds bytes that already crossed the wire, while a
+// compression bomb turns a few KB on the wire into whatever this allows —
+// so its default has to be small enough to survive, not merely "large".
+const MAX_PAYLOAD = 1024 * 1024 * 16;
 const CLOSE_TIMEOUT = 1000;
 // How long the answering side waits for the peer's FIN before destroying.
 const CLOSE_GRACE = 200;
@@ -20,6 +25,7 @@ class Connection extends EventEmitter {
   #queue = new SegmentQueue();
   #pendingHeader = null;
   #maxBuffer;
+  #maxPayload;
   #maxBackpressure;
   #fragmentThreshold;
   #deflate;
@@ -42,14 +48,21 @@ class Connection extends EventEmitter {
     const {
       isClient = false,
       maxBuffer = MAX_BUFFER,
+      maxPayload = MAX_PAYLOAD,
       closeTimeout = CLOSE_TIMEOUT,
-      maxBackpressure = 0,
+      // Finite by default: an unbounded outbound buffer lets a peer that
+      // stops reading (or floods pings, each answered with a pong) grow the
+      // socket's write queue without limit. `maxBuffer` is the ceiling —
+      // the connection can hold one biggest-allowed message in flight —
+      // and 0 opts back into unbounded.
+      maxBackpressure = maxBuffer,
       fragmentThreshold = 0,
       protocol = '',
       deflate = null,
     } = options;
     this.#isClient = isClient;
     this.#maxBuffer = maxBuffer;
+    this.#maxPayload = maxPayload;
     this.#closeTimeout = closeTimeout;
     this.#maxBackpressure = maxBackpressure;
     this.#fragmentThreshold = fragmentThreshold;
@@ -280,9 +293,13 @@ class Connection extends EventEmitter {
   }
 
   #emitInflated(opcode, payload) {
+    // The dedicated inflated-size cap. zlib's maxOutputLength stops the
+    // inflation the moment output would exceed it, so a compression bomb
+    // costs at most `maxPayload` of memory and CPU before the close.
+    const limit = Math.min(this.#maxPayload, this.#maxBuffer);
     let inflated = null;
     try {
-      inflated = permessageDeflate.decompress(payload, this.#maxBuffer);
+      inflated = permessageDeflate.decompress(payload, limit);
     } catch (error) {
       this.emit('error', error);
       const type = error.code === 'ERR_BUFFER_TOO_LARGE' ? 'MESSAGE_TOO_BIG' : 'INVALID_PAYLOAD';
@@ -338,6 +355,10 @@ class Connection extends EventEmitter {
       return this.#writeFrame(new Frame(true, opcode, false, payload, null, rsv));
     }
     let ok = true;
+    // One cork for the WHOLE fragmented message: per-frame cork/uncork
+    // (inside #writeFrame) flushed a TCP write per fragment; nested corks
+    // are ref-counted, so this outer pair batches them into one flush.
+    this.#socket.cork();
     for (let offset = 0; offset < payload.length; offset += threshold) {
       const end = Math.min(offset + threshold, payload.length);
       const fin = end === payload.length;
@@ -345,6 +366,7 @@ class Connection extends EventEmitter {
       const frameRsv = offset === 0 ? rsv : 0;
       ok = this.#writeFrame(new Frame(fin, op, false, payload.subarray(offset, end), null, frameRsv));
     }
+    this.#socket.uncork();
     return ok;
   }
 
@@ -365,6 +387,7 @@ class Connection extends EventEmitter {
 
   sendPing(payload) {
     if (this.#closing) return false;
+    if (this.#exceedsBackpressure()) return false;
     if (payload) return this.#writeFrame(Frame.ping(payload));
     return this.#fastPing();
   }
@@ -372,7 +395,13 @@ class Connection extends EventEmitter {
   // No #closing guard: RFC 6455 5.5.3 requires a pong unless a Close frame
   // was received, and #processFrames stops draining input once
   // #closeReceived is set — including frames already queued behind the Close.
+  //
+  // The backpressure guard DOES apply: a peer that floods pings without
+  // reading the pongs grows the write queue without limit, and RFC
+  // compliance is not a suicide pact — past the cap the connection is
+  // terminated like any other non-reading peer.
   sendPong(payload) {
+    if (this.#exceedsBackpressure()) return false;
     if (payload) return this.#writeFrame(Frame.pong(payload));
     return this.#fastPong();
   }
@@ -451,4 +480,4 @@ class Connection extends EventEmitter {
   }
 }
 
-module.exports = { Connection, CLOSE_TIMEOUT };
+module.exports = { Connection, CLOSE_TIMEOUT, MAX_PAYLOAD };

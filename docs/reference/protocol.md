@@ -28,6 +28,38 @@ What that promise covers, and what it does not:
 A change to any of the above is a major version, with the reasoning in the
 [CHANGELOG](https://github.com/Alexis-Technologies/wrpc/blob/main/CHANGELOG.md).
 
+## Versioning
+
+The wire carries a revision marker, negotiated as a WebSocket subprotocol:
+
+```
+Sec-WebSocket-Protocol: wrpc.v1        (client offer)
+Sec-WebSocket-Protocol: wrpc.v1        (server echo)
+```
+
+A wrpc client **offers** `wrpc.v1` by default; a wrpc server with no
+app-configured `protocols`/`handleProtocols` **echoes** it back. Both sides
+therefore know, before the first packet, which revision the other speaks —
+and the selected name is on `connection.protocol` server-side.
+
+The rules that keep this compatible in every direction:
+
+- A peer that offers **nothing** gets no subprotocol and both sides speak
+  this page as written — the pre-marker handshake stays valid forever.
+- A server whose app configures its own `protocols` list takes over
+  negotiation entirely; offering `wrpc.v1` alongside app protocols is the
+  app's decision.
+- A future `wrpc.v2` will be offered ALONGSIDE `wrpc.v1`
+  (`Sec-WebSocket-Protocol: wrpc.v2, wrpc.v1`), so an old server picks the
+  one it knows and nothing breaks. What `v2` may change is exactly what the
+  stability section above says `v1` never will.
+- The name `wrpc.` is reserved as a prefix: applications must not mint their
+  own subprotocols under it.
+
+HTTP and SSE requests carry no subprotocol; they stay versioned by this page
+alone (additive changes only), which is safe because every request/response
+pair is self-contained.
+
 ## Framing
 
 | Transport | JSON packets | Binary chunks |
@@ -69,9 +101,18 @@ a `callback` carrying code 500.
 ```
 
 Exactly one of `result` / `error`. Error codes reuse HTTP semantics where
-they fit: `400` invalid input, `403` no session, `404` unknown method, `408`
-timeout, `500` handler failure or invalid output, `503` queue overflow. Over
-HTTP the same code becomes the response status.
+they fit: `400` invalid input, `403` no session (or a refused origin), `404`
+unknown method, `408` timeout, `429` too many in-flight calls from one
+connection, `500` handler failure or invalid output, `503` queue overflow.
+Over HTTP the same code becomes the response status.
+
+What the `message` carries depends on the class of the code. 4xx messages
+are written for the caller — validation text, quota refusals — and travel
+verbatim. A 5xx message is a server internal: the peer receives the status
+line (`"Internal Server Error"`) and the exception text stays in the server
+log, correlated by the same packet `id`. A server-side error that WANTS its
+message on the wire opts in with `error.expose = true`; the errors wrpc
+itself constructs (timeout, queue overflow, invalid output) are marked so.
 
 ### `event` — both directions
 
@@ -383,14 +424,37 @@ mechanism, not a queue.
 SSE is one-way, so a channel is two halves that find each other by id:
 
 ```
-GET  {basePath}/events?channel=<id>      server -> client stream
-POST {basePath}   x-wrpc-channel: <id>   client -> server
+GET  {basePath}/events                        opens a NEW channel
+GET  {basePath}/events  x-wrpc-channel: <id>  re-attaches to an existing one
+POST {basePath}         x-wrpc-channel: <id>  client -> server
 ```
+
+**The channel id is minted by the server** and handed out exactly once, in
+the `ready` frame that opens every stream:
+
+```
+event: ready
+data: {"channel":"b1f0…"}
+```
+
+A client cannot propose its own id: a GET naming an id the server does not
+hold answers `409`, which is the client's signal to drop its channel state
+and start a fresh one. (`?channel=<id>` in the query string is accepted for
+re-attach as well, but the header is preferred — URLs end up in proxy logs.)
+
+The channel is **bound to the identity that created it**: the session token
+in the opening GET's cookie (or "anonymous" when it carries none). Every
+re-attach and every POST must present the same cookie identity — a request
+that names a live channel id without it is refused with `403`. Knowing an id
+is never enough to act on someone else's channel. Channel creation is also
+capped (`maxChannels`, `maxChannelsPerAddress`): past the caps a new GET
+answers `503` or `429`.
 
 Both halves belong to **one** server-side client, which is what lets a
 subscription opened by a POST deliver its values down the stream. A POST
 answers `202` with no body: every reply, callbacks included, travels on the
-stream — the same shape the Service Worker port transport has.
+stream — the same shape the Service Worker port transport has. A POST naming
+an unknown channel answers `409`, like the GET.
 
 Each frame carries the channel's own monotonic `id:`, and a dropped stream
 does not destroy the channel. It is held for `retention` (30 s by default),

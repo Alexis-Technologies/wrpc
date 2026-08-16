@@ -3,439 +3,22 @@ import {
   Server as HttpServer,
   ServerResponse,
 } from 'node:http';
-import { Writable } from 'node:stream';
 import type { Connection } from './ws.js';
 import type { Engine, EngineConnectionSource, WrpcSocket, EngineAttachOptions } from './engine.js';
 import type { Backplane } from './scaling.js';
+import {
+  Emitter,
+  WrpcError,
+  WrpcReadable,
+  WrpcWritable,
+  WrpcLogger,
+  WrpcLogWriter,
+  WrpcTelemetryOptions,
+} from './client.js';
 
-export declare class Emitter {
-  constructor(options?: { maxListeners?: number });
-  emit(eventName: PropertyKey, value?: unknown): Promise<void>;
-  on(eventName: PropertyKey, listener: (value: any) => void): void;
-  once(eventName: PropertyKey, listener: (value: any) => void): void;
-  off(eventName: PropertyKey, listener?: (value: any) => void): void;
-  clear(eventName?: PropertyKey): void;
-  listeners(eventName: PropertyKey): Array<(value: any) => void>;
-  listenerCount(eventName: PropertyKey): number;
-  eventNames(): Array<PropertyKey>;
-}
-
-export class WrpcError extends Error {
-  code: number;
-  constructor(options: { message: string; code: number });
-}
-
-export interface ReadableOptions {
-  highWaterMark?: number;
-}
-
-export class WrpcReadable extends Emitter {
-  id: string;
-  name: string;
-  size: number;
-  queue: Array<ArrayBufferView>;
-  streaming: boolean;
-  status: string;
-  bytesRead: number;
-  highWaterMark: number;
-  constructor(
-    id: string,
-    name: string,
-    size: number,
-    options?: ReadableOptions,
-  );
-  push(data: ArrayBufferView): Promise<ArrayBufferView>;
-  finalize(writable: Writable): Promise<void>;
-  pipe(writable: Writable): Writable;
-  toBlob(type?: string): Promise<Blob>;
-  close(): Promise<void>;
-  terminate(): Promise<void>;
-  stop(force?: boolean): Promise<void>;
-  read(): Promise<ArrayBufferView | null>;
-  pull(): ArrayBufferView | undefined;
-  checkStreamLimits(): void;
-  waitEvent(event: PropertyKey): Promise<unknown>;
-  [Symbol.asyncIterator](): AsyncIterableIterator<ArrayBufferView>;
-}
-
-export interface Transport {
-  send(obj: object): void;
-  write(data: string | ArrayBufferView): void;
-}
-
-export class WrpcWritable extends Emitter {
-  id: string;
-  name: string;
-  size: number;
-  transport: Transport;
-  /** True once the transport closed: write() reports false, no 'drain' follows. */
-  readonly closed: boolean;
-  constructor(id: string, name: string, size: number, transport: Transport);
-  init(): void;
-  write(data: ArrayBufferView): boolean;
-  end(): void;
-  terminate(): void;
-}
-
-export interface BlobUploader {
-  id: string;
-  upload(): Promise<void>;
-}
-
-declare class ClientTransport extends Emitter {
-  url: string;
-  active: boolean;
-  constructor(url: string);
-  open(options?: WrpcClientOptions): Promise<void>;
-  close(): void;
-  send(obj: object): void;
-  write(data: string | ArrayBufferView): void;
-  online(): void;
-  offline(): void;
-}
-export type { ClientTransport };
-
-export class WrpcClient<Api = UntypedApi> extends Emitter {
-  static connections: Set<WrpcClient>;
-  static isOnline: boolean;
-  static online(): void;
-  static offline(): void;
-  static initialize(): void;
-  /**
-   * With a contract — `WrpcClient.connect<Api>(url)` — the whole `api` is
-   * typed. Without one it behaves exactly as it always did. See
-   * {@link connect}, which is the same call under a name that reads better
-   * with a type argument.
-   */
-  static connect<Api = UntypedApi>(
-    url: string,
-    options?: WrpcClientOptions,
-  ): Promise<WrpcClient<Api>>;
-  static transport: {
-    ws: new (url: string) => ClientTransport;
-    http: new (url: string) => ClientTransport;
-    event: {
-      getInstance(url: string): ClientTransport;
-    };
-  };
-
-  url: string;
-  /**
-   * The loaded units. A method is a function for a call and a
-   * {@link SubscriptionMethod} for a subscription — a subscription answers
-   * with a stream, so it is not callable.
-   *
-   * With a contract type this is {@link TypedApi}; note that it types what
-   * the contract DECLARES, not what has been `load()`ed yet — a unit read
-   * before its `load()` is `undefined` at runtime.
-   */
-  api: TypedApi<Api>;
-  readonly active: boolean;
-
-  constructor(
-    url: string,
-    transport: ClientTransport,
-    options?: WrpcClientOptions,
-  );
-  /** Reconnect attempts made since the last successful open. */
-  readonly attempt: number;
-
-  open(): Promise<void>;
-  close(): void;
-  load(...units: Array<Extract<keyof Api, string>>): Promise<void>;
-  getStream(id: string): WrpcReadable | WrpcWritable;
-  createStream(name: string, size: number): WrpcWritable;
-  createBlobUploader(blob: Blob): BlobUploader;
-  send(obj: object): void;
-  /** Fire-and-forget event to the server; `name` is 'unit/event'. */
-  sendEvent(name: string, data?: unknown): void;
-  /** Sends whatever calls are waiting to be batched. Safe to call anytime. */
-  flush(): void;
-  write(data: string | ArrayBufferView): void;
-}
-
-/**
- * Truncated exponential backoff with full jitter:
- * `delay = random(0, min(maxDelay, minDelay * factor ** attempt))`.
- */
-export interface ReconnectOptions {
-  /** First retry window in ms; default 2000. */
-  minDelay?: number;
-  /** Cap in ms; default 30000. */
-  maxDelay?: number;
-  /** Window growth per attempt; default 2. */
-  factor?: number;
-  /** Spread the delay over the whole window; default true. */
-  jitter?: boolean;
-  /** Attempts before giving up and emitting 'reconnect-failed'. */
-  retries?: number;
-}
-
-/**
- * App-level heartbeat: `{ type: 'ping' }` out, `{ type: 'pong' }` back.
- * A browser WebSocket exposes no protocol ping, so this is the only way to
- * notice a connection that died without a close frame. WebSocket transport
- * only; `false` disables it.
- */
-export interface HeartbeatOptions {
-  /** Milliseconds between pings; default 30000. */
-  interval?: number;
-  /** Milliseconds to wait for the pong before reconnecting; default 10000. */
-  timeout?: number;
-}
-
-/**
- * Call batching: several calls issued in the same tick travel as ONE frame
- * (a JSON array). Only `call` packets batch — a ping, a cancel or an
- * unsubscribe is a control packet whose whole point is to arrive now.
- */
-export interface BatchOptions {
-  /** 'microtask' (default) or a delay in ms. */
-  flush?: 'microtask' | number;
-  /** Packets per frame before an early flush; default 16. */
-  maxSize?: number;
-  /** Bytes per frame before an early flush; default 65536. */
-  maxBytes?: number;
-}
-
-export interface CallOptions {
-  /** Aborting sends `{type:'cancel'}` and rejects with code 499. */
-  signal?: AbortSignal;
-}
-
-/** A live subscription, as seen by the caller that opened it. */
-export interface Subscription {
-  readonly id: string;
-  /** The last tracked eventId seen; what a reconnect resumes from. */
-  readonly lastEventId: string | undefined;
-  readonly closed: boolean;
-  unsubscribe(): boolean;
-}
-
-export interface SubscribeOptions<Data = any> {
-  /** Where to resume from; the server decides what that means. */
-  lastEventId?: string;
-  onData?(data: Data): void;
-  /** The subscription died: the handler threw, or the server refused it. */
-  onError?(error: WrpcError): void;
-  /**
-   * The subscription ended cleanly — the handler finished, or
-   * {@link WrpcClient.close} took the whole client down under it.
-   *
-   * Exactly one of `onEnd`/`onError` fires, and only for an ending the caller
-   * did not ask for: calling `unsubscribe()` yourself is silent, because you
-   * already know. A reconnect is not an ending either — the client re-opens
-   * its subscriptions from the last eventId it saw.
-   */
-  onEnd?(): void;
-}
-
-export interface IterateOptions<Data = any> extends SubscribeOptions<Data> {
-  /** Aborting unsubscribes and ends the iterator. */
-  signal?: AbortSignal;
-  highWaterMark?: number;
-}
-
-/** What `client.api[unit][method]` is when the method is a subscription. */
-export interface SubscriptionMethod {
-  readonly kind: 'subscription';
-  subscribe(args?: object, options?: SubscribeOptions): Subscription;
-  iterate(args?: object, options?: IterateOptions): AsyncIterableIterator<any> & { subscription: Subscription };
-}
-
-// ---------------------------------------------------------------------------
-// Contract-first typed client
-//
-// The contract is written ONCE, as an ordinary TypeScript interface, and
-// threaded through `connect<Api>()`. Nothing is generated and nothing is
-// checked at runtime: these types describe the api the server already
-// introspects, so they buy autocompletion and a compile error on a typo —
-// not a guarantee that the server agrees. (`wrpc types`, the codegen CLI,
-// writes exactly this shape of interface FROM a running server.)
-//
-//   interface Api {
-//     chat: {
-//       send(args: { text: string }): Promise<{ id: string }>;
-//       onMessage: SubscriptionContract<{ room: string }, { text: string }>;
-//     };
-//     'auth.1': { signIn(args: { login: string }): Promise<{ token: string }> };
-//   }
-//
-//   const client = await connect<Api>('wss://host');
-//   await client.load('chat');
-//   const { id } = await client.api.chat.send({ text: 'hi' });
-
-/**
- * Declares a contract member as a subscription rather than a call: it answers
- * with a stream, so on the client it becomes a {@link TypedSubscriptionMethod}
- * (`subscribe`/`iterate`) instead of something callable.
- *
- * Declaration-only — there is no runtime value to construct, and the phantom
- * key exists so a plain object type can never be mistaken for one. (The
- * `~`-prefixed key is the same idiom Standard Schema uses for `~standard`.)
- * Not to be confused with {@link Subscription}, which is the live handle
- * `subscribe()` hands back.
- */
-export interface SubscriptionContract<Args = void, Data = unknown> {
-  readonly '~wrpc.subscription': (args: Args) => Data;
-}
-
-/**
- * No contract given: `api` keeps the loose, runtime-shaped record it has
- * always had, so nothing about an untyped client changes.
- */
-export type UntypedApi = Record<string, Record<string, any>>;
-
-/**
- * `any` has to be caught before any conditional type sees it: `any extends X`
- * matches BOTH branches, which would turn an untyped unit into a union of
- * "callable" and "subscription" and make it neither.
- */
-export type IsAny<T> = 0 extends 1 & T ? true : false;
-
-/** `[args]` when args are required, `[args?]` when the contract says `void`. */
-export type ContractArgs<Args, Rest extends Array<unknown>> = [Args] extends [void]
-  ? [args?: Args, ...rest: Rest]
-  : [args: Args, ...rest: Rest];
-
-/**
- * What an unusable contract member maps to. A wrpc procedure receives exactly
- * ONE args object, so a member declared with two parameters (or a rest
- * parameter, or as something that is not a function at all) cannot be called:
- * slot 1 on the client is {@link CallOptions}, not a second argument. The text
- * is what the compiler quotes back at the call site.
- */
-export type InvalidContractMember = ['wrpc: a contract member is `(args) => Promise<T>` or a SubscriptionContract'];
-
-/**
- * A contract member's parameters, as the client takes them.
- *
- * A zero-argument member KEEPS its args slot: `#scaffold` builds
- * `(args = {}, options = {})`, so slot 0 is always the wire args. Collapsing
- * the tuple would make `ping({ signal })` compile and then ship `{"signal":{}}`
- * to the server as the procedure's arguments, silently dropping the
- * cancellation the caller asked for — `ping(undefined, { signal })` is the
- * spelling that works.
- */
-export type TypedParams<Params extends Array<unknown>> = Params extends readonly [] ? [args?: undefined]
-  : Params extends readonly [unknown?] ? Params
-  : [args: InvalidContractMember];
-
-/** What a subscription member of a contract becomes on the client. */
-export interface TypedSubscriptionMethod<Args, Data> {
-  readonly kind: 'subscription';
-  subscribe(...params: ContractArgs<Args, [options?: SubscribeOptions<Data>]>): Subscription;
-  iterate(
-    ...params: ContractArgs<Args, [options?: IterateOptions<Data>]>
-  ): AsyncIterableIterator<Data> & { subscription: Subscription };
-}
-
-/**
- * One contract member, translated. A call keeps its declared parameters and
- * gains the trailing {@link CallOptions} the client accepts, which is what
- * carries `{ signal }`; its result is awaited, since the wire always answers
- * with a promise whether the handler did or not.
- */
-export type TypedMethod<T> = IsAny<T> extends true ? any
-  : T extends SubscriptionContract<infer Args, infer Data> ? TypedSubscriptionMethod<Args, Data>
-  : T extends (...args: infer Params) => infer Result
-    ? (...args: [...TypedParams<Params>, options?: CallOptions]) => Promise<Awaited<Result>>
-  : InvalidContractMember;
-
-/**
- * One contract unit, translated.
- *
- * `on` is dropped: a unit IS an {@link Emitter} at runtime, so `api.chat.on`
- * has to stay the listener registration. Mapping a contract key called `on`
- * would shadow it with an overload — and an *optional* one reduces the whole
- * intersection to `never`, which turns every member access on that unit into
- * an error pointing nowhere.
- */
-export type TypedUnit<Unit> = IsAny<Unit> extends true ? Record<string, any>
-  : { [Method in keyof Unit as Method extends 'on' ? never : Method]: TypedMethod<Unit[Method]> };
-
-/**
- * The whole contract, translated. Each unit is also an {@link Emitter} — that
- * is where server → client events for the unit arrive.
- */
-export type TypedApi<Api> = { [Unit in keyof Api]: Emitter & TypedUnit<Api[Unit]> };
-
-/**
- * The first parameter of a parameter tuple. Projected from the tuple rather
- * than inferred from `(args: infer A) => any`, because a zero-parameter
- * function IS assignable to a one-parameter target — so that inference
- * succeeds with `unknown` where the honest answer is `void`.
- */
-export type FirstArg<Params extends Array<unknown>> = Params extends readonly [] ? void
-  : Params extends readonly [infer Arg] ? Arg
-  : Params extends readonly [(infer Arg)?] ? Arg | undefined
-  : Params extends readonly [infer Arg, ...Array<any>] ? Arg
-  : void;
-
-/**
- * The argument type of a contract member, call or subscription — declared
- * ({@link SubscriptionContract}) or already mapped
- * ({@link TypedSubscriptionMethod}).
- */
-export type InferArgs<T> = T extends SubscriptionContract<infer Args, any> ? Args
-  : T extends TypedSubscriptionMethod<infer Args, any> ? Args
-  : T extends (...args: infer Params) => any ? FirstArg<Params>
-  : void;
-
-/** What a contract member answers with: a call's result, a subscription's value. */
-export type InferResult<T> = T extends SubscriptionContract<any, infer Data> ? Data
-  : T extends TypedSubscriptionMethod<any, infer Data> ? Data
-  : T extends (...args: Array<any>) => infer Result ? Awaited<Result>
-  : never;
-
-/**
- * Opens a connection. The same call as {@link WrpcClient.connect}, spelled as
- * a function because that is where the contract type argument reads naturally:
- * `connect<Api>('wss://host')`. Without one, the client is untyped exactly as
- * before.
- */
-export declare function connect<Api = UntypedApi>(
-  url: string,
-  options?: WrpcClientOptions,
-): Promise<WrpcClient<Api>>;
-
-export interface WrpcClientOptions {
-  callTimeout?: number;
-  /** Coalesce calls into batch frames; `true` takes the defaults. */
-  batch?: BatchOptions | boolean;
-  /**
-   * Which registered transport to use. Defaults to the URL scheme; 'sse'
-   * exists once '@alexify/wrpc/sse' has been required.
-   */
-  transport?: 'ws' | 'http' | 'sse' | string;
-  reconnect?: ReconnectOptions | false;
-  /** Shorthand for `reconnect.minDelay`. */
-  reconnectTimeout?: number;
-  heartbeat?: HeartbeatOptions | false;
-  worker?: ServiceWorker;
-  /**
-   * Off by default, unlike the server: a client that printed on every
-   * reconnect would be noise in a browser console nobody asked for. A logger
-   * observes errors in addition to the `'error'` event, it does not replace
-   * it.
-   */
-  logger?: WrpcLogger | boolean;
-  /**
-   * Off unless a tracer, a meter, or the OTel api module is supplied. With a
-   * propagator, outgoing packets carry `tp`/`ts` so the server's span becomes
-   * a child of this client's.
-   */
-  telemetry?: WrpcTelemetryOptions | null;
-  /** Jitter source; injectable so tests can pin the backoff schedule. */
-  random?: () => number;
-  proxy?: (data: string, packet: object | null) => void;
-}
-
-export class WrpcClientProxy extends Emitter {
-  constructor(options?: WrpcClientOptions);
-  open(): Promise<void>;
-  close(): void;
-}
+// The browser-safe half of the surface lives in client.d.ts (which is what
+// the `browser` types condition serves); this file is that plus the server.
+export * from './client.js';
 
 // ---------------------------------------------------------------------------
 // Router / procedures
@@ -515,6 +98,8 @@ export declare function isTracked(value: unknown): boolean;
  * choose between a snapshot and an error instead of silently skipping a gap.
  */
 export declare class EventLog<T = unknown> {
+  /** Which log incarnation mints this log's ids (the `<epoch>.` prefix). */
+  readonly epoch: string;
   constructor(options?: { size?: number; start?: number });
   readonly size: number;
   readonly length: number;
@@ -524,33 +109,18 @@ export declare class EventLog<T = unknown> {
   clear(): void;
 }
 
-export declare function createEventLog<T = unknown>(options?: { size?: number; start?: number }): EventLog<T>;
-
 /**
- * Push -> pull adapter: the bridge between "something calls me with a
- * value" and "someone is `for await`-ing values". The queue is bounded —
- * a producer that outruns the consumer drops the OLDEST value and says so
- * through `dropped`.
+ * Ids are `<epoch>.<n>`: random epoch per instance by default, so a
+ * lastEventId from another process (or a restart) is a foreign epoch and
+ * since() answers null — an honest "cannot resume" — instead of a numeric
+ * coincidence. A persisted/shared log passes its own stable `epoch`.
  */
-export declare class EventStream<T = unknown> implements AsyncIterableIterator<T> {
-  constructor(options?: { signal?: AbortSignal; highWaterMark?: number });
-  readonly length: number;
-  readonly closed: boolean;
-  dropped: number;
-  push(value: T): boolean;
-  end(): void;
-  fail(error: Error): void;
-  next(): Promise<IteratorResult<T>>;
-  return(): Promise<IteratorResult<T>>;
-  [Symbol.asyncIterator](): AsyncIterableIterator<T>;
-}
+export declare function createEventLog<T = unknown>(options?: {
+  size?: number;
+  start?: number;
+  epoch?: string;
+}): EventLog<T>;
 
-export declare function createEventStream<T = unknown>(options?: {
-  signal?: AbortSignal;
-  highWaterMark?: number;
-}): EventStream<T>;
-
-/** The third argument every subscription handler receives. */
 export interface SubscriptionOptions {
   /** What the client says it last saw; undefined on a fresh subscribe. */
   lastEventId?: string;
@@ -559,9 +129,44 @@ export interface SubscriptionOptions {
 }
 
 
+/**
+ * A lifecycle hook: named phases, fastify-style, with no `next`. A hook
+ * runs and either returns (the pipeline continues) or throws an error whose
+ * numeric `code` becomes the wire code. "After" is a later phase, not code
+ * after a next() call. The payload depends on the phase: the packet for
+ * onRequest/onSend/onResponse/onSubscribe, the args for
+ * preValidation/preHandler, the result for preSerialization (returning a
+ * value replaces it), the error for onError/onTimeout, the terminal packet
+ * for onUnsubscribe.
+ */
+export type Hook = (context: Context, payload: unknown) => unknown | Promise<unknown>;
+/** Connection lifecycle hook; observational and contained. */
+export type ConnectionHook = (client: Client, payload: null) => unknown | Promise<unknown>;
+
+/** The phases a router (or a unit's reserved `hooks` key) may register. */
+export interface RouterHooks {
+  onRequest?: Hook | Array<Hook>;
+  preValidation?: Hook | Array<Hook>;
+  preHandler?: Hook | Array<Hook>;
+  preSerialization?: Hook | Array<Hook>;
+  onSend?: Hook | Array<Hook>;
+  onResponse?: Hook | Array<Hook>;
+  onError?: Hook | Array<Hook>;
+  onTimeout?: Hook | Array<Hook>;
+  onSubscribe?: Hook | Array<Hook>;
+  onUnsubscribe?: Hook | Array<Hook>;
+  /** Router-level only. */
+  onConnect?: ConnectionHook | Array<ConnectionHook>;
+  /** Router-level only. */
+  onDisconnect?: ConnectionHook | Array<ConnectionHook>;
+}
+
+/** The subset a unit's reserved `hooks` key accepts (no connection phases). */
+export type UnitHooks = Omit<RouterHooks, 'onConnect' | 'onDisconnect'>;
+
 export interface ProcedureOptions {
   handler: ProcedureHandler;
-  access?: 'public' | 'session' | string;
+  access?: 'public' | 'session';
   input?: Validator;
   output?: Validator;
   /** Milliseconds; the call fails with code 408 when exceeded. */
@@ -573,6 +178,11 @@ export interface ProcedureOptions {
   signature?: Signature;
   /** Inferred from an async generator handler; rarely written by hand. */
   kind?: 'call' | 'subscription';
+  /** This procedure's own slice of the pipeline. */
+  preValidation?: Hook | Array<Hook>;
+  preHandler?: Hook | Array<Hook>;
+  preSerialization?: Hook | Array<Hook>;
+  onError?: Hook | Array<Hook>;
 }
 
 /** Same as ProcedureOptions minus the two a stream cannot mean. */
@@ -589,9 +199,14 @@ export declare class Procedure {
   kind: 'call' | 'subscription';
   readonly subscription: boolean;
   constructor(options: ProcedureOptions);
-  invoke(context: Context, args: unknown): Promise<unknown>;
+  invoke(context: Context, args: unknown, hooks?: Readonly<Record<string, ReadonlyArray<Hook>>>): Promise<unknown>;
   /** The value stream behind `{type:'subscribe'}`. */
-  subscribe(context: Context, args: unknown, options?: Partial<SubscriptionOptions>): AsyncIterableIterator<unknown>;
+  subscribe(
+    context: Context,
+    args: unknown,
+    options?: Partial<SubscriptionOptions>,
+    hooks?: Readonly<Record<string, ReadonlyArray<Hook>>>,
+  ): AsyncIterableIterator<unknown>;
 }
 
 export interface ProcedureFactory {
@@ -616,12 +231,14 @@ export type MethodDefinition = Procedure | ProcedureHandler | ProcedureOptions;
 export type EventsDefinition = Record<string, MethodDefinition>;
 
 /**
- * A unit's methods, plus the reserved `on` key holding its event handlers.
- * `on` is therefore NOT usable as a method name.
+ * A unit's methods, plus two reserved keys: `on` holds its inbound event
+ * handlers and `hooks` its slice of the lifecycle pipeline. Neither is
+ * usable as a method name.
  */
 export interface UnitDefinition {
   on?: EventsDefinition;
-  [method: string]: MethodDefinition | EventsDefinition | undefined;
+  hooks?: UnitHooks;
+  [method: string]: MethodDefinition | EventsDefinition | UnitHooks | undefined;
 }
 
 /**
@@ -639,7 +256,13 @@ export interface MethodInfo {
 }
 
 export declare class Router {
-  constructor(definition?: RouterDefinition);
+  constructor(definition?: RouterDefinition, options?: { hooks?: RouterHooks });
+  /** Adds a router-level hook after construction. Returns the router. */
+  addHook(name: keyof RouterHooks, fn: Hook | ConnectionHook): this;
+  /** The flattened pipeline for one procedure (router + unit + procedure). */
+  hooksFor(proc: Procedure): Readonly<Record<string, ReadonlyArray<Hook>>>;
+  /** Router-level connection lifecycle hooks, consumed by RpcServer. */
+  readonly connectionHooks: { onConnect: ReadonlyArray<ConnectionHook>; onDisconnect: ReadonlyArray<ConnectionHook> };
   getProcedure(
     unit: string,
     version: string | undefined,
@@ -656,13 +279,18 @@ export declare class Router {
   merge(other: Router): Router;
 }
 
-export declare function defineRouter(definition: RouterDefinition): Router;
+export declare function defineRouter(definition: RouterDefinition, options?: { hooks?: RouterHooks }): Router;
 
 // ---------------------------------------------------------------------------
 // Sessions
 
 /** Structural store contract — anything with this shape plugs in. */
 export interface SessionStore {
+  /**
+   * Optional sliding expiry: called on restore, because restoring IS active
+   * use. A store without it keeps absolute TTLs — a valid policy too.
+   */
+  touch?(token: string): Promise<void> | void;
   get(token: string): Promise<State | null>;
   set(token: string, data: State): Promise<void>;
   delete(token: string): Promise<void>;
@@ -681,6 +309,7 @@ export interface MemorySessionStoreOptions {
  * so production deployments should inject a real store instead.
  */
 export declare class MemorySessionStore implements SessionStore {
+  touch(token: string): Promise<void>;
   constructor(options?: MemorySessionStoreOptions);
   readonly size: number;
   get(token: string): Promise<State | null>;
@@ -821,7 +450,12 @@ export declare class Context {
    * that could not exist before the router it was built from.
    */
   readonly server: RpcServer | null;
-  constructor(client: Client);
+  /**
+   * A child of the connection's logger bound to this call's uuid — the
+   * documented way to log from a handler: `context.log.info(...)`.
+   */
+  readonly log: WrpcLogWriter;
+  constructor(client: Client, signal?: AbortSignal | null);
 }
 
 export class Client extends Emitter {
@@ -839,6 +473,15 @@ export class Client extends Emitter {
   /** Live subscriptions, by id — what `{type:'unsubscribe'}` reaches. */
   subscriptions: Map<string, AbortController>;
   maxSubscriptions: number;
+  maxCalls: number;
+  /** Context uuids and server-side stream ids; injectable via RpcServerOptions. */
+  generateId: () => string;
+  /** The connection-scoped log writer (peer binding included). */
+  readonly log: WrpcLogWriter;
+  /** The server's telemetry writer; disabled-shaped when unconfigured. */
+  readonly otel: object;
+  /** 'ws' | 'http' | 'sse' | 'event' — a metric attribute and a log field. */
+  readonly transportKind: string;
   /** False on a text-only transport (SSE), where binary streams cannot go. */
   readonly binary: boolean;
   /** Resolves when the transport drained, or when it closed. */
@@ -846,8 +489,15 @@ export class Client extends Emitter {
   error(code: number, options?: ErrorOptions): void;
   /** Returns false when the transport is above its high-water mark. */
   send(obj: object, options?: { code?: number; method?: string }): boolean;
+  /**
+   * Writes an ALREADY-serialized packet — the fan-out seam: a broadcast
+   * stringifies once and hands every recipient the same text.
+   */
+  sendRaw(text: string): boolean;
   createContext(signal?: AbortSignal | null): Context;
+  /** The LOCAL Emitter emit — nothing reaches the wire; that is sendEvent. */
   emit(name: EventName, data?: unknown): Promise<void>;
+  /** Sends a `{type:'event'}` packet to this peer; `name` is 'unit/event'. */
   sendEvent(name: string, data?: unknown): void;
   /** Diagnostics for inbound packets with no id to answer on. */
   warn(message: string): void;
@@ -899,113 +549,6 @@ export interface HttpCall {
 // ---------------------------------------------------------------------------
 // Logging
 
-/**
- * A logger to inject. Every member is optional so that both shapes are
- * structurally assignable without importing anybody's types:
- *
- * - a **structured** logger (pino, bunyan, winston) — identified by `child`
- *   or `level`, and called as `(entry, message)`
- * - a **Console** — called as `(message)`, with the entry dropped
- *
- * `true` logs to the global console; `false` disables logging outright. An
- * object that matches neither shape disables it too: an observability option
- * never throws.
- */
-export interface WrpcLogger {
-  child?(bindings: Record<string, unknown>): WrpcLogger;
-  level?: unknown;
-  log?(...args: any[]): void;
-  info?(...args: any[]): void;
-  debug?(...args: any[]): void;
-  warn?(...args: any[]): void;
-  error?(...args: any[]): void;
-}
-
-// ---------------------------------------------------------------------------
-// OpenTelemetry
-//
-// Structural views of the OTel objects, so a real SDK is assignable without
-// wrpc importing (or depending on) @opentelemetry/api. Only `Span.end` is
-// required — everything a span might not implement is optional, and wrpc
-// calls it optionally.
-
-export interface WrpcSpan {
-  setAttribute?(key: string, value: unknown): unknown;
-  addEvent?(name: string, attributes?: Record<string, unknown>): unknown;
-  recordException?(error: unknown): void;
-  setStatus?(status: { code: number; message?: string }): unknown;
-  end(): void;
-}
-
-export interface WrpcTracer {
-  startSpan?(name: string, options?: unknown): WrpcSpan;
-  startActiveSpan?<T>(name: string, options: unknown, fn: (span: WrpcSpan) => T): T;
-}
-
-export interface WrpcCounter {
-  add(value: number, attributes?: Record<string, unknown>): void;
-}
-
-export interface WrpcHistogram {
-  record(value: number, attributes?: Record<string, unknown>): void;
-}
-
-export interface WrpcMeter {
-  createCounter(name: string, options?: unknown): WrpcCounter;
-  createHistogram(name: string, options?: unknown): WrpcHistogram;
-  createUpDownCounter?(name: string, options?: unknown): WrpcCounter;
-}
-
-export interface WrpcPropagation {
-  inject(context: unknown, carrier: object, setter: unknown): void;
-  extract(context: unknown, carrier: object, getter: unknown): unknown;
-}
-
-export interface WrpcContextApi {
-  active(): unknown;
-}
-
-export interface WrpcTelemetryApi {
-  trace?: { getTracer(name: string, version?: string): WrpcTracer };
-  metrics?: { getMeter(name: string, version?: string): WrpcMeter };
-  propagation?: WrpcPropagation;
-  context?: WrpcContextApi;
-}
-
-/**
- * Two injection modes. `{ api }` — the `@opentelemetry/api` module, from
- * which wrpc derives its own tracer and meter so spans carry the
- * `@alexify/wrpc` instrumentation scope. `{ tracer, meter }` — pre-built
- * instances; either alone is a supported configuration.
- *
- * With neither, telemetry is off and every recording path is a no-op.
- */
-export interface WrpcTelemetryOptions {
-  api?: WrpcTelemetryApi;
-  tracer?: WrpcTracer;
-  meter?: WrpcMeter;
-  /**
-   * Default true. When false, the peer address is left off spans. A session
-   * token is never recorded at any setting — that is a credential, not an
-   * identity, and the two do not share a switch.
-   */
-  includeIdentity?: boolean;
-  /**
-   * Trace context is written to, and read from, the packet's `tp`/`ts`
-   * fields through these. `api` supplies both; pass them explicitly when
-   * injecting a bare `tracer`/`meter`. Without a propagator wrpc emits local
-   * spans only — it will not hand-roll the W3C format.
-   */
-  propagation?: WrpcPropagation;
-  context?: WrpcContextApi;
-  /**
-   * Default true, as in gRPC and HTTP instrumentation: an inbound
-   * `traceparent` becomes the server span's parent. Set false when peers are
-   * untrusted — a hostile client can otherwise forge trace ids.
-   */
-  trustRemoteContext?: boolean;
-}
-
 export interface RpcServerOptions {
   router: Router;
   sessions?: SessionsOptions;
@@ -1023,10 +566,23 @@ export interface RpcServerOptions {
   backplane?: Backplane | null;
   /** Identifies this instance on the backplane; a uuid by default. */
   instanceId?: string;
+  /**
+   * Context uuids, server-side stream ids and synthetic REST packet ids;
+   * uuid v4 unless the app brings its own. Correlation ids, not secrets.
+   */
+  generateId?: () => string;
+  /**
+   * system/introspect exposure: `true` (default) mounts it public,
+   * `'session'` gates it behind a session, `false` leaves the API surface
+   * unadvertised. A router defining its own introspect always wins.
+   */
+  introspection?: boolean | 'session';
   /** Packets accepted in one batch frame; default 128. */
   maxBatch?: number;
   /** Concurrent subscriptions per client; default 256. */
   maxSubscriptions?: number;
+  /** In-flight calls per client; past it a call answers 429. Default 1000. */
+  maxCalls?: number;
   /** SSE channel options, or `false` to remove the events endpoint. */
   sse?: import('./sse.js').SseOptions | false;
 }
@@ -1056,6 +612,14 @@ export declare class RpcServer extends Emitter {
   attachPort(port: MessagePort): Client;
   handleHttpCall(call: HttpCall): Promise<void>;
   matchPath(pathname: string): { mode: 'packet' | 'rest'; rest?: string } | null;
+  /** True while drain() runs: new calls are refused with 503. */
+  readonly draining: boolean;
+  /**
+   * The graceful half of a shutdown: refuse new calls (503) and wait up to
+   * `timeout` ms for in-flight ones to settle. Subscriptions are not waited
+   * for — a live feed has no natural end. Resolves early when idle.
+   */
+  drain(timeout?: number): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -1070,6 +634,8 @@ export interface ServerOptions extends RpcServerOptions {
   timeouts?: { bind?: number };
   retry?: number;
   engine?: Engine;
+  /** Request-body cap in bytes for the built-in HTTP path. Default 10 MiB. */
+  maxBodySize?: number;
   /** Options forwarded to the engine's attach() (path, protocols, ...). */
   ws?: Omit<EngineAttachOptions, 'server'>;
 }
@@ -1089,7 +655,11 @@ export class Server extends Emitter {
   except(...clients: Array<Client>): Broadcast;
   broadcast(name: string, data?: unknown): number;
   listen(): Promise<Server>;
-  close(): Promise<void>;
+  /**
+   * With `drain` (ms): stop intake, let in-flight calls settle up to the
+   * window, send every peer 1001 "going away", then tear down what remains.
+   */
+  close(options?: { drain?: number }): Promise<void>;
 }
 
 // ---------------------------------------------------------------------------
@@ -1151,73 +721,3 @@ export function buildHeaders(
   origin?: string,
 ): Record<string, string>;
 
-export interface CallPacket {
-  type: 'call';
-  id: string;
-  method: string;
-  args: object;
-}
-
-export interface StreamPacket {
-  type: 'stream';
-  id: string;
-  name?: string;
-  size?: number;
-  status?: 'end' | 'terminate';
-}
-
-/** Fire-and-forget, both directions; `name` is 'unit/event'. */
-export interface EventPacket {
-  type: 'event';
-  name: string;
-  data?: unknown;
-}
-
-export interface SubscribePacket {
-  type: 'subscribe';
-  id: string;
-  method: string;
-  args?: object;
-  lastEventId?: string;
-}
-
-/** One value of a subscription; `eventId` only for tracked values. */
-export interface DataPacket {
-  type: 'data';
-  id: string;
-  eventId?: string;
-  data?: unknown;
-}
-
-/** A subscription's terminal packet — refusals included. */
-export interface EndPacket {
-  type: 'end';
-  id: string;
-  error?: { message: string; code: number };
-}
-
-export interface UnsubscribePacket {
-  type: 'unsubscribe';
-  id: string;
-}
-
-export interface CancelPacket {
-  type: 'cancel';
-  id: string;
-}
-
-/** A JSON array of packets: several requests, or several answers, in one frame. */
-export type BatchFrame = Array<
-  CallPacket | SubscribePacket | UnsubscribePacket | CancelPacket | StreamPacket | EventPacket
->;
-
-/** App-level heartbeat; see HeartbeatOptions. */
-export interface HeartbeatPacket {
-  type: 'ping' | 'pong';
-}
-
-export function chunkEncode(id: string, payload: Uint8Array): Uint8Array;
-export function chunkDecode(chunk: Uint8Array): {
-  id: string;
-  payload: Uint8Array;
-};

@@ -71,6 +71,9 @@ export interface EngineAttachOptions {
   perMessageDeflate?: boolean | PerMessageDeflateOptions;
   pingInterval?: number;
   maxBuffer?: number;
+  /** Inflated-size cap for permessage-deflate messages. Default 16 MiB. */
+  maxPayload?: number;
+  /** Outbound-buffer cap; defaults to maxBuffer, 0 = unbounded. */
   maxBackpressure?: number;
   fragmentThreshold?: number;
   closeTimeout?: number;
@@ -109,6 +112,7 @@ export interface EngineConnectionSource extends EventEmitter {
 export interface Engine {
   name: string;
   standalone?: boolean;
+  /** @experimental Beyond the documented WrpcSocket contract; may change in a minor. */
   capabilities: EngineCapabilities;
   attach(options: EngineAttachOptions): EngineConnectionSource;
   listen?(options: { host?: string; port?: number }): Promise<unknown>;

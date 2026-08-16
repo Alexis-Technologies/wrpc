@@ -102,6 +102,25 @@ Three checks are deliberately **not** in CI — run them by hand:
   (`tests/scaling/redis.test.js`); this is only useful when you want to check
   a live server, and the file skips itself without `REDIS_URL`.
 
+## Stability and deprecation
+
+The published surface is stable under semver, with two carve-outs marked
+`@experimental` in the `.d.ts` files:
+
+- the **telemetry** writer shapes and metric set (`telemetry` option) — the
+  signals will keep improving in minors;
+- the **engine port** internals beyond the documented `WrpcSocket` contract
+  (`capabilities` in particular).
+
+An `@experimental` API may change in a minor release, with the change
+described in the CHANGELOG. Everything else follows the usual rule: removal
+or breaking change of a stable API needs (1) a deprecation note in the
+CHANGELOG and the docs for at least one minor release, and (2) a major
+version to actually remove it. The wire protocol has its own, stronger
+promise — see [protocol.md](./docs/reference/protocol.md#stability): packet
+shapes never break inside a major, and the `wrpc.v1` subprotocol names the
+revision on the wire.
+
 ## Release checklist
 
 Releases are **manual**. Nothing in the tooling bumps a version, tags, or

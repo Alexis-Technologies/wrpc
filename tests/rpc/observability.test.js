@@ -86,14 +86,17 @@ test('the logger reaches every component of a live server', async (t) => {
 });
 
 test('component children are bound where the plan says they are', async (t) => {
-  await t.test('the rooms child labels a backplane serialization failure', async () => {
+  await t.test('the rooms child labels a broadcast serialization failure', async () => {
     const { logger, entries } = collector();
     const rpc = new RpcServer({ router: createRouter(), logger, backplane: new MemoryBackplane() });
     const circular = {};
     circular.self = circular;
-    rpc.broadcast('ping', circular);
-    const failure = entries.find((entry) => entry.event === 'backplane.serialize');
-    assert.ok(failure, 'the non-serializable envelope was reported');
+    // The fan-out serializes ONCE now, so the failure surfaces there — before
+    // local delivery and before the backplane publish — and is reported, not
+    // thrown at the broadcaster.
+    assert.strictEqual(rpc.broadcast('ping', circular), 0);
+    const failure = entries.find((entry) => entry.event === 'broadcast.serialize');
+    assert.ok(failure, 'the non-serializable payload was reported');
     assert.strictEqual(failure.component, 'rooms');
     assert.ok(failure.err instanceof Error);
   });
@@ -138,7 +141,12 @@ test('a logger that throws never breaks a call', async (t) => {
   const client = await WrpcClient.connect(url, { reconnect: false });
   await client.load('probe');
   assert.deepStrictEqual(await client.api.probe.echo({ ok: 1 }), { ok: 1 });
-  await assert.rejects(client.api.probe.boom(), /handler exploded/);
+  // An uncaught handler error is a 500 whose message stays in the server
+  // log: the peer sees the status line, not the exception text.
+  await assert.rejects(
+    client.api.probe.boom(),
+    (error) => error.code === 500 && /Internal Server Error/.test(error.message),
+  );
   await client.close();
 });
 

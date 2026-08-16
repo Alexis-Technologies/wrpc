@@ -58,7 +58,10 @@ export interface WebsocketServerOptions {
   server?: HttpServer | HttpsServer;
   pingInterval?: number;
   maxBuffer?: number;
+  /** Inflated-size cap for permessage-deflate messages. Default 16 MiB. */
+  maxPayload?: number;
   closeTimeout?: number;
+  /** Outbound-buffer cap; past it the connection is terminated. Defaults to maxBuffer; 0 = unbounded. */
   maxBackpressure?: number;
   fragmentThreshold?: number;
   path?: string;
@@ -95,7 +98,10 @@ export declare class WebsocketServer extends EventEmitter {
 export interface ConnectionOptions {
   isClient?: boolean;
   maxBuffer?: number;
+  /** Inflated-size cap for permessage-deflate messages. Default 16 MiB. */
+  maxPayload?: number;
   closeTimeout?: number;
+  /** Outbound-buffer cap; past it the connection is terminated. Defaults to maxBuffer; 0 = unbounded. */
   maxBackpressure?: number;
   fragmentThreshold?: number;
   protocol?: string;

@@ -5,8 +5,7 @@ const http = require('node:http');
 const { RpcServer, rpcOptions } = require('../rpc/core.js');
 const { createNodeEngine, isEngine } = require('../engine/index.js');
 const { createUwsEngine } = require('./uws.js');
-const { isOriginAllowed } = require('../transport.js');
-const { normalizeBody, eachHeader, nodeStream } = require('./common.js');
+const { normalizeBody, eachHeader, nodeStream, createUpgradeGate } = require('./common.js');
 
 // Fastify plugin. One plugin, two backends, picked by looking at what
 // fastify is actually running on:
@@ -18,8 +17,6 @@ const { normalizeBody, eachHeader, nodeStream } = require('./common.js');
 //
 // HTTP calls go through fastify's own routes, so the app's hooks, auth and
 // error handling run BEFORE wrpc sees the call ("upgrade-through-router").
-
-const getPathname = (url) => (url ? url.split('?')[0] : '/');
 
 // fastify-uws keeps its uWebSockets.js app on a private symbol. Reaching for
 // it by description is deliberate: the package exports no accessor, and the
@@ -136,18 +133,10 @@ const wrpcFastify = async (fastify, options = {}) => {
 
   // ---- WebSocket: engine attach ------------------------------------------
 
-  const verifyUpgrade = ({ req }) => {
-    if (ws.path === undefined) {
-      const pathname = getPathname(req.url);
-      if (pathname !== '/' && rpc.matchPath(pathname) === null) return false;
-    }
-    return isOriginAllowed(cors, req.headers.origin);
-  };
-
   const source = engine.attach({
     ...(engine.standalone ? {} : { server: fastify.server }),
     ...ws,
-    verifyClient: ws.verifyClient ?? verifyUpgrade,
+    verifyClient: createUpgradeGate({ rpc, cors, ws }),
   });
   source.on('connection', (socket, req) => {
     rpc.attachSocket(socket, {

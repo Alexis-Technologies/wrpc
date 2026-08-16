@@ -42,10 +42,18 @@ with every adapter; the network half belongs to the shell.
 | `cors` | `null` | See [CORS](#cors) below. |
 | `backplane` | `null` | Carries room events between instances — see [Scaling](./scaling). |
 | `instanceId` | a uuid | Identifies this instance on the backplane. |
+| `generateId` | uuid v4 | Context uuids, server stream ids, REST packet ids — bring your own (cuid/ulid). |
+| `introspection` | `true` | `system/introspect` exposure: `true` public, `'session'` gated, `false` off. |
 | `maxBatch` | `128` | Packets accepted in one [batch frame](./client#batching). |
 | `maxSubscriptions` | `256` | Concurrent [subscriptions](./subscriptions) per client. |
+| `maxCalls` | `1000` | In-flight calls per client; past it a call answers `429`. |
 | `sse` | `{}` | [SSE](./sse) channel options, or `false` to remove the endpoint. |
-| `console` | `globalThis.console` | Where the server logs. Anything Console-shaped. |
+| `logger` | `globalThis.console` | Where the server logs — a Console or a pino-shaped logger; `false` silences it. See [Logging](./logging). |
+| `telemetry` | `null` | OTel traces and metrics — see [Telemetry](./telemetry). |
+
+Lifecycle [hooks](./hooks) are not a server option: they belong to the
+router (`defineRouter(units, { hooks })`), which is what every shell and
+adapter shares.
 
 ### Network options
 
@@ -57,6 +65,7 @@ with every adapter; the network half belongs to the shell.
 | `nagle` | `true` | `false` sets `noDelay` on the listener. |
 | `engine` | `createNodeEngine()` | The WebSocket [engine](../reference/engine). |
 | `ws` | `{}` | Forwarded to the engine's `attach()` — `path`, `protocols`, `verifyClient`, `perMessageDeflate`, … |
+| `maxBodySize` | 10 MiB | Request-body cap in bytes for the built-in HTTP path. |
 | `retry` | `3` | `EADDRINUSE` bind attempts before giving up. |
 | `timeouts.bind` | `2000` | Milliseconds between those attempts. |
 

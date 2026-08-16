@@ -8,15 +8,18 @@ const { RoomRegistry, Broadcast } = require('../../src/rpc/rooms.js');
 const noop = () => {};
 const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
 
-// Rooms only ever touch `persistent` and `sendEvent` on a client, which is
-// what makes the registry testable without a socket underneath.
+// Rooms only ever touch `persistent` and `sendRaw` on a client (the fan-out
+// serializes once and hands every recipient the same text), which is what
+// makes the registry testable without a socket underneath.
 const fakeClient = (name, { persistent = true, broken = false } = {}) => ({
   name,
   persistent,
   received: [],
-  sendEvent(event, data) {
+  sendRaw(text) {
     if (broken) throw new Error(`socket ${name} is gone`);
-    this.received.push([event, data]);
+    const packet = JSON.parse(text);
+    this.received.push([packet.name, packet.data]);
+    return true;
   },
 });
 

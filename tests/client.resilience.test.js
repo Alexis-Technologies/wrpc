@@ -391,3 +391,155 @@ test('events: one that reaches no listener surfaces as unhandled-event', async (
     assert.strictEqual(unhandled, 0);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Phase 4: the connection lifecycle settles everything deterministically.
+
+test('in-flight calls are rejected with 503 the moment the connection dies', async (t) => {
+  const definition = router({
+    slow: procedure({ access: 'public', handler: async () => timers.setTimeout(5000, 'late') }),
+  });
+  const { server, port } = await createServer(definition);
+  t.after(() => server.close());
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    reconnect: false,
+    callTimeout: 30_000,
+  });
+  t.after(() => void client.close());
+  await client.load('test');
+
+  const started = Date.now();
+  const pending = client.api.test.slow();
+  await timers.setTimeout(20);
+  // The server terminates this peer: the pending call must settle NOW, not
+  // in 30 seconds.
+  for (const peer of server.clients) peer.destroy();
+  for (const connection of server.wsServer.connections) connection.terminate();
+  const error = await pending.then(
+    () => null,
+    (failure) => failure,
+  );
+  assert.ok(error, 'the call must reject');
+  assert.strictEqual(error.code, 503);
+  assert.match(error.message, /Connection closed/);
+  assert.ok(Date.now() - started < 5000, 'settled by the disconnect, not by the timeout');
+});
+
+test('an explicit close() rejects in-flight calls too', async (t) => {
+  const definition = router({
+    slow: procedure({ access: 'public', handler: async () => timers.setTimeout(5000, 'late') }),
+  });
+  const { server, port } = await createServer(definition);
+  t.after(() => server.close());
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    reconnect: false,
+    callTimeout: 30_000,
+  });
+  await client.load('test');
+  const pending = client.api.test.slow();
+  await timers.setTimeout(20);
+  client.close();
+  await assert.rejects(pending, (error) => error.code === 503);
+});
+
+test('a failed load() on reconnect does not kill the subscriptions silently', async (t) => {
+  const state = { subscribes: 0 };
+  const definition = defineRouter({
+    feed: {
+      ticks: procedure.subscription({
+        access: 'public',
+        handler: async function* (_context, _args, { signal }) {
+          state.subscribes++;
+          await timers.setTimeout(60_000, undefined, { signal }).catch(() => {});
+        },
+      }),
+    },
+  });
+  const { server, port } = await createServer(definition);
+  t.after(() => server.close());
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    reconnectTimeout: 20,
+    logger: false,
+  });
+  t.after(() => void client.close());
+  await client.load('feed');
+  client.api.feed.ticks.subscribe({}, {});
+  await waitFor(() => state.subscribes === 1, 'the subscription never opened');
+
+  // Force a reconnect. The re-subscribe must happen even though restore also
+  // reloads units — the coupling that used to kill subscriptions is gone.
+  for (const connection of server.wsServer.connections) connection.terminate();
+  await waitFor(() => state.subscribes === 2, 'the subscription was not restored after the reconnect');
+});
+
+test('close({ drain }) lets in-flight calls finish and refuses new ones with 503', async (t) => {
+  const definition = router({
+    slow: procedure({ access: 'public', handler: async () => timers.setTimeout(150, 'done') }),
+  });
+  const { server, port } = await createServer(definition);
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    reconnect: false,
+  });
+  t.after(() => void client.close());
+  await client.load('test');
+
+  const inFlight = client.api.test.slow();
+  await timers.setTimeout(20);
+  const closing = server.close({ drain: 2000 });
+  await timers.setTimeout(20);
+  // The drain window refuses NEW work...
+  await assert.rejects(client.api.test.hello(), (error) => error.code === 503);
+  // ...but finishes what it started.
+  assert.strictEqual(await inFlight, 'done');
+  await closing;
+});
+
+test('the queue is abort-aware and the timeout covers the queue wait', async (t) => {
+  const definition = router({
+    queued: procedure({
+      access: 'public',
+      timeout: 120,
+      queue: { concurrency: 1, size: 10 },
+      handler: async () => timers.setTimeout(80, 'ran'),
+    }),
+  });
+  const { server, port } = await createServer(definition);
+  t.after(() => server.close());
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, { heartbeat: false, reconnect: false });
+  t.after(() => void client.close());
+  await client.load('test');
+
+  // First occupies the slot (~80ms); second waits ~80ms in the queue and
+  // has ~40ms of budget left — its handler alone needs 80 more, so the
+  // DEADLINE (not a fresh per-handler timeout) must fail it with 408.
+  const first = client.api.test.queued();
+  const second = client.api.test.queued();
+  assert.strictEqual(await first, 'ran');
+  await assert.rejects(second, (error) => error.code === 408);
+});
+
+test('an HTTP transport failure settles the exact calls it carried', async (t) => {
+  // A server that answers 502 with an HTML body — the proxy failure shape
+  // wrpc packets never travel in. Without the synthesized answers the
+  // introspect call under load() would hang out its whole callTimeout.
+  const proxy = http.createServer((req, res) => {
+    res.writeHead(502, { 'Content-Type': 'text/html' });
+    res.end('<html>Bad Gateway</html>');
+  });
+  await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve));
+  t.after(() => proxy.close());
+  const { port } = proxy.address();
+
+  const client = await WrpcClient.connect(`http://127.0.0.1:${port}/api`, {
+    reconnect: false,
+    callTimeout: 30_000,
+  });
+  t.after(() => void client.close());
+  const started = Date.now();
+  await assert.rejects(client.load('test'), (error) => error.code === 502);
+  assert.ok(Date.now() - started < 5000, 'settled by the synthesized answer, not the timeout');
+});

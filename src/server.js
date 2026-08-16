@@ -5,15 +5,12 @@ const https = require('node:https');
 
 const { Emitter } = require('./utils.js');
 const { RpcServer, rpcOptions } = require('./rpc/core.js');
-const { isOriginAllowed } = require('./transport.js');
 const { createNodeEngine, isEngine } = require('./engine/index.js');
-const { receiveBody, nodeStream } = require('./adapters/common.js');
+const { receiveBody, nodeStream, createUpgradeGate, respondBodyError, MAX_BODY_SIZE } = require('./adapters/common.js');
 const { createLoggerWriter } = require('./logging.js');
 
 const DEFAULT_LISTEN_RETRY = 3;
 const DEFAULT_BIND_TIMEOUT = 2000;
-
-const getPathname = (url) => (url ? url.split('?')[0] : '/');
 
 // Batteries-included shell over the engine-agnostic RpcServer core:
 // creates the node http(s) server, attaches a WebSocket engine (the
@@ -75,14 +72,6 @@ class Server extends Emitter {
     return this.rpc.broadcast(name, data);
   }
 
-  #upgradeGate(wsOptions, cors) {
-    // With an explicit ws.path the engine already gates the pathname, and
-    // the default RPC-path gate would 403 every upgrade to a custom path —
-    // keep only the origin check in that case.
-    const checkPath = wsOptions.path === undefined;
-    return wsOptions.verifyClient ?? (({ req }) => this.#verifyUpgrade(req, cors, checkPath));
-  }
-
   #onConnection(socket, req) {
     this.rpc.attachSocket(socket, {
       headers: req.headers,
@@ -95,7 +84,7 @@ class Server extends Emitter {
   #initStandalone(wsOptions, cors) {
     this.wsServer = this.#engine.attach({
       ...wsOptions,
-      verifyClient: this.#upgradeGate(wsOptions, cors),
+      verifyClient: createUpgradeGate({ rpc: this.rpc, cors, ws: wsOptions }),
       onHttpCall: (call) => this.rpc.handleHttpCall(call),
     });
     this.wsServer.on('connection', (socket, req) => {
@@ -116,7 +105,7 @@ class Server extends Emitter {
       this.#handleHttpRequest(req, res);
     });
 
-    const verifyClient = this.#upgradeGate(wsOptions, cors);
+    const verifyClient = createUpgradeGate({ rpc: this.rpc, cors, ws: wsOptions });
     this.wsServer = this.#engine.attach({ server: this.httpServer, ...wsOptions, verifyClient });
     this.wsServer.on('connection', (socket, req) => {
       this.#onConnection(socket, req);
@@ -127,17 +116,6 @@ class Server extends Emitter {
     });
   }
 
-  // Default upgrade gate: the RPC paths (plus bare '/') and, when CORS
-  // origins are configured, a matching Origin header.
-  #verifyUpgrade(req, cors, checkPath = true) {
-    if (checkPath) {
-      const pathname = getPathname(req.url);
-      const pathOk = pathname === '/' || this.rpc.matchPath(pathname) !== null;
-      if (!pathOk) return false;
-    }
-    return isOriginAllowed(cors, req.headers.origin);
-  }
-
   async #handleHttpRequest(req, res) {
     const respond = ({ status, headers, body }) => {
       if (res.writableEnded) return;
@@ -146,14 +124,9 @@ class Server extends Emitter {
     };
     let body = null;
     try {
-      body = await receiveBody(req);
+      body = await receiveBody(req, this.#options.maxBodySize ?? MAX_BODY_SIZE);
     } catch (error) {
-      const packet = { type: 'callback', id: '', error: { message: error.message, code: 400 } };
-      return void respond({
-        status: 400,
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify(packet),
-      });
+      return void respondBodyError(respond, error);
     }
     await this.rpc.handleHttpCall({
       method: req.method,
@@ -214,19 +187,36 @@ class Server extends Emitter {
     });
   }
 
-  async close() {
+  /**
+   * Shuts the server down. With `drain` (ms) the shutdown is graceful:
+   * intake stops first (new connections are refused, new calls answer 503),
+   * in-flight calls get up to `drain` ms to settle, then every peer gets a
+   * 1001 "going away" close frame, and only what remains is torn down hard.
+   * Without it the same sequence runs with a zero-length drain window.
+   */
+  async close(options = {}) {
+    const { drain = 0 } = options;
     if (!this.httpServer) {
-      await this.rpc.close();
-      return void this.#engine.close();
+      await this.rpc.drain(drain);
+      // Standalone engines own the whole stack: their close() both stops
+      // the listener and says goodbye to the peers.
+      this.#engine.close();
+      return void (await this.rpc.close());
     }
+    // Stop intake first, so a load balancer's next health check fails while
+    // the in-flight work is still being finished.
     const closed = new Promise((resolve) => {
       this.httpServer.close((error) => {
         if (error) this.#log.error({ err: error, event: 'close' });
         resolve();
       });
     });
-    await this.rpc.close();
+    await this.rpc.drain(drain);
+    // The engine's close sends 1001 to every open socket BEFORE the core
+    // evicts the clients — the reverse order used to terminate everyone and
+    // then say goodbye to nobody.
     this.#engine.close();
+    await this.rpc.close();
     this.httpServer.closeAllConnections();
     await closed;
   }

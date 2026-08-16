@@ -4,10 +4,10 @@ const http = require('node:http');
 
 const { Emitter, jsonParse } = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
-const { ServerTransport, buildHeaders, parseCookies } = require('../transport.js');
+const { ServerTransport, buildHeaders, isOriginAllowed, parseCookies } = require('../transport.js');
 const { WrpcWritable } = require('../streams.js');
 const { SessionManager } = require('./sessions.js');
-const { defineRouter, procedure } = require('./router.js');
+const { defineRouter, procedure, runHooksSafe } = require('./router.js');
 const { RoomRegistry, Broadcast, RoomsBackplane } = require('./rooms.js');
 const { SseChannels, CHANNEL_HEADER } = require('../sse/server.js');
 const { isBackplane } = require('../scaling/index.js');
@@ -18,17 +18,30 @@ const { createServerTelemetry } = require('../telemetry/server.js');
 // One peer holding thousands of open generators is a denial of service the
 // application never opted into; the cap is generous but present.
 const DEFAULT_MAX_SUBSCRIPTIONS = 256;
+// Same reasoning for in-flight calls: each holds a controller, a context and
+// possibly a queue slot until it settles.
+const DEFAULT_MAX_CALLS = 1000;
 
 const ServerHttpTransport = ServerTransport.transport.http;
 const ServerWsTransport = ServerTransport.transport.ws;
 const ServerEventTransport = ServerTransport.transport.event;
+
+// A capability refusal ("this transport cannot carry that") is part of the
+// protocol conversation, not a server internal: 400-coded and exposed so
+// the peer reads the actual reason instead of a masked 500.
+const refusal = (message) => {
+  const error = new Error(message);
+  error.code = 400;
+  error.expose = true;
+  return error;
+};
 
 class Context {
   #log = null;
 
   constructor(client, signal = null) {
     this.client = client;
-    this.uuid = generateUUID();
+    this.uuid = client.generateId();
     this.state = {};
     // Aborted when the caller cancels, unsubscribes, or disconnects. A
     // handler that awaits anything long-lived should pass it along; one
@@ -62,8 +75,18 @@ class Client extends Emitter {
   #log = null;
   #otel = null;
 
-  constructor(transport, { sessions, rooms, server, log, otel, maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS } = {}) {
+  constructor(transport, options = {}) {
     super();
+    const {
+      sessions,
+      rooms,
+      server,
+      log,
+      otel,
+      maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
+      maxCalls = DEFAULT_MAX_CALLS,
+      generateId,
+    } = options;
     this.#transport = transport;
     this.#sessions = sessions;
     // A Client built outside an RpcServer still has working rooms; it just
@@ -82,6 +105,10 @@ class Client extends Emitter {
     this.calls = new Map();
     this.subscriptions = new Map();
     this.maxSubscriptions = maxSubscriptions;
+    this.maxCalls = maxCalls;
+    // Context uuids and server-side stream ids; uuid v4 unless the app
+    // brings its own (cuid/ulid/a test counter) — see RpcServerOptions.
+    this.generateId = typeof generateId === 'function' ? generateId : generateUUID;
   }
 
   error(code, { id = '', error = null } = {}) {
@@ -117,9 +144,12 @@ class Client extends Emitter {
   send(obj, options = {}) {
     const { code, method } = options;
     const flushed = this.#transport.send(obj, code);
+    // Debug on purpose: one line per successful call is a firehose. A
+    // console logger drops debug outright; a structured logger's own level
+    // decides. Failures still log at error, unconditionally.
     const isSuccessCallback = obj.type === 'callback' && !obj.error;
     if (isSuccessCallback) {
-      this.#log.log({ event: 'call.ok', method, id: obj.id }, `${this.source}\tCALL\t${method}\tOK`);
+      this.#log.debug({ event: 'call.ok', method, id: obj.id }, `${this.source}\tCALL\t${method}\tOK`);
     }
     return flushed;
   }
@@ -161,18 +191,29 @@ class Client extends Emitter {
     return new Context(this, signal);
   }
 
-  emit(name, data) {
-    if (name === 'close') return super.emit(name, data);
-    this.sendEvent(name, data);
-    return Promise.resolve();
-  }
+  // NOTE: `emit` is the inherited LOCAL Emitter emit — `client.on('x', fn)`
+  // works, and Client is substitutable for the Emitter it extends. The wire
+  // send has its own name and always had it: `sendEvent`.
 
   sendEvent(name, data) {
     const packet = { type: 'event', name, data };
     if (!this.#transport.connection) {
-      throw new Error(`Can't send wrpc event to http transport`);
+      throw refusal(`Can't send wrpc event to http transport`);
     }
     this.send(packet);
+  }
+
+  /**
+   * Writes an ALREADY-serialized packet. The fan-out seam: a broadcast to N
+   * clients stringifies once and hands every recipient the same text,
+   * instead of paying JSON.stringify per client. Returns the transport's
+   * backpressure signal, like send().
+   */
+  sendRaw(text) {
+    if (!this.#transport.connection) {
+      throw refusal(`Can't send wrpc event to http transport`);
+    }
+    return this.#transport.write(text);
   }
 
   // ---------------------------------------------------------------------
@@ -198,9 +239,9 @@ class Client extends Emitter {
 
   getStream(id) {
     if (!this.#transport.connection) {
-      throw new Error(`Can't receive stream from http transport`);
+      throw refusal(`Can't receive stream from http transport`);
     }
-    if (!this.binary) throw new Error(`Can't receive stream over a text-only transport`);
+    if (!this.binary) throw refusal(`Can't receive stream over a text-only transport`);
     const stream = this.streams.get(id);
     if (stream) return stream;
     throw new Error(`Stream ${id} is not initialized`);
@@ -208,12 +249,15 @@ class Client extends Emitter {
 
   createStream(name, size) {
     if (!this.#transport.connection) {
-      throw new Error(`Can't send wrpc streams to http transport`);
+      throw refusal(`Can't send wrpc streams to http transport`);
     }
-    if (!this.binary) throw new Error(`Can't send wrpc streams over a text-only transport`);
+    if (!this.binary) throw refusal(`Can't send wrpc streams over a text-only transport`);
     if (!name) throw new Error('Stream name is not provided');
     if (!size) throw new Error('Stream size is not provided');
-    const id = generateUUID();
+    const id = this.generateId();
+    if (typeof id !== 'string' || id.length === 0 || id.length > 255) {
+      throw new TypeError('createStream: generateId must return a string of at most 255 characters');
+    }
     const stream = new WrpcWritable(id, name, size, this.#transport);
     this.streams.set(id, stream);
     return stream;
@@ -269,7 +313,11 @@ class Client extends Emitter {
     for (const controller of this.subscriptions.values()) controller.abort(disconnected);
     this.calls.clear();
     this.subscriptions.clear();
-    this.emit('close');
+    // Contained: destroy() runs from the transport's close handler, where a
+    // throwing app listener would otherwise be an unhandled rejection.
+    Promise.resolve(this.emit('close')).catch((error) => {
+      log.error({ err: error, event: 'listener.close' });
+    });
     for (const stream of this.streams.values()) {
       if (typeof stream.terminate !== 'function') continue;
       Promise.resolve(stream.terminate()).catch((error) => {
@@ -294,8 +342,11 @@ const RPC_OPTION_KEYS = [
   'telemetry',
   'backplane',
   'instanceId',
+  'generateId',
+  'introspection',
   'maxBatch',
   'maxSubscriptions',
+  'maxCalls',
   'sse',
 ];
 
@@ -331,7 +382,9 @@ class RpcServer extends Emitter {
   #sseLog;
   #otel;
   #limits;
+  #generateId;
   #sse = null;
+  #draining = false;
   #clients = new Set();
 
   constructor(options = {}) {
@@ -345,8 +398,11 @@ class RpcServer extends Emitter {
       telemetry = null,
       backplane = null,
       instanceId = generateUUID(),
+      generateId = null,
+      introspection = true,
       maxBatch = DEFAULT_MAX_BATCH,
       maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
+      maxCalls = DEFAULT_MAX_CALLS,
       sse = {},
     } = options;
     if (!router || typeof router.getProcedure !== 'function') {
@@ -365,8 +421,9 @@ class RpcServer extends Emitter {
     this.#cors = cors;
     this.#basePath = normalizeBasePath(basePath);
     this.#instance = instanceId;
-    this.#limits = { maxBatch, maxSubscriptions };
-    this.#router = this.#withIntrospection(router);
+    this.#generateId = typeof generateId === 'function' ? generateId : generateUUID;
+    this.#limits = { maxBatch, maxSubscriptions, maxCalls };
+    this.#router = this.#withIntrospection(router, introspection);
     this.#initRooms(backplane);
     // A channel's client is built from the GET that opened the stream, so it
     // restores the session from that request's cookie the way attachSocket
@@ -377,7 +434,12 @@ class RpcServer extends Emitter {
       client.sessionReady = this.#restoreFromCookie(client, headers);
       return client;
     };
-    this.#sse = sse === false ? null : new SseChannels({ ...sse, log: this.#sseLog, otel: this.#otel, addClient });
+    // The identity a request presents, bound to a channel at creation and
+    // required again on every re-attach and channel POST — the id alone
+    // must never be enough to act as the channel's session.
+    const channelKey = (headers) => this.#requestKey(headers);
+    this.#sse =
+      sse === false ? null : new SseChannels({ ...sse, log: this.#sseLog, otel: this.#otel, addClient, channelKey });
   }
 
   #initRooms(backplane) {
@@ -454,12 +516,17 @@ class RpcServer extends Emitter {
     return this.#target().emit(name, data);
   }
 
-  #withIntrospection(router) {
+  // `mode`: true mounts system/introspect as public (the default the typed
+  // client and the codegen CLI rely on), 'session' gates it behind a
+  // session, false leaves the API surface unadvertised entirely. A router
+  // that already defines its own introspect always wins.
+  #withIntrospection(router, mode) {
+    if (mode === false) return router;
     if (router.getProcedure('system', '*', 'introspect')) return router;
     const system = defineRouter({
       system: {
         introspect: procedure({
-          access: 'public',
+          access: mode === 'session' ? 'session' : 'public',
           handler: async (_context, units) => this.#router.introspect(units),
         }),
       },
@@ -475,14 +542,23 @@ class RpcServer extends Emitter {
       log: this.#log,
       otel: this.#otel,
       maxSubscriptions: this.#limits.maxSubscriptions,
+      maxCalls: this.#limits.maxCalls,
+      generateId: this.#generateId,
     };
     const client = new Client(transport, options);
     this.#clients.add(client);
     this.#otel.recordConnection(1, transport.kind);
+    // Router-level connection lifecycle hooks. Observational and contained:
+    // refusing a connection is verifyClient's job, this is where per-client
+    // state is set up and torn down. Fires for every attached client — the
+    // per-request HTTP ones included.
+    const { onConnect, onDisconnect } = this.#router.connectionHooks;
+    if (onConnect.length > 0) void runHooksSafe(onConnect, client, null, this.#log, 'onConnect');
     transport.once('close', () => {
       client.destroy();
       this.#clients.delete(client);
       this.#otel.recordConnection(-1, transport.kind);
+      if (onDisconnect.length > 0) void runHooksSafe(onDisconnect, client, null, this.#log, 'onDisconnect');
     });
     return client;
   }
@@ -575,10 +651,23 @@ class RpcServer extends Emitter {
     return `${this.#basePath}/events`;
   }
 
+  // The identity an HTTP request presents: its cookie's session token, or
+  // '' when it carries none. What SSE channels are keyed by.
+  #requestKey(headers = {}) {
+    const cookie = headers?.cookie;
+    if (!cookie) return '';
+    return this.#sessions.readToken(parseCookies(cookie)) ?? '';
+  }
+
   // A POST carrying a live channel id belongs to that channel's client, not
   // to a fresh request/response one: that is what lets a subscription opened
   // by a POST deliver its values down the peer's event stream. The POST
   // itself answers 202 — every reply travels on the stream.
+  //
+  // The channel id alone is NOT enough: the POST must also present the
+  // cookie identity the channel was created under, or knowing an id (they
+  // ride in URLs and logs) would be a bearer token for someone else's
+  // session-carrying client.
   //
   // `headers` are the same CORS-bearing response headers every other HTTP
   // answer carries: without them a browser on another origin cannot read
@@ -590,7 +679,13 @@ class RpcServer extends Emitter {
       call.respond({ status, headers: { ...headers, 'Content-Length': body.length }, body });
     };
     if (!channel) {
-      return void respond(404, { type: 'callback', id: '', error: { message: 'Unknown channel', code: 404 } });
+      // 409, matching the events endpoint: "this channel is gone" is the
+      // signal the client recovers from by starting a fresh channel.
+      return void respond(409, { type: 'callback', id: '', error: { message: 'Unknown channel', code: 409 } });
+    }
+    if (!this.#sse.authorized(channel, call.headers)) {
+      const error = { message: 'Channel belongs to another session', code: 403 };
+      return void respond(403, { type: 'callback', id: '', error });
     }
     handleMessage(channel.client, call.body, this.#router, this.#limits);
     call.respond({ status: 202, headers: { ...headers, 'Content-Length': 0 } });
@@ -601,50 +696,75 @@ class RpcServer extends Emitter {
     if (call.method === 'OPTIONS') {
       return void call.respond({ status: 200, headers });
     }
+    // With cors.origins configured, a browser request from a disallowed
+    // origin is refused outright, not merely denied the response headers:
+    // the page could not read the answer either way, but the call itself
+    // would still have RUN — with the cookie session restored — which is
+    // exactly the cross-site request an origin allowlist exists to stop.
+    if (!isOriginAllowed(this.#cors, call.headers?.origin)) {
+      return void new ServerHttpTransport(call, { headers }).error(403);
+    }
     const [pathname, params] = split(call.url ?? '/', '?');
+    const match = this.matchPath(pathname);
     if (this.#sse) {
       if (pathname === this.eventsPath && (call.method ?? 'GET').toUpperCase() === 'GET') {
-        const query = parseParams(params);
-        const channelId = query.channel || call.headers?.[CHANNEL_HEADER] || undefined;
-        const lastEventId = call.headers?.['last-event-id'] ?? query.lastEventId ?? null;
-        return void this.#sse.open(call, { channelId, lastEventId, headers });
+        return void this.#handleSseOpen(call, params, headers);
       }
       const channelId = call.headers?.[CHANNEL_HEADER];
-      if (channelId && call.method === 'POST' && this.matchPath(pathname)?.mode === 'packet') {
+      if (channelId && call.method === 'POST' && match?.mode === 'packet') {
         return void this.#handleChannelPost(call, channelId, headers);
       }
     }
-    const isPacketPost = call.method === 'POST' && this.matchPath(pathname)?.mode === 'packet';
-    const batch = isPacketPost ? this.#batchIds(call.body) : null;
-    const transport = new ServerHttpTransport(call, { headers, batch });
-    const match = this.matchPath(pathname);
-    if (!match) return void transport.error(404);
+    if (!match) {
+      return void new ServerHttpTransport(call, { headers }).error(404);
+    }
+    if (match.mode === 'packet') return this.#handlePacketPost(call, headers);
+    return this.#handleRest(call, match.rest, params, headers);
+  }
 
+  // GET {basePath}/events — opens (or re-attaches) an SSE channel. The id
+  // may arrive by header (preferred — URLs end up in logs) or query param.
+  #handleSseOpen(call, params, headers) {
+    const query = parseParams(params);
+    const channelId = call.headers?.[CHANNEL_HEADER] || query.channel || null;
+    const lastEventId = call.headers?.['last-event-id'] ?? query.lastEventId ?? null;
+    this.#sse.open(call, { channelId, lastEventId, headers });
+  }
+
+  // POST {basePath} — a JSON call packet (or a batch array) in the body.
+  async #handlePacketPost(call, headers) {
+    const batch = call.method === 'POST' ? this.#batchIds(call.body) : null;
+    const transport = new ServerHttpTransport(call, { headers, batch });
+    if (call.method !== 'POST') return void transport.error(403);
     const client = this.#addClient(transport);
     // An aborted or never-answered request must still evict the client:
     // the transport only self-closes when it writes a response.
     if (typeof call.onAbort === 'function') call.onAbort(() => transport.emit('close'));
+    await this.#restoreFromCookie(client, call.headers);
+    return void handleMessage(client, call.body, this.#router, this.#limits);
+  }
 
-    if (match.mode === 'packet') {
-      if (call.method !== 'POST') return void transport.error(403);
-      await this.#restoreFromCookie(client, call.headers);
-      return void handleMessage(client, call.body, this.#router, this.#limits);
-    }
-    // REST mode: a cross-site GET/HEAD carries the SameSite=Lax session
-    // cookie on top-level navigation, so ambient-authority dispatch of
-    // session procedures would be a CSRF hole. Safe methods therefore
-    // run WITHOUT the cookie-restored session (public procedures only)
-    // unless the request proves intent with a same-origin fetch header.
+  // ANY {basePath}/unit/method?args — REST mode, args from query + body.
+  //
+  // A cross-site GET/HEAD carries the SameSite=Lax session cookie on
+  // top-level navigation, so ambient-authority dispatch of session
+  // procedures would be a CSRF hole. Safe methods therefore run WITHOUT the
+  // cookie-restored session (public procedures only) unless the request
+  // proves intent with a same-origin fetch header.
+  async #handleRest(call, rest, params, headers) {
+    const transport = new ServerHttpTransport(call, { headers });
+    const client = this.#addClient(transport);
+    if (typeof call.onAbort === 'function') call.onAbort(() => transport.emit('close'));
     const method = (call.method ?? 'GET').toUpperCase();
     const safeMethod = method === 'GET' || method === 'HEAD';
     if (!safeMethod || this.#isSameOriginFetch(call.headers)) {
       await this.#restoreFromCookie(client, call.headers);
     }
     const parameters = parseParams(params);
-    const [unit, name] = split(match.rest, '/');
+    const [unit, name] = split(rest, '/');
     const body = jsonParse(call.body) || {};
     const args = { ...parameters, ...body };
-    const id = generateUUID();
+    const id = this.#generateId();
     const packet = { type: 'call', id, method: `${unit}/${name}`, args };
     return void handleRpc(client, packet, this.#router);
   }
@@ -655,6 +775,30 @@ class RpcServer extends Emitter {
     const site = headers['sec-fetch-site'];
     if (!site) return true; // curl, server-to-server, older clients
     return site === 'same-origin' || site === 'none';
+  }
+
+  /** True while drain() runs: new calls are refused with 503. */
+  get draining() {
+    return this.#draining;
+  }
+
+  /**
+   * The graceful half of a shutdown: stop taking new calls (they answer
+   * 503) and wait up to `timeout` ms for the in-flight ones to settle.
+   * Subscriptions are deliberately NOT waited for — a live feed has no
+   * natural end; it is ended by the close that follows. Resolves early the
+   * moment nothing is in flight; a 0/absent timeout is a no-op.
+   */
+  async drain(timeout = 0) {
+    if (!(timeout > 0)) return;
+    this.#draining = true;
+    const deadline = Date.now() + timeout;
+    while (Date.now() < deadline) {
+      let busy = 0;
+      for (const client of this.#clients) busy += client.calls.size;
+      if (busy === 0) return;
+      await new Promise((resolve) => setTimeout(resolve, 25));
+    }
   }
 
   async close() {
@@ -669,4 +813,4 @@ class RpcServer extends Emitter {
   }
 }
 
-module.exports = { RpcServer, Client, Context, rpcOptions, DEFAULT_MAX_SUBSCRIPTIONS };
+module.exports = { RpcServer, Client, Context, rpcOptions, DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_CALLS };

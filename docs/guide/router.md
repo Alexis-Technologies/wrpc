@@ -164,7 +164,9 @@ On the wire that is the `method` string: `auth/signIn` or `auth.1/signIn`.
 `'unit.1.2'` is rejected outright rather than silently truncated.
 
 `on` is **reserved** inside a unit — it holds the unit's inbound event
-handlers, so no method may be called `on`:
+handlers, so no method may be called `on`. `hooks` is reserved too: the
+unit's slice of the [lifecycle pipeline](./hooks). Neither is usable as a
+method name:
 
 ```js
 defineRouter({

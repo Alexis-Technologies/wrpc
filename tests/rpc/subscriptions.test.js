@@ -62,19 +62,22 @@ const createServer = async (router, options = {}) => {
 // The primitives, on their own
 
 test('tracked / createEventLog: the replay buffer', async (t) => {
-  const log = createEventLog({ size: 3 });
+  // A fixed epoch pins the ids for the assertions; the default is random
+  // per instance (that is what makes cross-process resume honest).
+  const log = createEventLog({ size: 3, epoch: 'e' });
 
-  await t.test('ids are monotonic and push returns them', () => {
-    assert.strictEqual(log.push('a'), '0');
-    assert.strictEqual(log.push('b'), '1');
-    assert.strictEqual(log.lastEventId, '1');
+  await t.test('ids are monotonic, epoch-stamped, and push returns them', () => {
+    assert.strictEqual(log.push('a'), 'e.0');
+    assert.strictEqual(log.push('b'), 'e.1');
+    assert.strictEqual(log.lastEventId, 'e.1');
+    assert.strictEqual(log.epoch, 'e');
     assert.strictEqual(log.length, 2);
   });
 
   await t.test('since() replays everything after an id, as tracked values', () => {
-    const missed = log.since('0');
-    assert.deepStrictEqual(missed, [tracked('1', 'b')]);
-    assert.deepStrictEqual(log.since('1'), [], 'nothing was missed');
+    const missed = log.since('e.0');
+    assert.deepStrictEqual(missed, [tracked('e.1', 'b')]);
+    assert.deepStrictEqual(log.since('e.1'), [], 'nothing was missed');
   });
 
   await t.test('no lastEventId means nothing to replay', () => {
@@ -85,30 +88,37 @@ test('tracked / createEventLog: the replay buffer', async (t) => {
 
   await t.test('an evicted id still resumes while nothing after it is missing', () => {
     log.push('c');
-    log.push('d'); // evicts 'a' (id 0), leaving 1..3
+    log.push('d'); // evicts 'a' (id e.0), leaving e.1..e.3
     assert.strictEqual(log.length, 3);
-    // The client saw 0; 1, 2 and 3 are all still held, so nothing is missing.
-    assert.deepStrictEqual(log.since('0'), [tracked('1', 'b'), tracked('2', 'c'), tracked('3', 'd')]);
-    assert.deepStrictEqual(log.since('1'), [tracked('2', 'c'), tracked('3', 'd')]);
+    // The client saw e.0; e.1..e.3 are all still held, nothing is missing.
+    assert.deepStrictEqual(log.since('e.0'), [tracked('e.1', 'b'), tracked('e.2', 'c'), tracked('e.3', 'd')]);
+    assert.deepStrictEqual(log.since('e.1'), [tracked('e.2', 'c'), tracked('e.3', 'd')]);
   });
 
   await t.test('a real gap is an honest null, not a truncated history', () => {
-    log.push('e'); // evicts id 1, leaving 2..4
-    assert.strictEqual(log.since('0'), null, 'the caller must know it cannot resume');
-    assert.deepStrictEqual(log.since('2'), [tracked('3', 'd'), tracked('4', 'e')]);
+    log.push('e'); // evicts id e.1, leaving e.2..e.4
+    assert.strictEqual(log.since('e.0'), null, 'the caller must know it cannot resume');
+    assert.deepStrictEqual(log.since('e.2'), [tracked('e.3', 'd'), tracked('e.4', 'e')]);
+  });
+
+  await t.test('a foreign epoch cannot resume — another process minted it', () => {
+    assert.strictEqual(log.since('other.2'), null);
+    assert.strictEqual(log.since('2'), null, 'a pre-epoch numeric id is foreign too');
   });
 
   await t.test('a nonsense id cannot resume either', () => {
     assert.strictEqual(log.since('not-a-number'), null);
+    assert.strictEqual(log.since('e.NaN'), null);
   });
 
   await t.test('an id newer than everything held means nothing was missed', () => {
-    assert.deepStrictEqual(log.since('99'), []);
+    assert.deepStrictEqual(log.since('e.99'), []);
   });
 
-  await t.test('size must be a positive integer', () => {
+  await t.test('size must be a positive integer, epoch must be dot-free', () => {
     assert.throws(() => createEventLog({ size: 0 }), TypeError);
     assert.throws(() => createEventLog({ size: 1.5 }), TypeError);
+    assert.throws(() => createEventLog({ epoch: 'a.b' }), TypeError);
   });
 });
 
@@ -191,7 +201,7 @@ const countdown = defineRouter({
     tracked: procedure.subscription({
       access: 'public',
       handler: async function* (_context, _args, { lastEventId }) {
-        const log = createEventLog({ size: 10 });
+        const log = createEventLog({ size: 10, epoch: 'e' });
         for (const value of ['a', 'b', 'c']) log.push(value);
         const missed = log.since(lastEventId);
         for (const value of missed ?? []) yield value;
@@ -282,14 +292,14 @@ test('subscriptions: the wire lifecycle', async (t) => {
     });
     await within(ended, 'the tracked subscription to end');
     assert.deepStrictEqual(values, ['live']);
-    assert.strictEqual(handle.lastEventId, '3');
+    assert.strictEqual(handle.lastEventId, 'e.3');
     assert.strictEqual(handle.closed, true);
   });
 
   await t.test('lastEventId replays what was missed', async () => {
     const values = [];
     const ended = new Promise((resolve) => {
-      client.api.feed.tracked.subscribe({}, { lastEventId: '0', onData: (d) => values.push(d), onEnd: resolve });
+      client.api.feed.tracked.subscribe({}, { lastEventId: 'e.0', onData: (d) => values.push(d), onEnd: resolve });
     });
     await within(ended, 'the resumed subscription to end');
     assert.deepStrictEqual(values, ['b', 'c', 'live'], 'everything after id 0');
@@ -480,7 +490,7 @@ test('subscriptions: a reconnect resumes from the last eventId', async (t) => {
   // The log lives outside the server, so a restart on the same port is a new
   // process from the client's point of view but the same feed from the
   // application's — exactly the case resume exists for.
-  const log = createEventLog({ size: 50 });
+  const log = createEventLog({ size: 50, epoch: 'e' });
   const live = new Set();
   const router = defineRouter({
     feed: {
@@ -521,7 +531,7 @@ test('subscriptions: a reconnect resumes from the last eventId', async (t) => {
   await waitFor(() => live.size === 1, 'the subscription never opened');
   publish('one');
   await waitFor(() => seen.length === 1, 'the live value never arrived');
-  assert.strictEqual(handle.lastEventId, '0');
+  assert.strictEqual(handle.lastEventId, 'e.0');
 
   // The outage: values published while nobody is connected are what the
   // resume has to fill in.
@@ -536,7 +546,7 @@ test('subscriptions: a reconnect resumes from the last eventId', async (t) => {
   assert.strictEqual(info.subscriptions, 1, 'the reconnect re-opened the subscription');
   await waitFor(() => seen.length === 3, `only ${seen.length} values after the resume`);
   assert.deepStrictEqual(seen, ['one', 'two', 'three'], 'nothing missed, nothing duplicated');
-  assert.strictEqual(handle.lastEventId, '2');
+  assert.strictEqual(handle.lastEventId, 'e.2');
 
   publish('four');
   await waitFor(() => seen.length === 4, 'the resumed subscription is not live');

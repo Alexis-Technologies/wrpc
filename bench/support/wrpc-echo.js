@@ -3,9 +3,6 @@
 const { Server } = require('../../src/server.js');
 const { defineRouter, procedure } = require('../../src/rpc/router.js');
 
-const noop = () => {};
-const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
-
 // `api` is the bench-local shorthand every stack under bench/ shares:
 // { unit: { method: { access?, handler(args, context) } } }. Adapt it onto
 // the real router — procedure() handlers take (context, args), the default
@@ -34,7 +31,11 @@ const createWrpcServer = async (api) => {
     port: 0,
     protocol: 'http',
     timeouts: { bind: 100 },
-    console: quiet,
+    // `logger: false` (the real option — `console` never existed) matters
+    // beyond hygiene: a benchmark that logs a line per call measures the
+    // terminal, and the un-silenced output used to overflow spawnSync's
+    // 1 MiB buffer and kill the whole comparison run.
+    logger: false,
   });
   await server.listen();
   const { port } = server.address();

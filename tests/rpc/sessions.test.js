@@ -306,3 +306,66 @@ test('MemorySessionStore bounds', async (t) => {
     assert.deepStrictEqual(await store.get('t0'), { i: 0 });
   });
 });
+
+test('session state proxy: wire-shaped keys cannot mutate the prototype', async () => {
+  const manager = new SessionManager({ store: capturingStore() }, quiet);
+  const session = manager.create('tok', {});
+  // Built at runtime: the literal member access is what the lint forbids,
+  // and a wire-supplied key is exactly a runtime string.
+  const protoKey = ['__pro', 'to__'].join('');
+  session.state[protoKey] = { polluted: true };
+  assert.strictEqual({}.polluted, undefined, 'Object.prototype must stay untouched');
+  assert.strictEqual(Object.getPrototypeOf(session.state), Object.prototype);
+  assert.strictEqual(session.state[protoKey].polluted, true, 'the value lands as an own property');
+});
+
+test('buildCookie: RFC 6265 grammar is enforced', async (t) => {
+  const { buildCookie } = require('../../src/rpc/sessions.js');
+  const options = { path: '/', httpOnly: true, secure: true, sameSite: 'Lax', maxAge: null };
+
+  await t.test('a clean token passes', () => {
+    assert.match(buildCookie('token', 'abc-123', options), /^token=abc-123; /);
+  });
+
+  await t.test('a token that smuggles attributes is refused', () => {
+    assert.throws(() => buildCookie('token', 'x; Domain=evil.example', options), /forbids/);
+    assert.throws(() => buildCookie('token', 'x\r\nSet-Cookie: y=z', options), /forbids/);
+  });
+
+  await t.test('bad names, paths and sameSite values are refused', () => {
+    assert.throws(() => buildCookie('to ken', 'x', options), /name/);
+    assert.throws(() => buildCookie('token', 'x', { ...options, path: '/; Secure' }), /Path/);
+    assert.throws(() => buildCookie('token', 'x', { ...options, sameSite: 'Sneaky' }), /sameSite/);
+  });
+});
+
+test('MemorySessionStore.touch slides the expiry under active use', async () => {
+  let now = 1000;
+  const store = new MemorySessionStore({ ttl: 100, now: () => now });
+  await store.set('tok', { user: 'ada' });
+  now = 1090; // 10ms before expiry
+  await store.touch('tok');
+  now = 1150; // past the ORIGINAL expiry, inside the touched one
+  assert.deepStrictEqual(await store.get('tok'), { user: 'ada' });
+  now = 1250; // past the touched expiry too
+  assert.strictEqual(await store.get('tok'), null);
+});
+
+test('SessionManager.restore touches the store when it can', async () => {
+  const touched = [];
+  const store = {
+    async get() {
+      return { user: 'ada' };
+    },
+    async set() {},
+    async delete() {},
+    async touch(token) {
+      touched.push(token);
+    },
+  };
+  const manager = new SessionManager({ store }, quiet);
+  const session = await manager.restore('tok');
+  assert.strictEqual(session.state.user, 'ada');
+  await settle();
+  assert.deepStrictEqual(touched, ['tok'], 'restore is active use — the TTL must slide');
+});

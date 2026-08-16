@@ -21,7 +21,7 @@ const createNodeEngine = (engineOptions = {}) => {
     },
     // attachOptions: { server, path, verifyClient, protocols,
     //   handleProtocols, perMessageDeflate, pingInterval, maxBuffer,
-    //   maxBackpressure, fragmentThreshold, closeTimeout }
+    //   maxPayload, maxBackpressure, fragmentThreshold, closeTimeout }
     // Returns an EventEmitter with 'connection'(socket, req) events.
     attach(attachOptions) {
       wss = new WebsocketServer({ ...engineOptions, ...attachOptions });

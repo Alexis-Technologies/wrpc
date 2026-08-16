@@ -210,3 +210,26 @@ test('Connection: RSV1 without negotiated deflate stays a protocol error', () =>
   assert.strictEqual(close.opcode, OPCODES.CLOSE);
   assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.PROTOCOL_ERROR);
 });
+
+test('Connection: a compression bomb is capped by maxPayload, not maxBuffer', () => {
+  const socket = new MockSocket();
+  // A few KB on the wire inflating to ~4 MB; maxPayload of 1 MB must stop
+  // the inflation even though maxBuffer (wire bytes) is far larger.
+  const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE, maxPayload: 1024 * 1024 });
+  const errors = [];
+  const messages = [];
+  conn.on('error', (error) => errors.push(error));
+  conn.on('message', (data) => messages.push(data));
+
+  const bomb = compress(Buffer.alloc(4 * 1024 * 1024, 0x61));
+  assert.ok(bomb.length < 16 * 1024, 'the bomb must be small on the wire');
+  const frame = new Frame(true, OPCODES.TEXT, false, bomb, null, RSV1);
+  frame.maskPayload();
+  socket.emit('data', frame.toBuffer());
+
+  assert.strictEqual(messages.length, 0, 'the inflated payload must never surface');
+  assert.strictEqual(errors.length, 1);
+  const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+  assert.strictEqual(close.opcode, OPCODES.CLOSE);
+  assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.MESSAGE_TOO_BIG);
+});

@@ -63,6 +63,10 @@ await WrpcClient.connect(url, {
 | `transport` | from the URL | `'ws'`, `'http'`, `'sse'`, or anything registered. |
 | `worker` | — | A `ServiceWorker` to proxy through. |
 | `random` | `Math.random` | Jitter source; injectable so tests can pin the schedule. |
+| `generateId` | uuid v4 | Packet/subscription/stream ids — bring your own (cuid/ulid/a test counter). Correlation ids, not secrets; stream ids must stay within 255 UTF-8 bytes. |
+| `protocols` | `['wrpc.v1']` | WebSocket subprotocols to offer; the server echoes the wire revision back. `[]` offers nothing. |
+| `logger` | off | A Console or pino-shaped logger; observes errors in addition to the `'error'` event. |
+| `telemetry` | off | OTel tracer/meter/api — see [Telemetry](./telemetry). |
 
 ## Calls
 

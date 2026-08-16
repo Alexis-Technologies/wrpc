@@ -265,8 +265,14 @@ class Semaphore {
     return this.#counter === this.#concurrency;
   }
 
-  enter() {
+  // `signal` (optional) makes a queued waiter abortable: a caller that gave
+  // up — cancelled, disconnected, timed out — leaves the queue immediately
+  // instead of taking a slot later and doing work nobody will read.
+  enter(signal = null) {
     return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        return void reject(new Error('Semaphore entry aborted'));
+      }
       if (this.#counter > 0) {
         this.#counter--;
         return void resolve();
@@ -274,13 +280,20 @@ class Semaphore {
       if (this.#queue.length >= this.#size) {
         return void reject(new Error('Semaphore queue is full'));
       }
-      const waiter = { resolve, reject, timer: null };
+      const waiter = { resolve, reject, timer: null, release: null };
+      const evict = (error) => {
+        const index = this.#queue.indexOf(waiter);
+        if (index > -1) this.#queue.splice(index, 1);
+        if (waiter.timer) clearTimeout(waiter.timer);
+        reject(error);
+      };
       if (this.#timeout > 0) {
-        waiter.timer = setTimeout(() => {
-          const index = this.#queue.indexOf(waiter);
-          if (index > -1) this.#queue.splice(index, 1);
-          reject(new Error('Semaphore timeout'));
-        }, this.#timeout);
+        waiter.timer = setTimeout(() => evict(new Error('Semaphore timeout')), this.#timeout);
+      }
+      if (signal) {
+        const onAbort = () => evict(new Error('Semaphore entry aborted'));
+        signal.addEventListener('abort', onAbort, { once: true });
+        waiter.release = () => signal.removeEventListener('abort', onAbort);
       }
       this.#queue.push(waiter);
     });
@@ -293,6 +306,7 @@ class Semaphore {
       return;
     }
     if (waiter.timer) clearTimeout(waiter.timer);
+    waiter.release?.();
     waiter.resolve();
   }
 }

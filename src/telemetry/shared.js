@@ -82,6 +82,80 @@ const resolveTracerAndMeter = (telemetry) => {
 
 const noop = () => {};
 
+// The OTel RPC semantic conventions split a target into service ($unit) and
+// method: one helper, used by spans AND metrics on both halves, so the two
+// never disagree about what 'rpc.method' means.
+const targetAttributes = (target) => {
+  const slash = target.indexOf('/');
+  return {
+    'rpc.service': slash > 0 ? target.slice(0, slash) : target,
+    'rpc.method': slash > 0 ? target.slice(slash + 1) : '',
+  };
+};
+
+// Opens a span (active when the tracer can, detached otherwise) and invokes
+// `fn(handle)` exactly once. Shared verbatim by both halves — the arity
+// check on startActiveSpan and the invoked-guard are hazards nobody should
+// maintain twice.
+const startSpanWith = (tracer, name, options, parent, handle, fn) => {
+  if (hasMethod(tracer, 'startActiveSpan')) {
+    let invoked = false;
+    try {
+      const run = (span) => {
+        handle.span = span ?? null;
+        invoked = true;
+        return fn(handle);
+      };
+      // The 4-argument overload is not universal: handing four arguments
+      // to a 3-argument implementation means the callback is never called
+      // at all, so the arity is checked rather than assumed.
+      const withParent = parent && tracer.startActiveSpan.length >= 4;
+      return withParent
+        ? tracer.startActiveSpan(name, options, parent, run)
+        : tracer.startActiveSpan(name, options, run);
+    } catch (error) {
+      // An error thrown by `fn` itself must propagate untouched; only a
+      // tracer that broke BEFORE running the callback is swallowed.
+      if (invoked) throw error;
+      return fn(handle);
+    }
+  }
+  try {
+    if (!hasMethod(tracer, 'startSpan')) handle.span = null;
+    else handle.span = parent ? tracer.startSpan(name, options, parent) : tracer.startSpan(name, options);
+  } catch {
+    handle.span = null;
+  }
+  return fn(handle);
+};
+
+const recordSpanError = (handle, error, code) => {
+  try {
+    handle.error = true;
+    const span = handle?.span;
+    if (!span) return;
+    span.recordException?.(error);
+    span.setStatus?.({ code: SPAN_STATUS_ERROR, message: error?.message });
+    if (code !== undefined) span.setAttribute?.('rpc.wrpc.status_code', code);
+    if (error?.name) span.setAttribute?.('error.type', error.name);
+  } catch {
+    // Telemetry must never break the request path.
+  }
+};
+
+const endSpanHandle = (handle, attributes) => {
+  try {
+    const span = handle?.span;
+    if (!span) return;
+    if (attributes) {
+      for (const [key, value] of Object.entries(attributes)) {
+        if (value !== undefined && value !== null) span.setAttribute?.(key, value);
+      }
+    }
+    span.end();
+  } catch {}
+};
+
 const DISABLED = Object.freeze({
   enabled: false,
   // The lifecycle wrapper still runs its callback — that is what lets the
@@ -107,6 +181,10 @@ const DISABLED = Object.freeze({
 });
 
 module.exports = {
+  targetAttributes,
+  startSpanWith,
+  recordSpanError,
+  endSpanHandle,
   SPAN_STATUS_ERROR,
   SCOPE_NAME,
   SPAN_KIND_SERVER,

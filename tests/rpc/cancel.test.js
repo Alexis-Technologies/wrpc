@@ -207,3 +207,21 @@ test('subscriptions: ctx.signal reaches a subscription handler too', async (t) =
   handle.unsubscribe();
   await waitFor(() => live === 0, 'the signal never reached the generator');
 });
+
+test('maxCalls: in-flight calls from one connection are capped with 429', async (t) => {
+  const { server, port } = await createServer({ maxCalls: 2 });
+  t.after(() => server.close());
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, { heartbeat: false });
+  t.after(() => void client.close());
+  await client.load('slow');
+
+  // One connection processes its packets in order, so by the time `quick`
+  // is dispatched both waits are registered in-flight — no waiting needed.
+  const first = client.api.slow.wait({ ms: 300 });
+  const second = client.api.slow.wait({ ms: 300 });
+  await assert.rejects(client.api.slow.quick(), (error) => error.code === 429);
+  // The cap is per in-flight set, not a ban: once a slot frees, calls run.
+  assert.deepStrictEqual(await first, { done: true });
+  assert.deepStrictEqual(await second, { done: true });
+  assert.strictEqual(await client.api.slow.quick(), 'fast');
+});
