@@ -131,11 +131,10 @@ sent over HTTP is refused with a `callback` carrying code 400 and an empty
 id: fire-and-forget on a request/response transport would leave the request
 unanswered forever, so it is an error rather than a silent no-op.
 
-- **server → client**: emitted by `client.emit(name, data)`, by
-  `client.sendEvent(name, data)`, or by a room broadcast
-  (`server.to(room).emit(...)`). The client dispatches on the `unit` part of
-  the name to `client.api[unit]`; anything that reaches no listener surfaces
-  as an `unhandled-event` on the client itself.
+- **server → client**: emitted by `client.sendEvent(name, data)` or by a room
+  broadcast (`server.to(room).emit(...)`). The client dispatches on the `unit`
+  part of the name to `client.api[unit]`; anything that reaches no listener
+  surfaces as an `unhandled-event` on the client itself.
 - **client → server**: sent by `client.sendEvent('unit/name', data)` and
   handled by the unit's `on` map in the router. Handlers are procedures, so
   `access`, `input` validation and `queue` all apply.
