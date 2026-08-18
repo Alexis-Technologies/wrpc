@@ -9,6 +9,7 @@ const { WrpcWritable } = require('../streams.js');
 const { SessionManager } = require('./sessions.js');
 const { defineRouter, procedure, runHooksSafe } = require('./router.js');
 const { RoomRegistry, Broadcast, RoomsBackplane } = require('./rooms.js');
+const { Cluster } = require('./cluster.js');
 const { SseChannels, CHANNEL_HEADER } = require('../sse/server.js');
 const { isBackplane } = require('../scaling/index.js');
 const { handleMessage, handleBinary, handleRpc, split, parseParams, DEFAULT_MAX_BATCH } = require('./dispatcher.js');
@@ -21,6 +22,9 @@ const DEFAULT_MAX_SUBSCRIPTIONS = 256;
 // Same reasoning for in-flight calls: each holds a controller, a context and
 // possibly a queue slot until it settles.
 const DEFAULT_MAX_CALLS = 1000;
+// How long client.ask() waits for the peer's answer. Mirrors the client's
+// default call timeout: an ask is a call travelling the other way.
+const DEFAULT_ASK_TIMEOUT = 7_000;
 
 const ServerHttpTransport = ServerTransport.transport.http;
 const ServerWsTransport = ServerTransport.transport.ws;
@@ -74,6 +78,9 @@ class Client extends Emitter {
   #server = null;
   #log = null;
   #otel = null;
+  // id -> { resolve, reject, timer }: answers this client owes to asks the
+  // server sent it. See ask()/expectAnswer()/settleAnswer().
+  #asks = new Map();
 
   constructor(transport, options = {}) {
     super();
@@ -109,6 +116,13 @@ class Client extends Emitter {
     // Context uuids and server-side stream ids; uuid v4 unless the app
     // brings its own (cuid/ulid/a test counter) — see RpcServerOptions.
     this.generateId = typeof generateId === 'function' ? generateId : generateUUID;
+    // Instance-prefixed, so the id IS the address: a cluster command for
+    // this client goes straight to this instance's channel, no broadcast.
+    // A standalone Client (no server) has no instance and no prefix.
+    this.id = this.#server ? `${this.#server.instanceId}.${this.generateId()}` : this.generateId();
+    // The application's bag, carried by cluster descriptors — what
+    // socket.data is in socket.io. wrpc itself never reads it.
+    this.data = {};
   }
 
   error(code, { id = '', error = null } = {}) {
@@ -216,6 +230,57 @@ class Client extends Emitter {
     return this.#transport.write(text);
   }
 
+  /**
+   * A call in the other direction: sends `{type:'event', name, data, id}`
+   * and resolves with the answer the peer's responder returns (registered
+   * client-side with `client.respond(name, fn)`). Rejects with 408 on
+   * timeout, 503 when the connection drops first.
+   */
+  ask(name, data, options = {}) {
+    if (!this.#transport.connection) {
+      throw refusal(`Can't send wrpc event to http transport`);
+    }
+    const id = this.generateId();
+    const packet = { type: 'event', name, data, id };
+    this.send(packet);
+    return this.expectAnswer(id, options.timeout);
+  }
+
+  /**
+   * Registers a pending answer slot for `id`. The seam Broadcast.ask()
+   * uses: the broadcast writes its own pre-serialized packet through
+   * sendRaw and only needs the bookkeeping half of ask().
+   */
+  expectAnswer(id, timeout) {
+    return new Promise((resolve, reject) => {
+      const wait = timeout > 0 ? timeout : DEFAULT_ASK_TIMEOUT;
+      const timer = setTimeout(() => {
+        this.#asks.delete(id);
+        const error = new Error('Ask timeout');
+        error.code = 408;
+        reject(error);
+      }, wait);
+      if (typeof timer.unref === 'function') timer.unref();
+      this.#asks.set(id, { resolve, reject, timer });
+    });
+  }
+
+  /** Routes an inbound `callback` to its pending ask; false when none. */
+  settleAnswer(packet) {
+    const pending = this.#asks.get(packet.id);
+    if (!pending) return false;
+    this.#asks.delete(packet.id);
+    clearTimeout(pending.timer);
+    if (packet.error) {
+      const error = new Error(packet.error.message ?? 'Ask failed');
+      error.code = packet.error.code ?? 500;
+      pending.reject(error);
+    } else {
+      pending.resolve(packet.result);
+    }
+    return true;
+  }
+
   // ---------------------------------------------------------------------
   // Rooms. The registry owns both directions, so this client keeps no room
   // state of its own that a missed leave could leave stale.
@@ -313,6 +378,17 @@ class Client extends Emitter {
     for (const controller of this.subscriptions.values()) controller.abort(disconnected);
     this.calls.clear();
     this.subscriptions.clear();
+    // An answer can no longer arrive: whoever asked is settled NOW instead
+    // of waiting out the ask timeout on a peer that is gone.
+    if (this.#asks.size > 0) {
+      const gone = new Error('Client disconnected');
+      gone.code = 503;
+      for (const pending of this.#asks.values()) {
+        clearTimeout(pending.timer);
+        pending.reject(gone);
+      }
+      this.#asks.clear();
+    }
     // Contained: destroy() runs from the transport's close handler, where a
     // throwing app listener would otherwise be an unhandled rejection.
     Promise.resolve(this.emit('close')).catch((error) => {
@@ -348,6 +424,7 @@ const RPC_OPTION_KEYS = [
   'maxSubscriptions',
   'maxCalls',
   'sse',
+  'cluster',
 ];
 
 const rpcOptions = (options = {}) => {
@@ -374,6 +451,7 @@ class RpcServer extends Emitter {
   #sessions;
   #rooms;
   #backplane = null;
+  #cluster = null;
   #instance;
   #cors;
   #basePath;
@@ -386,6 +464,7 @@ class RpcServer extends Emitter {
   #sse = null;
   #draining = false;
   #clients = new Set();
+  #byId = new Map();
 
   constructor(options = {}) {
     super();
@@ -404,12 +483,19 @@ class RpcServer extends Emitter {
       maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
       maxCalls = DEFAULT_MAX_CALLS,
       sse = {},
+      cluster = {},
     } = options;
     if (!router || typeof router.getProcedure !== 'function') {
       throw new TypeError('RpcServer: options.router (a Router from defineRouter) is required');
     }
     if (backplane && !isBackplane(backplane)) {
       throw new TypeError('RpcServer: options.backplane does not implement the backplane contract');
+    }
+    // The dot separates the instance prefix from the rest of a client id
+    // (`<instanceId>.<generateId()>`), so an instance name carrying one
+    // would make every one of its client ids parse to the wrong address.
+    if (String(instanceId).includes('.')) {
+      throw new TypeError('RpcServer: options.instanceId must not contain "."');
     }
     this.#log = createLoggerWriter(logger);
     this.#otel = createServerTelemetry(telemetry);
@@ -424,7 +510,7 @@ class RpcServer extends Emitter {
     this.#generateId = typeof generateId === 'function' ? generateId : generateUUID;
     this.#limits = { maxBatch, maxSubscriptions, maxCalls };
     this.#router = this.#withIntrospection(router, introspection);
-    this.#initRooms(backplane);
+    this.#initRooms(backplane, cluster);
     // A channel's client is built from the GET that opened the stream, so it
     // restores the session from that request's cookie the way attachSocket
     // does — otherwise a browser holding a valid cookie starts the channel
@@ -442,7 +528,19 @@ class RpcServer extends Emitter {
       sse === false ? null : new SseChannels({ ...sse, log: this.#sseLog, otel: this.#otel, addClient, channelKey });
   }
 
-  #initRooms(backplane) {
+  #initRooms(backplane, clusterOptions) {
+    // The cluster exists with or without a backplane — without one every
+    // operation degrades to its local half, so application code written
+    // against `server.cluster` never branches on the deployment.
+    const cluster = new Cluster({
+      backplane,
+      instance: this.#instance,
+      local: this.#clusterOps(),
+      log: this.#log.child({ component: 'cluster' }),
+      generateId: this.#generateId,
+      options: clusterOptions,
+    });
+    this.#cluster = cluster;
     if (!backplane) {
       this.#rooms = new RoomRegistry();
       return;
@@ -462,8 +560,84 @@ class RpcServer extends Emitter {
     this.#rooms = new RoomRegistry({
       onSubscribe: (room) => binder.joinRoom(room),
       onUnsubscribe: (room) => binder.leaveRoom(room),
+      // Every membership change is a presence delta; the periodic snapshot
+      // corrects whatever the broker drops.
+      onJoin: (room) => cluster.delta(room, 1),
+      onLeave: (room) => cluster.delta(room, -1),
     });
     binder.start();
+    cluster.start();
+  }
+
+  // The seam the cluster reaches this node's clients through: selectors and
+  // descriptors here, correlation and channels there.
+  #clusterOps() {
+    const select = (sel = {}) => {
+      if (typeof sel.id === 'string') {
+        const client = this.#byId.get(sel.id);
+        return client ? [client] : [];
+      }
+      if (typeof sel.room === 'string') return Array.from(this.#rooms.members(sel.room));
+      // Persistent connections only: a per-request HTTP client is not a
+      // peer anyone means to enumerate, join or disconnect.
+      return Array.from(this.#clients).filter((client) => client.persistent);
+    };
+    return {
+      count: (room) => this.#rooms.count(room),
+      snapshot: () => {
+        const rooms = {};
+        for (const room of this.#rooms.list()) rooms[room] = this.#rooms.count(room);
+        let clients = 0;
+        for (const client of this.#clients) if (client.persistent) clients++;
+        return { rooms, clients };
+      },
+      descriptors: (sel) =>
+        select(sel)
+          .filter((client) => client.persistent)
+          .map((client) => ({
+            id: client.id,
+            instance: this.#instance,
+            rooms: [...client.rooms],
+            data: client.data,
+            transport: client.transportKind,
+            session: Boolean(client.session),
+          })),
+      join: (sel, rooms) => {
+        if (!Array.isArray(rooms)) return;
+        for (const client of select(sel)) {
+          for (const room of rooms) client.join(room);
+        }
+      },
+      leave: (sel, rooms) => {
+        if (!Array.isArray(rooms)) return;
+        for (const client of select(sel)) {
+          for (const room of rooms) client.leave(room);
+        }
+      },
+      disconnect: (sel) => {
+        for (const client of select(sel)) client.close();
+      },
+      // The remote leg of a broadcast ask: LOCAL delivery only — the
+      // question already reached every other node as its own request. An
+      // ARRAY of rooms is a narrowing even when empty (to() with no rooms
+      // reaches nobody); only null means "everyone" — collapsing [] into
+      // the all-clients target would resurrect the WHERE-id-IN-() mistake
+      // for any envelope arriving with rooms: [] on the wire.
+      ask: (rooms, name, data, timeout, onCount) => {
+        const target = Array.isArray(rooms) ? this.#target().to(...rooms) : this.#target();
+        return target.local().ask(name, data, { timeout, onCount });
+      },
+    };
+  }
+
+  /** Cluster-wide presence, introspection and node-to-node messaging. */
+  get cluster() {
+    return this.#cluster;
+  }
+
+  /** The local client with this id; undefined when not on this instance. */
+  getClient(id) {
+    return this.#byId.get(id);
   }
 
   get router() {
@@ -496,6 +670,7 @@ class RpcServer extends Emitter {
       registry: this.#rooms,
       clients: () => this.#clients,
       publish: this.#backplane ? (envelope) => this.#backplane.publish(envelope) : null,
+      cluster: this.#backplane ? this.#cluster : null,
       log: this.#roomsLog,
       otel: this.#otel,
     });
@@ -547,6 +722,7 @@ class RpcServer extends Emitter {
     };
     const client = new Client(transport, options);
     this.#clients.add(client);
+    this.#byId.set(client.id, client);
     this.#otel.recordConnection(1, transport.kind);
     // Router-level connection lifecycle hooks. Observational and contained:
     // refusing a connection is verifyClient's job, this is where per-client
@@ -557,6 +733,7 @@ class RpcServer extends Emitter {
     transport.once('close', () => {
       client.destroy();
       this.#clients.delete(client);
+      this.#byId.delete(client.id);
       this.#otel.recordConnection(-1, transport.kind);
       if (onDisconnect.length > 0) void runHooksSafe(onDisconnect, client, null, this.#log, 'onDisconnect');
     });
@@ -805,6 +982,11 @@ class RpcServer extends Emitter {
     if (this.#sse) this.#sse.close();
     for (const client of this.#clients) client.close();
     this.#clients.clear();
+    this.#byId.clear();
+    // The goodbye goes out first, while the backplane binder still works:
+    // other nodes evict this instance immediately instead of waiting out
+    // the presence timeout.
+    this.#cluster.close();
     // Unsubscribe before dropping the rooms, so the registry's last-member
     // callbacks have nothing left to do. The injected backplane itself is
     // never closed here: its lifetime belongs to whoever created it.

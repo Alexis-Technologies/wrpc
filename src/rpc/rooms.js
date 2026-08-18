@@ -20,6 +20,11 @@ const BROADCAST_CHANNEL = 'broadcast';
 const ROOM_CHANNEL_PREFIX = 'room:';
 const ENVELOPE_VERSION = 1;
 
+// How long a broadcast question waits for each client's answer. Matches the
+// client's default call timeout: an ask is a call in the other direction.
+const DEFAULT_ASK_TIMEOUT = 7_000;
+const EMPTY_ASK = { answers: [], errors: [], expected: 0, incomplete: false };
+
 const roomChannel = (room) => ROOM_CHANNEL_PREFIX + room;
 
 const EMPTY = new Set();
@@ -36,14 +41,19 @@ class RoomRegistry {
   #joined = new Map(); // Client -> Set<room>
   #onSubscribe;
   #onUnsubscribe;
+  #onJoin;
+  #onLeave;
 
   // onSubscribe/onUnsubscribe fire when a room gains its first member and
   // loses its last one: that is exactly when a backplane has to (un)subscribe
-  // the room's channel. Plain callbacks rather than events — join/leave is a
-  // hot path and Emitter.emit allocates a promise per call.
-  constructor({ onSubscribe = null, onUnsubscribe = null } = {}) {
+  // the room's channel. onJoin/onLeave fire on EVERY membership change: the
+  // cluster's presence deltas. Plain callbacks rather than events —
+  // join/leave is a hot path and Emitter.emit allocates a promise per call.
+  constructor({ onSubscribe = null, onUnsubscribe = null, onJoin = null, onLeave = null } = {}) {
     this.#onSubscribe = onSubscribe;
     this.#onUnsubscribe = onUnsubscribe;
+    this.#onJoin = onJoin;
+    this.#onLeave = onLeave;
   }
 
   get size() {
@@ -87,6 +97,7 @@ class RoomRegistry {
     }
     rooms.add(room);
     if (created && this.#onSubscribe) this.#onSubscribe(room);
+    if (this.#onJoin) this.#onJoin(room, client);
     return true;
   }
 
@@ -98,6 +109,7 @@ class RoomRegistry {
       rooms.delete(room);
       if (rooms.size === 0) this.#joined.delete(client);
     }
+    if (this.#onLeave) this.#onLeave(room, client);
     if (members.size > 0) return true;
     this.#rooms.delete(room);
     if (this.#onUnsubscribe) this.#onUnsubscribe(room);
@@ -128,6 +140,7 @@ class Broadcast {
   #registry;
   #clients;
   #publish;
+  #cluster;
   #targets;
   #excluded;
   #localOnly;
@@ -138,6 +151,7 @@ class Broadcast {
     registry,
     clients,
     publish = null,
+    cluster = null,
     log = globalThis.console,
     otel = null,
     targets = null,
@@ -147,6 +161,7 @@ class Broadcast {
     this.#registry = registry;
     this.#clients = clients;
     this.#publish = publish;
+    this.#cluster = cluster;
     this.#log = createLoggerWriter(log);
     this.#otel = otel;
     this.#targets = targets;
@@ -159,6 +174,7 @@ class Broadcast {
       registry: this.#registry,
       clients: this.#clients,
       publish: this.#publish,
+      cluster: this.#cluster,
       log: this.#log,
       otel: this.#otel,
       targets: this.#targets,
@@ -254,6 +270,83 @@ class Broadcast {
     }
     this.#otel?.recordBroadcast(name, sent, published);
     return sent;
+  }
+
+  /**
+   * Emits `name` to every matching client AND waits for each one's answer
+   * (the peer registers one with `client.respond(name, fn)`). Resolves
+   * `{ answers, errors, expected, incomplete }` — never rejects: a broadcast
+   * question has many answerers, so per-client failures are data, not an
+   * exception that discards the answers that DID arrive.
+   *
+   * With a cluster attached the question reaches every instance's members
+   * too; `local()` keeps it on this one.
+   */
+  ask(name, data, options = {}) {
+    if (typeof name !== 'string' || name.length === 0) {
+      throw new TypeError('Event name must be a non-empty string');
+    }
+    // Narrowed to no rooms at all: nobody here, nobody anywhere — the same
+    // short-circuit emit() has, extended to the cluster leg. Without it the
+    // "WHERE id IN ()" mistake comes back through the wire: an empty rooms
+    // array used to reach every client of every OTHER instance.
+    if (this.#targets && this.#targets.length === 0) {
+      if (options.onCount) options.onCount(0);
+      return Promise.resolve({ answers: [], errors: [], expected: 0, incomplete: false });
+    }
+    const timeout = options.timeout > 0 ? options.timeout : DEFAULT_ASK_TIMEOUT;
+    const local = this.#askLocal(name, data, timeout);
+    if (options.onCount) options.onCount(local.expected);
+    const remote =
+      !this.#localOnly && this.#cluster
+        ? this.#cluster.broadcastAsk(this.#targets, name, data, timeout)
+        : Promise.resolve(EMPTY_ASK);
+    return Promise.all([local.done, remote]).then(([mine, theirs]) => ({
+      answers: [...mine.answers, ...theirs.answers],
+      errors: [...mine.errors, ...theirs.errors],
+      expected: local.expected + theirs.expected,
+      incomplete: Boolean(theirs.incomplete),
+    }));
+  }
+
+  // The local leg. The payload is serialized ONCE for the whole fan-out —
+  // an ack needs a per-recipient id, but that is a suffix concatenation on
+  // the shared prefix, not a second JSON.stringify of the data.
+  #askLocal(name, data, timeout) {
+    let prefix;
+    try {
+      prefix = JSON.stringify({ type: 'event', name, data }).slice(0, -1);
+    } catch (error) {
+      this.#log.error({ err: error, event: 'broadcast.serialize', name });
+      return { expected: 0, done: Promise.resolve({ answers: [], errors: [] }) };
+    }
+    const pending = [];
+    if (!this.#targets || this.#targets.length > 0) {
+      for (const client of this.#recipients()) {
+        if (this.#excluded?.has(client)) continue;
+        if (!client.persistent) continue;
+        const id = client.generateId();
+        try {
+          client.sendRaw(`${prefix},"id":${JSON.stringify(id)}}`);
+        } catch (error) {
+          this.#log.error({ err: error, event: 'broadcast.send', name });
+          continue;
+        }
+        // Registered AFTER the write went through: a send that threw never
+        // parks an answer slot that nothing will settle.
+        pending.push(client.expectAnswer(id, timeout));
+      }
+    }
+    const done = Promise.allSettled(pending).then((settled) => {
+      const answers = [];
+      const errors = [];
+      for (const outcome of settled) {
+        if (outcome.status === 'fulfilled') answers.push(outcome.value);
+        else errors.push({ message: outcome.reason?.message ?? 'Ask failed', code: outcome.reason?.code ?? 500 });
+      }
+      return { answers, errors };
+    });
+    return { expected: pending.length, done };
   }
 }
 

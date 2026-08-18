@@ -173,6 +173,22 @@ surfaces as `unhandled-event` rather than vanishing.
 `client.attempt` is how many reconnect attempts have been made since the last
 successful open, and `client.active` is whether the transport is up.
 
+## Answering the server
+
+The server can [ask](./rooms#asking-a-room) — an event that expects an
+answer. The client registers exactly one responder per event name:
+
+```js
+client.respond('chat/confirm', async (data) => ({ ok: true }));
+client.unrespond('chat/confirm');
+```
+
+The responder's return value (or thrown error, with its `code`) travels
+back as the answer. An ask with no responder is answered `501` immediately
+and still surfaces as `unhandled-event`. Registration is client-level, not
+per-unit — unit objects carry server-named methods, where a method called
+`respond` would collide — and works before `load()`.
+
 ## Offline and online
 
 ```js

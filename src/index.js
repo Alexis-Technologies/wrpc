@@ -6,6 +6,7 @@ const { Server } = require('./server.js');
 const { RpcServer, Client, Context } = require('./rpc/core.js');
 const { defineRouter, procedure, Router, Procedure } = require('./rpc/router.js');
 const { RoomRegistry, Broadcast } = require('./rpc/rooms.js');
+const { Cluster } = require('./rpc/cluster.js');
 const { tracked, isTracked, createEventLog, EventLog } = require('./rpc/subscriptions.js');
 const { Session, MemorySessionStore, createProxy } = require('./rpc/sessions.js');
 const { ServerTransport, buildHeaders } = require('./transport.js');
@@ -32,6 +33,7 @@ module.exports = {
   Procedure,
   RoomRegistry,
   Broadcast,
+  Cluster,
   tracked,
   isTracked,
   createEventLog,

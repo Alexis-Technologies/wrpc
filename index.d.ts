@@ -371,6 +371,10 @@ export declare class RoomRegistry {
     onSubscribe?: (room: string) => void;
     /** Fires when a room loses its last member (backplane unsubscribe). */
     onUnsubscribe?: (room: string) => void;
+    /** Fires on EVERY successful join — the cluster's presence deltas. */
+    onJoin?: (room: string, client: Client) => void;
+    /** Fires on EVERY successful leave. */
+    onLeave?: (room: string, client: Client) => void;
   });
   /** Number of non-empty rooms. */
   readonly size: number;
@@ -409,6 +413,122 @@ export declare class Broadcast {
    * backplane, whose delivery this number says nothing about.
    */
   emit(name: string, data?: unknown): number;
+  /**
+   * Emits to every matching client — every instance's members included,
+   * unless `local()` — and waits for each one's answer (registered
+   * client-side with `client.respond(name, fn)`). Never rejects:
+   * per-client failures are collected in `errors`.
+   */
+  ask(name: string, data?: unknown, options?: AskOptions): Promise<AskResult>;
+}
+
+export interface AskOptions {
+  /** Per-client answer timeout in ms; default 7000. */
+  timeout?: number;
+}
+
+export interface AskResult {
+  /** Values the responders returned, in settlement order. */
+  answers: Array<unknown>;
+  /** Per-client failures: 501 no responder, 408 timeout, 503 disconnect. */
+  errors: Array<{ message: string; code: number }>;
+  /** How many clients were asked, cluster-wide. */
+  expected: number;
+  /** True when a remote instance never answered inside the timeout. */
+  incomplete: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// Cluster
+
+/** Narrows a cluster operation: one room, or every persistent client. */
+export interface ClusterSelector {
+  room?: string;
+}
+
+/** What fetchClients answers, one per matching client, cluster-wide. */
+export interface ClientDescriptor {
+  id: string;
+  /** The instance holding the connection. */
+  instance: string;
+  rooms: Array<string>;
+  /** The application's `client.data` bag. */
+  data: Record<string, unknown>;
+  /** 'ws' | 'sse' | 'event'. */
+  transport: string;
+  /** Whether the client currently carries a session. */
+  session: boolean;
+}
+
+export interface ClusterOptions {
+  /** How often the corrective presence snapshot is published; default 5000. */
+  presenceInterval?: number;
+  /** Silence after which a node is evicted; default 3× presenceInterval. */
+  presenceTimeout?: number;
+  /** Backstop for cluster requests (fetchClients, ask); default 2000. */
+  requestTimeout?: number;
+}
+
+export interface ClusterAskResult {
+  /** One answer per node that had a responder. */
+  answers: Array<unknown>;
+  /** Per-node failures (no responder, responder threw). */
+  errors: Array<string>;
+  /** True when a node never answered inside the timeout. */
+  incomplete: boolean;
+}
+
+/**
+ * Presence, introspection and node-to-node messaging across every instance
+ * sharing a backplane. Always present on an RpcServer: without a backplane
+ * every operation degrades to its local half, so application code never
+ * branches on the deployment.
+ *
+ * Presence is replicated — deltas plus corrective snapshots — so `count()`
+ * and `presence()` are local reads with no network round-trip.
+ */
+export declare class Cluster extends Emitter {
+  readonly instanceId: string;
+  /** The boot marker distinguishing a restart from a live node. */
+  readonly epoch: string;
+  /** False without a backplane: every operation is local-only. */
+  readonly connected: boolean;
+  /** Cluster-wide membership of `room`: a local sum, no network. */
+  count(room: string): number;
+  /** Per-instance breakdown of `room`; zero-count instances are omitted. */
+  presence(room: string): { total: number; instances: Record<string, number> };
+  /** Ids of the live instances, this one first. */
+  instances(): Array<string>;
+  /**
+   * Descriptors of matching clients across the cluster. Resolves early the
+   * moment every live node answered; on timeout the partial array carries a
+   * non-enumerable `incomplete: true`.
+   */
+  fetchClients(
+    sel?: ClusterSelector,
+    options?: { timeout?: number },
+  ): Promise<Array<ClientDescriptor> & { incomplete?: boolean }>;
+  /**
+   * `target` is a client id (addressed: ONE instance hears it) or a
+   * selector (`{ room }` / `{}`: applied on every instance). Commands are
+   * fire-and-forget with the backplane's at-most-once delivery.
+   */
+  join(target: string | ClusterSelector, ...rooms: Array<string>): void;
+  leave(target: string | ClusterSelector, ...rooms: Array<string>): void;
+  disconnect(target: string | ClusterSelector): void;
+  /** Fire-and-forget to every OTHER node's `cluster.on(name, ...)`. */
+  sendEvent(name: string, data?: unknown): void;
+  /** The LOCAL Emitter emit — remote nodes are reached by sendEvent. */
+  emit(name: EventName, data?: unknown): Promise<void>;
+  /**
+   * Asks every other node and collects their answers — each node answers
+   * through its `cluster.respond(name, fn)` responder, or contributes an
+   * error when it has none.
+   */
+  ask(name: string, data?: unknown, options?: { timeout?: number }): Promise<ClusterAskResult>;
+  /** One responder per name; a duplicate registration throws. */
+  respond(name: string, handler: (data: unknown, from: string) => unknown): void;
+  unrespond(name: string): boolean;
 }
 
 // ---------------------------------------------------------------------------
@@ -459,6 +579,17 @@ export declare class Context {
 }
 
 export class Client extends Emitter {
+  /**
+   * Instance-prefixed (`<instanceId>.<generateId()>`), so the id itself
+   * addresses the instance holding the connection — what lets a cluster
+   * command for one client travel as one message to one node.
+   */
+  readonly id: string;
+  /**
+   * The application's bag, carried by cluster descriptors (fetchClients).
+   * wrpc itself never reads it — socket.io's `socket.data`.
+   */
+  data: Record<string, unknown>;
   source: string;
   session: Session | null;
   /** True for transports that stay open (WebSocket, worker port). */
@@ -499,6 +630,21 @@ export class Client extends Emitter {
   emit(name: EventName, data?: unknown): Promise<void>;
   /** Sends a `{type:'event'}` packet to this peer; `name` is 'unit/event'. */
   sendEvent(name: string, data?: unknown): void;
+  /**
+   * A call in the other direction: sends `{type:'event', name, data, id}`
+   * and resolves with what the peer's responder returns (registered
+   * client-side with `client.respond(name, fn)`). Rejects with 408 on
+   * timeout, 503 when the connection drops, 501 when the peer has no
+   * responder.
+   */
+  ask(name: string, data?: unknown, options?: AskOptions): Promise<unknown>;
+  /**
+   * The bookkeeping half of ask(), for a caller that writes the packet
+   * itself (Broadcast.ask's encode-once fan-out).
+   */
+  expectAnswer(id: string, timeout?: number): Promise<unknown>;
+  /** Routes an inbound `callback` to its pending ask; false when none. */
+  settleAnswer(packet: { id: string; result?: unknown; error?: { message: string; code: number } }): boolean;
   /** Diagnostics for inbound packets with no id to answer on. */
   warn(message: string): void;
   /** Joins a room; false when already a member. */
@@ -564,7 +710,10 @@ export interface RpcServerOptions {
    * work identically inside a single instance.
    */
   backplane?: Backplane | null;
-  /** Identifies this instance on the backplane; a uuid by default. */
+  /**
+   * Identifies this instance on the backplane; a uuid by default. Must not
+   * contain '.' — it prefixes every client id (`<instanceId>.<id>`).
+   */
   instanceId?: string;
   /**
    * Context uuids, server-side stream ids and synthetic REST packet ids;
@@ -585,6 +734,8 @@ export interface RpcServerOptions {
   maxCalls?: number;
   /** SSE channel options, or `false` to remove the events endpoint. */
   sse?: import('./sse.js').SseOptions | false;
+  /** Presence/request tuning for the cluster layer. */
+  cluster?: ClusterOptions;
 }
 
 export declare class RpcServer extends Emitter {
@@ -598,7 +749,11 @@ export declare class RpcServer extends Emitter {
   /** The SSE channel registry, or null when `sse: false`. */
   readonly sse: import('./sse.js').SseChannels | null;
   readonly clients: Set<Client>;
+  /** Cluster-wide presence, introspection and node-to-node messaging. */
+  readonly cluster: Cluster;
   constructor(options: RpcServerOptions);
+  /** The local client with this id; undefined when not on this instance. */
+  getClient(id: string): Client | undefined;
   /** Everyone in any of `rooms`, each client once; with no rooms, nobody. */
   to(...rooms: Array<string>): Broadcast;
   /** Everyone connected, minus `clients`. */
@@ -654,6 +809,10 @@ export class Server extends Emitter {
   to(...rooms: Array<string>): Broadcast;
   except(...clients: Array<Client>): Broadcast;
   broadcast(name: string, data?: unknown): number;
+  /** Cluster-wide presence, introspection and node-to-node messaging. */
+  readonly cluster: Cluster;
+  /** The local client with this id; undefined when not on this instance. */
+  getClient(id: string): Client | undefined;
   listen(): Promise<Server>;
   /**
    * With `drain` (ms): stop intake, let in-flight calls settle up to the

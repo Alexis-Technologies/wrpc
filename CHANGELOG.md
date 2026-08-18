@@ -13,6 +13,51 @@ narrower promise — see
 
 ### Added
 
+- **The cluster layer: `server.cluster`.** Presence, introspection and
+  node-to-node messaging across every instance sharing a backplane, built
+  ON TOP of the pub/sub contract (`publish`/`subscribe`/`close` — adapters
+  are untouched) with two new channels: `cluster` (all nodes) and
+  `inst:<instanceId>` (one node's inbox). Always present: without a
+  backplane every operation degrades to its local half.
+  - **Replicated presence.** `cluster.count(room)` / `presence(room)` /
+    `instances()` are LOCAL reads — join/leave publishes a ±1 delta, a
+    periodic snapshot (`cluster.presenceInterval`, default 5 s) heals lost
+    deltas, liveness counts every message a node sends, a newcomer's hello
+    is answered with addressed state so it warms instantly, graceful close
+    evicts immediately, and a restart's fresh epoch REPLACES counters
+    instead of doubling them. (socket.io's heartbeat carries no room data —
+    its cluster-wide count is always a fetchSockets round-trip.)
+  - **Introspection.** `cluster.fetchClients({ room }?)` answers
+    descriptors (`{ id, instance, rooms, data, transport, session }`) from
+    every node, resolving the moment the last live node answered — node
+    death mid-request completes it via eviction, and the timeout backstop
+    resolves the partial result with `incomplete: true`, never silently.
+  - **Commands.** `cluster.join/leave/disconnect(target, ...rooms)` where
+    `target` is a client id or a `{ room }` selector. Client ids are now
+    instance-prefixed (`client.id = '<instanceId>.<generateId()>'`), so an
+    id-addressed command travels as ONE message to ONE node. `client.data`
+    is the application's bag (socket.io's `socket.data`), carried by
+    descriptors; `rpc.getClient(id)` looks a local client up.
+  - **Node-to-node messaging.** `cluster.sendEvent(name, data)` fans out to
+    every other node's `cluster.on(name, fn)`; `cluster.ask(name, data)`
+    collects one answer per node through `cluster.respond(name, fn)`
+    responders (socket.io's `serverSideEmit` pair). As everywhere in wrpc,
+    `emit` stays the local Emitter emit.
+- **Acks: calls in the other direction.** A server → client event MAY now
+  carry an `id`, making it a question the client answers with the ordinary
+  `callback` packet — no new wire type, the field is additive.
+  `client.ask(name, data, { timeout })` on the server resolves with the
+  answer (408 timeout / 503 disconnect / 501 no responder); the browser
+  registers exactly one responder per name with
+  `client.respond(name, fn)` / `unrespond(name)` (client-level, so a unit
+  method named `respond` cannot collide). `server.to(room).ask(...)`
+  broadcasts the question and aggregates
+  `{ answers, errors, expected, incomplete }` — cluster-wide with a
+  backplane, using two-phase accounting (each node first reports how many
+  clients it asked, then streams the answers), and it serializes the
+  payload ONCE for the whole fan-out: the per-recipient id is a suffix
+  concatenation on the shared prefix, so plain `emit()` paid nothing for
+  ask's existence.
 - **Lifecycle hooks, in the fastify tradition.** Named phases with no `next`:
   `onRequest`, `preValidation`, `preHandler`, `preSerialization`, `onSend`,
   `onResponse`, `onError`, `onTimeout`, `onSubscribe`, `onUnsubscribe`, plus
@@ -115,6 +160,10 @@ narrower promise — see
   wire event for every name except `'close'`, which made `client.on('x')`
   dead code and the class unsubstitutable for its base. The wire send is
   `client.sendEvent(name, data)`, as it always was.
+- **`instanceId` must not contain `'.'`.** It now prefixes every client id
+  (`<instanceId>.<generateId()>` — the dot is what addressed cluster
+  commands parse), so a dotted instance name is refused at construction
+  with a `TypeError`. The default uuid was never affected.
 - **Server-minted SSE channel ids.** A channel id is no longer proposed by
   the client: the server mints it and hands it out once, in the `ready`
   frame. The channel is bound to the cookie identity that created it —

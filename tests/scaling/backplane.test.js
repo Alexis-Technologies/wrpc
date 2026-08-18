@@ -218,7 +218,9 @@ test('backplane: a broken backplane never breaks local delivery', async (t) => {
 
   assert.strictEqual(sent, 1, 'local delivery is unaffected');
   assert.deepStrictEqual(socket.events, [{ type: 'event', name: 'message', data: { text: 'hi' } }]);
-  assert.strictEqual(errors.length, 1, 'the failure is reported');
+  // At least the room publish failed and was reported; the cluster's own
+  // presence traffic (hello, join delta) fails through the same path.
+  assert.ok(errors.length >= 1, 'the failure is reported');
 });
 
 test('backplane: malformed envelopes are ignored', async (t) => {

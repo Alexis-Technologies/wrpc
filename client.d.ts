@@ -157,6 +157,16 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
   send(obj: object): void;
   /** Fire-and-forget event to the server; `name` is 'unit/event'. */
   sendEvent(name: string, data?: unknown): void;
+  /**
+   * Registers the answer this client gives when the server asks `name`
+   * ('unit/event') — the receiving half of the server's `client.ask()` and
+   * `Broadcast.ask()`. One responder per name: a duplicate registration
+   * throws. Client-level rather than per-unit on purpose — unit objects
+   * carry server-named methods, where a method called 'respond' would
+   * collide.
+   */
+  respond(name: string, handler: (data: unknown) => unknown): void;
+  unrespond(name: string): boolean;
   /** Sends whatever calls are waiting to be batched. Safe to call anytime. */
   flush(): void;
   write(data: string | ArrayBufferView): void;
@@ -624,11 +634,16 @@ export interface StreamPacket {
   status?: 'end' | 'terminate';
 }
 
-/** Fire-and-forget, both directions; `name` is 'unit/event'. */
+/**
+ * Fire-and-forget, both directions; `name` is 'unit/event'. With an `id`
+ * it is an ask (server → client): the receiver MUST answer with a
+ * `callback` carrying the same id.
+ */
 export interface EventPacket {
   type: 'event';
   name: string;
   data?: unknown;
+  id?: string;
 }
 
 export interface SubscribePacket {

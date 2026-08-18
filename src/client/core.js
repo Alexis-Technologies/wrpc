@@ -204,6 +204,7 @@ class WrpcClient extends Emitter {
   #pongTimer = null;
   #loaded = new Set();
   #unitMethods = new Map();
+  #responders = new Map();
   #proxyPacket = null;
   #options = {};
 
@@ -648,7 +649,12 @@ class WrpcClient extends Emitter {
 
   async #dispatch(packet) {
     const { type, id, name } = packet;
-    if (type === 'event') return void (await this.#handleEvent(name, packet.data));
+    if (type === 'event') {
+      // An event carrying an id is an ask: the server wants an answer, and
+      // that is a different contract from fan-out delivery to listeners.
+      if (typeof id === 'string' && id) return void (await this.#answerAsk(name, packet.data, id));
+      return void (await this.#handleEvent(name, packet.data));
+    }
     if (!id) throw new Error('Packet structure error');
     if (type === 'callback') return void this.#settle(packet);
     if (type === 'data' || type === 'end') return void this.#handleSubscriptionPacket(packet);
@@ -694,6 +700,49 @@ class WrpcClient extends Emitter {
     // Nobody asked to hear about it, but a subscription that died must not
     // die quietly.
     if (!record.stream) this.#escalate(error, 'subscription.error');
+  }
+
+  /**
+   * Registers the answer this client gives when the server asks `name`
+   * ('unit/event'). One responder per name — two answers to one question
+   * are ambiguous, so a duplicate registration throws, like Emitter's
+   * duplicate-listener guard. Client-level rather than per-unit on purpose:
+   * unit objects carry server-named methods, where a method called
+   * 'respond' would collide.
+   */
+  respond(name, handler) {
+    if (typeof name !== 'string' || name.length === 0) {
+      throw new TypeError('respond: name must be a non-empty string');
+    }
+    if (typeof handler !== 'function') {
+      throw new TypeError('respond: handler must be a function');
+    }
+    if (this.#responders.has(name)) {
+      throw new Error(`Duplicate responder for '${name}'`);
+    }
+    this.#responders.set(name, handler);
+  }
+
+  unrespond(name) {
+    return this.#responders.delete(name);
+  }
+
+  // The server asked: run the responder and answer with the callback packet
+  // the id makes addressable. No responder is answered too — a 501 now beats
+  // the server discovering nothing at its timeout.
+  async #answerAsk(name, data, id) {
+    const responder = typeof name === 'string' ? this.#responders.get(name) : undefined;
+    if (!responder) {
+      this.send({ type: 'callback', id, error: { message: `No responder for '${name}'`, code: 501 } });
+      return void (await this.emit('unhandled-event', { name, data, id }));
+    }
+    try {
+      const result = await responder(data);
+      this.send({ type: 'callback', id, result });
+    } catch (error) {
+      const code = typeof error?.code === 'number' ? error.code : 500;
+      this.send({ type: 'callback', id, error: { message: error?.message ?? 'Responder failed', code } });
+    }
   }
 
   // Events are addressed 'unit/event'. One that reaches no listener — an

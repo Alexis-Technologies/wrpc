@@ -402,6 +402,21 @@ const handlePacket = (client, packet, router) => {
     return void handleStream(client, packet).catch(contain(client, 'STREAM'));
   } else if (type === 'event' && typeof name === 'string' && name) {
     return void handleEvent(client, packet, router).catch(contain(client, 'EVENT'));
+  } else if (type === 'callback' && typeof id === 'string' && id) {
+    // Asks only travel on persistent transports, so a callback on HTTP can
+    // never match one — and it MUST still be answered, or the request (and
+    // every other slot of its batch) would hang unanswered forever.
+    if (needsConnection(client, id, 'Callbacks')) return;
+    // The answer to an ask this server sent (client.ask / Broadcast.ask).
+    // An unmatched one — late after its timeout, or simply never asked — is
+    // logged, not answered: an error callback to a callback could ping-pong.
+    // The id is peer-controlled text: bounded and escaped before it becomes
+    // a log line.
+    if (!client.settleAnswer(packet)) {
+      const shown = id.length > 128 ? `${id.slice(0, 128)}…` : id;
+      client.warn(`ANSWER\t${JSON.stringify(shown)}\tno pending ask`);
+    }
+    return;
   } else if (type === 'ping') {
     // App-level heartbeat: a browser WebSocket cannot see protocol pings,
     // so liveness is measured with packets the client can observe.

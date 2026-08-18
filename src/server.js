@@ -72,6 +72,16 @@ class Server extends Emitter {
     return this.rpc.broadcast(name, data);
   }
 
+  /** Cluster-wide presence, introspection and node-to-node messaging. */
+  get cluster() {
+    return this.rpc.cluster;
+  }
+
+  /** The local client with this id; undefined when not on this instance. */
+  getClient(id) {
+    return this.rpc.getClient(id);
+  }
+
   #onConnection(socket, req) {
     this.rpc.attachSocket(socket, {
       headers: req.headers,

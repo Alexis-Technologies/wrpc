@@ -293,6 +293,42 @@ expectAssignable<wrpc.RpcServerOptions>({ router, generateId: () => 'id-1' });
 expectAssignable<wrpc.RpcServerOptions>({ router, introspection: 'session', maxCalls: 64 });
 expectAssignable<wrpc.ServerOptions>({ router, maxBodySize: 1024 });
 
+// Cluster: identity, replicated presence, introspection, commands, messaging
+expectType<string>(client.id);
+expectType<Record<string, unknown>>(client.data);
+expectType<Promise<unknown>>(client.ask('chat/confirm', { q: 1 }, { timeout: 1000 }));
+expectType<Promise<unknown>>(client.expectAnswer('id-1', 1000));
+expectType<boolean>(client.settleAnswer({ id: 'id-1', result: 1 }));
+expectType<wrpc.Cluster>(rpc.cluster);
+expectType<Client | undefined>(rpc.getClient('node-1.abc'));
+// The shell delegates, and Cluster is a VALUE export (instanceof works).
+expectType<wrpc.Cluster>(server.cluster);
+expectType<Client | undefined>(server.getClient('node-1.abc'));
+expectType<typeof wrpc.Cluster>(wrpc.Cluster);
+expectType<string>(rpc.cluster.instanceId);
+expectType<string>(rpc.cluster.epoch);
+expectType<boolean>(rpc.cluster.connected);
+expectType<number>(rpc.cluster.count('chat'));
+expectType<{ total: number; instances: Record<string, number> }>(rpc.cluster.presence('chat'));
+expectType<Array<string>>(rpc.cluster.instances());
+expectType<Promise<Array<wrpc.ClientDescriptor> & { incomplete?: boolean }>>(rpc.cluster.fetchClients({ room: 'x' }));
+expectType<void>(rpc.cluster.join('node-1.abc', 'ops'));
+expectType<void>(rpc.cluster.leave({ room: 'chat' }, 'archive'));
+expectType<void>(rpc.cluster.disconnect({}));
+expectType<void>(rpc.cluster.sendEvent('cache/invalidate', { key: 'users' }));
+expectType<Promise<wrpc.ClusterAskResult>>(rpc.cluster.ask('stats', {}, { timeout: 500 }));
+expectType<void>(rpc.cluster.respond('stats', (data, from) => ({ data, from })));
+expectType<boolean>(rpc.cluster.unrespond('stats'));
+expectAssignable<wrpc.RpcServerOptions>({ router, cluster: { presenceInterval: 1000, requestTimeout: 500 } });
+
+// Acks: the broadcast question aggregates, never rejects
+expectType<Promise<wrpc.AskResult>>(rpc.to('chat').ask('chat/poll', { q: 1 }, { timeout: 1000 }));
+declare const askResult: wrpc.AskResult;
+expectType<Array<unknown>>(askResult.answers);
+expectType<Array<{ message: string; code: number }>>(askResult.errors);
+expectType<number>(askResult.expected);
+expectType<boolean>(askResult.incomplete);
+
 // Hooks: three registration levels type-check, unknown phases do not
 const hook: wrpc.Hook = async (ctx, payload) => {
   void ctx.state;
@@ -342,6 +378,10 @@ expectError<wrpc.WrpcClientOptions>({ reconnect: { minDelay: '100' } });
 declare const wsClient: WrpcClient;
 expectType<number>(wsClient.attempt);
 expectType<void>(wsClient.sendEvent('chat/typing', { on: true }));
+// The receiving half of a server ask: one responder per name.
+expectType<void>(wsClient.respond('chat/confirm', (data) => ({ ok: true, data })));
+expectType<void>(wsClient.respond('chat/confirm', async () => 'answer'));
+expectType<boolean>(wsClient.unrespond('chat/confirm'));
 
 // ---------------------------------------------------------------------------
 // Contract-first typed client. The contract is a plain interface; nothing is

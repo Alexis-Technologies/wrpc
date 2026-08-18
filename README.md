@@ -62,9 +62,10 @@ reimplementation.
 | --- | --- | --- | --- |
 | Transport | WebSocket, HTTP, SSE, worker port | HTTP, WebSocket | WebSocket + long-poll fallback |
 | Types | contract-first + codegen, no build step | TypeScript inference | none built in |
-| Realtime | subscriptions, events, rooms | subscriptions | events, rooms |
+| Realtime | subscriptions, events, rooms, acks | subscriptions | events, rooms, acks |
 | Binary | streams with backpressure | ❌ | ❌ (messages only) |
 | Scaling | rooms backplane (any pub/sub) | your own | adapters |
+| Cluster ops | fetchClients, commands, presence (local read) | your own | fetchSockets (round-trip) |
 | Runtime deps | **0** | a few | several |
 | Needs TypeScript | ❌ | effectively yes | ❌ |
 
@@ -112,16 +113,16 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 29.3 KB | **10.1 KB** | 11 KB |
-| `@alexify/wrpc` — node (client + server) | 108.1 KB | 36.3 KB | — |
-| `@alexify/wrpc/ws` (WebSocket engine) | 20.6 KB | 7.5 KB | — |
-| `@alexify/wrpc/engine` (engine port) | 21.1 KB | 7.7 KB | — |
-| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 13.1 KB | 5.4 KB | — |
-| `@alexify/wrpc/fastify` | 86.9 KB | 30.0 KB | — |
-| `@alexify/wrpc/express` | 81.6 KB | 27.9 KB | — |
-| `@alexify/wrpc/scaling` (rooms backplane) | 3.9 KB | 1.7 KB | — |
-| `@alexify/wrpc/sse` — browser (client transport) | 32.0 KB | **11.0 KB** | 12 KB |
-| `@alexify/wrpc/sse` — node | 37.1 KB | 12.8 KB | — |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 30.1 KB | **10.3 KB** | 11 KB |
+| `@alexify/wrpc` — node (client + server) | 117.2 KB | 38.8 KB | — |
+| `@alexify/wrpc/ws` (WebSocket engine) | 20.7 KB | 7.5 KB | — |
+| `@alexify/wrpc/engine` (engine port) | 21.2 KB | 7.7 KB | — |
+| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 13.5 KB | 5.5 KB | — |
+| `@alexify/wrpc/fastify` | 100.6 KB | 34.3 KB | — |
+| `@alexify/wrpc/express` | 95.3 KB | 32.2 KB | — |
+| `@alexify/wrpc/scaling` (rooms backplane) | 4.1 KB | 1.7 KB | — |
+| `@alexify/wrpc/sse` — browser (client transport) | 32.8 KB | **11.2 KB** | 12 KB |
+| `@alexify/wrpc/sse` — node | 41.1 KB | 13.9 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 2.4 KB | **1.0 KB** | 2 KB |
 
 The Node-only rows are reported for visibility into what each subpath pulls in
@@ -211,10 +212,10 @@ for await (const message of client.api.chat.onMessage.iterate()) {
 | Area | What you get |
 | ---- | ------------ |
 | **RPC** | [Router and procedures](https://wrpc.vercel.app/guide/router) with access control, [Standard Schema](https://standardschema.dev) validators, timeouts, concurrency queues and versioned units |
-| **Realtime** | [Events both ways](https://wrpc.vercel.app/guide/rooms), [rooms](https://wrpc.vercel.app/guide/rooms), [subscriptions with resume](https://wrpc.vercel.app/guide/subscriptions), cancellation, call batching |
+| **Realtime** | [Events both ways](https://wrpc.vercel.app/guide/rooms), [rooms](https://wrpc.vercel.app/guide/rooms), [acks](https://wrpc.vercel.app/guide/rooms#asking-a-room) (`client.ask`, `to(room).ask`), [subscriptions with resume](https://wrpc.vercel.app/guide/subscriptions), cancellation, call batching |
 | **Streams** | [Binary upload/download](https://wrpc.vercel.app/guide/streams) interleaved on one connection, with end-to-end backpressure |
 | **Sessions** | [Cookie-backed sessions](https://wrpc.vercel.app/guide/sessions) restored on reconnect, pluggable store, CSRF-aware REST dispatch |
-| **Scaling** | [Rooms backplane](https://wrpc.vercel.app/guide/scaling) over any pub/sub; Redis and in-memory adapters included |
+| **Scaling** | [Rooms backplane](https://wrpc.vercel.app/guide/scaling) over any pub/sub; Redis and in-memory adapters included; [cluster layer](https://wrpc.vercel.app/guide/scaling#the-cluster-layer) — replicated presence (`count` with no round-trip), `fetchClients`, cross-instance commands, node-to-node ask |
 | **Transports** | WebSocket, plain HTTP, [Server-Sent Events](https://wrpc.vercel.app/guide/sse), Service Worker `MessagePort` |
 | **Hosts** | Batteries-included [server](https://wrpc.vercel.app/guide/server), or [fastify](https://wrpc.vercel.app/guide/adapters/fastify) / [express](https://wrpc.vercel.app/guide/adapters/express) / [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws) / bare `node:http` |
 | **Client** | Exponential backoff with full jitter, app-level heartbeat, automatic re-`load()` and re-subscribe, offline/online |

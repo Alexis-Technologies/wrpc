@@ -116,7 +116,38 @@ Three rules worth committing to memory:
 It exists for cases where an event is already being fanned out by something
 else; without a backplane it does nothing.
 
+## Asking a room
+
+`ask()` is `emit()` that waits for answers. Each receiving client registers
+one responder per event name; the broadcast collects every answer and every
+failure — it never rejects, because a question with many answerers has no
+single failure:
+
+```js
+// Browser
+client.respond('chat/poll', async ({ question }) => ({ vote: 'yes' }));
+
+// Server
+const { answers, errors, expected, incomplete } =
+  await server.to('chat').ask('chat/poll', { question: 'ready?' }, { timeout: 5000 });
+```
+
+- `answers` — what the responders returned; `errors` — per-client failures
+  (`501` no responder, `408` timeout, `503` disconnected mid-question).
+- `expected` — how many clients were asked, across every instance with a
+  [backplane](./scaling); `local()` keeps the question here.
+- `incomplete` — `true` only when a remote instance never reported back.
+
+One peer is asked directly with `client.ask(name, data, { timeout })`, which
+resolves with that answer or rejects with the same codes. On the wire an ask
+is the ordinary event packet plus an `id`, answered by the ordinary
+`callback` — see the [protocol](../reference/protocol#event-both-directions).
+
 ## The client
+
+Every client has an `id` (instance-prefixed — the [cluster](./scaling)
+addresses commands with it) and a `data` bag the application may fill;
+`fetchClients` descriptors carry both.
 
 `context.client` is the server-side handle to one peer. Beyond rooms and
 sessions:
@@ -124,6 +155,7 @@ sessions:
 | Member | What it is |
 | --- | --- |
 | `client.sendEvent(name, data)` | Send an event to this peer (`emit` is the local `Emitter` emit). |
+| `client.ask(name, data, opts)` | Send an event and await the peer's registered answer. |
 | `client.send(packet)` | Send a raw packet. `false` when the transport is above its high-water mark. |
 | `client.drain()` | Resolves when the transport drained — or when it closed. |
 | `client.persistent` | `false` on HTTP: no events, no subscriptions, no streams. |

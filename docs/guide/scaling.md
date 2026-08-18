@@ -139,17 +139,77 @@ balancer need a shared [session store](./sessions#stores) as well — the defaul
 `MemorySessionStore` lives in one process, so a client that reconnects to a
 different instance would arrive anonymous.
 
+## The cluster layer
+
+On top of room fan-out, the same backplane powers `server.cluster` —
+presence, introspection and node-to-node messaging. It is always there:
+without a backplane every operation degrades to its local half, so
+application code never branches on the deployment.
+
+Two more channels join `broadcast`/`room:<name>`, both held for the life of
+the process: `cluster` (every instance — presence, wide requests and
+commands) and `inst:<instanceId>` (one instance — its answers and addressed
+commands).
+
+### Presence: replicated, read locally
+
+```js
+server.cluster.count('chat');     // cluster-wide membership — no network
+server.cluster.presence('chat');  // { total, instances: { 'node-1': 2, … } }
+server.cluster.instances();       // live instance ids, this one first
+```
+
+`count()` and `presence()` are **local sums**: every join/leave publishes a
+±1 delta, and a periodic snapshot (`cluster.presenceInterval`, default 5 s)
+corrects whatever the at-most-once broker dropped — a lost delta heals
+within one interval. A node that goes silent for `presenceTimeout` (default
+3× the interval) is evicted; a graceful `close()` says goodbye and is
+evicted immediately; a restart carries a fresh epoch, so its counters are
+replaced, never doubled. `rooms.count(room)` and `members(room)` remain the
+LOCAL numbers — zero-cost reads for code that wants exactly this instance.
+
+### Introspection and commands
+
+```js
+const clients = await server.cluster.fetchClients({ room: 'chat' });
+// [{ id, instance, rooms, data, transport, session }, …] from every node
+
+server.cluster.join(clientId, 'ops');          // addressed: ONE instance hears it
+server.cluster.leave({ room: 'chat' }, 'x');   // filter: applied on every instance
+server.cluster.disconnect({ room: 'banned' });
+```
+
+`client.id` is instance-prefixed (`<instanceId>.<generateId()>`), so an
+id-addressed command travels as **one message to one node** — no
+cluster-wide filtering. `fetchClients` knows its respondent set from
+presence and resolves the moment every live node answered; the timeout
+(`cluster.requestTimeout`, default 2 s) is a backstop that resolves the
+partial array with a non-enumerable `incomplete: true`, never silently.
+`client.data` is the application's bag and rides along in descriptors.
+
+### Node-to-node messaging
+
+```js
+server.cluster.sendEvent('cache/invalidate', { key });   // fire-and-forget
+server.cluster.on('cache/invalidate', ({ key }) => { … }); // on OTHER nodes
+
+server.cluster.respond('stats', async () => ({ load: cpu() }));
+const { answers, errors, incomplete } = await server.cluster.ask('stats');
+```
+
+As everywhere in wrpc, `emit` is the local Emitter emit; the wire send is
+`sendEvent`. `ask()` collects one answer per node — a node without a
+responder contributes an error entry, not silence.
+
 ## What stays per-instance
 
-The backplane carries **events** between instances — nothing else. Three
-things deliberately stay local, and a deployment has to account for them:
+The backplane carries events, presence and requests between instances —
+not connections themselves. Two things deliberately stay local, and a
+deployment has to account for them:
 
 - **SSE channels.** A channel lives on the instance that created it, so SSE
   needs sticky routing (cookie affinity). A misrouted request answers
   `409` and the client starts over — see the [SSE guide](./sse).
-- **Room membership counts.** `rooms.count(room)` and `members(room)` read
-  THIS instance's registry. With a backplane the emit reaches every
-  instance, but the numbers a handler sees are local — treat them as such.
 - **Event logs.** `createEventLog()` is per-process memory, and its ids are
   epoch-stamped so this is *visible*: a client resuming against another
   instance (or a restarted one) presents a foreign epoch, `since()` answers
