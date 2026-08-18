@@ -39,7 +39,11 @@ class MemoryBackplane {
     if (this.#closed) return;
     const handlers = this.#channels.get(this.#key(channel));
     if (!handlers || handlers.size === 0) return;
-    for (const handler of Array.from(handlers)) {
+    // No snapshot: the loop body only schedules, so nothing here can mutate
+    // `handlers` mid-iteration. (Contrast the copy in scaling/redis.js, whose
+    // loop calls handlers synchronously and therefore needs one.) The real
+    // safety is the membership re-check inside the microtask below.
+    for (const handler of handlers) {
       queueMicrotask(() => {
         // Unsubscribed between publish and delivery: a broker would not
         // deliver either.

@@ -363,3 +363,108 @@ test('batching: a real client over a real websocket', async (t) => {
   assert.strictEqual(mixed[0].value, 8);
   assert.strictEqual(mixed[1].reason.code, 418);
 });
+
+// Above ServerHttpTransport's INDEX_THRESHOLD, #ordered switches from the
+// linear scan to an id-indexed pass. Both must produce identical output, so
+// the large-batch cases below exist to reach the second path at all — the
+// suites above never exceed a handful of answers.
+test('batching: a large batch is reordered identically to a small one', async (t) => {
+  const { server, port } = await createServer();
+  t.after(() => server.close());
+
+  const post = async (body) => {
+    const res = await fetch(`http://127.0.0.1:${port}/api`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body),
+    });
+    return { status: res.status, body: await res.json() };
+  };
+
+  await t.test('40 answers come back in request order, not completion order', async () => {
+    const size = 40;
+    const packets = [];
+    for (let i = 0; i < size; i++) {
+      packets.push({ type: 'call', id: `id-${i}`, method: 'math/double', args: { n: i } });
+    }
+    const { status, body } = await post(packets);
+    assert.strictEqual(status, 200);
+    assert.strictEqual(body.length, size);
+    for (let i = 0; i < size; i++) {
+      assert.strictEqual(body[i].id, `id-${i}`, `slot ${i} holds its own id`);
+      assert.strictEqual(body[i].result, i * 2);
+    }
+  });
+
+  await t.test('a repeated id consumes one answer per slot', async () => {
+    const size = 14;
+    const packets = [];
+    for (let i = 0; i < size; i++) {
+      // Every slot asks under the SAME id. The dispatcher answers the first
+      // and refuses the rest as already in flight, so all 14 answers share one
+      // id — which is precisely the case the id index must not collapse: it
+      // has to hand out one collected answer per slot, not the first one 14
+      // times.
+      packets.push({ type: 'call', id: 'dup', method: 'math/double', args: { n: i } });
+    }
+    const { status, body } = await post(packets);
+    assert.strictEqual(status, 200);
+    assert.strictEqual(body.length, size, 'every slot is answered');
+    for (const packet of body) assert.strictEqual(packet.id, 'dup');
+    const answered = body.filter((packet) => packet.result !== undefined);
+    const refused = body.filter((packet) => packet.error?.code === 400);
+    assert.strictEqual(answered.length, 1, 'exactly one call ran');
+    assert.strictEqual(refused.length, size - 1, 'the rest were refused as in-flight');
+    assert.match(refused[0].error.message, /already in flight/);
+  });
+
+  await t.test('a failing call keeps its slot among many successes', async () => {
+    const packets = [];
+    for (let i = 0; i < 20; i++) {
+      const failing = i === 7;
+      packets.push({
+        type: 'call',
+        id: `id-${i}`,
+        method: failing ? 'math/fail' : 'math/double',
+        args: { n: i },
+      });
+    }
+    const { body } = await post(packets);
+    assert.strictEqual(body.length, 20);
+    for (let i = 0; i < 20; i++) assert.strictEqual(body[i].id, `id-${i}`);
+    assert.strictEqual(body[7].error.code, 418);
+    assert.strictEqual(body[8].result, 16);
+  });
+});
+
+// The close() path pre-fills every unanswered slot and then runs #ordered, so
+// it reaches the indexed branch too once the batch is large enough.
+test('batching: a large batch closed mid-flight answers every slot', { timeout: 10000 }, async (t) => {
+  const { server, port } = await createServer();
+  t.after(() => server.close());
+
+  const packets = [{ type: 'call', id: 'first', method: 'math/double', args: { n: 21 } }];
+  for (let i = 0; i < 19; i++) {
+    packets.push({ type: 'call', id: `hang-${i}`, method: 'math/hang', args: {} });
+  }
+
+  const pending = fetch(`http://127.0.0.1:${port}/api`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(packets),
+  });
+
+  await timers.setTimeout(50);
+  for (const client of server.rpc.clients) client.close();
+
+  const res = await pending;
+  assert.strictEqual(res.status, 503);
+  const body = await res.json();
+  assert.deepStrictEqual(
+    body.map((packet) => packet.id),
+    packets.map((packet) => packet.id),
+    'every id is answered, in request order',
+  );
+  assert.strictEqual(body[0].result, 42, 'the one collected answer is not thrown away');
+  assert.strictEqual(body[1].error.code, 503);
+});

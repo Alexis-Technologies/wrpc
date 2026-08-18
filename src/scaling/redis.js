@@ -68,6 +68,9 @@ const createRedisAdapter = (options = {}) => {
   const onMessage = (channel, message) => {
     const set = handlers.get(channel);
     if (!set) return;
+    // Snapshot is load-bearing, unlike the one dropped in scaling/memory.js:
+    // these handlers run SYNCHRONOUSLY, so one that subscribes or unsubscribes
+    // during dispatch would otherwise perturb a live Set iterator.
     for (const handler of Array.from(set)) {
       try {
         handler(message);

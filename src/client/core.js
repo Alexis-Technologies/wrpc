@@ -567,7 +567,14 @@ class WrpcClient extends Emitter {
     // A batch of one is that packet: no reason to make the peer unwrap it.
     // The frame is assembled from the texts serialized at enqueue — flush
     // never runs JSON.stringify again.
-    const frame = pending.length === 1 ? pending[0].text : `[${pending.map((entry) => entry.text).join(',')}]`;
+    let frame = pending[0].text;
+    if (pending.length > 1) {
+      // Concatenated in place: map() built a throwaway array of the very texts
+      // already sitting in `pending`, just to hand them to join().
+      frame = `[${pending[0].text}`;
+      for (let i = 1; i < pending.length; i++) frame += `,${pending[i].text}`;
+      frame += ']';
+    }
     try {
       this.#transport.write(frame);
     } catch (error) {

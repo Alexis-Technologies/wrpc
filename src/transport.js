@@ -142,17 +142,51 @@ class ServerHttpTransport extends ServerTransport {
     return this.write(JSON.stringify(this.#ordered()), 200);
   }
 
+  // Building an id index makes this O(n), but the Map costs more than the
+  // quadratic it removes until the batch gets big: the linear scan wins 1.31x
+  // at 4 answers and 1.08x at 8, and loses 1.20x at 16 and 3.92x at 128.
+  // Re-run bench/batch-ordering.js before moving this.
+  static #INDEX_THRESHOLD = 12;
+
   #ordered() {
-    const pending = this.#collected.slice();
+    const collected = this.#collected;
+    if (collected.length >= ServerHttpTransport.#INDEX_THRESHOLD) return this.#orderedIndexed();
+    const pending = collected.slice();
     const answers = [];
     for (const id of this.#batch) {
       const index = pending.findIndex((packet) => packet.id === id);
       if (index < 0) continue;
-      answers.push(...pending.splice(index, 1));
+      answers.push(pending[index]);
+      pending.splice(index, 1);
     }
     // Anything with no matching id (a structure error carries an empty one)
     // still has to be reported, so it goes at the end rather than nowhere.
-    answers.push(...pending);
+    for (let i = 0; i < pending.length; i++) answers.push(pending[i]);
+    return answers;
+  }
+
+  // Same output as the scan above, including the two behaviours that are easy
+  // to lose: ids repeated within one batch consume one collected answer each,
+  // and unmatched answers trail in COLLECTION order, not index order.
+  #orderedIndexed() {
+    const collected = this.#collected;
+    const byId = new Map();
+    for (let i = 0; i < collected.length; i++) {
+      const { id } = collected[i];
+      const bucket = byId.get(id);
+      if (bucket === undefined) byId.set(id, [i]);
+      else bucket.push(i);
+    }
+    const answers = [];
+    const taken = new Uint8Array(collected.length);
+    for (const id of this.#batch) {
+      const bucket = byId.get(id);
+      if (bucket === undefined || bucket.length === 0) continue;
+      const index = bucket.shift();
+      taken[index] = 1;
+      answers.push(collected[index]);
+    }
+    for (let i = 0; i < collected.length; i++) if (taken[i] === 0) answers.push(collected[i]);
     return answers;
   }
 
@@ -186,7 +220,8 @@ class ServerHttpTransport extends ServerTransport {
     if (this.#responded) return;
     if (!this.#batch) return void this.error(503);
     const message = http.STATUS_CODES[503];
-    const answered = new Set(this.#collected.map((packet) => packet.id));
+    const answered = new Set();
+    for (let i = 0; i < this.#collected.length; i++) answered.add(this.#collected[i].id);
     for (const id of this.#batch) {
       if (answered.has(id)) continue;
       answered.add(id);

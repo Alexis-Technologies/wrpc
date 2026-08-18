@@ -107,7 +107,15 @@ class EventLog {
     if (cursor >= this.#next - 1) return [];
     const oldest = this.#entries.length > 0 ? this.#entries[0].n : this.#next;
     if (cursor < oldest - 1) return null; // the gap is older than the buffer
-    return this.#entries.filter((entry) => entry.n > cursor).map((entry) => tracked(entry.id, entry.data));
+    // Entries are appended in order, so the first one past the cursor marks
+    // the start of the tail — one pass, one array, instead of filter().map()
+    // building two.
+    const missed = [];
+    for (let i = 0; i < this.#entries.length; i++) {
+      const entry = this.#entries[i];
+      if (entry.n > cursor) missed.push(tracked(entry.id, entry.data));
+    }
+    return missed;
   }
 
   clear() {

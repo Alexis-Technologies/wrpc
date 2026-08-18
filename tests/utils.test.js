@@ -142,6 +142,107 @@ test('Emitter', async (t) => {
     emitter.on('close', () => {});
     assert.deepStrictEqual(emitter.eventNames().sort(), ['close', 'data']);
   });
+
+  // The contract every emit() shape must preserve, characterized here because
+  // `void emitter.emit('close')` is the house style: a listener's SYNCHRONOUS
+  // throw has to surface as a rejection, never as a throw escaping into a
+  // socket handler. Written against the pre-fast-path implementation.
+  await t.test('a synchronously throwing listener rejects instead of throwing', async () => {
+    const emitter = new Emitter();
+    emitter.on('boom', () => {
+      throw new Error('sync boom');
+    });
+    let escaped = null;
+    let promise = null;
+    try {
+      promise = emitter.emit('boom', 1);
+    } catch (error) {
+      escaped = error;
+    }
+    assert.strictEqual(escaped, null, 'emit must not throw synchronously');
+    await assert.rejects(promise, /sync boom/);
+  });
+
+  await t.test('a throwing listener does not stop the listeners after it', async () => {
+    const emitter = new Emitter();
+    const ran = [];
+    emitter.on('boom', () => {
+      ran.push('a');
+      throw new Error('sync boom');
+    });
+    emitter.on('boom', () => ran.push('b'));
+    await assert.rejects(emitter.emit('boom'), /sync boom/);
+    assert.deepStrictEqual(ran, ['a', 'b']);
+  });
+
+  await t.test('an async listener rejection surfaces on the emit promise', async () => {
+    const emitter = new Emitter();
+    emitter.on('boom', async () => {
+      throw new Error('async boom');
+    });
+    await assert.rejects(emitter.emit('boom'), /async boom/);
+  });
+
+  await t.test('emit resolves to undefined whatever a listener returns', async () => {
+    const emitter = new Emitter();
+    emitter.on('value', () => 42);
+    assert.strictEqual(await emitter.emit('value'), undefined);
+    const asyncEmitter = new Emitter();
+    asyncEmitter.on('value', async () => 42);
+    assert.strictEqual(await asyncEmitter.emit('value'), undefined);
+  });
+
+  await t.test('emit awaits an async listener before resolving', async () => {
+    const emitter = new Emitter();
+    let done = false;
+    emitter.on('slow', async () => {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+      done = true;
+    });
+    await emitter.emit('slow');
+    assert.strictEqual(done, true);
+  });
+
+  // off() splices without deleting an emptied record, so an event with a live
+  // entry and zero listeners is reachable and must still resolve.
+  await t.test('emit on an event emptied by off resolves', async () => {
+    const emitter = new Emitter();
+    const listener = () => {};
+    emitter.on('data', listener);
+    emitter.off('data', listener);
+    assert.strictEqual(emitter.listenerCount('data'), 0);
+    await assert.doesNotReject(emitter.emit('data', 1));
+  });
+
+  await t.test('a lone once listener fires exactly once and clears the event', async () => {
+    const emitter = new Emitter();
+    let calls = 0;
+    emitter.once('tick', () => calls++);
+    await emitter.emit('tick');
+    await emitter.emit('tick');
+    assert.strictEqual(calls, 1);
+    assert.deepStrictEqual(emitter.eventNames(), []);
+  });
+
+  await t.test('a once listener that throws still rejects and is still removed', async () => {
+    const emitter = new Emitter();
+    let calls = 0;
+    emitter.once('boom', () => {
+      calls++;
+      throw new Error('once boom');
+    });
+    await assert.rejects(emitter.emit('boom'), /once boom/);
+    await emitter.emit('boom');
+    assert.strictEqual(calls, 1);
+  });
+
+  await t.test('an error event with a listener does not throw', async () => {
+    const emitter = new Emitter();
+    const seen = [];
+    emitter.on('error', (error) => seen.push(error.message));
+    await emitter.emit('error', new Error('handled'));
+    assert.deepStrictEqual(seen, ['handled']);
+  });
 });
 
 test('jsonParse', () => {

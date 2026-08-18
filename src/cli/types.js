@@ -76,7 +76,7 @@ const parseArgs = (argv) => {
     if (arg === '--version' || arg === '-v') return { version: true };
     // Everything after '--' is positional, even if it looks like a flag.
     if (arg === '--') {
-      positional.push(...argv.slice(i + 1));
+      for (let n = i + 1; n < argv.length; n++) positional.push(argv[n]);
       break;
     }
     if (FLAGS_WITH_VALUE.has(arg)) {
@@ -87,8 +87,10 @@ const parseArgs = (argv) => {
       if (value === undefined || (value.startsWith('-') && value !== '-')) fail(`${arg} requires a value`);
       i++;
       if (arg === '--out') options.out = value;
-      else if (arg === '--units') options.units.push(...value.split(',').map((unit) => unit.trim()));
-      else if (arg === '--interface') options.interfaceName = value;
+      else if (arg === '--units') {
+        const names = value.split(',');
+        for (let n = 0; n < names.length; n++) options.units.push(names[n].trim());
+      } else if (arg === '--interface') options.interfaceName = value;
       else options.packageName = value;
       continue;
     }
@@ -272,7 +274,8 @@ const renderTypes = (introspection, options = {}) => {
         continue;
       }
       if (info.kind === 'subscription') subscriptions++;
-      body.push(...renderMethod(unitKey, method, info, warn));
+      const rendered = renderMethod(unitKey, method, info, warn);
+      for (let n = 0; n < rendered.length; n++) body.push(rendered[n]);
     }
     // A unit CAN have no callable methods — one that only declares inbound
     // event handlers (`on: {...}`) introspects as an empty method map. It is

@@ -268,7 +268,10 @@ class Cluster extends Emitter {
     node.clients = typeof clients === 'number' ? clients : 0;
     node.rooms = new Map();
     if (rooms && typeof rooms === 'object') {
-      for (const [room, count] of Object.entries(rooms)) {
+      // for...in, not Object.entries: this runs per presence snapshot per peer,
+      // and entries allocated an array plus a pair object for every room.
+      for (const room in rooms) {
+        const count = rooms[room];
         if (typeof count === 'number' && count > 0) node.rooms.set(room, count);
       }
     }
@@ -375,7 +378,10 @@ class Cluster extends Emitter {
     return this.#request('fetch', { sel }, options.timeout ?? this.#requestTimeout).then(({ payloads, incomplete }) => {
       const clients = local;
       for (const payload of payloads) {
-        if (Array.isArray(payload)) clients.push(...payload);
+        // push(...payload) is Function.prototype.apply in disguise and throws
+        // RangeError once a fan-in exceeds the engine's argument limit — a hard
+        // failure on exactly the large deployments this path exists to serve.
+        if (Array.isArray(payload)) for (let i = 0; i < payload.length; i++) clients.push(payload[i]);
       }
       if (incomplete) {
         this.#log.warn({ event: 'cluster.fetch.incomplete', received: clients.length });
@@ -402,11 +408,23 @@ class Cluster extends Emitter {
     this.#command('disconnect', target, undefined);
   }
 
+  // The three room ops, in one place. Both call sites below used to spell this
+  // chain out themselves and disagreed on the unknown-op case — one fell
+  // through to disconnect, the other ignored it — so the default is now the
+  // caller's to state: this returns false rather than picking one.
+  #applyOp(op, sel, rooms) {
+    if (op === 'join') this.#local.join(sel, rooms);
+    else if (op === 'leave') this.#local.leave(sel, rooms);
+    else if (op === 'disconnect') this.#local.disconnect(sel);
+    else return false;
+    return true;
+  }
+
   #command(op, target, rooms) {
     const apply = (sel) => {
-      if (op === 'join') this.#local.join(sel, rooms);
-      else if (op === 'leave') this.#local.leave(sel, rooms);
-      else this.#local.disconnect(sel);
+      // `op` here is a literal from join()/leave()/disconnect(), never user
+      // input, so an unknown one is a bug in this file and should be loud.
+      if (!this.#applyOp(op, sel, rooms)) throw new Error(`Unknown cluster command op '${op}'`);
     };
     // An addressed command rides the target instance's own channel — one
     // publish, one receiver — instead of asking every node to filter.
@@ -437,8 +455,10 @@ class Cluster extends Emitter {
       const errors = [];
       for (const payload of payloads) {
         if (!payload || typeof payload !== 'object') continue;
-        if (Array.isArray(payload.answers)) answers.push(...payload.answers);
-        if (Array.isArray(payload.errors)) errors.push(...payload.errors);
+        // Appended by index, not spread: see the note on fetchClients above.
+        const { answers: mine, errors: theirs } = payload;
+        if (Array.isArray(mine)) for (let i = 0; i < mine.length; i++) answers.push(mine[i]);
+        if (Array.isArray(theirs)) for (let i = 0; i < theirs.length; i++) errors.push(theirs[i]);
       }
       return { answers, errors, expected: meta.expected, incomplete };
     });
@@ -600,9 +620,9 @@ class Cluster extends Emitter {
       case 'cmd': {
         const { op, sel, rooms } = envelope;
         try {
-          if (op === 'join') this.#local.join(sel ?? {}, rooms);
-          else if (op === 'leave') this.#local.leave(sel ?? {}, rooms);
-          else if (op === 'disconnect') this.#local.disconnect(sel ?? {});
+          // `op` arrived from a peer: an unrecognised one is ignored, the same
+          // way the switch's own default ignores an unrecognised envelope type.
+          this.#applyOp(op, sel ?? {}, rooms);
         } catch (error) {
           this.#log.error({ err: error, event: 'cluster.command', op });
         }

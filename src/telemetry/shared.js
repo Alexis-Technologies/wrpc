@@ -42,8 +42,21 @@ const SETTER = {
   },
 };
 
+// At most two keys can ever be present, so the four possible answers are
+// prebuilt: Object.keys().filter() walked the whole packet and allocated two
+// arrays per inbound traced packet to rediscover one of these every time.
+const NO_KEYS = Object.freeze([]);
+const TRACEPARENT_ONLY = Object.freeze([TRACEPARENT]);
+const TRACESTATE_ONLY = Object.freeze([TRACESTATE]);
+const BOTH_KEYS = Object.freeze([TRACEPARENT, TRACESTATE]);
+
 const GETTER = {
-  keys: (packet) => Object.keys(packet).filter((key) => key === TRACEPARENT || key === TRACESTATE),
+  keys: (packet) => {
+    const hasParent = packet[TRACEPARENT] !== undefined;
+    const hasState = packet[TRACESTATE] !== undefined;
+    if (hasParent) return hasState ? BOTH_KEYS : TRACEPARENT_ONLY;
+    return hasState ? TRACESTATE_ONLY : NO_KEYS;
+  },
   get(packet, key) {
     if (key === 'traceparent') return packet[TRACEPARENT];
     if (key === 'tracestate') return packet[TRACESTATE];
@@ -148,7 +161,10 @@ const endSpanHandle = (handle, attributes) => {
     const span = handle?.span;
     if (!span) return;
     if (attributes) {
-      for (const [key, value] of Object.entries(attributes)) {
+      // for...in over a literal built in this package — no entries array, and
+      // no [key, value] pair object, per span end i.e. per traced call.
+      for (const key in attributes) {
+        const value = attributes[key];
         if (value !== undefined && value !== null) span.setAttribute?.(key, value);
       }
     }

@@ -1,5 +1,14 @@
 'use strict';
 
+// Every emit() answers with a promise, and a listener's SYNCHRONOUS throw has
+// to become a rejection: `void emitter.emit('close')` is the house style, and a
+// throw escaping it would land in a socket handler. The async-arrow wrapper on
+// the slow path buys exactly that, at one closure and one promise per listener
+// per emit. The overwhelmingly common shape is a single sync listener — a
+// transport's 'message', a stream's chunk push — so it is spelled out by hand:
+// 4.0 -> 14.3 M emit/s awaited, 4.8 -> 63.9 M fire-and-forget; bench/emitter.js.
+const RESOLVED = Promise.resolve();
+
 class Emitter {
   #events = new Map();
   #maxListeners = 10;
@@ -11,10 +20,26 @@ class Emitter {
   emit(eventName, value) {
     const event = this.#events.get(eventName);
     if (!event) {
-      if (eventName !== 'error') return Promise.resolve();
+      if (eventName !== 'error') return RESOLVED;
       throw new Error('Unhandled error');
     }
-    const listeners = event.on.slice();
+    const on = event.on;
+    // Gated on once.size because the sweep below may delete the whole record,
+    // and off() splices without deleting, so an emptied `on` is reachable too.
+    if (event.once.size === 0 && on.length < 2) {
+      if (on.length === 0) return RESOLVED;
+      let result;
+      try {
+        result = on[0](value);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      if (result === null || result === undefined) return RESOLVED;
+      return typeof result.then === 'function' ? Promise.resolve(result).then(() => undefined) : RESOLVED;
+    }
+    // More than one listener, or a once to sweep: snapshot first, because a
+    // listener may call off() while the eager invocation below is still going.
+    const listeners = on.slice();
     const promises = listeners.map(async (fn) => fn(value));
     if (event.once.size > 0) {
       const len = event.on.length;

@@ -94,9 +94,12 @@ const statusLine = (code) => `${code} ${http.STATUS_CODES[code] ?? 'Unknown'}`;
 // The core answers with `Set-Cookie` as an array and Content-Length as a
 // number; frameworks want strings and repeated header lines.
 const eachHeader = (headers, visit) => {
-  for (const [name, value] of Object.entries(headers)) {
+  // for...in over the core's own header literal: Object.entries allocated an
+  // array plus a [name, value] pair per header, per HTTP response.
+  for (const name in headers) {
+    const value = headers[name];
     if (Array.isArray(value)) {
-      for (const item of value) visit(name, String(item));
+      for (let i = 0; i < value.length; i++) visit(name, String(value[i]));
       continue;
     }
     visit(name, String(value));

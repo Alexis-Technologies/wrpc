@@ -579,8 +579,12 @@ class RpcServer extends Emitter {
       }
       if (typeof sel.room === 'string') return Array.from(this.#rooms.members(sel.room));
       // Persistent connections only: a per-request HTTP client is not a
-      // peer anyone means to enumerate, join or disconnect.
-      return Array.from(this.#clients).filter((client) => client.persistent);
+      // peer anyone means to enumerate, join or disconnect. Filtered while
+      // collecting — Array.from().filter() built the whole client list first
+      // and then threw most of it away.
+      const persistent = [];
+      for (const client of this.#clients) if (client.persistent) persistent.push(client);
+      return persistent;
     };
     return {
       count: (room) => this.#rooms.count(room),
@@ -591,17 +595,27 @@ class RpcServer extends Emitter {
         for (const client of this.#clients) if (client.persistent) clients++;
         return { rooms, clients };
       },
-      descriptors: (sel) =>
-        select(sel)
-          .filter((client) => client.persistent)
-          .map((client) => ({
+      // One pass: the filter+map chain allocated an intermediate array on top
+      // of the one select() already built.
+      descriptors: (sel) => {
+        const selected = select(sel);
+        const out = [];
+        for (let i = 0; i < selected.length; i++) {
+          const client = selected[i];
+          if (!client.persistent) continue;
+          const rooms = [];
+          for (const room of client.rooms) rooms.push(room);
+          out.push({
             id: client.id,
             instance: this.#instance,
-            rooms: [...client.rooms],
+            rooms,
             data: client.data,
             transport: client.transportKind,
             session: Boolean(client.session),
-          })),
+          });
+        }
+        return out;
+      },
       join: (sel, rooms) => {
         if (!Array.isArray(rooms)) return;
         for (const client of select(sel)) {
@@ -815,7 +829,12 @@ class RpcServer extends Emitter {
     const packet = jsonParse(body);
     if (!Array.isArray(packet)) return null;
     if (packet.length === 0 || packet.length > this.#limits.maxBatch) return null;
-    return packet.map((item) => (item && typeof item === 'object' ? item.id : undefined));
+    const ids = new Array(packet.length);
+    for (let i = 0; i < packet.length; i++) {
+      const item = packet[i];
+      ids[i] = item && typeof item === 'object' ? item.id : undefined;
+    }
+    return ids;
   }
 
   get sse() {
