@@ -1,0 +1,10 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32" role="img" aria-label="wrpc">
+  <!-- The Node.js hexagon, holding the two directions of an RPC: call out, callback back. -->
+  <path d="M16 2 28.12 9V23L16 30 3.88 23V9Z" fill="none" stroke="#5FA04E" stroke-width="2.2" stroke-linejoin="round"/>
+  <g fill="none" stroke="#5FA04E" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+    <path d="M9 12.6H21.4"/>
+    <path d="M18.9 10.1 21.4 12.6 18.9 15.1"/>
+    <path d="M23 19.4H10.6"/>
+    <path d="M13.1 16.9 10.6 19.4 13.1 21.9"/>
+  </g>
+</svg>

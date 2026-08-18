@@ -1,0 +1,143 @@
+/**
+ * Brand theme for wrpc — the same approach Pinia/Vite/Vue use: override VitePress
+ * CSS variables to restyle the default theme rather than fork its components.
+ *
+ * Palette: Node.js green (#5FA04E / #7DBE6C) on ink (#1B1C1E). wrpc is a Node.js
+ * protocol library, so it wears the platform's colour.
+ *
+ * Note on contrast: #5FA04E as link text on white is 3.17:1, which fails WCAG AA.
+ * So in the light theme brand-1/-2 are darkened greens (text and links, 5.6:1 and
+ * 4.4:1) and the pure Node green is reserved for filled surfaces, where the text
+ * on top is ink.
+ */
+
+:root {
+  /* ─── Brand colors (buttons, links, accents) ──────────────────────── */
+  --vp-c-brand-1: #3d7431;
+  --vp-c-brand-2: #4c8f3d;
+  --vp-c-brand-3: #5fa04e;
+  --vp-c-brand-soft: rgba(95, 160, 78, 0.16);
+
+  /* Default theme alias mappings (kept in sync with brand) */
+  --vp-c-default-1: var(--vp-c-gray-1);
+  --vp-c-default-2: var(--vp-c-gray-2);
+  --vp-c-default-3: var(--vp-c-gray-3);
+  --vp-c-default-soft: var(--vp-c-gray-soft);
+
+  --vp-c-tip-1: var(--vp-c-brand-1);
+  --vp-c-tip-2: var(--vp-c-brand-2);
+  --vp-c-tip-3: var(--vp-c-brand-3);
+  --vp-c-tip-soft: var(--vp-c-brand-soft);
+}
+
+.dark {
+  --vp-c-brand-1: #7dbe6c;
+  --vp-c-brand-2: #9bd08c;
+  --vp-c-brand-3: #417e33;
+  --vp-c-brand-soft: rgba(95, 160, 78, 0.18);
+}
+
+/* ─── Buttons: ink on Node green, the way nodejs.org does its CTAs ─── */
+:root {
+  --vp-button-brand-bg: #5fa04e;
+  --vp-button-brand-hover-bg: #7dbe6c;
+  --vp-button-brand-active-bg: #417e33;
+  --vp-button-brand-border: transparent;
+  --vp-button-brand-hover-border: transparent;
+  --vp-button-brand-active-border: transparent;
+  --vp-button-brand-text: #1b1c1e;
+  --vp-button-brand-hover-text: #1b1c1e;
+  --vp-button-brand-active-text: #1b1c1e;
+}
+
+/* ─── Home hero: gradient title + glowing logo blob (the "Pinia look") ─ */
+:root {
+  --vp-home-hero-name-color: transparent;
+  --vp-home-hero-name-background: -webkit-linear-gradient(120deg, #5fa04e 25%, #9bd08c);
+
+  /* Deeper than the mark itself: the logo is #5FA04E, so an equally bright halo
+     would swallow it. Forest green keeps the mark the brightest thing on screen. */
+  --vp-home-hero-image-background-image: linear-gradient(-45deg, #417e33 40%, #22431b 100%);
+  --vp-home-hero-image-filter: blur(48px);
+}
+
+@media (min-width: 640px) {
+  :root {
+    --vp-home-hero-image-filter: blur(72px);
+  }
+}
+
+@media (min-width: 960px) {
+  :root {
+    --vp-home-hero-image-filter: blur(96px);
+  }
+}
+
+/* ─── Code block inline highlight accent ──────────────────────────────── */
+:root {
+  --vp-code-block-bg: var(--vp-c-bg-alt);
+}
+
+/* Slightly tighter, friendlier hero on wide screens */
+.VPHero .name {
+  letter-spacing: -0.02em;
+}
+
+/* ─── Home feature cards: glow on hover (clickable, no layout shift) ───── */
+.VPFeatures .VPFeature {
+  transition:
+    border-color 0.25s ease,
+    background-color 0.25s ease,
+    box-shadow 0.25s ease;
+}
+
+.VPFeatures .VPFeature.link:hover {
+  border-color: var(--vp-c-brand-3);
+  box-shadow: 0 8px 24px rgba(65, 126, 51, 0.16);
+}
+
+.dark .VPFeatures .VPFeature.link:hover {
+  box-shadow: 0 8px 24px rgba(125, 190, 108, 0.14);
+}
+
+/* Make the "learn more" link adopt the brand color on card hover */
+.VPFeatures .VPFeature.link:hover .link-text-value {
+  color: var(--vp-c-brand-1);
+}
+
+/* ─── Mermaid diagrams: centre them and let wide graphs scroll ─────────── */
+.mermaid {
+  display: flex;
+  justify-content: center;
+  overflow-x: auto;
+  margin: 20px 0;
+}
+
+/**
+ * Mermaid sizes a node from its own measurement pass, which does not know about
+ * VitePress' global line-height (1.5). Multi-line labels then overflow the box
+ * they were fitted to. Pinning the label line-height back to mermaid's own
+ * assumption keeps the text inside the shape.
+ */
+.mermaid .nodeLabel,
+.mermaid .edgeLabel,
+.mermaid .cluster-label,
+.mermaid foreignObject div,
+.mermaid foreignObject span,
+.mermaid foreignObject p {
+  line-height: 1.25;
+  margin: 0;
+}
+
+/**
+ * Edge labels render on their own opaque rect, which mermaid fills from the page
+ * background it assumed at init — not the one in effect after a theme toggle.
+ * Pinning both to VitePress' own tokens keeps them readable in either theme.
+ */
+.mermaid .edgeLabel,
+.mermaid .edgeLabel rect,
+.mermaid .edgeLabel foreignObject div {
+  background-color: var(--vp-c-bg) !important;
+  fill: var(--vp-c-bg) !important;
+  color: var(--vp-c-text-1);
+}

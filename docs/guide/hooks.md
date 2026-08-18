@@ -26,6 +26,27 @@ const router = defineRouter(units, {
 });
 ```
 
+## The pipeline
+
+```mermaid
+flowchart TD
+  P["call packet"] --> R{"onRequest"}
+  R -->|session restore + access| V1{"preValidation"}
+  V1 -->|input validator| V2{"preHandler"}
+  V2 -->|handler| V3{"preSerialization"}
+  V3 -->|output validator| SND{"onSend"}
+  SND -->|write the callback| RSP{"onResponse"}
+  R -.->|throw| E
+  V1 -.->|throw| E
+  V2 -.->|throw| E
+  V3 -.->|throw| E
+  E{"onTimeout on 408,<br>then onError"} --> WE["error callback"]
+```
+
+Diamonds are hook phases; the labels on the arrows are the machinery that runs
+between them. Everything on the solid path can end the call by throwing —
+`onResponse` runs after the write and cannot.
+
 ## Phases
 
 | Phase | When | Payload | Typical use |

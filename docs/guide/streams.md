@@ -119,6 +119,24 @@ pushes back through the queue, through the socket, and into TCP — the producer
 on the other end sees `write()` return `false`. Nothing between them buffers
 without bound.
 
+```mermaid
+flowchart LR
+  P["producer<br>stream.write(chunk)"] --> F["chunkEncode<br>binary framing"]
+  F --> SB["socket buffer"]
+  SB --> TCP(["TCP window"])
+  TCP --> RB["receive buffer"]
+  RB --> Q["WrpcReadable<br>highWaterMark: 32"]
+  Q --> CN["consumer"]
+  CN -. slow .-> Q
+  Q -. pause reads .-> RB
+  SB -. above high-water mark .-> P
+```
+
+Every dotted arrow is one hop of the same signal travelling backwards: a slow
+consumer pauses socket reads, TCP stops moving bytes, the sender's buffer fills,
+and `write()` starts answering `false`. Nothing in between buffers without
+bound.
+
 ::: tip Verified, not asserted
 `tests/perf/stream-memory.perf.js` (`pnpm test:perf`) streams 1 GiB through and
 fails if RSS grows with it.

@@ -23,6 +23,29 @@ const router = defineRouter({
 });
 ```
 
+## A call, end to end
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as client
+  participant D as dispatcher
+  participant R as Router
+  participant P as procedure
+  C->>D: call { id, unit, name, args }
+  D->>R: getProcedure(unit, name)
+  R-->>D: procedure + its flattened hook chain
+  D->>P: invoke(context, args)
+  Note over P: queue slot → access → input →<br>handler → output, under a timeout
+  P-->>D: result
+  D-->>C: callback { id, result }
+```
+
+A failure takes the same path back: the procedure throws, and the client
+receives `callback { id, error: { code, message } }` with the error's numeric
+`code`. Nothing about that shape depends on the transport — the same exchange
+happens over [HTTP](./server), [SSE](./sse) and a Service Worker port.
+
 ## Procedures
 
 `procedure(options)` builds one. Everything but `handler` is optional:

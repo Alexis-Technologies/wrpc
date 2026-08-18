@@ -166,6 +166,29 @@ when the id has fallen out of the buffer**. That third case is why it is not
 just an array: silently skipping a gap is the one outcome a resumable feed must
 never produce.
 
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as client
+  participant S as server
+  participant L as event log
+  C->>S: subscribe { id, lastEventId }
+  S->>L: since(lastEventId)
+  alt id still in the buffer
+    L-->>S: the missed values
+    S-->>C: data × n (replay)
+  else id fell out of the buffer
+    L-->>S: null
+    Note over S: a real gap — never skipped silently
+    S-->>C: data { type: "snapshot" }
+  end
+  loop live
+    S-->>C: data { tracked id, value }
+  end
+  C->>S: unsubscribe
+  S-->>C: end
+```
+
 The client re-subscribes automatically after a reconnect, sending the last
 tracked id it saw. Nothing extra to write.
 

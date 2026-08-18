@@ -23,6 +23,16 @@ context.server.to('lobby').except(context.client).emit('chat/message', { text: '
 context.server.broadcast('system/announce', { up: true });
 ```
 
+```mermaid
+flowchart TD
+  E["server.to('lobby').except(sender).emit(name, data)"] --> R{"in room<br>lobby?"}
+  R -- no --> D1["not delivered"]
+  R -- yes --> X{"excluded?"}
+  X -- yes --> D2["not delivered"]
+  X -- no --> P["event packet on that client's transport"]
+  B["server.broadcast(name, data)"] --> P
+```
+
 An event name is `unit/name`. The client dispatches on the `unit` half:
 
 ```js

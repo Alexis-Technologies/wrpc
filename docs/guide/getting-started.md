@@ -6,6 +6,40 @@ object out of it at runtime. Calls, server → client events, subscriptions,
 rooms and binary streams all ride on one connection — and the package has
 **no runtime dependencies at all**.
 
+## How it fits together
+
+One connection carries every feature on this site, and every box on the server
+side is replaceable without touching your handlers:
+
+```mermaid
+flowchart LR
+  subgraph C["browser or Node.js"]
+    direction TB
+    app["your code<br>client.api.chat.send()"] --> cl["WrpcClient"]
+    cl --> ctr["transport<br>ws · http · sse · event"]
+  end
+
+  ctr <==> eng
+
+  subgraph S["Node.js server"]
+    direction TB
+    eng["engine<br>node · uWebSockets.js"] --> tr["ServerTransport"]
+    tr --> disp["dispatcher"]
+    disp --> rt["Router"]
+    rt --> h["your procedure"]
+    disp -.-> st["sessions · rooms · cluster"]
+  end
+
+  st -.-> bp[("backplane<br>Redis or memory")]
+```
+
+The client talks to an **engine** over a transport; the engine hands raw frames
+to a `ServerTransport`, the **dispatcher** turns them into packets, and the
+**router** decides which procedure runs. Swap the engine ([uWebSockets.js](./adapters/uws)),
+swap the transport ([SSE](./sse)), or mount the whole thing inside
+[Fastify](./adapters/fastify) or [Express](./adapters/express) — the router and
+the wire protocol do not change.
+
 ## Installation
 
 ```bash

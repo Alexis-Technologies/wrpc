@@ -8,13 +8,16 @@ hero:
   name: wrpc
   text: Fast, zero-dependency WebSocket RPC
   tagline: Router and procedures, subscriptions with resume, rooms that scale, and binary streams with real backpressure — for Node.js and browsers, with nothing in your lockfile.
+  image:
+    src: /logo-mark.svg
+    alt: wrpc
   actions:
     - theme: brand
       text: Get Started
       link: /guide/getting-started
     - theme: alt
-      text: Wire protocol
-      link: /reference/protocol
+      text: Why wrpc?
+      link: /guide/why
     - theme: alt
       text: View on GitHub
       link: https://github.com/Alexis-Technologies/wrpc
@@ -55,9 +58,14 @@ features:
     details: Declare the contract once and connect&lt;Api&gt;() types every call, or generate it from a running server with the wrpc types CLI. No TypeScript at runtime, ever.
     link: /guide/typed-client
     linkText: Type the client
+  - icon: 🛰️
+    title: Cluster-aware out of the box
+    details: Presence read from a local map, <code>fetchClients</code> across every node, addressed commands and node-to-node asks — on the same backplane the rooms use.
+    link: /guide/cluster
+    linkText: Go multi-instance
   - icon: 🌐
     title: Node.js and the browser
-    details: One protocol implementation, ~7 KB min+gzip in a browser bundle with no Node builtins — plus offline through a Service Worker and TanStack Query bindings at ~1 KB.
+    details: One protocol implementation, ~10 KB min+gzip in a browser bundle with no Node builtins — plus offline through a Service Worker and TanStack Query bindings at ~1 KB.
     link: /guide/client
     linkText: Client guide
 ---

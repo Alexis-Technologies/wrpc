@@ -9,6 +9,7 @@ const ogDescription =
 const repo = 'https://github.com/Alexis-Technologies/wrpc';
 const base = '/';
 const hostname = 'https://wrpc.vercel.app/';
+const ogImage = `${hostname}logo.png`;
 
 // Mirrors package.json "keywords" — kept as a one-term-per-line list so the
 // two stay easy to diff.
@@ -30,14 +31,11 @@ const keywords = [
   'typescript',
   'javascript',
   'node',
-  'browser',
   'opentelemetry',
   'observability',
   'tracing',
   'logging',
-  'hooks',
   'pino',
-  '@alexify/wrpc',
 ].join(', ');
 
 // schema.org structured data — helps search and AI engines understand the
@@ -51,6 +49,7 @@ const jsonLd = {
   applicationCategory: 'DeveloperApplication',
   operatingSystem: 'Node.js >= 22, modern browsers',
   url: hostname,
+  image: ogImage,
   downloadUrl: 'https://www.npmjs.com/package/@alexify/wrpc',
   codeRepository: repo,
   license: 'https://opensource.org/licenses/MIT',
@@ -60,8 +59,8 @@ const jsonLd = {
 };
 
 // https://vitepress.dev/reference/site-config
-export default withMermaid(
-  defineConfig({
+export default withMermaid({
+  ...defineConfig({
     title: '@alexify/wrpc',
     titleTemplate: ':title — wrpc',
     description: ogDescription,
@@ -72,6 +71,9 @@ export default withMermaid(
     sitemap: { hostname },
 
     head: [
+      ['link', { rel: 'icon', type: 'image/svg+xml', href: `${base}logo-mark.svg` }],
+      ['link', { rel: 'icon', type: 'image/png', href: `${base}favicon.png` }],
+      ['meta', { name: 'theme-color', content: '#5FA04E' }],
       ['meta', { name: 'author', content: 'Alexis Technologies' }],
       ['meta', { name: 'keywords', content: keywords }],
       ['meta', { name: 'robots', content: 'index, follow' }],
@@ -79,11 +81,22 @@ export default withMermaid(
       ['meta', { property: 'og:site_name', content: '@alexify/wrpc' }],
       ['meta', { property: 'og:title', content: ogTitle }],
       ['meta', { property: 'og:description', content: ogDescription }],
-      ['meta', { name: 'twitter:card', content: 'summary' }],
+      ['meta', { property: 'og:image', content: ogImage }],
+      ['meta', { name: 'twitter:card', content: 'summary_large_image' }],
       ['meta', { name: 'twitter:title', content: ogTitle }],
       ['meta', { name: 'twitter:description', content: ogDescription }],
+      ['meta', { name: 'twitter:image', content: ogImage }],
       ['script', { type: 'application/ld+json' }, JSON.stringify(jsonLd)],
     ],
+
+    // Mermaid pulls in a few CJS-only transitive deps (dayjs among them). Vite's
+    // dev server hands them to the browser unbundled, where `import dayjs from` has
+    // no default export and the whole app fails to boot. Pre-bundling them fixes dev;
+    // noExternal keeps mermaid inlined for the SSR build.
+    vite: {
+      optimizeDeps: { include: ['mermaid', 'dayjs'] },
+      ssr: { noExternal: ['mermaid'] },
+    },
 
     // Per-page canonical + og:url for clean SEO indexing.
     transformPageData(pageData) {
@@ -97,6 +110,8 @@ export default withMermaid(
     },
 
     themeConfig: {
+      logo: '/logo-mark.svg',
+
       // ─── Top navigation ──────────────────────────────────────────────
       nav: [
         { text: 'Guide', link: '/guide/getting-started', activeMatch: '/guide/' },
@@ -117,7 +132,10 @@ export default withMermaid(
         '/guide/': [
           {
             text: 'Introduction',
-            items: [{ text: 'Getting Started', link: '/guide/getting-started' }],
+            items: [
+              { text: 'Getting Started', link: '/guide/getting-started' },
+              { text: 'Why wrpc?', link: '/guide/why' },
+            ],
           },
           {
             text: 'Server',
@@ -130,6 +148,7 @@ export default withMermaid(
               { text: 'Subscriptions', link: '/guide/subscriptions' },
               { text: 'Binary streams', link: '/guide/streams' },
               { text: 'Scaling', link: '/guide/scaling' },
+              { text: 'Cluster', link: '/guide/cluster' },
             ],
           },
           {
@@ -137,6 +156,7 @@ export default withMermaid(
             items: [
               { text: 'Client', link: '/guide/client' },
               { text: 'Typed client', link: '/guide/typed-client' },
+              { text: 'Browser & bundling', link: '/guide/browser' },
               { text: 'Codegen CLI', link: '/guide/cli' },
               { text: 'TanStack Query', link: '/guide/query' },
             ],
@@ -153,6 +173,10 @@ export default withMermaid(
           {
             text: 'Operations',
             items: [
+              { text: 'Security', link: '/guide/security' },
+              { text: 'Running in production', link: '/guide/production' },
+              { text: 'Testing', link: '/guide/testing' },
+              { text: 'Performance', link: '/guide/performance' },
               { text: 'Logging', link: '/guide/logging' },
               { text: 'OpenTelemetry', link: '/guide/telemetry' },
             ],
@@ -165,6 +189,7 @@ export default withMermaid(
               { text: 'Wire protocol', link: '/reference/protocol' },
               { text: 'Wire format', link: '/reference/wire-format' },
               { text: 'Engine port', link: '/reference/engine' },
+              { text: 'Errors & close codes', link: '/reference/errors' },
             ],
           },
         ],
@@ -191,4 +216,20 @@ export default withMermaid(
       },
     },
   }),
-);
+
+  // ─── Mermaid ───────────────────────────────────────────────────────────
+  // Deliberately no `theme` here: vitepress-plugin-mermaid picks 'default' or
+  // 'dark' from VitePress' own isDark and re-renders on toggle, and anything we
+  // set would win over that and freeze the diagrams in one theme. Colors are
+  // therefore left to mermaid; only typography and layout are ours.
+  mermaid: {
+    fontFamily: 'var(--vp-font-family-base)',
+    flowchart: { useMaxWidth: true, htmlLabels: true, padding: 12 },
+    sequence: { useMaxWidth: true, actorMargin: 40, wrap: true },
+  },
+
+  mermaidPlugin: {
+    // `vp-raw` keeps VitePress' own markdown styling off the rendered SVG.
+    class: 'mermaid vp-raw',
+  },
+});

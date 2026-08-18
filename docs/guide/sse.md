@@ -36,6 +36,22 @@ GET  {basePath}/events  x-wrpc-channel: <id>  re-attaches to an existing one
 POST {basePath}         x-wrpc-channel: <id>  client -> server
 ```
 
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as client
+  participant S as server
+  C->>S: GET /api/events
+  S-->>C: ready { channel id }
+  Note over S: one server-side Client owns both halves
+  C->>S: POST /api with x-wrpc-channel
+  S-->>C: 202, no body
+  S-->>C: callback on the stream
+  Note over C,S: stream drops, channel held for `retention`
+  C->>S: GET /api/events with Last-Event-ID
+  S-->>C: replay of what was missed, then live frames
+```
+
 **The server mints the id** and hands it out exactly once, in the `ready`
 frame that opens every stream — a client never proposes its own. The channel
 is bound to the cookie identity of the GET that created it, and every

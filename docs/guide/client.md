@@ -127,6 +127,23 @@ jitter:
 delay = random(0, min(maxDelay, minDelay * factor ** attempt))
 ```
 
+```mermaid
+stateDiagram-v2
+  [*] --> connecting
+  connecting --> open: handshake ok
+  connecting --> waiting: failed
+  open --> waiting: socket closed
+  waiting --> connecting: after the jittered delay
+  waiting --> failed: retries exhausted
+  open --> restoring: reconnected
+  restoring --> open: units re-loaded,<br>subscriptions re-opened
+  failed --> [*]
+```
+
+`waiting → failed` emits `reconnect-failed`; `restoring → open` emits
+`reconnect`. A `restore-failed` on the way through `restoring` means a unit or
+subscription could not be rebuilt, and is reported rather than swallowed.
+
 Jittering the **whole window** rather than adding a small offset is what breaks
 up the thundering herd: after a server restart, a thousand clients that
 disconnected in the same millisecond would otherwise all come back in the same
@@ -230,5 +247,6 @@ bundler that honours the `browser` field — webpack, Vite, esbuild with
 `browser: true`), Parcel, Bun. It contains the client, the streams and the
 chunk helpers, and **no Node builtins** — the server half is not in it.
 
-The main entry is ~7 KB min+gzip in that build; `scripts/size.js` enforces a
-budget on it in CI.
+The main entry is ~10 KB min+gzip in that build; `scripts/size.js` enforces a
+budget on it in CI. See [Browser & bundling](./browser) for the full table, the
+`browser` field map, and what is deliberately missing from that entry.

@@ -33,6 +33,22 @@ the package still works.
 
 Two shapes satisfy the port, and the difference is who owns the network stack.
 
+```mermaid
+flowchart TD
+  subgraph HOSTED["hosted — standalone falsy"]
+    direction TB
+    h1["someone else's node:http server"] --> h2["engine.attach({ server, path })"]
+    h2 --> h3["'connection' → rpc.attachSocket"]
+    h2 -. "or handleUpgrade(req, socket, head)" .-> h3
+  end
+
+  subgraph STANDALONE["standalone — standalone: true"]
+    direction TB
+    s1["engine.attach({ path, onHttpCall })"] --> s2["engine.listen({ host, port })"]
+    s2 --> s3["engine owns HTTP and WS<br>server.httpServer is null"]
+  end
+```
+
 **Hosted** (`standalone` falsy) attaches to a listener someone else owns:
 
 ```js

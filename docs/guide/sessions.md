@@ -71,6 +71,33 @@ A dropped connection never deletes the session from the store. That is exactly
 what makes a reconnect cheap: sessions end through `finalizeSession()` or
 store-side expiry, and nothing else.
 
+## The lifecycle
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant B as client
+  participant S as server
+  participant T as SessionStore
+  B->>S: call auth/login
+  S->>T: set(token, state)
+  S-->>B: callback + Set-Cookie
+  B->>S: call profile/whoami
+  Note over S: cookie → restoreSession(token)
+  S->>T: get(token)
+  T-->>S: state
+  S-->>B: callback { user }
+  Note over B,S: connection drops
+  B->>S: reconnect, cookie replayed
+  S->>T: get(token)
+  Note over S: same session, new Client
+```
+
+A reconnect is a **new server-side client** carrying the **same session**: the
+cookie is what survives the socket. That is why room membership has to be
+re-applied by hand ([rooms](./rooms#rooms-and-reconnects)) while session state
+simply reappears.
+
 ## Cookies
 
 ```js
