@@ -57,10 +57,19 @@ const api = () =>
     },
   });
 
-test('isCodec: structural, both halves required', () => {
+test('isCodec: structural — a packet half, a rest section, or both', () => {
   assert.strictEqual(isCodec({ encode: () => '', decode: () => ({}) }), true);
   assert.strictEqual(isCodec({ encode: () => '' }), false);
   assert.strictEqual(isCodec(null), false);
+  assert.strictEqual(isCodec({ rest: { encode: () => '', decode: () => null } }), true, 'rest-only is a codec');
+  assert.strictEqual(isCodec({ rest: { encode: () => '' } }), false, 'a declared rest section must be complete');
+  assert.strictEqual(
+    isCodec({ encode: () => '', decode: () => null, rest: { encode: () => '' } }),
+    false,
+    'a malformed rest section is refused even next to a valid packet half',
+  );
+  assert.strictEqual(isCodec({ rest: { encode: () => '', decode: () => null, contentType: 5 } }), false);
+  assert.strictEqual(isCodec({ rest: { encode: () => '', decode: () => null, contentType: 'x/y' } }), true);
   assert.throws(() => new RpcServer({ router: api(), codec: { encode: () => '' } }), /options\.codec/);
 });
 
@@ -186,9 +195,179 @@ test('codec over packet-mode HTTP: frames and Content-Type', async (t) => {
     assert.deepStrictEqual(await client.api.chat.send({ text: 'h' }), { echoed: 'h' });
   });
 
-  await t.test('REST mode stays JSON — curl is its audience', async () => {
+  await t.test('REST mode stays JSON without codec.rest — curl is its audience', async () => {
     const res = await fetch(`${base}/chat/send?text=q`);
+    // The mode-blind Content-Type bug: the packet codec's type must never
+    // ride on a REST body it did not frame.
+    assert.notStrictEqual(res.headers.get('content-type'), 'application/x-wrpc-toy');
     const packet = await res.json(); // plain JSON, not codec-framed
     assert.deepStrictEqual(packet.result, { echoed: 'q' });
   });
+});
+
+// ---------------------------------------------------------------------------
+// codec.rest: the opt-in BODY codec for REST mode. Values, not packets —
+// and binary is fine here (whole HTTP bodies, no framing to collide with).
+
+// A toy binary body codec: one prefix byte, then JSON bytes.
+const toyRestCodec = () => {
+  const stats = { encoded: 0, decoded: 0 };
+  return {
+    stats,
+    rest: {
+      contentType: 'application/x-wrpc-bin',
+      encode: (value) => {
+        stats.encoded++;
+        return Buffer.concat([Buffer.from([0xab]), Buffer.from(JSON.stringify(value ?? null))]);
+      },
+      decode: (body) => {
+        stats.decoded++;
+        const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
+        if (buffer[0] !== 0xab) throw new Error('bad binary frame');
+        return JSON.parse(buffer.subarray(1).toString());
+      },
+    },
+  };
+};
+
+const restApi = () =>
+  defineRouter({
+    projects: {
+      create: procedure({
+        access: 'public',
+        http: { method: 'POST', path: '/projects/:orgId', status: 201 },
+        handler: async (_ctx, { params, body }) => ({ orgId: params.orgId, name: body?.name }),
+      }),
+      findById: procedure({
+        access: 'public',
+        http: { method: 'GET', path: '/projects/:id' },
+        handler: async (_ctx, { params }) => ({ id: params.id }),
+      }),
+      boom: procedure({
+        access: 'public',
+        http: { method: 'GET', path: '/projects/:id/boom' },
+        handler: async () => {
+          const error = new Error('gone');
+          error.code = 404;
+          error.details = { why: 'archived' };
+          throw error;
+        },
+      }),
+      plain: procedure({ access: 'public', handler: async (_ctx, args) => ({ plain: true, args }) }),
+    },
+    misc: {
+      // Deliberately outside every trie path: the conventional-mode probe.
+      plain: procedure({ access: 'public', handler: async (_ctx, args) => ({ plain: true, args }) }),
+    },
+  });
+
+test('codec.rest on the shell: binary bodies on both REST modes', async (t) => {
+  const codec = toyRestCodec();
+  const { server, port } = await bootServer(t, { router: restApi(), codec });
+  const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+  const decodeRes = async (res) => codec.rest.decode(Buffer.from(await res.arrayBuffer()));
+
+  await t.test('a declared route round-trips a binary request and response', async () => {
+    const res = await fetch(`${base}/projects/42`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-wrpc-bin' },
+      body: codec.rest.encode({ name: 'Alpha' }),
+    });
+    assert.strictEqual(res.status, 201);
+    assert.strictEqual(res.headers.get('content-type'), 'application/x-wrpc-bin');
+    assert.deepStrictEqual(await decodeRes(res), { orgId: '42', name: 'Alpha' });
+  });
+
+  await t.test('an error body travels codec-framed, details included', async () => {
+    const res = await fetch(`${base}/projects/1/boom`);
+    assert.strictEqual(res.status, 404);
+    assert.strictEqual(res.headers.get('content-type'), 'application/x-wrpc-bin');
+    assert.deepStrictEqual(await decodeRes(res), { message: 'gone', code: 404, details: { why: 'archived' } });
+  });
+
+  await t.test('a 405 keeps its Allow header and frames its error body', async () => {
+    const res = await fetch(`${base}/projects/42`, { method: 'PATCH' });
+    assert.strictEqual(res.status, 405);
+    assert.deepStrictEqual(res.headers.get('allow').split(', ').sort(), ['GET', 'POST']);
+    assert.deepStrictEqual(await decodeRes(res), { message: 'Method Not Allowed', code: 405 });
+  });
+
+  await t.test('a malformed escape answers a framed 400', async () => {
+    const res = await fetch(`${base}/projects/%ZZ`);
+    assert.strictEqual(res.status, 400);
+    assert.strictEqual((await decodeRes(res)).code, 400);
+  });
+
+  await t.test('a request body the codec cannot decode is the caller`s 400', async () => {
+    const res = await fetch(`${base}/projects/42`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ name: 'not framed' }),
+    });
+    assert.strictEqual(res.status, 400);
+  });
+
+  await t.test('the conventional mode frames its callback envelope too', async () => {
+    const res = await fetch(`${base}/misc/plain?x=1`);
+    assert.strictEqual(res.headers.get('content-type'), 'application/x-wrpc-bin');
+    const packet = await decodeRes(res);
+    assert.strictEqual(packet.type, 'callback');
+    assert.deepStrictEqual(packet.result, { plain: true, args: { x: '1' } });
+  });
+
+  await t.test('packet mode is untouched by a rest-only codec', async () => {
+    const res = await fetch(base, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ type: 'call', id: '1', method: 'projects/plain', args: {} }),
+    });
+    assert.strictEqual(res.headers.get('content-type'), 'application/json');
+    assert.deepStrictEqual((await res.json()).result, { plain: true, args: {} });
+  });
+});
+
+test('codec.rest on the client: the REST leg speaks binary end to end', async (t) => {
+  const { server, port } = await bootServer(t, { router: restApi(), codec: toyRestCodec() });
+  const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+
+  await t.test('a mapped call round-trips through the client codec', async () => {
+    const clientCodec = toyRestCodec();
+    const client = await connectClient(t, base, { transport: 'http', codec: clientCodec });
+    await client.load('projects');
+    const created = await client.api.projects.create({ params: { orgId: '7' }, body: { name: 'B' } });
+    assert.deepStrictEqual(created, { orgId: '7', name: 'B' });
+    assert.ok(clientCodec.stats.encoded > 0, 'the request body went through encode');
+    assert.ok(clientCodec.stats.decoded > 0, 'the response body went through decode');
+  });
+
+  await t.test('a wire error decodes into WrpcError with code and details', async () => {
+    const client = await connectClient(t, base, { transport: 'http', codec: toyRestCodec() });
+    await client.load('projects');
+    await assert.rejects(client.api.projects.boom({ params: { id: '1' } }), (error) => {
+      assert.strictEqual(error.code, 404);
+      assert.strictEqual(error.message, 'gone');
+      assert.deepStrictEqual(error.details, { why: 'archived' });
+      return true;
+    });
+  });
+});
+
+test('the REST leg Content-Type: the packet codec never leaks; codec.rest owns it', async (t) => {
+  const captured = [];
+  const realFetch = globalThis.fetch;
+  globalThis.fetch = async (_url, options) => {
+    captured.push(options.headers);
+    return { status: 200, text: async () => 'null', arrayBuffer: async () => new ArrayBuffer(0) };
+  };
+  t.after(() => void (globalThis.fetch = realFetch));
+  const HttpTransport = WrpcClient.transport.http;
+  const transport = new HttpTransport('http://x/api');
+  // The mirror of the server's mode-blind bug: a PACKET codec on the
+  // transport must not stamp its contentType onto a JSON REST-leg body.
+  transport.codec = toyCodec();
+  await transport.request('POST', 'http://x/api/things', '{"a":1}', undefined);
+  assert.strictEqual(captured[0]['Content-Type'], 'application/json');
+  const rest = { encode: () => new Uint8Array([1]), decode: () => null, contentType: 'application/x-bin' };
+  await transport.request('POST', 'http://x/api/things', new Uint8Array([1]), undefined, rest);
+  assert.strictEqual(captured[1]['Content-Type'], 'application/x-bin');
 });

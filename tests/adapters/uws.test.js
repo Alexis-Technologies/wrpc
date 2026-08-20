@@ -215,3 +215,49 @@ test('control frames surface as ping and pong events', { skip: !uws && 'uWebSock
 
   peer.close();
 });
+
+test(
+  'codec.rest: a binary REST body round-trips over uws',
+  { skip: !uws && 'uWebSockets.js unavailable' },
+  async (t) => {
+    const codec = {
+      rest: {
+        contentType: 'application/x-wrpc-bin',
+        encode: (value) => Buffer.concat([Buffer.from([0xab]), Buffer.from(JSON.stringify(value ?? null))]),
+        decode: (body) => {
+          const buffer = Buffer.isBuffer(body) ? body : Buffer.from(body);
+          if (buffer[0] !== 0xab) throw new Error('bad frame');
+          return JSON.parse(buffer.subarray(1).toString());
+        },
+      },
+    };
+    const server = new Server({
+      router: defineRouter({
+        projects: {
+          create: procedure({
+            access: 'public',
+            http: { method: 'POST', path: '/projects/:orgId', status: 201 },
+            handler: async (_ctx, { params, body }) => ({ orgId: params.orgId, name: body?.name }),
+          }),
+        },
+      }),
+      host: '127.0.0.1',
+      port: 0,
+      logger: false,
+      codec,
+      engine: createUwsEngine({ uws }),
+    });
+    t.after(() => server.close());
+    await server.listen();
+    const { port } = server.address();
+
+    const res = await fetch(`http://127.0.0.1:${port}/api/projects/9`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/x-wrpc-bin', Connection: 'close' },
+      body: codec.rest.encode({ name: 'Bin' }),
+    });
+    assert.strictEqual(res.status, 201);
+    assert.strictEqual(res.headers.get('content-type'), 'application/x-wrpc-bin');
+    assert.deepStrictEqual(codec.rest.decode(Buffer.from(await res.arrayBuffer())), { orgId: '9', name: 'Bin' });
+  },
+);

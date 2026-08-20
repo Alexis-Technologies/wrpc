@@ -16,7 +16,7 @@ interface Api {
     stats(): Promise<{ total: number }>;
     onMessage: SubscriptionContract<{ room: string }, { text: string }>;
   };
-  'auth.1': {
+  'auth.v1': {
     signIn(args: { login: string }): Promise<{ token: string }>;
   };
 }
@@ -52,7 +52,7 @@ expectType<void>(null as unknown as wrpcQuery.CallArgs<Api, ['chat', 'stats']>);
 // A subscription answers with a stream: it is not a query
 expectError(wq.queryOptions(['chat', 'onMessage'], { room: 'a' }));
 // ...and a versioned unit key works like any other
-expectType<WrpcQueryOptions<{ token: string }>>(wq.queryOptions(['auth.1', 'signIn'], { login: 'me' }));
+expectType<WrpcQueryOptions<{ token: string }>>(wq.queryOptions(['auth.v1', 'signIn'], { login: 'me' }));
 
 // --- mutations -------------------------------------------------------------
 const send = wq.mutationOptions(['chat', 'send']);
@@ -109,7 +109,7 @@ expectError(loose.queryOptions(['anything', 'goes', 'deeper']));
 
 // --- the derived path types -------------------------------------------------
 expectAssignable<wrpcQuery.CallPath<Api>>(['chat', 'send']);
-expectAssignable<wrpcQuery.CallPath<Api>>(['auth.1', 'signIn']);
+expectAssignable<wrpcQuery.CallPath<Api>>(['auth.v1', 'signIn']);
 expectError<wrpcQuery.CallPath<Api>>(['chat', 'onMessage']);
 expectAssignable<wrpcQuery.SubscriptionPath<Api>>(['chat', 'onMessage']);
 expectError<wrpcQuery.SubscriptionPath<Api>>(['chat', 'send']);

@@ -107,14 +107,19 @@ const registerRestRoutes = (fastify, rpc, options) => {
   const routes = rpc.router.restRoutes();
   if (routes.length === 0) return;
   const contexts = new WeakMap();
-  const contextOf = (request) => {
+  // One request runs exactly one route, so the first caller's target wins —
+  // and every caller for a given request passes that route's own target.
+  const contextOf = (request, target) => {
     let pending = contexts.get(request);
     if (!pending) {
-      pending = rpc.delegatedContext({
-        method: request.method,
-        headers: request.headers,
-        remoteAddress: request.ip,
-      });
+      pending = rpc.delegatedContext(
+        {
+          method: request.method,
+          headers: request.headers,
+          remoteAddress: request.ip,
+        },
+        target,
+      );
       contexts.set(request, pending);
     }
     return pending;
@@ -123,6 +128,9 @@ const registerRestRoutes = (fastify, rpc, options) => {
   for (const route of routes) {
     const { proc, http } = route;
     const hooks = rpc.router.hooksFor(proc);
+    // The same call identity a packet-mode Context carries, so cross-cutting
+    // hooks read context.method/context.procedure on the delegated path too.
+    const rpcTarget = { method: `${route.unitKey}/${route.methodName}`, procedure: proc };
     // Arity matters to fastify: an async hook with a third parameter is
     // read as callback-style and refused — so the payload-less phases get
     // two-parameter wrappers, and only the payload phases take three.
@@ -130,7 +138,7 @@ const registerRestRoutes = (fastify, rpc, options) => {
       const wrapped = [];
       for (const hook of list) {
         wrapped.push(async (request, reply) => {
-          const { context } = await contextOf(request);
+          const { context } = await contextOf(request, rpcTarget);
           return void (await hook(context, payloadOf(request)));
         });
       }
@@ -140,7 +148,7 @@ const registerRestRoutes = (fastify, rpc, options) => {
       const wrapped = [];
       for (const hook of list) {
         wrapped.push(async (request, reply, payload) => {
-          const { context } = await contextOf(request);
+          const { context } = await contextOf(request, rpcTarget);
           return void (await hook(context, payload));
         });
       }
@@ -153,7 +161,7 @@ const registerRestRoutes = (fastify, rpc, options) => {
       const wrapped = [];
       for (const hook of list) {
         wrapped.push(async (request, reply, payload) => {
-          const { context } = await contextOf(request);
+          const { context } = await contextOf(request, rpcTarget);
           const replaced = await hook(context, payload);
           return replaced === undefined ? payload : replaced;
         });
@@ -161,7 +169,7 @@ const registerRestRoutes = (fastify, rpc, options) => {
       return wrapped;
     };
     const init = async (request, reply) => {
-      const { release } = await contextOf(request);
+      const { release } = await contextOf(request, rpcTarget);
       // The response's close is the eviction signal, whether the reply was
       // sent, hijacked or the peer vanished.
       reply.raw?.on?.('close', release);
@@ -170,7 +178,7 @@ const registerRestRoutes = (fastify, rpc, options) => {
     // The session is restored inside delegatedContext (init), so the gate
     // closes the onRequest phase.
     const accessGuard = async (request) => {
-      const { client } = await contextOf(request);
+      const { client } = await contextOf(request, rpcTarget);
       if (proc.access !== 'public' && !client.session) throw forbidden();
     };
     const status = http.status ?? 200;
@@ -192,7 +200,7 @@ const registerRestRoutes = (fastify, rpc, options) => {
       onResponse: wrap(hooks.onResponse, () => null),
       ...(options.restErrors === 'app' ? {} : { errorHandler: wireErrorHandler }),
       handler: async (request, reply) => {
-        const { context, transport } = await contextOf(request);
+        const { context, transport } = await contextOf(request, rpcTarget);
         let result;
         try {
           result = await proc.invokeBare(context, argsOf(request));
@@ -220,6 +228,17 @@ const wrpcFastify = async (fastify, options = {}) => {
   // structured shape and calls child()/info(entry, message) natively.
   const logger = options.logger ?? fastify.log;
   const rpc = options.rpc ?? new RpcServer(rpcOptions({ ...options, cors, logger }));
+  // Delegated REST routes exist FOR fastify's own serialization, schema and
+  // swagger; a codec.rest body (possibly a raw Buffer) would silently bypass
+  // fjs and preSerialization. Refusing loudly beats a route that documents
+  // JSON and ships msgpack — the core hosts serve binary REST natively.
+  // Checked on the resolved rpc so the options.rpc path is covered too.
+  if (rpc.codec?.rest && rpc.router.hasRestRoutes) {
+    throw new TypeError(
+      'wrpcFastify: codec.rest and delegated REST routes (procedures with http mappings) are mutually exclusive — ' +
+        'serve binary REST from a core host, or drop the http mappings under this plugin',
+    );
+  }
   const base = rpc.basePath;
   const engine = resolveEngine(fastify, options);
 

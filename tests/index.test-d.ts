@@ -57,12 +57,19 @@ const router = wrpc.defineRouter({
     }),
     shorthand: async () => 42,
   },
-  'auth.1': {
+  'auth.v1': {
     signIn: { handler: async () => true },
   },
 });
 expectType<Router>(router);
 expectType<Procedure | null>(router.getProcedure('chat', '*', 'send'));
+
+// The REST version strategy: 'path' or a function taking the vN token
+expectAssignable<Parameters<typeof wrpc.defineRouter>[1]>({ rest: { version: 'path' } });
+expectAssignable<Parameters<typeof wrpc.defineRouter>[1]>({
+  rest: { version: (version: string, path: string) => `/${version}${path}` },
+});
+expectError(wrpc.defineRouter({}, { rest: { version: 'header' } }));
 
 // Inbound events: the reserved `on` key, handlers shaped like procedures
 const eventful = wrpc.defineRouter({
@@ -277,6 +284,11 @@ expectType<string>(context.uuid);
 expectType<Record<string, unknown>>(context.state);
 expectType<AbortSignal | null>(context.signal);
 expectType<Client>(context.client);
+// The call identity: the wire target and the resolved procedure
+expectType<string | null>(context.method);
+expectType<wrpc.Procedure | null>(context.procedure);
+// onDisconnect's payload carries the pre-destroy room snapshot
+expectAssignable<wrpc.ConnectionHook>((_client: Client, payload: { rooms: Set<string> } | null) => void payload);
 expectType<Client['log']>(client.log);
 expectType<string>(client.transportKind);
 expectType<boolean>(client.persistent);
@@ -378,6 +390,21 @@ expectError<wrpc.WrpcClientOptions>({ reconnect: { minDelay: '100' } });
 declare const wsClient: WrpcClient;
 expectType<number>(wsClient.attempt);
 expectType<void>(wsClient.sendEvent('chat/typing', { on: true }));
+// use(): the static introspection artifact — raw system/introspect shape
+expectType<WrpcClient>(wsClient.use({ chat: { ping: { access: 'public' } } }));
+expectAssignable<Parameters<WrpcClient['use']>[0]>({
+  chat: {
+    ping: { access: 'public' },
+    onMessage: { access: 'public', kind: 'subscription' },
+    create: {
+      access: 'public',
+      http: { method: 'POST', path: '/chats', status: 201 },
+      schema: { body: { type: 'object' } },
+    },
+  },
+});
+expectError(wsClient.use('nope'));
+expectError(wsClient.use({ chat: { ping: { kind: 'subscription' } } })); // access is required
 // The receiving half of a server ask: one responder per name.
 expectType<void>(wsClient.respond('chat/confirm', (data) => ({ ok: true, data })));
 expectType<void>(wsClient.respond('chat/confirm', async () => 'answer'));
@@ -397,7 +424,7 @@ interface Contract {
     onMessage: wrpc.SubscriptionContract<{ room: string }, { text: string }>;
     onTick: wrpc.SubscriptionContract<void, number>;
   };
-  'auth.1': {
+  'auth.v1': {
     signIn(args: { login: string }): Promise<{ token: string }>;
   };
 }
@@ -410,7 +437,7 @@ expectType<Promise<{ id: string }>>(typed.api.chat.send({ text: 'hi' }, { signal
 expectType<Promise<Array<string>>>(typed.api.chat.find());
 expectType<Promise<Array<string>>>(typed.api.chat.find({ q: 'x' }, {}));
 expectType<Promise<{ done: true }>>(typed.api.chat.sync({ a: 1 }));
-expectType<Promise<{ token: string }>>(typed.api['auth.1'].signIn({ login: 'a' }));
+expectType<Promise<{ token: string }>>(typed.api['auth.v1'].signIn({ login: 'a' }));
 expectError(typed.api.chat.send({ text: 42 }));
 expectError(typed.api.chat.send());
 expectError(typed.api.chat.missing({}));
@@ -440,7 +467,7 @@ expectError(malformed.api.unit.notAMethod());
 expectType<wrpc.InvalidContractMember>(malformed.api.unit.notAMethod);
 
 // `load` only accepts unit keys the contract declares
-expectType<Promise<void>>(typed.load('chat', 'auth.1'));
+expectType<Promise<void>>(typed.load('chat', 'auth.v1'));
 expectError(typed.load('missing'));
 
 // A subscription is NOT callable: it answers with a stream
@@ -565,3 +592,25 @@ expectAssignable<wrpc.RpcServerOptions>({
   codec: { encode: () => '', decode: () => ({}), contentType: 'application/x-toy' },
 });
 expectType<boolean>(wrpc.isCodec({}));
+// codec.rest: the REST body codec — binary allowed, rest-only codecs valid
+expectAssignable<wrpc.WrpcRestCodec>({
+  encode: (value) => new Uint8Array([1]),
+  decode: (body) => body,
+  contentType: 'application/msgpack',
+});
+expectAssignable<wrpc.WrpcCodec>({ rest: { encode: () => new Uint8Array(), decode: () => null } });
+expectAssignable<wrpc.WrpcCodec>({
+  encode: () => '',
+  decode: () => ({}),
+  rest: { encode: () => '', decode: () => null },
+});
+expectError<wrpc.WrpcCodec>({ rest: { encode: () => new Uint8Array() } }); // decode required
+expectAssignable<wrpc.RpcServerOptions>({
+  router,
+  codec: { rest: { encode: () => new Uint8Array(), decode: () => null, contentType: 'application/msgpack' } },
+});
+expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({
+  codec: { rest: { encode: () => new Uint8Array(), decode: () => null } },
+});
+declare const rpcForCodec: RpcServer;
+expectType<wrpc.WrpcCodec | null>(rpcForCodec.codec);

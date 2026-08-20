@@ -17,7 +17,7 @@ const router = defineRouter({
       handler: async (context, { text }) => ({ id: await store.append(text) }),
     }),
   },
-  'auth.1': {
+  'auth.v1': {
     signIn: procedure({ access: 'public', handler: async (context, args) => { /* ... */ } }),
   },
 });
@@ -214,23 +214,23 @@ handler: async (context, { room, text }) => {
 
 ## Units and versions
 
-A unit key is `unit` or `unit.version`. Both live side by side, and a client
+A unit key is `unit` or `unit.vN` — the version token is `v` plus a number, and anything else (`auth.1`, `auth.beta`) is rejected loudly. Both live side by side, and a client
 loads whichever it wants:
 
 ```js
 defineRouter({
   auth: { signIn: procedure({ /* the default version */ }) },
-  'auth.1': { signIn: procedure({ /* the pinned one */ }) },
+  'auth.v1': { signIn: procedure({ /* the pinned one */ }) },
 });
 ```
 
 ```js
 await client.load('auth');    // the default version
-await client.load('auth.1');  // the pinned one
+await client.load('auth.v1');  // the pinned one
 ```
 
-On the wire that is the `method` string: `auth/signIn` or `auth.1/signIn`.
-`'unit.1.2'` is rejected outright rather than silently truncated.
+On the wire that is the `method` string: `auth/signIn` or `auth.v1/signIn`.
+`'unit.v1.2'` is rejected outright rather than silently truncated.
 
 `on` is **reserved** inside a unit — it holds the unit's inbound event
 handlers, so no method may be called `on`. `hooks` is reserved too: the
@@ -275,7 +275,7 @@ anonymous clients, say) simply by declaring `system.introspect` yourself.
     "send":      { "access": "session", "meta": { "description": "Post a message" } },
     "onMessage": { "access": "session", "kind": "subscription" }
   },
-  "auth.1": { "signIn": { "access": "public" } }
+  "auth.v1": { "signIn": { "access": "public" } }
 }
 ```
 

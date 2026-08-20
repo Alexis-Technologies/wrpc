@@ -31,17 +31,29 @@ Options:
   --units <a,b>         Only these units (repeatable, or comma-separated)
   --interface <name>    Name of the generated interface (default: Api)
   --package <specifier> Where to import SubscriptionContract from (default: @alexify/wrpc)
+  --schema <path>       Also write the raw introspection as a module for
+                        client.use(); '-' writes to stdout
+  --format <cjs|esm>    Module format for --schema (default: cjs)
   -h, --help            Show this help
   -v, --version         Show the wrpc version
 ```
 
 ```bash
-wrpc types http://localhost:8000/api --units chat,auth.1 --out src/api.d.ts
+wrpc types http://localhost:8000/api --units chat,auth.v1 --out src/api.d.ts
+wrpc types http://localhost:8000/api --out api.d.ts --schema api.static.js
 wrpc types http://localhost:8000/api --out -          # stdout, for piping
 ```
 
 `--package` matters in a monorepo that re-exports wrpc under its own name: the
 generated file imports `SubscriptionContract` from wherever you say.
+
+`--schema` writes a second artifact from the same fetch: the raw
+`system/introspect` result as an importable module (`module.exports = {...}`,
+or `export default {...}` with `--format esm`). It is what
+[`client.use()`](./typed-client#static-introspection) consumes to scaffold the
+api with no introspection round-trip — the runtime counterpart of the
+generated types. One stdout per run: `--schema -` and `--out -` cannot be
+combined.
 
 ## Describing procedures
 

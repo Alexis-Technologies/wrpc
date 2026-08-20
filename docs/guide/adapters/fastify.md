@@ -132,6 +132,15 @@ Two things to know:
 A collision between a mapped path and an app route under `basePath` makes
 find-my-way throw at registration — the correct failure.
 
+One combination is refused outright: [`codec.rest`](../codec#rest-bodies-codec-rest)
+together with delegated REST routes throws at registration. Delegation
+exists *for* fastify's serialization, schemas and swagger — a codec-framed
+(possibly binary) body would silently bypass `fast-json-stringify` and
+`preSerialization`, shipping msgpack from a route that documents JSON.
+Serve binary REST from a core host (the node shell, express, uws — all
+Buffer-native), or drop the `http` mappings under this plugin; `codec.rest`
+without mappings registers normally.
+
 ## Mirroring existing routes {#mirroring-existing-routes}
 
 The reverse direction: your **existing fastify routes** become wrpc
@@ -181,6 +190,10 @@ fastify.get('/internal/health', { config: { wrpc: false } }, handler);  // opt o
 ```
 
 - A naming collision throws at `onReady`, naming both routes.
+- A derived unit name containing a dot registers as a versioned key, so it
+  must fit the `unit.vN` syntax — a path segment like `/api.internal/x`
+  throws loudly at `onReady` instead of being silently split into a version;
+  give such a route an explicit `config.wrpc.unit`.
 - Mirrored procedures carry a `signature` distilled from the route's JSON
   Schemas, so [`wrpc types`](../cli) types them; `meta.mirrored` records
   the origin.

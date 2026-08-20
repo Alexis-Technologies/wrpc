@@ -14,7 +14,7 @@ const { existsSync } = require('node:fs');
 const { mkdtemp, readFile, rm, writeFile } = require('node:fs/promises');
 const { execFile } = require('node:child_process');
 
-const { Server, defineRouter, procedure } = require('../../index.js');
+const { Server, WrpcClient, defineRouter, procedure } = require('../../index.js');
 
 const ROOT = path.join(__dirname, '..', '..');
 const BIN = path.join(ROOT, 'bin', 'wrpc.js');
@@ -61,7 +61,7 @@ const router = defineRouter({
       },
     }),
   },
-  'auth.1': {
+  'auth.v1': {
     signIn: procedure({
       access: 'public',
       signature: { args: { login: 'string' }, returns: { token: 'string' } },
@@ -101,7 +101,7 @@ test('CLI e2e: generates a contract from a live server and type-checks it', asyn
       "import type { SubscriptionContract } from '@alexify/wrpc';",
       '',
       'export interface Api {',
-      "  'auth.1': {",
+      "  'auth.v1': {",
       '    signIn(args: { login: string }): Promise<{ token: string }>;',
       '  };',
       '  chat: {',
@@ -142,7 +142,7 @@ test('CLI e2e: generates a contract from a live server and type-checks it', asyn
   assert.strictEqual(filtered.code, 0, filtered.stderr);
   const narrowed = await readFile(narrow, 'utf8');
   assert.match(narrowed, /export interface ChatApi \{/);
-  assert.ok(!narrowed.includes("'auth.1'"), '--units chat must not describe auth.1');
+  assert.ok(!narrowed.includes("'auth.v1'"), '--units chat must not describe auth.v1');
   assert.ok(!narrowed.includes('system:'), '--units chat must not describe system');
 
   await t.test('the generated contract satisfies the typed client', async (sub) => {
@@ -157,11 +157,11 @@ test('CLI e2e: generates a contract from a live server and type-checks it', asyn
         '',
         'export const run = async () => {',
         "  const client = await connect<Api>('ws://127.0.0.1:1/');",
-        "  await client.load('chat', 'auth.1');",
+        "  await client.load('chat', 'auth.v1');",
         "  const sent: { id: string } = await client.api.chat.send({ room: 'a', text: 'hi' });",
         "  const rows: Array<{ id: string; text: string }> = await client.api.chat.list({ room: 'a' });",
         '  const anything: unknown = await client.api.chat.ping();',
-        "  const token: string = (await client.api['auth.1'].signIn({ login: 'me' })).token;",
+        "  const token: string = (await client.api['auth.v1'].signIn({ login: 'me' })).token;",
         '  const texts: Array<string> = [];',
         "  const feed = client.api.chat.onMessage.subscribe({ room: 'a' }, {",
         '    onData: (data) => void texts.push(data.text),',
@@ -206,6 +206,65 @@ test('CLI e2e: generates a contract from a live server and type-checks it', asyn
     const checked = await run(TSC, ['-p', path.join(dir, 'tsconfig.json')], { cwd: dir });
     assert.strictEqual(checked.code, 0, `tsc rejected the generated contract:\n${checked.stdout}${checked.stderr}`);
   });
+});
+
+test('CLI e2e: --schema feeds client.use() with no introspect wire traffic', async (t) => {
+  let introspects = 0;
+  // merge() rather than addHook: the shared `router` must stay untouched for
+  // the other tests. The hook reads context.method — the call identity.
+  const counted = router.merge(
+    defineRouter(
+      {},
+      {
+        hooks: {
+          onRequest: async (context) => {
+            if (context.method === 'system/introspect') introspects++;
+          },
+        },
+      },
+    ),
+  );
+  const server = new Server({
+    router: counted,
+    host: '127.0.0.1',
+    port: 0,
+    protocol: 'http',
+    logger: false,
+    timeouts: { bind: 100 },
+  });
+  await server.listen();
+  t.after(() => server.close());
+  const { port } = server.address();
+
+  const dir = await mkdtemp(path.join(os.tmpdir(), 'wrpc-schema-'));
+  t.after(() => rm(dir, { recursive: true, force: true }));
+  const out = path.join(dir, 'api.d.ts');
+  const artifactPath = path.join(dir, 'api.static.js');
+
+  const generated = await run(process.execPath, [
+    BIN,
+    'types',
+    `http://127.0.0.1:${port}/api`,
+    '--out',
+    out,
+    '--schema',
+    artifactPath,
+  ]);
+  assert.strictEqual(generated.code, 0, `wrpc types failed: ${generated.stderr}`);
+  assert.match(await readFile(out, 'utf8'), /export interface Api \{/, 'the types artifact is still written');
+
+  const artifact = require(artifactPath);
+  assert.strictEqual(artifact['auth.v1'].signIn.access, 'public');
+  assert.strictEqual(artifact.chat.onMessage.kind, 'subscription');
+
+  introspects = 0; // the CLI's own fetch was one; the client must add none
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, { heartbeat: false, reconnect: false });
+  t.after(() => void client.close());
+  client.use(artifact);
+  assert.strictEqual(await client.api.chat.ping(), true);
+  const { token } = await client.api['auth.v1'].signIn({ login: 'me' });
+  assert.strictEqual(token, 't');
+  assert.strictEqual(introspects, 0, 'static scaffolding produced no introspect call');
 });
 
 test('CLI e2e: a server that is not there fails with a message, not a stack', async () => {

@@ -85,13 +85,13 @@ test('spans', async (t) => {
   await t.test('a call span carries the rpc semconv attributes', () => {
     const { tracer, spans } = createTracing();
     const otel = createServerTelemetry({ tracer });
-    otel.withSpan({ client: fakeClient(), packet: { type: 'call', id: 'p1' }, target: 'chat.2/send' }, (handle) =>
+    otel.withSpan({ client: fakeClient(), packet: { type: 'call', id: 'p1' }, target: 'chat.v2/send' }, (handle) =>
       otel.endSpan(handle, { 'wrpc.status': 'ok' }),
     );
     const [span] = spans();
-    assert.strictEqual(span.name, 'chat.2/send');
+    assert.strictEqual(span.name, 'chat.v2/send');
     assert.strictEqual(span.attributes['rpc.system'], 'wrpc');
-    assert.strictEqual(span.attributes['rpc.service'], 'chat.2');
+    assert.strictEqual(span.attributes['rpc.service'], 'chat.v2');
     assert.strictEqual(span.attributes['rpc.method'], 'send');
     assert.strictEqual(span.attributes['wrpc.packet.type'], 'call');
     assert.strictEqual(span.attributes['wrpc.packet.id'], 'p1');

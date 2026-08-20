@@ -61,7 +61,7 @@ between them. Everything on the solid path can end the call by throwing —
 | `onTimeout` | a 408 specifically (before `onError`) | the error | timeout-specific signals |
 | `onSubscribe` | after access, before a subscription starts | the packet | subscription quotas |
 | `onUnsubscribe` | after a subscription ended, **whatever ended it** | the terminal packet | quota release |
-| `onConnect` / `onDisconnect` | a client attached / went away (router-level only) | — | per-connection state |
+| `onConnect` / `onDisconnect` | a client attached / went away (router-level only) | `null` / `{ rooms }` — the pre-destroy room snapshot | per-connection state |
 
 Rules that hold everywhere:
 
@@ -72,6 +72,15 @@ Rules that hold everywhere:
   is logged and never breaks what it observes.
 - **`context.state` is the hand-off**: what `onRequest` or `preHandler`
   loads is what the handler (and every later phase) reads.
+- **The context knows its call**: `context.method` is the wire target
+  (`'unit/name'`, `'unit.vN/name'`, or the event name for an inbound event)
+  and `context.procedure` is the resolved [`Procedure`](./router#procedures)
+  — so a cross-cutting logging or tracing hook reads the identity instead of
+  re-deriving it from the packet. `context.procedure.meta` is the natural
+  place for per-procedure hook configuration.
+- **`onDisconnect` receives `{ rooms }`** — a snapshot of the client's rooms
+  taken before teardown emptied the registry; by the time the hook runs,
+  `client.rooms` is already empty (see [Rooms](./rooms#joining-and-leaving)).
 - **Inbound events** run the invocation phases (`preValidation`,
   `preHandler`, `onError`); there is no packet to answer, so
   `onRequest`/`onSend` do not apply.

@@ -294,6 +294,100 @@ test('hooks: inbound events run the invocation phases', async (t) => {
   ]);
 });
 
+test('hooks: context carries its call identity across call, subscribe and event', async (t) => {
+  const seen = [];
+  const identity = (phase) => async (context) => void seen.push([phase, context.method, context.procedure]);
+  const router = defineRouter(
+    {
+      unit: {
+        run: procedure({ access: 'public', handler: async (context) => context.method }),
+        feed: procedure.subscription({
+          access: 'public',
+          handler: async function* () {
+            yield { ok: true };
+          },
+        }),
+        on: {
+          nudge: procedure({ access: 'public', handler: async () => {} }),
+        },
+      },
+    },
+    {
+      hooks: {
+        onRequest: identity('onRequest'),
+        preHandler: identity('preHandler'),
+        onSubscribe: identity('onSubscribe'),
+      },
+    },
+  );
+  const { url } = await boot(t, router);
+  const client = await connect(t, url);
+  await client.load('unit');
+  seen.length = 0; // load() runs the hooks for system/introspect too
+
+  assert.strictEqual(await client.api.unit.run(), 'unit/run', 'the handler reads its own target');
+  const call = seen.filter(([phase]) => phase === 'onRequest' || phase === 'preHandler');
+  assert.deepStrictEqual(
+    call.map(([phase, method]) => [phase, method]),
+    [
+      ['onRequest', 'unit/run'],
+      ['preHandler', 'unit/run'],
+    ],
+  );
+  const proc = router.getProcedure('unit', undefined, 'run');
+  assert.ok(
+    call.every((entry) => entry[2] === proc),
+    'context.procedure is the resolved Procedure instance',
+  );
+
+  seen.length = 0;
+  await new Promise((resolve) => {
+    client.api.unit.feed.subscribe({}, { onData: () => {}, onEnd: resolve });
+  });
+  const sub = seen.find(([phase]) => phase === 'onSubscribe');
+  assert.strictEqual(sub[1], 'unit/feed');
+  assert.strictEqual(sub[2], router.getProcedure('unit', undefined, 'feed'));
+
+  seen.length = 0;
+  client.sendEvent('unit/nudge', {});
+  await waitFor(() => seen.some(([phase]) => phase === 'preHandler'), 'the event hook never ran');
+  const event = seen.find(([phase]) => phase === 'preHandler');
+  assert.strictEqual(event[1], 'unit/nudge', 'an inbound event carries its name verbatim');
+  assert.strictEqual(event[2], router.getEventHandler('unit', undefined, 'nudge'));
+});
+
+test('hooks: onDisconnect receives the rooms the client was in', async (t) => {
+  const seen = [];
+  const router = defineRouter(
+    {
+      unit: {
+        enter: procedure({
+          access: 'public',
+          handler: async (context) => {
+            context.client.join('lobby');
+            context.client.join('games');
+            return [...context.client.rooms];
+          },
+        }),
+      },
+    },
+    {
+      hooks: {
+        onDisconnect: async (client, payload) => void seen.push([payload, client.rooms]),
+      },
+    },
+  );
+  const { url } = await boot(t, router);
+  const client = await connect(t, url);
+  await client.load('unit');
+  assert.deepStrictEqual(await client.api.unit.enter(), ['lobby', 'games']);
+  await client.close();
+  await waitFor(() => seen.length > 0, 'onDisconnect never fired');
+  const [payload, liveRooms] = seen[0];
+  assert.deepStrictEqual(payload.rooms, new Set(['lobby', 'games']), 'the payload snapshots the pre-destroy rooms');
+  assert.deepStrictEqual(liveRooms, new Set(), 'the registry itself is already empty by hook time');
+});
+
 test('hooks: onConnect and onDisconnect bracket a connection', async (t) => {
   const seen = [];
   const router = defineRouter(

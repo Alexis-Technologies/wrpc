@@ -4,6 +4,10 @@ const { Semaphore } = require('../utils.js');
 const { isTracked, tracked } = require('./subscriptions.js');
 
 const DEFAULT_VERSION = '*';
+// The version token of a unit key: 'auth.v1' -> 'v1'. Closed on purpose —
+// the token rides in wire targets and (with rest.version) URL paths, so it
+// must stay a safe path segment.
+const VERSION_TOKEN = /^v\d+$/;
 
 const CALL = 'call';
 const SUBSCRIPTION = 'subscription';
@@ -568,6 +572,39 @@ const compileOutput = (ajv, schema, label) => {
   };
 };
 
+// Router-level REST options; today one strategy: how a versioned unit's
+// declared paths surface. `null` means "declared paths verbatim".
+const normalizeRestOptions = (rest) => {
+  if (rest === undefined || rest === null) return null;
+  if (typeof rest !== 'object' || Array.isArray(rest)) {
+    throw new TypeError('defineRouter: rest must be an options object');
+  }
+  const { version } = rest;
+  if (version === undefined) return null;
+  if (version !== 'path' && typeof version !== 'function') {
+    throw new TypeError("defineRouter: rest.version must be 'path' or a function (version, path) => path");
+  }
+  return { version };
+};
+
+// The version-aware view of a procedure's http mapping: with a rest.version
+// strategy, a versioned unit's declared path gains its '/vN' prefix here —
+// computed at build/introspection time, never by mutating proc.http
+// (Procedure instances are shared across routers by merge()). The version
+// token already carries the 'v' ('auth.v1' -> 'v1'), so 'path' is a plain
+// prefix. The one seam serves the trie, restRoutes() and introspect(), which
+// is what keeps dispatch, host adapters and clients version-consistent.
+const effectiveHttp = (http, version, restOptions) => {
+  if (!http || version === DEFAULT_VERSION || !restOptions?.version) return http;
+  const spec = restOptions.version;
+  const path =
+    typeof spec === 'function' ? spec(version, http.path) : `/${version}${http.path === '/' ? '' : http.path}`;
+  if (typeof path !== 'string' || !path.startsWith('/')) {
+    throw new TypeError(`rest.version must produce a path starting with '/', got ${JSON.stringify(path)}`);
+  }
+  return { ...http, path };
+};
+
 class Router {
   // unit -> Map(version -> { methods: Map(name -> Procedure),
   //                          events:  Map(name -> Procedure),
@@ -590,10 +627,13 @@ class Router {
   // instances, and two routers may carry different compilers.
   #validation = null;
   #compiled = new Map();
+  // The rest.version strategy; `#rest` is taken by the trie above.
+  #restOptions = null;
 
   constructor(definition = {}, options = {}) {
     this.#hooks = normalizeHooks(options.hooks, ROUTER_PHASES, 'defineRouter');
     this.#validation = normalizeValidation(options.validation);
+    this.#restOptions = normalizeRestOptions(options.rest);
     for (const [unitKey, methods] of Object.entries(definition)) {
       this.#addUnit(unitKey, methods);
     }
@@ -730,7 +770,11 @@ class Router {
         for (const [methodName, proc] of entry.methods) {
           if (!proc.http) continue;
           trees ??= new Map();
-          const { method, path } = proc.http;
+          // Effective, not declared: with rest.version, two versions of one
+          // declared path diverge by their '/vN' prefix BEFORE the conflict
+          // check below ever sees them.
+          const http = effectiveHttp(proc.http, version, this.#restOptions);
+          const { method, path } = http;
           let node = trees.get(method);
           if (!node) {
             node = makeNode();
@@ -766,7 +810,7 @@ class Router {
                 `${existing.unitKey}/${existing.methodName} and ${unitKey}/${methodName}`,
             );
           }
-          node.terminal = { proc, unitKey, methodName, paramNames, http: proc.http };
+          node.terminal = { proc, unitKey, methodName, paramNames, http };
         }
       }
     }
@@ -783,12 +827,20 @@ class Router {
   }
 
   #addUnit(unitKey, definition) {
-    const [unit, version = DEFAULT_VERSION, ...extra] = unitKey.split('.');
-    // A silent split would truncate 'unit.1.2' into unit.1 and merge
-    // colliding registrations — reject anything but 'unit' / 'unit.ver'
-    if (!unit || version === '' || extra.length > 0 || typeof definition !== 'object' || definition === null) {
-      throw new TypeError(`Invalid router unit definition: ${unitKey}`);
+    const [unit, rawVersion, ...extra] = unitKey.split('.');
+    // A silent split would truncate 'unit.v1.2' into unit.v1 and merge
+    // colliding registrations — reject anything but 'unit' / 'unit.vN'.
+    // The vN pattern is the whole version syntax: 'auth.1' is invalid.
+    if (
+      !unit ||
+      extra.length > 0 ||
+      (rawVersion !== undefined && !VERSION_TOKEN.test(rawVersion)) ||
+      typeof definition !== 'object' ||
+      definition === null
+    ) {
+      throw new TypeError(`Invalid router unit definition: ${unitKey} (a unit key is 'unit' or 'unit.vN')`);
     }
+    const version = rawVersion ?? DEFAULT_VERSION;
     let versions = this.#units.get(unit);
     if (!versions) {
       versions = new Map();
@@ -894,7 +946,7 @@ class Router {
         const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
         for (const [methodName, proc] of entry.methods) {
           if (!proc.http) continue;
-          routes.push({ unitKey, methodName, proc, http: proc.http });
+          routes.push({ unitKey, methodName, proc, http: effectiveHttp(proc.http, version, this.#restOptions) });
         }
       }
     }
@@ -902,7 +954,7 @@ class Router {
   }
 
   // Introspection v2: { unitKey: { method: { access, meta?, signature? } } }
-  // where unitKey is 'unit' for the default version and 'unit.ver' otherwise.
+  // where unitKey is 'unit' for the default version and 'unit.vN' otherwise.
   // Anything but an array of unit keys means "no filter" — REST calls
   // deliver plain-object args here.
   introspect(units = null, options = {}) {
@@ -925,8 +977,9 @@ class Router {
           if (Object.keys(proc.meta).length > 0) info.meta = proc.meta;
           if (proc.signature) info.signature = proc.signature;
           // The REST mapping travels so clients (and codegen/OpenAPI
-          // tooling) can address the same procedure as a plain endpoint.
-          if (proc.http) info.http = proc.http;
+          // tooling) can address the same procedure as a plain endpoint —
+          // effective, so a client's REST leg calls the versioned URL.
+          if (proc.http) info.http = effectiveHttp(proc.http, version, this.#restOptions);
           if (schemas && proc.schema) {
             const parts = {};
             if (proc.schema.params !== undefined) parts.params = proc.schema.params;
@@ -957,7 +1010,11 @@ class Router {
             serializer: this.#validation?.serializer ?? other.#validation?.serializer,
           }
         : undefined;
-    const merged = new Router({}, { hooks, validation });
+    // The rest strategy must survive a merge (receiver wins, like
+    // validation): #withIntrospection merges a system router into EVERY
+    // server's router by default, and dropping it there would silently
+    // unprefix every versioned route.
+    const merged = new Router({}, { hooks, validation, rest: this.#restOptions ?? other.#restOptions ?? undefined });
     for (const source of [this, other]) {
       for (const [unit, versions] of source.#units) {
         for (const [version, entry] of versions) {

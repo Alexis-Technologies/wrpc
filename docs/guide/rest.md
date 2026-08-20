@@ -55,6 +55,41 @@ procedures. A known path hit with the wrong verb answers **405** with an
 The conventional `ANY {basePath}/:unit/:method` mode keeps working underneath
 as a fallback, unchanged, callback envelopes and all.
 
+## Versioning
+
+By default a [versioned unit](./router#units-and-versions)'s declared path
+registers verbatim — so two versions declaring the same path collide at build
+time. The router-level `rest.version` strategy maps each version onto its own
+URL instead:
+
+```js
+defineRouter(
+  {
+    'auth.v1': {
+      signIn: procedure({ http: { method: 'POST', path: '/auth/signIn' }, handler }),
+    },
+  },
+  { rest: { version: 'path' } },
+);
+// POST {basePath}/v1/auth/signIn  — the wire target stays auth.v1/signIn
+```
+
+The rules:
+
+- `'path'` prefixes the declared path with `/vN` — the version token of the
+  unit key, verbatim (`auth.v1` → `/v1/...`; `path: '/'` becomes `/v1`).
+- The **default version stays unprefixed**: `auth` + `/auth/signIn` keeps
+  `/auth/signIn`, so the same declared path in `auth` and `auth.v1` no longer
+  conflicts and both dispatch.
+- A function form takes full control: `version: (version, path) => string`
+  receives the token (`'v1'`) and the declared path and returns the effective
+  path (it must start with `/`).
+- `proc.http` is the **declaration** and never mutates — the prefix is
+  computed where routes surface (the dispatch trie, `restRoutes()`, and
+  introspection), which is what keeps the shell, the host adapters and the
+  client's REST leg version-consistent without any of them knowing about the
+  strategy. The strategy also survives `merge()`.
+
 ## The `schema` option
 
 The shape is `fastify.route.schema`, verbatim: `params`, `querystring` (or

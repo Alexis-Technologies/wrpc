@@ -13,6 +13,38 @@ narrower promise — see
 
 ### Added
 
+- **The call identity on `Context`.** `context.method` (the wire target —
+  `'unit/name'`, `'unit.vN/name'`, or the event name for an inbound event)
+  and `context.procedure` (the resolved `Procedure`) are set at every
+  context creation site — calls, subscriptions, inbound events, and the
+  fastify adapter's delegated REST routes — so cross-cutting hooks read
+  the identity instead of re-deriving it from the packet.
+- **`onDisconnect` receives `{ rooms }`.** The router-level disconnect hook's
+  payload carries a snapshot of the client's rooms taken before teardown
+  emptied the registry (`destroy()` leads with `rooms.leaveAll()`, so
+  `client.rooms` is already empty by hook time). `onConnect` keeps `null`.
+- **Static introspection: `client.use(introspection)` + `wrpc types --schema`.**
+  `use()` scaffolds units from a raw `system/introspect` artifact with zero
+  wire traffic — synchronous, works before `open()`. Dynamic wins: a
+  `load()`ed unit skips `use()` and reloads on reconnect; static units never
+  re-introspect. The CLI's new `--schema <path>` (with `--format cjs|esm`)
+  emits that artifact from the same fetch as the types.
+- **REST version strategy: `defineRouter(units, { rest: { version: 'path' } })`.**
+  Maps a versioned unit's declared routes under a `/vN` prefix
+  (`auth.v1` + `/auth/signIn` → `/v1/auth/signIn`; the default version stays
+  unprefixed), computed at trie build through one `effectiveHttp` seam that
+  also feeds `restRoutes()` and introspection — so the fastify registration
+  and the client's REST leg are version-correct with no changes of their
+  own. A function form `(version, path) => path` takes full control. The
+  strategy survives `merge()` (receiver wins).
+- **`codec.rest`: binary-capable REST bodies.** An optional `rest` section on
+  the wire codec — `{ encode(value), decode(body), contentType? }` — frames
+  REST bodies (values, not packets; binary allowed) on both REST modes,
+  requests, results and errors, server and client. Rest-only codecs are
+  valid (packets stay JSON). The fastify adapter refuses `codec.rest` next
+  to delegated REST routes — a codec-framed body would silently bypass
+  fastify's serialization; the core hosts serve it natively. New public
+  `RpcServer.codec` getter exposes the injected option.
 - **The cluster layer: `server.cluster`.** Presence, introspection and
   node-to-node messaging across every instance sharing a backplane, built
   ON TOP of the pub/sub contract (`publish`/`subscribe`/`close` — adapters
@@ -156,6 +188,12 @@ narrower promise — see
 
 ### Changed (breaking)
 
+- **Unit version keys are `unit.vN`.** The version token of a unit key must
+  be `v` plus a number: `auth.v1` replaces `auth.1`, which now throws a
+  `TypeError` at router build (nothing was released, so nothing shipped on
+  the old spelling). The token is stored verbatim — wire targets are
+  `auth.v1/signIn`, introspection keys `'auth.v1'` — which is what lets the
+  REST `/vN` prefix be a plain concatenation.
 - **`Client.emit` is the local `Emitter` emit again.** It used to send a
   wire event for every name except `'close'`, which made `client.on('x')`
   dead code and the class unsubstitutable for its base. The wire send is
@@ -285,6 +323,14 @@ narrower promise — see
 
 ### Fixed
 
+- **Two mode-blind `Content-Type` headers under a packet codec.** The server
+  applied `codec.contentType` before the packet/REST mode branch, so REST
+  responses advertised the packet framing while writing JSON bodies; the
+  client's REST leg mirrored the bug on its requests. Both now scope the
+  packet codec's type to packet mode; REST bodies advertise
+  `codec.rest.contentType` (or JSON) instead — observable as changed
+  response/request headers for anyone who combined a packet codec with REST
+  mode.
 - **`client.close()` now ends every live subscription, not just the iterated
   ones.** It called `record.stream?.end()`, so an `iterate()` consumer's
   `for await` finished — while a `subscribe()` consumer that passed
@@ -341,7 +387,7 @@ narrower promise — see
         send(args: { text: string }): Promise<{ id: string }>;
         onMessage: SubscriptionContract<{ room: string }, { text: string }>;
       };
-      'auth.1': { signIn(args: { login: string }): Promise<{ token: string }> };
+      'auth.v1': { signIn(args: { login: string }): Promise<{ token: string }> };
     }
 
     const client = await connect<Api>('wss://host');
@@ -374,7 +420,7 @@ narrower promise — see
       runtime, so `api.chat.on` stays the listener registration. (An optional
       `on?: {...}` used to reduce the whole unit to `never`.)
   - **`wrpc types` — the codegen CLI.** `npx wrpc types http://host:8000/api
-    --out api.d.ts [--units chat,auth.1] [--interface Api] [--package ...]`
+    --out api.d.ts [--units chat,auth.v1] [--interface Api] [--package ...]`
     (`--out -` writes to stdout) turns `system/introspect` into exactly the
     kind of interface above. The two halves meet in the middle: hand-write the
     contract for exact types, generate it when you would rather not write it.
@@ -811,7 +857,7 @@ Found by an adversarial review of F5 itself, each reproduced before fixing:
 - Server-agnostic RPC core (F2):
   - **Router/procedures** (`defineRouter`, `procedure`, `Router`,
     `Procedure`): units defined declaratively with versions as
-    `'unit.version'` keys, bare-function shorthand, per-procedure
+    `'unit.vN'` keys, bare-function shorthand, per-procedure
     `access` (default `'session'`), `input`/`output` validators (plain
     functions or Standard Schema objects; failures map to 400/500),
     `timeout` (408), `queue` concurrency limits backed by a `Semaphore`

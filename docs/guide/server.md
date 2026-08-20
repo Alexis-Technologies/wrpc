@@ -96,7 +96,7 @@ curl -X POST http://localhost:8000/api/greeting/hello -d '{"name":"World"}' \
 ```
 
 A versioned unit keeps its version in the path segment:
-`{basePath}/auth.1/signIn`.
+`{basePath}/auth.v1/signIn`.
 
 The response is always a `callback` packet, and the error code becomes the HTTP
 status — `404` unknown method, `403` no session, `418` if that is what your

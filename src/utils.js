@@ -336,15 +336,27 @@ class Semaphore {
   }
 }
 
-// Structural check for an injected wire codec: { encode(packet) -> string,
-// decode(text) -> packet, contentType? }. Text-only by design — binary
-// output would collide with the chunk framing on ws and the line protocol
-// on SSE — and shared here because both the server core and the browser
+// Structural check for an injected wire codec. The packet half —
+// { encode(packet) -> string, decode(text) -> packet, contentType? } — is
+// text-only by design: binary output would collide with the chunk framing
+// on ws and the line protocol on SSE. The optional `rest` section is a BODY
+// codec for REST mode — { encode(value), decode(body), contentType? } —
+// where binary is fine (whole HTTP bodies, no framing to collide with).
+// A codec may carry either half or both; a declared rest section must be
+// complete. Shared here because both the server core and the browser
 // client run it.
-const isCodec = (value) =>
+const isRestSection = (value) =>
   value !== null &&
   typeof value === 'object' &&
   typeof value.encode === 'function' &&
-  typeof value.decode === 'function';
+  typeof value.decode === 'function' &&
+  (value.contentType === undefined || typeof value.contentType === 'string');
+
+const isCodec = (value) => {
+  if (value === null || typeof value !== 'object') return false;
+  const packet = typeof value.encode === 'function' && typeof value.decode === 'function';
+  if (value.rest !== undefined && !isRestSection(value.rest)) return false;
+  return packet || value.rest !== undefined;
+};
 
 module.exports = { Emitter, jsonParse, isCodec, Semaphore, backoffDelay, EventStream, createEventStream };

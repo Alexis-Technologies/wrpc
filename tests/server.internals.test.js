@@ -217,7 +217,7 @@ const router = defineRouter({
   math: {
     add: procedure({ access: 'public', handler: async (_context, { a, b }) => Number(a) + Number(b) }),
   },
-  'calc.1': {
+  'calc.v1': {
     double: procedure({ access: 'public', handler: async (_context, { x }) => x * 2 }),
   },
   secure: {
@@ -268,7 +268,7 @@ test('RPC dispatcher', async (t) => {
   await t.test('handleRpc resolves versioned units from the method name', async () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
-    await handleRpc(client, { type: 'call', id: '2', method: 'calc.1/double', args: { x: 21 } }, router);
+    await handleRpc(client, { type: 'call', id: '2', method: 'calc.v1/double', args: { x: 21 } }, router);
     assert.deepStrictEqual(transport.sent, [{ type: 'callback', id: '2', result: 42 }]);
     await handleRpc(client, { type: 'call', id: '3', method: 'calc/double', args: { x: 21 } }, router);
     assert.deepStrictEqual(transport.errors, [{ code: 404, id: '3', error: null }]);
@@ -282,11 +282,11 @@ test('RPC dispatcher', async (t) => {
   });
 
   await t.test('handleRpc: a multi-dot unit name misses instead of truncating the version', async () => {
-    // 'calc.1.2/double' must look up version '1.2' (a miss), never fall
-    // back to the registered 'calc.1'
+    // 'calc.v1.2/double' must look up version 'v1.2' (a miss), never fall
+    // back to the registered 'calc.v1'
     const transport = fakeWsTransport();
     const client = createClient(transport);
-    await handleRpc(client, { type: 'call', id: '5', method: 'calc.1.2/double', args: { x: 21 } }, router);
+    await handleRpc(client, { type: 'call', id: '5', method: 'calc.v1.2/double', args: { x: 21 } }, router);
     assert.deepStrictEqual(transport.errors, [{ code: 404, id: '5', error: null }]);
     assert.deepStrictEqual(transport.sent, []);
   });

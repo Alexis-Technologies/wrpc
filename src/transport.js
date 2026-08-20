@@ -174,12 +174,20 @@ class ServerHttpTransport extends ServerTransport {
   // the bare result rather than the callback envelope the text carries.
   send(obj, code = 200, text = null) {
     if (this.#rest && obj.type === 'callback') {
-      if (obj.error) return this.write(JSON.stringify(obj.error), obj.error.code ?? code);
+      // The REST body codec (codec.rest) encodes VALUES — the plain result
+      // and the wire error object — never envelopes. Absent, JSON as ever.
+      const codec = this.#rest.codec ?? null;
+      if (obj.error) {
+        return this.write(codec ? codec.encode(obj.error) : JSON.stringify(obj.error), obj.error.code ?? code);
+      }
       const status = this.#rest.status ?? 200;
       // 204 promises "no content": the result (if any) is discarded on the
       // wire by contract, not by accident.
       if (status === 204) return this.write('', 204);
-      return this.write(obj.result === undefined ? 'null' : JSON.stringify(obj.result), status);
+      // An undefined result travels as an encoded `null` — one documented
+      // behaviour with and without a codec.
+      if (obj.result === undefined) return this.write(codec ? codec.encode(null) : 'null', status);
+      return this.write(codec ? codec.encode(obj.result) : JSON.stringify(obj.result), status);
     }
     if (!this.#batch) return super.send(obj, code, text);
     if (this.#responded) return true;

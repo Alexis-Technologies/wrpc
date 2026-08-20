@@ -30,15 +30,15 @@ test('router: the reserved `on` key holds event handlers', async (t) => {
         seen: { access: 'session', handler: async () => {} },
       },
     },
-    'chat.1': {
+    'chat.v1': {
       on: { typing: async () => {} },
     },
   });
 
   await t.test('handlers are looked up per unit and version', () => {
     assert.ok(router.getEventHandler('chat', '*', 'typing'));
-    assert.ok(router.getEventHandler('chat', '1', 'typing'));
-    assert.strictEqual(router.getEventHandler('chat', '1', 'seen'), null);
+    assert.ok(router.getEventHandler('chat', 'v1', 'typing'));
+    assert.strictEqual(router.getEventHandler('chat', 'v1', 'seen'), null);
     assert.strictEqual(router.getEventHandler('chat', '*', 'nothing'), null);
     assert.strictEqual(router.getEventHandler('nowhere', '*', 'typing'), null);
   });
@@ -52,13 +52,13 @@ test('router: the reserved `on` key holds event handlers', async (t) => {
     assert.strictEqual(router.getProcedure('chat', '*', 'on'), null);
     const introspection = router.introspect();
     assert.deepStrictEqual(Object.keys(introspection.chat), ['send']);
-    assert.deepStrictEqual(Object.keys(introspection['chat.1']), []);
+    assert.deepStrictEqual(Object.keys(introspection['chat.v1']), []);
   });
 
   await t.test('merge carries the event handlers over', () => {
     const merged = router.merge(defineRouter({ other: { on: { hello: async () => {} } } }));
     assert.ok(merged.getEventHandler('chat', '*', 'typing'));
-    assert.ok(merged.getEventHandler('chat', '1', 'typing'));
+    assert.ok(merged.getEventHandler('chat', 'v1', 'typing'));
     assert.ok(merged.getEventHandler('other', '*', 'hello'));
     assert.ok(merged.getProcedure('chat', '*', 'send'));
   });

@@ -43,7 +43,7 @@ const refusal = (message) => {
 class Context {
   #log = null;
 
-  constructor(client, signal = null) {
+  constructor(client, signal = null, target = null) {
     this.client = client;
     this.uuid = client.generateId();
     this.state = {};
@@ -51,6 +51,11 @@ class Context {
     // handler that awaits anything long-lived should pass it along; one
     // that ignores it simply runs to completion and has its result dropped.
     this.signal = signal;
+    // Call identity, so cross-cutting hooks need not re-derive it from the
+    // packet: the wire target ('unit.ver/name'; an inbound event's name
+    // verbatim) and the resolved Procedure handling it.
+    this.method = target?.method ?? null;
+    this.procedure = target?.procedure ?? null;
   }
 
   get session() {
@@ -204,8 +209,8 @@ class Client extends Emitter {
     return this.#transport.binary !== false;
   }
 
-  createContext(signal = null) {
-    return new Context(this, signal);
+  createContext(signal = null, target = null) {
+    return new Context(this, signal, target);
   }
 
   // The inbound half of the wire codec: what handleMessage parses frames
@@ -481,6 +486,8 @@ class RpcServer extends Emitter {
   #sse = null;
   #querystring = null;
   #codec = null;
+  #codecOption = null;
+  #restCodec = null;
   #draining = false;
   #clients = new Set();
   #byId = new Map();
@@ -526,7 +533,7 @@ class RpcServer extends Emitter {
       throw new TypeError('RpcServer: options.querystring must provide a parse(text) function');
     }
     if (codec !== null && !isCodec(codec)) {
-      throw new TypeError('RpcServer: options.codec must provide encode(packet) and decode(text)');
+      throw new TypeError('RpcServer: options.codec must provide encode(packet)/decode(text), a rest section, or both');
     }
     this.#log = createLoggerWriter(logger);
     this.#otel = createServerTelemetry(telemetry);
@@ -540,13 +547,20 @@ class RpcServer extends Emitter {
     this.#instance = instanceId;
     this.#generateId = typeof generateId === 'function' ? generateId : generateUUID;
     this.#querystring = querystring;
-    this.#codec = codec;
+    // Two halves, two fields: #codec is the PACKET codec (ws/http/sse/worker
+    // frames — a rest-only codec leaves packet mode JSON), #restCodec the
+    // REST body codec. The raw option survives for the public getter.
+    this.#codecOption = codec;
+    this.#codec = codec && typeof codec.encode === 'function' && typeof codec.decode === 'function' ? codec : null;
+    this.#restCodec = codec?.rest ?? null;
     this.#limits = { maxBatch, maxSubscriptions, maxCalls };
     this.#router = this.#withIntrospection(router, introspection);
-    // A compiled fjs serializer emits JSON; a codec re-frames the whole
-    // wire. Both at once would mean the serializer's output is thrown away
-    // (or worse, double-encoded) — refusal beats a silent precedence.
-    if (codec && this.#router.hasSerializers) {
+    // A compiled fjs serializer emits JSON; a packet codec re-frames the
+    // whole wire. Both at once would mean the serializer's output is thrown
+    // away (or worse, double-encoded) — refusal beats a silent precedence.
+    // (codec.rest is compatible: the fast path serializes envelopes, and
+    // REST bodies never carry envelopes.)
+    if (this.#codec && this.#router.hasSerializers) {
       throw new TypeError('RpcServer: options.codec and compiled response serializers are mutually exclusive');
     }
     this.#initRooms(backplane, cluster);
@@ -714,6 +728,11 @@ class RpcServer extends Emitter {
     return this.#basePath;
   }
 
+  /** The injected codec option, verbatim — how an adapter inspects codec.rest. */
+  get codec() {
+    return this.#codecOption;
+  }
+
   get clients() {
     return new Set(this.#clients);
   }
@@ -727,7 +746,7 @@ class RpcServer extends Emitter {
    * client is evicted. The safe-method CSRF rule is the same one
    * #handleRest applies.
    */
-  async delegatedContext({ method = 'GET', headers = {}, remoteAddress = '' } = {}) {
+  async delegatedContext({ method = 'GET', headers = {}, remoteAddress = '' } = {}, target = null) {
     const transport = new ServerHttpTransport({ headers, remoteAddress, respond: () => {} }, { headers: {} });
     const client = this.#addClient(transport);
     const verb = String(method).toUpperCase();
@@ -735,7 +754,7 @@ class RpcServer extends Emitter {
     if (!safeMethod || this.#isSameOriginFetch(headers)) {
       await this.#restoreFromCookie(client, headers);
     }
-    const context = client.createContext(null);
+    const context = client.createContext(null, target);
     return { client, context, transport, release: () => transport.emit('close') };
   }
 
@@ -816,11 +835,17 @@ class RpcServer extends Emitter {
     const { onConnect, onDisconnect } = this.#router.connectionHooks;
     if (onConnect.length > 0) void runHooksSafe(onConnect, client, null, this.#log, 'onConnect');
     transport.once('close', () => {
+      // Snapshotted BEFORE destroy(): its first act is rooms.leaveAll(), so
+      // by hook time the registry is empty — the payload is the only way a
+      // disconnect hook learns which rooms the client was in. (client.rooms
+      // already returns a fresh Set copy.) Not reordered: the hooks run
+      // fire-and-forget, so ordering would not guarantee visibility anyway.
+      const payload = onDisconnect.length > 0 ? { rooms: client.rooms } : null;
       client.destroy();
       this.#clients.delete(client);
       this.#byId.delete(client.id);
       this.#otel.recordConnection(-1, transport.kind);
-      if (onDisconnect.length > 0) void runHooksSafe(onDisconnect, client, null, this.#log, 'onDisconnect');
+      if (onDisconnect.length > 0) void runHooksSafe(onDisconnect, client, payload, this.#log, 'onDisconnect');
     });
     return client;
   }
@@ -952,6 +977,8 @@ class RpcServer extends Emitter {
   // answer carries: without them a browser on another origin cannot read
   // this response at all, which makes cross-origin SSE impossible.
   #handleChannelPost(call, channelId, headers) {
+    // Channel POSTs answer packet-mode bodies, so the packet codec's type.
+    if (this.#codec?.contentType) headers = { ...headers, 'Content-Type': this.#codec.contentType };
     const channel = this.#sse.get(channelId);
     const respond = (status, packet) => {
       const body = Buffer.from(this.#codec ? this.#codec.encode(packet) : JSON.stringify(packet));
@@ -983,7 +1010,9 @@ class RpcServer extends Emitter {
     if (!isOriginAllowed(this.#cors, call.headers?.origin)) {
       return void new ServerHttpTransport(call, { headers }).error(403);
     }
-    if (this.#codec?.contentType) headers['Content-Type'] = this.#codec.contentType;
+    // No Content-Type override here: which codec's type applies depends on
+    // the MODE (packet vs REST), decided below — a blanket header would
+    // advertise the packet framing on REST bodies it never framed.
     const [pathname, params] = split(call.url ?? '/', '?');
     const match = this.matchPath(pathname);
     if (this.#sse) {
@@ -1019,6 +1048,8 @@ class RpcServer extends Emitter {
 
   // POST {basePath} — a JSON call packet (or a batch array) in the body.
   async #handlePacketPost(call, headers) {
+    // Mode-aware: only packet-mode responses carry the packet codec's type.
+    if (this.#codec?.contentType) headers['Content-Type'] = this.#codec.contentType;
     const batch = call.method === 'POST' ? this.#batchIds(call.body) : null;
     const transport = new ServerHttpTransport(call, { headers, batch });
     if (call.method !== 'POST') return void transport.error(403);
@@ -1039,6 +1070,12 @@ class RpcServer extends Emitter {
   // proves intent with a same-origin fetch header.
   async #handleRest(call, rest, params, headers) {
     const method = (call.method ?? 'GET').toUpperCase();
+    // The REST body codec (codec.rest), when configured, re-frames every
+    // REST body — declared and conventional, results, errors and requests.
+    // The PACKET codec never applies here: REST's default audience is curl
+    // and browsers, and its bodies are values, not packet frames.
+    const restCodec = this.#restCodec;
+    if (restCodec?.contentType) headers['Content-Type'] = restCodec.contentType;
     // Declarative routes first: a procedure that mapped itself onto a verb
     // and path owns that path. The conventional /:unit/:method mode stays
     // as the fallback, so introspection-driven callers keep working.
@@ -1046,35 +1083,58 @@ class RpcServer extends Emitter {
     // Declarative-route refusals answer in REST shape too (a plain wire
     // error object), not as callback envelopes — same contract as a hit.
     if (route?.malformed) {
-      return void new ServerHttpTransport(call, { headers, rest: {} }).error(400);
+      return void new ServerHttpTransport(call, { headers, rest: { codec: restCodec } }).error(400);
     }
     if (route?.allowed) {
       const headersWithAllow = { ...headers, Allow: route.allowed.join(', ') };
-      return void new ServerHttpTransport(call, { headers: headersWithAllow, rest: {} }).error(405);
+      return void new ServerHttpTransport(call, { headers: headersWithAllow, rest: { codec: restCodec } }).error(405);
     }
-    const transport = new ServerHttpTransport(call, { headers, rest: route ? { status: route.http.status } : null });
+    const transport = new ServerHttpTransport(call, {
+      headers,
+      rest: route ? { status: route.http.status, codec: restCodec } : null,
+    });
     const client = this.#addClient(transport);
-    // REST mode stays JSON whatever the codec says — curl and browsers are
-    // this mode's audience, and the codec is packet framing, not a body
-    // format. #addClient assigned the codec; take it back off.
-    transport.codec = null;
+    // #addClient assigned the packet codec; REST bodies are not packet
+    // frames, so it comes back off. The conventional mode's callback
+    // envelope IS the body value, so the rest codec (when configured)
+    // takes the packet codec's slot on the transport.
+    transport.codec = restCodec;
     if (typeof call.onAbort === 'function') call.onAbort(() => transport.emit('close'));
     const safeMethod = method === 'GET' || method === 'HEAD';
     if (!safeMethod || this.#isSameOriginFetch(call.headers)) {
       await this.#restoreFromCookie(client, call.headers);
     }
+    // A request body under a rest codec that fails to decode is the
+    // caller's malformed input: 400 in REST shape, never a throw upward.
+    const decodeBody = (fallback) => {
+      const raw = call.body;
+      if (raw === undefined || raw === null || raw.length === 0) return fallback;
+      if (!restCodec) return jsonParse(raw) ?? fallback;
+      return restCodec.decode(raw);
+    };
     const id = this.#generateId();
     if (route) {
       // REST semantics: the request arrives structured, and the SAME shape
       // is what a ws caller passes by hand — the mapping only defines how
       // an HTTP request is unpacked into args.
-      const args = { params: route.params, query: this.#parseQuery(params), body: jsonParse(call.body) ?? undefined };
+      let body;
+      try {
+        body = decodeBody(undefined);
+      } catch {
+        return void transport.error(400);
+      }
+      const args = { params: route.params, query: this.#parseQuery(params), body };
       const packet = { type: 'call', id, method: `${route.unitKey}/${route.methodName}`, args };
       return void handleRpc(client, packet, this.#router);
     }
     const parameters = this.#parseQuery(params);
     const [unit, name] = split(rest, '/');
-    const body = jsonParse(call.body) || {};
+    let body;
+    try {
+      body = decodeBody(null) ?? {};
+    } catch {
+      return void transport.error(400);
+    }
     const args = { ...parameters, ...body };
     const packet = { type: 'call', id, method: `${unit}/${name}`, args };
     return void handleRpc(client, packet, this.#router);

@@ -140,8 +140,12 @@ export interface SubscriptionOptions {
  * for onUnsubscribe.
  */
 export type Hook = (context: Context, payload: unknown) => unknown | Promise<unknown>;
-/** Connection lifecycle hook; observational and contained. */
-export type ConnectionHook = (client: Client, payload: null) => unknown | Promise<unknown>;
+/**
+ * Connection lifecycle hook; observational and contained. `onConnect`
+ * receives null; `onDisconnect` receives `{ rooms }` — a snapshot of the
+ * client's rooms taken before destroy() emptied the registry.
+ */
+export type ConnectionHook = (client: Client, payload: { rooms: Set<string> } | null) => unknown | Promise<unknown>;
 
 /** The phases a router (or a unit's reserved `hooks` key) may register. */
 export interface RouterHooks {
@@ -280,7 +284,7 @@ export interface UnitDefinition {
 }
 
 /**
- * Unit keys are 'unit' or 'unit.version'; method values are procedures,
+ * Unit keys are 'unit' or 'unit.vN' ('auth.v1'); method values are procedures,
  * bare handler functions, or procedure option objects.
  */
 export type RouterDefinition = Record<string, UnitDefinition>;
@@ -315,8 +319,22 @@ export interface CompiledArtifacts {
   serialize?: (value: unknown) => string;
 }
 
+/**
+ * Router-level REST options. `version: 'path'` maps a versioned unit's
+ * declared routes under a `/vN` prefix (`auth.v1` + `/auth/signIn` →
+ * `/v1/auth/signIn`); a function receives the version token (`'v1'`) and the
+ * declared path and returns the effective path. The default version stays
+ * unprefixed, and `proc.http` (the declaration) is never mutated.
+ */
+export interface RestOptions {
+  version?: 'path' | ((version: string, path: string) => string);
+}
+
 export declare class Router {
-  constructor(definition?: RouterDefinition, options?: { hooks?: RouterHooks; validation?: ValidationOptions });
+  constructor(
+    definition?: RouterDefinition,
+    options?: { hooks?: RouterHooks; validation?: ValidationOptions; rest?: RestOptions },
+  );
   /**
    * Adds a unit after construction (how the fastify mirror lands units
    * discovered at onReady). Refuses an already-registered unit key.
@@ -371,7 +389,10 @@ export declare class Router {
  */
 export declare function effectiveSchema(proc: Procedure): ProcedureSchema;
 
-export declare function defineRouter(definition: RouterDefinition, options?: { hooks?: RouterHooks; validation?: ValidationOptions }): Router;
+export declare function defineRouter(
+  definition: RouterDefinition,
+  options?: { hooks?: RouterHooks; validation?: ValidationOptions; rest?: RestOptions },
+): Router;
 
 // ---------------------------------------------------------------------------
 // Sessions
@@ -667,7 +688,15 @@ export declare class Context {
    * documented way to log from a handler: `context.log.info(...)`.
    */
   readonly log: WrpcLogWriter;
-  constructor(client: Client, signal?: AbortSignal | null);
+  /**
+   * The wire target of this invocation — `'unit/name'` or `'unit.vN/name'`
+   * for calls and subscriptions, the event name verbatim for inbound
+   * events; null on a context built without a target.
+   */
+  readonly method: string | null;
+  /** The procedure (or event handler) resolved for this invocation. */
+  readonly procedure: Procedure | null;
+  constructor(client: Client, signal?: AbortSignal | null, target?: { method?: string; procedure?: Procedure } | null);
 }
 
 export class Client extends Emitter {
@@ -846,12 +875,30 @@ export interface RpcServerOptions {
 }
 
 /** An injected wire codec — structural, checked by `isCodec`. */
-export interface WrpcCodec {
+/**
+ * The REST-mode body codec (`codec.rest`): encodes VALUES — the plain
+ * result, the wire error object, the request body — never packet
+ * envelopes. Binary is allowed here (whole HTTP bodies, no framing to
+ * collide with), unlike the text-only packet half.
+ */
+export interface WrpcRestCodec {
+  encode(value: unknown): string | Uint8Array;
+  decode(body: Uint8Array | string): unknown;
+  /** Overrides `application/json` on REST bodies, both directions. */
+  contentType?: string;
+}
+
+export interface WrpcPacketCodec {
   encode(packet: unknown): string;
   decode(text: string): unknown;
   /** Overrides `application/json` on packet-mode HTTP/SSE requests. */
   contentType?: string;
+  /** REST bodies stay JSON unless this section re-frames them. */
+  rest?: WrpcRestCodec;
 }
+
+/** A codec carries the packet half, the rest section, or both. */
+export type WrpcCodec = WrpcPacketCodec | { rest: WrpcRestCodec };
 
 export declare function isCodec(value: unknown): value is WrpcCodec;
 
@@ -861,6 +908,8 @@ export declare class RpcServer extends Emitter {
   readonly rooms: RoomRegistry;
   readonly instanceId: string;
   readonly basePath: string;
+  /** The injected codec option, verbatim; null without one. */
+  readonly codec: WrpcCodec | null;
   /** Where the SSE stream lives: `${basePath}/events`. */
   readonly eventsPath: string;
   /** The SSE channel registry, or null when `sse: false`. */
@@ -871,7 +920,10 @@ export declare class RpcServer extends Emitter {
    * the host owns routing/validation/serialization, wrpc the session and
    * client lifecycle. Call `release()` when the response closes.
    */
-  delegatedContext(request?: { method?: string; headers?: Record<string, string | undefined>; remoteAddress?: string }): Promise<{
+  delegatedContext(
+    request?: { method?: string; headers?: Record<string, string | undefined>; remoteAddress?: string },
+    target?: { method?: string; procedure?: Procedure } | null,
+  ): Promise<{
     client: Client;
     context: Context;
     transport: ServerTransport;

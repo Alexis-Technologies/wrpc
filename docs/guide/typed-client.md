@@ -13,7 +13,7 @@ interface Api {
     send(args: { text: string }): Promise<{ id: string }>;
     onMessage: SubscriptionContract<{ room: string }, { text: string }>;
   };
-  'auth.1': { signIn(args: { login: string }): Promise<{ token: string }> };
+  'auth.v1': { signIn(args: { login: string }): Promise<{ token: string }> };
 }
 
 const client = await connect<Api>('wss://host/api');
@@ -41,7 +41,7 @@ interface Api {
   feed: {
     ticks: SubscriptionContract<{ room: string }, { n: number }>;
   };
-  'auth.1': { signIn(args: { login: string }): Promise<{ token: string }> };
+  'auth.v1': { signIn(args: { login: string }): Promise<{ token: string }> };
 }
 ```
 
@@ -123,6 +123,44 @@ npx wrpc types http://localhost:8000/api --out api.d.ts
 See [Codegen CLI](./cli). The two halves meet in the middle: generate, then
 hand-edit if you want something more precise than the server's `signature`
 descriptors can express.
+
+## Static introspection
+
+`load()` asks the running server what a unit looks like — one
+`system/introspect` round-trip, repeated on every reconnect. When the contract
+is generated anyway, the *runtime* shape can be generated too: the same CLI
+run emits the raw introspection as an importable module, and `client.use()`
+scaffolds from it with **no wire traffic at all**:
+
+```bash
+wrpc types http://localhost:8000/api --out api.d.ts --schema api.static.js
+```
+
+```js
+import { connect } from '@alexify/wrpc';
+import type { Api } from './api.js';
+import schema from './api.static.js';
+
+const client = await connect<Api>('wss://example.com/api');
+client.use(schema); // synchronous — client.api is complete right here
+```
+
+The rules, in the order they matter:
+
+- **`use()` is synchronous and offline.** It works before `open()` and
+  without a reachable server — the artifact is the contract, exactly as the
+  generated `.d.ts` is.
+- **Dynamic wins.** `load()`ing a unit supersedes its static scaffold and the
+  unit reloads on reconnect from then on; `use()` on an already-`load()`ed
+  unit is a no-op. The two coexist: static for the stable core, `load()` for
+  anything you want introspected live.
+- **Static units never re-introspect.** A reconnect re-loads `load()`ed units
+  only, and the `'reconnect'` event's `units` payload lists only those.
+- **Pre-validation compiles from the artifact's schemas** (when you inject a
+  client-side ajv) and does not update until you regenerate — contract drift
+  is the codegen's responsibility, the same trade a generated `.d.ts` makes.
+- A server can keep schemas out of the artifact with
+  `introspection: { schemas: false }`, which shrinks it to names and access.
 
 ## Server-side types
 

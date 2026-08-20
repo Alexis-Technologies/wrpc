@@ -37,9 +37,9 @@ const split = (s, separator) => {
 
 const parseParams = (params) => Object.fromEntries(new URLSearchParams(params));
 
-// 'unit/name', 'unit.ver/name' -> { unit, version, name }.
-// Split on the FIRST dot only: 'unit.1.2/m' must look up version '1.2'
-// (a guaranteed miss -> 404), not silently truncate to version '1'
+// 'unit/name', 'unit.vN/name' -> { unit, version, name }.
+// Split on the FIRST dot only: 'unit.v1.2/m' must look up version 'v1.2'
+// (a guaranteed miss -> 404), not silently truncate to version 'v1'
 const parseTarget = (target) => {
   const [unitName, name] = split(target, '/');
   const dot = unitName.indexOf('.');
@@ -91,7 +91,7 @@ const handleRpc = async (client, packet, router) => {
   const compiled = router.compiledFor(proc);
   // Created before the first phase so onRequest can already enrich
   // ctx.state — the context is what ties the phases of one call together.
-  const context = client.createContext(controller.signal);
+  const context = client.createContext(controller.signal, { method, procedure: proc });
   // The span covers the whole invocation including session wait, access
   // check, validation and the timeout race — an argument error deserves an
   // error span and a duration sample exactly as much as a slow handler does.
@@ -213,7 +213,7 @@ const handleSubscribe = async (client, packet, router) => {
   }
   const hooks = router.hooksFor(proc);
   const compiled = router.compiledFor(proc);
-  const context = client.createContext(controller.signal);
+  const context = client.createContext(controller.signal, { method, procedure: proc });
   if (hooks.onSubscribe.length > 0) {
     try {
       await runHooks(hooks.onSubscribe, context, packet);
@@ -349,7 +349,7 @@ const handleEvent = async (client, packet, router) => {
   // onRequest/onSend do not apply — there is no packet to answer with.
   const hooks = router.hooksFor(handler);
   const compiled = router.compiledFor(handler);
-  const context = client.createContext();
+  const context = client.createContext(null, { method: target, procedure: handler });
   const run = async (handle) => {
     try {
       await handler.invoke(context, data, hooks, compiled);

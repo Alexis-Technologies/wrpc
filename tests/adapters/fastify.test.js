@@ -554,6 +554,105 @@ test('delegated REST: fastify validates, serializes and answers wire errors', { 
   });
 });
 
+test('delegated REST: the context carries its call identity', { skip: noFastify }, async (t) => {
+  const seen = [];
+  const router = defineRouter(
+    {
+      projects: {
+        find: procedure({
+          access: 'public',
+          http: { method: 'GET', path: '/projects/:id' },
+          handler: async (context, { params }) => ({ id: params.id, method: context.method }),
+        }),
+      },
+    },
+    {
+      hooks: {
+        onRequest: async (context) => void seen.push([context.method, context.procedure]),
+      },
+    },
+  );
+  const app = fastify({ logger: false });
+  t.after(() => app.close());
+  await app.register(wrpcFastify, { router, logger: false });
+  await app.ready();
+  const res = await app.inject({ method: 'GET', url: '/api/projects/7' });
+  assert.strictEqual(res.statusCode, 200);
+  assert.deepStrictEqual(res.json(), { id: '7', method: 'projects/find' });
+  assert.strictEqual(seen.length, 1);
+  assert.strictEqual(seen[0][0], 'projects/find');
+  assert.strictEqual(seen[0][1], router.getProcedure('projects', undefined, 'find'));
+});
+
+test('delegated REST: rest.version registers the prefixed url', { skip: noFastify }, async (t) => {
+  const seen = [];
+  const router = defineRouter(
+    {
+      'auth.v1': {
+        signIn: procedure({
+          access: 'public',
+          http: { method: 'POST', path: '/auth/signIn' },
+          handler: async (context) => ({ method: context.method }),
+        }),
+      },
+    },
+    {
+      rest: { version: 'path' },
+      hooks: { onRequest: async (context) => void seen.push(context.method) },
+    },
+  );
+  const app = fastify({ logger: false });
+  t.after(() => app.close());
+  await app.register(wrpcFastify, { router, logger: false });
+  await app.ready();
+  const res = await app.inject({ method: 'POST', url: '/api/v1/auth/signIn', payload: {} });
+  assert.strictEqual(res.statusCode, 200);
+  assert.deepStrictEqual(
+    res.json(),
+    { method: 'auth.v1/signIn' },
+    'the delegated context carries the versioned target',
+  );
+  assert.deepStrictEqual(seen, ['auth.v1/signIn']);
+});
+
+test('codec.rest and delegated REST routes refuse each other loudly', { skip: noFastify }, async (t) => {
+  const restCodec = { rest: { encode: (value) => JSON.stringify(value), decode: (body) => JSON.parse(String(body)) } };
+  const mapped = () =>
+    defineRouter({
+      projects: {
+        find: procedure({ access: 'public', http: { method: 'GET', path: '/projects/:id' }, handler: async () => 1 }),
+      },
+    });
+
+  await t.test('codec.rest + http mappings throws at ready', async () => {
+    const app = fastify({ logger: false });
+    t.after(() => app.close().catch(() => {}));
+    app.register(wrpcFastify, { router: mapped(), logger: false, codec: restCodec });
+    await assert.rejects(() => app.ready(), /codec\.rest and delegated REST routes .* are mutually exclusive/);
+  });
+
+  await t.test('the options.rpc path is covered by the same check', async () => {
+    const app = fastify({ logger: false });
+    t.after(() => app.close().catch(() => {}));
+    const rpc = new RpcServer({ router: mapped(), logger: false, codec: restCodec });
+    app.register(wrpcFastify, { rpc, logger: false });
+    await assert.rejects(() => app.ready(), /mutually exclusive/);
+  });
+
+  await t.test('codec.rest without http mappings registers normally', async () => {
+    const app = fastify({ logger: false });
+    t.after(() => app.close());
+    await app.register(wrpcFastify, { router: createRouter(), logger: false, codec: restCodec });
+    await app.ready();
+    const injected = await app.inject({
+      method: 'POST',
+      url: '/api',
+      payload: { type: 'call', id: '1', method: 'probe/echo', args: { a: 1 } },
+    });
+    assert.strictEqual(injected.statusCode, 200);
+  });
+});
+
 test('delegated REST: restErrors "app" leaves the error shape to the app', { skip: noFastify }, async (t) => {
   const app = fastify({ logger: false });
   t.after(() => app.close());

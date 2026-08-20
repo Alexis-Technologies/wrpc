@@ -518,3 +518,129 @@ test('introspection carries input schema parts; client prevalidates with injecte
     await assert.rejects(client.api.p.make({ body: {} }), (error) => error.code === 400);
   });
 });
+
+// ---------------------------------------------------------------------------
+// rest.version: 'auth.v1' + '/auth/signIn' -> '/v1/auth/signIn'
+
+const versionedApi = (rest = { version: 'path' }) =>
+  defineRouter(
+    {
+      auth: {
+        signIn: procedure({
+          access: 'public',
+          http: { method: 'POST', path: '/auth/signIn' },
+          handler: async () => ({ version: 'default' }),
+        }),
+      },
+      'auth.v1': {
+        signIn: procedure({
+          access: 'public',
+          http: { method: 'POST', path: '/auth/signIn' },
+          handler: async () => ({ version: 'v1' }),
+        }),
+        root: procedure({
+          access: 'public',
+          http: { method: 'GET', path: '/' },
+          handler: async () => ({ root: 'v1' }),
+        }),
+      },
+    },
+    { rest },
+  );
+
+test('rest.version option validation', () => {
+  assert.throws(() => defineRouter({}, { rest: 'path' }), /rest must be an options object/);
+  assert.throws(() => defineRouter({}, { rest: { version: 'header' } }), /rest\.version must be 'path' or a function/);
+  assert.ok(defineRouter({}, { rest: {} }) instanceof Object, 'an empty rest object configures nothing');
+  assert.throws(
+    () => versionedApi({ version: () => 'no-slash' }).restRoutes(),
+    /must produce a path starting with '\/'/,
+  );
+});
+
+test('rest.version at the router: trie, restRoutes, introspection', async (t) => {
+  await t.test('the same declared path diverges by version before the conflict check', () => {
+    const router = versionedApi();
+    assert.deepStrictEqual(
+      router
+        .restRoutes()
+        .map((route) => `${route.http.method} ${route.http.path}`)
+        .sort(),
+      ['GET /v1', 'POST /auth/signIn', 'POST /v1/auth/signIn'],
+    );
+  });
+
+  await t.test('proc.http is the declaration and never mutates', () => {
+    const router = versionedApi();
+    router.restRoutes();
+    router.introspect();
+    assert.strictEqual(router.getProcedure('auth', 'v1', 'signIn').http.path, '/auth/signIn');
+  });
+
+  await t.test('the function form receives the vN token and the declared path', () => {
+    const seen = [];
+    const router = versionedApi({
+      version: (version, path) => {
+        seen.push([version, path]);
+        return `/${version}-api${path === '/' ? '' : path}`;
+      },
+    });
+    const paths = router
+      .restRoutes()
+      .map((route) => route.http.path)
+      .sort();
+    assert.deepStrictEqual(paths, ['/auth/signIn', '/v1-api', '/v1-api/auth/signIn']);
+    assert.ok(seen.every(([version]) => version === 'v1'));
+  });
+
+  await t.test('without the option the declared paths collide loudly, as before', () => {
+    assert.throws(() => versionedApi({}).restRoutes(), /REST route conflict/);
+  });
+
+  await t.test('merge carries the strategy either way (receiver wins)', () => {
+    const carried = versionedApi().merge(defineRouter({}));
+    assert.ok(carried.restRoutes().some((route) => route.http.path === '/v1/auth/signIn'));
+    const adopted = defineRouter({}).merge(versionedApi());
+    assert.ok(adopted.restRoutes().some((route) => route.http.path === '/v1/auth/signIn'));
+  });
+});
+
+test('rest.version end to end: shell dispatch, introspection, client REST leg', async (t) => {
+  const router = versionedApi();
+  const { server, port } = await bootServer(t, { router });
+  const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+
+  await t.test('both versions of one declared path dispatch to their own procedure', async () => {
+    // The server's router is the MERGED one (#withIntrospection), so this
+    // also proves the strategy survived the merge every boot performs.
+    const v1 = await fetch(`${base}/v1/auth/signIn`, { method: 'POST' });
+    assert.strictEqual(v1.status, 200);
+    assert.deepStrictEqual(await v1.json(), { version: 'v1' });
+    const def = await fetch(`${base}/auth/signIn`, { method: 'POST' });
+    assert.deepStrictEqual(await def.json(), { version: 'default' });
+  });
+
+  await t.test("a versioned path: '/' becomes /v1", async () => {
+    const res = await fetch(`${base}/v1`);
+    assert.deepStrictEqual(await res.json(), { root: 'v1' });
+  });
+
+  await t.test('the conventional /auth.v1/signIn mode still answers packets', async () => {
+    const res = await fetch(`${base}/auth.v1/signIn`, { method: 'POST', body: '' });
+    assert.strictEqual(res.status, 200);
+    const packet = await res.json();
+    assert.strictEqual(packet.type, 'callback');
+    assert.deepStrictEqual(packet.result, { version: 'v1' });
+  });
+
+  await t.test('introspection ships the prefixed path, so the client REST leg calls it', async () => {
+    const info = server.rpc.router.introspect()['auth.v1'];
+    assert.strictEqual(info.signIn.http.method, 'POST');
+    assert.strictEqual(info.signIn.http.path, '/v1/auth/signIn');
+    const client = await connectClient(t, base, { transport: 'http' });
+    await client.load('auth.v1');
+    // Hitting the UNprefixed path would answer { version: 'default' } — the
+    // assertion below is exactly the versioned-URL proof.
+    assert.deepStrictEqual(await client.api['auth.v1'].signIn({}), { version: 'v1' });
+  });
+});

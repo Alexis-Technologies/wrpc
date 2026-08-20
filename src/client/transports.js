@@ -105,13 +105,16 @@ class ClientHttpTransport extends ClientTransport {
 
   // The REST leg: one mapped call, one plain-bodied response. The caller
   // (client/core #restCall) interprets status and body; aborting `signal`
-  // aborts the fetch.
-  async request(method, url, body, signal) {
-    const headers = { 'Content-Type': this.codec?.contentType ?? 'application/json' };
+  // aborts the fetch. `rest` is the codec.rest section when configured —
+  // it owns this leg's Content-Type and switches the read path to bytes.
+  // The PACKET codec's contentType belongs to write() below, never here:
+  // a JSON REST body must say JSON.
+  async request(method, url, body, signal, rest = null) {
+    const headers = { 'Content-Type': rest?.contentType ?? 'application/json' };
     const options = body === undefined ? { method, headers, signal } : { method, headers, body, signal };
     const res = await fetch(url, options);
-    const text = await res.text();
-    return { status: res.status, text };
+    if (rest) return { status: res.status, body: new Uint8Array(await res.arrayBuffer()) };
+    return { status: res.status, text: await res.text() };
   }
 
   // Malformed answers null either way — the codec's parse is the probe's.

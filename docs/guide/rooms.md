@@ -90,6 +90,20 @@ context.client.rooms;              // Set<string>, a copy
 Rooms are released automatically when a client disconnects — there is no
 cleanup to forget. The registry owns both directions (which clients a room
 holds, which rooms a client joined), so a disconnect is one `leaveAll` call.
+That release runs **before** the router's `onDisconnect` hook, so inside the
+hook `client.rooms` is already empty — the hook's payload carries a
+`{ rooms }` snapshot taken just before teardown, which is how a presence
+hook learns what the client was in:
+
+```js
+defineRouter(units, {
+  hooks: {
+    onDisconnect: (client, { rooms }) => {
+      for (const room of rooms) server.to(room).emit('presence/left', { id: client.id });
+    },
+  },
+});
+```
 
 Inspect the registry through `server.rooms`:
 

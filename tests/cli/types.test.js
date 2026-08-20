@@ -14,6 +14,7 @@ const {
   main,
   parseArgs,
   quoteKey,
+  renderStatic,
   renderType,
   renderTypes,
 } = require('../../src/cli/types.js');
@@ -59,7 +60,7 @@ test('CLI parseArgs: the happy paths', () => {
     '--out',
     '-',
     '--units',
-    'chat, auth.1',
+    'chat, auth.v1',
     '--units',
     'presence',
     '--interface',
@@ -68,7 +69,7 @@ test('CLI parseArgs: the happy paths', () => {
     '../wrpc',
   ]);
   assert.strictEqual(full.out, '-');
-  assert.deepStrictEqual(full.units, ['chat', 'auth.1', 'presence']);
+  assert.deepStrictEqual(full.units, ['chat', 'auth.v1', 'presence']);
   assert.strictEqual(full.interfaceName, 'Contract');
   assert.strictEqual(full.packageName, '../wrpc');
 
@@ -122,7 +123,7 @@ test('CLI parseArgs: rejects every malformed invocation', () => {
 test('CLI quoteKey: bare identifiers, safely quoted everything else', () => {
   assert.strictEqual(quoteKey('chat'), 'chat');
   assert.strictEqual(quoteKey('_$x0'), '_$x0');
-  assert.strictEqual(quoteKey('auth.1'), "'auth.1'");
+  assert.strictEqual(quoteKey('auth.v1'), "'auth.v1'");
   assert.strictEqual(quoteKey('weird-name'), "'weird-name'");
   assert.strictEqual(quoteKey('1st'), "'1st'");
   // Anything that needed escaping keeps JSON's quoting, which is what makes it safe
@@ -211,7 +212,7 @@ test('CLI renderTypes: a whole introspection becomes a contract interface', () =
           signature: { args: { room: 'string' }, data: { text: 'string' } },
         },
       },
-      'auth.1': { signIn: { access: 'public', signature: { args: { login: 'string' } } } },
+      'auth.v1': { signIn: { access: 'public', signature: { args: { login: 'string' } } } },
     },
     { url: 'http://127.0.0.1:8000/api', warn },
   );
@@ -226,7 +227,7 @@ test('CLI renderTypes: a whole introspection becomes a contract interface', () =
       "import type { SubscriptionContract } from '@alexify/wrpc';",
       '',
       'export interface Api {',
-      "  'auth.1': {",
+      "  'auth.v1': {",
       '    signIn(args: { login: string }): Promise<unknown>;',
       '  };',
       '  chat: {',
@@ -580,4 +581,112 @@ test('CLI main: a write that fails with a non-Error still says what it was doing
   });
   assert.strictEqual(code, 1);
   assert.deepStrictEqual(error.lines, ['wrpc types: Cannot write x: disk on fire']);
+});
+
+// ---------------------------------------------------------------------------
+// --schema: the static introspection artifact
+
+test('CLI parseArgs: --schema and --format', () => {
+  const parsed = parseArgs(['types', 'http://h/api', '--out', 'api.d.ts', '--schema', 'api.static.js']);
+  assert.strictEqual(parsed.schema, 'api.static.js');
+  assert.strictEqual(parsed.format, 'cjs', 'cjs is the default format');
+  const esm = parseArgs(['types', 'http://h/api', '--out', '-', '--schema', 'api.static.js', '--format', 'esm']);
+  assert.strictEqual(esm.format, 'esm');
+
+  const rejects = (argv, needle) => {
+    assert.throws(
+      () => parseArgs(argv),
+      (error) => {
+        assert.ok(error instanceof CliError, `${needle}: expected a CliError, got ${error}`);
+        assert.match(error.message, needle);
+        return true;
+      },
+    );
+  };
+  rejects(['types', 'http://h', '--out', 'x', '--format', 'esm'], /--format only applies to --schema/);
+  rejects(
+    ['types', 'http://h', '--out', 'x', '--schema', 's.js', '--format', 'umd'],
+    /--format must be 'cjs' or 'esm'/,
+  );
+  rejects(['types', 'http://h', '--out', '-', '--schema', '-'], /cannot both write to stdout/);
+  rejects(['types', 'http://h', '--out', 'x', '--schema'], /--schema requires a value/);
+});
+
+test('renderStatic: a sorted, verbatim introspection module', () => {
+  const introspection = {
+    zeta: { b: { access: 'public' }, a: { access: 'public', kind: 'subscription' } },
+    alpha: { m: { access: 'public', schema: { body: { type: 'object' } } } },
+  };
+  const cjs = renderStatic(introspection, { url: 'http://h/api?token=secret' });
+  assert.ok(cjs.startsWith("'use strict';\n"), 'cjs opens with use strict');
+  assert.match(cjs, /^module\.exports = \{$/m);
+  assert.match(cjs, /\/\/ Source: http:\/\/h\/api$/m, 'credentials and query never reach the file');
+  assert.ok(cjs.endsWith(';\n'), 'the artifact ends with a newline');
+  // Deterministic: unit and method keys are sorted whatever order they came in
+  assert.ok(cjs.indexOf('"alpha"') < cjs.indexOf('"zeta"'));
+  assert.ok(cjs.indexOf('"a"') < cjs.indexOf('"b"'));
+  const again = renderStatic(
+    { alpha: { m: introspection.alpha.m }, zeta: { a: introspection.zeta.a, b: introspection.zeta.b } },
+    { url: 'http://h/api?token=secret' },
+  );
+  assert.strictEqual(cjs, again, 'byte-identical across runs and key orders');
+  // The payload survives verbatim: require()-equivalent shape via JSON
+  const literal = cjs.slice(cjs.indexOf('module.exports = ') + 'module.exports = '.length, -2);
+  assert.deepStrictEqual(JSON.parse(literal), {
+    alpha: { m: { access: 'public', schema: { body: { type: 'object' } } } },
+    zeta: { a: { access: 'public', kind: 'subscription' }, b: { access: 'public' } },
+  });
+
+  const esm = renderStatic(introspection, { url: 'http://h/api', format: 'esm' });
+  assert.ok(!esm.includes('use strict'));
+  assert.match(esm, /^export default \{$/m);
+
+  const warn = warner();
+  const skipped = renderStatic({ ok: { m: { access: 'public' } }, broken: 42 }, { warn });
+  assert.strictEqual(warn.matching("unit 'broken'").length, 1);
+  assert.ok(!skipped.includes('broken'));
+});
+
+test("renderStatic: a '__proto__' unit lands as data, not as a prototype", () => {
+  const introspection = JSON.parse('{"__proto__": {"m": {"access": "public"}}, "chat": {}}');
+  const cjs = renderStatic(introspection, {});
+  assert.match(cjs, /"__proto__"/, 'the key is emitted as a plain property');
+});
+
+test('CLI main: --schema writes both artifacts from one fetch', async () => {
+  const written = [];
+  let fetches = 0;
+  const doFetch = async () => {
+    fetches++;
+    return answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } });
+  };
+  const code = await main(['types', 'http://h/api', '--out', 'api.d.ts', '--schema', 'api.static.js'], {
+    log: collect(),
+    error: collect(),
+    fetch: doFetch,
+    write: async (file, text) => void written.push({ file, text }),
+  });
+  assert.strictEqual(code, 0);
+  assert.strictEqual(fetches, 1, 'one fetch feeds both artifacts');
+  assert.strictEqual(written.length, 2);
+  assert.strictEqual(written[0].file, 'api.d.ts');
+  assert.match(written[0].text, /export interface Api \{/);
+  assert.strictEqual(written[1].file, 'api.static.js');
+  assert.match(written[1].text, /module\.exports = \{/);
+  assert.match(written[1].text, /"ping"/);
+});
+
+test("CLI main: '--schema -' streams the module to stdout while --out writes the file", async () => {
+  const log = collect();
+  const written = [];
+  const doFetch = async () => answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } });
+  const code = await main(['types', 'http://h/api', '--out', 'api.d.ts', '--schema', '-', '--format', 'esm'], {
+    log,
+    error: collect(),
+    fetch: doFetch,
+    write: async (file, text) => void written.push({ file, text }),
+  });
+  assert.strictEqual(code, 0);
+  assert.strictEqual(written.length, 1, 'only the types artifact hit the filesystem');
+  assert.match(log.text(), /export default \{/);
 });

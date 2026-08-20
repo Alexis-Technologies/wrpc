@@ -72,12 +72,12 @@ test('versioned units', async (t) => {
   const v1 = procedure({ access: 'public', handler: async () => 'v1' });
   const def = procedure({ access: 'public', handler: async () => 'default' });
   const router = defineRouter({
-    'unit.1': { m: v1 },
+    'unit.v1': { m: v1 },
     unit: { m: def },
   });
 
-  await t.test('unit.1 key registers version 1', () => {
-    assert.strictEqual(router.getProcedure('unit', '1', 'm'), v1);
+  await t.test('unit.v1 key registers version v1', () => {
+    assert.strictEqual(router.getProcedure('unit', 'v1', 'm'), v1);
   });
 
   await t.test('bare unit key registers the default version *', () => {
@@ -85,15 +85,24 @@ test('versioned units', async (t) => {
   });
 
   await t.test('no cross-version fallback', () => {
-    assert.strictEqual(router.getProcedure('unit', '2', 'm'), null);
-    const only = defineRouter({ 'solo.1': { m: v1 } });
+    assert.strictEqual(router.getProcedure('unit', 'v2', 'm'), null);
+    const only = defineRouter({ 'solo.v1': { m: v1 } });
     assert.strictEqual(only.getProcedure('solo', '*', 'm'), null);
-    assert.strictEqual(only.getProcedure('solo', '1', 'm'), v1);
+    assert.strictEqual(only.getProcedure('solo', 'v1', 'm'), v1);
   });
 
   await t.test('getProcedure misses return null', () => {
     assert.strictEqual(router.getProcedure('nope', '*', 'm'), null);
     assert.strictEqual(router.getProcedure('unit', '*', 'nope'), null);
+  });
+
+  await t.test("the version token is 'vN' and nothing else", () => {
+    const method = { m: async () => 1 };
+    assert.throws(() => defineRouter({ 'unit.1': method }), /a unit key is 'unit' or 'unit\.vN'/);
+    assert.throws(() => defineRouter({ 'unit.v': method }), TypeError);
+    assert.throws(() => defineRouter({ 'unit.vx': method }), TypeError);
+    assert.throws(() => defineRouter({ 'unit.V1': method }), TypeError, 'the v is lowercase');
+    assert.strictEqual(defineRouter({ 'unit.v12': method }).getProcedure('unit', 'v12', 'm') !== null, true);
   });
 });
 
@@ -109,7 +118,7 @@ test('introspect', async (t) => {
       }),
       plain: noop,
     },
-    'unit.1': { legacy: procedure({ access: 'public', handler: noop }) },
+    'unit.v1': { legacy: procedure({ access: 'public', handler: noop }) },
     other: { m: noop },
   });
 
@@ -123,7 +132,7 @@ test('introspect', async (t) => {
         },
         plain: { access: 'session' },
       },
-      'unit.1': { legacy: { access: 'public' } },
+      'unit.v1': { legacy: { access: 'public' } },
       other: { m: { access: 'session' } },
     });
   });
@@ -136,7 +145,7 @@ test('introspect', async (t) => {
 
   await t.test('filter by units list', () => {
     assert.deepStrictEqual(Object.keys(router.introspect(['unit'])), ['unit']);
-    assert.deepStrictEqual(router.introspect(['unit.1']), { 'unit.1': { legacy: { access: 'public' } } });
+    assert.deepStrictEqual(router.introspect(['unit.v1']), { 'unit.v1': { legacy: { access: 'public' } } });
     assert.deepStrictEqual(router.introspect(['missing']), {});
   });
 });
@@ -147,7 +156,7 @@ test('merge', async (t) => {
   const procB = procedure({ access: 'public', handler: async () => 'b' });
   const procX = procedure({ access: 'public', handler: async () => 'x' });
   const versioned = procedure({ access: 'public', handler: async () => 'v2' });
-  const a = defineRouter({ unit: { m: procA, only: onlyA }, 'legacy.2': { m: versioned } });
+  const a = defineRouter({ unit: { m: procA, only: onlyA }, 'legacy.v2': { m: versioned } });
   const b = defineRouter({ unit: { m: procB }, extra: { x: procX } });
   const merged = a.merge(b);
 
@@ -157,7 +166,7 @@ test('merge', async (t) => {
     assert.notStrictEqual(merged, b);
     assert.strictEqual(merged.getProcedure('unit', '*', 'only'), onlyA);
     assert.strictEqual(merged.getProcedure('extra', '*', 'x'), procX);
-    assert.strictEqual(merged.getProcedure('legacy', '2', 'm'), versioned);
+    assert.strictEqual(merged.getProcedure('legacy', 'v2', 'm'), versioned);
   });
 
   await t.test('collision: the other router wins', () => {
@@ -168,7 +177,7 @@ test('merge', async (t) => {
     assert.strictEqual(a.getProcedure('unit', '*', 'm'), procA);
     assert.strictEqual(b.getProcedure('unit', '*', 'm'), procB);
     assert.strictEqual(a.getProcedure('extra', '*', 'x'), null);
-    assert.strictEqual(b.getProcedure('legacy', '2', 'm'), null);
+    assert.strictEqual(b.getProcedure('legacy', 'v2', 'm'), null);
     assert.strictEqual(b.getProcedure('unit', '*', 'only'), null);
   });
 });
@@ -346,9 +355,9 @@ test('invoke timeout and queue', async (t) => {
 test('review regressions: keys, filters, and queue-timeout interplay', async (t) => {
   await t.test('multi-dot unit keys are rejected instead of silently truncated', () => {
     const method = { m: async () => 1 };
-    assert.throws(() => defineRouter({ 'unit.1.2': method }), TypeError);
+    assert.throws(() => defineRouter({ 'unit.v1.2': method }), TypeError);
     assert.throws(() => defineRouter({ 'unit.': method }), TypeError);
-    assert.throws(() => defineRouter({ '.1': method }), TypeError);
+    assert.throws(() => defineRouter({ '.v1': method }), TypeError);
   });
 
   await t.test('introspect treats a non-array units argument as no filter', () => {
@@ -414,7 +423,7 @@ test('addUnit: post-construction units for the mirror feature', async (t) => {
     const router = defineRouter({ a: { x: procedure({ access: 'public', handler: async () => 1 }) } });
     assert.throws(() => router.addUnit('a', {}), /already registered/);
     // A different VERSION of the same unit is a different key.
-    router.addUnit('a.2', { x: procedure({ access: 'public', handler: async () => 2 }) });
-    assert.notStrictEqual(router.getProcedure('a', '2', 'x'), null);
+    router.addUnit('a.v2', { x: procedure({ access: 'public', handler: async () => 2 }) });
+    assert.notStrictEqual(router.getProcedure('a', 'v2', 'x'), null);
   });
 });
