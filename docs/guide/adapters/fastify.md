@@ -91,6 +91,102 @@ find-my-way prefers it over the parametric route it would otherwise fall into.
 A path outside `basePath` gets **fastify's** 404, not wrpc's error packet. That
 difference is the whole reason to compose as a plugin.
 
+## Declarative REST routes {#declarative-rest-routes}
+
+A procedure with an [`http` mapping](../rest) becomes a **native fastify
+route** under this plugin — not a proxy into the wrpc dispatcher. Fastify
+owns routing, schema validation, serialization and (through
+@fastify/swagger) documentation; wrpc supplies the per-request `Context`
+(session, rooms, client lifecycle) and runs the bare handler under the
+procedure's own queue/timeout semantics. The internal API over HTTP is
+therefore the **same endpoint external consumers hit**.
+
+```js
+const router = defineRouter({
+  projects: {
+    create: procedure({
+      http: { method: 'POST', path: '/projects/:orgId', status: 201 },
+      schema: { body: { /* JSON Schema */ }, response: { 201: { /* … */ } }, tags: ['Projects'] },
+      handler: async (context, { params, query, body }) => { /* ... */ },
+    }),
+  },
+});
+```
+
+`schema` is forwarded to `fastify.route.schema` verbatim (plus wrpc's
+[default error responses](../rest#default-error-responses)), so swagger
+sees everything. wrpc's lifecycle hooks map onto fastify's phases by name —
+the naming was fastify's to begin with — with the payload differences
+documented in the adapter source.
+
+Two things to know:
+
+- **Validation runs once, in fastify.** The wrpc-side compiled validators
+  are for the other transports; on this path the fastify pipeline already
+  ran.
+- **Errors answer the wire shape** `{ message, code, details? }` with the
+  code as the status. Pass `restErrors: 'app'` to keep your app's own error
+  format instead (the default error responses are then not documented, so
+  your format survives serialization).
+
+A collision between a mapped path and an app route under `basePath` makes
+find-my-way throw at registration — the correct failure.
+
+## Mirroring existing routes {#mirroring-existing-routes}
+
+The reverse direction: your **existing fastify routes** become wrpc
+procedures, without rewriting any of them.
+
+```js
+await fastify.register(wrpcFastify, {
+  router,
+  mirror: {
+    access: 'session',
+    headers: (context) => ({ authorization: `Bearer ${context.session?.state.token ?? ''}` }),
+  },
+});
+
+// later, from a browser:
+await client.load('projects');
+await client.api.projects.create({ params: { orgId: '42' }, body: { name: 'Alpha' } });
+```
+
+The generated procedure dispatches through `fastify.inject()`
+(light-my-request, no network), so the route's **whole pipeline** — your
+onRequest hooks, auth, schema validation, serialization — runs exactly as
+for a real request. Route errors flow back with their status, message and
+`details`.
+
+Rules of the collection:
+
+- Register the plugin **before** the routes it should mirror — collection
+  happens via an `onRoute` hook.
+- **Naming is reverse REST semantics**: `POST /projects` → `create`,
+  `GET /projects/:id` → `findById`, `GET /projects/slug/:slug` →
+  `findBySlug`, `GET /projects/archive` → `findAllArchive`,
+  `POST /projects/:orgId/archive/:id` → `createArchive`; `PATCH` → update,
+  `PUT` → replace, `DELETE` → delete. The unit is the last static segment
+  before the first param. Anything the semantics cannot express is what
+  `config.wrpc` is for:
+
+```js
+fastify.route({
+  method: 'DELETE',
+  url: '/projects/:orgId/archive/:id',
+  config: { wrpc: { name: 'unarchive' } },   // instead of deleteArchive
+  handler,
+});
+
+fastify.get('/internal/health', { config: { wrpc: false } }, handler);  // opt out
+```
+
+- A naming collision throws at `onReady`, naming both routes.
+- Mirrored procedures carry a `signature` distilled from the route's JSON
+  Schemas, so [`wrpc types`](../cli) types them; `meta.mirrored` records
+  the origin.
+- Mirrored calls are calls only — no subscriptions or binary streams — and
+  `fastify.inject` makes this a colder path than a native procedure.
+
 ## Shutdown
 
 `fastify.close()` is enough: the plugin closes the core and the engine on

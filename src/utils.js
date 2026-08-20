@@ -336,4 +336,15 @@ class Semaphore {
   }
 }
 
-module.exports = { Emitter, jsonParse, Semaphore, backoffDelay, EventStream, createEventStream };
+// Structural check for an injected wire codec: { encode(packet) -> string,
+// decode(text) -> packet, contentType? }. Text-only by design — binary
+// output would collide with the chunk framing on ws and the line protocol
+// on SSE — and shared here because both the server core and the browser
+// client run it.
+const isCodec = (value) =>
+  value !== null &&
+  typeof value === 'object' &&
+  typeof value.encode === 'function' &&
+  typeof value.decode === 'function';
+
+module.exports = { Emitter, jsonParse, isCodec, Semaphore, backoffDelay, EventStream, createEventStream };

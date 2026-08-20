@@ -142,6 +142,7 @@ export default withMermaid({
             items: [
               { text: 'Server', link: '/guide/server' },
               { text: 'Router & procedures', link: '/guide/router' },
+              { text: 'Declarative REST', link: '/guide/rest' },
               { text: 'Hooks', link: '/guide/hooks' },
               { text: 'Sessions', link: '/guide/sessions' },
               { text: 'Rooms', link: '/guide/rooms' },
@@ -165,6 +166,7 @@ export default withMermaid({
             text: 'Transports & hosts',
             items: [
               { text: 'Server-Sent Events', link: '/guide/sse' },
+              { text: 'Wire codec', link: '/guide/codec' },
               { text: 'uWebSockets.js', link: '/guide/adapters/uws' },
               { text: 'Fastify', link: '/guide/adapters/fastify' },
               { text: 'Express', link: '/guide/adapters/express' },

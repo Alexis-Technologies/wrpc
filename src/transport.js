@@ -75,6 +75,27 @@ const publicErrorMessage = (code, error) => {
   return status;
 };
 
+// `details` follows the exact same rule as the message: structured issue
+// lists (validation paths, quota numbers) are part of the 4xx conversation,
+// while a 5xx's internals stay in the log unless the error opts in.
+const publicErrorDetails = (code, error) => {
+  if (!error || error.details === undefined) return undefined;
+  if (code < 500 || error.expose === true) return error.details;
+  return undefined;
+};
+
+// The one builder for the wire error object, so every packet that carries
+// an error ({type:'callback'} and {type:'end'} alike) redacts identically.
+// The `details` key is omitted entirely when there is nothing to say —
+// an optional field, absent rather than null, per the protocol's
+// additive-fields rule.
+const wireError = (code, error) => {
+  const wire = { message: publicErrorMessage(code, error), code };
+  const details = publicErrorDetails(code, error);
+  if (details !== undefined) wire.details = details;
+  return wire;
+};
+
 class ServerTransport extends Emitter {
   // Which wire this is, for log entries and metric attributes. Subclasses
   // override it; the base value covers a transport nobody labelled.
@@ -90,15 +111,24 @@ class ServerTransport extends Emitter {
   }
 
   error(code = 500, { id = '', error = null } = {}) {
-    const packet = { type: 'callback', id, error: { message: publicErrorMessage(code, error), code } };
+    const packet = { type: 'callback', id, error: wireError(code, error) };
     return this.send(packet, code);
   }
 
   // Returns the transport's backpressure signal (false = above the
   // high-water mark) so a producer — a subscription pump, a stream — can
   // wait for 'drain' instead of buffering without limit.
-  send(obj, code = 200) {
-    return this.write(JSON.stringify(obj), code);
+  //
+  // `text` is the already-serialized form of `obj` when the dispatcher's
+  // compiled-serializer fast path built one (see handleRpc); passing both
+  // keeps the object available to the overrides that need it (batch
+  // collection, REST unwrapping) while the plain path skips a stringify.
+  send(obj, code = 200, text = null) {
+    // An injected codec (RpcServer options.codec, assigned per transport)
+    // re-frames every packet; it wins over precompiled `text` by
+    // construction — the server refuses codec + serializers up front.
+    if (this.codec) return this.write(this.codec.encode(obj), code);
+    return this.write(text ?? JSON.stringify(obj), code);
   }
 }
 
@@ -113,6 +143,10 @@ class ServerHttpTransport extends ServerTransport {
   #setCookies = [];
   #batch = null; // requested ids, in order — null outside batch mode
   #collected = [];
+  // Declarative-route mode: the response body is the PLAIN result (or the
+  // wire error object), not a callback envelope — external REST semantics.
+  // `{ status }` carries the route's success status; null everywhere else.
+  #rest = null;
 
   constructor(call, options = {}) {
     super(call.remoteAddress ?? '');
@@ -120,6 +154,7 @@ class ServerHttpTransport extends ServerTransport {
     this.headers = options.headers ?? { ...SECURITY_HEADERS };
     this.#respond = call.respond;
     if (Array.isArray(options.batch)) this.#batch = options.batch;
+    if (options.rest) this.#rest = options.rest;
   }
 
   get responded() {
@@ -134,12 +169,24 @@ class ServerHttpTransport extends ServerTransport {
   // until the last one arrives and then emitted in the order the packets
   // were sent, so a caller can zip requests to responses positionally
   // without depending on how fast each handler happened to be.
-  send(obj, code = 200) {
-    if (!this.#batch) return super.send(obj, code);
+  // Both special modes ignore `text` deliberately: batch mode collects the
+  // OBJECTS to re-order and re-serialize as one frame, and REST mode writes
+  // the bare result rather than the callback envelope the text carries.
+  send(obj, code = 200, text = null) {
+    if (this.#rest && obj.type === 'callback') {
+      if (obj.error) return this.write(JSON.stringify(obj.error), obj.error.code ?? code);
+      const status = this.#rest.status ?? 200;
+      // 204 promises "no content": the result (if any) is discarded on the
+      // wire by contract, not by accident.
+      if (status === 204) return this.write('', 204);
+      return this.write(obj.result === undefined ? 'null' : JSON.stringify(obj.result), status);
+    }
+    if (!this.#batch) return super.send(obj, code, text);
     if (this.#responded) return true;
     this.#collected.push(obj);
     if (this.#collected.length < this.#batch.length) return true;
-    return this.write(JSON.stringify(this.#ordered()), 200);
+    const ordered = this.#ordered();
+    return this.write(this.codec ? this.codec.encode(ordered) : JSON.stringify(ordered), 200);
   }
 
   // Building an id index makes this O(n), but the Map costs more than the
@@ -211,6 +258,12 @@ class ServerHttpTransport extends ServerTransport {
     this.#setCookies.push(cookieHeader);
   }
 
+  // Cookies a handler queued (startSession) that no write() will flush —
+  // a host-delegated route copies these onto its own reply.
+  get pendingCookies() {
+    return this.#setCookies;
+  }
+
   // Closed before every answer arrived — a shutdown, an evicted client. In
   // batch mode `error()` would only collect ONE more answer and then keep
   // waiting for the rest, which are never coming, so the request hangs. Fill
@@ -227,7 +280,8 @@ class ServerHttpTransport extends ServerTransport {
       answered.add(id);
       this.#collected.push({ type: 'callback', id: typeof id === 'string' ? id : '', error: { message, code: 503 } });
     }
-    this.write(JSON.stringify(this.#ordered()), 503);
+    const ordered = this.#ordered();
+    this.write(this.codec ? this.codec.encode(ordered) : JSON.stringify(ordered), 503);
   }
 }
 
@@ -291,5 +345,7 @@ module.exports = {
   isOriginAllowed,
   parseCookies,
   publicErrorMessage,
+  publicErrorDetails,
+  wireError,
   SECURITY_HEADERS,
 };

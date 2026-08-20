@@ -62,6 +62,15 @@ const router = defineRouter({
         return { ok: true };
       },
     }),
+    // A declaratively-mapped route: every boot must serve it as a real REST
+    // endpoint — plain result body, status from http.status — whether the
+    // host is the core trie (shell/express/uws) or fastify's own router
+    // (the delegated route).
+    mapped: procedure({
+      access: 'public',
+      http: { method: 'POST', path: '/things/:thingId', status: 201 },
+      handler: async (_context, { params, query, body }) => ({ thingId: params.thingId, q: query, name: body?.name }),
+    }),
     readUpload: procedure({
       access: 'public',
       handler: async (context, { id }) => {
@@ -260,6 +269,16 @@ const runAdapterSpec = async (entry, t) => {
     const body = await res.json();
     assert.strictEqual(res.status, 200);
     assert.deepStrictEqual(body.result, { a: '1', b: 'body', c: 3 });
+  });
+
+  await t.test('a declarative REST route answers a plain result with its own status', async () => {
+    const res = await fetch(`${base}/things/42?x=1`, {
+      method: 'POST',
+      headers: JSON_HEADERS,
+      body: JSON.stringify({ name: 'Alpha' }),
+    });
+    assert.strictEqual(res.status, 201);
+    assert.deepStrictEqual(await res.json(), { thingId: '42', q: { x: '1' }, name: 'Alpha' });
   });
 
   await t.test('an unknown method is a 404 error packet', async () => {

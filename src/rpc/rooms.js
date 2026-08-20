@@ -146,6 +146,7 @@ class Broadcast {
   #localOnly;
   #log;
   #otel;
+  #codec;
 
   constructor({
     registry,
@@ -154,6 +155,7 @@ class Broadcast {
     cluster = null,
     log = globalThis.console,
     otel = null,
+    codec = null,
     targets = null,
     excluded = null,
     localOnly = false,
@@ -164,6 +166,7 @@ class Broadcast {
     this.#cluster = cluster;
     this.#log = createLoggerWriter(log);
     this.#otel = otel;
+    this.#codec = codec;
     this.#targets = targets;
     this.#excluded = excluded;
     this.#localOnly = localOnly;
@@ -177,6 +180,7 @@ class Broadcast {
       cluster: this.#cluster,
       log: this.#log,
       otel: this.#otel,
+      codec: this.#codec,
       targets: this.#targets,
       excluded: this.#excluded,
       localOnly: this.#localOnly,
@@ -242,7 +246,10 @@ class Broadcast {
     // the broadcaster is usually far from whoever built the value.
     let text;
     try {
-      text = JSON.stringify({ type: 'event', name, data });
+      // A configured codec is server-wide, so this stays a SINGLE encode
+      // for the whole fan-out — same property the JSON path has.
+      const packet = { type: 'event', name, data };
+      text = this.#codec ? this.#codec.encode(packet) : JSON.stringify(packet);
     } catch (error) {
       this.#log.error({ err: error, event: 'broadcast.serialize', name });
       return 0;
@@ -315,7 +322,11 @@ class Broadcast {
   #askLocal(name, data, timeout) {
     let prefix;
     try {
-      prefix = JSON.stringify({ type: 'event', name, data }).slice(0, -1);
+      // The suffix surgery below splices a per-recipient id into JSON text;
+      // under a codec the whole packet is encoded per recipient instead —
+      // a deliberate slow path, since only the codec knows its framing.
+      prefix = this.#codec ? null : JSON.stringify({ type: 'event', name, data }).slice(0, -1);
+      if (this.#codec) this.#codec.encode({ type: 'event', name, data }); // surface a circular payload NOW
     } catch (error) {
       this.#log.error({ err: error, event: 'broadcast.serialize', name });
       return { expected: 0, done: Promise.resolve({ answers: [], errors: [] }) };
@@ -327,7 +338,10 @@ class Broadcast {
         if (!client.persistent) continue;
         const id = client.generateId();
         try {
-          client.sendRaw(`${prefix},"id":${JSON.stringify(id)}}`);
+          const frame = this.#codec
+            ? this.#codec.encode({ type: 'event', name, data, id })
+            : `${prefix},"id":${JSON.stringify(id)}}`;
+          client.sendRaw(frame);
         } catch (error) {
           this.#log.error({ err: error, event: 'broadcast.send', name });
           continue;
@@ -341,8 +355,13 @@ class Broadcast {
       const answers = [];
       const errors = [];
       for (const outcome of settled) {
-        if (outcome.status === 'fulfilled') answers.push(outcome.value);
-        else errors.push({ message: outcome.reason?.message ?? 'Ask failed', code: outcome.reason?.code ?? 500 });
+        if (outcome.status === 'fulfilled') {
+          answers.push(outcome.value);
+          continue;
+        }
+        const failure = { message: outcome.reason?.message ?? 'Ask failed', code: outcome.reason?.code ?? 500 };
+        if (outcome.reason?.details !== undefined) failure.details = outcome.reason.details;
+        errors.push(failure);
       }
       return { answers, errors };
     });

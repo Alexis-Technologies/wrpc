@@ -13,6 +13,14 @@ An error travels inside a `callback` packet:
 { "type": "callback", "id": "7", "error": { "message": "Not found", "code": 404 } }
 ```
 
+An error MAY additionally carry structured `details` — validation failures
+put their issue list there:
+
+```json
+{ "error": { "message": "Invalid arguments: text is required", "code": 400,
+             "details": { "issues": [{ "message": "text is required", "path": ["text"] }] } } }
+```
+
 On the client it arrives as a rejected promise carrying a `WrpcError`:
 
 ```js
@@ -24,8 +32,19 @@ try {
 }
 ```
 
-`WrpcError` is `Error` plus a numeric `code`. There is no error *class* per
-code on purpose: the number crosses the wire, subclasses do not.
+`WrpcError` is `Error` plus a numeric `code` — and `details`, when the
+server attached any. There is no error *class* per code on purpose: the
+number crosses the wire, subclasses do not.
+
+```js
+catch (error) {
+  if (error.code === 400) showIssues(error.details?.issues);
+}
+```
+
+To attach details from a handler, set `error.details` alongside `code`; the
+same exposure rule as the message applies — a 4xx's details travel, a 5xx's
+stay in the log unless `error.expose = true`.
 
 ## Throwing from a handler
 

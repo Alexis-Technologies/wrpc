@@ -113,6 +113,30 @@ test('WrpcClient packet handling', async (t) => {
     );
     await assert.rejects(loadPromise, (error) => error instanceof WrpcError && error.code === 500);
   });
+
+  await t.test('#handlePacket carries wire error details onto the WrpcError', async () => {
+    const { client, transport } = makeClient();
+    transport.active = true;
+    const loadPromise = client.load('greeting');
+    await timers.setImmediate();
+    const sentPacket = JSON.parse(transport.sent[0]);
+    const details = { issues: [{ message: 'name required', path: ['name'] }] };
+    transport.emit(
+      'message',
+      JSON.stringify({ type: 'callback', id: sentPacket.id, error: { message: 'invalid', code: 400, details } }),
+    );
+    await assert.rejects(loadPromise, (error) => {
+      assert.ok(error instanceof WrpcError);
+      assert.strictEqual(error.code, 400);
+      assert.deepStrictEqual(error.details, details);
+      return true;
+    });
+  });
+
+  await t.test('WrpcError leaves details absent when the wire carried none', () => {
+    const error = new WrpcError({ message: 'nope', code: 404 });
+    assert.strictEqual('details' in error, false);
+  });
 });
 
 test('WrpcClient static online/offline/initialize', async (t) => {

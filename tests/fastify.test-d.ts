@@ -49,3 +49,17 @@ expectType<UwsApp | null>(adapter.findUwsApp(realFastify.server));
 expectType<UwsApp | null>(adapter.findUwsApp(null));
 expectType<UwsApp | null>(adapter.findUwsApp({}));
 expectError(adapter.findUwsApp());
+
+// Mirror: existing routes as wrpc procedures
+expectAssignable<WrpcFastifyOptions>({ router, mirror: true });
+expectAssignable<WrpcFastifyOptions>({
+  router,
+  restErrors: 'app',
+  mirror: {
+    access: 'public',
+    include: (route) => route.method !== 'GET',
+    unit: (route) => (route.url.startsWith('/legacy') ? 'legacy' : undefined),
+    name: () => undefined,
+    headers: (context) => ({ authorization: `Bearer ${String(context.uuid)}` }),
+  },
+});

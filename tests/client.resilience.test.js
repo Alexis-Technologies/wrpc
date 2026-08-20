@@ -543,3 +543,185 @@ test('an HTTP transport failure settles the exact calls it carried', async (t) =
   await assert.rejects(client.load('test'), (error) => error.code === 502);
   assert.ok(Date.now() - started < 5000, 'settled by the synthesized answer, not the timeout');
 });
+
+// ---------------------------------------------------------------------------
+// Transport fallback: `transport: [a, b, ...]` — candidates in order,
+// retries per candidate, loud capability loss.
+
+const { Emitter } = require('../src/utils.js');
+
+// A fake client transport on the ClientTransport contract, registered under
+// a throwaway name (the pattern the heartbeat test above set). `kill()`
+// makes every further open() reject the way a dead socket does — an error
+// plus a 'close' on the next microtask.
+const registerFake = (name, { persistent = true } = {}) => {
+  const instances = [];
+  class Fake extends Emitter {
+    constructor(url) {
+      super();
+      this.url = url;
+      this.persistent = persistent;
+      this.heartbeat = false;
+      this.active = false;
+      this.dead = false;
+      instances.push(this);
+    }
+
+    async open() {
+      if (this.dead) {
+        queueMicrotask(() => this.emit('close'));
+        throw new Error(`open failed (${this.url})`);
+      }
+      this.active = true;
+      this.emit('open');
+    }
+
+    kill() {
+      this.dead = true;
+      this.active = false;
+      this.emit('close');
+    }
+
+    write() {
+      return true;
+    }
+
+    send() {
+      return true;
+    }
+
+    close() {
+      this.active = false;
+      this.emit('close');
+    }
+
+    terminate() {
+      this.active = false;
+    }
+
+    online() {}
+
+    offline() {}
+  }
+  WrpcClient.transport[name] = Fake;
+  return { instances, teardown: () => delete WrpcClient.transport[name] };
+};
+
+test('fallback: the candidate list is validated up front', async () => {
+  await assert.rejects(WrpcClient.connect('ws://x/api', { transport: [] }), /must not be empty/);
+  await assert.rejects(WrpcClient.connect('ws://x/api', { transport: ['ws', 'nope'] }), /Unknown transport 'nope'/);
+  await assert.rejects(WrpcClient.connect('ws://x/api', { transport: ['ws', 'event'] }), /cannot contain 'event'/);
+});
+
+test('fallback: a dying candidate hands over to the next; the old one goes inert', async (t) => {
+  const first = registerFake('fake-a');
+  const second = registerFake('fake-b');
+  t.after(() => {
+    first.teardown();
+    second.teardown();
+  });
+
+  const client = await WrpcClient.connect('http://host/api', {
+    transport: ['fake-a', 'fake-b'],
+    reconnect: { retries: 2, minDelay: 1, maxDelay: 1, jitter: false },
+    heartbeat: false,
+  });
+  t.after(() => void client.close());
+
+  const fallbacks = [];
+  client.on('transport-fallback', (info) => fallbacks.push(info));
+  const failed = [];
+  client.on('reconnect-failed', (info) => failed.push(info));
+
+  const a = first.instances[0];
+  a.kill();
+
+  await waitFor(() => second.instances.length > 0 && second.instances[0].active, 'fake-b never took over');
+  assert.deepStrictEqual(fallbacks, [{ from: 'fake-a', to: 'fake-b' }]);
+  assert.strictEqual(failed.length, 0, 'reconnect-failed must wait for the LAST candidate');
+  assert.strictEqual(client.active, true);
+  // Retries reset per candidate: the swap arrived with a fresh counter.
+  assert.strictEqual(client.attempt, 0);
+
+  // A late 'close' from the abandoned transport must not disturb the live
+  // candidate — its listeners came off at the swap.
+  a.emit('close');
+  await timers.setTimeout(10);
+  assert.strictEqual(client.active, true);
+});
+
+test('fallback: only the LAST candidate exhausting emits reconnect-failed', async (t) => {
+  const first = registerFake('fake-a');
+  const second = registerFake('fake-b');
+  t.after(() => {
+    first.teardown();
+    second.teardown();
+  });
+
+  const client = await WrpcClient.connect('http://host/api', {
+    transport: ['fake-a', 'fake-b'],
+    reconnect: { retries: 1, minDelay: 1, maxDelay: 1, jitter: false },
+    heartbeat: false,
+  });
+  t.after(() => void client.close());
+
+  const fallbacks = [];
+  client.on('transport-fallback', (info) => fallbacks.push(info));
+  const exhausted = new Promise((resolve) => client.once('reconnect-failed', resolve));
+
+  first.instances[0].kill();
+  await waitFor(() => second.instances.length > 0, 'fake-b never constructed');
+  // The second candidate is dead on arrival too.
+  second.instances[0].dead = true;
+  second.instances[0].close();
+  await exhausted;
+  assert.strictEqual(fallbacks.length, 1, 'no wrap-around: one pass over the list');
+});
+
+test('fallback: the URL is re-spelled per candidate scheme', async (t) => {
+  const first = registerFake('fake-a');
+  t.after(() => first.teardown());
+  const client = await WrpcClient.connect('wss://host/api', {
+    transport: ['fake-a', 'http'],
+    reconnect: { retries: 0 },
+    heartbeat: false,
+  });
+  t.after(() => void client.close());
+  // The fake saw the ws spelling (non-ws candidates get http/https).
+  assert.strictEqual(first.instances[0].url, 'https://host/api');
+});
+
+test('fallback: landing on a non-persistent transport fails live subscriptions loudly', async (t) => {
+  const feed = procedure.subscription({
+    access: 'public',
+    handler: async function* (_context, _args, { signal }) {
+      yield 1;
+      await new Promise((resolve) => {
+        signal.addEventListener('abort', resolve, { once: true });
+      });
+    },
+  });
+  const { server, port } = await createServer(router({ feed }));
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    transport: ['ws', 'http'],
+    reconnect: { retries: 0, minDelay: 1, maxDelay: 1, jitter: false },
+    heartbeat: false,
+  });
+  t.after(() => void client.close());
+  await client.load('test');
+
+  const seen = [];
+  const errors = [];
+  client.api.test.feed.subscribe({}, { onData: (value) => seen.push(value), onError: (error) => errors.push(error) });
+  await waitFor(() => seen.length > 0, 'the feed never produced');
+
+  const fallbacks = [];
+  client.on('transport-fallback', (info) => fallbacks.push(info));
+  await server.close();
+
+  await waitFor(() => errors.length > 0, 'the subscription never failed');
+  assert.strictEqual(errors[0].code, 400);
+  assert.match(errors[0].message, /cannot carry subscriptions/);
+  assert.deepStrictEqual(fallbacks, [{ from: 'ws', to: 'http' }]);
+  client.close();
+});

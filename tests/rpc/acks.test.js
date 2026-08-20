@@ -55,6 +55,25 @@ test('acks: a throwing responder answers a coded error', async (t) => {
   await assert.rejects(peer.ask('chat/confirm', {}), (error) => error.code === 409 && /not now/.test(error.message));
 });
 
+test('acks: a responder error carries its details across the wire', async (t) => {
+  const { server, url } = await bootServer(t, { router: api() });
+  const client = await connectClient(t, url);
+  await client.load('chat');
+
+  client.respond('chat/confirm', async () => {
+    const error = new Error('invalid vote');
+    error.code = 400;
+    error.details = { issues: [{ message: 'choice required', path: ['choice'] }] };
+    throw error;
+  });
+  const peer = grabClient(server);
+  await assert.rejects(peer.ask('chat/confirm', {}), (error) => {
+    assert.strictEqual(error.code, 400);
+    assert.deepStrictEqual(error.details, { issues: [{ message: 'choice required', path: ['choice'] }] });
+    return true;
+  });
+});
+
 test('acks: no responder answers 501 immediately, not at the timeout', async (t) => {
   const { server, url } = await bootServer(t, { router: api() });
   const client = await connectClient(t, url);

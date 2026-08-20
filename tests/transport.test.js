@@ -167,6 +167,50 @@ test('ServerHttpTransport', async (t) => {
     assert.deepStrictEqual(packet, { type: 'callback', id: '42', error: { message: 'domain failure', code: 422 } });
   });
 
+  await t.test('error() carries details on a 4xx', () => {
+    const call = fakeCall();
+    const transport = new ServerHttpTransport(call);
+    const error = new Error('invalid');
+    error.details = { issues: [{ message: 'name required', path: ['name'] }] };
+    transport.error(400, { id: '1', error });
+    const packet = JSON.parse(call.responses[0].body.toString());
+    assert.deepStrictEqual(packet.error, {
+      message: 'invalid',
+      code: 400,
+      details: { issues: [{ message: 'name required', path: ['name'] }] },
+    });
+  });
+
+  await t.test('error() strips details from a 5xx', () => {
+    const call = fakeCall();
+    const transport = new ServerHttpTransport(call);
+    const error = new Error('secret internals');
+    error.details = { query: 'SELECT *' };
+    transport.error(500, { id: '1', error });
+    const packet = JSON.parse(call.responses[0].body.toString());
+    assert.strictEqual(packet.error.message, 'Internal Server Error');
+    assert.strictEqual('details' in packet.error, false);
+  });
+
+  await t.test('error() keeps 5xx details when the error opts in with expose', () => {
+    const call = fakeCall();
+    const transport = new ServerHttpTransport(call);
+    const error = new Error('queue full');
+    error.expose = true;
+    error.details = { waiting: 100 };
+    transport.error(503, { id: '1', error });
+    const packet = JSON.parse(call.responses[0].body.toString());
+    assert.deepStrictEqual(packet.error, { message: 'queue full', code: 503, details: { waiting: 100 } });
+  });
+
+  await t.test('error() omits the details key entirely when there are none', () => {
+    const call = fakeCall();
+    const transport = new ServerHttpTransport(call);
+    transport.error(404, { id: '1', error: new Error('nope') });
+    const packet = JSON.parse(call.responses[0].body.toString());
+    assert.strictEqual('details' in packet.error, false);
+  });
+
   await t.test('getCookies returns {} when there is no cookie header', () => {
     const transport = new ServerHttpTransport(fakeCall());
     assert.deepStrictEqual(transport.getCookies(), {});

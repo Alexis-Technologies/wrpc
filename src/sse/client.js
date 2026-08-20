@@ -227,7 +227,7 @@ class ClientSseTransport extends ClientTransport {
 
   write(data) {
     if (!this.active || this.#channel === null) throw new Error('Not connected');
-    const headers = { 'Content-Type': 'application/json', [CHANNEL_HEADER]: this.#channel };
+    const headers = { 'Content-Type': this.codec?.contentType ?? 'application/json', [CHANNEL_HEADER]: this.#channel };
     const post = async () => {
       const response = await fetch(this.url, { method: 'POST', headers, body: data });
       // 202 is the expected answer: everything a call produces comes back

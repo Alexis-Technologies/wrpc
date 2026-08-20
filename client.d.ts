@@ -28,9 +28,14 @@ export declare class Emitter {
   eventNames(): Array<PropertyKey>;
 }
 
+/** Structural check for an injected wire codec (shared with the server). */
+export declare function isCodec(value: unknown): boolean;
+
 export class WrpcError extends Error {
   code: number;
-  constructor(options: { message: string; code: number });
+  /** Structured issue lists the server attached; an optional wire field. */
+  details?: unknown;
+  constructor(options: { message: string; code: number; details?: unknown });
 }
 
 export interface ReadableOptions {
@@ -125,6 +130,8 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
     event: {
       getInstance(url: string): ClientTransport;
     };
+    /** Late registration — how the sse subpath (and tests) add transports. */
+    [name: string]: unknown;
   };
 
   url: string;
@@ -425,8 +432,30 @@ export interface WrpcClientOptions {
    * Which registered transport to use. Defaults to the URL scheme; 'sse'
    * exists once '@alexify/wrpc/sse' has been required.
    */
-  transport?: 'ws' | 'http' | 'sse' | string;
+  /**
+   * A single registered transport name, or an ORDERED fallback list: each
+   * candidate gets its own reconnect budget; when one exhausts, the next
+   * takes over ('transport-fallback' fires) and only the last exhausting
+   * emits 'reconnect-failed'. No default order — the list is yours.
+   */
+  transport?: 'ws' | 'http' | 'sse' | string | Array<string>;
   reconnect?: ReconnectOptions | false;
+  /**
+   * Pluggable query-string serializer (qs and friends) for mapped REST
+   * requests over the http transport — mirror of the server's option.
+   */
+  querystring?: { stringify(query: object): string };
+  /**
+   * Client-side pre-validation: an injected ajv-shaped compiler applied to
+   * the introspected input schema parts, so a doomed call rejects locally
+   * (WrpcError 400 + details) without the round trip.
+   */
+  validation?: { ajv: { compile(schema: object): (value: unknown) => boolean } };
+  /**
+   * The client half of the server's wire codec — same structural shape,
+   * same single-line-text rule. Frames on ws/http/sse packet paths.
+   */
+  codec?: { encode(packet: unknown): string; decode(text: string): unknown; contentType?: string };
   /** Shorthand for `reconnect.minDelay`. */
   reconnectTimeout?: number;
   heartbeat?: HeartbeatOptions | false;
@@ -666,7 +695,7 @@ export interface DataPacket {
 export interface EndPacket {
   type: 'end';
   id: string;
-  error?: { message: string; code: number };
+  error?: { message: string; code: number; details?: unknown };
 }
 
 export interface UnsubscribePacket {

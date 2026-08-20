@@ -1,5 +1,5 @@
 import type { Engine, EngineAttachOptions } from './engine.js';
-import type { RpcServer, RpcServerOptions, WrpcLogger } from './index.js';
+import type { Context, RpcServer, RpcServerOptions, WrpcLogger } from './index.js';
 import type { UwsApp } from './uws.js';
 
 /**
@@ -23,6 +23,8 @@ export interface FastifyLike {
   route(options: any): unknown;
   decorate(name: string, value: unknown): unknown;
   addHook(name: string, hook: (...args: any[]) => unknown): unknown;
+  /** Used by the mirror feature to dispatch through the route pipeline. */
+  inject?(options: any): Promise<any>;
 }
 
 export interface WrpcFastifyOptions extends Partial<RpcServerOptions> {
@@ -40,6 +42,14 @@ export interface WrpcFastifyOptions extends Partial<RpcServerOptions> {
    * narrow that limit; leaving it unset keeps the app's own.
    */
   maxBodySize?: number;
+  /** Mirror the app's own routes as wrpc procedures; `true` takes defaults. */
+  mirror?: MirrorOptions | boolean;
+  /**
+   * Error format on delegated REST routes: 'wrpc' (default) answers the wire
+   * error object `{ message, code, details? }`; 'app' leaves errors to the
+   * app's own fastify error handling.
+   */
+  restErrors?: 'wrpc' | 'app';
 }
 
 /**
@@ -55,6 +65,34 @@ export declare function wrpcFastify(
   fastify: FastifyLike,
   options?: WrpcFastifyOptions,
 ): Promise<void>;
+
+/** A route as the mirror's filters and naming callbacks see it. */
+export interface MirroredRoute {
+  method: string;
+  url: string;
+  schema: object | null;
+  config: Record<string, unknown>;
+}
+
+/**
+ * Reverse engineering: existing fastify routes become wrpc procedures,
+ * dispatched through `fastify.inject()` so the route's whole pipeline
+ * (hooks, auth, validation, serialization) keeps running. Routes registered
+ * AFTER the plugin are collected; per-route `config.wrpc` refines
+ * (`{ unit, name }`) or opts out (`false`).
+ */
+export interface MirrorOptions {
+  /** Extra filter on top of the defaults (own routes, HEAD/OPTIONS, wildcards). */
+  include?(route: MirroredRoute): boolean;
+  /** Overrides the default unit (the last static segment before the first param). */
+  unit?(route: MirroredRoute): string | undefined;
+  /** Overrides the reverse-REST default name (create/findAll/findById/...). */
+  name?(route: MirroredRoute): string | undefined;
+  /** Maps the wrpc context into headers for the injected request (auth). */
+  headers?(context: Context): Record<string, string> | Promise<Record<string, string>>;
+  /** Access level of the generated procedures. Default 'session'. */
+  access?: 'public' | 'session';
+}
 
 /** Digs the uWebSockets.js app out of a fastify-uws server; null otherwise. */
 export declare function findUwsApp(server: unknown): UwsApp | null;

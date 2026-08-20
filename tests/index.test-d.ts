@@ -325,7 +325,7 @@ expectAssignable<wrpc.RpcServerOptions>({ router, cluster: { presenceInterval: 1
 expectType<Promise<wrpc.AskResult>>(rpc.to('chat').ask('chat/poll', { q: 1 }, { timeout: 1000 }));
 declare const askResult: wrpc.AskResult;
 expectType<Array<unknown>>(askResult.answers);
-expectType<Array<{ message: string; code: number }>>(askResult.errors);
+expectType<Array<{ message: string; code: number; details?: unknown }>>(askResult.errors);
 expectType<number>(askResult.expected);
 expectType<boolean>(askResult.incomplete);
 
@@ -507,3 +507,61 @@ expectType<ArrayBufferView | undefined>(readable.pull());
 declare const writable: WrpcWritable;
 expectType<boolean>(writable.write(new Uint8Array(1)));
 expectType<boolean>(writable.closed);
+
+// error.details: optional wire field on WrpcError and ask errors
+declare const wrpcError: wrpc.WrpcError;
+expectAssignable<unknown>(wrpcError.details);
+expectAssignable<wrpc.WrpcError>(new wrpc.WrpcError({ message: 'x', code: 400, details: { issues: [] } }));
+
+// Declarative REST: http + fastify-shaped schema on a procedure
+const mapped = wrpc.procedure({
+  access: 'public',
+  http: { method: 'POST', path: '/projects/:orgId', status: 201 },
+  schema: {
+    params: { type: 'object' },
+    query: { type: 'object' },
+    response: { 201: { type: 'object' }, 500: false },
+    tags: ['Projects'],
+  },
+  handler: async (_context, args) => args,
+});
+expectType<wrpc.HttpRoute | null>(mapped.http);
+expectType<wrpc.ProcedureSchema | null>(mapped.schema);
+expectType<wrpc.ProcedureSchema>(wrpc.effectiveSchema(mapped));
+expectType<boolean>(router.hasRestRoutes);
+const matched = router.matchRest('POST', ['projects', '42']);
+if (matched && 'proc' in matched) {
+  expectType<Record<string, string>>(matched.params);
+  expectType<wrpc.HttpRoute>(matched.http);
+}
+expectType<Array<{ unitKey: string; methodName: string; proc: wrpc.Procedure; http: wrpc.HttpRoute }>>(
+  router.restRoutes(),
+);
+expectAssignable<wrpc.RpcServerOptions>({ router, querystring: { parse: (text) => ({ text }) } });
+
+// Injected validation compilers
+expectAssignable<wrpc.ValidationOptions>({
+  ajv: { compile: (schema) => (value) => Boolean(schema && value) },
+  serializer: { compile: () => (value) => JSON.stringify(value) },
+});
+const compiledRouter = wrpc.defineRouter({}, { validation: { ajv: { compile: () => () => true } } });
+expectType<wrpc.CompiledArtifacts | null>(compiledRouter.compiledFor(mapped));
+expectType<boolean>(compiledRouter.hasSerializers);
+expectAssignable<wrpc.RpcServerOptions>({ router, introspection: { access: 'session', schemas: false } });
+
+// Client options: pluggable querystring + injected pre-validation
+expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({
+  querystring: { stringify: (query: object) => String(query) },
+  validation: { ajv: { compile: () => () => true } },
+});
+
+// Transport fallback list
+expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ transport: ['ws', 'sse', 'http'] });
+
+// Wire codec
+expectAssignable<wrpc.WrpcCodec>({ encode: (packet) => JSON.stringify(packet), decode: (text) => JSON.parse(text) });
+expectAssignable<wrpc.RpcServerOptions>({
+  router,
+  codec: { encode: () => '', decode: () => ({}), contentType: 'application/x-toy' },
+});
+expectType<boolean>(wrpc.isCodec({}));

@@ -34,7 +34,11 @@ const ENTRIES = [
   // in-flight rejection on disconnect, restore decoupling, the wrpc.v1
   // subprotocol offer, pluggable generateId, and synthesized answers for
   // failed HTTP batches.
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 11 },
+  // Raised 11 -> 12 for the REST bridge: the client's REST leg for mapped
+  // procedures (URL building, plain-result/wire-error handling, pluggable
+  // querystring), error.details on WrpcError, plus the transport-fallback
+  // and codec seams of the same release.
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 12 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
@@ -42,7 +46,9 @@ const ENTRIES = [
   { label: 'fastify adapter (@alexify/wrpc/fastify)', entry: 'fastify.js', platform: 'node' },
   { label: 'express adapter (@alexify/wrpc/express)', entry: 'express.js', platform: 'node' },
   { label: 'rooms backplane (@alexify/wrpc/scaling)', entry: 'scaling.js', platform: 'node' },
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 12 },
+  // 12 -> 13 alongside the main-entry raise: the sse entry bundles the same
+  // client core, so the REST-bridge bytes land here too.
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 13 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
 ];

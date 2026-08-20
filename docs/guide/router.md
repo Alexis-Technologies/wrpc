@@ -102,6 +102,52 @@ procedure({
 });
 ```
 
+The third spelling is **declarative**: a fastify-shaped `schema` object plus
+an injected compiler. wrpc imports no schema library — you pass your own
+ajv (and, optionally, a fast-json-stringify) and the router compiles every
+declared part **once**, when it is built:
+
+```js
+const Ajv = require('ajv');
+const fjs = require('fast-json-stringify');
+
+const router = defineRouter(units, {
+  validation: {
+    ajv: new Ajv({ coerceTypes: true }),          // anything with compile(schema)
+    serializer: { compile: (schema) => fjs(schema) },
+  },
+});
+
+procedure({
+  http: { method: 'POST', path: '/projects/:orgId', status: 201 },
+  schema: {
+    params: { type: 'object', properties: { orgId: { type: 'string' } } },
+    body: { type: 'object', required: ['name'] },
+    response: { 201: { type: 'object', properties: { id: { type: 'string' } } } },
+  },
+  handler: async (context, { params, query, body }) => { /* ... */ },
+});
+```
+
+- `params`/`querystring` (or `query`)/`body` compile into ONE input
+  validator; a failure answers 400 with part-prefixed issue paths in
+  [`error.details`](../reference/errors#the-error-shape).
+- `schema.response[status]` (the mapped status, else the first 2xx) becomes
+  the output validator — and, with a `serializer` injected, a compiled
+  serializer the dispatcher feeds straight to the wire
+  (`bench/serialize-callback.js` is the measurement).
+- A schema with validation parts in a router **without** `validation.ajv`
+  throws at build: a declaration nothing enforces would be an authorization
+  bug in waiting. Under the [fastify adapter](./adapters/fastify) fastify
+  validates the delegated HTTP routes itself, but the same procedures over
+  WebSocket are wrpc's to validate — inject the ajv either way.
+- `schema` and `input`/`output` are mutually exclusive on one procedure.
+- The input parts travel through introspection, so a browser client with
+  its own injected ajv (`WrpcClient.connect(url, { validation: { ajv } })`)
+  **pre-validates locally** and rejects a doomed call with the same
+  400 + details, without the round trip. Strip them with
+  `introspection: { schemas: false }` if the payload matters.
+
 A function validator returns the (possibly coerced) value, or throws.
 Returning `undefined` keeps the original — so a pure assertion needs no
 `return`:

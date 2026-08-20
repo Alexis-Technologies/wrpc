@@ -155,6 +155,39 @@ be rebuilt — re-opens every subscription from the last eventId it saw, and the
 emits `reconnect`. The `api` unit objects themselves are reused, so event
 listeners registered on them survive the outage.
 
+## Transport fallback
+
+`transport` also accepts an **ordered list** of candidates:
+
+```js
+require('@alexify/wrpc/sse');   // 'sse' must be registered to be named
+const client = await WrpcClient.connect('wss://host/api', {
+  transport: ['ws', 'sse', 'http'],
+});
+```
+
+There is deliberately **no default order** — the list is yours. Every name
+is validated up front (a fallback that fails at fall-back time is a fallback
+nobody tested), and `'event'` cannot appear in one (it is selected through
+`worker`, not by URL).
+
+The semantics:
+
+- `reconnect.retries` applies **per candidate**. When one exhausts its
+  budget, the next takes over with a fresh counter and an immediate first
+  try — the backoff was guarding the old endpoint, not the new one.
+- Each hand-over emits `'transport-fallback', { from, to }`; only the LAST
+  candidate exhausting emits `'reconnect-failed'`. There is no wrap-around,
+  and no automatic upgrade back — reconnect the client if you want `ws`
+  again.
+- The URL is re-spelled per candidate (`wss:` ⇄ `https:`), so one URL
+  serves the whole list.
+- **Capability loss is loud.** Falling onto a non-persistent transport
+  (plain `http`) fails every live subscription immediately with code `400`
+  — not one refused re-`subscribe` at a time. Prefer `sse` ahead of `http`
+  in the list if feeds matter: it carries events, subscriptions and cancel
+  (everything but binary streams).
+
 ## Heartbeat
 
 A browser `WebSocket` exposes no protocol-level ping, so a connection that died

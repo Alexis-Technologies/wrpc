@@ -133,8 +133,11 @@ const createEventLog = (options) => new EventLog(options);
 // mark, and the pump waits for 'drain' before pulling the next value. A
 // generator that ignores that would turn a slow consumer into unbounded
 // server-side memory.
-const runSubscription = async (client, { id, procedure, context, args, lastEventId, signal, stats = null, hooks }) => {
-  const iterator = procedure.subscribe(context, args, { lastEventId, signal }, hooks);
+const runSubscription = async (
+  client,
+  { id, procedure, context, args, lastEventId, signal, stats = null, hooks, compiled = null },
+) => {
+  const iterator = procedure.subscribe(context, args, { lastEventId, signal }, hooks, compiled);
   let terminal = { type: 'end', id };
   try {
     while (true) {

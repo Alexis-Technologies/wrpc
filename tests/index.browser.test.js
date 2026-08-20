@@ -19,6 +19,7 @@ test('browser barrel exposes only browser-safe exports', () => {
     'chunkEncode',
     'connect',
     'createEventStream',
+    'isCodec',
   ]);
   assert.strictEqual(typeof wrpcBrowser.Emitter, 'function');
   assert.strictEqual(typeof wrpcBrowser.connect, 'function');

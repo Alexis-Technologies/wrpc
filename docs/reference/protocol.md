@@ -73,6 +73,21 @@ A transport that cannot stay open (plain HTTP) carries calls only: events,
 subscriptions, cancellation and streams need a persistent connection, and
 asking for one over HTTP is an error rather than a silent no-op.
 
+Besides packet mode (`POST {basePath}` with a packet body) and the
+conventional REST mode (`ANY {basePath}/:unit/:method`, answered with a
+`callback` packet), a server MAY serve **declaratively mapped routes**: a
+procedure carrying an `http` descriptor (surfaced through introspection,
+below) is addressable as `method {basePath}{path}`, args arrive structured
+as `{ params, query, body }`, and the response is the **plain result** (or
+the wire error object) with the mapped status — external REST semantics.
+This is additive: a peer that ignores `http` keeps every existing mode.
+
+Everything on this page describes the **JSON framing**, which is the
+protocol. An application MAY replace the framing on both of its own ends
+with an injected [wire codec](../guide/codec) — that is an opt-in
+arrangement outside this page's interoperability promise: an independent
+implementation is only guaranteed to interoperate over JSON.
+
 SSE is persistent but text-only, so it carries everything except binary
 streams — see [Server-Sent Events](#server-sent-events) below.
 
@@ -113,6 +128,26 @@ line (`"Internal Server Error"`) and the exception text stays in the server
 log, correlated by the same packet `id`. A server-side error that WANTS its
 message on the wire opts in with `error.expose = true`; the errors wrpc
 itself constructs (timeout, queue overflow, invalid output) are marked so.
+
+The error object MAY carry a third, optional field — `details` — with
+structured, JSON-serializable data about the failure. Validation failures
+use it for their issue list:
+
+```json
+{
+  "type": "callback",
+  "id": "b1f0…",
+  "error": {
+    "message": "Invalid arguments: text is required",
+    "code": 400,
+    "details": { "issues": [{ "message": "text is required", "path": ["text"] }] }
+  }
+}
+```
+
+`details` obeys exactly the exposure rule `message` does: it travels on a
+4xx (or with `expose = true`) and is stripped from a 5xx. A peer that does
+not know the field ignores it, per the additive-fields rule above.
 
 ### `event` — both directions {#event-both-directions}
 
@@ -194,8 +229,9 @@ It needs a connection that stays open, so it is refused (400) on HTTP.
 ```
 
 `end` is the terminal packet in every case — normal completion, a generator
-that threw (`error: { message, code }`), and refusals such as 404, 403 or
-429. `{"type":"unsubscribe","id"}` ends one early; the server aborts the
+that threw (`error: { message, code, details? }` — the same object shape,
+including the optional `details`, as a callback error), and refusals such as
+404, 403 or 429. `{"type":"unsubscribe","id"}` ends one early; the server aborts the
 handler's `signal`, runs its `finally`, and answers `end`.
 
 `eventId` appears only on values the handler wrapped in `tracked(id, data)`.
@@ -332,6 +368,7 @@ Each method carries:
 | `kind` | `'subscription'`, and **only** then — a client scaffolds a call unless told otherwise |
 | `meta` | The procedure's `meta`, when it is not empty. `meta.description` is the **one** home for prose — `wrpc types` turns it into a doc comment, so it does not also live in `signature` |
 | `signature` | An optional descriptor, below |
+| `http` | The declarative REST mapping (`{ method, path, status? }`), when the procedure carries one. |
 
 This is what `load()` consumes to build `client.api`, and what the `wrpc types`
 CLI consumes to generate a contract interface — where a `kind: 'subscription'`

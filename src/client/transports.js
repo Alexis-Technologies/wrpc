@@ -86,6 +86,10 @@ class ClientWsTransport extends ClientTransport {
 class ClientHttpTransport extends ClientTransport {
   // One request, one response: nothing to cancel or subscribe on.
   persistent = false;
+  // Can carry procedure-mapped REST requests (client/core #restCall): a
+  // call whose procedure declares `http` goes out as the same REST request
+  // an external consumer would send, not as a packet POST.
+  rest = true;
 
   async open() {
     if (this.active) return;
@@ -99,8 +103,29 @@ class ClientHttpTransport extends ClientTransport {
     this.emit('close');
   }
 
+  // The REST leg: one mapped call, one plain-bodied response. The caller
+  // (client/core #restCall) interprets status and body; aborting `signal`
+  // aborts the fetch.
+  async request(method, url, body, signal) {
+    const headers = { 'Content-Type': this.codec?.contentType ?? 'application/json' };
+    const options = body === undefined ? { method, headers, signal } : { method, headers, body, signal };
+    const res = await fetch(url, options);
+    const text = await res.text();
+    return { status: res.status, text };
+  }
+
+  // Malformed answers null either way — the codec's parse is the probe's.
+  #decode(text) {
+    if (!this.codec) return jsonParse(text);
+    try {
+      return this.codec.decode(text);
+    } catch {
+      return null;
+    }
+  }
+
   write(data) {
-    const headers = { 'Content-Type': 'application/json' };
+    const headers = { 'Content-Type': this.codec?.contentType ?? 'application/json' };
     const options = { method: 'POST', headers, body: data };
     const send = async () => {
       try {
@@ -111,7 +136,7 @@ class ClientHttpTransport extends ClientTransport {
         // body is NOT wrpc's — a proxy's HTML 502, an empty body — are
         // answers synthesized, so the exact calls this request carried
         // settle now instead of waiting out callTimeout.
-        if (res.ok || jsonParse(text) !== null) return void this.emit('message', text);
+        if (res.ok || this.#decode(text) !== null) return void this.emit('message', text);
         this.#fail(data, res.status);
       } catch (error) {
         this.emit('error', error);
@@ -123,9 +148,9 @@ class ClientHttpTransport extends ClientTransport {
 
   // Synthesizes an error callback for every call packet the failed request
   // carried — the transport is the only party that knows which ids just
-  // died with it.
+  // died with it. Both directions speak the codec when one is configured.
   #fail(data, status) {
-    const parsed = jsonParse(data);
+    const parsed = this.#decode(data);
     if (!parsed) return;
     const packets = Array.isArray(parsed) ? parsed : [parsed];
     const answers = [];
@@ -138,7 +163,8 @@ class ClientHttpTransport extends ClientTransport {
       });
     }
     if (answers.length === 0) return;
-    this.emit('message', JSON.stringify(Array.isArray(parsed) ? answers : answers[0]));
+    const frame = Array.isArray(parsed) ? answers : answers[0];
+    this.emit('message', this.codec ? this.codec.encode(frame) : JSON.stringify(frame));
   }
 }
 

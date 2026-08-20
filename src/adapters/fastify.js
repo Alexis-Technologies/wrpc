@@ -3,9 +3,12 @@
 const http = require('node:http');
 
 const { RpcServer, rpcOptions } = require('../rpc/core.js');
+const { effectiveSchema } = require('../rpc/router.js');
+const { publicErrorMessage, publicErrorDetails } = require('../transport.js');
 const { createNodeEngine, isEngine } = require('../engine/index.js');
 const { createUwsEngine } = require('./uws.js');
 const { normalizeBody, eachHeader, nodeStream, createUpgradeGate } = require('./common.js');
+const { setupMirror } = require('./mirror.js');
 
 // Fastify plugin. One plugin, two backends, picked by looking at what
 // fastify is actually running on:
@@ -44,6 +47,171 @@ const resolveEngine = (fastify, options) => {
     'wrpcFastify: could not detect a WebSocket backend for this fastify instance — ' +
       'pass one explicitly via options.engine',
   );
+};
+
+// ---- Delegated REST routes ------------------------------------------------
+//
+// A procedure with an `http` mapping becomes a REAL fastify route: fastify
+// owns routing, schema validation, serialization and swagger; wrpc supplies
+// the per-request Context (session, rooms, client lifecycle) and runs the
+// bare handler under the procedure's own queue/timeout semantics
+// (Procedure.invokeBare). The internal API over HTTP is therefore the SAME
+// endpoint external consumers hit — one route, two audiences.
+//
+// wrpc's lifecycle hooks map onto fastify's phases by name (the naming was
+// fastify's to begin with). Payload shapes differ where fastify's do:
+//   onRequest        -> fastify onRequest,        payload = the request
+//   preValidation    -> fastify preValidation,    payload = { params, query, body } (raw)
+//   preHandler       -> fastify preHandler,       payload = the same args, validated
+//   preSerialization -> fastify preSerialization, payload = the result (return replaces)
+//   onSend           -> fastify onSend,           payload = the serialized body
+//   onError          -> fastify onError,          payload = the error (observational)
+//   onResponse       -> fastify onResponse,       payload = null
+// onTimeout has no fastify phase; a 408 still reaches onError.
+
+const argsOf = (request) => ({ params: request.params, query: request.query, body: request.body });
+
+const forbidden = () => {
+  const error = new Error('Forbidden');
+  error.code = 403;
+  // fastify's own error handler reads statusCode; wrpc's reads code. Both
+  // are set so `restErrors: 'app'` keeps the status too.
+  error.statusCode = 403;
+  error.expose = true;
+  return error;
+};
+
+// The wrpc wire error shape, as a fastify route errorHandler: the code is
+// the status, the body is { message, code, details? } under the same
+// redaction rule every other transport applies. Fastify's own schema
+// validation failures land here too — their issue list becomes `details`.
+const wireErrorHandler = (error, request, reply) => {
+  let code =
+    typeof error.code === 'number' ? error.code : typeof error.statusCode === 'number' ? error.statusCode : 500;
+  if (!Number.isInteger(code) || code < 200 || code > 599) code = 500;
+  const body = { message: publicErrorMessage(code, error), code };
+  if (Array.isArray(error.validation)) {
+    const issues = [];
+    for (const issue of error.validation) {
+      issues.push({ message: issue.message, path: issue.instancePath });
+    }
+    body.details = { issues };
+  } else {
+    const details = publicErrorDetails(code, error);
+    if (details !== undefined) body.details = details;
+  }
+  reply.code(code).send(body);
+};
+
+const registerRestRoutes = (fastify, rpc, options) => {
+  const routes = rpc.router.restRoutes();
+  if (routes.length === 0) return;
+  const contexts = new WeakMap();
+  const contextOf = (request) => {
+    let pending = contexts.get(request);
+    if (!pending) {
+      pending = rpc.delegatedContext({
+        method: request.method,
+        headers: request.headers,
+        remoteAddress: request.ip,
+      });
+      contexts.set(request, pending);
+    }
+    return pending;
+  };
+  const base = rpc.basePath;
+  for (const route of routes) {
+    const { proc, http } = route;
+    const hooks = rpc.router.hooksFor(proc);
+    // Arity matters to fastify: an async hook with a third parameter is
+    // read as callback-style and refused — so the payload-less phases get
+    // two-parameter wrappers, and only the payload phases take three.
+    const wrap = (list, payloadOf) => {
+      const wrapped = [];
+      for (const hook of list) {
+        wrapped.push(async (request, reply) => {
+          const { context } = await contextOf(request);
+          return void (await hook(context, payloadOf(request)));
+        });
+      }
+      return wrapped;
+    };
+    const wrapPayload = (list) => {
+      const wrapped = [];
+      for (const hook of list) {
+        wrapped.push(async (request, reply, payload) => {
+          const { context } = await contextOf(request);
+          return void (await hook(context, payload));
+        });
+      }
+      return wrapped;
+    };
+    // Replacement semantics for the two payload-shaping phases: a wrpc hook
+    // returning undefined keeps the payload, anything else replaces it —
+    // translated to fastify's "the returned value IS the payload".
+    const wrapShaping = (list) => {
+      const wrapped = [];
+      for (const hook of list) {
+        wrapped.push(async (request, reply, payload) => {
+          const { context } = await contextOf(request);
+          const replaced = await hook(context, payload);
+          return replaced === undefined ? payload : replaced;
+        });
+      }
+      return wrapped;
+    };
+    const init = async (request, reply) => {
+      const { release } = await contextOf(request);
+      // The response's close is the eviction signal, whether the reply was
+      // sent, hijacked or the peer vanished.
+      reply.raw?.on?.('close', release);
+    };
+    // wrpc order: onRequest -> session restore -> ACCESS -> preValidation.
+    // The session is restored inside delegatedContext (init), so the gate
+    // closes the onRequest phase.
+    const accessGuard = async (request) => {
+      const { client } = await contextOf(request);
+      if (proc.access !== 'public' && !client.session) throw forbidden();
+    };
+    const status = http.status ?? 200;
+    // With `restErrors: 'app'` the app owns the error format, so the
+    // wire-shaped default error responses must not be documented — they
+    // would re-serialize the app's error bodies into wrpc's shape.
+    const schema = options.restErrors === 'app' ? (proc.schema ?? undefined) : effectiveSchema(proc);
+    fastify.route({
+      method: http.method,
+      url: `${base}${http.path === '/' ? '' : http.path}` || '/',
+      config: { wrpc: true },
+      schema,
+      onRequest: [init, ...wrap(hooks.onRequest, (request) => request), accessGuard],
+      preValidation: wrap(hooks.preValidation, argsOf),
+      preHandler: wrap(hooks.preHandler, argsOf),
+      preSerialization: wrapShaping(hooks.preSerialization),
+      onSend: wrapShaping(hooks.onSend),
+      onError: wrapPayload(hooks.onError),
+      onResponse: wrap(hooks.onResponse, () => null),
+      ...(options.restErrors === 'app' ? {} : { errorHandler: wireErrorHandler }),
+      handler: async (request, reply) => {
+        const { context, transport } = await contextOf(request);
+        let result;
+        try {
+          result = await proc.invokeBare(context, argsOf(request));
+        } catch (error) {
+          // Mirror the numeric wrpc code onto fastify's statusCode so an
+          // app-owned error handler (restErrors: 'app') keeps the status.
+          if (error && typeof error.code === 'number' && error.statusCode === undefined) error.statusCode = error.code;
+          throw error;
+        }
+        // A login that called startSession queued its cookie on the
+        // transport nothing will flush — copy it onto the real reply.
+        if (transport.pendingCookies.length > 0) reply.header('set-cookie', transport.pendingCookies);
+        reply.code(status);
+        // 204 promises "no content": the result is discarded by contract.
+        if (status === 204) return reply.send();
+        return result === undefined ? null : result;
+      },
+    });
+  }
 };
 
 const wrpcFastify = async (fastify, options = {}) => {
@@ -126,10 +294,25 @@ const wrpcFastify = async (fastify, options = {}) => {
     fastify.route({
       method: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
       url,
+      // The marker the mirror feature skips: wrpc must not mirror itself.
+      config: { wrpc: true },
       ...(maxBodySize === undefined ? {} : { bodyLimit: maxBodySize }),
       handler: handle,
     });
   }
+
+  // Procedures with an `http` mapping become native fastify routes — the
+  // full delegation described above. Registered AFTER the conventional
+  // routes; find-my-way prefers the more specific static/parametric shape
+  // per segment, so `${base}/projects/:orgId` wins over the generic
+  // `${base}/:unit/:method` where both could match.
+  registerRestRoutes(fastify, rpc, options);
+
+  // Reverse engineering: the app's own routes become wrpc procedures
+  // (collected from here on — register this plugin before the routes it
+  // should mirror), dispatched through fastify.inject so the route's whole
+  // pipeline keeps running.
+  if (options.mirror) setupMirror(fastify, rpc, options);
 
   // ---- WebSocket: engine attach ------------------------------------------
 

@@ -19,10 +19,11 @@ const isGeneratorHandler = (handler) => handler instanceof AsyncGeneratorFunctio
 // `expose` marks the message as protocol surface: these strings are written
 // for the caller, so the transport sends them verbatim even on a 5xx, where
 // an ordinary error's message is replaced by the status line.
-const codedError = (message, code) => {
+const codedError = (message, code, details) => {
   const error = new Error(message);
   error.code = code;
   error.expose = true;
+  if (details !== undefined) error.details = details;
   return error;
 };
 
@@ -37,8 +38,16 @@ const runValidator = async (validator, value) => {
   const standard = validator['~standard'];
   const result = await standard.validate(value);
   if (result.issues) {
-    const message = result.issues.map((issue) => issue.message).join('; ');
-    throw new Error(message);
+    // The joined message stays the human line; the issues keep their paths
+    // as structured `details`, which the transport forwards on 4xx (or on
+    // expose) as the wire error's optional `details` field.
+    const issues = [];
+    for (const issue of result.issues) {
+      issues.push({ message: issue.message, path: issue.path });
+    }
+    const error = new Error(issues.map((issue) => issue.message).join('; '));
+    error.details = { issues };
+    throw error;
   }
   return result.value;
 };
@@ -128,6 +137,74 @@ const assignKey = (target, key, value) => {
   Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
 };
 
+// ---------------------------------------------------------------------------
+// Declarative REST mapping and the fastify-shaped schema object.
+//
+// `http: { method, path, status? }` maps a procedure onto a real HTTP
+// endpoint under the server's basePath; args then arrive structured as
+// { params, query, body }, over EVERY transport — the mapping only defines
+// how an HTTP request is unpacked, a ws caller passes the same shape itself.
+//
+// `schema` follows fastify.route.schema: `params`, `querystring` (or its
+// alias `query` — interchangeable, normalized here), `body`, `headers`,
+// `response` keyed by status code, plus any passthrough keys (tags,
+// summary, security, ...) that wrpc never interprets but forwards to hosts
+// (fastify/swagger) verbatim.
+
+const HTTP_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'];
+const PARAM_SEGMENT = /^:[A-Za-z_$][\w$]*$/;
+const STATIC_SEGMENT = /^[^/:*]+$/;
+
+const normalizeHttp = (http) => {
+  if (http === null || http === undefined) return null;
+  if (typeof http !== 'object') throw new TypeError('procedure() http must be an object');
+  const { method, path, status = null } = http;
+  if (!HTTP_METHODS.includes(method)) {
+    throw new TypeError(`procedure() http.method must be one of ${HTTP_METHODS.join(', ')}`);
+  }
+  if (typeof path !== 'string' || !path.startsWith('/')) {
+    throw new TypeError("procedure() http.path must be a string starting with '/'");
+  }
+  const segments = path === '/' ? [] : path.slice(1).split('/');
+  for (const segment of segments) {
+    if (!PARAM_SEGMENT.test(segment) && !STATIC_SEGMENT.test(segment)) {
+      throw new TypeError(`procedure() http.path has an invalid segment '${segment}' in '${path}'`);
+    }
+  }
+  if (status !== null && !(Number.isInteger(status) && status >= 200 && status <= 599)) {
+    throw new TypeError('procedure() http.status must be an integer HTTP status (200-599)');
+  }
+  return { method, path, status };
+};
+
+// The parts wrpc itself understands; everything else on `schema` passes
+// through untouched. `query` and `querystring` are interchangeable spellings
+// of the same part — normalized to `querystring` (fastify's canon).
+const SCHEMA_PARTS = ['params', 'querystring', 'body', 'headers', 'response'];
+
+const normalizeSchema = (schema, label) => {
+  if (schema === null || schema === undefined) return null;
+  if (typeof schema !== 'object' || Array.isArray(schema)) {
+    throw new TypeError(`${label} schema must be an object (fastify route schema shape)`);
+  }
+  if (schema.query !== undefined && schema.querystring !== undefined && schema.query !== schema.querystring) {
+    throw new TypeError(`${label} schema has both 'query' and 'querystring' and they differ — use one`);
+  }
+  const normalized = {};
+  for (const key of Object.keys(schema)) {
+    if (key === 'query') continue; // folded into querystring below
+    assignKey(normalized, key, schema[key]);
+  }
+  if (schema.query !== undefined && schema.querystring === undefined) normalized.querystring = schema.query;
+  for (const part of SCHEMA_PARTS) {
+    const value = normalized[part];
+    if (value !== undefined && (typeof value !== 'object' || value === null)) {
+      throw new TypeError(`${label} schema.${part} must be an object`);
+    }
+  }
+  return normalized;
+};
+
 const timeoutRace = (promise, ms) => {
   let timer = null;
   const failure = new Promise((resolve, reject) => {
@@ -150,6 +227,8 @@ class Procedure {
       meta = {},
       signature = null,
       kind = null,
+      http = null,
+      schema = null,
       preValidation = null,
       preHandler = null,
       preSerialization = null,
@@ -188,6 +267,13 @@ class Procedure {
     this.timeout = timeout;
     this.meta = meta;
     this.signature = signature;
+    this.http = normalizeHttp(http);
+    this.schema = normalizeSchema(schema, 'procedure()');
+    // One declarative source of truth per direction: a schema beside a
+    // programmatic validator would leave "which one ran?" ambiguous.
+    if (this.schema && (input || output)) {
+      throw new TypeError('procedure() schema and input/output are mutually exclusive');
+    }
     if (queue && !(Number.isInteger(queue.concurrency) && queue.concurrency > 0)) {
       throw new TypeError('procedure() queue.concurrency must be a positive integer');
     }
@@ -196,6 +282,11 @@ class Procedure {
     // meaning something else is worse than refusing.
     if (this.kind === SUBSCRIPTION && (queue || timeout)) {
       throw new TypeError('procedure.subscription() does not support queue or timeout');
+    }
+    // A subscription is already refused on plain HTTP (400), so an HTTP
+    // route mapping could never mean anything for one.
+    if (this.kind === SUBSCRIPTION && this.http) {
+      throw new TypeError('procedure.subscription() does not support http');
     }
     this.semaphore = queue ? new Semaphore(queue) : null;
   }
@@ -210,15 +301,17 @@ class Procedure {
    * guarantees a call does; `lastEventId` and `signal` reach the handler as
    * its third argument.
    */
-  async *subscribe(context, args, options = {}, hooks = EMPTY_HOOKS) {
+  async *subscribe(context, args, options = {}, hooks = EMPTY_HOOKS, compiled = null) {
     if (this.kind !== SUBSCRIPTION) {
       throw codedError('Not a subscription', 400);
     }
+    const inputValidator = compiled?.input ?? this.input;
+    const outputValidator = compiled?.output ?? this.output;
     if (hooks.preValidation.length > 0) await runHooks(hooks.preValidation, context, args);
     let input = args;
-    if (this.input) {
-      input = await runValidator(this.input, args).catch((error) => {
-        throw codedError(`Invalid arguments: ${error.message}`, 400);
+    if (inputValidator) {
+      input = await runValidator(inputValidator, args).catch((error) => {
+        throw codedError(`Invalid arguments: ${error.message}`, 400, error.details);
       });
     }
     if (hooks.preHandler.length > 0) await runHooks(hooks.preHandler, context, input);
@@ -227,21 +320,54 @@ class Procedure {
       throw codedError('Subscription handler must return an async iterable', 500);
     }
     for await (const value of source) {
-      if (!this.output) {
+      if (!outputValidator) {
         yield value;
         continue;
       }
       // Validate the payload, not the tracking wrapper: an output schema
       // describes what the client receives, not how it is labelled.
       const payload = isTracked(value) ? value.data : value;
-      const checked = await runValidator(this.output, payload).catch((error) => {
-        throw codedError(`Invalid subscription value: ${error.message}`, 500);
+      const checked = await runValidator(outputValidator, payload).catch((error) => {
+        throw codedError(`Invalid subscription value: ${error.message}`, 500, error.details);
       });
       yield isTracked(value) ? tracked(value.id, checked) : checked;
     }
   }
 
-  async invoke(context, args, hooks = EMPTY_HOOKS) {
+  // The host-delegated entry (the fastify adapter's native routes): the
+  // semaphore and the deadline behave EXACTLY as in invoke() — the slot is
+  // held until the handler settles — but hooks, access and validators are
+  // the host's job, already run by the time this is called.
+  async invokeBare(context, args) {
+    if (this.kind === SUBSCRIPTION) {
+      throw codedError('This procedure is a subscription: use {type:"subscribe"}', 400);
+    }
+    const deadline = this.timeout > 0 ? Date.now() + this.timeout : 0;
+    if (this.semaphore) {
+      try {
+        await this.semaphore.enter(context.signal ?? null);
+      } catch (error) {
+        throw codedError(error.message, 503);
+      }
+    }
+    let handlerStarted = false;
+    try {
+      if (deadline > 0 && Date.now() >= deadline) {
+        throw codedError('Procedure timeout', 408);
+      }
+      handlerStarted = true;
+      const invocation = Promise.resolve().then(() => this.handler(context, args));
+      if (this.semaphore) {
+        const release = () => this.semaphore.leave();
+        invocation.then(release, release);
+      }
+      return deadline > 0 ? await timeoutRace(invocation, Math.max(1, deadline - Date.now())) : await invocation;
+    } finally {
+      if (this.semaphore && !handlerStarted) this.semaphore.leave();
+    }
+  }
+
+  async invoke(context, args, hooks = EMPTY_HOOKS, compiled = null) {
     if (this.kind === SUBSCRIPTION) {
       throw codedError('This procedure is a subscription: use {type:"subscribe"}', 400);
     }
@@ -264,10 +390,12 @@ class Procedure {
     }
     let handlerStarted = false;
     try {
+      const inputValidator = compiled?.input ?? this.input;
+      const outputValidator = compiled?.output ?? this.output;
       if (hooks.preValidation.length > 0) await runHooks(hooks.preValidation, context, args);
-      if (this.input) {
-        args = await runValidator(this.input, args).catch((error) => {
-          throw codedError(`Invalid arguments: ${error.message}`, 400);
+      if (inputValidator) {
+        args = await runValidator(inputValidator, args).catch((error) => {
+          throw codedError(`Invalid arguments: ${error.message}`, 400, error.details);
         });
       }
       if (hooks.preHandler.length > 0) await runHooks(hooks.preHandler, context, args);
@@ -288,9 +416,9 @@ class Procedure {
         const replaced = await hook(context, result);
         if (replaced !== undefined) result = replaced;
       }
-      if (this.output) {
-        result = await runValidator(this.output, result).catch((error) => {
-          throw codedError(`Invalid procedure result: ${error.message}`, 500);
+      if (outputValidator) {
+        result = await runValidator(outputValidator, result).catch((error) => {
+          throw codedError(`Invalid procedure result: ${error.message}`, 500, error.details);
         });
       }
       return result;
@@ -339,6 +467,107 @@ const concatHooks = (base, extra, phases) => {
   return result;
 };
 
+// ---------------------------------------------------------------------------
+// Injected JSON Schema compilers. Structural, per the zero-dependency rule:
+// `ajv` is anything with compile(schema) -> validateFn (ajv-shaped: the fn
+// answers a boolean and exposes `.errors`), `serializer` anything with
+// compile(schema) -> (value) -> string (fast-json-stringify-shaped). wrpc
+// never imports either — the application passes its own.
+
+const normalizeValidation = (validation) => {
+  if (validation === null || validation === undefined) return null;
+  if (typeof validation !== 'object') {
+    throw new TypeError('defineRouter: options.validation must be an object');
+  }
+  const { ajv = null, serializer = null } = validation;
+  if (ajv !== null && typeof ajv.compile !== 'function') {
+    throw new TypeError('defineRouter: validation.ajv must provide compile(schema)');
+  }
+  if (serializer !== null && typeof serializer.compile !== 'function') {
+    throw new TypeError('defineRouter: validation.serializer must provide compile(schema)');
+  }
+  if (!ajv && !serializer) return null;
+  return { ajv, serializer };
+};
+
+// The schema parts and the args keys they validate.
+const INPUT_PARTS = [
+  ['params', 'params'],
+  ['querystring', 'query'],
+  ['body', 'body'],
+];
+
+// Compiles the input parts into ONE function validator, fastify-style: each
+// part validates its slice of `{ params, query, body }`, issues carry
+// part-prefixed paths, and ajv's own coercions land in place. The wrapper is
+// an ordinary function validator, so `runValidator` stays the single
+// execution seam.
+const compileInput = (ajv, schema, label) => {
+  const parts = [];
+  for (const [part, argsKey] of INPUT_PARTS) {
+    if (schema[part] === undefined) continue;
+    let validate;
+    try {
+      validate = ajv.compile(schema[part]);
+    } catch (error) {
+      throw new TypeError(`${label}: schema.${part} failed to compile: ${error.message}`);
+    }
+    parts.push({ part, argsKey, validate });
+  }
+  if (parts.length === 0) return null;
+  return (args) => {
+    const value = args && typeof args === 'object' ? args : {};
+    let issues = null;
+    for (const { part, argsKey, validate } of parts) {
+      if (validate(value[argsKey] ?? {})) continue;
+      issues ??= [];
+      for (const item of validate.errors ?? []) {
+        issues.push({ message: item.message, path: `/${part}${item.instancePath ?? ''}` });
+      }
+    }
+    if (issues) {
+      const messages = [];
+      for (const issue of issues) messages.push(`${issue.path} ${issue.message}`);
+      const error = new Error(messages.join('; '));
+      error.details = { issues };
+      throw error;
+    }
+    return value;
+  };
+};
+
+// The success-response schema: the mapped status first, then any 2xx entry.
+const successResponse = (proc) => {
+  const response = proc.schema?.response;
+  if (!response || typeof response !== 'object') return null;
+  const preferred = proc.http?.status ?? 200;
+  if (response[preferred] && response[preferred] !== false) return response[preferred];
+  for (const key of Object.keys(response)) {
+    const code = Number(key);
+    if (code >= 200 && code < 300 && response[key] !== false) return response[key];
+  }
+  return null;
+};
+
+const compileOutput = (ajv, schema, label) => {
+  let validate;
+  try {
+    validate = ajv.compile(schema);
+  } catch (error) {
+    throw new TypeError(`${label}: schema.response failed to compile: ${error.message}`);
+  }
+  return (result) => {
+    if (validate(result)) return result;
+    const issues = [];
+    for (const item of validate.errors ?? []) {
+      issues.push({ message: item.message, path: item.instancePath });
+    }
+    const error = new Error(issues.map((issue) => `${issue.path} ${issue.message}`).join('; '));
+    error.details = { issues };
+    throw error;
+  };
+};
+
 class Router {
   // unit -> Map(version -> { methods: Map(name -> Procedure),
   //                          events:  Map(name -> Procedure),
@@ -350,13 +579,41 @@ class Router {
   // Procedure instance may be registered in several routers (merge reuses
   // them), each with different router-level hooks.
   #chains = new Map();
+  // The declarative REST table: a segment trie over every procedure's
+  // `http` mapping. Per-router like #chains (merge reuses Procedures), and
+  // rebuilt whenever the unit set changes. `null` until a mapping exists,
+  // so routers without REST pay one null check.
+  #rest = null;
+  // Injected compilers (ajv-shaped, fast-json-stringify-shaped) and the
+  // per-router artifacts they produce: Procedure -> { input?, output?,
+  // serialize? }. Per-router like #chains — merge() shares Procedure
+  // instances, and two routers may carry different compilers.
+  #validation = null;
+  #compiled = new Map();
 
   constructor(definition = {}, options = {}) {
     this.#hooks = normalizeHooks(options.hooks, ROUTER_PHASES, 'defineRouter');
+    this.#validation = normalizeValidation(options.validation);
     for (const [unitKey, methods] of Object.entries(definition)) {
       this.#addUnit(unitKey, methods);
     }
     this.#rebuildChains();
+  }
+
+  /**
+   * Adds a unit after construction — how the fastify adapter's mirror
+   * feature lands units discovered at onReady, when the router already
+   * exists. Refuses a unit key that is already registered (merge() is the
+   * tool for combining routers). Returns the router.
+   */
+  addUnit(unitKey, definition) {
+    const [unit, version = DEFAULT_VERSION] = String(unitKey).split('.');
+    if (this.#units.get(unit)?.has(version)) {
+      throw new TypeError(`addUnit: unit '${unitKey}' is already registered`);
+    }
+    this.#addUnit(unitKey, definition);
+    this.#rebuildChains();
+    return this;
   }
 
   /** Adds a router-level hook after construction. Returns the router. */
@@ -375,6 +632,19 @@ class Router {
     return this.#chains.get(proc) ?? EMPTY_HOOKS;
   }
 
+  /** The compiled { input?, output?, serialize? } for one procedure. */
+  compiledFor(proc) {
+    return this.#compiled.get(proc) ?? null;
+  }
+
+  /** True when any procedure compiled a response serializer. */
+  get hasSerializers() {
+    for (const artifacts of this.#compiled.values()) {
+      if (artifacts.serialize) return true;
+    }
+    return false;
+  }
+
   /** Router-level connection lifecycle hooks, consumed by RpcServer. */
   get connectionHooks() {
     return { onConnect: this.#hooks.onConnect, onDisconnect: this.#hooks.onDisconnect };
@@ -388,6 +658,119 @@ class Router {
         for (const proc of entry.events.values()) this.#chains.set(proc, this.#chainFor(entry, proc));
       }
     }
+    this.#rebuildRest();
+    this.#rebuildCompiled();
+  }
+
+  // Schemas compile ONCE, when the router is built. A procedure whose
+  // schema declares validation parts in a router with no injected ajv is a
+  // build error: the declaration would otherwise be silently unenforced,
+  // and an unenforced schema is an authorization bug waiting to be found.
+  #rebuildCompiled() {
+    this.#compiled = new Map();
+    for (const [unit, versions] of this.#units) {
+      for (const [version, entry] of versions) {
+        const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
+        for (const [methodName, proc] of entry.methods) {
+          const artifacts = this.#compileFor(proc, `${unitKey}/${methodName}`);
+          if (artifacts) this.#compiled.set(proc, artifacts);
+        }
+        for (const [eventName, proc] of entry.events) {
+          const artifacts = this.#compileFor(proc, `${unitKey}/on.${eventName}`);
+          if (artifacts) this.#compiled.set(proc, artifacts);
+        }
+      }
+    }
+  }
+
+  #compileFor(proc, label) {
+    const schema = proc.schema;
+    if (!schema) return null;
+    const hasInput = schema.params !== undefined || schema.querystring !== undefined || schema.body !== undefined;
+    const success = successResponse(proc);
+    if (!hasInput && !success) return null; // passthrough-only schema (tags, ...)
+    const ajv = this.#validation?.ajv ?? null;
+    if (!ajv) {
+      throw new TypeError(
+        `Router: ${label} declares schema validation but no validation.ajv compiler was injected — ` +
+          'pass defineRouter(units, { validation: { ajv } })',
+      );
+    }
+    const artifacts = {};
+    const input = hasInput ? compileInput(ajv, schema, label) : null;
+    if (input) artifacts.input = input;
+    if (success) {
+      artifacts.output = compileOutput(ajv, success, label);
+      const serializer = this.#validation?.serializer;
+      if (serializer) {
+        try {
+          artifacts.serialize = serializer.compile(success);
+        } catch (error) {
+          throw new TypeError(`Router: ${label} schema.response failed to compile a serializer: ${error.message}`);
+        }
+      }
+    }
+    return artifacts;
+  }
+
+  // The trie — one tree per HTTP verb, the find-my-way shape, so
+  // `POST /projects/:orgId` and `GET /projects/:id` coexist the way they
+  // do in fastify. A node is { static: Map(segment -> node),
+  // param: { name, node } | null, terminal: route | null }. Static beats
+  // param on match; within one verb a duplicate path or two different
+  // param names at one position are build-time conflicts, reported with
+  // both procedures' addresses.
+  #rebuildRest() {
+    this.#rest = null;
+    const makeNode = () => ({ static: new Map(), param: null, terminal: null });
+    let trees = null;
+    for (const [unit, versions] of this.#units) {
+      for (const [version, entry] of versions) {
+        const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
+        for (const [methodName, proc] of entry.methods) {
+          if (!proc.http) continue;
+          trees ??= new Map();
+          const { method, path } = proc.http;
+          let node = trees.get(method);
+          if (!node) {
+            node = makeNode();
+            trees.set(method, node);
+          }
+          const segments = path === '/' ? [] : path.slice(1).split('/');
+          const paramNames = [];
+          for (const segment of segments) {
+            if (segment.startsWith(':')) {
+              const name = segment.slice(1);
+              if (node.param && node.param.name !== name) {
+                throw new TypeError(
+                  `REST route conflict: ${method} ':${node.param.name}' and ':${name}' at the same position ` +
+                    `(${unitKey}/${methodName} vs an earlier route)`,
+                );
+              }
+              node.param ??= { name, node: makeNode() };
+              paramNames.push(name);
+              node = node.param.node;
+              continue;
+            }
+            let next = node.static.get(segment);
+            if (!next) {
+              next = makeNode();
+              node.static.set(segment, next);
+            }
+            node = next;
+          }
+          if (node.terminal) {
+            const existing = node.terminal;
+            throw new TypeError(
+              `REST route conflict: ${method} ${path} is declared by both ` +
+                `${existing.unitKey}/${existing.methodName} and ${unitKey}/${methodName}`,
+            );
+          }
+          node.terminal = { proc, unitKey, methodName, paramNames, http: proc.http };
+        }
+      }
+    }
+    this.#rest = trees;
   }
 
   #chainFor(entry, proc) {
@@ -451,12 +834,83 @@ class Router {
     return entry?.events.get(name) ?? null;
   }
 
+  /** True when at least one procedure declares an `http` mapping. */
+  get hasRestRoutes() {
+    return this.#rest !== null;
+  }
+
+  /**
+   * Matches an HTTP verb and decoded path segments against the declarative
+   * REST table. Returns null (no path match — the caller falls back to the
+   * conventional /:unit/:method mode), `{ allowed }` (some OTHER verb
+   * matches this path — a 405 with an Allow list), or the full route
+   * `{ proc, unitKey, methodName, params, http }`.
+   */
+  matchRest(method, segments) {
+    if (!this.#rest) return null;
+    const hit = this.#walk(this.#rest.get(method), segments);
+    if (hit) {
+      const params = {};
+      for (let i = 0; i < hit.route.paramNames.length; i++) {
+        assignKey(params, hit.route.paramNames[i], hit.values[i]);
+      }
+      const { proc, unitKey, methodName, http } = hit.route;
+      return { proc, unitKey, methodName, params, http };
+    }
+    // No route under this verb — probe the other verbs' trees so the
+    // answer distinguishes "unknown path" (fall through, maybe the
+    // conventional mode knows it) from "known path, wrong verb" (405).
+    const allowed = [];
+    for (const [verb, tree] of this.#rest) {
+      if (verb !== method && this.#walk(tree, segments)) allowed.push(verb);
+    }
+    return allowed.length > 0 ? { allowed } : null;
+  }
+
+  #walk(node, segments) {
+    if (!node) return null;
+    const values = [];
+    for (const segment of segments) {
+      const next = node.static.get(segment);
+      if (next) {
+        node = next;
+        continue;
+      }
+      if (node.param) {
+        values.push(segment);
+        node = node.param.node;
+        continue;
+      }
+      return null;
+    }
+    return node.terminal ? { route: node.terminal, values } : null;
+  }
+
+  /** Every declared REST route — what a host adapter registers natively. */
+  restRoutes() {
+    const routes = [];
+    for (const [unit, versions] of this.#units) {
+      for (const [version, entry] of versions) {
+        const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
+        for (const [methodName, proc] of entry.methods) {
+          if (!proc.http) continue;
+          routes.push({ unitKey, methodName, proc, http: proc.http });
+        }
+      }
+    }
+    return routes;
+  }
+
   // Introspection v2: { unitKey: { method: { access, meta?, signature? } } }
   // where unitKey is 'unit' for the default version and 'unit.ver' otherwise.
   // Anything but an array of unit keys means "no filter" — REST calls
   // deliver plain-object args here.
-  introspect(units = null) {
+  introspect(units = null, options = {}) {
     const filter = Array.isArray(units) ? units : null;
+    // The input schema parts travel by default: they are what a client's
+    // injected ajv pre-validates against, saving the round trip a doomed
+    // call would make. `schemas: false` strips them (they can be sizable).
+    const { schemas = true } = options;
     const result = {};
     for (const [unit, versions] of this.#units) {
       for (const [version, entry] of versions) {
@@ -470,6 +924,16 @@ class Router {
           if (proc.subscription) info.kind = proc.kind;
           if (Object.keys(proc.meta).length > 0) info.meta = proc.meta;
           if (proc.signature) info.signature = proc.signature;
+          // The REST mapping travels so clients (and codegen/OpenAPI
+          // tooling) can address the same procedure as a plain endpoint.
+          if (proc.http) info.http = proc.http;
+          if (schemas && proc.schema) {
+            const parts = {};
+            if (proc.schema.params !== undefined) parts.params = proc.schema.params;
+            if (proc.schema.querystring !== undefined) parts.querystring = proc.schema.querystring;
+            if (proc.schema.body !== undefined) parts.body = proc.schema.body;
+            if (Object.keys(parts).length > 0) info.schema = parts;
+          }
           assignKey(methodsInfo, methodName, info);
         }
         assignKey(result, unitKey, methodsInfo);
@@ -484,7 +948,16 @@ class Router {
   // set — the shared Procedure instances themselves are never mutated.
   merge(other) {
     const hooks = concatHooks(this.#hooks, other.#hooks, ROUTER_PHASES);
-    const merged = new Router({}, { hooks });
+    // This router's compilers win, the other's fill in — mirroring the
+    // hook order (this first). Procedures recompile against the winner.
+    const validation =
+      this.#validation || other.#validation
+        ? {
+            ajv: this.#validation?.ajv ?? other.#validation?.ajv,
+            serializer: this.#validation?.serializer ?? other.#validation?.serializer,
+          }
+        : undefined;
+    const merged = new Router({}, { hooks, validation });
     for (const source of [this, other]) {
       for (const [unit, versions] of source.#units) {
         for (const [version, entry] of versions) {
@@ -501,6 +974,47 @@ class Router {
   }
 }
 
+// ---------------------------------------------------------------------------
+// The effective fastify-shaped schema a host (fastify routes, swagger,
+// introspection consumers) receives: the user's declaration with wrpc's own
+// lifecycle error statuses documented underneath. Which statuses apply is
+// derived from the procedure's options; docs/reference/errors.md is the
+// dictionary. 499 (cancel) is deliberately absent — a cancelled HTTP
+// request gets no response to document. A user's schema.response entry for
+// the same code always overrides the default, and `false` removes it.
+
+const WIRE_ERROR_SCHEMA = Object.freeze({
+  type: 'object',
+  properties: {
+    message: { type: 'string' },
+    code: { type: 'number' },
+    details: {},
+  },
+  required: ['message', 'code'],
+});
+
+const defaultErrorResponses = (proc) => {
+  const codes = [429, 500, 503];
+  if (proc.schema || proc.input) codes.push(400);
+  if (proc.access !== 'public') codes.push(403);
+  if (proc.timeout > 0) codes.push(408);
+  const responses = {};
+  for (const code of codes) responses[code] = WIRE_ERROR_SCHEMA;
+  return responses;
+};
+
+const effectiveSchema = (proc) => {
+  const response = defaultErrorResponses(proc);
+  const declared = proc.schema?.response ?? {};
+  for (const key of Object.keys(declared)) {
+    if (declared[key] === false) delete response[key];
+    else assignKey(response, key, declared[key]);
+  }
+  const schema = { ...(proc.schema ?? {}) };
+  schema.response = response;
+  return schema;
+};
+
 const defineRouter = (definition, options) => new Router(definition, options);
 
 module.exports = {
@@ -508,6 +1022,7 @@ module.exports = {
   Router,
   procedure,
   defineRouter,
+  effectiveSchema,
   runHooks,
   runHooksSafe,
   EMPTY_HOOKS,

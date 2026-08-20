@@ -416,3 +416,319 @@ test("body limits are fastify's, not the adapter's", { skip: noFastify }, async 
     assert.strictEqual(res.status, 413);
   });
 });
+
+// ---------------------------------------------------------------------------
+// Delegated REST routes: a procedure with an `http` mapping becomes a real
+// fastify route — fastify owns routing, validation, serialization and error
+// shape; wrpc supplies the Context and the bare handler.
+
+// Ajv-shaped, permissive: the delegated HTTP path is validated by fastify's
+// real ajv; injecting one here satisfies the router's "a schema must have a
+// compiler" rule for the ws path without pulling ajv into devDependencies.
+const permissiveAjv = { compile: () => () => true };
+
+const restRouter = (trace = []) =>
+  defineRouter(
+    {
+      projects: {
+        create: procedure({
+          access: 'public',
+          http: { method: 'POST', path: '/projects/:orgId', status: 201 },
+          schema: {
+            params: { type: 'object', properties: { orgId: { type: 'string' } }, required: ['orgId'] },
+            body: { type: 'object', properties: { name: { type: 'string', minLength: 2 } }, required: ['name'] },
+            response: {
+              201: { type: 'object', properties: { orgId: { type: 'string' }, name: { type: 'string' } } },
+            },
+            tags: ['Projects'],
+          },
+          preHandler: async (_context, args) => void trace.push(`proc:preHandler:${args.body.name}`),
+          handler: async (_context, { params, body }) => {
+            trace.push('handler');
+            return { orgId: params.orgId, name: body.name, secret: 'trimmed by fjs' };
+          },
+        }),
+        secure: procedure({
+          http: { method: 'GET', path: '/projects/:id/secure' },
+          handler: async () => ({ ok: true }),
+        }),
+        slow: procedure({
+          access: 'public',
+          timeout: 20,
+          http: { method: 'GET', path: '/projects/:id/slow' },
+          handler: () => new Promise(() => {}),
+        }),
+        login: procedure({
+          access: 'public',
+          http: { method: 'POST', path: '/login' },
+          handler: async (context) => {
+            context.client.startSession(undefined, { user: 'ada' });
+            return { ok: true };
+          },
+        }),
+      },
+    },
+    {
+      validation: { ajv: permissiveAjv },
+      hooks: {
+        onRequest: async () => void trace.push('router:onRequest'),
+        onResponse: async () => void trace.push('router:onResponse'),
+        onError: async (_context, error) => void trace.push(`router:onError:${error.code ?? 'none'}`),
+      },
+    },
+  );
+
+test('delegated REST: fastify validates, serializes and answers wire errors', { skip: noFastify }, async (t) => {
+  const trace = [];
+  const app = fastify({ logger: false });
+  t.after(() => app.close());
+  await app.register(wrpcFastify, { router: restRouter(trace), logger: false });
+  await app.ready();
+
+  await t.test('a valid call: status from http.status, fjs trims the body, hooks ran in order', async () => {
+    trace.length = 0;
+    const res = await app.inject({ method: 'POST', url: '/api/projects/42', payload: { name: 'Alpha' } });
+    assert.strictEqual(res.statusCode, 201);
+    assert.deepStrictEqual(res.json(), { orgId: '42', name: 'Alpha' });
+    assert.deepStrictEqual(trace, ['router:onRequest', 'proc:preHandler:Alpha', 'handler', 'router:onResponse']);
+  });
+
+  await t.test("fastify's schema validation answers the wire error shape with details", async () => {
+    trace.length = 0;
+    const res = await app.inject({ method: 'POST', url: '/api/projects/42', payload: { name: 'A' } });
+    assert.strictEqual(res.statusCode, 400);
+    const body = res.json();
+    assert.strictEqual(body.code, 400);
+    assert.match(body.message, /fewer than 2 characters/);
+    assert.strictEqual(body.details.issues.length, 1);
+    // wrpc's own validator never ran — fastify's did, once.
+    assert.strictEqual(trace.includes('handler'), false);
+    assert.strictEqual(trace.at(-1), 'router:onResponse');
+  });
+
+  await t.test('access !== public without a session answers 403 before the handler', async () => {
+    trace.length = 0;
+    const res = await app.inject({ method: 'GET', url: '/api/projects/1/secure' });
+    assert.strictEqual(res.statusCode, 403);
+    assert.strictEqual(res.json().code, 403);
+    assert.strictEqual(trace.includes('handler'), false);
+  });
+
+  await t.test('invokeBare keeps the timeout: 408 through the wire error handler and onError', async () => {
+    trace.length = 0;
+    const res = await app.inject({ method: 'GET', url: '/api/projects/1/slow' });
+    assert.strictEqual(res.statusCode, 408);
+    assert.strictEqual(res.json().code, 408);
+    assert.ok(trace.includes('router:onError:408'));
+  });
+
+  await t.test('startSession from a delegated handler sets the cookie on the fastify reply', async () => {
+    const res = await app.inject({ method: 'POST', url: '/api/login', payload: {} });
+    assert.strictEqual(res.statusCode, 200);
+    assert.match(String(res.headers['set-cookie'] ?? ''), /token=/);
+  });
+
+  await t.test('the delegated route beats the conventional parametric one; packet mode intact', async () => {
+    const packet = {
+      type: 'call',
+      id: '1',
+      method: 'projects/create',
+      args: { params: { orgId: 'x' }, query: {}, body: { name: 'Beta' } },
+    };
+    const res = await app.inject({ method: 'POST', url: '/api', payload: packet });
+    assert.strictEqual(res.json().result.name, 'Beta');
+  });
+
+  await t.test('the schema fastify sees is the effective one — wrpc error statuses documented', async () => {
+    const probe = fastify({ logger: false });
+    t.after(() => probe.close());
+    const seen = [];
+    probe.addHook('onRoute', (route) => {
+      if (route.method === 'POST' && route.url === '/api/projects/:orgId') seen.push(route.schema);
+    });
+    await probe.register(wrpcFastify, { router: restRouter(), logger: false });
+    await probe.ready();
+    assert.strictEqual(seen.length, 1);
+    assert.deepStrictEqual(seen[0].tags, ['Projects']);
+    for (const code of ['201', '400', '429', '500', '503']) assert.ok(seen[0].response[code], `response ${code}`);
+  });
+});
+
+test('delegated REST: restErrors "app" leaves the error shape to the app', { skip: noFastify }, async (t) => {
+  const app = fastify({ logger: false });
+  t.after(() => app.close());
+  await app.register(wrpcFastify, { router: restRouter(), logger: false, restErrors: 'app' });
+  await app.ready();
+  const res = await app.inject({ method: 'GET', url: '/api/projects/1/secure' });
+  assert.strictEqual(res.statusCode, 403);
+  // fastify's default error body, not wrpc's wire shape
+  assert.strictEqual(res.json().error, 'Forbidden');
+});
+
+// ---------------------------------------------------------------------------
+// Reverse engineering: the app's own routes become wrpc procedures,
+// dispatched through fastify.inject so the route's whole pipeline runs.
+
+const { defaultName, defaultUnit, routeSignature } = require('../../src/adapters/mirror.js');
+
+test('mirror naming: reverse REST semantics', () => {
+  const knownUnits = new Set(['projects']);
+  const name = (method, url) => {
+    const segments = url.split('/').filter((s) => s.length > 0);
+    const named = defaultUnit(segments, knownUnits);
+    return `${named.unit}/${defaultName(method, segments.slice(named.tailIndex))}`;
+  };
+  assert.strictEqual(name('POST', '/projects'), 'projects/create');
+  assert.strictEqual(name('POST', '/workspace/projects/:orgId'), 'projects/create');
+  assert.strictEqual(name('GET', '/workspace/projects'), 'projects/findAll');
+  assert.strictEqual(name('GET', '/workspace/projects/:id'), 'projects/findById');
+  assert.strictEqual(name('GET', '/workspace/projects/slug/:slug'), 'projects/findBySlug');
+  assert.strictEqual(name('GET', '/workspace/projects/archive'), 'projects/findAllArchive');
+  assert.strictEqual(name('PATCH', '/projects/:id'), 'projects/update');
+  assert.strictEqual(name('PUT', '/projects/:id'), 'projects/replace');
+  assert.strictEqual(name('DELETE', '/projects/:id'), 'projects/delete');
+  assert.strictEqual(name('POST', '/projects/:orgId/archive/:id'), 'projects/createArchive');
+  assert.strictEqual(name('DELETE', '/org-users/:id'), 'orgUsers/delete');
+  assert.strictEqual(defaultUnit([':id']), null);
+});
+
+test('mirror signature: JSON Schema distilled into the closed format', () => {
+  const signature = routeSignature({
+    params: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+    body: {
+      type: 'object',
+      properties: { name: { type: 'string' }, tags: { type: 'array', items: { type: 'string' } } },
+      required: ['name'],
+    },
+    response: { 200: { type: 'object', properties: { id: { type: 'string' }, count: { type: 'integer' } } } },
+  });
+  assert.deepStrictEqual(signature, {
+    args: {
+      params: { id: 'string' },
+      body: { name: 'string', 'tags?': ['string'] },
+    },
+    returns: { 'id?': 'string', 'count?': 'number' },
+  });
+  // Anything inexpressible degrades to 'unknown', never a guess.
+  assert.deepStrictEqual(routeSignature({ body: { oneOf: [] } }), { args: { body: 'unknown' } });
+  assert.strictEqual(routeSignature(null), null);
+});
+
+test('mirror: app routes become callable wrpc procedures', { skip: noFastify }, async (t) => {
+  const app = fastify({ logger: false });
+  t.after(() => app.close());
+  const router = defineRouter({ own: { ping: procedure({ access: 'public', handler: async () => 'pong' }) } });
+  await app.register(wrpcFastify, { router, logger: false, mirror: { access: 'public' } });
+
+  const seenAuth = [];
+  app.addHook('onRequest', async (req) => void seenAuth.push(req.headers['x-auth'] ?? null));
+  app.post(
+    '/workspace/projects/:orgId',
+    {
+      schema: {
+        body: { type: 'object', properties: { name: { type: 'string', minLength: 2 } }, required: ['name'] },
+        response: { 200: { type: 'object', properties: { name: { type: 'string' }, orgId: { type: 'string' } } } },
+      },
+    },
+    async (req) => ({ name: req.body.name, orgId: req.params.orgId, secret: 'trimmed' }),
+  );
+  app.get('/workspace/projects/slug/:slug', async (req) => ({ slug: req.params.slug }));
+  app.get('/workspace/projects', async (req) => ({ q: req.query }));
+  app.get('/boom/:id', async (req, reply) =>
+    reply.code(404).send({ message: 'nope', code: 404, details: { id: req.params.id } }),
+  );
+  app.route({
+    method: 'GET',
+    url: '/named',
+    config: { wrpc: { unit: 'misc', name: 'custom' } },
+    handler: async () => ({ ok: 1 }),
+  });
+  app.route({ method: 'GET', url: '/hidden', config: { wrpc: false }, handler: async () => ({}) });
+
+  await app.listen({ host: '127.0.0.1', port: 0 });
+  const port = app.server.address().port;
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, { heartbeat: false, reconnect: false });
+  t.after(() => void client.close());
+
+  await t.test('the full route pipeline runs: hooks, validation, serialization', async () => {
+    await client.load('projects');
+    const created = await client.api.projects.create({ params: { orgId: '7' }, body: { name: 'Beta' } });
+    assert.deepStrictEqual(created, { name: 'Beta', orgId: '7' }); // fjs trimmed `secret`
+    await assert.rejects(client.api.projects.create({ params: { orgId: '7' }, body: { name: 'B' } }), (error) => {
+      assert.strictEqual(error.code, 400);
+      return true;
+    });
+  });
+
+  await t.test('reverse naming and the query leg', async () => {
+    assert.deepStrictEqual(await client.api.projects.findBySlug({ params: { slug: 'alpha' } }), { slug: 'alpha' });
+    assert.deepStrictEqual(await client.api.projects.findAll({ query: { x: '1' } }), { q: { x: '1' } });
+  });
+
+  await t.test('route errors flow through with status, message and details', async () => {
+    await client.load('boom');
+    await assert.rejects(client.api.boom.findById({ params: { id: 'zz' } }), (error) => {
+      assert.strictEqual(error.code, 404);
+      assert.strictEqual(error.message, 'nope');
+      assert.deepStrictEqual(error.details, { id: 'zz' });
+      return true;
+    });
+  });
+
+  await t.test('config.wrpc: object renames, false hides, wrpc routes never mirror', async () => {
+    await client.load('misc');
+    assert.deepStrictEqual(await client.api.misc.custom(), { ok: 1 });
+    // 'hidden' is opted out entirely — not even introspectable.
+    const res = await fetch(`http://127.0.0.1:${port}/api/system/introspect`);
+    const { result } = await res.json();
+    assert.strictEqual('hidden' in result, false);
+  });
+
+  await t.test('the headers option maps the wrpc context into the injected request', async () => {
+    // A second app whose mirror stamps a header from the context.
+    const app2 = fastify({ logger: false });
+    t.after(() => app2.close());
+    await app2.register(wrpcFastify, {
+      router: defineRouter({}),
+      logger: false,
+      mirror: { access: 'public', headers: (context) => ({ 'x-auth': `ctx-${typeof context.uuid}` }) },
+    });
+    const stamped = [];
+    app2.get('/things', async (req) => {
+      stamped.push(req.headers['x-auth']);
+      return { ok: true };
+    });
+    await app2.listen({ host: '127.0.0.1', port: 0 });
+    const port2 = app2.server.address().port;
+    const client2 = await WrpcClient.connect(`ws://127.0.0.1:${port2}/api`, { heartbeat: false, reconnect: false });
+    t.after(() => void client2.close());
+    await client2.load('things');
+    await client2.api.things.findAll();
+    assert.deepStrictEqual(stamped, ['ctx-string']);
+  });
+
+  await t.test('mirrored signatures reach introspection', async () => {
+    const res = await fetch(`http://127.0.0.1:${port}/api/system/introspect`);
+    const packet = await res.json();
+    assert.deepStrictEqual(packet.result.projects.create.signature.args.body, { name: 'string' });
+    assert.deepStrictEqual(packet.result.projects.create.meta.mirrored, {
+      method: 'POST',
+      path: '/workspace/projects/:orgId',
+    });
+  });
+
+  await t.test('the wrpc router the app declared is untouched', async () => {
+    await client.load('own');
+    assert.strictEqual(await client.api.own.ping(), 'pong');
+  });
+});
+
+test('mirror: a naming collision throws at onReady with a hint', { skip: noFastify }, async (t) => {
+  const app = fastify({ logger: false });
+  t.after(() => app.close());
+  await app.register(wrpcFastify, { router: defineRouter({}), logger: false, mirror: true });
+  app.get('/things/:id', async () => ({}));
+  app.get('/things/special', async () => ({}));
+  app.get('/other/things/special', async () => ({}));
+  await assert.rejects(app.ready(), /things\/findAllSpecial.*config\.wrpc\.name/s);
+});

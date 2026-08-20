@@ -164,11 +164,41 @@ export interface RouterHooks {
 /** The subset a unit's reserved `hooks` key accepts (no connection phases). */
 export type UnitHooks = Omit<RouterHooks, 'onConnect' | 'onDisconnect'>;
 
+/** A declarative REST mapping: this procedure IS `method path` under basePath. */
+export interface HttpRoute {
+  method: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
+  /** Relative to the server's basePath; segments are static or `:name`. */
+  path: string;
+  /** Success status; 204 discards the result body by contract. */
+  status?: number;
+}
+
+/**
+ * The fastify.route.schema shape: the parts wrpc understands plus any
+ * passthrough keys (tags, summary, security, ...) forwarded to hosts
+ * verbatim. `query` and `querystring` are interchangeable spellings.
+ */
+export interface ProcedureSchema {
+  params?: object;
+  querystring?: object;
+  /** Alias of `querystring`; setting both to different objects throws. */
+  query?: object;
+  body?: object;
+  headers?: object;
+  /** Keyed by status code; `false` removes a default wrpc error entry. */
+  response?: Record<string | number, object | false>;
+  [passthrough: string]: unknown;
+}
+
 export interface ProcedureOptions {
   handler: ProcedureHandler;
   access?: 'public' | 'session';
   input?: Validator;
   output?: Validator;
+  /** Maps this procedure onto a real REST endpoint. Calls only. */
+  http?: HttpRoute;
+  /** Declarative validation/serialization/docs; excludes input/output. */
+  schema?: ProcedureSchema;
   /** Milliseconds; the call fails with code 408 when exceeded. */
   timeout?: number;
   /** Concurrency limit; overflow/starvation fails with code 503. */
@@ -185,8 +215,8 @@ export interface ProcedureOptions {
   onError?: Hook | Array<Hook>;
 }
 
-/** Same as ProcedureOptions minus the two a stream cannot mean. */
-export type SubscriptionProcedureOptions = Omit<ProcedureOptions, 'queue' | 'timeout'>;
+/** Same as ProcedureOptions minus the three a stream cannot mean. */
+export type SubscriptionProcedureOptions = Omit<ProcedureOptions, 'queue' | 'timeout' | 'http'>;
 
 export declare class Procedure {
   handler: ProcedureHandler;
@@ -196,10 +226,18 @@ export declare class Procedure {
   timeout: number;
   meta: Record<string, unknown>;
   signature: Signature | null;
+  http: HttpRoute | null;
+  /** Normalized: `query` folded into `querystring`. */
+  schema: ProcedureSchema | null;
   kind: 'call' | 'subscription';
   readonly subscription: boolean;
   constructor(options: ProcedureOptions);
   invoke(context: Context, args: unknown, hooks?: Readonly<Record<string, ReadonlyArray<Hook>>>): Promise<unknown>;
+  /**
+   * The host-delegated entry: queue/timeout semantics without hooks or
+   * validators — the host (a fastify route) already ran its own.
+   */
+  invokeBare(context: Context, args: unknown): Promise<unknown>;
   /** The value stream behind `{type:'subscribe'}`. */
   subscribe(
     context: Context,
@@ -253,14 +291,45 @@ export interface MethodInfo {
   kind?: 'subscription';
   meta?: Record<string, unknown>;
   signature?: Signature;
+  /** The declarative REST mapping, when the procedure carries one. */
+  http?: HttpRoute;
+  /** Input schema parts (params/querystring/body) for client pre-validation. */
+  schema?: { params?: object; querystring?: object; body?: object };
+}
+
+/**
+ * Injected JSON Schema compilers, structural: `ajv` is anything with
+ * compile(schema) -> validateFn (ajv-shaped: boolean answer, `.errors` on
+ * failure), `serializer` anything with compile(schema) -> (value) -> string
+ * (fast-json-stringify-shaped). wrpc imports neither.
+ */
+export interface ValidationOptions {
+  ajv?: { compile(schema: object): (value: unknown) => boolean };
+  serializer?: { compile(schema: object): (value: unknown) => string };
+}
+
+/** What the injected compilers produced for one procedure. */
+export interface CompiledArtifacts {
+  input?: Validator;
+  output?: Validator;
+  serialize?: (value: unknown) => string;
 }
 
 export declare class Router {
-  constructor(definition?: RouterDefinition, options?: { hooks?: RouterHooks });
+  constructor(definition?: RouterDefinition, options?: { hooks?: RouterHooks; validation?: ValidationOptions });
+  /**
+   * Adds a unit after construction (how the fastify mirror lands units
+   * discovered at onReady). Refuses an already-registered unit key.
+   */
+  addUnit(unitKey: string, definition: UnitDefinition): this;
   /** Adds a router-level hook after construction. Returns the router. */
   addHook(name: keyof RouterHooks, fn: Hook | ConnectionHook): this;
   /** The flattened pipeline for one procedure (router + unit + procedure). */
   hooksFor(proc: Procedure): Readonly<Record<string, ReadonlyArray<Hook>>>;
+  /** The compiled { input?, output?, serialize? } for one procedure. */
+  compiledFor(proc: Procedure): CompiledArtifacts | null;
+  /** True when any procedure compiled a response serializer. */
+  readonly hasSerializers: boolean;
   /** Router-level connection lifecycle hooks, consumed by RpcServer. */
   readonly connectionHooks: { onConnect: ReadonlyArray<ConnectionHook>; onDisconnect: ReadonlyArray<ConnectionHook> };
   getProcedure(
@@ -274,12 +343,35 @@ export declare class Router {
     version: string | undefined,
     name: string,
   ): Procedure | null;
-  introspect(units?: Array<string> | null): Record<string, Record<string, MethodInfo>>;
+  introspect(units?: Array<string> | null, options?: { schemas?: boolean }): Record<string, Record<string, MethodInfo>>;
+  /** True when at least one procedure declares an `http` mapping. */
+  readonly hasRestRoutes: boolean;
+  /**
+   * Matches a verb + decoded path segments against the REST table: null
+   * (unknown path), `{ allowed }` (known path, wrong verb — a 405), or the
+   * full route.
+   */
+  matchRest(
+    method: string,
+    segments: Array<string>,
+  ):
+    | { proc: Procedure; unitKey: string; methodName: string; params: Record<string, string>; http: HttpRoute }
+    | { allowed: Array<string> }
+    | null;
+  /** Every declared REST route — what a host adapter registers natively. */
+  restRoutes(): Array<{ unitKey: string; methodName: string; proc: Procedure; http: HttpRoute }>;
   /** Returns a NEW router; on collision the other router's procedure wins. */
   merge(other: Router): Router;
 }
 
-export declare function defineRouter(definition: RouterDefinition, options?: { hooks?: RouterHooks }): Router;
+/**
+ * The fastify-shaped schema a host receives: the user's declaration with
+ * wrpc's own lifecycle error statuses documented underneath (overridable,
+ * removable with `false`).
+ */
+export declare function effectiveSchema(proc: Procedure): ProcedureSchema;
+
+export declare function defineRouter(definition: RouterDefinition, options?: { hooks?: RouterHooks; validation?: ValidationOptions }): Router;
 
 // ---------------------------------------------------------------------------
 // Sessions
@@ -431,7 +523,7 @@ export interface AskResult {
   /** Values the responders returned, in settlement order. */
   answers: Array<unknown>;
   /** Per-client failures: 501 no responder, 408 timeout, 503 disconnect. */
-  errors: Array<{ message: string; code: number }>;
+  errors: Array<{ message: string; code: number; details?: unknown }>;
   /** How many clients were asked, cluster-wide. */
   expected: number;
   /** True when a remote instance never answered inside the timeout. */
@@ -644,7 +736,7 @@ export class Client extends Emitter {
    */
   expectAnswer(id: string, timeout?: number): Promise<unknown>;
   /** Routes an inbound `callback` to its pending ask; false when none. */
-  settleAnswer(packet: { id: string; result?: unknown; error?: { message: string; code: number } }): boolean;
+  settleAnswer(packet: { id: string; result?: unknown; error?: { message: string; code: number; details?: unknown } }): boolean;
   /** Diagnostics for inbound packets with no id to answer on. */
   warn(message: string): void;
   /** Joins a room; false when already a member. */
@@ -725,7 +817,10 @@ export interface RpcServerOptions {
    * `'session'` gates it behind a session, `false` leaves the API surface
    * unadvertised. A router defining its own introspect always wins.
    */
-  introspection?: boolean | 'session';
+  introspection?:
+    | boolean
+    | 'session'
+    | { access?: boolean | 'session'; schemas?: boolean };
   /** Packets accepted in one batch frame; default 128. */
   maxBatch?: number;
   /** Concurrent subscriptions per client; default 256. */
@@ -736,7 +831,29 @@ export interface RpcServerOptions {
   sse?: import('./sse.js').SseOptions | false;
   /** Presence/request tuning for the cluster layer. */
   cluster?: ClusterOptions;
+  /**
+   * Pluggable query-string codec (qs and friends) for REST-mode requests.
+   * The injected parser takes over prototype-pollution responsibility.
+   */
+  querystring?: { parse(text: string): Record<string, unknown>; stringify?(query: object): string };
+  /**
+   * Pluggable wire codec for wrpc packets (ws, packet-mode HTTP, SSE data,
+   * worker ports). Text-only: encode must produce single-line text. REST
+   * mode, SSE control frames and binary chunks stay outside it. Mutually
+   * exclusive with compiled response serializers.
+   */
+  codec?: WrpcCodec;
 }
+
+/** An injected wire codec — structural, checked by `isCodec`. */
+export interface WrpcCodec {
+  encode(packet: unknown): string;
+  decode(text: string): unknown;
+  /** Overrides `application/json` on packet-mode HTTP/SSE requests. */
+  contentType?: string;
+}
+
+export declare function isCodec(value: unknown): value is WrpcCodec;
 
 export declare class RpcServer extends Emitter {
   readonly router: Router;
@@ -749,6 +866,17 @@ export declare class RpcServer extends Emitter {
   /** The SSE channel registry, or null when `sse: false`. */
   readonly sse: import('./sse.js').SseChannels | null;
   readonly clients: Set<Client>;
+  /**
+   * A host-delegated REST route runs its procedure outside handleHttpCall:
+   * the host owns routing/validation/serialization, wrpc the session and
+   * client lifecycle. Call `release()` when the response closes.
+   */
+  delegatedContext(request?: { method?: string; headers?: Record<string, string | undefined>; remoteAddress?: string }): Promise<{
+    client: Client;
+    context: Context;
+    transport: ServerTransport;
+    release: () => void;
+  }>;
   /** Cluster-wide presence, introspection and node-to-node messaging. */
   readonly cluster: Cluster;
   constructor(options: RpcServerOptions);

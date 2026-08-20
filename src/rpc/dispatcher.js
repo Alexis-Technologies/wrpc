@@ -5,7 +5,7 @@ const { WrpcReadable } = require('../streams.js');
 const { chunkDecode } = require('../chunks.js');
 const { runSubscription } = require('./subscriptions.js');
 const { runHooks, runHooksSafe } = require('./router.js');
-const { publicErrorMessage } = require('../transport.js');
+const { publicErrorMessage, publicErrorDetails, wireError } = require('../transport.js');
 const { SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
 
 const DEFAULT_VERSION = '*';
@@ -88,6 +88,7 @@ const handleRpc = async (client, packet, router) => {
   const enabled = client.otel.enabled;
   const started = enabled ? now() : 0;
   const hooks = router.hooksFor(proc);
+  const compiled = router.compiledFor(proc);
   // Created before the first phase so onRequest can already enrich
   // ctx.state — the context is what ties the phases of one call together.
   const context = client.createContext(controller.signal);
@@ -106,7 +107,7 @@ const handleRpc = async (client, packet, router) => {
         code = 403;
         return void client.error(403, { id });
       }
-      const result = await proc.invoke(context, args, hooks);
+      const result = await proc.invoke(context, args, hooks, compiled);
       if (controller.signal.aborted) return void (status = 'cancelled');
       if (isError(result)) {
         status = 'error';
@@ -119,7 +120,17 @@ const handleRpc = async (client, packet, router) => {
       // onSend sees (and may mutate) the exact packet about to be written —
       // the last chance to redact or reshape a response.
       if (hooks.onSend.length > 0) await runHooks(hooks.onSend, context, callback);
-      client.send(callback, { method });
+      // The compiled-serializer fast path: the envelope is assembled around
+      // the schema-compiled result text instead of JSON.stringify walking
+      // the whole packet (~1.16x for the seam alone, more with a real
+      // fast-json-stringify — bench/serialize-callback.js). Correctness
+      // gates: an onSend hook may have mutated the packet after the shape
+      // the serializer was compiled for, so hooks win over the fast path.
+      const text =
+        compiled?.serialize && hooks.onSend.length === 0
+          ? `{"type":"callback","id":${JSON.stringify(id)},"result":${compiled.serialize(result)}}`
+          : undefined;
+      client.send(callback, { method, text });
       if (hooks.onResponse.length > 0) {
         await runHooksSafe(hooks.onResponse, context, callback, client.log, 'onResponse');
       }
@@ -159,8 +170,10 @@ const handleCancel = (client, packet) => {
 
 // A subscription's terminal packet is `end`, refusals included: answering
 // with a `callback` would make the client look for a call it never made.
-const refuse = (client, id, code, message, target) => {
-  client.send({ type: 'end', id, error: { message, code } });
+const refuse = (client, id, code, message, target, details) => {
+  const error = { message, code };
+  if (details !== undefined) error.details = details;
+  client.send({ type: 'end', id, error });
   client.warn(`SUBSCRIBE\t${id}\t${code}\t${message}`, { event: 'subscribe.refused', id, code });
   client.otel.recordCall(target, 'error', code);
 };
@@ -199,6 +212,7 @@ const handleSubscribe = async (client, packet, router) => {
     return void refuse(client, id, 403, 'Forbidden', method);
   }
   const hooks = router.hooksFor(proc);
+  const compiled = router.compiledFor(proc);
   const context = client.createContext(controller.signal);
   if (hooks.onSubscribe.length > 0) {
     try {
@@ -206,10 +220,10 @@ const handleSubscribe = async (client, packet, router) => {
     } catch (error) {
       client.subscriptions.delete(id);
       const code = typeof error.code === 'number' ? error.code : 500;
-      return void refuse(client, id, code, publicErrorMessage(code, error), method);
+      return void refuse(client, id, code, publicErrorMessage(code, error), method, publicErrorDetails(code, error));
     }
   }
-  const options = { id, procedure: proc, context, args, lastEventId, signal: controller.signal, hooks };
+  const options = { id, procedure: proc, context, args, lastEventId, signal: controller.signal, hooks, compiled };
   // The span covers the subscription's whole life, not just its setup: the
   // interesting number is how long a feed ran and how much it yielded.
   const started = now();
@@ -223,7 +237,7 @@ const handleSubscribe = async (client, packet, router) => {
       terminal = await runSubscription(client, { ...options, stats });
     } catch (error) {
       const code = typeof error.code === 'number' ? error.code : 500;
-      terminal = { type: 'end', id, error: { message: publicErrorMessage(code, error), code } };
+      terminal = { type: 'end', id, error: wireError(code, error) };
       client.otel.recordError(handle, error, code);
     } finally {
       if (client.subscriptions.get(id) === controller) client.subscriptions.delete(id);
@@ -334,10 +348,11 @@ const handleEvent = async (client, packet, router) => {
   // Events run the invocation phases (preValidation/preHandler/onError);
   // onRequest/onSend do not apply — there is no packet to answer with.
   const hooks = router.hooksFor(handler);
+  const compiled = router.compiledFor(handler);
   const context = client.createContext();
   const run = async (handle) => {
     try {
-      await handler.invoke(context, data, hooks);
+      await handler.invoke(context, data, hooks, compiled);
     } catch (error) {
       client.otel.recordError(handle, error);
       if (hooks.onError.length > 0) await runHooksSafe(hooks.onError, context, error, client.log, 'onError');
@@ -435,7 +450,7 @@ const handlePacket = (client, packet, router) => {
 // answered on its own (on a request/response transport the answers come
 // back as an array in the same order — see ServerHttpTransport).
 const handleMessage = (client, data, router, options = {}) => {
-  const parsed = jsonParse(data);
+  const parsed = client.decodePacket ? client.decodePacket(data) : jsonParse(data);
   // jsonParse answers null for both "malformed" and "the literal null", and
   // the `|| {}` below hides the difference. This is the single funnel every
   // unparseable packet in the system passes through, so it is worth a line.

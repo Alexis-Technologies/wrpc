@@ -254,6 +254,31 @@ test('invoke validation', async (t) => {
       return true;
     });
   });
+
+  await t.test('Standard Schema issues keep their paths as structured details', async () => {
+    const schema = {
+      '~standard': {
+        validate: async () => ({
+          issues: [
+            { message: 'name required', path: ['name'] },
+            { message: 'age invalid', path: ['profile', 'age'] },
+          ],
+        }),
+      },
+    };
+    const proc = procedure({ handler: async () => 'unreachable', input: schema });
+    await assert.rejects(proc.invoke({}, {}), (error) => {
+      assert.strictEqual(error.code, 400);
+      assert.strictEqual(error.expose, true);
+      assert.deepStrictEqual(error.details, {
+        issues: [
+          { message: 'name required', path: ['name'] },
+          { message: 'age invalid', path: ['profile', 'age'] },
+        ],
+      });
+      return true;
+    });
+  });
 });
 
 test('invoke timeout and queue', async (t) => {
@@ -370,5 +395,26 @@ test('review regressions: keys, filters, and queue-timeout interplay', async (t)
     await assert.rejects(proc.invoke({}, {}), (error) => error.code === 400);
     // slot free again: the next call reaches the validator, not a 503
     await assert.rejects(proc.invoke({}, {}), (error) => error.code === 400);
+  });
+});
+
+test('addUnit: post-construction units for the mirror feature', async (t) => {
+  const { defineRouter, procedure } = require('../../index.js');
+
+  await t.test('adds a unit and rebuilds the hook chains', async () => {
+    const trace = [];
+    const router = defineRouter({}, { hooks: { preHandler: async () => void trace.push('router') } });
+    router.addUnit('late', { hello: procedure({ access: 'public', handler: async () => 'hi' }) });
+    const proc = router.getProcedure('late', '*', 'hello');
+    assert.notStrictEqual(proc, null);
+    assert.strictEqual(router.hooksFor(proc).preHandler.length, 1);
+  });
+
+  await t.test('refuses a duplicate unit key', () => {
+    const router = defineRouter({ a: { x: procedure({ access: 'public', handler: async () => 1 }) } });
+    assert.throws(() => router.addUnit('a', {}), /already registered/);
+    // A different VERSION of the same unit is a different key.
+    router.addUnit('a.2', { x: procedure({ access: 'public', handler: async () => 2 }) });
+    assert.notStrictEqual(router.getProcedure('a', '2', 'x'), null);
   });
 });

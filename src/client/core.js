@@ -6,7 +6,7 @@
 // Worker proxy in ./proxy.js; ../client.js is the barrel that assembles
 // them, so require paths and the browser field are unchanged.
 
-const { Emitter, jsonParse, backoffDelay, createEventStream } = require('../utils.js');
+const { Emitter, jsonParse, isCodec, backoffDelay, createEventStream } = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { chunkDecode } = require('../chunks.js');
 const { WrpcReadable, WrpcWritable } = require('../streams.js');
@@ -106,11 +106,58 @@ const toByteView = async (input) => {
 };
 
 class WrpcError extends Error {
-  constructor({ message, code }) {
+  constructor({ message, code, details }) {
     super(message);
     this.code = code;
+    // Structured issue lists the server attached (validation paths and the
+    // like) — an optional wire field, absent on most errors.
+    if (details !== undefined) this.details = details;
   }
 }
+
+// Client-side pre-validation: the introspected input schema parts compiled
+// by an app-injected ajv (`validation: { ajv }`), so a doomed call rejects
+// locally with the SAME 400 + details it would earn from the server —
+// without the round trip. wrpc imports no schema library; without the
+// injection this costs nothing.
+const PREVALIDATE_PARTS = [
+  ['params', 'params'],
+  ['querystring', 'query'],
+  ['body', 'body'],
+];
+
+const compilePrevalidate = (ajv, schema) => {
+  const parts = [];
+  for (const [part, argsKey] of PREVALIDATE_PARTS) {
+    if (schema[part] === undefined) continue;
+    parts.push([part, argsKey, ajv.compile(schema[part])]);
+  }
+  if (parts.length === 0) return null;
+  return (args) => {
+    const value = args && typeof args === 'object' ? args : {};
+    let issues = null;
+    for (const [part, argsKey, validate] of parts) {
+      if (validate(value[argsKey] ?? {})) continue;
+      issues ??= [];
+      for (const item of validate.errors ?? []) {
+        issues.push({ message: item.message, path: `/${part}${item.instancePath ?? ''}` });
+      }
+    }
+    if (issues) {
+      const messages = [];
+      for (const issue of issues) messages.push(`${issue.path} ${issue.message}`);
+      throw new WrpcError({ message: messages.join('; '), code: 400, details: { issues } });
+    }
+    return value;
+  };
+};
+
+// ws and http spell the same endpoint with different schemes; a fallback
+// list crosses that line, so the URL is re-spelled per candidate.
+const mapScheme = (url, name) => {
+  if (name === 'ws') return url.replace(/^https:/, 'wss:').replace(/^http:/, 'ws:');
+  return url.replace(/^wss:/, 'https:').replace(/^ws:/, 'http:');
+};
 
 class ClientTransport extends Emitter {
   active = false;
@@ -128,7 +175,8 @@ class ClientTransport extends Emitter {
   }
 
   send(obj) {
-    this.write(JSON.stringify(obj));
+    // The codec is handed to the transport at bind time (client core).
+    this.write(this.codec ? this.codec.encode(obj) : JSON.stringify(obj));
   }
 
   // Drop the connection without waiting for a close handshake. The default
@@ -193,6 +241,13 @@ class WrpcClient extends Emitter {
   #flushTimer = null;
   #streams = new Map();
   #callTimeout = CALL_TIMEOUT;
+  #querystring = null;
+  #validation = null;
+  // The ordered fallback list (null without one) and the live candidate.
+  #transportNames = null;
+  #transportIndex = 0;
+  #boundHandlers = null;
+  #codec = null;
   #reconnect = RECONNECT;
   #reconnectTimer = null;
   #attempt = 0;
@@ -219,12 +274,29 @@ class WrpcClient extends Emitter {
 
   constructor(url, transport, options = {}) {
     super();
-    const { callTimeout, proxy, random, generateId, logger, telemetry } = options;
+    const { callTimeout, proxy, random, generateId, logger, telemetry, querystring, validation, codec } = options;
     // Off by default, unlike the server: a client that printed on every
     // reconnect would be noise in a browser console nobody asked for.
     this.#log = createLoggerWriter(logger);
     this.#otel = createClientTelemetry(telemetry);
     if (callTimeout) this.#callTimeout = callTimeout;
+    // Pluggable query-string serializer (qs and friends) for mapped REST
+    // requests — the mirror of the server's `querystring` option, so array
+    // encodings agree end to end.
+    if (querystring && typeof querystring.stringify === 'function') this.#querystring = querystring;
+    // Structural, like every injection: anything with compile(schema) -> fn
+    // (ajv-shaped: boolean answer, `.errors` on failure).
+    if (validation?.ajv && typeof validation.ajv.compile === 'function') this.#validation = validation.ajv;
+    if (Array.isArray(options.transport)) this.#transportNames = [...options.transport];
+    // The wire codec — the client half of the server's `codec` option.
+    // Must produce single-line text (SSE frames by line); structural check
+    // shared with the server (isCodec).
+    if (codec !== undefined && codec !== null) {
+      if (!isCodec(codec)) {
+        throw new TypeError('WrpcClient: options.codec must provide encode(packet) and decode(text)');
+      }
+      this.#codec = codec;
+    }
     if (proxy) this.#proxyPacket = proxy;
     if (random) this.#random = random; // deterministic jitter in tests
     // Packet, subscription and stream ids; uuid v4 unless the app brings
@@ -248,12 +320,28 @@ class WrpcClient extends Emitter {
     }
     // The scheme picks the transport unless one is named. 'sse' only exists
     // once '@alexify/wrpc/sse' has been required, which is what registers it.
-    const name = options.transport ?? (url.startsWith('http') ? 'http' : 'ws');
+    // A list is an ordered fallback: candidates are tried in the given
+    // order, each with its own reconnect budget — there is deliberately no
+    // default order, the application names its own. All names are checked
+    // UP FRONT: a fallback that fails at fall-back time is a fallback
+    // nobody tested.
+    if (Array.isArray(options.transport)) {
+      if (options.transport.length === 0) throw new Error('transport list must not be empty');
+      for (const candidate of options.transport) {
+        if (candidate === 'event') throw new Error("transport list cannot contain 'event' — pass options.worker");
+        if (typeof WrpcClient.transport[candidate] !== 'function') {
+          throw new Error(`Unknown transport '${candidate}'`);
+        }
+      }
+    }
+    const name = Array.isArray(options.transport)
+      ? options.transport[0]
+      : (options.transport ?? (url.startsWith('http') ? 'http' : 'ws'));
     const Transport = WrpcClient.transport[name];
     if (typeof Transport !== 'function') {
       throw new Error(`Unknown transport '${name}'`);
     }
-    const transport = new Transport(url);
+    const transport = new Transport(mapScheme(url, name));
     const client = new WrpcClient(url, transport, options);
     await client.open();
     return client;
@@ -300,8 +388,25 @@ class WrpcClient extends Emitter {
     }
   }
 
+  // The handlers are kept so #unbindTransport can take them OFF a
+  // transport being abandoned by a fallback swap — a late 'close' from the
+  // old socket would otherwise double-schedule reconnects on the new one.
+  #unbindTransport() {
+    if (!this.#boundHandlers) return;
+    for (const [event, handler] of this.#boundHandlers) this.#transport.off(event, handler);
+    this.#boundHandlers = null;
+  }
+
   #bindTransport() {
-    this.#transport.on('open', () => {
+    // The transport owns the outbound write, so it carries the codec; a
+    // fallback swap re-binds and re-hands it here.
+    if (this.#codec) this.#transport.codec = this.#codec;
+    const bind = (event, handler) => {
+      this.#boundHandlers ??= [];
+      this.#boundHandlers.push([event, handler]);
+      this.#transport.on(event, handler);
+    };
+    bind('open', () => {
       clearTimeout(this.#reconnectTimer);
       this.#reconnectTimer = null;
       const attempts = this.#attempt;
@@ -318,7 +423,7 @@ class WrpcClient extends Emitter {
       if (reconnected) this.#restore(attempts).catch((error) => this.#escalate(error, 'reconnect.restore'));
     });
 
-    this.#transport.on('close', () => {
+    bind('close', () => {
       this.#stopHeartbeat();
       // Settled before 'close' is announced: a listener reacting to the
       // close must find the calls already rejected and the streams ended,
@@ -331,11 +436,11 @@ class WrpcClient extends Emitter {
       this.#scheduleReconnect();
     });
 
-    this.#transport.on('error', (error) => {
+    bind('error', (error) => {
       this.#escalate(error, 'transport.error');
     });
 
-    this.#transport.on('message', (data) => {
+    bind('message', (data) => {
       const escalate = (error) => this.#escalate(error, 'message');
       if (typeof data === 'string') this.#handlePacket(data).catch(escalate);
       else this.#handleBinary(data).catch(escalate);
@@ -376,12 +481,68 @@ class WrpcClient extends Emitter {
     await this.emit('reconnect', { units, attempts, subscriptions: subscriptions.length });
   }
 
+  // Ends every live subscription NOW, loudly — the path a fallback onto a
+  // request/response transport takes: re-sending `subscribe` packets the
+  // server would refuse one by one (400 each) would be the quiet version
+  // of the same failure.
+  #failSubscriptions(message) {
+    if (this.#subscriptions.size === 0) return;
+    const records = Array.from(this.#subscriptions.values());
+    this.#subscriptions.clear();
+    for (const record of records) {
+      record.onRelease?.();
+      const error = new WrpcError({ message, code: 400 });
+      record.stream?.fail(error);
+      if (record.onError) record.onError(error);
+      else if (!record.stream) this.#escalate(error, 'subscription.error');
+    }
+  }
+
+  // The next candidate on the fallback list takes over: the dead
+  // transport's listeners come off (a late 'close' from its socket must
+  // not double-drive the new one), the URL is re-spelled for the new
+  // scheme, and capability loss is loud rather than silent.
+  #advanceTransport() {
+    if (!this.#transportNames || this.#transportIndex >= this.#transportNames.length - 1) return false;
+    const from = this.#transportNames[this.#transportIndex];
+    this.#transportIndex++;
+    const to = this.#transportNames[this.#transportIndex];
+    this.#unbindTransport();
+    try {
+      this.#transport.terminate();
+    } catch {
+      // Already dead — that is why we are here.
+    }
+    const Transport = WrpcClient.transport[to];
+    this.#transport = new Transport(mapScheme(this.url, to));
+    this.#bindTransport();
+    if (this.#transport.persistent === false) {
+      this.#failSubscriptions(`Transport fell back to '${to}', which cannot carry subscriptions`);
+    }
+    this.#log.warn({ event: 'transport.fallback', from, to, url: this.url });
+    this.emit('transport-fallback', { from, to }).catch((error) =>
+      this.#escalate(error, 'listener.transport-fallback'),
+    );
+    return true;
+  }
+
   #scheduleReconnect() {
     if (this.active) return;
     if (!WrpcClient.connections.has(this)) return;
     if (this.#reconnectTimer) return;
     const { retries } = this.#reconnect;
     if (this.#attempt >= retries) {
+      // Exhaustion falls through the candidate list before it is final:
+      // retries are PER CANDIDATE (the counter resets), and the fresh
+      // candidate gets an immediate first try — backoff was guarding the
+      // old transport's endpoint, not this one.
+      if (this.#advanceTransport()) {
+        this.#attempt = 0;
+        return void this.open().catch((error) => {
+          this.#escalate(error, 'fallback.open');
+          this.#scheduleReconnect();
+        });
+      }
       this.#log.warn({ event: 'reconnect.failed', attempts: this.#attempt, url: this.url });
       this.#otel.recordReconnect('exhausted', this.#attempt);
       return void this.emit('reconnect-failed', { attempts: this.#attempt }).catch((error) =>
@@ -536,7 +697,7 @@ class WrpcClient extends Emitter {
     // bytes — the old path stringified for the length, dropped the string,
     // and paid stringify again at flush. Sizes are UTF-16 code units
     // (byte-exact for ASCII payloads; a bound either way).
-    const text = JSON.stringify(packet);
+    const text = this.#codec ? this.#codec.encode(packet) : JSON.stringify(packet);
     const size = text.length;
     this.#pending.push({ packet, text, size });
     this.#pendingBytes += size;
@@ -569,11 +730,20 @@ class WrpcClient extends Emitter {
     // never runs JSON.stringify again.
     let frame = pending[0].text;
     if (pending.length > 1) {
-      // Concatenated in place: map() built a throwaway array of the very texts
-      // already sitting in `pending`, just to hand them to join().
-      frame = `[${pending[0].text}`;
-      for (let i = 1; i < pending.length; i++) frame += `,${pending[i].text}`;
-      frame += ']';
+      if (this.#codec) {
+        // Only the codec knows its framing, so the batch array is encoded
+        // whole — per-item texts served the size accounting (a documented
+        // double encode on this deliberate slow path).
+        const packets = new Array(pending.length);
+        for (let i = 0; i < pending.length; i++) packets[i] = pending[i].packet;
+        frame = this.#codec.encode(packets);
+      } else {
+        // Concatenated in place: map() built a throwaway array of the very
+        // texts already sitting in `pending`, just to hand them to join().
+        frame = `[${pending[0].text}`;
+        for (let i = 1; i < pending.length; i++) frame += `,${pending[i].text}`;
+        frame += ']';
+      }
     }
     try {
       this.#transport.write(frame);
@@ -623,8 +793,18 @@ class WrpcClient extends Emitter {
     return { id, upload };
   }
 
+  // Inbound half of the wire codec; null for malformed, like jsonParse.
+  #decodePacket(text) {
+    if (!this.#codec) return jsonParse(text);
+    try {
+      return this.#codec.decode(text);
+    } catch {
+      return null;
+    }
+  }
+
   async #handlePacket(data) {
-    const packet = jsonParse(data);
+    const packet = this.#decodePacket(data);
     if (!packet) {
       if (this.#proxyPacket) return void this.#proxyPacket(data, null);
       throw new Error('Invalid JSON packet');
@@ -748,7 +928,11 @@ class WrpcClient extends Emitter {
       this.send({ type: 'callback', id, result });
     } catch (error) {
       const code = typeof error?.code === 'number' ? error.code : 500;
-      this.send({ type: 'callback', id, error: { message: error?.message ?? 'Responder failed', code } });
+      const wire = { message: error?.message ?? 'Responder failed', code };
+      // Same exposure rule the server applies: 4xx details are part of the
+      // conversation, a 5xx's internals stay here unless the error opts in.
+      if (error?.details !== undefined && (code < 500 || error.expose === true)) wire.details = error.details;
+      this.send({ type: 'callback', id, error: wire });
     }
   }
 
@@ -886,6 +1070,66 @@ class WrpcClient extends Emitter {
     });
   }
 
+  // The REST leg of a mapped procedure: args arrive in the same
+  // { params, query, body } shape the procedure sees on every transport;
+  // here they become the path, the query string and the JSON body. The
+  // response is the plain result (or the wire error object) — external
+  // REST semantics, not a callback envelope.
+  async #restCall(http, args = {}, options = {}) {
+    const { signal } = options;
+    if (signal?.aborted) throw new WrpcError(CANCELLED_ERROR);
+    const method = http.method;
+    const safeMethod = method === 'GET' || method === 'HEAD';
+    const body = safeMethod || args?.body === undefined ? undefined : JSON.stringify(args.body);
+    const url = this.#restUrl(http, args);
+    let res;
+    try {
+      res = await this.#transport.request(method, url, body, signal);
+    } catch (error) {
+      if (signal?.aborted) throw new WrpcError(CANCELLED_ERROR);
+      throw new WrpcError({ message: `HTTP request failed: ${error?.message ?? error}`, code: 503 });
+    }
+    if (res.status === 204) return undefined;
+    const parsed = jsonParse(res.text);
+    if (res.status >= 200 && res.status < 300) return parsed;
+    const wire = parsed && typeof parsed === 'object' && typeof parsed.message === 'string' ? parsed : null;
+    throw new WrpcError({
+      message: wire?.message ?? `HTTP request failed (${res.status})`,
+      code: wire?.code ?? res.status,
+      details: wire?.details,
+    });
+  }
+
+  #restUrl(http, args) {
+    const params = args?.params ?? {};
+    const segments = http.path === '/' ? [] : http.path.slice(1).split('/');
+    const parts = new Array(segments.length);
+    for (let i = 0; i < segments.length; i++) {
+      const segment = segments[i];
+      if (segment.startsWith(':')) {
+        const value = params[segment.slice(1)];
+        if (value === undefined) {
+          throw new WrpcError({
+            message: `Missing path param '${segment.slice(1)}' for ${http.method} ${http.path}`,
+            code: 400,
+          });
+        }
+        parts[i] = encodeURIComponent(String(value));
+      } else {
+        parts[i] = segment;
+      }
+    }
+    const baseUrl = this.#transport.url ?? this.url;
+    let url = baseUrl.endsWith('/') ? baseUrl.slice(0, -1) : baseUrl;
+    if (parts.length > 0) url += `/${parts.join('/')}`;
+    const query = args?.query;
+    if (query && Object.keys(query).length > 0) {
+      const text = this.#querystring ? this.#querystring.stringify(query) : String(new URLSearchParams(query));
+      if (text) url += `?${text}`;
+    }
+    return url;
+  }
+
   #dispatchCall(target, packet, id, signal) {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) return void reject(new WrpcError(CANCELLED_ERROR));
@@ -977,7 +1221,26 @@ class WrpcClient extends Emitter {
     const createMethod = (methodName, info = {}) => {
       const target = this.#target(unit, methodName);
       if (info.kind !== 'subscription') {
-        return (args = {}, options = {}) => this.#call(target, args, options);
+        // Compiled once per scaffold — load() re-runs on every reconnect,
+        // so a schema change on the server lands with the reload.
+        const prevalidate = this.#validation && info.schema ? compilePrevalidate(this.#validation, info.schema) : null;
+        const guard = (args) => {
+          if (!prevalidate) return null;
+          try {
+            prevalidate(args);
+          } catch (error) {
+            return Promise.reject(error);
+          }
+          return null;
+        };
+        // A procedure with an `http` mapping, on a transport that can carry
+        // it, goes out as the SAME REST request an external consumer would
+        // send — one endpoint, two audiences. Every other transport speaks
+        // packets as always.
+        if (info.http && this.#transport.rest === true) {
+          return (args = {}, options = {}) => guard(args) ?? this.#restCall(info.http, args, options);
+        }
+        return (args = {}, options = {}) => guard(args) ?? this.#call(target, args, options);
       }
       // A subscription is not callable: it answers with a stream, so it
       // exposes the two ways to consume one instead of pretending to be a
