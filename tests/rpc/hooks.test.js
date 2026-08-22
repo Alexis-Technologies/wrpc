@@ -611,3 +611,30 @@ test('subprotocol: a peer that offers nothing still connects (1.0 stays valid)',
   const connections = [...server.wsServer.connections];
   assert.strictEqual(connections[0].protocol, '');
 });
+
+test('meta: withMeta normalizes keys, the raw call() escape hatch does not', async (t) => {
+  const router = defineRouter({
+    unit: { run: procedure({ access: 'public', handler: async (context) => ({ ...context.callMeta }) }) },
+  });
+  const { url } = await boot(t, router);
+  const client = await connect(t, url);
+  await client.load('unit');
+
+  // The ergonomic path normalizes, so a camelCase key addresses the same
+  // value it would over a header carrier.
+  assert.deepStrictEqual(await client.api.unit.run.withMeta({ traceId: 't1', userId: 2 })(), {
+    'trace-id': 't1',
+    'user-id': 2,
+  });
+
+  // The raw seam hands the wire exactly what it was given — this asymmetry
+  // is deliberate: it is what the auth hooks write against.
+  assert.deepStrictEqual(await client.call('unit/run', {}, { meta: { traceId: 't2' } }), { traceId: 't2' });
+
+  // Values keep their JSON types on the packet path; only a header carrier
+  // has to flatten them.
+  assert.deepStrictEqual(await client.api.unit.run.withMeta({ retryCount: 3, isRetry: true })(), {
+    'retry-count': 3,
+    'is-retry': true,
+  });
+});

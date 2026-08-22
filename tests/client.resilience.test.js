@@ -1213,3 +1213,87 @@ test('headers: an invalid option throws loudly at construction', async () => {
   const WsTransport = WrpcClient.transport.ws;
   assert.throws(() => new WrpcClient('ws://x', new WsTransport('ws://x'), { headers: ['nope'] }), /options\.headers/);
 });
+
+test('declared: keys are kebab-normalized before any transport sees them', async (t) => {
+  const fake = registerFake('kebabfake');
+  t.after(() => fake.teardown());
+  const client = await WrpcClient.connect('fake://x', {
+    transport: ['kebabfake'],
+    heartbeat: false,
+    logger: false,
+    headers: { xAppVersion: '2', 'x-already': 'kebab', numeric: 7, nested: { a: 1 }, missing: null },
+    meta: { userId: 1, traceId: 'abc' },
+  });
+  t.after(() => void client.close());
+  const transport = fake.instances.at(-1);
+
+  // One normalization point, upstream of every carrier — which is why ws and
+  // the worker transport need no code of their own.
+  assert.deepStrictEqual(transport.lastOpen.headers, {
+    'x-app-version': '2',
+    'x-already': 'kebab',
+    numeric: '7', // stringified: over ws this used to be dropped outright
+    nested: '{"a":1}',
+    // `missing: null` is absent — a header cannot say "absent"
+  });
+  assert.strictEqual(Object.hasOwn(transport.lastOpen.headers, 'missing'), false);
+
+  // Meta keeps its JSON types in the default carrier: only a header carrier
+  // has to flatten, and flattening here would lose information for nothing.
+  assert.deepStrictEqual(transport.lastOpen.meta, { 'user-id': 1, 'trace-id': 'abc' });
+});
+
+test('declared: an unsendable header value is dropped with a warning, not fatal', async (t) => {
+  const fake = registerFake('warnfake');
+  t.after(() => fake.teardown());
+  const warnings = [];
+  const client = await WrpcClient.connect('fake://x', {
+    transport: ['warnfake'],
+    heartbeat: false,
+    logger: { warn: (entry) => warnings.push(entry), info: () => {}, error: () => {}, debug: () => {}, log: () => {} },
+    headers: { userName: 'José', ok: 'plain' },
+  });
+  t.after(() => void client.close());
+  const transport = fake.instances.at(-1);
+  assert.deepStrictEqual(transport.lastOpen.headers, { ok: 'plain' });
+  assert.ok(
+    warnings.some((entry) => entry.event === 'declared.unsendable' && entry.key === 'user-name'),
+    'the drop must be visible on the side that can fix it',
+  );
+});
+
+test("metaFormat: 'prefixed' flattens values on EVERY transport, not just the header legs", async (t) => {
+  const fake = registerFake('pfxfake');
+  t.after(() => fake.teardown());
+  const client = await WrpcClient.connect('fake://x', {
+    transport: ['pfxfake'],
+    heartbeat: false,
+    logger: false,
+    metaFormat: 'prefixed',
+    meta: { userId: 7, isRetry: true, nested: { a: 1 }, missing: null, plain: 'x' },
+  });
+  t.after(() => void client.close());
+  const transport = fake.instances.at(-1);
+
+  // The guarantee is about the bag the SERVER observes, not the wire: ws
+  // still carries one JSON query parameter, but its values are already
+  // flattened, so switching transports cannot change the shape.
+  assert.deepStrictEqual(transport.lastOpen.meta, {
+    'user-id': '7',
+    'is-retry': 'true',
+    nested: '{"a":1}',
+    plain: 'x',
+  });
+  assert.strictEqual(transport.lastOpen.metaPrefixed, true);
+});
+
+test('metaFormat: an invalid value throws loudly at construction', async () => {
+  const WsTransport = WrpcClient.transport.ws;
+  assert.throws(
+    () => new WrpcClient('ws://x', new WsTransport('ws://x'), { metaFormat: 'nope' }),
+    /options\.metaFormat/,
+  );
+  // The default is untouched by the option's absence.
+  const fine = new WrpcClient('ws://x', new WsTransport('ws://x'), { meta: { a: 1 } });
+  assert.ok(fine);
+});

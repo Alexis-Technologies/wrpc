@@ -110,8 +110,19 @@ reserved names (`cookie`, `host`, `origin`, `sec-*`, `content-*`, `proxy-*`,
 `x-wrpc-*`) from the query path outright. The `x-wrpc-meta` request header
 (percent-encoded JSON) carries per-request metadata for plain HTTP callers,
 with `x-wrpc-meta-<key>: <value>` accepted as an equivalent per-key
-spelling — string values only, keys lowercased by HTTP, the JSON header
-winning a key collision.
+spelling — string values only, the JSON header winning a key collision. A
+conformant client MAY emit either; on a transport without headers the
+prefixed *mode* still travels as the `wrpc_meta` parameter, because the
+guarantee is about the bag the server observes, not the wire.
+
+Keys of both declared bags are normalized to **kebab-case**
+(`userId` → `user-id`), so one spelling addresses a value whatever carrier
+brought it and `schema.headers` has a single casing to validate. Because
+both spellings reduce to the same key, a collision between them is real
+rather than two lookalike keys. A conformant server MAY apply this
+normalization; a caller writing header names by hand must write kebab
+itself, since HTTP lowercases header names before the server observes
+them and the word boundary cannot be recovered afterwards.
 
 ## Packets
 

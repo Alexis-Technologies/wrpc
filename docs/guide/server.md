@@ -124,7 +124,8 @@ new Server({
 | `origins` | — | An allowlist array, or a predicate. |
 | `credentials` | `false` | Emits `Access-Control-Allow-Credentials`. |
 | `methods` | `'POST, GET, OPTIONS'` | `Access-Control-Allow-Methods`. |
-| `headers` | `'Content-Type, x-wrpc-channel, last-event-id'` | `Access-Control-Allow-Headers`. |
+| `headers` | `'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta'` | `Access-Control-Allow-Headers`. A string, or an array joined with `', '`. |
+| `metaHeaders` | — | Meta keys allowed as per-key `x-wrpc-meta-<key>` headers. Appended to `headers`. |
 
 Four things worth knowing:
 
@@ -132,11 +133,22 @@ Four things worth knowing:
   not — so a shared cache can never serve one origin's grant to another.
   `credentials` is what the session cookie needs; a wildcard origin cannot
   carry credentials, which is the other reason to configure an allowlist.
-- A disallowed origin does **not** fail the call. CORS is enforced by the
-  browser, not the server: the call runs and the grant is simply withheld.
-- Replacing `headers` drops `x-wrpc-channel` and `last-event-id` unless you put
-  them back — those are what the [SSE transport](./sse) sends, so removing them
-  disables cross-origin SSE.
+- A disallowed origin is refused **403**, not merely denied the grant. The
+  page could not read the answer either way — but without the refusal the
+  call would still have *run*, with the cookie session restored, which is
+  exactly the cross-site request an allowlist exists to stop.
+- Replacing `headers` drops `x-wrpc-channel`, `last-event-id` and
+  `x-wrpc-meta` unless you put them back — the first two are what the
+  [SSE transport](./sse) sends, so removing them disables cross-origin SSE,
+  and the third carries [connection metadata](./metadata).
+- `metaHeaders` exists because CORS has **no wildcard for header names**. A
+  client using [`metaFormat: 'prefixed'`](./metadata#choosing-a-spelling-metaformat)
+  sends one real header per meta key, so each key must be named:
+  `metaHeaders: ['userId']` grants `x-wrpc-meta-user-id` — normalized with
+  the same rule the client uses, so a camelCase config still grants the name
+  that actually arrives. The default `metaFormat: 'json'` needs none of
+  this: it sends the one already-allowed `x-wrpc-meta` header whatever the
+  keys are.
 - A request with **no** `Origin` header always passes the upgrade check.
   Non-browser peers (curl, server-to-server) send none, and the header is not a
   credential in any case.

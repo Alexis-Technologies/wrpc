@@ -4,7 +4,12 @@
 // exactly the way the SSE subpath registers its own — the registry is the
 // one seam every transport, built-in or not, goes through.
 
-const { WrpcClient, ClientTransport, WRPC_PROTOCOL } = require('./core.js');
+const { WrpcClient, ClientTransport, WRPC_PROTOCOL, metaHeaders } = require('./core.js');
+
+// Mirrors the server's metaMaxBytes default: past it the server drops the
+// entire declared bag, so refusing here is the difference between a visible
+// warning and a label that silently stopped arriving.
+const META_MAX = 2048;
 const { jsonParse } = require('../utils.js');
 const { WebSocket } = globalThis;
 
@@ -106,12 +111,22 @@ class ClientHttpTransport extends ClientTransport {
   // ride as REAL request headers on every packet POST and REST leg.
   headers = null;
   meta = null;
+  metaBag = null;
+  prefixed = false;
 
   async open(options = {}) {
     this.headers = options.headers ?? null;
-    // Encoded once per open: a header value must stay latin-1, so the meta
-    // object travels as percent-encoded JSON.
-    this.meta = options.meta ? encodeURIComponent(JSON.stringify(options.meta)) : null;
+    // Built once per open, as a header BLOCK rather than a single encoded
+    // value: which spelling it is (one canonical JSON header, or one header
+    // per key) is the client's metaFormat choice, and every leg below just
+    // spreads whatever came out.
+    this.prefixed = options.metaPrefixed === true;
+    // Both the raw bag and the prebuilt block: a call that brings its own
+    // meta has to merge with the BAG, not with the block. In json mode the
+    // two halves are the same header name, so layering blocks would replace
+    // the connection's meta rather than extend it.
+    this.metaBag = options.meta ?? null;
+    this.meta = this.metaBag ? metaHeaders(this.metaBag, this.prefixed) : null;
     if (this.active) return;
     this.active = true;
     this.emit('open');
@@ -129,14 +144,35 @@ class ClientHttpTransport extends ClientTransport {
   // it owns this leg's Content-Type and switches the read path to bytes.
   // The PACKET codec's contentType belongs to write() below, never here:
   // a JSON REST body must say JSON.
-  async request(method, url, body, signal, rest = null) {
+  async request(method, url, body, signal, options = {}) {
+    const { rest = null, meta = null } = options;
     // Declared first, wire headers after: the protocol's own always win.
-    const headers = { ...this.headers, 'Content-Type': rest?.contentType ?? 'application/json' };
-    if (this.meta) headers['x-wrpc-meta'] = this.meta;
-    const options = body === undefined ? { method, headers, signal } : { method, headers, body, signal };
-    const res = await fetch(url, options);
+    // A call's own meta merges over the connection's bag — per-call wins a
+    // key collision — and only then becomes headers.
+    const block = meta ? this.#requestMeta(meta) : this.meta;
+    const headers = {
+      ...this.headers,
+      ...block,
+      'Content-Type': rest?.contentType ?? 'application/json',
+    };
+    const init = body === undefined ? { method, headers, signal } : { method, headers, body, signal };
+    const res = await fetch(url, init);
     if (rest) return { status: res.status, body: new Uint8Array(await res.arrayBuffer()) };
     return { status: res.status, text: await res.text() };
+  }
+
+  // One request's meta block: the connection bag with this request's own
+  // layered over it. Capped here rather than left to the server, whose
+  // limit drops the WHOLE bag — a silent loss on the side that cannot fix
+  // it. Refusing here keeps the connection's own label intact and says so.
+  #requestMeta(meta) {
+    const merged = { ...this.metaBag, ...meta };
+    const block = metaHeaders(merged, this.prefixed);
+    let bytes = 0;
+    for (const key in block) bytes += key.length + block[key].length;
+    if (bytes <= META_MAX) return block;
+    this.log.warn({ event: 'meta.oversize', bytes });
+    return this.meta;
   }
 
   // Malformed answers null either way — the codec's parse is the probe's.
@@ -149,9 +185,13 @@ class ClientHttpTransport extends ClientTransport {
     }
   }
 
-  write(data) {
-    const headers = { ...this.headers, 'Content-Type': this.codec?.contentType ?? 'application/json' };
-    if (this.meta) headers['x-wrpc-meta'] = this.meta;
+  write(data, meta) {
+    // A batch's aggregated per-call meta (see client core flush) merges over
+    // the connection bag for THIS request only. It is a summary: one POST
+    // has one header block, so a key carried by several calls shows the last
+    // value. Nothing is lost — each call's exact meta rides its own packet.
+    const block = meta ? this.#requestMeta(meta) : this.meta;
+    const headers = { ...this.headers, ...block, 'Content-Type': this.codec?.contentType ?? 'application/json' };
     const options = { method: 'POST', headers, body: data };
     const send = async () => {
       try {

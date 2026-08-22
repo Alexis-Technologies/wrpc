@@ -3,7 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { Emitter, jsonParse, Semaphore } = require('../src/utils.js');
+const { Emitter, jsonParse, Semaphore, toKebab } = require('../src/utils.js');
 
 test('Emitter', async (t) => {
   await t.test('emit resolves without listeners for non-error events', async () => {
@@ -301,5 +301,37 @@ test('Semaphore', async (t) => {
     assert.strictEqual(semaphore.empty, false);
     semaphore.leave();
     assert.strictEqual(semaphore.empty, true);
+  });
+});
+
+test('toKebab', async (t) => {
+  // The contract table. Both ends of the wire run this exact function, so a
+  // change here is a change to what `schema.headers` must be written against.
+  const cases = [
+    ['userId', 'user-id'],
+    ['userID', 'user-id'], // collides with userId ON PURPOSE — documented, last write wins
+    ['user-id', 'user-id'], // already kebab
+    ['user_id', 'user_id'], // snake left alone, deliberately
+    ['XMLHttpRequest', 'xml-http-request'], // the acronym pass earns its keep here
+    ['HTTPServer', 'http-server'],
+    ['ABC', 'abc'],
+    ['a1B2', 'a1-b2'], // a digit is a boundary left-hand side
+    ['x-app-version', 'x-app-version'],
+    ['authorization', 'authorization'],
+    ['', ''],
+  ];
+  await t.test('the contract table', () => {
+    for (const [input, expected] of cases) assert.strictEqual(toKebab(input), expected, input);
+  });
+
+  await t.test('idempotent: the server may normalize what the client already did', () => {
+    for (const [input] of cases) {
+      const once = toKebab(input);
+      assert.strictEqual(toKebab(once), once, input);
+    }
+  });
+
+  await t.test('output is always lowercase, so a second pass can never split again', () => {
+    for (const [input] of cases) assert.strictEqual(toKebab(input), toKebab(input).toLowerCase(), input);
   });
 });

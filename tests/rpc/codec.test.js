@@ -368,6 +368,6 @@ test('the REST leg Content-Type: the packet codec never leaks; codec.rest owns i
   await transport.request('POST', 'http://x/api/things', '{"a":1}', undefined);
   assert.strictEqual(captured[0]['Content-Type'], 'application/json');
   const rest = { encode: () => new Uint8Array([1]), decode: () => null, contentType: 'application/x-bin' };
-  await transport.request('POST', 'http://x/api/things', new Uint8Array([1]), undefined, rest);
+  await transport.request('POST', 'http://x/api/things', new Uint8Array([1]), undefined, { rest });
   assert.strictEqual(captured[1]['Content-Type'], 'application/x-bin');
 });

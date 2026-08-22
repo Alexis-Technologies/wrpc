@@ -168,6 +168,12 @@ const bearerTransport = ({ scheme = 'Bearer' } = {}) => {
       if (observed) return observed;
       const declared = declaredFromUrl(url, 'wrpc_h');
       for (const key in declared) {
+        // The core's own wrpc_h parser normalizes names with toKebab, this one
+        // only lowercases — and the two cannot disagree here, because the name
+        // being matched has no lowercase-to-uppercase boundary for toKebab to
+        // split. Kept spelled this way on purpose: this file requires NOTHING
+        // (that is what keeps the subpath ~1 KB and browser-safe), so it must
+        // not import a helper to reproduce a result it already computes.
         if (key.toLowerCase() === 'authorization') return fromValue(declared[key]);
       }
       return null;

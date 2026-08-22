@@ -2,7 +2,7 @@
 
 const http = require('node:http');
 
-const { Emitter } = require('./utils.js');
+const { Emitter, toKebab } = require('./utils.js');
 
 // RFC 6265 permits '=' inside cookie values (base64, JWT) — split each
 // pair on the FIRST '=' only, or the value gets silently truncated.
@@ -33,15 +33,33 @@ const DEFAULT_CORS_METHODS = 'POST, GET, OPTIONS';
 // list via `cors.headers` the same way.
 const DEFAULT_CORS_HEADERS = 'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta';
 
+const CORS_META_PREFIX = 'x-wrpc-meta-';
+// `headers` accepts an array purely so composing a list stays readable; the
+// string form is what the header value has always been and is untouched.
+const corsHeaderList = (value) => (Array.isArray(value) ? value.join(', ') : value);
+// The per-key meta spelling (metaFormat: 'prefixed') sends one real request
+// header per key, and CORS has no wildcard for header names — so every key a
+// cross-origin client will send has to be named. Run through toKebab so
+// `metaHeaders: ['userId']` grants `x-wrpc-meta-user-id`: the name the client
+// actually sends, not the one the config happened to spell.
+const allowedHeaders = (cors) => {
+  const declared = corsHeaderList(cors?.headers) ?? DEFAULT_CORS_HEADERS;
+  const meta = cors?.metaHeaders;
+  if (!meta || meta.length === 0) return declared;
+  let allow = declared;
+  for (let i = 0; i < meta.length; i++) allow += `, ${CORS_META_PREFIX}${toKebab(meta[i])}`;
+  return allow;
+};
+
 // CORS v2: `cors` is { origins: string[] | (origin) => boolean, credentials?,
-// headers?, methods? }. Without a `cors` option every origin is allowed
+// headers?, metaHeaders?, methods? }. Without a `cors` option every origin is allowed
 // (wildcard, credentials-less) — the pre-F2 behavior. With `origins`, the
 // request origin is echoed back only when allowed, plus `Vary: Origin`.
 const buildHeaders = (cors, origin) => {
   const headers = {
     ...SECURITY_HEADERS,
     'Access-Control-Allow-Methods': cors?.methods ?? DEFAULT_CORS_METHODS,
-    'Access-Control-Allow-Headers': cors?.headers ?? DEFAULT_CORS_HEADERS,
+    'Access-Control-Allow-Headers': allowedHeaders(cors),
   };
   if (!cors || !cors.origins) {
     headers['Access-Control-Allow-Origin'] = '*';

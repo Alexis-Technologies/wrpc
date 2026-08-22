@@ -707,3 +707,46 @@ test('rest.version end to end: shell dispatch, introspection, client REST leg', 
     assert.deepStrictEqual(await client.api['auth.v1'].signIn({}), { version: 'v1' });
   });
 });
+
+test('withMeta reaches callMeta over the mapped REST leg, in both metaFormats', async (t) => {
+  const router = defineRouter({
+    orders: {
+      create: procedure({
+        access: 'public',
+        http: { method: 'POST', path: '/orders' },
+        handler: async (context) => ({ ...context.callMeta }),
+      }),
+    },
+  });
+  const { origin } = await bootServer(t, { router });
+
+  const over = async (metaFormat) => {
+    const client = await connectClient(t, `${origin}/api`, {
+      transport: ['http'],
+      metaFormat,
+      meta: { tenant: 'acme', traceId: 'connection' },
+    });
+    await client.load('orders');
+    return client.api.orders.create;
+  };
+
+  for (const metaFormat of ['json', 'prefixed']) {
+    const create = await over(metaFormat);
+
+    // The gap this closes: #restCall used to destructure `signal` only, so
+    // withMeta on a mapped procedure was silently dropped.
+    const stamped = await create.withMeta({ idem: '9f3c' })({ body: {} });
+    assert.strictEqual(stamped.idem, '9f3c', `withMeta was dropped in ${metaFormat} mode`);
+
+    // On REST there is no packet, so the two channels are one: connection
+    // meta rides every request and the per-call half is layered over it.
+    assert.strictEqual(stamped.tenant, 'acme', 'connection meta must survive alongside the call meta');
+
+    // ...and wins a key collision, because it is the more specific of the two.
+    const shadowed = await create.withMeta({ traceId: 'per-call' })({ body: {} });
+    assert.strictEqual(shadowed['trace-id'], 'per-call', `per-call meta lost the collision in ${metaFormat} mode`);
+
+    // A call with no meta of its own still sees the connection bag.
+    assert.deepStrictEqual(await create({ body: {} }), { tenant: 'acme', 'trace-id': 'connection' });
+  }
+});

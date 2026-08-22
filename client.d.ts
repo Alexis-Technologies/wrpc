@@ -269,8 +269,13 @@ export interface CallOptions {
   /**
    * Per-call metadata, carried as the packet's optional `meta` field and
    * surfaced server-side as `context.callMeta`. Deliberately outside schema
-   * validation. Packet path only — a mapped REST leg carries the
-   * connection-phase meta header on every request instead.
+   * validation. On a mapped REST leg there is no packet, so it merges over
+   * the connection bag and travels as request headers instead — per-call
+   * winning a key collision.
+   *
+   * Handed to the wire VERBATIM: unlike `withMeta`, this escape hatch does
+   * not kebab-normalize keys. It is the raw seam the auth hooks write
+   * against; prefer `withMeta` unless you need that.
    */
   meta?: Record<string, unknown>;
 }
@@ -416,7 +421,9 @@ export type TypedMethod<T> = IsAny<T> extends true ? any
 
 /**
  * A callable contract member: the call itself, plus `withMeta` — the bound
- * variant that stamps every call it makes with per-call metadata.
+ * variant that stamps every call it makes with per-call metadata. Keys are
+ * kebab-normalized once at bind time, so a bound method costs no more per
+ * invocation than an unbound one.
  */
 export type TypedCallMethod<Params extends Array<unknown>, Result> = {
   (...args: [...Params, options?: CallOptions]): Promise<Result>;
@@ -531,16 +538,43 @@ export interface WrpcClientOptions {
    * headers winning, reserved names (cookie, host, origin, sec-*,
    * content-*, proxy-*, x-wrpc-*) dropped from the query path. Labels,
    * never credentials on the ws leg.
+   *
+   * Keys are normalized to kebab-case (`xAppVersion` -> `x-app-version`), so
+   * one spelling addresses a value whatever carrier brought it — and that is
+   * the spelling to write in `schema.headers`. Values are stringified, so a
+   * number arrives as a string on every transport rather than being coerced
+   * on http and dropped on ws.
    */
-  headers?: Record<string, string> | (() => Record<string, string> | Promise<Record<string, string>>);
+  headers?: Record<string, unknown> | (() => Record<string, unknown> | Promise<Record<string, unknown>>);
   /**
    * Connection-phase metadata — headers' unvalidated sibling. Re-evaluated
    * on every open; rides the `x-wrpc-meta` request header on http/sse, the
    * `wrpc_meta` connect-URL parameter on ws, and the `wrpc:connect` message
    * on the worker transport. Lands on `client.meta.data` server-side. Never
    * runs through schema validation — see the per-call twin in CallOptions.
+   *
+   * Keys are kebab-normalized like `headers`; values keep their JSON types
+   * unless `metaFormat` is `'prefixed'`.
    */
   meta?: Record<string, unknown> | (() => Record<string, unknown> | Promise<Record<string, unknown>>);
+  /**
+   * How the connection-phase `meta` bag is spelled on the wire.
+   *
+   * `'json'` (default) sends one `x-wrpc-meta` header of percent-encoded
+   * JSON: type-faithful, and one stable name on the CORS allowlist.
+   *
+   * `'prefixed'` sends one `x-wrpc-meta-<key>` header per entry — the S3
+   * `x-amz-meta-*` idiom, so a gateway can route on, inject or strip an
+   * individual key without JSON surgery. Values become strings (objects are
+   * JSON-stringified, null/undefined drop the key), and cross-origin
+   * callers must name each key in `cors.metaHeaders`.
+   *
+   * The choice changes the wire only on http/sse; ws and the worker
+   * transport have no headers and keep the one query parameter. What it
+   * changes everywhere is the VALUES: `'prefixed'` flattens on every
+   * transport, so the bag the server observes never depends on the carrier.
+   */
+  metaFormat?: 'json' | 'prefixed';
   /**
    * Pluggable query-string serializer (qs and friends) for mapped REST
    * requests over the http transport — mirror of the server's option.

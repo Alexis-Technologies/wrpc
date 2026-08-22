@@ -468,3 +468,121 @@ test('batching: a large batch closed mid-flight answers every slot', { timeout: 
   assert.strictEqual(body[0].result, 42, 'the one collected answer is not thrown away');
   assert.strictEqual(body[1].error.code, 503);
 });
+
+test('batching: per-call meta aggregates into the request headers, last write wins', async (t) => {
+  const seen = [];
+  const router = defineRouter({
+    unit: {
+      run: procedure({
+        access: 'public',
+        handler: async (context) => {
+          seen.push({ call: { ...context.callMeta }, connection: { ...context.meta.data } });
+          return true;
+        },
+      }),
+    },
+  });
+  const server = new Server({ host: '127.0.0.1', port: 0, protocol: 'http', logger: false, router });
+  await server.listen();
+  t.after(() => server.close());
+  const { port } = server.address();
+
+  const client = await WrpcClient.connect(`http://127.0.0.1:${port}/api`, {
+    transport: ['http'],
+    heartbeat: false,
+    reconnect: false,
+    logger: false,
+    batch: true,
+    meta: { tenant: 'acme' },
+  });
+  t.after(() => void client.close());
+  await client.load('unit');
+  seen.length = 0;
+
+  // Three calls in one tick -> one POST, one header block.
+  const [a, b, c] = await Promise.all([
+    client.api.unit.run.withMeta({ traceId: 't1', shared: 'same' })(),
+    client.api.unit.run.withMeta({ traceId: 't2', shared: 'same' })(),
+    client.api.unit.run.withMeta({ traceId: 't3' })(),
+  ]);
+  assert.deepStrictEqual([a, b, c], [true, true, true]);
+  assert.strictEqual(seen.length, 3);
+
+  // The packet field is untouched by batching: every call keeps its EXACT
+  // meta, which is what context.callMeta reports. This is the source of truth.
+  assert.deepStrictEqual(
+    seen.map((entry) => entry.call['trace-id']),
+    ['t1', 't2', 't3'],
+  );
+
+  // The headers carry the aggregate — a lossy summary for infrastructure.
+  // A key every call agreed on survives; a key they disagreed on shows the
+  // LAST value; the connection's own bag is still underneath.
+  for (const entry of seen) {
+    assert.strictEqual(entry.connection.shared, 'same');
+    assert.strictEqual(entry.connection['trace-id'], 't3', 'the aggregate must be last-write-wins');
+    assert.strictEqual(entry.connection.tenant, 'acme', 'the connection bag must survive the aggregate');
+  }
+});
+
+test('batching: a batch carrying no meta leaves the connection header alone', async (t) => {
+  const seen = [];
+  const router = defineRouter({
+    unit: {
+      run: procedure({ access: 'public', handler: async (ctx) => void seen.push({ ...ctx.meta.data }) ?? true }),
+    },
+  });
+  const server = new Server({ host: '127.0.0.1', port: 0, protocol: 'http', logger: false, router });
+  await server.listen();
+  t.after(() => server.close());
+  const { port } = server.address();
+  const client = await WrpcClient.connect(`http://127.0.0.1:${port}/api`, {
+    transport: ['http'],
+    heartbeat: false,
+    reconnect: false,
+    logger: false,
+    batch: true,
+    meta: { tenant: 'acme' },
+  });
+  t.after(() => void client.close());
+  await client.load('unit');
+  seen.length = 0;
+  await Promise.all([client.api.unit.run(), client.api.unit.run()]);
+  for (const entry of seen) assert.deepStrictEqual(entry, { tenant: 'acme' });
+});
+
+test('batching: an oversize aggregate is refused loudly, keeping the connection label', async (t) => {
+  const seen = [];
+  const warnings = [];
+  const router = defineRouter({
+    unit: {
+      run: procedure({ access: 'public', handler: async (ctx) => void seen.push({ ...ctx.meta.data }) ?? true }),
+    },
+  });
+  const server = new Server({ host: '127.0.0.1', port: 0, protocol: 'http', logger: false, router });
+  await server.listen();
+  t.after(() => server.close());
+  const { port } = server.address();
+  const client = await WrpcClient.connect(`http://127.0.0.1:${port}/api`, {
+    transport: ['http'],
+    heartbeat: false,
+    reconnect: false,
+    batch: true,
+    meta: { tenant: 'acme' },
+    logger: { warn: (e) => warnings.push(e), info: () => {}, error: () => {}, debug: () => {}, log: () => {} },
+  });
+  t.after(() => void client.close());
+  await client.load('unit');
+  seen.length = 0;
+
+  await client.api.unit.run.withMeta({ pad: 'x'.repeat(4096) })();
+
+  // The server drops the WHOLE bag past its cap, so refusing client-side is
+  // the difference between a visible warning and a label that silently
+  // stopped arriving — and the connection's own bag survives either way.
+  assert.deepStrictEqual(seen[0], { tenant: 'acme' });
+  assert.ok(
+    warnings.some((entry) => entry.event === 'meta.oversize'),
+    'the refusal must be visible on the side that can fix it',
+  );
+});

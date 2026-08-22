@@ -6,7 +6,7 @@
 // Worker proxy in ./proxy.js; ../client.js is the barrel that assembles
 // them, so require paths and the browser field are unchanged.
 
-const { Emitter, jsonParse, isCodec, backoffDelay, createEventStream } = require('../utils.js');
+const { Emitter, jsonParse, isCodec, toKebab, backoffDelay, createEventStream } = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { chunkDecode } = require('../chunks.js');
 const { WrpcReadable, WrpcWritable } = require('../streams.js');
@@ -152,6 +152,61 @@ const compilePrevalidate = (ajv, schema) => {
   };
 };
 
+// A declared value has to survive being a header value on http/sse, so one
+// rule produces it everywhere — including the ws query, which could carry
+// richer JSON but must not, or the two transports would disagree on shape.
+// null/undefined DROP the key rather than sending the string 'null': a
+// header cannot say "absent", and a lie the server cannot undo is worse
+// than an omission it can.
+const toHeaderValue = (value) => {
+  if (typeof value === 'string') return value;
+  if (value === null || value === undefined) return null;
+  if (typeof value === 'object') return JSON.stringify(value);
+  return String(value);
+};
+
+// A header value must stay latin-1 or fetch throws a TypeError deep inside
+// the transport, long after the mistake was made.
+const HEADER_SAFE = /^[ -~]*$/;
+
+// Normalizes one declared bag: keys to kebab, and — when the values will
+// become header values — through toHeaderValue. Refusal-style like the
+// server's half: a value that cannot ride drops with a warning rather than
+// failing the connection it was only labelling.
+const normalizeDeclared = (value, stringify, log) => {
+  if (!value) return null;
+  let out = null;
+  for (const key in value) {
+    if (key === '__proto__') continue;
+    const name = toKebab(key);
+    if (name.length === 0) continue;
+    let entry = value[key];
+    if (stringify) {
+      entry = toHeaderValue(entry);
+      if (entry === null) continue;
+      if (!HEADER_SAFE.test(entry)) {
+        log.warn({ event: 'declared.unsendable', key: name });
+        continue;
+      }
+    }
+    (out ??= {})[name] = entry;
+  }
+  return out;
+};
+
+// The declared-meta header block for one request, built once per open (or
+// per request, when a call brings its own). Two spellings of the same bag:
+// the canonical single header is type-faithful and needs one CORS entry;
+// the prefixed one is what a gateway can route on, strip or inject, at the
+// cost of string-only values and a CORS entry per key.
+const METAS = 'x-wrpc-meta';
+const metaHeaders = (meta, prefixed) => {
+  if (!prefixed) return { [METAS]: encodeURIComponent(JSON.stringify(meta)) };
+  const out = {};
+  for (const key in meta) out[`${METAS}-${key}`] = meta[key];
+  return out;
+};
+
 // ws and http spell the same endpoint with different schemes; a fallback
 // list crosses that line, so the URL is re-spelled per candidate.
 const mapScheme = (url, name) => {
@@ -176,7 +231,9 @@ class ClientTransport extends Emitter {
 
   send(obj) {
     // The codec is handed to the transport at bind time (client core).
-    this.write(this.codec ? this.codec.encode(obj) : JSON.stringify(obj));
+    // `obj.meta` rides along so a transport with a header block can mirror
+    // it; a control packet has none, and ws/worker ignore the argument.
+    this.write(this.codec ? this.codec.encode(obj) : JSON.stringify(obj), obj?.meta);
   }
 
   // Drop the connection without waiting for a close handshake. The default
@@ -268,6 +325,7 @@ class WrpcClient extends Emitter {
   // re-evaluated on every open so a reconnect presents fresh values.
   #headers = null;
   #meta = null;
+  #metaFormat = 'json';
   #random = Math.random;
   #generateId = generateUUID;
   #heartbeat = null;
@@ -335,6 +393,20 @@ class WrpcClient extends Emitter {
       const valid = typeof meta === 'function' || (typeof meta === 'object' && !Array.isArray(meta));
       if (!valid) throw new TypeError('WrpcClient: options.meta must be an object or a function returning one');
       this.#meta = meta;
+    }
+    const { metaFormat } = options;
+    // A sibling option rather than a descriptor on `meta`: that option
+    // already means "an object OR a function returning one", so making the
+    // object form ALSO mean a descriptor would be genuinely ambiguous —
+    // { value, carrier } is a legitimate meta bag today. And not inferred
+    // from the data either: "prefixed when every value is a string" would
+    // make the wire shape depend on the payload, so one numeric field would
+    // silently flip the connection and change what CORS has to allow.
+    if (metaFormat !== undefined) {
+      if (metaFormat !== 'json' && metaFormat !== 'prefixed') {
+        throw new TypeError("WrpcClient: options.metaFormat must be 'json' or 'prefixed'");
+      }
+      this.#metaFormat = metaFormat;
     }
     // Off by default, unlike the server: a client that printed on every
     // reconnect would be noise in a browser console nobody asked for.
@@ -477,8 +549,11 @@ class WrpcClient extends Emitter {
 
   #bindTransport() {
     // The transport owns the outbound write, so it carries the codec; a
-    // fallback swap re-binds and re-hands it here.
+    // fallback swap re-binds and re-hands it here. The logger rides the same
+    // seam: a transport that refuses something (an oversize meta block) has
+    // to be able to say so where the application can see it.
     if (this.#codec) this.#transport.codec = this.#codec;
+    this.#transport.log = this.#log;
     const bind = (event, handler) => {
       this.#boundHandlers ??= [];
       this.#boundHandlers.push([event, handler]);
@@ -778,8 +853,23 @@ class WrpcClient extends Emitter {
     let options = this.#options;
     if (this.#headers || this.#meta) {
       options = { ...options };
-      if (this.#headers) options.headers = await this.#resolveDeclared(this.#headers);
-      if (this.#meta) options.meta = await this.#resolveDeclared(this.#meta);
+      // Headers are ALWAYS stringified: `{ v: 2 }` used to arrive as '2' over
+      // http (fetch coerces) and vanish over ws (the server keeps a flat
+      // string map), so the two transports quietly disagreed. Meta keeps its
+      // JSON types here — only the prefixed carrier flattens them.
+      if (this.#headers) {
+        options.headers = normalizeDeclared(await this.#resolveDeclared(this.#headers), true, this.#log);
+      }
+      if (this.#meta) {
+        // The prefixed carrier makes every value a header value, so it
+        // stringifies — on ws and the worker too, where the JSON parameter
+        // could have carried richer types. The guarantee this option makes
+        // is about the bag the SERVER observes, not about the wire, and a
+        // bag whose shape changed with the transport would break it.
+        const prefixed = this.#metaFormat === 'prefixed';
+        options.meta = normalizeDeclared(await this.#resolveDeclared(this.#meta), prefixed, this.#log);
+        if (prefixed) options.metaPrefixed = true;
+      }
     }
     await this.#transport.open(options);
     // Assigned synchronously by the 'open' handler above (every transport
@@ -889,6 +979,18 @@ class WrpcClient extends Emitter {
     // The frame is assembled from the texts serialized at enqueue — flush
     // never runs JSON.stringify again.
     let frame = pending[0].text;
+    // The per-call meta of everything in this frame, merged in order so the
+    // LAST writer wins. One POST has one header block, so this is a lossy
+    // SUMMARY for the infrastructure between the two ends — a gateway, a
+    // WAF, an access log — and deliberately not a data channel: each call's
+    // exact meta is already in its own packet's `meta` field, which the
+    // batch never touches and which is what becomes context.callMeta.
+    // Allocated only when something actually carries meta.
+    let meta = null;
+    for (let i = 0; i < pending.length; i++) {
+      const carried = pending[i].packet.meta;
+      if (carried) meta = Object.assign(meta ?? {}, carried);
+    }
     if (pending.length > 1) {
       if (this.#codec) {
         // Only the codec knows its framing, so the batch array is encoded
@@ -906,7 +1008,7 @@ class WrpcClient extends Emitter {
       }
     }
     try {
-      this.#transport.write(frame);
+      this.#transport.write(frame, meta);
     } catch (error) {
       this.#escalate(error, 'batch.flush');
     }
@@ -1312,7 +1414,7 @@ class WrpcClient extends Emitter {
   // response is the plain result (or the wire error object) — external
   // REST semantics, not a callback envelope.
   async #restCall(http, args = {}, options = {}) {
-    const { signal } = options;
+    const { signal, meta } = options;
     if (signal?.aborted) throw new WrpcError(CANCELLED_ERROR);
     const method = http.method;
     const safeMethod = method === 'GET' || method === 'HEAD';
@@ -1324,7 +1426,12 @@ class WrpcClient extends Emitter {
     const url = this.#restUrl(http, args);
     let res;
     try {
-      res = await this.#transport.request(method, url, body, signal, rest);
+      // On REST there is no packet, so per-call meta and connection meta are
+      // the SAME channel — the server unpacks the request's whole declared
+      // bag into packet.meta. Merging is the existing semantics rather than
+      // a workaround, and the per-call half wins. Safe from the batching
+      // problem by construction: this leg is one call per request.
+      res = await this.#transport.request(method, url, body, signal, { rest, meta });
     } catch (error) {
       if (signal?.aborted) throw new WrpcError(CANCELLED_ERROR);
       throw new WrpcError({ message: `HTTP request failed: ${error?.message ?? error}`, code: 503 });
@@ -1499,12 +1606,19 @@ class WrpcClient extends Emitter {
           fn = (args = {}, options = {}) => guard(args) ?? this.#call(target, args, options);
         }
         // Per-call metadata, bound once: api.unit.m.withMeta({ idem })(args).
-        // Packet path only — the mapped REST leg carries connection-phase
-        // meta on every request instead (the x-wrpc-meta header).
-        fn.withMeta =
-          (meta) =>
-          (args = {}, options = {}) =>
-            fn(args, { ...options, meta });
+        // Works on both legs — the packet path carries it as the packet's
+        // `meta` field, the mapped REST leg as request headers.
+        // Keys are normalized HERE, at bind time rather than per invocation,
+        // so a bound method costs no more than it did before. Values keep
+        // their JSON types — the packet field is JSON, and only a header
+        // carrier has to flatten. The raw client.call(target, args, { meta })
+        // escape hatch is deliberately NOT normalized: it is the seam the
+        // auth hooks write against, and it hands the wire exactly what it was
+        // given.
+        fn.withMeta = (meta) => {
+          const bound = normalizeDeclared(meta, false, this.#log);
+          return (args = {}, options = {}) => fn(args, { ...options, meta: bound });
+        };
         return fn;
       }
       // A subscription is not callable: it answers with a stream, so it
@@ -1568,6 +1682,7 @@ module.exports = {
   WRPC_PROTOCOL,
   CALL_TIMEOUT,
   normalizeReconnect,
+  metaHeaders,
   unref,
   toByteView,
 };

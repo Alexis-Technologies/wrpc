@@ -711,3 +711,104 @@ test('x-wrpc-meta-*: prefixed headers are the curl-friendly spelling (strings, J
   });
   assert.deepStrictEqual((await mixed.json()).result.call, { idem: 'survives' });
 });
+
+test('kebab: declared header and meta keys normalize to one casing convention', async (t) => {
+  const { server, origin } = await startServer(t, {
+    router: defineRouter({
+      probe: {
+        peek: procedure({
+          access: 'public',
+          handler: async (context) => ({ ...context.meta.data }),
+        }),
+      },
+    }),
+  });
+
+  await t.test('wrpc_h: a camelCase name becomes kebab, not a run-on word', () => {
+    const client = server.rpc.attachSocket(new FakeWsSocket(), {
+      headers: {},
+      url: `/api?${wrpcH({ xAppVersion: '2', XMLHttpRequest: 'x', alreadyKebab: 'y', 'x-plain': 'z' })}`,
+    });
+    // Before kebab-normalization this landed as `xappversion` — a key nobody
+    // would write in a schema.headers, which is the whole point.
+    assert.strictEqual(client.meta.headers['x-app-version'], '2');
+    assert.strictEqual(client.meta.headers.xappversion, undefined);
+    assert.strictEqual(client.meta.headers['xml-http-request'], 'x');
+    assert.strictEqual(client.meta.headers['already-kebab'], 'y');
+    assert.strictEqual(client.meta.headers['x-plain'], 'z', 'an already-kebab name is untouched');
+  });
+
+  await t.test('wrpc_h: the reserved deny list still applies to the normalized name', () => {
+    const client = server.rpc.attachSocket(new FakeWsSocket(), {
+      headers: {},
+      url: `/api?${wrpcH({ xWrpcChannel: 'forged', secFetchSite: 'forged', Cookie: 'forged' })}`,
+    });
+    assert.strictEqual(client.meta.headers['x-wrpc-channel'], undefined);
+    assert.strictEqual(client.meta.headers['sec-fetch-site'], undefined);
+    assert.strictEqual(client.meta.headers.cookie, undefined);
+  });
+
+  await t.test('prefixed meta headers normalize the same way', async () => {
+    const res = await fetch(`${origin}/api/probe/peek`, {
+      headers: { 'x-wrpc-meta-user-id': '7', 'x-wrpc-meta-locale': 'de-CH' },
+    });
+    assert.deepStrictEqual((await res.json()).result, { 'user-id': '7', locale: 'de-CH' });
+  });
+
+  await t.test('the canonical JSON header is normalized too, and still wins a collision', async () => {
+    const canonical = encodeURIComponent(JSON.stringify({ userId: 'json-wins', traceId: 'abc' }));
+    const res = await fetch(`${origin}/api/probe/peek`, {
+      headers: { 'x-wrpc-meta': canonical, 'x-wrpc-meta-user-id': 'prefixed' },
+    });
+    // Both spellings reduce to `user-id`, so the collision is REAL and the
+    // canonical header is the one that survives it.
+    assert.deepStrictEqual((await res.json()).result, { 'user-id': 'json-wins', 'trace-id': 'abc' });
+  });
+});
+
+test('metaFormat: every carrier lands the same bag on client.meta.data', async (t) => {
+  const { origin, server } = await startServer(t, {
+    router: defineRouter({
+      probe: { peek: procedure({ access: 'public', handler: async (ctx) => ({ ...ctx.meta.data }) }) },
+    }),
+  });
+  const { connect } = require('../../index.js');
+  const declared = { userId: 7, traceId: 'abc' };
+
+  const seen = async (options) => {
+    const client = await connect(`${origin}/api`, { ...options, heartbeat: false, logger: false, meta: declared });
+    t.after(() => void client.close());
+    await client.load('probe');
+    return client.api.probe.peek();
+  };
+
+  // The whole point of the kebab rule: whatever carried it, ONE spelling
+  // addresses the value. ws keeps JSON types; a header carrier cannot.
+  const ws = await seen({});
+  const httpJson = await seen({ transport: ['http'] });
+  const httpPrefixed = await seen({ transport: ['http'], metaFormat: 'prefixed' });
+
+  const keys = (bag) => Object.keys(bag).sort();
+  assert.deepStrictEqual(keys(ws), ['trace-id', 'user-id']);
+  assert.deepStrictEqual(keys(httpJson), ['trace-id', 'user-id'], 'http json disagreed with ws on keys');
+  assert.deepStrictEqual(keys(httpPrefixed), ['trace-id', 'user-id'], 'the prefixed carrier disagreed on keys');
+
+  assert.deepStrictEqual(ws, { 'user-id': 7, 'trace-id': 'abc' });
+  assert.deepStrictEqual(httpJson, { 'user-id': 7, 'trace-id': 'abc' });
+  // Values are the documented difference, and the ONLY one.
+  assert.deepStrictEqual(httpPrefixed, { 'user-id': '7', 'trace-id': 'abc' });
+  assert.ok(server);
+});
+
+test('cors.metaHeaders: the preflight names each prefixed meta header', async (t) => {
+  const { origin } = await startServer(t, {
+    cors: { origins: ['http://app.example'], metaHeaders: ['userId', 'locale'] },
+  });
+  const res = await fetch(`${origin}/api`, { method: 'OPTIONS', headers: { Origin: 'http://app.example' } });
+  assert.strictEqual(res.status, 200);
+  const allow = res.headers.get('access-control-allow-headers');
+  assert.ok(allow.includes('x-wrpc-meta-user-id'), allow);
+  assert.ok(allow.includes('x-wrpc-meta-locale'), allow);
+  // The defaults survive: replacing them would disable cross-origin SSE.
+  assert.ok(allow.includes('x-wrpc-channel') && allow.includes('last-event-id'), allow);
+});

@@ -358,3 +358,31 @@ test('parseCookies', async (t) => {
     assert.strictEqual(cookies.spaced, 'padded');
   });
 });
+
+test('buildHeaders: cors.metaHeaders names the per-key meta headers CORS cannot wildcard', () => {
+  const { buildHeaders } = require('../src/transport.js');
+  const allow = (cors) => buildHeaders(cors, 'http://app.example')['Access-Control-Allow-Headers'];
+
+  // Appended to the default, never replacing it: dropping x-wrpc-channel
+  // here would silently disable cross-origin SSE.
+  assert.strictEqual(
+    allow({ metaHeaders: ['locale'] }),
+    'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta, x-wrpc-meta-locale',
+  );
+
+  // Normalized with the SAME rule the client uses, so a config written in
+  // camelCase still grants the name that will actually arrive.
+  assert.strictEqual(allow({ metaHeaders: ['userId'] }).endsWith(', x-wrpc-meta-user-id'), true);
+
+  // An explicit list composes with metaHeaders rather than fighting it.
+  assert.strictEqual(
+    allow({ headers: 'Content-Type', metaHeaders: ['userId', 'traceId'] }),
+    'Content-Type, x-wrpc-meta-user-id, x-wrpc-meta-trace-id',
+  );
+
+  // The array form of `headers` is the same value, spelled as a list.
+  assert.strictEqual(allow({ headers: ['Content-Type', 'X-Token'] }), 'Content-Type, X-Token');
+
+  // Absent or empty changes nothing.
+  assert.strictEqual(allow({ metaHeaders: [] }), 'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta');
+});

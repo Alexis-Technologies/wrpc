@@ -1,6 +1,6 @@
 'use strict';
 
-const { WrpcClient, ClientTransport } = require('../client.js');
+const { WrpcClient, ClientTransport, metaHeaders } = require('../client.js');
 const { CHANNEL_HEADER } = require('./constants.js');
 
 // The client half of the SSE transport. Browser-safe: `fetch`, streams and
@@ -111,8 +111,9 @@ class ClientSseTransport extends ClientTransport {
 
   async open(options = {}) {
     this.#headers = options.headers ?? null;
-    // Encoded once per open — a header value must stay latin-1.
-    this.#meta = options.meta ? encodeURIComponent(JSON.stringify(options.meta)) : null;
+    // A header BLOCK, not one encoded value: the client's metaFormat picks
+    // the spelling, both legs below just spread the result.
+    this.#meta = options.meta ? metaHeaders(options.meta, options.metaPrefixed) : null;
     if (this.active) return;
     if (this.#reading) return this.#reading;
     const opening = this.#open(true);
@@ -129,8 +130,7 @@ class ClientSseTransport extends ClientTransport {
     this.#controller = controller;
     this.#parser = new SseParser();
     // Declared first, wire headers after: the protocol's own always win.
-    const headers = { ...this.#headers, accept: 'text/event-stream' };
-    if (this.#meta) headers['x-wrpc-meta'] = this.#meta;
+    const headers = { ...this.#headers, ...this.#meta, accept: 'text/event-stream' };
     // A reconnect presents the channel and where it stopped; the server
     // replays what this channel did not acknowledge.
     if (this.#channel !== null) headers[CHANNEL_HEADER] = this.#channel;
@@ -238,10 +238,10 @@ class ClientSseTransport extends ClientTransport {
     if (!this.active || this.#channel === null) throw new Error('Not connected');
     const headers = {
       ...this.#headers,
+      ...this.#meta,
       'Content-Type': this.codec?.contentType ?? 'application/json',
       [CHANNEL_HEADER]: this.#channel,
     };
-    if (this.#meta) headers['x-wrpc-meta'] = this.#meta;
     const post = async () => {
       const response = await fetch(this.url, { method: 'POST', headers, body: data });
       // 202 is the expected answer: everything a call produces comes back

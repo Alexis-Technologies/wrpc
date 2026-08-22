@@ -359,4 +359,27 @@ const isCodec = (value) => {
   return packet || value.rest !== undefined;
 };
 
-module.exports = { Emitter, jsonParse, isCodec, Semaphore, backoffDelay, EventStream, createEventStream };
+// camelCase -> kebab-case for declared header and meta keys, applied on BOTH
+// ends so `schema.headers` and the meta bag see one casing convention whatever
+// transport carried them. Two passes: the acronym pass keeps XMLHttpRequest
+// from becoming x-m-l-http-request, the boundary pass does the ordinary case
+// change. The output is all-lowercase and both patterns need an uppercase
+// char, so toKebab(toKebab(x)) === toKebab(x) by construction.
+//
+// Two deliberate non-goals. Underscores are left alone: user_id -> user-id
+// would silently merge two keys an application may have meant to keep apart,
+// widening the rule from "one casing convention" to "one spelling convention".
+// And collisions are not detected — userId and userID both yield user-id,
+// last write wins — because a per-key guard costs an Object.hasOwn on a
+// byte-budgeted path and would be the one place this pipeline warns about a
+// single key rather than refusing the bag.
+//
+// It also cannot repair what it never sees: every HTTP stack lowercases header
+// names before wrpc is reached, so an external caller's `x-wrpc-meta-userId`
+// arrives as `userid` with the word boundary already gone. The guarantee holds
+// for keys wrpc's own client produced; everyone else writes kebab themselves.
+const KEBAB_ACRONYM = /([A-Z]+)([A-Z][a-z])/g;
+const KEBAB_BOUNDARY = /([a-z0-9])([A-Z])/g;
+const toKebab = (key) => key.replace(KEBAB_ACRONYM, '$1-$2').replace(KEBAB_BOUNDARY, '$1-$2').toLowerCase();
+
+module.exports = { Emitter, jsonParse, isCodec, toKebab, Semaphore, backoffDelay, EventStream, createEventStream };

@@ -339,12 +339,34 @@ only by adapter tests; never a runtime dependency).
   `method.withMeta({...})(args)`): an optional additive `meta` field on
   `call`/`subscribe`/`event` packets, surfaced as `context.callMeta`
   (frozen-empty default) and `client.meta.data`; deliberately outside the
-  `validation` option. Plain HTTP callers pass the `x-wrpc-meta` header
-  (percent-encoded JSON) or the curl-friendly `x-wrpc-meta-<key>` prefixed
-  form (string values, the S3 `x-amz-meta-*` idiom; the JSON header wins a
-  collision).
+  `validation` option. Two wire spellings, both emitted by the client and
+  both accepted from plain HTTP callers: the `x-wrpc-meta` header
+  (percent-encoded JSON, the default — type-faithful, one CORS entry) and
+  the per-key `x-wrpc-meta-<key>` form (the S3 `x-amz-meta-*` idiom; string
+  values, one CORS entry per key), chosen with the client's
+  `metaFormat: 'json' | 'prefixed'`. The JSON header wins a key collision.
   Both channels share one sanitizer: `metaMaxBytes` cap (default 2048) on
   the encoded input, plain-object check, `__proto__` drop, freeze.
+- **Keys of both declared bags are normalized to kebab-case** (`userId` ->
+  `user-id`, `xAppVersion` -> `x-app-version`) on every transport and on
+  both ends, so `schema.headers` has one casing to validate and the two meta
+  spellings collide on the same key instead of sitting side by side as
+  lookalikes. Underscores are left alone; keys differing only in acronym
+  casing merge (last write wins); an external caller must write kebab itself
+  because HTTP lowercases header names before the server observes them.
+- Per-call `meta` now reaches the client's **mapped REST leg**, which
+  silently dropped it: with no packet to ride, it merges over the connection
+  bag and travels as request headers, the per-call half winning. Under
+  `batch: true` the request headers carry the batch's **aggregate**
+  (last write wins) as a summary for gateways and access logs — each call's
+  exact meta still rides its own packet and is what `context.callMeta`
+  reports. An oversize aggregate is refused client-side with a
+  `meta.oversize` warning rather than left to the server's whole-bag drop.
+- `cors.metaHeaders: string[]` names the per-key meta headers CORS cannot
+  wildcard (`['userId']` grants `x-wrpc-meta-user-id`, normalized with the
+  same rule the client uses); appended to `cors.headers`, which now also
+  accepts an array. `ClientTransport.request` takes `{ rest, meta }` in
+  place of its trailing `rest` argument.
 - Pluggable session token carrier (`sessions: { transport }`, structural via
   `isTokenTransport`): the cookie default is byte-identical; a non-ambient
   carrier (`ambient: false`) is exempt from the safe-method CSRF rule it

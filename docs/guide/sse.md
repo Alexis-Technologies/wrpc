@@ -144,7 +144,7 @@ allowed. They are in the default `Access-Control-Allow-Headers`; if you
 **replace** `cors.headers`, put them back:
 
 ```js
-new Server({ router, cors: { origins: [...], headers: 'Content-Type, x-wrpc-channel, last-event-id' } });
+new Server({ router, cors: { origins: [...], headers: 'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta' } });
 ```
 
 ## Hosting it yourself

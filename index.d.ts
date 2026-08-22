@@ -683,11 +683,24 @@ export interface CorsOptions {
   credentials?: boolean;
   /**
    * `Access-Control-Allow-Headers`. Replaces the default,
-   * `'Content-Type, x-wrpc-channel, last-event-id'` — the last two are what
-   * the SSE transport's POSTs and resumes send, and neither is
-   * CORS-safelisted, so dropping them disables cross-origin SSE.
+   * `'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta'` — none of
+   * the last three is CORS-safelisted, so dropping `x-wrpc-channel` or
+   * `last-event-id` disables cross-origin SSE, and dropping `x-wrpc-meta`
+   * disables cross-origin connection metadata.
+   *
+   * An array is joined with `', '` — the same value, spelled as a list.
    */
-  headers?: string;
+  headers?: string | Array<string>;
+  /**
+   * Meta keys a cross-origin client may send as per-key
+   * `x-wrpc-meta-<key>` headers (the client's `metaFormat: 'prefixed'`).
+   * CORS has no wildcard for header names, so each key must be named;
+   * `['userId']` grants `x-wrpc-meta-user-id`, kebab-normalized to match
+   * what the client actually sends. Appended to `headers`, never replacing
+   * it. Unnecessary with the default `metaFormat: 'json'`, which sends the
+   * one already-allowed `x-wrpc-meta` header whatever the keys are.
+   */
+  metaHeaders?: Array<string>;
   /** `Access-Control-Allow-Methods`; default `'POST, GET, OPTIONS'`. */
   methods?: string;
 }
