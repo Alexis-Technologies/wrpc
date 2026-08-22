@@ -466,6 +466,18 @@ const restRouter = (trace = []) =>
             return { ok: true };
           },
         }),
+        stamped: procedure({
+          access: 'public',
+          http: { method: 'GET', path: '/projects-stamped' },
+          schema: {
+            headers: {
+              type: 'object',
+              properties: { 'x-app-version': { type: 'string' } },
+              required: ['x-app-version'],
+            },
+          },
+          handler: async (context) => ({ v: context.meta.headers['x-app-version'] }),
+        }),
       },
     },
     {
@@ -520,6 +532,21 @@ test('delegated REST: fastify validates, serializes and answers wire errors', { 
     assert.strictEqual(res.statusCode, 408);
     assert.strictEqual(res.json().code, 408);
     assert.ok(trace.includes('router:onError:408'));
+  });
+
+  await t.test('schema.headers travels verbatim: fastify validates it on the delegated route', async () => {
+    // The carve-out is structural — invokeBare runs no wrpc validators — so
+    // the ONLY headers check on this path is fastify's own.
+    const missing = await app.inject({ method: 'GET', url: '/api/projects-stamped' });
+    assert.strictEqual(missing.statusCode, 400);
+    assert.match(missing.json().message, /x-app-version/);
+    const ok = await app.inject({
+      method: 'GET',
+      url: '/api/projects-stamped',
+      headers: { 'x-app-version': '5.5' },
+    });
+    assert.strictEqual(ok.statusCode, 200);
+    assert.deepStrictEqual(ok.json(), { v: '5.5' });
   });
 
   await t.test('startSession from a delegated handler sets the cookie on the fastify reply', async () => {

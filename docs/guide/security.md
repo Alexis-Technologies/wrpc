@@ -27,6 +27,19 @@ args, cookies, `Last-Event-ID`, channel ids, and — with
 [trace context](./telemetry) — even `traceparent`. Everything below is about
 keeping that input from becoming something else.
 
+### Connection metadata
+
+[Declared headers and `meta`](./metadata) are peer-controlled **labels** —
+never authorization inputs. wrpc holds that line structurally: both bags are
+size-capped on the encoded input (`metaMaxBytes`), plain-object-checked,
+`__proto__`-stripped and frozen; the ws query path cannot spoof an observed
+header (observed always wins the merge, and reserved names — `cookie`,
+`host`, `origin`, `sec-*`, `content-*`, `proxy-*`, `x-wrpc-*` — are dropped
+from it outright); and every violation is a refusal that leaves the
+connection unlabelled, never an error that leaks parsing internals. The one
+rule the framework cannot enforce for you: never branch an access decision
+on `client.meta` — that is the session's job.
+
 ### Access control
 
 `access: 'session'` is the built-in gate: no [session](./sessions), `403`,
@@ -84,6 +97,11 @@ defended rather than trusted:
   so `?__proto__=x` lands as an own property. A hand-rolled `obj[key] = value`
   loop here would reintroduce the hole, which is why that allocation is
   deliberately not optimized away.
+- **Declared metadata.** `JSON.parse` defines `"__proto__"` as an *own* data
+  property and pollutes nothing by itself — but application code that
+  spreads or `Object.assign`s [`client.meta`](./metadata) bags into a config
+  would carry the key along, so wrpc drops it during sanitizing, and both
+  bags are null-prototyped and frozen besides.
 
 The same reasoning covers the dispatch tables: any table keyed on peer-controlled
 input uses `Object.hasOwn` or a `null` prototype, so `TABLE['toString']` cannot

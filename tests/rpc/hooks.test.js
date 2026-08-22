@@ -388,6 +388,102 @@ test('hooks: onDisconnect receives the rooms the client was in', async (t) => {
   assert.deepStrictEqual(liveRooms, new Set(), 'the registry itself is already empty by hook time');
 });
 
+test('meta: context.callMeta carries the packet meta field to hooks and handlers', async (t) => {
+  const seen = [];
+  const router = defineRouter(
+    {
+      unit: {
+        run: procedure({ access: 'public', handler: async (context) => context.callMeta }),
+        feed: procedure.subscription({
+          access: 'public',
+          handler: async function* (context) {
+            yield context.callMeta;
+          },
+        }),
+        on: {
+          poke: procedure({
+            access: 'public',
+            handler: async (context) => void seen.push(['event', context.callMeta]),
+          }),
+        },
+      },
+    },
+    { hooks: { onRequest: async (context) => void seen.push(['onRequest', context.callMeta]) } },
+  );
+  const { url } = await boot(t, router);
+  const client = await connect(t, url);
+  await client.load('unit');
+  seen.length = 0; // load() is a hooked call too
+
+  // The per-call spelling on the escape hatch...
+  assert.deepStrictEqual(await client.call('unit/run', {}, { meta: { idem: 'k1' } }), { idem: 'k1' });
+  // ...and the bound-variant spelling on a scaffolded method.
+  assert.deepStrictEqual(await client.api.unit.run.withMeta({ idem: 'k2' })(), { idem: 'k2' });
+  // A packet with NO meta reads as a frozen empty object, never null.
+  const bare = await client.api.unit.run();
+  assert.deepStrictEqual(bare, {});
+  assert.deepStrictEqual(
+    // Spread-normalized: the empty default is null-prototyped by design.
+    seen.filter(([phase]) => phase === 'onRequest').map(([, meta]) => ({ ...meta })),
+    [{ idem: 'k1' }, { idem: 'k2' }, {}],
+  );
+  // An inbound EVENT packet carries the field the same way (no client
+  // spelling yet — sent raw, as any hand-written peer could).
+  client.send({ type: 'event', name: 'unit/poke', data: {}, meta: { trace: 't1' } });
+  await waitFor(() => seen.some(([phase]) => phase === 'event'), 'the event never arrived');
+  assert.deepStrictEqual({ ...seen.find(([phase]) => phase === 'event')[1] }, { trace: 't1' });
+});
+
+test('meta: a malformed or oversize packet meta is refused, the call still runs', async (t) => {
+  const router = defineRouter({
+    unit: {
+      run: procedure({
+        access: 'public',
+        handler: async (context) => ({
+          meta: context.callMeta,
+          frozen: Object.isFrozen(context.callMeta),
+          protoKey: Object.hasOwn(context.callMeta, '__proto__'),
+        }),
+      }),
+    },
+  });
+  const { server, url } = await boot(t, router, { metaMaxBytes: 64 });
+  const client = await connect(t, url);
+  await client.load('unit');
+  // An array, an oversize object, a bare string: each is dropped to the
+  // frozen empty default — the label is refused, never the call.
+  for (const bad of [['a'], { pad: 'x'.repeat(200) }, 'nope', 42]) {
+    const out = await client.call('unit/run', {}, { meta: bad });
+    assert.deepStrictEqual(out.meta, {}, JSON.stringify(bad));
+    assert.strictEqual(out.frozen, true);
+  }
+  // A declared __proto__ key never reaches the handler's bag.
+  const out = await client.call('unit/run', {}, { meta: JSON.parse('{"a":1,"__proto__":{"polluted":1}}') });
+  assert.deepStrictEqual(out.meta, { a: 1 });
+  assert.strictEqual(out.protoKey, false);
+  assert.strictEqual({}.polluted, undefined);
+  assert.ok(server); // silence unused
+});
+
+test('hooks: an onConnect room join is visible to the very first dispatched call', async (t) => {
+  const router = defineRouter({
+    unit: {
+      rooms: procedure({ access: 'public', handler: async (context) => [...context.client.rooms] }),
+    },
+  });
+  // Slower than a localhost round trip on purpose: without the client.ready
+  // gate the introspect and the call would race past the join and this test
+  // would flake toward [] — the exact bug the gate closes.
+  router.addHook('onConnect', async (client) => {
+    await timers.setTimeout(25);
+    client.join('lobby');
+  });
+  const { url } = await boot(t, router);
+  const client = await connect(t, url);
+  await client.load('unit');
+  assert.deepStrictEqual(await client.api.unit.rooms(), ['lobby']);
+});
+
 test('hooks: onConnect and onDisconnect bracket a connection', async (t) => {
   const seen = [];
   const router = defineRouter(

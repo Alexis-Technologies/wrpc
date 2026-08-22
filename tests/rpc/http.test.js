@@ -145,7 +145,7 @@ test('OPTIONS preflight: 200 with CORS headers, no body processing', async (t) =
   assert.strictEqual(res.headers.get('access-control-allow-methods'), 'POST, GET, OPTIONS');
   assert.strictEqual(
     res.headers.get('access-control-allow-headers'),
-    'Content-Type, x-wrpc-channel, last-event-id',
+    'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta',
     'the SSE transport sends two headers a preflight has to name explicitly',
   );
   assert.strictEqual(await res.text(), '');
@@ -324,6 +324,136 @@ test('ws attach: no cookie means no session, session-access call gets 403', asyn
   });
 });
 
+test('ws attach: client.meta snapshots the upgrade (frozen, null-proto headers)', async (t) => {
+  const { server } = await startServer(t);
+  const socket = new FakeWsSocket();
+  const client = server.rpc.attachSocket(socket, {
+    headers: { 'x-app-version': '2.1.0', cookie: 'token=nope' },
+    url: '/api?x=1',
+    remoteAddress: '10.0.0.7',
+  });
+  assert.strictEqual(client.meta.url, '/api?x=1');
+  assert.strictEqual(client.meta.remoteAddress, '10.0.0.7');
+  assert.strictEqual(client.meta.headers['x-app-version'], '2.1.0');
+  assert.ok(Object.isFrozen(client.meta) && Object.isFrozen(client.meta.headers) && Object.isFrozen(client.meta.data));
+  // Null-prototyped: a header named like an Object.prototype member must
+  // answer undefined, not a function.
+  assert.strictEqual(client.meta.headers.toString, undefined);
+  assert.strictEqual(Object.getPrototypeOf(client.meta.headers), null);
+  // A bare attach still carries the complete (empty) shape.
+  const bare = server.rpc.attachSocket(new FakeWsSocket(), {});
+  assert.strictEqual(bare.meta.url, '');
+  assert.strictEqual(bare.meta.remoteAddress, '127.0.0.1');
+  assert.strictEqual(bare.meta.protocol, '');
+  assert.deepStrictEqual(Object.keys(bare.meta.headers), []);
+  assert.deepStrictEqual(Object.keys(bare.meta.data), []);
+});
+
+const wrpcH = (value) => `wrpc_h=${encodeURIComponent(JSON.stringify(value))}`;
+
+test('ws attach: declared headers (wrpc_h) merge UNDER the observed ones', async (t) => {
+  const { server } = await startServer(t);
+  const declared = {
+    'X-App-Version': '1.2.3', // lowercased on the way in
+    'x-thing': 'declared', // observed value must win
+    cookie: 'token=forged', // reserved: cannot be spoofed through the URL
+    'x-wrpc-channel': 'forged', // reserved prefix
+    'Sec-Fetch-Site': 'same-origin', // reserved prefix
+    num: 5, // not a string: dropped
+    nested: { a: 1 }, // not a string: dropped
+    __proto__: { polluted: 1 }, // never carried over
+  };
+  const socket = new FakeWsSocket();
+  const client = server.rpc.attachSocket(socket, {
+    headers: { cookie: 'token=real', 'x-thing': 'observed' },
+    url: `/api?${wrpcH(declared)}`,
+  });
+  assert.strictEqual(client.meta.headers['x-app-version'], '1.2.3');
+  assert.strictEqual(client.meta.headers['x-thing'], 'observed');
+  assert.strictEqual(client.meta.headers.cookie, 'token=real');
+  assert.strictEqual(client.meta.headers['x-wrpc-channel'], undefined);
+  assert.strictEqual(client.meta.headers['sec-fetch-site'], undefined);
+  assert.strictEqual(client.meta.headers.num, undefined);
+  assert.strictEqual(client.meta.headers.nested, undefined);
+  assert.strictEqual({}.polluted, undefined, 'Object.prototype survived');
+  assert.strictEqual(Object.hasOwn(client.meta.headers, '__proto__'), false);
+});
+
+test('ws attach: malformed or oversize wrpc_h is refused, never fatal', async (t) => {
+  const { server } = await startServer(t, { metaMaxBytes: 64 });
+  const attach = (url) => server.rpc.attachSocket(new FakeWsSocket(), { headers: { 'x-obs': 'kept' }, url });
+  const cases = [
+    `/api?${wrpcH({ pad: 'x'.repeat(200) })}`, // over the cap (encoded length)
+    '/api?wrpc_h=not-json', // malformed JSON
+    `/api?${wrpcH(['a', 'b'])}`, // an array
+    `/api?${wrpcH(7)}`, // a bare number
+    '/api?wrpc_h=%', // a broken percent sequence
+    '/api?other=1', // no parameter at all
+  ];
+  for (const url of cases) {
+    const client = attach(url);
+    // The label is refused; the connection and the observed headers are not.
+    assert.strictEqual(client.meta.headers['x-obs'], 'kept', url);
+    assert.deepStrictEqual(Object.keys(client.meta.headers), ['x-obs'], `nothing declared survives for ${url}`);
+  }
+});
+
+test('onConnect: client.sessionReady is assigned before the hooks run (and awaiting it does not deadlock)', async (t) => {
+  const seen = [];
+  const router = createRouter();
+  router.addHook('onConnect', async (client) => {
+    // The documented recipe: the hook awaits the restore. Before the fix it
+    // awaited the constructor's resolved default and saw session === null.
+    const restored = await client.sessionReady;
+    seen.push([restored, client.session?.state?.user ?? null]);
+  });
+  const { server, origin } = await startServer(t, { router });
+  const token = await login(origin, '/api', 'dana');
+
+  const socket = new FakeWsSocket();
+  const client = server.rpc.attachSocket(socket, { headers: { cookie: `token=${token}` } });
+  await client.ready;
+  // onConnect fires for the login POST's per-request client too; the ws
+  // attach is the last entry, and it must see the restored session.
+  assert.deepStrictEqual(seen.at(-1), [true, 'dana']);
+});
+
+test('ws attach: a call racing onConnect is dispatched only after the hooks settled', async (t) => {
+  const router = defineRouter({
+    probe: {
+      rooms: procedure({ access: 'public', handler: async (context) => [...context.client.rooms] }),
+    },
+  });
+  router.addHook('onConnect', async (client) => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    client.join('lobby');
+  });
+  const { server } = await startServer(t, { router });
+  const socket = new FakeWsSocket();
+  server.rpc.attachSocket(socket, { headers: {} });
+  // Sent in the same tick as the attach — the exact race client.ready closes.
+  const call = { type: 'call', id: '9', method: 'probe/rooms', args: {} };
+  socket.emit('message', Buffer.from(JSON.stringify(call)), false);
+  const reply = JSON.parse(await socket.nextSent());
+  assert.deepStrictEqual(reply, { type: 'callback', id: '9', result: ['lobby'] });
+});
+
+test('packet POST: dispatch waits for client.ready (session restore plus onConnect hooks)', async (t) => {
+  const router = defineRouter({
+    probe: {
+      stamp: procedure({ access: 'public', handler: async (context) => context.client.data.stamp ?? null }),
+    },
+  });
+  router.addHook('onConnect', async (client) => {
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    client.data.stamp = 'hooked';
+  });
+  const { origin } = await startServer(t, { router });
+  const res = await postPacket(`${origin}/api`, 'probe/stamp', {});
+  const packet = await res.json();
+  assert.deepStrictEqual(packet, { type: 'callback', id: '1', result: 'hooked' });
+});
+
 const wsHeaders = (extra = {}) => ({
   Upgrade: 'websocket',
   Connection: 'Upgrade',
@@ -454,4 +584,84 @@ test('introspection option', async (t) => {
     const { origin } = await startServer(t);
     assert.strictEqual(await probe(origin), undefined);
   });
+});
+
+test('x-wrpc-meta: a REST caller passes per-request meta; connection meta.data doubles as callMeta', async (t) => {
+  const router = defineRouter({
+    probe: {
+      peek: procedure({
+        access: 'public',
+        handler: async (context) => ({ call: { ...context.callMeta }, data: { ...context.meta.data } }),
+      }),
+    },
+  });
+  const { origin } = await startServer(t, { router });
+  const meta = encodeURIComponent(JSON.stringify({ idem: '9f3c', v: '1.2.3' }));
+  // The conventional REST mode: one GET, the header carries the meta.
+  const res = await fetch(`${origin}/api/probe/peek`, { headers: { 'x-wrpc-meta': meta } });
+  const { result } = await res.json();
+  assert.deepStrictEqual(result.call, { idem: '9f3c', v: '1.2.3' });
+  assert.deepStrictEqual(result.data, { idem: '9f3c', v: '1.2.3' });
+  // Without the header both bags read empty, not null.
+  const bare = await fetch(`${origin}/api/probe/peek`);
+  const { result: none } = await bare.json();
+  assert.deepStrictEqual(none, { call: {}, data: {} });
+});
+
+test('ws attach: the wrpc_meta query lands on client.meta.data', async (t) => {
+  const { server } = await startServer(t);
+  const declared = encodeURIComponent(JSON.stringify({ v: '2.0', locale: 'de-CH' }));
+  const socket = new FakeWsSocket();
+  const client = server.rpc.attachSocket(socket, { headers: {}, url: `/api?wrpc_meta=${declared}` });
+  assert.deepStrictEqual({ ...client.meta.data }, { v: '2.0', locale: 'de-CH' });
+  assert.ok(Object.isFrozen(client.meta.data));
+});
+
+test('sessions.transport: a bearer strategy restores from Authorization and skips the CSRF rule', async (t) => {
+  const bearer = {
+    ambient: false,
+    read: ({ headers }) => {
+      const value = headers?.authorization;
+      return typeof value === 'string' && value.startsWith('Bearer ') ? value.slice(7) : null;
+    },
+    write: () => null, // a server cannot SEND Authorization: the handler returns tokens
+  };
+  const router = defineRouter({
+    auth: {
+      login: procedure({
+        access: 'public',
+        handler: async (context) => {
+          context.client.startSession(undefined, { user: 'bea' });
+          return { token: context.session.token };
+        },
+      }),
+      whoami: procedure({ access: 'session', handler: async (context) => ({ user: context.session.state.user }) }),
+    },
+  });
+  const { server, origin } = await startServer(t, { router, sessions: { transport: bearer } });
+
+  const res = await postPacket(`${origin}/api`, 'auth/login', {});
+  assert.strictEqual(res.status, 200);
+  // write() answered null, so no Set-Cookie is stamped — the token travels
+  // in the handler's own result instead.
+  assert.deepStrictEqual(res.headers.getSetCookie(), []);
+  const { token } = (await res.json()).result;
+  assert.ok(token);
+
+  // A safe-method REST call with NO same-origin fetch header: under the
+  // cookie default this runs sessionless (ambient authority, CSRF); a
+  // bearer credential is script-attached, so it restores.
+  const who = await fetch(`${origin}/api/auth/whoami`, { headers: { authorization: `Bearer ${token}` } });
+  assert.strictEqual(who.status, 200);
+  assert.deepStrictEqual((await who.json()).result, { user: 'bea' });
+
+  // The same header on a ws upgrade restores the session for the socket.
+  const socket = new FakeWsSocket();
+  const client = server.rpc.attachSocket(socket, { headers: { authorization: `Bearer ${token}` } });
+  assert.strictEqual(await client.sessionReady, true);
+  assert.strictEqual(client.session.state.user, 'bea');
+
+  // A wrong token is nobody.
+  const miss = await fetch(`${origin}/api/auth/whoami`, { headers: { authorization: 'Bearer nope' } });
+  assert.strictEqual(miss.status, 403);
 });

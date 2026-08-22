@@ -190,7 +190,12 @@ sequenceDiagram
 ```
 
 The client re-subscribes automatically after a reconnect, sending the last
-tracked id it saw. Nothing extra to write.
+tracked id it saw. For a `session`-gated feed, pair this with the client's
+[`authenticate` hook](./client#authenticating), which is awaited **before**
+the re-subscribe — a re-subscribe refused for a missing session answers `end`
+with code `403`, and an `end` is **terminal**: the feed is over, and a later
+sign-in does not revive it. If a feed can outlive its session (a credential
+expiring mid-connection), re-subscribe from the handle's `onError`.
 
 ## Limits
 

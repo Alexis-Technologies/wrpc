@@ -70,6 +70,12 @@ Rules that hold everywhere:
 - **The observational phases are contained**: a throwing
   `onResponse`/`onError`/`onTimeout`/`onUnsubscribe`/`onConnect`/`onDisconnect`
   is logged and never breaks what it observes.
+- **`onConnect` is ordered against dispatch**: `client.sessionReady` is
+  assigned before the hooks run (so `await client.sessionReady` inside one is
+  safe), and the dispatcher waits for `client.ready` — session restore plus
+  settled `onConnect` hooks — before the access check. A hook that never
+  settles holds that client's dispatch; the server logs `onConnect.stalled`
+  after 5 s so the hang is visible.
 - **`context.state` is the hand-off**: what `onRequest` or `preHandler`
   loads is what the handler (and every later phase) reads.
 - **The context knows its call**: `context.method` is the wire target

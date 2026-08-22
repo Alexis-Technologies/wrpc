@@ -65,6 +65,12 @@ WebSocket it creates the session for that connection alone. If you want the
 session to survive a reconnect, log in over HTTP (the browser stores the
 cookie) and let the WebSocket upgrade restore it — which it does, from the same
 cookie.
+
+The counterpart for everything the cookie cannot reach: the client's
+[`authenticate` hook](./client#authenticating) re-presents the credential on
+every reconnect, *before* the subscriptions are re-opened and the units
+re-loaded. On a Node client — whose `WebSocket` sends no cookies at all — it
+is the **only** way a session survives a reconnect.
 :::
 
 A dropped connection never deletes the session from the store. That is exactly
@@ -177,3 +183,71 @@ new Server({ router, sessions: { generateToken: () => myUlid() } });
 The default is a v4 UUID from `node:crypto` (or `globalThis.crypto` in a
 browser build). Whatever you substitute must be unguessable: it is the whole
 credential.
+
+## Pluggable token carriers
+
+*Where* the token lives on the wire is an injection like the store —
+`sessions.transport`, structural (`isTokenTransport`), with the cookie
+behaviour as the byte-identical default:
+
+```js
+// { read({ headers, url }) -> token | null,
+//   write(token) -> Set-Cookie-style header value | null,
+//   ambient?: boolean }
+new Server({ router, sessions: { transport: myTransport } });
+```
+
+Two ready-made strategies ship in the **`@alexify/wrpc/auth`** subpath —
+deliberately outside the base bundle, like the rooms backplane in
+`./scaling`:
+
+```js
+const { bearerTransport, payloadTransport } = require('@alexify/wrpc/auth');
+new Server({ router, sessions: { transport: bearerTransport() } });
+```
+
+- **`bearerTransport()`** reads `Authorization: Bearer <token>` — the real
+  header where the transport can send one (http/sse, curl), the client's
+  declared-headers channel on browser ws (see
+  [Metadata](./metadata#declared-headers-the-headers-client-option)).
+- **`payloadTransport({ field })`** reads a field of the client's declared
+  `meta` — for apps that keep `authorization` semantics out of it.
+
+Two asymmetries every non-cookie strategy inherits, both by construction:
+
+- **The server cannot *send* `Authorization`.** `write()` returns null; the
+  `signIn` handler hands the token pair back **in its result**, the client
+  stores it (see the client half below) and presents it on the next
+  connection. Neither half works alone — the pair is the strategy.
+- **The safe-method CSRF rule does not apply.** That rule guards *ambient*
+  authority — a cookie the browser attaches without script. A bearer
+  credential is script-attached, so a non-ambient transport
+  (`ambient: false`) restores on safe methods too, cross-site fetch headers
+  or not.
+
+### The client half: stores and `bearerAuth()`
+
+The same subpath carries the client side: token **stores**
+(`get`/`set`/`delete`, sync or async — a `Map` already qualifies) and
+`bearerAuth()`, which composes a store with your `signIn`/`refresh` calls
+into the three [client options](./client#authenticating) that make the
+strategy work end to end:
+
+```js
+const { bearerAuth, webStorage } = require('@alexify/wrpc/auth');
+
+const client = await connect(url, {
+  ...bearerAuth({
+    store: webStorage(localStorage), // or memoryStore(), cookieStorage(document), your IndexedDB wrapper
+    signIn: (c) => c.call('auth/signIn', credentials()),
+    refresh: (c, tokens) => c.call('auth/refresh', { token: tokens.access }),
+  }),
+});
+```
+
+`headers` presents the stored token on **every** open (so the reconnect's
+upgrade restores the session before the re-subscribe), `authenticate` signs
+in only when the store is empty, and `refresh` is single-flight with a
+one-shot retry. The server-side `auth/refresh` handler re-binds the **live**
+connection with `context.client.startSession(...)` and returns the rotated
+pair — that is what heals a token expiring mid-socket without a reconnect.

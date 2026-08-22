@@ -8,7 +8,7 @@ const { defineRouter, procedure, Router, Procedure, effectiveSchema } = require(
 const { RoomRegistry, Broadcast } = require('./rpc/rooms.js');
 const { Cluster } = require('./rpc/cluster.js');
 const { tracked, isTracked, createEventLog, EventLog } = require('./rpc/subscriptions.js');
-const { Session, MemorySessionStore, createProxy } = require('./rpc/sessions.js');
+const { Session, MemorySessionStore, createProxy, isTokenTransport } = require('./rpc/sessions.js');
 const { ServerTransport, buildHeaders } = require('./transport.js');
 const { WrpcReadable, WrpcWritable } = require('./streams.js');
 const { chunkEncode, chunkDecode } = require('./chunks.js');
@@ -42,6 +42,7 @@ module.exports = {
   createEventStream,
   EventStream,
   isCodec,
+  isTokenTransport,
   MemorySessionStore,
   ServerTransport,
   buildHeaders,

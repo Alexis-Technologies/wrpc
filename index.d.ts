@@ -445,16 +445,47 @@ export interface CookieOptions {
   maxAge?: number | null;
 }
 
+/**
+ * Where the session token lives on the wire — injected like a codec or a
+ * logger, checked structurally (`isTokenTransport`). The cookie default
+ * keeps the behaviour wrpc always had; a bearer or payload strategy is one
+ * object.
+ */
+export interface TokenTransport {
+  /** The token this request presents, or null. */
+  read(request: { headers?: Record<string, string | Array<string> | undefined>; url?: string }): string | null;
+  /**
+   * A Set-Cookie-style response header value to stamp (HTTP transports
+   * only), or null when the carrier cannot stamp one — a bearer strategy
+   * returns null and the signIn handler hands tokens back in its result.
+   */
+  write(token: string): string | null;
+  /** Optional: the deleting stamp. */
+  clear?(): string | null;
+  /**
+   * True when the BROWSER attaches the credential without script (a
+   * cookie) — which is what the safe-method CSRF rule exists for. A
+   * non-ambient carrier is exempt from that rule.
+   */
+  ambient?: boolean;
+}
+
+export declare function isTokenTransport(value: unknown): boolean;
+
 export interface SessionsOptions {
   store?: SessionStore;
   cookie?: CookieOptions;
   generateToken?: () => string;
+  /** The injected token carrier; the cookie default is byte-identical. */
+  transport?: TokenTransport;
 }
 
 declare class SessionManager {
   store: SessionStore;
   generateToken: () => string;
   cookie: CookieOptions & { name: string; path: string };
+  /** The active token carrier (the cookie default unless injected). */
+  transport: TokenTransport;
   create(token?: string, data?: State): Session;
   restore(token: string): Promise<Session | null>;
   destroy(token: string): Promise<void>;
@@ -666,6 +697,23 @@ export interface ErrorOptions {
   error?: Error;
 }
 
+/**
+ * What the peer presented when the connection was made. Frozen. `headers`
+ * and `data` are PEER-CONTROLLED — labels for logs, metrics and feature
+ * gates, never an authorization input: authorization is the session's job.
+ */
+export interface ClientMeta {
+  /** Client-declared metadata (the client's `meta` option); `{}` when none. */
+  readonly data: Readonly<Record<string, unknown>>;
+  /** Request/upgrade headers; `{}` on a worker port. */
+  readonly headers: Readonly<Record<string, string | Array<string> | undefined>>;
+  /** The request/upgrade URL with its query string; `''` on a worker port. */
+  readonly url: string;
+  readonly remoteAddress: string;
+  /** The negotiated WebSocket subprotocol; `''` off ws. */
+  readonly protocol: string;
+}
+
 export declare class Context {
   client: Client;
   uuid: string;
@@ -696,7 +744,21 @@ export declare class Context {
   readonly method: string | null;
   /** The procedure (or event handler) resolved for this invocation. */
   readonly procedure: Procedure | null;
-  constructor(client: Client, signal?: AbortSignal | null, target?: { method?: string; procedure?: Procedure } | null);
+  /** The connection's presented metadata — `client.meta`, mirrored. */
+  readonly meta: ClientMeta;
+  /**
+   * The caller's per-invocation metadata (the packet's optional `meta`
+   * field, sanitized: plain object, size-capped, `__proto__` dropped,
+   * frozen). A frozen EMPTY object when the packet carried none — never
+   * null, so `context.callMeta.idem` needs no `?.`. Deliberately outside
+   * schema validation; a label, never an authorization input.
+   */
+  readonly callMeta: Readonly<Record<string, unknown>>;
+  constructor(
+    client: Client,
+    signal?: AbortSignal | null,
+    target?: { method?: string; procedure?: Procedure; callMeta?: Record<string, unknown> | null } | null,
+  );
 }
 
 export class Client extends Emitter {
@@ -717,8 +779,21 @@ export class Client extends Emitter {
   readonly persistent: boolean;
   /** The RpcServer this client belongs to; null for a standalone Client. */
   readonly server: RpcServer | null;
+  /**
+   * What the peer presented when the connection was made (headers, url,
+   * negotiated subprotocol, client-declared metadata). Frozen; the
+   * peer-controlled parts are labels, never authorization inputs.
+   */
+  readonly meta: ClientMeta;
   /** Settles once the cookie-based session restore (if any) finished. */
   sessionReady: Promise<unknown>;
+  /**
+   * What dispatch gates on: the session restore PLUS the settled onConnect
+   * hooks. Two promises on purpose — an onConnect hook may `await
+   * client.sessionReady`, so folding the hooks into that same promise would
+   * make such a hook wait for itself. Never rejects.
+   */
+  ready: Promise<unknown>;
   streams: Map<string, WrpcReadable | WrpcWritable>;
   /** In-flight calls, by id — what `{type:'cancel'}` reaches. */
   calls: Map<string, AbortController>;
@@ -872,6 +947,13 @@ export interface RpcServerOptions {
    * exclusive with compiled response serializers.
    */
   codec?: WrpcCodec;
+  /**
+   * Cap on peer-declared metadata, measured on the ENCODED input: the ws
+   * `wrpc_h` connect-URL parameter and the per-packet `meta` field. Over
+   * the cap the label is refused (a warn is logged), never the connection.
+   * Default 2048.
+   */
+  metaMaxBytes?: number;
 }
 
 /** An injected wire codec — structural, checked by `isCodec`. */
@@ -921,7 +1003,7 @@ export declare class RpcServer extends Emitter {
    * client lifecycle. Call `release()` when the response closes.
    */
   delegatedContext(
-    request?: { method?: string; headers?: Record<string, string | undefined>; remoteAddress?: string },
+    request?: { method?: string; headers?: Record<string, string | undefined>; remoteAddress?: string; url?: string },
     target?: { method?: string; procedure?: Procedure } | null,
   ): Promise<{
     client: Client;

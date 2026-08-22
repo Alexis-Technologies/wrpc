@@ -25,10 +25,13 @@ const SECURITY_HEADERS = {
 };
 
 const DEFAULT_CORS_METHODS = 'POST, GET, OPTIONS';
-// `x-wrpc-channel` (which event stream a POST belongs to) and `last-event-id`
-// (the SSE resume header) are not CORS-safelisted, so a cross-origin peer's
-// preflight fails before the request is ever sent unless they are named here.
-const DEFAULT_CORS_HEADERS = 'Content-Type, x-wrpc-channel, last-event-id';
+// `x-wrpc-channel` (which event stream a POST belongs to), `last-event-id`
+// (the SSE resume header) and `x-wrpc-meta` (per-request client metadata)
+// are not CORS-safelisted, so a cross-origin peer's preflight fails before
+// the request is ever sent unless they are named here. An application whose
+// clients declare CUSTOM connection headers over http/sse must widen the
+// list via `cors.headers` the same way.
+const DEFAULT_CORS_HEADERS = 'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta';
 
 // CORS v2: `cors` is { origins: string[] | (origin) => boolean, credentials?,
 // headers?, methods? }. Without a `cors` option every origin is allowed

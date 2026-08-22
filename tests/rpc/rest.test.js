@@ -386,11 +386,74 @@ test('injected validation: compile-once, per-part issues, details', async (t) =>
     });
   });
 
+  await t.test('schema.headers validates the CONNECTION headers, issues prefixed /headers', async () => {
+    const router = defineRouter(
+      {
+        p: {
+          make: procedure({
+            access: 'public',
+            schema: { headers: { required: ['x-app-version'] } },
+            handler: async (ctx) => ctx.meta.headers['x-app-version'],
+          }),
+        },
+      },
+      { validation: { ajv: fakeAjv() } },
+    );
+    const proc = router.getProcedure('p', '*', 'make');
+    const compiled = router.compiledFor(proc);
+    // A connection that presented no such header: refused 400, same issue
+    // shape as every other part, under its own /headers prefix.
+    await assert.rejects(proc.invoke({ signal: null, meta: { headers: {} } }, {}, undefined, compiled), (error) => {
+      assert.strictEqual(error.code, 400);
+      assert.deepStrictEqual(error.details, {
+        issues: [{ message: "must have required property 'x-app-version'", path: '/headers' }],
+      });
+      return true;
+    });
+    const ok = { signal: null, meta: { headers: Object.freeze({ 'x-app-version': '3' }) } };
+    assert.strictEqual(await proc.invoke(ok, {}, undefined, compiled), '3');
+  });
+
+  await t.test('a coercing ajv cannot corrupt the frozen headers snapshot', async () => {
+    // An ajv compiled with coerceTypes writes coerced values back into the
+    // object it validates — compiled validators are strict-mode code, so on
+    // the frozen client.meta.headers that write would THROW. The router
+    // therefore validates a copy; this fake mutates to prove it got one.
+    const coercingAjv = {
+      compile: () => {
+        const validate = (value) => {
+          value.coerced = 'yes';
+          validate.errors = null;
+          return true;
+        };
+        return validate;
+      },
+    };
+    const router = defineRouter(
+      { p: { make: procedure({ access: 'public', schema: { headers: {} }, handler: async () => 'ok' }) } },
+      { validation: { ajv: coercingAjv } },
+    );
+    const proc = router.getProcedure('p', '*', 'make');
+    const headers = Object.freeze({ a: '1' });
+    const context = { signal: null, meta: { headers } };
+    assert.strictEqual(await proc.invoke(context, {}, undefined, router.compiledFor(proc)), 'ok');
+    assert.strictEqual(headers.coerced, undefined, 'the frozen snapshot stayed untouched');
+  });
+
   await t.test('a schema with parts and no injected ajv throws at build, naming the procedure', () => {
     assert.throws(
       () =>
         defineRouter({
           p: { make: procedure({ access: 'public', schema: { body: {} }, handler: async () => 1 }) },
+        }),
+      /p\/make declares schema validation/,
+    );
+    // headers is an input part like any other: declaring it demands the
+    // same injected compiler, loudly, at build.
+    assert.throws(
+      () =>
+        defineRouter({
+          p: { make: procedure({ access: 'public', schema: { headers: {} }, handler: async () => 1 }) },
         }),
       /p\/make declares schema validation/,
     );

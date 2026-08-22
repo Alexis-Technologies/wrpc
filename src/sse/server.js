@@ -326,7 +326,9 @@ class SseChannels {
     const channelId = generateUUID();
     const address = call.remoteAddress ?? '';
     const transport = new ServerSseTransport(channelId, address);
-    const client = this.#addClient(transport, call.headers ?? {});
+    // The whole call, not just its headers: the injected addClient builds
+    // the client's meta (headers, url, remoteAddress) from it too.
+    const client = this.#addClient(transport, call);
     const key = this.#channelKey(call.headers ?? {});
     const channel = new SseChannel({ id: channelId, key, client, transport, ...this.#options });
     this.#channels.set(channelId, channel);

@@ -308,6 +308,53 @@ only by adapter tests; never a runtime dependency).
   emits `'restore-failed'` and forces a clean reconnect rather than
   silently killing every subscription.
 
+**Authentication & metadata**
+- Client `authenticate` hook: awaited inside `open()` on the first connect
+  (so `connect()` resolves an already-authenticated client) and on every
+  reconnect **before** the subscriptions re-open and the units reload — the
+  window an `'open'` listener structurally cannot reach. A throw terminates
+  the transport, emits `'authenticate-failed'` and walks the normal backoff;
+  `client.close()` inside the hook stops the cycle. With a hook configured,
+  `'open'` fires after a successful authentication.
+- Client `refresh` hook (`fn` or `{ on, handler }`, default trigger `[401]`):
+  single-flight credential refresh — N concurrent refusals produce one
+  handler run — with each refused call re-issued exactly once under a fresh
+  packet id, on both the packet and the REST leg; on failure the original
+  refusal surfaces. Never fires for calls made inside `authenticate`.
+- Public `client.call(target, args, options)` — one call by wire target with
+  no scaffolding: the escape hatch a first-connect hook needs, since `api`
+  is built by `load()`.
+- `client.meta` / `context.meta`: a frozen snapshot of what the peer
+  presented — request/upgrade `headers`, `url` (every attach site used to
+  drop `req.url`), `remoteAddress`, negotiated ws `protocol`, and declared
+  `data`.
+- Client `headers` option (connection-phase, re-evaluated per open): real
+  request headers on http/sse/worker, one `wrpc_h` query parameter on
+  browser ws (the WHATWG constructor takes no headers; observed headers win
+  the merge, reserved names are dropped from the query path). Validated when
+  a procedure declares `schema.headers` — the part was previously accepted
+  and silently ignored; delegated fastify routes still validate in fastify,
+  not twice.
+- Client `meta` option and per-call `meta` (`client.call(..., { meta })`,
+  `method.withMeta({...})(args)`): an optional additive `meta` field on
+  `call`/`subscribe`/`event` packets, surfaced as `context.callMeta`
+  (frozen-empty default) and `client.meta.data`; deliberately outside the
+  `validation` option. Plain HTTP callers pass the `x-wrpc-meta` header.
+  Both channels share one sanitizer: `metaMaxBytes` cap (default 2048) on
+  the encoded input, plain-object check, `__proto__` drop, freeze.
+- Pluggable session token carrier (`sessions: { transport }`, structural via
+  `isTokenTransport`): the cookie default is byte-identical; a non-ambient
+  carrier (`ambient: false`) is exempt from the safe-method CSRF rule it
+  never needed, and SSE channel identity keys on whatever the carrier reads.
+- New **`@alexify/wrpc/auth`** subpath (browser-safe, own 2 KB budget):
+  token stores (`memoryStore`/`webStorage`/`cookieStorage` — a `Map`
+  already satisfies the contract), `bearerAuth()` composing
+  `headers`+`authenticate`+`refresh` around a store, and the server halves
+  `bearerTransport()` / `payloadTransport()`.
+- Server dispatch now gates on `client.ready` — session restore **plus**
+  settled `onConnect` hooks — so a subscribe racing the hooks can no longer
+  miss a room broadcast; a hook stalled past 5 s logs `onConnect.stalled`.
+
 **Observability**
 - Structured `logger` option (replacing `console`): one injected writer
   (`src/logging.js`, zero-import) normalizing a structured logger (pino/
@@ -368,6 +415,23 @@ only by adapter tests; never a runtime dependency).
   versions) and a stability/deprecation policy in `CONTRIBUTING.md`, with
   `@experimental` markers on the telemetry shapes and the engine-port
   `capabilities`.
+
+### Fixed
+
+- `client.sessionReady` is assigned **before** the `onConnect` hooks run —
+  the documented `await client.sessionReady` recipe used to await the
+  constructor's resolved default and see `session === null`; the packet-POST
+  and delegated paths now share the same restore promise instead of
+  discarding it.
+- A restore (or authenticate) failing **after** the socket opened restores
+  the attempt count before terminating, so the backoff grows and `retries`
+  exhausts instead of hammering `minDelay` forever — which also means the
+  transport-fallback list is actually reached from a post-open failure.
+- A rejected `WrpcClient.connect()` closes the half-born client instead of
+  leaking it into `WrpcClient.connections` for `online()` to revive; a
+  throwing `'restore-failed'` listener is escalated rather than becoming an
+  unhandled rejection; `WrpcClient.online()` no longer aborts its re-open
+  loop on the first client without an `'error'` listener.
 
 ### Changed (breaking)
 

@@ -48,7 +48,10 @@ test('buildHeaders', async (t) => {
     assert.strictEqual(defaults['Access-Control-Allow-Methods'], 'POST, GET, OPTIONS');
     // The SSE transport's own headers are in the default: neither is
     // CORS-safelisted, so leaving them out fails the preflight.
-    assert.strictEqual(defaults['Access-Control-Allow-Headers'], 'Content-Type, x-wrpc-channel, last-event-id');
+    assert.strictEqual(
+      defaults['Access-Control-Allow-Headers'],
+      'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta',
+    );
     assert.strictEqual(defaults['Vary'], undefined);
     assert.strictEqual(defaults['Content-Type'], 'application/json');
 

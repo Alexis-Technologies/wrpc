@@ -19,6 +19,24 @@ const CANCELLED = 499;
 // denial of service.
 const DEFAULT_MAX_BATCH = 128;
 
+// Peer-declared metadata: the optional `meta` field on call/subscribe/event
+// packets, and its connection-phase twin decoded in rpc/core. A plain
+// object or nothing — capped on the serialized size, own `__proto__`
+// dropped so application code can spread the bag safely, frozen so every
+// reader sees one snapshot. A refusal yields NO meta, never an error: this
+// is a label, deliberately outside the `validation` option (see
+// docs/guide/metadata.md).
+const PROTO_KEY = '__proto__';
+
+const sanitizeMeta = (value, limit) => {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  if (JSON.stringify(value).length > limit) return null;
+  // An own data property here (JSON.parse never pollutes by itself), dropped
+  // for the sake of application code that would spread the bag into a config.
+  if (Object.hasOwn(value, PROTO_KEY)) delete value[PROTO_KEY];
+  return Object.freeze(value);
+};
+
 // What unresolved method/event names become in metric series and span
 // names. The raw string is peer-controlled: a scanner spraying random
 // method names used to mint a new time series per guess.
@@ -91,7 +109,11 @@ const handleRpc = async (client, packet, router) => {
   const compiled = router.compiledFor(proc);
   // Created before the first phase so onRequest can already enrich
   // ctx.state — the context is what ties the phases of one call together.
-  const context = client.createContext(controller.signal, { method, procedure: proc });
+  const context = client.createContext(controller.signal, {
+    method,
+    procedure: proc,
+    callMeta: packet.meta === undefined ? null : sanitizeMeta(packet.meta, client.metaMax),
+  });
   // The span covers the whole invocation including session wait, access
   // check, validation and the timeout race — an argument error deserves an
   // error span and a duration sample exactly as much as a slow handler does.
@@ -100,7 +122,7 @@ const handleRpc = async (client, packet, router) => {
     let code;
     try {
       if (hooks.onRequest.length > 0) await runHooks(hooks.onRequest, context, packet);
-      await client.sessionReady;
+      await client.ready;
       if (controller.signal.aborted) return void (status = 'cancelled');
       if (!client.session && proc.access !== 'public') {
         status = 'error';
@@ -202,7 +224,7 @@ const handleSubscribe = async (client, packet, router) => {
   // same turn has something to find.
   const controller = new AbortController();
   client.subscriptions.set(id, controller);
-  await client.sessionReady;
+  await client.ready;
   if (controller.signal.aborted) {
     client.subscriptions.delete(id);
     return;
@@ -213,7 +235,11 @@ const handleSubscribe = async (client, packet, router) => {
   }
   const hooks = router.hooksFor(proc);
   const compiled = router.compiledFor(proc);
-  const context = client.createContext(controller.signal, { method, procedure: proc });
+  const context = client.createContext(controller.signal, {
+    method,
+    procedure: proc,
+    callMeta: packet.meta === undefined ? null : sanitizeMeta(packet.meta, client.metaMax),
+  });
   if (hooks.onSubscribe.length > 0) {
     try {
       await runHooks(hooks.onSubscribe, context, packet);
@@ -341,7 +367,7 @@ const handleEvent = async (client, packet, router) => {
   const { unit, version, name } = parseTarget(target);
   const handler = router.getEventHandler(unit, version, name);
   if (!handler) return void client.warn(`EVENT\t${target}\tno handler`);
-  await client.sessionReady;
+  await client.ready;
   if (!client.session && handler.access !== 'public') {
     return void client.warn(`EVENT\t${target}\tsession required`);
   }
@@ -349,7 +375,11 @@ const handleEvent = async (client, packet, router) => {
   // onRequest/onSend do not apply — there is no packet to answer with.
   const hooks = router.hooksFor(handler);
   const compiled = router.compiledFor(handler);
-  const context = client.createContext(null, { method: target, procedure: handler });
+  const context = client.createContext(null, {
+    method: target,
+    procedure: handler,
+    callMeta: packet.meta === undefined ? null : sanitizeMeta(packet.meta, client.metaMax),
+  });
   const run = async (handle) => {
     try {
       await handler.invoke(context, data, hooks, compiled);
@@ -468,6 +498,7 @@ const handleMessage = (client, data, router, options = {}) => {
 };
 
 module.exports = {
+  sanitizeMeta,
   handleRpc,
   handleStream,
   handleBinary,

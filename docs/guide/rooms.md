@@ -230,3 +230,16 @@ const router = defineRouter(
 
 The client sees a seamless story: reconnect, session restored from the
 cookie, `onConnect` re-joins, and the next room broadcast reaches it again.
+
+Two guarantees make this recipe safe to rely on:
+
+- **`client.sessionReady` is assigned before the hooks run**, so the `await`
+  in the hook really waits for the cookie restore instead of a resolved
+  default.
+- **Dispatch gates on `client.ready`** — the session restore *plus* the
+  settled `onConnect` hooks — so a call or subscribe racing the reconnect is
+  handled only after the re-join. The two promises are separate on purpose:
+  a hook may await `client.sessionReady`, and folding the hooks into that
+  same promise would make such a hook wait for itself. The flip side: a hook
+  that never settles now holds the client's dispatch — after 5 s the server
+  logs `onConnect.stalled` so the hang leaves a trace.

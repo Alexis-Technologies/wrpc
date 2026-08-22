@@ -44,6 +44,7 @@ const createWrpc = (options = {}) => {
   source.on('connection', (socket, req) => {
     rpc.attachSocket(socket, {
       headers: req.headers,
+      url: req.url ?? '',
       remoteAddress: req.socket?.remoteAddress ?? socket.remoteAddress,
     });
   });

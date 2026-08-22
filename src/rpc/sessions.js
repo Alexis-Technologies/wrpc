@@ -2,6 +2,39 @@
 
 const { generateUUID } = require('../runtime/node.js');
 const { createLoggerWriter } = require('../logging.js');
+const { parseCookies } = require('../transport.js');
+
+// TokenTransport — where the session token lives on the wire, injected like
+// a codec or a logger and checked structurally:
+//   read({ headers, url }) -> string | null   the token this request presents
+//   write(token) -> string | null             a Set-Cookie-style response
+//                                             header value, when the carrier
+//                                             can stamp one (HTTP only; a
+//                                             bearer carrier returns null and
+//                                             the signIn handler hands tokens
+//                                             back in its result instead)
+//   ambient?: boolean                         true when the BROWSER attaches
+//                                             the credential without script
+//                                             (a cookie) — which is exactly
+//                                             what the safe-method CSRF rule
+//                                             exists for; a non-ambient
+//                                             carrier is exempt from it
+//   clear() -> string | null                  optional; the deleting stamp
+const isTokenTransport = (value) =>
+  Boolean(value) && typeof value.read === 'function' && typeof value.write === 'function';
+
+// The default: the cookie behaviour wrpc always had, expressed as one
+// injectable object so a bearer or payload strategy is a peer, not a fork.
+const cookieTokenTransport = (manager) => ({
+  ambient: true,
+  read: ({ headers }) => {
+    const cookie = headers?.cookie;
+    if (!cookie) return null;
+    return manager.readToken(parseCookies(cookie));
+  },
+  write: (token) => manager.cookieHeader(token),
+  clear: () => manager.cookieDeleteHeader(),
+});
 
 const createProxy = (data, save) =>
   new Proxy(data, {
@@ -155,11 +188,17 @@ class SessionManager {
   #log;
 
   constructor(options = {}, logger = globalThis.console) {
-    const { store = new MemorySessionStore(), generateToken = generateUUID, cookie = {} } = options;
+    const { store = new MemorySessionStore(), generateToken = generateUUID, cookie = {}, transport } = options;
     this.store = store;
     this.generateToken = generateToken;
     this.cookie = { ...DEFAULT_COOKIE, ...cookie };
     this.#log = createLoggerWriter(logger);
+    // The injected token carrier; the cookie default keeps the behaviour
+    // wrpc always had, byte for byte.
+    if (transport !== undefined && !isTokenTransport(transport)) {
+      throw new TypeError('SessionManager: sessions.transport must provide read(request) and write(token)');
+    }
+    this.transport = transport ?? cookieTokenTransport(this);
   }
 
   #saver(token) {
@@ -208,4 +247,4 @@ class SessionManager {
   }
 }
 
-module.exports = { Session, MemorySessionStore, SessionManager, createProxy, buildCookie };
+module.exports = { Session, MemorySessionStore, SessionManager, createProxy, buildCookie, isTokenTransport };

@@ -202,9 +202,10 @@ class WrpcClient extends Emitter {
     for (const connection of WrpcClient.connections) {
       connection.#transport.online();
       if (!connection.active) {
-        connection.open().catch((error) => {
-          connection.emit('error', error);
-        });
+        // #escalate, not emit('error'): Emitter throws for an unlistened
+        // 'error', and a throw inside this loop would abandon the re-open
+        // of every connection after this one.
+        connection.open().catch((error) => connection.#escalate(error, 'online.open'));
       }
     }
   }
@@ -253,6 +254,20 @@ class WrpcClient extends Emitter {
   #reconnectTimer = null;
   #attempt = 0;
   #connected = false;
+  // The authenticate hook and the settling of the first connect's afterOpen
+  // run — open() awaits it so connect() returns an authenticated client.
+  #authenticate = null;
+  #authenticating = false;
+  #opened = null;
+  // The refresh hook, the codes that trigger it, and the in-flight run
+  // shared by every concurrent refusal (single-flight).
+  #refresh = null;
+  #refreshCodes = [401];
+  #refreshing = null;
+  // Connection-phase headers and metadata: objects, or functions
+  // re-evaluated on every open so a reconnect presents fresh values.
+  #headers = null;
+  #meta = null;
   #random = Math.random;
   #generateId = generateUUID;
   #heartbeat = null;
@@ -280,6 +295,47 @@ class WrpcClient extends Emitter {
   constructor(url, transport, options = {}) {
     super();
     const { callTimeout, proxy, random, generateId, logger, telemetry, querystring, validation, codec } = options;
+    const { authenticate } = options;
+    // Presents this connection's credential: awaited inside open() on the
+    // first connect, and again on every reconnect BEFORE the subscriptions
+    // are re-opened and the units re-loaded — the window an 'open' listener
+    // structurally cannot reach (see #afterOpen).
+    if (typeof authenticate === 'function') this.#authenticate = authenticate;
+    const { refresh } = options;
+    // Single-flight credential refresh: on a refusal whose code is listed
+    // (401 by default) the handler runs ONCE for all concurrent refusals,
+    // and each refused call is re-issued exactly once. `authenticate` heals
+    // a NEW connection; `refresh` heals a LIVE one whose credential expired.
+    if (refresh !== undefined && refresh !== null) {
+      if (typeof refresh === 'function') {
+        this.#refresh = refresh;
+      } else if (typeof refresh.handler === 'function') {
+        this.#refresh = refresh.handler;
+        if (Array.isArray(refresh.on) && refresh.on.length > 0) this.#refreshCodes = [...refresh.on];
+      } else {
+        throw new TypeError('WrpcClient: options.refresh must be a function or { on?, handler }');
+      }
+    }
+    const { headers } = options;
+    // Connection-phase headers, distinct from per-call `meta`: they ride as
+    // REAL request headers on http/sse (and any transport that can send
+    // them), and as ONE query parameter on the browser ws connect URL —
+    // the WHATWG WebSocket constructor takes no headers. Validated when the
+    // server's procedure declares `schema.headers`.
+    if (headers !== undefined && headers !== null) {
+      const valid = typeof headers === 'function' || (typeof headers === 'object' && !Array.isArray(headers));
+      if (!valid) throw new TypeError('WrpcClient: options.headers must be an object or a function returning one');
+      this.#headers = headers;
+    }
+    const { meta } = options;
+    // Connection-phase metadata — headers' unvalidated sibling: never runs
+    // through schema validation, lands on client.meta.data server-side, and
+    // has a per-call twin (the packet `meta` field / context.callMeta).
+    if (meta !== undefined && meta !== null) {
+      const valid = typeof meta === 'function' || (typeof meta === 'object' && !Array.isArray(meta));
+      if (!valid) throw new TypeError('WrpcClient: options.meta must be an object or a function returning one');
+      this.#meta = meta;
+    }
     // Off by default, unlike the server: a client that printed on every
     // reconnect would be noise in a browser console nobody asked for.
     this.#log = createLoggerWriter(logger);
@@ -320,12 +376,26 @@ class WrpcClient extends Emitter {
     this.#bindTransport();
   }
 
+  // A rejected open (an authenticate hook that failed, a refused socket)
+  // must not leave a half-born client behind: open() registered it in
+  // WrpcClient.connections before the transport was reached, and a failing
+  // authenticate arms the reconnect timer — close() undoes both, so the
+  // caller who never received the client has nothing running for it.
+  static async #openOrClose(client) {
+    try {
+      await client.open();
+    } catch (error) {
+      client.close();
+      throw error;
+    }
+    return client;
+  }
+
   static async connect(url, options = {}) {
     if (options.worker) {
       const transport = WrpcClient.transport.event.getInstance(url);
       const client = new WrpcClient(url, transport, options);
-      await client.open();
-      return client;
+      return WrpcClient.#openOrClose(client);
     }
     // The scheme picks the transport unless one is named. 'sse' only exists
     // once '@alexify/wrpc/sse' has been required, which is what registers it.
@@ -352,8 +422,7 @@ class WrpcClient extends Emitter {
     }
     const transport = new Transport(mapScheme(url, name));
     const client = new WrpcClient(url, transport, options);
-    await client.open();
-    return client;
+    return WrpcClient.#openOrClose(client);
   }
 
   // An 'error' with no listener throws by design (see Emitter), which is
@@ -426,10 +495,25 @@ class WrpcClient extends Emitter {
       this.#log.info({ event: reconnected ? 'reconnected' : 'open', url: this.url, attempts });
       this.#otel.recordConnection(1);
       if (reconnected) this.#otel.recordReconnect('recovered', attempts);
+      // Without an authenticate hook this is the historical path, spelled
+      // out rather than routed through the async #afterOpen: an async hop
+      // would push both the 'open' emit and #restore one microtask later,
+      // and the ordering of a lifecycle emit against the subscribe packets
+      // that follow it is exactly what applications end up depending on.
+      //
       // Lifecycle emits are async (listeners may be): a throwing listener
       // must surface through #escalate, not as an unhandled rejection.
-      this.emit('open').catch((error) => this.#escalate(error, 'listener.open'));
-      if (reconnected) this.#restore(attempts).catch((error) => this.#escalate(error, 'reconnect.restore'));
+      if (!this.#authenticate) {
+        this.emit('open').catch((error) => this.#escalate(error, 'listener.open'));
+        if (reconnected) this.#restore(attempts).catch((error) => this.#escalate(error, 'reconnect.restore'));
+        return;
+      }
+      const settled = this.#afterOpen(reconnected, attempts);
+      // The first connect's rejection is open()'s to re-raise (see open());
+      // every later one has nowhere to go but #escalate. Both branches
+      // attach a handler in this turn, so neither is an unhandled rejection.
+      if (reconnected) settled.catch((error) => this.#escalate(error, 'reconnect.afterOpen'));
+      else this.#opened = settled;
     });
 
     bind('close', () => {
@@ -471,6 +555,38 @@ class WrpcClient extends Emitter {
   // is terminated so the normal reconnect path (backoff, retries,
   // 'reconnect-failed') takes over, instead of leaving a half-restored
   // client that looks open.
+  // The seam the transport's 'open' event could not provide. #restore sends
+  // every subscribe packet BEFORE its first await (see below), so an async
+  // 'open' listener can never win that race: its body past the first await
+  // resumes with the packets already on the wire. This runs the credential
+  // first, awaited, and only then announces 'open' and restores.
+  async #afterOpen(reconnected, attempts) {
+    try {
+      // The guard keeps a refresh from running inside the hook that would
+      // itself be re-run by it (see #maybeRefresh).
+      this.#authenticating = true;
+      await this.#authenticate(this, { reconnected, attempts });
+    } catch (error) {
+      this.#log.warn({ event: 'authenticate.failed', err: error, attempts, url: this.url });
+      void this.emit('authenticate-failed', { error, attempts, reconnected }).catch((e) =>
+        this.#escalate(e, 'listener.authenticate-failed'),
+      );
+      // Same reasoning, same ordering, as the restore path below: put the
+      // pre-open attempt count back BEFORE terminate() synchronously hands
+      // it to the reconnect scheduler.
+      if (this.#attempt === 0) this.#attempt = attempts;
+      if (this.active) this.#transport.terminate();
+      throw error;
+    } finally {
+      this.#authenticating = false;
+    }
+    // 'open' now means USABLE: a listener that fires a session-gated call
+    // finds the credential already presented. Still not awaited — a listener
+    // is an observer, and one that throws must not take the restore with it.
+    this.emit('open').catch((error) => this.#escalate(error, 'listener.open'));
+    if (reconnected) await this.#restore(attempts);
+  }
+
   async #restore(attempts) {
     // Each subscription is re-opened from the last eventId it saw, so the
     // server can replay what was missed instead of starting over. A feed
@@ -482,7 +598,16 @@ class WrpcClient extends Emitter {
       if (units.length > 0) await this.load(...units);
     } catch (error) {
       this.#log.warn({ event: 'restore.failed', err: error, attempts, url: this.url });
-      this.emit('restore-failed', { error, attempts });
+      void this.emit('restore-failed', { error, attempts }).catch((e) => this.#escalate(e, 'listener.restore-failed'));
+      // The attempt counter was reset to 0 the moment the socket opened, so
+      // a restore failing afterwards used to hand #scheduleReconnect a zero:
+      // retry at minDelay forever, the window never growing, `retries` never
+      // exhausting, the next fallback transport never reached. Put the
+      // pre-open count back FIRST — terminate() emits 'close' synchronously,
+      // and that is where the scheduler reads it. The guard covers the other
+      // ordering: a socket that died on its own already advanced the
+      // counter, and that number is the fresher one.
+      if (this.#attempt === 0) this.#attempt = attempts;
       // Still "open" from the transport's point of view — force the cycle.
       if (this.active) this.#transport.terminate();
       throw error;
@@ -636,14 +761,40 @@ class WrpcClient extends Emitter {
     }
   }
 
+  // Re-evaluated on EVERY open, the function form included: a version bump,
+  // a rotated device id or a fresh bearer token is picked up by the
+  // reconnect that follows, not frozen at construction.
+  async #resolveDeclared(source) {
+    const value = typeof source === 'function' ? await source() : source;
+    if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+    return value;
+  }
+
   async open() {
     WrpcClient.connections.add(this);
-    await this.#transport.open(this.#options);
+    // A fresh options object per open, never a mutation: #options belongs
+    // to the application, and #advanceTransport keeps rebuilding candidates
+    // from the pristine url.
+    let options = this.#options;
+    if (this.#headers || this.#meta) {
+      options = { ...options };
+      if (this.#headers) options.headers = await this.#resolveDeclared(this.#headers);
+      if (this.#meta) options.meta = await this.#resolveDeclared(this.#meta);
+    }
+    await this.#transport.open(options);
+    // Assigned synchronously by the 'open' handler above (every transport
+    // emits 'open' before its open() resolves), so a first connect with an
+    // authenticate hook is awaited here: connect() resolves authenticated.
+    const opened = this.#opened;
+    if (!opened) return;
+    this.#opened = null;
+    await opened;
   }
 
   close() {
     clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = null;
+    this.#opened = null;
     this.#stopHeartbeat();
     // Anything still queued leaves before the socket does; a call whose
     // packet never shipped would otherwise wait out its whole timeout.
@@ -1083,10 +1234,56 @@ class WrpcClient extends Emitter {
     return `${unit}/${methodName}`;
   }
 
+  /**
+   * One call addressed by wire target ('unit/name', 'unit.vN/name') with no
+   * scaffolding: the escape hatch for a method whose unit has not been
+   * load()ed — which is every method inside an `authenticate` hook on a
+   * first connect, since `api` is built by load() and load() runs after
+   * auth. No client-side pre-validation and no REST leg: the packet path.
+   */
+  call(method, args = {}, options = {}) {
+    return this.#call(method, args, options);
+  }
+
+  // One-shot retry through the injected refresh hook: on a refusal whose
+  // code the hook covers, run the (single-flight) refresh and re-issue the
+  // call ONCE — with a fresh packet id, since the once-path builds a new
+  // packet. The retry calls the once-path directly, so a second refusal
+  // surfaces as-is: no loop by construction. Never fires inside the
+  // authenticate hook (#authenticating) — the hook heals connections, and a
+  // refresh triggered by its own calls would recurse.
+  #withRefresh(issue) {
+    return issue().catch(async (error) => {
+      if (!this.active || this.#authenticating || !this.#refreshCodes.includes(error?.code)) throw error;
+      try {
+        await this.#runRefresh(error);
+      } catch {
+        // The refresh's own failure is the hook's private business — the
+        // caller gets the refusal it actually received.
+        throw error;
+      }
+      return issue();
+    });
+  }
+
+  #runRefresh(error) {
+    // Ten concurrent refusals produce ONE handler run; everyone awaits it.
+    // The first refusal's error is the one the handler sees.
+    return (this.#refreshing ??= Promise.resolve(this.#refresh(this, error)).finally(() => {
+      this.#refreshing = null;
+    }));
+  }
+
   #call(target, args, options = {}) {
+    if (!this.#refresh) return this.#callOnce(target, args, options);
+    return this.#withRefresh(() => this.#callOnce(target, args, options));
+  }
+
+  #callOnce(target, args, options = {}) {
     const id = this.#generateId();
     const { signal } = options;
     const packet = { type: 'call', id, method: target, args };
+    if (options.meta !== undefined) packet.meta = options.meta;
     if (!this.#otel.enabled) return this.#dispatchCall(target, packet, id, signal);
     const started = now();
     return this.#otel.withSpan({ packet, target }, (handle) => {
@@ -1291,10 +1488,24 @@ class WrpcClient extends Emitter {
         // it, goes out as the SAME REST request an external consumer would
         // send — one endpoint, two audiences. Every other transport speaks
         // packets as always.
+        let fn;
         if (info.http && this.#transport.rest === true) {
-          return (args = {}, options = {}) => guard(args) ?? this.#restCall(info.http, args, options);
+          fn = (args = {}, options = {}) =>
+            guard(args) ??
+            (this.#refresh
+              ? this.#withRefresh(() => this.#restCall(info.http, args, options))
+              : this.#restCall(info.http, args, options));
+        } else {
+          fn = (args = {}, options = {}) => guard(args) ?? this.#call(target, args, options);
         }
-        return (args = {}, options = {}) => guard(args) ?? this.#call(target, args, options);
+        // Per-call metadata, bound once: api.unit.m.withMeta({ idem })(args).
+        // Packet path only — the mapped REST leg carries connection-phase
+        // meta on every request instead (the x-wrpc-meta header).
+        fn.withMeta =
+          (meta) =>
+          (args = {}, options = {}) =>
+            fn(args, { ...options, meta });
+        return fn;
       }
       // A subscription is not callable: it answers with a stream, so it
       // exposes the two ways to consume one instead of pretending to be a

@@ -100,12 +100,19 @@ class ClientSseTransport extends ClientTransport {
   #parser = null;
   #reading = null;
   #onReady = null;
+  // Connection-phase headers and metadata, resolved per open — real request
+  // headers on both the stream GET and every packet POST.
+  #headers = null;
+  #meta = null;
 
   get eventsUrl() {
     return joinUrl(this.url, '/events');
   }
 
-  async open() {
+  async open(options = {}) {
+    this.#headers = options.headers ?? null;
+    // Encoded once per open — a header value must stay latin-1.
+    this.#meta = options.meta ? encodeURIComponent(JSON.stringify(options.meta)) : null;
     if (this.active) return;
     if (this.#reading) return this.#reading;
     const opening = this.#open(true);
@@ -121,7 +128,9 @@ class ClientSseTransport extends ClientTransport {
     const controller = new AbortController();
     this.#controller = controller;
     this.#parser = new SseParser();
-    const headers = { accept: 'text/event-stream' };
+    // Declared first, wire headers after: the protocol's own always win.
+    const headers = { ...this.#headers, accept: 'text/event-stream' };
+    if (this.#meta) headers['x-wrpc-meta'] = this.#meta;
     // A reconnect presents the channel and where it stopped; the server
     // replays what this channel did not acknowledge.
     if (this.#channel !== null) headers[CHANNEL_HEADER] = this.#channel;
@@ -227,7 +236,12 @@ class ClientSseTransport extends ClientTransport {
 
   write(data) {
     if (!this.active || this.#channel === null) throw new Error('Not connected');
-    const headers = { 'Content-Type': this.codec?.contentType ?? 'application/json', [CHANNEL_HEADER]: this.#channel };
+    const headers = {
+      ...this.#headers,
+      'Content-Type': this.codec?.contentType ?? 'application/json',
+      [CHANNEL_HEADER]: this.#channel,
+    };
+    if (this.#meta) headers['x-wrpc-meta'] = this.#meta;
     const post = async () => {
       const response = await fetch(this.url, { method: 'POST', headers, body: data });
       // 202 is the expected answer: everything a call produces comes back

@@ -40,7 +40,12 @@ const ENTRIES = [
   // and codec seams of the same release. 12 -> 13 for static introspection
   // (client.use() + the #scaffoldUnit extraction it shares with load());
   // the same raise absorbs the codec.rest client bytes of this release.
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 13 },
+  // 13 -> 14 for the auth + metadata batch: the authenticate hook (the
+  // pre-restore seam), single-flight refresh with its one-shot retry,
+  // public client.call(), the connection-phase headers/meta options across
+  // all four transports, and per-call meta (withMeta) — measured together
+  // at ~+750 B min+gzip.
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 14 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
@@ -50,10 +55,16 @@ const ENTRIES = [
   { label: 'rooms backplane (@alexify/wrpc/scaling)', entry: 'scaling.js', platform: 'node' },
   // 12 -> 13 alongside the main-entry raise: the sse entry bundles the same
   // client core, so the REST-bridge bytes land here too. 13 -> 14 with the
-  // main entry's static-introspection raise, for the same reason.
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 14 },
+  // main entry's static-introspection raise, for the same reason; 14 -> 15
+  // with its auth + metadata raise, again for the same shared core (plus
+  // the sse transport's own declared-headers/meta legs).
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 15 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
+  // Browser-reachable like query (stores + bearerAuth ship to pages), and
+  // deliberately OUTSIDE the main entry so only apps that opt into the
+  // strategies pay for them.
+  { label: 'auth strategies (@alexify/wrpc/auth)', entry: 'auth.js', platform: 'browser', budget: 2 },
 ];
 
 // A browser entry has to be self-contained: no node builtins, and no packages

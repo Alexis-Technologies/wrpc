@@ -501,6 +501,39 @@ expectType<Emitter & Record<string, any>>(untyped.api.anything);
 expectType<any>(untyped.api.anything.whatever({ x: 1 }));
 expectType<Promise<void>>(untyped.load('anything'));
 
+// client.meta / context.meta: the connection's presented metadata
+declare const serverClient: wrpc.Client;
+declare const serverContext: wrpc.Context;
+expectType<string>(serverClient.meta.url);
+expectType<string>(serverClient.meta.protocol);
+expectType<wrpc.ClientMeta>(serverContext.meta);
+expectType<Promise<unknown>>(serverClient.ready);
+
+// context.callMeta: the per-call metadata bag, frozen-empty by default
+expectType<Readonly<Record<string, unknown>>>(serverContext.callMeta);
+
+// client.call(): the unscaffolded escape hatch — deliberately untyped
+expectType<Promise<unknown>>(untyped.call('auth/signIn', { user: 'a' }));
+expectType<Promise<unknown>>(untyped.call('orders/create', {}, { meta: { idem: 'k' } }));
+// withMeta on a typed contract method keeps the parameters and the result
+expectType<Promise<{ id: string }>>(typed.api.chat.send.withMeta({ idem: 'k' })({ text: 'hi' }));
+// The connection-phase meta option, both forms
+void wrpc.connect('ws://host', { meta: { v: '1.2.3' } });
+void wrpc.connect('ws://host', { meta: async () => ({ v: '1.2.3' }) });
+expectType<Promise<unknown>>(typed.call('auth.v1/signIn'));
+// The authenticate and refresh hooks type-check in both spellings
+void wrpc.connect('ws://host', {
+  authenticate: async (client, info) => {
+    expectType<boolean>(info.reconnected);
+    expectType<number>(info.attempts);
+    await client.call('auth/signIn');
+  },
+  refresh: async (client) => void (await client.call('auth/refresh')),
+});
+void wrpc.connect('ws://host', {
+  refresh: { on: [401, 403], handler: async () => {} },
+});
+
 // Inference utilities, on the declared side...
 expectType<{ text: string }>(null as unknown as wrpc.InferArgs<Contract['chat']['send']>);
 expectType<{ id: string }>(null as unknown as wrpc.InferResult<Contract['chat']['send']>);

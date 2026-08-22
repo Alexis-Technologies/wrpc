@@ -51,6 +51,16 @@ const router = defineRouter({
         throw error;
       },
     }),
+    // What proves no host drops the request identity on its way in.
+    peekMeta: procedure({
+      access: 'public',
+      handler: async (context) => ({
+        url: context.meta.url,
+        protocol: context.meta.protocol,
+        hasHeaders: Object.keys(context.meta.headers).length > 0,
+        appVersion: context.meta.headers['x-app-version'] ?? null,
+      }),
+    }),
     whoami: procedure({
       access: 'session',
       handler: async (context) => ({ user: context.session.state.user }),
@@ -395,6 +405,27 @@ const runAdapterSpec = async (entry, t) => {
     });
     await old.text();
     assert.strictEqual(old.status, 404, 'the default base path no longer answers');
+  });
+
+  await t.test('client.meta: no host drops the request url or headers', async (sub) => {
+    // The packet endpoint: a per-request client still sees url + headers —
+    // including a client-declared one carried as a REAL request header.
+    const { res, body } = await rpcPost(base, 'test/peekMeta', {}, { 'x-app-version': '9.9' });
+    assert.strictEqual(res.status, 200);
+    assert.ok(body.result.url.includes('/api'), `http: meta.url survived (got '${body.result.url}')`);
+    assert.strictEqual(body.result.hasHeaders, true, 'http: meta.headers observed');
+    assert.strictEqual(body.result.appVersion, '9.9', 'http: a declared header rides as a real one');
+    // The ws upgrade: url, headers, the negotiated subprotocol — and the
+    // declared headers, carried by the wrpc_h query (lowercased on arrival).
+    const client = await WrpcClient.connect(`ws://127.0.0.1:${main.port}/api`, {
+      headers: { 'X-App-Version': '8.8' },
+    });
+    sub.after(() => void client.close());
+    const meta = await client.call('test/peekMeta');
+    assert.ok(meta.url.includes('/api'), `ws: the upgrade url survived (got '${meta.url}')`);
+    assert.strictEqual(meta.hasHeaders, true, 'ws: the upgrade headers survived');
+    assert.strictEqual(meta.protocol, 'wrpc.v1');
+    assert.strictEqual(meta.appVersion, '8.8', 'ws: the declared header arrived through the connect url');
   });
 
   await t.test('WebSocket: load, call, event and streams over one connection', async (sub) => {

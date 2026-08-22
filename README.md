@@ -117,17 +117,18 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 30.4 KB | **10.4 KB** | 11 KB |
-| `@alexify/wrpc` — node (client + server) | 119.0 KB | 39.5 KB | — |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 38.5 KB | **13.0 KB** | 14 KB |
+| `@alexify/wrpc` — node (client + server) | 143.0 KB | 47.3 KB | — |
 | `@alexify/wrpc/ws` (WebSocket engine) | 20.7 KB | 7.5 KB | — |
 | `@alexify/wrpc/engine` (engine port) | 21.2 KB | 7.7 KB | — |
-| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 14.1 KB | 5.8 KB | — |
-| `@alexify/wrpc/fastify` | 102.2 KB | 34.8 KB | — |
-| `@alexify/wrpc/express` | 96.9 KB | 32.8 KB | — |
+| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 15.2 KB | 6.1 KB | — |
+| `@alexify/wrpc/fastify` | 124.7 KB | 42.6 KB | — |
+| `@alexify/wrpc/express` | 113.1 KB | 38.0 KB | — |
 | `@alexify/wrpc/scaling` (rooms backplane) | 4.1 KB | 1.7 KB | — |
-| `@alexify/wrpc/sse` — browser (client transport) | 33.1 KB | **11.4 KB** | 12 KB |
-| `@alexify/wrpc/sse` — node | 41.9 KB | 14.2 KB | — |
+| `@alexify/wrpc/sse` — browser (client transport) | 41.4 KB | **14.0 KB** | 15 KB |
+| `@alexify/wrpc/sse` — node | 50.9 KB | 17.1 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 2.4 KB | **1.0 KB** | 2 KB |
+| `@alexify/wrpc/auth` (token strategies) | 2.6 KB | **1.2 KB** | 2 KB |
 
 The Node-only rows are reported for visibility into what each subpath pulls in
 — they never ship to a browser, and the adapter rows include the whole core
@@ -270,6 +271,7 @@ See [Logging](https://wrpc.vercel.app/guide/logging) and
 | `@alexify/wrpc/scaling` | `MemoryBackplane`, `createRedisAdapter`, `isBackplane` | [Scaling](https://wrpc.vercel.app/guide/scaling) |
 | `@alexify/wrpc/sse` | `SseChannels`, `ServerSseTransport`, `ClientSseTransport`, `SseParser` | [Server-Sent Events](https://wrpc.vercel.app/guide/sse) |
 | `@alexify/wrpc/query` | `createQueryUtils` | [TanStack Query](https://wrpc.vercel.app/guide/query) |
+| `@alexify/wrpc/auth` | `bearerAuth`, `memoryStore`, `webStorage`, `cookieStorage`, `bearerTransport`, `payloadTransport` | [Sessions](https://wrpc.vercel.app/guide/sessions#pluggable-token-carriers) |
 | `wrpc` (bin) | `wrpc types <url> --out api.d.ts` | [Codegen CLI](https://wrpc.vercel.app/guide/cli) |
 
 Every subpath ships hand-maintained TypeScript declarations — no generation, no

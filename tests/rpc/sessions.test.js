@@ -369,3 +369,29 @@ test('SessionManager.restore touches the store when it can', async () => {
   await settle();
   assert.deepStrictEqual(touched, ['tok'], 'restore is active use — the TTL must slide');
 });
+
+test('token transport: the cookie default and the structural check', async (t) => {
+  const { SessionManager, isTokenTransport } = require('../../src/rpc/sessions.js');
+  const quiet = { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} };
+
+  await t.test('the default transport IS the cookie behaviour, ambient', () => {
+    const manager = new SessionManager({}, quiet);
+    const { transport } = manager;
+    assert.strictEqual(transport.ambient, true);
+    assert.strictEqual(transport.read({ headers: { cookie: 'token=abc' } }), 'abc');
+    assert.strictEqual(transport.read({ headers: {} }), null);
+    assert.strictEqual(transport.write('abc'), manager.cookieHeader('abc'));
+    assert.strictEqual(transport.clear(), manager.cookieDeleteHeader());
+  });
+
+  await t.test('a malformed injection throws loudly at construction', () => {
+    assert.throws(() => new SessionManager({ transport: { read: () => null } }, quiet), /sessions\.transport/);
+    assert.throws(() => new SessionManager({ transport: 'cookie' }, quiet), /sessions\.transport/);
+  });
+
+  await t.test('isTokenTransport is the structural gate', () => {
+    assert.strictEqual(isTokenTransport({ read: () => null, write: () => null }), true);
+    assert.strictEqual(isTokenTransport({ read: () => null }), false);
+    assert.strictEqual(isTokenTransport(null), false);
+  });
+});

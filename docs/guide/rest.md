@@ -99,6 +99,16 @@ status code, plus any passthrough keys (`tags`, `summary`, `security`,
 which is what makes swagger documentation free under the
 [fastify adapter](./adapters/fastify#declarative-rest-routes).
 
+`headers` is an input part like the other three, with one asymmetry: what it
+validates is not an `args` slice but the **connection's**
+[`context.meta.headers`](./metadata) — the request headers on http/sse, the
+upgrade headers (merged with the client-declared ones) on a socket. Issues
+carry the `/headers` prefix in `error.details.issues`. On a
+[delegated fastify route](./adapters/fastify#declarative-rest-routes) the
+part travels verbatim and **fastify** validates it — never twice. The
+validator runs against a *copy* of the frozen headers snapshot, so an ajv
+compiled with `coerceTypes` cannot corrupt (or throw on) it.
+
 `schema` and the programmatic `input`/`output` validators are **mutually
 exclusive** on one procedure. How schemas become validation is the
 [injected compiler's](./router#validators) job.

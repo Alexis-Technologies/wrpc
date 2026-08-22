@@ -62,6 +62,10 @@ await WrpcClient.connect(url, {
 | `batch` | off | `true` takes the defaults. |
 | `transport` | from the URL | `'ws'`, `'http'`, `'sse'`, or anything registered. |
 | `worker` | — | A `ServiceWorker` to proxy through. |
+| `authenticate` | — | Presents the connection's credential; awaited before the reconnect restore — see [Authenticating](#authenticating). |
+| `refresh` | — | Single-flight credential refresh with a one-shot retry — see [Refreshing a credential](#refreshing-a-credential). |
+| `headers` | — | Connection-phase headers, re-evaluated per open; validated by `schema.headers` — see [Metadata](./metadata). |
+| `meta` | — | Connection-phase metadata (unvalidated); per-call twin via `{ meta }` / `withMeta()` — see [Metadata](./metadata). |
 | `random` | `Math.random` | Jitter source; injectable so tests can pin the schedule. |
 | `generateId` | uuid v4 | Packet/subscription/stream ids — bring your own (cuid/ulid/a test counter). Correlation ids, not secrets; stream ids must stay within 255 UTF-8 bytes. |
 | `protocols` | `['wrpc.v1']` | WebSocket subprotocols to offer; the server echoes the wire revision back. `[]` offers nothing. |
@@ -130,8 +134,10 @@ delay = random(0, min(maxDelay, minDelay * factor ** attempt))
 ```mermaid
 stateDiagram-v2
   [*] --> connecting
-  connecting --> open: handshake ok
+  connecting --> authenticating: handshake ok
   connecting --> waiting: failed
+  authenticating --> open: hook passed<br>(or none configured)
+  authenticating --> waiting: hook threw
   open --> waiting: socket closed
   waiting --> connecting: after the jittered delay
   waiting --> failed: retries exhausted
@@ -154,6 +160,78 @@ connection is a new server-side client, so its introspected method list has to
 be rebuilt — re-opens every subscription from the last eventId it saw, and then
 emits `reconnect`. The `api` unit objects themselves are reused, so event
 listeners registered on them survive the outage.
+
+## Authenticating
+
+A reconnected socket is a **new server-side client**: whatever a login call
+established belongs to the connection that died. The restore machinery
+re-sends its `subscribe` packets *synchronously, before any await*, so an
+`'open'` listener — whose body past its first `await` resumes a microtask
+later — structurally cannot present a credential first. The `authenticate`
+option is the seam that can:
+
+```js
+const client = await connect(url, {
+  authenticate: async (client, { reconnected }) => {
+    await client.call('auth/signIn', { token: readToken() });
+  },
+});
+```
+
+The hook is awaited in two places:
+
+- **Inside `open()` on the first connect** — `await connect(...)` resolves an
+  already-authenticated client. A throw here rejects `connect()` and leaves
+  nothing behind (no reconnect timer, no registered connection).
+- **On every reconnect, BEFORE the restore** — the subscriptions are
+  re-opened and the units re-loaded only after the hook resolved, so a
+  `session`-gated feed resumes instead of being refused with a terminal 403.
+  This also unblocks `introspection: 'session'` servers, whose reconnect
+  `load()` would otherwise 403 forever.
+
+Inside the hook, address methods as `client.call('unit/name', args)` — `api`
+is built by `load()`, which runs after auth. With a hook configured, `'open'`
+fires **after** a successful authentication: "open" means usable.
+
+A throw on a reconnect terminates the transport, emits
+**`'authenticate-failed'`** (`{ error, attempts, reconnected }`), and hands
+control to the normal backoff — retries grow, `retries` exhausts, a
+[fallback transport](#transport-fallback) gets its turn (the hook runs there
+too). A credential that will not fix itself (a revoked account, a bad
+password) should not retry: call `client.close()` inside the hook before
+throwing, and the cycle stops.
+
+### Refreshing a credential
+
+`authenticate` heals a **new** connection; `refresh` heals a **live** one
+whose credential expired mid-session:
+
+| | `authenticate` | `refresh` |
+|---|---|---|
+| Runs | on open / reconnect, before restore | when a call is refused with a listed code |
+| Concurrency | one connection, one run | **single-flight**: N concurrent refusals, one run |
+| On success | `'open'`, then restore | each refused call retried **exactly once**, fresh packet id |
+| On failure | terminate + backoff | the **original** refusal surfaces, never the refresh's error |
+
+```js
+const client = await connect(url, {
+  authenticate: (c) => c.call('auth/signIn', { token: tokens.access }),
+  refresh: {
+    on: [401, 403], // wrpc's own "no session" refusal is 403; app-level is usually 401
+    handler: async (c) => {
+      tokens = await c.call('auth/refresh', { token: tokens.refresh });
+    },
+  },
+});
+```
+
+The retry path covers both the packet leg and the REST leg of mapped
+methods. Guard rails, by construction: the retry calls the wire directly, so
+a second refusal surfaces as-is (no loop); calls made *inside* the
+`authenticate` hook never trigger a refresh (no recursion); and a live
+subscription refused mid-session is **not** re-opened automatically — an
+`end` is terminal, so re-subscribe from the handle's `onError` if a feed can
+outlive its session.
 
 ## Transport fallback
 
@@ -211,6 +289,8 @@ client.on('close', () => {});
 client.on('reconnecting', ({ attempt, delay }) => {});
 client.on('reconnect', ({ units, attempts, subscriptions }) => {});
 client.on('reconnect-failed', ({ attempts }) => {});
+client.on('restore-failed', ({ error, attempts }) => {});
+client.on('authenticate-failed', ({ error, attempts, reconnected }) => {});
 client.on('heartbeat-timeout', () => {});
 client.on('unhandled-event', ({ name, data }) => {});
 client.on('error', (error) => {});

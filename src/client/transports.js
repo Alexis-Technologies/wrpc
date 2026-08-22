@@ -24,7 +24,19 @@ class ClientWsTransport extends ClientTransport {
       // empty array offers nothing — an escape hatch for a proxy that
       // mangles the header. The selected protocol lands on `this.protocol`.
       const protocols = options.protocols ?? [WRPC_PROTOCOL];
-      const socket = protocols.length > 0 ? new WebSocket(this.url, protocols) : new WebSocket(this.url);
+      // Connection-phase headers ride as ONE query parameter: the WHATWG
+      // WebSocket constructor cannot set real headers, in the browser by
+      // spec and in Node because the client uses the same globalThis
+      // implementation. The server reads observed upgrade headers first and
+      // this parameter only for names they do not carry, so a transport
+      // that CAN send real headers needs no query at all. Loud caveat: the
+      // connect URL lands in proxy access logs — a device id belongs here,
+      // a secret does not.
+      const params = [];
+      if (options.headers) params.push(`wrpc_h=${encodeURIComponent(JSON.stringify(options.headers))}`);
+      if (options.meta) params.push(`wrpc_meta=${encodeURIComponent(JSON.stringify(options.meta))}`);
+      const url = params.length > 0 ? `${this.url}${this.url.includes('?') ? '&' : '?'}${params.join('&')}` : this.url;
+      const socket = protocols.length > 0 ? new WebSocket(url, protocols) : new WebSocket(url);
       this.#socket = socket;
       const onClose = (error) => {
         // Scoped to the socket it was registered for. Both 'close' and
@@ -90,8 +102,16 @@ class ClientHttpTransport extends ClientTransport {
   // call whose procedure declares `http` goes out as the same REST request
   // an external consumer would send, not as a packet POST.
   rest = true;
+  // Connection-phase headers and metadata, resolved per open — here they
+  // ride as REAL request headers on every packet POST and REST leg.
+  headers = null;
+  meta = null;
 
-  async open() {
+  async open(options = {}) {
+    this.headers = options.headers ?? null;
+    // Encoded once per open: a header value must stay latin-1, so the meta
+    // object travels as percent-encoded JSON.
+    this.meta = options.meta ? encodeURIComponent(JSON.stringify(options.meta)) : null;
     if (this.active) return;
     this.active = true;
     this.emit('open');
@@ -110,7 +130,9 @@ class ClientHttpTransport extends ClientTransport {
   // The PACKET codec's contentType belongs to write() below, never here:
   // a JSON REST body must say JSON.
   async request(method, url, body, signal, rest = null) {
-    const headers = { 'Content-Type': rest?.contentType ?? 'application/json' };
+    // Declared first, wire headers after: the protocol's own always win.
+    const headers = { ...this.headers, 'Content-Type': rest?.contentType ?? 'application/json' };
+    if (this.meta) headers['x-wrpc-meta'] = this.meta;
     const options = body === undefined ? { method, headers, signal } : { method, headers, body, signal };
     const res = await fetch(url, options);
     if (rest) return { status: res.status, body: new Uint8Array(await res.arrayBuffer()) };
@@ -128,7 +150,8 @@ class ClientHttpTransport extends ClientTransport {
   }
 
   write(data) {
-    const headers = { 'Content-Type': this.codec?.contentType ?? 'application/json' };
+    const headers = { ...this.headers, 'Content-Type': this.codec?.contentType ?? 'application/json' };
+    if (this.meta) headers['x-wrpc-meta'] = this.meta;
     const options = { method: 'POST', headers, body: data };
     const send = async () => {
       try {
@@ -198,7 +221,14 @@ class ClientEventTransport extends ClientTransport {
       this.emit('message', data);
     });
     port1.start();
-    this.#worker.postMessage({ type: 'wrpc:connect' }, [port2]);
+    // Declared headers travel in the connect message for the port's
+    // consumer. The built-in proxy (client/proxy.js) ignores them — its own
+    // WrpcClient carries its own options — but a custom consumer that
+    // attaches ports to an RpcServer can hand them to attachPort.
+    const connect = { type: 'wrpc:connect' };
+    if (options.headers) connect.headers = options.headers;
+    if (options.meta) connect.meta = options.meta;
+    this.#worker.postMessage(connect, [port2]);
     this.active = true;
     this.emit('open');
   }

@@ -85,6 +85,7 @@ class Server extends Emitter {
   #onConnection(socket, req) {
     this.rpc.attachSocket(socket, {
       headers: req.headers,
+      url: req.url ?? '',
       remoteAddress: req.socket?.remoteAddress ?? socket.remoteAddress,
     });
   }

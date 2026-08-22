@@ -33,10 +33,12 @@ const codedError = (message, code, details) => {
 
 // A validator is either a plain function `(value) => value | throws`
 // (returning undefined keeps the original value) or a Standard Schema
-// (https://standardschema.dev) object carrying `~standard`.
-const runValidator = async (validator, value) => {
+// (https://standardschema.dev) object carrying `~standard`. `context` is
+// forwarded so a compiled input validator can reach what is NOT in args —
+// the connection headers a schema.headers part checks.
+const runValidator = async (validator, value, context = null) => {
   if (typeof validator === 'function') {
-    const result = await validator(value);
+    const result = await validator(value, context);
     return result === undefined ? value : result;
   }
   const standard = validator['~standard'];
@@ -314,7 +316,7 @@ class Procedure {
     if (hooks.preValidation.length > 0) await runHooks(hooks.preValidation, context, args);
     let input = args;
     if (inputValidator) {
-      input = await runValidator(inputValidator, args).catch((error) => {
+      input = await runValidator(inputValidator, args, context).catch((error) => {
         throw codedError(`Invalid arguments: ${error.message}`, 400, error.details);
       });
     }
@@ -398,7 +400,7 @@ class Procedure {
       const outputValidator = compiled?.output ?? this.output;
       if (hooks.preValidation.length > 0) await runHooks(hooks.preValidation, context, args);
       if (inputValidator) {
-        args = await runValidator(inputValidator, args).catch((error) => {
+        args = await runValidator(inputValidator, args, context).catch((error) => {
           throw codedError(`Invalid arguments: ${error.message}`, 400, error.details);
         });
       }
@@ -518,8 +520,19 @@ const compileInput = (ajv, schema, label) => {
     }
     parts.push({ part, argsKey, validate });
   }
-  if (parts.length === 0) return null;
-  return (args) => {
+  // The asymmetric part: headers are not an args slice — they live on
+  // context.meta.headers — so they get their own check instead of a row in
+  // INPUT_PARTS, and the closure takes the context runValidator forwards.
+  let headersValidate = null;
+  if (schema.headers !== undefined) {
+    try {
+      headersValidate = ajv.compile(schema.headers);
+    } catch (error) {
+      throw new TypeError(`${label}: schema.headers failed to compile: ${error.message}`);
+    }
+  }
+  if (parts.length === 0 && !headersValidate) return null;
+  return (args, context) => {
     const value = args && typeof args === 'object' ? args : {};
     let issues = null;
     for (const { part, argsKey, validate } of parts) {
@@ -527,6 +540,19 @@ const compileInput = (ajv, schema, label) => {
       issues ??= [];
       for (const item of validate.errors ?? []) {
         issues.push({ message: item.message, path: `/${part}${item.instancePath ?? ''}` });
+      }
+    }
+    if (headersValidate) {
+      // A COPY on purpose: client.meta.headers is frozen, and an injected
+      // ajv compiled with coerceTypes would otherwise throw writing the
+      // coerced value back (compiled validators are strict-mode code). The
+      // copy also keeps the snapshot honest — validation observes headers,
+      // it never rewrites them.
+      if (!headersValidate({ ...(context?.meta?.headers ?? {}) })) {
+        issues ??= [];
+        for (const item of headersValidate.errors ?? []) {
+          issues.push({ message: item.message, path: `/headers${item.instancePath ?? ''}` });
+        }
       }
     }
     if (issues) {
@@ -726,7 +752,11 @@ class Router {
   #compileFor(proc, label) {
     const schema = proc.schema;
     if (!schema) return null;
-    const hasInput = schema.params !== undefined || schema.querystring !== undefined || schema.body !== undefined;
+    const hasInput =
+      schema.params !== undefined ||
+      schema.querystring !== undefined ||
+      schema.body !== undefined ||
+      schema.headers !== undefined;
     const success = successResponse(proc);
     if (!hasInput && !success) return null; // passthrough-only schema (tags, ...)
     const ajv = this.#validation?.ajv ?? null;

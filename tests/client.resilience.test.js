@@ -475,6 +475,92 @@ test('a failed load() on reconnect does not kill the subscriptions silently', as
   await waitFor(() => state.subscribes === 2, 'the subscription was not restored after the reconnect');
 });
 
+// ---------------------------------------------------------------------------
+// Backoff correctness when the failure happens AFTER the socket opened: the
+// attempt counter is reset to 0 the moment 'open' fires, so a post-open
+// failure (restore, and later authenticate) must put it back before it
+// terminates — otherwise the cycle hammers minDelay forever.
+
+const sessionGatedBoot = async (t) => {
+  const definition = defineRouter({
+    auth: {
+      login: procedure({
+        access: 'public',
+        handler: async (context) => void context.client.startSession(undefined, { user: 'a' }),
+      }),
+    },
+    secret: {
+      peek: procedure({ access: 'session', handler: async () => 'ok' }),
+    },
+  });
+  const server = new Server({
+    router: definition,
+    host: '127.0.0.1',
+    port: 0,
+    protocol: 'http',
+    logger: false,
+    timeouts: { bind: 50 },
+    introspection: 'session',
+  });
+  await server.listen();
+  t.after(() => server.close());
+  return { server, port: server.address().port };
+};
+
+test('restore: a failing load() grows the backoff and eventually exhausts retries', async (t) => {
+  const { server, port } = await sessionGatedBoot(t);
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: { minDelay: 10, maxDelay: 1000, factor: 2, jitter: false, retries: 3 },
+  });
+  t.after(() => void client.close());
+  // introspection: 'session' + a ws login (which sets no cookie) is exactly
+  // the scenario in which restore's load() fails on every new socket.
+  client.use({ auth: { login: { access: 'public' } } });
+  await client.api.auth.login();
+  await client.load('secret');
+  assert.strictEqual(await client.api.secret.peek(), 'ok');
+
+  const delays = [];
+  let failures = 0;
+  client.on('reconnecting', ({ delay }) => void delays.push(delay));
+  client.on('restore-failed', () => void failures++);
+  const exhausted = new Promise((resolve) => client.on('reconnect-failed', resolve));
+
+  for (const connection of server.wsServer.connections) connection.terminate();
+
+  const result = await exhausted;
+  // Before the fix the counter reset to 0 on every open, so the schedule was
+  // [10, 10, 10, ...] forever and 'reconnect-failed' never fired at all.
+  assert.deepStrictEqual(delays, [10, 20, 40]);
+  assert.strictEqual(failures, 3);
+  assert.strictEqual(result.attempts, 3);
+});
+
+test('restore-failed: a throwing listener is escalated, not an unhandled rejection', async (t) => {
+  const { server, port } = await sessionGatedBoot(t);
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: { minDelay: 10, maxDelay: 20, factor: 2, jitter: false, retries: 1 },
+  });
+  t.after(() => void client.close());
+  client.use({ auth: { login: { access: 'public' } } });
+  await client.api.auth.login();
+  await client.load('secret');
+
+  const escalated = [];
+  client.on('error', (error) => void escalated.push(error.message));
+  client.on('restore-failed', () => {
+    throw new Error('listener boom');
+  });
+  const exhausted = new Promise((resolve) => client.on('reconnect-failed', resolve));
+  for (const connection of server.wsServer.connections) connection.terminate();
+  await exhausted;
+  assert.ok(escalated.includes('listener boom'));
+});
+
 test('close({ drain }) lets in-flight calls finish and refuses new ones with 503', async (t) => {
   const definition = router({
     slow: procedure({ access: 'public', handler: async () => timers.setTimeout(150, 'done') }),
@@ -567,7 +653,8 @@ const registerFake = (name, { persistent = true } = {}) => {
       instances.push(this);
     }
 
-    async open() {
+    async open(options = {}) {
+      this.lastOpen = options; // what the client resolved for THIS open
       if (this.dead) {
         queueMicrotask(() => this.emit('close'));
         throw new Error(`open failed (${this.url})`);
@@ -596,7 +683,9 @@ const registerFake = (name, { persistent = true } = {}) => {
     }
 
     terminate() {
-      this.active = false;
+      // The base ClientTransport contract: terminate reports the close, so
+      // the reconnect cycle a post-open failure forces can continue.
+      this.close();
     }
 
     online() {}
@@ -724,4 +813,403 @@ test('fallback: landing on a non-persistent transport fails live subscriptions l
   assert.match(errors[0].message, /cannot carry subscriptions/);
   assert.deepStrictEqual(fallbacks, [{ from: 'ws', to: 'http' }]);
   client.close();
+});
+
+// ---------------------------------------------------------------------------
+// The authenticate hook: awaited inside open() on the first connect, and on
+// every reconnect BEFORE the subscriptions are re-opened and units reloaded.
+
+const authBoot = async (t, { introspection = 'session' } = {}) => {
+  const order = [];
+  const state = { subscribes: 0, logins: 0 };
+  const definition = defineRouter({
+    auth: {
+      login: procedure({
+        access: 'public',
+        handler: async (context) => {
+          state.logins++;
+          order.push('login');
+          context.client.startSession(undefined, { user: 'ann' });
+        },
+      }),
+    },
+    feed: {
+      ticks: procedure.subscription({
+        access: 'session',
+        handler: async function* (_context, _args, { signal }) {
+          state.subscribes++;
+          order.push('subscribe');
+          await timers.setTimeout(60_000, undefined, { signal }).catch(() => {});
+        },
+      }),
+    },
+  });
+  const server = new Server({
+    router: definition,
+    host: '127.0.0.1',
+    port: 0,
+    protocol: 'http',
+    logger: false,
+    timeouts: { bind: 50 },
+    introspection,
+  });
+  await server.listen();
+  t.after(() => server.close());
+  return { server, port: server.address().port, order, state };
+};
+
+test('authenticate: awaited on first connect, and before restore on reconnect', async (t) => {
+  const { server, port, order, state } = await authBoot(t);
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnectTimeout: 10,
+    authenticate: (c) => c.call('auth/login'),
+  });
+  t.after(() => void client.close());
+  // connect() resolved authenticated: a session-gated load works right away
+  // even though the server's introspection itself requires a session.
+  assert.strictEqual(state.logins, 1);
+  await client.load('feed');
+  client.api.feed.ticks.subscribe({}, {});
+  await waitFor(() => state.subscribes === 1, 'the subscription never opened');
+
+  // Force a reconnect. The DECISIVE assertion is the arrival order on the
+  // new socket: login (the credential) must precede the re-subscribe, which
+  // an 'open' listener could never guarantee — and the session-gated
+  // subscription resuming at all proves the credential arrived first.
+  for (const connection of server.wsServer.connections) connection.terminate();
+  await waitFor(() => state.subscribes === 2, 'the subscription was not restored after the reconnect');
+  assert.deepStrictEqual(order, ['login', 'subscribe', 'login', 'subscribe']);
+  assert.strictEqual(state.logins, 2);
+});
+
+test('authenticate: the hook receives { reconnected, attempts }', async (t) => {
+  const { server, port } = await authBoot(t, { introspection: true });
+  const infos = [];
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnectTimeout: 10,
+    authenticate: (c, info) => void infos.push(info),
+  });
+  t.after(() => void client.close());
+  assert.deepStrictEqual(infos, [{ reconnected: false, attempts: 0 }]);
+  for (const connection of server.wsServer.connections) connection.terminate();
+  await waitFor(() => infos.length === 2, 'the hook never re-ran on reconnect');
+  assert.strictEqual(infos[1].reconnected, true);
+  assert.ok(infos[1].attempts >= 1);
+});
+
+test('authenticate: a failing hook walks the backoff and emits authenticate-failed', async (t) => {
+  const { server, port } = await authBoot(t, { introspection: true });
+  let allow = true;
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: { minDelay: 10, maxDelay: 1000, factor: 2, jitter: false, retries: 3 },
+    authenticate: () => {
+      if (!allow) throw new Error('credential rejected');
+    },
+  });
+  t.after(() => void client.close());
+
+  const delays = [];
+  const failed = [];
+  client.on('reconnecting', ({ delay }) => void delays.push(delay));
+  client.on('authenticate-failed', (info) => void failed.push(info));
+  const exhausted = new Promise((resolve) => client.on('reconnect-failed', resolve));
+
+  allow = false;
+  for (const connection of server.wsServer.connections) connection.terminate();
+  await exhausted;
+  // The same growth lock as the restore path: without the attempt-count
+  // restoration this would be [10, 10, 10, ...] forever.
+  assert.deepStrictEqual(delays, [10, 20, 40]);
+  assert.strictEqual(failed.length, 3);
+  assert.strictEqual(failed[0].error.message, 'credential rejected');
+  assert.strictEqual(failed[0].reconnected, true);
+  assert.ok(failed[0].attempts >= 1);
+});
+
+test('authenticate: a first-connect failure rejects connect() and leaves no zombie', async (t) => {
+  const { port } = await authBoot(t, { introspection: true });
+  const before = WrpcClient.connections.size;
+  await assert.rejects(
+    WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+      heartbeat: false,
+      logger: false,
+      reconnectTimeout: 10,
+      authenticate: () => {
+        throw new Error('bad password');
+      },
+    }),
+    (error) => error.message === 'bad password',
+  );
+  // open() had registered the client before the transport was reached; the
+  // rejection must not leave it behind for WrpcClient.online() to revive.
+  assert.strictEqual(WrpcClient.connections.size, before);
+});
+
+test('authenticate: a hook that closes the client stops the retry cycle', async (t) => {
+  const { server, port } = await authBoot(t, { introspection: true });
+  let fatal = false;
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: { minDelay: 5, maxDelay: 10, factor: 2, jitter: false, retries: 10 },
+    authenticate: (c) => {
+      if (!fatal) return;
+      c.close(); // the documented "a bad password won't fix itself" escape
+      throw new Error('give up');
+    },
+  });
+  const reconnecting = [];
+  client.on('reconnecting', (info) => void reconnecting.push(info));
+  fatal = true;
+  for (const connection of server.wsServer.connections) connection.terminate();
+  await waitFor(() => !WrpcClient.connections.has(client), 'close() inside the hook never took effect');
+  const settled = reconnecting.length;
+  await timers.setTimeout(60);
+  assert.strictEqual(reconnecting.length, settled, 'the cycle kept scheduling after close()');
+});
+
+test('authenticate: exhausted retries fall through to the next transport candidate', async (t) => {
+  const a = registerFake('authfba');
+  const b = registerFake('authfbb');
+  t.after(() => {
+    a.teardown();
+    b.teardown();
+  });
+  let calls = 0;
+  const client = await WrpcClient.connect('fake://x', {
+    transport: ['authfba', 'authfbb'],
+    heartbeat: false,
+    logger: false,
+    reconnect: { minDelay: 5, maxDelay: 10, factor: 2, jitter: false, retries: 1 },
+    authenticate: () => {
+      calls++;
+      if (calls === 1) return; // the first connect succeeds on candidate A
+      if (b.instances.some((i) => i.active)) return; // candidate B accepts
+      throw new Error('still refused on A');
+    },
+  });
+  t.after(() => void client.close());
+  const fallbacks = [];
+  client.on('transport-fallback', (info) => void fallbacks.push(info));
+  // close(), not kill(): candidate A must keep OPENING successfully so the
+  // failure that exhausts its retries is the authenticate hook, not the socket.
+  a.instances.at(-1).close();
+  await waitFor(() => b.instances.some((i) => i.active), 'the fallback candidate never opened');
+  assert.deepStrictEqual(fallbacks, [{ from: 'authfba', to: 'authfbb' }]);
+  assert.ok(calls >= 3, 'the hook must have been retried on A and re-run on B');
+});
+
+test('no authenticate hook: open fires before reconnect, restore unchanged', async (t) => {
+  const definition = router();
+  const { server, port } = await createServer(definition);
+  t.after(() => server.close());
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnectTimeout: 10,
+  });
+  t.after(() => void client.close());
+  await client.load('test');
+  const events = [];
+  client.on('open', () => void events.push('open'));
+  client.on('reconnect', () => void events.push('reconnect'));
+  for (const connection of server.wsServer.connections) connection.terminate();
+  await waitFor(() => events.includes('reconnect'), 'never reconnected');
+  assert.deepStrictEqual(events, ['open', 'reconnect']);
+});
+
+// ---------------------------------------------------------------------------
+// The refresh hook: single-flight, one-shot retry, original error surfaces.
+
+const refreshBoot = async (t) => {
+  const state = { ok: false, ids: [], hits: 0 };
+  const definition = defineRouter({
+    flaky: {
+      get: procedure({
+        access: 'public',
+        handler: async (context) => {
+          state.hits++;
+          state.ids.push(context.uuid);
+          if (!state.ok) {
+            const error = new Error('expired');
+            error.code = 401;
+            error.expose = true;
+            throw error;
+          }
+          return 'fresh';
+        },
+      }),
+      teapot: procedure({
+        access: 'public',
+        handler: async () => {
+          const error = new Error('teapot');
+          error.code = 418;
+          error.expose = true;
+          throw error;
+        },
+      }),
+    },
+  });
+  const { server, port } = await createServer(definition);
+  t.after(() => server.close());
+  return { server, port, state };
+};
+
+test('refresh: a 401 is refreshed once and the call retried with a fresh packet', async (t) => {
+  const { port, state } = await refreshBoot(t);
+  let refreshes = 0;
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    refresh: () => {
+      refreshes++;
+      state.ok = true;
+    },
+  });
+  t.after(() => void client.close());
+  await client.load('flaky');
+  assert.strictEqual(await client.api.flaky.get(), 'fresh');
+  assert.strictEqual(refreshes, 1);
+  // Two server-side invocations — the refusal and the retry — each its own
+  // packet (context uuids differ), never a re-send of the same id.
+  assert.strictEqual(state.hits, 2);
+  assert.notStrictEqual(state.ids[0], state.ids[1]);
+});
+
+test('refresh: ten concurrent 401s produce exactly one refresh', async (t) => {
+  const { port, state } = await refreshBoot(t);
+  let refreshes = 0;
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    refresh: async () => {
+      refreshes++;
+      await timers.setTimeout(20);
+      state.ok = true;
+    },
+  });
+  t.after(() => void client.close());
+  await client.load('flaky');
+  const results = await Promise.all(Array.from({ length: 10 }, () => client.api.flaky.get()));
+  assert.deepStrictEqual(results, new Array(10).fill('fresh'));
+  assert.strictEqual(refreshes, 1);
+});
+
+test('refresh: a failing refresh surfaces the ORIGINAL error, and retries never loop', async (t) => {
+  const { port, state } = await refreshBoot(t);
+  let refreshes = 0;
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    refresh: () => {
+      refreshes++;
+      throw new Error('refresh broke');
+    },
+  });
+  t.after(() => void client.close());
+  await client.load('flaky');
+  await assert.rejects(client.api.flaky.get(), (error) => error.code === 401 && error.message === 'expired');
+  assert.strictEqual(refreshes, 1);
+
+  // A refresh that "succeeds" without fixing anything: the retry's second
+  // 401 surfaces as-is instead of triggering another refresh.
+  const stubborn = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    refresh: () => void refreshes++,
+  });
+  t.after(() => void stubborn.close());
+  refreshes = 0;
+  state.ok = false;
+  await stubborn.load('flaky');
+  await assert.rejects(stubborn.api.flaky.get(), (error) => error.code === 401);
+  assert.strictEqual(refreshes, 1);
+});
+
+test('refresh: codes outside `on` do not trigger it, and `on` widens the trigger', async (t) => {
+  const { port, state } = await refreshBoot(t);
+  let refreshes = 0;
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    refresh: { on: [401, 403], handler: () => void refreshes++ },
+  });
+  t.after(() => void client.close());
+  await client.load('flaky');
+  await assert.rejects(client.api.flaky.teapot(), (error) => error.code === 418);
+  assert.strictEqual(refreshes, 0);
+  state.ok = true;
+  assert.strictEqual(await client.api.flaky.get(), 'fresh');
+});
+
+test('refresh: never fires for calls made inside the authenticate hook', async (t) => {
+  const { port } = await refreshBoot(t);
+  let refreshes = 0;
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    authenticate: async (c) => {
+      // A 401 inside the hook is the hook's to handle — a refresh here
+      // would recurse into the very flow that is authenticating.
+      await c.call('flaky/get').catch(() => {});
+    },
+    refresh: () => void refreshes++,
+  });
+  t.after(() => void client.close());
+  assert.strictEqual(refreshes, 0);
+});
+
+test('headers: the function form is re-evaluated on every open', async (t) => {
+  const fake = registerFake('hdrfake');
+  t.after(() => fake.teardown());
+  let version = 0;
+  const client = await WrpcClient.connect('fake://x', {
+    transport: ['hdrfake'],
+    heartbeat: false,
+    logger: false,
+    reconnect: { minDelay: 5, maxDelay: 10, factor: 2, jitter: false, retries: 3 },
+    headers: () => ({ 'x-app-version': String(++version) }),
+  });
+  t.after(() => void client.close());
+  const transport = fake.instances.at(-1);
+  assert.deepStrictEqual(transport.lastOpen.headers, { 'x-app-version': '1' });
+  // The reconnect resolves the function AGAIN — a rotated value is presented,
+  // not the one frozen at construction.
+  transport.close();
+  await waitFor(() => transport.lastOpen.headers?.['x-app-version'] === '2', 'the reconnect kept the stale headers');
+});
+
+test('meta: the connection-phase option rides open() alongside headers', async (t) => {
+  const fake = registerFake('metafake');
+  t.after(() => fake.teardown());
+  let n = 0;
+  const client = await WrpcClient.connect('fake://x', {
+    transport: ['metafake'],
+    heartbeat: false,
+    logger: false,
+    reconnect: { minDelay: 5, maxDelay: 10, factor: 2, jitter: false, retries: 3 },
+    meta: () => ({ v: String(++n) }),
+  });
+  t.after(() => void client.close());
+  const transport = fake.instances.at(-1);
+  assert.deepStrictEqual(transport.lastOpen.meta, { v: '1' });
+  transport.close();
+  await waitFor(() => transport.lastOpen.meta?.v === '2', 'the reconnect kept the stale meta');
+});
+
+test('headers: an invalid option throws loudly at construction', async () => {
+  const WsTransport = WrpcClient.transport.ws;
+  assert.throws(() => new WrpcClient('ws://x', new WsTransport('ws://x'), { headers: ['nope'] }), /options\.headers/);
 });

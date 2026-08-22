@@ -106,6 +106,14 @@ const state = { log: [], live: new Set(), closed: 0 };
 const router = defineRouter({
   test: {
     hello: procedure({ access: 'public', handler: async (_context, { name }) => `Hello, ${name}` }),
+    peekMeta: procedure({
+      access: 'public',
+      handler: async (context) => ({
+        url: context.meta.url,
+        hasHeaders: Object.keys(context.meta.headers).length > 0,
+        appVersion: context.meta.headers['x-app-version'] ?? null,
+      }),
+    }),
     fail: procedure({
       access: 'public',
       handler: async () => {
@@ -179,6 +187,7 @@ test('sse: a full RPC session over POST + event stream', async (t) => {
   const client = await WrpcClient.connect(`http://127.0.0.1:${port}/api`, {
     transport: 'sse',
     heartbeat: false,
+    headers: { 'X-App-Version': '7.7' },
   });
   t.after(() => void client.close());
 
@@ -189,6 +198,13 @@ test('sse: a full RPC session over POST + event stream', async (t) => {
 
   await t.test('errors keep their code', async () => {
     await assert.rejects(client.api.test.fail(), (error) => error.code === 418);
+  });
+
+  await t.test('the channel client carries the meta of the GET that opened it', async () => {
+    const meta = await client.call('test/peekMeta');
+    assert.ok(meta.url.includes('/api/events'), `meta.url is the opening GET's (got '${meta.url}')`);
+    assert.strictEqual(meta.hasHeaders, true);
+    assert.strictEqual(meta.appVersion, '7.7', 'declared headers ride the stream GET as real ones');
   });
 
   await t.test('server events reach the stream', async () => {

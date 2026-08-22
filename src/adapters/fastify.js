@@ -117,6 +117,7 @@ const registerRestRoutes = (fastify, rpc, options) => {
           method: request.method,
           headers: request.headers,
           remoteAddress: request.ip,
+          url: request.url,
         },
         target,
       );
@@ -343,6 +344,7 @@ const wrpcFastify = async (fastify, options = {}) => {
   source.on('connection', (socket, req) => {
     rpc.attachSocket(socket, {
       headers: req.headers,
+      url: req.url ?? '',
       remoteAddress: req.socket?.remoteAddress ?? socket.remoteAddress,
     });
   });
