@@ -339,7 +339,10 @@ only by adapter tests; never a runtime dependency).
   `method.withMeta({...})(args)`): an optional additive `meta` field on
   `call`/`subscribe`/`event` packets, surfaced as `context.callMeta`
   (frozen-empty default) and `client.meta.data`; deliberately outside the
-  `validation` option. Plain HTTP callers pass the `x-wrpc-meta` header.
+  `validation` option. Plain HTTP callers pass the `x-wrpc-meta` header
+  (percent-encoded JSON) or the curl-friendly `x-wrpc-meta-<key>` prefixed
+  form (string values, the S3 `x-amz-meta-*` idiom; the JSON header wins a
+  collision).
   Both channels share one sanitizer: `metaMaxBytes` cap (default 2048) on
   the encoded input, plain-object check, `__proto__` drop, freeze.
 - Pluggable session token carrier (`sessions: { transport }`, structural via

@@ -108,7 +108,10 @@ size-capped, sanitized, and never able to override an observed request
 header — wrpc's own implementation reads observed headers first and drops
 reserved names (`cookie`, `host`, `origin`, `sec-*`, `content-*`, `proxy-*`,
 `x-wrpc-*`) from the query path outright. The `x-wrpc-meta` request header
-carries per-request metadata for plain HTTP callers.
+(percent-encoded JSON) carries per-request metadata for plain HTTP callers,
+with `x-wrpc-meta-<key>: <value>` accepted as an equivalent per-key
+spelling — string values only, keys lowercased by HTTP, the JSON header
+winning a key collision.
 
 ## Packets
 

@@ -112,28 +112,56 @@ const declaredHeaders = (url, limit, log) => {
 // bag is deliberately outside schema validation: it is a label for
 // cross-cutting hooks, not procedure input.
 const META_HEADER = 'x-wrpc-meta';
+const META_PREFIX = 'x-wrpc-meta-';
 const META_PARAM = 'wrpc_meta';
 
+// The prefixed spelling for external HTTP callers — the S3 x-amz-meta-*
+// idiom: `x-wrpc-meta-idem: 9f3c` is a header a human can type and a
+// gateway can inject or strip, where the percent-encoded JSON one is not.
+// Values stay STRINGS (the same by-design semantics as REST query args) and
+// key case is lost to HTTP's lowercasing — which is why this is the
+// convenience form, not the canonical one: the wrpc client keeps sending
+// the single JSON header (type-faithful, case-preserving, one stable CORS
+// entry), and on a key collision the JSON header wins.
+const prefixedData = (headers, limit) => {
+  let data = null;
+  let bytes = 0;
+  for (const key in headers) {
+    if (!key.startsWith(META_PREFIX)) continue;
+    const name = key.slice(META_PREFIX.length);
+    // A duplicated header arrives as an array — skipped, refusal-style,
+    // like every other malformed label; '__proto__' never carries over.
+    if (name.length === 0 || name === '__proto__' || typeof headers[key] !== 'string') continue;
+    bytes += name.length + headers[key].length;
+    if (bytes > limit) return null;
+    (data ??= { __proto__: null })[name] = headers[key];
+  }
+  return data;
+};
+
 const declaredData = (headers, url, limit, log) => {
+  const prefixed = headers ? prefixedData(headers, limit) : null;
   let raw = null;
   const header = headers?.[META_HEADER];
   if (typeof header === 'string' && header.length > 0) {
     if (header.length > limit) {
       log.warn({ event: 'meta.oversize', bytes: header.length });
-      return null;
+      return sanitizeMeta(prefixed, limit);
     }
     try {
       raw = decodeURIComponent(header);
     } catch {
-      return null;
+      return sanitizeMeta(prefixed, limit);
     }
   } else {
     const query = split(url ?? '', '?')[1];
-    if (!query || query.length > limit) return null;
-    raw = new URLSearchParams(query).get(META_PARAM);
+    if (query && query.length <= limit) raw = new URLSearchParams(query).get(META_PARAM);
   }
-  if (!raw) return null;
-  return sanitizeMeta(jsonParse(raw), limit);
+  const declared = raw ? jsonParse(raw) : null;
+  const canonical = typeof declared === 'object' && declared !== null && !Array.isArray(declared) ? declared : null;
+  if (!canonical) return sanitizeMeta(prefixed, limit);
+  // Prefixed first, canonical second: the JSON header wins a key collision.
+  return sanitizeMeta(prefixed ? { ...prefixed, ...canonical } : canonical, limit);
 };
 
 // A capability refusal ("this transport cannot carry that") is part of the

@@ -153,9 +153,28 @@ onRequest: async (context) => {
 },
 ```
 
-A REST caller (curl, another service) passes the same thing as the
-`x-wrpc-meta` header — for a per-request client the connection *is* the
-call, so the header doubles as `context.callMeta`. The one place per-call
+A REST caller (curl, another service) passes the same thing over headers —
+for a per-request client the connection *is* the call, so they double as
+`context.callMeta`. Two spellings are accepted:
+
+```bash
+# The prefixed form — the S3 x-amz-meta-* idiom, one header per key,
+# nothing to encode. Values arrive as STRINGS (the same by-design
+# semantics as REST query args) and keys are lowercased by HTTP itself.
+curl -H 'x-wrpc-meta-idem: 9f3c' -H 'x-wrpc-meta-locale: de-CH' …
+
+# The canonical form — percent-encoded JSON in ONE header. Type-faithful
+# (numbers stay numbers), case-preserving, and one stable name on the CORS
+# allowlist — which is why the wrpc client emits this one, and why it wins
+# a key collision with the prefixed form.
+curl -H "x-wrpc-meta: $(node -p 'encodeURIComponent(JSON.stringify({ idem: \"9f3c\" }))')" …
+```
+
+The prefixed form exists for humans and infrastructure — gateways can
+inject or strip individual keys without JSON surgery. Browser cross-origin
+callers should stay on the canonical header: with credentials, CORS has no
+header wildcards, so every `x-wrpc-meta-<key>` name would need its own
+`Access-Control-Allow-Headers` entry. The one place per-call
 meta does not reach is the client's **mapped REST leg** (a procedure with
 `http` called over the http transport): there the connection-phase header
 already rides every request, and the packet field has no packet to ride.

@@ -665,3 +665,49 @@ test('sessions.transport: a bearer strategy restores from Authorization and skip
   const miss = await fetch(`${origin}/api/auth/whoami`, { headers: { authorization: 'Bearer nope' } });
   assert.strictEqual(miss.status, 403);
 });
+
+test('x-wrpc-meta-*: prefixed headers are the curl-friendly spelling (strings, JSON header wins)', async (t) => {
+  const router = defineRouter({
+    probe: {
+      peek: procedure({
+        access: 'public',
+        handler: async (context) => ({ call: { ...context.callMeta }, data: { ...context.meta.data } }),
+      }),
+    },
+  });
+  const { origin } = await startServer(t, { router, metaMaxBytes: 128 });
+
+  // The S3 x-amz-meta-* idiom: one header per key, no encoding needed.
+  const res = await fetch(`${origin}/api/probe/peek`, {
+    headers: { 'x-wrpc-meta-idem': '9f3c', 'x-wrpc-meta-locale': 'de-CH' },
+  });
+  const { result } = await res.json();
+  assert.deepStrictEqual(result.call, { idem: '9f3c', locale: 'de-CH' });
+  assert.deepStrictEqual(result.data, { idem: '9f3c', locale: 'de-CH' });
+
+  // On a key collision the canonical JSON header wins — it is the
+  // type-faithful channel the wrpc client emits.
+  const canonical = encodeURIComponent(JSON.stringify({ idem: 'json-wins', retries: 3 }));
+  const both = await fetch(`${origin}/api/probe/peek`, {
+    headers: { 'x-wrpc-meta': canonical, 'x-wrpc-meta-idem': 'prefixed', 'x-wrpc-meta-extra': 'kept' },
+  });
+  const merged = (await both.json()).result.call;
+  assert.deepStrictEqual(merged, { idem: 'json-wins', retries: 3, extra: 'kept' });
+
+  // Refusals: a bare prefix, a __proto__ key, and the size cap.
+  const bad = await fetch(`${origin}/api/probe/peek`, {
+    headers: { 'x-wrpc-meta-': 'nameless', 'x-wrpc-meta-__proto__': 'nope' },
+  });
+  assert.deepStrictEqual((await bad.json()).result.call, {});
+  assert.strictEqual({}.polluted, undefined);
+  const over = await fetch(`${origin}/api/probe/peek`, {
+    headers: { 'x-wrpc-meta-pad': 'x'.repeat(200) },
+  });
+  assert.deepStrictEqual((await over.json()).result.call, {}, 'over the cap the whole label is refused');
+
+  // A malformed canonical header does not take the prefixed ones with it.
+  const mixed = await fetch(`${origin}/api/probe/peek`, {
+    headers: { 'x-wrpc-meta': '%not-json', 'x-wrpc-meta-idem': 'survives' },
+  });
+  assert.deepStrictEqual((await mixed.json()).result.call, { idem: 'survives' });
+});
