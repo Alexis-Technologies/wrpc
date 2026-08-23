@@ -1027,32 +1027,8 @@ test('no authenticate hook: open fires before reconnect, restore unchanged', asy
 // ---------------------------------------------------------------------------
 // The refresh hook: single-flight, one-shot retry, original error surfaces.
 
-// `refuseTogether: N` parks the first N refusals until all N have arrived,
-// then releases them in one tick. Only calls issued BEFORE a single-flight
-// refresh starts may join it — one issued during a run is the deadlock
-// guard's case and surfaces its own refusal — so a test proving "N refusals,
-// one run" needs every refusal to reach the client while the run is open.
-// Waiting on the clock cannot promise that: the refusals are what STARTS the
-// run, so any spread between them (whichever side it comes from) eats the
-// window, and a spread this process never produces on one machine is exactly
-// what a loaded two-core runner does produce. Holding them server-side makes
-// the spread zero by construction instead of small by luck.
-const refuseGate = (count) => {
-  if (!count) return () => Promise.resolve();
-  let parked = [];
-  return () =>
-    new Promise((resolve) => {
-      parked.push(resolve);
-      if (parked.length < count) return;
-      const release = parked;
-      parked = [];
-      for (const one of release) one();
-    });
-};
-
-const refreshBoot = async (t, { refuseTogether = 0 } = {}) => {
+const refreshBoot = async (t) => {
   const state = { ok: false, ids: [], hits: 0 };
-  const gate = refuseGate(refuseTogether);
   const definition = defineRouter({
     flaky: {
       get: procedure({
@@ -1061,7 +1037,6 @@ const refreshBoot = async (t, { refuseTogether = 0 } = {}) => {
           state.hits++;
           state.ids.push(context.uuid);
           if (!state.ok) {
-            await gate();
             const error = new Error('expired');
             error.code = 401;
             error.expose = true;
@@ -1086,15 +1061,72 @@ const refreshBoot = async (t, { refuseTogether = 0 } = {}) => {
   return { server, port, state };
 };
 
-// Hold a refresh run open for a fixed number of event-loop TURNS rather than
-// a fixed number of milliseconds. Paired with `refuseTogether`, everything
-// this has to cover is already written: the answers left the server in one
-// tick and only have to cross loopback inside this process. Counting turns is
-// what makes it survive a starved runner — under contention each turn simply
-// takes longer, so the wait stretches with the machine instead of expiring on
-// it, which is precisely how a millisecond constant fails.
-const settleTurns = async (turns = 10) => {
-  for (let i = 0; i < turns; i++) await timers.setTimeout(0);
+// A transport the test drives by hand. `sent` is every packet the client
+// wrote (it writes synchronously, so they are all there the moment the calls
+// are issued) and `deliver` feeds answers back.
+//
+// The single-flight tests below use it because the property they assert —
+// refusals arriving while a run is open all join that one run — is a client
+// invariant with a precondition no wire can guarantee. Over a real socket the
+// refusals are both what STARTS the run and what has to arrive during it, so
+// any delivery spread eats the window: emission can be forced simultaneous,
+// but a loaded Linux box may still split one write burst across reads where
+// loopback here coalesces it. Every clock-based window tried against this
+// raced. Here the test delivers the refusals and holds the run open itself,
+// so the precondition is established rather than hoped for. The real-socket
+// refresh path stays covered by the server-backed tests around these.
+const registerScripted = (name) => {
+  const sent = [];
+  let live = null;
+  class Scripted extends Emitter {
+    constructor(url) {
+      super();
+      this.url = url;
+      this.persistent = true;
+      this.heartbeat = false;
+      this.active = false;
+      live = this;
+    }
+
+    async open() {
+      this.active = true;
+      this.emit('open');
+    }
+
+    write(packet) {
+      sent.push(packet);
+      return true;
+    }
+
+    send(packet) {
+      return this.write(packet);
+    }
+
+    close() {
+      this.active = false;
+      this.emit('close');
+    }
+
+    terminate() {
+      this.close();
+    }
+
+    online() {}
+
+    offline() {}
+  }
+  WrpcClient.transport[name] = Scripted;
+  return {
+    sent,
+    calls: () => sent.filter((packet) => packet.type === 'call'),
+    deliver: (packet) => void live.emit('message', JSON.stringify(packet)),
+    refuse: (packet, code = 401) =>
+      void live.emit(
+        'message',
+        JSON.stringify({ type: 'callback', id: packet.id, error: { message: 'expired', code } }),
+      ),
+    teardown: () => delete WrpcClient.transport[name],
+  };
 };
 
 test('refresh: a 401 is refreshed once and the call retried with a fresh packet', async (t) => {
@@ -1120,22 +1152,42 @@ test('refresh: a 401 is refreshed once and the call retried with a fresh packet'
 });
 
 test('refresh: ten concurrent 401s produce exactly one refresh', async (t) => {
-  const { port, state } = await refreshBoot(t, { refuseTogether: 10 });
+  const wire = registerScripted('scripted-join');
+  t.after(wire.teardown);
   let refreshes = 0;
-  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const client = await WrpcClient.connect('ws://scripted/api', {
+    transport: 'scripted-join',
     heartbeat: false,
     logger: false,
     reconnect: false,
     refresh: async () => {
       refreshes++;
-      await settleTurns();
-      state.ok = true;
+      await held;
     },
   });
   t.after(() => void client.close());
-  await client.load('flaky');
-  const results = await Promise.all(Array.from({ length: 10 }, () => client.api.flaky.get()));
-  assert.deepStrictEqual(results, new Array(10).fill('fresh'));
+
+  // Issued before any run exists, so every one of them is allowed to join
+  // (a call issued DURING a run is the deadlock guard's case instead).
+  const calls = Array.from({ length: 10 }, () => client.call('flaky/get'));
+  const issued = wire.calls();
+  assert.strictEqual(issued.length, 10, 'the client writes synchronously: all ten are on the wire');
+
+  // Refused in one turn, and the run cannot end until this test says so —
+  // the window is a fact here, not a race.
+  for (const packet of issued) wire.refuse(packet);
+  await waitFor(() => refreshes === 1, 'the refresh never ran');
+  release();
+
+  // Each joined caller re-issues exactly once, under a fresh packet id.
+  await waitFor(() => wire.calls().length === 20, 'the refused calls never re-issued');
+  const retries = wire.calls().slice(10);
+  assert.strictEqual(new Set(retries.map((packet) => packet.id)).size, 10, 'each retry has its own id');
+  for (const packet of retries) wire.deliver({ type: 'callback', id: packet.id, result: 'fresh' });
+
+  assert.deepStrictEqual(await Promise.all(calls), new Array(10).fill('fresh'));
   assert.strictEqual(refreshes, 1);
 });
 
@@ -1574,26 +1626,39 @@ test('heartbeat-timeout: a throwing listener surfaces through error, never as an
 });
 
 test('refresh: a failing run logs and emits refresh-failed, once for all joined callers', async (t) => {
-  const { port } = await refreshBoot(t, { refuseTogether: 2 });
+  const wire = registerScripted('scripted-failing');
+  t.after(wire.teardown);
   const failures = [];
-  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+  let started = 0;
+  let release;
+  const held = new Promise((resolve) => (release = resolve));
+  const client = await WrpcClient.connect('ws://scripted/api', {
+    transport: 'scripted-failing',
     heartbeat: false,
     logger: false,
     reconnect: false,
-    // Held open while both refusals — released together by the gate — reach
-    // the client, so both join one single-flight run. A handler that finished
-    // first would start a second run, which is the behaviour under test.
+    // Held open until this test releases it, so both refusals are inside the
+    // run by construction. A handler that finished before the second refusal
+    // landed would start a second run — which is the behaviour under test.
     refresh: async () => {
-      await settleTurns();
+      started++;
+      await held;
       throw new Error('refresh broke');
     },
   });
   t.after(() => void client.close());
   client.on('refresh-failed', (info) => void failures.push(info));
-  await client.load('flaky');
+
   // Two concurrent refusals join ONE refresh run: the callers surface their
   // original 401s, the run's own failure is reported exactly once.
-  const results = await Promise.allSettled([client.api.flaky.get(), client.api.flaky.get()]);
+  const calls = [client.call('flaky/get'), client.call('flaky/get')];
+  const issued = wire.calls();
+  assert.strictEqual(issued.length, 2);
+  for (const packet of issued) wire.refuse(packet);
+  await waitFor(() => started === 1, 'the refresh never started');
+  release();
+
+  const results = await Promise.allSettled(calls);
   assert.ok(results.every((r) => r.status === 'rejected' && r.reason.code === 401));
   assert.strictEqual(failures.length, 1);
   assert.strictEqual(failures[0].error.message, 'refresh broke');
