@@ -11,6 +11,10 @@ narrower promise — see
 
 ## [Unreleased]
 
+This package has not been published to npm yet — there is no `[1.0.0]`
+release section until the first publish; everything below lands there
+verbatim on release day.
+
 ### Added
 
 **2026-08 re-review batch (resilience, security, scale, types)**
@@ -621,5 +625,4 @@ only by adapter tests; never a runtime dependency).
   the code (zero dependencies, `.d.ts`/`tsd` pairing, the uws teardown trap
   that wedges `node --test`), and the manual release checklist.
 
-This package has not been published to npm yet — there is no `[1.0.0]`
-release section until the first publish.
+[Unreleased]: https://github.com/Alexis-Technologies/wrpc/commits/main
