@@ -15,7 +15,7 @@ export interface TokenStore {
   delete(key: string): unknown | Promise<unknown>;
 }
 
-export declare function isTokenStore(value: unknown): boolean;
+export declare function isTokenStore(value: unknown): value is TokenStore;
 
 /** In-memory, per-tab: a Map IS the contract. */
 export declare function memoryStore(): Map<string, unknown>;

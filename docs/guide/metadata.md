@@ -97,7 +97,11 @@ The query path is sanitized server-side, and every rule is a refusal, never
 an error — an oversize or malformed label leaves the connection with no
 label, not without a connection:
 
-- capped on the **encoded** length (`metaMaxBytes`, default 2048);
+- capped on the **encoded** length (`metaMaxBytes`, default 2048). On ws the
+  cap is measured over the **whole connect-URL query**, so application query
+  parameters share the budget with the declared bags; the client refuses an
+  oversize bag with a `meta.oversize` warning instead of sending what the
+  server would silently drop whole;
 - a flat `string → string` map only; names normalized to
   [kebab-case](#key-casing);
 - reserved names dropped: `cookie`, `host`, `origin`, and the `sec-`,

@@ -33,6 +33,8 @@ Options:
   --package <specifier> Where to import SubscriptionContract from (default: @alexify/wrpc)
   --schema <path>       Also write the raw introspection as a module for
                         client.use(); '-' writes to stdout
+  --openapi <path>      Also write an OpenAPI 3 document projected from the
+                        procedures that declare an 'http' mapping
   --format <cjs|esm>    Module format for --schema (default: cjs)
   -h, --help            Show this help
   -v, --version         Show the wrpc version
@@ -52,8 +54,18 @@ generated file imports `SubscriptionContract` from wherever you say.
 or `export default {...}` with `--format esm`). It is what
 [`client.use()`](./typed-client#static-introspection) consumes to scaffold the
 api with no introspection round-trip — the runtime counterpart of the
-generated types. One stdout per run: `--schema -` and `--out -` cannot be
-combined.
+generated types. One stdout per run across `--out`, `--schema` and
+`--openapi`.
+
+`--openapi` writes a third artifact from the same fetch: an **OpenAPI 3
+document** projected from every procedure that declares an [`http`
+mapping](./rest) — verb, `/vN`-versioned path, declared status, path/query
+parameters and request body straight from the fastify-shaped `schema` parts,
+plus the wire error object as the default response. A mechanical projection,
+not an inference: what the introspection carries is what the document says.
+(Under the fastify adapter you can also let `@fastify/swagger` build one
+from the delegated routes; `--openapi` covers the built-in `Server` and
+every other host.)
 
 ## Describing procedures
 

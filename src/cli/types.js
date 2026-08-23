@@ -51,6 +51,9 @@ Options:
   --schema <path>       Also write the raw introspection as a module for
                         client.use(); '-' writes to stdout (fed by the same
                         fetch as the types)
+  --openapi <path>      Also write an OpenAPI 3 document projected from the
+                        procedures that declare an 'http' mapping; '-' writes
+                        to stdout (same fetch again)
   --format <cjs|esm>    Module format for --schema (default: cjs)
   -h, --help            Show this help
   -v, --version         Show the wrpc version
@@ -70,7 +73,7 @@ const fail = (message) => {
 // ---------------------------------------------------------------------------
 // argv
 
-const FLAGS_WITH_VALUE = new Set(['--out', '--units', '--interface', '--package', '--schema', '--format']);
+const FLAGS_WITH_VALUE = new Set(['--out', '--units', '--interface', '--package', '--schema', '--format', '--openapi']);
 
 const parseArgs = (argv) => {
   const options = { units: [], interfaceName: DEFAULT_INTERFACE, packageName: DEFAULT_PACKAGE };
@@ -97,6 +100,7 @@ const parseArgs = (argv) => {
         for (let n = 0; n < names.length; n++) options.units.push(names[n].trim());
       } else if (arg === '--interface') options.interfaceName = value;
       else if (arg === '--schema') options.schema = value;
+      else if (arg === '--openapi') options.openapi = value;
       else if (arg === '--format') options.format = value;
       else options.packageName = value;
       continue;
@@ -124,7 +128,8 @@ const parseArgs = (argv) => {
   }
   // Two artifacts cannot share one stdout: the result would be a .d.ts and a
   // module concatenated into something that is neither.
-  if (options.schema === '-' && options.out === '-') fail('--schema - and --out - cannot both write to stdout');
+  const stdouts = [options.out, options.schema, options.openapi].filter((target) => target === '-');
+  if (stdouts.length > 1) fail("only one of --out, --schema and --openapi may write to stdout ('-')");
   if (options.schema !== undefined && options.format === undefined) options.format = 'cjs';
   return { ...options, url };
 };
@@ -236,6 +241,47 @@ const signatureOf = (info, target, warn) => {
   return signature;
 };
 
+// The typed-event blocks: the introspection's `on` map (inbound handlers)
+// becomes the contract's `sends` key — what typed client.sendEvent carries —
+// and the declared `emits` map becomes `events`, the listener/responder
+// types on the unit emitter. Same allowlisted signature language as calls.
+const renderSends = (unitKey, inbound, warn) => {
+  if (!isFieldMap(inbound)) {
+    warn(`unit '${unitKey}' has a non-object 'on' block; skipped`);
+    return [];
+  }
+  const entries = [];
+  for (const name of Object.keys(inbound).sort()) {
+    const info = inbound[name];
+    if (!isFieldMap(info)) continue;
+    const signature = signatureOf(info, `${unitKey}/on.${name}`, warn);
+    const args = signature?.args === undefined ? 'unknown' : renderType(signature.args, warn);
+    entries.push(`    ${quoteKey(name)}: ${args};`);
+  }
+  if (entries.length === 0) return [];
+  return ['  sends: {', ...entries, '  };'];
+};
+
+const renderEmits = (unitKey, emits, warn) => {
+  if (!isFieldMap(emits)) {
+    warn(`unit '${unitKey}' has a non-object 'emits' block; skipped`);
+    return [];
+  }
+  const entries = [];
+  for (const name of Object.keys(emits).sort()) {
+    const descriptor = emits[name];
+    if (!isFieldMap(descriptor)) {
+      warn(`${unitKey}.emits.${name} is not a descriptor; skipped`);
+      continue;
+    }
+    const data = descriptor.data === undefined ? 'unknown' : renderType(descriptor.data, warn);
+    const returns = descriptor.returns === undefined ? 'void' : renderType(descriptor.returns, warn);
+    entries.push(`    ${quoteKey(name)}: (data: ${data}) => ${returns};`);
+  }
+  if (entries.length === 0) return [];
+  return ['  events: {', ...entries, '  };'];
+};
+
 const renderMethod = (unitKey, method, info, warn) => {
   const target = `${unitKey}/${method}`;
   const signature = signatureOf(info, target, warn);
@@ -285,6 +331,8 @@ const renderTypes = (introspection, options = {}) => {
     }
     const body = [];
     for (const method of Object.keys(methods).sort()) {
+      // The reserved typed-event blocks, rendered below — never methods.
+      if (method === 'on' || method === 'emits') continue;
       const info = methods[method];
       if (!isFieldMap(info)) {
         warn(`${unitKey}/${method} is not a method descriptor; skipped`);
@@ -294,6 +342,8 @@ const renderTypes = (introspection, options = {}) => {
       const rendered = renderMethod(unitKey, method, info, warn);
       for (let n = 0; n < rendered.length; n++) body.push(rendered[n]);
     }
+    if (methods.emits !== undefined) body.push(...renderEmits(unitKey, methods.emits, warn));
+    if (methods.on !== undefined) body.push(...renderSends(unitKey, methods.on, warn));
     // A unit CAN have no callable methods — one that only declares inbound
     // event handlers (`on: {...}`) introspects as an empty method map. It is
     // still worth emitting: the unit object is an Emitter, which is where its
@@ -314,6 +364,128 @@ const renderTypes = (introspection, options = {}) => {
   if (subscriptions > 0) lines.push(`import type { ${MARKER} } from '${packageName}';`, '');
   lines.push(`export interface ${interfaceName} {`, ...units, '}', '');
   return lines.join('\n');
+};
+
+// ---------------------------------------------------------------------------
+// OpenAPI projection
+//
+// `introspect()` already carries everything a path item needs — the
+// effective `http` mapping (verb, path, status, versioned) and the
+// fastify-shaped `schema` parts (params/querystring/body, real JSON
+// Schema) — so the OpenAPI document is a mechanical projection, not an
+// inference. What the closed shape language is to the .d.ts, JSON.stringify
+// is to this file: every wire-sourced value lands as DATA in one JSON
+// literal, never as code or as a key outside it.
+
+// ':id' path segments -> '{id}'.
+const openApiPath = (path) => {
+  const segments = path.split('/');
+  for (let i = 0; i < segments.length; i++) {
+    if (segments[i].startsWith(':')) segments[i] = `{${segments[i].slice(1)}}`;
+  }
+  return segments.join('/');
+};
+
+const isFieldMapLike = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
+
+// One schema part with `properties` -> a parameter list (path or query).
+const openApiParameters = (part, location, target, warn) => {
+  if (!isFieldMapLike(part)) return [];
+  const { properties } = part;
+  if (!isFieldMapLike(properties)) {
+    warn(`${target}: schema.${location === 'path' ? 'params' : 'querystring'} has no properties; skipped`);
+    return [];
+  }
+  const required = Array.isArray(part.required) ? part.required : [];
+  const parameters = [];
+  for (const name of Object.keys(properties).sort()) {
+    parameters.push({
+      name,
+      in: location,
+      // Path parameters are always required, whatever the schema says.
+      required: location === 'path' ? true : required.includes(name),
+      schema: properties[name],
+    });
+  }
+  return parameters;
+};
+
+// The wire error object every non-2xx wrpc answer carries.
+const OPENAPI_ERROR_SCHEMA = {
+  type: 'object',
+  properties: {
+    message: { type: 'string' },
+    code: { type: 'number' },
+    details: {},
+  },
+  required: ['message', 'code'],
+};
+
+const renderOpenApi = (introspection, options = {}) => {
+  const { url = '', warn = () => {} } = options;
+  if (!isFieldMap(introspection)) fail('The server did not answer introspection with an object');
+  const paths = {};
+  let routes = 0;
+  for (const unitKey of Object.keys(introspection).sort()) {
+    const methods = introspection[unitKey];
+    if (!isFieldMap(methods)) continue;
+    for (const method of Object.keys(methods).sort()) {
+      if (method === 'on' || method === 'emits') continue;
+      const info = methods[method];
+      if (!isFieldMap(info) || !isFieldMapLike(info.http)) continue;
+      const target = `${unitKey}/${method}`;
+      const { http } = info;
+      if (typeof http.method !== 'string' || typeof http.path !== 'string' || !http.path.startsWith('/')) {
+        warn(`${target}: malformed http mapping; skipped`);
+        continue;
+      }
+      const verb = http.method.toLowerCase();
+      const status = typeof http.status === 'number' ? http.status : 200;
+      const operation = {
+        operationId: target,
+        responses: {
+          [String(status)]:
+            status === 204 ? { description: 'No content' } : { description: 'The procedure result, as JSON' },
+          default: {
+            description: 'A wrpc wire error',
+            content: { 'application/json': { schema: OPENAPI_ERROR_SCHEMA } },
+          },
+        },
+      };
+      const description = info.meta?.description;
+      if (typeof description === 'string' && description.trim() !== '') operation.summary = description;
+      const schema = isFieldMapLike(info.schema) ? info.schema : {};
+      const parameters = [
+        ...openApiParameters(schema.params, 'path', target, warn),
+        ...openApiParameters(schema.querystring, 'query', target, warn),
+      ];
+      if (parameters.length > 0) operation.parameters = parameters;
+      if (schema.body !== undefined && verb !== 'get' && verb !== 'head') {
+        operation.requestBody = {
+          required: true,
+          content: { 'application/json': { schema: schema.body } },
+        };
+      }
+      const pathKey = openApiPath(http.path);
+      // Sorted null-proto container, like renderStatic: a '__proto__' path
+      // must land as data.
+      const item = Object.hasOwn(paths, pathKey) ? paths[pathKey] : {};
+      item[verb] = operation;
+      Object.defineProperty(paths, pathKey, { value: item, enumerable: true, writable: true, configurable: true });
+      routes++;
+    }
+  }
+  if (routes === 0) warn('no procedure declares an http mapping; the OpenAPI document has no paths');
+  const document = {
+    openapi: '3.0.3',
+    info: {
+      title: 'wrpc API',
+      description: `Generated by \`wrpc types --openapi\` from ${sourceLabel(url)}. Paths live under the server's basePath.`,
+      version: '0.0.0',
+    },
+    paths,
+  };
+  return `${JSON.stringify(document, null, 2)}\n`;
 };
 
 /**
@@ -425,6 +597,9 @@ const main = async (argv, io = {}) => {
     if (options.schema !== undefined) {
       await emit(options.schema, renderStatic(introspection, { ...options, warn }));
     }
+    if (options.openapi !== undefined) {
+      await emit(options.openapi, renderOpenApi(introspection, { ...options, warn }));
+    }
     return 0;
   } catch (cause) {
     if (cause instanceof CliError) {
@@ -445,6 +620,7 @@ module.exports = {
   main,
   parseArgs,
   quoteKey,
+  renderOpenApi,
   renderStatic,
   renderType,
   renderTypes,

@@ -55,11 +55,13 @@ await WrpcClient.connect(url, {
 
 | Option | Default | Meaning |
 | --- | --- | --- |
-| `callTimeout` | `7000` | Milliseconds a call waits for its answer. |
+| `callTimeout` | `7000` | Milliseconds a call waits for its answer; expiry rejects with a coded **408** `WrpcError`. |
+| `connectTimeout` | `30000` | Cap on the transport handshake; expiry rejects with a coded **408** and the normal backoff continues. `false`/`0` disables. |
 | `reconnect` | see below | `false` disables reconnection entirely. |
 | `reconnectTimeout` | — | Shorthand for `reconnect.minDelay`. |
 | `heartbeat` | `{ interval: 30000, timeout: 10000 }` | `false` disables it. |
 | `batch` | off | `true` takes the defaults. |
+| `retry` | off | Opt-in per-call retry: `{ attempts, on: [503], minDelay, maxDelay, factor, jitter }`, `true` for the defaults. Coded failures re-issue with a fresh packet id after a jittered backoff — never a silent offline buffer. |
 | `transport` | from the URL | `'ws'`, `'http'`, `'sse'`, or anything registered. |
 | `worker` | — | A `ServiceWorker` to proxy through. |
 | `authenticate` | — | Presents the connection's credential; awaited before the reconnect restore — see [Authenticating](#authenticating). |
@@ -81,6 +83,11 @@ const result = await client.api.unit.method(args, { signal });
 Slot 0 is always the procedure's arguments and slot 1 is always the client's
 options — even for a procedure that takes nothing:
 `client.api.system.ping(undefined, { signal })`.
+
+The options slot also takes a per-call **`timeout`** (ms), overriding
+`callTimeout` for this call and riding the packet so the server shortens the
+procedure's own budget to match — the gRPC-deadline shape. Expiry rejects
+with a coded **408**.
 
 Aborting `signal` sends `{ type: 'cancel', id }` and rejects the call with a
 `WrpcError` carrying code **499**. Cancellation is best-effort by nature — a
@@ -155,6 +162,15 @@ up the thundering herd: after a server restart, a thousand clients that
 disconnected in the same millisecond would otherwise all come back in the same
 millisecond.
 
+The attempt counter resets only after the connection has **survived**
+`reconnect.stableAfter` milliseconds (default: `minDelay`) — a TCP open by
+itself proves nothing. A peer that accepts the upgrade and immediately drops
+it (a server shedding load mid-restart, a proxy that resets after the
+handshake) therefore keeps climbing the backoff, exhausts `retries` and
+reaches the fallback transport, instead of hammering the struggling server
+at `minDelay` forever. `stableAfter: 0` restores the old reset-on-open
+behavior.
+
 On a successful reconnect the client reloads every unit it had loaded — the new
 connection is a new server-side client, so its introspected method list has to
 be rebuilt — re-opens every subscription from the last eventId it saw, and then
@@ -226,12 +242,18 @@ const client = await connect(url, {
 ```
 
 The retry path covers both the packet leg and the REST leg of mapped
-methods. Guard rails, by construction: the retry calls the wire directly, so
-a second refusal surfaces as-is (no loop); calls made *inside* the
-`authenticate` hook never trigger a refresh (no recursion); and a live
-subscription refused mid-session is **not** re-opened automatically — an
-`end` is terminal, so re-subscribe from the handle's `onError` if a feed can
-outlive its session.
+methods, **and the subscribe leg**: a subscription refused with a listed
+code runs the same single-flight refresh and is re-opened exactly once —
+the case that matters is the reconnect after an outage longer than the
+credential, where every re-subscribe would otherwise earn a terminal 403
+while plain calls quietly heal. Guard rails, by construction: the retry
+calls the wire directly, so a second refusal surfaces as-is (no loop);
+calls made *inside* the `authenticate` hook never trigger a refresh (no
+recursion); and a call made *by the refresh handler itself* that is refused
+surfaces its refusal instead of joining the run that is awaiting it (no
+deadlock). A subscription refused with a code **outside** `refresh.on`
+stays terminal — re-subscribe from the handle's `onError` if such a feed
+can outlive its session.
 
 ## Transport fallback
 
@@ -360,6 +382,6 @@ bundler that honours the `browser` field — webpack, Vite, esbuild with
 `browser: true`), Parcel, Bun. It contains the client, the streams and the
 chunk helpers, and **no Node builtins** — the server half is not in it.
 
-The main entry is ~10 KB min+gzip in that build; `scripts/size.js` enforces a
+The main entry is under 15 KB min+gzip in that build; `scripts/size.js` enforces a
 budget on it in CI. See [Browser & bundling](./browser) for the full table, the
 `browser` field map, and what is deliberately missing from that entry.

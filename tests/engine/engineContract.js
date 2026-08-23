@@ -236,6 +236,30 @@ const runEngineContract = (harness, t) => {
     const socket = await connected;
     assert.strictEqual(socket.protocol, 'wrpc');
   });
+
+  t.test('stopListening (when present) refuses new peers while accepted ones keep working', async (sub) => {
+    const probe = createEngine();
+    // Optional capability, standalone-shaped: hosted engines have no
+    // listener of their own to stop. Skipped, never failed, elsewhere.
+    if (typeof probe.stopListening !== 'function') {
+      probe.close?.();
+      return void sub.skip('engine has no stopListening');
+    }
+    probe.close?.();
+    const { engine, source, port } = await boot(sub, {});
+    const connected = new Promise((resolve) => source.once('connection', resolve));
+    const peer = await openPeer(port);
+    sub.after(() => peer.close());
+    const socket = await connected;
+    engine.stopListening();
+    // The accepted socket still echoes...
+    socket.on('message', (data) => socket.send(String(data)));
+    const answered = new Promise((resolve) => peer.on('message', resolve));
+    peer.sendText('still-alive');
+    assert.strictEqual(String(await answered), 'still-alive');
+    // ...while a NEW connection is refused at the listener.
+    await assert.rejects(openPeer(port), () => true, 'a connect after stopListening must fail');
+  });
 };
 
 module.exports = { runEngineContract, hostedHarness, standaloneHarness };

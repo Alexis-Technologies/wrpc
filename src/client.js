@@ -5,7 +5,7 @@
 // Service Worker proxy. Splitting the modules changed no require path —
 // this file kept the old one.
 
-const { WrpcClient, WrpcError, ClientTransport, metaHeaders } = require('./client/core.js');
+const { WrpcClient, WrpcError, ClientTransport, isClientTransport, metaHeaders } = require('./client/core.js');
 require('./client/transports.js');
 const { WrpcClientProxy } = require('./client/proxy.js');
 
@@ -22,4 +22,4 @@ const connect = (url, options) => WrpcClient.connect(url, options);
 // ClientTransport is exported for transports that live in their own subpath
 // (see src/sse/client.js); it is deliberately NOT re-exported from the
 // package barrel, where transports stay type-only.
-module.exports = { WrpcClient, WrpcClientProxy, WrpcError, ClientTransport, connect, metaHeaders };
+module.exports = { WrpcClient, WrpcClientProxy, WrpcError, ClientTransport, isClientTransport, connect, metaHeaders };

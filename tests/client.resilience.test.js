@@ -1297,3 +1297,348 @@ test('metaFormat: an invalid value throws loudly at construction', async () => {
   const fine = new WrpcClient('ws://x', new WsTransport('ws://x'), { meta: { a: 1 } });
   assert.ok(fine);
 });
+
+// ---------------------------------------------------------------------------
+// The reconnect/refresh edges: refresh re-entry, subscription refresh,
+// backoff stability, connect timeout, and the coded settlement of calls a
+// dead transport strands.
+
+const net = require('node:net');
+const { ClientTransport } = require('../src/client.js');
+
+test('refresh: a call made BY the refresh handler surfaces its refusal instead of deadlocking', async (t) => {
+  const { port, state } = await refreshBoot(t);
+  let inner = null;
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    refresh: async (c) => {
+      // The handler's own call is refused too (state.ok is still false).
+      // Before the joined-run guard this awaited the very promise that was
+      // awaiting it — a permanent, client-wide wedge with no timer left to
+      // break it.
+      inner = await c.call('flaky/get', {}).then(
+        () => 'resolved',
+        (error) => error.code,
+      );
+      state.ok = true;
+    },
+  });
+  t.after(() => void client.close());
+  await client.load('flaky');
+  assert.strictEqual(await client.api.flaky.get(), 'fresh');
+  assert.strictEqual(inner, 401, "the handler's own call must surface its 401, not join the refresh");
+});
+
+const subscriptionRefreshBoot = async (t) => {
+  const state = { ok: false, subscribes: 0 };
+  const definition = defineRouter({
+    feed: {
+      ticks: procedure.subscription({
+        access: 'public',
+        handler: async function* (_context, _args, { signal }) {
+          state.subscribes++;
+          if (!state.ok) {
+            const error = new Error('expired');
+            error.code = 401;
+            error.expose = true;
+            throw error;
+          }
+          yield 'tick';
+          await timers.setTimeout(60_000, undefined, { signal }).catch(() => {});
+        },
+      }),
+    },
+  });
+  const { server, port } = await createServer(definition);
+  t.after(() => server.close());
+  return { server, port, state };
+};
+
+test('refresh: a refused subscribe runs the refresh and re-opens the feed', async (t) => {
+  const { port, state } = await subscriptionRefreshBoot(t);
+  let refreshes = 0;
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    refresh: () => {
+      refreshes++;
+      state.ok = true;
+    },
+  });
+  t.after(() => void client.close());
+  await client.load('feed');
+  const values = [];
+  const errors = [];
+  client.api.feed.ticks.subscribe({}, { onData: (v) => void values.push(v), onError: (e) => void errors.push(e) });
+  // The refused subscribe runs the single-flight refresh and re-opens: the
+  // feed delivers instead of dying with a terminal 401 while plain calls
+  // heal — the silent half-dead client this path used to produce.
+  await waitFor(() => values.length === 1, 'the feed never delivered after the refresh');
+  assert.deepStrictEqual(values, ['tick']);
+  assert.strictEqual(refreshes, 1);
+  assert.strictEqual(state.subscribes, 2);
+  assert.deepStrictEqual(errors, []);
+});
+
+test('refresh: a subscribe refused AGAIN after the refresh is terminal — no loop', async (t) => {
+  const { port, state } = await subscriptionRefreshBoot(t);
+  let refreshes = 0;
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    // "Succeeds" without fixing anything: the retry's refusal must surface.
+    refresh: () => void refreshes++,
+  });
+  t.after(() => void client.close());
+  await client.load('feed');
+  const errors = [];
+  client.api.feed.ticks.subscribe({}, { onData: noop, onError: (e) => void errors.push(e) });
+  await waitFor(() => errors.length === 1, 'the second refusal never surfaced');
+  assert.strictEqual(errors[0].code, 401);
+  assert.strictEqual(refreshes, 1);
+  assert.strictEqual(state.subscribes, 2);
+  await timers.setTimeout(30);
+  assert.strictEqual(state.subscribes, 2, 'a terminal refusal must not keep re-subscribing');
+});
+
+test('reconnect: an accept-then-drop peer climbs the backoff instead of pinning at minDelay', async (t) => {
+  const fake = registerFake('acceptdrop');
+  t.after(fake.teardown);
+  const client = await WrpcClient.connect('fake://x', {
+    transport: ['acceptdrop'],
+    heartbeat: false,
+    logger: false,
+    reconnect: { minDelay: 10, maxDelay: 1000, factor: 2, jitter: false, retries: 3 },
+  });
+  t.after(() => void client.close());
+  const transport = fake.instances.at(-1);
+  const delays = [];
+  client.on('reconnecting', ({ delay }) => void delays.push(delay));
+  const exhausted = new Promise((resolve) => client.on('reconnect-failed', resolve));
+  // From now on every open is accepted and immediately dropped by the peer
+  // — the shape of a server shedding load mid-restart.
+  const accept = transport.open.bind(transport);
+  transport.open = async (options) => {
+    await accept(options);
+    queueMicrotask(() => transport.close());
+  };
+  transport.close();
+  await exhausted;
+  // Before the stability window this read [10, 10, 10, ...] forever: every
+  // TCP open re-zeroed the counter, retries never exhausted and
+  // 'reconnect-failed' never fired.
+  assert.deepStrictEqual(delays, [10, 20, 40]);
+});
+
+test('connectTimeout: a handshake that never answers rejects with a coded 408', async (t) => {
+  // A TCP listener that accepts and never speaks: the WebSocket handshake
+  // neither opens nor errors, which used to park the ladder forever.
+  const black = net.createServer(() => {});
+  await new Promise((resolve) => black.listen(0, '127.0.0.1', resolve));
+  t.after(() => black.close());
+  const { port } = black.address();
+  const before = WrpcClient.connections.size;
+  const started = Date.now();
+  await assert.rejects(
+    WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+      heartbeat: false,
+      logger: false,
+      reconnect: false,
+      connectTimeout: 50,
+    }),
+    (error) => error.code === 408 && /Connect timeout/.test(error.message),
+  );
+  assert.ok(Date.now() - started < 5000, 'settled by connectTimeout, not a transport default');
+  assert.strictEqual(WrpcClient.connections.size, before, 'the failed connect must not leave a zombie');
+});
+
+test('batching: a call flushed onto a dead transport settles with a coded 503, not callTimeout', async (t) => {
+  const { server, port } = await createServer(router());
+  t.after(() => server.close());
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    batch: true,
+    callTimeout: 30_000,
+  });
+  t.after(() => void client.close());
+  client.on('error', noop);
+  await client.load('test');
+  for (const connection of server.wsServer.connections) connection.terminate();
+  await waitFor(() => !client.active, 'the drop never reached the client');
+  const started = Date.now();
+  // The frame was spliced out of #pending before write threw, so neither
+  // #failCalls nor a 'close' could see these ids — the flush itself settles.
+  await assert.rejects(client.api.test.hello({}), (error) => error.code === 503);
+  assert.ok(Date.now() - started < 5000, 'settled by the flush failure, not the timeout');
+});
+
+test('a call issued while the transport is down rejects with a coded 503', async (t) => {
+  const { server, port } = await createServer(router());
+  t.after(() => server.close());
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    callTimeout: 30_000,
+  });
+  t.after(() => void client.close());
+  await client.load('test');
+  for (const connection of server.wsServer.connections) connection.terminate();
+  await waitFor(() => !client.active, 'the drop never reached the client');
+  const started = Date.now();
+  await assert.rejects(client.api.test.hello({}), (error) => error.code === 503 && /Not connected/.test(error.message));
+  assert.ok(Date.now() - started < 5000, 'rejected on write, not at the timeout');
+});
+
+test('failPackets: only call packets earn synthesized answers', () => {
+  const transport = new ClientTransport('x');
+  const seen = [];
+  transport.on('message', (text) => void seen.push(jsonParse(text)));
+  const frame = JSON.stringify([{ type: 'call', id: 'a' }, { type: 'subscribe', id: 's' }, { type: 'ping' }]);
+  transport.failPackets(frame, 502);
+  // The subscribe is NOT answered: its terminal signal is an `end` packet,
+  // and a synthesized callback for it would throw in #settle as stale.
+  assert.deepStrictEqual(seen, [
+    [{ type: 'callback', id: 'a', error: { message: 'HTTP request failed (502)', code: 502 } }],
+  ]);
+});
+
+test('heartbeat-timeout: a throwing listener surfaces through error, never as an unhandled rejection', async (t) => {
+  const httpServer = http.createServer();
+  const wsServer = new WebsocketServer({ server: httpServer });
+  let answer = true;
+  wsServer.on('connection', (ws) => {
+    ws.on('message', (raw) => {
+      const packet = jsonParse(raw.toString()) || {};
+      if (packet.type === 'ping' && answer) ws.send(JSON.stringify({ type: 'pong' }));
+    });
+  });
+  await new Promise((resolve) => httpServer.listen(0, '127.0.0.1', resolve));
+  const { port } = httpServer.address();
+  t.after(() => void httpServer.close());
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}`, {
+    heartbeat: { interval: 15, timeout: 30 },
+    logger: false,
+    reconnect: false,
+  });
+  t.after(() => void client.close());
+  const escalated = new Promise((resolve) => client.on('error', resolve));
+  client.on('heartbeat-timeout', () => {
+    throw new Error('listener exploded');
+  });
+  answer = false;
+  const error = await escalated;
+  assert.strictEqual(error.message, 'listener exploded');
+});
+
+test('refresh: a failing run logs and emits refresh-failed, once for all joined callers', async (t) => {
+  const { port } = await refreshBoot(t);
+  const failures = [];
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    // Async with a hold, so BOTH refusals join one single-flight run — a
+    // synchronously-throwing handler finishes before the second refusal
+    // arrives and would legitimately start a second run.
+    refresh: async () => {
+      await timers.setTimeout(20);
+      throw new Error('refresh broke');
+    },
+  });
+  t.after(() => void client.close());
+  client.on('refresh-failed', (info) => void failures.push(info));
+  await client.load('flaky');
+  // Two concurrent refusals join ONE refresh run: the callers surface their
+  // original 401s, the run's own failure is reported exactly once.
+  const results = await Promise.allSettled([client.api.flaky.get(), client.api.flaky.get()]);
+  assert.ok(results.every((r) => r.status === 'rejected' && r.reason.code === 401));
+  assert.strictEqual(failures.length, 1);
+  assert.strictEqual(failures[0].error.message, 'refresh broke');
+  assert.strictEqual(failures[0].cause.code, 401);
+});
+
+test('CallOptions.timeout: the per-call deadline beats callTimeout and rides the packet', async (t) => {
+  const definition = defineRouter({
+    slow: {
+      // The server-side budget check: a generous procedure timeout that the
+      // caller's packet field must SHORTEN.
+      nap: procedure({
+        access: 'public',
+        timeout: 30_000,
+        handler: async (context) => {
+          await timers.setTimeout(500, undefined, { signal: context.signal }).catch(() => {});
+          return 'done';
+        },
+      }),
+    },
+  });
+  const { server, port } = await createServer(definition);
+  t.after(() => server.close());
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    callTimeout: 30_000,
+  });
+  t.after(() => void client.close());
+  await client.load('slow');
+  const started = Date.now();
+  await assert.rejects(client.api.slow.nap(undefined, { timeout: 60 }), (error) => error.code === 408);
+  assert.ok(Date.now() - started < 5000, 'the per-call deadline, not callTimeout, fired');
+});
+
+test('retry: listed codes are re-issued with fresh packet ids; others surface as-is', async (t) => {
+  const state = { hits: 0, ids: [] };
+  const definition = defineRouter({
+    flaky: {
+      get: procedure({
+        access: 'public',
+        handler: async (context) => {
+          state.hits++;
+          state.ids.push(context.uuid);
+          if (state.hits < 3) {
+            const error = new Error('overloaded');
+            error.code = 503;
+            error.expose = true;
+            throw error;
+          }
+          return 'finally';
+        },
+      }),
+      teapot: procedure({
+        access: 'public',
+        handler: async () => {
+          const error = new Error('teapot');
+          error.code = 418;
+          error.expose = true;
+          throw error;
+        },
+      }),
+    },
+  });
+  const { server, port } = await createServer(definition);
+  t.after(() => server.close());
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    retry: { attempts: 2, on: [503], minDelay: 5, maxDelay: 10, jitter: false },
+  });
+  t.after(() => void client.close());
+  await client.load('flaky');
+  assert.strictEqual(await client.api.flaky.get(), 'finally');
+  assert.strictEqual(state.hits, 3, 'two retries after the first failure');
+  assert.strictEqual(new Set(state.ids).size, 3, 'every attempt is its own packet');
+  // A code outside the policy surfaces immediately.
+  await assert.rejects(client.api.flaky.teapot(), (error) => error.code === 418);
+  // Exhausted attempts surface the LAST refusal.
+  state.hits = -10; // 503 forever
+  await assert.rejects(client.api.flaky.get(), (error) => error.code === 503);
+});

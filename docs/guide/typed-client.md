@@ -90,6 +90,42 @@ so `api.chat.on` has to stay the listener registration:
 client.api.chat.on('message', (data) => {});   // always the event listener
 ```
 
+## Typed events
+
+Two reserved contract keys type the realtime surface — declarations only,
+zero runtime bytes:
+
+```ts
+interface Api {
+  chat: {
+    send(args: { text: string }): Promise<{ id: string }>;
+    // server -> client: what `api.chat.on(...)` delivers, and what the
+    // server's ask (`client.respond`) carries. The function form encodes
+    // the ask's answer type; a bare payload type fits fire-and-forget.
+    events: {
+      message: (data: { text: string; from: string }) => void;
+      confirm: (data: { id: string }) => boolean;
+    };
+    // client -> server: what `client.sendEvent('chat/typing', ...)` carries
+    // (the router's inbound `on` handlers receive it).
+    sends: { typing: { on: boolean } };
+  };
+}
+```
+
+With `events` declared, the unit emitter narrows: `api.chat.on('message',
+(data) => ...)` types `data`, and an undeclared name is a compile error.
+`client.respond('chat/confirm', handler)` types the payload **and** the
+answer; `client.sendEvent('chat/typing', data)` types the payload.
+Undeclared names on `sendEvent`/`respond` stay allowed (they degrade to
+`unknown`), so partial contracts keep working.
+
+The server side declares both halves in the router — inbound handlers under
+the reserved `on` key as always, outbound payloads under the
+declaration-only `emits` key (`signature`-language descriptors) — and both
+travel through introspection, so [`wrpc types`](./cli) generates these
+blocks for you.
+
 ## Without a contract
 
 `connect(url)` with no type argument behaves exactly as it always did:
@@ -109,6 +145,8 @@ Exported for building your own helpers on top:
 | `FirstArg<Params>` | The first element of a parameter tuple, `void` when empty. |
 | `ContractArgs` / `TypedParams` | The parameter-tuple plumbing behind the mapping. |
 | `UntypedApi` / `IsAny<T>` / `InvalidContractMember` | The escape hatch, the `any` guard, the error message. |
+| `UnitEvents<Unit>` / `TypedUnitEmitter<Events>` | The declared `events` map and the narrowed unit emitter. |
+| `ServerEventName/Data/Answer<Api, …>` / `ClientSendName/Data<Api, …>` | The `unit/event` name and payload plumbing behind typed `respond`/`sendEvent`. |
 
 ## Generating the contract
 

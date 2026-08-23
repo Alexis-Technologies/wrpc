@@ -73,9 +73,48 @@ from "same process, merge them".
 
 | Option (`cluster.…`) | Default | What it controls |
 | --- | --- | --- |
-| `presenceInterval` | `5000` ms | How often this node re-publishes its snapshot. |
+| `presenceInterval` | `5000` ms | How often this node publishes its presence **digest** (a hash, not the room table — see below). Raising it also delays eviction: `presenceTimeout` defaults to 3× it. |
 | `presenceTimeout` | `3 ×` interval | Silence after which a node is evicted. |
 | `requestTimeout` | `2000` ms | Backstop for `fetchClients`/`ask`; resolves `incomplete`, never rejects. |
+| `rooms` | all | Which rooms replicate: an array, predicate or RegExp. See the cardinality note below. |
+| `maxFetch` | `1000` | Per-node ceiling on one `fetchClients` reply; a node over it answers its first `maxFetch` descriptors and the result carries `truncated: true` (never silent). `0` disables. |
+| `secret` | — | Opt-in HMAC-SHA256 envelope authentication — see [Trusting the backplane](#trusting-the-backplane). |
+
+`cluster: false` opts out of the cluster layer entirely: presence, commands
+and asks degrade to their local halves while the [rooms
+backplane](./scaling) keeps working. `server.cluster` still exists, so
+application code never branches on the deployment.
+
+::: warning Presence cost scales with ROOM cardinality
+Presence replicates a `room → count` table per node. With topic rooms
+(`'lobby'`, `'ticker:AAPL'`) that is small; with the per-user
+`user:<id>` pattern it is one entry per connection, and every node holds
+every other node's table — O(nodes × rooms) heap. The periodic corrective
+message is a **digest** (a 32-bit hash), so steady-state backplane traffic
+stays O(nodes²) *bytes*, and the full table travels only to a node whose
+view actually drifted (it asks with an addressed `sync`). If you never call
+`presence()`/`count()` on a family of rooms, exclude it with
+`cluster: { rooms }` — deltas and digests then skip it entirely.
+:::
+
+### Trusting the backplane
+
+The backplane is a **trust peer** of every node: anything that can publish
+on the `cluster` channel can disconnect every client or join anyone to any
+room on every instance at once. Isolate the broker on its own network and
+ACL it. Where that is not enough, set the same `cluster: { secret }` on
+every node: envelopes are HMAC-SHA256-signed and an unsigned or mis-signed
+message is dropped and logged (`cluster.unsigned` / `cluster.badsig`).
+Room *events* travel on separate channels and are not signed — the secret
+guards the command surface, the broker ACL guards the rest.
+
+### Health
+
+`cluster.healthy` (and the aggregate `server.rpc.healthy`) is `false` while
+a backplane channel subscribe is failing and being retried with capped
+backoff — the node can publish but cannot hear. `'degraded'` and
+`'recovered'` fire on the transitions; wire them to a readiness probe so a
+half-connected node is drained instead of serving with silent gaps.
 
 ```js
 const server = new Server({ router, backplane, instanceId: 'node-1', cluster: { presenceInterval: 2000 } });

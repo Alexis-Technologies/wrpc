@@ -13,6 +13,91 @@ narrower promise — see
 
 ### Added
 
+**2026-08 re-review batch (resilience, security, scale, types)**
+- Client resilience: `connectTimeout` (default 30 s — a handshake that never
+  answers no longer parks the reconnect ladder), `reconnect.stableAfter`
+  (the attempt counter resets only after the connection SURVIVES the window,
+  so an accept-then-drop peer climbs the backoff instead of pinning at
+  `minDelay`), coded rejections everywhere (`callTimeout` → 408 `WrpcError`,
+  dead-transport sends and batched flush failures → 503), and the SSE POST
+  settling the exact calls it carried.
+- Refresh hardening: a call made BY the refresh handler surfaces its refusal
+  instead of deadlocking the single-flight run; a refused **re-subscribe**
+  now runs the same refresh and re-opens once (feeds heal like calls after a
+  long outage); a THROWING refresh clears the `bearerAuth` store; failures
+  log `refresh.failed`, emit `'refresh-failed'` and count on
+  `wrpc.client.refreshes`.
+- Auth carriers: the `TokenTransport` port now receives the core's parsed
+  `declared`/`meta` bags (strategies can no longer drift from the wire
+  parser — `payloadTransport` reads both `x-wrpc-meta` spellings on every
+  carrier); on browser ws a Bearer credential rides a `wrpc.bearer.<token>`
+  subprotocol offer instead of the connect URL; `cookieStorage` stamps
+  `Secure` by default; the ws connect-URL query is client-capped with a
+  `meta.oversize` warning.
+- Per-call deadlines and retry: `CallOptions.timeout` (rides the packet; the
+  server SHORTENS the procedure budget to match) and the opt-in client
+  `retry` policy (`{ attempts, on: [503], … }`, jittered backoff, fresh
+  packet id per attempt, never an offline buffer).
+- Typed events: reserved contract keys `events` (server → client; narrows
+  the unit emitter and types `client.respond`) and `sends` (client → server;
+  types `client.sendEvent`) — declarations only. The router's inbound `on`
+  handlers and the new declaration-only `emits` key now travel through
+  introspection, and `wrpc types` generates both blocks.
+- `wrpc types --openapi <path>`: an OpenAPI 3 document projected from every
+  procedure with an `http` mapping (path/query parameters and request body
+  from the fastify-shaped schema parts, wire error as the default response).
+- Query bindings: `infiniteQueryOptions(path, args, { cursorKey, ... })` —
+  the tRPC-v11 paging factory, cursor merged over args, lazy resolution and
+  AbortSignal forwarding as ever.
+- Cluster at scale: presence's periodic corrective message is now a
+  **digest** (hash) with an addressed `sync`/`state` exchange only on
+  drift; `cluster.rooms` replication filter; `cluster.maxFetch` (loud
+  truncation, `clients.truncated`); opt-in `cluster.secret` HMAC envelope
+  authentication; honest `cluster: false`; `healthy` getters with
+  `'degraded'`/`'recovered'` events and backplane subscribe RETRY (rooms
+  and cluster channels); `rooms: { linger }` grace window on emptied room
+  channels; the SSE per-address cap gained an injected `clientAddress`
+  seam (and the express adapter reports `req.ip`).
+- Observability of the newest subsystems: the mapped REST leg traces on
+  both ends (real `traceparent` headers ↔ the synthetic packet), delegated
+  fastify routes emit the same spans/metrics as the packet path
+  (`RpcServer#otel`, `@experimental`), cluster envelopes carry trace
+  context and three `wrpc.cluster.*` instruments, early HTTP/SSE refusals
+  log and count (`http.refused`/`sse.refused`/`cors.refused` on
+  `wrpc.server.calls` under `<unknown>`), SSE gaps/expiries are logged and
+  counted (`wrpc.server.sse.events`), reconnects count every attempt.
+- The HTTP side's version marker: every response echoes `wrpc-version: 1`
+  (requests may send one; revision 1 accepts and ignores it) — the ws
+  subprotocol ladder's counterpart, reserved inside the freeze.
+- Guard tests for every hand-synced pair (VitePress keywords/nav label,
+  `RPC_OPTION_KEYS`, `scripts/size.js` ENTRIES, runtime-exports ⊆ d.ts,
+  d.ts cross-references), a structural client-transport contract
+  (`isClientTransport` + `tests/client/transportContract.js`), and docs:
+  a dedicated [Authentication](https://wrpc.vercel.app/guide/auth) page,
+  [Stability & deprecation](https://wrpc.vercel.app/reference/stability)
+  reference, refreshed homepage grid/README/why.md (REST finally on the
+  front door; honest tRPC bench footnote — the sequential number is a
+  client flush-timer artifact).
+
+### Changed
+- **Breaking (nothing released yet):** `Procedure#invoke` takes an optional
+  5th `budget` argument; the introspection unit object carries reserved
+  `on`/`emits` keys (clients skip them; older generated artifacts are
+  unaffected); `fetchClients` remote replies changed shape internally
+  (`{ list, truncated }`); presence's periodic full `state` broadcast was
+  replaced by the digest flow; `bearerTransport` no longer parses the raw
+  `wrpc_h` URL itself (the core hands it the parsed bag);
+  `maxChannelsPerAddress` keys on the injected `clientAddress`.
+- Performance: `Allow-Headers` memoized per cors object
+  (bench/cors-headers.js), `runValidator` synchronous fast path
+  (bench/validate.js), ring-buffer replay logs (bench/replay-buffer.js),
+  `sanitizeMeta` upper-bound walk and the `wrpc_meta` substring gate
+  (bench/meta.js), batch flush skips the meta aggregate off-HTTP.
+- Internal layout: `src/rpc/core.js` split (`client.js` — Context/Client;
+  `meta.js` — the connection-metadata parser), the REST trie moved to
+  `src/rpc/rest.js`, the wire names centralized in `src/wire.js`.
+
+
 **Core RPC**
 - `defineRouter`/`procedure`/`Router`/`Procedure`: units declared with versions
   as `'unit.vN'` keys, bare-function shorthand, per-procedure `access`

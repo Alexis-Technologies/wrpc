@@ -9,7 +9,11 @@ const { Server } = require('@alexify/wrpc');
 const server = new Server({ router, telemetry: { api }, port: 8000, protocol: 'http' });
 ```
 
-Pass the same option to a client and one trace covers both sides of the wire.
+Pass the same option to a client and one trace covers both sides of the wire
+— the packet transports, the mapped **REST leg** (context rides real
+`traceparent`/`tracestate` headers there), the fastify adapter's delegated
+routes, and the cluster's node-to-node hop (context rides the backplane
+envelope).
 
 ::: info OpenTelemetry is injected, never depended on
 `@alexify/wrpc` has no dependencies and never will. The two constants it would
@@ -97,8 +101,22 @@ credential, not an identity, and the two do not share a switch.
 | `wrpc.server.backpressure` | Counter | `{event}` |
 | `wrpc.server.sessions` | Counter | `{operation}` |
 | `wrpc.server.sse.channels` | UpDownCounter | `{channel}` |
+| `wrpc.server.sse.events` | Counter | `{event}` |
+| `wrpc.cluster.messages` | Counter | `{message}` |
+| `wrpc.cluster.requests` | Counter | `{request}` |
+| `wrpc.cluster.instances` | UpDownCounter | `{instance}` |
 | `wrpc.client.reconnects` | Counter | `{attempt}` |
+| `wrpc.client.refreshes` | Counter | `{run}` |
 | `wrpc.client.connections` | UpDownCounter | `{connection}` |
+
+`wrpc.server.sse.events` labels a closed kind set — `open`, `reattach`,
+`replay`, `gap`, `expired` — and the `gap`/`expired` series are **real event
+loss**, the signal replay sizing is tuned from. `wrpc.client.reconnects`
+counts every *scheduled* attempt (`attempted`) plus the terminal outcomes
+(`recovered`, `exhausted`), so its rate is the reconnect pressure and a storm
+that keeps recovering stays visible. Early HTTP/SSE refusals that happen
+before any client exists (CORS 403, 404, 405, capacity 429/503) are counted
+on `wrpc.server.calls` under the `<unknown>` target.
 
 Metric attributes deliberately stay low-cardinality: the method, the status,
 the transport. Packet ids and peer addresses go on spans, never on a metric

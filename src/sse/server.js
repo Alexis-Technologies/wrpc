@@ -3,6 +3,7 @@
 const { ServerTransport } = require('../transport.js');
 const { generateUUID } = require('../runtime/node.js');
 const { createLoggerWriter } = require('../logging.js');
+const { UNKNOWN_TARGET } = require('../rpc/dispatcher.js');
 
 // Server-Sent Events as a wrpc transport.
 //
@@ -134,7 +135,14 @@ class SseChannel {
     this.transport = transport;
     this.retention = retention;
     this.writer = null;
-    this.buffer = [];
+    // A preallocated ring (slots + head + count), not push/shift: shift on
+    // every SSE event cost ~320 ns at the default replay=100 against ~7 ns
+    // for the ring — bench/replay-buffer.js; same shape as EventLog and
+    // SegmentQueue. Capacity is `replay` (the frame-count budget); the byte
+    // budget below can hold the COUNT lower, never higher.
+    this.buffer = new Array(replay);
+    this.head = 0;
+    this.count = 0;
     this.replay = replay;
     this.replayBytes = replayBytes;
     this.bytes = 0;
@@ -143,19 +151,25 @@ class SseChannel {
     transport.onPacket = (payload) => this.push(payload);
   }
 
+  // Drops the oldest retained frame and its bytes from the accounting.
+  #evict() {
+    const dropped = this.buffer[this.head];
+    this.buffer[this.head] = undefined;
+    this.head = (this.head + 1) % this.replay;
+    this.count--;
+    this.bytes -= dropped.text.length;
+  }
+
   push(payload) {
     const id = this.cursor++;
     const text = frame(id, payload);
-    this.buffer.push({ id, text });
+    // Two budgets, both honest: frame count AND bytes. The count budget is
+    // the ring's own capacity — a full ring overwrites its oldest slot.
+    if (this.count === this.replay) this.#evict();
+    this.buffer[(this.head + this.count) % this.replay] = { id, text };
+    this.count++;
     this.bytes += text.length;
-    // Two budgets, both honest: frame count AND bytes.
-    while (
-      this.buffer.length > 0 &&
-      (this.buffer.length > this.replay || (this.replayBytes > 0 && this.bytes > this.replayBytes))
-    ) {
-      const dropped = this.buffer.shift();
-      this.bytes -= dropped.text.length;
-    }
+    while (this.count > 0 && this.replayBytes > 0 && this.bytes > this.replayBytes) this.#evict();
     return this.transport.writeFrame(text);
   }
 
@@ -167,18 +181,20 @@ class SseChannel {
    */
   resume(lastEventId) {
     const cursor = Number(lastEventId);
-    if (!Number.isFinite(cursor)) return;
-    const oldest = this.buffer.length > 0 ? this.buffer[0].id : this.cursor;
+    if (!Number.isFinite(cursor)) return null;
+    const oldest = this.count > 0 ? this.buffer[this.head].id : this.cursor;
     if (cursor < oldest - 1) {
       this.transport.writeFrame(`event: gap\ndata: ${JSON.stringify({ oldest })}\n\n`);
-      return;
+      return 'gap';
     }
-    for (const entry of this.buffer) {
+    for (let i = 0; i < this.count; i++) {
+      const entry = this.buffer[(this.head + i) % this.replay];
       if (entry.id <= cursor) continue;
       this.transport.writeFrame(entry.text);
       // The sink died mid-replay: the rest would go nowhere.
       if (!this.transport.attached) break;
     }
+    return 'replay';
   }
 }
 
@@ -188,6 +204,7 @@ class SseChannels {
   #options;
   #addClient;
   #channelKey;
+  #clientAddress;
   #log;
   #otel;
 
@@ -200,6 +217,14 @@ class SseChannels {
     this.#channelKey = channelKey ?? (() => '');
     this.#log = createLoggerWriter(log);
     this.#otel = otel;
+    // What maxChannelsPerAddress counts by. The default is the TCP peer —
+    // which behind a reverse proxy or L7 balancer is ONE address for every
+    // real client, so the 101st user through the proxy would be refused 429
+    // at 1% of the node's budget. Deployments behind a proxy inject their
+    // own reader (X-Forwarded-For's client hop, a CDN header), duck-typed
+    // like the codec/logger seams, or set maxChannelsPerAddress: 0.
+    this.#clientAddress =
+      typeof options.clientAddress === 'function' ? options.clientAddress : (call) => call.remoteAddress ?? '';
     this.#options = {
       retention: options.retention ?? DEFAULT_RETENTION,
       replay: options.replay ?? DEFAULT_REPLAY,
@@ -225,6 +250,12 @@ class SseChannels {
   }
 
   #refuse(call, headers, code, message) {
+    // A refusal that happens before any Client exists produced no log line
+    // and no metric anywhere — a 429ing capacity cap was invisible until a
+    // user complained. Counted on the same series as answered traffic
+    // (UNKNOWN_TARGET keeps cardinality flat).
+    this.#log.warn({ event: 'sse.refused', code, reason: message });
+    this.#otel?.recordCall(UNKNOWN_TARGET, 'error', code);
     const body = Buffer.from(JSON.stringify({ type: 'callback', id: '', error: { message, code } }));
     call.respond({ status: code, headers: { ...headers, 'Content-Type': 'application/json' }, body });
   }
@@ -263,7 +294,7 @@ class SseChannels {
       return void this.#refuse(call, headers, 403, 'Channel belongs to another session');
     }
     if (!existing) {
-      const refusal = this.#capacity(call.remoteAddress ?? '');
+      const refusal = this.#capacity(this.#clientAddress(call));
       if (refusal) return void this.#refuse(call, headers, refusal.code, refusal.message);
     }
     const channel = existing ?? this.#create(call);
@@ -298,7 +329,16 @@ class SseChannels {
     // frame is the ONLY place the server hands the id out.
     writer.write(`retry: ${this.#options.retry}\n\n`);
     writer.write(`event: ready\ndata: ${JSON.stringify({ channel: channel.id })}\n\n`);
-    if (existing && lastEventId !== null) channel.resume(lastEventId);
+    this.#otel?.recordSseEvent(existing ? 'reattach' : 'open');
+    if (existing && lastEventId !== null) {
+      const outcome = channel.resume(lastEventId);
+      // A gap is REAL event loss: the peer is being told to start over,
+      // and until this line nothing on either side said so.
+      if (outcome === 'gap') {
+        this.#log.warn({ event: 'sse.gap', channel: channel.id, requested: lastEventId });
+      }
+      if (outcome) this.#otel?.recordSseEvent(outcome);
+    }
     this.#beat(channel, writer);
     writer.onClose?.(() => this.#detach(channel, writer));
     return channel;
@@ -324,8 +364,10 @@ class SseChannels {
   // later request must present again.
   #create(call) {
     const channelId = generateUUID();
-    const address = call.remoteAddress ?? '';
-    const transport = new ServerSseTransport(channelId, address);
+    // The capacity key comes from the seam; the transport keeps the raw
+    // TCP peer, which is what client.meta reports.
+    const address = this.#clientAddress(call);
+    const transport = new ServerSseTransport(channelId, call.remoteAddress ?? '');
     // The whole call, not just its headers: the injected addClient builds
     // the client's meta (headers, url, remoteAddress) from it too.
     const client = this.#addClient(transport, call);
@@ -374,6 +416,8 @@ class SseChannels {
     if (channel.timer) clearTimeout(channel.timer);
     channel.timer = setTimeout(() => {
       this.#channels.delete(channel.id);
+      this.#log.debug({ event: 'sse.expired', channel: channel.id });
+      this.#otel?.recordSseEvent('expired');
       channel.transport.close();
     }, channel.retention);
     channel.timer.unref?.();

@@ -4,7 +4,8 @@ const timers = require('node:timers/promises');
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { Server, WrpcClient, defineRouter, procedure } = require('../../index.js');
+const { WrpcClient, defineRouter, procedure } = require('../../index.js');
+const { bootServer } = require('../helpers/server.js');
 
 const waitFor = async (predicate, message = 'condition never held') => {
   for (let i = 0; i < 200; i++) {
@@ -21,19 +22,11 @@ const codedError = (message, code) => {
   return error;
 };
 
+// Delegates to the shared boot (tests/helpers/server.js) — the local
+// signature stays, the copied Server block goes.
 const boot = async (t, router, options = {}) => {
-  const server = new Server({
-    router,
-    host: '127.0.0.1',
-    port: 0,
-    protocol: 'http',
-    logger: false,
-    timeouts: { bind: 50 },
-    ...options,
-  });
-  await server.listen();
-  t.after(() => server.close());
-  return { server, url: `ws://127.0.0.1:${server.address().port}/api` };
+  const { server, url } = await bootServer(t, { router, ...options });
+  return { server, url };
 };
 
 const connect = async (t, url, options = {}) => {

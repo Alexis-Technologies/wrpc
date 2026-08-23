@@ -1,8 +1,10 @@
 'use strict';
 
 const http = require('node:http');
+const { performance } = require('node:perf_hooks');
 
 const { RpcServer, rpcOptions } = require('../rpc/core.js');
+const { TRACEPARENT, TRACESTATE } = require('../telemetry/shared.js');
 const { effectiveSchema } = require('../rpc/router.js');
 const { publicErrorMessage, publicErrorDetails } = require('../transport.js');
 const { createNodeEngine, isEngine } = require('../engine/index.js');
@@ -201,23 +203,48 @@ const registerRestRoutes = (fastify, rpc, options) => {
       onResponse: wrap(hooks.onResponse, () => null),
       ...(options.restErrors === 'app' ? {} : { errorHandler: wireErrorHandler }),
       handler: async (request, reply) => {
-        const { context, transport } = await contextOf(request, rpcTarget);
-        let result;
-        try {
-          result = await proc.invokeBare(context, argsOf(request));
-        } catch (error) {
-          // Mirror the numeric wrpc code onto fastify's statusCode so an
-          // app-owned error handler (restErrors: 'app') keeps the status.
-          if (error && typeof error.code === 'number' && error.statusCode === undefined) error.statusCode = error.code;
-          throw error;
+        const { client, context, transport } = await contextOf(request, rpcTarget);
+        const otel = rpc.otel;
+        // The dispatcher's bracket, reproduced: a delegated route bypasses
+        // the packet path entirely, so without this the server emitted no
+        // span and no call metric for its whole REST surface — an
+        // instrumented-looking server with a hole where fastify routes are.
+        // Trace context arrives as real headers; mapped onto the synthetic
+        // packet's tp/ts, the writer's ordinary extract picks it up.
+        const packet = { type: 'call' };
+        const parent = request.headers.traceparent;
+        if (typeof parent === 'string' && parent.length > 0) {
+          packet[TRACEPARENT] = parent;
+          const state = request.headers.tracestate;
+          if (typeof state === 'string' && state.length > 0) packet[TRACESTATE] = state;
         }
-        // A login that called startSession queued its cookie on the
-        // transport nothing will flush — copy it onto the real reply.
-        if (transport.pendingCookies.length > 0) reply.header('set-cookie', transport.pendingCookies);
-        reply.code(status);
-        // 204 promises "no content": the result is discarded by contract.
-        if (status === 204) return reply.send();
-        return result === undefined ? null : result;
+        const started = otel.enabled ? performance.now() : 0;
+        return otel.withSpan({ client, packet, target: rpcTarget.method }, async (handle) => {
+          let result;
+          try {
+            result = await proc.invokeBare(context, argsOf(request));
+          } catch (error) {
+            // Mirror the numeric wrpc code onto fastify's statusCode so an
+            // app-owned error handler (restErrors: 'app') keeps the status.
+            if (error && typeof error.code === 'number' && error.statusCode === undefined) {
+              error.statusCode = error.code;
+            }
+            const code = typeof error?.code === 'number' ? error.code : 500;
+            otel.recordError(handle, error, code);
+            otel.endSpan(handle, { 'wrpc.status': 'error', 'rpc.wrpc.status_code': code });
+            otel.recordCall(rpcTarget.method, 'error', code, otel.enabled ? performance.now() - started : undefined);
+            throw error;
+          }
+          otel.endSpan(handle, { 'wrpc.status': 'ok' });
+          otel.recordCall(rpcTarget.method, 'ok', undefined, otel.enabled ? performance.now() - started : undefined);
+          // A login that called startSession queued its cookie on the
+          // transport nothing will flush — copy it onto the real reply.
+          if (transport.pendingCookies.length > 0) reply.header('set-cookie', transport.pendingCookies);
+          reply.code(status);
+          // 204 promises "no content": the result is discarded by contract.
+          if (status === 204) return reply.send();
+          return result === undefined ? null : result;
+        });
       },
     });
   }

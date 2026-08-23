@@ -67,7 +67,7 @@ wss.on('connection', (connection, req) => {
 | `perMessageDeflate` | off | `true` or `{ threshold }`. |
 | `pingInterval` | `10000` | Protocol-ping interval; a peer that misses one is terminated. |
 | `maxBuffer` | 100 MiB | Largest inbound message. |
-| `maxBackpressure` | `0` (unbounded) | Outbound cap; exceeding it closes with `1009`. |
+| `maxBackpressure` | `maxBuffer` (100 MiB) | Outbound cap; a connection past it is **terminated** (the peer observes `1006`). |
 | `fragmentThreshold` | `0` (off) | Fragment outbound messages above this size. |
 | `closeTimeout` | `1000` | How long to wait for the peer's close frame. |
 
@@ -98,9 +98,14 @@ is what is queued but not yet flushed.
 
 This is accounted honestly rather than assumed — the return value of the
 underlying `socket.write()` is tracked everywhere, fast ping/pong paths
-included. With `maxBackpressure` set, a peer that lets the buffer grow past it
-is closed with `1009` (message too big) instead of being allowed to exhaust
-memory.
+included. A peer that lets the buffer grow past `maxBackpressure` (default:
+`maxBuffer`, 100 MiB) is **terminated** — a hard socket destroy, so the peer
+observes an abnormal `1006` close, not a graceful `1009`: a connection that
+far behind cannot be trusted to complete a close handshake. In practice the
+protocol heartbeat bounds the accumulation first — a peer whose receive side
+stalled misses its pong and is terminated within ~2 ping intervals. Note the
+uws engine's default outbound ceiling is its 16 MiB `maxPayload`; set
+`maxBackpressure` explicitly if the two engines must match.
 
 `pause()`/`resume()` are the receive side of the same idea: while binary chunks
 are being consumed, the RPC layer stops reading from the socket, so the

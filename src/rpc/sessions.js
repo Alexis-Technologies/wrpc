@@ -6,7 +6,15 @@ const { parseCookies } = require('../transport.js');
 
 // TokenTransport — where the session token lives on the wire, injected like
 // a codec or a logger and checked structurally:
-//   read({ headers, url }) -> string | null   the token this request presents
+//   read(request) -> string | null            the token this request presents
+//     request = { headers, url, declared?, meta? } — besides the raw
+//     headers/url, the core passes what it already parsed: `declared` (the
+//     merged declared+observed header bag, ws wrpc_h included, capped on
+//     the configurable metaMaxBytes) and `meta` (the sanitized
+//     connection-metadata bag, both x-wrpc-meta spellings merged,
+//     kebab-keyed). Prefer them: a strategy that re-parses the wire can
+//     drift from the core parser. Both are absent on the SSE channel-key
+//     path, so keep a raw-header fallback for the names you read.
 //   write(token) -> string | null             a Set-Cookie-style response
 //                                             header value, when the carrier
 //                                             can stamp one (HTTP only; a

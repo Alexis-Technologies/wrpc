@@ -208,6 +208,11 @@ class Server extends Emitter {
   async close(options = {}) {
     const { drain = 0 } = options;
     if (!this.httpServer) {
+      // Intake first, same ordering as the node boot below: a standalone
+      // engine that can close its listen socket separately refuses new
+      // connections while the in-flight work drains, instead of accepting
+      // calls it will immediately 503.
+      if (typeof this.#engine.stopListening === 'function') this.#engine.stopListening();
       await this.rpc.drain(drain);
       // Standalone engines own the whole stack: their close() both stops
       // the listener and says goodbye to the peers.

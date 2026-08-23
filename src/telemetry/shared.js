@@ -190,10 +190,16 @@ const DISABLED = Object.freeze({
   recordBackpressure: noop,
   recordSession: noop,
   recordSseChannel: noop,
+  recordSseEvent: noop,
+  recordClusterMessage: noop,
+  recordClusterRequest: noop,
+  recordClusterInstances: noop,
   // Client-side members: one disabled writer serves both halves, so it has
   // to answer to everything either of them exposes.
   recordReconnect: noop,
+  recordRefresh: noop,
   inject: noop,
+  injectHeaders: noop,
 });
 
 module.exports = {

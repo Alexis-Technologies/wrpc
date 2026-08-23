@@ -14,6 +14,7 @@ import {
   WrpcLogger,
   WrpcLogWriter,
   WrpcTelemetryOptions,
+  WrpcCodec,
 } from './client.js';
 
 // The browser-safe half of the surface lives in client.d.ts (which is what
@@ -90,7 +91,7 @@ export interface Tracked<T = unknown> {
 /** Labels one yielded value so a reconnect can resume after it. */
 export declare function tracked<T>(eventId: string | number, data: T): Tracked<T>;
 
-export declare function isTracked(value: unknown): boolean;
+export declare function isTracked(value: unknown): value is Tracked<unknown>;
 
 /**
  * A bounded replay buffer. `since()` answers with what a client missed —
@@ -470,7 +471,7 @@ export interface TokenTransport {
   ambient?: boolean;
 }
 
-export declare function isTokenTransport(value: unknown): boolean;
+export declare function isTokenTransport(value: unknown): value is TokenTransport;
 
 export interface SessionsOptions {
   store?: SessionStore;
@@ -605,12 +606,44 @@ export interface ClientDescriptor {
 }
 
 export interface ClusterOptions {
-  /** How often the corrective presence snapshot is published; default 5000. */
+  /**
+   * How often the corrective presence DIGEST is published; default 5000.
+   * Raising it also delays eviction (presenceTimeout defaults to 3× it).
+   */
   presenceInterval?: number;
   /** Silence after which a node is evicted; default 3× presenceInterval. */
   presenceTimeout?: number;
   /** Backstop for cluster requests (fetchClients, ask); default 2000. */
   requestTimeout?: number;
+  /**
+   * Which rooms replicate through presence: an array, predicate or RegExp.
+   * Excluding high-cardinality families (the per-user `user:<id>` pattern)
+   * keeps their deltas and digests off the wire entirely. Default: all.
+   */
+  rooms?: Array<string> | ((room: string) => boolean) | RegExp;
+  /**
+   * Per-node ceiling on one fetchClients reply; a node over it answers its
+   * first `maxFetch` descriptors and the result carries `truncated: true`.
+   * `0` disables. Default 1000.
+   */
+  maxFetch?: number;
+  /**
+   * Opt-in HMAC-SHA256 envelope authentication: with the same secret on
+   * every node, an unsigned or mis-signed cluster message is dropped and
+   * logged — "can publish on the broker" stops being "can command every
+   * node". Room events travel unsigned; ACL the broker for those.
+   */
+  secret?: string;
+}
+
+export interface RoomsOptions {
+  /**
+   * How long an emptied room's backplane channel stays subscribed, in ms —
+   * the grace window that absorbs reconnect churn for single-member rooms
+   * and keeps the between-subscriptions loss window shut for the common
+   * bounce. Default 5000; `0` unsubscribes immediately.
+   */
+  linger?: number;
 }
 
 export interface ClusterAskResult {
@@ -637,6 +670,12 @@ export declare class Cluster extends Emitter {
   readonly epoch: string;
   /** False without a backplane: every operation is local-only. */
   readonly connected: boolean;
+  /**
+   * False while a channel subscribe is failing and being retried: the node
+   * can publish but cannot hear. 'degraded'/'recovered' fire on the
+   * transitions — wire them to a readiness probe.
+   */
+  readonly healthy: boolean;
   /** Cluster-wide membership of `room`: a local sum, no network. */
   count(room: string): number;
   /** Per-instance breakdown of `room`; zero-count instances are omitted. */
@@ -651,7 +690,7 @@ export declare class Cluster extends Emitter {
   fetchClients(
     sel?: ClusterSelector,
     options?: { timeout?: number },
-  ): Promise<Array<ClientDescriptor> & { incomplete?: boolean }>;
+  ): Promise<Array<ClientDescriptor> & { incomplete?: boolean; truncated?: boolean }>;
   /**
    * `target` is a client id (addressed: ONE instance hears it) or a
    * selector (`{ room }` / `{}`: applied on every instance). Commands are
@@ -946,8 +985,14 @@ export interface RpcServerOptions {
   maxCalls?: number;
   /** SSE channel options, or `false` to remove the events endpoint. */
   sse?: import('./sse.js').SseOptions | false;
-  /** Presence/request tuning for the cluster layer. */
-  cluster?: ClusterOptions;
+  /**
+   * Presence/request tuning for the cluster layer, or `false` to opt out:
+   * presence, commands and asks then degrade to their local halves while
+   * the rooms backplane keeps working.
+   */
+  cluster?: ClusterOptions | false;
+  /** Rooms-backplane tuning (see the scaling guide). */
+  rooms?: RoomsOptions;
   /**
    * Pluggable query-string codec (qs and friends) for REST-mode requests.
    * The injected parser takes over prototype-pollution responsibility.
@@ -969,33 +1014,11 @@ export interface RpcServerOptions {
   metaMaxBytes?: number;
 }
 
-/** An injected wire codec — structural, checked by `isCodec`. */
-/**
- * The REST-mode body codec (`codec.rest`): encodes VALUES — the plain
- * result, the wire error object, the request body — never packet
- * envelopes. Binary is allowed here (whole HTTP bodies, no framing to
- * collide with), unlike the text-only packet half.
- */
-export interface WrpcRestCodec {
-  encode(value: unknown): string | Uint8Array;
-  decode(body: Uint8Array | string): unknown;
-  /** Overrides `application/json` on REST bodies, both directions. */
-  contentType?: string;
-}
-
-export interface WrpcPacketCodec {
-  encode(packet: unknown): string;
-  decode(text: string): unknown;
-  /** Overrides `application/json` on packet-mode HTTP/SSE requests. */
-  contentType?: string;
-  /** REST bodies stay JSON unless this section re-frames them. */
-  rest?: WrpcRestCodec;
-}
-
-/** A codec carries the packet half, the rest section, or both. */
-export type WrpcCodec = WrpcPacketCodec | { rest: WrpcRestCodec };
-
-export declare function isCodec(value: unknown): value is WrpcCodec;
+// The codec types (WrpcCodec, WrpcPacketCodec, WrpcRestCodec) and the
+// isCodec predicate live in client.d.ts — the client accepts the same
+// shape — and arrive here through the `export *`. One declaration: the
+// browser and node entries used to present DIFFERENT signatures for the
+// same runtime function.
 
 export declare class RpcServer extends Emitter {
   readonly router: Router;
@@ -1044,6 +1067,18 @@ export declare class RpcServer extends Emitter {
   matchPath(pathname: string): { mode: 'packet' | 'rest'; rest?: string } | null;
   /** True while drain() runs: new calls are refused with 503. */
   readonly draining: boolean;
+  /**
+   * False while a backplane channel subscribe is failing and being retried
+   * (rooms or cluster): the node can publish but cannot HEAR — drain it
+   * from rotation. Always true without a backplane.
+   */
+  readonly healthy: boolean;
+  /**
+   * The server telemetry writer, for hosts that run procedures outside the
+   * dispatcher (the fastify adapter's delegated routes bracket invokeBare
+   * with it). @experimental — the writer's shape may change in a minor.
+   */
+  readonly otel: unknown;
   /**
    * The graceful half of a shutdown: refuse new calls (503) and wait up to
    * `timeout` ms for in-flight ones to settle. Subscriptions are not waited

@@ -113,7 +113,8 @@ test('Client / calls', async (t) => {
 
   await t.test('handles call timeouts', async () => {
     const promise = client.api.test.timeout();
-    await assert.rejects(promise, new Error('Request timeout'));
+    // Coded like every client-produced refusal: `error.code` checks work.
+    await assert.rejects(promise, (error) => error.message === 'Request timeout' && error.code === 408);
   });
 
   await t.test('handles api errors', async () => {

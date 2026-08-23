@@ -1,16 +1,16 @@
 'use strict';
 
-const http = require('node:http');
-
-const { Emitter, jsonParse, isCodec, toKebab } = require('../utils.js');
+const { Emitter, jsonParse, isCodec } = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { ServerTransport, buildHeaders, isOriginAllowed } = require('../transport.js');
-const { WrpcWritable } = require('../streams.js');
 const { SessionManager } = require('./sessions.js');
 const { defineRouter, procedure, runHooksSafe } = require('./router.js');
 const { RoomRegistry, Broadcast, RoomsBackplane } = require('./rooms.js');
 const { Cluster } = require('./cluster.js');
-const { SseChannels, CHANNEL_HEADER } = require('../sse/server.js');
+const { SseChannels } = require('../sse/server.js');
+// The channel header from the import-free constants module, NOT from
+// sse/server.js: the string is shared, the implementation is not.
+const { CHANNEL_HEADER } = require('../wire.js');
 const { isBackplane } = require('../scaling/index.js');
 const {
   handleMessage,
@@ -18,21 +18,14 @@ const {
   handleRpc,
   split,
   parseParams,
-  sanitizeMeta,
   DEFAULT_MAX_BATCH,
+  UNKNOWN_TARGET,
 } = require('./dispatcher.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createServerTelemetry } = require('../telemetry/server.js');
-
-// One peer holding thousands of open generators is a denial of service the
-// application never opted into; the cap is generous but present.
-const DEFAULT_MAX_SUBSCRIPTIONS = 256;
-// Same reasoning for in-flight calls: each holds a controller, a context and
-// possibly a queue slot until it settles.
-const DEFAULT_MAX_CALLS = 1000;
-// How long client.ask() waits for the peer's answer. Mirrors the client's
-// default call timeout: an ask is a call travelling the other way.
-const DEFAULT_ASK_TIMEOUT = 7_000;
+const { TRACEPARENT, TRACESTATE } = require('../telemetry/shared.js');
+const { Context, Client, DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_CALLS, buildMeta } = require('./client.js');
+const { DEFAULT_META_MAX, declaredHeaders, declaredData } = require('./meta.js');
 
 // After this long an unsettled onConnect chain logs a warning: a hook that
 // never resolves holds the client's dispatch (see #addClient), and the warn
@@ -43,578 +36,18 @@ const ServerHttpTransport = ServerTransport.transport.http;
 const ServerWsTransport = ServerTransport.transport.ws;
 const ServerEventTransport = ServerTransport.transport.event;
 
-// The empty halves of a ClientMeta. Null-prototyped: header names and
-// declared metadata keys are peer-controlled, and a plain literal would
-// answer meta.headers['toString'] with a real function.
-const FROZEN_EMPTY = Object.freeze({ __proto__: null });
-const EMPTY_META = Object.freeze({
-  data: FROZEN_EMPTY,
-  headers: FROZEN_EMPTY,
-  url: '',
-  remoteAddress: '',
-  protocol: '',
-});
-
-// The frozen snapshot of what the peer presented when the connection was
-// made. `headers` is copied, not adopted: the source object belongs to the
-// host request and other code may still be reading (or mutating) it.
-const buildMeta = ({ headers, url, remoteAddress, protocol, data } = {}) =>
-  Object.freeze({
-    data: data ?? FROZEN_EMPTY,
-    headers: headers ? Object.freeze({ __proto__: null, ...headers }) : FROZEN_EMPTY,
-    url: url ?? '',
-    remoteAddress: remoteAddress ?? '',
-    protocol: protocol ?? '',
-  });
-
-// Connection-phase headers on the ws leg: the WHATWG WebSocket constructor
-// cannot set real upgrade headers, so the client carries declared ones as
-// ONE query parameter on the connect URL. PEER-CONTROLLED, so every step
-// below is a refusal rather than a throw — an oversize or malformed label
-// leaves the connection with no label, never without a connection. Observed
-// upgrade headers always win the merge: the query can only ADD names the
-// request did not carry, and the reserved names it could spoof are dropped
-// outright (on http/sse, fetch itself refuses to send them, so the deny
-// list exists exactly for this query path).
-const HEADERS_PARAM = 'wrpc_h';
-const DEFAULT_META_MAX = 2048;
-const RESERVED_DECLARED = /^(?:cookie|host|origin)$|^(?:sec-|content-|proxy-|x-wrpc-)/;
-
-const declaredHeaders = (url, limit, log) => {
-  const query = split(url ?? '', '?')[1];
-  if (!query) return null;
-  // Capped on the ENCODED length, before any decoding work — that is the
-  // string the peer actually controls.
-  if (query.length > limit) {
-    log.warn({ event: 'meta.oversize', bytes: query.length });
-    return null;
-  }
-  const raw = new URLSearchParams(query).get(HEADERS_PARAM);
-  if (!raw) return null;
-  const value = jsonParse(raw);
-  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-  let declared = null;
-  for (const key of Object.keys(value)) {
-    if (typeof value[key] !== 'string') continue; // a flat string map only
-    // Kebab-cased: node lowercases observed header names, and schema.headers
-    // validation must see one casing convention, not two. Kebab rather than a
-    // bare lowercase because `xAppVersion` would otherwise land as
-    // `xappversion` — a key nobody would write in a schema.
-    // Tested AFTER the transform: toKebab can only lowercase and insert
-    // hyphens, so it can never turn a permitted name into a reserved one, but
-    // the honest order is to check the name that will actually be kept.
-    const name = toKebab(key);
-    if (name === '__proto__' || RESERVED_DECLARED.test(name)) continue;
-    (declared ??= { __proto__: null })[name] = value[key];
-  }
-  return declared;
-};
-
-// The connection-phase half of `meta` — the x-wrpc-meta request header
-// (http/sse; percent-encoded JSON, since header values must stay latin-1),
-// its per-key x-wrpc-meta-<name> spelling, or the wrpc_meta connect-URL
-// parameter (ws). Same sanitizer as the
-// per-packet field, same refusal-not-throw discipline. Unlike headers this
-// bag is deliberately outside schema validation: it is a label for
-// cross-cutting hooks, not procedure input.
-const META_HEADER = 'x-wrpc-meta';
-const META_PREFIX = 'x-wrpc-meta-';
-const META_PARAM = 'wrpc_meta';
-
-// The prefixed spelling — the S3 x-amz-meta-* idiom: `x-wrpc-meta-idem: 9f3c`
-// is a header a human can type and a gateway can inject, strip or route on,
-// where the percent-encoded JSON one is not. wrpc's own client emits it when
-// asked (`metaFormat: 'prefixed'`); an external HTTP caller can always use it.
-// Values stay STRINGS — the same by-design semantics as REST query args — so
-// the canonical JSON header remains the type-faithful form and wins a key
-// collision. Names are kebab-normalized to match what the client sends, but
-// see toKebab: HTTP has already lowercased them, so a caller who writes
-// `x-wrpc-meta-userId` by hand gets `userid` and no transform can undo it.
-const prefixedData = (headers, limit) => {
-  let data = null;
-  let bytes = 0;
-  for (const key in headers) {
-    if (!key.startsWith(META_PREFIX)) continue;
-    const name = key.slice(META_PREFIX.length);
-    // A duplicated header arrives as an array — skipped, refusal-style,
-    // like every other malformed label; '__proto__' never carries over.
-    if (name.length === 0 || name === '__proto__' || typeof headers[key] !== 'string') continue;
-    bytes += name.length + headers[key].length;
-    if (bytes > limit) return null;
-    (data ??= { __proto__: null })[toKebab(name)] = headers[key];
-  }
-  return data;
-};
-
-// Copies `source` onto `target` under normalized names. `target` is always a
-// bag this function's caller just built, never one it was handed, so writing
-// through it is safe; '__proto__' is skipped before it can be a key at all.
-const kebabKeys = (source, target) => {
-  for (const key in source) {
-    if (key === '__proto__') continue;
-    target[toKebab(key)] = source[key];
-  }
-  return target;
-};
-
-const declaredData = (headers, url, limit, log) => {
-  const prefixed = headers ? prefixedData(headers, limit) : null;
-  let raw = null;
-  const header = headers?.[META_HEADER];
-  if (typeof header === 'string' && header.length > 0) {
-    if (header.length > limit) {
-      log.warn({ event: 'meta.oversize', bytes: header.length });
-      return sanitizeMeta(prefixed, limit);
-    }
-    try {
-      raw = decodeURIComponent(header);
-    } catch {
-      return sanitizeMeta(prefixed, limit);
-    }
-  } else {
-    const query = split(url ?? '', '?')[1];
-    if (query && query.length <= limit) raw = new URLSearchParams(query).get(META_PARAM);
-  }
-  const declared = raw ? jsonParse(raw) : null;
-  const canonical = typeof declared === 'object' && declared !== null && !Array.isArray(declared) ? declared : null;
-  if (!canonical) return sanitizeMeta(prefixed, limit);
-  // Normalized as it merges, so the two spellings reduce to the SAME key and
-  // the collision is real: without this, `x-wrpc-meta: {"userId":1}` and
-  // `x-wrpc-meta-user-id: 2` would sit side by side as lookalike keys and
-  // nothing would win. Prefixed is the (already-kebab) seed, canonical
-  // overwrites it — the JSON header is the type-faithful form, so it wins.
-  return sanitizeMeta(kebabKeys(canonical, prefixed ?? { __proto__: null }), limit);
+// call joins the caller's trace exactly like a packet call does.
+const copyTraceHeaders = (headers, packet) => {
+  const parent = headers?.traceparent;
+  if (typeof parent !== 'string' || parent.length === 0) return;
+  packet[TRACEPARENT] = parent;
+  const state = headers.tracestate;
+  if (typeof state === 'string' && state.length > 0) packet[TRACESTATE] = state;
 };
 
 // A capability refusal ("this transport cannot carry that") is part of the
 // protocol conversation, not a server internal: 400-coded and exposed so
 // the peer reads the actual reason instead of a masked 500.
-const refusal = (message) => {
-  const error = new Error(message);
-  error.code = 400;
-  error.expose = true;
-  return error;
-};
-
-class Context {
-  #log = null;
-
-  constructor(client, signal = null, target = null) {
-    this.client = client;
-    this.uuid = client.generateId();
-    this.state = {};
-    // Aborted when the caller cancels, unsubscribes, or disconnects. A
-    // handler that awaits anything long-lived should pass it along; one
-    // that ignores it simply runs to completion and has its result dropped.
-    this.signal = signal;
-    // Call identity, so cross-cutting hooks need not re-derive it from the
-    // packet: the wire target ('unit.ver/name'; an inbound event's name
-    // verbatim) and the resolved Procedure handling it.
-    this.method = target?.method ?? null;
-    this.procedure = target?.procedure ?? null;
-    // The caller's per-invocation metadata (the packet's optional `meta`
-    // field, sanitized) — a frozen empty object rather than null, so a
-    // cross-cutting hook reads context.callMeta.idem without `?.`.
-    this.callMeta = target?.callMeta ?? FROZEN_EMPTY;
-  }
-
-  get session() {
-    return this.client.session;
-  }
-
-  // Bound lazily: a Context is allocated for every call, subscribe and
-  // inbound event, and most handlers never log. `uuid` is already there, so
-  // the correlation id exists whether or not anyone asks for the child.
-  get log() {
-    return (this.#log ??= this.client.log.child({ callId: this.uuid }));
-  }
-
-  // Rooms are reached from a handler through here — `ctx.server.to(room)` —
-  // rather than by closing over a server the router had to exist before.
-  get server() {
-    return this.client.server;
-  }
-
-  // The connection's presented metadata, mirrored the way `session` is: a
-  // getter, so the per-call Context allocates nothing for it.
-  get meta() {
-    return this.client.meta;
-  }
-}
-
-class Client extends Emitter {
-  #transport = null;
-  #sessions = null;
-  #rooms = null;
-  #server = null;
-  #log = null;
-  #otel = null;
-  #codec = null;
-  // id -> { resolve, reject, timer }: answers this client owes to asks the
-  // server sent it. See ask()/expectAnswer()/settleAnswer().
-  #asks = new Map();
-  #ready = null;
-
-  constructor(transport, options = {}) {
-    super();
-    const {
-      sessions,
-      rooms,
-      server,
-      log,
-      otel,
-      maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
-      maxCalls = DEFAULT_MAX_CALLS,
-      generateId,
-      codec = null,
-      meta = null,
-      metaMax = DEFAULT_META_MAX,
-    } = options;
-    // The dispatcher's cap on the per-packet `meta` field (sanitizeMeta).
-    this.metaMax = metaMax;
-    // What the peer presented when the connection was made (headers, url,
-    // negotiated subprotocol) — frozen, EMPTY_META when nothing was. The
-    // peer-controlled parts are labels, never authorization inputs.
-    this.meta = meta ?? EMPTY_META;
-    this.#transport = transport;
-    this.#sessions = sessions;
-    this.#codec = codec;
-    // A Client built outside an RpcServer still has working rooms; it just
-    // has nobody to share them with.
-    this.#rooms = rooms ?? new RoomRegistry();
-    this.#server = server ?? null;
-    // Connection-scoped, bound once: a connection lives for minutes, and the
-    // binding hoists the peer id out of every line logged for it.
-    this.#log = createLoggerWriter(log ?? globalThis.console).child({ peer: transport.source });
-    this.#otel = otel ?? createServerTelemetry(null);
-    this.source = transport.source;
-    this.session = null;
-    this.sessionReady = Promise.resolve();
-    this.streams = new Map();
-    // id -> AbortController, for the two things a peer can take back.
-    this.calls = new Map();
-    this.subscriptions = new Map();
-    this.maxSubscriptions = maxSubscriptions;
-    this.maxCalls = maxCalls;
-    // Context uuids and server-side stream ids; uuid v4 unless the app
-    // brings its own (cuid/ulid/a test counter) — see RpcServerOptions.
-    this.generateId = typeof generateId === 'function' ? generateId : generateUUID;
-    // Instance-prefixed, so the id IS the address: a cluster command for
-    // this client goes straight to this instance's channel, no broadcast.
-    // A standalone Client (no server) has no instance and no prefix.
-    this.id = this.#server ? `${this.#server.instanceId}.${this.generateId()}` : this.generateId();
-    // The application's bag, carried by cluster descriptors — what
-    // socket.data is in socket.io. wrpc itself never reads it.
-    this.data = {};
-  }
-
-  error(code, { id = '', error = null } = {}) {
-    const httpCode = code <= 599 ? code : 500;
-    const status = http.STATUS_CODES[httpCode];
-    const info = error ? error.stack : status || 'Unknown error';
-    this.#transport.error(code, { id, error });
-    this.#log.error({ event: 'rpc.error', code, id, err: error }, `${this.source}\t${code}\t${info}`);
-  }
-
-  // What dispatch actually gates on: the session restore PLUS the settled
-  // onConnect hooks (#addClient assigns the combined promise). Two promises
-  // on purpose — a hook may `await client.sessionReady`, so folding the
-  // hooks into that same promise would make such a hook wait for itself.
-  // Follows `sessionReady` until #addClient diverges them, so a standalone
-  // Client that assigns sessionReady by hand keeps the gate it expects.
-  get ready() {
-    return this.#ready ?? this.sessionReady;
-  }
-
-  set ready(value) {
-    this.#ready = value;
-  }
-
-  /** The connection-scoped writer, reached by the dispatcher and handlers. */
-  get log() {
-    return this.#log;
-  }
-
-  /** The server's telemetry writer; disabled-shaped when unconfigured. */
-  get otel() {
-    return this.#otel;
-  }
-
-  /** 'ws' | 'http' | 'sse' | 'event' — a metric attribute and a log field. */
-  get transportKind() {
-    return this.#transport.kind;
-  }
-
-  // Diagnostics for packets that carry no id to answer on (inbound events):
-  // the log is the only channel left.
-  warn(message, entry = {}) {
-    this.#log.warn({ event: 'rpc.warn', ...entry }, `${this.source}\t${message}`);
-  }
-
-  /** Returns false when the transport is above its high-water mark. */
-  send(obj, options = {}) {
-    const { code, method, text } = options;
-    const flushed = this.#transport.send(obj, code, text);
-    // Debug on purpose: one line per successful call is a firehose. A
-    // console logger drops debug outright; a structured logger's own level
-    // decides. Failures still log at error, unconditionally.
-    const isSuccessCallback = obj.type === 'callback' && !obj.error;
-    if (isSuccessCallback) {
-      this.#log.debug({ event: 'call.ok', method, id: obj.id }, `${this.source}\tCALL\t${method}\tOK`);
-    }
-    return flushed;
-  }
-
-  /**
-   * Resolves when the transport has drained — or when it closes, so a
-   * producer waiting on a peer that never reads is released by the
-   * disconnect rather than parked forever.
-   */
-  drain() {
-    return new Promise((resolve) => {
-      const done = () => {
-        this.#transport.off('drain', done);
-        this.#transport.off('close', done);
-        resolve();
-      };
-      this.#transport.on('drain', done);
-      this.#transport.on('close', done);
-    });
-  }
-
-  // True for transports that stay open (WebSocket, worker port): only
-  // those can carry events and streams.
-  get persistent() {
-    return Boolean(this.#transport.connection);
-  }
-
-  /** The RpcServer this client belongs to; null for a standalone Client. */
-  get server() {
-    return this.#server;
-  }
-
-  /** False on a text-only transport (SSE), where binary streams cannot go. */
-  get binary() {
-    return this.#transport.binary !== false;
-  }
-
-  createContext(signal = null, target = null) {
-    return new Context(this, signal, target);
-  }
-
-  // The inbound half of the wire codec: what handleMessage parses frames
-  // with. Malformed input answers null, same contract as jsonParse.
-  decodePacket(text) {
-    if (!this.#codec) return jsonParse(text);
-    try {
-      return this.#codec.decode(typeof text === 'string' ? text : String(text));
-    } catch {
-      return null;
-    }
-  }
-
-  // NOTE: `emit` is the inherited LOCAL Emitter emit — `client.on('x', fn)`
-  // works, and Client is substitutable for the Emitter it extends. The wire
-  // send has its own name and always had it: `sendEvent`.
-
-  sendEvent(name, data) {
-    const packet = { type: 'event', name, data };
-    if (!this.#transport.connection) {
-      throw refusal(`Can't send wrpc event to http transport`);
-    }
-    this.send(packet);
-  }
-
-  /**
-   * Writes an ALREADY-serialized packet. The fan-out seam: a broadcast to N
-   * clients stringifies once and hands every recipient the same text,
-   * instead of paying JSON.stringify per client. Returns the transport's
-   * backpressure signal, like send().
-   */
-  sendRaw(text) {
-    if (!this.#transport.connection) {
-      throw refusal(`Can't send wrpc event to http transport`);
-    }
-    return this.#transport.write(text);
-  }
-
-  /**
-   * A call in the other direction: sends `{type:'event', name, data, id}`
-   * and resolves with the answer the peer's responder returns (registered
-   * client-side with `client.respond(name, fn)`). Rejects with 408 on
-   * timeout, 503 when the connection drops first.
-   */
-  ask(name, data, options = {}) {
-    if (!this.#transport.connection) {
-      throw refusal(`Can't send wrpc event to http transport`);
-    }
-    const id = this.generateId();
-    const packet = { type: 'event', name, data, id };
-    this.send(packet);
-    return this.expectAnswer(id, options.timeout);
-  }
-
-  /**
-   * Registers a pending answer slot for `id`. The seam Broadcast.ask()
-   * uses: the broadcast writes its own pre-serialized packet through
-   * sendRaw and only needs the bookkeeping half of ask().
-   */
-  expectAnswer(id, timeout) {
-    return new Promise((resolve, reject) => {
-      const wait = timeout > 0 ? timeout : DEFAULT_ASK_TIMEOUT;
-      const timer = setTimeout(() => {
-        this.#asks.delete(id);
-        const error = new Error('Ask timeout');
-        error.code = 408;
-        reject(error);
-      }, wait);
-      if (typeof timer.unref === 'function') timer.unref();
-      this.#asks.set(id, { resolve, reject, timer });
-    });
-  }
-
-  /** Routes an inbound `callback` to its pending ask; false when none. */
-  settleAnswer(packet) {
-    const pending = this.#asks.get(packet.id);
-    if (!pending) return false;
-    this.#asks.delete(packet.id);
-    clearTimeout(pending.timer);
-    if (packet.error) {
-      const error = new Error(packet.error.message ?? 'Ask failed');
-      error.code = packet.error.code ?? 500;
-      if (packet.error.details !== undefined) error.details = packet.error.details;
-      pending.reject(error);
-    } else {
-      pending.resolve(packet.result);
-    }
-    return true;
-  }
-
-  // ---------------------------------------------------------------------
-  // Rooms. The registry owns both directions, so this client keeps no room
-  // state of its own that a missed leave could leave stale.
-
-  join(room) {
-    return this.#rooms.join(this, room);
-  }
-
-  leave(room) {
-    return this.#rooms.leave(this, room);
-  }
-
-  /** The rooms this client is in — a copy, safe to iterate while leaving. */
-  get rooms() {
-    return new Set(this.#rooms.roomsOf(this));
-  }
-
-  in(room) {
-    return this.#rooms.members(room).has(this);
-  }
-
-  getStream(id) {
-    if (!this.#transport.connection) {
-      throw refusal(`Can't receive stream from http transport`);
-    }
-    if (!this.binary) throw refusal(`Can't receive stream over a text-only transport`);
-    const stream = this.streams.get(id);
-    if (stream) return stream;
-    throw new Error(`Stream ${id} is not initialized`);
-  }
-
-  createStream(name, size) {
-    if (!this.#transport.connection) {
-      throw refusal(`Can't send wrpc streams to http transport`);
-    }
-    if (!this.binary) throw refusal(`Can't send wrpc streams over a text-only transport`);
-    if (!name) throw new Error('Stream name is not provided');
-    if (!size) throw new Error('Stream size is not provided');
-    const id = this.generateId();
-    if (typeof id !== 'string' || id.length === 0 || id.length > 255) {
-      throw new TypeError('createStream: generateId must return a string of at most 255 characters');
-    }
-    const stream = new WrpcWritable(id, name, size, this.#transport);
-    this.streams.set(id, stream);
-    return stream;
-  }
-
-  initializeSession(token, data = {}) {
-    // Re-initializing the SAME token must not finalize first: with an async
-    // store the fire-and-forget delete(token) could land after the new
-    // set(token) and silently wipe the fresh session
-    if (this.session && this.session.token !== token) void this.finalizeSession();
-    this.session = this.#sessions.create(token, data);
-    return true;
-  }
-
-  async finalizeSession() {
-    if (!this.session) return false;
-    const { token } = this.session;
-    this.session = null;
-    await this.#sessions.destroy(token);
-    return true;
-  }
-
-  startSession(token, data = {}) {
-    this.initializeSession(token, data);
-    if (!this.#transport.connection) {
-      // The carrier stamps the response when it can (a cookie); a bearer
-      // carrier answers null and the handler returns tokens in its result.
-      const header = this.#sessions.transport.write(this.session.token);
-      if (header) this.#transport.sendSessionCookie(header);
-    }
-    return true;
-  }
-
-  async restoreSession(token) {
-    const session = await this.#sessions.restore(token);
-    if (!session) return false;
-    this.session = session;
-    return true;
-  }
-
-  close() {
-    this.#transport.close();
-  }
-
-  // A dropped connection does NOT delete the session from the store —
-  // that is what makes restoreSession after a reconnect possible.
-  // Sessions end via finalizeSession or store-side expiry only.
-  destroy() {
-    const log = this.#log;
-    this.#rooms.leaveAll(this);
-    // A gone peer cannot receive an answer, so everything still running on
-    // its behalf is told to stop — this is what runs a subscription
-    // handler's `finally`, releasing whatever it had open.
-    const disconnected = new Error('Client disconnected');
-    for (const controller of this.calls.values()) controller.abort(disconnected);
-    for (const controller of this.subscriptions.values()) controller.abort(disconnected);
-    this.calls.clear();
-    this.subscriptions.clear();
-    // An answer can no longer arrive: whoever asked is settled NOW instead
-    // of waiting out the ask timeout on a peer that is gone.
-    if (this.#asks.size > 0) {
-      const gone = new Error('Client disconnected');
-      gone.code = 503;
-      for (const pending of this.#asks.values()) {
-        clearTimeout(pending.timer);
-        pending.reject(gone);
-      }
-      this.#asks.clear();
-    }
-    // Contained: destroy() runs from the transport's close handler, where a
-    // throwing app listener would otherwise be an unhandled rejection.
-    Promise.resolve(this.emit('close')).catch((error) => {
-      log.error({ err: error, event: 'listener.close' });
-    });
-    for (const stream of this.streams.values()) {
-      if (typeof stream.terminate !== 'function') continue;
-      Promise.resolve(stream.terminate()).catch((error) => {
-        log.error({ err: error, event: 'stream.terminate', stream: stream.id });
-      });
-    }
-    this.streams.clear();
-  }
-}
 
 const DEFAULT_BASE_PATH = '/api';
 
@@ -637,6 +70,7 @@ const RPC_OPTION_KEYS = [
   'maxCalls',
   'sse',
   'cluster',
+  'rooms',
   'querystring',
   'codec',
   'metaMaxBytes',
@@ -704,6 +138,7 @@ class RpcServer extends Emitter {
       maxCalls = DEFAULT_MAX_CALLS,
       sse = {},
       cluster = {},
+      rooms = {},
       querystring = null,
       codec = null,
       metaMaxBytes = DEFAULT_META_MAX,
@@ -761,22 +196,20 @@ class RpcServer extends Emitter {
     if (this.#codec && this.#router.hasSerializers) {
       throw new TypeError('RpcServer: options.codec and compiled response serializers are mutually exclusive');
     }
-    this.#initRooms(backplane, cluster);
+    this.#initRooms(backplane, cluster, rooms);
     // A channel's client is built from the GET that opened the stream, so it
     // restores the session from that request's cookie the way attachSocket
     // does — otherwise a browser holding a valid cookie starts the channel
     // anonymous and every `access: 'session'` procedure on it answers 403.
-    const addClient = (transport, call) =>
-      this.#addClient(
+    const addClient = (transport, call) => {
+      const data = declaredData(call.headers, split(call.url ?? '', '?')[1], this.#metaMax, this.#sseLog);
+      return this.#addClient(
         transport,
-        (client) => this.#restoreToken(client, { headers: call.headers, url: call.url }),
-        buildMeta({
-          headers: call.headers,
-          data: declaredData(call.headers, call.url, this.#metaMax, this.#sseLog),
-          url: call.url,
-          remoteAddress: call.remoteAddress,
-        }),
+        (client) =>
+          this.#restoreToken(client, { headers: call.headers, url: call.url, declared: call.headers, meta: data }),
+        buildMeta({ headers: call.headers, data, url: call.url, remoteAddress: call.remoteAddress }),
       );
+    };
     // The identity a request presents, bound to a channel at creation and
     // required again on every re-attach and channel POST — the id alone
     // must never be enough to act as the channel's session.
@@ -785,17 +218,23 @@ class RpcServer extends Emitter {
       sse === false ? null : new SseChannels({ ...sse, log: this.#sseLog, otel: this.#otel, addClient, channelKey });
   }
 
-  #initRooms(backplane, clusterOptions) {
+  #initRooms(backplane, clusterOptions, roomsOptions = {}) {
     // The cluster exists with or without a backplane — without one every
     // operation degrades to its local half, so application code written
     // against `server.cluster` never branches on the deployment.
+    // `cluster: false` opts out of the cluster layer HONESTLY (it used to
+    // be silently ignored): the Cluster is built without the backplane, so
+    // presence replication, commands and asks degrade to their local
+    // halves, while the rooms backplane below is untouched.
+    const enabled = clusterOptions !== false;
     const cluster = new Cluster({
-      backplane,
+      backplane: enabled ? backplane : null,
       instance: this.#instance,
       local: this.#clusterOps(),
       log: this.#log.child({ component: 'cluster' }),
+      otel: this.#otel,
       generateId: this.#generateId,
-      options: clusterOptions,
+      options: enabled ? clusterOptions : {},
     });
     this.#cluster = cluster;
     if (!backplane) {
@@ -806,6 +245,7 @@ class RpcServer extends Emitter {
       backplane,
       instance: this.#instance,
       log: this.#roomsLog,
+      linger: roomsOptions?.linger,
       // A replayed event is delivered LOCALLY: publishing it again would
       // bounce it between instances forever.
       deliver: (rooms, name, data) => {
@@ -941,6 +381,15 @@ class RpcServer extends Emitter {
     return new Set(this.#clients);
   }
 
+  // The telemetry writer, for hosts that run procedures OUTSIDE the
+  // dispatcher (the fastify adapter's delegated routes): they bracket
+  // invokeBare with the same spans/metrics the packet path gets, without
+  // reaching into private state. The writer's shape is @experimental, like
+  // the telemetry option it reflects.
+  get otel() {
+    return this.#otel;
+  }
+
   /**
    * A host-delegated REST route (the fastify adapter's native routes) runs
    * its procedure outside handleHttpCall: the host owns routing, validation
@@ -959,15 +408,12 @@ class RpcServer extends Emitter {
     // page's own code must set — has nothing to guard, so it restores on
     // safe methods too.
     const ambient = this.#sessions.transport.ambient === true;
+    const data = declaredData(headers, split(url ?? '', '?')[1], this.#metaMax, this.#log);
     const restore =
       !safeMethod || !ambient || this.#isSameOriginFetch(headers)
-        ? (c) => this.#restoreToken(c, { headers, url })
+        ? (c) => this.#restoreToken(c, { headers, url, declared: headers, meta: data })
         : null;
-    const client = this.#addClient(
-      transport,
-      restore,
-      buildMeta({ headers, data: declaredData(headers, url, this.#metaMax, this.#log), url, remoteAddress }),
-    );
+    const client = this.#addClient(transport, restore, buildMeta({ headers, data, url, remoteAddress }));
     await client.ready;
     const context = client.createContext(null, target);
     return { client, context, transport, release: () => transport.emit('close') };
@@ -1089,6 +535,11 @@ class RpcServer extends Emitter {
   // The injected token carrier decides what "this request presents a
   // session" means: a cookie by default, an Authorization header or a
   // payload field when the app swapped the strategy (sessions.transport).
+  // Besides the raw { headers, url }, read() receives what the core already
+  // parsed — `declared` (the merged declared+observed header bag, wrpc_h
+  // included and capped on the configurable metaMaxBytes) and `meta` (the
+  // sanitized connection-metadata bag, both spellings merged) — so a
+  // strategy never re-implements the wire parsing and cannot drift from it.
   #restoreToken(client, request) {
     const token = this.#sessions.transport.read(request);
     if (!token) return Promise.resolve(false);
@@ -1110,12 +561,14 @@ class RpcServer extends Emitter {
     // Declared-then-observed: the wrpc_h query can only add names the
     // upgrade request did not carry (see declaredHeaders).
     const declared = declaredHeaders(meta.url, this.#metaMax, this.#log);
+    const merged = declared ? { ...declared, ...meta.headers } : meta.headers;
+    const data = declaredData(meta.headers, split(meta.url ?? '', '?')[1], this.#metaMax, this.#log);
     const client = this.#addClient(
       transport,
-      (c) => this.#restoreToken(c, { headers: meta.headers, url: meta.url }),
+      (c) => this.#restoreToken(c, { headers: meta.headers, url: meta.url, declared: merged, meta: data }),
       buildMeta({
-        headers: declared ? { ...declared, ...meta.headers } : meta.headers,
-        data: declaredData(meta.headers, meta.url, this.#metaMax, this.#log),
+        headers: merged,
+        data,
         url: meta.url,
         remoteAddress: meta.remoteAddress ?? socket.remoteAddress,
         protocol: socket.protocol,
@@ -1262,6 +715,13 @@ class RpcServer extends Emitter {
     // would still have RUN — with the cookie session restored — which is
     // exactly the cross-site request an origin allowlist exists to stop.
     if (!isOriginAllowed(this.#cors, call.headers?.origin)) {
+      // A configuration error, not routine traffic: the offending origin is
+      // the one fact the operator needs. Counted on the calls series with
+      // UNKNOWN_TARGET so refused traffic shows up next to answered traffic
+      // without new cardinality — the rule every early refusal below shares
+      // (these paths run before any Client exists, so nothing else records).
+      this.#log.warn({ event: 'cors.refused', origin: call.headers?.origin });
+      this.#otel.recordCall(UNKNOWN_TARGET, 'error', 403);
       return void new ServerHttpTransport(call, { headers }).error(403);
     }
     // No Content-Type override here: which codec's type applies depends on
@@ -1279,9 +739,11 @@ class RpcServer extends Emitter {
       }
     }
     if (!match) {
+      this.#log.warn({ event: 'http.refused', code: 404, path: pathname });
+      this.#otel.recordCall(UNKNOWN_TARGET, 'error', 404);
       return void new ServerHttpTransport(call, { headers }).error(404);
     }
-    if (match.mode === 'packet') return this.#handlePacketPost(call, headers);
+    if (match.mode === 'packet') return this.#handlePacketPost(call, headers, params);
     return this.#handleRest(call, match.rest, params, headers);
   }
 
@@ -1301,21 +763,21 @@ class RpcServer extends Emitter {
   }
 
   // POST {basePath} — a JSON call packet (or a batch array) in the body.
-  async #handlePacketPost(call, headers) {
+  async #handlePacketPost(call, headers, params) {
     // Mode-aware: only packet-mode responses carry the packet codec's type.
     if (this.#codec?.contentType) headers['Content-Type'] = this.#codec.contentType;
     const batch = call.method === 'POST' ? this.#batchIds(call.body) : null;
     const transport = new ServerHttpTransport(call, { headers, batch });
-    if (call.method !== 'POST') return void transport.error(403);
+    if (call.method !== 'POST') {
+      this.#log.warn({ event: 'http.refused', code: 403, method: call.method });
+      this.#otel.recordCall(UNKNOWN_TARGET, 'error', 403);
+      return void transport.error(403);
+    }
+    const data = declaredData(call.headers, params, this.#metaMax, this.#log);
     const client = this.#addClient(
       transport,
-      (c) => this.#restoreToken(c, { headers: call.headers, url: call.url }),
-      buildMeta({
-        headers: call.headers,
-        data: declaredData(call.headers, call.url, this.#metaMax, this.#log),
-        url: call.url,
-        remoteAddress: call.remoteAddress,
-      }),
+      (c) => this.#restoreToken(c, { headers: call.headers, url: call.url, declared: call.headers, meta: data }),
+      buildMeta({ headers: call.headers, data, url: call.url, remoteAddress: call.remoteAddress }),
     );
     // An aborted or never-answered request must still evict the client:
     // the transport only self-closes when it writes a response.
@@ -1346,9 +808,13 @@ class RpcServer extends Emitter {
     // Declarative-route refusals answer in REST shape too (a plain wire
     // error object), not as callback envelopes — same contract as a hit.
     if (route?.malformed) {
+      this.#log.warn({ event: 'http.refused', code: 400, path: rest });
+      this.#otel.recordCall(UNKNOWN_TARGET, 'error', 400);
       return void new ServerHttpTransport(call, { headers, rest: { codec: restCodec } }).error(400);
     }
     if (route?.allowed) {
+      this.#log.warn({ event: 'http.refused', code: 405, method, path: rest });
+      this.#otel.recordCall(UNKNOWN_TARGET, 'error', 405);
       const headersWithAllow = { ...headers, Allow: route.allowed.join(', ') };
       return void new ServerHttpTransport(call, { headers: headersWithAllow, rest: { codec: restCodec } }).error(405);
     }
@@ -1357,15 +823,15 @@ class RpcServer extends Emitter {
       rest: route ? { status: route.http.status, codec: restCodec } : null,
     });
     const safeMethod = method === 'GET' || method === 'HEAD';
-    // Same ambient-only CSRF reasoning as delegatedContext above.
-    const restore =
-      !safeMethod || this.#sessions.transport.ambient !== true || this.#isSameOriginFetch(call.headers)
-        ? (c) => this.#restoreToken(c, { headers: call.headers, url: call.url })
-        : null;
     // For a per-request client the connection IS the call, so the declared
     // data doubles as this call's meta: a curl caller passes x-wrpc-meta and
     // a hook reads context.callMeta, same as on ws.
-    const data = declaredData(call.headers, call.url, this.#metaMax, this.#log);
+    const data = declaredData(call.headers, params, this.#metaMax, this.#log);
+    // Same ambient-only CSRF reasoning as delegatedContext above.
+    const restore =
+      !safeMethod || this.#sessions.transport.ambient !== true || this.#isSameOriginFetch(call.headers)
+        ? (c) => this.#restoreToken(c, { headers: call.headers, url: call.url, declared: call.headers, meta: data })
+        : null;
     const client = this.#addClient(
       transport,
       restore,
@@ -1400,6 +866,7 @@ class RpcServer extends Emitter {
       const args = { params: route.params, query: this.#parseQuery(params), body };
       const packet = { type: 'call', id, method: `${route.unitKey}/${route.methodName}`, args };
       if (data) packet.meta = data;
+      copyTraceHeaders(call.headers, packet);
       return void handleRpc(client, packet, this.#router);
     }
     const parameters = this.#parseQuery(params);
@@ -1413,6 +880,7 @@ class RpcServer extends Emitter {
     const args = { ...parameters, ...body };
     const packet = { type: 'call', id, method: `${unit}/${name}`, args };
     if (data) packet.meta = data;
+    copyTraceHeaders(call.headers, packet);
     return void handleRpc(client, packet, this.#router);
   }
 
@@ -1442,6 +910,16 @@ class RpcServer extends Emitter {
   /** True while drain() runs: new calls are refused with 503. */
   get draining() {
     return this.#draining;
+  }
+
+  /**
+   * False while a backplane channel subscribe is failing and being retried
+   * (rooms or cluster): the node can publish but cannot HEAR — the
+   * half-connected state a readiness probe should drain it on. Always true
+   * without a backplane.
+   */
+  get healthy() {
+    return (this.#backplane === null || this.#backplane.healthy) && this.#cluster.healthy;
   }
 
   /**

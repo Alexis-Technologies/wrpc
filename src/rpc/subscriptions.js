@@ -45,7 +45,14 @@ const DEFAULT_LOG_SIZE = 100;
 // numeric coincidence silently pretending nothing was missed. A persisted
 // or shared log passes its own stable `epoch`.
 class EventLog {
-  #entries = [];
+  // A preallocated ring (slots + head cursor + count), not push/shift:
+  // Array#shift on every event at steady state cost ~320 ns per push at the
+  // default size 100 against ~7 ns for the ring, and the cost was not even
+  // monotonic in size (V8's left-trimming threshold) — bench/replay-buffer.js.
+  // Same shape as SegmentQueue (src/websocket/segments.js).
+  #entries;
+  #head = 0;
+  #count = 0;
   #size;
   #next;
   #epoch;
@@ -55,6 +62,7 @@ class EventLog {
       throw new TypeError('createEventLog: size must be a positive integer');
     }
     this.#size = size;
+    this.#entries = new Array(size);
     this.#next = start;
     this.#epoch = epoch === null || epoch === undefined ? Math.random().toString(36).slice(2, 10) : String(epoch);
     if (this.#epoch.includes('.')) {
@@ -67,7 +75,7 @@ class EventLog {
   }
 
   get length() {
-    return this.#entries.length;
+    return this.#count;
   }
 
   /** Which log incarnation mints this log's ids. */
@@ -77,14 +85,22 @@ class EventLog {
 
   /** The id of the newest entry, or null while the log is empty. */
   get lastEventId() {
-    return this.#entries.length > 0 ? this.#entries[this.#entries.length - 1].id : null;
+    if (this.#count === 0) return null;
+    return this.#entries[(this.#head + this.#count - 1) % this.#size].id;
   }
 
   push(data) {
     const n = this.#next++;
     const id = `${this.#epoch}.${n}`;
-    this.#entries.push({ id, n, data });
-    if (this.#entries.length > this.#size) this.#entries.shift();
+    const entry = { id, n, data };
+    if (this.#count < this.#size) {
+      this.#entries[(this.#head + this.#count) % this.#size] = entry;
+      this.#count++;
+    } else {
+      // Full: the new entry takes the oldest slot and the head advances.
+      this.#entries[this.#head] = entry;
+      this.#head = (this.#head + 1) % this.#size;
+    }
     return id;
   }
 
@@ -105,21 +121,24 @@ class EventLog {
     if (!Number.isFinite(cursor)) return null;
     // Everything asked for is newer than everything we hold: nothing missed.
     if (cursor >= this.#next - 1) return [];
-    const oldest = this.#entries.length > 0 ? this.#entries[0].n : this.#next;
+    const oldest = this.#count > 0 ? this.#entries[this.#head].n : this.#next;
     if (cursor < oldest - 1) return null; // the gap is older than the buffer
-    // Entries are appended in order, so the first one past the cursor marks
-    // the start of the tail — one pass, one array, instead of filter().map()
-    // building two.
+    // Entries sit in ring order from the head, so one pass from there
+    // collects the tail past the cursor — one array, no filter().map().
     const missed = [];
-    for (let i = 0; i < this.#entries.length; i++) {
-      const entry = this.#entries[i];
+    for (let i = 0; i < this.#count; i++) {
+      const entry = this.#entries[(this.#head + i) % this.#size];
       if (entry.n > cursor) missed.push(tracked(entry.id, entry.data));
     }
     return missed;
   }
 
   clear() {
-    this.#entries.length = 0;
+    // fill(), not length = 0: the slot array is the ring's preallocation,
+    // and the overwrite releases the entry references it held.
+    this.#entries.fill(undefined);
+    this.#head = 0;
+    this.#count = 0;
   }
 }
 

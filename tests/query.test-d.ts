@@ -117,3 +117,11 @@ expectType<{ text: string }>(null as unknown as wrpcQuery.CallArgs<Api, ['chat',
 expectType<{ id: string }>(null as unknown as wrpcQuery.CallResult<Api, ['chat', 'send']>);
 expectType<{ room: string }>(null as unknown as wrpcQuery.SubscriptionArgs<Api, ['chat', 'onMessage']>);
 expectType<{ text: string }>(null as unknown as wrpcQuery.SubscriptionData<Api, ['chat', 'onMessage']>);
+
+// infiniteQueryOptions: typed like queryOptions, cursor rides as an args field
+import type { WrpcInfiniteQueryOptions } from '../query.js';
+expectAssignable<WrpcInfiniteQueryOptions<{ id: string }>>(
+  wq.infiniteQueryOptions(['chat', 'send'], { text: 'x' }, { initialPageParam: null, cursorKey: 'after' }),
+);
+void wq.infiniteQueryOptions(['chat', 'list'], { room: 'a' }).queryFn({ pageParam: 'p2' });
+expectError(wq.infiniteQueryOptions(['chat', 'nope'], {}));

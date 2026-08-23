@@ -27,9 +27,17 @@ at all, and next to two frameworks that do the same job wrpc does.
 | uWebSockets.js — raw echo, no RPC | 30,196 | 12,169 | 158,567 |
 | `@fastify/websocket` — raw echo, no RPC | 34,888 | 12,307 | 110,184 |
 | socket.io — framework RPC via `emitWithAck` | 25,254 | 11,128 | 99,472 |
-| tRPC — framework RPC over `wsLink` | 661 | 587 | 23,023 |
+| tRPC — framework RPC over `wsLink` | 661¹ | 587¹ | 23,023 |
 
 ops/sec, higher is better.
+
+¹ tRPC's sequential number is a **client-side flush-timer artifact, not
+throughput**: its per-call latency measures a near-constant ~1.5 ms
+(median 1.53 ms, p10–p90 spread 1.48–1.69 — a fixed delay, not processing),
+so one awaited call per timer tick caps the sequential rate while the
+pipelined column shows what the same stack does when many calls share a
+flush. Compare tRPC on the batched column, where its per-call machinery
+amortizes.
 
 Read it honestly:
 
@@ -39,9 +47,12 @@ Read it honestly:
 - **On real payloads the gap closes and inverts.** At 10 KB, wrpc is the
   fastest entry in the table — including the raw echoes — because the
   send path avoids re-encoding and re-copying what it already has.
-- **Against frameworks doing the same job**, wrpc is level with socket.io and
-  ~40× tRPC's `wsLink` on a single call. tRPC's number is a property of that
-  link's per-call machinery, not of tRPC's type story, which is excellent.
+- **Against frameworks doing the same job**, wrpc is level with socket.io on
+  a single call and the fastest measured stack at 10 KB. The tRPC rows read
+  through footnote ¹: its sequential number is a client flush-timer
+  artifact, and the honest comparison is the batched column — where wrpc is
+  still ~4.4× ahead. tRPC's type story is excellent and unaffected by any
+  of this.
 - **Batching changes the ranking**, and a uWebSockets.js-backed stack wins it —
   which is exactly why the [uws engine](./adapters/uws) is a supported swap.
 

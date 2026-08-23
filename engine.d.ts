@@ -116,6 +116,13 @@ export interface Engine {
   capabilities: EngineCapabilities;
   attach(options: EngineAttachOptions): EngineConnectionSource;
   listen?(options: { host?: string; port?: number }): Promise<unknown>;
+  /**
+   * Optional listener-only phase of a graceful shutdown (standalone
+   * engines): refuse NEW connections while the accepted ones keep working
+   * — the intake-first ordering a hosted boot gets from httpServer.close().
+   * Feature-detected by the Server shell before drain().
+   */
+  stopListening?(): void;
   close(options?: { code?: number; reason?: string }): void;
 }
 

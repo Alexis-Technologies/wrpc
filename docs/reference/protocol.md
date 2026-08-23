@@ -56,9 +56,13 @@ The rules that keep this compatible in every direction:
 - The name `wrpc.` is reserved as a prefix: applications must not mint their
   own subprotocols under it.
 
-HTTP and SSE requests carry no subprotocol; they stay versioned by this page
-alone (additive changes only), which is safe because every request/response
-pair is self-contained.
+HTTP and SSE requests carry no subprotocol. Their marker is the reserved
+**`wrpc-version`** header: every response echoes `wrpc-version: 1`, and a
+request MAY send one — revision 1 accepts and ignores it, which is exactly
+what reserves the negotiation seam inside the freeze (a future revision can
+branch on it without breaking a v1 peer). Beyond that, the HTTP side stays
+versioned by this page (additive changes only), which is safe because every
+request/response pair is self-contained.
 
 ## Framing
 
@@ -153,6 +157,13 @@ like any other unknown field. It is a label, never an authorization input,
 and deliberately outside schema validation. The trace-context fields
 `tp`/`ts` (below) are separate on purpose — they belong to the telemetry
 propagator, not to the application.
+
+A `call` packet may also carry an optional **`timeout`** field — the
+caller's per-call deadline in milliseconds (`CallOptions.timeout`). A server
+that understands it uses it to *shorten* the procedure's own time budget
+(never to widen it — the caller's budget is a courtesy, the procedure's
+timeout is the server's protection); one that does not ignores it, and only
+the caller's local timer applies. Additive, absent unless set.
 
 ### `callback` — server → client {#callback-server-client}
 
@@ -419,7 +430,16 @@ Each method carries:
 | `signature` | An optional descriptor, below |
 | `http` | The declarative REST mapping (`{ method, path, status? }`), when the procedure carries one. |
 
-This is what `load()` consumes to build `client.api`, and what the `wrpc types`
+A unit object may additionally carry two **reserved keys** — impossible to
+collide with a method, since both are reserved in the router definition too:
+
+| Key | Meaning |
+| --- | --- |
+| `on` | The unit's inbound (client → server) event handlers: `{ [event]: { access, signature? } }`. What `wrpc types` turns into the contract's `sends` key, typing `client.sendEvent`. |
+| `emits` | The unit's *declared* outbound (server → client) events, verbatim from the router's declaration-only `emits` key: `{ [event]: { data?, returns? } }` in the `signature` shape language. What `wrpc types` turns into the contract's `events` key, typing the unit emitter and `client.respond`. |
+
+This is what `load()` consumes to build `client.api` (the two reserved keys
+are skipped — they are declarations, not methods), and what the `wrpc types`
 CLI consumes to generate a contract interface — where a `kind: 'subscription'`
 method becomes a `SubscriptionContract<Args, Data>` member rather than a
 callable one.

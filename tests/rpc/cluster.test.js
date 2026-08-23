@@ -484,3 +484,151 @@ test('cluster: a failing local op answers the requester with an error entry', as
   assert.deepStrictEqual(answers, []);
   assert.deepStrictEqual(errors, ['responder exploded']);
 });
+
+// ---------------------------------------------------------------------------
+// The scale/trust hardening: cluster: false, the rooms filter, the fetch
+// cap, envelope authentication and the digest presence heal.
+
+test('cluster: false opts out honestly — presence stays local, rooms backplane untouched', async (t) => {
+  const backplane = new MemoryBackplane();
+  const a = boot(t, backplane, { instanceId: 'a', cluster: false });
+  const b = boot(t, backplane, { instanceId: 'b' });
+  attach(a).client.join('lobby');
+  await settle(20);
+  // b never learns about a: a publishes no presence at all.
+  assert.deepStrictEqual(b.cluster.instances(), ['b']);
+  assert.strictEqual(a.cluster.connected, false);
+  // The ROOMS backplane is independent of the cluster opt-out: a broadcast
+  // from b still reaches a's member.
+  const socketA = attach(a);
+  socketA.client.join('news');
+  await settle(20);
+  b.to('news').emit('news/flash', { n: 1 });
+  await settle(20);
+  assert.ok(socketA.socket.events.some((e) => e.name === 'news/flash'));
+});
+
+test('cluster: the rooms filter keeps unlisted rooms off the wire', async (t) => {
+  const backplane = new MemoryBackplane();
+  const filter = (room) => !room.startsWith('user:');
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { rooms: filter } });
+  const b = boot(t, backplane, { instanceId: 'b', cluster: { rooms: filter } });
+  const peer = attach(a);
+  peer.client.join('lobby');
+  peer.client.join('user:42');
+  await settle(20);
+  assert.strictEqual(b.cluster.count('lobby'), 1, 'a topic room replicates');
+  assert.strictEqual(b.cluster.count('user:42'), 0, 'a filtered room does not');
+  // Locally both are visible: the filter shapes replication, not truth.
+  assert.strictEqual(a.cluster.count('user:42'), 1);
+});
+
+test('cluster: fetchClients truncates LOUDLY at the per-node cap', async (t) => {
+  const backplane = new MemoryBackplane();
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { maxFetch: 2 } });
+  const b = boot(t, backplane, { instanceId: 'b', cluster: { maxFetch: 2 } });
+  for (let i = 0; i < 4; i++) attach(b);
+  await settle(20);
+  const clients = await a.cluster.fetchClients({});
+  // b answered with its first 2 of 4 and said so.
+  assert.strictEqual(clients.length, 2);
+  assert.strictEqual(clients.truncated, true);
+});
+
+test('cluster: a shared secret authenticates envelopes; unsigned peers are ignored', async (t) => {
+  const backplane = new MemoryBackplane();
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { secret: 's3cr3t' } });
+  const b = boot(t, backplane, { instanceId: 'b', cluster: { secret: 's3cr3t' } });
+  boot(t, backplane, { instanceId: 'rogue' }); // no secret — nobody to the signed pair
+  attach(b).client.join('lobby');
+  await settle(20);
+  // Signed peers see each other; the unsigned node is nobody to them.
+  assert.deepStrictEqual(a.cluster.instances().sort(), ['a', 'b']);
+  assert.strictEqual(a.cluster.count('lobby'), 1);
+  assert.ok(!a.cluster.instances().includes('rogue'));
+  // A raw forged command on the shared channel is dropped by the signature
+  // check — the poisoned-broker scenario the secret exists for.
+  backplane.publish('cluster', JSON.stringify({ v: 1, from: 'evil', epoch: 'x', t: 'cmd', op: 'disconnect', sel: {} }));
+  await settle(20);
+  assert.strictEqual(b.clients.size, 1, 'the forged disconnect must not run');
+});
+
+test('cluster: the digest heals a dropped delta through an addressed sync', async (t) => {
+  const backplane = new MemoryBackplane();
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { presenceInterval: 40 } });
+  const b = boot(t, backplane, { instanceId: 'b', cluster: { presenceInterval: 40 } });
+  await settle(20);
+  // Sabotage: b's view of a is emptied by hand — the digest mismatch must
+  // notice and pull a full state without a full snapshot every tick.
+  attach(a).client.join('lobby');
+  await settle(20);
+  assert.strictEqual(b.cluster.count('lobby'), 1);
+  // Sabotage via the wire: a fake empty state for a, from a's OWN
+  // name/epoch (no secret in this test), empties b's view of it.
+  backplane.publish(
+    'cluster',
+    JSON.stringify({ v: 1, from: 'a', epoch: a.cluster.epoch, t: 'state', rooms: {}, clients: 0 }),
+  );
+  await settle(20);
+  assert.strictEqual(b.cluster.count('lobby'), 0, 'the sabotage took');
+  // Within a few presence ticks the digest mismatch triggers sync -> state.
+  await timers.setTimeout(150);
+  await settle(20);
+  assert.strictEqual(b.cluster.count('lobby'), 1, 'the digest healed the view');
+});
+
+test('cluster: signature edge branches — tampered payload and malformed commands are dropped', async (t) => {
+  const backplane = new MemoryBackplane();
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { secret: 's3' } });
+  const b = boot(t, backplane, { instanceId: 'b', cluster: { secret: 's3' } });
+  attach(b);
+  await settle(20);
+  assert.deepStrictEqual(a.cluster.instances().sort(), ['a', 'b']);
+  // A signed envelope TAMPERED after signing: valid-looking sig, wrong body.
+  const forged = JSON.stringify({
+    v: 1,
+    from: 'b',
+    epoch: b.cluster.epoch,
+    t: 'cmd',
+    op: 'disconnect',
+    sel: {},
+    sig: 'a'.repeat(64),
+  });
+  backplane.publish('cluster', forged);
+  await settle(20);
+  assert.strictEqual(b.clients.size, 1, 'a bad signature must not run the command');
+});
+
+test('cluster: malformed cmd shapes are dropped before they run', async (t) => {
+  const backplane = new MemoryBackplane();
+  const a = boot(t, backplane, { instanceId: 'a' });
+  const b = boot(t, backplane, { instanceId: 'b' });
+  const peer = attach(b);
+  peer.client.join('news');
+  await settle(20);
+  const post = (body) => backplane.publish('cluster', JSON.stringify({ v: 1, from: 'x', epoch: 'e', ...body }));
+  post({ t: 'cmd', op: 42, sel: {} }); // non-string op
+  post({ t: 'cmd', op: 'disconnect', sel: 'everyone' }); // non-object sel
+  post({ t: 'cmd', op: 'leave', sel: {}, rooms: 'news' }); // rooms not an array
+  post({ t: 'cmd', op: 'leave', sel: {}, rooms: [7] }); // rooms not strings
+  await settle(20);
+  assert.strictEqual(b.clients.size, 1, 'the client survived every malformed command');
+  assert.strictEqual(a.cluster.count('news') + b.cluster.count('news') > 0, true, 'the room membership survived');
+});
+
+test('cluster: a RegExp rooms filter and maxFetch: 0 (uncapped) hold', async (t) => {
+  const backplane = new MemoryBackplane();
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { rooms: /^topic:/, maxFetch: 0 } });
+  const b = boot(t, backplane, { instanceId: 'b', cluster: { rooms: /^topic:/, maxFetch: 0 } });
+  const peer = attach(a);
+  peer.client.join('topic:x');
+  peer.client.join('dm:1');
+  await settle(20);
+  assert.strictEqual(b.cluster.count('topic:x'), 1);
+  assert.strictEqual(b.cluster.count('dm:1'), 0);
+  for (let i = 0; i < 3; i++) attach(b);
+  await settle(20);
+  const clients = await a.cluster.fetchClients({});
+  assert.strictEqual(clients.truncated, undefined, 'maxFetch: 0 never truncates');
+  assert.ok(clients.length >= 4);
+});

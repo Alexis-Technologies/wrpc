@@ -197,7 +197,9 @@ class ClientSseTransport extends ClientTransport {
       // The server no longer holds what this channel missed: resuming would
       // silently skip frames. Drop the channel state and start over — the
       // client above re-loads and re-subscribes, and each subscription
-      // resumes (or honestly refuses to) from its own lastEventId.
+      // resumes (or honestly refuses to) from its own lastEventId. Said out
+      // loud: this is event loss, not routine reconnection.
+      this.log?.warn({ event: 'sse.gap', channel: this.#channel });
       this.#channel = null;
       this.#lastEventId = null;
       this.close();
@@ -251,11 +253,19 @@ class ClientSseTransport extends ClientTransport {
       if (response.ok) return void (text && this.emit('message', text));
       // 409: the channel died server-side (retention, restart, another
       // instance). This stream is now an orphan — close it so the client
-      // above reconnects and starts a fresh channel.
+      // above reconnects and starts a fresh channel (the 'close' settles
+      // everything in flight).
       if (response.status === 409) return void this.close();
+      // A refused POST answers nothing on the event stream, so the exact
+      // calls this request carried settle now instead of waiting out
+      // callTimeout — same contract as the plain HTTP transport.
       this.emit('error', new Error(`SSE post failed with ${response.status}: ${text}`));
+      this.failPackets(data, response.status);
     };
-    post().catch((error) => this.emit('error', error));
+    post().catch((error) => {
+      this.emit('error', error);
+      this.failPackets(data, 503);
+    });
     return true;
   }
 }

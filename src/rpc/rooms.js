@@ -377,19 +377,33 @@ class Broadcast {
 // which only instances holding members of it subscribe to. Either way an
 // envelope reaches a given instance through exactly ONE channel, so no
 // receiver-side deduplication is needed.
+// How long an emptied room's channel stays subscribed (ms): the grace
+// window that absorbs reconnect churn. 0 disables (`rooms: { linger: 0 }`).
+const DEFAULT_LINGER = 5_000;
+
 class RoomsBackplane {
   #backplane;
   #instance;
   #deliver;
   #log;
-  #channels = new Map(); // channel -> { count, off, stale }
+  #linger;
+  #channels = new Map(); // channel -> { count, off, stale, timer, lingerTimer }
   #closed = false;
+  // Channels whose subscribe FAILED and is being retried: while any are
+  // pending, cross-instance delivery on them is dark and `healthy` is
+  // false — what a readiness probe should drain the node on.
+  #pending = 0;
 
-  constructor({ backplane, instance, deliver, log = globalThis.console }) {
+  constructor({ backplane, instance, deliver, log = globalThis.console, linger = DEFAULT_LINGER }) {
     this.#backplane = backplane;
     this.#instance = instance;
     this.#deliver = deliver;
     this.#log = createLoggerWriter(log);
+    this.#linger = linger > 0 ? linger : 0;
+  }
+
+  get healthy() {
+    return this.#pending === 0;
   }
 
   // The broadcast channel is retained for the process' whole life: an
@@ -404,23 +418,52 @@ class RoomsBackplane {
     if (entry) {
       entry.count++;
       entry.stale = false;
+      // Re-populated inside the linger window: cancel the disposal, no
+      // broker round trip happened at all.
+      if (entry.lingerTimer) {
+        clearTimeout(entry.lingerTimer);
+        entry.lingerTimer = null;
+      }
       return;
     }
-    const record = { count: 1, off: null, stale: false };
+    const record = { count: 1, off: null, stale: false, timer: null, lingerTimer: null };
     this.#channels.set(channel, record);
+    this.#subscribe(channel, record, 0);
+  }
+
+  // Subscribes with capped-backoff RETRY on rejection. A rejected subscribe
+  // used to delete the record outright, and nothing ever re-attempted:
+  // while the room stayed populated the instance was permanently deaf on
+  // its channel — and on BROADCAST_CHANNEL, permanently deaf to every
+  // server.broadcast() — while looking perfectly healthy.
+  #subscribe(channel, record, attempt) {
     const handler = (message) => this.#receive(message);
     Promise.resolve()
       .then(() => this.#backplane.subscribe(channel, handler))
       .then(
         (off) => {
+          if (attempt > 0) {
+            this.#pending--;
+            this.#log.warn({ event: 'backplane.recovered', channel, attempt });
+          }
           record.off = typeof off === 'function' ? off : null;
           // The room emptied (or the server closed) while subscribe was in
           // flight — unsubscribe now that there is something to unsubscribe.
           if (record.stale || this.#closed) this.#dispose(channel, record);
         },
         (error) => {
-          this.#channels.delete(channel);
-          this.#log.error({ err: error, event: 'backplane.subscribe', channel });
+          this.#log.error({ err: error, event: 'backplane.subscribe', channel, attempt });
+          if (record.stale || this.#closed) {
+            if (attempt > 0) this.#pending--;
+            return void this.#channels.delete(channel);
+          }
+          if (attempt === 0) this.#pending++;
+          const delay = Math.min(30_000, 500 * 2 ** attempt);
+          record.timer = setTimeout(() => {
+            record.timer = null;
+            this.#subscribe(channel, record, attempt + 1);
+          }, delay);
+          record.timer.unref?.();
         },
       );
   }
@@ -434,11 +477,32 @@ class RoomsBackplane {
       record.stale = true; // subscribe still in flight; dispose on arrival
       return;
     }
+    // Linger before unsubscribing: for a single-member room (the per-user
+    // pattern) every connect/disconnect used to be a SUBSCRIBE/UNSUBSCRIBE
+    // pair on the broker, and every reconnect re-opened the documented
+    // "published while between subscriptions" loss window. Holding the
+    // emptied channel for a grace period collapses that churn to nothing.
+    if (this.#linger > 0) {
+      record.lingerTimer = setTimeout(() => {
+        record.lingerTimer = null;
+        if (record.count === 0 && !this.#closed) this.#dispose(channel, record);
+      }, this.#linger);
+      if (typeof record.lingerTimer.unref === 'function') record.lingerTimer.unref();
+      return;
+    }
     this.#dispose(channel, record);
   }
 
   #dispose(channel, record) {
     this.#channels.delete(channel);
+    if (record.timer) {
+      clearTimeout(record.timer);
+      record.timer = null;
+    }
+    if (record.lingerTimer) {
+      clearTimeout(record.lingerTimer);
+      record.lingerTimer = null;
+    }
     if (!record.off) return;
     try {
       const result = record.off();

@@ -103,3 +103,88 @@ test('every file the allowlist names exists', () => {
     assert.ok(existsSync(path.join(ROOT, entry.replace(/\/$/, ''))), `files entry ${entry} does not exist`);
   }
 });
+
+// ---------------------------------------------------------------------------
+// The hand-synced pairs CLAUDE.md names (and two the review found unnamed):
+// every one of these used to be a release-checklist memory item, and two had
+// already drifted by the time the guard below was written.
+
+const read = (relative) => require('node:fs').readFileSync(path.join(ROOT, relative), 'utf8');
+
+test('docs/.vitepress/config.mts mirrors package.json keywords and version', () => {
+  const config = read('docs/.vitepress/config.mts');
+  const start = config.indexOf('const keywords = [');
+  assert.ok(start >= 0, 'config.mts must keep its keywords array');
+  const block = config.slice(start, config.indexOf(']', start));
+  const mirrored = [...block.matchAll(/'([^']+)'/g)].map((match) => match[1]);
+  assert.deepStrictEqual(mirrored, pkg.keywords, 'config.mts keywords must mirror package.json exactly');
+  assert.ok(config.includes(`'v${pkg.version}'`), `the nav version label must read v${pkg.version}`);
+});
+
+test('RPC_OPTION_KEYS matches the RpcServer constructor destructure', () => {
+  const core = read('src/rpc/core.js');
+  const keysStart = core.indexOf('const RPC_OPTION_KEYS = [');
+  const keys = [...core.slice(keysStart, core.indexOf(']', keysStart)).matchAll(/'([^']+)'/g)].map((m) => m[1]);
+  assert.ok(keys.length > 0);
+  const ctorStart = core.indexOf('constructor(options = {})');
+  const destructure = core.slice(core.indexOf('const {', ctorStart), core.indexOf('} = options;', ctorStart));
+  const names = [...destructure.matchAll(/^\s{6}(\w+)/gm)].map((m) => m[1]);
+  // Set equality both ways: a key the shells would drop (in the constructor
+  // but not the list) and a stale key (listed but no longer destructured)
+  // are both silent bugs.
+  assert.deepStrictEqual([...names].sort(), [...keys].sort());
+});
+
+test('every exports subpath has a bundle-size row in scripts/size.js', () => {
+  const size = read('scripts/size.js');
+  const entries = [...size.matchAll(/entry: '([^']+)'/g)].map((m) => m[1]);
+  for (const [key, value] of Object.entries(pkg.exports)) {
+    if (key === './package.json') continue;
+    const targets = exportTargets(value).map((target) => target.replace(/^\.\//, ''));
+    // .d.ts targets are types conditions, not bundles.
+    const runtime = targets.filter((target) => target.endsWith('.js'));
+    assert.ok(
+      runtime.some((target) => entries.includes(target)),
+      `${key} has no ENTRIES row in scripts/size.js (targets: ${runtime.join(', ')})`,
+    );
+  }
+});
+
+test('runtime barrel exports are all declared in the hand-written types', () => {
+  const declared = (files) => {
+    const names = new Set();
+    for (const file of files) {
+      const text = read(file);
+      for (const match of text.matchAll(/^export (?:declare )?(?:abstract )?(?:class|function|const|let)\s+(\w+)/gm)) {
+        names.add(match[1]);
+      }
+    }
+    return names;
+  };
+  const cases = [
+    ['index.js', declared(['index.d.ts', 'client.d.ts'])],
+    ['browser.js', declared(['browser.d.ts', 'client.d.ts'])],
+  ];
+  for (const [barrel, names] of cases) {
+    const runtime = Object.keys(require(path.join(ROOT, barrel)));
+    for (const name of runtime) {
+      assert.ok(names.has(name), `${barrel} exports '${name}' but the d.ts pair never declares it`);
+    }
+  }
+});
+
+test('every ./x.js reference inside a shipped root d.ts resolves to a shipped x.d.ts', () => {
+  const roots = pkg.files.filter((entry) => entry.endsWith('.d.ts'));
+  for (const file of roots) {
+    const text = read(file);
+    const refs = [
+      ...[...text.matchAll(/from '\.\/([\w.-]+)\.js'/g)].map((m) => m[1]),
+      ...[...text.matchAll(/import\('\.\/([\w.-]+)\.js'\)/g)].map((m) => m[1]),
+    ];
+    for (const ref of refs) {
+      const dts = `${ref}.d.ts`;
+      assert.ok(existsSync(path.join(ROOT, dts)), `${file} references ./${ref}.js but ${dts} does not exist`);
+      assert.ok(shipped(dts), `${file} references ./${ref}.js but ${dts} is not in the files allowlist`);
+    }
+  }
+});

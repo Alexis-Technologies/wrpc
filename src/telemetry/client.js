@@ -57,6 +57,17 @@ const createClientTelemetry = (telemetry) => {
       reconnects = null;
     }
   }
+  let refreshes = null;
+  if (hasMethod(meter, 'createCounter')) {
+    try {
+      refreshes = meter.createCounter('wrpc.client.refreshes', {
+        unit: '{run}',
+        description: 'Credential refresh runs, by outcome',
+      });
+    } catch {
+      refreshes = null;
+    }
+  }
   if (hasMethod(meter, 'createUpDownCounter')) {
     try {
       connections = meter.createUpDownCounter('wrpc.client.connections', {
@@ -96,6 +107,20 @@ const createClientTelemetry = (telemetry) => {
       } catch {}
     },
 
+    /**
+     * Writes the active trace context into a plain header bag under the
+     * REAL W3C names (traceparent/tracestate) — the REST leg's carrier,
+     * where there is no packet to hold tp/ts. The propagator's default
+     * setter does exactly that, so no adapter is needed.
+     */
+    injectHeaders(carrier) {
+      if (!propagator) return;
+      try {
+        const active = propagator.context?.active?.();
+        propagator.propagation.inject(active, carrier);
+      } catch {}
+    },
+
     recordError(handle, error) {
       recordSpanError(handle, error);
     },
@@ -115,10 +140,19 @@ const createClientTelemetry = (telemetry) => {
     recordReconnect(outcome, attempt) {
       try {
         // The attempt COUNT stays off the attributes: an unbounded integer
-        // as a label is a new time series per value. The outcome is the
-        // dimension; the count is the metric's own value.
+        // as a label is a new time series per value. Every SCHEDULED attempt
+        // is recorded once (outcome 'attempted'), so the rate of that series
+        // is the reconnect pressure an operator alerts on; 'recovered' and
+        // 'exhausted' are the terminal markers saying how episodes end — a
+        // storm that keeps recovering is no longer invisible.
         void attempt;
         reconnects?.add(1, { 'wrpc.reconnect.outcome': outcome });
+      } catch {}
+    },
+
+    recordRefresh(outcome) {
+      try {
+        refreshes?.add(1, { 'wrpc.refresh.outcome': outcome });
       } catch {}
     },
 

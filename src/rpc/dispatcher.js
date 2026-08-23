@@ -28,9 +28,35 @@ const DEFAULT_MAX_BATCH = 128;
 // docs/guide/metadata.md).
 const PROTO_KEY = '__proto__';
 
+// A conservative UPPER bound on the serialized size of a flat bag: every
+// string character worst-cased at 6 encoded bytes (\uXXXX), numbers at
+// their longest spelling. -1 means "cannot bound cheaply" (a nested value,
+// an exotic type) and the caller falls back to the exact measure.
+const metaUpperBound = (value) => {
+  let bound = 2; // the braces
+  for (const key in value) {
+    bound += key.length * 6 + 6; // quotes, colon, comma, escape worst case
+    const entry = value[key];
+    const type = typeof entry;
+    if (type === 'string') bound += entry.length * 6 + 2;
+    else if (type === 'number' || type === 'boolean') bound += 24;
+    else if (entry === null) bound += 4;
+    else return -1;
+  }
+  return bound;
+};
+
 const sanitizeMeta = (value, limit) => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
-  if (JSON.stringify(value).length > limit) return null;
+  // The cap measures the SERIALIZED size, but serializing every bag to
+  // learn it was over-generous: per-call meta is a first-class field now
+  // (withMeta), so this runs per call/subscribe/event packet. The one-pass
+  // bound accepts the common small bag without a stringify (~139 -> ~20 ns
+  // for a three-key bag, bench/meta.js); the exact measure runs only for
+  // bags near the limit or with nested values. Never admits an over-limit
+  // bag — the bound only overestimates.
+  const bound = metaUpperBound(value);
+  if ((bound < 0 || bound > limit) && JSON.stringify(value).length > limit) return null;
   // An own data property here (JSON.parse never pollutes by itself), dropped
   // for the sake of application code that would spread the bag into a config.
   if (Object.hasOwn(value, PROTO_KEY)) delete value[PROTO_KEY];
@@ -129,7 +155,11 @@ const handleRpc = async (client, packet, router) => {
         code = 403;
         return void client.error(403, { id });
       }
-      const result = await proc.invoke(context, args, hooks, compiled);
+      // The caller's per-call deadline, validated as a bounded positive
+      // number — an additive packet field, absent on every packet that
+      // never set CallOptions.timeout.
+      const budget = typeof packet.timeout === 'number' && packet.timeout > 0 ? packet.timeout : 0;
+      const result = await proc.invoke(context, args, hooks, compiled, budget);
       if (controller.signal.aborted) return void (status = 'cancelled');
       if (isError(result)) {
         status = 'error';
@@ -499,6 +529,7 @@ const handleMessage = (client, data, router, options = {}) => {
 
 module.exports = {
   sanitizeMeta,
+  UNKNOWN_TARGET,
   handleRpc,
   handleStream,
   handleBinary,

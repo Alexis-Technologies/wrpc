@@ -107,6 +107,16 @@ export interface WrpcMutationOptions<Args, Result> {
   mutationFn(args?: Args): Promise<Result>;
 }
 
+/** What useInfiniteQuery's queryFn receives; structural, like QueryFnContext. */
+export interface InfiniteQueryFnContext extends QueryFnContext {
+  pageParam?: unknown;
+}
+
+export interface WrpcInfiniteQueryOptions<Result> {
+  queryKey: WrpcQueryKey;
+  queryFn(context?: InfiniteQueryFnContext): Promise<Result>;
+}
+
 /** The one method of `QueryClient` this needs. Structural: no import. */
 export interface QueryCache {
   setQueryData(queryKey: any, updater: (previous: any) => any): unknown;
@@ -150,6 +160,17 @@ export interface QueryUtils<Api = UntypedApi> {
     path: Path,
     ...params: CallParams<Api, Path, [extra?: Record<string, unknown>]>
   ): WrpcQueryOptions<CallResult<Api, Path>>;
+  /**
+   * `{ queryKey, queryFn }` for useInfiniteQuery: the page cursor rides as
+   * an ordinary args field (`cursorKey`, default 'cursor') merged over
+   * `args`. `initialPageParam`/`getNextPageParam` and the rest of `extra`
+   * pass through untouched, same non-checking rule as queryOptions.
+   */
+  infiniteQueryOptions<Path extends CallPath<Api>>(
+    path: Path,
+    args?: Partial<CallArgs<Api, Path>>,
+    extra?: Record<string, unknown> & { cursorKey?: string },
+  ): WrpcInfiniteQueryOptions<CallResult<Api, Path>>;
   mutationOptions<Path extends CallPath<Api>>(
     path: Path,
     extra?: Record<string, unknown>,

@@ -88,7 +88,19 @@ new Server({
 | `heartbeat` | `15000` | Comment-frame interval in ms; `0` disables. |
 | `retry` | `2000` | The `retry:` value handed to the peer. |
 | `maxChannels` | `10000` | Live channels per server; past it a new GET is `503`. |
-| `maxChannelsPerAddress` | `100` | Live channels per remote address; past it `429`. |
+| `maxChannelsPerAddress` | `100` | Live channels per remote address; past it `429`. **Behind a proxy this counts the proxy**, not your users — see the warning below. |
+| `clientAddress` | socket peer | `(call) => string` — what the per-address cap counts by. Inject a reader for your proxy's client header. |
+
+::: warning Behind a load balancer, set `clientAddress`
+The per-address cap defaults to the TCP peer address. Behind nginx/ALB that
+is ONE address for every real client, so the 101st user through the proxy
+is refused `429` while the node idles at 1% of `maxChannels`. Either inject
+`sse: { clientAddress: (call) => firstForwardedFor(call.headers) }` (trust
+your proxy's header only when the proxy is yours), set
+`maxChannelsPerAddress: 0`, or on the express adapter enable
+`app.set('trust proxy', ...)` — its `req.ip` is what wrpc receives there.
+:::
+
 
 `sse: false` removes the endpoint entirely.
 

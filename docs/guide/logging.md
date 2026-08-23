@@ -65,7 +65,7 @@ wrpc builds child loggers so you do not have to correlate by hand:
 
 | Binding | Scope |
 | ------- | ----- |
-| `component` | `rooms`, `sse` or `sessions` — built once per server |
+| `component` | `rooms`, `sse`, `sessions`, `cluster` or `redis` — built once per server |
 | `peer` | one connection, bound when it opens |
 | `callId` | one call, subscription or inbound event |
 

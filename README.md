@@ -14,7 +14,7 @@
 A fast, **zero-dependency** WebSocket-based RPC protocol for Node.js and
 browsers. Router and procedures, subscriptions that resume, rooms
 that scale across processes, and binary streams with backpressure that reaches
-all the way into TCP — [~10 KB min+gzip](#bundle-size) in a browser bundle, and
+all the way into TCP — [under 15 KB min+gzip](#bundle-size) in a browser bundle, and
 nothing at all in your lockfile.
 
 ```javascript
@@ -117,18 +117,18 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 38.5 KB | **13.0 KB** | 14 KB |
-| `@alexify/wrpc` — node (client + server) | 143.0 KB | 47.3 KB | — |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 44.3 KB | **14.9 KB** | 15.0 KB |
+| `@alexify/wrpc` — node (client + server) | 158.2 KB | 52.2 KB | — |
 | `@alexify/wrpc/ws` (WebSocket engine) | 20.7 KB | 7.5 KB | — |
 | `@alexify/wrpc/engine` (engine port) | 21.2 KB | 7.7 KB | — |
-| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 15.2 KB | 6.1 KB | — |
-| `@alexify/wrpc/fastify` | 124.7 KB | 42.6 KB | — |
-| `@alexify/wrpc/express` | 113.1 KB | 38.0 KB | — |
+| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 16.0 KB | 6.4 KB | — |
+| `@alexify/wrpc/fastify` | 135.3 KB | 46.2 KB | — |
+| `@alexify/wrpc/express` | 122.9 KB | 41.3 KB | — |
 | `@alexify/wrpc/scaling` (rooms backplane) | 4.1 KB | 1.7 KB | — |
-| `@alexify/wrpc/sse` — browser (client transport) | 41.4 KB | **14.0 KB** | 15 KB |
-| `@alexify/wrpc/sse` — node | 50.9 KB | 17.1 KB | — |
-| `@alexify/wrpc/query` (TanStack bindings) | 2.4 KB | **1.0 KB** | 2 KB |
-| `@alexify/wrpc/auth` (token strategies) | 2.6 KB | **1.2 KB** | 2 KB |
+| `@alexify/wrpc/sse` — browser (client transport) | 47.2 KB | **15.9 KB** | 16.0 KB |
+| `@alexify/wrpc/sse` — node | 86.1 KB | 28.6 KB | — |
+| `@alexify/wrpc/query` (TanStack bindings) | 2.7 KB | **1.1 KB** | 2.0 KB |
+| `@alexify/wrpc/auth` (token strategies) | 3.3 KB | **1.5 KB** | 2.0 KB |
 
 The Node-only rows are reported for visibility into what each subpath pulls in
 — they never ship to a browser, and the adapter rows include the whole core
@@ -220,9 +220,10 @@ for await (const message of client.api.chat.onMessage.iterate()) {
 | **Realtime** | [Events both ways](https://wrpc.vercel.app/guide/rooms), [rooms](https://wrpc.vercel.app/guide/rooms), [acks](https://wrpc.vercel.app/guide/rooms#asking-a-room) (`client.ask`, `to(room).ask`), [subscriptions with resume](https://wrpc.vercel.app/guide/subscriptions), cancellation, call batching |
 | **Hooks** | [Lifecycle phases](https://wrpc.vercel.app/guide/hooks) in the fastify tradition — router, unit and procedure levels flattened into one pipeline; no `(ctx, next)` middleware |
 | **Streams** | [Binary upload/download](https://wrpc.vercel.app/guide/streams) interleaved on one connection, with end-to-end backpressure |
-| **Sessions** | [Cookie-backed sessions](https://wrpc.vercel.app/guide/sessions) restored on reconnect, pluggable store, CSRF-aware REST dispatch |
+| **REST** | [Declarative endpoints](https://wrpc.vercel.app/guide/rest) on the same procedures — verb, path, status, fastify-shaped schemas, `/vN` version paths, OpenAPI via [`wrpc types --openapi`](https://wrpc.vercel.app/guide/cli) |
+| **Sessions & auth** | [Cookie-backed sessions](https://wrpc.vercel.app/guide/sessions) restored on reconnect, pluggable store, CSRF-aware REST dispatch; [bearer/payload token carriers, client stores and the authenticate/refresh lifecycle](https://wrpc.vercel.app/guide/auth) |
 | **Scaling** | [Rooms backplane](https://wrpc.vercel.app/guide/scaling) over any pub/sub; Redis and in-memory adapters included; [cluster layer](https://wrpc.vercel.app/guide/cluster) — replicated presence (`count` with no round-trip), `fetchClients`, cross-instance commands, node-to-node ask |
-| **Transports** | WebSocket, plain HTTP, [Server-Sent Events](https://wrpc.vercel.app/guide/sse), Service Worker `MessagePort` |
+| **Transports** | WebSocket, plain HTTP, [Server-Sent Events](https://wrpc.vercel.app/guide/sse), Service Worker `MessagePort`; [pluggable wire codec](https://wrpc.vercel.app/guide/codec) and [request metadata](https://wrpc.vercel.app/guide/metadata) (`x-wrpc-meta-<key>`) |
 | **Hosts** | Batteries-included [server](https://wrpc.vercel.app/guide/server), or [fastify](https://wrpc.vercel.app/guide/adapters/fastify) / [express](https://wrpc.vercel.app/guide/adapters/express) / [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws) / bare `node:http` |
 | **Client** | Exponential backoff with full jitter, app-level heartbeat, automatic re-`load()` and re-subscribe, offline/online |
 | **Observability** | [Structured logging](https://wrpc.vercel.app/guide/logging) into your pino, [OpenTelemetry](https://wrpc.vercel.app/guide/telemetry) spans and metrics, W3C trace context across the wire |
@@ -271,7 +272,7 @@ See [Logging](https://wrpc.vercel.app/guide/logging) and
 | `@alexify/wrpc/scaling` | `MemoryBackplane`, `createRedisAdapter`, `isBackplane` | [Scaling](https://wrpc.vercel.app/guide/scaling) |
 | `@alexify/wrpc/sse` | `SseChannels`, `ServerSseTransport`, `ClientSseTransport`, `SseParser` | [Server-Sent Events](https://wrpc.vercel.app/guide/sse) |
 | `@alexify/wrpc/query` | `createQueryUtils` | [TanStack Query](https://wrpc.vercel.app/guide/query) |
-| `@alexify/wrpc/auth` | `bearerAuth`, `memoryStore`, `webStorage`, `cookieStorage`, `bearerTransport`, `payloadTransport` | [Sessions](https://wrpc.vercel.app/guide/sessions#pluggable-token-carriers) |
+| `@alexify/wrpc/auth` | `bearerAuth`, `memoryStore`, `webStorage`, `cookieStorage`, `bearerTransport`, `payloadTransport` | [Authentication](https://wrpc.vercel.app/guide/auth) |
 | `wrpc` (bin) | `wrpc types <url> --out api.d.ts` | [Codegen CLI](https://wrpc.vercel.app/guide/cli) |
 
 Every subpath ships hand-maintained TypeScript declarations — no generation, no
@@ -289,13 +290,17 @@ Every subpath ships hand-maintained TypeScript declarations — no generation, n
   [subscriptions](https://wrpc.vercel.app/guide/subscriptions),
   [streams](https://wrpc.vercel.app/guide/streams),
   [scaling](https://wrpc.vercel.app/guide/scaling),
-  [cluster](https://wrpc.vercel.app/guide/cluster).
+  [cluster](https://wrpc.vercel.app/guide/cluster),
+  [REST](https://wrpc.vercel.app/guide/rest),
+  [authentication](https://wrpc.vercel.app/guide/auth),
+  [metadata](https://wrpc.vercel.app/guide/metadata).
 - **Client** — [client](https://wrpc.vercel.app/guide/client),
   [typed client](https://wrpc.vercel.app/guide/typed-client),
   [browser & bundling](https://wrpc.vercel.app/guide/browser),
   [CLI](https://wrpc.vercel.app/guide/cli),
   [TanStack Query](https://wrpc.vercel.app/guide/query).
 - **Transports & hosts** — [SSE](https://wrpc.vercel.app/guide/sse),
+  [wire codec](https://wrpc.vercel.app/guide/codec),
   [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws),
   [fastify](https://wrpc.vercel.app/guide/adapters/fastify),
   [express](https://wrpc.vercel.app/guide/adapters/express).

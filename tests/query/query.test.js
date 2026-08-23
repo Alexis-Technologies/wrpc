@@ -308,3 +308,31 @@ test('query: the utils object is frozen', () => {
     wq.queryOptions = () => {};
   }, TypeError);
 });
+
+test('query: infiniteQueryOptions merges the page cursor over the args', async () => {
+  const client = fakeClient();
+  const wq = createQueryUtils(client);
+  const options = wq.infiniteQueryOptions(
+    ['chat', 'send'],
+    { room: 'a' },
+    { initialPageParam: null, getNextPageParam: (last) => last?.next, cursorKey: 'after' },
+  );
+  assert.deepStrictEqual(options.queryKey, ['chat', 'send', { room: 'a' }]);
+  assert.strictEqual(options.initialPageParam, null, 'extra passes through');
+  assert.strictEqual(typeof options.getNextPageParam, 'function');
+  assert.ok(!('cursorKey' in options), 'cursorKey is consumed, never handed to TanStack');
+
+  const controller = new AbortController();
+  await options.queryFn({ pageParam: 'p2', signal: controller.signal });
+  assert.deepStrictEqual(client.calls[0].args, { room: 'a', after: 'p2' });
+  assert.strictEqual(client.calls[0].options.signal, controller.signal);
+
+  // The default cursor key, and the no-context call TanStack never makes
+  await wq.infiniteQueryOptions(['chat', 'send'], { room: 'a' }).queryFn({ pageParam: 7 });
+  assert.deepStrictEqual(client.calls[1].args, { room: 'a', cursor: 7 });
+  await wq.infiniteQueryOptions(['chat', 'send']).queryFn();
+  assert.deepStrictEqual(client.calls[2].args, { cursor: undefined });
+
+  assert.throws(() => wq.infiniteQueryOptions(['chat', 'send'], {}, { cursorKey: '' }), /cursorKey/);
+  await assert.rejects(wq.infiniteQueryOptions(['chat', 'onMessage']).queryFn(), /subscription/);
+});

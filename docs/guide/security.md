@@ -141,6 +141,9 @@ The [SSE transport](./sse) keeps server-side state per channel, so it is
 bounded on three axes: `maxChannels` (10,000), `maxChannelsPerAddress` (100 —
 answering `429`), and `replayBytes` (1 MiB of retained frames per channel). A
 channel whose stream dropped is held only for `retention` (30 s).
+Behind a load balancer the per-address axis counts the balancer's one
+address — inject `sse: { clientAddress }` or disable that axis; see
+[SSE](./sse).
 
 ## Channel and session binding
 

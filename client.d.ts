@@ -28,8 +28,36 @@ export declare class Emitter {
   eventNames(): Array<PropertyKey>;
 }
 
-/** Structural check for an injected wire codec (shared with the server). */
-export declare function isCodec(value: unknown): boolean;
+/**
+ * The REST-mode body codec (`codec.rest`): encodes VALUES — the plain
+ * result, the wire error object, the request body — never packet
+ * envelopes. Binary is allowed here (whole HTTP bodies, no framing to
+ * collide with), unlike the text-only packet half.
+ */
+export interface WrpcRestCodec {
+  encode(value: unknown): string | Uint8Array;
+  decode(body: Uint8Array | string): unknown;
+  /** Overrides `application/json` on REST bodies, both directions. */
+  contentType?: string;
+}
+
+export interface WrpcPacketCodec {
+  encode(packet: unknown): string;
+  decode(text: string): unknown;
+  /** Overrides `application/json` on packet-mode HTTP/SSE requests. */
+  contentType?: string;
+  /** REST bodies stay JSON unless this section re-frames them. */
+  rest?: WrpcRestCodec;
+}
+
+/** A codec carries the packet half, the rest section, or both. */
+export type WrpcCodec = WrpcPacketCodec | { rest: WrpcRestCodec };
+
+/**
+ * Structural check for an injected wire codec (shared with the server) —
+ * a narrowing predicate, like every isX guard in the package.
+ */
+export declare function isCodec(value: unknown): value is WrpcCodec;
 
 export class WrpcError extends Error {
   code: number;
@@ -197,7 +225,7 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
   createBlobUploader(blob: Blob): BlobUploader;
   send(obj: object): void;
   /** Fire-and-forget event to the server; `name` is 'unit/event'. */
-  sendEvent(name: string, data?: unknown): void;
+  sendEvent<Name extends ClientSendName<Api> | (string & {})>(name: Name, data?: ClientSendData<Api, Name>): void;
   /**
    * Registers the answer this client gives when the server asks `name`
    * ('unit/event') — the receiving half of the server's `client.ask()` and
@@ -206,7 +234,10 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
    * carry server-named methods, where a method called 'respond' would
    * collide.
    */
-  respond(name: string, handler: (data: unknown) => unknown): void;
+  respond<Name extends ServerEventName<Api> | (string & {})>(
+    name: Name,
+    handler: (data: ServerEventData<Api, Name>) => ServerEventAnswer<Api, Name> | Promise<ServerEventAnswer<Api, Name>>,
+  ): void;
   unrespond(name: string): boolean;
   /** Sends whatever calls are waiting to be batched. Safe to call anytime. */
   flush(): void;
@@ -234,6 +265,13 @@ export interface ReconnectOptions {
   jitter?: boolean;
   /** Attempts before giving up and emitting 'reconnect-failed'. */
   retries?: number;
+  /**
+   * How long (ms) an open connection must SURVIVE before the attempt
+   * counter resets. A TCP/WS open proves nothing by itself: an
+   * accept-then-drop peer would otherwise pin every client at minDelay
+   * forever. Default: minDelay. 0 restores the old reset-on-open behavior.
+   */
+  stableAfter?: number;
 }
 
 /**
@@ -278,6 +316,38 @@ export interface CallOptions {
    * against; prefer `withMeta` unless you need that.
    */
   meta?: Record<string, unknown>;
+  /**
+   * Per-call deadline in ms, overriding the connection-wide `callTimeout`.
+   * Rides the packet as an additive `timeout` field, so the server SHORTENS
+   * the procedure's own budget to match (the gRPC-deadline shape — a
+   * caller's budget can only tighten, never widen, the server's limit).
+   * Expiry rejects with the coded 408 `WrpcError`. Not yet carried on the
+   * mapped REST leg, where the connection-wide timeout semantics apply.
+   */
+  timeout?: number;
+}
+
+/**
+ * Opt-in per-call retry: a call refused with a listed code is re-issued
+ * (fresh packet id) after a truncated-exponential, jittered backoff, up to
+ * `attempts` extra tries. `true` takes the defaults. Off by default, and
+ * deliberately NOT a buffer: nothing is queued while offline — a failure is
+ * retried on the caller's own promise, visibly. Scope non-idempotent
+ * procedures away from the trigger codes.
+ */
+export interface RetryOptions {
+  /** Extra attempts after the first failure; default 2. */
+  attempts?: number;
+  /** Codes that trigger a retry; default `[503]` (the coded dead-connection/draining refusals). */
+  on?: Array<number>;
+  /** First backoff window in ms; default 200. */
+  minDelay?: number;
+  /** Cap in ms; default 2000. */
+  maxDelay?: number;
+  /** Window growth per attempt; default 2. */
+  factor?: number;
+  /** Spread the delay over the whole window; default true. */
+  jitter?: boolean;
 }
 
 /** A live subscription, as seen by the caller that opened it. */
@@ -430,6 +500,91 @@ export type TypedCallMethod<Params extends Array<unknown>, Result> = {
   withMeta(meta: Record<string, unknown>): (...args: [...Params, options?: CallOptions]) => Promise<Result>;
 };
 
+// ---------------------------------------------------------------------------
+// Typed events — declarations only, zero runtime bytes.
+//
+// Two reserved contract keys close the realtime typing gap:
+//
+//   interface Api {
+//     chat: {
+//       send(args: { text: string }): Promise<{ id: string }>;
+//       // server -> client: what `api.chat.on(...)` delivers, and what the
+//       // server's ask (`client.respond`) carries. Function form encodes the
+//       // ask's answer type; a bare payload type works for fire-and-forget.
+//       events: {
+//         message: (data: { text: string; from: string }) => void;
+//         confirm: (data: { id: string }) => boolean;
+//       };
+//       // client -> server: what `client.sendEvent('chat/typing', ...)`
+//       // carries (the router's inbound `on` handlers receive it).
+//       sends: { typing: { on: boolean } };
+//     };
+//   }
+//
+// Both keys are stripped from the method map (they are declarations, not
+// procedures) and neither exists at runtime.
+
+/** The `events` map a unit declared, or `never`. */
+export type UnitEvents<Unit> = Unit extends { events: infer Events } ? Events : never;
+
+/** A declared event's listener: function form kept, payload form wrapped. */
+export type EventListenerOf<T> = T extends (data: infer Data) => any ? (data: Data) => void : (data: T) => void;
+
+/** A declared event's payload, whichever form declared it. */
+export type EventDataOf<T> = T extends (data: infer Data) => any ? Data : T;
+
+/**
+ * The unit-object emitter surface, narrowed to the declared event names —
+ * what a unit becomes instead of the bare {@link Emitter} once its contract
+ * declares `events`. Runtime-compatible: the unit object IS an Emitter.
+ */
+export interface TypedUnitEmitter<Events> {
+  emit(eventName: PropertyKey, value?: unknown): Promise<void>;
+  on<Name extends keyof Events & string>(name: Name, listener: EventListenerOf<Events[Name]>): void;
+  once<Name extends keyof Events & string>(name: Name, listener: EventListenerOf<Events[Name]>): void;
+  off<Name extends keyof Events & string>(name: Name, listener?: EventListenerOf<Events[Name]>): void;
+  clear(eventName?: PropertyKey): void;
+  listeners(eventName: PropertyKey): Array<(value: any) => void>;
+  listenerCount(eventName: PropertyKey): number;
+  eventNames(): Array<PropertyKey>;
+}
+
+/** Every `unit/event` name the contract declares under `events`. */
+export type ServerEventName<Api> = {
+  [Unit in keyof Api & string]: [UnitEvents<Api[Unit]>] extends [never] ? never
+    : `${Unit}/${keyof UnitEvents<Api[Unit]> & string}`;
+}[keyof Api & string];
+
+/** The payload of one declared server event, by its `unit/event` name. */
+export type ServerEventData<Api, Name> = Name extends `${infer Unit}/${infer Event}`
+  ? Unit extends keyof Api ? Event extends keyof UnitEvents<Api[Unit]> ? EventDataOf<UnitEvents<Api[Unit]>[Event]>
+    : unknown
+  : unknown
+  : unknown;
+
+/** What a responder may answer a declared ask with (function form only). */
+export type ServerEventAnswer<Api, Name> = Name extends `${infer Unit}/${infer Event}`
+  ? Unit extends keyof Api
+    ? Event extends keyof UnitEvents<Api[Unit]>
+      ? UnitEvents<Api[Unit]>[Event] extends (data: any) => infer Answer ? Answer : unknown
+    : unknown
+  : unknown
+  : unknown;
+
+/** Every `unit/event` name the contract declares under `sends`. */
+export type ClientSendName<Api> = {
+  [Unit in keyof Api & string]: Api[Unit] extends { sends: infer Sends } ? `${Unit}/${keyof Sends & string}`
+    : never;
+}[keyof Api & string];
+
+/** The payload of one declared client→server event. */
+export type ClientSendData<Api, Name> = Name extends `${infer Unit}/${infer Event}`
+  ? Unit extends keyof Api
+    ? Api[Unit] extends { sends: infer Sends } ? (Event extends keyof Sends ? EventDataOf<Sends[Event]> : unknown)
+    : unknown
+  : unknown
+  : unknown;
+
 /**
  * One contract unit, translated.
  *
@@ -437,16 +592,23 @@ export type TypedCallMethod<Params extends Array<unknown>, Result> = {
  * has to stay the listener registration. Mapping a contract key called `on`
  * would shadow it with an overload — and an *optional* one reduces the whole
  * intersection to `never`, which turns every member access on that unit into
- * an error pointing nowhere.
+ * an error pointing nowhere. `events` and `sends` are the reserved typed-
+ * event declarations above — never procedures.
  */
 export type TypedUnit<Unit> = IsAny<Unit> extends true ? Record<string, any>
-  : { [Method in keyof Unit as Method extends 'on' ? never : Method]: TypedMethod<Unit[Method]> };
+  : {
+    [Method in keyof Unit as Method extends 'on' | 'events' | 'sends' ? never : Method]: TypedMethod<Unit[Method]>;
+  };
 
 /**
  * The whole contract, translated. Each unit is also an {@link Emitter} — that
- * is where server → client events for the unit arrive.
+ * is where server → client events for the unit arrive; a unit that declares
+ * `events` gets the narrowed {@link TypedUnitEmitter} instead.
  */
-export type TypedApi<Api> = { [Unit in keyof Api]: Emitter & TypedUnit<Api[Unit]> };
+export type TypedApi<Api> = {
+  [Unit in keyof Api]: ([UnitEvents<Api[Unit]>] extends [never] ? Emitter : TypedUnitEmitter<UnitEvents<Api[Unit]>>) &
+    TypedUnit<Api[Unit]>;
+};
 
 /**
  * The first parameter of a parameter tuple. Projected from the tuple rather
@@ -488,9 +650,25 @@ export declare function connect<Api = UntypedApi>(
 ): Promise<WrpcClient<Api>>;
 
 export interface WrpcClientOptions {
+  /**
+   * Milliseconds a call may await its answer before rejecting with a coded
+   * 408 `WrpcError` ('Request timeout'); default 7000.
+   */
   callTimeout?: number;
+  /**
+   * Cap (ms) on the transport handshake; default 30000, `0`/`false`
+   * disables. Connection setup is the one phase with no liveness signal at
+   * all — the heartbeat starts after 'open', and nothing schedules the next
+   * reconnect attempt while open() is pending — so a handshake that neither
+   * opens nor errors would park the reconnect ladder forever. On expiry the
+   * open rejects with a coded 408 `WrpcError` ('Connect timeout') and the
+   * normal reconnect cycle continues with the attempt counter intact.
+   */
+  connectTimeout?: number | false;
   /** Coalesce calls into batch frames; `true` takes the defaults. */
   batch?: BatchOptions | boolean;
+  /** Opt-in per-call retry policy; `true` takes the defaults. */
+  retry?: RetryOptions | boolean;
   /**
    * Which registered transport to use. Defaults to the URL scheme; 'sse'
    * exists once '@alexify/wrpc/sse' has been required.

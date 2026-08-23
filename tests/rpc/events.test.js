@@ -48,11 +48,16 @@ test('router: the reserved `on` key holds event handlers', async (t) => {
     assert.strictEqual(router.getEventHandler('chat', '*', 'seen').access, 'session');
   });
 
-  await t.test('`on` is not a callable method and not introspected', () => {
+  await t.test('`on` is not a callable method; it introspects as the typed-event block', () => {
     assert.strictEqual(router.getProcedure('chat', '*', 'on'), null);
     const introspection = router.introspect();
-    assert.deepStrictEqual(Object.keys(introspection.chat), ['send']);
-    assert.deepStrictEqual(Object.keys(introspection['chat.v1']), []);
+    // The inbound handlers now TRAVEL (what `wrpc types` turns into the
+    // contract's `sends` key) — under the reserved 'on' key, never as a
+    // method descriptor: no `kind`, and the client's scaffold skips it.
+    assert.deepStrictEqual(Object.keys(introspection.chat), ['send', 'on']);
+    assert.deepStrictEqual(Object.keys(introspection.chat.on).sort(), ['seen', 'typing']);
+    assert.strictEqual(introspection.chat.on.typing.access, 'session');
+    assert.deepStrictEqual(Object.keys(introspection['chat.v1']), ['on']);
   });
 
   await t.test('merge carries the event handlers over', () => {

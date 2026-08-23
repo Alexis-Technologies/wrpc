@@ -321,3 +321,53 @@ test('subscribe and event packets carry trace context too', async (t) => {
   assert.ok(event, 'the event packet was captured');
   assert.match(event[TRACEPARENT], /^00-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/);
 });
+
+test('the REST leg propagates context through real traceparent headers', async (t) => {
+  withOtelGlobals(t);
+  const clientSide = createTracing();
+  const serverSide = createTracing();
+  const definition = defineRouter({
+    things: {
+      get: procedure({
+        access: 'public',
+        http: { method: 'GET', path: '/things/:id' },
+        handler: async (_context, args) => ({ id: args.params.id }),
+      }),
+    },
+  });
+  const server = new Server({
+    router: definition,
+    host: '127.0.0.1',
+    port: 0,
+    protocol: 'http',
+    timeouts: { bind: 100 },
+    logger: false,
+    telemetry: { tracer: serverSide.tracer, propagation: otelApi.propagation, context: otelApi.context },
+  });
+  await server.listen();
+  t.after(() => server.close());
+  const client = await WrpcClient.connect(`http://127.0.0.1:${server.address().port}/api`, {
+    transport: 'http',
+    logger: false,
+    reconnect: false,
+    telemetry: { tracer: clientSide.tracer, propagation: otelApi.propagation, context: otelApi.context },
+  });
+  t.after(() => void client.close());
+  await client.load('things');
+  // The mapped procedure goes out as a REAL REST request on the http
+  // transport — the leg that used to be a trace break in both directions.
+  const result = await client.api.things.get({ params: { id: '7' } });
+  assert.deepStrictEqual(result, { id: '7' });
+  await new Promise((resolve) => setTimeout(resolve, 20));
+
+  const callSpan = clientSide.spans().find((span) => span.name === 'things/get');
+  const serverSpan = serverSide.spans().find((span) => span.name === 'things/get');
+  assert.ok(callSpan, 'the REST leg must open a client span');
+  assert.ok(serverSpan, 'the server must span the REST call');
+  assert.strictEqual(serverSpan.spanContext().traceId, callSpan.spanContext().traceId, 'one trace across the leg');
+  assert.strictEqual(
+    serverSpan.parentSpanContext?.spanId,
+    callSpan.spanContext().spanId,
+    'the server span hangs off the REST client span',
+  );
+});

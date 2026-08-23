@@ -20,10 +20,13 @@ flowchart LR
   end
 
   ctr <==> eng
+  curl["curl · partner<br>GET /v1/orders/:id"] --> eng
 
   subgraph S["Node.js server"]
     direction TB
     eng["engine<br>node · uWebSockets.js"] --> tr["ServerTransport"]
+    eng --> rest["REST trie<br>declared http routes"]
+    rest --> disp
     tr --> disp["dispatcher"]
     disp --> rt["Router"]
     rt --> h["your procedure"]
@@ -103,6 +106,31 @@ console.log(await client.api.greeting.hello({ name: 'World' })); // Hello, World
 `system/introspect` procedure) and scaffolds `client.api.greeting` from the
 answer. Nothing is generated ahead of time, and the server is the single source
 of truth about what exists.
+
+Typing it costs four lines — a contract interface and `connect<Api>()` —
+or none at all, generated from the running server:
+
+::: code-group
+
+```ts [TypeScript]
+import { connect } from '@alexify/wrpc';
+
+interface Api {
+  greeting: { hello(args: { name: string }): Promise<string> };
+}
+
+const client = await connect<Api>('ws://127.0.0.1:8000/api');
+await client.load('greeting');
+await client.api.greeting.hello({ name: 'World' }); // typed end to end
+```
+
+```bash [Generate it]
+npx wrpc types http://127.0.0.1:8000/api --out api.d.ts
+```
+
+:::
+
+No build step and no TypeScript at runtime — see [Typed client](./typed-client).
 
 The same call works over plain HTTP — connect to `http://127.0.0.1:8000/api`
 and every call becomes a `POST` carrying the same JSON packet. What HTTP cannot
@@ -206,28 +234,11 @@ producer instead of filling memory. See [Subscriptions](./subscriptions).
 
 ## Types
 
-Nothing above needs TypeScript. When you want it, there are two ways in and
-they meet in the middle — hand-write the contract, or generate it from a
-running server:
-
-```ts
-import { connect, type SubscriptionContract } from '@alexify/wrpc';
-
-interface Api {
-  greeting: { hello(args: { name: string }): Promise<string> };
-  chat: { ticks: SubscriptionContract<{ to: number }, { n: number }> };
-}
-
-const client = await connect<Api>('ws://127.0.0.1:8000/api');
-await client.load('greeting');
-const message = await client.api.greeting.hello({ name: 'World' }); // string
-```
-
-```bash
-npx wrpc types http://127.0.0.1:8000/api --out api.d.ts
-```
-
-See [Typed client](./typed-client) and [Codegen CLI](./cli).
+The typed variant above is the whole story in miniature: declare the
+contract (or generate it with [`wrpc types`](./cli), `--openapi` included)
+and `connect<Api>()` types every call, subscription and server-push event.
+The details — subscription contracts, typed events, static introspection —
+live in [Typed client](./typed-client).
 
 ## Where to go next
 
@@ -235,11 +246,17 @@ See [Typed client](./typed-client) and [Codegen CLI](./cli).
 | --- | --- |
 | know every option the server takes | [Server](./server) |
 | write procedures, validators, versions | [Router & procedures](./router) |
-| authenticate users | [Sessions](./sessions) |
+| expose procedures as REST endpoints | [Declarative REST](./rest) |
+| run code around every call | [Hooks](./hooks) |
+| authenticate users | [Sessions](./sessions) · [Authentication](./auth) |
 | broadcast to groups | [Rooms](./rooms) · [Scaling](./scaling) |
 | push a feed of values | [Subscriptions](./subscriptions) |
 | move files over the connection | [Binary streams](./streams) |
 | tune reconnect, batching, heartbeat | [Client](./client) |
 | run inside fastify / express / uWebSockets.js | [Adapters](./adapters/fastify) |
 | serve realtime where WebSockets can't go | [Server-Sent Events](./sse) |
+| span more than one process | [Cluster](./cluster) |
+| carry per-call metadata | [Metadata](./metadata) |
+| cache and invalidate in React | [TanStack Query](./query) |
+| see calls in your traces | [OpenTelemetry](./telemetry) |
 | know exactly what goes over the wire | [Wire protocol](../reference/protocol) |

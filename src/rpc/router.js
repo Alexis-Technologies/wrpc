@@ -2,6 +2,14 @@
 
 const { Semaphore } = require('../utils.js');
 const { isTracked, tracked } = require('./subscriptions.js');
+const {
+  normalizeHttp,
+  normalizeRestOptions,
+  effectiveHttp,
+  buildRestTrees,
+  matchRestTrees,
+  collectRestRoutes,
+} = require('./rest.js');
 
 const DEFAULT_VERSION = '*';
 // The version token of a unit key: 'auth.v1' -> 'v1'. Closed on purpose —
@@ -36,11 +44,26 @@ const codedError = (message, code, details) => {
 // (https://standardschema.dev) object carrying `~standard`. `context` is
 // forwarded so a compiled input validator can reach what is NOT in args —
 // the connection headers a schema.headers part checks.
-const runValidator = async (validator, value, context = null) => {
+// Synchronous when the validator is — which the injected-ajv compiled fast
+// path always is: forcing it through an async wrapper cost two promise
+// allocations and microtask hops per validated call AND per yielded
+// subscription value (bench/validate.js). A function validator returning a
+// thenable (an async custom validator) still settles through it; the
+// Standard Schema branch stays async by its own contract. Callers therefore
+// use try/catch (a sync validator THROWS synchronously now) and only await
+// a result that is actually a thenable.
+const runValidator = (validator, value, context = null) => {
   if (typeof validator === 'function') {
-    const result = await validator(value, context);
+    const result = validator(value, context);
+    if (result && typeof result.then === 'function') {
+      return result.then((settled) => (settled === undefined ? value : settled));
+    }
     return result === undefined ? value : result;
   }
+  return runStandardSchema(validator, value);
+};
+
+const runStandardSchema = async (validator, value) => {
   const standard = validator['~standard'];
   const result = await standard.validate(value);
   if (result.issues) {
@@ -156,32 +179,6 @@ const assignKey = (target, key, value) => {
 // `response` keyed by status code, plus any passthrough keys (tags,
 // summary, security, ...) that wrpc never interprets but forwards to hosts
 // (fastify/swagger) verbatim.
-
-const HTTP_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'];
-const PARAM_SEGMENT = /^:[A-Za-z_$][\w$]*$/;
-const STATIC_SEGMENT = /^[^/:*]+$/;
-
-const normalizeHttp = (http) => {
-  if (http === null || http === undefined) return null;
-  if (typeof http !== 'object') throw new TypeError('procedure() http must be an object');
-  const { method, path, status = null } = http;
-  if (!HTTP_METHODS.includes(method)) {
-    throw new TypeError(`procedure() http.method must be one of ${HTTP_METHODS.join(', ')}`);
-  }
-  if (typeof path !== 'string' || !path.startsWith('/')) {
-    throw new TypeError("procedure() http.path must be a string starting with '/'");
-  }
-  const segments = path === '/' ? [] : path.slice(1).split('/');
-  for (const segment of segments) {
-    if (!PARAM_SEGMENT.test(segment) && !STATIC_SEGMENT.test(segment)) {
-      throw new TypeError(`procedure() http.path has an invalid segment '${segment}' in '${path}'`);
-    }
-  }
-  if (status !== null && !(Number.isInteger(status) && status >= 200 && status <= 599)) {
-    throw new TypeError('procedure() http.status must be an integer HTTP status (200-599)');
-  }
-  return { method, path, status };
-};
 
 // The parts wrpc itself understands; everything else on `schema` passes
 // through untouched. `query` and `querystring` are interchangeable spellings
@@ -316,9 +313,12 @@ class Procedure {
     if (hooks.preValidation.length > 0) await runHooks(hooks.preValidation, context, args);
     let input = args;
     if (inputValidator) {
-      input = await runValidator(inputValidator, args, context).catch((error) => {
+      try {
+        const checked = runValidator(inputValidator, args, context);
+        input = checked && typeof checked.then === 'function' ? await checked : checked;
+      } catch (error) {
         throw codedError(`Invalid arguments: ${error.message}`, 400, error.details);
-      });
+      }
     }
     if (hooks.preHandler.length > 0) await runHooks(hooks.preHandler, context, input);
     const source = this.handler(context, input, options);
@@ -333,9 +333,13 @@ class Procedure {
       // Validate the payload, not the tracking wrapper: an output schema
       // describes what the client receives, not how it is labelled.
       const payload = isTracked(value) ? value.data : value;
-      const checked = await runValidator(outputValidator, payload).catch((error) => {
+      let checked;
+      try {
+        checked = runValidator(outputValidator, payload);
+        if (checked && typeof checked.then === 'function') checked = await checked;
+      } catch (error) {
         throw codedError(`Invalid subscription value: ${error.message}`, 500, error.details);
-      });
+      }
       yield isTracked(value) ? tracked(value.id, checked) : checked;
     }
   }
@@ -373,7 +377,7 @@ class Procedure {
     }
   }
 
-  async invoke(context, args, hooks = EMPTY_HOOKS, compiled = null) {
+  async invoke(context, args, hooks = EMPTY_HOOKS, compiled = null, budget = 0) {
     if (this.kind === SUBSCRIPTION) {
       throw codedError('This procedure is a subscription: use {type:"subscribe"}', 400);
     }
@@ -381,7 +385,14 @@ class Procedure {
     // that waited 900 ms of a 1000 ms timeout in the queue has 100 ms of
     // handler budget left, not a fresh 1000 — overload must not do work for
     // callers that already gave up.
-    const deadline = this.timeout > 0 ? Date.now() + this.timeout : 0;
+    // `budget` is the CALLER's per-call deadline (the packet's optional
+    // `timeout` field — CallOptions.timeout, the gRPC-deadline shape). It
+    // can only SHORTEN the procedure's own limit, never widen it: the
+    // procedure's timeout is the server's protection, the caller's budget
+    // is a courtesy — no point doing work whose answer nobody awaits.
+    const cap = this.timeout > 0 ? this.timeout : 0;
+    const limit = budget > 0 && (cap === 0 || budget < cap) ? budget : cap;
+    const deadline = limit > 0 ? Date.now() + limit : 0;
     if (this.semaphore) {
       try {
         // Abort-aware: a queued waiter whose caller cancelled or
@@ -400,9 +411,12 @@ class Procedure {
       const outputValidator = compiled?.output ?? this.output;
       if (hooks.preValidation.length > 0) await runHooks(hooks.preValidation, context, args);
       if (inputValidator) {
-        args = await runValidator(inputValidator, args, context).catch((error) => {
+        try {
+          const checked = runValidator(inputValidator, args, context);
+          args = checked && typeof checked.then === 'function' ? await checked : checked;
+        } catch (error) {
           throw codedError(`Invalid arguments: ${error.message}`, 400, error.details);
-        });
+        }
       }
       if (hooks.preHandler.length > 0) await runHooks(hooks.preHandler, context, args);
       handlerStarted = true;
@@ -423,9 +437,12 @@ class Procedure {
         if (replaced !== undefined) result = replaced;
       }
       if (outputValidator) {
-        result = await runValidator(outputValidator, result).catch((error) => {
+        try {
+          const checked = runValidator(outputValidator, result);
+          result = checked && typeof checked.then === 'function' ? await checked : checked;
+        } catch (error) {
           throw codedError(`Invalid procedure result: ${error.message}`, 500, error.details);
-        });
+        }
       }
       return result;
     } finally {
@@ -464,6 +481,11 @@ const toProcedure = (value, unitKey, methodName) => {
 // `hooks` is reserved too: the unit's slice of the lifecycle pipeline.
 const EVENTS_KEY = 'on';
 const HOOKS_KEY = 'hooks';
+// Declaration-only: the unit's OUTBOUND (server -> client) events, as
+// `signature`-style descriptors ({ data, returns? }). No runtime behavior —
+// the map travels through introspection so `wrpc types` can generate the
+// contract's `events` key, the same way `signature` types calls.
+const EMITS_KEY = 'emits';
 
 // unit-level hooks may not carry the connection phases: a connection is not
 // scoped to a unit, so an onConnect there could never mean anything.
@@ -596,39 +618,6 @@ const compileOutput = (ajv, schema, label) => {
     error.details = { issues };
     throw error;
   };
-};
-
-// Router-level REST options; today one strategy: how a versioned unit's
-// declared paths surface. `null` means "declared paths verbatim".
-const normalizeRestOptions = (rest) => {
-  if (rest === undefined || rest === null) return null;
-  if (typeof rest !== 'object' || Array.isArray(rest)) {
-    throw new TypeError('defineRouter: rest must be an options object');
-  }
-  const { version } = rest;
-  if (version === undefined) return null;
-  if (version !== 'path' && typeof version !== 'function') {
-    throw new TypeError("defineRouter: rest.version must be 'path' or a function (version, path) => path");
-  }
-  return { version };
-};
-
-// The version-aware view of a procedure's http mapping: with a rest.version
-// strategy, a versioned unit's declared path gains its '/vN' prefix here —
-// computed at build/introspection time, never by mutating proc.http
-// (Procedure instances are shared across routers by merge()). The version
-// token already carries the 'v' ('auth.v1' -> 'v1'), so 'path' is a plain
-// prefix. The one seam serves the trie, restRoutes() and introspect(), which
-// is what keeps dispatch, host adapters and clients version-consistent.
-const effectiveHttp = (http, version, restOptions) => {
-  if (!http || version === DEFAULT_VERSION || !restOptions?.version) return http;
-  const spec = restOptions.version;
-  const path =
-    typeof spec === 'function' ? spec(version, http.path) : `/${version}${http.path === '/' ? '' : http.path}`;
-  if (typeof path !== 'string' || !path.startsWith('/')) {
-    throw new TypeError(`rest.version must produce a path starting with '/', got ${JSON.stringify(path)}`);
-  }
-  return { ...http, path };
 };
 
 class Router {
@@ -791,60 +780,7 @@ class Router {
   // param names at one position are build-time conflicts, reported with
   // both procedures' addresses.
   #rebuildRest() {
-    this.#rest = null;
-    const makeNode = () => ({ static: new Map(), param: null, terminal: null });
-    let trees = null;
-    for (const [unit, versions] of this.#units) {
-      for (const [version, entry] of versions) {
-        const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
-        for (const [methodName, proc] of entry.methods) {
-          if (!proc.http) continue;
-          trees ??= new Map();
-          // Effective, not declared: with rest.version, two versions of one
-          // declared path diverge by their '/vN' prefix BEFORE the conflict
-          // check below ever sees them.
-          const http = effectiveHttp(proc.http, version, this.#restOptions);
-          const { method, path } = http;
-          let node = trees.get(method);
-          if (!node) {
-            node = makeNode();
-            trees.set(method, node);
-          }
-          const segments = path === '/' ? [] : path.slice(1).split('/');
-          const paramNames = [];
-          for (const segment of segments) {
-            if (segment.startsWith(':')) {
-              const name = segment.slice(1);
-              if (node.param && node.param.name !== name) {
-                throw new TypeError(
-                  `REST route conflict: ${method} ':${node.param.name}' and ':${name}' at the same position ` +
-                    `(${unitKey}/${methodName} vs an earlier route)`,
-                );
-              }
-              node.param ??= { name, node: makeNode() };
-              paramNames.push(name);
-              node = node.param.node;
-              continue;
-            }
-            let next = node.static.get(segment);
-            if (!next) {
-              next = makeNode();
-              node.static.set(segment, next);
-            }
-            node = next;
-          }
-          if (node.terminal) {
-            const existing = node.terminal;
-            throw new TypeError(
-              `REST route conflict: ${method} ${path} is declared by both ` +
-                `${existing.unitKey}/${existing.methodName} and ${unitKey}/${methodName}`,
-            );
-          }
-          node.terminal = { proc, unitKey, methodName, paramNames, http };
-        }
-      }
-    }
-    this.#rest = trees;
+    this.#rest = buildRestTrees(this.#units, this.#restOptions);
   }
 
   #chainFor(entry, proc) {
@@ -878,12 +814,19 @@ class Router {
     }
     let entry = versions.get(version);
     if (!entry) {
-      entry = { methods: new Map(), events: new Map(), hooks: null };
+      entry = { methods: new Map(), events: new Map(), emits: null, hooks: null };
       versions.set(version, entry);
     }
     for (const [name, value] of Object.entries(definition)) {
       if (name === EVENTS_KEY) {
         this.#addEvents(unitKey, entry.events, value);
+        continue;
+      }
+      if (name === EMITS_KEY) {
+        if (typeof value !== 'object' || value === null || Array.isArray(value)) {
+          throw new TypeError(`Router definition ${unitKey}.emits must be an object of event descriptors`);
+        }
+        entry.emits = entry.emits ? { ...entry.emits, ...value } : { ...value };
         continue;
       }
       if (name === HOOKS_KEY) {
@@ -921,66 +864,14 @@ class Router {
     return this.#rest !== null;
   }
 
-  /**
-   * Matches an HTTP verb and decoded path segments against the declarative
-   * REST table. Returns null (no path match — the caller falls back to the
-   * conventional /:unit/:method mode), `{ allowed }` (some OTHER verb
-   * matches this path — a 405 with an Allow list), or the full route
-   * `{ proc, unitKey, methodName, params, http }`.
-   */
+  /** See matchRestTrees in rest.js — the trie set is per-router state. */
   matchRest(method, segments) {
-    if (!this.#rest) return null;
-    const hit = this.#walk(this.#rest.get(method), segments);
-    if (hit) {
-      const params = {};
-      for (let i = 0; i < hit.route.paramNames.length; i++) {
-        assignKey(params, hit.route.paramNames[i], hit.values[i]);
-      }
-      const { proc, unitKey, methodName, http } = hit.route;
-      return { proc, unitKey, methodName, params, http };
-    }
-    // No route under this verb — probe the other verbs' trees so the
-    // answer distinguishes "unknown path" (fall through, maybe the
-    // conventional mode knows it) from "known path, wrong verb" (405).
-    const allowed = [];
-    for (const [verb, tree] of this.#rest) {
-      if (verb !== method && this.#walk(tree, segments)) allowed.push(verb);
-    }
-    return allowed.length > 0 ? { allowed } : null;
-  }
-
-  #walk(node, segments) {
-    if (!node) return null;
-    const values = [];
-    for (const segment of segments) {
-      const next = node.static.get(segment);
-      if (next) {
-        node = next;
-        continue;
-      }
-      if (node.param) {
-        values.push(segment);
-        node = node.param.node;
-        continue;
-      }
-      return null;
-    }
-    return node.terminal ? { route: node.terminal, values } : null;
+    return matchRestTrees(this.#rest, method, segments);
   }
 
   /** Every declared REST route — what a host adapter registers natively. */
   restRoutes() {
-    const routes = [];
-    for (const [unit, versions] of this.#units) {
-      for (const [version, entry] of versions) {
-        const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
-        for (const [methodName, proc] of entry.methods) {
-          if (!proc.http) continue;
-          routes.push({ unitKey, methodName, proc, http: effectiveHttp(proc.http, version, this.#restOptions) });
-        }
-      }
-    }
-    return routes;
+    return collectRestRoutes(this.#units, this.#restOptions);
   }
 
   // Introspection v2: { unitKey: { method: { access, meta?, signature? } } }
@@ -1019,6 +910,21 @@ class Router {
           }
           assignKey(methodsInfo, methodName, info);
         }
+        // The unit's INBOUND event handlers, under the same reserved 'on'
+        // key the definition used — additive, and impossible to collide
+        // with a method ('on' routes to #addEvents at definition time).
+        // What `wrpc types` turns into the contract's `sends` key.
+        if (entry.events.size > 0) {
+          const inbound = {};
+          for (const [eventName, proc] of entry.events) {
+            const eventInfo = { access: proc.access };
+            if (proc.signature) eventInfo.signature = proc.signature;
+            assignKey(inbound, eventName, eventInfo);
+          }
+          assignKey(methodsInfo, EVENTS_KEY, inbound);
+        }
+        // The declared OUTBOUND events, verbatim — the contract's `events`.
+        if (entry.emits) assignKey(methodsInfo, EMITS_KEY, entry.emits);
         assignKey(result, unitKey, methodsInfo);
       }
     }
@@ -1051,6 +957,7 @@ class Router {
           const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
           const definition = Object.fromEntries(entry.methods);
           if (entry.events.size > 0) definition[EVENTS_KEY] = Object.fromEntries(entry.events);
+          if (entry.emits) definition[EMITS_KEY] = entry.emits;
           if (entry.hooks) definition[HOOKS_KEY] = entry.hooks;
           merged.#addUnit(unitKey, definition);
         }

@@ -4,6 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { RpcServer, WrpcClient, defineRouter, procedure } = require('../../index.js');
+const { bootServer } = require('../helpers/server.js');
 const { Server } = require('../../index.js');
 const { MemoryBackplane } = require('../../scaling.js');
 
@@ -39,18 +40,11 @@ const createRouter = () =>
     },
   });
 
+// Delegates to the shared boot (tests/helpers/server.js); `logger` arrives
+// through options, overriding the shared quiet default.
 const boot = async (t, options) => {
-  const server = new Server({
-    router: createRouter(),
-    host: '127.0.0.1',
-    port: 0,
-    protocol: 'http',
-    timeouts: { bind: 100 },
-    ...options,
-  });
-  await server.listen();
-  t.after(() => server.close());
-  return `ws://127.0.0.1:${server.address().port}/api`;
+  const { url } = await bootServer(t, { router: createRouter(), ...options });
+  return url;
 };
 
 test('the logger reaches every component of a live server', async (t) => {

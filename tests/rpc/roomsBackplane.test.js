@@ -2,6 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const timers = require('node:timers/promises');
 
 const { RoomsBackplane, BROADCAST_CHANNEL, roomChannel } = require('../../src/rpc/rooms.js');
 
@@ -38,12 +39,15 @@ const createBackplane = (overrides = {}) => {
   return backplane;
 };
 
-const createBinder = (backplane, { deliver = noop, log } = {}) => {
+const createBinder = (backplane, { deliver = noop, log, linger = 0 } = {}) => {
   const errors = [];
+  // linger: 0 — these tests exercise the immediate release mechanics; the
+  // grace window has its own test below.
   const binder = new RoomsBackplane({
     backplane,
     instance: 'node-1',
     deliver,
+    linger,
     log: log ?? { log: noop, error: (error) => errors.push(error) },
   });
   return { binder, errors };
@@ -120,9 +124,14 @@ test('RoomsBackplane: a subscription still in flight', async (t) => {
     assert.deepStrictEqual(unsubscribed, [], 'the channel is still wanted');
   });
 
-  await t.test('a failing subscribe is reported and the channel is forgotten', async () => {
+  await t.test('a failing subscribe is reported, kept and RETRIED — never terminal', async () => {
+    let attempts = 0;
     const backplane = createBackplane({
-      subscribe: () => Promise.reject(new Error('broker refused')),
+      subscribe: () => {
+        attempts++;
+        if (attempts < 2) return Promise.reject(new Error('broker refused'));
+        return Promise.resolve(() => {});
+      },
     });
     const { binder, errors } = createBinder(backplane);
 
@@ -130,11 +139,13 @@ test('RoomsBackplane: a subscription still in flight', async (t) => {
     await settle();
     assert.strictEqual(errors.length, 1);
     assert.match(errors[0].message, /broker refused/);
-
-    // Forgotten, so a later join tries again rather than assuming success.
-    binder.joinRoom('chat');
+    // The instance is degraded, not silently deaf-forever.
+    assert.strictEqual(binder.healthy, false);
+    // The capped-backoff retry (500ms first step) re-subscribes on its own.
+    await timers.setTimeout(600);
     await settle();
-    assert.strictEqual(errors.length, 2);
+    assert.strictEqual(attempts, 2, 'the retry ran');
+    assert.strictEqual(binder.healthy, true, 'recovery clears the degraded state');
   });
 
   await t.test('a backplane that returns no unsubscribe function is tolerated', async () => {
@@ -307,4 +318,29 @@ test('RoomsBackplane: close', async (t) => {
     handler(JSON.stringify({ instance: 'node-2', rooms: null, name: 'msg', data: 1 }));
     assert.deepStrictEqual(deliveries, []);
   });
+});
+
+test('RoomsBackplane: the linger window absorbs a reconnect bounce', async () => {
+  const subscribed = [];
+  const unsubscribed = [];
+  const backplane = createBackplane({
+    subscribe: (channel) => {
+      subscribed.push(channel);
+      return Promise.resolve(() => void unsubscribed.push(channel));
+    },
+  });
+  const { binder } = createBinder(backplane, { linger: 50 });
+  binder.joinRoom('me');
+  await settle();
+  // The single member bounces: leave + rejoin inside the window.
+  binder.leaveRoom('me');
+  binder.joinRoom('me');
+  await settle();
+  assert.strictEqual(subscribed.filter((c) => c.includes('me')).length, 1, 'no broker round trip at all');
+  assert.deepStrictEqual(unsubscribed, [], 'the channel never released');
+  // A leave the window EXPIRES on does release.
+  binder.leaveRoom('me');
+  await timers.setTimeout(80);
+  await settle();
+  assert.strictEqual(unsubscribed.length, 1);
 });

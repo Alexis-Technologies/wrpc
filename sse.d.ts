@@ -64,8 +64,17 @@ export interface SseOptions {
   replayBytes?: number;
   /** Live channels per server; past it a new GET is 503. Default 10000. */
   maxChannels?: number;
-  /** Live channels per remote address; past it 429. Default 100. */
+  /**
+   * Live channels per remote address; past it 429. Default 100. Behind a
+   * proxy the default address is the PROXY — see `clientAddress`.
+   */
   maxChannelsPerAddress?: number;
+  /**
+   * What the per-address cap counts by; defaults to the TCP peer address.
+   * Behind a load balancer inject a reader for your proxy's client header
+   * (trust it only when the proxy is yours).
+   */
+  clientAddress?: (call: { headers?: Record<string, unknown>; remoteAddress?: string }) => string;
 }
 
 /** The server-side transport behind one event stream. Text-only. */

@@ -5,6 +5,7 @@
 // one seam every transport, built-in or not, goes through.
 
 const { WrpcClient, ClientTransport, WRPC_PROTOCOL, metaHeaders } = require('./core.js');
+const { HEADERS_PARAM, META_PARAM } = require('../wire.js');
 
 // Mirrors the server's metaMaxBytes default: past it the server drops the
 // entire declared bag, so refusing here is the difference between a visible
@@ -28,7 +29,24 @@ class ClientWsTransport extends ClientTransport {
       // protocol.md#versioning). `protocols` overrides the offer, and an
       // empty array offers nothing — an escape hatch for a proxy that
       // mangles the header. The selected protocol lands on `this.protocol`.
-      const protocols = options.protocols ?? [WRPC_PROTOCOL];
+      let protocols = options.protocols ?? [WRPC_PROTOCOL];
+      // The Authorization header is the ONE declared name that is a secret,
+      // and the connect URL lands in proxy access logs. RFC 6455 gives ws a
+      // header that survives the WHATWG constructor — the subprotocol offer
+      // — so a Bearer credential rides as `wrpc.bearer.<token>` and is
+      // stripped from the wrpc_h bag (the server's bearer transport reads
+      // sec-websocket-protocol first). A token outside the RFC 7230 token
+      // charset cannot be a subprotocol name and falls back to the query,
+      // with the loud caveat below.
+      let bag = options.headers;
+      const auth = bag?.authorization;
+      const bearer = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
+      if (bearer && /^[!#$%&'*+.^_`|~A-Za-z0-9-]+$/.test(bearer)) {
+        protocols = [...protocols, `wrpc.bearer.${bearer}`];
+        bag = { ...bag };
+        delete bag.authorization;
+        if (Object.keys(bag).length === 0) bag = null;
+      }
       // Connection-phase headers ride as ONE query parameter: the WHATWG
       // WebSocket constructor cannot set real headers, in the browser by
       // spec and in Node because the client uses the same globalThis
@@ -38,8 +56,18 @@ class ClientWsTransport extends ClientTransport {
       // connect URL lands in proxy access logs — a device id belongs here,
       // a secret does not.
       const params = [];
-      if (options.headers) params.push(`wrpc_h=${encodeURIComponent(JSON.stringify(options.headers))}`);
-      if (options.meta) params.push(`wrpc_meta=${encodeURIComponent(JSON.stringify(options.meta))}`);
+      // Capped like the http leg: past metaMaxBytes the server drops the
+      // ENTIRE bag (measured over the whole query), so sending it anyway
+      // would be a silent loss on the side that cannot see it. The refusal
+      // keeps the connection working, un-labelled, and says so.
+      const declare = (param, bag) => {
+        const value = encodeURIComponent(JSON.stringify(bag));
+        const bytes = param.length + 1 + value.length;
+        if (bytes > META_MAX) return void this.log?.warn({ event: 'meta.oversize', param, bytes });
+        params.push(`${param}=${value}`);
+      };
+      if (bag) declare(HEADERS_PARAM, bag);
+      if (options.meta) declare(META_PARAM, options.meta);
       const url = params.length > 0 ? `${this.url}${this.url.includes('?') ? '&' : '?'}${params.join('&')}` : this.url;
       const socket = protocols.length > 0 ? new WebSocket(url, protocols) : new WebSocket(url);
       this.#socket = socket;
@@ -86,6 +114,10 @@ class ClientWsTransport extends ClientTransport {
   // waiting for one would gate the reconnect on the socket's own timeout.
   // Report the close now; the socket's later 'close' is then a no-op.
   terminate() {
+    // A connect still in flight (the connectTimeout race): closing a
+    // CONNECTING socket aborts the handshake and fires 'close', which is
+    // where onClose rejects the pending open().
+    if (this.#opening) return void this.#socket?.close();
     if (!this.active) return;
     const socket = this.#socket;
     this.active = false;
@@ -107,6 +139,9 @@ class ClientHttpTransport extends ClientTransport {
   // call whose procedure declares `http` goes out as the same REST request
   // an external consumer would send, not as a packet POST.
   rest = true;
+  // Consumes write()'s meta argument as request headers — the flag the
+  // batch flush checks before building its per-frame aggregate.
+  metaHeaders = true;
   // Connection-phase headers and metadata, resolved per open — here they
   // ride as REAL request headers on every packet POST and REST leg.
   headers = null;
@@ -145,14 +180,16 @@ class ClientHttpTransport extends ClientTransport {
   // The PACKET codec's contentType belongs to write() below, never here:
   // a JSON REST body must say JSON.
   async request(method, url, body, signal, options = {}) {
-    const { rest = null, meta = null } = options;
+    const { rest = null, meta = null, trace = null } = options;
     // Declared first, wire headers after: the protocol's own always win.
     // A call's own meta merges over the connection's bag — per-call wins a
-    // key collision — and only then becomes headers.
+    // key collision — and only then becomes headers. `trace` is the REST
+    // leg's traceparent/tracestate pair, injected by the telemetry writer.
     const block = meta ? this.#requestMeta(meta) : this.meta;
     const headers = {
       ...this.headers,
       ...block,
+      ...trace,
       'Content-Type': rest?.contentType ?? 'application/json',
     };
     const init = body === undefined ? { method, headers, signal } : { method, headers, body, signal };
@@ -169,7 +206,9 @@ class ClientHttpTransport extends ClientTransport {
     const merged = { ...this.metaBag, ...meta };
     const block = metaHeaders(merged, this.prefixed);
     let bytes = 0;
-    for (const key in block) bytes += key.length + block[key].length;
+    // String() defensively: a non-string slipping through would make bytes
+    // NaN, and `NaN <= META_MAX` refuses the whole block with no real cause.
+    for (const key in block) bytes += key.length + String(block[key]).length;
     if (bytes <= META_MAX) return block;
     this.log.warn({ event: 'meta.oversize', bytes });
     return this.meta;
@@ -203,34 +242,15 @@ class ClientHttpTransport extends ClientTransport {
         // answers synthesized, so the exact calls this request carried
         // settle now instead of waiting out callTimeout.
         if (res.ok || this.#decode(text) !== null) return void this.emit('message', text);
-        this.#fail(data, res.status);
+        // The synthesized per-id answers live on the base class now — the
+        // SSE transport's outbound half fails the same way (see failPackets).
+        this.failPackets(data, res.status);
       } catch (error) {
         this.emit('error', error);
-        this.#fail(data, 503);
+        this.failPackets(data, 503);
       }
     };
     send();
-  }
-
-  // Synthesizes an error callback for every call packet the failed request
-  // carried — the transport is the only party that knows which ids just
-  // died with it. Both directions speak the codec when one is configured.
-  #fail(data, status) {
-    const parsed = this.#decode(data);
-    if (!parsed) return;
-    const packets = Array.isArray(parsed) ? parsed : [parsed];
-    const answers = [];
-    for (const packet of packets) {
-      if (!packet || typeof packet !== 'object' || typeof packet.id !== 'string') continue;
-      answers.push({
-        type: 'callback',
-        id: packet.id,
-        error: { message: `HTTP request failed (${status})`, code: status },
-      });
-    }
-    if (answers.length === 0) return;
-    const frame = Array.isArray(parsed) ? answers : answers[0];
-    this.emit('message', this.codec ? this.codec.encode(frame) : JSON.stringify(frame));
   }
 }
 
@@ -294,10 +314,12 @@ class ClientEventTransport extends ClientTransport {
   }
 }
 
-WrpcClient.transport = {
+// Assigned INTO the class's null-proto registry, never replacing it: the
+// sse subpath registers the same way, and require order stops mattering.
+Object.assign(WrpcClient.transport, {
   ws: ClientWsTransport,
   http: ClientHttpTransport,
   event: ClientEventTransport,
-};
+});
 
 module.exports = { ClientWsTransport, ClientHttpTransport, ClientEventTransport };

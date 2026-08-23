@@ -16,6 +16,7 @@ const {
   quoteKey,
   renderStatic,
   renderType,
+  renderOpenApi,
   renderTypes,
 } = require('../../src/cli/types.js');
 
@@ -608,7 +609,10 @@ test('CLI parseArgs: --schema and --format', () => {
     ['types', 'http://h', '--out', 'x', '--schema', 's.js', '--format', 'umd'],
     /--format must be 'cjs' or 'esm'/,
   );
-  rejects(['types', 'http://h', '--out', '-', '--schema', '-'], /cannot both write to stdout/);
+  rejects(
+    ['types', 'http://h', '--out', '-', '--schema', '-'],
+    /one of --out, --schema and --openapi may write to stdout/,
+  );
   rejects(['types', 'http://h', '--out', 'x', '--schema'], /--schema requires a value/);
 });
 
@@ -689,4 +693,87 @@ test("CLI main: '--schema -' streams the module to stdout while --out writes the
   assert.strictEqual(code, 0);
   assert.strictEqual(written.length, 1, 'only the types artifact hit the filesystem');
   assert.match(log.text(), /export default \{/);
+});
+
+test('CLI renderTypes: typed-event blocks — `on` becomes `sends`, `emits` becomes `events`', () => {
+  const warnings = [];
+  const text = renderTypes(
+    {
+      chat: {
+        send: { access: 'public', signature: { args: { text: 'string' }, returns: { id: 'string' } } },
+        on: {
+          typing: { access: 'session', signature: { args: { on: 'boolean' } } },
+          bare: { access: 'public' },
+        },
+        emits: {
+          message: { data: { text: 'string', from: 'string' } },
+          confirm: { data: { id: 'string' }, returns: 'boolean' },
+        },
+      },
+    },
+    { warn: (message) => warnings.push(message) },
+  );
+  assert.match(text, /sends: \{/);
+  assert.match(text, /typing: \{on: boolean\}|typing: \{ on: boolean \}/);
+  assert.match(text, /bare: unknown;/);
+  assert.match(text, /events: \{/);
+  assert.match(text, /message: \(data: \{.*text: string.*\}\) => void;/s);
+  assert.match(text, /confirm: \(data: \{.*id: string.*\}\) => boolean;/s);
+  // Neither reserved block leaks as a callable method.
+  assert.ok(!/\bon\(/.test(text));
+  assert.ok(!/\bemits\(/.test(text));
+  assert.deepStrictEqual(warnings, []);
+});
+
+test('CLI renderOpenApi: http-mapped procedures project to an OpenAPI 3 document', () => {
+  const warnings = [];
+  const doc = JSON.parse(
+    renderOpenApi(
+      {
+        orders: {
+          get: {
+            access: 'public',
+            http: { method: 'GET', path: '/v1/orders/:id' },
+            schema: {
+              params: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+              querystring: { type: 'object', properties: { expand: { type: 'boolean' } } },
+            },
+          },
+          create: {
+            access: 'session',
+            http: { method: 'POST', path: '/v1/orders', status: 201 },
+            schema: { body: { type: 'object', properties: { sku: { type: 'string' } }, required: ['sku'] } },
+            meta: { description: 'Creates an order' },
+          },
+          // No http mapping: not a REST endpoint, absent from the document.
+          internal: { access: 'public' },
+          on: { ping: { access: 'public' } },
+        },
+      },
+      { url: 'http://x/api', warn: (message) => warnings.push(message) },
+    ),
+  );
+  assert.strictEqual(doc.openapi, '3.0.3');
+  assert.deepStrictEqual(Object.keys(doc.paths).sort(), ['/v1/orders', '/v1/orders/{id}']);
+  const get = doc.paths['/v1/orders/{id}'].get;
+  assert.strictEqual(get.operationId, 'orders/get');
+  assert.deepStrictEqual(
+    get.parameters.map((p) => [p.name, p.in, p.required]),
+    [
+      ['id', 'path', true],
+      ['expand', 'query', false],
+    ],
+  );
+  const post = doc.paths['/v1/orders'].post;
+  assert.strictEqual(post.summary, 'Creates an order');
+  assert.ok(post.responses['201']);
+  assert.ok(post.responses.default.content['application/json'].schema.properties.code);
+  assert.strictEqual(post.requestBody.content['application/json'].schema.required[0], 'sku');
+  assert.deepStrictEqual(warnings, []);
+});
+
+test('CLI parseArgs: --openapi rides along, one stdout at most', () => {
+  const options = parseArgs(['types', 'http://x/api', '--out', 'api.d.ts', '--openapi', 'openapi.json']);
+  assert.strictEqual(options.openapi, 'openapi.json');
+  assert.throws(() => parseArgs(['types', 'http://x/api', '--out', '-', '--openapi', '-']), /one of/);
 });

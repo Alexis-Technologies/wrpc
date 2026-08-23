@@ -1,7 +1,7 @@
 {
   "name": "@alexify/wrpc",
   "version": "1.0.0",
-  "description": "Fast, zero-dependency, WebSocket-based RPC protocol for Node.js and browsers",
+  "description": "Fast, zero-dependency, WebSocket-based RPC protocol for Node.js and browsers: one router over WebSocket, HTTP, SSE and REST - typed client, subscriptions, rooms, cluster and binary streams",
   "main": "index.js",
   "browser": {
     "./index.js": "./browser.js",
@@ -110,12 +110,18 @@
     "typescript",
     "javascript",
     "node",
-    "browser",
     "opentelemetry",
     "observability",
-    "tracing",
-    "logging",
-    "pino"
+    "sse",
+    "server-sent-events",
+    "rest",
+    "typed-client",
+    "codegen",
+    "tanstack-query",
+    "subscriptions",
+    "pubsub",
+    "cluster",
+    "streams"
   ],
   "author": "Alex Dolid <dolid.sasha@gmail.com>",
   "license": "MIT",

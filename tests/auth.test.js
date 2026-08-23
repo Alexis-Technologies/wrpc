@@ -89,19 +89,24 @@ test('token stores: prefixes isolate applications', async () => {
 // ---------------------------------------------------------------------------
 // The server halves on their own
 
-test('bearerTransport reads the real header first, the ws query as fallback', () => {
+test('bearerTransport reads the header, then the subprotocol offer, then the parsed declared bag', () => {
   const transport = bearerTransport();
   assert.strictEqual(transport.ambient, false);
   assert.strictEqual(transport.read({ headers: { authorization: 'Bearer abc' } }), 'abc');
   assert.strictEqual(transport.read({ headers: { authorization: 'Basic abc' } }), null);
-  const declared = encodeURIComponent(JSON.stringify({ Authorization: 'Bearer fromquery' }));
-  assert.strictEqual(transport.read({ headers: {}, url: `/api?wrpc_h=${declared}` }), 'fromquery');
-  // The observed header wins over the declared one.
+  // The ws subprotocol carrier: the client offers wrpc.bearer.<token> next
+  // to the wire revision, keeping the credential out of the connect URL.
+  assert.strictEqual(transport.read({ headers: { 'sec-websocket-protocol': 'wrpc.v1, wrpc.bearer.tok9' } }), 'tok9');
+  // The declared bag arrives PARSED from the core (kebab keys, capped on the
+  // configurable metaMaxBytes) — this module never re-derives it from the
+  // URL, so it cannot drift from the core parser.
+  assert.strictEqual(transport.read({ headers: {}, declared: { authorization: 'Bearer fromquery' } }), 'fromquery');
   assert.strictEqual(
-    transport.read({ headers: { authorization: 'Bearer real' }, url: `/api?wrpc_h=${declared}` }),
+    transport.read({ headers: { authorization: 'Bearer real' }, declared: { authorization: 'Bearer other' } }),
     'real',
   );
-  assert.strictEqual(transport.read({ headers: {}, url: '/api?wrpc_h=%7Bnot-json' }), null);
+  const raw = encodeURIComponent(JSON.stringify({ Authorization: 'Bearer fromquery' }));
+  assert.strictEqual(transport.read({ headers: {}, url: `/api?wrpc_h=${raw}` }), null);
   assert.strictEqual(transport.write('abc'), null);
 });
 
@@ -233,4 +238,151 @@ test('bearerAuth: a mid-session refusal refreshes once, rotates the pair and ret
   const rotated = (await store.get('tokens')).access;
   assert.notStrictEqual(rotated, before, 'the stored pair was rotated');
   assert.strictEqual(state.signIns, 1, 'refresh healed the session without a second signIn');
+});
+
+test('bearerAuth: a THROWING refresh clears the store like a falsy return does', async () => {
+  const store = memoryStore();
+  store.set('tokens', { access: 'dead', refresh: 'revoked' });
+  const options = bearerAuth({
+    store,
+    signIn: () => null,
+    refresh: () => {
+      throw new Error('refresh token revoked');
+    },
+  });
+  await assert.rejects(options.refresh.handler({}, new Error('401')), /refresh token revoked/);
+  // The pair just proved dead: leaving it stored would make every later
+  // reconnect's authenticate short-circuit on a corpse forever.
+  assert.strictEqual(store.get('tokens'), undefined);
+});
+
+// ---------------------------------------------------------------------------
+// The carrier matrix: one payloadTransport server, every carrier x both
+// meta spellings — the drift this matrix exists to catch is a token that
+// restores on ws but silently 403s on http/sse under metaFormat 'prefixed'.
+
+require('../sse.js'); // registers the 'sse' client transport
+
+const payloadBoot = async (t) => {
+  const definition = defineRouter({
+    auth: {
+      signIn: procedure({
+        access: 'public',
+        handler: async (context) => {
+          context.client.startSession(undefined, { user: 'zoe' });
+          return { token: context.session.token };
+        },
+      }),
+    },
+    secure: {
+      whoami: procedure({ access: 'session', handler: async (context) => context.session.state.user }),
+    },
+  });
+  const server = new Server({
+    router: definition,
+    host: '127.0.0.1',
+    port: 0,
+    protocol: 'http',
+    logger: false,
+    timeouts: { bind: 50 },
+    sessions: { transport: payloadTransport() },
+  });
+  await server.listen();
+  t.after(() => server.close());
+  const port = server.address().port;
+  const first = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+  });
+  const { token } = await first.call('auth/signIn', {});
+  first.close();
+  return { server, port, token };
+};
+
+test('payloadTransport: the token restores on every carrier and both meta spellings', async (t) => {
+  const { port, token } = await payloadBoot(t);
+  const cases = [
+    ['ws json', `ws://127.0.0.1:${port}/api`, {}],
+    ['ws prefixed', `ws://127.0.0.1:${port}/api`, { metaFormat: 'prefixed' }],
+    ['http json', `http://127.0.0.1:${port}/api`, { transport: 'http' }],
+    ['http prefixed', `http://127.0.0.1:${port}/api`, { transport: 'http', metaFormat: 'prefixed' }],
+    ['sse json', `http://127.0.0.1:${port}/api`, { transport: 'sse' }],
+    ['sse prefixed', `http://127.0.0.1:${port}/api`, { transport: 'sse', metaFormat: 'prefixed' }],
+  ];
+  for (const [label, url, extra] of cases) {
+    const client = await WrpcClient.connect(url, {
+      heartbeat: false,
+      logger: false,
+      reconnect: false,
+      meta: { token },
+      ...extra,
+    });
+    await client.load('secure');
+    assert.strictEqual(await client.api.secure.whoami(), 'zoe', `carrier: ${label}`);
+    client.close();
+  }
+});
+
+test('payloadTransport: a hand-written x-wrpc-meta-<field> header restores too', async (t) => {
+  const { port, token } = await payloadBoot(t);
+  // The curl shape: no wrpc client at all, one per-key header. GET is a safe
+  // method, but a non-ambient carrier restores on it by design.
+  const res = await fetch(`http://127.0.0.1:${port}/api/secure/whoami`, {
+    headers: { 'x-wrpc-meta-token': token },
+  });
+  const body = await res.json();
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(body.result, 'zoe');
+});
+
+test('bearerAuth over ws: the token rides the subprotocol offer, never the connect URL', async (t) => {
+  const { server, port } = await bearerBoot(t);
+  const store = memoryStore();
+  const client = await WrpcClient.connect(
+    `ws://127.0.0.1:${port}/api`,
+    Object.assign(
+      { heartbeat: false, logger: false, reconnect: false },
+      bearerAuth({ store, signIn: (c) => c.call('auth/signIn') }),
+    ),
+  );
+  t.after(() => void client.close());
+  await client.load('secure');
+  // Session restored on reconnect-shaped opens proves the carrier works;
+  // here the FIRST connect signs in, so assert on a second connection that
+  // presents the stored token.
+  const stored = await store.get('tokens');
+  assert.ok(stored.access);
+  const again = await WrpcClient.connect(
+    `ws://127.0.0.1:${port}/api`,
+    Object.assign(
+      { heartbeat: false, logger: false, reconnect: false },
+      bearerAuth({ store, signIn: () => assert.fail('stored token must restore without a signIn') }),
+    ),
+  );
+  t.after(() => void again.close());
+  await again.load('secure');
+  // The stored token restored the session with NO signIn — the subprotocol
+  // carrier did the work.
+  assert.strictEqual(await again.api.secure.whoami(), 'noa');
+  // And the upgrade URL the server observed carries no credential: wrpc_h
+  // (the query fallback that lands in access logs) must be absent.
+  for (const peer of server.clients) {
+    assert.ok(!String(peer.meta?.url ?? '').includes('wrpc_h'), 'the bearer token leaked into the connect URL');
+  }
+});
+
+test('payloadTransport: raw fallbacks — prefixed header, oversize canonical, camelCase field', () => {
+  const transport = payloadTransport();
+  // The per-key spelling as a raw header (no parsed bag: the SSE key path).
+  assert.strictEqual(transport.read({ headers: { 'x-wrpc-meta-token': 'tok2' } }), 'tok2');
+  // An oversize canonical header is ignored, not parsed.
+  const big = 'x'.repeat(3000);
+  assert.strictEqual(transport.read({ headers: { 'x-wrpc-meta': big } }), null);
+  // The parsed bag wins over everything.
+  assert.strictEqual(transport.read({ headers: { 'x-wrpc-meta-token': 'raw' }, meta: { token: 'bag' } }), 'bag');
+  // A camelCase field matches its kebab key in the parsed bag.
+  const camel = payloadTransport({ field: 'authToken' });
+  assert.strictEqual(camel.read({ headers: {}, meta: { 'auth-token': 'k1' } }), 'k1');
+  assert.strictEqual(camel.read({ headers: { 'x-wrpc-meta-auth-token': 'k2' } }), 'k2');
 });

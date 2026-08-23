@@ -3,6 +3,7 @@
 const http = require('node:http');
 
 const { Emitter, toKebab } = require('./utils.js');
+const { META_HEADER, META_PREFIX, CHANNEL_HEADER } = require('./wire.js');
 
 // RFC 6265 permits '=' inside cookie values (base64, JWT) — split each
 // pair on the FIRST '=' only, or the value gets silently truncated.
@@ -22,6 +23,11 @@ const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Strict-Transport-Security': 'max-age=31536000; includeSubdomains; preload',
   'Content-Type': 'application/json',
+  // The HTTP side's version marker, echoed on every response — the ws
+  // subprotocol ladder's counterpart (protocol.md#versioning). A request
+  // MAY send `wrpc-version`; revision 1 accepts and ignores it, which is
+  // exactly what reserves the negotiation seam inside the 1.0 freeze.
+  'wrpc-version': '1',
 };
 
 const DEFAULT_CORS_METHODS = 'POST, GET, OPTIONS';
@@ -31,9 +37,9 @@ const DEFAULT_CORS_METHODS = 'POST, GET, OPTIONS';
 // the request is ever sent unless they are named here. An application whose
 // clients declare CUSTOM connection headers over http/sse must widen the
 // list via `cors.headers` the same way.
-const DEFAULT_CORS_HEADERS = 'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta';
+const DEFAULT_CORS_HEADERS = `Content-Type, ${CHANNEL_HEADER}, last-event-id, ${META_HEADER}`;
 
-const CORS_META_PREFIX = 'x-wrpc-meta-';
+const CORS_META_PREFIX = META_PREFIX;
 // `headers` accepts an array purely so composing a list stays readable; the
 // string form is what the header value has always been and is untouched.
 const corsHeaderList = (value) => (Array.isArray(value) ? value.join(', ') : value);
@@ -42,12 +48,27 @@ const corsHeaderList = (value) => (Array.isArray(value) ? value.join(', ') : val
 // cross-origin client will send has to be named. Run through toKebab so
 // `metaHeaders: ['userId']` grants `x-wrpc-meta-user-id`: the name the client
 // actually sends, not the one the config happened to spell.
+//
+// Memoized on the cors OBJECT: the string derives only from the immutable
+// option (assigned once in RpcServer's constructor), yet buildHeaders runs
+// on every HTTP call — preflight, packet POST, REST, SSE — and the toKebab
+// regex passes made it cost ~1.9 µs/request with six camelCase metaHeaders,
+// against ~20 ns for the whole buildHeaders once memoized
+// (bench/cors-headers.js). Only the STRING is cached;
+// the headers object stays per-request (it carries per-origin fields and is
+// mutated by callers).
+const ALLOW_CACHE = new WeakMap();
 const allowedHeaders = (cors) => {
-  const declared = corsHeaderList(cors?.headers) ?? DEFAULT_CORS_HEADERS;
-  const meta = cors?.metaHeaders;
-  if (!meta || meta.length === 0) return declared;
+  if (!cors) return DEFAULT_CORS_HEADERS;
+  const cached = ALLOW_CACHE.get(cors);
+  if (cached !== undefined) return cached;
+  const declared = corsHeaderList(cors.headers) ?? DEFAULT_CORS_HEADERS;
+  const meta = cors.metaHeaders;
   let allow = declared;
-  for (let i = 0; i < meta.length; i++) allow += `, ${CORS_META_PREFIX}${toKebab(meta[i])}`;
+  if (meta && meta.length > 0) {
+    for (let i = 0; i < meta.length; i++) allow += `, ${CORS_META_PREFIX}${toKebab(meta[i])}`;
+  }
+  ALLOW_CACHE.set(cors, allow);
   return allow;
 };
 

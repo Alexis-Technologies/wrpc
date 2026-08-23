@@ -119,7 +119,7 @@ test('Server / calls', async (t) => {
     // server without `timeouts` crashed with a TypeError on EADDRINUSE.
     const blocker = new Server({ router, host: 'localhost', port: 0, protocol: 'http', logger: false });
     await blocker.listen();
-    const { port } = blocker.httpServer.address();
+    const { port } = blocker.address();
     const extra = new Server({ router, host: 'localhost', port, protocol: 'http', logger: false });
     const listening = extra.listen();
     await timers.setTimeout(50); // first bind fails with EADDRINUSE, a retry is scheduled
@@ -156,7 +156,7 @@ test('Server / calls', async (t) => {
       ws: { path: '/socket' },
     });
     await custom.listen();
-    const { port } = custom.httpServer.address();
+    const { port } = custom.address();
 
     const socket = new ProtocolClient(`ws://localhost:${port}/socket`);
     const opened = await new Promise((resolve) => {

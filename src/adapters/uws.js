@@ -180,6 +180,7 @@ const createUwsEngine = (engineOptions = {}) => {
   const source = new EventEmitter();
   const sockets = new Set();
   let listenSocket = null;
+  let stoppedListening = false;
   let closed = false;
   let attached = false;
 
@@ -385,6 +386,19 @@ const createUwsEngine = (engineOptions = {}) => {
       });
     },
 
+    // The listener-only phase of a graceful shutdown: new connections are
+    // refused while the sockets already accepted keep working — the same
+    // intake-first ordering the node boot gets from httpServer.close().
+    // Optional in the engine port; feature-detected by the Server shell.
+    stopListening() {
+      if (closed || !listenSocket) return;
+      if (typeof uws?.us_listen_socket_close === 'function') {
+        uws.us_listen_socket_close(listenSocket);
+        stoppedListening = true;
+      }
+      listenSocket = null;
+    },
+
     close({ code = 1001, reason = 'Server is closing' } = {}) {
       if (closed) return;
       closed = true;
@@ -393,8 +407,9 @@ const createUwsEngine = (engineOptions = {}) => {
       // app.close() closes the app's listen sockets itself, so closing the
       // token first would be a double free — a native SIGSEGV, not an error.
       // Only an app we do NOT own (fastify-uws) leaves the token to us, and
-      // in that case we never opened one anyway.
-      if (ownsApp) {
+      // in that case we never opened one anyway. After stopListening() the
+      // token is already closed, so app.close() must NOT run again.
+      if (ownsApp && !stoppedListening) {
         app.close();
       } else if (listenSocket && typeof uws?.us_listen_socket_close === 'function') {
         uws.us_listen_socket_close(listenSocket);

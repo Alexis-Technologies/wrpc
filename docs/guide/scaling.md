@@ -189,3 +189,23 @@ rooms at once — `to('a', 'b').emit(...)` — degrades to the single broadcast
 channel every instance holds, because delivering through per-room channels
 would need receiver-side deduplication the protocol deliberately does not
 have. Prefer single-room emits in fan-out-heavy paths.
+
+## Channel lifecycle and the linger window
+
+One room is one backplane channel, subscribed on the room's first local
+member and unsubscribed after its last one leaves — plus a **linger**: an
+emptied channel stays subscribed for `rooms: { linger }` ms (default 5000,
+`0` disables) so the per-user room pattern does not pay a broker
+SUBSCRIBE/UNSUBSCRIBE pair on every reconnect, and the documented
+"published while between subscriptions" loss window does not re-open for
+the common bounce. A subscribe that FAILS is retried with capped backoff
+and surfaces through `server.rpc.healthy` — see
+[Cluster § Health](./cluster#health).
+
+## The backplane is a trust peer
+
+Every instance believes what arrives on its channels. Isolate the broker
+and ACL it; for the command surface, add the opt-in
+[`cluster: { secret }`](./cluster#trusting-the-backplane) HMAC. Room events
+themselves are not signed — a compromised broker can inject or drop them,
+which is the at-most-once contract's honest edge.

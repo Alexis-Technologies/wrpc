@@ -71,7 +71,11 @@ const createWrpc = (options = {}) => {
         url,
         headers: req.headers,
         body,
-        remoteAddress: req.socket?.remoteAddress,
+        // req.ip honours express's own `trust proxy` setting, so behind a
+        // configured proxy the SSE per-address cap counts real clients
+        // instead of the balancer's one IP; without the setting it IS the
+        // socket address, same as the fallback.
+        remoteAddress: req.ip ?? req.socket?.remoteAddress,
         respond,
         stream: nodeStream(res),
         onAbort: (listener) => void res.on('close', listener),

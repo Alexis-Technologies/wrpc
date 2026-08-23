@@ -8,6 +8,7 @@ const {
   SPAN_KIND_SERVER,
   TRACEPARENT,
   GETTER,
+  SETTER,
   hasMethod,
   resolvePropagation,
   resolveTracerAndMeter,
@@ -69,6 +70,10 @@ const createServerTelemetry = (telemetry) => {
   let backpressure = null;
   let sessions = null;
   let sseChannels = null;
+  let clusterMessages = null;
+  let clusterRequests = null;
+  let clusterInstances = null;
+  let sseEvents = null;
 
   // Checked separately from the others: a meter with counters and histograms
   // but no up/down counter would otherwise disable every instrument here.
@@ -108,6 +113,18 @@ const createServerTelemetry = (telemetry) => {
         unit: '{operation}',
         description: 'Session operations, by kind and result',
       });
+      clusterMessages = meter.createCounter('wrpc.cluster.messages', {
+        unit: '{message}',
+        description: 'Backplane envelopes received, by type',
+      });
+      clusterRequests = meter.createCounter('wrpc.cluster.requests', {
+        unit: '{request}',
+        description: 'Cluster requests settled, by op and completeness',
+      });
+      sseEvents = meter.createCounter('wrpc.server.sse.events', {
+        unit: '{event}',
+        description: 'SSE channel lifecycle events (open/reattach/replay/gap/expired)',
+      });
     } catch {
       duration = null;
       calls = null;
@@ -117,6 +134,9 @@ const createServerTelemetry = (telemetry) => {
       streamBytes = null;
       backpressure = null;
       sessions = null;
+      clusterMessages = null;
+      clusterRequests = null;
+      sseEvents = null;
     }
   }
   if (canGauge) {
@@ -133,10 +153,15 @@ const createServerTelemetry = (telemetry) => {
         unit: '{channel}',
         description: 'Live SSE channels',
       });
+      clusterInstances = meter.createUpDownCounter('wrpc.cluster.instances', {
+        unit: '{instance}',
+        description: 'Peer instances this node currently sees on the backplane',
+      });
     } catch {
       connections = null;
       subscriptions = null;
       sseChannels = null;
+      clusterInstances = null;
     }
   }
 
@@ -235,6 +260,48 @@ const createServerTelemetry = (telemetry) => {
     recordSseChannel(delta) {
       try {
         sseChannels?.add(delta);
+      } catch {}
+    },
+
+    recordSseEvent(kind) {
+      try {
+        // A closed kind set: open | reattach | replay | gap | expired. The
+        // gap and expired series are REAL event loss — what replay sizing
+        // is tuned from.
+        sseEvents?.add(1, { 'wrpc.sse.event': kind });
+      } catch {}
+    },
+
+    recordClusterMessage(type) {
+      try {
+        // The envelope type set is closed (hello/state/delta/bye/e/cmd/q/a)
+        // — a bounded label, unlike anything peer-named.
+        clusterMessages?.add(1, { 'wrpc.cluster.type': type });
+      } catch {}
+    },
+
+    recordClusterRequest(op, complete) {
+      try {
+        clusterRequests?.add(1, { 'wrpc.cluster.op': op, 'wrpc.cluster.complete': complete === true });
+      } catch {}
+    },
+
+    recordClusterInstances(delta) {
+      try {
+        clusterInstances?.add(delta);
+      } catch {}
+    },
+
+    /**
+     * Writes the active trace context into a node-to-node envelope as
+     * tp/ts — the cluster's cross-node hop is where a trace is most
+     * valuable and used to be exactly where context was dropped.
+     */
+    inject(carrier) {
+      if (!propagator) return;
+      try {
+        const active = propagator.context?.active?.();
+        propagator.propagation.inject(active, carrier, SETTER);
       } catch {}
     },
   };

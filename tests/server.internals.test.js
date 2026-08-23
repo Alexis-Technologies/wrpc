@@ -417,7 +417,7 @@ const createServer = async (options = {}) => {
     ...options,
   });
   await server.listen();
-  const { port } = server.httpServer.address();
+  const { port } = server.address();
   return { server, port };
 };
 

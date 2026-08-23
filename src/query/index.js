@@ -127,6 +127,30 @@ const createQueryUtils = (client, options = {}) => {
       };
     },
 
+    /**
+     * `{ queryKey, queryFn, initialPageParam, getNextPageParam }` for
+     * useInfiniteQuery — the paging factory tRPC v11 ships and a chat/feed
+     * app reaches for first. The page cursor rides as an ordinary args
+     * field (`cursorKey`, default 'cursor'), merged over `args`, so the
+     * procedure sees `{ ...args, cursor }` exactly as a hand-written
+     * queryFn would send it. Everything else in `extra`
+     * (initialPageParam, getNextPageParam, maxPages, ...) passes through.
+     * Same lazy resolution and AbortSignal forwarding as queryOptions.
+     */
+    infiniteQueryOptions(path, args, extra = {}) {
+      checkPath(path);
+      const { cursorKey = 'cursor', ...rest } = extra;
+      if (typeof cursorKey !== 'string' || cursorKey.length === 0) {
+        throw new TypeError('wrpc/query: infiniteQueryOptions cursorKey must be a non-empty string');
+      }
+      return {
+        ...rest,
+        queryKey: queryKey(path, args),
+        queryFn: async (context) =>
+          resolveCall(path)({ ...args, [cursorKey]: context?.pageParam }, { signal: context?.signal }),
+      };
+    },
+
     /** `{ mutationKey, mutationFn }` for useMutation; the variables ARE the args. */
     mutationOptions(path, extra) {
       checkPath(path);

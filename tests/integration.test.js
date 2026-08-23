@@ -23,7 +23,7 @@ const createServer = async (router) => {
     timeouts: { bind: 100 },
   });
   await server.listen();
-  const { port } = server.httpServer.address();
+  const { port } = server.address();
   return { server, port };
 };
 

@@ -323,7 +323,9 @@ expectType<boolean>(rpc.cluster.connected);
 expectType<number>(rpc.cluster.count('chat'));
 expectType<{ total: number; instances: Record<string, number> }>(rpc.cluster.presence('chat'));
 expectType<Array<string>>(rpc.cluster.instances());
-expectType<Promise<Array<wrpc.ClientDescriptor> & { incomplete?: boolean }>>(rpc.cluster.fetchClients({ room: 'x' }));
+expectType<Promise<Array<wrpc.ClientDescriptor> & { incomplete?: boolean; truncated?: boolean }>>(
+  rpc.cluster.fetchClients({ room: 'x' }),
+);
 expectType<void>(rpc.cluster.join('node-1.abc', 'ops'));
 expectType<void>(rpc.cluster.leave({ room: 'chat' }, 'archive'));
 expectType<void>(rpc.cluster.disconnect({}));
@@ -381,12 +383,16 @@ expectError<wrpc.WrpcClientOptions>({ packetHandler: (data: string) => void data
 
 // Resilience options: backoff, heartbeat, and their off switches
 expectAssignable<wrpc.WrpcClientOptions>({
-  reconnect: { minDelay: 100, maxDelay: 5000, factor: 1.5, jitter: false, retries: 10 },
+  reconnect: { minDelay: 100, maxDelay: 5000, factor: 1.5, jitter: false, retries: 10, stableAfter: 1000 },
   heartbeat: { interval: 1000, timeout: 200 },
   random: () => 0.5,
 });
 expectAssignable<wrpc.WrpcClientOptions>({ reconnect: false, heartbeat: false });
+expectAssignable<wrpc.WrpcClientOptions>({ connectTimeout: 5000 });
+expectAssignable<wrpc.WrpcClientOptions>({ connectTimeout: false });
+expectError<wrpc.WrpcClientOptions>({ connectTimeout: '5s' });
 expectError<wrpc.WrpcClientOptions>({ reconnect: { minDelay: '100' } });
+expectError<wrpc.WrpcClientOptions>({ reconnect: { stableAfter: '1s' } });
 declare const wsClient: WrpcClient;
 expectType<number>(wsClient.attempt);
 expectType<void>(wsClient.sendEvent('chat/typing', { on: true }));
@@ -647,3 +653,77 @@ expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({
 });
 declare const rpcForCodec: RpcServer;
 expectType<wrpc.WrpcCodec | null>(rpcForCodec.codec);
+
+// Phase-5 surface: cluster hardening, rooms linger, SSE address seam
+expectAssignable<wrpc.RpcServerOptions>({
+  router,
+  cluster: { rooms: ['lobby'], maxFetch: 500, secret: 's', presenceInterval: 10_000 },
+  rooms: { linger: 2000 },
+});
+expectAssignable<wrpc.RpcServerOptions>({ router, cluster: false });
+expectAssignable<wrpc.ClusterOptions>({ rooms: /^topic:/ });
+expectAssignable<wrpc.ClusterOptions>({ rooms: (room: string) => room.startsWith('t:') });
+expectError<wrpc.ClusterOptions>({ rooms: 42 });
+declare const clusterTyped: wrpc.Cluster;
+expectType<boolean>(clusterTyped.healthy);
+void clusterTyped.fetchClients({}).then((clients) => {
+  expectType<boolean | undefined>(clients.truncated);
+  return undefined;
+});
+declare const rpcTyped: wrpc.RpcServer;
+expectType<boolean>(rpcTyped.healthy);
+
+// Typed events: the reserved `events` (server -> client) and `sends`
+// (client -> server) contract keys — declarations only, no runtime bytes.
+interface EventfulContract {
+  chat: {
+    send(args: { text: string }): Promise<{ id: string }>;
+    events: {
+      message: (data: { text: string; from: string }) => void;
+      confirm: (data: { id: string }) => boolean;
+      plain: { n: number }; // payload form, fire-and-forget
+    };
+    sends: { typing: { on: boolean } };
+  };
+  bare: {
+    hello(): Promise<string>;
+  };
+}
+declare const eventfulClient: WrpcClient<EventfulContract>;
+
+// The unit emitter is narrowed to the declared names and payloads
+eventfulClient.api.chat.on('message', (data) => {
+  expectType<{ text: string; from: string }>(data);
+});
+eventfulClient.api.chat.once('plain', (data) => {
+  expectType<{ n: number }>(data);
+});
+expectError(eventfulClient.api.chat.on('nonsense', () => {}));
+// `events`/`sends` are declarations, never callable members
+expectError(eventfulClient.api.chat.events);
+expectError(eventfulClient.api.chat.sends);
+// A unit without `events` keeps the loose Emitter it always had
+eventfulClient.api.bare.on('anything', (value) => void value);
+
+// sendEvent is keyed on the declared `sends` names…
+expectType<void>(eventfulClient.sendEvent('chat/typing', { on: true }));
+expectError(eventfulClient.sendEvent('chat/typing', { on: 'yes' }));
+// …while undeclared names stay allowed (string & {}) with unknown data
+expectType<void>(eventfulClient.sendEvent('elsewhere/custom', { any: 1 }));
+
+// respond is typed by the `events` function form: payload in, answer out
+eventfulClient.respond('chat/confirm', (data) => {
+  expectType<{ id: string }>(data);
+  return true;
+});
+expectError(eventfulClient.respond('chat/confirm', (data: { id: string }) => 'not-a-boolean'));
+
+// The meta/headers options that shipped without their tsd halves
+void wrpc.connect('ws://host', { headers: { 'x-app-version': '1.2.3' } });
+void wrpc.connect('ws://host', { headers: async () => ({ authorization: 'Bearer x' }) });
+void wrpc.connect('ws://host', { metaFormat: 'prefixed' });
+void wrpc.connect('ws://host', { metaFormat: 'json' });
+expectError(wrpc.connect('ws://host', { metaFormat: 'base64' }));
+expectAssignable<wrpc.RpcServerOptions>({ router, metaMaxBytes: 4096, cors: { metaHeaders: ['userId', 'tenantId'] } });
+expectError<wrpc.RpcServerOptions>({ router, cors: { metaHeaders: 'userId' } });
+expectError<wrpc.RpcServerOptions>({ router, metaMaxBytes: '4k' });

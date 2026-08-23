@@ -632,5 +632,7 @@ test('sse: the replay buffer is capped by bytes, not only frames', async (t) => 
   await waitFor(() => stream.events.filter((event) => event.event === 'message').length === 5, 'answers arrived');
   const held = server.rpc.sse.get(channel);
   assert.ok(held.bytes <= 512, `the buffer holds ${held.bytes} bytes, over the 512 budget`);
-  assert.ok(held.buffer.length < 5, 'older frames were evicted by the byte budget');
+  // `count` is the ring's live-entry counter (buffer.length is the ring's
+  // preallocated capacity, constant by design).
+  assert.ok(held.count < 5, 'older frames were evicted by the byte budget');
 });
