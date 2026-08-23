@@ -79,22 +79,39 @@ test('WrpcReadable.pipe surfaces finalize() rejections as an error event', async
   assert.match(error.message, /sink exploded/);
 });
 
-test('WrpcReadable.push applies backpressure once the high water mark is exceeded', async () => {
+test('WrpcReadable.push applies backpressure once a consumer attached and the high water mark is exceeded', async () => {
   const readable = new WrpcReadable('id', 'name', 10, { highWaterMark: 1 });
+  // The high-water mark only applies after the first read: the consumer
+  // attaches, and PULL_EVENTs become possible.
   await readable.push(Buffer.from('a'));
-  await readable.push(Buffer.from('b'));
+  assert.strictEqual((await readable.read()).toString(), 'a');
 
-  let thirdResolved = false;
-  const third = readable.push(Buffer.from('c')).then(() => (thirdResolved = true));
+  await readable.push(Buffer.from('b'));
+  await readable.push(Buffer.from('c'));
+
+  let fourthResolved = false;
+  const fourth = readable.push(Buffer.from('d')).then(() => (fourthResolved = true));
 
   await new Promise((resolve) => setImmediate(resolve));
-  assert.strictEqual(thirdResolved, false);
+  assert.strictEqual(fourthResolved, false);
 
-  assert.strictEqual((await readable.read()).toString(), 'a');
-  await third;
-  assert.strictEqual(thirdResolved, true);
   assert.strictEqual((await readable.read()).toString(), 'b');
+  await fourth;
+  assert.strictEqual(fourthResolved, true);
   assert.strictEqual((await readable.read()).toString(), 'c');
+  assert.strictEqual((await readable.read()).toString(), 'd');
+});
+
+test('WrpcReadable.push buffers freely before any consumer attaches', async () => {
+  const readable = new WrpcReadable('id', 'name', 10, { highWaterMark: 1 });
+  // No consumer yet: pushes far beyond the high-water mark must resolve
+  // immediately — blocking here would deadlock the upload-then-call wire
+  // pattern (chunks arrive before the call that starts the consumer).
+  for (let i = 0; i < 40; i++) {
+    await readable.push(Buffer.from(String(i)));
+  }
+  assert.strictEqual(readable.queue.length, 40);
+  assert.strictEqual((await readable.read()).toString(), '0');
 });
 
 test('WrpcReadable.terminate marks the stream terminated without waiting for all bytes', async () => {
@@ -106,6 +123,8 @@ test('WrpcReadable.terminate marks the stream terminated without waiting for all
 
 test('WrpcReadable.checkStreamLimits grows the high water mark under listener pressure', async () => {
   const readable = new WrpcReadable('id', 'name', 100, { highWaterMark: 1 });
+  await readable.push(Buffer.from('0'));
+  assert.strictEqual((await readable.read()).toString(), '0'); // attach a consumer
   await readable.push(Buffer.from('a'));
   await readable.push(Buffer.from('b'));
 
@@ -117,13 +136,19 @@ test('WrpcReadable.checkStreamLimits grows the high water mark under listener pr
   }
   await new Promise((resolve) => setImmediate(resolve));
 
-  // An 11th waiter trips checkStreamLimits' threshold (raising highWaterMark)
-  // and then immediately hits the Emitter's own identical default maxListeners
-  // cap when it tries to register itself, rejecting this specific push().
-  const eleventh = await readable.push(Buffer.from('x')).catch((error) => error);
-  assert.strictEqual(readable.highWaterMark, 2);
-  assert.match(eleventh.message, /MaxListenersExceededWarning/);
+  // An 11th waiter trips checkStreamLimits' threshold (raising highWaterMark).
+  // Since F2 the Emitter's listener cap only warns instead of throwing, so
+  // the push stalls like the others rather than rejecting.
+  const warnings = [];
+  const originalWarn = globalThis.console.warn;
+  globalThis.console.warn = (message) => warnings.push(message);
+  const eleventh = readable.push(Buffer.from('x'));
+  await new Promise((resolve) => setImmediate(resolve));
+  globalThis.console.warn = originalWarn;
 
-  for (let i = 0; i < 12; i++) await readable.read();
-  await Promise.all(stalled);
+  assert.strictEqual(readable.highWaterMark, 2);
+  assert.ok(warnings.some((message) => /MaxListenersExceededWarning/.test(message)));
+
+  for (let i = 0; i < 13; i++) await readable.read();
+  await Promise.all([...stalled, eleventh]);
 });

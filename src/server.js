@@ -3,310 +3,110 @@
 const http = require('node:http');
 const https = require('node:https');
 
-const { Emitter, jsonParse } = require('./utils.js');
-const { generateUUID } = require('./runtime/node.js');
-
-const { WebsocketServer } = require('./websocket/ws.js');
-const { ServerTransport, buildHeaders } = require('./transport.js');
-const ServerHttpTransport = ServerTransport.transport.http;
-const ServerWsTransport = ServerTransport.transport.ws;
-const ServerEventTransport = ServerTransport.transport.event;
-const { WrpcReadable, WrpcWritable } = require('./streams.js');
-const { chunkDecode } = require('./chunks.js');
+const { Emitter } = require('./utils.js');
+const { RpcServer, rpcOptions } = require('./rpc/core.js');
+const { createNodeEngine, isEngine } = require('./engine/index.js');
+const { receiveBody, nodeStream, createUpgradeGate, respondBodyError, MAX_BODY_SIZE } = require('./adapters/common.js');
+const { createLoggerWriter } = require('./logging.js');
 
 const DEFAULT_LISTEN_RETRY = 3;
-const MAX_BODY_SIZE = 10 * 1024 * 1024;
+const DEFAULT_BIND_TIMEOUT = 2000;
 
-const isError = (err) => err?.constructor?.name?.includes('Error') || false;
-
-const split = (s, separator) => {
-  const i = s.indexOf(separator);
-  if (i < 0) return [s, ''];
-  return [s.slice(0, i), s.slice(i + separator.length)];
-};
-
-const parseParams = (params) => Object.fromEntries(new URLSearchParams(params));
-
-const receiveBody = async (stream, limit = MAX_BODY_SIZE) => {
-  if (!Number.isSafeInteger(limit) || limit < 0) {
-    throw new TypeError('Body size limit must be a non-negative safe integer');
-  }
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of stream) {
-    size += chunk.length;
-    if (size > limit) throw new Error('Body size limit exceeded');
-    chunks.push(chunk);
-  }
-  if (chunks.length === 1) return chunks[0];
-  return Buffer.concat(chunks, size);
-};
-
-const getPathname = (url) => (url ? url.split('?')[0] : '/');
-
-const isWrpcWebSocketPath = (url) => {
-  const pathname = getPathname(url);
-  return pathname === '/' || pathname === '/api' || pathname.startsWith('/api/');
-};
-
-const createProxy = (data, save) =>
-  new Proxy(data, {
-    get: (target, key) => {
-      const value = Reflect.get(target, key);
-      return value;
-    },
-    set: (target, key, value) => {
-      const success = Reflect.set(target, key, value);
-      if (save) save(target);
-      return success;
-    },
-  });
-
-class Session {
-  constructor(token, data, context) {
-    this.token = token;
-    const { console, auth } = context;
-    this.state = createProxy(data, (data) => {
-      auth.saveSession(token, data).catch((error) => {
-        console.error(error);
-      });
-    });
-  }
-}
-
-const sessions = new Map(); // token: Session
-
-class Context {
-  constructor(client) {
-    this.client = client;
-    this.uuid = generateUUID();
-    this.state = {};
-    this.session = client?.session ?? null;
-  }
-}
-
-class Client extends Emitter {
-  #transport = null;
-  #context = null;
-
-  constructor(transport, context) {
-    super();
-    this.#transport = transport;
-    this.#context = context;
-    this.source = transport.source;
-    this.session = null;
-    this.streams = new Map();
-  }
-
-  error(code, { id = '', error = null } = {}) {
-    const httpCode = code <= 599 ? code : 500;
-    const status = http.STATUS_CODES[httpCode];
-    const info = error ? error.stack : status || 'Unknown error';
-    this.#transport.error(code, { id, error });
-    this.#context.console.error(`${this.source}\t${code}\t${info}`);
-  }
-
-  send(obj, options = {}) {
-    const { code, method } = options;
-    this.#transport.send(obj, code);
-    const isSuccessCallback = obj.type === 'callback' && !obj.error;
-    if (!isSuccessCallback) return;
-    this.#context.console.log(`${this.source}\tCALL\t${method}\tOK`);
-  }
-
-  createContext() {
-    return new Context(this);
-  }
-
-  emit(name, data) {
-    if (name === 'close') return void super.emit(name, data);
-    this.sendEvent(name, data);
-  }
-
-  sendEvent(name, data) {
-    const packet = { type: 'event', name, data };
-    if (!this.#transport.connection) {
-      throw new Error(`Can't send wrpc event to http transport`);
-    }
-    this.send(packet);
-  }
-
-  getStream(id) {
-    if (!this.#transport.connection) {
-      throw new Error(`Can't receive stream from http transport`);
-    }
-    const stream = this.streams.get(id);
-    if (stream) return stream;
-    throw new Error(`Stream ${id} is not initialized`);
-  }
-
-  createStream(name, size) {
-    if (!this.#transport.connection) {
-      throw new Error(`Can't send wrpc streams to http transport`);
-    }
-    if (!name) throw new Error('Stream name is not provided');
-    if (!size) throw new Error('Stream size is not provided');
-    const id = generateUUID();
-    const stream = new WrpcWritable(id, name, size, this.#transport);
-    this.streams.set(id, stream);
-    return stream;
-  }
-
-  initializeSession(token, data = {}) {
-    this.finalizeSession();
-    this.session = new Session(token, data, this.#context);
-    sessions.set(token, this.session);
-    return true;
-  }
-
-  finalizeSession() {
-    if (!this.session) return false;
-    sessions.delete(this.session.token);
-    this.session = null;
-    return true;
-  }
-
-  startSession(token, data = {}) {
-    this.initializeSession(token, data);
-    if (!this.#transport.connection) {
-      this.#transport.sendSessionCookie(token);
-    }
-    return true;
-  }
-
-  restoreSession(token) {
-    const session = sessions.get(token);
-    if (!session) return false;
-    this.session = session;
-    return true;
-  }
-
-  close() {
-    this.#transport.close();
-  }
-
-  destroy() {
-    const { console } = this.#context;
-    this.emit('close');
-    for (const stream of this.streams.values()) {
-      if (typeof stream.terminate !== 'function') continue;
-      Promise.resolve(stream.terminate()).catch((error) => {
-        console.error(error);
-      });
-    }
-    this.streams.clear();
-    if (!this.session) return;
-    sessions.delete(this.session.token);
-  }
-}
-
-const protectedCall = async (client, proc, id, args) => {
-  const context = client.createContext();
-  try {
-    await proc.enter();
-  } catch (error) {
-    client.error(503, { id, error });
-    return { entered: false, result: null };
-  }
-  let result = null;
-  try {
-    result = await proc.invoke(context, args);
-  } finally {
-    proc.leave();
-  }
-  return { entered: true, result };
-};
-
-const handleStream = async (client, packet) => {
-  const { id, name, size, status } = packet;
-  const tag = `${id}/${name}`;
-  try {
-    const stream = client.streams.get(id);
-    if (status) {
-      if (!stream) throw new Error(`Stream ${tag} is not initialized`);
-      if (status === 'end') await stream.close();
-      if (status === 'terminate') await stream.terminate();
-      return void client.streams.delete(id);
-    }
-    const valid = typeof name === 'string' && Number.isSafeInteger(size);
-    if (!valid) throw new Error('Stream packet structure error');
-    if (stream) throw new Error(`Stream ${tag} is already initialized`);
-    {
-      const stream = new WrpcReadable(id, name, size);
-      client.streams.set(id, stream);
-    }
-  } catch (error) {
-    client.error(400, { id, error });
-  }
-};
-
-const handleBinary = async (client, data) => {
-  const { id, payload } = chunkDecode(data);
-  try {
-    const upstream = client.streams.get(id);
-    if (upstream) {
-      await upstream.push(payload);
-      return;
-    }
-    const error = new Error(`Stream ${id} is not initialized`);
-    client.error(400, { id, error });
-  } catch (error) {
-    client.error(400, { id, error });
-  }
-};
-
-const handleRpc = async (client, packet, context) => {
-  const { id, method, args } = packet;
-  const [unitName, methodName] = method.split('/');
-  const [unit, ver = '*'] = unitName.split('.');
-  const proc = context.getMethod(unit, ver, methodName);
-  if (!proc) return void client.error(404, { id });
-  if (!client.session && proc.access !== 'public') {
-    return void client.error(403, { id });
-  }
-  try {
-    const procResult = await protectedCall(client, proc, id, args);
-    if (!procResult.entered) return;
-    const { result } = procResult;
-    if (isError(result)) {
-      const { code } = result;
-      return void client.error(code, { id, error: result });
-    }
-    client.send({ type: 'callback', id, result }, { method });
-  } catch (error) {
-    let code = error.code === 'ETIMEOUT' ? 408 : 500;
-    if (typeof error.code === 'number') code = error.code;
-    return void client.error(code, { id, error });
-  }
-};
-
+// Batteries-included shell over the engine-agnostic RpcServer core:
+// creates the node http(s) server, attaches a WebSocket engine (the
+// built-in one by default), and feeds HTTP requests into the core.
+//
+// With a standalone engine (uWebSockets.js) there is no node http server at
+// all: `httpServer` stays null and the engine owns listening plus the HTTP
+// request path. Read the bound address through `server.address()`, which
+// covers both shapes.
 class Server extends Emitter {
-  #headers = null;
-  #clients = new Set();
-  #context = null;
-  #options = null;
   httpServer = null;
   wsServer = null;
+  rpc = null;
+  #engine;
+  #options;
+  #log;
+  #address = null;
 
-  constructor(context, options) {
+  constructor(options = {}) {
     super();
-    this.#context = context;
+    const { cors = null, logger = globalThis.console, engine = createNodeEngine(), ws = {} } = options;
+    if (!isEngine(engine)) {
+      throw new TypeError('Server: options.engine does not implement the Engine contract');
+    }
     this.#options = options;
-    this.#headers = buildHeaders(options.cors);
-    this.#init();
+    this.#log = createLoggerWriter(logger);
+    this.#engine = engine;
+    this.rpc = new RpcServer(rpcOptions({ ...options, cors, logger }));
+    if (engine.standalone) this.#initStandalone(ws, cors);
+    else this.#init(ws, cors);
   }
 
-  #addClient(transport) {
-    const client = new Client(transport, this.#context);
-    this.#clients.add(client);
-    transport.once('close', () => {
-      client.destroy();
-      this.#clients.delete(client);
+  // The bound address, whichever side owns the listener.
+  address() {
+    if (this.httpServer) return this.httpServer.address();
+    return this.#address;
+  }
+
+  // Rooms, forwarded to the core so `server.to('chat').emit(...)` reads the
+  // same whether wrpc owns the listener or an adapter does.
+
+  get rooms() {
+    return this.rpc.rooms;
+  }
+
+  get clients() {
+    return this.rpc.clients;
+  }
+
+  to(...rooms) {
+    return this.rpc.to(...rooms);
+  }
+
+  except(...clients) {
+    return this.rpc.except(...clients);
+  }
+
+  broadcast(name, data) {
+    return this.rpc.broadcast(name, data);
+  }
+
+  /** Cluster-wide presence, introspection and node-to-node messaging. */
+  get cluster() {
+    return this.rpc.cluster;
+  }
+
+  /** The local client with this id; undefined when not on this instance. */
+  getClient(id) {
+    return this.rpc.getClient(id);
+  }
+
+  #onConnection(socket, req) {
+    this.rpc.attachSocket(socket, {
+      headers: req.headers,
+      url: req.url ?? '',
+      remoteAddress: req.socket?.remoteAddress ?? socket.remoteAddress,
     });
-    return client;
   }
 
-  #init() {
+  // Standalone engines own node:http too, so the shell creates no server
+  // and hands the core's HTTP entry point to the engine instead.
+  #initStandalone(wsOptions, cors) {
+    this.wsServer = this.#engine.attach({
+      ...wsOptions,
+      verifyClient: createUpgradeGate({ rpc: this.rpc, cors, ws: wsOptions }),
+      onHttpCall: (call) => this.rpc.handleHttpCall(call),
+    });
+    this.wsServer.on('connection', (socket, req) => {
+      this.#onConnection(socket, req);
+    });
+    this.on('port', (port) => {
+      this.rpc.attachPort(port);
+    });
+  }
+
+  #init(wsOptions, cors) {
     const { protocol, nagle = true, key, cert, SNICallback } = this.#options;
     const proto = protocol === 'http' ? http : https;
     const opt = { key, cert, noDelay: !nagle, SNICallback };
@@ -316,150 +116,126 @@ class Server extends Emitter {
       this.#handleHttpRequest(req, res);
     });
 
-    const options = this.#createWsServerOptions();
-    this.wsServer = new WebsocketServer(options);
-
-    this.wsServer.on('connection', (connection, req) => {
-      this.#handleWsConnection(req, connection);
+    const verifyClient = createUpgradeGate({ rpc: this.rpc, cors, ws: wsOptions });
+    this.wsServer = this.#engine.attach({ server: this.httpServer, ...wsOptions, verifyClient });
+    this.wsServer.on('connection', (socket, req) => {
+      this.#onConnection(socket, req);
     });
 
     this.on('port', (port) => {
-      this.#handleEventConnection(port);
+      this.rpc.attachPort(port);
     });
-  }
-
-  #createWsServerOptions() {
-    const { websocketPath } = this.#options;
-    const options = { server: this.httpServer };
-    if (websocketPath !== undefined) {
-      options.path = websocketPath;
-    } else {
-      options.verifyClient = ({ req }) => isWrpcWebSocketPath(req.url);
-    }
-    return options;
   }
 
   async #handleHttpRequest(req, res) {
-    if (!req.url.startsWith('/api')) return;
-    const options = { headers: this.#headers };
-    const transport = new ServerHttpTransport(req, res, options);
-    if (res.writableEnded) return;
-
-    const client = this.#addClient(transport);
-    let data = null;
+    const respond = ({ status, headers, body }) => {
+      if (res.writableEnded) return;
+      res.writeHead(status, headers);
+      res.end(body);
+    };
+    let body = null;
     try {
-      data = await receiveBody(req);
+      body = await receiveBody(req, this.#options.maxBodySize ?? MAX_BODY_SIZE);
     } catch (error) {
-      transport.error(400, { error });
-      return;
+      return void respondBodyError(respond, error);
     }
-
-    if (req.url === '/api') {
-      if (req.method !== 'POST') transport.error(403);
-      else this.#message(client, data);
-      return;
-    }
-    this.#request(client, transport, data);
-  }
-
-  #handleWsConnection(req, connection) {
-    const options = { headers: this.#headers };
-    const transport = new ServerWsTransport(req, connection, options);
-    const client = this.#addClient(transport);
-
-    connection.on('message', (data, isBinary) => {
-      if (isBinary) handleBinary(client, new Uint8Array(data));
-      else this.#message(client, data);
+    await this.rpc.handleHttpCall({
+      method: req.method,
+      url: req.url,
+      headers: req.headers,
+      body,
+      remoteAddress: req.socket.remoteAddress,
+      respond,
+      // Keeps the response open and writes into it — how SSE is served.
+      stream: nodeStream(res),
+      // Lets the core evict clients for requests that never get a response
+      onAbort: (listener) => void res.on('close', listener),
     });
-    connection.on('error', () => transport.emit('close'));
   }
 
-  #handleEventConnection(port) {
-    const transport = new ServerEventTransport(port);
-    const client = this.#addClient(transport);
-
-    port.on('message', (data) => {
-      if (typeof data === 'string' || Buffer.isBuffer(data)) {
-        this.#message(client, data);
-      } else if (data instanceof Uint8Array) {
-        handleBinary(client, data);
-      }
+  // One bind attempt; rejects with the bind error (EADDRINUSE included) so
+  // the retry loop above can decide, and detaches both listeners either way
+  // so a retried listen() does not stack them.
+  #bindOnce(host, port) {
+    if (!this.httpServer) return this.#engine.listen({ host, port });
+    return new Promise((resolve, reject) => {
+      const onListening = () => {
+        this.httpServer.off('error', onError);
+        resolve(this.httpServer.address());
+      };
+      const onError = (error) => {
+        this.httpServer.off('listening', onListening);
+        reject(error);
+      };
+      this.httpServer.once('listening', onListening);
+      this.httpServer.once('error', onError);
+      this.httpServer.listen(port, host);
     });
   }
 
   listen() {
-    const { host, port, timeouts, retry } = this.#options;
-
+    const { host, port, timeouts = {}, retry } = this.#options;
     let count = retry || DEFAULT_LISTEN_RETRY;
-    let listen = null;
 
     return new Promise((resolve, reject) => {
-      const onListening = () => {
-        this.#context.console.info(`Listen port ${port}`);
-        resolve(this);
+      const attempt = () => {
+        this.#bindOnce(host, port).then(
+          (address) => {
+            this.#address = address;
+            this.#log.info({ event: 'listen', port: address?.port ?? port }, `Listen port ${address?.port ?? port}`);
+            resolve(this);
+          },
+          (error) => {
+            if (error.code !== 'EADDRINUSE') return void reject(error);
+            count--;
+            if (count === 0) return void reject(error);
+            this.#log.warn({ event: 'listen.retry', host, port }, `Address in use: ${host}:${port}, retry...`);
+            setTimeout(attempt, timeouts.bind ?? DEFAULT_BIND_TIMEOUT);
+          },
+        );
       };
-
-      const onError = (error) => {
-        if (error.code !== 'EADDRINUSE') return void reject(error);
-        count--;
-        if (count === 0) return void reject(error);
-        this.#context.console.warn(`Address in use: ${host}:${port}, retry...`);
-        setTimeout(listen, timeouts.bind);
-      };
-
-      listen = () => {
-        this.httpServer.once('listening', onListening);
-        this.httpServer.once('error', onError);
-        this.httpServer.listen(port, host);
-      };
-
-      listen();
+      attempt();
     });
   }
 
-  #message(client, data) {
-    const packet = jsonParse(data) || {};
-    const { id, type, method } = packet;
-    if (type === 'call' && id && method) {
-      return void handleRpc(client, packet, this.#context);
-    } else if (type === 'stream' && id) {
-      return void handleStream(client, packet);
+  /**
+   * Shuts the server down. With `drain` (ms) the shutdown is graceful:
+   * intake stops first (new connections are refused, new calls answer 503),
+   * in-flight calls get up to `drain` ms to settle, then every peer gets a
+   * 1001 "going away" close frame, and only what remains is torn down hard.
+   * Without it the same sequence runs with a zero-length drain window.
+   */
+  async close(options = {}) {
+    const { drain = 0 } = options;
+    if (!this.httpServer) {
+      // Intake first, same ordering as the node boot below: a standalone
+      // engine that can close its listen socket separately refuses new
+      // connections while the in-flight work drains, instead of accepting
+      // calls it will immediately 503.
+      if (typeof this.#engine.stopListening === 'function') this.#engine.stopListening();
+      await this.rpc.drain(drain);
+      // Standalone engines own the whole stack: their close() both stops
+      // the listener and says goodbye to the peers.
+      this.#engine.close();
+      return void (await this.rpc.close());
     }
-    const error = new Error('Packet structure error');
-    client.error(500, { error });
-  }
-
-  #request(client, transport, data) {
-    const { url } = transport.req;
-    const pathname = url.slice('/api/'.length);
-    const [path, params] = split(pathname, '?');
-    const parameters = parseParams(params);
-    const [unit, name] = split(path, '/');
-    const body = jsonParse(data) || {};
-    const args = { ...parameters, ...body };
-    const id = generateUUID();
-    const method = `${unit}/${name}`;
-    const packet = { id, method, args };
-    handleRpc(client, packet, this.#context);
-  }
-
-  async close() {
+    // Stop intake first, so a load balancer's next health check fails while
+    // the in-flight work is still being finished.
     const closed = new Promise((resolve) => {
       this.httpServer.close((error) => {
-        if (error) this.#context.console.error(error);
+        if (error) this.#log.error({ err: error, event: 'close' });
         resolve();
       });
     });
-    for (const client of this.#clients) client.close();
+    await this.rpc.drain(drain);
+    // The engine's close sends 1001 to every open socket BEFORE the core
+    // evicts the clients — the reverse order used to terminate everyone and
+    // then say goodbye to nobody.
+    this.#engine.close();
+    await this.rpc.close();
     this.httpServer.closeAllConnections();
     await closed;
   }
 }
 
-module.exports = {
-  Server,
-  Client,
-  Context,
-  Session,
-  createProxy,
-};
+module.exports = { Server };

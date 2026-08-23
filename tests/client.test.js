@@ -92,6 +92,18 @@ test('Client / calls', async (t) => {
     assert.deepStrictEqual(result, { success: true });
   });
 
+  await t.test('client.call() reaches a method whose unit was never loaded', async () => {
+    // No scaffolding involved: the target is addressed by wire string, which
+    // is what an authenticate hook uses before load() has built `api`.
+    const fresh = await WrpcClient.connect('ws://localhost:8000/', { callTimeout: 300 });
+    try {
+      assert.deepStrictEqual(await fresh.call('test/test'), { success: true });
+      assert.strictEqual(fresh.api.test, undefined, 'call() must not scaffold anything');
+    } finally {
+      fresh.close();
+    }
+  });
+
   await t.test('handles parallel api calls', async () => {
     const promises = [];
     for (let i = 0; i < 10; i++) promises.push(client.api.test.test());
@@ -101,7 +113,8 @@ test('Client / calls', async (t) => {
 
   await t.test('handles call timeouts', async () => {
     const promise = client.api.test.timeout();
-    await assert.rejects(promise, new Error('Request timeout'));
+    // Coded like every client-produced refusal: `error.code` checks work.
+    await assert.rejects(promise, (error) => error.message === 'Request timeout' && error.code === 408);
   });
 
   await t.test('handles api errors', async () => {

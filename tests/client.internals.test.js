@@ -113,6 +113,30 @@ test('WrpcClient packet handling', async (t) => {
     );
     await assert.rejects(loadPromise, (error) => error instanceof WrpcError && error.code === 500);
   });
+
+  await t.test('#handlePacket carries wire error details onto the WrpcError', async () => {
+    const { client, transport } = makeClient();
+    transport.active = true;
+    const loadPromise = client.load('greeting');
+    await timers.setImmediate();
+    const sentPacket = JSON.parse(transport.sent[0]);
+    const details = { issues: [{ message: 'name required', path: ['name'] }] };
+    transport.emit(
+      'message',
+      JSON.stringify({ type: 'callback', id: sentPacket.id, error: { message: 'invalid', code: 400, details } }),
+    );
+    await assert.rejects(loadPromise, (error) => {
+      assert.ok(error instanceof WrpcError);
+      assert.strictEqual(error.code, 400);
+      assert.deepStrictEqual(error.details, details);
+      return true;
+    });
+  });
+
+  await t.test('WrpcError leaves details absent when the wire carried none', () => {
+    const error = new WrpcError({ message: 'nope', code: 404 });
+    assert.strictEqual('details' in error, false);
+  });
 });
 
 test('WrpcClient static online/offline/initialize', async (t) => {
@@ -206,5 +230,84 @@ test('WrpcClient.connect with a Service Worker (event transport)', async (t) => 
 
     client.close();
     assert.strictEqual(client.active, false);
+  });
+});
+
+// ---------------------------------------------------------------------------
+// Static introspection: use()
+
+test('use(): static introspection without wire traffic', async (t) => {
+  const artifact = () => ({
+    greeting: { hello: { access: 'public' } },
+    feed: { ticks: { access: 'public', kind: 'subscription' } },
+  });
+
+  await t.test('scaffolds synchronously, before open(), with zero wire traffic', () => {
+    const { client, transport } = makeClient();
+    const result = client.use(artifact());
+    assert.strictEqual(result, client, 'use() returns this');
+    assert.strictEqual(typeof client.api.greeting.hello, 'function');
+    assert.strictEqual(typeof client.api.feed.ticks.subscribe, 'function', 'a kind: subscription scaffolds one');
+    assert.strictEqual(transport.sent.length, 0, 'nothing went over the wire');
+  });
+
+  await t.test('a use() unit is a real Emitter: server events land on it', async () => {
+    const { client, transport } = makeClient();
+    client.use(artifact());
+    const seen = [];
+    client.api.greeting.on('waved', (data) => void seen.push(data));
+    transport.emit('message', JSON.stringify({ type: 'event', name: 'greeting/waved', data: { at: 1 } }));
+    await timers.setImmediate();
+    assert.deepStrictEqual(seen, [{ at: 1 }]);
+  });
+
+  await t.test('load() after use() flips the unit to dynamic: it reloads on reconnect', async (t) => {
+    const transport = new FakeTransport('fake://x');
+    const client = new WrpcClient('fake://x', transport, {
+      heartbeat: false,
+      reconnect: { minDelay: 1, maxDelay: 2, retries: 2 },
+    });
+    t.after(() => void client.close());
+    await client.open();
+    client.use(artifact());
+    const loadPromise = client.load('greeting');
+    await timers.setImmediate();
+    const sent = JSON.parse(transport.sent.at(-1));
+    assert.strictEqual(sent.method, 'system/introspect');
+    transport.emit('message', JSON.stringify({ type: 'callback', id: sent.id, result: { greeting: { wave: {} } } }));
+    await loadPromise;
+    assert.strictEqual(typeof client.api.greeting.wave, 'function');
+    assert.strictEqual(client.api.greeting.hello, undefined, 'the stale static method is gone');
+    // Reconnect re-introspects the load()ed unit only — 'feed' stays static.
+    transport.sent.length = 0;
+    transport.close();
+    for (let i = 0; i < 200 && transport.sent.length === 0; i++) await timers.setTimeout(5);
+    const packet = JSON.parse(transport.sent[0]);
+    assert.strictEqual(packet.method, 'system/introspect');
+    assert.deepStrictEqual(packet.args, ['greeting'], 'the static unit is not re-introspected');
+    transport.emit('message', JSON.stringify({ type: 'callback', id: packet.id, result: { greeting: { wave: {} } } }));
+  });
+
+  await t.test('use() after load() is a no-op for that unit (dynamic wins)', async () => {
+    const { client, transport } = makeClient();
+    transport.active = true;
+    const loadPromise = client.load('greeting');
+    await timers.setImmediate();
+    const sent = JSON.parse(transport.sent[0]);
+    transport.emit('message', JSON.stringify({ type: 'callback', id: sent.id, result: { greeting: { wave: {} } } }));
+    await loadPromise;
+    client.use(artifact());
+    assert.strictEqual(client.api.greeting.hello, undefined, 'the artifact did not overwrite the loaded unit');
+    assert.strictEqual(typeof client.api.greeting.wave, 'function');
+    assert.strictEqual(typeof client.api.feed.ticks.subscribe, 'function', 'other units still scaffold');
+  });
+
+  await t.test('bad shapes throw a TypeError', () => {
+    const { client } = makeClient();
+    assert.throws(() => client.use(null), TypeError);
+    assert.throws(() => client.use([]), TypeError);
+    assert.throws(() => client.use('nope'), TypeError);
+    assert.throws(() => client.use({ unit: 'nope' }), /unit 'unit' must be an object/);
+    assert.throws(() => client.use({ unit: [] }), TypeError);
   });
 });

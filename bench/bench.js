@@ -23,7 +23,7 @@ async function main() {
       echo: { handler: async (args) => args },
       notify: {
         handler: async (_args, context) => {
-          context.client.emit('bench/ping', { ping: true });
+          context.client.sendEvent('bench/ping', { ping: true });
           return { ok: true };
         },
       },

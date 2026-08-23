@@ -1,9 +1,17 @@
 /**
- * Compares wrpc's full RPC round-trip against an equivalent minimal
- * "echo RPC" (same {id, method, args} envelope, correlated by id) built
- * directly on top of ws, uWebSockets.js, @fastify/websocket, and
- * fastify-uws — so the numbers isolate transport overhead rather than
- * protocol-design differences. See bench/support/rpc-stacks.js.
+ * Compares wrpc's full RPC round-trip against two kinds of neighbour:
+ *
+ *  - RAW TRANSPORTS (ws, uWebSockets.js, @fastify/websocket, fastify-uws)
+ *    driving an equivalent minimal "echo RPC" — the same {id, method, args}
+ *    envelope correlated by id, so those numbers isolate transport overhead
+ *    rather than protocol-design differences. They are a floor, not a rival:
+ *    none of them implements sessions, rooms, streams or subscriptions.
+ *  - RPC FRAMEWORKS (socket.io, tRPC over wsLink) doing the job wrpc does,
+ *    envelope and bookkeeping included.
+ *
+ * See bench/support/rpc-stacks.js. Each measurement runs twice: one call at
+ * a time (latency) and 64 in flight (throughput) — a stack with a fixed
+ * per-call delay reads very differently under the two.
  *
  * Each stack runs in its own child process (spawned here) because mixing
  * raw uWebSockets.js with fastify-uws's bundled copy of it in one process
@@ -17,7 +25,10 @@
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const STACK_ORDER = ['wrpc', 'ws', 'uws', 'fastify-websocket', 'fastify-uws'];
+const STACK_ORDER = ['wrpc', 'ws', 'uws', 'fastify-websocket', 'fastify-uws', 'socket.io', 'trpc-ws'];
+// Matched by suffix against the names rpc-stack-worker.js prints. The
+// pipelined row keeps its own suffix (`… ×64`), so the match stays unambiguous.
+const MEASUREMENTS = ['small payload', '10KB payload', 'small payload ×64'];
 const WORKER = path.join(__dirname, 'support', 'rpc-stack-worker.js');
 
 function runStack(key) {
@@ -42,14 +53,14 @@ function main() {
   for (const key of STACK_ORDER) byStack.set(key, runStack(key));
 
   console.log('\nSummary (ops/sec, relative to wrpc):\n');
-  for (const size of ['small payload', '10KB payload']) {
+  for (const size of MEASUREMENTS) {
     const baseline = byStack.get('wrpc').find((r) => r.name.endsWith(size)).opsPerSec;
     console.log(`  ${size}:`);
     for (const key of STACK_ORDER) {
       const result = byStack.get(key).find((r) => r.name.endsWith(size));
       const ratio = (result.opsPerSec / baseline).toFixed(2);
       const label = result.name.slice(0, result.name.indexOf(' — '));
-      console.log(`    ${label.padEnd(38)} ${String(result.opsPerSec).padStart(10)} ops/sec  (${ratio}x)`);
+      console.log(`    ${label.padEnd(44)} ${String(result.opsPerSec).padStart(10)} ops/sec  (${ratio}x)`);
     }
     console.log();
   }

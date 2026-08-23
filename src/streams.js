@@ -10,6 +10,7 @@ const MAX_LISTENERS = 10;
 const MAX_HIGH_WATER_MARK = 1000;
 
 class WrpcReadable extends Emitter {
+  #consuming = false;
   queue = [];
   streaming = true;
   status = 'active';
@@ -25,8 +26,12 @@ class WrpcReadable extends Emitter {
     if (highWaterMark) this.highWaterMark = highWaterMark;
   }
 
+  // The high-water mark applies only once a consumer attached: before that
+  // nobody emits PULL_EVENT, so blocking here would deadlock producers whose
+  // consumer starts from a later packet on the same paused socket (the
+  // upload-then-call wire pattern).
   async push(data) {
-    while (this.queue.length > this.highWaterMark) {
+    while (this.#consuming && this.queue.length > this.highWaterMark) {
       this.checkStreamLimits();
       await this.waitEvent(PULL_EVENT);
     }
@@ -39,8 +44,14 @@ class WrpcReadable extends Emitter {
     const onError = () => this.terminate();
     writable.once('error', onError);
     for await (const chunk of this) {
+      // A closed sink accepts nothing and will never emit 'drain'
+      if (writable.closed) {
+        await this.terminate();
+        writable.removeListener('error', onError);
+        return;
+      }
       const needDrain = !writable.write(chunk);
-      if (needDrain) await writable.waitEvent('drain');
+      if (needDrain && !writable.closed) await writable.waitEvent('drain');
     }
     this.emit('end');
     writable.end();
@@ -85,6 +96,7 @@ class WrpcReadable extends Emitter {
   }
 
   async read() {
+    this.#consuming = true;
     if (this.queue.length > 0) return this.pull();
     const finisher = await this.waitEvent(PUSH_EVENT);
     if (finisher === null) return null;
@@ -92,6 +104,7 @@ class WrpcReadable extends Emitter {
   }
 
   pull() {
+    this.#consuming = true;
     const data = this.queue.shift();
     /* c8 ignore next -- read()/waitEvent(PUSH_EVENT) callers already guard against an empty queue */
     if (!data) return data;
@@ -125,13 +138,40 @@ class WrpcReadable extends Emitter {
 }
 
 class WrpcWritable extends Emitter {
+  #waitingDrain = false;
+  #closed = false;
+  #ended = false;
+
   constructor(id, name, size, transport) {
     super();
     this.id = id;
     this.name = name;
     this.size = size;
     this.transport = transport;
+    // Armed HERE, not lazily inside the backpressure branch: a stream that
+    // never happened to stall used to learn nothing when the transport
+    // closed — `closed` stayed false and a producer loop kept writing into
+    // the void. Now every writable notices the disconnect, backpressured
+    // or not.
+    if (typeof transport.once === 'function') {
+      transport.once('close', () => {
+        if (this.#closed) return;
+        this.#closed = true;
+        this.#releaseDrain();
+        this.emit('close');
+      });
+    }
     this.init();
+  }
+
+  get closed() {
+    return this.#closed;
+  }
+
+  #releaseDrain() {
+    if (!this.#waitingDrain) return;
+    this.#waitingDrain = false;
+    this.emit('drain');
   }
 
   init() {
@@ -140,18 +180,35 @@ class WrpcWritable extends Emitter {
     this.transport.send(packet);
   }
 
+  // Reports the transport's real acceptance: false means the socket buffer
+  // is above its high-water mark — wait for this stream's 'drain' event.
+  // A false return can also mean the transport closed: check `closed` (or
+  // listen for 'close') — after it, no 'drain' will ever follow.
+  // Transports without flow-control reporting (browser WebSocket, HTTP)
+  // always count as accepted.
   write(data) {
+    if (this.#closed || this.#ended) return false;
     const chunk = chunkEncode(this.id, data);
-    this.transport.write(chunk);
-    return true;
+    const accepted = this.transport.write(chunk) !== false;
+    if (!accepted && !this.#waitingDrain && typeof this.transport.once === 'function') {
+      this.#waitingDrain = true;
+      this.transport.once('drain', () => this.#releaseDrain());
+    }
+    return accepted;
   }
 
+  // Idempotent, and a no-op on a dead transport: the peer that would have
+  // read the status packet is gone.
   end() {
+    if (this.#closed || this.#ended) return;
+    this.#ended = true;
     const packet = { type: 'stream', id: this.id, status: 'end' };
     this.transport.send(packet);
   }
 
   terminate() {
+    if (this.#closed || this.#ended) return;
+    this.#ended = true;
     const packet = { type: 'stream', id: this.id, status: 'terminate' };
     this.transport.send(packet);
   }

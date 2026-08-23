@@ -11,6 +11,11 @@ class MockSocket extends EventEmitter {
     this.writtenData = [];
     this.ended = false;
     this.destroyed = false;
+    this.paused = false;
+    // Backpressure modelling: write() reports this value, writableLength
+    // mimics the kernel/stream buffer size, drain() releases the pressure.
+    this.writeResult = true;
+    this.writableLength = 0;
   }
 
   cork() {
@@ -34,6 +39,21 @@ class MockSocket extends EventEmitter {
     } else {
       this.writtenData.push(data);
     }
+    return this.writeResult;
+  }
+
+  pause() {
+    this.paused = true;
+  }
+
+  resume() {
+    this.paused = false;
+  }
+
+  drain() {
+    this.writeResult = true;
+    this.writableLength = 0;
+    this.emit('drain');
   }
 
   end(data) {

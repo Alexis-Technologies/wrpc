@@ -1,0 +1,28 @@
+<!doctype html>
+<title>wrpc chat example</title>
+<input id="text" placeholder="say something" autofocus />
+<button id="send">Send</button>
+<ul id="log"></ul>
+<script type="module">
+  import wrpc from './wrpc.browser.js';
+  const { connect } = wrpc;
+
+  const room = 'lobby';
+  const log = document.getElementById('log');
+  const say = (text) => {
+    const li = document.createElement('li');
+    li.textContent = text;
+    log.appendChild(li);
+  };
+
+  const client = await connect('ws://127.0.0.1:8000/api');
+  await client.load('chat');
+  client.api.chat.on('message', ({ text }) => say(text));
+  await client.api.chat.join({ room });
+
+  document.getElementById('send').onclick = () => {
+    const input = document.getElementById('text');
+    client.api.chat.shout({ room, text: input.value });
+    input.value = '';
+  };
+</script>

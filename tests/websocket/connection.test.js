@@ -75,6 +75,45 @@ test('Connection: sendClose triggers socket end after CLOSE_TIMEOUT', () => {
   });
 });
 
+test('Connection: answering a peer close hangs up immediately (RFC 6455 5.5.1)', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { closeTimeout: 60_000 });
+
+  const close = Frame.close(1000, 'bye');
+  close.maskPayload();
+  socket.emit('data', close.toBuffer());
+
+  const echo = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+  assert.strictEqual(echo.opcode, OPCODES.CLOSE);
+  // The point of the change: the answering side does not wait out
+  // closeTimeout for the initiator to hang up. Both peers waiting is what
+  // used to cost a full second on every graceful disconnect.
+  assert.strictEqual(socket.ended, true, 'the socket is half-closed as soon as the echo is written');
+  conn.terminate();
+});
+
+test('Connection: a frame pipelined behind a peer close is not acted on', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { closeTimeout: 50 });
+  const messages = [];
+  conn.on('message', (data) => void messages.push(data));
+
+  // One TCP segment carrying CLOSE then PING then a data frame. Answering
+  // the ping would write past the end() the close echo just performed.
+  const close = Frame.close(1000, 'bye');
+  close.maskPayload();
+  const ping = Frame.ping(Buffer.from('hi'));
+  ping.maskPayload();
+  const text = Frame.text('late');
+  text.maskPayload();
+  socket.emit('data', Buffer.concat([close.toBuffer(), ping.toBuffer(), text.toBuffer()]));
+
+  const written = socket.writtenData.map((data) => FrameParser.parse(data).value.frame.opcode);
+  assert.deepStrictEqual(written, [OPCODES.CLOSE], 'the close echo is the last thing written');
+  assert.deepStrictEqual(messages, [], 'and nothing queued behind the close is delivered');
+  conn.terminate();
+});
+
 test('Connection: rejects fragmented message exceeding maxBuffer', () => {
   const socket = new MockSocket();
   const conn = new Connection(socket, Buffer.alloc(0), { maxBuffer: 10 });
@@ -157,6 +196,30 @@ test('Connection: client-mode sendPing/sendPong use the masked empty-frame fast 
   assert.strictEqual(pongFrame.opcode, OPCODES.PONG);
   assert.strictEqual(pongFrame.masked, true);
   assert.strictEqual(pongFrame.payload.length, 0);
+
+  conn.terminate();
+});
+
+test('Connection: send methods return uniform booleans', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { closeTimeout: 50 });
+
+  assert.strictEqual(conn.sendPing(), true);
+  assert.strictEqual(conn.sendPing(Buffer.from('x')), true);
+  assert.strictEqual(conn.sendPong(), true);
+  assert.strictEqual(conn.sendPong(Buffer.from('x')), true);
+  assert.strictEqual(conn.sendText('x'), true);
+  assert.strictEqual(conn.sendBinary(Buffer.from('x')), true);
+
+  conn.sendClose(1000, 'bye');
+
+  assert.strictEqual(conn.sendPing(), false);
+  assert.strictEqual(conn.sendPing(Buffer.from('x')), false);
+  assert.strictEqual(conn.sendText('x'), false);
+  assert.strictEqual(conn.sendBinary(Buffer.from('x')), false);
+  // Pong stays available during the close handshake (RFC 6455 5.5.3)
+  assert.strictEqual(conn.sendPong(), true);
+  assert.strictEqual(conn.sendPong(Buffer.from('x')), true);
 
   conn.terminate();
 });

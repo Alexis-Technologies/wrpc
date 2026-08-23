@@ -1,5 +1,14 @@
 'use strict';
 
+// Every emit() answers with a promise, and a listener's SYNCHRONOUS throw has
+// to become a rejection: `void emitter.emit('close')` is the house style, and a
+// throw escaping it would land in a socket handler. The async-arrow wrapper on
+// the slow path buys exactly that, at one closure and one promise per listener
+// per emit. The overwhelmingly common shape is a single sync listener — a
+// transport's 'message', a stream's chunk push — so it is spelled out by hand:
+// 4.0 -> 14.3 M emit/s awaited, 4.8 -> 63.9 M fire-and-forget; bench/emitter.js.
+const RESOLVED = Promise.resolve();
+
 class Emitter {
   #events = new Map();
   #maxListeners = 10;
@@ -11,10 +20,26 @@ class Emitter {
   emit(eventName, value) {
     const event = this.#events.get(eventName);
     if (!event) {
-      if (eventName !== 'error') return Promise.resolve();
+      if (eventName !== 'error') return RESOLVED;
       throw new Error('Unhandled error');
     }
-    const listeners = event.on.slice();
+    const on = event.on;
+    // Gated on once.size because the sweep below may delete the whole record,
+    // and off() splices without deleting, so an emptied `on` is reachable too.
+    if (event.once.size === 0 && on.length < 2) {
+      if (on.length === 0) return RESOLVED;
+      let result;
+      try {
+        result = on[0](value);
+      } catch (error) {
+        return Promise.reject(error);
+      }
+      if (result === null || result === undefined) return RESOLVED;
+      return typeof result.then === 'function' ? Promise.resolve(result).then(() => undefined) : RESOLVED;
+    }
+    // More than one listener, or a once to sweep: snapshot first, because a
+    // listener may call off() while the eager invocation below is still going.
+    const listeners = on.slice();
     const promises = listeners.map(async (fn) => fn(value));
     if (event.once.size > 0) {
       const len = event.on.length;
@@ -47,9 +72,13 @@ class Emitter {
       event.on.push(listener);
       if (once) event.once.add(listener);
     }
+    // A warning, not a throw: exceeding the cap usually signals a leak,
+    // but killing legitimate fan-out (many streams awaiting one 'drain')
+    // is worse than a noisy console (cross-platform, so no process API).
     if (event.on.length > this.#maxListeners) {
-      throw new Error(
-        `MaxListenersExceededWarning: Possible memory leak. ` + `Current maxListeners is ${this.#maxListeners}.`,
+      globalThis.console.warn(
+        `MaxListenersExceededWarning: Possible ${String(eventName)} memory leak. ` +
+          `${event.on.length} listeners added, current maxListeners is ${this.#maxListeners}.`,
       );
     }
   }
@@ -102,4 +131,255 @@ const jsonParse = (data = null) => {
   }
 };
 
-module.exports = { Emitter, jsonParse };
+const DEFAULT_HIGH_WATER_MARK = 1024;
+
+// Push -> pull adapter: the missing primitive between "something calls me
+// with a value" (an emitter, a backplane message, a websocket frame) and
+// "someone is `for await`-ing values". Used on the server to feed a
+// subscription handler and on the client to back `subscription.iterate()`.
+//
+// The queue is bounded: a producer that outruns the consumer drops the
+// OLDEST pending value rather than growing without limit, and says so
+// through `dropped`. Silent unbounded buffering is how a slow consumer
+// takes a process down.
+class EventStream {
+  #queue = [];
+  #waiting = null;
+  #done = false;
+  #error = null;
+  #highWaterMark;
+  #onAbort = null;
+  #signal = null;
+
+  constructor({ signal = null, highWaterMark = DEFAULT_HIGH_WATER_MARK } = {}) {
+    this.#highWaterMark = highWaterMark;
+    this.dropped = 0;
+    if (!signal) return;
+    this.#signal = signal;
+    if (signal.aborted) {
+      this.#done = true;
+      return;
+    }
+    this.#onAbort = () => this.end();
+    signal.addEventListener('abort', this.#onAbort, { once: true });
+  }
+
+  get length() {
+    return this.#queue.length;
+  }
+
+  get closed() {
+    return this.#done;
+  }
+
+  push(value) {
+    if (this.#done) return false;
+    if (this.#waiting) {
+      const { resolve } = this.#waiting;
+      this.#waiting = null;
+      resolve({ value, done: false });
+      return true;
+    }
+    this.#queue.push(value);
+    if (this.#queue.length > this.#highWaterMark) {
+      this.#queue.shift();
+      this.dropped++;
+    }
+    return true;
+  }
+
+  /** Ends the stream; a pending next() resolves as done. */
+  end() {
+    if (this.#done) return;
+    this.#done = true;
+    this.#detach();
+    if (!this.#waiting) return;
+    const { resolve } = this.#waiting;
+    this.#waiting = null;
+    resolve({ value: undefined, done: true });
+  }
+
+  /** Ends the stream by throwing into the consumer. */
+  fail(error) {
+    if (this.#done) return;
+    this.#error = error;
+    this.#done = true;
+    this.#detach();
+    if (!this.#waiting) return;
+    const { reject } = this.#waiting;
+    this.#waiting = null;
+    reject(error);
+  }
+
+  #detach() {
+    if (!this.#onAbort || !this.#signal) return;
+    this.#signal.removeEventListener('abort', this.#onAbort);
+    this.#onAbort = null;
+  }
+
+  next() {
+    if (this.#queue.length > 0) {
+      return Promise.resolve({ value: this.#queue.shift(), done: false });
+    }
+    if (this.#error) {
+      const error = this.#error;
+      this.#error = null;
+      return Promise.reject(error);
+    }
+    if (this.#done) return Promise.resolve({ value: undefined, done: true });
+    if (this.#waiting) {
+      return Promise.reject(new Error('EventStream: concurrent next() is not supported'));
+    }
+    return new Promise((resolve, reject) => {
+      this.#waiting = { resolve, reject };
+    });
+  }
+
+  // Consumers that break out of `for await` land here: the stream has to
+  // release its abort listener, or a long-lived signal pins it forever.
+  return() {
+    this.end();
+    return Promise.resolve({ value: undefined, done: true });
+  }
+
+  [Symbol.asyncIterator]() {
+    return this;
+  }
+}
+
+const createEventStream = (options) => new EventStream(options);
+
+// Reconnect pacing: truncated exponential backoff with AWS "full jitter"
+// (https://aws.amazon.com/builders-library/timeouts-retries-and-backoff-with-jitter/).
+//
+//   window = min(maxDelay, minDelay * factor ** attempt)
+//   delay  = jitter ? random_between(0, window) : window
+//
+// Jittering the WHOLE window rather than adding a small offset is what
+// actually breaks up the thundering herd: after a server restart, a thousand
+// clients that all disconnected in the same millisecond would otherwise all
+// come back in the same millisecond. `attempt` is 0-based, so the first
+// retry waits inside the minDelay window.
+const backoffDelay = ({ attempt = 0, minDelay, maxDelay, factor = 2, jitter = true, random = Math.random }) => {
+  const growth = factor > 0 ? factor ** attempt : 1;
+  // Infinity * 0 is NaN, and an overflowing exponential must still cap.
+  const window = Math.min(maxDelay, minDelay * growth);
+  const capped = Number.isFinite(window) ? window : maxDelay;
+  if (!jitter) return Math.round(capped);
+  return Math.round(random() * capped);
+};
+
+// Counting semaphore with a bounded wait queue (ported from metautil):
+// enter() resolves when a slot frees up, rejects on queue overflow or
+// after `timeout` ms in the queue.
+class Semaphore {
+  #concurrency;
+  #counter;
+  #size;
+  #timeout;
+  #queue = [];
+
+  constructor({ concurrency, size = 0, timeout = 0 } = {}) {
+    this.#concurrency = concurrency;
+    this.#counter = concurrency;
+    this.#size = size;
+    this.#timeout = timeout;
+  }
+
+  get empty() {
+    return this.#counter === this.#concurrency;
+  }
+
+  // `signal` (optional) makes a queued waiter abortable: a caller that gave
+  // up — cancelled, disconnected, timed out — leaves the queue immediately
+  // instead of taking a slot later and doing work nobody will read.
+  enter(signal = null) {
+    return new Promise((resolve, reject) => {
+      if (signal?.aborted) {
+        return void reject(new Error('Semaphore entry aborted'));
+      }
+      if (this.#counter > 0) {
+        this.#counter--;
+        return void resolve();
+      }
+      if (this.#queue.length >= this.#size) {
+        return void reject(new Error('Semaphore queue is full'));
+      }
+      const waiter = { resolve, reject, timer: null, release: null };
+      const evict = (error) => {
+        const index = this.#queue.indexOf(waiter);
+        if (index > -1) this.#queue.splice(index, 1);
+        if (waiter.timer) clearTimeout(waiter.timer);
+        reject(error);
+      };
+      if (this.#timeout > 0) {
+        waiter.timer = setTimeout(() => evict(new Error('Semaphore timeout')), this.#timeout);
+      }
+      if (signal) {
+        const onAbort = () => evict(new Error('Semaphore entry aborted'));
+        signal.addEventListener('abort', onAbort, { once: true });
+        waiter.release = () => signal.removeEventListener('abort', onAbort);
+      }
+      this.#queue.push(waiter);
+    });
+  }
+
+  leave() {
+    const waiter = this.#queue.shift();
+    if (!waiter) {
+      if (this.#counter < this.#concurrency) this.#counter++;
+      return;
+    }
+    if (waiter.timer) clearTimeout(waiter.timer);
+    waiter.release?.();
+    waiter.resolve();
+  }
+}
+
+// Structural check for an injected wire codec. The packet half —
+// { encode(packet) -> string, decode(text) -> packet, contentType? } — is
+// text-only by design: binary output would collide with the chunk framing
+// on ws and the line protocol on SSE. The optional `rest` section is a BODY
+// codec for REST mode — { encode(value), decode(body), contentType? } —
+// where binary is fine (whole HTTP bodies, no framing to collide with).
+// A codec may carry either half or both; a declared rest section must be
+// complete. Shared here because both the server core and the browser
+// client run it.
+const isRestSection = (value) =>
+  value !== null &&
+  typeof value === 'object' &&
+  typeof value.encode === 'function' &&
+  typeof value.decode === 'function' &&
+  (value.contentType === undefined || typeof value.contentType === 'string');
+
+const isCodec = (value) => {
+  if (value === null || typeof value !== 'object') return false;
+  const packet = typeof value.encode === 'function' && typeof value.decode === 'function';
+  if (value.rest !== undefined && !isRestSection(value.rest)) return false;
+  return packet || value.rest !== undefined;
+};
+
+// camelCase -> kebab-case for declared header and meta keys, applied on BOTH
+// ends so `schema.headers` and the meta bag see one casing convention whatever
+// transport carried them. Two passes: the acronym pass keeps XMLHttpRequest
+// from becoming x-m-l-http-request, the boundary pass does the ordinary case
+// change. The output is all-lowercase and both patterns need an uppercase
+// char, so toKebab(toKebab(x)) === toKebab(x) by construction.
+//
+// Two deliberate non-goals. Underscores are left alone: user_id -> user-id
+// would silently merge two keys an application may have meant to keep apart,
+// widening the rule from "one casing convention" to "one spelling convention".
+// And collisions are not detected — userId and userID both yield user-id,
+// last write wins — because a per-key guard costs an Object.hasOwn on a
+// byte-budgeted path and would be the one place this pipeline warns about a
+// single key rather than refusing the bag.
+//
+// It also cannot repair what it never sees: every HTTP stack lowercases header
+// names before wrpc is reached, so an external caller's `x-wrpc-meta-userId`
+// arrives as `userid` with the word boundary already gone. The guarantee holds
+// for keys wrpc's own client produced; everyone else writes kebab themselves.
+const KEBAB_ACRONYM = /([A-Z]+)([A-Z][a-z])/g;
+const KEBAB_BOUNDARY = /([a-z0-9])([A-Z])/g;
+const toKebab = (key) => key.replace(KEBAB_ACRONYM, '$1-$2').replace(KEBAB_BOUNDARY, '$1-$2').toLowerCase();
+
+module.exports = { Emitter, jsonParse, isCodec, toKebab, Semaphore, backoffDelay, EventStream, createEventStream };

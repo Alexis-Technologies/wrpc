@@ -5,7 +5,7 @@ const { randomUUID } = require('node:crypto');
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { Server } = require('../src/server.js');
+const { Server, defineRouter, procedure } = require('../index.js');
 const { ProtocolClient } = require('./websocket/protocolClient.js');
 
 const parseStatusCode = (statusLine) => {
@@ -21,53 +21,32 @@ process.emitWarning = (warning, type, ...args) => {
   emitWarning(warning, type, ...args);
 };
 
-class ProcedureMock {
-  constructor({ access, ...options }) {
-    this.options = options;
-    this.access = access;
-  }
-
-  // eslint-disable-next-line class-methods-use-this
-  async enter() {}
-  // eslint-disable-next-line class-methods-use-this
-  leave() {}
-  invoke(_context, args) {
-    return this.options.handler(args);
-  }
-}
+const router = defineRouter({
+  test: {
+    hello: procedure({
+      access: 'public',
+      handler: async (_context, { name }) => {
+        await timers.setTimeout(10);
+        return `Hello, ${name}`;
+      },
+    }),
+  },
+});
 
 test('Server / calls', async (t) => {
-  const api = {
-    test: {
-      hello: {
-        access: 'public',
-        handler: async ({ name }) => {
-          await timers.setTimeout(10);
-          return `Hello, ${name}`;
-        },
-      },
-    },
-  };
-  const noop = () => {};
   const options = {
+    router,
     host: 'localhost',
     port: 8003,
     protocol: 'http',
+    logger: false,
     timeouts: { bind: 100 },
-    queue: { concurrency: 100, size: 100, timeout: 5_000 },
-    generateId: randomUUID,
-  };
-  const application = {
-    console: { log: noop, info: noop, warn: noop, error: noop, debug: noop },
-    static: { constructor: { name: 'Static' } },
-    auth: { saveSession: async () => {} },
-    getMethod: (unit, _version, method) => new ProcedureMock(api[unit][method]),
   };
 
   let server;
 
   t.beforeEach(async () => {
-    server = new Server(application, options);
+    server = new Server(options);
     await server.listen();
   });
 
@@ -121,7 +100,37 @@ test('Server / calls', async (t) => {
     assert.strictEqual(response.result, `Hello, ${args.name}`);
   });
 
+  await t.test('responds 404 on non-/api HTTP path instead of hanging', async () => {
+    const res = await fetch(`http://${options.host}:${options.port}/health`);
+    assert.strictEqual(res.status, 404);
+    const packet = await res.json();
+    assert.strictEqual(packet.type, 'callback');
+    assert.strictEqual(packet.error.code, 404);
+  });
+
+  await t.test('listen() works without the timeouts option', async () => {
+    const extra = new Server({ router, host: 'localhost', port: 0, protocol: 'http', logger: false });
+    await extra.listen();
+    await extra.close();
+  });
+
+  await t.test('listen() retry path works without the timeouts option', async () => {
+    // The bind-retry handler used to dereference options.timeouts.bind, so a
+    // server without `timeouts` crashed with a TypeError on EADDRINUSE.
+    const blocker = new Server({ router, host: 'localhost', port: 0, protocol: 'http', logger: false });
+    await blocker.listen();
+    const { port } = blocker.address();
+    const extra = new Server({ router, host: 'localhost', port, protocol: 'http', logger: false });
+    const listening = extra.listen();
+    await timers.setTimeout(50); // first bind fails with EADDRINUSE, a retry is scheduled
+    await blocker.close(); // free the port so the scheduled retry succeeds
+    await listening;
+    await extra.close();
+  });
+
   await t.test('rejects websocket upgrade on invalid path', async () => {
+    // The default verifyClient gate only accepts '/' and the RPC base paths,
+    // so the engine aborts the upgrade with 403 Forbidden.
     const res = await ProtocolClient.attemptHandshake({
       host: options.host,
       port: options.port,
@@ -135,5 +144,47 @@ test('Server / calls', async (t) => {
       timeoutMs: 600,
     });
     assert.strictEqual(parseStatusCode(res.statusLine), 403);
+  });
+
+  await t.test('ws.path relocates the websocket endpoint (regression: default gate 403ed it)', async () => {
+    const custom = new Server({
+      router,
+      host: 'localhost',
+      port: 0,
+      protocol: 'http',
+      logger: false,
+      ws: { path: '/socket' },
+    });
+    await custom.listen();
+    const { port } = custom.address();
+
+    const socket = new ProtocolClient(`ws://localhost:${port}/socket`);
+    const opened = await new Promise((resolve) => {
+      socket.on('open', () => resolve(true));
+      socket.on('close', () => resolve(false));
+    });
+    assert.strictEqual(opened, true);
+
+    const packet = { type: 'call', id: 'ws-path', method: 'test/hello', args: { name: 'Path' } };
+    socket.send(JSON.stringify(packet));
+    const resPacket = await new Promise((resolve) => socket.once('message', resolve));
+    assert.strictEqual(JSON.parse(resPacket.toString()).result, 'Hello, Path');
+    socket.close();
+
+    // the engine's own path filter still rejects everything else
+    const res = await ProtocolClient.attemptHandshake({
+      host: 'localhost',
+      port,
+      path: '/api',
+      headers: {
+        Upgrade: 'websocket',
+        Connection: 'Upgrade',
+        'Sec-WebSocket-Version': '13',
+        'Sec-WebSocket-Key': Buffer.from('0123456789abcdef').toString('base64'),
+      },
+      timeoutMs: 600,
+    });
+    assert.strictEqual(parseStatusCode(res.statusLine), 404);
+    await custom.close();
   });
 });

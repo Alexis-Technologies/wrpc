@@ -1,0 +1,63 @@
+# wrpc (@alexify/wrpc)
+
+> A fast, zero-dependency, WebSocket-based RPC protocol for Node.js and browsers. Router and procedures, subscriptions that resume after a reconnect, rooms that scale across processes, binary streams with backpressure that reaches into TCP, and a typed client with no build step.
+
+Key facts:
+
+- npm: `@alexify/wrpc` — zero runtime dependencies (no `dependencies`, `peerDependencies` or `optionalDependencies` field), CommonJS, ships `src/` as-is with no build step.
+- Size: 10.4 KB min+gzip for the browser entry; 11.4 KB with the SSE transport; 1.0 KB for the TanStack Query bindings.
+- Runtimes: Node.js >= 22 on the server, any modern browser through a bundler on the client. The browser build contains zero Node builtins.
+- Transports: WebSocket, plain HTTP, Server-Sent Events, Service Worker `MessagePort`.
+- Hosts: batteries-included `Server`, or fastify / express / bare `node:http` / uWebSockets.js — every host injected, never depended on.
+- Public API: `Server`, `RpcServer`, `defineRouter`, `procedure`, `WrpcClient`, `connect<Api>()`, `tracked`, `createEventLog`, `RoomRegistry`, `Broadcast`, `Cluster`, `WrpcReadable`, `WrpcWritable`.
+- Subpaths: `@alexify/wrpc`, `/ws`, `/engine`, `/uws`, `/fastify`, `/express`, `/scaling`, `/sse`, `/query`, plus a `wrpc types` codegen CLI.
+- The wire protocol is frozen at 1.0: JSON packets (`call`, `callback`, `event`, `subscribe`, `data`, `end`, `unsubscribe`, `cancel`, `stream`, `ping`, `pong`) plus a binary chunk framing.
+- Source: https://github.com/Alexis-Technologies/wrpc
+
+## Introduction
+
+- [Getting Started](https://wrpc.vercel.app/guide/getting-started): Install, a first server and client, sessions, realtime and subscriptions, with an architecture diagram.
+- [Why wrpc?](https://wrpc.vercel.app/guide/why): Positioning against tRPC and Socket.IO, what zero dependencies buys, and when NOT to use it.
+
+## Server
+
+- [Server](https://wrpc.vercel.app/guide/server): `RpcServer` vs the batteries-included `Server`, options, what it serves over HTTP, CORS, lifecycle.
+- [Router & procedures](https://wrpc.vercel.app/guide/router): `defineRouter`/`procedure`, access levels, Standard Schema validators, timeouts, queues, versioned units, introspection.
+- [Hooks](https://wrpc.vercel.app/guide/hooks): Lifecycle phases in the fastify tradition; router, unit and procedure levels flattened into one pipeline. No `(ctx, next)` middleware.
+- [Sessions](https://wrpc.vercel.app/guide/sessions): Token plus state store, cookies, the cross-site GET gate, pluggable stores.
+- [Rooms & events](https://wrpc.vercel.app/guide/rooms): Events in both directions, join/leave, the chainable `Broadcast`, acks via `ask()`.
+- [Subscriptions](https://wrpc.vercel.app/guide/subscriptions): Async-generator feeds, backpressure, and resume through `tracked()` + `createEventLog()`.
+- [Binary streams](https://wrpc.vercel.app/guide/streams): Interleaved upload/download with end-to-end backpressure.
+- [Scaling](https://wrpc.vercel.app/guide/scaling): The three-method backplane contract, memory and Redis adapters, at-most-once delivery.
+- [Cluster](https://wrpc.vercel.app/guide/cluster): Replicated presence, `fetchClients`, addressed commands, node-to-node ask, and client acks.
+
+## Client
+
+- [Client](https://wrpc.vercel.app/guide/client): Transports, options, calls, batching, reconnect with jittered backoff, heartbeat, events, Service Workers.
+- [Typed client](https://wrpc.vercel.app/guide/typed-client): `connect<Api>()` with a hand-written contract, and its three sharp edges.
+- [Browser & bundling](https://wrpc.vercel.app/guide/browser): The `browser` field map, what is in the browser entry, bundle budgets, framework notes.
+- [Codegen CLI](https://wrpc.vercel.app/guide/cli): `wrpc types <url> --out api.d.ts` against a running server.
+- [TanStack Query](https://wrpc.vercel.app/guide/query): Option factories (not hooks) for React/Solid/Svelte/Vue Query.
+
+## Transports and hosts
+
+- [Server-Sent Events](https://wrpc.vercel.app/guide/sse): The full protocol over SSE, channel binding, replay, sticky routing, limitations.
+- [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws): The standalone engine and what it changes.
+- [Fastify](https://wrpc.vercel.app/guide/adapters/fastify): The plugin, both backends, hook ordering, shutdown.
+- [Express](https://wrpc.vercel.app/guide/adapters/express): Middleware that owns no listener; driving upgrades by hand.
+
+## Operations
+
+- [Security](https://wrpc.vercel.app/guide/security): Trust boundary, the production checklist, prototype-pollution defences, resource limits, 5xx masking.
+- [Running in production](https://wrpc.vercel.app/guide/production): Graceful drain and shutdown, health checks, proxies, sticky routing, backpressure tuning.
+- [Testing](https://wrpc.vercel.app/guide/testing): Boot patterns, `t.after` teardown, multi-instance tests over `MemoryBackplane`, testing without a network.
+- [Performance](https://wrpc.vercel.app/guide/performance): Reproducible benchmarks against ws, uWebSockets.js, socket.io and tRPC; fan-out, parser and dispatch numbers.
+- [Logging](https://wrpc.vercel.app/guide/logging): The injected structured logger and what it emits.
+- [OpenTelemetry](https://wrpc.vercel.app/guide/telemetry): Spans, metrics, trace-context propagation, privacy.
+
+## Reference
+
+- [Wire protocol](https://wrpc.vercel.app/reference/protocol): Every packet type, batching, trace context, introspection, sessions, rooms, SSE, reconnect. Frozen at 1.0.
+- [Wire format](https://wrpc.vercel.app/reference/wire-format): Binary chunk framing and the from-scratch RFC 6455/7692 WebSocket engine.
+- [Engine port](https://wrpc.vercel.app/reference/engine): The `Engine`/`WrpcSocket` contract, hosted vs standalone, writing your own.
+- [Errors & close codes](https://wrpc.vercel.app/reference/errors): The full status-code table, which codes retry, and RFC 6455 close codes.
