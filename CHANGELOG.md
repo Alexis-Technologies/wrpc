@@ -9,7 +9,7 @@ Semver here versions the **JavaScript API**. The wire protocol carries its own,
 narrower promise — see
 [Stability](./docs/reference/protocol.md#stability).
 
-## [Unreleased]
+## [1.0.0] - 2026-08-23
 
 This package has not been published to npm yet — there is no `[1.0.0]`
 release section until the first publish; everything below lands there
@@ -624,5 +624,3 @@ only by adapter tests; never a runtime dependency).
 - `CONTRIBUTING.md` added: development workflow, house rules not visible in
   the code (zero dependencies, `.d.ts`/`tsd` pairing, the uws teardown trap
   that wedges `node --test`), and the manual release checklist.
-
-[Unreleased]: https://github.com/Alexis-Technologies/wrpc/commits/main
