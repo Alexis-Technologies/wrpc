@@ -1061,6 +1061,21 @@ const refreshBoot = async (t) => {
   return { server, port, state };
 };
 
+// Hold a single-flight refresh open until every concurrent refusal it is
+// meant to absorb has actually been issued. Only calls made BEFORE a run
+// starts may join it (one issued during a run is the deadlock guard's case
+// and surfaces its own refusal), so a test proving "N refusals, one run"
+// has to keep the run open until the server has answered all N. A fixed
+// sleep does not: what has to fit inside the window is the server working
+// through the other N-1 calls, and N-1 full dispatch passes under coverage
+// on a loaded runner outlast any constant worth writing. The trailing
+// settle covers delivery — client and server share this process, so the
+// loopback answers land within a turn or two of being written.
+const untilRefused = async (state, count) => {
+  while (state.hits < count) await timers.setTimeout(1);
+  await timers.setTimeout(20);
+};
+
 test('refresh: a 401 is refreshed once and the call retried with a fresh packet', async (t) => {
   const { port, state } = await refreshBoot(t);
   let refreshes = 0;
@@ -1092,7 +1107,7 @@ test('refresh: ten concurrent 401s produce exactly one refresh', async (t) => {
     reconnect: false,
     refresh: async () => {
       refreshes++;
-      await timers.setTimeout(20);
+      await untilRefused(state, 10);
       state.ok = true;
     },
   });
@@ -1538,17 +1553,17 @@ test('heartbeat-timeout: a throwing listener surfaces through error, never as an
 });
 
 test('refresh: a failing run logs and emits refresh-failed, once for all joined callers', async (t) => {
-  const { port } = await refreshBoot(t);
+  const { port, state } = await refreshBoot(t);
   const failures = [];
   const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
     heartbeat: false,
     logger: false,
     reconnect: false,
-    // Async with a hold, so BOTH refusals join one single-flight run — a
-    // synchronously-throwing handler finishes before the second refusal
-    // arrives and would legitimately start a second run.
+    // Held open until BOTH refusals exist, so both join one single-flight
+    // run — a handler that finishes before the second refusal arrives would
+    // legitimately start a second run, which is the behaviour under test.
     refresh: async () => {
-      await timers.setTimeout(20);
+      await untilRefused(state, 2);
       throw new Error('refresh broke');
     },
   });
