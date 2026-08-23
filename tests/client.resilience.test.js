@@ -1027,8 +1027,32 @@ test('no authenticate hook: open fires before reconnect, restore unchanged', asy
 // ---------------------------------------------------------------------------
 // The refresh hook: single-flight, one-shot retry, original error surfaces.
 
-const refreshBoot = async (t) => {
+// `refuseTogether: N` parks the first N refusals until all N have arrived,
+// then releases them in one tick. Only calls issued BEFORE a single-flight
+// refresh starts may join it — one issued during a run is the deadlock
+// guard's case and surfaces its own refusal — so a test proving "N refusals,
+// one run" needs every refusal to reach the client while the run is open.
+// Waiting on the clock cannot promise that: the refusals are what STARTS the
+// run, so any spread between them (whichever side it comes from) eats the
+// window, and a spread this process never produces on one machine is exactly
+// what a loaded two-core runner does produce. Holding them server-side makes
+// the spread zero by construction instead of small by luck.
+const refuseGate = (count) => {
+  if (!count) return () => Promise.resolve();
+  let parked = [];
+  return () =>
+    new Promise((resolve) => {
+      parked.push(resolve);
+      if (parked.length < count) return;
+      const release = parked;
+      parked = [];
+      for (const one of release) one();
+    });
+};
+
+const refreshBoot = async (t, { refuseTogether = 0 } = {}) => {
   const state = { ok: false, ids: [], hits: 0 };
+  const gate = refuseGate(refuseTogether);
   const definition = defineRouter({
     flaky: {
       get: procedure({
@@ -1037,6 +1061,7 @@ const refreshBoot = async (t) => {
           state.hits++;
           state.ids.push(context.uuid);
           if (!state.ok) {
+            await gate();
             const error = new Error('expired');
             error.code = 401;
             error.expose = true;
@@ -1061,19 +1086,15 @@ const refreshBoot = async (t) => {
   return { server, port, state };
 };
 
-// Hold a single-flight refresh open until every concurrent refusal it is
-// meant to absorb has actually been issued. Only calls made BEFORE a run
-// starts may join it (one issued during a run is the deadlock guard's case
-// and surfaces its own refusal), so a test proving "N refusals, one run"
-// has to keep the run open until the server has answered all N. A fixed
-// sleep does not: what has to fit inside the window is the server working
-// through the other N-1 calls, and N-1 full dispatch passes under coverage
-// on a loaded runner outlast any constant worth writing. The trailing
-// settle covers delivery — client and server share this process, so the
-// loopback answers land within a turn or two of being written.
-const untilRefused = async (state, count) => {
-  while (state.hits < count) await timers.setTimeout(1);
-  await timers.setTimeout(20);
+// Hold a refresh run open for a fixed number of event-loop TURNS rather than
+// a fixed number of milliseconds. Paired with `refuseTogether`, everything
+// this has to cover is already written: the answers left the server in one
+// tick and only have to cross loopback inside this process. Counting turns is
+// what makes it survive a starved runner — under contention each turn simply
+// takes longer, so the wait stretches with the machine instead of expiring on
+// it, which is precisely how a millisecond constant fails.
+const settleTurns = async (turns = 10) => {
+  for (let i = 0; i < turns; i++) await timers.setTimeout(0);
 };
 
 test('refresh: a 401 is refreshed once and the call retried with a fresh packet', async (t) => {
@@ -1099,7 +1120,7 @@ test('refresh: a 401 is refreshed once and the call retried with a fresh packet'
 });
 
 test('refresh: ten concurrent 401s produce exactly one refresh', async (t) => {
-  const { port, state } = await refreshBoot(t);
+  const { port, state } = await refreshBoot(t, { refuseTogether: 10 });
   let refreshes = 0;
   const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
     heartbeat: false,
@@ -1107,7 +1128,7 @@ test('refresh: ten concurrent 401s produce exactly one refresh', async (t) => {
     reconnect: false,
     refresh: async () => {
       refreshes++;
-      await untilRefused(state, 10);
+      await settleTurns();
       state.ok = true;
     },
   });
@@ -1553,17 +1574,17 @@ test('heartbeat-timeout: a throwing listener surfaces through error, never as an
 });
 
 test('refresh: a failing run logs and emits refresh-failed, once for all joined callers', async (t) => {
-  const { port, state } = await refreshBoot(t);
+  const { port } = await refreshBoot(t, { refuseTogether: 2 });
   const failures = [];
   const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
     heartbeat: false,
     logger: false,
     reconnect: false,
-    // Held open until BOTH refusals exist, so both join one single-flight
-    // run — a handler that finishes before the second refusal arrives would
-    // legitimately start a second run, which is the behaviour under test.
+    // Held open while both refusals — released together by the gate — reach
+    // the client, so both join one single-flight run. A handler that finished
+    // first would start a second run, which is the behaviour under test.
     refresh: async () => {
-      await untilRefused(state, 2);
+      await settleTurns();
       throw new Error('refresh broke');
     },
   });
