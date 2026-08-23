@@ -45,12 +45,16 @@ test('createUwsEngine: attaching twice is refused', { skip: !uws && 'uWebSockets
   engine.close();
 });
 
-test('uws engine satisfies the WrpcSocket engine contract', { skip: !uws && 'uWebSockets.js unavailable' }, (t) => {
-  runEngineContract(
-    standaloneHarness(() => createUwsEngine({ uws })),
-    t,
-  );
-});
+test(
+  'uws engine satisfies the WrpcSocket engine contract',
+  { skip: !uws && 'uWebSockets.js unavailable' },
+  async (t) => {
+    await runEngineContract(
+      standaloneHarness(() => createUwsEngine({ uws })),
+      t,
+    );
+  },
+);
 
 test('UwsSocket: a poisoned uws handle never escapes as a throw', () => {
   // uws invalidates the handle in its close callback; every method on it

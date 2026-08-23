@@ -56,7 +56,7 @@ const openPeer = (port) =>
 
 // `t` is a node:test context; `harness` is either a createEngine function
 // (hosted) or a full harness object.
-const runEngineContract = (harness, t) => {
+const runEngineContract = async (harness, t) => {
   const { createEngine, boot: bootEngine } = typeof harness === 'function' ? hostedHarness(harness) : harness;
 
   // `sub` is the subtest context: teardown is registered as an after-hook
@@ -69,7 +69,7 @@ const runEngineContract = (harness, t) => {
     return { engine, ...booted };
   };
 
-  t.test('engine shape: name, capabilities, attach, close', async () => {
+  await t.test('engine shape: name, capabilities, attach, close', async () => {
     const engine = createEngine();
     assert.strictEqual(typeof engine.name, 'string');
     assert.strictEqual(typeof engine.attach, 'function');
@@ -83,7 +83,7 @@ const runEngineContract = (harness, t) => {
     engine.close(); // an engine that owns native resources must not be leaked
   });
 
-  t.test('connection event delivers a WrpcSocket and the upgrade request', async (sub) => {
+  await t.test('connection event delivers a WrpcSocket and the upgrade request', async (sub) => {
     const { source, port } = await boot(sub);
     const connected = new Promise((resolve) => source.once('connection', (socket, req) => resolve({ socket, req })));
     const peer = await openPeer(port);
@@ -100,7 +100,7 @@ const runEngineContract = (harness, t) => {
     peer.close();
   });
 
-  t.test('echo: text and binary round-trip, send returns a boolean', async (sub) => {
+  await t.test('echo: text and binary round-trip, send returns a boolean', async (sub) => {
     const { source, port } = await boot(sub);
     source.on('connection', (socket) => {
       socket.on('message', (data, isBinary) => {
@@ -126,7 +126,7 @@ const runEngineContract = (harness, t) => {
     peer.close();
   });
 
-  t.test('message payloads survive the callback that delivered them', async (sub) => {
+  await t.test('message payloads survive the callback that delivered them', async (sub) => {
     // Engines that expose their receive buffer (or a neutered ArrayBuffer,
     // as uws does) must copy before handing the payload to the RPC core,
     // which consumes stream chunks asynchronously.
@@ -145,7 +145,7 @@ const runEngineContract = (harness, t) => {
     peer.close();
   });
 
-  t.test('close(code, reason) reaches the peer', async (sub) => {
+  await t.test('close(code, reason) reaches the peer', async (sub) => {
     const { source, port } = await boot(sub);
     source.on('connection', (socket) => socket.close(4001, 'contract bye'));
     // The close frame may arrive in the same TCP segment as the 101
@@ -158,7 +158,7 @@ const runEngineContract = (harness, t) => {
     assert.strictEqual(closed.reason.toString(), 'contract bye');
   });
 
-  t.test('terminate() drops the peer without a close frame', async (sub) => {
+  await t.test('terminate() drops the peer without a close frame', async (sub) => {
     const { source, port } = await boot(sub);
     source.on('connection', (socket) => socket.terminate());
     // Not openPeer: a fast engine can terminate before the peer finished
@@ -167,7 +167,7 @@ const runEngineContract = (harness, t) => {
     await new Promise((resolve) => peer.socket.once('close', resolve));
   });
 
-  t.test('peer close surfaces as a close event with code and reason', async (sub) => {
+  await t.test('peer close surfaces as a close event with code and reason', async (sub) => {
     const { source, port } = await boot(sub);
     const socketClosed = new Promise((resolve) => {
       source.once('connection', (socket) => {
@@ -181,7 +181,7 @@ const runEngineContract = (harness, t) => {
     assert.strictEqual(String(reason), 'peer leaving');
   });
 
-  t.test('a closed socket reports no buffer and refuses sends', async (sub) => {
+  await t.test('a closed socket reports no buffer and refuses sends', async (sub) => {
     const { source, port } = await boot(sub);
     const gone = new Promise((resolve) => {
       source.once('connection', (socket) => {
@@ -198,7 +198,7 @@ const runEngineContract = (harness, t) => {
     socket.terminate();
   });
 
-  t.test('verifyClient rejection blocks the upgrade', async (sub) => {
+  await t.test('verifyClient rejection blocks the upgrade', async (sub) => {
     const { port } = await boot(sub, { verifyClient: () => false });
     const res = await ProtocolClient.attemptHandshake({
       host: '127.0.0.1',
@@ -215,7 +215,7 @@ const runEngineContract = (harness, t) => {
     assert.strictEqual(parseInt(res.statusLine.split(' ')[1], 10), 403);
   });
 
-  t.test('subprotocol negotiation echoes the selected protocol', async (sub) => {
+  await t.test('subprotocol negotiation echoes the selected protocol', async (sub) => {
     const { source, port } = await boot(sub, { protocols: ['wrpc'] });
     const connected = new Promise((resolve) => source.once('connection', resolve));
     const res = await ProtocolClient.attemptHandshake({
@@ -237,7 +237,7 @@ const runEngineContract = (harness, t) => {
     assert.strictEqual(socket.protocol, 'wrpc');
   });
 
-  t.test('stopListening (when present) refuses new peers while accepted ones keep working', async (sub) => {
+  await t.test('stopListening (when present) refuses new peers while accepted ones keep working', async (sub) => {
     const probe = createEngine();
     // Optional capability, standalone-shaped: hosted engines have no
     // listener of their own to stop. Skipped, never failed, elsewhere.

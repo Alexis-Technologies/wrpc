@@ -13,6 +13,6 @@ test('isEngine: structural engine detection', () => {
   assert.strictEqual(isEngine({ name: 'x', attach() {} }), false);
 });
 
-test('node engine satisfies the WrpcSocket engine contract', (t) => {
-  runEngineContract(() => createNodeEngine(), t);
+test('node engine satisfies the WrpcSocket engine contract', async (t) => {
+  await runEngineContract(() => createNodeEngine(), t);
 });

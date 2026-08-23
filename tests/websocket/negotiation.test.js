@@ -18,6 +18,17 @@ const BASE_HEADERS = {
 
 const parseStatusCode = (statusLine) => parseInt(statusLine.split(' ')[1], 10);
 
+// Node 22 aborts a still-pending test the moment the event loop goes idle
+// ('Promise resolution is still pending but the event loop has already
+// resolved'); Node 24 tolerates it. The ws heartbeat timer is unref'd on
+// purpose, so once the handshake sockets are gone the loop is idle by design
+// while `httpServer.close()` is still pending. One ref'd handle for the
+// file's lifetime keeps the runner from calling that a failure — without it
+// the first test aborts and the other nine cascade as cancelledByParent.
+let loopHold = null;
+test.before(() => void (loopHold = setInterval(() => {}, 1000)));
+test.after(() => clearInterval(loopHold));
+
 const withServer = async (options, run) => {
   const httpServer = http.createServer();
   const wsServer = new WebsocketServer({ server: httpServer, pingInterval: 5000, ...options });
@@ -26,6 +37,12 @@ const withServer = async (options, run) => {
   try {
     await run({ port, wsServer, httpServer });
   } finally {
+    // An upgraded socket outlives the http server: `close()` waits for it,
+    // and nothing else reaps it until the (unref'd) heartbeat terminates the
+    // peer two ping intervals later. That is the ~10 s each of these tests
+    // used to spend sitting in this finally. Close the ws server first so
+    // the peers are terminated now.
+    wsServer.close();
     await new Promise((resolve) => httpServer.close(resolve));
   }
 };

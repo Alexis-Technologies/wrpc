@@ -7,10 +7,10 @@ const { WrpcClient, ClientTransport, isClientTransport } = require('../../src/cl
 require('../../sse.js'); // registers the sse transport
 const { runTransportContract } = require('./transportContract.js');
 
-test('client transports: every registered transport passes the shared contract', (t) => {
+test('client transports: every registered transport passes the shared contract', async (t) => {
   const names = Object.keys(WrpcClient.transport);
   assert.deepStrictEqual([...names].sort(), ['event', 'http', 'sse', 'ws']);
-  for (const name of names) runTransportContract(t, name, WrpcClient.transport[name]);
+  for (const name of names) await runTransportContract(t, name, WrpcClient.transport[name]);
 });
 
 test('client transports: the registry is null-prototyped and assigned into', () => {

@@ -11,8 +11,11 @@ const assert = require('node:assert');
 
 const { isClientTransport } = require('../../src/client.js');
 
-const runTransportContract = (t, name, Transport) => {
-  t.test(`${name}: satisfies the ClientTransport contract`, () => {
+// Awaited, and awaited by its caller: a subtest a synchronous parent never
+// waits for is CANCELLED rather than run on Node 22 (Node 24's runner waits),
+// which is how this suite reported `cancelledByParent` for every case there.
+const runTransportContract = async (t, name, Transport) => {
+  await t.test(`${name}: satisfies the ClientTransport contract`, () => {
     assert.strictEqual(isClientTransport(Transport), true);
     const proto = Transport.prototype;
     for (const method of ['open', 'close', 'write', 'terminate', 'send', 'on', 'off', 'online', 'offline']) {
@@ -20,7 +23,7 @@ const runTransportContract = (t, name, Transport) => {
     }
   });
 
-  t.test(`${name}: instance flags and url`, () => {
+  await t.test(`${name}: instance flags and url`, () => {
     const instance = new Transport(`x://host/${name}`);
     assert.strictEqual(instance.url, `x://host/${name}`);
     assert.strictEqual(typeof instance.active, 'boolean');

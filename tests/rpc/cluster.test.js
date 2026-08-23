@@ -12,6 +12,19 @@ const timers = require('node:timers/promises');
 const { RpcServer } = require('../../src/rpc/core.js');
 const { defineRouter, procedure } = require('../../src/rpc/router.js');
 const { MemoryBackplane } = require('../../src/scaling/index.js');
+
+// Node 22 aborts a still-pending test the moment the event loop goes idle
+// ('Promise resolution is still pending but the event loop has already
+// resolved'); Node 24 tolerates it. Several waits below are driven by
+// deliberately unref'd timers — a cluster request must never keep its host
+// process alive (src/rpc/cluster.js) — and a MemoryBackplane owns no handles,
+// so the loop really is idle by design while the test waits. One ref'd handle
+// for the file's lifetime keeps the runner from calling that a failure.
+// Without it, the first such wait aborts and every later test in the file
+// cascades as cancelledByParent.
+let loopHold = null;
+test.before(() => void (loopHold = setInterval(() => {}, 1000)));
+test.after(() => clearInterval(loopHold));
 const { instanceOfClientId } = require('../../src/rpc/cluster.js');
 
 const quiet = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
