@@ -335,6 +335,11 @@ class ServerEventTransport extends ServerTransport {
   constructor(port) {
     super('event transport');
     this.port = port;
+    // A port stays open like a socket does — what Client.persistent
+    // checks (rpc/client.js), and so what admits events, subscriptions
+    // and streams. Without it a port-attached client was silently
+    // request/response only.
+    this.connection = this;
     port.on('close', () => void this.emit('close'));
   }
 

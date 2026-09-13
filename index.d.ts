@@ -1178,8 +1178,10 @@ export type { ServerWsTransport };
 
 declare class ServerEventTransport extends ServerTransport {
   port: MessagePort;
+  /** Set to the transport itself: a port stays open, so the Client is persistent. */
+  connection: ServerEventTransport;
   constructor(port: MessagePort);
-  write(data: string | Buffer): void;
+  write(data: string | Buffer): boolean;
   close(): void;
 }
 export type { ServerEventTransport };

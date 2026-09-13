@@ -5,6 +5,9 @@ const assert = require('node:assert');
 
 const { ServerTransport, buildHeaders, parseCookies } = require('../src/transport.js');
 const { Emitter } = require('../src/utils.js');
+const { Client } = require('../src/rpc/client.js');
+
+const quietLog = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
 
 const { http: ServerHttpTransport, ws: ServerWsTransport, event: ServerEventTransport } = ServerTransport.transport;
 
@@ -329,6 +332,13 @@ test('ServerEventTransport', async (t) => {
     assert.deepStrictEqual(sent, [{ hello: true }]);
     transport.close();
     assert.strictEqual(portClosed, true);
+  });
+
+  await t.test('is persistent: a port stays open, so events and streams are admitted', () => {
+    const port = { on: () => {}, postMessage: () => {}, close: () => {} };
+    const transport = new ServerEventTransport(port);
+    assert.strictEqual(Boolean(transport.connection), true);
+    assert.strictEqual(new Client(transport, { log: quietLog }).persistent, true);
   });
 
   await t.test('forwards port close as a transport close event', () => {
