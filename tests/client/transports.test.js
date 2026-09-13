@@ -37,3 +37,35 @@ test('client transports: a malformed registrant is refused with the port-shaped 
   // here, not on the first connect.
   assert.strictEqual(isClientTransport(ClientTransport), false);
 });
+
+// A transport named explicitly gets the url as written and the whole
+// connect() options bag in open(): that is how a peer-to-peer transport
+// receives its link (the same way the event transport receives `worker`),
+// and 'webrtc:<peer>' is a scheme mapScheme leaves alone.
+test('client transports: a named transport sees the raw url and the options bag on open()', async (t) => {
+  const seen = { urls: [], options: [] };
+  class Recording extends ClientTransport {
+    constructor(url) {
+      super(url);
+      seen.urls.push(url);
+    }
+    async open(options) {
+      seen.options.push(options);
+      this.active = true;
+      this.emit('open');
+    }
+    close() {
+      this.active = false;
+      this.emit('close');
+    }
+    write() {}
+  }
+  WrpcClient.transport.webrtc = Recording;
+  t.after(() => delete WrpcClient.transport.webrtc);
+  const link = { token: 'link' };
+  const client = await WrpcClient.connect('webrtc:peer-42', { transport: 'webrtc', link, heartbeat: false });
+  t.after(() => client.close());
+  assert.deepStrictEqual(seen.urls, ['webrtc:peer-42']);
+  assert.strictEqual(seen.options[0].link, link);
+  assert.strictEqual(seen.options[0].transport, 'webrtc');
+});
