@@ -40,6 +40,42 @@ const { id, payload: bytes } = chunkDecode(frame);
 The Node build uses `Buffer`, the browser build `TextEncoder`/`TextDecoder` —
 swapped through the package's `browser` field, so the same code works in both.
 
+## Data-channel frames
+
+On a WebRTC data channel (the `@alexify/wrpc/webrtc` transport) both packets
+and chunks travel as **binary** messages, because a channel message has a
+size limit and a packet or a chunk may not fit in one. Each message is one
+fragment, prefixed by a single header byte:
+
+```
+┌────────────┬────────────────────────────────────────┐
+│  1 byte    │              fragment payload           │
+│  KIND|FIN  │  UTF-8 JSON (KIND 0) or chunk (KIND 1)  │
+└────────────┴────────────────────────────────────────┘
+bit 0 KIND, bit 1 FIN (last fragment), bits 2–7 reserved (0)
+```
+
+A packet under the limit is one message: header `0b11`, then the JSON. A
+64 KiB stream chunk at a 16 KiB limit is five messages: four with header
+`0b01` and a final `0b11`, the payloads concatenated being exactly the chunk
+frame above (id length, id, payload). The receiver concatenates until FIN —
+the channel is ordered and reliable, so no message id is needed — and then
+hands a KIND 0 message to the packet parser and a KIND 1 message to
+`chunkDecode`. The rules and the error cases are in
+[the protocol reference](./protocol#webrtc-framing).
+
+```js
+const { FrameEncoder, FrameDecoder, KIND_TEXT } = require('@alexify/wrpc/webrtc');
+
+const encoder = new FrameEncoder(16 * 1024); // the negotiated maxMessageSize
+encoder.encodeText('{"type":"ping"}', (frame) => channel.send(frame));
+const decoder = new FrameDecoder();
+const message = decoder.push(event.data); // null until FIN; then { kind, data }
+```
+
+The frame handed to the sink is a view over a buffer the encoder reuses for
+the next fragment — hand it to `send()`, which copies, and never keep it.
+
 ## The WebSocket engine
 
 `@alexify/wrpc/ws` publishes the implementation itself. It is **not** in the

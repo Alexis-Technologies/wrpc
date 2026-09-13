@@ -72,6 +72,7 @@ request/response pair is self-contained.
 | HTTP | request body / response body | not available |
 | SSE | `POST` body out, `data:` lines back | not available |
 | Service Worker port | `postMessage(string)` | `postMessage(Uint8Array)` |
+| WebRTC data channel | binary frames, `KIND = 0` | binary frames, `KIND = 1` |
 
 A transport that cannot stay open (plain HTTP) carries calls only: events,
 subscriptions, cancellation and streams need a persistent connection, and
@@ -97,7 +98,10 @@ errors alike) MAY be re-framed — binary included — by an injected
 `codec.rest` section, under the same outside-the-promise terms.
 
 SSE is persistent but text-only, so it carries everything except binary
-streams — see [Server-Sent Events](#server-sent-events) below.
+streams — see [Server-Sent Events](#server-sent-events) below. A WebRTC data
+channel is persistent and binary but caps the size of one message, so both
+packets and chunks travel fragmented under a one-byte header — see
+[WebRTC](#webrtc) below.
 
 ### Connection metadata
 
@@ -269,7 +273,9 @@ dropped NAT mapping, a suspended laptop, a proxy that stopped forwarding —
 looks perfectly open from JavaScript until the first call times out. Both
 sides answer a `ping` with a `pong` immediately; the client additionally
 measures the round trip and reconnects when the answer does not arrive
-within its timeout.
+within its timeout. On a WebRTC link each direction has its own client and
+its own channel (see [WebRTC](#webrtc)), so each direction heartbeats on its
+own channel.
 
 ### `subscribe` / `data` / `end` / `unsubscribe` — a stream of values
 
@@ -605,6 +611,66 @@ Serverless-friendly by construction: no upgrade, no socket beyond the
 response body, nothing but HTTP in either direction. What it cannot carry is
 binary — SSE frames are text, so wrpc's binary streams are refused on this
 transport rather than silently corrupted.
+
+## WebRTC
+
+Two peers speak wrpc to each other over one `RTCPeerConnection` carrying
+**two negotiated data channels**, one per direction of the protocol's
+client → server relationship:
+
+```
+channel initiator   (negotiated, id 0 by default)   initiator's client  → responder's host
+channel responder   (negotiated, id 1 by default)   responder's client  → initiator's host
+```
+
+The *initiator* is the peer whose id sorts first (plain string comparison);
+it makes the offer, and it is the *impolite* side of
+[perfect negotiation](https://w3c.github.io/webrtc-pc/#perfect-negotiation-example).
+Both peers create both channels before the first offer, with the same ids
+and the same label (`wrpc`) — negotiated channels are not described in the
+SDP, so the two configurations must agree. The ids are configurable for an
+application that keeps its own channels on the same connection.
+
+Because each channel is one ordinary client → server wire, every packet on
+this page travels unchanged: a peer runs a client on the channel it
+initiates and a dispatcher on the other, and nothing in a packet says which
+peer is "the server". Signaling (descriptions and ICE candidates) is
+application-level and reaches the peers through any channel the
+application chooses — `@alexify/wrpc/webrtc` ships one over an ordinary
+wrpc connection — and is not part of the wire either.
+
+### Data-channel framing {#webrtc-framing}
+
+A data channel message has a size limit (16 KiB is the only size every
+implementation supports; `sctp.maxMessageSize` reports what a pair actually
+negotiated) and wrpc's batch frames and stream chunks are routinely larger.
+So on a data channel **every message is binary** (the channel's
+`binaryType` is `arraybuffer`), and a packet or chunk is sent as one or
+more fragments, each under a one-byte header:
+
+```
+bit 0   KIND   0 = a wrpc packet (UTF-8 JSON — what a WebSocket text frame carries)
+               1 = a binary stream chunk (a chunkEncode frame, see the wire-format page)
+bit 1   FIN    1 = the last fragment of this message
+bit 2–7        reserved, MUST be 0
+```
+
+- Fragments of one message are sent back to back on one ordered, reliable
+  channel, so there is no message id and no sequence number: a receiver
+  concatenates fragments until FIN.
+- The KIND of a continuation MUST equal the KIND of the message it
+  continues; a set reserved bit, a mismatched continuation, a text message
+  that is not valid UTF-8 or a reassembly past the receiver's cap
+  (16 MiB by default) is a protocol error, and the receiver closes the
+  channel — the data-channel analogue of a WebSocket `1002`.
+- Fragment size is the negotiated `sctp.maxMessageSize` capped at 256 KiB,
+  and 16 KiB when nothing is reported. A peer MAY send smaller fragments.
+
+Everything above the header is exactly the WebSocket wire: the ordering rule
+"a `stream` packet precedes the first chunk with its id" holds per channel,
+`ping`/`pong` run per direction, and a subscription resumes with
+`lastEventId` across a renegotiated connection the way it does across a
+reconnected socket.
 
 ## Reconnect
 

@@ -29,13 +29,19 @@ const byteLength = (data) => {
   throw new TypeError('fake: unsupported message type');
 };
 
-// Delivered as a fresh ArrayBuffer (or Blob under the browser default), so
-// a receiver that retains a view never aliases the sender's memory.
-const toDelivered = (data, binaryType) => {
+// send() copies synchronously, like a browser's: the caller may reuse its
+// buffer the moment send() returns (src/webrtc/framing.js relies on it).
+const copyAtSend = (data) => {
   if (typeof data === 'string') return data;
   const view =
     data instanceof ArrayBuffer ? new Uint8Array(data) : new Uint8Array(data.buffer, data.byteOffset, data.byteLength);
-  const copy = view.slice().buffer;
+  return view.slice().buffer;
+};
+
+// Delivered as a fresh ArrayBuffer (or Blob under the browser default), so
+// a receiver that retains a view never aliases anyone's memory.
+const toDelivered = (copy, binaryType) => {
+  if (typeof copy === 'string') return copy;
   return binaryType === 'blob' ? new Blob([copy]) : copy;
 };
 
@@ -85,6 +91,7 @@ class FakeDataChannel extends EventTarget {
       return;
     }
     this.sent++;
+    const copy = copyAtSend(data);
     this.bufferedAmount += size;
     if (this.bufferedAmount > this.bufferedAmountLowThreshold) this.#aboveLow = true;
     const peer = this.#peer;
@@ -97,7 +104,7 @@ class FakeDataChannel extends EventTarget {
       }
       // A severed ICE link (failIce) or a closed peer eats the bytes.
       if (!linked || !peer || peer.readyState !== 'open') return;
-      peer.dispatchEvent(new MessageEvent('message', { data: toDelivered(data, peer.binaryType) }));
+      peer.dispatchEvent(new MessageEvent('message', { data: toDelivered(copy, peer.binaryType) }));
     });
   }
 
