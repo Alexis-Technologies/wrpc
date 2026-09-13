@@ -149,6 +149,7 @@
     "fastify-uws": "^2.0.0",
     "ioredis": "^6.0.0",
     "mermaid": "^11.16.0",
+    "node-datachannel": "^0.33.4",
     "oxfmt": "^0.62.0",
     "oxlint": "^1.77.0",
     "pino": "^10.3.1",
