@@ -699,6 +699,12 @@ export declare class Cluster extends Emitter {
   join(target: string | ClusterSelector, ...rooms: Array<string>): void;
   leave(target: string | ClusterSelector, ...rooms: Array<string>): void;
   disconnect(target: string | ClusterSelector): void;
+  /**
+   * One event to ONE client by id — an addressed command, so only the
+   * instance its id names hears it. `room` narrows delivery to a client
+   * still in that room. Fire-and-forget, at-most-once.
+   */
+  send(clientId: string, name: string, data?: unknown, options?: { room?: string }): void;
   /** Fire-and-forget to every OTHER node's `cluster.on(name, ...)`. */
   sendEvent(name: string, data?: unknown): void;
   /** The LOCAL Emitter emit — remote nodes are reached by sendEvent. */
@@ -1052,6 +1058,13 @@ export declare class RpcServer extends Emitter {
   constructor(options: RpcServerOptions);
   /** The local client with this id; undefined when not on this instance. */
   getClient(id: string): Client | undefined;
+  /**
+   * One event to one client by id, here or on the instance its id names
+   * (via the cluster). `room` narrows delivery to a client still in that
+   * room. True when delivered locally or handed to the backplane; false
+   * when known undeliverable.
+   */
+  sendTo(clientId: string, name: string, data?: unknown, options?: { room?: string }): boolean;
   /** Everyone in any of `rooms`, each client once; with no rooms, nobody. */
   to(...rooms: Array<string>): Broadcast;
   /** Everyone connected, minus `clients`. */
@@ -1123,6 +1136,8 @@ export class Server extends Emitter {
   readonly cluster: Cluster;
   /** The local client with this id; undefined when not on this instance. */
   getClient(id: string): Client | undefined;
+  /** One event to one client by id, here or on another instance — forwarded to the core. */
+  sendTo(clientId: string, name: string, data?: unknown, options?: { room?: string }): boolean;
   listen(): Promise<Server>;
   /**
    * With `drain` (ms): stop intake, let in-flight calls settle up to the

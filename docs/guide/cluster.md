@@ -175,6 +175,23 @@ Commands are fire-and-forget with the backplane's at-most-once delivery: they
 are the right tool for "kick these connections", and the wrong one for
 anything that must be exactly-once.
 
+### One event to one client
+
+```js
+server.sendTo(clientId, 'chat/dm', { text: 'hi' });                   // here, or on the node its id names
+server.sendTo(clientId, 'signaling/signal', payload, { room: 'lobby' }); // only while it is still in `room`
+```
+
+`server.sendTo` is the id-addressed counterpart of `to(room).emit`: a local
+id is delivered directly, a foreign one becomes an addressed `event` command
+on that node's channel (`server.cluster.send` is the same call without the
+local short-cut). `room` bounds the delivery to a client still in that room —
+a relay tied to a membership must not outlive it. It returns `true` when the
+event was delivered locally or handed to the backplane and `false` when it is
+known undeliverable (no such local client, a per-request HTTP client, not in
+`room`, or a foreign id with no backplane). The remote leg is at-most-once,
+like every command.
+
 ## Node-to-node messaging
 
 ```js

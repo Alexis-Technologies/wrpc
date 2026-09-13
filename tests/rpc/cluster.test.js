@@ -645,3 +645,107 @@ test('cluster: a RegExp rooms filter and maxFetch: 0 (uncapped) hold', async (t)
   assert.strictEqual(clients.truncated, undefined, 'maxFetch: 0 never truncates');
   assert.ok(clients.length >= 4);
 });
+
+test('cluster: send() delivers one event to a client on another instance', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const channels = [];
+  const spy = {
+    publish: (channel, message) => {
+      channels.push(channel);
+      backplane.publish(channel, message);
+    },
+    subscribe: (channel, handler) => backplane.subscribe(channel, handler),
+    close: () => {},
+  };
+  const a = boot(t, spy, { instanceId: 'a' });
+  const b = boot(t, backplane, { instanceId: 'b' });
+  await settle();
+  const remote = attach(b);
+  const local = attach(a);
+  await settle();
+  channels.length = 0;
+
+  a.cluster.send(remote.client.id, 'chat/dm', { text: 'hi' });
+  await settle();
+  assert.deepStrictEqual(channels, ['inst:b'], 'addressed: one publish on the target instance channel');
+  assert.deepStrictEqual(remote.socket.events, [{ type: 'event', name: 'chat/dm', data: { text: 'hi' } }]);
+
+  // A local id is applied directly, nothing published.
+  a.cluster.send(local.client.id, 'chat/dm', { text: 'local' });
+  await settle();
+  assert.deepStrictEqual(channels, ['inst:b']);
+  assert.deepStrictEqual(local.socket.events, [{ type: 'event', name: 'chat/dm', data: { text: 'local' } }]);
+
+  assert.throws(() => a.cluster.send('', 'chat/dm', {}), TypeError);
+  assert.throws(() => a.cluster.send(remote.client.id, '', {}), TypeError);
+});
+
+test('cluster: send() with a room reaches only a client still in it', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const a = boot(t, backplane, { instanceId: 'a' });
+  const b = boot(t, backplane, { instanceId: 'b' });
+  await settle();
+  const remote = attach(b);
+  remote.client.join('rtc:lobby');
+  await settle();
+
+  a.cluster.send(remote.client.id, 'signaling/signal', { n: 1 }, { room: 'rtc:lobby' });
+  a.cluster.send(remote.client.id, 'signaling/signal', { n: 2 }, { room: 'rtc:other' });
+  await settle();
+  assert.deepStrictEqual(
+    remote.socket.events.map((e) => e.data),
+    [{ n: 1 }],
+    'the event bounded by a room the client left (or never joined) is dropped',
+  );
+});
+
+test('rpc: sendTo() picks the local or the cluster leg and reports deliverability', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const a = boot(t, backplane, { instanceId: 'a' });
+  const b = boot(t, backplane, { instanceId: 'b' });
+  await settle();
+  const local = attach(a);
+  const remote = attach(b);
+  local.client.join('r');
+  await settle();
+
+  assert.strictEqual(a.sendTo(local.client.id, 'x/y', 1), true);
+  assert.strictEqual(a.sendTo(local.client.id, 'x/y', 2, { room: 'r' }), true);
+  assert.strictEqual(a.sendTo(local.client.id, 'x/y', 3, { room: 'elsewhere' }), false);
+  assert.strictEqual(a.sendTo('a.no-such-client', 'x/y', 4), false, 'a local-looking id that is not here');
+  assert.strictEqual(a.sendTo('no-dot', 'x/y', 5), false, 'no instance in the id');
+  assert.strictEqual(a.sendTo(remote.client.id, 'x/y', 6), true, 'handed to the backplane');
+  await settle();
+  assert.deepStrictEqual(
+    local.socket.events.map((e) => e.data),
+    [1, 2],
+  );
+  assert.deepStrictEqual(
+    remote.socket.events.map((e) => e.data),
+    [6],
+  );
+  assert.throws(() => a.sendTo(42, 'x/y'), TypeError);
+  assert.throws(() => a.sendTo(local.client.id, ''), TypeError);
+
+  // Without a backplane a foreign id is known undeliverable.
+  const solo = boot(t, null, { instanceId: 'solo' });
+  assert.strictEqual(solo.sendTo('b.someone', 'x/y', 7), false);
+});
+
+test('cluster: a malformed or unsigned event command never runs', async (t) => {
+  const backplane = new MemoryBackplane();
+  const a = boot(t, backplane, { instanceId: 'a' });
+  const b = boot(t, backplane, { instanceId: 'b' });
+  const peer = attach(b);
+  await settle(20);
+  const post = (body) => backplane.publish('inst:b', JSON.stringify({ v: 1, from: 'x', epoch: 'e', ...body }));
+  post({ t: 'cmd', op: 'event', sel: { id: peer.client.id } }); // no name
+  post({ t: 'cmd', op: 'event', sel: { id: peer.client.id }, name: 7, data: {} }); // non-string name
+  post({ t: 'cmd', op: 'event', sel: { id: peer.client.id }, name: '', data: {} }); // empty name
+  await settle(20);
+  assert.deepStrictEqual(peer.socket.events, [], 'nothing reached the client');
+  assert.strictEqual(a.cluster.instances().includes('b'), true);
+});

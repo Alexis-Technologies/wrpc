@@ -111,6 +111,7 @@ class Cluster extends Emitter {
    *   count(room), snapshot() -> { clients, rooms }
    *   descriptors(sel) -> Array
    *   join(sel, rooms) / leave(sel, rooms) / disconnect(sel)
+   *   event(sel, name, data)   — deliver one event to the selected client(s)
    *   ask(rooms, name, data, timeout, onCount) -> Promise<{answers, errors}>
    */
   constructor({
@@ -571,48 +572,74 @@ class Cluster extends Emitter {
    * fire-and-forget with the backplane's at-most-once delivery.
    */
   join(target, ...rooms) {
-    this.#command('join', target, rooms);
+    this.#command('join', target, { rooms });
   }
 
   leave(target, ...rooms) {
-    this.#command('leave', target, rooms);
+    this.#command('leave', target, { rooms });
   }
 
   disconnect(target) {
-    this.#command('disconnect', target, undefined);
+    this.#command('disconnect', target, {});
   }
 
-  // The three room ops, in one place. Both call sites below used to spell this
+  /**
+   * One event to ONE client, wherever it is connected: the id names the
+   * instance, so this is an addressed command — one publish, one receiver
+   * — never a broadcast-and-filter. `room` narrows delivery to a client
+   * still in that room (a relay that must not outlive a membership).
+   * Fire-and-forget with the backplane's at-most-once delivery; a local
+   * id is applied directly.
+   */
+  send(clientId, name, data, options = {}) {
+    if (typeof clientId !== 'string' || clientId.length === 0) {
+      throw new TypeError('Cluster.send: clientId must be a non-empty string');
+    }
+    if (typeof name !== 'string' || name.length === 0) {
+      throw new TypeError('Event name must be a non-empty string');
+    }
+    const room = typeof options.room === 'string' ? options.room : undefined;
+    this.#command('event', clientId, { name, data }, room);
+  }
+
+  // The command ops, in one place. Both call sites below used to spell this
   // chain out themselves and disagreed on the unknown-op case — one fell
   // through to disconnect, the other ignored it — so the default is now the
   // caller's to state: this returns false rather than picking one.
-  #applyOp(op, sel, rooms) {
-    if (op === 'join') this.#local.join(sel, rooms);
-    else if (op === 'leave') this.#local.leave(sel, rooms);
+  // `args` is the envelope's op-specific part: { rooms } for join/leave,
+  // { name, data } for event — the same keys on the wire, so a node that
+  // predates an op ignores it and one that knows it reads it (additive).
+  #applyOp(op, sel, args) {
+    if (op === 'join') this.#local.join(sel, args.rooms);
+    else if (op === 'leave') this.#local.leave(sel, args.rooms);
     else if (op === 'disconnect') this.#local.disconnect(sel);
+    else if (op === 'event') this.#local.event(sel, args.name, args.data);
     else return false;
     return true;
   }
 
-  #command(op, target, rooms) {
+  // `room`, when given, rides inside the selector: a client that left the
+  // room between send and delivery is not selected — a relay bounded by a
+  // membership must not outlive it.
+  #command(op, target, args, room = undefined) {
     const apply = (sel) => {
-      // `op` here is a literal from join()/leave()/disconnect(), never user
-      // input, so an unknown one is a bug in this file and should be loud.
-      if (!this.#applyOp(op, sel, rooms)) throw new Error(`Unknown cluster command op '${op}'`);
+      // `op` here is a literal from join()/leave()/disconnect()/send(), never
+      // user input, so an unknown one is a bug in this file and should be loud.
+      if (!this.#applyOp(op, sel, args)) throw new Error(`Unknown cluster command op '${op}'`);
     };
     // An addressed command rides the target instance's own channel — one
     // publish, one receiver — instead of asking every node to filter.
     if (typeof target === 'string') {
-      const sel = { id: target };
+      const sel = room === undefined ? { id: target } : { id: target, room };
       const instance = instanceOfClientId(target);
       if (instance === this.#instance || instance === null) return void apply(sel);
       if (!this.#backplane || this.#closed) return;
-      return void this.#post(instanceChannel(instance), { t: 'cmd', op, sel, rooms });
+      return void this.#post(instanceChannel(instance), { t: 'cmd', op, sel, ...args });
     }
     const sel = target && typeof target === 'object' ? target : {};
     apply(sel);
     if (!this.#backplane || this.#closed) return;
-    this.#post(CLUSTER_CHANNEL, { t: 'cmd', op, sel, rooms });
+    this.#post(CLUSTER_CHANNEL, { t: 'cmd', op, sel, ...args });
   }
 
   /**
@@ -840,19 +867,21 @@ class Cluster extends Emitter {
       case 'q':
         return void this.#serve(envelope);
       case 'cmd': {
-        const { op, sel, rooms } = envelope;
+        const { op, sel, rooms, name, data } = envelope;
         // Wire-shape sanity on the most powerful envelope type: op a
         // string, sel a plain object, rooms (when present) an array of
-        // strings — a malformed command is dropped, never partially run.
+        // strings, an event's name a non-empty string — a malformed
+        // command is dropped, never partially run.
         if (typeof op !== 'string') return;
         if (sel !== undefined && (typeof sel !== 'object' || sel === null || Array.isArray(sel))) return;
         if (rooms !== undefined && (!Array.isArray(rooms) || rooms.some((room) => typeof room !== 'string'))) {
           return;
         }
+        if (op === 'event' && (typeof name !== 'string' || name.length === 0)) return;
         try {
           // `op` arrived from a peer: an unrecognised one is ignored, the same
           // way the switch's own default ignores an unrecognised envelope type.
-          this.#applyOp(op, sel ?? {}, rooms);
+          this.#applyOp(op, sel ?? {}, { rooms, name, data });
         } catch (error) {
           this.#log.error({ err: error, event: 'cluster.command', op });
         }

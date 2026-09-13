@@ -82,6 +82,10 @@ class Server extends Emitter {
     return this.rpc.getClient(id);
   }
 
+  sendTo(clientId, name, data, options) {
+    return this.rpc.sendTo(clientId, name, data, options);
+  }
+
   #onConnection(socket, req) {
     this.rpc.attachSocket(socket, {
       headers: req.headers,

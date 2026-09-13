@@ -6,7 +6,7 @@ const { ServerTransport, buildHeaders, isOriginAllowed } = require('../transport
 const { SessionManager } = require('./sessions.js');
 const { defineRouter, procedure, runHooksSafe } = require('./router.js');
 const { RoomRegistry, Broadcast, RoomsBackplane } = require('./rooms.js');
-const { Cluster } = require('./cluster.js');
+const { Cluster, instanceOfClientId } = require('./cluster.js');
 const { SseChannels } = require('../sse/server.js');
 // The channel header from the import-free constants module, NOT from
 // sse/server.js: the string is shared, the implementation is not.
@@ -272,7 +272,11 @@ class RpcServer extends Emitter {
     const select = (sel = {}) => {
       if (typeof sel.id === 'string') {
         const client = this.#byId.get(sel.id);
-        return client ? [client] : [];
+        if (!client) return [];
+        // id AND room: the room is a condition on that one client, not a
+        // second population — an addressed relay bounded by a membership.
+        if (typeof sel.room === 'string' && !client.in(sel.room)) return [];
+        return [client];
       }
       if (typeof sel.room === 'string') return Array.from(this.#rooms.members(sel.room));
       // Persistent connections only: a per-request HTTP client is not a
@@ -328,6 +332,11 @@ class RpcServer extends Emitter {
       disconnect: (sel) => {
         for (const client of select(sel)) client.close();
       },
+      // The local leg of Cluster.send / RpcServer.sendTo: a per-request HTTP
+      // client cannot receive one, and is skipped the way Broadcast skips it.
+      event: (sel, name, data) => {
+        for (const client of select(sel)) if (client.persistent) client.sendEvent(name, data);
+      },
       // The remote leg of a broadcast ask: LOCAL delivery only — the
       // question already reached every other node as its own request. An
       // ARRAY of rooms is a narrowing even when empty (to() with no rooms
@@ -349,6 +358,34 @@ class RpcServer extends Emitter {
   /** The local client with this id; undefined when not on this instance. */
   getClient(id) {
     return this.#byId.get(id);
+  }
+
+  /**
+   * One event to one client by id, on this instance or — through the
+   * cluster's addressed command — on the instance its id names. `room`
+   * narrows delivery to a client still in that room. Returns true when
+   * the event was delivered locally or handed to the backplane, false when
+   * it is known not to be deliverable (unknown local id, non-persistent
+   * client, not in `room`, or a foreign id with no backplane).
+   */
+  sendTo(clientId, name, data, options = {}) {
+    if (typeof clientId !== 'string' || clientId.length === 0) {
+      throw new TypeError('sendTo: clientId must be a non-empty string');
+    }
+    if (typeof name !== 'string' || name.length === 0) {
+      throw new TypeError('Event name must be a non-empty string');
+    }
+    const room = typeof options.room === 'string' ? options.room : undefined;
+    const client = this.#byId.get(clientId);
+    if (client) {
+      if (!client.persistent || (room !== undefined && !client.in(room))) return false;
+      client.sendEvent(name, data);
+      return true;
+    }
+    const instance = instanceOfClientId(clientId);
+    if (instance === null || instance === this.#instance || !this.#backplane) return false;
+    this.#cluster.send(clientId, name, data, { room });
+    return true;
   }
 
   get router() {
