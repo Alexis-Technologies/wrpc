@@ -600,10 +600,14 @@ class RpcServer extends Emitter {
     // may hand them over here.
     const client = this.#addClient(transport, null, meta?.headers ? buildMeta({ headers: meta.headers }) : null);
     port.on('message', (data) => {
-      if (typeof data === 'string' || Buffer.isBuffer(data)) {
+      // Same rule as the socket path: text is a packet, bytes are a stream
+      // chunk. A Buffer IS a Uint8Array, and checking Buffer.isBuffer first
+      // used to hand a binary chunk to the JSON parser. Anything else
+      // (a structured-clone of an object) is not on the wire and is dropped.
+      if (typeof data === 'string') {
         handleMessage(client, data, this.#router, this.#limits);
-      } else if (data instanceof Uint8Array) {
-        handleBinary(client, data);
+      } else if (ArrayBuffer.isView(data)) {
+        handleBinary(client, new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
       }
     });
     return client;
