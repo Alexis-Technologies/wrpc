@@ -12,7 +12,10 @@ const { WrpcWritable } = require('../streams.js');
 const { RoomRegistry } = require('./rooms.js');
 const { DEFAULT_META_MAX } = require('./meta.js');
 const { createLoggerWriter } = require('../logging.js');
-const { createServerTelemetry } = require('../telemetry/server.js');
+// The disabled shape only: a Client without an injected writer (a peer
+// host, a standalone Client) must not pull the whole server facade into a
+// browser bundle for it.
+const { DISABLED: DISABLED_TELEMETRY } = require('../telemetry/shared.js');
 
 // One peer holding thousands of open generators is a denial of service the
 // application never opted into; the cap is generous but present.
@@ -145,7 +148,7 @@ class Client extends Emitter {
     // Connection-scoped, bound once: a connection lives for minutes, and the
     // binding hoists the peer id out of every line logged for it.
     this.#log = createLoggerWriter(log ?? globalThis.console).child({ peer: transport.source });
-    this.#otel = otel ?? createServerTelemetry(null);
+    this.#otel = otel ?? DISABLED_TELEMETRY;
     this.source = transport.source;
     this.session = null;
     this.sessionReady = Promise.resolve();
@@ -396,12 +399,21 @@ class Client extends Emitter {
     return stream;
   }
 
+  // A host with no session manager (a browser-side peer host, a standalone
+  // Client) refuses the session calls with a coded error instead of a
+  // TypeError from inside a handler.
+  #requireSessions(method) {
+    if (this.#sessions) return this.#sessions;
+    throw refusal(`${method}: sessions are not available on this host`);
+  }
+
   initializeSession(token, data = {}) {
+    const sessions = this.#requireSessions('initializeSession');
     // Re-initializing the SAME token must not finalize first: with an async
     // store the fire-and-forget delete(token) could land after the new
     // set(token) and silently wipe the fresh session
     if (this.session && this.session.token !== token) void this.finalizeSession();
-    this.session = this.#sessions.create(token, data);
+    this.session = sessions.create(token, data);
     return true;
   }
 
@@ -409,23 +421,26 @@ class Client extends Emitter {
     if (!this.session) return false;
     const { token } = this.session;
     this.session = null;
-    await this.#sessions.destroy(token);
+    // A session that never came from a store (a peer host's link identity)
+    // has nothing to destroy.
+    if (this.#sessions) await this.#sessions.destroy(token);
     return true;
   }
 
   startSession(token, data = {}) {
+    const sessions = this.#requireSessions('startSession');
     this.initializeSession(token, data);
     if (!this.#transport.connection) {
       // The carrier stamps the response when it can (a cookie); a bearer
       // carrier answers null and the handler returns tokens in its result.
-      const header = this.#sessions.transport.write(this.session.token);
+      const header = sessions.transport.write(this.session.token);
       if (header) this.#transport.sendSessionCookie(header);
     }
     return true;
   }
 
   async restoreSession(token) {
-    const session = await this.#sessions.restore(token);
+    const session = await this.#requireSessions('restoreSession').restore(token);
     if (!session) return false;
     this.session = session;
     return true;

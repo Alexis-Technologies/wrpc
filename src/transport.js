@@ -1,8 +1,9 @@
 'use strict';
 
-const { Emitter, toKebab } = require('./utils.js');
+const { toKebab } = require('./utils.js');
 const { STATUS_CODES } = require('./status.js');
 const { publicErrorMessage, publicErrorDetails, wireError } = require('./rpc/errors.js');
+const { ServerTransport } = require('./rpc/serverTransport.js');
 const { META_HEADER, META_PREFIX, CHANNEL_HEADER } = require('./wire.js');
 
 // RFC 6265 permits '=' inside cookie values (base64, JWT) — split each
@@ -102,42 +103,6 @@ const isOriginAllowed = (cors, origin) => {
   if (typeof cors.origins === 'function') return Boolean(cors.origins(origin));
   return cors.origins.includes(origin);
 };
-
-class ServerTransport extends Emitter {
-  // Which wire this is, for log entries and metric attributes. Subclasses
-  // override it; the base value covers a transport nobody labelled.
-  kind = 'unknown';
-
-  constructor(source) {
-    // No listener cap: transports are fan-out points — every backpressured
-    // outbound stream on the connection parks a once('drain'|'close')
-    // listener here, and the default cap of 10 would throw on the 11th
-    // concurrently stalled stream.
-    super({ maxListeners: Number.MAX_SAFE_INTEGER });
-    this.source = source;
-  }
-
-  error(code = 500, { id = '', error = null } = {}) {
-    const packet = { type: 'callback', id, error: wireError(code, error) };
-    return this.send(packet, code);
-  }
-
-  // Returns the transport's backpressure signal (false = above the
-  // high-water mark) so a producer — a subscription pump, a stream — can
-  // wait for 'drain' instead of buffering without limit.
-  //
-  // `text` is the already-serialized form of `obj` when the dispatcher's
-  // compiled-serializer fast path built one (see handleRpc); passing both
-  // keeps the object available to the overrides that need it (batch
-  // collection, REST unwrapping) while the plain path skips a stringify.
-  send(obj, code = 200, text = null) {
-    // An injected codec (RpcServer options.codec, assigned per transport)
-    // re-frames every packet; it wins over precompiled `text` by
-    // construction — the server refuses codec + serializers up front.
-    if (this.codec) return this.write(this.codec.encode(obj), code);
-    return this.write(text ?? JSON.stringify(obj), code);
-  }
-}
 
 // Net-free HTTP transport over an abstract call description:
 // { method, url, headers, body?, remoteAddress?, respond({ status, headers, body }) }.
