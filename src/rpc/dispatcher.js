@@ -5,7 +5,7 @@ const { WrpcReadable } = require('../streams.js');
 const { chunkDecode } = require('../chunks.js');
 const { runSubscription } = require('./subscriptions.js');
 const { runHooks, runHooksSafe } = require('./router.js');
-const { publicErrorMessage, publicErrorDetails, wireError } = require('../transport.js');
+const { publicErrorMessage, publicErrorDetails, wireError } = require('./errors.js');
 const { SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
 
 const DEFAULT_VERSION = '*';
