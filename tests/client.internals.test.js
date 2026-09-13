@@ -311,3 +311,49 @@ test('use(): static introspection without wire traffic', async (t) => {
     assert.throws(() => client.use({ unit: [] }), TypeError);
   });
 });
+
+// The client is the transport a WrpcWritable holds, so the transport's
+// flow-control signal has to pass through it — both the write() boolean
+// and the 'drain' that releases the producer. A WebSocket in a browser
+// reports nothing (undefined counts as accepted); an RTCDataChannel does.
+test('WrpcClient backpressure passthrough', async (t) => {
+  class ThrottledTransport extends FakeTransport {
+    accept = true;
+    write(data) {
+      super.write(data);
+      return this.accept;
+    }
+  }
+
+  await t.test('write() returns the transport signal and createStream parks on drain', async () => {
+    const transport = new ThrottledTransport('fake://x');
+    const client = new WrpcClient('fake://x', transport);
+    await client.open();
+    t.after(() => client.close());
+
+    assert.strictEqual(client.write('{"type":"ping"}'), true);
+    transport.accept = false;
+    assert.strictEqual(client.write('{"type":"ping"}'), false);
+
+    const stream = client.createStream('upload.bin', 6);
+    assert.strictEqual(stream.write(new Uint8Array([1, 2, 3])), false);
+    let drained = 0;
+    stream.on('drain', () => drained++);
+    transport.accept = true;
+    transport.emit('drain');
+    await timers.setImmediate();
+    assert.strictEqual(drained, 1);
+    assert.strictEqual(stream.write(new Uint8Array([4, 5, 6])), true);
+  });
+
+  await t.test('a transport that reports nothing counts as accepted', async () => {
+    const { client, transport } = makeClient();
+    await client.open();
+    t.after(() => client.close());
+    assert.strictEqual(client.write('{"type":"ping"}'), undefined);
+    const before = transport.sent.length;
+    const stream = client.createStream('upload.bin', 1);
+    assert.strictEqual(stream.write(new Uint8Array([1])), true);
+    assert.strictEqual(transport.sent.length - before, 2); // stream packet + chunk
+  });
+});

@@ -101,7 +101,8 @@ export class WrpcReadable extends Emitter {
 
 export interface Transport {
   send(obj: object): void;
-  write(data: string | ArrayBufferView): void;
+  /** `false` means above the high-water mark: wait for 'drain'. `void` counts as accepted. */
+  write(data: string | ArrayBufferView): boolean | void;
 }
 
 export class WrpcWritable extends Emitter {
@@ -144,11 +145,18 @@ export interface WrpcMethodInfo {
 declare class ClientTransport extends Emitter {
   url: string;
   active: boolean;
+  /** Stays open (WebSocket, port, SSE, data channel): carries subscriptions, cancel and streams. */
+  persistent: boolean;
+  /** Opts into the client's app-level ping/pong; the client owns the timers. */
+  heartbeat: boolean;
   constructor(url: string);
   open(options?: WrpcClientOptions): Promise<void>;
   close(): void;
+  /** Synchronous, unconditional: flips `active` and emits 'close' without a peer handshake. */
+  terminate(): void;
   send(obj: object): void;
-  write(data: string | ArrayBufferView): void;
+  /** Returns the flow-control signal when the wire has one (`false` = above the high-water mark, then 'drain'). */
+  write(data: string | ArrayBufferView): boolean | void;
   online(): void;
   offline(): void;
 }
@@ -241,7 +249,8 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
   unrespond(name: string): boolean;
   /** Sends whatever calls are waiting to be batched. Safe to call anytime. */
   flush(): void;
-  write(data: string | ArrayBufferView): void;
+  /** The transport's flow-control signal, passed through (see ClientTransport.write). */
+  write(data: string | ArrayBufferView): boolean | void;
 }
 
 /**

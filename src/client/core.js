@@ -759,6 +759,13 @@ class WrpcClient extends Emitter {
       this.#escalate(error, 'transport.error');
     });
 
+    // The client IS the transport a WrpcWritable holds (createStream), so
+    // a flow-controlled transport's 'drain' has to be re-announced here or
+    // the producer parked on it never wakes.
+    bind('drain', () => {
+      this.emit('drain').catch((error) => this.#escalate(error, 'listener.drain'));
+    });
+
     bind('message', (data) => {
       const escalate = (error) => this.#escalate(error, 'message');
       if (typeof data === 'string') this.#handlePacket(data).catch(escalate);
@@ -1115,8 +1122,12 @@ class WrpcClient extends Emitter {
     record.stream?.end();
   }
 
+  // Returns the transport's backpressure signal (false = above its
+  // high-water mark) so a WrpcWritable can park on 'drain' instead of
+  // buffering without limit; a transport that reports nothing counts as
+  // accepted (undefined !== false).
   write(data) {
-    this.#transport.write(data);
+    return this.#transport.write(data);
   }
 
   send(data) {
