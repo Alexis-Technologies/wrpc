@@ -157,6 +157,10 @@ class FakePeerConnection extends EventTarget {
   #linked = false;
   #closed = false;
   #negotiationQueued = false;
+  // The spec's negotiation-needed flag: raised by createDataChannel and
+  // restartIce, cleared by createOffer, checked when stable — so a
+  // negotiation that already happened fires no late event.
+  #negotiationNeeded = false;
   #descriptionSeq = 0;
 
   constructor(world, configuration = {}) {
@@ -202,6 +206,7 @@ class FakePeerConnection extends EventTarget {
 
   async createOffer(options = {}) {
     if (this.#closed) throw invalidState('RTCPeerConnection is closed');
+    this.#negotiationNeeded = false;
     const restart = options.iceRestart === true ? ' ice-restart' : '';
     return { type: 'offer', sdp: `v=0 fake ${this.id} o=${++this.#descriptionSeq}${restart}` };
   }
@@ -323,11 +328,15 @@ class FakePeerConnection extends EventTarget {
   // ---- internals
 
   #queueNegotiation() {
+    this.#negotiationNeeded = true;
     if (this.#negotiationQueued) return;
     this.#negotiationQueued = true;
     this.#world.later(() => {
       this.#negotiationQueued = false;
-      if (this.#closed || this.signalingState !== 'stable') return;
+      if (this.#closed || !this.#negotiationNeeded) return;
+      // Not stable: re-checked when the signaling state returns to stable.
+      if (this.signalingState !== 'stable') return;
+      this.#negotiationNeeded = false;
       this.dispatchEvent(new Event('negotiationneeded'));
     });
   }
@@ -356,12 +365,20 @@ class FakePeerConnection extends EventTarget {
   // Both sides stable with each other as remote: the link comes up after a
   // hop, like ICE checks would.
   #negotiated() {
+    if (this.#negotiationNeeded) this.#queueNegotiation();
     const peer = this.#peer;
     if (!peer || peer.#peer !== this || peer.signalingState !== 'stable') return;
     this.#world.later(() => {
       if (this.#closed || peer.#closed) return;
+      // Both transports come up before any channel opens — a channel's
+      // 'open' handler on either side must already see sctp.
+      const fresh = !this.#linked;
       this.#connect();
       peer.#connect();
+      if (fresh) {
+        this.#openChannels();
+        peer.#openChannels();
+      }
     });
   }
 
@@ -370,6 +387,9 @@ class FakePeerConnection extends EventTarget {
     this.#linked = true;
     this.sctp = { maxMessageSize: this.#world.maxMessageSize };
     this.#setStates('connected', 'connected');
+  }
+
+  #openChannels() {
     for (const channel of this.#channels.values()) this.#tryOpen(channel);
   }
 
