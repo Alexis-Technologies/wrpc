@@ -1,8 +1,7 @@
 'use strict';
 
-const http = require('node:http');
-
 const { Emitter, toKebab } = require('./utils.js');
+const { STATUS_CODES } = require('./status.js');
 const { META_HEADER, META_PREFIX, CHANNEL_HEADER } = require('./wire.js');
 
 // RFC 6265 permits '=' inside cookie values (base64, JWT) — split each
@@ -111,7 +110,7 @@ const isOriginAllowed = (cors, origin) => {
 // router's own coded errors do: their messages are part of the protocol).
 // The packet id is the correlation: the same id is on the server log line.
 const publicErrorMessage = (code, error) => {
-  const status = http.STATUS_CODES[code] || 'Unknown error';
+  const status = STATUS_CODES[code] || 'Unknown error';
   if (!error) return status;
   if (code < 500 || error.expose === true) return error.message;
   return status;
@@ -322,7 +321,7 @@ class ServerHttpTransport extends ServerTransport {
   close() {
     if (this.#responded) return;
     if (!this.#batch) return void this.error(503);
-    const message = http.STATUS_CODES[503];
+    const message = STATUS_CODES[503];
     const answered = new Set();
     for (let i = 0; i < this.#collected.length; i++) answered.add(this.#collected[i].id);
     for (const id of this.#batch) {

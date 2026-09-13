@@ -22,9 +22,8 @@ const nodeStream =
     };
   };
 
-const http = require('node:http');
-
 const { isOriginAllowed } = require('../transport.js');
+const { STATUS_CODES } = require('../status.js');
 
 // Shared plumbing for everything that turns a host framework's request into
 // the abstract call description RpcServer.handleHttpCall consumes:
@@ -89,7 +88,7 @@ const normalizeBody = (body) => {
   }
 };
 
-const statusLine = (code) => `${code} ${http.STATUS_CODES[code] ?? 'Unknown'}`;
+const statusLine = (code) => `${code} ${STATUS_CODES[code] ?? 'Unknown'}`;
 
 // The core answers with `Set-Cookie` as an array and Content-Length as a
 // number; frameworks want strings and repeated header lines.

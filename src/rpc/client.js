@@ -5,9 +5,8 @@
 // they reach the RpcServer only through the options bag #addClient builds,
 // so the dependency is one-way: core requires this file, never the reverse.
 
-const http = require('node:http');
-
 const { Emitter, jsonParse } = require('../utils.js');
+const { STATUS_CODES } = require('../status.js');
 const { generateUUID } = require('../runtime/node.js');
 const { WrpcWritable } = require('../streams.js');
 const { RoomRegistry } = require('./rooms.js');
@@ -170,7 +169,7 @@ class Client extends Emitter {
 
   error(code, { id = '', error = null } = {}) {
     const httpCode = code <= 599 ? code : 500;
-    const status = http.STATUS_CODES[httpCode];
+    const status = STATUS_CODES[httpCode];
     const info = error ? error.stack : status || 'Unknown error';
     this.#transport.error(code, { id, error });
     this.#log.error({ event: 'rpc.error', code, id, err: error }, `${this.source}\t${code}\t${info}`);
