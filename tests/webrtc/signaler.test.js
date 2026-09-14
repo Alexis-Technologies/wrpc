@@ -51,7 +51,7 @@ test('signaler: the structural checks', () => {
   assert.strictEqual(isSignaler(bare), true);
   assert.strictEqual(hasRoster(bare), false);
   assert.strictEqual(hasRoster({ ...bare, join() {}, leave() {} }), true);
-  assert.deepStrictEqual([...SIGNAL_MESSAGE_TYPES], ['description', 'candidate', 'close']);
+  assert.deepStrictEqual([...SIGNAL_MESSAGE_TYPES], ['description', 'candidate', 'close', 'connect']);
   assert.ok(Object.isFrozen(SIGNAL_MESSAGE_TYPES));
   assert.strictEqual(isSignalMessage({ type: 'candidate' }), true);
   assert.strictEqual(isSignalMessage({ type: 'offer' }), false);

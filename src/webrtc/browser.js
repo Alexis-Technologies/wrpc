@@ -10,6 +10,8 @@ const { RtcLink, normalizeChannels, DEFAULT_CHANNELS, MAX_CHANNEL_ID } = require
 const { ClientRtcTransport, RtcPeerTransport } = require('./transport.js');
 const { PeerHost } = require('./host.js');
 const signaler = require('./signaler.js');
+const { WrpcPeer, PeerLink } = require('./peer.js');
+const { Mesh } = require('./mesh.js');
 
 module.exports = {
   isRtcAdapter,
@@ -23,6 +25,9 @@ module.exports = {
   ClientRtcTransport,
   RtcPeerTransport,
   PeerHost,
+  WrpcPeer,
+  PeerLink,
+  Mesh,
   WrpcSignaler: signaler.WrpcSignaler,
   wrpcSignaler: signaler.wrpcSignaler,
   isSignaler: signaler.isSignaler,

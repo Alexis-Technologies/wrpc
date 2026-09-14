@@ -18,6 +18,7 @@
 //   SignalMessage = { type: 'description', description }
 //                 | { type: 'candidate', candidate }
 //                 | { type: 'close' }
+//                 | { type: 'connect' }   a knock: "dial me" (WrpcPeer, from the non-initiator)
 //
 // WrpcPeer needs only a Signaler; Mesh needs a RosterSignaler. Anything
 // with the shape qualifies (isSignaler / hasRoster are structural, like
@@ -28,7 +29,7 @@
 
 const { Emitter } = require('../utils.js');
 
-const SIGNAL_MESSAGE_TYPES = Object.freeze(['description', 'candidate', 'close']);
+const SIGNAL_MESSAGE_TYPES = Object.freeze(['description', 'candidate', 'close', 'connect']);
 
 const isSignalMessage = (message) =>
   typeof message === 'object' && message !== null && SIGNAL_MESSAGE_TYPES.includes(message.type);
@@ -149,7 +150,9 @@ class WrpcSignaler extends Emitter {
 
   send(to, message, options = {}) {
     if (typeof to !== 'string' || to.length === 0) throw new TypeError('send: to must be a peer id');
-    if (!isSignalMessage(message)) throw new TypeError('send: message.type must be description, candidate or close');
+    if (!isSignalMessage(message)) {
+      throw new TypeError('send: message.type must be description, candidate, close or connect');
+    }
     const room = options.room === undefined ? null : checkRoom(options.room);
     this.#client.sendEvent(`${this.#unit}/signal`, { to, room, message });
   }
