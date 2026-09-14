@@ -9,6 +9,7 @@ const framing = require('./framing.js');
 const { RtcLink, normalizeChannels, DEFAULT_CHANNELS, MAX_CHANNEL_ID } = require('./link.js');
 const { ClientRtcTransport, RtcPeerTransport } = require('./transport.js');
 const { PeerHost } = require('./host.js');
+const signaler = require('./signaler.js');
 
 module.exports = {
   isRtcAdapter,
@@ -22,6 +23,12 @@ module.exports = {
   ClientRtcTransport,
   RtcPeerTransport,
   PeerHost,
+  WrpcSignaler: signaler.WrpcSignaler,
+  wrpcSignaler: signaler.wrpcSignaler,
+  isSignaler: signaler.isSignaler,
+  hasRoster: signaler.hasRoster,
+  isSignalMessage: signaler.isSignalMessage,
+  SIGNAL_MESSAGE_TYPES: signaler.SIGNAL_MESSAGE_TYPES,
   FrameEncoder: framing.FrameEncoder,
   FrameDecoder: framing.FrameDecoder,
   FramingError: framing.FramingError,

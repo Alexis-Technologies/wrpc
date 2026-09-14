@@ -1,6 +1,8 @@
 'use strict';
 
 // The Node barrel of @alexify/wrpc/webrtc: the browser surface plus what
-// only a server needs (the signaling unit lands here in a later phase).
+// only a server needs — the signaling unit and its connection hooks.
 
-module.exports = { ...require('./browser.js') };
+const { createSignalingUnit, createSignalingHooks } = require('./signaling.js');
+
+module.exports = { ...require('./browser.js'), createSignalingUnit, createSignalingHooks };
