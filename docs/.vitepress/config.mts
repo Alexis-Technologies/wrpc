@@ -44,6 +44,9 @@ const keywords = [
   'pubsub',
   'cluster',
   'streams',
+  'webrtc',
+  'peer-to-peer',
+  'data-channel',
 ].join(', ');
 
 // schema.org structured data — helps search and AI engines understand the

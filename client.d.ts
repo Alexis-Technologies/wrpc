@@ -184,6 +184,8 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
     event: {
       getInstance(url: string): ClientTransport;
     };
+    /** Registered by `@alexify/wrpc/webrtc`; `connect('webrtc:<peer>', { transport: 'webrtc', link })`. */
+    webrtc?: new (url: string, options?: object) => ClientTransport;
     /** Late registration — how the sse subpath (and tests) add transports. */
     [name: string]: unknown;
   };
@@ -688,7 +690,7 @@ export interface WrpcClientOptions {
    * takes over ('transport-fallback' fires) and only the last exhausting
    * emits 'reconnect-failed'. No default order — the list is yours.
    */
-  transport?: 'ws' | 'http' | 'sse' | string | Array<string>;
+  transport?: 'ws' | 'http' | 'sse' | 'webrtc' | string | Array<string>;
   reconnect?: ReconnectOptions | false;
   /**
    * Presents this connection's credential. Awaited inside `open()` on the
@@ -791,6 +793,8 @@ export interface WrpcClientOptions {
   reconnectTimeout?: number;
   heartbeat?: HeartbeatOptions | false;
   worker?: ServiceWorker;
+  /** The RtcLink a `transport: 'webrtc'` client speaks over (`@alexify/wrpc/webrtc`). */
+  link?: import('./webrtc.browser.js').RtcLink;
   /**
    * Off by default, unlike the server: a client that printed on every
    * reconnect would be noise in a browser console nobody asked for. A logger

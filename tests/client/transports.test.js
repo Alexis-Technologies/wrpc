@@ -5,7 +5,7 @@ const assert = require('node:assert');
 
 const { WrpcClient, ClientTransport, isClientTransport } = require('../../src/client.js');
 require('../../sse.js'); // registers the sse transport
-require('../../src/webrtc/transport.js'); // registers the webrtc transport
+require('../../webrtc.js'); // registers the webrtc transport
 const { runTransportContract } = require('./transportContract.js');
 
 test('client transports: every registered transport passes the shared contract', async (t) => {

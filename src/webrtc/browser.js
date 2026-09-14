@@ -10,10 +10,19 @@ const { RtcLink, normalizeChannels, DEFAULT_CHANNELS, MAX_CHANNEL_ID } = require
 const { ClientRtcTransport, RtcPeerTransport } = require('./transport.js');
 const { PeerHost } = require('./host.js');
 const signaler = require('./signaler.js');
+// A browser peer defines its router with these; the main browser entry
+// leaves them out for its byte budget, and they are already in this bundle
+// (the host dispatches over a Router).
+const { defineRouter, procedure } = require('../rpc/router.js');
+const { tracked, createEventLog } = require('../rpc/subscriptions.js');
 const { WrpcPeer, PeerLink } = require('./peer.js');
 const { Mesh } = require('./mesh.js');
 
 module.exports = {
+  defineRouter,
+  procedure,
+  tracked,
+  createEventLog,
   isRtcAdapter,
   isRtcPeerConnection,
   isRtcDataChannel,

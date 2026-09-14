@@ -41,6 +41,7 @@ import {
   chunkDecode,
 } from '${ROOT}/browser.js';
 import { ClientSseTransport, SseParser, CHANNEL_HEADER } from '${ROOT}/sse.browser.js';
+import { WrpcPeer, wrpcSignaler, createW3cAdapter, defineRouter, procedure } from '${ROOT}/webrtc.browser.js';
 
 interface Api {
   chat: { send: (args: { text: string }) => Promise<{ ok: boolean }> };
@@ -66,6 +67,11 @@ async function main() {
   void ClientSseTransport;
   void SseParser;
   void CHANNEL_HEADER;
+  // A browser peer: its router, its signaler over the client, the native adapter.
+  const router = defineRouter({ chat: { hello: procedure({ handler: async (context) => context.client.id }) } });
+  const peer = new WrpcPeer({ router, signaler: wrpcSignaler(client), rtc: createW3cAdapter() });
+  const mesh = peer.join('lobby');
+  mesh.broadcast('chat/note', 1) satisfies number;
 }
 void main;
 
@@ -75,8 +81,11 @@ void main;
 import { Server } from '${ROOT}/browser.js';
 // @ts-expect-error the channel registry is server machinery
 import { SseChannels } from '${ROOT}/sse.browser.js';
+// @ts-expect-error the signaling unit is server machinery
+import { createSignalingUnit } from '${ROOT}/webrtc.browser.js';
 void Server;
 void SseChannels;
+void createSignalingUnit;
 `;
 
 const TSCONFIG = {

@@ -9,11 +9,70 @@ Semver here versions the **JavaScript API**. The wire protocol carries its own,
 narrower promise — see
 [Stability](./docs/reference/protocol.md#stability).
 
-## [1.0.0] - 2026-08-23
+## [Unreleased]
 
-This package has not been published to npm yet — there is no `[1.0.0]`
-release section until the first publish; everything below lands there
-verbatim on release day.
+### Added
+
+**WebRTC: peer-to-peer wrpc (`@alexify/wrpc/webrtc`)**
+- `WrpcPeer` — a router others call, a signaler to find them through, an
+  RTC adapter to reach them with. Two browsers (or a browser and a Node
+  process with an injected implementation) each serve a router and call the
+  other's over ONE `RTCPeerConnection` carrying two negotiated data
+  channels, one per client→host direction, so the ordinary `WrpcClient` and
+  dispatcher speak across the link unchanged: calls, events, ask/respond,
+  subscriptions with `lastEventId` resume, binary streams, heartbeat and
+  reconnect. `PeerLink` is one peer, both directions (`remote`, `api`,
+  `client`, `send`/`ask`/`createStream`); roles are by id order alone and
+  `connect()` works from either side (the non-initiator knocks).
+- `Mesh` (`peer.join(room)`) — everyone in a signaling room linked to
+  everyone, with `broadcast()`/`ask()` as one `Broadcast` fan-out over the
+  host room `mesh:<room>`, `respond()` covering members present and
+  future, and a rebuild on a signaling reset.
+- Signaling: the structural `Signaler`/`RosterSignaler` contract
+  (`isSignaler`, `hasRoster`), the built-in server unit
+  `createSignalingUnit()` + `createSignalingHooks()` (relayed through
+  `RpcServer.sendTo`, so it clusters with no extra state; a peer's id is
+  its signaling client id) and its client half `wrpcSignaler(client)` over
+  any transport.
+- The lower layers, all exported: the W3C-shaped `RtcAdapter` port
+  (`createW3cAdapter`, structural checks — wrpc binds to no Node WebRTC
+  package), `RtcLink` (perfect negotiation, trickle ICE, ICE restart,
+  redial, configurable negotiated channel ids), the one-byte data-channel
+  framing (`FrameEncoder`/`FrameDecoder`, fragmentation to the negotiated
+  message size, documented in the protocol reference), `ClientRtcTransport`
+  (registered as `WrpcClient.transport.webrtc`), `RtcPeerTransport` and the
+  browser-safe `PeerHost` (`trust: 'link'` pseudo-sessions so
+  `access: 'session'` procedures run on a peer).
+- The webrtc browser entry also exports `defineRouter`, `procedure`,
+  `tracked` and `createEventLog` — a browser peer defines its router with
+  them, and the main browser entry leaves them out for its byte budget.
+- Cluster: `cluster.send(clientId, name, data, { room })` and
+  `RpcServer.sendTo()` / `Server.sendTo()` — one event to one client by id,
+  on this instance or through the cluster's addressed command, optionally
+  bounded by a room membership.
+- Types: `rpc.d.ts`, the node-free server-core types (routers, sessions,
+  rooms, `Client`, `Context`) shared by the Node surface and the browser
+  peer types, and `ClientHost` — the host contract `context.server` is now
+  typed as (see Changed).
+
+### Changed
+- `Context.server` and `Client.server` are typed as `ClientHost | null`
+  instead of `RpcServer | null`: the contract both an `RpcServer` and a
+  WebRTC `PeerHost` satisfy (`router`, `rooms`, `getClient`, `to`, `except`,
+  `broadcast`). Narrow with `instanceof RpcServer` to reach sessions, the
+  cluster or `sendTo`. Runtime behaviour is unchanged.
+- `ServerEventTransport` (the `attachPort` transport) now exposes
+  `connection`, so a MessagePort client is `persistent`: events,
+  subscriptions and streams work over it as over a socket.
+
+### Fixed
+- `attachPort` routed a `Buffer` chunk to the text handler; binary chunks
+  now reach `handleBinary` whatever the view type.
+- `WrpcClient.write()` returns the transport's backpressure signal and the
+  client re-announces the transport's `'drain'`, so a `WrpcWritable` on the
+  client side actually waits for the wire.
+
+## [1.0.0] - 2026-08-23
 
 ### Added
 

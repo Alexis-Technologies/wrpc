@@ -8,6 +8,7 @@ import type {
   Server,
   RpcServer,
   Client,
+  ClientHost,
   Context,
   Session,
   ServerTransport,
@@ -271,9 +272,13 @@ expectType<Promise<void>>(client.emit('room/event', { x: 1 }));
 // Context.session mirrors the live client session
 declare const context: Context;
 expectType<Session | null>(context.session);
-// ...and Context.server is how a handler reaches rooms
-expectType<RpcServer | null>(context.server);
-expectType<RpcServer | null>(client.server);
+// ...and Context.server is how a handler reaches rooms: the host contract
+// an RpcServer and a WebRTC PeerHost both satisfy (narrow for the rest)
+expectType<ClientHost | null>(context.server);
+expectType<ClientHost | null>(client.server);
+declare const rpcServer: RpcServer;
+expectAssignable<ClientHost>(rpcServer);
+if (context.server instanceof wrpc.RpcServer) expectType<RpcServer>(context.server);
 
 // Every public getter of Context and Client is typed: the documented
 // `context.log.info(...)` pattern must compile, and so must the rest —

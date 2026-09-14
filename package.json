@@ -6,6 +6,7 @@
   "browser": {
     "./index.js": "./browser.js",
     "./sse.js": "./sse.browser.js",
+    "./webrtc.js": "./webrtc.browser.js",
     "./src/chunks.js": "./src/chunks.browser.js",
     "./src/runtime/node.js": "./src/runtime/browser.js"
   },
@@ -61,6 +62,14 @@
     "./auth": {
       "types": "./auth.d.ts",
       "default": "./auth.js"
+    },
+    "./webrtc": {
+      "browser": {
+        "types": "./webrtc.browser.d.ts",
+        "default": "./webrtc.browser.js"
+      },
+      "types": "./webrtc.d.ts",
+      "default": "./webrtc.js"
     },
     "./package.json": "./package.json"
   },
@@ -121,7 +130,10 @@
     "subscriptions",
     "pubsub",
     "cluster",
-    "streams"
+    "streams",
+    "webrtc",
+    "peer-to-peer",
+    "data-channel"
   ],
   "author": "Alex Dolid <dolid.sasha@gmail.com>",
   "license": "MIT",
@@ -195,6 +207,11 @@
     "query.d.ts",
     "auth.js",
     "auth.d.ts",
+    "rpc.d.ts",
+    "webrtc.js",
+    "webrtc.browser.js",
+    "webrtc.d.ts",
+    "webrtc.browser.d.ts",
     "bin/",
     "src/",
     "LICENSE",

@@ -71,6 +71,13 @@ const ENTRIES = [
   // deliberately OUTSIDE the main entry so only apps that opt into the
   // strategies pay for them.
   { label: 'auth strategies (@alexify/wrpc/auth)', entry: 'auth.js', platform: 'browser', budget: 2 },
+  // A peer is a client AND a server: the webrtc browser entry bundles the
+  // client core plus the router, dispatcher, per-peer Client, rooms and
+  // Broadcast (what makes a mesh broadcast/ask a single-encode fan-out),
+  // plus the link, framing, peer, mesh and signaler halves — measured at
+  // 38.3 KB when the row landed, so 40 is the ratchet.
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 40 },
+  { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
 ];
 
 // A browser entry has to be self-contained: no node builtins, and no packages

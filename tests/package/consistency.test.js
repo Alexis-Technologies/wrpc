@@ -162,8 +162,10 @@ test('runtime barrel exports are all declared in the hand-written types', () => 
     return names;
   };
   const cases = [
-    ['index.js', declared(['index.d.ts', 'client.d.ts'])],
+    ['index.js', declared(['index.d.ts', 'rpc.d.ts', 'client.d.ts'])],
     ['browser.js', declared(['browser.d.ts', 'client.d.ts'])],
+    ['webrtc.js', declared(['webrtc.d.ts', 'webrtc.browser.d.ts', 'rpc.d.ts'])],
+    ['webrtc.browser.js', declared(['webrtc.browser.d.ts', 'rpc.d.ts'])],
   ];
   for (const [barrel, names] of cases) {
     const runtime = Object.keys(require(path.join(ROOT, barrel)));
