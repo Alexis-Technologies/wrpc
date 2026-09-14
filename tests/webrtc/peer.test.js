@@ -295,7 +295,7 @@ test('peer: uploads and downloads cross the fragmenting channel', async (t) => {
   peer('b');
   const ab = await within(a.connect('b'), 'open');
   await ab.load('calc');
-  const size = 300 * 1024;
+  const size = 1024 * 1024;
   const payload = new Uint8Array(size);
   let sum = 0;
   for (let i = 0; i < size; i++) {
@@ -361,6 +361,40 @@ test('peer: ICE failure → redial → the client reconnects and a subscription 
   assert.strictEqual(await ab.api.calc.add({ a: 1, b: 1 }), 2);
   const client = b.link('a').remote;
   assert.ok(client.active, 'the responder side client is up again');
+});
+
+test('peer: a heartbeat timeout on a silently dead path restarts ICE, then the redial cycle takes over', async (t) => {
+  const { peer, hub } = world(t);
+  const a = peer('a', {
+    client: { heartbeat: { interval: 15, timeout: 15 }, reconnect: { minDelay: 5, maxDelay: 20, jitter: false } },
+    restartTimeout: 40,
+  });
+  const b = peer('b', { restartTimeout: 40 });
+  const ab = await within(a.connect('b'), 'open');
+  const ba = await within(b.link('a').ready(), 'open');
+  let timeouts = 0;
+  ab.remote.on('heartbeat-timeout', () => void timeouts++);
+  // The path dies but ICE has not noticed yet (no state change, bytes
+  // eaten); signaling is deaf so the restart cannot heal it either.
+  hub.mute('a');
+  hub.mute('b');
+  const pc = ab.link.pc;
+  pc.blackhole();
+  await waitFor(() => timeouts >= 1, 'the heartbeat noticed');
+  assert.ok(pc.restarts >= 1, 'the transport asked the link for an ICE restart');
+  // Until the restart fails the client keeps re-opening on the dead link
+  // (it still reads 'connected') and timing out again — bounded by
+  // restartTimeout, after which the redial cycle owns the recovery.
+  await waitFor(() => ab.link.state === 'failed', 'the restart failed');
+  assert.ok(timeouts >= 2, 'the heartbeat kept timing out on the dead path');
+  assert.strictEqual(ab.state, 'reconnecting');
+  const reconnected = onceEvent(ab, 'reconnect');
+  hub.unmute('a');
+  hub.unmute('b');
+  await within(reconnected, 'redialled and reconnected');
+  await waitFor(() => ba.state === 'open', 'the responder followed');
+  await ab.load('calc');
+  assert.strictEqual(await ab.api.calc.add({ a: 2, b: 2 }), 4);
 });
 
 test('peer: a responder whose initiator vanished knocks, then gives up', async (t) => {

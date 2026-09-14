@@ -169,10 +169,18 @@ class ClientRtcTransport extends ClientTransport {
     if (link) link.close();
   }
 
-  /** Local only: this direction is considered dead; the link is the owner's. */
+  /**
+   * Local only: this direction is considered dead; the link is the
+   * owner's. The core terminates on a heartbeat timeout — a path that is
+   * silently dead while the link still reads 'connected' — and the RTC
+   * remedy for that is an ICE restart: it either heals the path under the
+   * open channels or fails the link, whose owner then redials.
+   */
   terminate() {
     this.#attempt++;
+    const link = this.#link;
     this.#down();
+    if (link && link.state === 'connected') link.restart();
   }
 
   #bindLink(link) {

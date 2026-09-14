@@ -399,6 +399,16 @@ class FakePeerConnection extends EventTarget {
     this.#setStates('failed', 'failed');
   }
 
+  // Test hook: the path is silently dead — bytes vanish on both ends but
+  // no state changes, the way a NAT that dropped its binding looks before
+  // ICE consent expires. Only an app-level heartbeat notices; an ICE
+  // restart (a renegotiation) re-links.
+  blackhole() {
+    const peer = this.#peer;
+    this.#linked = false;
+    if (peer && peer.#peer === this) peer.#linked = false;
+  }
+
   #setStates(ice, connection) {
     if (this.iceConnectionState !== ice) {
       this.iceConnectionState = ice;

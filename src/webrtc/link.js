@@ -224,6 +224,10 @@ class RtcLink extends Emitter {
   restart() {
     const pc = this.#pc;
     if (!pc || this.#state === 'closed' || this.#state === 'failed') return;
+    // One restart at a time: a caller asking again while one is under way
+    // (a heartbeat timing out on every reconnect over the dead path) must
+    // not re-arm the timer, or the restart never gets to fail.
+    if (this.#restarting) return;
     this.#restarting = true;
     this.#armRestartTimer();
     if (typeof pc.restartIce === 'function') {
