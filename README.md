@@ -129,6 +129,8 @@ then gzipped):
 | `@alexify/wrpc/sse` — node | 86.1 KB | 28.6 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` (token strategies) | 3.3 KB | **1.5 KB** | 2.0 KB |
+| `@alexify/wrpc/webrtc` — browser (peer, link, mesh) | 118.5 KB | **38.3 KB** | 40.0 KB |
+| `@alexify/wrpc/webrtc` — node | 122.4 KB | 39.5 KB | — |
 
 The Node-only rows are reported for visibility into what each subpath pulls in
 — they never ship to a browser, and the adapter rows include the whole core
@@ -223,7 +225,7 @@ for await (const message of client.api.chat.onMessage.iterate()) {
 | **REST** | [Declarative endpoints](https://wrpc.vercel.app/guide/rest) on the same procedures — verb, path, status, fastify-shaped schemas, `/vN` version paths, OpenAPI via [`wrpc types --openapi`](https://wrpc.vercel.app/guide/cli) |
 | **Sessions & auth** | [Cookie-backed sessions](https://wrpc.vercel.app/guide/sessions) restored on reconnect, pluggable store, CSRF-aware REST dispatch; [bearer/payload token carriers, client stores and the authenticate/refresh lifecycle](https://wrpc.vercel.app/guide/auth) |
 | **Scaling** | [Rooms backplane](https://wrpc.vercel.app/guide/scaling) over any pub/sub; Redis and in-memory adapters included; [cluster layer](https://wrpc.vercel.app/guide/cluster) — replicated presence (`count` with no round-trip), `fetchClients`, cross-instance commands, node-to-node ask |
-| **Transports** | WebSocket, plain HTTP, [Server-Sent Events](https://wrpc.vercel.app/guide/sse), Service Worker `MessagePort`; [pluggable wire codec](https://wrpc.vercel.app/guide/codec) and [request metadata](https://wrpc.vercel.app/guide/metadata) (`x-wrpc-meta-<key>`) |
+| **Transports** | WebSocket, plain HTTP, [Server-Sent Events](https://wrpc.vercel.app/guide/sse), Service Worker `MessagePort`, [WebRTC data channels](https://wrpc.vercel.app/guide/webrtc) between browsers (symmetric peers, mesh, built-in or pluggable signaling); [pluggable wire codec](https://wrpc.vercel.app/guide/codec) and [request metadata](https://wrpc.vercel.app/guide/metadata) (`x-wrpc-meta-<key>`) |
 | **Hosts** | Batteries-included [server](https://wrpc.vercel.app/guide/server), or [fastify](https://wrpc.vercel.app/guide/adapters/fastify) / [express](https://wrpc.vercel.app/guide/adapters/express) / [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws) / bare `node:http` |
 | **Client** | Exponential backoff with full jitter, app-level heartbeat, automatic re-`load()` and re-subscribe, offline/online |
 | **Observability** | [Structured logging](https://wrpc.vercel.app/guide/logging) into your pino, [OpenTelemetry](https://wrpc.vercel.app/guide/telemetry) spans and metrics, W3C trace context across the wire |
@@ -273,6 +275,7 @@ See [Logging](https://wrpc.vercel.app/guide/logging) and
 | `@alexify/wrpc/sse` | `SseChannels`, `ServerSseTransport`, `ClientSseTransport`, `SseParser` | [Server-Sent Events](https://wrpc.vercel.app/guide/sse) |
 | `@alexify/wrpc/query` | `createQueryUtils` | [TanStack Query](https://wrpc.vercel.app/guide/query) |
 | `@alexify/wrpc/auth` | `bearerAuth`, `memoryStore`, `webStorage`, `cookieStorage`, `bearerTransport`, `payloadTransport` | [Authentication](https://wrpc.vercel.app/guide/auth) |
+| `@alexify/wrpc/webrtc` | `WrpcPeer`, `PeerLink`, `Mesh`, `PeerHost`, `RtcLink`, `wrpcSignaler`, `createSignalingUnit`, `createSignalingHooks`, `createW3cAdapter` | [WebRTC](https://wrpc.vercel.app/guide/webrtc) |
 | `wrpc` (bin) | `wrpc types <url> --out api.d.ts` | [Codegen CLI](https://wrpc.vercel.app/guide/cli) |
 
 Every subpath ships hand-maintained TypeScript declarations — no generation, no
@@ -300,6 +303,7 @@ Every subpath ships hand-maintained TypeScript declarations — no generation, n
   [CLI](https://wrpc.vercel.app/guide/cli),
   [TanStack Query](https://wrpc.vercel.app/guide/query).
 - **Transports & hosts** — [SSE](https://wrpc.vercel.app/guide/sse),
+  [WebRTC](https://wrpc.vercel.app/guide/webrtc),
   [wire codec](https://wrpc.vercel.app/guide/codec),
   [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws),
   [fastify](https://wrpc.vercel.app/guide/adapters/fastify),

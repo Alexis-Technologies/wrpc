@@ -128,5 +128,6 @@ docs/.vitepress/cache
 # Autobahn testsuite output
 scripts/autobahn/reports/
 
-# examples/chat's build.js output — regenerate with `node build.js`
+# the examples' build.js output — regenerate with `node build.js`
 examples/chat/public/wrpc.browser.js
+examples/syncom-mesh/public/wrpc.browser.js

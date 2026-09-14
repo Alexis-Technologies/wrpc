@@ -27,6 +27,7 @@ Two mechanisms, both declared in `package.json`:
 | --- | --- | --- |
 | `index.js` | `browser.js` | The browser barrel excludes the server half entirely. |
 | `sse.js` | `sse.browser.js` | A browser needs the [SSE](./sse) client transport, never the channel registry. |
+| `webrtc.js` | `webrtc.browser.js` | A browser peer needs the [WebRTC](./webrtc) peer, link and signaler client, never the server-side signaling unit. |
 | `src/chunks.js` | `src/chunks.browser.js` | `Buffer` vs `TextEncoder`/`TextDecoder` for [binary framing](./streams). |
 | `src/runtime/node.js` | `src/runtime/browser.js` | `node:crypto` vs `globalThis.crypto` for id generation. |
 
@@ -76,13 +77,15 @@ the run — it is a ratchet, and it runs in CI's lint job.
 | `@alexify/wrpc/sse` — browser | 47.2 KB | **15.9 KB** | 16.0 KB |
 | `@alexify/wrpc/query` | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` | 3.3 KB | **1.5 KB** | 2.0 KB |
+| `@alexify/wrpc/webrtc` — browser | 118.5 KB | **38.3 KB** | 40.0 KB |
 | `@alexify/wrpc` — node | 158.2 KB | 52.2 KB | — |
 
 The Node-only entries carry no budget because their gzip size is not a shipping
 cost; they are measured so a regression is *visible*, not gated.
 
 The SSE entry is the browser entry **plus** the SSE transport — you pay the
-extra ~1 KB only if you import it.
+extra ~1 KB only if you import it. The [WebRTC](./webrtc) entry is a client
+**and** a server (a peer serves a router), which is what its 38 KB buys.
 [`@alexify/wrpc/query`](./query) requires nothing at all (that is what keeps it
 at 1 KB); it takes the client and your `QueryClient` by injection.
 
@@ -100,6 +103,7 @@ comment saying why.
 | `http` | One-shot calls with no connection — no events, no subscriptions, no streams. |
 | `sse` | WebSockets are blocked by a proxy or corporate network. Text only. |
 | `event` | The connection lives in a Service Worker; the page talks over a `MessagePort`. |
+| `webrtc` | Peer to peer: the other end is another browser (or an injected Node implementation), reached through a [`WrpcPeer`](./webrtc) — not a URL. |
 
 `WrpcClient.transport` is a plain lookup table on purpose, and a subpath
 entrypoint registers into it at require time — which is how `@alexify/wrpc/sse`

@@ -1,0 +1,115 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>wrpc mesh example</title>
+<style>
+  body { font: 14px/1.4 system-ui, sans-serif; max-width: 40rem; margin: 2rem auto; }
+  #peers li { font-family: monospace; }
+  #log { border-top: 1px solid #ccc; padding-top: .5rem; }
+  button { margin-right: .25rem; }
+</style>
+<h1>wrpc mesh</h1>
+<p>me: <code id="me">connecting…</code> as <input id="name" placeholder="your name" size="10" /></p>
+<p>peers in <code>lobby</code>:</p>
+<ul id="peers"></ul>
+<p>
+  <input id="text" placeholder="say something to everyone" autofocus />
+  <button id="say">Broadcast</button>
+  <button id="poll">Ask everyone their name</button>
+  <button id="file">Send 1 MiB to each peer</button>
+</p>
+<ul id="log"></ul>
+<script type="module">
+  import wrpc from './wrpc.browser.js';
+  const { connect, WrpcPeer, wrpcSignaler, defineRouter, procedure } = wrpc;
+
+  const $ = (id) => document.getElementById(id);
+  const say = (text) => {
+    const li = document.createElement('li');
+    li.textContent = text;
+    $('log').prepend(li);
+  };
+  $('name').value = `tab-${Math.random().toString(36).slice(2, 6)}`;
+
+  // What every peer serves. Handlers run with the link's pseudo-session:
+  // context.session.data.peer is the calling peer's id.
+  const router = defineRouter({
+    chat: {
+      hello: procedure({ handler: async (context) => `hello ${context.session.data.peer}, I am ${$('name').value}` }),
+      receive: procedure({
+        handler: async (context, { id, size }) => {
+          const stream = context.client.getStream(id);
+          let bytes = 0;
+          for await (const chunk of stream) bytes += chunk.length;
+          say(`received ${bytes} of ${size} bytes from ${context.session.data.peer}`);
+          return { bytes };
+        },
+      }),
+      on: {
+        // A peer → this router, through link.remote.sendEvent('chat/ping').
+        ping: procedure({ handler: async (context) => say(`ping from ${context.session.data.peer}`) }),
+      },
+    },
+  });
+
+  const client = await connect('ws://127.0.0.1:8000/api');
+  const signaler = wrpcSignaler(client);
+  const peer = new WrpcPeer({ router, signaler, iceServers: [] });
+  peer.on('error', (error) => say(`error: ${error.message}`));
+  $('me').textContent = await peer.start();
+
+  const mesh = peer.join('lobby', { data: { name: $('name').value } });
+  const render = () => {
+    $('peers').replaceChildren(
+      ...[...mesh.links.values()].map((link) => {
+        const li = document.createElement('li');
+        li.textContent = `${link.id} — ${link.state}${link.data?.name ? ` (${link.data.name})` : ''}`;
+        return li;
+      }),
+    );
+  };
+  mesh.on('link', (link) => {
+    link.on('state', render);
+    render();
+  });
+  mesh.on('join', async ({ id, data }) => {
+    render();
+    const link = mesh.link(id);
+    await link.load('chat');
+    // mesh.broadcast() goes host → remote: it arrives on the OTHER peer's
+    // unit emitter, the way a server's events reach a client.
+    link.api.chat.on('note', ({ text }) => say(`${data?.name ?? id}: ${text}`));
+    link.remote.sendEvent('chat/ping', {});
+    say(`${data?.name ?? id} joined — ${await link.api.chat.hello()}`);
+  });
+  mesh.on('leave', ({ id }) => {
+    render();
+    say(`${id} left`);
+  });
+  mesh.respond('name', async () => $('name').value);
+
+  $('say').onclick = () => {
+    const text = $('text').value;
+    $('text').value = '';
+    say(`me: ${text} (to ${mesh.broadcast('chat/note', { text })} peers)`);
+  };
+  $('poll').onclick = async () => {
+    const { answers, errors } = await mesh.ask('name', {}, { timeout: 2000 });
+    say(`names: ${answers.join(', ') || '(nobody)'}${errors.length ? ` — ${errors.length} failed` : ''}`);
+  };
+  $('file').onclick = async () => {
+    const size = 1024 * 1024;
+    const payload = new Uint8Array(size).fill(42);
+    for (const link of mesh.links.values()) {
+      if (!link.open) continue;
+      const stream = link.remote.createStream('blob', size);
+      const receiving = link.api.chat.receive({ id: stream.id, size });
+      const drained = () => new Promise((resolve) => stream.once('drain', resolve));
+      for (let offset = 0; offset < size; offset += 64 * 1024) {
+        if (!stream.write(payload.subarray(offset, offset + 64 * 1024))) await drained();
+      }
+      stream.end();
+      const { bytes } = await receiving;
+      say(`${link.id} confirmed ${bytes} bytes`);
+    }
+  };
+</script>

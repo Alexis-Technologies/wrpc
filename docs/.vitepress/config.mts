@@ -179,6 +179,7 @@ export default withMermaid({
             text: 'Transports & hosts',
             items: [
               { text: 'Server-Sent Events', link: '/guide/sse' },
+              { text: 'WebRTC', link: '/guide/webrtc' },
               { text: 'Wire codec', link: '/guide/codec' },
               { text: 'uWebSockets.js', link: '/guide/adapters/uws' },
               { text: 'Fastify', link: '/guide/adapters/fastify' },
