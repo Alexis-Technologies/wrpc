@@ -47,4 +47,17 @@ class ServerTransport extends Emitter {
   }
 }
 
-module.exports = { ServerTransport };
+// The shape of a transport a host can attach by itself — persistent
+// (`connection` set) and announcing inbound traffic as 'packet' (text) and
+// 'chunk' (bytes) events. What PeerHost.attach and RpcServer.attach both
+// check; structural, so a transport need not extend ServerTransport.
+const isInboundTransport = (transport) =>
+  typeof transport === 'object' &&
+  transport !== null &&
+  typeof transport.write === 'function' &&
+  typeof transport.close === 'function' &&
+  typeof transport.on === 'function' &&
+  typeof transport.once === 'function' &&
+  Boolean(transport.connection);
+
+module.exports = { ServerTransport, isInboundTransport };

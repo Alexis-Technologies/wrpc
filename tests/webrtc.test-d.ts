@@ -3,6 +3,7 @@ import * as webrtc from '../webrtc.js';
 import type {
   ChannelsOptions,
   ClientRtcTransport,
+  RtcDataChannelLike,
   Mesh,
   PeerHost,
   PeerLink,
@@ -135,8 +136,24 @@ async function usage() {
   // The transport can also be named on an ordinary connect, given a link.
   const direct = await connect<Api>('webrtc:other', { transport: 'webrtc', link: link.link });
   expectType<WrpcClient<Api>>(direct);
+
+  // Or a raw data channel the application negotiated — static, or a factory
+  // the reconnect cycle asks for the next one.
+  const raw = await connect<Api>('webrtc:server', { transport: 'webrtc', channel: dataChannel, maxMessageSize: 65536 });
+  expectType<WrpcClient<Api>>(raw);
+  await connect<Api>('webrtc:server', { transport: 'webrtc', channel: async () => dataChannel });
+  const clientHalf = new webrtc.ClientRtcTransport('webrtc:server', { channel: () => dataChannel });
+  expectType<RtcDataChannelLike | null>(clientHalf.channel);
+  expectType<RtcLink | null>(clientHalf.link);
+  const hostHalf = new webrtc.RtcPeerTransport(dataChannel);
+  expectType<RtcLink | null>(hostHalf.link);
+  expectType<RtcDataChannelLike>(hostHalf.channel);
+  new webrtc.RtcPeerTransport(dataChannel, { peer: 'browser', maxMessageSize: 65536 });
+  new webrtc.RtcPeerTransport(link.link, { peer: 'other' });
+  expectError(new webrtc.RtcPeerTransport(link.link));
 }
 void usage;
+declare const dataChannel: RtcDataChannelLike;
 
 // A PeerHost is a ClientHost like an RpcServer: handlers reach rooms on both.
 declare const host: PeerHost;

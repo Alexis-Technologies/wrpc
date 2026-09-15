@@ -796,6 +796,13 @@ export interface WrpcClientOptions {
   /** The RtcLink a `transport: 'webrtc'` client speaks over (`@alexify/wrpc/webrtc`). */
   link?: import('./webrtc.browser.js').RtcLink;
   /**
+   * Instead of a link: a data channel the application negotiated itself,
+   * or a factory asked for one on every (re)open (`@alexify/wrpc/webrtc`).
+   */
+  channel?: import('./webrtc.browser.js').ChannelSource;
+  /** With `channel`: the message size to fragment at (default 16 KiB). */
+  maxMessageSize?: number;
+  /**
    * Off by default, unlike the server: a client that printed on every
    * reconnect would be noise in a browser console nobody asked for. A logger
    * observes errors in addition to the `'error'` event, it does not replace

@@ -30,18 +30,10 @@ const { RoomRegistry, Broadcast } = require('../rpc/rooms.js');
 const { Client, DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_CALLS, buildMeta } = require('../rpc/client.js');
 const { handleMessage, handleBinary } = require('../rpc/dispatcher.js');
 const { DEFAULT_META_MAX } = require('../rpc/meta.js');
+const { isInboundTransport } = require('../rpc/serverTransport.js');
 
 const TRUST = ['link', 'none'];
 const ONCONNECT_STALL_MS = 5000;
-
-const isInboundTransport = (transport) =>
-  typeof transport === 'object' &&
-  transport !== null &&
-  typeof transport.write === 'function' &&
-  typeof transport.close === 'function' &&
-  typeof transport.on === 'function' &&
-  typeof transport.once === 'function' &&
-  Boolean(transport.connection);
 
 class PeerHost extends Emitter {
   #otel;

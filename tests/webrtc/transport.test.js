@@ -10,6 +10,7 @@ const { RtcLink } = require('../../src/webrtc/link.js');
 const { KIND_BINARY, FLAG_FIN } = require('../../src/webrtc/framing.js');
 const { chunkEncode } = require('../../src/chunks.js');
 const { createFakeRtc } = require('./fakeRtc.js');
+const { rawChannelPair } = require('./rawChannel.js');
 const { waitFor, within } = require('./portContract.js');
 const { runTransportContract } = require('../client/transportContract.js');
 
@@ -342,4 +343,238 @@ test('webrtc transport: constructing the host half needs a host channel', async 
   t.after(() => fake.world.close());
   const link = new RtcLink({ localId: 'a', remoteId: 'b', adapter: fake.adapter, signal() {}, log: quiet });
   assert.throws(() => new RtcPeerTransport(link, { peer: 'b' }), /no host channel/);
+});
+
+// ---------------------------------------------------------------------------
+// The raw-channel mode: no link, a data channel the application owns.
+
+test('webrtc transport: raw channel — open() over an open channel announces open first and takes binaryType', async (t) => {
+  const { a, b } = await rawChannelPair(t);
+  assert.strictEqual(a.binaryType, 'blob', 'the browser default the transport must override');
+  const client = new ClientRtcTransport('webrtc:host', { channel: a });
+  assert.strictEqual(client.link, null);
+  assert.strictEqual(client.channel, null, 'null before open()');
+  const events = [];
+  client.on('open', () => events.push('open'));
+  await client.open();
+  assert.deepStrictEqual(events, ['open']);
+  assert.strictEqual(client.channel, a);
+  assert.strictEqual(a.binaryType, 'arraybuffer');
+  const host = new RtcPeerTransport(b);
+  assert.strictEqual(host.link, null);
+  assert.strictEqual(host.channel, b);
+  assert.strictEqual(host.source, 'wrpc', 'the label is the default source');
+  assert.strictEqual(host.kind, 'webrtc');
+  assert.strictEqual(host.connection, host, 'persistent');
+  assert.strictEqual(b.binaryType, 'arraybuffer');
+  const packets = [];
+  const received = [];
+  host.on('packet', (text) => packets.push(text));
+  client.on('message', (data) => received.push(data));
+  assert.strictEqual(client.write('{"type":"ping"}'), true);
+  assert.strictEqual(host.send({ type: 'pong' }), true);
+  await within(
+    waitFor(() => packets.length === 1 && received.length === 1, 'both directions'),
+    'both directions',
+  );
+  assert.deepStrictEqual(packets, ['{"type":"ping"}']);
+  assert.deepStrictEqual(received, ['{"type":"pong"}']);
+});
+
+test('webrtc transport: raw channel — both sides fragment at their own maxMessageSize', async (t) => {
+  const { a, b } = await rawChannelPair(t, { fake: { maxMessageSize: 8192 } });
+  const client = new ClientRtcTransport('webrtc:host', { channel: a, maxMessageSize: 1024 });
+  const host = new RtcPeerTransport(b, { peer: 'client', maxMessageSize: 4096 });
+  assert.strictEqual(host.source, 'client');
+  const chunks = [];
+  const received = [];
+  host.on('chunk', (bytes) => chunks.push(bytes));
+  client.on('message', (data) => received.push(data));
+  await client.open();
+  const up = new Uint8Array(5000).map((_, i) => i & 0xff);
+  const down = new Uint8Array(7000).map((_, i) => (i * 7) & 0xff);
+  client.write(chunkEncode('s1', up));
+  host.write(down);
+  await within(
+    waitFor(() => chunks.length === 1 && received.length === 1, 'delivery'),
+    'delivery',
+  );
+  assert.deepStrictEqual(Array.from(chunks[0]), Array.from(chunkEncode('s1', up)));
+  assert.deepStrictEqual(Array.from(received[0]), Array.from(down));
+  assert.ok(a.sent >= 5, `the client fragmented at 1 KiB: ${a.sent} frames`);
+  assert.ok(b.sent >= 2, `the host fragmented at 4 KiB: ${b.sent} frames`);
+});
+
+test('webrtc transport: raw channel — open() waits for a connecting channel', async (t) => {
+  const { a, b, connect } = await rawChannelPair(t, { deferred: true });
+  assert.strictEqual(a.readyState, 'connecting');
+  const client = new ClientRtcTransport('webrtc:host', { channel: a });
+  let opened = false;
+  client.on('open', () => (opened = true));
+  const opening = client.open();
+  await timers.setTimeout(10);
+  assert.strictEqual(opened, false, 'still waiting');
+  assert.strictEqual(client.channel, a, 'known while waiting (terminate() closes it)');
+  await connect();
+  await within(opening, 'open');
+  assert.strictEqual(opened, true);
+  assert.strictEqual(b.readyState, 'open');
+});
+
+test('webrtc transport: raw channel — a closed channel is refused with a pointer to the factory', async (t) => {
+  const { a } = await rawChannelPair(t);
+  a.close();
+  await timers.setTimeout(5);
+  const client = new ClientRtcTransport('webrtc:host', { channel: a });
+  await assert.rejects(client.open(), /closed; pass a factory/);
+  assert.strictEqual(client.active, false);
+});
+
+test('webrtc transport: raw channel — a connecting channel that closes before opening rejects open()', async (t) => {
+  const { a } = await rawChannelPair(t, { deferred: true });
+  const client = new ClientRtcTransport('webrtc:host', { channel: a });
+  const opening = client.open();
+  a.close();
+  await assert.rejects(opening, /closed; pass a factory/);
+});
+
+test('webrtc transport: raw channel — something that is not a channel is a TypeError', async (t) => {
+  const client = new ClientRtcTransport('webrtc:host', { channel: () => ({ send() {} }) });
+  await assert.rejects(client.open(), TypeError);
+  assert.throws(() => new ClientRtcTransport('webrtc:host', { link: {}, channel: {} }), /mutually exclusive/);
+  assert.throws(() => new RtcPeerTransport({ send() {} }), /no host channel/);
+});
+
+test('webrtc transport: raw channel — close() closes the channel; the host half sees it', async (t) => {
+  const { a, b } = await rawChannelPair(t);
+  const client = new ClientRtcTransport('webrtc:host', { channel: a });
+  const host = new RtcPeerTransport(b);
+  await client.open();
+  const hostClosed = onceEvent(host, 'close');
+  let closes = 0;
+  client.on('close', () => closes++);
+  client.close();
+  assert.strictEqual(client.active, false);
+  assert.strictEqual(closes, 1);
+  await within(hostClosed, 'host closed');
+  assert.strictEqual(a.readyState, 'closed');
+  assert.strictEqual(host.write('late'), false);
+  client.close(); // idempotent
+  assert.strictEqual(closes, 1);
+});
+
+test('webrtc transport: raw channel — the host half closing closes the channel; the client sees it', async (t) => {
+  const { a, b } = await rawChannelPair(t);
+  const client = new ClientRtcTransport('webrtc:host', { channel: a });
+  const host = new RtcPeerTransport(b);
+  await client.open();
+  const clientClosed = onceEvent(client, 'close');
+  host.close();
+  await within(clientClosed, 'client closed');
+  assert.strictEqual(b.readyState, 'closed');
+  assert.strictEqual(client.channel, null);
+  host.close(); // idempotent
+});
+
+test('webrtc transport: raw channel — terminate() closes the dead channel; a static channel cannot reopen', async (t) => {
+  const { a, b } = await rawChannelPair(t);
+  const client = new ClientRtcTransport('webrtc:host', { channel: a });
+  const host = new RtcPeerTransport(b);
+  await client.open();
+  const hostClosed = onceEvent(host, 'close');
+  client.terminate();
+  assert.strictEqual(client.active, false);
+  await within(hostClosed, 'host closed');
+  assert.strictEqual(a.readyState, 'closed', 'nobody else owns a raw channel');
+  await assert.rejects(client.open(), /closed; pass a factory/);
+});
+
+test('webrtc transport: raw channel — a factory is asked on every open(), and terminate() during it wins', async (t) => {
+  const first = await rawChannelPair(t);
+  const { world } = first;
+  const hosts = [];
+  let calls = 0;
+  const factory = async () => {
+    calls++;
+    const pair = calls === 1 ? first : await rawChannelPair(t, { world });
+    hosts.push(new RtcPeerTransport(pair.b));
+    return pair.a;
+  };
+  const client = new ClientRtcTransport('webrtc:host', { channel: factory });
+  await client.open();
+  assert.strictEqual(calls, 1);
+  assert.strictEqual(client.channel, first.a);
+  // The channel dies: the next open() gets the factory's next channel.
+  const closed = onceEvent(client, 'close');
+  first.b.close();
+  await within(closed, 'client down');
+  await client.open();
+  assert.strictEqual(calls, 2);
+  assert.notStrictEqual(client.channel, first.a);
+  const packets = [];
+  hosts[1].on('packet', (text) => packets.push(text));
+  client.write('on the second channel');
+  await within(
+    waitFor(() => packets.includes('on the second channel'), 'delivery'),
+    'delivery',
+  );
+  // terminate() while the factory is still working: the late channel is
+  // closed, not adopted.
+  client.terminate();
+  let release;
+  const gate = new Promise((resolve) => (release = resolve));
+  const slow = new ClientRtcTransport('webrtc:host', {
+    channel: async () => {
+      await gate;
+      const pair = await rawChannelPair(t, { world });
+      return pair.a;
+    },
+  });
+  let opened = 0;
+  slow.on('open', () => opened++);
+  const pending = slow.open();
+  slow.terminate();
+  release();
+  await assert.rejects(pending, /terminated/);
+  assert.strictEqual(opened, 0);
+  assert.strictEqual(slow.active, false);
+});
+
+test('webrtc transport: raw channel — a framing error closes the channel on both halves', async (t) => {
+  const { a, b } = await rawChannelPair(t);
+  const errors = [];
+  const client = new ClientRtcTransport('webrtc:host', { channel: a });
+  const host = new RtcPeerTransport(b, { onError: (error) => errors.push(error.name) });
+  client.on('error', (error) => errors.push(error.name));
+  await client.open();
+  b.send(new Uint8Array([0b11111111, 1]));
+  await within(
+    waitFor(() => a.readyState === 'closed', 'closed'),
+    'closed',
+  );
+  assert.deepStrictEqual(errors, ['FramingError']);
+  assert.strictEqual(client.active, false);
+  assert.strictEqual(host.write('late'), false);
+});
+
+test('webrtc transport: raw channel — channel and maxMessageSize arrive through connect() options', async (t) => {
+  const { a, b } = await rawChannelPair(t);
+  const host = new RtcPeerTransport(b);
+  const packets = [];
+  host.on('packet', (text) => packets.push(text));
+  const client = await WrpcClient.connect('webrtc:host', {
+    transport: 'webrtc',
+    channel: a,
+    maxMessageSize: 64,
+    heartbeat: false,
+    reconnect: false,
+  });
+  t.after(() => client.close());
+  assert.strictEqual(client.active, true);
+  client.write(`{"type":"event","name":"x","data":"${'y'.repeat(200)}"}`);
+  await within(
+    waitFor(() => packets.length === 1, 'delivery'),
+    'delivery',
+  );
+  assert.ok(a.sent >= 4, `fragmented at 64 bytes: ${a.sent} frames`);
 });

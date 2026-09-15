@@ -209,26 +209,53 @@ export interface RtcTransportOptions {
   highWaterMark?: number;
   /** bufferedAmountLowThreshold, where 'drain' fires. Default 256 KiB. */
   lowWaterMark?: number;
+  /**
+   * Raw-channel mode only (a link negotiates its own): the message size to
+   * fragment at. Default 16 KiB, the interop floor; `negotiateMessageSize(pc.sctp)`
+   * for what the connection actually allows.
+   */
+  maxMessageSize?: number;
 }
 
 /**
- * The client half over a link's clientChannel, registered as
- * `WrpcClient.transport.webrtc`: `connect('webrtc:<peer>', { transport:
- * 'webrtc', link })`. close() ends the LINK (goodbye, no redial);
- * terminate() is local, and the client's reconnect cycle re-opens on the
- * link once it is connected again.
+ * A data channel the application owns, or a factory the transport asks for
+ * one on every open() — how an application on the raw-channel level plugs
+ * its own recovery into the client's reconnect cycle.
+ */
+export type ChannelSource = RtcDataChannelLike | (() => RtcDataChannelLike | Promise<RtcDataChannelLike>);
+
+/**
+ * The client half over a link's clientChannel — or over a raw data channel
+ * — registered as `WrpcClient.transport.webrtc`: `connect('webrtc:<peer>',
+ * { transport: 'webrtc', link })` or `{ transport: 'webrtc', channel }`.
+ * Over a link, close() ends the LINK (goodbye, no redial) and terminate()
+ * is local — the client's reconnect cycle re-opens on the link once it is
+ * connected again. Over a raw channel both close the channel; a factory
+ * hands the reconnect cycle its successor, a static channel is refused
+ * once closed.
  */
 export declare class ClientRtcTransport extends ClientTransport {
-  constructor(url: string, options?: RtcTransportOptions & { link?: RtcLink | null });
+  constructor(url: string, options?: RtcTransportOptions & { link?: RtcLink | null; channel?: ChannelSource | null });
   readonly link: RtcLink | null;
+  /** The channel spoken on; null before open() and after close. */
+  readonly channel: RtcDataChannelLike | null;
 }
 
-/** The host half over a link's hostChannel; what PeerHost.attach() takes. */
+/**
+ * The host half over a link's hostChannel — what PeerHost.attach() takes —
+ * or over a raw data channel — what RpcServer.attachChannel() builds.
+ */
 export declare class RtcPeerTransport extends Emitter {
   constructor(link: RtcLink, options: RtcTransportOptions & { peer: string; onError?: (error: Error) => void });
+  /** `peer` defaults to the channel's label. */
+  constructor(
+    channel: RtcDataChannelLike,
+    options?: RtcTransportOptions & { peer?: string; onError?: (error: Error) => void },
+  );
   readonly kind: 'webrtc';
   readonly source: string;
-  readonly link: RtcLink;
+  /** null over a raw channel. */
+  readonly link: RtcLink | null;
   readonly channel: RtcDataChannelLike;
   connection: unknown;
   write(data: string | Uint8Array): boolean;
