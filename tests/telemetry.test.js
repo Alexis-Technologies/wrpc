@@ -378,6 +378,9 @@ test('partial and broken meters', async (t) => {
     assert.doesNotThrow(() => otel.recordSession('create', 'ok'));
     assert.doesNotThrow(() => otel.recordSseChannel(1));
     assert.doesNotThrow(() => otel.recordSubscription(1, 'a/b'));
+    assert.doesNotThrow(() => otel.recordRtcLink(1, 'initiator'));
+    assert.doesNotThrow(() => otel.recordRtcRedial('responder'));
+    assert.doesNotThrow(() => otel.recordRtcRestart('failed'));
     assert.doesNotThrow(() => otel.recordSubscriptionValues(1, 'a/b'));
   });
 });

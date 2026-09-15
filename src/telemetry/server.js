@@ -74,6 +74,9 @@ const createServerTelemetry = (telemetry) => {
   let clusterRequests = null;
   let clusterInstances = null;
   let sseEvents = null;
+  let rtcLinks = null;
+  let rtcRedials = null;
+  let rtcRestarts = null;
 
   // Checked separately from the others: a meter with counters and histograms
   // but no up/down counter would otherwise disable every instrument here.
@@ -121,6 +124,14 @@ const createServerTelemetry = (telemetry) => {
         unit: '{request}',
         description: 'Cluster requests settled, by op and completeness',
       });
+      rtcRedials = meter.createCounter('wrpc.rtc.redials', {
+        unit: '{attempt}',
+        description: 'Redials (initiator) and knocks (responder) after a peer link failed, by role',
+      });
+      rtcRestarts = meter.createCounter('wrpc.rtc.ice_restarts', {
+        unit: '{restart}',
+        description: 'ICE restarts on peer links, by outcome',
+      });
       sseEvents = meter.createCounter('wrpc.server.sse.events', {
         unit: '{event}',
         description: 'SSE channel lifecycle events (open/reattach/replay/gap/expired)',
@@ -137,6 +148,8 @@ const createServerTelemetry = (telemetry) => {
       clusterMessages = null;
       clusterRequests = null;
       sseEvents = null;
+      rtcRedials = null;
+      rtcRestarts = null;
     }
   }
   if (canGauge) {
@@ -153,6 +166,10 @@ const createServerTelemetry = (telemetry) => {
         unit: '{channel}',
         description: 'Live SSE channels',
       });
+      rtcLinks = meter.createUpDownCounter('wrpc.rtc.links', {
+        unit: '{link}',
+        description: 'Open peer links, by role',
+      });
       clusterInstances = meter.createUpDownCounter('wrpc.cluster.instances', {
         unit: '{instance}',
         description: 'Peer instances this node currently sees on the backplane',
@@ -162,6 +179,7 @@ const createServerTelemetry = (telemetry) => {
       subscriptions = null;
       sseChannels = null;
       clusterInstances = null;
+      rtcLinks = null;
     }
   }
 
@@ -277,6 +295,26 @@ const createServerTelemetry = (telemetry) => {
         // The envelope type set is closed (hello/state/delta/bye/e/cmd/q/a)
         // — a bounded label, unlike anything peer-named.
         clusterMessages?.add(1, { 'wrpc.cluster.type': type });
+      } catch {}
+    },
+
+    // The WebRTC peer layer. `role` is 'initiator' or 'responder', an
+    // ICE restart's outcome is 'requested', 'recovered' or 'failed'.
+    recordRtcLink(delta, role) {
+      try {
+        rtcLinks?.add(delta, { 'wrpc.rtc.role': role });
+      } catch {}
+    },
+
+    recordRtcRedial(role) {
+      try {
+        rtcRedials?.add(1, { 'wrpc.rtc.role': role });
+      } catch {}
+    },
+
+    recordRtcRestart(outcome) {
+      try {
+        rtcRestarts?.add(1, { 'wrpc.rtc.outcome': outcome });
       } catch {}
     },
 

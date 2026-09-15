@@ -77,7 +77,7 @@ the run — it is a ratchet, and it runs in CI's lint job.
 | `@alexify/wrpc/sse` — browser | 47.2 KB | **15.9 KB** | 16.0 KB |
 | `@alexify/wrpc/query` | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` | 3.3 KB | **1.5 KB** | 2.0 KB |
-| `@alexify/wrpc/webrtc` — browser | 118.5 KB | **38.3 KB** | 40.0 KB |
+| `@alexify/wrpc/webrtc` — browser | 124.3 KB | **40.2 KB** | 41.0 KB |
 | `@alexify/wrpc` — node | 158.2 KB | 52.2 KB | — |
 
 The Node-only entries carry no budget because their gzip size is not a shipping
@@ -85,7 +85,7 @@ cost; they are measured so a regression is *visible*, not gated.
 
 The SSE entry is the browser entry **plus** the SSE transport — you pay the
 extra ~1 KB only if you import it. The [WebRTC](./webrtc) entry is a client
-**and** a server (a peer serves a router), which is what its 38 KB buys.
+**and** a server (a peer serves a router), which is what its 40 KB buys.
 [`@alexify/wrpc/query`](./query) requires nothing at all (that is what keeps it
 at 1 KB); it takes the client and your `QueryClient` by injection.
 

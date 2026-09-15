@@ -67,7 +67,7 @@ span and a duration sample exactly as a slow handler does.
 | `wrpc.status` | `ok`, `error`, `cancelled`, `timeout` |
 | `error.type` | the error's constructor name |
 | `wrpc.packet.type`, `wrpc.packet.id` | every span |
-| `wrpc.transport` | `ws`, `http`, `sse`, `event` |
+| `wrpc.transport` | `ws`, `http`, `sse`, `event`, `webrtc` |
 | `wrpc.persistent` | whether the connection stays open |
 | `wrpc.subscription.values` | values yielded |
 | `wrpc.subscription.terminal` | `complete`, `error`, `unsubscribed` |
@@ -105,9 +105,19 @@ credential, not an identity, and the two do not share a switch.
 | `wrpc.cluster.messages` | Counter | `{message}` |
 | `wrpc.cluster.requests` | Counter | `{request}` |
 | `wrpc.cluster.instances` | UpDownCounter | `{instance}` |
+| `wrpc.rtc.links` | UpDownCounter | `{link}` |
+| `wrpc.rtc.redials` | Counter | `{attempt}` |
+| `wrpc.rtc.ice_restarts` | Counter | `{restart}` |
 | `wrpc.client.reconnects` | Counter | `{attempt}` |
 | `wrpc.client.refreshes` | Counter | `{run}` |
 | `wrpc.client.connections` | UpDownCounter | `{connection}` |
+
+The three `wrpc.rtc.*` instruments come from a [WebRTC peer](./webrtc): open
+links by `wrpc.rtc.role` (`initiator` / `responder`), redials and knocks
+after a link failed by role, and ICE restarts by `wrpc.rtc.outcome`
+(`requested`, `recovered`, `failed`). A peer's host half also records the
+ordinary server spans and `wrpc.server.connections` under
+`wrpc.transport: 'webrtc'`.
 
 `wrpc.server.sse.events` labels a closed kind set — `open`, `reattach`,
 `replay`, `gap`, `expired` — and the `gap`/`expired` series are **real event

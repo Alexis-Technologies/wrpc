@@ -289,12 +289,38 @@ new WrpcPeer({
   restartTimeout: 15_000,
   redial: { retries: 5, minDelay: 500, maxDelay: 10_000 },
   accept: async (from, room) => allowed(from),   // gates incoming links
+  telemetry: { api: otel },   // the peer's server half and its links; see below
 });
 ```
 
 The link's `write()` answers `false` above `highWaterMark` (1 MiB of
 `bufferedAmount`) and `drain` fires at `lowWaterMark` (256 KiB), so a stream
 producer on either end sees the same backpressure it does on a socket.
+
+## Telemetry
+
+A peer is a server too, so it takes the same [telemetry](./telemetry)
+injection a server does and emits the same things: a SERVER span for every
+call, subscription and inbound event it answers (under `wrpc.transport:
+'webrtc'`), and `wrpc.server.connections` for its links. The calling peer's
+client half takes its own through `client.telemetry`, and with a propagator
+injected on both the client span parents the server span across the
+link — one trace end to end, exactly as between a client and a server.
+
+```js
+new WrpcPeer({
+  router,
+  signaler,
+  telemetry: { api: otel },            // the host half: spans, gauges, the rtc instruments
+  client: { telemetry: { api: otel } }, // each link's client half: CLIENT spans, reconnects
+});
+```
+
+Three instruments are the peer layer's own: `wrpc.rtc.links` (open links,
+by `wrpc.rtc.role`), `wrpc.rtc.redials` (redials and knocks after a failure,
+by role) and `wrpc.rtc.ice_restarts` (by `wrpc.rtc.outcome`: `requested`,
+`recovered`, `failed`) — the rate of the last two is what an operator alerts
+on. A client-only peer (no router) still counts its links.
 
 ## What it cannot do
 
@@ -315,5 +341,6 @@ producer on either end sees the same backpressure it does on a socket.
 A peer is a client **and** a server, so the webrtc browser entry is heavier
 than the main one: the client core plus the router, dispatcher, per-peer
 `Client`, rooms and `Broadcast`, the link, framing, peer, mesh and signaler
-halves — about 38 KB min+gzip against a 40 KB budget in `pnpm size`. You
+halves, and the server telemetry writer — about 40 KB min+gzip against a
+41 KB budget in `pnpm size`. You
 pay it only when you import the subpath; the main entry is untouched.

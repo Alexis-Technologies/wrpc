@@ -129,8 +129,8 @@ then gzipped):
 | `@alexify/wrpc/sse` — node | 86.1 KB | 28.6 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` (token strategies) | 3.3 KB | **1.5 KB** | 2.0 KB |
-| `@alexify/wrpc/webrtc` — browser (peer, link, mesh) | 118.5 KB | **38.3 KB** | 40.0 KB |
-| `@alexify/wrpc/webrtc` — node | 122.4 KB | 39.5 KB | — |
+| `@alexify/wrpc/webrtc` — browser (peer, link, mesh) | 124.3 KB | **40.2 KB** | 41.0 KB |
+| `@alexify/wrpc/webrtc` — node | 128.3 KB | 41.2 KB | — |
 
 The Node-only rows are reported for visibility into what each subpath pulls in
 — they never ship to a browser, and the adapter rows include the whole core

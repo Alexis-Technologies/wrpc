@@ -94,6 +94,7 @@ const peer = new webrtc.WrpcPeer({
   client: { heartbeat: false },
   host: { trust: 'none', highWaterMark: 65536 },
   redial: { retries: 3 },
+  telemetry: { includeIdentity: false },
   accept: (from, room) => {
     expectType<string>(from);
     expectType<string | null>(room);
@@ -142,3 +143,4 @@ declare const host: PeerHost;
 expectAssignable<ClientHost>(host);
 expectType<number>(host.to('mesh:lobby').emit('x/y', 1));
 expectType<Set<Client>>(host.clients);
+expectType<boolean>(host.otel.enabled);

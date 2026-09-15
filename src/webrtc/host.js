@@ -23,6 +23,7 @@
 
 const { Emitter, isCodec } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
+const { createServerTelemetry } = require('../telemetry/server.js');
 const { generateUUID } = require('../runtime/node.js');
 const { defineRouter, procedure, runHooksSafe } = require('../rpc/router.js');
 const { RoomRegistry, Broadcast } = require('../rpc/rooms.js');
@@ -43,6 +44,7 @@ const isInboundTransport = (transport) =>
   Boolean(transport.connection);
 
 class PeerHost extends Emitter {
+  #otel;
   #router;
   #codec;
   #log;
@@ -68,6 +70,7 @@ class PeerHost extends Emitter {
     metaMaxBytes = DEFAULT_META_MAX,
     trust = 'link',
     instanceId = null,
+    telemetry = null,
   } = {}) {
     super();
     if (!router || typeof router.getProcedure !== 'function') {
@@ -81,6 +84,9 @@ class PeerHost extends Emitter {
       throw new TypeError('PeerHost: options.instanceId must be a non-empty string without "."');
     }
     this.#log = createLoggerWriter(logger);
+    // The same server-side writer RpcServer uses: spans for the calls this
+    // peer answers, the connection gauge, and the rtc instruments.
+    this.#otel = createServerTelemetry(telemetry);
     this.#roomsLog = this.#log.child({ component: 'rooms' });
     this.#codec = codec && typeof codec.encode === 'function' && typeof codec.decode === 'function' ? codec : null;
     this.#generateId = typeof generateId === 'function' ? generateId : generateUUID;
@@ -117,6 +123,11 @@ class PeerHost extends Emitter {
     return this.#trust;
   }
 
+  /** The telemetry writer (disabled-shaped when none was injected). */
+  get otel() {
+    return this.#otel;
+  }
+
   getClient(id) {
     return this.#byId.get(id);
   }
@@ -144,7 +155,7 @@ class PeerHost extends Emitter {
       rooms: this.#rooms,
       server: this,
       log: this.#log,
-      otel: null,
+      otel: this.#otel,
       maxSubscriptions: this.#limits.maxSubscriptions,
       maxCalls: this.#limits.maxCalls,
       generateId: this.#generateId,
@@ -154,6 +165,7 @@ class PeerHost extends Emitter {
     if (this.#trust === 'link') client.session = Object.freeze({ token: peer, data: about });
     this.#clients.add(client);
     this.#byId.set(client.id, client);
+    this.#otel.recordConnection(1, transport.kind);
     // Router-level connection hooks, ordered before dispatch exactly as
     // RpcServer does it: client.ready gates the access check.
     const { onConnect, onDisconnect } = this.#router.connectionHooks;
@@ -173,6 +185,7 @@ class PeerHost extends Emitter {
       client.destroy();
       this.#clients.delete(client);
       this.#byId.delete(client.id);
+      this.#otel.recordConnection(-1, transport.kind);
       if (onDisconnect.length > 0) void runHooksSafe(onDisconnect, client, payload, this.#log, 'onDisconnect');
       void this.emit('detach', client).catch((error) => this.#log.error({ err: error, event: 'listener.detach' }));
     });
@@ -187,7 +200,7 @@ class PeerHost extends Emitter {
       publish: null,
       cluster: null,
       log: this.#roomsLog,
-      otel: null,
+      otel: this.#otel,
       codec: this.#codec,
     });
   }

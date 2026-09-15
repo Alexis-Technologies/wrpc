@@ -194,6 +194,9 @@ const DISABLED = Object.freeze({
   recordClusterMessage: noop,
   recordClusterRequest: noop,
   recordClusterInstances: noop,
+  recordRtcLink: noop,
+  recordRtcRedial: noop,
+  recordRtcRestart: noop,
   // Client-side members: one disabled writer serves both halves, so it has
   // to answer to everything either of them exposes.
   recordReconnect: noop,

@@ -230,6 +230,7 @@ class RtcLink extends Emitter {
     if (this.#restarting) return;
     this.#restarting = true;
     this.#armRestartTimer();
+    void this.emit('restart', { outcome: 'requested' }).catch((error) => this.#error(error, 'listener.restart'));
     if (typeof pc.restartIce === 'function') {
       pc.restartIce();
       // An implementation without negotiationneeded would leave restartIce
@@ -465,6 +466,7 @@ class RtcLink extends Emitter {
       else {
         this.#restarting = true;
         this.#armRestartTimer();
+        void this.emit('restart', { outcome: 'requested' }).catch((error) => this.#error(error, 'listener.restart'));
       }
       return;
     }
@@ -476,6 +478,7 @@ class RtcLink extends Emitter {
       this.#restarting = false;
       this.#clearRestartTimer();
       this.#log.info({ event: 'rtc.ice.restarted' });
+      void this.emit('restart', { outcome: 'recovered' }).catch((error) => this.#error(error, 'listener.restart'));
     }
   }
 
@@ -533,6 +536,7 @@ class RtcLink extends Emitter {
     this.#restartTimer = unref(
       setTimeout(() => {
         this.#restartTimer = null;
+        void this.emit('restart', { outcome: 'failed' }).catch((error) => this.#error(error, 'listener.restart'));
         this.#fail(new Error(`ICE restart did not reconnect within ${this.#restartTimeout} ms`));
       }, this.#restartTimeout),
     );

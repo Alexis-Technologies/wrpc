@@ -75,8 +75,10 @@ const ENTRIES = [
   // client core plus the router, dispatcher, per-peer Client, rooms and
   // Broadcast (what makes a mesh broadcast/ask a single-encode fan-out),
   // plus the link, framing, peer, mesh and signaler halves — measured at
-  // 38.3 KB when the row landed, so 40 is the ratchet.
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 40 },
+  // 38.3 KB when the row landed. 40 -> 41 for the server telemetry writer:
+  // a peer answers calls, so it emits the server spans and gauges a server
+  // does (+1.9 KB, the whole of src/telemetry/server.js).
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 41 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
 ];
 

@@ -27,6 +27,7 @@
 const { Emitter, backoffDelay } = require('../utils.js');
 const { WrpcClient } = require('../client/core.js');
 const { createLoggerWriter } = require('../logging.js');
+const { createServerTelemetry } = require('../telemetry/server.js');
 const { isRtcAdapter, createW3cAdapter } = require('./port.js');
 const { RtcLink, DEFAULT_CHANNELS, normalizeChannels } = require('./link.js');
 const { ClientRtcTransport, RtcPeerTransport } = require('./transport.js');
@@ -69,9 +70,11 @@ class PeerLink extends Emitter {
   #redialTimer = null;
   #opened;
   #log;
+  #otel;
+  #counted = false;
   #unbind = [];
 
-  constructor(peer, { id, room, data, link, host, hostOptions, client, framing, redial, log }) {
+  constructor(peer, { id, room, data, link, host, hostOptions, client, framing, redial, log, otel }) {
     super();
     this.#peer = peer;
     this.#id = id;
@@ -82,6 +85,7 @@ class PeerLink extends Emitter {
     this.#hostOptions = hostOptions;
     this.#redial = redial;
     this.#log = log;
+    this.#otel = otel;
     this.#opened = deferred();
     const transport = new ClientRtcTransport(`webrtc:${id}`, { link, framing, ...hostOptions.water });
     this.#remote = new WrpcClient(`webrtc:${id}`, transport, {
@@ -263,6 +267,7 @@ class PeerLink extends Emitter {
       else if (state === 'closed') this.#onClosed();
     });
     on(link, 'error', (error) => this.#error(error));
+    on(link, 'restart', ({ outcome }) => this.#otel.recordRtcRestart(outcome));
     on(remote, 'open', () => this.#onUp());
     on(remote, 'reconnect-failed', () => this.close());
     // Bound for the client's whole life, not unbound on close: an open()
@@ -310,6 +315,7 @@ class PeerLink extends Emitter {
     const first = !this.#everOpen;
     this.#everOpen = true;
     this.#setState('open');
+    this.#count(1);
     if (first) {
       this.#opened.resolve(this);
       void this.emit('open').catch((error) => this.#error(error));
@@ -321,6 +327,7 @@ class PeerLink extends Emitter {
   #onFailed() {
     if (this.#state === 'closed') return;
     this.#setState('reconnecting');
+    this.#count(-1);
     if (this.#redialAttempt >= this.#redial.retries) {
       this.#log.warn({ event: 'rtc.peer.gave-up', attempts: this.#redialAttempt });
       return void this.close();
@@ -332,6 +339,7 @@ class PeerLink extends Emitter {
     this.#redialTimer = setTimeout(() => {
       this.#redialTimer = null;
       if (this.#state === 'closed') return;
+      this.#otel.recordRtcRedial(this.#role);
       if (this.initiator) this.#redialNow();
       else if (this.#link.state === 'failed') this.#knock();
       // A responder whose initiator never answers fails again on the
@@ -356,6 +364,7 @@ class PeerLink extends Emitter {
   #onClosed() {
     if (this.#state === 'closed') return;
     this.#setState('closed');
+    this.#count(-1);
     clearTimeout(this.#redialTimer);
     this.#redialTimer = null;
     for (const unbind of this.#unbind) unbind();
@@ -366,6 +375,19 @@ class PeerLink extends Emitter {
     this.#opened.reject(new Error(`PeerLink to '${this.#id}' closed`));
     this.#peer.released(this);
     void this.emit('close').catch((error) => this.#error(error));
+  }
+
+  get #role() {
+    return this.initiator ? 'initiator' : 'responder';
+  }
+
+  // The open-links gauge: +1 when both directions come up, -1 once when
+  // they go down, whatever the order of failure and close.
+  #count(delta) {
+    if (delta > 0 && this.#counted) return;
+    if (delta < 0 && !this.#counted) return;
+    this.#counted = delta > 0;
+    this.#otel.recordRtcLink(delta, this.#role);
   }
 
   #setState(state) {
@@ -406,6 +428,7 @@ class WrpcPeer extends Emitter {
   #redial;
   #accept;
   #log;
+  #otel;
   #links = new Map();
   // Signals for a peer whose accept() is still pending.
   #pending = new Map();
@@ -432,6 +455,7 @@ class WrpcPeer extends Emitter {
       redial = {},
       accept = null,
       logger = false,
+      telemetry = null,
     } = options;
     if (!isSignaler(signaler)) throw new TypeError('WrpcPeer: options.signaler must satisfy the Signaler contract');
     const adapter = rtc ?? createW3cAdapter();
@@ -460,7 +484,11 @@ class WrpcPeer extends Emitter {
     this.#restartTimeout = restartTimeout;
     this.#redial = normalizeRedial(redial);
     this.#accept = accept;
-    if (router) this.#host = new PeerHost({ logger, ...hostRest, router });
+    if (router) this.#host = new PeerHost({ logger, telemetry, ...hostRest, router });
+    // One writer for the peer: the host's when there is one (so its spans,
+    // connection gauge and the link instruments share instruments), its
+    // own otherwise — a client-only peer still has links to count.
+    this.#otel = this.#host ? this.#host.otel : createServerTelemetry(telemetry);
     // Listening from the start: a peer that never called start() itself
     // still answers a knock — start() runs on the first signal.
     signaler.on('signal', this.#onSignal);
@@ -607,6 +635,7 @@ class WrpcPeer extends Emitter {
       framing: this.#framing,
       redial: this.#redial,
       log: this.#log.child({ peer: remoteId }),
+      otel: this.#otel,
     });
     this.#links.set(remoteId, peerLink);
     void this.emit('link', peerLink).catch((error) => this.escalate(error));

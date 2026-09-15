@@ -43,6 +43,12 @@ narrower promise — see
   (registered as `WrpcClient.transport.webrtc`), `RtcPeerTransport` and the
   browser-safe `PeerHost` (`trust: 'link'` pseudo-sessions so
   `access: 'session'` procedures run on a peer).
+- Peer telemetry: `WrpcPeer({ telemetry })` / `PeerHost({ telemetry })` take
+  the server's injection — SERVER spans for what a peer answers, joined to
+  the calling peer's CLIENT spans through the packet's traceparent,
+  `wrpc.server.connections` under `wrpc.transport: 'webrtc'` — plus three
+  instruments of the peer layer's own: `wrpc.rtc.links`, `wrpc.rtc.redials`,
+  `wrpc.rtc.ice_restarts`. `RtcLink` emits `'restart'` with the outcome.
 - The webrtc browser entry also exports `defineRouter`, `procedure`,
   `tracked` and `createEventLog` — a browser peer defines its router with
   them, and the main browser entry leaves them out for its byte budget.

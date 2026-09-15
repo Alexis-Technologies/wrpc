@@ -3,7 +3,16 @@
 // Node machinery and lives in webrtc.d.ts, which re-exports this file — so
 // the Node types are a superset, exactly like the runtime. Node-free: the
 // router and Client types come from rpc.d.ts, the client's from client.d.ts.
-import { ClientTransport, Emitter, WrpcClient, WrpcClientOptions, WrpcCodec, WrpcLogger, WrpcWritable } from './client.js';
+import {
+  ClientTransport,
+  Emitter,
+  WrpcClient,
+  WrpcClientOptions,
+  WrpcCodec,
+  WrpcLogger,
+  WrpcTelemetryOptions,
+  WrpcWritable,
+} from './client.js';
 import { AskOptions, AskResult, Broadcast, Client, ClientHost, RoomRegistry, Router } from './rpc.js';
 
 // A browser peer defines its router with these, which the main browser
@@ -158,7 +167,8 @@ export interface RtcLinkOptions {
 
 /**
  * Events: 'state' (RtcLinkState), 'open' (both channels open), 'close',
- * 'error', 'channel-close' ({ which: 'client' | 'host' }).
+ * 'error', 'channel-close' ({ which: 'client' | 'host' }), 'restart'
+ * ({ outcome: 'requested' | 'recovered' | 'failed' }).
  */
 export declare class RtcLink extends Emitter {
   constructor(options: RtcLinkOptions);
@@ -247,6 +257,8 @@ export interface PeerHostOptions {
    */
   trust?: 'link' | 'none';
   instanceId?: string | null;
+  /** The same injection RpcServer takes: spans for answered calls, the connection gauge, the rtc instruments. */
+  telemetry?: WrpcTelemetryOptions | null;
 }
 
 /**
@@ -262,6 +274,8 @@ export declare class PeerHost extends Emitter implements ClientHost {
   readonly clients: Set<Client>;
   readonly instanceId: string;
   readonly trust: 'link' | 'none';
+  /** The telemetry writer; `enabled` is false when nothing was injected. */
+  readonly otel: { readonly enabled: boolean };
   getClient(id: string): Client | undefined;
   attach(transport: RtcPeerTransport, options: { peer: string; room?: string | null; data?: object | null }): Client;
   to(...rooms: Array<string>): Broadcast;
@@ -375,6 +389,13 @@ export interface WrpcPeerOptions {
   /** Gates incoming links; return false (or throw) to refuse. */
   accept?: ((from: string, room: string | null) => boolean | Promise<boolean>) | null;
   logger?: WrpcLogger | boolean;
+  /**
+   * Telemetry for the peer's server half and its links (the host's spans and
+   * connection gauge, `wrpc.rtc.links` / `wrpc.rtc.redials` /
+   * `wrpc.rtc.ice_restarts`). The client half of each link takes its own
+   * through `client.telemetry`.
+   */
+  telemetry?: WrpcTelemetryOptions | null;
 }
 
 export type PeerLinkState = 'connecting' | 'open' | 'reconnecting' | 'closed';
