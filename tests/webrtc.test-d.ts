@@ -16,7 +16,7 @@ import type {
   WrpcPeer,
   WrpcSignaler,
 } from '../webrtc.js';
-import type { AskResult, Client, ClientHost, Router, RouterDefinition, WrpcClient } from '../index.js';
+import type { AskResult, Client, ClientHost, Router, RouterDefinition, RpcServer, WrpcClient } from '../index.js';
 import { connect, defineRouter, procedure } from '../index.js';
 
 // The barrel: peer surface plus the Node-only signaling unit.
@@ -154,6 +154,20 @@ async function usage() {
 }
 void usage;
 declare const dataChannel: RtcDataChannelLike;
+
+// The attachPort of WebRTC: a raw channel on an RpcServer, through the Node barrel.
+declare const rpc: RpcServer;
+expectType<Client>(webrtc.attachChannel(rpc, dataChannel));
+expectType<Client>(
+  webrtc.attachChannel(rpc, dataChannel, {
+    peer: 'browser',
+    headers: { 'x-a': '1' },
+    data: { u: 1 },
+    maxMessageSize: 65536,
+  }),
+);
+expectError(webrtc.attachChannel(rpc, dataChannel, { peer: 42 }));
+expectError(webrtc.attachChannel({}, dataChannel));
 
 // A PeerHost is a ClientHost like an RpcServer: handlers reach rooms on both.
 declare const host: PeerHost;

@@ -1,4 +1,5 @@
-import type { Context, RouterDefinition, ConnectionHook } from './rpc.js';
+import type { Client, ClientMeta, Context, RouterDefinition, ConnectionHook } from './rpc.js';
+import type { RtcDataChannelLike, RtcPeerTransport, RtcTransportOptions } from './webrtc.browser.js';
 
 /**
  * `@alexify/wrpc/webrtc` — peer-to-peer wrpc over WebRTC data channels.
@@ -66,3 +67,33 @@ export declare function createSignalingUnit(options?: SignalingUnitOptions): Rou
 export declare function createSignalingHooks(options?: { name?: string; prefix?: string }): {
   onDisconnect: ConnectionHook;
 };
+
+export interface AttachChannelOptions
+  extends Pick<RtcTransportOptions, 'maxMessageSize' | 'framing' | 'highWaterMark' | 'lowWaterMark'> {
+  /** The client's `source`; defaults to the channel's label. */
+  peer?: string;
+  /** Observed about the connection by the application; lands in `context.meta`. */
+  headers?: Record<string, string>;
+  data?: Record<string, unknown>;
+  remoteAddress?: string;
+}
+
+/** What attachChannel needs of a server: RpcServer's `attach`. */
+export interface AttachingServer {
+  attach(transport: RtcPeerTransport, options?: { meta?: ClientMeta | null }): Client;
+}
+
+/**
+ * The attachPort of WebRTC: a raw data channel the application negotiated
+ * itself, attached to an ordinary RpcServer — sessions, rooms, cluster and
+ * all — reachable from a browser with `connect(url, { transport: 'webrtc',
+ * channel })`. Builds the host half of the transport over the channel and
+ * hands it to `server.attach`. No session at attach (a channel carries no
+ * request); no ICE restart or redial (the peer connection is the
+ * application's).
+ */
+export declare function attachChannel(
+  server: AttachingServer,
+  channel: RtcDataChannelLike,
+  options?: AttachChannelOptions,
+): Client;

@@ -259,7 +259,8 @@ attaches it to an ordinary `RpcServer` — sessions, rooms, cluster and all —
 the way it attaches a `MessagePort`:
 
 ```js
-rpc.attachChannel(dc, { peer: 'browser-7', headers, data });   // the attachPort of WebRTC
+import { attachChannel } from '@alexify/wrpc/webrtc';
+attachChannel(rpc, dc, { peer: 'browser-7', headers, data });   // the attachPort of WebRTC
 ```
 
 A browser answers with a `PeerHost` over the host half of the transport:
@@ -293,7 +294,7 @@ otherwise — pass `maxMessageSize: negotiateMessageSize(pc.sctp)` (on the
 client through `connect()`'s options, on the server through
 `attachChannel()`'s) once the connection is up to use what it really allows;
 each side fragments independently, so the two need not agree. And a raw
-channel carries no request, so `RpcServer.attachChannel` starts the client
+channel carries no request, so `attachChannel` starts the client
 with no session, exactly as `attachPort` does: the default `access:
 'session'` answers 403 until the application establishes one, and what it
 knows about the peer goes in `headers` / `data`, where handlers read it from
@@ -302,7 +303,10 @@ way.)
 
 `RpcServer.attach(transport)` is the seam under `attachChannel`: any
 persistent transport that announces inbound text as `'packet'` and bytes as
-`'chunk'` events is a client, WebRTC or not.
+`'chunk'` events is a client, WebRTC or not. That is also why `attachChannel`
+lives in this subpath and not on the server — the core knows no framing;
+the function builds an `RtcPeerTransport` over the channel and hands it to
+`attach`.
 
 ## Mesh
 

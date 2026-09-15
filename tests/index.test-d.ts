@@ -217,13 +217,7 @@ expectType<string>(rpc.basePath);
 expectType<Set<Client>>(rpc.clients);
 expectType<Promise<void>>(rpc.close());
 
-// The raw-channel level: attach() takes any inbound transport, attachChannel a data channel.
-declare const dataChannel: import('../webrtc.browser.js').RtcDataChannelLike;
-expectType<Client>(rpc.attachChannel(dataChannel));
-expectType<Client>(
-  rpc.attachChannel(dataChannel, { peer: 'browser', headers: { 'x-a': '1' }, data: { u: 1 }, maxMessageSize: 65536 }),
-);
-expectError(rpc.attachChannel(dataChannel, { peer: 42 }));
+// The seam under @alexify/wrpc/webrtc's attachChannel: any inbound transport is a client.
 declare const inbound: wrpc.InboundTransport;
 expectType<Client>(rpc.attach(inbound));
 expectType<Client>(rpc.attach(inbound, { meta: null }));

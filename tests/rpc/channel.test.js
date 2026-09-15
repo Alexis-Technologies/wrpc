@@ -1,6 +1,6 @@
 'use strict';
 
-// RpcServer.attach / attachChannel end to end: a WrpcClient over a raw
+// RpcServer.attach / attachChannel (@alexify/wrpc/webrtc) end to end: a WrpcClient over a raw
 // data channel (transport: 'webrtc', channel) against an ordinary
 // RpcServer — the attachPort of WebRTC. Fake channels from
 // tests/webrtc/rawChannel.js, negotiated by hand the way an application on
@@ -17,6 +17,7 @@ const { tracked, createEventLog } = require('../../src/rpc/subscriptions.js');
 const { createEventStream, Emitter } = require('../../src/utils.js');
 const { WrpcClient } = require('../../src/client/core.js');
 const { ClientRtcTransport } = require('../../src/webrtc/transport.js');
+const { attachChannel } = require('../../src/webrtc/index.js');
 const { chunkEncode } = require('../../src/chunks.js');
 const { rawChannelPair } = require('../webrtc/rawChannel.js');
 const { waitFor, within } = require('../webrtc/portContract.js');
@@ -126,7 +127,7 @@ const boot = async (t, { attach = {}, client: clientOptions = {}, logger = quiet
   const rpc = new RpcServer({ router: served.router, logger });
   t.after(() => rpc.close());
   const pair = await rawChannelPair(t);
-  const attached = rpc.attachChannel(pair.b, attach);
+  const attached = attachChannel(rpc, pair.b, attach);
   const client = await WrpcClient.connect('webrtc:server', {
     transport: 'webrtc',
     channel: pair.a,
@@ -227,7 +228,7 @@ test('attachChannel: a factory reconnects the client on a fresh channel and the 
   const rpc = new RpcServer({ router: served.router, logger: quiet });
   t.after(() => rpc.close());
   const first = await rawChannelPair(t);
-  const attached = [rpc.attachChannel(first.b, { peer: 'p' })];
+  const attached = [attachChannel(rpc, first.b, { peer: 'p' })];
   let calls = 0;
   const client = await WrpcClient.connect('webrtc:server', {
     transport: 'webrtc',
@@ -237,7 +238,7 @@ test('attachChannel: a factory reconnects the client on a fresh channel and the 
       calls++;
       if (calls === 1) return first.a;
       const pair = await rawChannelPair(t, { world: first.world });
-      attached.push(rpc.attachChannel(pair.b, { peer: 'p' }));
+      attached.push(attachChannel(rpc, pair.b, { peer: 'p' }));
       return pair.a;
     },
     heartbeat: false,
@@ -276,7 +277,7 @@ test('attachChannel: a static channel cannot come back — reconnect: false ends
 
 test('attachChannel: a framing error from the client is logged and closes the channel', async (t) => {
   const warnings = [];
-  const logger = { ...quiet, warn: (entry) => warnings.push(entry) };
+  const logger = { ...quiet, warn: (entry) => warnings.push(entry), child: () => logger };
   const { rpc, pair, attached } = await boot(t, { logger, attach: { peer: 'bad' } });
   pair.a.send(new Uint8Array([0b11111111, 1]));
   await waitFor(() => !rpc.clients.has(attached), 'detached');
@@ -329,4 +330,5 @@ test('attach: any persistent transport announcing packet/chunk is a client; a no
 
 test('attach: the transport registered under the webrtc name is the one the client picks', () => {
   assert.strictEqual(WrpcClient.transport.webrtc, ClientRtcTransport);
+  assert.throws(() => attachChannel({}, {}), /server with attach/);
 });

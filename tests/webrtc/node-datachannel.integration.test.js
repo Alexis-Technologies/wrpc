@@ -45,13 +45,13 @@ test(
 );
 
 test(
-  'webrtc raw channel: RpcServer.attachChannel over a real implementation',
+  'webrtc raw channel: attachChannel over a real implementation',
   { skip: !w3c && 'set WRPC_RTC=node-datachannel' },
   async (t) => {
     const { RpcServer } = require('../../src/rpc/core.js');
     const { defineRouter, procedure } = require('../../src/rpc/router.js');
     const { WrpcClient } = require('../../src/client/core.js');
-    require('../../src/webrtc/transport.js');
+    const { attachChannel } = require('../../src/webrtc/index.js');
     const { connectPair, opened, within } = require('./portContract.js');
     const adapter = createW3cAdapter(w3c);
     const a = adapter.createPeerConnection({ iceServers: [] });
@@ -71,7 +71,7 @@ test(
     });
     const rpc = new RpcServer({ router, logger: false });
     t.after(() => rpc.close());
-    const attached = rpc.attachChannel(channels.b, { peer: 'real' });
+    const attached = attachChannel(rpc, channels.b, { peer: 'real' });
     const client = await WrpcClient.connect('webrtc:server', {
       transport: 'webrtc',
       channel: channels.a,

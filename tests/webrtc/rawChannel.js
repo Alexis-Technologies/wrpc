@@ -4,7 +4,7 @@
 // level UNDER RtcLink: the offer/answer exchange and the candidate relay
 // are done by hand here, which is exactly the signaling an application on
 // that level owns. What the raw-channel tests of the transports and
-// RpcServer.attachChannel run over.
+// attachChannel (src/webrtc/index.js) run over.
 //
 // Not a *.test.js — a helper for tests/webrtc/*.test.js and tests/rpc/.
 

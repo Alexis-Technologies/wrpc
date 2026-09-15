@@ -39,11 +39,12 @@ narrower promise — see
   channel })` speaks on an `RTCDataChannel` the application negotiated
   itself (a factory instead of a channel plugs the application's own
   recovery into the client's reconnect cycle), `RtcPeerTransport` takes a
-  raw channel for a `PeerHost`, and `RpcServer.attachChannel(dc, { peer,
-  headers, data, maxMessageSize })` is the `attachPort` of WebRTC — an
-  ordinary server, sessions and cluster included, reachable peer to peer.
-  Under it, `RpcServer.attach(transport)` accepts any persistent transport
-  that announces inbound traffic as `'packet'`/`'chunk'` events.
+  raw channel for a `PeerHost`, and `attachChannel(rpc, dc, { peer,
+  headers, data, maxMessageSize })` from the Node barrel is the
+  `attachPort` of WebRTC — an ordinary server, sessions and cluster
+  included, reachable peer to peer. Under it, `RpcServer.attach(transport)`
+  accepts any persistent transport that announces inbound traffic as
+  `'packet'`/`'chunk'` events; the core stays free of any framing.
 - The lower layers, all exported: the W3C-shaped `RtcAdapter` port
   (`createW3cAdapter`, structural checks — wrpc binds to no Node WebRTC
   package), `RtcLink` (perfect negotiation, trickle ICE, ICE restart,

@@ -188,7 +188,6 @@ const rpc = new RpcServer({ router });
 
 rpc.attachSocket(socket, { headers, remoteAddress });   // a WrpcSocket or Connection
 rpc.attachPort(port);                                   // a MessagePort (Service Worker)
-rpc.attachChannel(dc, { peer, headers, data });         // a WebRTC data channel you negotiated
 rpc.attach(transport);                                  // any persistent 'packet'/'chunk' transport
 await rpc.handleHttpCall({ method, url, headers, body, respond });
 ```
@@ -217,11 +216,12 @@ WebSocket to the server and the page reaches the worker over a `MessagePort`.
 That is entirely a client-side arrangement; see
 [Client](./client#service-workers).
 
-`attachChannel(dc, options)` is the same arrangement over a WebRTC data
-channel the application negotiated itself — a browser reaching this server
-peer to peer with `connect(url, { transport: 'webrtc', channel })` — with the
-[`@alexify/wrpc/webrtc`](./webrtc#your-own-connection) framing on the wire.
-Like a port, a channel carries no request: the client starts with no session,
-and what the application observed about the peer goes in `headers` / `data`.
-Both are built on `attach(transport)`, which takes any persistent transport
-that announces inbound text as `'packet'` and bytes as `'chunk'` events.
+`attach(transport)` is the seam under both: any persistent transport that
+announces inbound text as `'packet'` and bytes as `'chunk'` events becomes a
+client, whether this package knows the wire or not. The one it ships on top
+of it is `attachChannel(rpc, dc, options)` from
+[`@alexify/wrpc/webrtc`](./webrtc#your-own-connection) — a WebRTC data
+channel the application negotiated itself, a browser reaching this server
+peer to peer with `connect(url, { transport: 'webrtc', channel })`. Like a
+port, a channel carries no request: the client starts with no session, and
+what the application observed about the peer goes in `headers` / `data`.

@@ -367,17 +367,11 @@ export declare class RpcServer extends Emitter {
   attachPort(port: MessagePort): Client;
   /**
    * Any persistent transport announcing its inbound traffic as 'packet'
-   * (text) and 'chunk' (bytes) events — the seam under attachChannel. `meta`
-   * is what the application observed about the connection, if anything.
+   * (text) and 'chunk' (bytes) events — the seam a wire the core never heard
+   * of plugs into (`attachChannel` in `@alexify/wrpc/webrtc` does). `meta` is
+   * what the application observed about the connection, if anything.
    */
   attach(transport: InboundTransport, options?: { meta?: ClientMeta | null }): Client;
-  /**
-   * A raw WebRTC data channel the application negotiated itself — the
-   * attachPort of WebRTC (`@alexify/wrpc/webrtc` has the client side:
-   * `connect(url, { transport: 'webrtc', channel })`). No session at attach;
-   * no ICE restart or redial — the peer connection is the application's.
-   */
-  attachChannel(channel: import('./webrtc.browser.js').RtcDataChannelLike, options?: AttachChannelOptions): Client;
   handleHttpCall(call: HttpCall): Promise<void>;
   matchPath(pathname: string): { mode: 'packet' | 'rest'; rest?: string } | null;
   /** True while drain() runs: new calls are refused with 503. */
@@ -462,19 +456,6 @@ export interface InboundTransport extends Emitter {
   connection: unknown;
   write(data: string | Uint8Array): boolean;
   close(): void;
-}
-
-export interface AttachChannelOptions
-  extends Pick<
-    import('./webrtc.browser.js').RtcTransportOptions,
-    'maxMessageSize' | 'framing' | 'highWaterMark' | 'lowWaterMark'
-  > {
-  /** The client's `source`; defaults to the channel's label. */
-  peer?: string;
-  /** Observed about the connection by the application; lands in `context.meta`. */
-  headers?: Record<string, string>;
-  data?: Record<string, unknown>;
-  remoteAddress?: string;
 }
 
 export class ServerTransport extends Emitter {
