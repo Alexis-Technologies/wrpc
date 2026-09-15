@@ -145,11 +145,13 @@ at another origin through the proxy's `url`. `worker` also takes a dedicated
 `Worker` or a raw `MessagePort`. See [Client → Workers](./client#workers).
 
 ::: warning Browser support
-SharedWorker is missing from Chrome for Android; feature-detect
-(`typeof SharedWorker !== 'undefined'`) and fall back to a direct connection.
-The proxy releases a closed tab's port on the `MessagePort` `close` event, which
-older engines never fire — there the entry lives until the worker does, as it
-always has for a Service Worker.
+SharedWorker reaches most of the mobile web now (Chrome and Firefox for
+Android, recent Safari on iOS), but Samsung Internet and Opera Mobile still
+don't ship it — feature-detect (`typeof SharedWorker !== 'undefined'`) and
+fall back to a direct connection rather than assuming it. The proxy releases
+a closed tab's port on the `MessagePort` `close` event, which older engines
+never fire — there the entry lives until the worker does, as it always has
+for a Service Worker.
 :::
 
 The client also listens to `online`/`offline`: going offline stops the
