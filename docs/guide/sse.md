@@ -64,7 +64,7 @@ channel and letting the client re-load and re-subscribe.
 Both halves belong to **one** server-side `Client`, which is what lets a
 subscription opened by a POST deliver its values down the stream. A POST
 answers `202` with no body: every reply, callbacks included, travels on the
-stream — the same shape the Service Worker port transport has.
+stream — the same shape the worker port transport has.
 
 Each frame carries the channel's own monotonic `id:`, and a dropped stream does
 **not** destroy the channel. It is held for `retention` (30 s by default), so a

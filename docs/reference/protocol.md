@@ -2,9 +2,9 @@
 
 The wire protocol is deliberately small: **JSON packets** for everything
 addressable, plus a **binary framing** for stream payloads. It rides on a
-WebSocket, an HTTP request/response pair, or a `MessagePort` to a Service
-Worker — the packets are identical on all three, which is what lets the same
-client code work offline behind a worker.
+WebSocket, an HTTP request/response pair, or a `MessagePort` to a worker (a
+Service Worker or a SharedWorker) — the packets are identical on all three,
+which is what lets the same client code work behind a worker.
 
 ## Stability
 
@@ -71,7 +71,7 @@ request/response pair is self-contained.
 | WebSocket | text frames | binary frames |
 | HTTP | request body / response body | not available |
 | SSE | `POST` body out, `data:` lines back | not available |
-| Service Worker port | `postMessage(string)` | `postMessage(Uint8Array)` |
+| Worker port | `postMessage(string)` | `postMessage(Uint8Array)` |
 | WebRTC data channel | binary frames, `KIND = 0` | binary frames, `KIND = 1` |
 
 A transport that cannot stay open (plain HTTP) carries calls only: events,
@@ -597,7 +597,7 @@ answers `503` or `429`.
 Both halves belong to **one** server-side client, which is what lets a
 subscription opened by a POST deliver its values down the stream. A POST
 answers `202` with no body: every reply, callbacks included, travels on the
-stream — the same shape the Service Worker port transport has. A POST naming
+stream — the same shape the worker port transport has. A POST naming
 an unknown channel answers `409`, like the GET.
 
 Each frame carries the channel's own monotonic `id:`, and a dropped stream

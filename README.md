@@ -14,7 +14,7 @@
 A fast, **zero-dependency** WebSocket-based RPC protocol for Node.js and
 browsers. Router and procedures, subscriptions that resume, rooms
 that scale across processes, and binary streams with backpressure that reaches
-all the way into TCP — [under 15 KB min+gzip](#bundle-size) in a browser bundle, and
+all the way into TCP — [~15 KB min+gzip](#bundle-size) in a browser bundle, and
 nothing at all in your lockfile.
 
 ```javascript
@@ -117,16 +117,16 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 44.3 KB | **14.9 KB** | 15.0 KB |
-| `@alexify/wrpc` — node (client + server) | 158.2 KB | 52.2 KB | — |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 44.7 KB | **15.1 KB** | 16.0 KB |
+| `@alexify/wrpc` — node (client + server) | 162.6 KB | 53.9 KB | — |
 | `@alexify/wrpc/ws` (WebSocket engine) | 20.7 KB | 7.5 KB | — |
 | `@alexify/wrpc/engine` (engine port) | 21.2 KB | 7.7 KB | — |
-| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 16.0 KB | 6.4 KB | — |
-| `@alexify/wrpc/fastify` | 135.3 KB | 46.2 KB | — |
-| `@alexify/wrpc/express` | 122.9 KB | 41.3 KB | — |
+| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 17.9 KB | 7.3 KB | — |
+| `@alexify/wrpc/fastify` | 139.3 KB | 47.8 KB | — |
+| `@alexify/wrpc/express` | 127.0 KB | 42.9 KB | — |
 | `@alexify/wrpc/scaling` (rooms backplane) | 4.1 KB | 1.7 KB | — |
-| `@alexify/wrpc/sse` — browser (client transport) | 47.2 KB | **15.9 KB** | 16.0 KB |
-| `@alexify/wrpc/sse` — node | 86.1 KB | 28.6 KB | — |
+| `@alexify/wrpc/sse` — browser (client transport) | 47.6 KB | **16.0 KB** | 17.0 KB |
+| `@alexify/wrpc/sse` — node | 88.4 KB | 29.6 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` (token strategies) | 3.3 KB | **1.5 KB** | 2.0 KB |
 | `@alexify/wrpc/webrtc` — browser (peer, link, mesh) | 125.9 KB | **40.7 KB** | 41.0 KB |
@@ -225,7 +225,7 @@ for await (const message of client.api.chat.onMessage.iterate()) {
 | **REST** | [Declarative endpoints](https://wrpc.vercel.app/guide/rest) on the same procedures — verb, path, status, fastify-shaped schemas, `/vN` version paths, OpenAPI via [`wrpc types --openapi`](https://wrpc.vercel.app/guide/cli) |
 | **Sessions & auth** | [Cookie-backed sessions](https://wrpc.vercel.app/guide/sessions) restored on reconnect, pluggable store, CSRF-aware REST dispatch; [bearer/payload token carriers, client stores and the authenticate/refresh lifecycle](https://wrpc.vercel.app/guide/auth) |
 | **Scaling** | [Rooms backplane](https://wrpc.vercel.app/guide/scaling) over any pub/sub; Redis and in-memory adapters included; [cluster layer](https://wrpc.vercel.app/guide/cluster) — replicated presence (`count` with no round-trip), `fetchClients`, cross-instance commands, node-to-node ask |
-| **Transports** | WebSocket, plain HTTP, [Server-Sent Events](https://wrpc.vercel.app/guide/sse), Service Worker `MessagePort`, [WebRTC data channels](https://wrpc.vercel.app/guide/webrtc) between browsers (symmetric peers, mesh, built-in or pluggable signaling); [pluggable wire codec](https://wrpc.vercel.app/guide/codec) and [request metadata](https://wrpc.vercel.app/guide/metadata) (`x-wrpc-meta-<key>`) |
+| **Transports** | WebSocket, plain HTTP, [Server-Sent Events](https://wrpc.vercel.app/guide/sse), a worker `MessagePort` (Service Worker or SharedWorker), [WebRTC data channels](https://wrpc.vercel.app/guide/webrtc) between browsers (symmetric peers, mesh, built-in or pluggable signaling); [pluggable wire codec](https://wrpc.vercel.app/guide/codec) and [request metadata](https://wrpc.vercel.app/guide/metadata) (`x-wrpc-meta-<key>`) |
 | **Hosts** | Batteries-included [server](https://wrpc.vercel.app/guide/server), or [fastify](https://wrpc.vercel.app/guide/adapters/fastify) / [express](https://wrpc.vercel.app/guide/adapters/express) / [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws) / bare `node:http` |
 | **Client** | Exponential backoff with full jitter, app-level heartbeat, automatic re-`load()` and re-subscribe, offline/online |
 | **Observability** | [Structured logging](https://wrpc.vercel.app/guide/logging) into your pino, [OpenTelemetry](https://wrpc.vercel.app/guide/telemetry) spans and metrics, W3C trace context across the wire |
@@ -269,8 +269,8 @@ See [Logging](https://wrpc.vercel.app/guide/logging) and
 | `@alexify/wrpc/ws` | `WebsocketServer`, `Connection`, `Frame`, `FrameParser`, `OPCODES`, `CLOSE_CODES` | [Wire format](https://wrpc.vercel.app/reference/wire-format) |
 | `@alexify/wrpc/engine` | `createNodeEngine`, `isEngine`, the `Engine`/`WrpcSocket` contracts | [Engine port](https://wrpc.vercel.app/reference/engine) |
 | `@alexify/wrpc/uws` | `createUwsEngine`, `UwsSocket` | [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws) |
-| `@alexify/wrpc/fastify` | `wrpcFastify`, `findUwsApp` | [Fastify](https://wrpc.vercel.app/guide/adapters/fastify) |
-| `@alexify/wrpc/express` | `createWrpc` | [Express](https://wrpc.vercel.app/guide/adapters/express) |
+| `@alexify/wrpc/fastify` | 139.3 KB | 47.8 KB | — |
+| `@alexify/wrpc/express` | 127.0 KB | 42.9 KB | — |
 | `@alexify/wrpc/scaling` | `MemoryBackplane`, `createRedisAdapter`, `isBackplane` | [Scaling](https://wrpc.vercel.app/guide/scaling) |
 | `@alexify/wrpc/sse` | `SseChannels`, `ServerSseTransport`, `ClientSseTransport`, `SseParser` | [Server-Sent Events](https://wrpc.vercel.app/guide/sse) |
 | `@alexify/wrpc/query` | `createQueryUtils` | [TanStack Query](https://wrpc.vercel.app/guide/query) |

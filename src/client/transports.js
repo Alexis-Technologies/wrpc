@@ -272,8 +272,11 @@ class ClientEventTransport extends ClientTransport {
   async open(options = {}) {
     if (this.active) return;
     const worker = options.worker ?? this.#worker;
-    if (!worker) throw new Error('Service Worker not provided');
-    this.#worker = worker;
+    if (!worker) throw new Error('Worker not provided');
+    // A SharedWorker is reached through its `port`; a ServiceWorker, a
+    // dedicated Worker or a raw MessagePort posts directly. Resolved once,
+    // so online()/offline() and every reopen address the same target.
+    this.#worker = worker.port ?? worker;
     const { port1, port2 } = new MessageChannel();
     this.#port = port1;
     port1.addEventListener('message', ({ data }) => {
@@ -294,6 +297,10 @@ class ClientEventTransport extends ClientTransport {
   }
 
   close() {
+    // A second close (terminate() after close(), or #openOrClose cleaning up
+    // an open() that threw before a port existed) has nothing to close —
+    // and must not replace the original error with a TypeError.
+    if (!this.active) return;
     this.active = false;
     this.#port.close();
     this.#port = null;

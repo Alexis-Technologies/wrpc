@@ -13,6 +13,19 @@ narrower promise — see
 
 ### Added
 
+**Shared Workers behind the `event` transport**
+- `connect(url, { worker })` takes a `SharedWorker` (reached through its
+  `port`), a dedicated `Worker` or a raw `MessagePort` as well as a
+  `ServiceWorker` — the page side posts to `worker.port ?? worker`, and every
+  client still gets its own `MessageChannel`.
+- `WrpcClientProxy` also listens on the SharedWorker `connect` event and
+  treats each page's port as the control bus `self` is in a Service Worker;
+  both listeners are registered, no context sniffing.
+- `WrpcClientProxy` takes a `url` option — the server the worker connects to,
+  defaulting to the one derived from `self.location` as before.
+- The proxy releases a port, and the answers parked on it, when the page
+  closes it (the `MessagePort` `close` event; best effort in older engines).
+
 **WebRTC: peer-to-peer wrpc (`@alexify/wrpc/webrtc`)**
 - `WrpcPeer` — a router others call, a signaler to find them through, an
   RTC adapter to reach them with. Two browsers (or a browser and a Node
@@ -83,6 +96,9 @@ narrower promise — see
   subscriptions and streams work over it as over a socket.
 
 ### Fixed
+- `ClientEventTransport.close()` is idempotent: `terminate()` after `close()`,
+  or the cleanup after an `open()` that threw before a port existed, no
+  longer throws a `TypeError` in place of the original error.
 - `attachPort` routed a `Buffer` chunk to the text handler; binary chunks
   now reach `handleBinary` whatever the view type.
 - `WrpcClient.write()` returns the transport's backpressure signal and the

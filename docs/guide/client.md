@@ -63,7 +63,7 @@ await WrpcClient.connect(url, {
 | `batch` | off | `true` takes the defaults. |
 | `retry` | off | Opt-in per-call retry: `{ attempts, on: [503], minDelay, maxDelay, factor, jitter }`, `true` for the defaults. Coded failures re-issue with a fresh packet id after a jittered backoff — never a silent offline buffer. |
 | `transport` | from the URL | `'ws'`, `'http'`, `'sse'`, or anything registered. |
-| `worker` | — | A `ServiceWorker` to proxy through. |
+| `worker` | — | A worker to proxy through: a `ServiceWorker`, a `SharedWorker`, a dedicated `Worker` or a raw `MessagePort` — see [Workers](#workers). |
 | `authenticate` | — | Presents the connection's credential; awaited before the reconnect restore — see [Authenticating](#authenticating). |
 | `refresh` | — | Single-flight credential refresh with a one-shot retry — see [Refreshing a credential](#refreshing-a-credential). |
 | `headers` | — | Connection-phase headers, re-evaluated per open; validated by `schema.headers` — see [Metadata](./metadata). |
@@ -355,10 +355,11 @@ Static, because connectivity is a property of the machine rather than of one
 connection. `WrpcClient.initialize()` wires them to the browser's `online` /
 `offline` events; `WrpcClient.connections` is the live set.
 
-## Service Workers
+## Workers
 
-For an offline-capable app, the Service Worker holds the connection and the
-page talks to the worker over a `MessagePort`. In the worker:
+A worker can hold the connection while every page talks to the worker over a
+`MessagePort` — one socket for all tabs, and (with a Service Worker) a peer
+that survives a page reload. In the worker:
 
 ```js
 const { WrpcClientProxy } = require('@alexify/wrpc');
@@ -367,15 +368,27 @@ const proxy = new WrpcClientProxy({ callTimeout: 7000 });
 await proxy.open();
 ```
 
-…and in the page:
+…and in the page, hand `worker` whatever holds the proxy:
 
 ```js
+// a Service Worker
 const client = await WrpcClient.connect(url, { worker: navigator.serviceWorker.controller });
+
+// a SharedWorker — reached through its port
+const shared = new SharedWorker('/wrpc-worker.js', { name: 'wrpc' });
+const client = await WrpcClient.connect(url, { worker: shared });
 ```
 
+A dedicated `Worker` or a raw `MessagePort` work the same way. The proxy takes
+every client option plus `url`, the server it connects to; without it the URL
+is derived from the worker's own `location` — right for a Service Worker on
+the site it serves, and what a SharedWorker proxying to another origin
+overrides.
+
 The packets are identical on both hops, so nothing above the transport
-changes — which is what makes the arrangement worth having: one socket for
-every tab, and a peer that survives a page reload.
+changes. Each `connect()` gets its own `MessageChannel` to the worker; the
+proxy routes answers back to the port that asked and broadcasts events to
+every port, and lets go of a port when its page closes it.
 
 ## In a browser bundle
 
@@ -385,6 +398,6 @@ bundler that honours the `browser` field — webpack, Vite, esbuild with
 `browser: true`), Parcel, Bun. It contains the client, the streams and the
 chunk helpers, and **no Node builtins** — the server half is not in it.
 
-The main entry is under 15 KB min+gzip in that build; `scripts/size.js` enforces a
+The main entry is ~15 KB min+gzip in that build; `scripts/size.js` enforces a
 budget on it in CI. See [Browser & bundling](./browser) for the full table, the
 `browser` field map, and what is deliberately missing from that entry.

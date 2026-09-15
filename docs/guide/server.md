@@ -187,7 +187,7 @@ const { RpcServer } = require('@alexify/wrpc');
 const rpc = new RpcServer({ router });
 
 rpc.attachSocket(socket, { headers, remoteAddress });   // a WrpcSocket or Connection
-rpc.attachPort(port);                                   // a MessagePort (Service Worker)
+rpc.attachPort(port);                                   // a node:worker_threads MessagePort
 rpc.attach(transport);                                  // any persistent 'packet'/'chunk' transport
 await rpc.handleHttpCall({ method, url, headers, body, respond });
 ```
@@ -214,7 +214,7 @@ server.emit('port', port);
 This is *not* the browser Service Worker story — there, the worker holds a real
 WebSocket to the server and the page reaches the worker over a `MessagePort`.
 That is entirely a client-side arrangement; see
-[Client](./client#service-workers).
+[Client](./client#workers).
 
 `attach(transport)` is the seam under both: any persistent transport that
 announces inbound text as `'packet'` and bytes as `'chunk'` events becomes a

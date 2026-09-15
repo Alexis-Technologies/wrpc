@@ -1,8 +1,9 @@
 'use strict';
 
-// The Service Worker proxy: forwards packets between a page's WrpcClient
-// and a worker-held connection. Shares nothing with WrpcClient beyond
-// calling connect() — which is why it lives in its own module.
+// The worker-side proxy (Service Worker, SharedWorker or dedicated Worker):
+// forwards packets between a page's WrpcClient and a worker-held
+// connection. Shares nothing with WrpcClient beyond calling connect() —
+// which is why it lives in its own module.
 
 const { Emitter, jsonParse } = require('../utils.js');
 const { WrpcClient, CALL_TIMEOUT, normalizeReconnect } = require('./core.js');
@@ -16,10 +17,20 @@ class WrpcClientProxy extends Emitter {
   #heartbeat = undefined;
   #logger = undefined;
   #telemetry = undefined;
+  #url = undefined;
+
+  // The control bus: `wrpc:*` objects, a transferred port riding on
+  // `wrpc:connect`. On a ServiceWorker (and a dedicated Worker) it is `self`;
+  // on a SharedWorker it is the per-page port the `connect` event hands
+  // over. Optional chaining because a page can post anything on that port.
+  #onControl = (event) => {
+    const type = event.data?.type;
+    if (typeof type === 'string' && type.startsWith('wrpc')) this.#handleEvent(event);
+  };
 
   constructor(options = {}) {
     super();
-    const { callTimeout, heartbeat, logger, telemetry } = options;
+    const { callTimeout, heartbeat, logger, telemetry, url } = options;
     if (callTimeout) this.#callTimeout = callTimeout;
     this.#reconnect = normalizeReconnect(options);
     this.#heartbeat = heartbeat;
@@ -27,12 +38,17 @@ class WrpcClientProxy extends Emitter {
     // is silently lost on the connection it owns.
     this.#logger = logger;
     this.#telemetry = telemetry;
+    this.#url = url;
     if (typeof self === 'undefined') {
-      throw new Error('WrpcClientProxy must run in ServiceWorker context');
+      throw new Error('WrpcClientProxy must run in a worker context');
     }
-    self.addEventListener('message', (event) => {
-      const { type } = event.data;
-      if (type?.startsWith('wrpc')) this.#handleEvent(event);
+    // Both listeners, no context sniffing: a ServiceWorker never fires
+    // `connect`, a SharedWorker never fires `message` on self.
+    self.addEventListener('message', this.#onControl);
+    self.addEventListener('connect', (event) => {
+      const port = event.ports[0];
+      port.addEventListener('message', this.#onControl);
+      port.start();
     });
   }
 
@@ -43,7 +59,7 @@ class WrpcClientProxy extends Emitter {
       return;
     }
     const protocol = self.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const url = `${protocol}//${self.location.host}`;
+    const url = this.#url ?? `${protocol}//${self.location.host}`;
     const options = {
       callTimeout: this.#callTimeout,
       reconnect: this.#reconnect,
@@ -69,6 +85,15 @@ class WrpcClientProxy extends Emitter {
       this.#ports.add(port);
       port.addEventListener('message', (messageEvent) => {
         this.#handleMessage(messageEvent, port);
+      });
+      // Best effort: the page half closing fires `close` here in current
+      // engines (and in Node), so a closed tab does not pin its port — or
+      // the answers it was still waiting for — for the life of the worker.
+      port.addEventListener('close', () => {
+        this.#ports.delete(port);
+        for (const [id, pending] of this.#pending) {
+          if (pending === port) this.#pending.delete(id);
+        }
       });
       port.start();
       return;

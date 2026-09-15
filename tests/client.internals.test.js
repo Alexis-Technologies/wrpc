@@ -211,7 +211,7 @@ test('WrpcClient.connect with a Service Worker (event transport)', async (t) => 
   await t.test('a fresh instance requires a worker to open', async () => {
     const EventTransport = WrpcClient.transport.event;
     const transport = new EventTransport('worker://fresh');
-    await assert.rejects(transport.open({}), /Service Worker not provided/);
+    await assert.rejects(transport.open({}), /Worker not provided/);
   });
 
   await t.test('connect() opens the singleton, exposes online/offline, and closes cleanly', async () => {
@@ -230,6 +230,38 @@ test('WrpcClient.connect with a Service Worker (event transport)', async (t) => 
 
     client.close();
     assert.strictEqual(client.active, false);
+  });
+
+  await t.test('a SharedWorker is reached through its port', async () => {
+    const sent = [];
+    const worker = { port: { postMessage: (msg) => sent.push(msg) } };
+    const EventTransport = WrpcClient.transport.event;
+    const transport = new EventTransport('worker://shared-worker');
+    await transport.open({ worker, headers: { a: '1' } });
+    assert.strictEqual(sent.length, 1);
+    assert.deepStrictEqual(sent[0], { type: 'wrpc:connect', headers: { a: '1' } });
+    transport.online();
+    transport.offline();
+    assert.deepStrictEqual(
+      sent.slice(1).map((m) => m.type),
+      ['wrpc:online', 'wrpc:offline'],
+    );
+    transport.close();
+    // A reopen addresses the resolved port, not the SharedWorker object.
+    await transport.open({});
+    assert.strictEqual(sent.at(-1).type, 'wrpc:connect');
+    transport.close();
+  });
+
+  await t.test('close() is idempotent and safe before open()', async () => {
+    const EventTransport = WrpcClient.transport.event;
+    const transport = new EventTransport('worker://idle');
+    assert.doesNotThrow(() => transport.close());
+    await transport.open({ worker: { postMessage() {} } });
+    transport.close();
+    assert.doesNotThrow(() => transport.close());
+    assert.doesNotThrow(() => transport.terminate());
+    assert.strictEqual(transport.active, false);
   });
 });
 
