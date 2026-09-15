@@ -10,6 +10,7 @@
 //   WRPC_RTC=node-datachannel node --test tests/webrtc/node-datachannel.integration.test.js
 
 const { test } = require('node:test');
+const assert = require('node:assert');
 
 const { createW3cAdapter } = require('../../src/webrtc/port.js');
 const { runRtcPortContract } = require('./portContract.js');
@@ -40,5 +41,46 @@ test(
         // not node-datachannel, nothing to release
       }
     });
+  },
+);
+
+test(
+  'webrtc raw channel: RpcServer.attachChannel over a real implementation',
+  { skip: !w3c && 'set WRPC_RTC=node-datachannel' },
+  async (t) => {
+    const { RpcServer } = require('../../src/rpc/core.js');
+    const { defineRouter, procedure } = require('../../src/rpc/router.js');
+    const { WrpcClient } = require('../../src/client/core.js');
+    require('../../src/webrtc/transport.js');
+    const { connectPair, opened, within } = require('./portContract.js');
+    const adapter = createW3cAdapter(w3c);
+    const a = adapter.createPeerConnection({ iceServers: [] });
+    const b = adapter.createPeerConnection({ iceServers: [] });
+    t.after(() => {
+      a.close();
+      b.close();
+    });
+    const channels = {
+      a: a.createDataChannel('wrpc', { negotiated: true, id: 0 }),
+      b: b.createDataChannel('wrpc', { negotiated: true, id: 0 }),
+    };
+    await connectPair(a, b);
+    await within(Promise.all([opened(channels.a), opened(channels.b)]), 'channels');
+    const router = defineRouter({
+      calc: { add: procedure({ access: 'public', handler: async (_ctx, { x, y }) => x + y }) },
+    });
+    const rpc = new RpcServer({ router, logger: false });
+    t.after(() => rpc.close());
+    const attached = rpc.attachChannel(channels.b, { peer: 'real' });
+    const client = await WrpcClient.connect('webrtc:server', {
+      transport: 'webrtc',
+      channel: channels.a,
+      heartbeat: false,
+      reconnect: false,
+    });
+    t.after(() => client.close());
+    await client.load('calc');
+    assert.strictEqual(await client.api.calc.add({ x: 2, y: 2 }), 4);
+    assert.strictEqual(attached.transportKind, 'webrtc');
   },
 );

@@ -229,6 +229,81 @@ signaler, which only moves it. `isSignaler` / `hasRoster` check the shape.
 A hand-rolled one over socket.io, a hosted signaling service, or a
 `MessagePort` between two tabs of one browser all qualify.
 
+## Your own connection
+
+Everything above sits on three levels, and you can enter at any of them:
+
+| Level | wrpc owns | You own |
+| --- | --- | --- |
+| `WrpcPeer` / `Mesh` | The peer connection, negotiation, ICE restart, redial, both directions, the roster | A router and a signaler |
+| `RtcLink` | One `RTCPeerConnection`, perfect negotiation, ICE restart, two channels | Signaling and the decision to redial |
+| **A data channel** | The wire: framing, packets, streams, heartbeat | The peer connection, signaling, recovery |
+
+The lowest level is the `event` transport's arrangement: you already have an
+`RTCDataChannel` — negotiated by your own signaling, perhaps next to your
+game's or media's channels on the same connection — and wrpc speaks on it.
+On the client, `channel` takes the place of `link`:
+
+```js
+import { connect } from '@alexify/wrpc';
+import '@alexify/wrpc/webrtc';                       // registers the transport
+
+const pc = new RTCPeerConnection(config);
+const dc = pc.createDataChannel('wrpc', { negotiated: true, id: 0 });
+// ... your offer/answer exchange ...
+const client = await connect('webrtc:server', { transport: 'webrtc', channel: dc, reconnect: false });
+```
+
+The other end is whoever holds the pair of that channel. A Node process
+attaches it to an ordinary `RpcServer` — sessions, rooms, cluster and all —
+the way it attaches a `MessagePort`:
+
+```js
+rpc.attachChannel(dc, { peer: 'browser-7', headers, data });   // the attachPort of WebRTC
+```
+
+A browser answers with a `PeerHost` over the host half of the transport:
+
+```js
+import { PeerHost, RtcPeerTransport } from '@alexify/wrpc/webrtc';
+host.attach(new RtcPeerTransport(dc, { peer: 'other' }), { peer: 'other' });
+```
+
+What the level does **not** do is what a link would: no ICE restart, no
+redial. A static channel is one connection — when it closes, the client's
+`open()` refuses it, so pass `reconnect: false` and rebuild the client when
+you have a new one. To plug your own recovery into the client's reconnect
+cycle instead, hand over a **factory**: every (re)open asks it for the next
+channel, and subscriptions resume with their `lastEventId` as on any other
+transport.
+
+```js
+const client = await connect('webrtc:server', {
+  transport: 'webrtc',
+  channel: async () => {
+    const pc = await renegotiate();                  // your signaling, again
+    return pc.createDataChannel('wrpc', { negotiated: true, id: 0 });
+  },
+});
+```
+
+Two more differences from the link level. The transport cannot see the peer
+connection, so it fragments at the 16 KiB interop floor unless told
+otherwise — pass `maxMessageSize: negotiateMessageSize(pc.sctp)` (on the
+client through `connect()`'s options, on the server through
+`attachChannel()`'s) once the connection is up to use what it really allows;
+each side fragments independently, so the two need not agree. And a raw
+channel carries no request, so `RpcServer.attachChannel` starts the client
+with no session, exactly as `attachPort` does: the default `access:
+'session'` answers 403 until the application establishes one, and what it
+knows about the peer goes in `headers` / `data`, where handlers read it from
+`context.meta`. (A `PeerHost` keeps its `trust: 'link'` pseudo-session either
+way.)
+
+`RpcServer.attach(transport)` is the seam under `attachChannel`: any
+persistent transport that announces inbound text as `'packet'` and bytes as
+`'chunk'` events is a client, WebRTC or not.
+
 ## Mesh
 
 `peer.join(room)` links this peer with everyone in a signaling room, as

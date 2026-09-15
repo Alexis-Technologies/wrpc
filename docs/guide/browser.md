@@ -77,7 +77,7 @@ the run — it is a ratchet, and it runs in CI's lint job.
 | `@alexify/wrpc/sse` — browser | 47.2 KB | **15.9 KB** | 16.0 KB |
 | `@alexify/wrpc/query` | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` | 3.3 KB | **1.5 KB** | 2.0 KB |
-| `@alexify/wrpc/webrtc` — browser | 124.3 KB | **40.2 KB** | 41.0 KB |
+| `@alexify/wrpc/webrtc` — browser | 125.9 KB | **40.7 KB** | 41.0 KB |
 | `@alexify/wrpc` — node | 158.2 KB | 52.2 KB | — |
 
 The Node-only entries carry no budget because their gzip size is not a shipping
@@ -103,7 +103,7 @@ comment saying why.
 | `http` | One-shot calls with no connection — no events, no subscriptions, no streams. |
 | `sse` | WebSockets are blocked by a proxy or corporate network. Text only. |
 | `event` | The connection lives in a Service Worker; the page talks over a `MessagePort`. |
-| `webrtc` | Peer to peer: the other end is another browser (or an injected Node implementation), reached through a [`WrpcPeer`](./webrtc) — not a URL. |
+| `webrtc` | Peer to peer: the other end is another browser (or a Node process), reached through a [`WrpcPeer`](./webrtc)'s `link` or a data `channel` you negotiated yourself — not a URL. |
 
 `WrpcClient.transport` is a plain lookup table on purpose, and a subpath
 entrypoint registers into it at require time — which is how `@alexify/wrpc/sse`

@@ -34,6 +34,16 @@ narrower promise — see
   `RpcServer.sendTo`, so it clusters with no extra state; a peer's id is
   its signaling client id) and its client half `wrpcSignaler(client)` over
   any transport.
+- Bring your own data channel — the level under `RtcLink`, the `event`
+  transport's arrangement for WebRTC: `connect(url, { transport: 'webrtc',
+  channel })` speaks on an `RTCDataChannel` the application negotiated
+  itself (a factory instead of a channel plugs the application's own
+  recovery into the client's reconnect cycle), `RtcPeerTransport` takes a
+  raw channel for a `PeerHost`, and `RpcServer.attachChannel(dc, { peer,
+  headers, data, maxMessageSize })` is the `attachPort` of WebRTC — an
+  ordinary server, sessions and cluster included, reachable peer to peer.
+  Under it, `RpcServer.attach(transport)` accepts any persistent transport
+  that announces inbound traffic as `'packet'`/`'chunk'` events.
 - The lower layers, all exported: the W3C-shaped `RtcAdapter` port
   (`createW3cAdapter`, structural checks — wrpc binds to no Node WebRTC
   package), `RtcLink` (perfect negotiation, trickle ICE, ICE restart,

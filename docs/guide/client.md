@@ -270,8 +270,9 @@ There is deliberately **no default order** — the list is yours. Every name
 is validated up front (a fallback that fails at fall-back time is a fallback
 nobody tested), and `'event'` cannot appear in one (it is selected through
 `worker`, not by URL). Neither can `'webrtc'` in practice: that transport,
-registered by [`@alexify/wrpc/webrtc`](./webrtc), speaks over a `link` given
-in the options rather than to a URL, and `WrpcPeer` constructs it for you.
+registered by [`@alexify/wrpc/webrtc`](./webrtc), speaks over a `link` (or a
+raw data `channel`) given in the options rather than to a URL, and `WrpcPeer`
+constructs it for you.
 
 The semantics:
 

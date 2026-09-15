@@ -3,6 +3,14 @@
 const { Emitter, jsonParse, isCodec } = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { ServerTransport, buildHeaders, isOriginAllowed } = require('../transport.js');
+const { isInboundTransport } = require('./serverTransport.js');
+// A data channel is a wire like a MessagePort is, and attachChannel is its
+// attachPort: the framing lives with the WebRTC transports, so the server
+// core requires that one leaf. Node-only here (no bundle budget), and no
+// cycle — webrtc/transport.js needs the client core, the framing and the
+// ServerTransport base, none of which come back through this file. The
+// "rpc/ never imports websocket/" rule is about the engine, not the wires.
+const { RtcPeerTransport } = require('../webrtc/transport.js');
 const { SessionManager } = require('./sessions.js');
 const { defineRouter, procedure, runHooksSafe } = require('./router.js');
 const { RoomRegistry, Broadcast, RoomsBackplane } = require('./rooms.js');
@@ -628,6 +636,46 @@ class RpcServer extends Emitter {
     });
     socket.on('error', () => transport.emit('close'));
     return client;
+  }
+
+  /**
+   * Any persistent inbound transport announcing its traffic as 'packet'
+   * (text) and 'chunk' (bytes) events — the seam under attachChannel, open
+   * to a transport this package never heard of. `meta` is a buildMeta()
+   * result (rpc/client.js) or null: a transport carries no request, so
+   * whatever the application observed about the connection is handed over.
+   */
+  attach(transport, { meta = null } = {}) {
+    if (!isInboundTransport(transport)) {
+      throw new TypeError('RpcServer.attach: a persistent transport with write/close/on/once is required');
+    }
+    const client = this.#addClient(transport, null, meta);
+    transport.on('packet', (text) => handleMessage(client, text, this.#router, this.#limits));
+    transport.on('chunk', (bytes) => handleBinary(client, bytes));
+    return client;
+  }
+
+  /**
+   * A raw WebRTC data channel the application negotiated itself — the
+   * level under RtcLink and WrpcPeer, and the attachPort of WebRTC: no
+   * session at attach (a channel carries no request; what the application
+   * knows goes in `headers`/`data`), no ICE restart or redial (the
+   * application owns the peer connection). `peer` is the client's source;
+   * `maxMessageSize` is what the far side's channel accepts (the 16 KiB
+   * interop floor by default — negotiateMessageSize(pc.sctp) for more).
+   */
+  attachChannel(channel, options = {}) {
+    const { peer, headers, data, remoteAddress, maxMessageSize, framing, highWaterMark, lowWaterMark } = options;
+    const transport = new RtcPeerTransport(channel, {
+      peer,
+      maxMessageSize,
+      framing,
+      highWaterMark,
+      lowWaterMark,
+      onError: (error) => this.#log.warn({ event: 'channel.error', peer: transport.source, err: error }),
+    });
+    const observed = headers || data || remoteAddress ? buildMeta({ headers, data, remoteAddress }) : null;
+    return this.attach(transport, { meta: observed });
   }
 
   attachPort(port, meta = null) {
