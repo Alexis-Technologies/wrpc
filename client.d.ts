@@ -792,7 +792,14 @@ export interface WrpcClientOptions {
   /** Shorthand for `reconnect.minDelay`. */
   reconnectTimeout?: number;
   heartbeat?: HeartbeatOptions | false;
-  worker?: ServiceWorker;
+  /**
+   * Selects the `event` transport: the connection lives in the worker, the
+   * page talks to it over a private `MessagePort`. A `ServiceWorker`
+   * (`navigator.serviceWorker.controller`), a `SharedWorker` (reached
+   * through its `port`), a dedicated `Worker`, or a raw `MessagePort` — the
+   * worker side runs a `WrpcClientProxy`.
+   */
+  worker?: ServiceWorker | SharedWorker | Worker | MessagePort;
   /** The RtcLink a `transport: 'webrtc'` client speaks over (`@alexify/wrpc/webrtc`). */
   link?: import('./webrtc.browser.js').RtcLink;
   /**
@@ -833,8 +840,17 @@ export interface WrpcClientOptions {
   proxy?: (data: string, packet: object | null) => void;
 }
 
+export interface WrpcClientProxyOptions extends WrpcClientOptions {
+  /**
+   * The server the worker connects to. Defaults to `self.location`'s origin
+   * with the matching `ws:`/`wss:` scheme — right for a Service Worker on
+   * the site it serves; a SharedWorker proxying to another origin names it.
+   */
+  url?: string;
+}
+
 export class WrpcClientProxy extends Emitter {
-  constructor(options?: WrpcClientOptions);
+  constructor(options?: WrpcClientProxyOptions);
   open(): Promise<void>;
   close(): void;
 }

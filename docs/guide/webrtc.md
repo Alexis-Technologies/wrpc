@@ -52,7 +52,7 @@ mesh.on('join', async ({ id, data }) => {
 
 The webrtc browser entry exports `defineRouter`, `procedure`, `tracked` and
 `createEventLog` — a browser peer defines its router with them; the main
-browser entry leaves them out to stay under its [15 KB budget](./browser#bundle-size).
+browser entry leaves them out to stay under its [16 KB budget](./browser#bundle-size).
 
 ### Node as a peer
 
@@ -412,8 +412,9 @@ on. A client-only peer (no router) still counts its links.
 - **Identity across signaling reconnects.** A peer's id is its signaling
   connection's. A reconnect is a `leave` + `join` under a new id (a `Mesh`
   handles it); pin stable identity in the join `data`.
-- **The Service Worker proxy.** The `event` transport builds its URL from
-  the worker's location; a data channel cannot be reached through it.
+- **The worker proxy.** `WrpcClientProxy` connects to a URL (its `url`
+  option, or one built from the worker's location); a data channel cannot
+  be reached through it.
 
 ## Bundle size
 

@@ -244,7 +244,7 @@ class ClientTransport extends Emitter {
   persistent = true;
   // Opt-in: only a transport that can silently die needs an app-level
   // heartbeat. A request/response transport has nothing to keep alive, and
-  // a MessagePort to a Service Worker cannot half-close.
+  // a MessagePort to a worker cannot half-close.
   heartbeat = false;
 
   constructor(url) {

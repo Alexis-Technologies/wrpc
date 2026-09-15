@@ -4,6 +4,7 @@ import type {
   Emitter,
   WrpcClient,
   WrpcClientProxy,
+  WrpcClientOptions,
   WrpcError,
   Server,
   RpcServer,
@@ -28,6 +29,14 @@ import type { Engine, EngineConnectionSource } from '../engine.js';
 expectType<typeof Emitter>(wrpc.Emitter);
 expectType<typeof WrpcClient>(wrpc.WrpcClient);
 expectType<typeof WrpcClientProxy>(wrpc.WrpcClientProxy);
+// The `event` transport's worker: a ServiceWorker, a SharedWorker (through
+// its port), a dedicated Worker or a raw MessagePort.
+expectAssignable<WrpcClientOptions>({ worker: {} as ServiceWorker });
+expectAssignable<WrpcClientOptions>({ worker: {} as SharedWorker });
+expectAssignable<WrpcClientOptions>({ worker: {} as Worker });
+expectAssignable<WrpcClientOptions>({ worker: {} as MessagePort });
+expectError<WrpcClientOptions>({ worker: 'sw.js' });
+expectType<WrpcClientProxy>(new wrpc.WrpcClientProxy({ url: 'wss://api.example.com', callTimeout: 7000 }));
 expectType<typeof WrpcError>(wrpc.WrpcError);
 expectType<typeof Server>(wrpc.Server);
 expectType<typeof RpcServer>(wrpc.RpcServer);

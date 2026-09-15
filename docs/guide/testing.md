@@ -129,7 +129,7 @@ that reason.
 ## Testing without a network at all
 
 `rpc.attachPort(port)` attaches a `MessagePort` as a transport — the same seam
-the [Service Worker](./client#service-workers) client uses. A
+the [worker](./client#workers) client uses. A
 `node:worker_threads` `MessageChannel` gives you a full client/server exchange
 with no listener, no port and no sockets:
 

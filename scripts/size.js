@@ -49,7 +49,10 @@ const ENTRIES = [
   // the reconnect stability window (stableAfter), refresh-aware subscribe
   // restore, the joined-run refresh guard, coded 408/503 rejections and the
   // shared failPackets settlement — measured together at ~+450 B min+gzip.
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 15 },
+  // 15 -> 16: the worker proxy grew a SharedWorker leg (the `connect`
+  // listener, the `url` option, port cleanup on `close`) with 16 bytes of
+  // headroom left; the marketing line moved to "~15 KB" in the same change.
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 16 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
@@ -64,7 +67,8 @@ const ENTRIES = [
   // the sse transport's own declared-headers/meta legs); 15 -> 16 with its
   // resilience raise (same shared core, plus the sse POST settling its own
   // refused calls through failPackets).
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 16 },
+  // 16 -> 17: bundles the main browser entry, so it inherits its SharedWorker bytes.
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 17 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and

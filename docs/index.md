@@ -70,7 +70,7 @@ features:
     linkText: Adapters
   - icon: 🌍
     title: Node.js and the browser
-    details: One protocol implementation, under 15 KB min+gzip in a browser bundle with no Node builtins (a budget CI enforces) — plus offline through a Service Worker and TanStack Query bindings at ~1 KB.
+    details: One protocol implementation, ~15 KB min+gzip in a browser bundle with no Node builtins (a budget CI enforces) — plus one socket for every tab through a Service Worker or a SharedWorker, and TanStack Query bindings at ~1 KB.
     link: /guide/client
     linkText: Client guide
 ---

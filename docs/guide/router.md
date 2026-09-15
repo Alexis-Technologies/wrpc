@@ -44,7 +44,7 @@ sequenceDiagram
 A failure takes the same path back: the procedure throws, and the client
 receives `callback { id, error: { code, message } }` with the error's numeric
 `code`. Nothing about that shape depends on the transport — the same exchange
-happens over [HTTP](./server), [SSE](./sse) and a Service Worker port.
+happens over [HTTP](./server), [SSE](./sse) and a worker port.
 
 ## Procedures
 

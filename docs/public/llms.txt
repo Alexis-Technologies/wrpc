@@ -5,9 +5,9 @@
 Key facts:
 
 - npm: `@alexify/wrpc` — zero runtime dependencies (no `dependencies`, `peerDependencies` or `optionalDependencies` field), CommonJS, ships `src/` as-is with no build step.
-- Size: 10.4 KB min+gzip for the browser entry; 11.4 KB with the SSE transport; 1.0 KB for the TanStack Query bindings.
+- Size: 15.1 KB min+gzip for the browser entry; 16.0 KB with the SSE transport; 1.1 KB for the TanStack Query bindings.
 - Runtimes: Node.js >= 22 on the server, any modern browser through a bundler on the client. The browser build contains zero Node builtins.
-- Transports: WebSocket, plain HTTP, Server-Sent Events, Service Worker `MessagePort`.
+- Transports: WebSocket, plain HTTP, Server-Sent Events, a worker `MessagePort` (Service Worker or SharedWorker).
 - Hosts: batteries-included `Server`, or fastify / express / bare `node:http` / uWebSockets.js — every host injected, never depended on.
 - Public API: `Server`, `RpcServer`, `defineRouter`, `procedure`, `WrpcClient`, `connect<Api>()`, `tracked`, `createEventLog`, `RoomRegistry`, `Broadcast`, `Cluster`, `WrpcReadable`, `WrpcWritable`.
 - Subpaths: `@alexify/wrpc`, `/ws`, `/engine`, `/uws`, `/fastify`, `/express`, `/scaling`, `/sse`, `/query`, plus a `wrpc types` codegen CLI.
@@ -33,7 +33,7 @@ Key facts:
 
 ## Client
 
-- [Client](https://wrpc.vercel.app/guide/client): Transports, options, calls, batching, reconnect with jittered backoff, heartbeat, events, Service Workers.
+- [Client](https://wrpc.vercel.app/guide/client): Transports, options, calls, batching, reconnect with jittered backoff, heartbeat, events, workers (Service Worker, SharedWorker).
 - [Typed client](https://wrpc.vercel.app/guide/typed-client): `connect<Api>()` with a hand-written contract, and its three sharp edges.
 - [Browser & bundling](https://wrpc.vercel.app/guide/browser): The `browser` field map, what is in the browser entry, bundle budgets, framework notes.
 - [Codegen CLI](https://wrpc.vercel.app/guide/cli): `wrpc types <url> --out api.d.ts` against a running server.
