@@ -34,6 +34,19 @@ export interface SignalingUnitOptions {
   /** Applied to every method and the signal event. Default 'session'. */
   access?: 'session' | 'public';
   /**
+   * The peer id of a connection — a user id from the session, say — with
+   * the id the client proposed in `whoami` as one input. Default: the
+   * connection's client id, the proposal ignored.
+   */
+  identity?: ((context: Context, info: { proposed: string | null }) => string | Promise<string>) | null;
+  /**
+   * A second connection on this instance identifying as an id already held:
+   * 'replace' (default) hands the id over and tells the first `replaced`;
+   * 'refuse' answers it 409. Node-local — a cluster-wide claim belongs in
+   * the identity strategy.
+   */
+  duplicate?: 'replace' | 'refuse';
+  /**
    * Runs before a join and before every relayed signal. Return false to
    * refuse with 403, or throw a coded error of your own.
    */
@@ -54,15 +67,17 @@ export interface SignalingUnitOptions {
 /**
  * The built-in signaling unit as a router definition fragment — spread it
  * into `defineRouter`: `whoami`, `join`, `leave`, `members`, and the
- * inbound `signal` event relayed through `RpcServer.sendTo` (so it clusters
- * with no extra state). A peer's id is its signaling client id.
+ * inbound `signal` event relayed through `RpcServer.sendTo`. A peer's id is
+ * what `identity` says — the connection's client id by default; rosters
+ * and signals carry each peer's routable `address` and `instance`.
  */
 export declare function createSignalingUnit(options?: SignalingUnitOptions): RouterDefinition;
 
 /**
  * The router-level `onDisconnect` hook that announces a dropped signaling
- * connection's leave to the rooms it was in. `name`/`prefix` must match the
- * unit's.
+ * connection's leave (`reason: 'disconnect'`) to the rooms it was in —
+ * unless a newer connection took its id meanwhile. `name`/`prefix` must
+ * match the unit's.
  */
 export declare function createSignalingHooks(options?: { name?: string; prefix?: string }): {
   onDisconnect: ConnectionHook;

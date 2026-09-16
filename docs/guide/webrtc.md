@@ -183,26 +183,74 @@ themselves in hooks from `context.meta.data.peer`.
 
 `createSignalingUnit()` is a router fragment: `whoami`, `join`, `leave`,
 `members`, and the inbound `signal` event, relayed with `RpcServer.sendTo`.
-A peer's id **is** its signaling client id — server-issued, so nobody can
-claim another's; instance-prefixed, so the relay is one addressed cluster
-command with no extra state. Stable application identity (a user id, a
-display name) travels as the `data` given to `join`, which every other
-member receives with the roster and the `join` notification.
+Every roster member, `join` and signal carries the peer's `id`, its
+`instance` and its routable `address` (the signaling client id), so a relay
+never resolves a peer id on the hot path; `leave` carries a `reason`
+(`'left'`, `'disconnect'` or `'replaced'`).
 
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `name` | `'signaling'` | The unit name; the client helper must agree. |
 | `access` | `'session'` | Applied to every method and the event. |
+| `identity` | the client id | `(context, { proposed }) => id`: the peer id of a connection — see [Identity](#identity). |
+| `duplicate` | `'replace'` | A second connection under a held id takes it over (the first hears `replaced`); `'refuse'` answers it `409`. |
 | `authorize` | — | `(context, { action: 'join' \| 'signal', room, ... })`: return `false` to refuse with `403`, or throw a coded error of your own. |
 | `relay` | `'room'` | A signal reaches `to` only while both peers share the room; `'any'` relays to any connected id. |
 | `prefix` | `'rtc:'` | Signaling rooms live under it in the room registry, apart from your own rooms. |
 
 `createSignalingHooks()` returns the router-level `onDisconnect` that
-announces a dropped signaling connection's leave to the rooms it was in.
-When a signaling connection reconnects it comes back as a **new** client,
-so a new id: the client helper re-identifies, re-joins its rooms and emits
-`reset`, and a `Mesh` rebuilds its links under the new id. Open links do
-not need signaling to keep working — only to be (re)negotiated.
+announces a dropped signaling connection's leave (`reason: 'disconnect'`) to
+the rooms it was in — unless a newer connection took its id meanwhile, in
+which case the peer is still there and nothing is announced.
+
+### Identity
+
+By default a peer's id **is** its signaling client id: server-issued, so
+nobody can claim another's, and instance-prefixed, so the relay is one
+addressed cluster command. It changes on every reconnect, though, and it
+says nothing about *who* the peer is. The `identity` strategy makes it the
+application's:
+
+```js
+createSignalingUnit({
+  identity: (context, { proposed }) => context.session.data.userId,
+});
+```
+
+The hook runs once per connection, on `whoami` (or lazily on the first
+`join`/`signal`), with the id the client proposed as one input:
+
+```js
+const signaler = wrpcSignaler(client, { identity: 'alice' }); // or () => Promise<string>
+await peer.start(); // 'alice', if the server agrees
+await peer.connect('bob');
+```
+
+The default strategy ignores the proposal; yours may adopt it, map it, or
+throw a coded error. Two things follow from a stable id:
+
+- **Links survive a signaling reconnect.** The signaler comes back, is the
+  same id again (`reset` with `id === previous`) and re-joins its rooms; the
+  `WrpcPeer` keeps every link, and a `Mesh` on the other side only marked
+  the member `away` for the interval — its link never needed signaling to
+  keep working. A `reset` under a *changed* id still closes them all.
+- **Incarnations.** One id may come from two endpoints — a second tab, or a
+  tab reloaded before the server noticed the first socket die. Each
+  `wrpcSignaler` carries one `instance` (from its `generateId` option, a
+  uuid by default), stamped on everything the server relays about it. A
+  signal or roster entry for a known id under **another** instance means a
+  new endpoint: the stale link is abandoned without a goodbye (one would
+  land on the newcomer) and the peer relinks. Within one server instance
+  `duplicate` decides the clash at identification time: `'replace'` hands
+  the id to the newer connection and tells the older one `replaced` — its
+  `WrpcPeer` abandons its links, emits `'replaced'` and closes — while
+  `'refuse'` answers the newcomer `409`. Cluster-wide uniqueness is the
+  strategy's business (claim the id in your store and throw `409` on a
+  loss); rosters collapse a duplicate to the newest.
+
+`context.client.data.rtc` holds the connection's `{ id, instance, since,
+rooms }`, which is what travels in cluster descriptors and builds the
+roster on any node.
 
 ### Your own
 
@@ -211,17 +259,22 @@ not need signaling to keep working — only to be (re)negotiated.
 ```ts
 interface Signaler {
   readonly id: string | null;
+  readonly instance?: string | null;                 // this incarnation of the id (optional)
   ready(): Promise<string>;                          // this peer's id
-  send(to, message, { room? }): void | Promise<void>;
-  on('signal', ({ from, room, message }) => void);   // an inbound one
+  send(to, message, { room?, address? }): void | Promise<void>;
+  on('signal', ({ from, instance?, address?, room, message }) => void);   // an inbound one
   off(event, handler);
 }
 interface RosterSignaler extends Signaler {          // what Mesh needs on top
-  join(room, data?): Promise<Array<{ id, data }>>;   // the other members
+  join(room, data?): Promise<Array<{ id, instance?, address?, data }>>;   // the other members
   leave(room): Promise<void>;
-  on('join' | 'leave' | 'reset', handler);
+  on('join' | 'leave' | 'reset' | 'replaced', handler);   // leave: { id, reason? }
 }
 ```
+
+`instance`, `address` and `reason` are optional: a signaler that carries
+none of them still works, and a peer then never mistakes a reconnect for a
+new incarnation (or a dropped connection for a departure).
 
 A `message` is `{ type: 'description', description }`, `{ type: 'candidate',
 candidate }`, `{ type: 'close' }` or `{ type: 'connect' }` — opaque to the
@@ -409,9 +462,6 @@ on. A client-only peer (no router) still counts its links.
 - **Real sessions.** A browser cannot verify another peer's token without a
   secret. `trust: 'link'` is the honest substitute; server-signed assertions
   are a possible later addition.
-- **Identity across signaling reconnects.** A peer's id is its signaling
-  connection's. A reconnect is a `leave` + `join` under a new id (a `Mesh`
-  handles it); pin stable identity in the join `data`.
 - **The worker proxy.** `WrpcClientProxy` connects to a URL (its `url`
   option, or one built from the worker's location); a data channel cannot
   be reached through it.

@@ -62,13 +62,44 @@ test('signaler: construction validates the client and the unit name', () => {
   assert.throws(() => wrpcSignaler({}), /must be a WrpcClient/);
   assert.throws(() => wrpcSignaler(null), /must be a WrpcClient/);
   assert.throws(() => wrpcSignaler(new FakeClient(), { unit: '' }), /unit must be a unit name/);
+  assert.throws(() => wrpcSignaler(new FakeClient(), { identity: 7 }), /identity must be/);
+  assert.throws(() => wrpcSignaler(new FakeClient(), { identity: '' }), /identity must be/);
+  assert.throws(() => wrpcSignaler(new FakeClient(), { generateId: 'x' }), /generateId must be a function/);
+  assert.throws(() => wrpcSignaler(new FakeClient(), { generateId: () => '' }), /generateId must return/);
   const client = new FakeClient();
   const signaler = wrpcSignaler(client, { unit: 'rtc' });
   assert.ok(signaler instanceof WrpcSignaler);
   assert.ok(client.api.rtc instanceof Emitter, 'the unit is scaffolded statically');
   assert.strictEqual(signaler.unit, 'rtc');
   assert.strictEqual(signaler.id, null);
+  assert.match(signaler.instance, /^[0-9a-f-]{36}$/, 'a uuid instance by default');
+  assert.strictEqual(signaler.replaced, false);
   assert.strictEqual(client.calls.length, 0, 'no wire traffic at construction');
+});
+
+test('signaler: identity is proposed in whoami; the instance is generated once', async () => {
+  const client = new FakeClient();
+  client.answers.set('signaling/whoami', ({ id }) => ({ id: id ?? 'server-picked' }));
+  let generated = 0;
+  const signaler = wrpcSignaler(client, { identity: 'alice', generateId: () => `inst-${++generated}` });
+  assert.strictEqual(signaler.instance, 'inst-1');
+  assert.strictEqual(await signaler.ready(), 'alice');
+  assert.deepStrictEqual(client.calls[0].args, { instance: 'inst-1', id: 'alice' });
+  // A function, sync or async, is asked on every identification.
+  let asked = 0;
+  const lazy = wrpcSignaler(client, { identity: async () => `user-${++asked}` });
+  assert.strictEqual(await lazy.ready(), 'user-1');
+  await client.emit('reconnect', {});
+  await waitFor(() => lazy.id === 'user-2');
+  assert.strictEqual(asked, 2);
+  assert.strictEqual(generated, 1, 'the instance survives a reconnect');
+  // A proposal that is not an id is refused before any packet.
+  const bad = wrpcSignaler(client, { identity: () => 42 });
+  await assert.rejects(bad.ready(), /identity must produce a non-empty string/);
+  // Without a proposal only the instance travels.
+  const plain = wrpcSignaler(client);
+  await plain.ready();
+  assert.deepStrictEqual(client.calls.at(-1).args, { instance: plain.instance });
 });
 
 test('signaler: ready() is single-flight, validates the answer and retries after a failure', async () => {
@@ -91,7 +122,8 @@ test('signaler: ready() is single-flight, validates the answer and retries after
 test('signaler: send() writes the signal event; join/leave/members are calls', async () => {
   const client = new FakeClient();
   client.answers.set('signaling/whoami', { id: 'i.1' });
-  client.answers.set('signaling/join', { id: 'i.1', room: 'r', members: [{ id: 'i.2', data: null }] });
+  const member = { id: 'i.2', instance: 'x2', address: 'n.2', data: null };
+  client.answers.set('signaling/join', { id: 'i.1', room: 'r', members: [member] });
   client.answers.set('signaling/leave', { room: 'r', left: true });
   client.answers.set('signaling/members', [{ id: 'i.2', data: 'x' }]);
   const signaler = wrpcSignaler(client);
@@ -101,8 +133,20 @@ test('signaler: send() writes the signal event; join/leave/members are calls', a
     { name: 'signaling/signal', data: { to: 'i.2', room: 'r', message: description } },
     { name: 'signaling/signal', data: { to: 'i.2', room: null, message: { type: 'close' } } },
   ]);
-  assert.deepStrictEqual(await signaler.join('r', { name: 'me' }), [{ id: 'i.2', data: null }]);
+  assert.strictEqual(signaler.addressOf('i.2'), null);
+  assert.deepStrictEqual(await signaler.join('r', { name: 'me' }), [member]);
   assert.deepStrictEqual(signaler.rooms, new Set(['r']));
+  // The roster taught it where i.2 lives: every later signal carries the
+  // address, an explicit one wins, and a leave forgets it.
+  assert.strictEqual(signaler.addressOf('i.2'), 'n.2');
+  signaler.send('i.2', { type: 'connect' }, { room: 'r' });
+  signaler.send('i.2', { type: 'connect' }, { room: 'r', address: 'n.9' });
+  assert.deepStrictEqual(client.events.slice(2), [
+    { name: 'signaling/signal', data: { to: 'i.2', room: 'r', message: { type: 'connect' }, address: 'n.2' } },
+    { name: 'signaling/signal', data: { to: 'i.2', room: 'r', message: { type: 'connect' }, address: 'n.9' } },
+  ]);
+  await client.api.signaling.emit('leave', { room: 'r', id: 'i.2', reason: 'left' });
+  assert.strictEqual(signaler.addressOf('i.2'), null);
   assert.deepStrictEqual(await signaler.members('r'), [{ id: 'i.2', data: 'x' }]);
   await signaler.leave('r');
   assert.deepStrictEqual(signaler.rooms, new Set());
@@ -134,11 +178,26 @@ test('signaler: inbound events are shape-checked before they are re-emitted', as
   await api.emit('leave', { room: 'r', id: 'i.3' });
   await api.emit('leave', 'i.3');
   assert.deepStrictEqual(heard, [
-    { name: 'signal', from: 'i.2', room: 'r', message: description },
-    { name: 'signal', from: 'i.2', room: null, message: { type: 'close' } },
+    { name: 'signal', from: 'i.2', instance: null, address: null, room: 'r', message: description },
+    { name: 'signal', from: 'i.2', instance: null, address: null, room: null, message: { type: 'close' } },
     { name: 'join', room: 'r', id: 'i.3', data: 1 },
     { name: 'leave', room: 'r', id: 'i.3' },
   ]);
+  // A signal addressed to another peer id or another incarnation — a stale
+  // address hint the server followed — is not ours.
+  client.answers.set('signaling/whoami', { id: 'i.1' });
+  await signaler.ready();
+  heard.length = 0;
+  const addressed = { from: 'i.2', instance: 'x2', address: 'n.2', room: 'r', message: description };
+  await api.emit('signal', { ...addressed, to: 'i.9' });
+  await api.emit('signal', { ...addressed, to: 'i.1', toInstance: 'someone-else' });
+  await api.emit('signal', { ...addressed, to: 'i.1', toInstance: signaler.instance });
+  await api.emit('signal', { ...addressed, to: 'i.1' });
+  assert.deepStrictEqual(heard, [
+    { name: 'signal', from: 'i.2', instance: 'x2', address: 'n.2', room: 'r', message: description },
+    { name: 'signal', from: 'i.2', instance: 'x2', address: 'n.2', room: 'r', message: description },
+  ]);
+  assert.strictEqual(signaler.addressOf('i.2'), 'n.2', 'the sender address is learned from its signals');
 });
 
 test('signaler: reconnect re-identifies, re-joins every room and emits reset', async () => {
@@ -185,7 +244,7 @@ test('signaler: a failed reset surfaces as error only when someone listens', asy
   // No 'error' listener: swallowed, not thrown out of the client's emit.
   await client.emit('reconnect', {});
   await timers.setTimeout(5);
-  assert.strictEqual(signaler.id, null);
+  assert.strictEqual(signaler.id, 'i.1', 'the id is kept until the server says otherwise');
   assert.deepStrictEqual(resets, []);
   const errors = [];
   const failed = new Promise((resolve) => signaler.on('error', (error) => resolve(errors.push(error.message))));
@@ -195,6 +254,55 @@ test('signaler: a failed reset surfaces as error only when someone listens', asy
   // The next ready() tries again rather than caching the failure.
   client.answers.set('signaling/whoami', { id: 'i.9' });
   assert.strictEqual(await signaler.ready(), 'i.9');
+});
+
+test('signaler: the id is kept through a reset until whoami answers', async () => {
+  const client = new FakeClient();
+  let release = null;
+  client.answers.set('signaling/whoami', { id: 'same' });
+  const signaler = wrpcSignaler(client);
+  await signaler.ready();
+  client.answers.set(
+    'signaling/whoami',
+    () => new Promise((resolve) => void (release = () => resolve({ id: 'same' }))),
+  );
+  const reset = new Promise((resolve) => signaler.on('reset', resolve));
+  await client.emit('reconnect', {});
+  await waitFor(() => release !== null);
+  assert.strictEqual(signaler.id, 'same', 'a knock arriving now still has a local id to answer with');
+  release();
+  assert.deepStrictEqual(await reset, { id: 'same', previous: 'same', rooms: [] });
+});
+
+test("signaler: 'replaced' ends the signaler without detaching the client", async () => {
+  const client = new FakeClient();
+  client.answers.set('signaling/whoami', { id: 'alice' });
+  client.answers.set('signaling/join', { members: [{ id: 'bob', instance: 'b1', address: 'n.b', data: null }] });
+  const signaler = wrpcSignaler(client, { identity: 'alice' });
+  await signaler.join('r');
+  const heard = [];
+  signaler.on('replaced', (payload) => heard.push(['replaced', payload]));
+  signaler.on('reset', (payload) => heard.push(['reset', payload]));
+  await client.api.signaling.emit('replaced', { id: 'alice' });
+  assert.deepStrictEqual(heard, [['replaced', { id: 'alice' }]]);
+  assert.strictEqual(signaler.replaced, true);
+  assert.strictEqual(signaler.id, null);
+  assert.deepStrictEqual(signaler.rooms, new Set());
+  assert.strictEqual(signaler.addressOf('bob'), null);
+  assert.throws(() => signaler.send('bob', description), /was replaced/);
+  await assert.rejects(signaler.ready(), /was replaced/);
+  await assert.rejects(signaler.join('r'), /was replaced/);
+  // A reconnect re-identifies nothing: the id is the newer connection's now.
+  const calls = client.calls.length;
+  await client.emit('reconnect', {});
+  await timers.setTimeout(5);
+  assert.strictEqual(client.calls.length, calls);
+  assert.deepStrictEqual(heard.length, 1);
+  await client.api.signaling.emit('replaced', { id: 'alice' });
+  assert.deepStrictEqual(heard.length, 1, 'told once');
+  assert.ok(client.api.signaling.listenerCount('signal') > 0, "still listening: close() is the owner's");
+  signaler.close();
+  assert.strictEqual(client.api.signaling.listenerCount('replaced'), 0);
 });
 
 test('signaler: close() during a reset swallows the reset', async () => {
@@ -248,6 +356,7 @@ test('signaler: close() detaches every listener and forgets the rooms', async ()
   assert.strictEqual(signaler.id, null);
   assert.deepStrictEqual(signaler.rooms, new Set());
   assert.strictEqual(client.api.signaling.listenerCount('signal'), 0);
+  assert.strictEqual(client.api.signaling.listenerCount('replaced'), 0);
   assert.strictEqual(client.listenerCount('reconnect'), 0);
   await client.api.signaling.emit('signal', { from: 'i.2', room: 'r', message: description });
   await client.emit('reconnect', {});

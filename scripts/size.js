@@ -81,8 +81,10 @@ const ENTRIES = [
   // plus the link, framing, peer, mesh and signaler halves — measured at
   // 38.3 KB when the row landed. 40 -> 41 for the server telemetry writer:
   // a peer answers calls, so it emits the server spans and gauges a server
-  // does (+1.9 KB, the whole of src/telemetry/server.js).
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 41 },
+  // does (+1.9 KB, the whole of src/telemetry/server.js). 41 -> 42 for stable
+  // identity: the signaler's instance/address bookkeeping, the peer's
+  // incarnation check and the mesh's away set (+0.7 KB, measured 41.4).
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 42 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
 ];
 

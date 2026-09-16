@@ -98,11 +98,11 @@ const world = (t, options = {}) => {
     for (const peer of peers) peer.close();
     fake.world.close();
   });
-  const peer = (id, { router = true, seen, ...rest } = {}) => {
+  const peer = (id, { router = true, seen, signaler = hub.signaler(id), ...rest } = {}) => {
     const served = router ? routerOf(id, seen) : null;
     const instance = new WrpcPeer({
       router: served ? served.router : null,
-      signaler: hub.signaler(id),
+      signaler,
       rtc: fake.adapter,
       logger: quiet,
       client: { heartbeat: false, reconnect: { minDelay: 5, maxDelay: 20, jitter: false } },
@@ -477,6 +477,76 @@ test("peer: close() says goodbye on every link; the signaler's reset closes them
   await waitFor(() => c.links.size === 0, 'c dropped the old link');
   const b2c = await within(b.connect('c'), 'open under the new id');
   assert.strictEqual(b2c.link.localId, 'b2');
+});
+
+test('peer: a signaling reconnect under the same id keeps the links; a new id closes them', async (t) => {
+  const { peer, hub } = world(t);
+  const a = peer('a');
+  const b = peer('b');
+  const ab = await within(a.connect('b'), 'open');
+  const closes = [];
+  ab.on('close', () => closes.push('ab'));
+  b.link('a').on('close', () => closes.push('ba'));
+  const reset = onceEvent(a, 'reset');
+  await hub.reconnect('a');
+  const event = await within(reset, 'reset announced');
+  assert.deepStrictEqual([event.id, event.previous], ['a', 'a']);
+  assert.strictEqual(a.link('b'), ab, 'the same link object');
+  assert.strictEqual(ab.state, 'open');
+  await ab.load('calc');
+  assert.strictEqual(await ab.api.calc.add({ a: 2, b: 3 }), 5, 'and it still answers');
+  assert.deepStrictEqual(closes, []);
+  // The id changes: the links were made under the old one, so they go.
+  await hub.reset('a', 'a1');
+  await waitFor(() => closes.length === 2, 'both halves closed');
+  assert.strictEqual(a.links.size, 0);
+});
+
+test('peer: another incarnation of a linked id replaces the stale link, without a goodbye to the newcomer', async (t) => {
+  const { peer, hub } = world(t);
+  const a = peer('a');
+  const b = peer('b');
+  const stale = await within(a.connect('b'), 'open');
+  assert.strictEqual(stale.instance, b.signaler.instance, 'the instance is learned from the first signal');
+  assert.strictEqual(b.link('a').instance, a.signaler.instance);
+  const staleClosed = onceEvent(stale, 'close');
+  // b comes back as a new tab under the same id: a knock (or offer) from the
+  // new instance abandons the old link on a and opens a new one.
+  const fresh = peer('b', { signaler: await hub.replace('b') });
+  const opened = onceEvent(a, 'link');
+  const link = await within(fresh.connect('a'), 'new link open');
+  await within(staleClosed, 'stale closed');
+  const replacement = await within(opened, 'a made a new link');
+  assert.strictEqual(a.link('b'), replacement);
+  assert.strictEqual(replacement.instance, fresh.signaler.instance);
+  assert.strictEqual(link.state, 'open');
+  await link.load('calc');
+  assert.strictEqual(await link.api.calc.add({ a: 1, b: 1 }), 2);
+  // No 'close' was sent to b's new incarnation while the old link went.
+  assert.ok(!hub.sent.some((entry) => entry.from === 'a' && entry.type === 'close'), 'no goodbye sent');
+  // A hand-rolled signaler that carries no instance never triggers this.
+  assert.strictEqual(a.link('b'), replacement);
+  hub.relay('b', 'a', null, { type: 'connect' });
+  await hub.tick();
+  assert.strictEqual(a.link('b'), replacement, 'an instance-less signal is not another incarnation');
+});
+
+test('peer: a replaced peer abandons its links and closes', async (t) => {
+  const { peer, hub } = world(t);
+  const a = peer('a');
+  const b = peer('b');
+  const c = peer('c');
+  await within(Promise.all([a.connect('b'), a.connect('c')]), 'open');
+  const replaced = onceEvent(a, 'replaced');
+  const closed = onceEvent(a, 'close');
+  await hub.replace('a');
+  assert.deepStrictEqual(await within(replaced, 'told'), { id: 'a' });
+  await within(closed, 'closed');
+  assert.strictEqual(a.links.size, 0);
+  assert.ok(!hub.sent.some((entry) => entry.from === 'a' && entry.type === 'close'), 'no goodbye from a stranger');
+  await assert.rejects(a.connect('b'), /closed/);
+  // b and c lose the link through ICE, not through signaling.
+  await waitFor(() => b.links.size === 0 && c.links.size === 0, 'the others gave up');
 });
 
 test('peer: a peer without a router is client-only', async (t) => {

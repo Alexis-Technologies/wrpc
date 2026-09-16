@@ -315,21 +315,45 @@ export declare class PeerHost extends Emitter implements ClientHost {
 // Signaling: the contract, and the built-in client half.
 
 export interface SignalEvent {
+  /** The sender's peer id. */
   from: string;
+  /** The sender's incarnation, when the signaler carries one. */
+  instance?: string | null;
+  /** The sender's routable address (its signaling client id), when known. */
+  address?: string | null;
   room: string | null;
   message: SignalMessage;
 }
 
 export interface RosterMember {
   id: string;
+  instance?: string | null;
+  address?: string | null;
   data: unknown;
+}
+
+export interface JoinEvent extends RosterMember {
+  room: string;
+}
+
+/** Why a member left: it said so, its signaling connection dropped, or a newer connection took its id. */
+export type LeaveReason = 'left' | 'disconnect' | 'replaced';
+
+export interface LeaveEvent {
+  room: string;
+  id: string;
+  instance?: string | null;
+  address?: string | null;
+  reason?: LeaveReason;
 }
 
 /** What WrpcPeer needs: an identity and a relay. Structural — anything with the shape qualifies. */
 export interface Signaler {
   readonly id: string | null;
+  /** This incarnation of the id: two signalers under one id are told apart by it. Optional. */
+  readonly instance?: string | null;
   ready(): Promise<string>;
-  send(to: string, message: SignalMessage, options?: { room?: string }): void | Promise<void>;
+  send(to: string, message: SignalMessage, options?: { room?: string; address?: string }): void | Promise<void>;
   on(event: 'signal', handler: (event: SignalEvent) => void): unknown;
   on(event: string, handler: (...args: any[]) => void): unknown;
   off(event: string, handler: (...args: any[]) => void): unknown;
@@ -341,13 +365,18 @@ export interface RosterSignaler extends Signaler {
   join(room: string, data?: unknown): Promise<Array<RosterMember>>;
   leave(room: string): Promise<void>;
   on(event: 'signal', handler: (event: SignalEvent) => void): unknown;
-  on(event: 'join', handler: (event: { room: string; id: string; data: unknown }) => void): unknown;
-  on(event: 'leave', handler: (event: { room: string; id: string }) => void): unknown;
+  on(event: 'join', handler: (event: JoinEvent) => void): unknown;
+  on(event: 'leave', handler: (event: LeaveEvent) => void): unknown;
   on(event: 'reset', handler: (event: SignalerReset) => void): unknown;
+  on(event: 'replaced', handler: (event: { id: string }) => void): unknown;
   on(event: string, handler: (...args: any[]) => void): unknown;
 }
 
-/** The signaling connection came back under a new id: rooms re-joined, rosters fresh. */
+/**
+ * The signaling connection came back and re-identified: rooms re-joined,
+ * rosters fresh. Under a stable identity `id === previous` and the peer's
+ * links stay; under a new id they are closed.
+ */
 export interface SignalerReset {
   id: string;
   previous: string | null;
@@ -359,27 +388,54 @@ export declare function isSignalMessage(value: unknown): value is SignalMessage;
 export declare function isSignaler(value: unknown): value is Signaler;
 export declare function hasRoster(value: unknown): value is RosterSignaler;
 
+export interface WrpcSignalerOptions {
+  /** The unit name on the server (default 'signaling'). */
+  unit?: string;
+  /**
+   * The peer id this side proposes in `whoami`; the server's `identity`
+   * strategy decides (the default strategy ignores it). A function is asked
+   * on every identification.
+   */
+  identity?: string | (() => string | Promise<string>) | null;
+  /** Generates the one `instance` of this signaler (default: a uuid). */
+  generateId?: () => string;
+}
+
 /**
  * The client half of `createSignalingUnit`, over any WrpcClient (ws, sse,
- * ...). Events: 'signal', 'join', 'leave', 'reset', 'error'.
+ * ...). Events: 'signal', 'join', 'leave', 'reset', 'replaced', 'error'.
  */
 export declare class WrpcSignaler extends Emitter implements RosterSignaler {
-  constructor(client: WrpcClient<any>, options?: { unit?: string });
+  constructor(client: WrpcClient<any>, options?: WrpcSignalerOptions);
+  /** The peer id the server agreed to, or null before ready(). */
   readonly id: string | null;
+  /** This incarnation of the id: generated once, sent with every whoami. */
+  readonly instance: string;
   readonly client: WrpcClient<any>;
   readonly unit: string;
   /** The rooms joined through this signaler (a copy). */
   readonly rooms: Set<string>;
+  /** True once a newer connection took this peer id; the signaler is over. */
+  readonly replaced: boolean;
+  /** The routable address last learned for a peer, or null. */
+  addressOf(id: string): string | null;
   ready(): Promise<string>;
-  send(to: string, message: SignalMessage, options?: { room?: string }): void;
+  send(to: string, message: SignalMessage, options?: { room?: string; address?: string }): void;
   join(room: string, data?: unknown): Promise<Array<RosterMember>>;
   leave(room: string): Promise<void>;
   members(room: string): Promise<Array<RosterMember>>;
+  on(event: 'signal', handler: (event: SignalEvent) => void): this;
+  on(event: 'join', handler: (event: JoinEvent) => void): this;
+  on(event: 'leave', handler: (event: LeaveEvent) => void): this;
+  on(event: 'reset', handler: (event: SignalerReset) => void): this;
+  on(event: 'replaced', handler: (event: { id: string }) => void): this;
+  on(event: 'error', handler: (error: Error) => void): this;
+  on(event: string, handler: (...args: any[]) => void): this;
   /** Detaches from the client; the client itself stays open. */
   close(): void;
 }
 
-export declare function wrpcSignaler(client: WrpcClient<any>, options?: { unit?: string }): WrpcSignaler;
+export declare function wrpcSignaler(client: WrpcClient<any>, options?: WrpcSignalerOptions): WrpcSignaler;
 
 // ---------------------------------------------------------------------------
 // WrpcPeer, PeerLink, Mesh.
@@ -434,6 +490,8 @@ export type PeerLinkState = 'connecting' | 'open' | 'reconnecting' | 'closed';
  */
 export declare class PeerLink<Api = Record<string, Record<string, any>>> extends Emitter {
   readonly id: string;
+  /** The remote peer's incarnation once known, else null; another one under the same id is another endpoint. */
+  readonly instance: string | null;
   readonly room: string | null;
   /** The remote peer's roster data, when known. */
   readonly data: unknown;
@@ -472,7 +530,8 @@ export declare class PeerLink<Api = Record<string, Record<string, any>>> extends
 /**
  * A wrpc peer: a router others call, a signaler to find them through, an
  * RTC adapter to reach them with. Events: 'link' (PeerLink, incoming or
- * outgoing), 'reset', 'close', 'error' (error, source).
+ * outgoing), 'reset', 'replaced' (a newer connection took this peer id;
+ * the peer closes), 'close', 'error' (error, source).
  */
 export declare class WrpcPeer extends Emitter {
   constructor(options: WrpcPeerOptions);
@@ -487,10 +546,14 @@ export declare class WrpcPeer extends Emitter {
   link(id: string): PeerLink | undefined;
   /** Identifies through the signaler; runs on its own on the first signal. */
   start(): Promise<string>;
-  /** A link to `remoteId`, dialled from either side; idempotent while one exists. */
+  /**
+   * A link to `remoteId`, dialled from either side; idempotent while one
+   * exists, unless `instance` names another incarnation of the id — then
+   * the stale link is abandoned and the new endpoint dialled.
+   */
   connect<Api = Record<string, Record<string, any>>>(
     remoteId: string,
-    options?: { room?: string | null; data?: unknown },
+    options?: { room?: string | null; data?: unknown; instance?: string | null },
   ): Promise<PeerLink<Api>>;
   /** Joins a signaling room and links with everyone in it. Needs a RosterSignaler. */
   join(room: string, options?: { data?: unknown }): Mesh;
@@ -510,6 +573,8 @@ export declare class Mesh extends Emitter {
   readonly hostRoom: string;
   /** Ids of the members this peer has an open link with (a copy). */
   readonly peers: Set<string>;
+  /** Members whose signaling connection dropped while their link stayed up (a copy). */
+  readonly away: Set<string>;
   /** Every member link, open or still connecting (a copy). */
   readonly links: Map<string, PeerLink>;
   link(id: string): PeerLink | undefined;

@@ -4,16 +4,20 @@
 //
 //   interface Signaler {
 //     readonly id: string | null            this peer's id once ready()
+//     readonly instance?: string | null     this incarnation of the id (optional)
 //     ready(): Promise<string>              resolves the id (single-flight)
-//     send(to, message, { room? })          relay one SignalMessage to a peer
-//     on('signal', ({ from, room, message }) => void)   an inbound one
+//     send(to, message, { room?, address? })   relay one SignalMessage to a peer
+//     on('signal', ({ from, instance?, address?, room, message }) => void)   an inbound one
 //     off(event, handler); close?()
 //   }
 //   interface RosterSignaler extends Signaler {
-//     join(room, data?): Promise<Array<{ id, data }>>   the other members
+//     join(room, data?): Promise<Array<{ id, instance?, address?, data }>>   the other members
 //     leave(room): Promise<void>
-//     on('join' | 'leave', ({ room, id, data? }) => void)
-//     on('reset', ({ id, previous, rooms }) => void)    id changed: rebuild
+//     on('join', ({ room, id, instance?, address?, data? }) => void)
+//     on('leave', ({ room, id, instance?, reason? }) => void)
+//                                           reason: 'left' | 'disconnect' | 'replaced'
+//     on('reset', ({ id, previous, rooms }) => void)    re-identified: rebuild
+//     on('replaced', ({ id }) => void)      a newer connection took this id
 //   }
 //   SignalMessage = { type: 'description', description }
 //                 | { type: 'candidate', candidate }
@@ -26,8 +30,18 @@
 // signaling service, a MessagePort between two tabs. wrpcSignaler() is the
 // one wrpc ships: the client half of createSignalingUnit, over any
 // WrpcClient transport (ws, sse, ...).
+//
+// Identity: the id is whatever the server's identity strategy answers to
+// whoami — the connection's client id by default, or a stable
+// application id — with the `identity` option as this side's proposal.
+// `instance` is generated once per signaler and tells incarnations of the
+// same id apart across reconnects; the server only carries it. Peer
+// addresses (the routable client ids the roster and signals carry) are
+// remembered here and attached to send(), so a relay never has to resolve
+// a peer id on the hot path.
 
 const { Emitter } = require('../utils.js');
+const { generateUUID } = require('../runtime/node.js');
 
 const SIGNAL_MESSAGE_TYPES = Object.freeze(['description', 'candidate', 'close', 'connect']);
 
@@ -61,14 +75,23 @@ const checkRoom = (room) => {
   return room;
 };
 
+const isId = (value) => typeof value === 'string' && value.length > 0;
+
+const optionalId = (value) => (isId(value) ? value : null);
+
 class WrpcSignaler extends Emitter {
   #client;
   #unit;
+  #identity;
+  #instance;
   #id = null;
   #ready = null;
   // room -> join data, so a reconnect can re-join what this peer was in.
   #rooms = new Map();
+  // peer id -> the routable address the server last told us for it.
+  #addresses = new Map();
   #closed = false;
+  #replaced = false;
   #listeners;
 
   constructor(client, options = {}) {
@@ -76,38 +99,72 @@ class WrpcSignaler extends Emitter {
     if (!isWrpcClientLike(client)) {
       throw new TypeError('wrpcSignaler: client must be a WrpcClient (call, sendEvent, use, on, off)');
     }
-    const { unit = 'signaling' } = options;
+    const { unit = 'signaling', identity = null, generateId = generateUUID } = options;
     if (typeof unit !== 'string' || unit.length === 0) throw new TypeError('wrpcSignaler: unit must be a unit name');
+    if (identity !== null && !isId(identity) && !isFunction(identity)) {
+      throw new TypeError('wrpcSignaler: identity must be a non-empty string or a function');
+    }
+    if (!isFunction(generateId)) throw new TypeError('wrpcSignaler: generateId must be a function');
+    const instance = generateId();
+    if (!isId(instance)) throw new TypeError('wrpcSignaler: generateId must return a non-empty string');
     this.#client = client;
     this.#unit = unit;
+    this.#identity = identity;
+    this.#instance = instance;
     // A static unit with no methods: enough for client.api[unit] to exist as
     // the Emitter inbound events are delivered on, with no wire traffic and
     // no load() — usable before open() and untouched by reconnect's reload.
     client.use({ [unit]: {} });
     const api = client.api[unit];
-    const relay = (name) => (payload) => {
-      if (typeof payload !== 'object' || payload === null) return;
-      return this.emit(name, payload);
-    };
     this.#listeners = {
       signal: (payload) => {
         if (typeof payload !== 'object' || payload === null || !isSignalMessage(payload.message)) return;
-        if (typeof payload.from !== 'string') return;
-        return this.emit('signal', { from: payload.from, room: payload.room ?? null, message: payload.message });
+        if (!isId(payload.from)) return;
+        // Addressed to a peer id or an incarnation this is not: a stale
+        // address hint landed on this connection. Not ours.
+        if (isId(payload.to) && payload.to !== this.#id) return;
+        if (isId(payload.toInstance) && payload.toInstance !== this.#instance) return;
+        const address = optionalId(payload.address);
+        if (address) this.#addresses.set(payload.from, address);
+        return this.emit('signal', {
+          from: payload.from,
+          instance: optionalId(payload.instance),
+          address,
+          room: payload.room ?? null,
+          message: payload.message,
+        });
       },
-      join: relay('join'),
-      leave: relay('leave'),
+      join: (payload) => {
+        if (typeof payload !== 'object' || payload === null) return;
+        if (isId(payload.id) && isId(payload.address)) this.#addresses.set(payload.id, payload.address);
+        return this.emit('join', payload);
+      },
+      leave: (payload) => {
+        if (typeof payload !== 'object' || payload === null) return;
+        if (isId(payload.id)) this.#addresses.delete(payload.id);
+        return this.emit('leave', payload);
+      },
+      replaced: (payload) => {
+        if (typeof payload !== 'object' || payload === null) return;
+        return this.#onReplaced(payload);
+      },
       reconnect: () => void this.#reset(),
     };
     api.on('signal', this.#listeners.signal);
     api.on('join', this.#listeners.join);
     api.on('leave', this.#listeners.leave);
+    api.on('replaced', this.#listeners.replaced);
     client.on('reconnect', this.#listeners.reconnect);
   }
 
-  /** The peer id the server issued, or null before ready(). */
+  /** The peer id the server agreed to, or null before ready(). */
   get id() {
     return this.#id;
+  }
+
+  /** This incarnation of the id: generated once, sent with every whoami. */
+  get instance() {
+    return this.#instance;
   }
 
   /** The WrpcClient this signaler rides. */
@@ -125,36 +182,59 @@ class WrpcSignaler extends Emitter {
     return new Set(this.#rooms.keys());
   }
 
+  /** True once a newer connection took this peer id; the signaler is over. */
+  get replaced() {
+    return this.#replaced;
+  }
+
+  /** The routable address last learned for a peer, or null. */
+  addressOf(id) {
+    return this.#addresses.get(id) ?? null;
+  }
+
   ready() {
     if (this.#closed) return Promise.reject(new Error('Signaler is closed'));
+    if (this.#replaced) return Promise.reject(new Error('Signaler was replaced'));
     if (this.#ready === null) {
       // Any failure — a refused call, an answer without an id — forgets the
       // attempt, so the next ready() asks again instead of caching it.
-      this.#ready = this.#client
-        .call(`${this.#unit}/whoami`)
-        .then((result) => {
-          if (this.#closed) throw new Error('Signaler is closed');
-          if (typeof result?.id !== 'string' || result.id.length === 0) {
-            throw new TypeError(`${this.#unit}/whoami answered without an id`);
-          }
-          this.#id = result.id;
-          return result.id;
-        })
-        .catch((error) => {
-          this.#ready = null;
-          throw error;
-        });
+      this.#ready = this.#whoami().catch((error) => {
+        this.#ready = null;
+        throw error;
+      });
     }
     return this.#ready;
   }
 
+  async #whoami() {
+    const identity = this.#identity;
+    const proposed = isFunction(identity) ? await identity() : identity;
+    if (proposed !== null && proposed !== undefined && !isId(proposed)) {
+      throw new TypeError('wrpcSignaler: identity must produce a non-empty string');
+    }
+    const args = { instance: this.#instance };
+    if (isId(proposed)) args.id = proposed;
+    const result = await this.#client.call(`${this.#unit}/whoami`, args);
+    if (this.#closed) throw new Error('Signaler is closed');
+    if (this.#replaced) throw new Error('Signaler was replaced');
+    if (typeof result?.id !== 'string' || result.id.length === 0) {
+      throw new TypeError(`${this.#unit}/whoami answered without an id`);
+    }
+    this.#id = result.id;
+    return result.id;
+  }
+
   send(to, message, options = {}) {
-    if (typeof to !== 'string' || to.length === 0) throw new TypeError('send: to must be a peer id');
+    if (!isId(to)) throw new TypeError('send: to must be a peer id');
     if (!isSignalMessage(message)) {
       throw new TypeError('send: message.type must be description, candidate, close or connect');
     }
+    if (this.#replaced) throw new Error('Signaler was replaced');
     const room = options.room === undefined ? null : checkRoom(options.room);
-    this.#client.sendEvent(`${this.#unit}/signal`, { to, room, message });
+    const address = optionalId(options.address) ?? this.#addresses.get(to) ?? null;
+    const payload = { to, room, message };
+    if (address !== null) payload.address = address;
+    this.#client.sendEvent(`${this.#unit}/signal`, payload);
   }
 
   async join(room, data = null) {
@@ -163,8 +243,13 @@ class WrpcSignaler extends Emitter {
     const result = await this.#client.call(`${this.#unit}/join`, { room, data });
     // A close() that landed while the call was in flight must not
     // resurrect the room it just forgot.
-    if (!this.#closed) this.#rooms.set(room, data);
-    return Array.isArray(result?.members) ? result.members : [];
+    if (!this.#closed && !this.#replaced) this.#rooms.set(room, data);
+    const members = Array.isArray(result?.members) ? result.members : [];
+    for (let i = 0; i < members.length; i++) {
+      const member = members[i];
+      if (isId(member?.id) && isId(member.address)) this.#addresses.set(member.id, member.address);
+    }
+    return members;
   }
 
   async leave(room) {
@@ -179,13 +264,17 @@ class WrpcSignaler extends Emitter {
     return Array.isArray(result) ? result : [];
   }
 
-  // The signaling connection came back as a NEW server-side client: new id,
-  // rooms gone. Re-join every room this peer was in, then announce the
-  // reset with the fresh rosters so a Mesh can rebuild in one pass.
+  // The signaling connection came back as a NEW server-side client: rooms
+  // gone, the id to be agreed again (the same one, under a stable identity
+  // strategy — so it is kept until the answer lands, and a knock arriving
+  // meanwhile still has a local id to dial with). Re-join every room this
+  // peer was in, then announce the reset with the fresh rosters so a Mesh
+  // can rebuild in one pass.
   async #reset() {
+    if (this.#replaced) return;
     const previous = this.#id;
     this.#ready = null;
-    this.#id = null;
+    this.#addresses.clear();
     const rooms = [];
     try {
       await this.ready();
@@ -194,12 +283,26 @@ class WrpcSignaler extends Emitter {
         rooms.push({ room, members });
       }
     } catch (error) {
-      if (!this.#closed && this.listenerCount('error') > 0) await this.emit('error', error);
+      if (!this.#closed && !this.#replaced && this.listenerCount('error') > 0) await this.emit('error', error);
       return;
     }
     // close() may have run while the calls above were in flight.
-    if (this.#closed) return;
+    if (this.#closed || this.#replaced) return;
     await this.emit('reset', { id: this.#id, previous, rooms });
+  }
+
+  // A newer connection identified as this peer id: this incarnation is
+  // over. Nothing is re-identified on reconnect and nothing is sent; the
+  // owner decides what the page does next.
+  async #onReplaced(payload) {
+    if (this.#closed || this.#replaced) return;
+    const id = this.#id;
+    this.#replaced = true;
+    this.#id = null;
+    this.#ready = null;
+    this.#rooms.clear();
+    this.#addresses.clear();
+    await this.emit('replaced', { id: isId(payload.id) ? payload.id : id });
   }
 
   /** Detaches from the client; the client itself stays open. */
@@ -210,8 +313,10 @@ class WrpcSignaler extends Emitter {
     api.off('signal', this.#listeners.signal);
     api.off('join', this.#listeners.join);
     api.off('leave', this.#listeners.leave);
+    api.off('replaced', this.#listeners.replaced);
     this.#client.off('reconnect', this.#listeners.reconnect);
     this.#rooms.clear();
+    this.#addresses.clear();
     this.#ready = null;
     this.#id = null;
   }

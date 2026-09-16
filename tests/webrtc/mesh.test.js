@@ -214,7 +214,39 @@ test('mesh: leave announces to the others and closes the links nobody else holds
   await waitFor(() => a.links.size === 0 && b.links.size === 1, 'all a links gone');
 });
 
-test('mesh: a signaling reset rebuilds the room under the new id', async (t) => {
+test('mesh: a signaling reconnect under the same id keeps the links', async (t) => {
+  const { peer, hub } = world(t);
+  const a = peer('a');
+  const b = peer('b');
+  const ma = a.join('room', { data: 'A' });
+  const mb = b.join('room', { data: 'B' });
+  await within(settled(ma, 1), 'linked');
+  await within(settled(mb, 1), 'linked');
+  const ab = ma.link('b');
+  const ba = mb.link('a');
+  const events = [];
+  mb.on('leave', (event) => events.push(['leave', event.id]));
+  mb.on('join', (event) => events.push(['join', event.id]));
+  // The hub drops a's rooms ('disconnect' leaves), a re-joins under the
+  // same id and announces a reset: b marks a away, then clears it — the
+  // link never went anywhere.
+  const reset = onceEvent(a, 'reset');
+  await hub.reconnect('a');
+  const event = await within(reset, 'reset announced');
+  assert.strictEqual(event.id, 'a');
+  assert.strictEqual(event.previous, 'a');
+  assert.strictEqual(ma.link('b'), ab, 'the same link, not a new one');
+  assert.strictEqual(mb.link('a'), ba);
+  assert.strictEqual(ab.state, 'open');
+  await ab.load('chat');
+  assert.strictEqual(await ab.api.chat.hello(), 'b greets a');
+  await timers.setTimeout(20);
+  assert.deepStrictEqual(events, [], 'b saw neither a leave nor a join');
+  assert.deepStrictEqual(mb.away, new Set());
+  assert.deepStrictEqual(mb.peers, new Set(['a']));
+});
+
+test('mesh: a signaling reset under a new id rebuilds the room; the stale link leaves when it dies', async (t) => {
   const { peer, hub } = world(t);
   const a = peer('a');
   const b = peer('b');
@@ -230,14 +262,70 @@ test('mesh: a signaling reset rebuilds the room under the new id', async (t) => 
   assert.strictEqual(a.id, 'a2');
   assert.deepStrictEqual(await within(rejoined, 'a relinked'), { id: 'b', data: 'B' });
   await within(settled(mb, 1), 'b relinked');
-  await waitFor(() => events.length === 2, 'b saw the swap');
-  assert.deepStrictEqual(events, [
-    ['leave', 'a'],
+  // The 'disconnect' leave only marked a away; the link to the old id is
+  // abandoned by a without a goodbye and leaves once b's side gives up.
+  await waitFor(() => events.length === 2 && mb.link('a') === undefined, 'b saw the swap');
+  assert.deepStrictEqual(events.sort(), [
     ['join', 'a2', 'A'],
+    ['leave', 'a'],
   ]);
   assert.strictEqual(ma.link('b').link.localId, 'a2');
   assert.strictEqual(mb.link('a2').state, 'open');
+  assert.deepStrictEqual(mb.away, new Set());
+});
+
+test('mesh: a member that dropped and never came back leaves when its link dies', async (t) => {
+  const { peer, hub } = world(t);
+  const a = peer('a');
+  const b = peer('b');
+  const ma = a.join('room');
+  const mb = b.join('room');
+  await within(settled(ma, 1), 'linked');
+  await within(settled(mb, 1), 'linked');
+  const left = onceEvent(mb, 'leave');
+  hub.drop('a');
+  await waitFor(() => mb.away.has('a'), 'a is away');
+  assert.strictEqual(mb.link('a').state, 'open', 'the link outlives the signaling connection');
+  // Then the peer itself goes: the link fails, redials into the void, gives up.
+  a.close();
+  assert.deepStrictEqual(await within(left, 'a left'), { id: 'a' });
+  assert.deepStrictEqual(mb.away, new Set());
   assert.strictEqual(mb.link('a'), undefined);
+});
+
+test('mesh: a member replaced by another incarnation of its id relinks', async (t) => {
+  const { peer, hub } = world(t);
+  const a = peer('a');
+  const b = peer('b');
+  const ma = a.join('room', { data: 'A' });
+  const mb = b.join('room', { data: 'B' });
+  await within(settled(ma, 1), 'linked');
+  await within(settled(mb, 1), 'linked');
+  const stale = mb.link('a');
+  const events = [];
+  mb.on('leave', (event) => events.push(['leave', event.id]));
+  mb.on('join', (event) => events.push(['join', event.id, event.data]));
+  const replaced = onceEvent(a, 'replaced');
+  const closedA = onceEvent(a, 'close');
+  // A second tab identifies as 'a': the first is told, abandons its links
+  // and closes; b hears a 'replaced' leave, then the newcomer's join.
+  const fresh = peer('a', { signaler: await hub.replace('a') });
+  assert.deepStrictEqual(await within(replaced, 'old a told'), { id: 'a' });
+  await within(closedA, 'old a closed');
+  assert.strictEqual(a.links.size, 0);
+  const mesh = fresh.join('room', { data: 'A2' });
+  await within(settled(mesh, 1), 'new a linked');
+  await within(settled(mb, 1), 'b relinked');
+  assert.notStrictEqual(mb.link('a'), stale);
+  assert.strictEqual(stale.state, 'closed');
+  await waitFor(() => events.length === 2, 'b saw the swap');
+  assert.deepStrictEqual(events, [
+    ['leave', 'a'],
+    ['join', 'a', 'A2'],
+  ]);
+  const link = mb.link('a');
+  await link.load('chat');
+  assert.strictEqual(await link.api.chat.hello(), 'a greets b');
 });
 
 test('mesh: a peer without a router cannot fan out, and a signaler without a roster cannot mesh', async (t) => {
@@ -320,8 +408,9 @@ test('mesh: over createSignalingUnit + wrpcSignaler on a real server', async (t)
   const asked = await ma.ask('poll', {}, { timeout: 1000 });
   assert.deepStrictEqual(asked.answers.sort(), ['b', 'c']);
 
-  // The server drops a's signaling connection: b and c see a leave (the
-  // hook), a comes back under a new id, re-joins and re-links.
+  // The server drops a's signaling connection: b and c see a 'disconnect'
+  // leave (the hook), a comes back under a new id (the default identity is
+  // the connection's), re-joins and re-links.
   const oldId = a.id;
   const events = [];
   mb.on('leave', (event) => events.push(['leave', event.id]));
@@ -333,10 +422,12 @@ test('mesh: over createSignalingUnit + wrpcSignaler on a real server', async (t)
   assert.notStrictEqual(newId, oldId);
   await within(settled(ma, 2), 'a relinked');
   await within(settled(mb, 2), 'b relinked');
-  await waitFor(() => events.length === 2, 'b saw the swap');
-  assert.deepStrictEqual(events, [
-    ['leave', oldId],
+  // The hook's 'disconnect' leave only marks a away; the stale link is
+  // abandoned by a and leaves b's mesh once b gives up on it.
+  await waitFor(() => events.length === 2 && mb.link(oldId) === undefined, 'b saw the swap');
+  assert.deepStrictEqual(events.sort(), [
     ['join', newId],
+    ['leave', oldId],
   ]);
   assert.strictEqual(ma.link(b.id).link.localId, newId);
   const relinked = mb.link(newId);
@@ -347,4 +438,64 @@ test('mesh: over createSignalingUnit + wrpcSignaler on a real server', async (t)
   await waitFor(() => ma.peers.size === 1 && mb.peers.size === 1, 'c gone');
   await timers.setTimeout(10);
   assert.strictEqual(c.instance.links.size, 0);
+});
+
+test('mesh: a stable identity strategy keeps the links across a signaling reconnect', async (t) => {
+  const router = defineRouter(
+    { ...createSignalingUnit({ access: 'public', identity: (_context, { proposed }) => proposed }) },
+    { hooks: createSignalingHooks() },
+  );
+  const { server, url } = await bootServer(t, { router });
+  const fake = createFakeRtc();
+  t.after(() => fake.world.close());
+  const peers = [];
+  t.after(() => {
+    for (const peer of peers) peer.close();
+  });
+  const peer = async (name) => {
+    const client = await connectClient(t, url, { reconnect: { minDelay: 10, maxDelay: 20, jitter: false } });
+    client.on('error', () => {});
+    const signaler = wrpcSignaler(client, { identity: name });
+    const instance = new WrpcPeer({
+      router: routerOf(name),
+      signaler,
+      rtc: fake.adapter,
+      logger: quiet,
+      client: { heartbeat: false, reconnect: { minDelay: 5, maxDelay: 20, jitter: false } },
+      connectTimeout: 1000,
+      restartTimeout: 50,
+      redial: { minDelay: 5, maxDelay: 20, jitter: false, retries: 3 },
+    });
+    instance.on('error', () => {});
+    peers.push(instance);
+    assert.strictEqual(await instance.start(), name, 'the proposed id is the peer id');
+    return { instance, signaler, client };
+  };
+  const a = await peer('alice');
+  const b = await peer('bob');
+  const ma = a.instance.join('lobby');
+  const mb = b.instance.join('lobby');
+  await within(settled(ma, 1), 'linked');
+  await within(settled(mb, 1), 'linked');
+  const ab = ma.link('bob');
+  const events = [];
+  mb.on('leave', (event) => events.push(['leave', event.id]));
+  mb.on('join', (event) => events.push(['join', event.id]));
+
+  // The server drops alice's signaling connection: bob hears a 'disconnect'
+  // leave and marks her away; she reconnects, is 'alice' again with the same
+  // instance, re-joins — and the link never blinked.
+  const reset = onceEvent(a.signaler, 'reset');
+  const connection = [...server.rpc.clients].find((client) => client.data.rtc?.id === 'alice');
+  connection.close();
+  const event = await within(reset, 'alice reset');
+  assert.deepStrictEqual([event.id, event.previous], ['alice', 'alice']);
+  await waitFor(() => !mb.away.has('alice'), 'alice is back');
+  assert.strictEqual(ma.link('bob'), ab, 'the same link');
+  assert.strictEqual(ab.state, 'open');
+  await ab.load('chat');
+  assert.strictEqual(await ab.api.chat.hello(), 'bob greets alice');
+  await timers.setTimeout(20);
+  assert.deepStrictEqual(events, [], 'bob saw neither a leave nor a join');
+  assert.deepStrictEqual(mb.peers, new Set(['alice']));
 });

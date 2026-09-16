@@ -55,6 +55,7 @@ const isPeerId = (value) => typeof value === 'string' && value.length > 0;
 class PeerLink extends Emitter {
   #peer;
   #id;
+  #instance;
   #room;
   #data;
   #link;
@@ -74,10 +75,11 @@ class PeerLink extends Emitter {
   #counted = false;
   #unbind = [];
 
-  constructor(peer, { id, room, data, link, host, hostOptions, client, framing, redial, log, otel }) {
+  constructor(peer, { id, instance, room, data, link, host, hostOptions, client, framing, redial, log, otel }) {
     super();
     this.#peer = peer;
     this.#id = id;
+    this.#instance = instance;
     this.#room = room;
     this.#data = data;
     this.#link = link;
@@ -99,6 +101,15 @@ class PeerLink extends Emitter {
   /** The remote peer's id. */
   get id() {
     return this.#id;
+  }
+
+  /**
+   * The remote peer's incarnation — the `instance` its signaler carries —
+   * once known, else null. A signal from the same id under another instance
+   * is another endpoint, and this link is stale.
+   */
+  get instance() {
+    return this.#instance;
   }
 
   /** The signaling room this link was made in, or null. */
@@ -239,11 +250,17 @@ class PeerLink extends Emitter {
     return this.#link.receive(message);
   }
 
+  /** @internal The remote's instance, learned from its first signal or roster entry. */
+  adopt(instance) {
+    if (this.#instance === null && typeof instance === 'string') this.#instance = instance;
+  }
+
   /**
    * @internal Closes without a goodbye: after a signaling reset this side's
-   * id changed, so a 'close' sent now would reach the peer from a stranger
-   * — or worse, land on the fresh link it is already making to the new id.
-   * The peer learns through the roster (leave/join) or through ICE.
+   * id changed, or the remote came back as another incarnation, so a
+   * 'close' sent now would reach the peer from a stranger — or worse, land
+   * on the fresh link already being made. The peer learns through the
+   * roster (leave/join) or through ICE.
    */
   abandon() {
     void this.#link.receive({ type: 'close' });
@@ -437,6 +454,7 @@ class WrpcPeer extends Emitter {
   #closed = false;
   #onSignal = (event) => void this.#receive(event);
   #onReset = (event) => void this.#reset(event);
+  #onReplaced = (event) => void this.#replaced(event);
 
   constructor(options = {}) {
     super();
@@ -493,6 +511,7 @@ class WrpcPeer extends Emitter {
     // still answers a knock — start() runs on the first signal.
     signaler.on('signal', this.#onSignal);
     signaler.on('reset', this.#onReset);
+    signaler.on('replaced', this.#onReplaced);
   }
 
   /** This peer's id: the signaler's, once start() resolved. */
@@ -537,15 +556,18 @@ class WrpcPeer extends Emitter {
 
   /**
    * A link to `remoteId`, dialled from either side; idempotent while one
-   * exists. Resolves with the PeerLink once both directions are up.
+   * exists — unless `options.instance` names another incarnation of the
+   * id than the one linked, which abandons the stale link and dials the new
+   * endpoint. Resolves with the PeerLink once both directions are up.
    */
   async connect(remoteId, options = {}) {
     if (!isPeerId(remoteId)) throw new TypeError('WrpcPeer.connect: remoteId must be a non-empty string');
     await this.start();
     if (remoteId === this.id) throw new Error('WrpcPeer.connect: cannot connect to self');
+    const instance = isPeerId(options.instance) ? options.instance : null;
     const existing = this.#links.get(remoteId);
-    if (existing) return existing.ready();
-    const link = this.#create(remoteId, options.room ?? null, options.data ?? null);
+    if (existing && this.#current(existing, instance)) return existing.ready();
+    const link = this.#create(remoteId, options.room ?? null, options.data ?? null, instance);
     link.start({ knock: true });
     return link.ready();
   }
@@ -575,6 +597,7 @@ class WrpcPeer extends Emitter {
     this.#closed = true;
     this.#signaler.off('signal', this.#onSignal);
     this.#signaler.off('reset', this.#onReset);
+    this.#signaler.off('replaced', this.#onReplaced);
     for (const mesh of [...this.#meshes.values()]) mesh.detach();
     this.#meshes.clear();
     for (const link of [...this.#links.values()]) link.close();
@@ -611,7 +634,24 @@ class WrpcPeer extends Emitter {
     return false;
   }
 
-  #create(remoteId, room, data) {
+  // Whether `existing` is still the link to its peer: it is, unless
+  // `instance` says the id now lives at another endpoint — then the stale
+  // link is abandoned (no goodbye: it would land on the new one) and the
+  // answer is false. A link that never learned an instance adopts the
+  // first it sees.
+  #current(existing, instance) {
+    if (instance === null) return true;
+    if (existing.instance === null) {
+      existing.adopt(instance);
+      return true;
+    }
+    if (existing.instance === instance) return true;
+    this.#log.info({ event: 'rtc.peer.incarnation', peer: existing.id, previous: existing.instance, instance });
+    existing.abandon();
+    return false;
+  }
+
+  #create(remoteId, room, data, instance = null) {
     const localId = this.id;
     const link = new RtcLink({
       localId,
@@ -626,6 +666,7 @@ class WrpcPeer extends Emitter {
     });
     const peerLink = new PeerLink(this, {
       id: remoteId,
+      instance,
       room,
       data,
       link,
@@ -642,25 +683,32 @@ class WrpcPeer extends Emitter {
     return peerLink;
   }
 
-  async #receive({ from, room, message }) {
+  async #receive({ from, instance, room, message }) {
     if (this.#closed || !isPeerId(from) || !isSignalMessage(message)) return;
     try {
       await this.start();
     } catch (error) {
       return void this.escalate(error);
     }
-    if (this.#closed || from === this.id) return;
+    if (this.#closed || this.id === null || from === this.id) return;
+    const incarnation = isPeerId(instance) ? instance : null;
     const existing = this.#links.get(from);
-    if (existing) {
+    const stale = existing !== undefined && !this.#current(existing, incarnation);
+    if (existing && !stale) {
       if (message.type === 'connect') return void existing.knocked();
       return void (await existing.receive(message));
     }
     // Unknown peer: a knock or an offer opens a link, once accept() agrees;
-    // a candidate or close for a link we do not have is noise.
+    // a candidate or close for a link we do not have is noise. Except after
+    // a stale link went: its redial may already have reached the new
+    // incarnation and this is that side's answer, so the initiator (lower
+    // id) dials afresh on anything the newcomer says.
     const pending = this.#pending.get(from);
     if (pending) return void pending.push(message);
     const opening =
-      message.type === 'connect' || (message.type === 'description' && message.description?.type === 'offer');
+      message.type === 'connect' ||
+      (message.type === 'description' && message.description?.type === 'offer') ||
+      (stale && message.type !== 'close' && this.id < from);
     if (!opening) return;
     const queue = [message];
     this.#pending.set(from, queue);
@@ -678,21 +726,40 @@ class WrpcPeer extends Emitter {
       if (message.type !== 'close') this.signal(from, { type: 'close' }, room ?? null);
       return;
     }
-    const link = this.#create(from, room ?? null, null);
+    const link = this.#create(from, room ?? null, null, incarnation);
     link.start();
     for (const queued of queue) {
       if (queued.type === 'connect') link.knocked();
-      else await link.receive(queued);
+      // A stale-incarnation answer or candidate belongs to the link that
+      // went; the fresh dial above is what reaches the newcomer.
+      else if (!stale || queued.type !== 'description' || queued.description?.type === 'offer') {
+        await link.receive(queued);
+      }
     }
   }
 
-  // The signaling identity changed: every link was made under the old id
-  // and the remote side keys it by that id. Close them all — a Mesh
-  // rebuilds from the rosters the reset carries.
+  // The signaler re-identified. Under a stable identity the id is the same
+  // and the links, which never needed signaling to keep working, stay; a
+  // Mesh re-adopts them from the rosters the reset carries. When the id
+  // changed, every link was made under the old one and the remote side
+  // keys it by that: close them all, without a goodbye.
   #reset(event) {
-    this.#log.warn({ event: 'rtc.peer.reset', id: event?.id, previous: event?.previous });
-    for (const link of [...this.#links.values()]) link.abandon();
+    const changed = event?.id !== event?.previous;
+    this.#log.warn({ event: 'rtc.peer.reset', id: event?.id, previous: event?.previous, changed });
+    if (changed) for (const link of [...this.#links.values()]) link.abandon();
     void this.emit('reset', event).catch((error) => this.escalate(error));
+  }
+
+  // A newer connection took this peer id: this incarnation is over. The
+  // remote peers drop their links to it as the roster says so; here the
+  // links are abandoned (a goodbye would come from a stranger) and the peer
+  // closes. The owner decides whether a page starts a new one.
+  #replaced(event) {
+    if (this.#closed) return;
+    this.#log.warn({ event: 'rtc.peer.replaced', id: event?.id });
+    for (const link of [...this.#links.values()]) link.abandon();
+    void this.emit('replaced', event).catch((error) => this.escalate(error));
+    this.close();
   }
 }
 

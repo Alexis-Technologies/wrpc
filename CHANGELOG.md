@@ -40,13 +40,26 @@ narrower promise — see
 - `Mesh` (`peer.join(room)`) — everyone in a signaling room linked to
   everyone, with `broadcast()`/`ask()` as one `Broadcast` fan-out over the
   host room `mesh:<room>`, `respond()` covering members present and
-  future, and a rebuild on a signaling reset.
+  future, and a rebuild on a signaling reset. A member whose signaling
+  connection dropped is only `away`: its link stays up until it leaves for
+  real, comes back as another incarnation, or the link itself fails.
 - Signaling: the structural `Signaler`/`RosterSignaler` contract
   (`isSignaler`, `hasRoster`), the built-in server unit
   `createSignalingUnit()` + `createSignalingHooks()` (relayed through
-  `RpcServer.sendTo`, so it clusters with no extra state; a peer's id is
-  its signaling client id) and its client half `wrpcSignaler(client)` over
-  any transport.
+  `RpcServer.sendTo`, so it clusters with no extra state) and its client
+  half `wrpcSignaler(client)` over any transport.
+- Stable peer identity: `createSignalingUnit({ identity })` decides a
+  connection's peer id — a user id from the session, say — from the context
+  and the id the client proposed (`wrpcSignaler(client, { identity })`); the
+  default stays the connection's client id. The id survives a signaling
+  reconnect, so a `WrpcPeer`'s links do too (`reset` with `id === previous`
+  keeps them). Each signaler carries one `instance` (`generateId` option),
+  which tells two incarnations of one id apart: a signal from another
+  incarnation abandons the stale link and relinks. `duplicate: 'replace' |
+  'refuse'` decides a second connection under a held id; the first hears
+  `replaced` (the peer emits it and closes). Rosters, `join`/`leave` and
+  signals carry `instance` and the routable `address`, and `leave` a
+  `reason` (`'left' | 'disconnect' | 'replaced'`).
 - Bring your own data channel — the level under `RtcLink`, the `event`
   transport's arrangement for WebRTC: `connect(url, { transport: 'webrtc',
   channel })` speaks on an `RTCDataChannel` the application negotiated

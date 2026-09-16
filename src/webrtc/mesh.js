@@ -7,6 +7,13 @@
 // Client is kept in the room `mesh:<room>` on this peer's PeerHost, which
 // is what makes broadcast() and ask() a single-encode Broadcast fan-out
 // rather than a loop over links.
+//
+// A member whose signaling connection dropped (`leave` with reason
+// 'disconnect') is only `away`: its link never needed signaling to keep
+// working, and under a stable identity the member re-joins as the same
+// incarnation moments later. The link is kept until the member leaves for
+// real, comes back as another incarnation (the peer relinks), or the link
+// itself fails through the ordinary redial cycle.
 
 const { Emitter } = require('../utils.js');
 const { hasRoster } = require('./signaler.js');
@@ -17,6 +24,7 @@ class Mesh extends Emitter {
   #data;
   #signaler;
   #members = new Map(); // id -> PeerLink
+  #away = new Set(); // ids whose signaling dropped while their link stayed up
   #responders = new Map();
   #joined = null;
   #left = false;
@@ -34,14 +42,17 @@ class Mesh extends Emitter {
       this.#unbind.push(() => emitter.off(name, fn));
     };
     on(this.#signaler, 'join', (event) => {
-      if (event.room === room) this.#ensure(event.id, event.data ?? null);
+      if (event.room === room) this.#ensure(event.id, event.data ?? null, event.instance ?? null);
     });
     on(this.#signaler, 'leave', (event) => {
-      if (event.room === room) this.#drop(event.id, true);
+      if (event.room !== room) return;
+      if (event.reason === 'disconnect' && this.#members.get(event.id)?.open) this.#away.add(event.id);
+      else this.#dropId(event.id, true);
     });
     on(peer, 'reset', (event) => {
       const entry = Array.isArray(event?.rooms) ? event.rooms.find((item) => item.room === room) : null;
-      if (entry) for (const member of entry.members) this.#ensure(member.id, member.data ?? null);
+      if (!entry) return;
+      for (const member of entry.members) this.#ensure(member.id, member.data ?? null, member.instance ?? null);
     });
     on(peer, 'link', (link) => this.#adopt(link));
     this.#joined = this.#join();
@@ -56,6 +67,11 @@ class Mesh extends Emitter {
     const ids = new Set();
     for (const [id, link] of this.#members) if (link.open) ids.add(id);
     return ids;
+  }
+
+  /** Members whose signaling connection dropped while their link stayed up (a copy). */
+  get away() {
+    return new Set(this.#away);
   }
 
   /** Every member link, open or still connecting (a copy). */
@@ -122,7 +138,7 @@ class Mesh extends Emitter {
     this.#left = true;
     for (const unbind of this.#unbind) unbind();
     this.#unbind = [];
-    for (const id of [...this.#members.keys()]) this.#drop(id, false);
+    for (const link of [...this.#members.values()]) this.#drop(link, false);
     void this.emit('left').catch((error) => this.#peer.escalate(error, this));
   }
 
@@ -135,29 +151,34 @@ class Mesh extends Emitter {
   async #join() {
     const members = await this.#signaler.join(this.#room, this.#data);
     if (this.#left) return;
-    for (const member of members) this.#ensure(member.id, member.data ?? null);
+    for (const member of members) this.#ensure(member.id, member.data ?? null, member.instance ?? null);
   }
 
   // A member: link if not yet linked (from either side), and keep its host
-  // Client in the mesh room.
-  #ensure(id, data) {
+  // Client in the mesh room. The same incarnation coming back from `away`
+  // is already linked and only cleared; another incarnation makes the peer
+  // abandon the stale link (its close drops the member) and dial the fresh
+  // one, adopted through the peer's 'link' event.
+  #ensure(id, data, instance) {
     if (this.#left || id === this.#peer.id) return;
-    let link = this.#peer.link(id);
-    if (!link) {
-      // connect() resolves on open and rejects on close; both are
-      // announced through the link's events below, so the promise itself
-      // is only kept from being an unhandled rejection.
-      this.#peer.connect(id, { room: this.#room, data }).catch(() => {});
-      link = this.#peer.link(id);
-    }
+    this.#away.delete(id);
+    // connect() resolves on open and rejects on close; both are announced
+    // through the link's events below, so the promise itself is only kept
+    // from being an unhandled rejection.
+    this.#peer.connect(id, { room: this.#room, data, instance }).catch(() => {});
+    const link = this.#peer.link(id);
     if (link) this.#adopt(link, data);
   }
 
   // A link this peer made or accepted: a member of this mesh when it was
-  // made in this room, or when the roster names it.
+  // made in this room, or when the roster names it. A link that replaced a
+  // member's earlier one takes its place; the old one leaves on its close.
   #adopt(link, data = undefined) {
-    if (this.#left || this.#members.has(link.id)) return;
+    if (this.#left) return;
+    const known = this.#members.get(link.id);
+    if (known === link) return;
     if (data === undefined && link.room !== this.#room) return;
+    if (known) this.#release(known);
     this.#members.set(link.id, link);
     link.join(this.hostRoom);
     for (const [name, handler] of this.#responders) link.respond(name, handler);
@@ -167,19 +188,28 @@ class Mesh extends Emitter {
     else link.once('open', onOpen);
     link.once('close', () => {
       link.off('open', onOpen);
-      this.#drop(link.id, true);
+      if (this.#members.get(link.id) === link) this.#drop(link, true);
     });
     void this.emit('link', link).catch((error) => this.#peer.escalate(error, this));
   }
 
-  #drop(id, announce) {
+  #dropId(id, announce) {
     const link = this.#members.get(id);
-    if (!link) return;
-    this.#members.delete(id);
+    if (link) this.#drop(link, announce);
+  }
+
+  #drop(link, announce) {
+    this.#members.delete(link.id);
+    this.#away.delete(link.id);
+    this.#release(link);
+    if (!this.#peer.held(link.id, this)) link.close();
+    if (announce) void this.emit('leave', { id: link.id }).catch((error) => this.#peer.escalate(error, this));
+  }
+
+  // Out of the mesh room and off the responders, whether or not it closes.
+  #release(link) {
     link.leave(this.hostRoom);
     for (const name of this.#responders.keys()) link.unrespond(name);
-    if (!this.#peer.held(id, this)) link.close();
-    if (announce) void this.emit('leave', { id }).catch((error) => this.#peer.escalate(error, this));
   }
 }
 

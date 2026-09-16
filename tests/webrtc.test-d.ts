@@ -3,10 +3,12 @@ import * as webrtc from '../webrtc.js';
 import type {
   ChannelsOptions,
   ClientRtcTransport,
+  LeaveReason,
   RtcDataChannelLike,
   Mesh,
   PeerHost,
   PeerLink,
+  RosterMember,
   RosterSignaler,
   RtcAdapter,
   RtcLink,
@@ -63,14 +65,24 @@ if (webrtc.isRtcAdapter(maybeAdapter)) expectType<RtcAdapter>(maybeAdapter);
 
 // The signaler contract, and the built-in one over any WrpcClient.
 declare const client: WrpcClient;
-const signaler = webrtc.wrpcSignaler(client, { unit: 'signaling' });
+const signaler = webrtc.wrpcSignaler(client, { unit: 'signaling', identity: 'alice', generateId: () => 'tab-1' });
+webrtc.wrpcSignaler(client, { identity: async () => 'alice' });
+expectError(webrtc.wrpcSignaler(client, { identity: 42 }));
 expectAssignable<Signaler>(signaler);
 expectAssignable<RosterSignaler>(signaler);
 expectType<string | null>(signaler.id);
+expectType<string>(signaler.instance);
+expectType<boolean>(signaler.replaced);
+expectType<string | null>(signaler.addressOf('peer'));
 expectType<Promise<string>>(signaler.ready());
-expectType<Promise<Array<{ id: string; data: unknown }>>>(signaler.join('lobby', { name: 'ada' }));
-signaler.send('peer', { type: 'close' }, { room: 'lobby' });
+expectType<Promise<Array<RosterMember>>>(signaler.join('lobby', { name: 'ada' }));
+signaler.send('peer', { type: 'close' }, { room: 'lobby', address: 'node.1' });
 expectError(signaler.send('peer', { type: 'offer' }));
+signaler.on('leave', (event) => {
+  expectType<string>(event.id);
+  expectType<LeaveReason | undefined>(event.reason);
+});
+signaler.on('replaced', (event) => expectType<string>(event.id));
 expectAssignable<SignalMessage>({ type: 'connect' });
 expectAssignable<SignalMessage>({ type: 'description', description: { type: 'offer', sdp: 'v=0' } });
 // A hand-rolled signaler needs only the shape.
@@ -104,6 +116,7 @@ const peer = new webrtc.WrpcPeer({
 });
 expectType<string | null>(peer.id);
 expectType<PeerHost | null>(peer.host);
+peer.on('replaced', (event: { id: string }) => event.id);
 expectType<Map<string, PeerLink>>(peer.links);
 expectAssignable<Required<ChannelsOptions>>(peer.channels);
 expectError(new webrtc.WrpcPeer({ signaler, host: { trust: 'always' } }));
@@ -114,6 +127,7 @@ async function usage() {
   expectType<PeerLink<Api>>(link);
   expectType<string>(await link.api.chat.hello());
   expectType<string>(link.id);
+  expectType<string | null>(link.instance);
   expectType<boolean>(link.initiator);
   expectType<Client | null>(link.client);
   expectType<RtcLink>(link.link);
