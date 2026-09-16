@@ -208,13 +208,37 @@ class FakePeerConnection extends EventTarget {
     if (this.#closed) throw invalidState('RTCPeerConnection is closed');
     this.#negotiationNeeded = false;
     const restart = options.iceRestart === true ? ' ice-restart' : '';
-    return { type: 'offer', sdp: `v=0 fake ${this.id} o=${++this.#descriptionSeq}${restart}` };
+    return {
+      type: 'offer',
+      sdp: `v=0 fake ${this.id} o=${++this.#descriptionSeq}${restart}\r\n${this.#fingerprintLine()}`,
+    };
   }
 
   async createAnswer() {
     if (this.#closed) throw invalidState('RTCPeerConnection is closed');
     if (this.signalingState !== 'have-remote-offer') throw invalidState('createAnswer: no remote offer');
-    return { type: 'answer', sdp: `v=0 fake ${this.id} a=${++this.#descriptionSeq}` };
+    return { type: 'answer', sdp: `v=0 fake ${this.id} a=${++this.#descriptionSeq}\r\n${this.#fingerprintLine()}` };
+  }
+
+  /**
+   * The DTLS certificate fingerprint of this pc, as a real SDP declares it
+   * (`a=fingerprint:sha-256 AB:CD:...`): one certificate per pc, derived
+   * from the pc id so it is stable for the pc's life and unique to it.
+   */
+  get fingerprint() {
+    const seed = `certificate of ${this.id}`;
+    const bytes = [];
+    let h = 0x811c9dc5;
+    for (let i = 0; i < 32; i++) {
+      h ^= seed.charCodeAt(i % seed.length) + i;
+      h = Math.imul(h, 0x01000193) >>> 0;
+      bytes.push((h & 0xff).toString(16).padStart(2, '0').toUpperCase());
+    }
+    return `sha-256 ${bytes.join(':')}`;
+  }
+
+  #fingerprintLine() {
+    return `a=fingerprint:${this.fingerprint}`;
   }
 
   async setLocalDescription(description) {
