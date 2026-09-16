@@ -43,6 +43,14 @@ export interface DeflateParams {
   response: string;
   threshold: number;
   windowBits: number;
+  /** A live deflate context for what this side sends (contextTakeover 'server' | true, and the peer allowed it). */
+  serverTakeover?: boolean;
+  /** A live inflate context for what the peer sends (contextTakeover 'client' | true, and the peer keeps its context). */
+  clientTakeover?: boolean;
+  level?: number;
+  memLevel?: number;
+  /** Messages at or over `threshold` bytes deflate/inflate off the event loop; null keeps everything synchronous. */
+  async?: { threshold: number } | null;
 }
 
 export interface PerMessageDeflateOptions {
@@ -54,6 +62,27 @@ export interface PerMessageDeflateOptions {
    * same datacenter — decided on the upgrade request.
    */
   filter?: (req: IncomingMessage) => boolean;
+  /**
+   * Keep a zlib context across messages: 'server' for what this side
+   * sends, 'client' for what the peer sends, true for both. Better ratio
+   * on repetitive traffic at the price of a live zlib stream per direction
+   * per connection (a 32 KiB window plus ~128 KiB of deflate state at the
+   * defaults) and an asynchronous, queued write path. A peer's own
+   * `*_no_context_takeover` request is always honoured. Default false —
+   * every message a self-contained stream, which is what lets a fan-out
+   * share one deflated frame.
+   */
+  contextTakeover?: boolean | 'server' | 'client';
+  /** zlib compression level for the server's deflate (context takeover only). */
+  level?: number;
+  /** zlib memLevel for the server's deflate (context takeover only). */
+  memLevel?: number;
+  /**
+   * Deflate and inflate messages at or over `threshold` bytes off the
+   * event loop (zlib's threadpool API), in order behind whatever is
+   * already queued. Default threshold 256 KiB; `{}` takes it. Off by default.
+   */
+  async?: { threshold?: number };
 }
 
 /**

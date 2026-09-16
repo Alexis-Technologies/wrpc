@@ -2,7 +2,7 @@
 
 const { OPCODES, RSV1 } = require('./constants.js');
 const { encodeFrame } = require('./frame.js');
-const { compress, MIN_WINDOW_BITS, MAX_WINDOW_BITS } = require('./permessageDeflate.js');
+const { compress, compressAsync, MIN_WINDOW_BITS, MAX_WINDOW_BITS } = require('./permessageDeflate.js');
 
 // The engine-owned half of a shared message (see Connection.sendPrepared):
 // one text, encoded to the wire ONCE for however many connections write it.
@@ -38,18 +38,48 @@ class PreparedFrames {
     return frame;
   }
 
-  deflated(windowBits) {
+  #slots() {
     let frames = this.#deflated;
     if (frames === null) {
       frames = this.#deflated = new Array(SLOTS);
       for (let i = 0; i < SLOTS; i++) frames[i] = null;
     }
+    return frames;
+  }
+
+  deflated(windowBits) {
+    const frames = this.#slots();
     const slot = windowBits - MIN_WINDOW_BITS;
     let frame = frames[slot];
-    if (frame === null) {
-      frame = frames[slot] = encodeFrame(OPCODES.TEXT, RSV1, compress(this.payload, windowBits));
+    // A slot may hold the waiters of an in-flight async deflate (below);
+    // a synchronous caller then computes the same bytes itself rather than
+    // block on the threadpool.
+    if (frame === null || !Buffer.isBuffer(frame)) {
+      frame = encodeFrame(OPCODES.TEXT, RSV1, compress(this.payload, windowBits));
+      if (frames[slot] === null) frames[slot] = frame;
     }
     return frame;
+  }
+
+  // The off-loop variant (`perMessageDeflate.async`): the first recipient
+  // to need a window's frame starts ONE zlib.deflateRaw, and every later
+  // recipient of the same emit waits on that same result — still one
+  // deflate per window per fan-out, just not on the event loop.
+  deflatedAsync(windowBits, cb) {
+    const frames = this.#slots();
+    const slot = windowBits - MIN_WINDOW_BITS;
+    const current = frames[slot];
+    if (current !== null) {
+      if (Buffer.isBuffer(current)) return void cb(null, current);
+      return void current.push(cb);
+    }
+    const waiters = [cb];
+    frames[slot] = waiters;
+    compressAsync(this.payload, windowBits, (error, compressed) => {
+      const frame = error ? null : encodeFrame(OPCODES.TEXT, RSV1, compressed);
+      frames[slot] = frame;
+      for (let i = 0; i < waiters.length; i++) waiters[i](error, frame);
+    });
   }
 }
 

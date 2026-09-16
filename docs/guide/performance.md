@@ -134,6 +134,30 @@ call took 64 in flight from 101,666 to 114,158 and 1024 from 90,665 to
 104,864, with a single awaited call unchanged. `WRPC_ROOT=<checkout>` points
 the runner at another checkout for a before/after.
 
+## Compression modes
+
+`bench/deflate-context.js` — the stateless default, context takeover and the
+async threadpool path, on the traffic each is for:
+
+| Scenario | rate | ratio / loop delay |
+| --- | ---: | --- |
+| repeated JSON event, one-shot (default) | 97,685/sec | 1.1× |
+| repeated JSON event, **context takeover** | 30,677/sec | **10.6×** |
+| 4 KB JSON, one-shot / async | 94,100 / 21,547 | 3.1× |
+| 32 KB JSON, one-shot / async | 16,871 / 9,737 | 3.9× |
+| 256 KB JSON, one-shot / async | 1,618 / 1,789 | 3.8× |
+| 252 KB burst ×100, one-shot | 306/sec | loop blocked **328 ms** |
+| 252 KB burst ×100, **async** | 1,212/sec | loop delay 2 ms |
+
+Context takeover is the ratio knob: a repeated event shape compresses ten
+times better against its own history, for ~160 KiB of zlib state per
+direction per connection and an asynchronous, queued write path. Async is
+the event-loop knob: below its threshold the threadpool hand-off costs
+throughput, at 256 KB it is free, and on a burst — a fan-out's worth of
+large frames issued in one turn — it is the difference between a loop
+stalled for a third of a second and one that never notices. Both are
+opt-in; see [wire format](../reference/wire-format#permessage-deflate).
+
 ## The receive path
 
 `bench/parser-throughput.js`:

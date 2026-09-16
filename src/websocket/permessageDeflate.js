@@ -5,6 +5,12 @@ const zlib = require('node:zlib');
 const EXTENSION_NAME = 'permessage-deflate';
 const TRAILER = Buffer.from([0x00, 0x00, 0xff, 0xff]);
 const DEFAULT_THRESHOLD = 1024;
+// The threadpool hand-off of zlib's async API costs a fixed amount per
+// message: sequential throughput is a quarter of the sync path at 4 KB, a
+// half at 32 KB and level at 256 KB (bench/deflate-context.js) — so below
+// this a synchronous deflate is cheaper, and above it the hand-off is free
+// and the event loop is the thing being bought.
+const DEFAULT_ASYNC_THRESHOLD = 256 * 1024;
 // zlib cannot produce a true 8-bit raw-deflate window, so an offer
 // demanding server_max_window_bits=8 cannot be honored and is skipped.
 const MIN_WINDOW_BITS = 9;
@@ -60,6 +66,29 @@ const parseWindowBits = (value) => {
   return bits;
 };
 
+// `contextTakeover`: false (default) pins both directions to no context
+// takeover; 'server' keeps a deflate context for what WE send, 'client'
+// keeps an inflate context for what the peer sends, true both. A peer's
+// own `*_no_context_takeover` request is always honoured (RFC 7692
+// 7.1.1.1), so the ACCEPTED state can be narrower than the option.
+const takeoverOf = (options) => {
+  const value = options.contextTakeover;
+  if (value === true) return { server: true, client: true };
+  if (value === 'server') return { server: true, client: false };
+  if (value === 'client') return { server: false, client: true };
+  return { server: false, client: false };
+};
+
+// `async: { threshold }` moves the deflate/inflate of messages at or over
+// `threshold` bytes off the event loop (zlib's threadpool API); null keeps
+// every message synchronous.
+const asyncOf = (options) => {
+  const value = options.async;
+  if (!value || typeof value !== 'object') return null;
+  const threshold = value.threshold;
+  return { threshold: typeof threshold === 'number' && threshold > 0 ? threshold : DEFAULT_ASYNC_THRESHOLD };
+};
+
 const acceptOffer = (offer, options) => {
   if (!offer.valid) return null;
   let windowBits = MAX_WINDOW_BITS;
@@ -74,7 +103,12 @@ const acceptOffer = (offer, options) => {
       if (parseWindowBits(value) === null) return null;
     }
   }
-  const response = [EXTENSION_NAME, 'server_no_context_takeover', 'client_no_context_takeover'];
+  const takeover = takeoverOf(options);
+  const serverTakeover = takeover.server && !offer.params.has('server_no_context_takeover');
+  const clientTakeover = takeover.client && !offer.params.has('client_no_context_takeover');
+  const response = [EXTENSION_NAME];
+  if (!serverTakeover) response.push('server_no_context_takeover');
+  if (!clientTakeover) response.push('client_no_context_takeover');
   if (offer.params.has('server_max_window_bits')) {
     response.push(`server_max_window_bits=${windowBits}`);
   }
@@ -82,13 +116,21 @@ const acceptOffer = (offer, options) => {
     response: response.join('; '),
     threshold: options.threshold ?? DEFAULT_THRESHOLD,
     windowBits,
+    serverTakeover,
+    clientTakeover,
+    level: options.level,
+    memLevel: options.memLevel,
+    async: asyncOf(options),
   };
 };
 
 // Server-side negotiation: accepts the first honorable permessage-deflate
-// offer. Both directions are pinned to no context takeover, so every
-// message is a self-contained deflate stream — compression state never
-// spans messages and one-shot zlib calls suffice.
+// offer. By default both directions are pinned to no context takeover, so
+// every message is a self-contained deflate stream — compression state
+// never spans messages, one-shot zlib calls suffice, and the compressed
+// bytes are a function of (payload, window) alone (what lets a fan-out
+// share one frame). `contextTakeover` opts a direction into a live stream
+// per connection (deflateContext.js).
 // Returns the accepted params, null to decline, or { malformed: true }
 // when the header violates the grammar — the handshake must then fail
 // with 400 (RFC 6455 4.2.1), not proceed without the extension.
@@ -122,13 +164,34 @@ const decompress = (payload, maxLength) =>
     finishFlush: zlib.constants.Z_SYNC_FLUSH,
   });
 
+// The same two, off the event loop: zlib's callback API runs in libuv's
+// threadpool. Same bytes as the sync pair for the same input.
+const compressAsync = (payload, windowBits, cb) => {
+  zlib.deflateRaw(payload, { windowBits, finishFlush: zlib.constants.Z_SYNC_FLUSH }, (error, compressed) => {
+    if (error) return void cb(error);
+    cb(null, compressed.subarray(0, compressed.length - TRAILER.length));
+  });
+};
+
+const decompressAsync = (payload, maxLength, cb) => {
+  zlib.inflateRaw(
+    Buffer.concat([payload, TRAILER]),
+    { windowBits: MAX_WINDOW_BITS, maxOutputLength: maxLength, finishFlush: zlib.constants.Z_SYNC_FLUSH },
+    cb,
+  );
+};
+
 module.exports = {
   EXTENSION_NAME,
   DEFAULT_THRESHOLD,
+  DEFAULT_ASYNC_THRESHOLD,
   MIN_WINDOW_BITS,
   MAX_WINDOW_BITS,
+  TRAILER,
   parseExtensions,
   negotiate,
   compress,
   decompress,
+  compressAsync,
+  decompressAsync,
 };

@@ -80,7 +80,7 @@ is `null` and `server.address()` is the only way to read the bound address.
 | `path` | Restrict upgrades to this pathname. |
 | `verifyClient({ req, socket, head })` | Gate the handshake. `socket`/`head` are `null` for standalone engines. |
 | `protocols` / `handleProtocols(offered, req)` | Subprotocol negotiation; `false` rejects the handshake. |
-| `perMessageDeflate` | `true`, or `{ threshold, filter }`. See [wire format](./wire-format#permessage-deflate). |
+| `perMessageDeflate` | `true`, or `{ threshold, filter, contextTakeover, async, … }`. See [wire format](./wire-format#permessage-deflate). |
 | `coalesce` | Built-in engine: cork the writes of one event-loop turn into one flush. Default `true`. |
 | `pingInterval` | Protocol-ping interval for engines that own liveness. |
 | `maxBuffer` / `maxBackpressure` / `fragmentThreshold` / `closeTimeout` | Engine limits. |
@@ -114,7 +114,9 @@ Events: `'message'(data, isBinary)`, `'drain'`, `'ping'(payload)`,
 Two rules the whole stack depends on:
 
 - **`send()` returns an honest boolean.** `false` means the buffer is above its
-  high-water mark and a `'drain'` will follow. That is what makes
+  high-water mark and a `'drain'` will follow. The built-in engine's
+  asynchronous deflate paths (context takeover, `async`) count their queued
+  bytes into that buffer, so the boolean covers them too. That is what makes
   [stream](../guide/streams#backpressure) and
   [subscription](../guide/subscriptions#backpressure) backpressure real rather
   than aspirational — an engine that always returned `true` would turn a slow

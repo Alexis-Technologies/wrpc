@@ -13,6 +13,26 @@ narrower promise — see
 
 ### Added
 
+**Context takeover and async deflate (`perMessageDeflate.contextTakeover`, `.async`)**
+- `contextTakeover: 'server' | 'client' | true` keeps a live zlib stream per
+  direction per connection (`src/websocket/deflateContext.js`), so a message
+  may reference the ones before it — the ratio the stateless default gives
+  up, at ~160 KiB per direction per connection at the defaults (`level`,
+  `memLevel` tune it). A peer's own `*_no_context_takeover` request is
+  always honoured. `async: { threshold }` (256 KiB by default) runs the
+  deflate and inflate of larger messages on zlib's threadpool instead of
+  the event loop. Both go through per-connection ordering queues: writes
+  issued behind an in-flight deflate wait for it, inbound messages are
+  delivered in arrival order, `bufferedAmount` counts the queued bytes so
+  the `send()` boolean and `'drain'` stay honest, and a fan-out over the
+  async threshold still deflates once (the first recipient starts it, the
+  rest wait on the same frame). `bench/deflate-context.js`: a repeated JSON
+  event compresses 10.6× with a context against 1.1× without; a burst of
+  100 × 252 KB frames stalls the loop for 328 ms synchronously and 2 ms
+  async, at four times the throughput. Takeover members of a room compress per
+  connection, the stateless default keeps the shared frame. Autobahn passes
+  in both modes (`AUTOBAHN_DEFLATE=takeover node scripts/autobahn/run.js`).
+
 **The call path, measured and trimmed (phase 1b of the paper's findings)**
 - `bench/support/rpc-stacks.js` gains two rows: the same RPC path over the
   uws engine, and the own engine with `batch: true`. They answer the

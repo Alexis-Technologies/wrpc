@@ -141,7 +141,7 @@ wss.on('connection', (connection, req) => {
 | `path` | — | Restrict upgrades to this pathname. |
 | `verifyClient({ req, socket, head })` | — | Gate the handshake. |
 | `protocols` / `handleProtocols(offered, req)` | — | Subprotocol negotiation; `false` rejects the handshake. |
-| `perMessageDeflate` | off | `true` or `{ threshold, filter }`. |
+| `perMessageDeflate` | off | `true` or `{ threshold, filter, contextTakeover, level, memLevel, async }`. |
 | `coalesce` | `true` | Cork every write of one event-loop turn and flush on the next tick, one `writev` per burst. |
 | `pingInterval` | `10000` | Protocol-ping interval; a peer that misses one is terminated. |
 | `maxBuffer` | 100 MiB | Largest inbound message. |
@@ -255,12 +255,58 @@ new WebsocketServer({
 
 Messages below `threshold` (1 KiB by default) are sent uncompressed — below it,
 compression costs more than it saves. `filter(req)` decides per upgrade
-request whether the peer's offer is accepted at all. The negotiated response
-always asks for `server_no_context_takeover` and
+request whether the peer's offer is accepted at all. By default the
+negotiated response asks for `server_no_context_takeover` and
 `client_no_context_takeover`, which trades some ratio for bounded
 per-connection memory: context takeover keeps a zlib window alive per peer,
 and thousands of idle connections each holding one is a worse problem than a
 slightly larger frame.
+
+### Context takeover
+
+`contextTakeover: 'server' | 'client' | true` opts a direction into a live
+zlib stream per connection: `'server'` keeps a deflate context for what
+this side sends, `'client'` an inflate context for what the peer sends,
+`true` both. A message may then reference the bytes of the ones before it,
+which on repetitive traffic — the same JSON shape every tick — is a much
+smaller frame (`bench/deflate-context.js`). What it costs:
+
+- **Memory per connection, per direction**: the window (`1 << windowBits`,
+  32 KiB at 15) plus, for deflate, `1 << (memLevel + 9)` of hash state —
+  ~160 KiB at the defaults, tunable with `level` and `memLevel`.
+- **An asynchronous write path.** zlib has no synchronous API on a live
+  stream, so a takeover connection compresses through `write()` +
+  `flush()` off the event loop and keeps an ordering queue: every write
+  issued while a deflate is in flight — compressed or not — waits behind
+  it, so frames still leave in send order. Inbound messages are inflated
+  the same way and delivered in arrival order.
+- **No shared fan-out frame** for that connection: its bytes depend on its
+  own history, so a room broadcast compresses per recipient for takeover
+  members (they still share the serialized text). The stateless default is
+  what lets a room of 200 pay one deflate.
+
+A peer's own `server_no_context_takeover` / `client_no_context_takeover`
+request is always honoured (RFC 7692 7.1.1.1), so the accepted state can be
+narrower than the option: the [`Connection`](#connection) reports it as
+`serverTakeover` / `clientTakeover` on its negotiated params.
+
+### Async deflate
+
+`async: { threshold }` moves the deflate and inflate of messages at or over
+`threshold` bytes (256 KiB by default; `{}` takes it) to zlib's threadpool
+API, through the same ordering queues — for a peer that receives large
+payloads without stalling every other connection on the loop. Below the
+threshold a synchronous call is cheaper than the hand-off (a quarter of the
+sync throughput at 4 KB, half at 32 KB, level at 256 KB —
+`bench/deflate-context.js`); above it the loop is what the hand-off buys. A fan-out over
+the threshold still deflates **once**: the first recipient starts the job
+and every later one waits on the same frame.
+
+On both paths `bufferedAmount` counts the bytes waiting in the queue, so
+`send()` returns `false` and `'drain'` follows exactly as for a socket above
+its high-water mark — the backpressure contract holds, it just has one more
+place to hold bytes. A `close()` or `terminate()` drops what is still
+queued.
 
 `server_max_window_bits` is honoured when the client asks for it (8–15).
 
