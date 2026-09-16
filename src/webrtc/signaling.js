@@ -429,6 +429,12 @@ const createSignalingUnit = (options = {}) => {
             },
             handler: async (context, { fingerprint }) => {
               const { client } = context;
+              // In order, not Promise.all: identify() may be the connection's
+              // FIRST identification (a client that calls assert before
+              // whoami), and the claims hook reads the result from
+              // context.client.data.rtc. Once identified, identify() settles
+              // on a microtask, so running them together would save nothing
+              // and would run the hook for a connection about to be refused.
               const rtc = await identify(context);
               const custom = extraClaims === null ? null : await extraClaims(context);
               owns(client, rtc);

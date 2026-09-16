@@ -36,8 +36,10 @@ const generateAssertionKeys = async ({ kid = generateUUID(), subtle = globalThis
   const pair = await subtle.generateKey(ES256, true, ['sign', 'verify']);
   // Without key_ops: the JWKs travel between an issuer and verifiers whose
   // usage is decided at import, and publicKeys() strips it the same way.
-  const { key_ops: _sign, ...privateKey } = await subtle.exportKey('jwk', pair.privateKey);
-  const { key_ops: _verify, ...publicKey } = await subtle.exportKey('jwk', pair.publicKey);
+  const [{ key_ops: _sign, ...privateKey }, { key_ops: _verify, ...publicKey }] = await Promise.all([
+    subtle.exportKey('jwk', pair.privateKey),
+    subtle.exportKey('jwk', pair.publicKey),
+  ]);
   return {
     kid,
     privateKey: { ...privateKey, kid, alg: ASSERTION_ALG, use: 'sig' },
