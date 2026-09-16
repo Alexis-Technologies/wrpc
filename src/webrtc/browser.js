@@ -10,6 +10,7 @@ const { RtcLink, normalizeChannels, DEFAULT_CHANNELS, MAX_CHANNEL_ID } = require
 const { ClientRtcTransport, RtcPeerTransport } = require('./transport.js');
 const { PeerHost } = require('./host.js');
 const signaler = require('./signaler.js');
+const assertions = require('./assertions.js');
 // A browser peer defines its router with these; the main browser entry
 // leaves them out for its byte budget, and they are already in this bundle
 // (the host dispatches over a Router).
@@ -41,8 +42,14 @@ module.exports = {
   wrpcSignaler: signaler.wrpcSignaler,
   isSignaler: signaler.isSignaler,
   hasRoster: signaler.hasRoster,
+  hasAssertions: signaler.hasAssertions,
   isSignalMessage: signaler.isSignalMessage,
   SIGNAL_MESSAGE_TYPES: signaler.SIGNAL_MESSAGE_TYPES,
+  createAssertionVerifier: assertions.createAssertionVerifier,
+  sdpFingerprint: assertions.sdpFingerprint,
+  normalizeFingerprint: assertions.normalizeFingerprint,
+  isAssertion: assertions.isAssertion,
+  AssertionError: assertions.AssertionError,
   FrameEncoder: framing.FrameEncoder,
   FrameDecoder: framing.FrameDecoder,
   FramingError: framing.FramingError,

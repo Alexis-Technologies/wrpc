@@ -84,7 +84,12 @@ const ENTRIES = [
   // does (+1.9 KB, the whole of src/telemetry/server.js). 41 -> 42 for stable
   // identity: the signaler's instance/address bookkeeping, the peer's
   // incarnation check and the mesh's away set (+0.7 KB, measured 41.4).
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 42 },
+  // 42 -> 45 for trust assertions: the JWS verifier over crypto.subtle
+  // (base64url, the SDP fingerprint parser, key lookup and rotation) plus
+  // the peer's per-link verify/stamp chains and the host's trust
+  // 'assertion' (+2.6 KB, measured 44.0) — the cryptographic layer the
+  // peer-to-peer trust model rests on, a deliberate spend.
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 45 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
 ];
 

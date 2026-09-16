@@ -62,7 +62,43 @@ export interface SignalingUnitOptions {
   relay?: 'room' | 'any';
   /** The room-registry namespace signaling rooms live under. Default 'rtc:'. */
   prefix?: string;
+  /**
+   * Issue trust assertions: adds `assert({ fingerprint })` and the public
+   * `keys()` to the unit. `key` is a private EC P-256 JWK
+   * (`generateAssertionKeys().privateKey`) or a CryptoKey pair; `claims`
+   * adds claims of your own (roles, say) to every token.
+   */
+  assertions?: AssertionIssuerOptions & {
+    claims?: (context: Context) => object | null | Promise<object | null>;
+  };
 }
+
+export interface AssertionIssuerOptions {
+  key: JsonWebKey | { privateKey: CryptoKey; publicKey: CryptoKey };
+  /** The `kid` put in every header (default: the JWK's). */
+  kid?: string;
+  /** Seconds an assertion is valid for. Default 300. */
+  ttl?: number;
+  /** The `iss` claim, when verifiers expect one. */
+  issuer?: string | null;
+  subtle?: SubtleCrypto;
+}
+
+export interface AssertionIssuer {
+  readonly kid: string | null;
+  readonly ttl: number;
+  sign(claims: { sub: string; fp: string; [claim: string]: unknown }): Promise<{ assertion: string; iat: number; exp: number }>;
+  publicKeys(): Promise<Array<JsonWebKey>>;
+}
+
+/** The issuing half of trust assertions (see `createAssertionVerifier` for the other). */
+export declare function createAssertionIssuer(options: AssertionIssuerOptions): AssertionIssuer;
+
+/** A fresh ES256 key pair as JWKs, `kid` on both. Keep the private one private. */
+export declare function generateAssertionKeys(options?: {
+  kid?: string;
+  subtle?: SubtleCrypto;
+}): Promise<{ kid: string; privateKey: JsonWebKey; publicKey: JsonWebKey }>;
 
 /**
  * The built-in signaling unit as a router definition fragment — spread it

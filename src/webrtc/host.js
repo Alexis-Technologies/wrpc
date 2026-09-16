@@ -17,9 +17,13 @@
 // whose token is the peer id — a link only exists after signaling through
 // a server that admitted both peers, plus the local accept() hook, so the
 // link IS the authentication and handlers see `context.session.data.peer`.
-// `trust: 'none'` leaves session null: only access 'public' procedures
-// answer, and authorization is the application's, in hooks, from
-// `context.meta.data.peer`.
+// `trust: 'assertion'` is the same session, but attach() REQUIRES the
+// peer's verified assertion claims (WrpcPeer checks the server-signed
+// token against the link's DTLS certificate) and exposes them as
+// `context.session.data.claims`: the server vouched, cryptographically,
+// for exactly this endpoint. `trust: 'none'` leaves session null: only
+// access 'public' procedures answer, and authorization is the
+// application's, in hooks, from `context.meta.data.peer`.
 
 const { Emitter, isCodec } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
@@ -32,7 +36,7 @@ const { handleMessage, handleBinary } = require('../rpc/dispatcher.js');
 const { DEFAULT_META_MAX } = require('../rpc/meta.js');
 const { isInboundTransport } = require('../rpc/serverTransport.js');
 
-const TRUST = ['link', 'none'];
+const TRUST = ['link', 'assertion', 'none'];
 const ONCONNECT_STALL_MS = 5000;
 
 class PeerHost extends Emitter {
@@ -129,18 +133,31 @@ class PeerHost extends Emitter {
    * traffic as 'packet' (text) and 'chunk' (bytes) events —
    * RtcPeerTransport, or anything shaped like it. `peer` is the remote id;
    * `room` and `data` are what the peer said about itself at signaling
-   * time, frozen into the client's meta (and, under trust 'link', its
-   * session data).
+   * time, `claims` what its verified assertion says — all frozen into the
+   * client's meta (and, under trust 'link'/'assertion', its session data;
+   * `claims` last, so roster data cannot shadow it).
    */
-  attach(transport, { peer, room = null, data = null } = {}) {
+  attach(transport, { peer, room = null, data = null, claims = null } = {}) {
     if (!isInboundTransport(transport)) {
       throw new TypeError('PeerHost.attach: a persistent transport with write/close/on/once is required');
     }
     if (typeof peer !== 'string' || peer.length === 0) {
       throw new TypeError('PeerHost.attach: peer must be a non-empty string');
     }
+    if (claims !== null && (typeof claims !== 'object' || Array.isArray(claims))) {
+      throw new TypeError('PeerHost.attach: claims must be an object');
+    }
+    if (this.#trust === 'assertion' && claims === null) {
+      throw new TypeError("PeerHost.attach: trust 'assertion' requires the peer's verified claims");
+    }
     if (this.#codec) transport.codec = this.#codec;
-    const about = Object.freeze({ __proto__: null, peer, room, ...(data && typeof data === 'object' ? data : {}) });
+    const about = Object.freeze({
+      __proto__: null,
+      peer,
+      room,
+      ...(data && typeof data === 'object' ? data : {}),
+      ...(claims === null ? {} : { claims: Object.freeze({ ...claims }) }),
+    });
     const client = new Client(transport, {
       codec: this.#codec,
       sessions: null,
@@ -154,7 +171,7 @@ class PeerHost extends Emitter {
       meta: buildMeta({ data: about, remoteAddress: peer }),
       metaMax: this.#metaMax,
     });
-    if (this.#trust === 'link') client.session = Object.freeze({ token: peer, data: about });
+    if (this.#trust !== 'none') client.session = Object.freeze({ token: peer, data: about });
     this.#clients.add(client);
     this.#byId.set(client.id, client);
     this.#otel.recordConnection(1, transport.kind);

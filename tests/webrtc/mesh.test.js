@@ -18,6 +18,7 @@ const {
 } = require('../../src/webrtc/index.js');
 const { createFakeRtc } = require('./fakeRtc.js');
 const { FakeSignalHub } = require('./fakeSignalHub.js');
+const { createAssertionIssuer, generateAssertionKeys } = require('../../src/webrtc/assertionIssuer.js');
 const { within, waitFor } = require('./portContract.js');
 const { bootServer, connectClient } = require('../helpers/server.js');
 
@@ -43,7 +44,7 @@ const routerOf = (name) =>
 
 const world = (t, options = {}) => {
   const fake = createFakeRtc(options.fake);
-  const hub = new FakeSignalHub();
+  const hub = new FakeSignalHub(options.hub);
   const peers = [];
   t.after(() => {
     for (const peer of peers) peer.close();
@@ -498,4 +499,27 @@ test('mesh: a stable identity strategy keeps the links across a signaling reconn
   await timers.setTimeout(20);
   assert.deepStrictEqual(events, [], 'bob saw neither a leave nor a join');
   assert.deepStrictEqual(mb.peers, new Set(['alice']));
+});
+
+test("mesh: three peers with assertions link up and see each other's claims", async (t) => {
+  const keys = await generateAssertionKeys();
+  const issuer = createAssertionIssuer({ key: keys.privateKey });
+  const { peer } = world(t, { hub: { issuer, claims: (id) => ({ seat: id.toUpperCase() }) } });
+  const trusted = (id) => peer(id, { assertions: {}, host: { trust: 'assertion' } });
+  const a = trusted('a');
+  const b = trusted('b');
+  const c = trusted('c');
+  const ma = a.join('room');
+  const mb = b.join('room');
+  const mc = c.join('room');
+  for (const mesh of [ma, mb, mc]) await within(settled(mesh, 2), 'linked');
+  assert.deepStrictEqual([...ma.links.values()].map((link) => [link.id, link.claims.sub, link.claims.seat]).sort(), [
+    ['b', 'b', 'B'],
+    ['c', 'c', 'C'],
+  ]);
+  assert.strictEqual(ma.broadcast('chat/note', 1), 2);
+  const link = mb.link('c');
+  await link.load('chat');
+  assert.strictEqual(await link.api.chat.hello(), 'c greets b');
+  assert.strictEqual(mc.link('b').client.session.data.claims.seat, 'B');
 });

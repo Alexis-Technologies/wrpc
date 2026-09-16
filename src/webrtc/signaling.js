@@ -13,6 +13,9 @@
 //          join   { room, id, instance, address, data }
 //          leave  { room, id, instance, address, reason: 'left' | 'disconnect' | 'replaced' }
 //          replaced { id }      this connection lost its peer id to a newer one
+//   with `assertions` configured, two more:
+//   assert({ fingerprint })     -> { assertion, iat, exp }   a signed token: this peer id, this certificate
+//   keys()                      -> { keys: [JWK] }           the public keys (access 'public')
 //
 // Identity. A peer's id is what the `identity` strategy says: by default the
 // signaling connection's client id (instance-prefixed, server-issued —
@@ -40,6 +43,8 @@
 
 const { procedure } = require('../rpc/router.js');
 const { isSignalMessage, SIGNAL_MESSAGE_TYPES } = require('./signaler.js');
+const { normalizeFingerprint } = require('./assertions.js');
+const { createAssertionIssuer } = require('./assertionIssuer.js');
 
 const DEFAULT_NAME = 'signaling';
 const DEFAULT_PREFIX = 'rtc:';
@@ -101,6 +106,13 @@ const inputWhoami = (args) => {
   return { proposed: optionalId(args.id, 'id'), instance: optionalId(args.instance, 'instance') };
 };
 
+const inputAssert = (args) => {
+  if (typeof args !== 'object' || args === null) throw new TypeError('expected { fingerprint }');
+  const fingerprint = normalizeFingerprint(args.fingerprint);
+  if (fingerprint === null) throw new TypeError("fingerprint must look like 'sha-256 AB:CD:...'");
+  return { fingerprint };
+};
+
 const inputSignal = (args) => {
   if (typeof args !== 'object' || args === null) throw new TypeError('expected { to, room, message }');
   const { to, message } = args;
@@ -127,6 +139,10 @@ const inputSignal = (args) => {
  *   relay     'room' (default): a signal reaches `to` only while sender and
  *             receiver share the room; 'any': any connected client by id
  *   prefix    the room-registry namespace (default 'rtc:')
+ *   assertions { key, kid?, ttl?, issuer?, claims? } — issue trust
+ *             assertions (see assertions.js): `key` a private ES256 JWK or
+ *             CryptoKey pair, `claims(context)` extra claims to sign in
+ *             (roles, say). Adds `assert` and the public `keys` method.
  */
 const createSignalingUnit = (options = {}) => {
   const {
@@ -137,6 +153,7 @@ const createSignalingUnit = (options = {}) => {
     authorize = null,
     relay = 'room',
     prefix = DEFAULT_PREFIX,
+    assertions = null,
   } = options;
   if (typeof name !== 'string' || name.length === 0 || name.includes('/') || name.includes('.')) {
     throw new TypeError('createSignalingUnit: name must be a unit name without "/" or "."');
@@ -155,6 +172,22 @@ const createSignalingUnit = (options = {}) => {
   }
   if (relay !== 'room' && relay !== 'any') throw new TypeError("createSignalingUnit: relay must be 'room' or 'any'");
   if (typeof prefix !== 'string') throw new TypeError('createSignalingUnit: prefix must be a string');
+  if (assertions !== null && (typeof assertions !== 'object' || Array.isArray(assertions))) {
+    throw new TypeError('createSignalingUnit: assertions must be an object');
+  }
+  if (assertions !== null && assertions.claims !== undefined && typeof assertions.claims !== 'function') {
+    throw new TypeError('createSignalingUnit: assertions.claims must be a function');
+  }
+  const issuer =
+    assertions === null
+      ? null
+      : createAssertionIssuer({
+          key: assertions.key,
+          kid: assertions.kid,
+          ttl: assertions.ttl,
+          issuer: assertions.issuer,
+        });
+  const extraClaims = assertions?.claims ?? null;
 
   const roomOf = (room) => prefix + room;
   const event = (kind) => `${name}/${kind}`;
@@ -383,6 +416,36 @@ const createSignalingUnit = (options = {}) => {
         },
       }),
     },
+
+    ...(issuer === null
+      ? {}
+      : {
+          assert: procedure({
+            access,
+            input: inputAssert,
+            signature: {
+              args: { fingerprint: 'string' },
+              returns: { assertion: 'string', iat: 'number', exp: 'number' },
+            },
+            handler: async (context, { fingerprint }) => {
+              const { client } = context;
+              const rtc = await identify(context);
+              const custom = extraClaims === null ? null : await extraClaims(context);
+              owns(client, rtc);
+              if (custom !== null && (typeof custom !== 'object' || Array.isArray(custom))) {
+                throw refusal(`${name}: assertions.claims must return an object`, 500);
+              }
+              return issuer.sign({ ...custom, sub: rtc.id, fp: fingerprint });
+            },
+          }),
+          // Public on purpose: a peer fetches the keys before it has a
+          // session of its own, and they are public keys.
+          keys: procedure({
+            access: 'public',
+            signature: { returns: { keys: 'object[]' } },
+            handler: async () => ({ keys: await issuer.publicKeys() }),
+          }),
+        }),
 
     emits: {
       signal: {

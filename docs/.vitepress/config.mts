@@ -180,6 +180,7 @@ export default withMermaid({
             items: [
               { text: 'Server-Sent Events', link: '/guide/sse' },
               { text: 'WebRTC', link: '/guide/webrtc' },
+              { text: 'WebRTC: identity and trust', link: '/guide/webrtc-trust' },
               { text: 'Wire codec', link: '/guide/codec' },
               { text: 'uWebSockets.js', link: '/guide/adapters/uws' },
               { text: 'Fastify', link: '/guide/adapters/fastify' },

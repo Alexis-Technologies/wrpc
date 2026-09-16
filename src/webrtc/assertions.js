@@ -216,8 +216,9 @@ const createAssertionVerifier = ({ keys, issuer = null, subtle = globalThis.cryp
     if (fingerprint === null) refuse('assertion: no fingerprint', 'fingerprint');
     const declared = sdpFingerprint(sdp, fingerprint.slice(0, fingerprint.indexOf(' ')));
     if (declared !== fingerprint) refuse('assertion: fingerprint does not match the description', 'fingerprint');
-    if (typeof payload.exp !== 'number' || !(payload.exp * 1000 + SKEW_MS > now))
+    if (typeof payload.exp !== 'number' || !(payload.exp * 1000 + SKEW_MS > now)) {
       refuse('assertion: expired', 'expired');
+    }
     if (issuer !== null && payload.iss !== issuer) refuse('assertion: unexpected issuer', 'issuer');
     return Object.freeze({ ...payload });
   };

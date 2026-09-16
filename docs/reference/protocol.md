@@ -672,6 +672,43 @@ Everything above the header is exactly the WebSocket wire: the ordering rule
 `lastEventId` across a renegotiated connection the way it does across a
 reconnected socket.
 
+### Trust assertions {#webrtc-assertions}
+
+Signaling is not part of the wire, but the token a signaling server may
+attach to it is a format two parties written independently must agree on
+— a peer verifying, and whoever issues (the wrpc unit or any service that
+can sign a JWS). An assertion is a **JWS in compact serialization**
+(RFC 7515): `base64url(header).base64url(payload).base64url(signature)`.
+
+```
+header   { "alg": "ES256", "typ": "wrpc-rtc+jwt", "kid"?: string }
+payload  { "sub": string,      the peer id, as the signaling layer names it
+           "fp":  string,      the DTLS certificate fingerprint: "sha-256 AB:CD:…"
+           "iat": number,      seconds since the epoch
+           "exp": number,
+           "iss"?: string,
+           …any other claims }
+```
+
+- `alg` MUST be `ES256` (ECDSA over P-256 with SHA-256; the signature is
+  the raw 64-byte `r || s`, as JWS specifies). A verifier MUST refuse any
+  other `alg`, `none` included, and any `typ` but `wrpc-rtc+jwt`.
+- `kid` selects the public key when the issuer publishes several; a
+  verifier configured with a single unlabelled key accepts any `kid`.
+- **Binding.** An assertion travels inside a `description` signal, as its
+  `assertion` field, and is valid for that description only: `sub` MUST be
+  the peer id the signaling layer reports as the sender, and `fp` MUST be
+  the fingerprint the description's SDP declares (an `a=fingerprint:`
+  line — algorithm, a space, colon-separated hex — compared after
+  normalization: algorithm in lower case, hex in upper case). The DTLS handshake then
+  proves the sender holds that certificate. A verifier MUST apply the
+  description only after the assertion verified.
+- `exp` MUST be in the future by the issuer's clock (a verifier SHOULD
+  allow a small skew and MAY learn the issuer's clock from tokens issued to
+  itself). `iss`, when the deployment sets one, MUST match.
+- A token is at most 4 KiB. Anything else is a refusal; the reason is the
+  verifier's business, not the wire's — the link is simply closed.
+
 ## Reconnect
 
 The client reconnects on its own with truncated exponential backoff and full

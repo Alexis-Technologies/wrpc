@@ -170,6 +170,35 @@ test('peer host: a call, introspection, meta and the link pseudo-session', async
   assert.strictEqual(byId['3'].result.math.add.access, 'session');
 });
 
+test("peer host: trust 'assertion' requires verified claims and exposes them in the session", async () => {
+  const seen = [];
+  const host = new PeerHost({ router: routerOf(seen), logger: quiet, trust: 'assertion' });
+  assert.strictEqual(host.trust, 'assertion');
+  const transport = new FakePeerTransport('alice');
+  assert.throws(() => host.attach(transport, { peer: 'alice' }), /requires the peer's verified claims/);
+  assert.throws(() => host.attach(transport, { peer: 'alice', claims: 'yes' }), /claims must be an object/);
+  assert.throws(() => host.attach(transport, { peer: 'alice', claims: [1] }), /claims must be an object/);
+  const claims = { sub: 'alice', role: 'host', fp: 'sha-256 AA:BB' };
+  // Roster data cannot shadow the claims: they are placed last.
+  const client = host.attach(transport, { peer: 'alice', data: { claims: 'forged', name: 'ada' }, claims });
+  assert.deepStrictEqual(client.session.token, 'alice');
+  assert.deepStrictEqual(client.session.data.claims, claims);
+  assert.ok(Object.isFrozen(client.session.data.claims));
+  assert.strictEqual(client.session.data.name, 'ada');
+  assert.strictEqual(client.meta.data.claims.role, 'host');
+  // Under trust 'link' the claims are optional, and kept when given.
+  const linked = new PeerHost({ router: routerOf(seen), logger: quiet });
+  const bare = linked.attach(new FakePeerTransport('bob'), { peer: 'bob' });
+  assert.strictEqual(bare.session.data.claims, undefined);
+  const withClaims = linked.attach(new FakePeerTransport('carol'), { peer: 'carol', claims: { sub: 'carol' } });
+  assert.deepStrictEqual(withClaims.session.data.claims, { sub: 'carol' });
+  // Under trust 'none' they ride the meta only.
+  const none = new PeerHost({ router: routerOf(seen), logger: quiet, trust: 'none' });
+  const open = none.attach(new FakePeerTransport('dan'), { peer: 'dan', claims: { sub: 'dan' } });
+  assert.strictEqual(open.session, null);
+  assert.deepStrictEqual(open.meta.data.claims, { sub: 'dan' });
+});
+
 test("peer host: trust 'none' leaves the session null — session procedures answer 403", async () => {
   const host = new PeerHost({ router: routerOf([]), logger: quiet, trust: 'none' });
   const transport = new FakePeerTransport('them');

@@ -60,6 +60,23 @@ narrower promise — see
   `replaced` (the peer emits it and closes). Rosters, `join`/`leave` and
   signals carry `instance` and the routable `address`, and `leave` a
   `reason` (`'left' | 'disconnect' | 'replaced'`).
+- Trust assertions: `createSignalingUnit({ assertions: { key, ttl, issuer,
+  claims } })` signs a JWS (compact, ES256, `typ: 'wrpc-rtc+jwt'`) per peer
+  binding its id to the DTLS certificate fingerprint it dials with, and
+  publishes its keys (`assert({ fingerprint })`, public `keys()`; the
+  client half's `signaler.assert()`/`keys()`, `hasAssertions`). `WrpcPeer({
+  assertions })` gets a token for every description it sends and verifies
+  every one it receives — `sub` is the sender, `fp` is the description's
+  fingerprint, `exp`/`iss` hold, the signature checks against the server's
+  public key (rotation by `kid`) — before the link applies it and before
+  `accept(from, room, { instance, claims })` runs; a redial's new
+  certificate is verified anew, an ICE restart is a string compare. The
+  verified claims are `link.claims`, and `PeerHost({ trust: 'assertion' })`
+  requires them and exposes them as `context.session.data.claims`. Exported
+  for both sides: `createAssertionVerifier`, `sdpFingerprint`,
+  `normalizeFingerprint`, `isAssertion`, `AssertionError` (browser and
+  Node), `createAssertionIssuer`, `generateAssertionKeys` (Node). The
+  format is specified in the protocol reference.
 - Bring your own data channel — the level under `RtcLink`, the `event`
   transport's arrangement for WebRTC: `connect(url, { transport: 'webrtc',
   channel })` speaks on an `RTCDataChannel` the application negotiated

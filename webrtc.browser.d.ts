@@ -278,11 +278,13 @@ export interface PeerHostOptions {
   metaMaxBytes?: number;
   /**
    * 'link' (default): every attached Client gets a frozen pseudo-session
-   * `{ token: peerId, data: { peer, room, ...data } }`, so procedures with
-   * the default `access: 'session'` run — the link only exists because the
-   * signaling server admitted the peer. 'none' leaves `session` null.
+   * `{ token: peerId, data: { peer, room, ...data, claims? } }`, so
+   * procedures with the default `access: 'session'` run — the link only
+   * exists because the signaling server admitted the peer. 'assertion':
+   * the same session, but `attach()` requires the peer's verified
+   * assertion claims (`session.data.claims`). 'none' leaves `session` null.
    */
-  trust?: 'link' | 'none';
+  trust?: PeerTrust;
   instanceId?: string | null;
   /** The same injection RpcServer takes: spans for answered calls, the connection gauge, the rtc instruments. */
   telemetry?: WrpcTelemetryOptions | null;
@@ -294,17 +296,22 @@ export interface PeerHostOptions {
  * `ClientHost`, so a handler's `context.server.to(room).emit(...)` works
  * on a peer as on a server. Events: 'attach' (Client), 'detach' (Client).
  */
+export type PeerTrust = 'link' | 'assertion' | 'none';
+
 export declare class PeerHost extends Emitter implements ClientHost {
   constructor(options: PeerHostOptions);
   readonly router: Router;
   readonly rooms: RoomRegistry;
   readonly clients: Set<Client>;
   readonly instanceId: string;
-  readonly trust: 'link' | 'none';
+  readonly trust: PeerTrust;
   /** The telemetry writer; `enabled` is false when nothing was injected. */
   readonly otel: { readonly enabled: boolean };
   getClient(id: string): Client | undefined;
-  attach(transport: RtcPeerTransport, options: { peer: string; room?: string | null; data?: object | null }): Client;
+  attach(
+    transport: RtcPeerTransport,
+    options: { peer: string; room?: string | null; data?: object | null; claims?: AssertionClaims | null },
+  ): Client;
   to(...rooms: Array<string>): Broadcast;
   except(...clients: Array<Client>): Broadcast;
   broadcast(name: string, data?: unknown): number;
@@ -358,6 +365,16 @@ export interface Signaler {
   on(event: string, handler: (...args: any[]) => void): unknown;
   off(event: string, handler: (...args: any[]) => void): unknown;
   close?(): void;
+  /** Trust assertions: a signed token binding this peer's id to one of its certificates. */
+  assert?(claims: { fingerprint: string }): Promise<AssertionIssued>;
+  /** The server's public assertion keys. */
+  keys?(): Promise<Array<JsonWebKey>>;
+}
+
+/** A Signaler whose server issues trust assertions (`hasAssertions`). */
+export interface AssertingSignaler extends Signaler {
+  assert(claims: { fingerprint: string }): Promise<AssertionIssued>;
+  keys?(): Promise<Array<JsonWebKey>>;
 }
 
 /** What Mesh needs on top: rooms with a roster. */
@@ -387,6 +404,69 @@ export declare const SIGNAL_MESSAGE_TYPES: ReadonlyArray<SignalMessage['type']>;
 export declare function isSignalMessage(value: unknown): value is SignalMessage;
 export declare function isSignaler(value: unknown): value is Signaler;
 export declare function hasRoster(value: unknown): value is RosterSignaler;
+export declare function hasAssertions(value: unknown): value is AssertingSignaler;
+
+// ---------------------------------------------------------------------------
+// Trust assertions: a JWS (compact, ES256) binding a peer id to the DTLS
+// certificate fingerprint of the connection it dials with.
+
+/** What an issuer answers: the token, and its `iat`/`exp` (seconds). */
+export interface AssertionIssued {
+  assertion: string;
+  iat?: number;
+  exp?: number;
+}
+
+/** The verified payload of an assertion: the reserved claims plus whatever the server added. */
+export interface AssertionClaims {
+  /** The peer id. */
+  sub: string;
+  iat: number;
+  exp: number;
+  /** The certificate fingerprint, `'sha-256 AB:CD:...'`. */
+  fp: string;
+  iss?: string;
+  [claim: string]: unknown;
+}
+
+export type AssertionRefusal =
+  | 'malformed'
+  | 'typ'
+  | 'alg'
+  | 'kid'
+  | 'signature'
+  | 'subject'
+  | 'fingerprint'
+  | 'expired'
+  | 'issuer'
+  | 'missing';
+
+/** Why an assertion was refused; `code` names the check that failed. */
+export declare class AssertionError extends Error {
+  readonly code: AssertionRefusal;
+}
+
+export interface AssertionVerifierOptions {
+  /** Public EC P-256 JWKs — one, several (matched by `kid`), or a function answering them (asked again for an unknown kid). */
+  keys: JsonWebKey | Array<JsonWebKey> | (() => Promise<Array<JsonWebKey>> | Array<JsonWebKey>);
+  /** The `iss` every assertion must carry, when the issuer sets one. */
+  issuer?: string | null;
+  /** WebCrypto; defaults to `globalThis.crypto.subtle`. */
+  subtle?: SubtleCrypto;
+}
+
+export interface AssertionVerifier {
+  /** Verifies and binds: `sub` is `from`, `fp` is the fingerprint in `sdp`, `exp` is after `now`. */
+  verify(token: string, context: { from: string; sdp: string; now?: number }): Promise<AssertionClaims>;
+}
+
+export declare function createAssertionVerifier(options: AssertionVerifierOptions): AssertionVerifier;
+/** The `a=fingerprint:` an SDP declares for `algorithm` (default sha-256), normalized, or null. */
+export declare function sdpFingerprint(sdp: string, algorithm?: string): string | null;
+/** `'sha-256 ab:cd'` -> `'sha-256 AB:CD'`; null when the value is not a fingerprint. */
+export declare function normalizeFingerprint(value: unknown): string | null;
+/** True for anything shaped like a compact JWS of a sane size. */
+export declare function isAssertion(value: unknown): value is string;
 
 export interface WrpcSignalerOptions {
   /** The unit name on the server (default 'signaling'). */
@@ -424,6 +504,10 @@ export declare class WrpcSignaler extends Emitter implements RosterSignaler {
   join(room: string, data?: unknown): Promise<Array<RosterMember>>;
   leave(room: string): Promise<void>;
   members(room: string): Promise<Array<RosterMember>>;
+  /** `<unit>/assert`: a trust assertion for one of this peer's certificates (the unit must issue them). */
+  assert(claims: { fingerprint: string }): Promise<AssertionIssued>;
+  /** `<unit>/keys`: the server's public assertion keys. */
+  keys(): Promise<Array<JsonWebKey>>;
   on(event: 'signal', handler: (event: SignalEvent) => void): this;
   on(event: 'join', handler: (event: JoinEvent) => void): this;
   on(event: 'leave', handler: (event: LeaveEvent) => void): this;
@@ -469,8 +553,25 @@ export interface WrpcPeerOptions {
   connectTimeout?: number;
   restartTimeout?: number;
   redial?: RedialOptions | false;
-  /** Gates incoming links; return false (or throw) to refuse. */
-  accept?: ((from: string, room: string | null) => boolean | Promise<boolean>) | null;
+  /**
+   * Gates incoming links; return false (or throw) to refuse. `about` carries
+   * the peer's incarnation and — with assertions, for an offer — its verified
+   * claims (a knock carries none: they arrive with the answer).
+   */
+  accept?:
+    | ((
+        from: string,
+        room: string | null,
+        about: { instance: string | null; claims: AssertionClaims | null },
+      ) => boolean | Promise<boolean>)
+    | null;
+  /**
+   * Trust assertions: verify every peer's server-signed token against the
+   * DTLS certificate of the link it arrives on, and get this peer's own
+   * from `signaler.assert()` for every dial. `keys` defaults to
+   * `signaler.keys()`. Required for `host.trust: 'assertion'`.
+   */
+  assertions?: { keys?: AssertionVerifierOptions['keys']; issuer?: string | null } | null;
   logger?: WrpcLogger | boolean;
   /**
    * Telemetry for the peer's server half and its links (the host's spans and
@@ -492,6 +593,8 @@ export declare class PeerLink<Api = Record<string, Record<string, any>>> extends
   readonly id: string;
   /** The remote peer's incarnation once known, else null; another one under the same id is another endpoint. */
   readonly instance: string | null;
+  /** The remote peer's verified assertion claims, or null (no assertions, or none seen yet on the dialling side). */
+  readonly claims: AssertionClaims | null;
   readonly room: string | null;
   /** The remote peer's roster data, when known. */
   readonly data: unknown;
@@ -541,6 +644,8 @@ export declare class WrpcPeer extends Emitter {
   readonly host: PeerHost | null;
   readonly router: Router | null;
   readonly channels: Required<ChannelsOptions>;
+  /** True when this peer issues and verifies trust assertions. */
+  readonly assertions: boolean;
   /** Every link, keyed by remote id (a copy). */
   readonly links: Map<string, PeerLink>;
   link(id: string): PeerLink | undefined;

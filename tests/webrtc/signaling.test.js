@@ -18,6 +18,8 @@ const {
   hasRoster,
 } = require('../../src/webrtc/index.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
+const { generateAssertionKeys } = require('../../src/webrtc/assertionIssuer.js');
+const { createAssertionVerifier, parseJws } = require('../../src/webrtc/assertions.js');
 
 const quiet = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
 
@@ -87,6 +89,9 @@ test('signaling: option validation', () => {
   assert.throws(() => createSignalingUnit({ duplicate: 'merge' }), /duplicate must be one of/);
   assert.throws(() => createSignalingHooks({ name: '' }), /name must be a string/);
   assert.throws(() => createSignalingHooks({ prefix: null }), /prefix must be a string/);
+  assert.throws(() => createSignalingUnit({ assertions: 'yes' }), /assertions must be an object/);
+  assert.throws(() => createSignalingUnit({ assertions: { key: {} } }), /key must be/);
+  assert.throws(() => createSignalingUnit({ assertions: { key: {}, claims: 1 } }), /claims must be a function/);
   const unit = createSignalingUnit({ name: 'rtc' });
   assert.deepStrictEqual(Object.keys(unit), ['rtc']);
   assert.deepStrictEqual(Object.keys(unit.rtc).sort(), ['emits', 'join', 'leave', 'members', 'on', 'whoami']);
@@ -597,6 +602,62 @@ test('signaling: a stale address hint is not followed onto a stranger', async (t
   a.signaler.send('bob', description, { address: c.address });
   await waitFor(() => b.heard.length === 1);
   assert.deepStrictEqual(c.heard, []);
+});
+
+test('signaling: assertions bind the stable id to a certificate, with the claims the server adds', async (t) => {
+  const keys = await generateAssertionKeys({ kid: 'k1' });
+  const identity = (_context, { proposed }) => proposed;
+  const seen = [];
+  const claims = (context) => {
+    seen.push(context.client.data.rtc.id);
+    return { role: 'member', sub: 'forged', exp: 1 };
+  };
+  const unit = { identity, assertions: { key: keys.privateKey, ttl: 90, issuer: 'sig.test', claims } };
+  const boot = await bootServer(t, { router: signalingRouter(unit) });
+  const a = await peer(t, boot, { identity: 'alice' });
+  const fp = 'sha-256 ' + 'AB:'.repeat(31) + 'CD';
+  const answer = await a.signaler.assert({ fingerprint: fp.toLowerCase() });
+  assert.strictEqual(typeof answer.assertion, 'string');
+  assert.strictEqual(answer.exp, answer.iat + 90);
+  const { header, payload } = parseJws(answer.assertion);
+  assert.deepStrictEqual(header, { alg: 'ES256', typ: 'wrpc-rtc+jwt', kid: 'k1' });
+  assert.deepStrictEqual(payload, {
+    role: 'member',
+    sub: 'alice',
+    iat: answer.iat,
+    exp: answer.exp,
+    fp,
+    iss: 'sig.test',
+  });
+  assert.deepStrictEqual(seen, ['alice'], 'claims() ran with the identified context');
+  // keys() is public: a fresh, unidentified connection reads them.
+  const stranger = await connectClient(t, boot.url);
+  const published = await wrpcSignaler(stranger).keys();
+  assert.deepStrictEqual(published, [keys.publicKey]);
+  const verifier = createAssertionVerifier({ keys: published, issuer: 'sig.test' });
+  const sdp = `v=0\r\na=fingerprint:${fp}\r\n`;
+  assert.deepStrictEqual(await verifier.verify(answer.assertion, { from: 'alice', sdp }), payload);
+  // Input is validated; a replaced connection is refused.
+  for (const args of [{}, { fingerprint: 'nope' }, { fingerprint: 7 }, null]) {
+    await assert.rejects(a.client.call('signaling/assert', args), (error) => error.code === 400);
+  }
+  await assert.rejects(a.signaler.assert({}), /fingerprint must be/);
+  await peer(t, boot, { identity: 'alice' });
+  await waitFor(() => a.signaler.replaced);
+  await assert.rejects(a.client.call('signaling/assert', { fingerprint: fp }), (error) => error.code === 409);
+});
+
+test('signaling: a claims hook that answers garbage is a 500; no assertions means no assert/keys', async (t) => {
+  const keys = await generateAssertionKeys();
+  const broken = await bootServer(t, {
+    router: signalingRouter({ assertions: { key: keys.privateKey, claims: () => 'nope' } }),
+  });
+  const a = await peer(t, broken);
+  await assert.rejects(a.signaler.assert({ fingerprint: 'sha-256 AA:BB' }), (error) => error.code === 500);
+  const plain = await bootServer(t, { router: signalingRouter() });
+  const b = await peer(t, plain);
+  await assert.rejects(b.signaler.assert({ fingerprint: 'sha-256 AA:BB' }), (error) => error.code === 404);
+  await assert.rejects(b.signaler.keys(), (error) => error.code === 404);
 });
 
 // ---------------------------------------------------------------------------

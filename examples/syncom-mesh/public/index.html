@@ -8,7 +8,7 @@
   button { margin-right: .25rem; }
 </style>
 <h1>wrpc mesh</h1>
-<p>me: <code id="me">connecting…</code> as <input id="name" placeholder="your name" size="10" /></p>
+<p>me: <code id="me">connecting…</code> (the name is the peer id — open the same name twice to see <code>replaced</code>)</p>
 <p>peers in <code>lobby</code>:</p>
 <ul id="peers"></ul>
 <p>
@@ -28,13 +28,23 @@
     li.textContent = text;
     $('log').prepend(li);
   };
-  $('name').value = `tab-${Math.random().toString(36).slice(2, 6)}`;
+  // The peer id is the name in the URL (?name=ada), else a random one: the
+  // server's identity strategy adopts what the tab proposes.
+  const name = new URLSearchParams(location.search).get('name') || `tab-${Math.random().toString(36).slice(2, 6)}`;
+  $('name').value = name;
 
-  // What every peer serves. Handlers run with the link's pseudo-session:
-  // context.session.data.peer is the calling peer's id.
+  // What every peer serves. Handlers run with the link's session:
+  // context.session.data.peer is the calling peer's id, and under trust
+  // 'assertion' context.session.data.claims is what the server signed
+  // about it — verified against the link's own certificate.
   const router = defineRouter({
     chat: {
-      hello: procedure({ handler: async (context) => `hello ${context.session.data.peer}, I am ${$('name').value}` }),
+      hello: procedure({
+        handler: async (context) => {
+          const { peer, claims } = context.session.data;
+          return `hello ${peer} (asserted by ${claims.iss}, exp ${new Date(claims.exp * 1000).toLocaleTimeString()}), I am ${name}`;
+        },
+      }),
       receive: procedure({
         handler: async (context, { id, size }) => {
           const stream = context.client.getStream(id);
@@ -52,17 +62,23 @@
   });
 
   const client = await connect('ws://127.0.0.1:8000/api');
-  const signaler = wrpcSignaler(client);
-  const peer = new WrpcPeer({ router, signaler, iceServers: [] });
+  const signaler = wrpcSignaler(client, { identity: name });
+  // assertions: {} — verify every peer's server-signed token (keys fetched
+  // from the server) and present our own; trust 'assertion' makes the
+  // verified claims the session handlers run with.
+  const peer = new WrpcPeer({ router, signaler, iceServers: [], assertions: {}, host: { trust: 'assertion' } });
   peer.on('error', (error) => say(`error: ${error.message}`));
+  peer.on('replaced', () => say('another tab took this name — this peer is over'));
+  peer.on('reset', ({ id, previous }) => say(`signaling reconnected as ${id}${id === previous ? ' (links kept)' : ''}`));
   $('me').textContent = await peer.start();
 
-  const mesh = peer.join('lobby', { data: { name: $('name').value } });
+  const mesh = peer.join('lobby', { data: { name } });
   const render = () => {
     $('peers').replaceChildren(
       ...[...mesh.links.values()].map((link) => {
         const li = document.createElement('li');
-        li.textContent = `${link.id} — ${link.state}${link.data?.name ? ` (${link.data.name})` : ''}`;
+        const claims = link.claims ? ` · asserted by ${link.claims.iss}` : '';
+        li.textContent = `${link.id} — ${link.state}${link.data?.name ? ` (${link.data.name})` : ''}${claims}`;
         return li;
       }),
     );
@@ -85,7 +101,7 @@
     render();
     say(`${id} left`);
   });
-  mesh.respond('name', async () => $('name').value);
+  mesh.respond('name', async () => name);
 
   $('say').onclick = () => {
     const text = $('text').value;

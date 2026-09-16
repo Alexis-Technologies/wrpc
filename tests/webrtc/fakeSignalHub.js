@@ -21,14 +21,40 @@ class HubSignaler extends Emitter {
   #hub;
   #id;
   #instance;
+  #issuer;
   #rooms = new Map(); // room -> data
   #replaced = false;
 
-  constructor(hub, id, instance) {
+  constructor(hub, id, instance, issuer = null) {
     super();
     this.#hub = hub;
     this.#id = id;
     this.#instance = instance;
+    this.#issuer = issuer;
+  }
+
+  /** The issuer this signaler's assertions come from: the hub's unless a test gave it a rogue one. */
+  get issuer() {
+    return this.#issuer ?? this.#hub.issuer;
+  }
+
+  /** @internal */
+  set issuer(value) {
+    this.#issuer = value;
+  }
+
+  /** A trust assertion from the hub's issuer (or this signaler's own), like the real unit's. */
+  async assert({ fingerprint }) {
+    const issuer = this.issuer;
+    if (!issuer) throw new Error('hub: no issuer configured');
+    await this.#hub.tick();
+    if (this.#replaced) throw new Error('Signaler was replaced');
+    return issuer.sign({ sub: this.#id, fp: fingerprint, ...(this.#hub.claims ? this.#hub.claims(this.#id) : {}) });
+  }
+
+  async keys() {
+    if (!this.#hub.issuer) throw new Error('hub: no issuer configured');
+    return this.#hub.issuer.publicKeys();
   }
 
   get id() {
@@ -88,9 +114,18 @@ class FakeSignalHub {
   #rooms = new Map(); // room -> Map<id, data>
   #muted = new Set();
   sent = [];
+  /** The assertion issuer every signaler asks, when the test configures one. */
+  issuer = null;
+  /** Extra claims per peer id, signed into its assertions. */
+  claims = null;
 
-  signaler(id, { instance = `inst-${++sequence}` } = {}) {
-    const signaler = new HubSignaler(this, id, instance);
+  constructor({ issuer = null, claims = null } = {}) {
+    this.issuer = issuer;
+    this.claims = claims;
+  }
+
+  signaler(id, { instance = `inst-${++sequence}`, issuer = null } = {}) {
+    const signaler = new HubSignaler(this, id, instance, issuer);
     this.#peers.set(id, signaler);
     return signaler;
   }

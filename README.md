@@ -129,8 +129,8 @@ then gzipped):
 | `@alexify/wrpc/sse` — node | 88.4 KB | 29.6 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` (token strategies) | 3.3 KB | **1.5 KB** | 2.0 KB |
-| `@alexify/wrpc/webrtc` — browser (peer, link, mesh) | 125.9 KB | **40.7 KB** | 41.0 KB |
-| `@alexify/wrpc/webrtc` — node | 128.3 KB | 41.2 KB | — |
+| `@alexify/wrpc/webrtc` — browser (peer, link, mesh, assertions) | 136.3 KB | **44.0 KB** | 45.0 KB |
+| `@alexify/wrpc/webrtc` — node | 147.6 KB | 47.5 KB | — |
 
 The Node-only rows are reported for visibility into what each subpath pulls in
 — they never ship to a browser, and the adapter rows include the whole core
@@ -225,7 +225,7 @@ for await (const message of client.api.chat.onMessage.iterate()) {
 | **REST** | [Declarative endpoints](https://wrpc.vercel.app/guide/rest) on the same procedures — verb, path, status, fastify-shaped schemas, `/vN` version paths, OpenAPI via [`wrpc types --openapi`](https://wrpc.vercel.app/guide/cli) |
 | **Sessions & auth** | [Cookie-backed sessions](https://wrpc.vercel.app/guide/sessions) restored on reconnect, pluggable store, CSRF-aware REST dispatch; [bearer/payload token carriers, client stores and the authenticate/refresh lifecycle](https://wrpc.vercel.app/guide/auth) |
 | **Scaling** | [Rooms backplane](https://wrpc.vercel.app/guide/scaling) over any pub/sub; Redis and in-memory adapters included; [cluster layer](https://wrpc.vercel.app/guide/cluster) — replicated presence (`count` with no round-trip), `fetchClients`, cross-instance commands, node-to-node ask |
-| **Transports** | WebSocket, plain HTTP, [Server-Sent Events](https://wrpc.vercel.app/guide/sse), a worker `MessagePort` (Service Worker or SharedWorker), [WebRTC data channels](https://wrpc.vercel.app/guide/webrtc) between browsers (symmetric peers, mesh, built-in or pluggable signaling); [pluggable wire codec](https://wrpc.vercel.app/guide/codec) and [request metadata](https://wrpc.vercel.app/guide/metadata) (`x-wrpc-meta-<key>`) |
+| **Transports** | WebSocket, plain HTTP, [Server-Sent Events](https://wrpc.vercel.app/guide/sse), a worker `MessagePort` (Service Worker or SharedWorker), [WebRTC data channels](https://wrpc.vercel.app/guide/webrtc) between browsers (symmetric peers, mesh, built-in or pluggable signaling, stable app-level identity, [server-signed trust assertions](https://wrpc.vercel.app/guide/webrtc-trust)); [pluggable wire codec](https://wrpc.vercel.app/guide/codec) and [request metadata](https://wrpc.vercel.app/guide/metadata) (`x-wrpc-meta-<key>`) |
 | **Hosts** | Batteries-included [server](https://wrpc.vercel.app/guide/server), or [fastify](https://wrpc.vercel.app/guide/adapters/fastify) / [express](https://wrpc.vercel.app/guide/adapters/express) / [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws) / bare `node:http` |
 | **Client** | Exponential backoff with full jitter, app-level heartbeat, automatic re-`load()` and re-subscribe, offline/online |
 | **Observability** | [Structured logging](https://wrpc.vercel.app/guide/logging) into your pino, [OpenTelemetry](https://wrpc.vercel.app/guide/telemetry) spans and metrics, W3C trace context across the wire |
@@ -275,7 +275,7 @@ See [Logging](https://wrpc.vercel.app/guide/logging) and
 | `@alexify/wrpc/sse` | `SseChannels`, `ServerSseTransport`, `ClientSseTransport`, `SseParser` | [Server-Sent Events](https://wrpc.vercel.app/guide/sse) |
 | `@alexify/wrpc/query` | `createQueryUtils` | [TanStack Query](https://wrpc.vercel.app/guide/query) |
 | `@alexify/wrpc/auth` | `bearerAuth`, `memoryStore`, `webStorage`, `cookieStorage`, `bearerTransport`, `payloadTransport` | [Authentication](https://wrpc.vercel.app/guide/auth) |
-| `@alexify/wrpc/webrtc` | `WrpcPeer`, `PeerLink`, `Mesh`, `PeerHost`, `RtcLink`, `wrpcSignaler`, `createSignalingUnit`, `createSignalingHooks`, `createW3cAdapter` | [WebRTC](https://wrpc.vercel.app/guide/webrtc) |
+| `@alexify/wrpc/webrtc` | `WrpcPeer`, `PeerLink`, `Mesh`, `PeerHost`, `RtcLink`, `wrpcSignaler`, `createSignalingUnit`, `createSignalingHooks`, `createAssertionIssuer`, `createAssertionVerifier`, `createW3cAdapter` | [WebRTC](https://wrpc.vercel.app/guide/webrtc), [identity and trust](https://wrpc.vercel.app/guide/webrtc-trust) |
 | `wrpc` (bin) | `wrpc types <url> --out api.d.ts` | [Codegen CLI](https://wrpc.vercel.app/guide/cli) |
 
 Every subpath ships hand-maintained TypeScript declarations — no generation, no

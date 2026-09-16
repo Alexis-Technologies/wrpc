@@ -19,6 +19,10 @@
 //     on('reset', ({ id, previous, rooms }) => void)    re-identified: rebuild
 //     on('replaced', ({ id }) => void)      a newer connection took this id
 //   }
+//   interface AssertingSignaler extends Signaler {   trust assertions (hasAssertions)
+//     assert({ fingerprint }): Promise<{ assertion, iat?, exp? }>   a token for one of MY certificates
+//     keys?(): Promise<Array<JsonWebKey>>            the server's public keys
+//   }
 //   SignalMessage = { type: 'description', description }
 //                 | { type: 'candidate', candidate }
 //                 | { type: 'close' }
@@ -60,6 +64,8 @@ const isSignaler = (value) =>
   isFunction(value.off);
 
 const hasRoster = (value) => isSignaler(value) && isFunction(value.join) && isFunction(value.leave);
+
+const hasAssertions = (value) => isSignaler(value) && isFunction(value.assert);
 
 const isWrpcClientLike = (client) =>
   typeof client === 'object' &&
@@ -264,6 +270,26 @@ class WrpcSignaler extends Emitter {
     return Array.isArray(result) ? result : [];
   }
 
+  /** A trust assertion binding this peer's id to one of its certificates: `<unit>/assert`. */
+  async assert({ fingerprint } = {}) {
+    if (typeof fingerprint !== 'string' || fingerprint.length === 0) {
+      throw new TypeError('assert: fingerprint must be a non-empty string');
+    }
+    await this.ready();
+    const result = await this.#client.call(`${this.#unit}/assert`, { fingerprint });
+    if (typeof result?.assertion !== 'string' || result.assertion.length === 0) {
+      throw new TypeError(`${this.#unit}/assert answered without an assertion`);
+    }
+    return result;
+  }
+
+  /** The server's public assertion keys (JWKs): `<unit>/keys`. */
+  async keys() {
+    const result = await this.#client.call(`${this.#unit}/keys`);
+    if (!Array.isArray(result?.keys)) throw new TypeError(`${this.#unit}/keys answered without keys`);
+    return result.keys;
+  }
+
   // The signaling connection came back as a NEW server-side client: rooms
   // gone, the id to be agreed again (the same one, under a stable identity
   // strategy — so it is kept until the answer lands, and a knock arriving
@@ -325,4 +351,12 @@ class WrpcSignaler extends Emitter {
 /** The client half of createSignalingUnit, over an open or opening WrpcClient. */
 const wrpcSignaler = (client, options) => new WrpcSignaler(client, options);
 
-module.exports = { WrpcSignaler, wrpcSignaler, isSignaler, hasRoster, isSignalMessage, SIGNAL_MESSAGE_TYPES };
+module.exports = {
+  WrpcSignaler,
+  wrpcSignaler,
+  isSignaler,
+  hasRoster,
+  hasAssertions,
+  isSignalMessage,
+  SIGNAL_MESSAGE_TYPES,
+};

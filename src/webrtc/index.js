@@ -6,6 +6,7 @@
 
 const { buildMeta } = require('../rpc/client.js');
 const { createSignalingUnit, createSignalingHooks } = require('./signaling.js');
+const { createAssertionIssuer, generateAssertionKeys } = require('./assertionIssuer.js');
 const { RtcPeerTransport } = require('./transport.js');
 
 /**
@@ -38,4 +39,11 @@ const attachChannel = (server, channel, options = {}) => {
   return client;
 };
 
-module.exports = { ...require('./browser.js'), createSignalingUnit, createSignalingHooks, attachChannel };
+module.exports = {
+  ...require('./browser.js'),
+  createSignalingUnit,
+  createSignalingHooks,
+  createAssertionIssuer,
+  generateAssertionKeys,
+  attachChannel,
+};

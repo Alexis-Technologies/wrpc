@@ -33,6 +33,7 @@ const { RtcLink, DEFAULT_CHANNELS, normalizeChannels } = require('./link.js');
 const { ClientRtcTransport, RtcPeerTransport } = require('./transport.js');
 const { PeerHost } = require('./host.js');
 const { isSignaler, isSignalMessage } = require('./signaler.js');
+const { createAssertionVerifier, sdpFingerprint, isAssertion, AssertionError } = require('./assertions.js');
 
 const REDIAL = { retries: 5, minDelay: 500, maxDelay: 10_000, factor: 2, jitter: true };
 // The remote WrpcClient's reconnect: quick, since the link itself carries
@@ -64,6 +65,9 @@ class PeerLink extends Emitter {
   #hostOptions;
   #client = null;
   #rooms = new Set();
+  #claims;
+  #fingerprint;
+  #inbound = Promise.resolve();
   #state = 'connecting';
   #everOpen = false;
   #redial;
@@ -75,11 +79,14 @@ class PeerLink extends Emitter {
   #counted = false;
   #unbind = [];
 
-  constructor(peer, { id, instance, room, data, link, host, hostOptions, client, framing, redial, log, otel }) {
+  constructor(peer, options) {
     super();
+    const { id, instance, room, data, link, host, hostOptions, client, framing, redial, log, otel } = options;
     this.#peer = peer;
     this.#id = id;
     this.#instance = instance;
+    this.#claims = options.claims ?? null;
+    this.#fingerprint = options.fingerprint ?? null;
     this.#room = room;
     this.#data = data;
     this.#link = link;
@@ -110,6 +117,15 @@ class PeerLink extends Emitter {
    */
   get instance() {
     return this.#instance;
+  }
+
+  /**
+   * The remote peer's verified assertion claims (`sub`, `exp`, `fp`, and
+   * whatever the signaling server added), or null: no assertions
+   * configured, or — on the dialling side — none seen yet.
+   */
+  get claims() {
+    return this.#claims;
   }
 
   /** The signaling room this link was made in, or null. */
@@ -245,8 +261,32 @@ class PeerLink extends Emitter {
     if (this.initiator && this.#link.state === 'failed') this.#redialNow();
   }
 
-  /** @internal A signal from the remote peer. */
+  /**
+   * @internal A signal from the remote peer. Serialized: a description is
+   * verified (asynchronously) before the link applies it, and the next
+   * signal must not overtake it.
+   */
   receive(message) {
+    const run = () => this.#receive(message);
+    this.#inbound = this.#inbound.then(run, run);
+    return this.#inbound;
+  }
+
+  async #receive(message) {
+    if (this.#state === 'closed') return;
+    if (message?.type === 'description' && this.#peer.assertions) {
+      try {
+        const verified = await this.#peer.verifyDescription(this.#id, message, this.#fingerprint, this.#claims);
+        this.#fingerprint = verified.fingerprint;
+        this.#claims = verified.claims;
+      } catch (error) {
+        // Not who the signaling said, or not provably so: the link ends
+        // here with a goodbye, before the description touches the pc.
+        this.#log.warn({ event: 'rtc.peer.refused', peer: this.#id, reason: error.code ?? 'assertion', err: error });
+        this.#link.close();
+        return;
+      }
+    }
     return this.#link.receive(message);
   }
 
@@ -306,7 +346,12 @@ class PeerLink extends Emitter {
       ...this.#hostOptions.water,
       onError: (error) => this.#error(error),
     });
-    const client = this.#host.attach(transport, { peer: this.#id, room: this.#room, data: this.#data });
+    const client = this.#host.attach(transport, {
+      peer: this.#id,
+      room: this.#room,
+      data: this.#data,
+      claims: this.#claims,
+    });
     this.#client = client;
     for (const room of this.#rooms) client.join(room);
     transport.once('close', () => {
@@ -444,6 +489,10 @@ class WrpcPeer extends Emitter {
   #restartTimeout;
   #redial;
   #accept;
+  #verifier = null;
+  // The signaling server's clock minus ours, from our own assertions' iat:
+  // the common reference both peers check `exp` against.
+  #clock = 0;
   #log;
   #otel;
   #links = new Map();
@@ -472,10 +521,14 @@ class WrpcPeer extends Emitter {
       restartTimeout,
       redial = {},
       accept = null,
+      assertions = null,
       logger = false,
       telemetry = null,
     } = options;
     if (!isSignaler(signaler)) throw new TypeError('WrpcPeer: options.signaler must satisfy the Signaler contract');
+    if (assertions !== null && (typeof assertions !== 'object' || Array.isArray(assertions))) {
+      throw new TypeError('WrpcPeer: options.assertions must be an object');
+    }
     const adapter = rtc ?? createW3cAdapter();
     if (!isRtcAdapter(adapter)) throw new TypeError('WrpcPeer: options.rtc must satisfy the RtcAdapter contract');
     if (accept !== null && typeof accept !== 'function') {
@@ -485,6 +538,19 @@ class WrpcPeer extends Emitter {
       throw new TypeError('WrpcPeer: options.client must be an object');
     }
     if (typeof host !== 'object' || host === null) throw new TypeError('WrpcPeer: options.host must be an object');
+    if (assertions !== null) {
+      if (typeof signaler.assert !== 'function') {
+        throw new TypeError('WrpcPeer: options.assertions needs a signaler with assert() — the server must issue them');
+      }
+      const keys = assertions.keys ?? (typeof signaler.keys === 'function' ? () => signaler.keys() : null);
+      if (keys === null) {
+        throw new TypeError('WrpcPeer: options.assertions.keys is required when the signaler has no keys()');
+      }
+      this.#verifier = createAssertionVerifier({ keys, issuer: assertions.issuer ?? null });
+    }
+    if (host.trust === 'assertion' && this.#verifier === null) {
+      throw new TypeError("WrpcPeer: host.trust 'assertion' needs options.assertions");
+    }
     this.#signaler = signaler;
     this.#adapter = adapter;
     this.#configuration = iceServers ? { ...configuration, iceServers } : configuration;
@@ -533,6 +599,11 @@ class WrpcPeer extends Emitter {
 
   get channels() {
     return this.#channels;
+  }
+
+  /** True when this peer issues and verifies trust assertions. */
+  get assertions() {
+    return this.#verifier !== null;
   }
 
   /** Every link, keyed by remote id (a copy). */
@@ -617,6 +688,35 @@ class WrpcPeer extends Emitter {
     }
   }
 
+  /**
+   * @internal An outbound description gets this peer's assertion for the
+   * certificate it declares — one call to the signaling server per dial.
+   */
+  async stamp(message) {
+    if (message.type !== 'description') return message;
+    const fingerprint = sdpFingerprint(message.description?.sdp);
+    if (fingerprint === null) throw new Error('WrpcPeer: the local description declares no certificate fingerprint');
+    const result = await this.#signaler.assert({ fingerprint });
+    if (!isAssertion(result?.assertion)) throw new TypeError('signaler.assert() answered without an assertion');
+    if (typeof result.iat === 'number') this.#clock = result.iat * 1000 - Date.now();
+    return { ...message, assertion: result.assertion };
+  }
+
+  /**
+   * @internal The claims behind an inbound description from `from`: the
+   * signature is checked when the description's certificate differs from
+   * the one pinned on the link (a new pc — dial or redial); an ICE restart
+   * on the same pc is a string compare.
+   */
+  async verifyDescription(from, message, pinned = null, claims = null) {
+    const sdp = message.description?.sdp;
+    const fingerprint = sdpFingerprint(sdp);
+    if (fingerprint !== null && fingerprint === pinned) return { fingerprint, claims };
+    if (!isAssertion(message.assertion)) throw new AssertionError('assertion: missing', 'missing');
+    const verified = await this.#verifier.verify(message.assertion, { from, sdp, now: Date.now() + this.#clock });
+    return { fingerprint, claims: verified };
+  }
+
   /** @internal A link closed: forget it. */
   released(link) {
     if (this.#links.get(link.id) === link) this.#links.delete(link.id);
@@ -651,8 +751,18 @@ class WrpcPeer extends Emitter {
     return false;
   }
 
-  #create(remoteId, room, data, instance = null) {
+  #create(remoteId, room, data, instance = null, verified = null) {
     const localId = this.id;
+    const relay = (message) => this.signal(remoteId, message, room);
+    // With assertions, a description waits for its token — one round trip
+    // to the server — and the candidates that follow it wait their turn,
+    // so none overtakes the description they belong to.
+    let chain = Promise.resolve();
+    const stamped = (message) => {
+      const next = chain.then(() => this.stamp(message)).then(relay);
+      chain = next.catch(() => {});
+      return next;
+    };
     const link = new RtcLink({
       localId,
       remoteId,
@@ -662,13 +772,15 @@ class WrpcPeer extends Emitter {
       connectTimeout: this.#connectTimeout,
       restartTimeout: this.#restartTimeout,
       log: this.#log,
-      signal: (message) => this.signal(remoteId, message, room),
+      signal: this.#verifier === null ? relay : stamped,
     });
     const peerLink = new PeerLink(this, {
       id: remoteId,
       instance,
       room,
       data,
+      claims: verified ? verified.claims : null,
+      fingerprint: verified ? verified.fingerprint : null,
       link,
       host: this.#host,
       hostOptions: this.#hostOptions,
@@ -712,9 +824,26 @@ class WrpcPeer extends Emitter {
     if (!opening) return;
     const queue = [message];
     this.#pending.set(from, queue);
+    // Verification is protocol, accept() is policy: an offer's assertion is
+    // checked first, and the hook sees the verified claims. A knock carries
+    // no description; its claims arrive with the answer, before the host
+    // half attaches.
+    let verified = null;
+    if (this.#verifier !== null && message.type === 'description') {
+      try {
+        verified = await this.verifyDescription(from, message);
+      } catch (error) {
+        this.#pending.delete(from);
+        if (this.#closed) return;
+        this.#log.warn({ event: 'rtc.peer.refused', peer: from, room, reason: error.code ?? 'assertion', err: error });
+        this.signal(from, { type: 'close' }, room ?? null);
+        return;
+      }
+    }
     let accepted = true;
     try {
-      accepted = this.#accept === null ? true : await this.#accept(from, room ?? null);
+      const about = { instance: incarnation, claims: verified ? verified.claims : null };
+      accepted = this.#accept === null ? true : await this.#accept(from, room ?? null, about);
     } catch (error) {
       accepted = false;
       this.escalate(error);
@@ -722,11 +851,11 @@ class WrpcPeer extends Emitter {
     this.#pending.delete(from);
     if (this.#closed) return;
     if (accepted !== true) {
-      this.#log.info({ event: 'rtc.peer.refused', peer: from, room });
+      this.#log.info({ event: 'rtc.peer.refused', peer: from, room, reason: 'accept' });
       if (message.type !== 'close') this.signal(from, { type: 'close' }, room ?? null);
       return;
     }
-    const link = this.#create(from, room ?? null, null, incarnation);
+    const link = this.#create(from, room ?? null, null, incarnation, verified);
     link.start();
     for (const queued of queue) {
       if (queued.type === 'connect') link.knocked();

@@ -177,6 +177,14 @@ refused with a coded `400` on a peer. `trust: 'none'` leaves `session` null,
 in which case peer procedures must be `access: 'public'` and authorize
 themselves in hooks from `context.meta.data.peer`.
 
+A peer that wants *proof* rather than the relay's word turns on
+**trust assertions**: the signaling server signs a token per peer, bound to
+the certificate that peer dials with, every other peer verifies it with the
+server's public key before the link is allowed, and `trust: 'assertion'`
+makes the verified claims the session (`context.session.data.claims`). The
+model, the server and peer options and the wire format are on their own
+page: [WebRTC: identity and trust](./webrtc-trust).
+
 ## Signaling
 
 ### The built-in unit
@@ -420,7 +428,8 @@ new WrpcPeer({
   connectTimeout: 30_000,
   restartTimeout: 15_000,
   redial: { retries: 5, minDelay: 500, maxDelay: 10_000 },
-  accept: async (from, room) => allowed(from),   // gates incoming links
+  accept: async (from, room, { instance, claims }) => allowed(from),   // gates incoming links
+  assertions: { issuer: 'signaling.example' },   // verify and present server-signed tokens; see identity and trust
   telemetry: { api: otel },   // the peer's server half and its links; see below
 });
 ```
@@ -459,9 +468,10 @@ on. A client-only peer (no router) still counts its links.
 - **Receive-side backpressure.** A data channel has no `pause()`: a fast
   peer streaming a large file to a slow consumer accumulates in the
   receiving `WrpcReadable`. Size uploads accordingly, or ask before sending.
-- **Real sessions.** A browser cannot verify another peer's token without a
-  secret. `trust: 'link'` is the honest substitute; server-signed assertions
-  are a possible later addition.
+- **Real sessions.** A peer has no session store. `trust: 'link'` trusts
+  the relay's word, [trust assertions](./webrtc-trust) verify the server's
+  signed word about a peer at issue time — neither is revocable while a
+  link is open, other than by closing it.
 - **The worker proxy.** `WrpcClientProxy` connects to a URL (its `url`
   option, or one built from the worker's location); a data channel cannot
   be reached through it.
@@ -471,6 +481,6 @@ on. A client-only peer (no router) still counts its links.
 A peer is a client **and** a server, so the webrtc browser entry is heavier
 than the main one: the client core plus the router, dispatcher, per-peer
 `Client`, rooms and `Broadcast`, the link, framing, peer, mesh and signaler
-halves, and the server telemetry writer — about 40 KB min+gzip against a
-41 KB budget in `pnpm size`. You
+halves, the server telemetry writer, and the assertion verifier over
+WebCrypto — about 44 KB min+gzip against a 45 KB budget in `pnpm size`. You
 pay it only when you import the subpath; the main entry is untouched.

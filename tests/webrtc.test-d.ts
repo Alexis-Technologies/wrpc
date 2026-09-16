@@ -1,6 +1,8 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
 import * as webrtc from '../webrtc.js';
 import type {
+  AssertionClaims,
+  AssertionVerifier,
   ChannelsOptions,
   ClientRtcTransport,
   LeaveReason,
@@ -108,14 +110,38 @@ const peer = new webrtc.WrpcPeer({
   host: { trust: 'none', highWaterMark: 65536 },
   redial: { retries: 3 },
   telemetry: { includeIdentity: false },
-  accept: (from, room) => {
+  accept: (from, room, about) => {
     expectType<string>(from);
     expectType<string | null>(room);
+    expectType<string | null>(about.instance);
+    expectType<AssertionClaims | null>(about.claims);
     return true;
   },
 });
 expectType<string | null>(peer.id);
 expectType<PeerHost | null>(peer.host);
+expectType<boolean>(peer.assertions);
+// Trust assertions: verified on the peer, issued by the unit.
+new webrtc.WrpcPeer({ router, signaler, host: { trust: 'assertion' }, assertions: {} });
+new webrtc.WrpcPeer({ router, signaler, assertions: { keys: async () => [], issuer: 'sig' } });
+expectError(new webrtc.WrpcPeer({ router, signaler, assertions: { keys: 'jwk' } }));
+const verifier: AssertionVerifier = webrtc.createAssertionVerifier({ keys: [], issuer: null });
+expectType<Promise<AssertionClaims>>(verifier.verify('a.b.c', { from: 'x', sdp: 'v=0', now: 1 }));
+expectType<string | null>(webrtc.sdpFingerprint('v=0'));
+expectType<boolean>(webrtc.hasAssertions(signaler));
+expectType<Promise<{ assertion: string; iat?: number; exp?: number }>>(signaler.assert({ fingerprint: 'sha-256 AA' }));
+expectType<Promise<Array<JsonWebKey>>>(signaler.keys());
+async function issuing() {
+  const keys = await webrtc.generateAssertionKeys({ kid: 'k1' });
+  expectType<JsonWebKey>(keys.privateKey);
+  const issuer = webrtc.createAssertionIssuer({ key: keys.privateKey, ttl: 60 });
+  expectType<Promise<Array<JsonWebKey>>>(issuer.publicKeys());
+  const issued = await issuer.sign({ sub: 'alice', fp: 'sha-256 AA', role: 'host' });
+  expectType<string>(issued.assertion);
+  webrtc.createSignalingUnit({ assertions: { key: keys.privateKey, claims: () => ({ role: 'x' }) } });
+  expectError(webrtc.createSignalingUnit({ assertions: { key: 'nope' } }));
+}
+void issuing;
 peer.on('replaced', (event: { id: string }) => event.id);
 expectType<Map<string, PeerLink>>(peer.links);
 expectAssignable<Required<ChannelsOptions>>(peer.channels);
@@ -128,6 +154,7 @@ async function usage() {
   expectType<string>(await link.api.chat.hello());
   expectType<string>(link.id);
   expectType<string | null>(link.instance);
+  expectType<AssertionClaims | null>(link.claims);
   expectType<boolean>(link.initiator);
   expectType<Client | null>(link.client);
   expectType<RtcLink>(link.link);

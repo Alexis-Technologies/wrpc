@@ -14,6 +14,8 @@ const { WrpcPeer, PeerLink, normalizeRedial, REDIAL } = require('../../src/webrt
 const { createFakeRtc } = require('./fakeRtc.js');
 const { FakeSignalHub } = require('./fakeSignalHub.js');
 const { within, waitFor } = require('./portContract.js');
+const { createAssertionIssuer, generateAssertionKeys } = require('../../src/webrtc/assertionIssuer.js');
+const { sdpFingerprint } = require('../../src/webrtc/assertions.js');
 
 const quiet = {
   log() {},
@@ -92,7 +94,7 @@ const routerOf = (name, seen = []) => {
 // A world: one fake RTC, one hub, peers by id. Every peer is torn down.
 const world = (t, options = {}) => {
   const fake = createFakeRtc(options.fake);
-  const hub = new FakeSignalHub();
+  const hub = new FakeSignalHub(options.hub);
   const peers = [];
   t.after(() => {
     for (const peer of peers) peer.close();
@@ -616,4 +618,174 @@ test('peer: a signaler that cannot identify fails start() and connect(), and sta
   assert.strictEqual(attempts, 4);
   assert.strictEqual(peer.links.size, 0);
   peer.escalate(new Error('nobody listens'));
+});
+
+// ---------------------------------------------------------------------------
+// Trust assertions: the hub issues them the way the real unit does, the
+// peers verify them against the hub's public keys.
+
+const trusted = async (t, { claims = null, peerOptions = {} } = {}) => {
+  const keys = await generateAssertionKeys({ kid: 'hub' });
+  const issuer = createAssertionIssuer({ key: keys.privateKey, ttl: 60, issuer: 'hub.test' });
+  const { peer, hub, fake } = world(t, { hub: { issuer, claims } });
+  const assertions = { issuer: 'hub.test', ...peerOptions.assertions };
+  const trustedPeer = (id, options = {}) =>
+    peer(id, { assertions, host: { trust: 'assertion' }, ...peerOptions, ...options });
+  return { peer: trustedPeer, plain: peer, hub, fake, keys, issuer };
+};
+
+test('peer: assertions are issued per dial, verified both ways and land in the session', async (t) => {
+  const seen = [];
+  const { peer, hub, keys } = await trusted(t, {
+    claims: (id) => ({ role: id === 'a' ? 'host' : 'guest' }),
+    peerOptions: {
+      accept: (from, room, about) => {
+        seen.push([from, room, about.instance, about.claims?.sub, about.claims?.role]);
+        return true;
+      },
+    },
+  });
+  const a = peer('a');
+  const b = peer('b');
+  assert.strictEqual(a.assertions, true);
+  const ab = await within(a.connect('b', { room: 'r' }), 'open');
+  const ba = b.link('a');
+  // Both descriptions carried a token bound to the pc that sent them.
+  const stamped = hub.sent.filter((entry) => entry.type === 'description');
+  assert.strictEqual(stamped.length, 2, 'offer and answer');
+  assert.deepStrictEqual([ab.claims.sub, ab.claims.role, ab.claims.iss], ['b', 'guest', 'hub.test']);
+  assert.deepStrictEqual([ba.claims.sub, ba.claims.role], ['a', 'host']);
+  assert.strictEqual(ab.claims.fp, ba.link.pc.fingerprint, "b's token names b's certificate");
+  assert.strictEqual(ba.claims.fp, ab.link.pc.fingerprint);
+  // b's accept saw a's verified claims before it let the link in; a's
+  // connect() dialled, so b's claims came with the answer.
+  assert.deepStrictEqual(seen, [['a', 'r', a.signaler.instance, 'a', 'host']]);
+  // The host half sees them as the session: trust 'assertion'.
+  await ab.load('calc');
+  const who = await ab.api.calc.who();
+  assert.strictEqual(who.peer, 'a');
+  assert.strictEqual(who.token, 'a');
+  assert.strictEqual(ba.client.session.data.claims.role, 'host');
+  assert.strictEqual(ab.client.session.data.claims.role, 'guest');
+  assert.ok(Object.isFrozen(ab.client.session.data.claims));
+  assert.strictEqual(keys.publicKey.kid, 'hub');
+});
+
+test('peer: a description without a valid assertion is refused before it reaches the link', async (t) => {
+  const { peer, plain, hub, issuer } = await trusted(t);
+  const a = peer('a');
+  // c has no assertions configured: its offer carries no token.
+  const c = plain('c');
+  await assert.rejects(within(c.connect('a'), 'c refused'), /closed/);
+  assert.strictEqual(a.link('c'), undefined);
+  assert.ok(hub.sent.some((entry) => entry.from === 'a' && entry.to === 'c' && entry.type === 'close'));
+
+  // d signs with a key of its own: the signature does not verify.
+  const rogue = await generateAssertionKeys({ kid: 'hub' });
+  const d = peer('d', { signaler: hub.signaler('d', { issuer: createAssertionIssuer({ key: rogue.privateKey }) }) });
+  await assert.rejects(within(d.connect('a'), 'd refused'), /closed/);
+  assert.strictEqual(a.link('d'), undefined);
+
+  // e replays a token for another certificate: the fingerprint does not
+  // match the description it arrives with.
+  const replay = {
+    sign: (claims) => issuer.sign({ ...claims, fp: 'sha-256 ' + 'AA:'.repeat(31) + 'AA' }),
+    publicKeys: () => issuer.publicKeys(),
+  };
+  const e = peer('e', { signaler: hub.signaler('e', { issuer: replay }) });
+  await assert.rejects(within(e.connect('a'), 'e refused'), /closed/);
+  assert.strictEqual(a.link('e'), undefined);
+
+  // The dialling side refuses a bad ANSWER the same way: a dials f, whose
+  // answer is signed by the rogue key; a's link closes with a goodbye.
+  const f = peer('f', { signaler: hub.signaler('f', { issuer: createAssertionIssuer({ key: rogue.privateKey }) }) });
+  await assert.rejects(within(a.connect('f'), 'f refused'), /closed/);
+  assert.strictEqual(a.link('f'), undefined);
+  await waitFor(() => f.links.size === 0, 'f dropped too');
+
+  // And a good peer still gets in.
+  peer('b');
+  const ab = await within(a.connect('b'), 'b accepted');
+  assert.strictEqual(ab.claims.sub, 'b');
+});
+
+test('peer: a redial re-verifies the new certificate; an ICE restart on the same pc does not', async (t) => {
+  const { peer, hub, fake } = await trusted(t);
+  const a = peer('a');
+  const b = peer('b');
+  const ab = await within(a.connect('b'), 'open');
+  const ba = b.link('a');
+  const dials = () => hub.sent.filter((entry) => entry.type === 'description').length;
+  const first = { a: ab.claims.fp, b: ba.claims.fp };
+  assert.strictEqual(dials(), 2);
+
+  // ICE restart: same pc, same certificate — offer/answer flow again, with
+  // tokens (the initiator stamps every description) but no new claims.
+  const restarted = onceEvent(ab.link, 'restart');
+  ab.link.restart();
+  await within(restarted, 'restarted');
+  await waitFor(() => dials() === 4, 'restart offer and answer');
+  assert.deepStrictEqual({ a: ab.claims.fp, b: ba.claims.fp }, first, 'the pins did not move');
+
+  // A failed link redials onto a fresh pc: new certificates, new
+  // fingerprints, verified anew — and the session claims follow.
+  const reopened = onceEvent(ab, 'reconnect');
+  ab.link.pc.failIce();
+  await within(reopened, 'redialled');
+  await waitFor(() => ba.open, 'b side back');
+  assert.notStrictEqual(ab.claims.fp, first.a, 'a new certificate on b');
+  assert.notStrictEqual(ba.claims.fp, first.b);
+  assert.strictEqual(ab.claims.fp, ba.link.pc.fingerprint);
+  assert.strictEqual(ba.client.session.data.claims.fp, ba.claims.fp, 'the re-attached host half has the new claims');
+  void fake;
+  await ab.load('calc');
+  assert.strictEqual(await ab.api.calc.add({ a: 1, b: 2 }), 3);
+});
+
+test('peer: candidates never overtake a description that is waiting for its assertion', async (t) => {
+  const { peer, hub, issuer } = await trusted(t);
+  // A slow issuer: the offer waits ~30ms for its token while ICE gathers.
+  const slow = {
+    sign: async (claims) => {
+      await timers.setTimeout(30);
+      return issuer.sign(claims);
+    },
+    publicKeys: () => issuer.publicKeys(),
+  };
+  const a = peer('a', { signaler: hub.signaler('a', { issuer: slow }) });
+  peer('b', { signaler: hub.signaler('b', { issuer: slow }) });
+  const ab = await within(a.connect('b'), 'open');
+  assert.strictEqual(ab.state, 'open');
+  const order = hub.sent.filter((entry) => entry.from === 'a').map((entry) => entry.type);
+  assert.strictEqual(order.indexOf('description'), 0, 'the offer went first');
+  assert.ok(order.includes('candidate'));
+});
+
+test("peer: host trust 'assertion' requires assertions; assertions need a signaler that issues", async (t) => {
+  const { fake, hub } = world(t);
+  const { router } = routerOf('x');
+  assert.throws(
+    () => new WrpcPeer({ router, signaler: hub.signaler('x'), rtc: fake.adapter, host: { trust: 'assertion' } }),
+    /needs options.assertions/,
+  );
+  const mute = { id: null, ready: async () => 'y', send() {}, on() {}, off() {} };
+  assert.throws(
+    () => new WrpcPeer({ router, signaler: mute, rtc: fake.adapter, assertions: {} }),
+    /signaler with assert/,
+  );
+  assert.throws(
+    () => new WrpcPeer({ router, signaler: hub.signaler('z'), rtc: fake.adapter, assertions: 'yes' }),
+    /must be an object/,
+  );
+  // A signaler that issues but publishes no keys needs them by hand.
+  const issuing = { ...mute, assert: async () => ({ assertion: 'x.y.z' }) };
+  assert.throws(
+    () => new WrpcPeer({ router, signaler: issuing, rtc: fake.adapter, assertions: {} }),
+    /keys is required/,
+  );
+  const keys = await generateAssertionKeys();
+  const peer = new WrpcPeer({ router, signaler: issuing, rtc: fake.adapter, assertions: { keys: keys.publicKey } });
+  assert.strictEqual(peer.assertions, true);
+  peer.close();
+  assert.strictEqual(sdpFingerprint('v=0'), null);
 });

@@ -18,6 +18,15 @@ shows every link and its state, **Broadcast** sends an event to every peer,
 blob to each peer over its data channel, with backpressure. Close a tab and
 the others see it leave.
 
+Identity and trust are the server's: a tab proposes its name as its peer id
+(`?name=ada` in the URL, else a random one) and the server's `identity`
+strategy adopts it, so the id survives a signaling reconnect — restart
+`server.js` and watch the links stay up. Every peer also gets a signed
+**assertion** for the certificate it dials with, and the others verify it
+against the server's public key (`assertions: {}` on the peer, `trust:
+'assertion'` on its host): the `hello` answer shows the claims the handler
+ran with. Open the same name in a second tab and the first is `replaced`.
+
 All tabs run on one machine, so `iceServers` is empty; across machines give
 `WrpcPeer` a STUN (and, behind symmetric NATs, a TURN) server.
 
