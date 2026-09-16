@@ -31,7 +31,6 @@
   // The peer id is the name in the URL (?name=ada), else a random one: the
   // server's identity strategy adopts what the tab proposes.
   const name = new URLSearchParams(location.search).get('name') || `tab-${Math.random().toString(36).slice(2, 6)}`;
-  $('name').value = name;
 
   // What every peer serves. Handlers run with the link's session:
   // context.session.data.peer is the calling peer's id, and under trust

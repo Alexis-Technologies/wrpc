@@ -314,6 +314,8 @@ test('mesh: a member replaced by another incarnation of its id relinks', async (
   assert.deepStrictEqual(await within(replaced, 'old a told'), { id: 'a' });
   await within(closedA, 'old a closed');
   assert.strictEqual(a.links.size, 0);
+  // Neither side said goodbye: a 'close' to 'a' now would reach the newcomer.
+  assert.ok(!hub.sent.some((entry) => entry.type === 'close'), 'no goodbye in either direction');
   const mesh = fresh.join('room', { data: 'A2' });
   await within(settled(mesh, 1), 'new a linked');
   await within(settled(mb, 1), 'b relinked');

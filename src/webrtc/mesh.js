@@ -47,7 +47,10 @@ class Mesh extends Emitter {
     on(this.#signaler, 'leave', (event) => {
       if (event.room !== room) return;
       if (event.reason === 'disconnect' && this.#members.get(event.id)?.open) this.#away.add(event.id);
-      else this.#dropId(event.id, true);
+      // A replaced member's link is abandoned, not closed: a goodbye sent
+      // to its id now would reach the NEW incarnation — and land on the
+      // fresh link this mesh is about to make with it.
+      else this.#dropId(event.id, true, event.reason === 'replaced');
     });
     on(peer, 'reset', (event) => {
       const entry = Array.isArray(event?.rooms) ? event.rooms.find((item) => item.room === room) : null;
@@ -193,16 +196,19 @@ class Mesh extends Emitter {
     void this.emit('link', link).catch((error) => this.#peer.escalate(error, this));
   }
 
-  #dropId(id, announce) {
+  #dropId(id, announce, abandon = false) {
     const link = this.#members.get(id);
-    if (link) this.#drop(link, announce);
+    if (link) this.#drop(link, announce, abandon);
   }
 
-  #drop(link, announce) {
+  #drop(link, announce, abandon = false) {
     this.#members.delete(link.id);
     this.#away.delete(link.id);
     this.#release(link);
-    if (!this.#peer.held(link.id, this)) link.close();
+    if (!this.#peer.held(link.id, this)) {
+      if (abandon) link.abandon();
+      else link.close();
+    }
     if (announce) void this.emit('leave', { id: link.id }).catch((error) => this.#peer.escalate(error, this));
   }
 

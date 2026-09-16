@@ -45,6 +45,25 @@ test(
 );
 
 test(
+  'webrtc assertions: a real implementation declares a certificate fingerprint in its SDP',
+  { skip: !w3c && 'set WRPC_RTC=node-datachannel' },
+  async (t) => {
+    const { sdpFingerprint, normalizeFingerprint } = require('../../src/webrtc/assertions.js');
+    const adapter = createW3cAdapter(w3c);
+    const pc = adapter.createPeerConnection({ iceServers: [] });
+    t.after(() => pc.close());
+    pc.createDataChannel('probe', { negotiated: true, id: 0 });
+    const offer = await pc.createOffer();
+    // What the peer binds its assertion to: the DTLS fingerprint, present in
+    // every local description libdatachannel produces, sha-256 by default.
+    const fingerprint = sdpFingerprint(offer.sdp);
+    assert.strictEqual(typeof fingerprint, 'string');
+    assert.match(fingerprint, /^sha-256 (?:[0-9A-F]{2}:){31}[0-9A-F]{2}$/);
+    assert.strictEqual(normalizeFingerprint(fingerprint), fingerprint);
+  },
+);
+
+test(
   'webrtc raw channel: attachChannel over a real implementation',
   { skip: !w3c && 'set WRPC_RTC=node-datachannel' },
   async (t) => {
