@@ -241,6 +241,10 @@ class ClientEventTransport extends ClientTransport {
   #port = null;
   #worker = null;
 
+  // @deprecated Kept as the class-level singleton it always was, for code
+  // that still calls it — but connect() no longer does: each connect({
+  // worker }) builds its own transport, so the one returned here belongs to
+  // no client. Use `new WrpcClient.transport.event(url)`.
   static getInstance(url) {
     if (ClientEventTransport.instance) {
       return ClientEventTransport.instance;

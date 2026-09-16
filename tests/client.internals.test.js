@@ -202,9 +202,9 @@ test('WrpcClient static online/offline/initialize', async (t) => {
 });
 
 test('WrpcClient.connect with a Service Worker (event transport)', async (t) => {
-  await t.test('getInstance returns a shared singleton', () => {
+  await t.test('getInstance (deprecated) still returns a shared singleton', () => {
     const first = WrpcClient.transport.event.getInstance('worker://app');
-    const second = WrpcClient.transport.event.getInstance('worker://app');
+    const second = WrpcClient.transport.event.getInstance('worker://other');
     assert.strictEqual(first, second);
   });
 
@@ -214,22 +214,96 @@ test('WrpcClient.connect with a Service Worker (event transport)', async (t) => 
     await assert.rejects(transport.open({}), /Worker not provided/);
   });
 
-  await t.test('connect() opens the singleton, exposes online/offline, and closes cleanly', async () => {
+  await t.test('connect() opens its own transport, forwards online/offline, and closes cleanly', async () => {
     const sent = [];
     const worker = { postMessage: (msg) => sent.push(msg) };
 
     const client = await WrpcClient.connect('worker://shared', { worker });
     assert.strictEqual(client.active, true);
     assert.ok(sent.some((m) => m.type === 'wrpc:connect'));
+    assert.strictEqual(WrpcClient.transport.event.getInstance('worker://shared').active, false, 'not the singleton');
 
-    const transport = WrpcClient.transport.event.getInstance('worker://shared');
-    transport.online();
-    transport.offline();
+    WrpcClient.offline();
+    WrpcClient.online();
     assert.ok(sent.some((m) => m.type === 'wrpc:online'));
     assert.ok(sent.some((m) => m.type === 'wrpc:offline'));
 
     client.close();
     assert.strictEqual(client.active, false);
+  });
+
+  // A fake worker answering every call on the port it was handed with its
+  // own label — which worker answered is the whole assertion.
+  const fakeWorker = (label) => {
+    const worker = { connects: [], control: [] };
+    worker.postMessage = (message, transfer) => {
+      worker.control.push(message.type);
+      if (message.type !== 'wrpc:connect') return;
+      const port = transfer[0];
+      worker.connects.push(port);
+      port.addEventListener('message', ({ data }) => {
+        const packet = JSON.parse(data);
+        if (packet.type !== 'call') return;
+        port.postMessage(
+          JSON.stringify({ type: 'callback', id: packet.id, result: `${label}:${worker.connects.indexOf(port)}` }),
+        );
+      });
+      port.start();
+    };
+    worker.closeAll = () => {
+      for (const port of worker.connects) port.close();
+    };
+    return worker;
+  };
+
+  await t.test('one page, two workers: each connect() gets its own channel', async (t) => {
+    const workerA = fakeWorker('A');
+    const workerB = fakeWorker('B');
+    const a = await WrpcClient.connect('local:a', { worker: workerA });
+    const b = await WrpcClient.connect('local:b', { worker: workerB });
+    t.after(() => {
+      a.close();
+      b.close();
+      workerA.closeAll();
+      workerB.closeAll();
+    });
+
+    assert.strictEqual(workerA.connects.length, 1, 'workerA saw its own wrpc:connect');
+    assert.strictEqual(workerB.connects.length, 1, 'workerB was reached, not skipped');
+    assert.strictEqual(await a.call('unit/method'), 'A:0');
+    assert.strictEqual(await b.call('unit/method'), 'B:0');
+
+    // Online/offline reach every worker once per client, not one worker twice.
+    WrpcClient.offline();
+    WrpcClient.online();
+    assert.deepStrictEqual(workerA.control, ['wrpc:connect', 'wrpc:offline', 'wrpc:online']);
+    assert.deepStrictEqual(workerB.control, ['wrpc:connect', 'wrpc:offline', 'wrpc:online']);
+
+    // Independent lifecycles: closing one leaves the other connected.
+    a.close();
+    assert.strictEqual(a.active, false);
+    assert.strictEqual(b.active, true);
+    assert.strictEqual(await b.call('unit/method'), 'B:0');
+  });
+
+  await t.test('two clients, one worker: two channels, and close() is per client', async (t) => {
+    const worker = fakeWorker('W');
+    const first = await WrpcClient.connect('local:w', { worker });
+    const second = await WrpcClient.connect('local:w', { worker });
+    t.after(() => {
+      first.close();
+      second.close();
+      worker.closeAll();
+    });
+
+    assert.strictEqual(worker.connects.length, 2);
+    assert.notStrictEqual(worker.connects[0], worker.connects[1]);
+    assert.strictEqual(await first.call('unit/method'), 'W:0');
+    assert.strictEqual(await second.call('unit/method'), 'W:1');
+
+    first.close();
+    assert.strictEqual(second.active, true);
+    assert.strictEqual(await second.call('unit/method'), 'W:1');
   });
 
   await t.test('a SharedWorker is reached through its port', async () => {

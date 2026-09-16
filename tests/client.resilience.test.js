@@ -339,7 +339,7 @@ test('heartbeat: only a transport that can die silently gets one', () => {
   const { ws: WsTransport, http: HttpTransport, event: EventTransport } = WrpcClient.transport;
   assert.strictEqual(new WsTransport('ws://127.0.0.1:1').heartbeat, true);
   assert.strictEqual(new HttpTransport('http://127.0.0.1:1').heartbeat, false);
-  assert.strictEqual(EventTransport.getInstance('http://127.0.0.1:1').heartbeat, false);
+  assert.strictEqual(new EventTransport('http://127.0.0.1:1').heartbeat, false);
 });
 
 // ---------------------------------------------------------------------------

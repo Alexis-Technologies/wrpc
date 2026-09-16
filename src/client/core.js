@@ -614,7 +614,11 @@ class WrpcClient extends Emitter {
 
   static async connect(url, options = {}) {
     if (options.worker) {
-      const transport = WrpcClient.transport.event.getInstance(url);
+      // One transport per client, never the class-level getInstance(): a
+      // shared one made a second connect() to ANOTHER worker reuse the first
+      // MessageChannel, and one client's close() close the other's port.
+      const EventTransport = WrpcClient.transport.event;
+      const transport = new EventTransport(url);
       const client = new WrpcClient(url, transport, options);
       return WrpcClient.#openOrClose(client);
     }

@@ -389,6 +389,10 @@ expectError(wrpc.ServerEventTransport);
 declare const clientWs: ClientTransport;
 expectType<boolean>(clientWs.active);
 expectType<ClientTransport>(new wrpc.WrpcClient.transport.ws('ws://localhost'));
+// The worker transport is a constructor like the others (one per connect);
+// the deprecated class-level singleton is still typed.
+expectType<ClientTransport>(new wrpc.WrpcClient.transport.event('local:idb'));
+expectType<ClientTransport>(wrpc.WrpcClient.transport.event.getInstance('local:idb'));
 declare const httpTransport: ServerHttpTransport;
 expectType<Record<string, string>>(httpTransport.getCookies());
 expectType<boolean>(httpTransport.responded);

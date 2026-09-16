@@ -128,19 +128,16 @@ typically `localhost` in a desktop shell (Electron, Tauri) or during
 development.
 :::
 
-::: warning One active `event` worker per page at a time
-`ClientEventTransport` is cached as a **class-level singleton**
-(`ClientEventTransport.getInstance`), keyed by nothing — not by `url`, not by
-`worker`. The first `connect({ worker })` on a page opens the
-`MessageChannel`; while that transport is still open, a **second**
-`connect({ worker: otherWorker })` call in the *same page* reuses it as-is
-and never reaches `otherWorker`. This does not affect the diagram above (one
-`event` target, `svcD`), and it does not affect separate tabs each proxying
-to the *same* worker — each page is its own singleton. It only bites if a
-single page needs two different worker-backed backends at once; today that
-needs two separate pages/frames, or a single worker that itself fans out to
-both.
-:::
+Each `connect({ worker })` opens its **own** `MessageChannel`, so one page
+can reach several worker-backed backends at once — each client has its own
+port and its own lifecycle, and closing one leaves the others connected:
+
+```js
+const idb = new SharedWorker('/idb-worker.js', { name: 'wrpc-idb' });
+const files = new SharedWorker('/files-worker.js', { name: 'wrpc-files' });
+const svcD = await connect('local:idb', { worker: idb });
+const svcE = await connect('local:files', { worker: files });
+```
 
 ## Independent lifecycles, one exception
 

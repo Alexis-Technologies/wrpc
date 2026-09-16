@@ -238,7 +238,13 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
   static transport: {
     ws: new (url: string) => ClientTransport;
     http: new (url: string) => ClientTransport;
-    event: {
+    /** The worker transport; `connect(url, { worker })` builds one per client. */
+    event: (new (url: string) => ClientTransport) & {
+      /**
+       * @deprecated A class-level singleton that `connect()` no longer uses —
+       * each `connect({ worker })` builds its own transport, so the one
+       * returned here belongs to no client. Use `new WrpcClient.transport.event(url)`.
+       */
       getInstance(url: string): ClientTransport;
     };
     /** Registered by `@alexify/wrpc/webrtc`; `connect('webrtc:<peer>', { transport: 'webrtc', link })`. */

@@ -184,6 +184,10 @@ narrower promise — see
   typed as (see Changed).
 
 ### Changed
+- `ClientEventTransport.getInstance` is deprecated. It still returns the
+  class-level singleton it always did, but `connect({ worker })` no longer
+  uses it — construct one with `new WrpcClient.transport.event(url)`.
+  `WrpcClient.transport.event` is now typed as that constructor.
 - `Context.server` and `Client.server` are typed as `ClientHost | null`
   instead of `RpcServer | null`: the contract both an `RpcServer` and a
   WebRTC `PeerHost` satisfy (`router`, `rooms`, `getClient`, `to`, `except`,
@@ -194,6 +198,11 @@ narrower promise — see
   subscriptions and streams work over it as over a socket.
 
 ### Fixed
+- `connect(url, { worker })` builds its own `ClientEventTransport` per
+  client instead of sharing a class-level singleton. A second `connect` to a
+  DIFFERENT worker on the same page used to reuse the first `MessageChannel`
+  and never reach its worker, and closing one worker client closed the port
+  of every other one; now each client has its own channel and lifecycle.
 - `ClientEventTransport.close()` is idempotent: `terminate()` after `close()`,
   or the cleanup after an `open()` that threw before a port existed, no
   longer throws a `TypeError` in place of the original error.
