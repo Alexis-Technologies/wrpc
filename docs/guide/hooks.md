@@ -157,6 +157,9 @@ Keyed by the `Client` (a `WeakMap`, so state dies with the connection);
 key by session token or a header instead when limits should survive
 reconnects. The built-in `maxCalls` cap bounds *concurrency* per
 connection; this bounds *rate* — production deployments usually want both.
+See [Rate limiting & throttling](./rate-limiting) for per-procedure limits
+via `meta` and how this same hook covers every transport (WebSocket, HTTP,
+SSE, WebTransport, WebRTC) uniformly.
 
 ## Recipe: subscription quotas
 

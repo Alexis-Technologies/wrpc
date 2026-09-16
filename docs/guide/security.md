@@ -187,7 +187,8 @@ tell wrpc clients apart from everything else pointed at the same port.
 ## What wrpc does not do for you
 
 - **It is not a firewall.** Rate limiting beyond the per-connection caps is an
-  `onRequest` [hook](./hooks#recipe-a-rate-limit) plus your own bucket.
+  `onRequest` hook plus your own bucket — see
+  [Rate limiting & throttling](./rate-limiting).
 - **It does not authenticate.** `startSession` trusts whatever your login
   handler verified.
 - **It does not encrypt.** Run `protocol: 'https'`, or terminate TLS at a proxy

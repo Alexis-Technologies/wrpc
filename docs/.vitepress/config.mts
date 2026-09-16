@@ -196,6 +196,7 @@ export default withMermaid({
             text: 'Operations',
             items: [
               { text: 'Security', link: '/guide/security' },
+              { text: 'Rate limiting & throttling', link: '/guide/rate-limiting' },
               { text: 'Running in production', link: '/guide/production' },
               { text: 'Testing', link: '/guide/testing' },
               { text: 'Performance', link: '/guide/performance' },
