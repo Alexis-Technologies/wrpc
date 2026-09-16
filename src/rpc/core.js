@@ -37,6 +37,18 @@ const ServerHttpTransport = ServerTransport.transport.http;
 const ServerWsTransport = ServerTransport.transport.ws;
 const ServerEventTransport = ServerTransport.transport.event;
 
+// The transport a socket attached with `meta.kind` gets: a registered
+// ServerWsTransport subclass under that name ('wt' from @alexify/wrpc/wt,
+// whose require registers it), the WebSocket one otherwise. hasOwn, and
+// only a ws-shaped class: the table also holds http and event.
+const socketTransportFor = (kind) => {
+  if (typeof kind === 'string' && kind && Object.hasOwn(ServerTransport.transport, kind)) {
+    const Transport = ServerTransport.transport[kind];
+    if (Transport === ServerWsTransport || Transport.prototype instanceof ServerWsTransport) return Transport;
+  }
+  return ServerWsTransport;
+};
+
 // call joins the caller's trace exactly like a packet call does.
 const copyTraceHeaders = (headers, packet) => {
   const parent = headers?.traceparent;
@@ -249,9 +261,9 @@ class RpcServer extends Emitter {
       linger: roomsOptions?.linger,
       // A replayed event is delivered LOCALLY: publishing it again would
       // bounce it between instances forever.
-      deliver: (rooms, name, data) => {
+      deliver: (rooms, name, data, unreliable = false) => {
         const target = rooms ? this.#target().to(...rooms) : this.#target();
-        target.local().emit(name, data);
+        target.local().emit(name, data, unreliable ? { unreliable: true } : null);
       },
     });
     this.#backplane = binder;
@@ -595,7 +607,7 @@ class RpcServer extends Emitter {
   }
 
   attachSocket(socket, meta = {}) {
-    const transport = new ServerWsTransport(socket, meta);
+    const transport = new (socketTransportFor(meta.kind))(socket, meta);
     // Declared-then-observed: the wrpc_h query can only add names the
     // upgrade request did not carry (see declaredHeaders).
     const declared = declaredHeaders(meta.url, this.#metaMax, this.#log);

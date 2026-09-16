@@ -157,10 +157,67 @@ declare class ClientTransport extends Emitter {
   send(obj: object): void;
   /** Returns the flow-control signal when the wire has one (`false` = above the high-water mark, then 'drain'). */
   write(data: string | ArrayBufferView): boolean | void;
+  /**
+   * @experimental A packet as ONE unreliable datagram, where the wire has
+   * them: true when it went out, false when it could not (no datagrams,
+   * too large) — the core then sends it reliably. Only the `wt` transport
+   * implements it.
+   */
+  writeUnreliable?(data: string): boolean;
+  /** @experimental The largest datagram the wire carries; 0 or absent when it carries none. */
+  maxDatagramSize?: number;
   online(): void;
   offline(): void;
 }
 export type { ClientTransport };
+
+/** @experimental Delivery options of a fire-and-forget event. */
+export interface SendEventOptions {
+  /**
+   * Send as an unreliable datagram where the transport has them
+   * (WebTransport) — lossy and unordered, for state a later event
+   * supersedes: a cursor, a position. Reliable everywhere else, and where
+   * the packet does not fit in one datagram.
+   */
+  unreliable?: boolean;
+}
+
+/** @experimental The `wt` option of connect(), and ClientWtTransport's constructor options. */
+export interface WtTransportOptions {
+  /** `new WebTransport(url, init)` — an implementation; the global one by default. */
+  WebTransport?: new (url: string, init?: object) => unknown;
+  serverCertificateHashes?: Array<{ algorithm: string; value: BufferSource | string }>;
+  congestionControl?: 'default' | 'throughput' | 'low-latency';
+  allowPooling?: boolean;
+  requireUnreliable?: boolean;
+  /** Application protocols to offer (`WT-Available-Protocols`), where the browser supports them. */
+  protocols?: Array<string>;
+  /** Outbound bytes queued on the control stream before write() answers false (default 1 MiB). */
+  highWaterMark?: number;
+  /** Queue level under which 'drain' fires (default 256 KiB). */
+  lowWaterMark?: number;
+  /** The largest inbound message accepted (default 16 MiB); past it the session is hung up. */
+  maxMessage?: number;
+}
+
+/**
+ * @experimental The WebTransport client transport — `transport: 'wt'`,
+ * registered in the base entry. One client-opened bidirectional stream (the
+ * control stream) carries every packet and stream chunk under a
+ * length-prefixed framing; the session comes from `globalThis.WebTransport`
+ * or `options.wt.WebTransport`. Declared headers and meta ride the connect
+ * URL exactly as on ws (the CONNECT request cannot carry them), and cookies
+ * do not travel at all — a WebTransport CONNECT sends no credentials, so
+ * sessions need a bearer or payload token transport.
+ */
+export declare class ClientWtTransport extends ClientTransport {
+  constructor(url: string, options?: WtTransportOptions);
+  /** The WebTransport session spoken on; null before open() and after close. */
+  readonly session: unknown;
+  /** The largest datagram the session carries; 0 when it carries none. */
+  readonly maxDatagramSize: number;
+  writeUnreliable(data: string): boolean;
+}
 
 export class WrpcClient<Api = UntypedApi> extends Emitter {
   static connections: Set<WrpcClient>;
@@ -186,6 +243,11 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
     };
     /** Registered by `@alexify/wrpc/webrtc`; `connect('webrtc:<peer>', { transport: 'webrtc', link })`. */
     webrtc?: new (url: string, options?: object) => ClientTransport;
+    /**
+     * @experimental WebTransport (HTTP/3), in the base entry: `connect(url,
+     * { transport: ['wt', 'ws'], wt: { serverCertificateHashes } })`.
+     */
+    wt: typeof ClientWtTransport;
     /** Late registration — how the sse subpath (and tests) add transports. */
     [name: string]: unknown;
   };
@@ -235,7 +297,11 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
   createBlobUploader(blob: Blob): BlobUploader;
   send(obj: object): void;
   /** Fire-and-forget event to the server; `name` is 'unit/event'. */
-  sendEvent<Name extends ClientSendName<Api> | (string & {})>(name: Name, data?: ClientSendData<Api, Name>): void;
+  sendEvent<Name extends ClientSendName<Api> | (string & {})>(
+    name: Name,
+    data?: ClientSendData<Api, Name>,
+    options?: SendEventOptions | null,
+  ): void;
   /**
    * Registers the answer this client gives when the server asks `name`
    * ('unit/event') — the receiving half of the server's `client.ask()` and
@@ -690,7 +756,7 @@ export interface WrpcClientOptions {
    * takes over ('transport-fallback' fires) and only the last exhausting
    * emits 'reconnect-failed'. No default order — the list is yours.
    */
-  transport?: 'ws' | 'http' | 'sse' | 'webrtc' | string | Array<string>;
+  transport?: 'ws' | 'http' | 'sse' | 'webrtc' | 'wt' | string | Array<string>;
   reconnect?: ReconnectOptions | false;
   /**
    * Presents this connection's credential. Awaited inside `open()` on the
@@ -809,6 +875,14 @@ export interface WrpcClientOptions {
   channel?: import('./webrtc.browser.js').ChannelSource;
   /** With `channel`: the message size to fragment at (default 16 KiB). */
   maxMessageSize?: number;
+  /**
+   * @experimental Options of the `wt` transport (WebTransport over HTTP/3):
+   * the `WebTransportOptions` handed to the constructor, plus the
+   * implementation to construct with where `globalThis.WebTransport` is not
+   * one — a Node client over an injected implementation, a fake in tests.
+   * Without either, open() throws and a fallback list moves on.
+   */
+  wt?: WtTransportOptions;
   /**
    * Off by default, unlike the server: a client that printed on every
    * reconnect would be noise in a browser console nobody asked for. A logger

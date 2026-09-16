@@ -30,9 +30,12 @@ The URL scheme picks the transport; `options.transport` overrides it.
 | `http` | `http:` / `https:` | ✅ | ❌ (code 400) | ❌ |
 | `sse` | `http:` / `https:` | ✅ | ✅ | ❌ |
 | `event` | — | ✅ | ✅ | ✅ |
+| `wt` | `https:` | ✅ | ✅ | ✅ |
 
-`sse` has to be registered before it can be named — see [Server-Sent
-Events](./sse):
+`wt` is [WebTransport](./wt) (experimental), in the base entry so that
+`transport: ['wt', 'ws']` — WebTransport where the browser has it, a WebSocket
+otherwise — needs no import. `sse` has to be registered before it can be
+named — see [Server-Sent Events](./sse):
 
 ```js
 require('@alexify/wrpc/sse');
@@ -398,6 +401,6 @@ bundler that honours the `browser` field — webpack, Vite, esbuild with
 `browser: true`), Parcel, Bun. It contains the client, the streams and the
 chunk helpers, and **no Node builtins** — the server half is not in it.
 
-The main entry is ~15 KB min+gzip in that build; `scripts/size.js` enforces a
+The main entry is ~18 KB min+gzip in that build; `scripts/size.js` enforces a
 budget on it in CI. See [Browser & bundling](./browser) for the full table, the
 `browser` field map, and what is deliberately missing from that entry.

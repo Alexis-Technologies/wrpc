@@ -268,8 +268,12 @@ class ServerHttpTransport extends ServerTransport {
 class ServerWsTransport extends ServerTransport {
   kind = 'ws';
 
+  // `meta.kind` names the wire when a WrpcSocket-shaped connection is not a
+  // WebSocket — attachSession in @alexify/wrpc/wt passes 'wt' — so logs and
+  // metrics say which; the transport itself is the same either way.
   constructor(connection, meta = {}) {
     super(meta.remoteAddress ?? connection.remoteAddress ?? '');
+    if (typeof meta.kind === 'string' && meta.kind) this.kind = meta.kind;
     this.connection = connection;
     connection.on('close', () => void this.emit('close'));
     connection.on('drain', () => void this.emit('drain'));
@@ -280,6 +284,14 @@ class ServerWsTransport extends ServerTransport {
       data = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     }
     return this.connection.send(data);
+  }
+
+  // An event as a datagram where the socket has them (a WebTransport
+  // session): true when it went out, false when it could not — a WebSocket
+  // has no unreliable path, and Client.sendRaw then writes it reliably.
+  writeUnreliable(text) {
+    const socket = this.connection;
+    return typeof socket.sendUnreliable === 'function' && socket.sendUnreliable(text) === true;
   }
 
   // A graceful goodbye: the peer gets a close frame (1001 "going away") and

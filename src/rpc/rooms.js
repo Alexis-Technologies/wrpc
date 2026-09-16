@@ -233,10 +233,16 @@ class Broadcast {
    * returns how many received it LOCALLY — remote instances are reached
    * through the backplane, whose delivery this number says nothing about.
    */
-  emit(name, data) {
+  /**
+   * `unreliable: true` sends to every recipient whose transport has
+   * datagrams as one (lossy, unordered), and reliably to the rest — and
+   * carries the flag across the backplane, so remote instances do the same.
+   */
+  emit(name, data, options = null) {
     if (typeof name !== 'string' || name.length === 0) {
       throw new TypeError('Event name must be a non-empty string');
     }
+    const unreliable = options?.unreliable === true;
     // Narrowed to no rooms at all: nobody here, nobody anywhere — so there
     // is nothing to publish either.
     if (this.#targets && this.#targets.length === 0) return 0;
@@ -260,7 +266,7 @@ class Broadcast {
       // HTTP clients cannot carry events; skipping beats throwing mid-fan-out.
       if (!client.persistent) continue;
       try {
-        const flushed = client.sendRaw(text);
+        const flushed = client.sendRaw(text, unreliable ? options : null);
         sent++;
         // Not silently discarded any more: a recipient above its high-water
         // mark is visible in the metrics, and the engine's maxBackpressure
@@ -273,7 +279,10 @@ class Broadcast {
     }
     const published = Boolean(!this.#localOnly && this.#publish);
     if (published) {
-      this.#publish({ rooms: this.#targets, name, data });
+      // The flag rides only when set: the envelope stays what it was.
+      this.#publish(
+        unreliable ? { rooms: this.#targets, name, data, unreliable } : { rooms: this.#targets, name, data },
+      );
     }
     this.#otel?.recordBroadcast(name, sent, published);
     return sent;
@@ -522,9 +531,11 @@ class RoomsBackplane {
     this.release(roomChannel(room));
   }
 
-  publish({ rooms, name, data }) {
+  publish({ rooms, name, data, unreliable = false }) {
     if (this.#closed) return;
     const envelope = { v: ENVELOPE_VERSION, instance: this.#instance, rooms: rooms ?? null, name, data };
+    // Additive: an older instance ignores the field and delivers reliably.
+    if (unreliable) envelope.unreliable = true;
     let message = null;
     try {
       message = JSON.stringify(envelope);
@@ -556,7 +567,7 @@ class RoomsBackplane {
     if (typeof name !== 'string' || name.length === 0) return;
     if (rooms !== null && rooms !== undefined && !Array.isArray(rooms)) return;
     try {
-      this.#deliver(rooms ?? null, name, data);
+      this.#deliver(rooms ?? null, name, data, envelope.unreliable === true);
     } catch (error) {
       this.#log.error({ err: error, event: 'backplane.deliver', name });
     }

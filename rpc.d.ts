@@ -543,7 +543,8 @@ export declare class Broadcast {
    * received it LOCALLY — remote instances are reached through the
    * backplane, whose delivery this number says nothing about.
    */
-  emit(name: string, data?: unknown): number;
+  /** `unreliable: true`: a datagram to every recipient whose transport has them, reliable to the rest; the flag crosses the backplane. */
+  emit(name: string, data?: unknown, options?: { unreliable?: boolean } | null): number;
   /**
    * Emits to every matching client — every instance's members included,
    * unless `local()` — and waits for each one's answer (registered
@@ -717,12 +718,18 @@ export class Client extends Emitter {
    * Writes an ALREADY-serialized packet — the fan-out seam: a broadcast
    * stringifies once and hands every recipient the same text.
    */
-  sendRaw(text: string): boolean;
+  /** With `unreliable: true`, as a datagram where the transport can; reliably otherwise. */
+  sendRaw(text: string, options?: { unreliable?: boolean } | null): boolean;
   createContext(signal?: AbortSignal | null): Context;
   /** The LOCAL Emitter emit — nothing reaches the wire; that is sendEvent. */
   emit(name: EventName, data?: unknown): Promise<void>;
   /** Sends a `{type:'event'}` packet to this peer; `name` is 'unit/event'. */
-  sendEvent(name: string, data?: unknown): void;
+  /**
+   * `unreliable: true` sends the event as a datagram where the transport
+   * has them (WebTransport) — lossy and unordered — and reliably everywhere
+   * else; the application code is the same either way.
+   */
+  sendEvent(name: string, data?: unknown, options?: { unreliable?: boolean } | null): void;
   /**
    * A call in the other direction: sends `{type:'event', name, data, id}`
    * and resolves with what the peer's responder returns (registered

@@ -360,9 +360,14 @@ export declare class RpcServer extends Emitter {
   except(...clients: Array<Client>): Broadcast;
   /** Everyone connected; returns the number of LOCAL recipients. */
   broadcast(name: string, data?: unknown): number;
+  /**
+   * `meta` is the handshake as the host saw it: `url` carries the declared
+   * `wrpc_h`/`wrpc_meta` query, `kind` names the wire for logs and metrics
+   * when the socket is not a WebSocket (`'wt'` from `@alexify/wrpc/wt`).
+   */
   attachSocket(
     socket: WrpcSocket | Connection,
-    meta?: { headers?: Record<string, string | undefined>; remoteAddress?: string },
+    meta?: { headers?: Record<string, string | undefined>; url?: string; remoteAddress?: string; kind?: string },
   ): Client;
   attachPort(port: MessagePort): Client;
   /**
@@ -465,7 +470,7 @@ export class ServerTransport extends Emitter {
     event: typeof ServerEventTransport;
   };
   source: string;
-  /** 'http' | 'ws' | 'event' | 'sse' | 'webrtc' — what `Client.transportKind` reports. */
+  /** 'http' | 'ws' | 'event' | 'sse' | 'webrtc' | 'wt' — what `Client.transportKind` reports. */
   kind: string;
   /** Set on transports that stay open; `Client.persistent` is its truthiness. */
   connection?: unknown;
@@ -477,6 +482,8 @@ export class ServerTransport extends Emitter {
   send(obj: object, code?: number): boolean;
   /** The raw write every send() ends in; returns the same backpressure signal. */
   write(data: string | Uint8Array): boolean;
+  /** @experimental A packet as one datagram where the connection has them (WebTransport); false otherwise. */
+  writeUnreliable?(text: string): boolean;
   close(): void;
 }
 

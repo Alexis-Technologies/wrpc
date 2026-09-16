@@ -12,7 +12,7 @@ const { chunkDecode } = require('../chunks.js');
 const { WrpcReadable, WrpcWritable } = require('../streams.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createClientTelemetry } = require('../telemetry/client.js');
-const { META_HEADER, META_PREFIX } = require('../wire.js');
+const { META_HEADER, META_PREFIX, HEADERS_PARAM, META_PARAM } = require('../wire.js');
 
 const CALL_TIMEOUT = 7 * 1000;
 
@@ -228,6 +228,35 @@ const metaHeaders = (meta, prefixed) => {
     if (value !== null) out[META_PREFIX + key] = value;
   }
   return out;
+};
+
+// Mirrors the server's metaMaxBytes default: past it the server drops the
+// entire declared bag, so refusing here is the difference between a visible
+// warning and a label that silently stopped arriving.
+const META_MAX = 2048;
+
+// The connect URL of a transport whose constructor cannot set real headers
+// — the WHATWG WebSocket by spec, a browser WebTransport too: connection-
+// phase headers and metadata ride as ONE query parameter each. The server
+// reads observed request headers first and these parameters only for names
+// they do not carry, so a transport that CAN send real headers needs no
+// query at all. Loud caveat: the connect URL lands in proxy access logs — a
+// device id belongs here, a secret does not.
+const connectUrl = (url, headers, meta, log) => {
+  const params = [];
+  // Capped like the http leg: past metaMaxBytes the server drops the ENTIRE
+  // bag (measured over the whole query), so sending it anyway would be a
+  // silent loss on the side that cannot see it. The refusal keeps the
+  // connection working, un-labelled, and says so.
+  const declare = (param, bag) => {
+    const value = encodeURIComponent(JSON.stringify(bag));
+    const bytes = param.length + 1 + value.length;
+    if (bytes > META_MAX) return void log?.warn({ event: 'meta.oversize', param, bytes });
+    params.push(`${param}=${value}`);
+  };
+  if (headers) declare(HEADERS_PARAM, headers);
+  if (meta) declare(META_PARAM, meta);
+  return params.length > 0 ? `${url}${url.includes('?') ? '&' : '?'}${params.join('&')}` : url;
 };
 
 // ws and http spell the same endpoint with different schemes; a fallback
@@ -565,14 +594,22 @@ class WrpcClient extends Emitter {
   // WrpcClient.connections before the transport was reached, and a failing
   // authenticate arms the reconnect timer — close() undoes both, so the
   // caller who never received the client has nothing running for it.
+  // The first connect walks the fallback list on its own: a candidate whose
+  // open() rejects outright — no WebTransport in this runtime, a refused
+  // upgrade — hands over to the next one at once, with no reconnect budget
+  // to burn first, because nothing was ever connected to recover. Only the
+  // last candidate's rejection is connect()'s.
   static async #openOrClose(client) {
-    try {
-      await client.open();
-    } catch (error) {
-      client.close();
-      throw error;
+    for (;;) {
+      try {
+        await client.open();
+        return client;
+      } catch (error) {
+        if (client.#advanceTransport()) continue;
+        client.close();
+        throw error;
+      }
     }
-    return client;
   }
 
   static async connect(url, options = {}) {
@@ -1559,13 +1596,27 @@ class WrpcClient extends Emitter {
     this.#unitMethods.set(unit, new Set(methodNames));
   }
 
-  /** Sends a fire-and-forget event to the server; `name` is 'unit/event'. */
-  sendEvent(name, data) {
+  /**
+   * Sends a fire-and-forget event to the server; `name` is 'unit/event'.
+   * `unreliable: true` lets a transport with datagrams (WebTransport) send
+   * it as one — lossy and unordered, for state a later event supersedes,
+   * a cursor or a position — and falls back to the ordinary reliable send
+   * where the transport has none or the packet does not fit in one.
+   */
+  sendEvent(name, data, options = null) {
     const packet = { type: 'event', name, data };
     // Fire-and-forget still deserves a parent: the server opens a CONSUMER
     // span for the event, and this is what links it to the caller's trace.
     this.#otel.inject(packet);
+    if (options?.unreliable === true && this.#sendUnreliable(packet)) return;
     this.send(packet);
+  }
+
+  #sendUnreliable(packet) {
+    const transport = this.#transport;
+    if (typeof transport.writeUnreliable !== 'function' || !transport.active) return false;
+    const text = transport.codec ? transport.codec.encode(packet) : JSON.stringify(packet);
+    return transport.writeUnreliable(text) === true;
   }
 
   // `unit` is the introspection unit key — 'auth' or the pinned 'auth.v1' —
@@ -2035,6 +2086,7 @@ module.exports = {
   CALL_TIMEOUT,
   normalizeReconnect,
   metaHeaders,
+  connectUrl,
   unref,
   toByteView,
 };

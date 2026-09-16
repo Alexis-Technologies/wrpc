@@ -47,6 +47,9 @@ const keywords = [
   'webrtc',
   'peer-to-peer',
   'data-channel',
+  'webtransport',
+  'http3',
+  'quic',
 ].join(', ');
 
 // schema.org structured data — helps search and AI engines understand the
@@ -181,6 +184,7 @@ export default withMermaid({
               { text: 'Server-Sent Events', link: '/guide/sse' },
               { text: 'WebRTC', link: '/guide/webrtc' },
               { text: 'WebRTC: identity and trust', link: '/guide/webrtc-trust' },
+              { text: 'WebTransport', link: '/guide/wt' },
               { text: 'Wire codec', link: '/guide/codec' },
               { text: 'uWebSockets.js', link: '/guide/adapters/uws' },
               { text: 'Fastify', link: '/guide/adapters/fastify' },

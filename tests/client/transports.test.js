@@ -10,7 +10,7 @@ const { runTransportContract } = require('./transportContract.js');
 
 test('client transports: every registered transport passes the shared contract', async (t) => {
   const names = Object.keys(WrpcClient.transport);
-  assert.deepStrictEqual([...names].sort(), ['event', 'http', 'sse', 'webrtc', 'ws']);
+  assert.deepStrictEqual([...names].sort(), ['event', 'http', 'sse', 'webrtc', 'ws', 'wt']);
   for (const name of names) await runTransportContract(t, name, WrpcClient.transport[name]);
 });
 

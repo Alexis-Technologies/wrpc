@@ -4,14 +4,12 @@
 // exactly the way the SSE subpath registers its own — the registry is the
 // one seam every transport, built-in or not, goes through.
 
-const { WrpcClient, ClientTransport, WRPC_PROTOCOL, metaHeaders } = require('./core.js');
-const { HEADERS_PARAM, META_PARAM } = require('../wire.js');
-
-// Mirrors the server's metaMaxBytes default: past it the server drops the
-// entire declared bag, so refusing here is the difference between a visible
-// warning and a label that silently stopped arriving.
-const META_MAX = 2048;
+const { WrpcClient, ClientTransport, WRPC_PROTOCOL, metaHeaders, connectUrl } = require('./core.js');
 const { jsonParse } = require('../utils.js');
+
+// Mirrors the server's metaMaxBytes default — see connectUrl in core.js for
+// the query carrier; the http leg applies the same cap to its header block.
+const META_MAX = 2048;
 const { WebSocket } = globalThis;
 
 class ClientWsTransport extends ClientTransport {
@@ -47,28 +45,11 @@ class ClientWsTransport extends ClientTransport {
         delete bag.authorization;
         if (Object.keys(bag).length === 0) bag = null;
       }
-      // Connection-phase headers ride as ONE query parameter: the WHATWG
-      // WebSocket constructor cannot set real headers, in the browser by
-      // spec and in Node because the client uses the same globalThis
-      // implementation. The server reads observed upgrade headers first and
-      // this parameter only for names they do not carry, so a transport
-      // that CAN send real headers needs no query at all. Loud caveat: the
-      // connect URL lands in proxy access logs — a device id belongs here,
-      // a secret does not.
-      const params = [];
-      // Capped like the http leg: past metaMaxBytes the server drops the
-      // ENTIRE bag (measured over the whole query), so sending it anyway
-      // would be a silent loss on the side that cannot see it. The refusal
-      // keeps the connection working, un-labelled, and says so.
-      const declare = (param, bag) => {
-        const value = encodeURIComponent(JSON.stringify(bag));
-        const bytes = param.length + 1 + value.length;
-        if (bytes > META_MAX) return void this.log?.warn({ event: 'meta.oversize', param, bytes });
-        params.push(`${param}=${value}`);
-      };
-      if (bag) declare(HEADERS_PARAM, bag);
-      if (options.meta) declare(META_PARAM, options.meta);
-      const url = params.length > 0 ? `${this.url}${this.url.includes('?') ? '&' : '?'}${params.join('&')}` : this.url;
+      // Connection-phase headers ride as ONE query parameter each: the
+      // WHATWG WebSocket constructor cannot set real headers, in the browser
+      // by spec and in Node because the client uses the same globalThis
+      // implementation (connectUrl, shared with the WebTransport transport).
+      const url = connectUrl(this.url, bag, options.meta, this.log);
       const socket = protocols.length > 0 ? new WebSocket(url, protocols) : new WebSocket(url);
       this.#socket = socket;
       const onClose = (error) => {

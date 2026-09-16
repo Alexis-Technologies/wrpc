@@ -76,6 +76,47 @@ const message = decoder.push(event.data); // null until FIN; then { kind, data }
 The frame handed to the sink is a view over a buffer the encoder reuses for
 the next fragment — hand it to `send()`, which copies, and never keep it.
 
+## WebTransport stream frames
+
+On a WebTransport session (`transport: 'wt'`, `@alexify/wrpc/wt`) every packet
+and chunk travels on one bidirectional stream, the control stream. A QUIC
+stream carries bytes with no message boundary, so each message is
+length-prefixed:
+
+```
+┌──────────────────┬────────┬────────────────────────────────────────┐
+│     4 bytes      │ 1 byte │              payload                    │
+│ LENGTH (BE u32)  │  KIND  │  UTF-8 JSON (KIND 0) or chunk (KIND 1)  │
+└──────────────────┴────────┴────────────────────────────────────────┘
+```
+
+A `{"type":"ping"}` packet is 20 bytes: `00 00 00 0F 00` and then the 15
+bytes of JSON. A 64 KiB stream chunk is one message of 65 541 bytes, however
+many reads it takes to arrive; the receiver hands a KIND 0 message to the
+packet parser and a KIND 1 message to `chunkDecode`. The rules and the error
+cases are in [the protocol reference](./protocol#webtransport-framing).
+
+```js
+const { frame, frameText, StreamParser, KIND_BINARY } = require('@alexify/wrpc/wt');
+
+writer.write(frameText('{"type":"ping"}')); // a fresh frame — safe to queue
+writer.write(frame(KIND_BINARY, chunkEncode(id, bytes)));
+const parser = new StreamParser({ onMessage: (kind, data) => {} });
+for await (const read of readable) parser.push(read); // onMessage once per message
+```
+
+Unlike the data-channel encoder, the frames here are fresh buffers: a WHATWG
+writer takes its chunk by reference and may process it after `write()`
+returns, so a reused scratch buffer would corrupt what is still queued.
+
+Two more shapes ride a session. A **datagram** (an unreliable event) is one
+whole packet under the KIND byte alone, `00` then the JSON — see
+[the protocol reference](./protocol#webtransport-datagrams). A **binary
+stream on its own unidirectional stream** opens with the chunk header —
+`idLen`, then the id — and then carries raw payload bytes to its FIN; the
+receiver rebuilds `chunkEncode` frames from them, one per read
+([the protocol reference](./protocol#webtransport-streams)).
+
 ## The WebSocket engine
 
 `@alexify/wrpc/ws` publishes the implementation itself. It is **not** in the

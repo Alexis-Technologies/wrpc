@@ -8,7 +8,7 @@ holds for contributors.
 
 **The `exports` subpaths are the public API.** Everything reachable through
 `@alexify/wrpc` and its subpaths (`/ws`, `/engine`, `/uws`, `/fastify`,
-`/express`, `/scaling`, `/sse`, `/query`, `/auth`), as typed by the
+`/express`, `/scaling`, `/sse`, `/query`, `/auth`, `/webrtc`, `/wt`), as typed by the
 hand-maintained root `.d.ts` files, is stable under semver. Deep imports
 into `src/` are **not** addressable and not supported: the module layout
 may change in any release (and has — `rpc/core.js` split twice already).
@@ -24,14 +24,18 @@ may change in any release (and has — `rpc/core.js` split twice already).
 
 ## `@experimental` carve-outs
 
-Two areas are marked `@experimental` in the `.d.ts` files and may change in
+Three areas are marked `@experimental` in the `.d.ts` files and may change in
 a **minor** (described in the CHANGELOG):
 
 - the **telemetry** writer shapes and metric set (the `telemetry` option,
   and the `RpcServer#otel` getter the fastify adapter brackets delegated
   routes with) — the signals will keep improving;
 - the **engine port** internals beyond the documented `WrpcSocket` contract
-  (`capabilities` in particular).
+  (`capabilities` in particular);
+- **WebTransport**, whole: the `wt` client transport and its `wt` connect
+  option, the `@alexify/wrpc/wt` subpath, and the
+  [control-stream framing](./protocol#webtransport) it speaks — Node has no
+  WebTransport of its own yet, and the carrier will follow what lands.
 
 ## The wire protocol's own, stronger promise
 

@@ -89,7 +89,7 @@ Three jobs (`.github/workflows/ci.yml`):
 Lint and format deliberately target `src tests scripts bench bin` only, so
 `docs/` is not covered by them.
 
-Three checks are deliberately **not** in CI — run them by hand:
+Four checks are deliberately **not** in CI — run them by hand:
 
 - `node scripts/autobahn/run.js` — the RFC 6455/7692 conformance suite against
   the engine in `src/websocket/`. Needs docker; several minutes for 500+
@@ -101,16 +101,27 @@ Three checks are deliberately **not** in CI — run them by hand:
   adapter's contract through an in-repo ioredis-shaped fake
   (`tests/scaling/redis.test.js`); this is only useful when you want to check
   a live server, and the file skips itself without `REDIS_URL`.
+- `WRPC_WT=fails node --test tests/wt/fails.integration.test.js` and
+  `WRPC_WT=quico node --test tests/wt/quico.integration.test.js` — the
+  WebTransport server half against a real HTTP/3 stack
+  (`@fails-components/webtransport` with its native `-transport-http3-quiche`
+  binary, or the pure-JS `quico`). `pnpm test` covers the same code through
+  the in-memory fake (`tests/wt/fakeWebTransport.js`); both files skip
+  themselves without `WRPC_WT`. `node scripts/wt-cert.js` makes the
+  short-lived ECDSA certificate they and a browser need.
 
 ## Stability and deprecation
 
-The published surface is stable under semver, with two carve-outs marked
+The published surface is stable under semver, with three carve-outs marked
 `@experimental` in the `.d.ts` files:
 
 - the **telemetry** writer shapes and metric set (`telemetry` option) — the
   signals will keep improving in minors;
 - the **engine port** internals beyond the documented `WrpcSocket` contract
-  (`capabilities` in particular).
+  (`capabilities` in particular);
+- **WebTransport**, whole — the `wt` client transport, the `@alexify/wrpc/wt`
+  subpath and the control-stream framing — until Node has a WebTransport of
+  its own to settle the carrier against.
 
 An `@experimental` API may change in a minor release, with the change
 described in the CHANGELOG. Everything else follows the usual rule: removal

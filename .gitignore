@@ -131,3 +131,7 @@ scripts/autobahn/reports/
 # the examples' build.js output — regenerate with `node build.js`
 examples/chat/public/wrpc.browser.js
 examples/syncom-mesh/public/wrpc.browser.js
+examples/wt/public/wrpc.browser.js
+
+# node scripts/wt-cert.js output (short-lived WebTransport dev certificates)
+certs/

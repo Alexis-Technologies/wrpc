@@ -1,12 +1,14 @@
 'use strict';
 
 // The barrel the rest of the package (and the sse subpath) requires: the
-// core, the built-in transports (their require registers them), and the
-// Service Worker proxy. Splitting the modules changed no require path —
+// core, the built-in transports (their require registers them — the
+// WebTransport one included, so `transport: ['wt', 'ws']` needs no extra
+// import), and the Service Worker proxy. Splitting the modules changed no require path —
 // this file kept the old one.
 
 const { WrpcClient, WrpcError, ClientTransport, isClientTransport, metaHeaders } = require('./client/core.js');
 require('./client/transports.js');
+require('./client/webtransport.js');
 const { WrpcClientProxy } = require('./client/proxy.js');
 
 WrpcClient.initialize();

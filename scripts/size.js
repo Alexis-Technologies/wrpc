@@ -52,7 +52,15 @@ const ENTRIES = [
   // 15 -> 16: the worker proxy grew a SharedWorker leg (the `connect`
   // listener, the `url` option, port cleanup on `close`) with 16 bytes of
   // headroom left; the marketing line moved to "~15 KB" in the same change.
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 16 },
+  // 16 -> 17 for the WebTransport client transport (`transport: 'wt'`, in
+  // the base entry so the `['wt', 'ws']` fallback list needs no import) and
+  // its stream framing — measured together at +1.8 KB min+gzip (16.9); the
+  // connect-URL builder it shares with ws moved into the core in the same
+  // change, so the ws leg paid nothing twice.
+  // 17 -> 19 for the rest of WebTransport: unreliable events over datagrams
+  // and binary streams on their own WebTransport streams (the stream mux,
+  // capabilities negotiation) — measured together at +1.5 KB (18.4).
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 19 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
@@ -68,7 +76,9 @@ const ENTRIES = [
   // resilience raise (same shared core, plus the sse POST settling its own
   // refused calls through failPackets).
   // 16 -> 17: bundles the main browser entry, so it inherits its SharedWorker bytes.
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 17 },
+  // 17 -> 18 with the main entry's WebTransport raise, for the same reason (measured 17.8);
+  // 18 -> 20 with its datagram + stream-mux raise (measured 19.2).
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 20 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and
@@ -91,6 +101,10 @@ const ENTRIES = [
   // peer-to-peer trust model rests on, a deliberate spend.
   { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 45 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
+  // The server half of WebTransport (session contract, socket shim, host
+  // adapters); the client transport is in the main entry, so this never
+  // reaches a browser.
+  { label: 'webtransport — node (@alexify/wrpc/wt)', entry: 'wt.js', platform: 'node' },
 ];
 
 // A browser entry has to be self-contained: no node builtins, and no packages

@@ -13,6 +13,74 @@ narrower promise — see
 
 ### Added
 
+**WebTransport, experimental (`transport: 'wt'`, `@alexify/wrpc/wt`)**
+- `connect(url, { transport: ['wt', 'ws'], wt: { serverCertificateHashes } })`
+  runs the ordinary client over a WebTransport session (HTTP/3): every
+  packet and stream chunk travels on ONE client-opened bidirectional
+  stream — the control stream — under a five-byte length/kind header
+  (`docs/reference/protocol.md#webtransport`), so calls, events,
+  subscriptions with resume, binary streams with backpressure, heartbeat and
+  reconnect all work unchanged and the WebSocket fallback is invisible. The
+  transport is in the base client entry (no import for the fallback list;
+  the browser budget went 16 → 19 KB for it, datagrams and the stream mux included); the session comes from
+  `globalThis.WebTransport` or an injected `wt.WebTransport`. Declared
+  headers and meta ride the connect URL as on ws; a `CONNECT` sends no
+  cookies, so sessions need `bearerTransport()`/`payloadTransport()`.
+- `@alexify/wrpc/wt` is the server half, and binds to no implementation —
+  Node has no WebTransport of its own (`node:quic` is behind a compile-time
+  flag and speaks no WebTransport): `attachSession(server, session, meta)`
+  waits for the control stream, wraps the W3C-shaped session as a
+  `WrpcSocket` (`WtSocket`) and attaches it through `RpcServer.attachSocket`,
+  so a WebTransport client lands in the same `Server`, rooms, cluster and
+  session store as a WebSocket one; `acceptSessions(server, sessions)` loops
+  a host's `sessionStream()` (or any iterable); `fromFails(session)` and
+  `fromQuico(req, res)` read the `CONNECT` request off
+  `@fails-components/webtransport` and `quico` respectively (both
+  devDependencies, exercised by `WRPC_WT=`-guarded integration tests),
+  `failsRequestCallback` is the request callback a fails server needs, and
+  `isWtSession` is the structural check. `idleTimeout` terminates a session
+  that sends nothing — the liveness a host without its own session-end
+  reporting (quico) lacks. Close codes carry over: 1001 on
+  shutdown, 1002 on a framing violation, 403/408 on a refused session.
+- **Binary streams on their own WebTransport streams.** Once both ends have
+  announced it (each end's first message on the control stream is a KIND 2
+  capabilities message), every `createStream()` on either side gets a
+  unidirectional WebTransport stream: its chunks travel there, its `end()`
+  is that stream's FIN and its `terminate()` a reset, while calls, events
+  and subscriptions keep flowing on the control stream beside a large
+  transfer instead of behind it. The receiver holds early chunks until the
+  opening `stream` packet has passed and synthesizes the end only after the
+  stream's own FIN, so ordering is what a WebSocket gave; a peer that
+  announces nothing (an older peer, a wire codec) gets every chunk on the
+  control stream as before. `ServerWtTransport` (registered as
+  `ServerTransport.transport.wt`, which `attachSocket` now consults for
+  `meta.kind`) is what lets the server side see a stream packet before it
+  is serialized.
+- **Unreliable events.** `sendEvent(name, data, { unreliable: true })` on
+  the client, `client.sendEvent(...)` / `server.to(room).emit(...)` with the
+  same option on the server, send an event as ONE WebTransport datagram —
+  at most once, unordered, for state a later event supersedes (a cursor, a
+  position) — and reliably wherever the transport has no datagrams or the
+  packet does not fit in one, so application code is written once. A
+  `Broadcast` picks per recipient and carries the flag across the
+  backplane; `ask()` refuses it. The wire (`[KIND][packet]`) is in
+  `docs/reference/protocol.md#webtransport-datagrams`; `ClientTransport`
+  and `ServerTransport` gain an optional `writeUnreliable(text)` seam.
+- `node:quic` was evaluated as a host on a custom Node build and does not
+  qualify yet (it cannot send the WebTransport SETTINGS a client waits
+  for); the findings are in the guide.
+- The whole feature is marked `@experimental` and may change in a minor.
+
+**Transport fallback on the first connect**
+- `connect()` with a transport list now walks it on the FIRST connect too: a
+  candidate whose `open()` rejects outright (no `WebTransport` in this
+  runtime, a refused upgrade) hands over to the next one at once, with no
+  reconnect budget to burn first; only the last candidate's rejection is
+  `connect()`'s. Reconnect exhaustion falls through the list as before.
+- `RpcServer.attachSocket(socket, meta)` takes `meta.kind` — what
+  `Client.transportKind` and the log lines report for a socket that is not a
+  WebSocket (`'wt'`).
+
 **Shared Workers behind the `event` transport**
 - `connect(url, { worker })` takes a `SharedWorker` (reached through its
   `port`), a dedicated `Worker` or a raw `MessagePort` as well as a

@@ -279,10 +279,20 @@ class Client extends Emitter {
   // works, and Client is substitutable for the Emitter it extends. The wire
   // send has its own name and always had it: `sendEvent`.
 
-  sendEvent(name, data) {
+  /**
+   * `unreliable: true` sends the event as a datagram where the transport
+   * has them (WebTransport) — lossy and unordered, for state a later event
+   * supersedes — and reliably everywhere else; the application code is the
+   * same either way.
+   */
+  sendEvent(name, data, options = null) {
     const packet = { type: 'event', name, data };
     if (!this.#transport.connection) {
       throw refusal(`Can't send wrpc event to http transport`);
+    }
+    if (options?.unreliable === true) {
+      const codec = this.#transport.codec;
+      return void this.sendRaw(codec ? codec.encode(packet) : JSON.stringify(packet), options);
     }
     this.send(packet);
   }
@@ -293,11 +303,16 @@ class Client extends Emitter {
    * instead of paying JSON.stringify per client. Returns the transport's
    * backpressure signal, like send().
    */
-  sendRaw(text) {
-    if (!this.#transport.connection) {
+  sendRaw(text, options = null) {
+    const transport = this.#transport;
+    if (!transport.connection) {
       throw refusal(`Can't send wrpc event to http transport`);
     }
-    return this.#transport.write(text);
+    // A datagram where the transport can, the reliable write otherwise.
+    if (options?.unreliable === true && typeof transport.writeUnreliable === 'function') {
+      if (transport.writeUnreliable(text)) return true;
+    }
+    return transport.write(text);
   }
 
   /**
@@ -310,6 +325,8 @@ class Client extends Emitter {
     if (!this.#transport.connection) {
       throw refusal(`Can't send wrpc event to http transport`);
     }
+    // An ask expects an answer, and a datagram may never arrive.
+    if (options.unreliable) throw new TypeError('ask() cannot be unreliable: an answer is expected');
     const id = this.generateId();
     const packet = { type: 'event', name, data, id };
     this.send(packet);

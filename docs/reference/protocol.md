@@ -73,6 +73,7 @@ request/response pair is self-contained.
 | SSE | `POST` body out, `data:` lines back | not available |
 | Worker port | `postMessage(string)` | `postMessage(Uint8Array)` |
 | WebRTC data channel | binary frames, `KIND = 0` | binary frames, `KIND = 1` |
+| WebTransport | control stream, `KIND = 0` | control stream, `KIND = 1` |
 
 A transport that cannot stay open (plain HTTP) carries calls only: events,
 subscriptions, cancellation and streams need a persistent connection, and
@@ -101,7 +102,10 @@ SSE is persistent but text-only, so it carries everything except binary
 streams — see [Server-Sent Events](#server-sent-events) below. A WebRTC data
 channel is persistent and binary but caps the size of one message, so both
 packets and chunks travel fragmented under a one-byte header — see
-[WebRTC](#webrtc) below.
+[WebRTC](#webrtc) below. A WebTransport session is persistent and binary
+but its streams carry bytes with no message boundary, so packets and chunks
+travel length-prefixed on one stream — see [WebTransport](#webtransport)
+below.
 
 ### Connection metadata
 
@@ -708,6 +712,115 @@ payload  { "sub": string,      the peer id, as the signaling layer names it
   itself). `iss`, when the deployment sets one, MUST match.
 - A token is at most 4 KiB. Anything else is a refusal; the reason is the
   verifier's business, not the wire's — the link is simply closed.
+
+## WebTransport
+
+A client speaks wrpc to a server over a WebTransport session (HTTP/3) the
+way it does over a WebSocket: the packets are the same and travel in the
+same order. **This section is experimental**: it describes revision 1 of
+the carrier, may change in a minor release, and sits outside this page's
+interoperability promise until it stabilizes — the way an injected wire
+codec does.
+
+The client establishes the session (an extended `CONNECT` with `:protocol
+webtransport`, per the WebTransport specification) and opens **one
+bidirectional stream, the control stream**; the server treats the first
+bidirectional stream the client opens as such, and a session that opens
+none within the server's accept window is closed with code 408. Every
+packet and every stream chunk, in both directions, travels on the control
+stream. The session's datagrams carry unreliable events, and — once both
+ends have announced it — a binary stream's chunks travel on a stream of
+their own; both are described below.
+
+Connection metadata travels as on a browser WebSocket: the `CONNECT`
+request's headers are the observed bag, and the `wrpc_h` / `wrpc_meta`
+query parameters of the request path carry what the client declares. A
+`CONNECT` carries no cookies (its credentials mode is `omit`), so a session
+token is presented as a declared `authorization` header or a payload field
+— what the bearer and payload session transports read.
+
+### Stream framing {#webtransport-framing}
+
+A QUIC stream is a byte stream with no message boundaries, so every message
+on the control stream is prefixed with a five-byte header:
+
+```
+bytes 0–3  LENGTH  payload byte length, unsigned, big-endian
+byte  4    KIND    0 = a wrpc packet (UTF-8 JSON — what a WebSocket text frame carries)
+                   1 = a binary stream chunk (a chunkEncode frame, see the wire-format page)
+                   2 = a capabilities message (UTF-8 JSON) — see below
+                   3–255 reserved
+```
+
+- A message is one contiguous run of bytes; there is no fragmentation and
+  no FIN bit, because the stream is ordered and reliable. A receiver
+  buffers until LENGTH bytes have arrived, however the transport split them.
+- A reserved KIND, a LENGTH past the receiver's cap (16 MiB by default) or a
+  packet that is not valid UTF-8 is a protocol error: the receiver closes
+  the session with code 1002 — the WebTransport analogue of a WebSocket
+  `1002`.
+- Close codes are the WebSocket close codes carried in the session's
+  `closeCode`: a server closes with 1001 on shutdown and 1002 on a protocol
+  error; an application close is 1000 or 0. Ending the control stream (a
+  FIN) ends the connection, answered by a session close with 1000.
+
+Everything above the header is exactly the WebSocket wire: the ordering rule
+"a `stream` packet precedes the first chunk with its id" holds, `ping`/`pong`
+run per direction, and a subscription resumes with `lastEventId` across a
+new session the way it does across a reconnected socket.
+
+### Capabilities and per-stream transport {#webtransport-streams}
+
+Each end's **first message** on the control stream MAY be a capabilities
+message (KIND 2): a JSON object whose known key is `streams`
+(`{"streams":true}`). Unknown keys are ignored; an end that sends none, or
+`{}`, has announced nothing, and its peer treats it as a revision-1 peer.
+
+When **both** ends announced `streams`, a sender MAY carry a binary
+stream's chunks on a **unidirectional WebTransport stream of their own**
+instead of the control stream:
+
+- The `stream` packet that opens the wrpc stream (`{ type: 'stream', id,
+  name, size }`) stays on the control stream — its order against the call
+  that names the id is what the control stream guarantees.
+- The unidirectional stream opens with the chunk header — one byte of id
+  length, then the id (exactly the prefix of a `chunkEncode` frame) — once,
+  and then carries the payload bytes of every chunk of that id, in order,
+  with no per-chunk header. Its FIN is the stream's `end`; a RESET (an
+  aborted stream) is its `terminate`. The sender MUST NOT also send the
+  `end` or `terminate` packet for such a stream on the control stream.
+- A QUIC stream is ordered only against itself. A receiver MUST therefore
+  hold chunks that arrive before their `stream` packet has been read from
+  the control stream, and MUST deliver the synthesized `end` or `terminate`
+  only after the unidirectional stream has ended — never on the strength
+  of the control stream alone.
+- The choice is per stream and the sender's: a stream whose chunks were
+  sent on the control stream ends with an `end` packet there, exactly as in
+  revision 1, and a receiver accepts both forms at any time.
+
+### Datagrams {#webtransport-datagrams}
+
+A session's datagrams carry **unreliable events**: a packet a sender chose
+to deliver at most once, unordered, for state a later packet supersedes (a
+cursor, a position). A datagram is one whole message under a one-byte
+header — the KIND byte alone, since a datagram announces its own length:
+
+```
+byte 0   KIND   0 = a wrpc packet (UTF-8 JSON); other values reserved
+bytes 1…        the packet
+```
+
+- Only `event` packets without an `id` MAY be sent as datagrams: a call, a
+  callback, a stream packet, a chunk or an ask expects an order or an
+  answer that a datagram cannot promise. A receiver handles a datagram's
+  packet exactly as it would the same packet from the control stream.
+- A sender MUST NOT split a packet over datagrams: a packet larger than
+  the session's `maxDatagramSize` goes on the control stream instead. The
+  choice is the sender's alone and invisible to the receiver; a peer with
+  no datagrams sends every event on the control stream.
+- A receiver ignores a datagram it cannot read (a reserved KIND, invalid
+  UTF-8, an empty one) — a lost datagram is the norm, and an unreadable
+  one is not worth a hangup.
 
 ## Reconnect
 

@@ -71,6 +71,10 @@
       "types": "./webrtc.d.ts",
       "default": "./webrtc.js"
     },
+    "./wt": {
+      "types": "./wt.d.ts",
+      "default": "./wt.js"
+    },
     "./package.json": "./package.json"
   },
   "bin": {
@@ -133,7 +137,10 @@
     "streams",
     "webrtc",
     "peer-to-peer",
-    "data-channel"
+    "data-channel",
+    "webtransport",
+    "http3",
+    "quic"
   ],
   "author": "Alex Dolid <dolid.sasha@gmail.com>",
   "license": "MIT",
@@ -142,6 +149,8 @@
   },
   "homepage": "https://wrpc.vercel.app",
   "devDependencies": {
+    "@fails-components/webtransport": "^1.6.8",
+    "@fails-components/webtransport-transport-http3-quiche": "^1.6.8",
     "@fastify/websocket": "^11.3.0",
     "@opentelemetry/api": "^1.9.1",
     "@opentelemetry/context-async-hooks": "^2.10.0",
@@ -165,6 +174,7 @@
     "oxfmt": "^0.62.0",
     "oxlint": "^1.77.0",
     "pino": "^10.3.1",
+    "quico": "^0.4.0",
     "socket.io": "^4.8.3",
     "socket.io-client": "^4.8.3",
     "tsd": "^0.33.0",
@@ -181,6 +191,11 @@
     "access": "public"
   },
   "packageManager": "pnpm@10.34.5",
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@fails-components/webtransport-transport-http3-quiche"
+    ]
+  },
   "files": [
     "index.js",
     "index.d.ts",
@@ -212,6 +227,8 @@
     "webrtc.browser.js",
     "webrtc.d.ts",
     "webrtc.browser.d.ts",
+    "wt.js",
+    "wt.d.ts",
     "bin/",
     "src/",
     "LICENSE",
