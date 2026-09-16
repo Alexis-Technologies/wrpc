@@ -191,11 +191,6 @@
     "access": "public"
   },
   "packageManager": "pnpm@10.34.5",
-  "pnpm": {
-    "onlyBuiltDependencies": [
-      "@fails-components/webtransport-transport-http3-quiche"
-    ]
-  },
   "files": [
     "index.js",
     "index.d.ts",
