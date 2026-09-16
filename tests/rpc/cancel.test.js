@@ -125,6 +125,40 @@ test('cancellation: an AbortSignal takes a call back', async (t) => {
   });
 });
 
+test('cancellation over the event transport: an AbortSignal takes a call back through attachPort', async (t) => {
+  const { server } = await createServer();
+  t.after(() => server.close());
+  // The same bridge a page hands its worker: 'wrpc:connect' carries the
+  // port this server attaches directly with attachPort — no socket at all.
+  const worker = {
+    postMessage(message, transfer) {
+      if (message?.type === 'wrpc:connect') server.rpc.attachPort(transfer[0]);
+    },
+  };
+  const client = await WrpcClient.connect('local:bridge', { transport: 'event', worker, heartbeat: false });
+  t.after(() => void client.close());
+  await client.load('slow');
+
+  const beforeStarted = state.started;
+  const beforeAborted = state.aborted;
+  const beforeFinished = state.finished;
+  const controller = new AbortController();
+  const pending = client.api.slow.wait({ ms: 5000 }, { signal: controller.signal });
+  await waitFor(() => state.started === beforeStarted + 1, 'the handler never started');
+  controller.abort();
+  const error = await pending.then(
+    () => null,
+    (failure) => failure,
+  );
+  assert.strictEqual(error.code, 499);
+  assert.match(error.message, /Cancelled/);
+  await waitFor(() => state.aborted === beforeAborted + 1, 'ctx.signal never reached the handler');
+  assert.strictEqual(state.lastSignal.aborted, true);
+  assert.strictEqual(state.finished, beforeFinished, 'the handler stopped instead of running to completion');
+  const [serverClient] = server.rpc.clients;
+  await waitFor(() => serverClient.calls.size === 0, 'the cancelled call was never released');
+});
+
 test('cancellation: a batched call cancelled before it ships never ships', async (t) => {
   const { server, port } = await createServer();
   t.after(() => server.close());
