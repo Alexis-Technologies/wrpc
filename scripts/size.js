@@ -60,7 +60,12 @@ const ENTRIES = [
   // 17 -> 19 for the rest of WebTransport: unreliable events over datagrams
   // and binary streams on their own WebTransport streams (the stream mux,
   // capabilities negotiation) — measured together at +1.5 KB (18.4).
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 19 },
+  // 19 -> 20 for the call-path work behind the paper's 26 % figure: the
+  // bucketed deadline scheduler (one timer for every call in flight instead
+  // of a setTimeout + three closures per call), the synchronous `callback`
+  // fast path and the per-message `compress` option — +0.6 KB (measured
+  // 19.0), earned by bench/browser/calls.js and bench/bench.js.
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 20 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
@@ -78,7 +83,8 @@ const ENTRIES = [
   // 16 -> 17: bundles the main browser entry, so it inherits its SharedWorker bytes.
   // 17 -> 18 with the main entry's WebTransport raise, for the same reason (measured 17.8);
   // 18 -> 20 with its datagram + stream-mux raise (measured 19.2).
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 20 },
+  // 20 -> 21 with the main entry's call-path raise (measured 19.9).
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 21 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and
@@ -99,7 +105,10 @@ const ENTRIES = [
   // the peer's per-link verify/stamp chains and the host's trust
   // 'assertion' (+2.6 KB, measured 44.0) — the cryptographic layer the
   // peer-to-peer trust model rests on, a deliberate spend.
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 45 },
+  // 45 -> 46 for the shared fan-out message (`Client.sendShared`, the
+  // `compress` option, `isReady`, the lazy Context uuid) — the rpc leaves
+  // this entry bundles for PeerHost (+0.5 KB, measured 45.0).
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 46 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

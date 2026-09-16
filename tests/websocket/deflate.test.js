@@ -233,3 +233,142 @@ test('Connection: a compression bomb is capped by maxPayload, not maxBuffer', ()
   assert.strictEqual(close.opcode, OPCODES.CLOSE);
   assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.MESSAGE_TOO_BIG);
 });
+
+// --- Shared (prepared) frames: the fan-out path -------------------------
+
+const { PreparedFrames } = require('../../src/websocket/prepared.js');
+
+const lastFrame = (socket, allowedRsv = RSV1) =>
+  FrameParser.parse(socket.writtenData.at(-1), { allowedRsv }).value.frame;
+
+const sharedMessage = (text, compress = true) => ({ text, frames: null, compress });
+
+test('sendPrepared: one message, two windows — deflated once per window, both peers decode it', () => {
+  const wide = new MockSocket();
+  const narrow = new MockSocket();
+  const a = new Connection(wide, Buffer.alloc(0), { deflate: { ...DEFLATE, windowBits: 15 } });
+  const b = new Connection(narrow, Buffer.alloc(0), { deflate: { ...DEFLATE, windowBits: 10 } });
+  // A repeat 2 KB back: a 32 KB window (15) references it, a 1 KB window
+  // (10) cannot — so the two windows must produce different bytes.
+  const chunk = require('node:crypto').randomBytes(1536).toString('base64');
+  const text = JSON.stringify({ type: 'event', name: 'chat/message', data: chunk + chunk });
+  const message = sharedMessage(text);
+
+  assert.strictEqual(a.sendPrepared(message), true);
+  assert.strictEqual(b.sendPrepared(message), true);
+
+  assert.ok(message.frames instanceof PreparedFrames, 'the engine claims the slot with its own cache');
+  const wideFrame = lastFrame(wide);
+  const narrowFrame = lastFrame(narrow);
+  assert.strictEqual(wideFrame.rsv & RSV1, RSV1);
+  assert.strictEqual(narrowFrame.rsv & RSV1, RSV1);
+  assert.strictEqual(decompress(wideFrame.payload, 1 << 20).toString(), text);
+  assert.strictEqual(decompress(narrowFrame.payload, 1 << 20).toString(), text);
+  // Different windows, different bytes — and each window's frame is built
+  // once: the same buffer comes back on every later call.
+  assert.notDeepStrictEqual(message.frames.deflated(15), message.frames.deflated(10));
+  assert.strictEqual(message.frames.deflated(15), message.frames.deflated(15));
+  assert.strictEqual(message.frames.plain(), message.frames.plain());
+  a.terminate();
+  b.terminate();
+});
+
+test('sendPrepared: two connections with the same window receive byte-identical frames', () => {
+  const sockets = [new MockSocket(), new MockSocket()];
+  const conns = sockets.map((socket) => new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE }));
+  const message = sharedMessage('identical bytes '.repeat(64));
+  for (const conn of conns) conn.sendPrepared(message);
+  assert.deepStrictEqual(sockets[0].writtenData.at(-1), sockets[1].writtenData.at(-1));
+  assert.strictEqual(lastFrame(sockets[0]).rsv & RSV1, RSV1);
+  for (const conn of conns) conn.terminate();
+});
+
+test('sendPrepared: the threshold is per connection, the bytes are per window', () => {
+  const eager = new MockSocket();
+  const lazy = new MockSocket();
+  const a = new Connection(eager, Buffer.alloc(0), { deflate: { ...DEFLATE, threshold: 8 } });
+  const b = new Connection(lazy, Buffer.alloc(0), { deflate: { ...DEFLATE, threshold: 1 << 20 } });
+  const message = sharedMessage('over eight bytes, under a megabyte');
+  a.sendPrepared(message);
+  b.sendPrepared(message);
+  assert.strictEqual(lastFrame(eager).rsv & RSV1, RSV1);
+  const plain = lastFrame(lazy);
+  assert.strictEqual(plain.rsv, 0);
+  assert.strictEqual(plain.payload.toString(), message.text);
+  a.terminate();
+  b.terminate();
+});
+
+test('sendPrepared: compress:false on the message sends the plain frame past the threshold', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
+  const message = sharedMessage('never compressed '.repeat(64), false);
+  conn.sendPrepared(message);
+  const frame = lastFrame(socket);
+  assert.strictEqual(frame.rsv, 0);
+  assert.strictEqual(frame.payload.toString(), message.text);
+  conn.terminate();
+});
+
+test('sendPrepared: a slot claimed by another engine falls back to an ordinary send', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
+  const foreign = { encoded: true };
+  const message = { text: 'mixed room '.repeat(32), frames: foreign, compress: true };
+  assert.strictEqual(conn.sendPrepared(message), true);
+  assert.strictEqual(message.frames, foreign, 'the foreign cache is left alone');
+  const frame = lastFrame(socket);
+  assert.strictEqual(decompress(frame.payload, 1 << 20).toString(), message.text);
+  conn.terminate();
+});
+
+test('sendPrepared: a fragmenting connection fragments; a client connection masks', () => {
+  const fragmenting = new MockSocket();
+  const a = new Connection(fragmenting, Buffer.alloc(0), { fragmentThreshold: 16 });
+  const message = sharedMessage('x'.repeat(40));
+  a.sendPrepared(message);
+  assert.strictEqual(message.frames, null, 'no shared frame is built for a fragmented send');
+  assert.strictEqual(fragmenting.writtenData.length, 3, '40 bytes at a 16-byte threshold: three fragments');
+  const first = FrameParser.parse(fragmenting.writtenData[0]).value;
+  assert.strictEqual(first.frame.fin, false);
+  assert.strictEqual(first.frame.opcode, OPCODES.TEXT);
+  a.terminate();
+
+  const clientSide = new MockSocket();
+  const b = new Connection(clientSide, Buffer.alloc(0), { isClient: true });
+  const shared = sharedMessage('masked by the client');
+  b.sendPrepared(shared);
+  const frame = FrameParser.parse(clientSide.writtenData.at(-1)).value.frame;
+  assert.strictEqual(frame.masked, true);
+  frame.unmaskPayload();
+  assert.strictEqual(frame.payload.toString(), 'masked by the client');
+  b.terminate();
+});
+
+test('sendPrepared: reports backpressure like send() and refuses after close', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
+  socket.writeResult = false;
+  assert.strictEqual(conn.sendPrepared(sharedMessage('slow peer')), false);
+  socket.writeResult = true;
+  conn.sendClose(1000, 'bye');
+  assert.strictEqual(conn.sendPrepared(sharedMessage('too late')), false);
+  conn.terminate();
+});
+
+test('send: compress:false is honoured for unicast text and binary', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { deflate: { ...DEFLATE, threshold: 8 } });
+  const text = 'a very repetitive payload '.repeat(50);
+  conn.send(text, { compress: false });
+  const plainText = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+  assert.strictEqual(plainText.rsv, 0);
+  assert.strictEqual(plainText.payload.toString(), text);
+  conn.sendBinary(Buffer.alloc(4096, 1), { compress: false });
+  const plainBinary = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+  assert.strictEqual(plainBinary.rsv, 0);
+  assert.strictEqual(plainBinary.payload.length, 4096);
+  conn.sendText(text);
+  assert.strictEqual(lastFrame(socket).rsv & RSV1, RSV1, 'the default still compresses');
+  conn.terminate();
+});

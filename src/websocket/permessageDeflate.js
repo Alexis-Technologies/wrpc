@@ -125,6 +125,8 @@ const decompress = (payload, maxLength) =>
 module.exports = {
   EXTENSION_NAME,
   DEFAULT_THRESHOLD,
+  MIN_WINDOW_BITS,
+  MAX_WINDOW_BITS,
   parseExtensions,
   negotiate,
   compress,

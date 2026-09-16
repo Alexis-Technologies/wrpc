@@ -366,7 +366,15 @@ class Procedure {
         throw codedError('Procedure timeout', 408);
       }
       handlerStarted = true;
-      const invocation = Promise.resolve().then(() => this.handler(context, args));
+      // Called directly rather than through Promise.resolve().then(): the
+      // handler starts now instead of a microtask later, and a synchronous
+      // throw becomes the rejection it would have been (bench/bench.js).
+      let invocation;
+      try {
+        invocation = Promise.resolve(this.handler(context, args));
+      } catch (error) {
+        invocation = Promise.reject(error);
+      }
       if (this.semaphore) {
         const release = () => this.semaphore.leave();
         invocation.then(release, release);
@@ -420,7 +428,15 @@ class Procedure {
       }
       if (hooks.preHandler.length > 0) await runHooks(hooks.preHandler, context, args);
       handlerStarted = true;
-      const invocation = Promise.resolve().then(() => this.handler(context, args));
+      // Called directly rather than through Promise.resolve().then(): the
+      // handler starts now instead of a microtask later, and a synchronous
+      // throw becomes the rejection it would have been (bench/bench.js).
+      let invocation;
+      try {
+        invocation = Promise.resolve(this.handler(context, args));
+      } catch (error) {
+        invocation = Promise.reject(error);
+      }
       if (this.semaphore) {
         // The queue slot is held until the HANDLER settles: a timeout
         // rejects the caller but cannot cancel the handler, and freeing

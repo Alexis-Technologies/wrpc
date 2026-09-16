@@ -191,6 +191,23 @@ sessions:
 same procedure can be reachable over HTTP for the call and skip the
 event-emitting half when it is.
 
+## Compression
+
+A broadcast is serialized once, and on the built-in engine framed and
+deflated once too — one shared frame per emit, per negotiated window, rather
+than one deflate per member (the numbers are in
+[performance](./performance#fan-out)). Compression itself is negotiated per
+connection, and the server's `perMessageDeflate.filter(req)` chooses which
+peers get it. Per message, opt out when the payload is already compressed
+or latency matters more than bytes:
+
+```js
+context.server.to('lobby').emit('media/chunk', base64Jpeg, { compress: false });
+context.client.sendEvent('game/tick', state, { compress: false });
+```
+
+The flag is ignored on connections that never negotiated deflate.
+
 ## Rooms and reconnects
 
 Membership is **per connection**: a reconnect is a NEW server-side client,

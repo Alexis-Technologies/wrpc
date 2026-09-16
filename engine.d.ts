@@ -3,7 +3,7 @@ import { IncomingMessage, Server as HttpServer } from 'node:http';
 import { Server as HttpsServer } from 'node:https';
 import type { Duplex } from 'node:stream';
 import type { PerMessageDeflateOptions } from './ws.js';
-import type { HttpCall } from './index.js';
+import type { HttpCall, SharedMessage } from './index.js';
 
 /**
  * The upgrade request an engine hands to `verifyClient`, `handleProtocols`
@@ -37,8 +37,20 @@ export interface EngineVerifyClientInfo {
  * 'pong'(payload), 'close'(code, reason), 'error'(error).
  */
 export interface WrpcSocket extends EventEmitter {
-  /** Returns false when the socket buffer is above its high-water mark. */
-  send(data: string | Buffer): boolean;
+  /**
+   * Returns false when the socket buffer is above its high-water mark.
+   * `options.compress === false` asks for this one message to go
+   * uncompressed on a deflate-negotiated connection; sockets that predate
+   * the option ignore it.
+   */
+  send(data: string | Buffer, options?: { compress?: boolean } | null): boolean;
+  /**
+   * Optional (capability `prepared`): the fan-out path. Writes one message
+   * shared by every recipient of a broadcast, claiming or reusing its
+   * `frames` slot so the wire bytes are built once per emit, not once per
+   * member. Same boolean as send().
+   */
+  sendPrepared?(message: SharedMessage): boolean;
   readonly bufferedAmount: number;
   readonly remoteAddress?: string;
   protocol?: string;
@@ -56,6 +68,8 @@ export interface EngineCapabilities {
   deflate: boolean;
   cork: boolean;
   pause: boolean;
+  /** True when sockets implement sendPrepared (shared fan-out frames). */
+  prepared: boolean;
 }
 
 export interface EngineAttachOptions {
@@ -77,6 +91,8 @@ export interface EngineAttachOptions {
   maxBackpressure?: number;
   fragmentThreshold?: number;
   closeTimeout?: number;
+  /** Coalesce every write of one event-loop turn into one flush (built-in engine). Default true. */
+  coalesce?: boolean;
   /**
    * Standalone engines only: the core's HTTP entry point, invoked with the
    * same abstract call description RpcServer.handleHttpCall consumes.

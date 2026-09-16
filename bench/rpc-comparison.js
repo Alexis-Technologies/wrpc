@@ -25,7 +25,17 @@
 const path = require('node:path');
 const { spawnSync } = require('node:child_process');
 
-const STACK_ORDER = ['wrpc', 'ws', 'uws', 'fastify-websocket', 'fastify-uws', 'socket.io', 'trpc-ws'];
+const STACK_ORDER = [
+  'wrpc',
+  'wrpc-uws',
+  'wrpc-batch',
+  'ws',
+  'uws',
+  'fastify-websocket',
+  'fastify-uws',
+  'socket.io',
+  'trpc-ws',
+];
 // Matched by suffix against the names rpc-stack-worker.js prints. The
 // pipelined row keeps its own suffix (`… ×64`), so the match stays unambiguous.
 const MEASUREMENTS = ['small payload', '10KB payload', 'small payload ×64'];

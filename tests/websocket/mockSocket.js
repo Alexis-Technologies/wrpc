@@ -16,13 +16,21 @@ class MockSocket extends EventEmitter {
     // mimics the kernel/stream buffer size, drain() releases the pressure.
     this.writeResult = true;
     this.writableLength = 0;
+    // Cork accounting for the write-coalescing tests. Every uncork flushes
+    // (no ref counting): a fragmented message's per-fragment corks show up
+    // as one entry per fragment, which is what the fragmentation tests
+    // count.
+    this.corks = 0;
+    this.uncorks = 0;
   }
 
   cork() {
+    this.corks++;
     this.#isCorked = true;
   }
 
   uncork() {
+    this.uncorks++;
     this.#isCorked = false;
     if (this.#pendingWrites.length) {
       const combined = Buffer.isBuffer(this.#pendingWrites[0])

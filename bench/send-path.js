@@ -81,10 +81,12 @@ const benchDeflate = () => {
   );
 };
 
-// Room fan-out over sink sockets. THE baseline for encode-once: today every
-// recipient pays its own JSON.stringify + utf8 encode (+ deflate when on),
-// so the per-recipient cost is what this number exposes.
-const benchFanout = async (clients, deflate) => {
+// Room fan-out over sink sockets: the JSON is serialized once per emit and
+// the frame — deflated once per negotiated window — is shared by every
+// recipient (Connection.sendPrepared), so the per-recipient cost is one
+// socket write. `windows` alternates the negotiated window bits across
+// members, the mixed-fleet case where the shared frame is built per window.
+const benchFanout = async (clients, deflate, windows = [15]) => {
   const router = defineRouter({ noop: { ping: procedure({ access: 'public', handler: async () => null }) } });
   const rpc = new RpcServer({ router, logger: false });
   const sockets = [];
@@ -92,19 +94,20 @@ const benchFanout = async (clients, deflate) => {
     const socket = new SinkSocket();
     const conn = new Connection(socket, Buffer.alloc(0), {
       maxBackpressure: 0,
-      ...(deflate ? { deflate: { threshold: 1, windowBits: 15 } } : {}),
+      ...(deflate ? { deflate: { threshold: 1, windowBits: windows[i % windows.length] } } : {}),
     });
     const client = rpc.attachSocket(conn, { remoteAddress: `10.0.0.${i}` });
     client.join('load');
     sockets.push(socket);
   }
   const data = { text: 'x'.repeat(512), n: 42 };
-  const iterations = deflate ? 500 : 5_000;
+  const iterations = deflate ? 5_000 : 20_000;
   const started = performance.now();
   for (let i = 0; i < iterations; i++) rpc.to('load').emit('chat/message', data);
   const elapsed = performance.now() - started;
   const bytes = sockets.reduce((sum, socket) => sum + socket.bytes, 0);
-  report(`room fan-out x${clients}${deflate ? ' +deflate' : ''} (512 B)`, iterations, elapsed, bytes);
+  const mixed = windows.length > 1 ? ` windows ${windows.join('/')}` : '';
+  report(`room fan-out x${clients}${deflate ? ' +deflate' : ''}${mixed} (512 B)`, iterations, elapsed, bytes);
   await rpc.close();
 };
 
@@ -113,11 +116,15 @@ const main = async () => {
   console.log(`  ${'scenario'.padEnd(46)}${'rate'.padStart(18)}${'throughput'.padStart(12)}`);
   benchSendText('sendText 200 B', 'x'.repeat(200));
   benchSendText('sendText 4 KB', 'x'.repeat(4096));
+  // Straddles SINGLE_WRITE_MAX: above it the payload is a second write.
+  benchSendText('sendText 64 KB', 'x'.repeat(65536));
   benchSendText('sendText 200 B +deflate', 'x'.repeat(200), { deflate: { threshold: 1, windowBits: 15 } });
   benchDeflate();
   await benchFanout(50, false);
   await benchFanout(200, false);
   await benchFanout(50, true);
+  await benchFanout(200, true);
+  await benchFanout(50, true, [10, 15]);
   console.log();
 };
 

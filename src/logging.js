@@ -57,6 +57,7 @@ const noop = () => {};
 const DISABLED = Object.freeze({
   [LOG_WRITER]: true,
   enabled: false,
+  debugEnabled: false,
   // Returning `this` is what makes the per-connection and per-call children
   // free when logging is off: no allocation, no closure, no branch.
   child() {
@@ -76,6 +77,10 @@ const createConsoleWriter = (sink) => {
   const writer = {
     [LOG_WRITER]: true,
     enabled: true,
+    // `debugEnabled` is the per-call hot path's guard: false here because
+    // debug is dropped below, true on a structured writer whose own level
+    // decides — so a call site can skip building the entry it would drop.
+    debugEnabled: false,
     child() {
       return this;
     },
@@ -107,6 +112,7 @@ const createStructuredWriter = (sink) => {
   const writer = {
     [LOG_WRITER]: true,
     enabled: true,
+    debugEnabled: true,
     child(bindings) {
       if (!hasMethod(sink, 'child')) return this;
       try {

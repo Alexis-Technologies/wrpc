@@ -141,7 +141,8 @@ wss.on('connection', (connection, req) => {
 | `path` | — | Restrict upgrades to this pathname. |
 | `verifyClient({ req, socket, head })` | — | Gate the handshake. |
 | `protocols` / `handleProtocols(offered, req)` | — | Subprotocol negotiation; `false` rejects the handshake. |
-| `perMessageDeflate` | off | `true` or `{ threshold }`. |
+| `perMessageDeflate` | off | `true` or `{ threshold, filter }`. |
+| `coalesce` | `true` | Cork every write of one event-loop turn and flush on the next tick, one `writev` per burst. |
 | `pingInterval` | `10000` | Protocol-ping interval; a peer that misses one is terminated. |
 | `maxBuffer` | 100 MiB | Largest inbound message. |
 | `maxBackpressure` | `maxBuffer` (100 MiB) | Outbound cap; a connection past it is **terminated** (the peer observes `1006`). |
@@ -188,6 +189,14 @@ uws engine's default outbound ceiling is its 16 MiB `maxPayload`; set
 are being consumed, the RPC layer stops reading from the socket, so the
 pressure reaches the sender through TCP.
 
+Server connections **coalesce** writes (`coalesce: true`): the first write of
+an event-loop turn corks the socket and the next tick uncorks it, so the N
+answers to a batch or a burst of events leave in one `writev` instead of N
+syscalls — the idiom `node:http` uses. The boolean stays honest: a corked
+write still reports the buffered length against the high-water mark, and
+`'drain'` is unchanged. A bare `Connection` defaults to `coalesce: false`,
+so a write is on the socket the moment `send()` returns.
+
 ### Payload ownership
 
 A received payload may be a view into the receive buffer. **Copy it if you
@@ -232,17 +241,39 @@ Two things that matter at volume, both measured by `bench/`:
 RFC 7692 compression, over `node:zlib`, **off by default**:
 
 ```js
-new WebsocketServer({ server, perMessageDeflate: { threshold: 1024 } });
+new WebsocketServer({
+  server,
+  perMessageDeflate: {
+    threshold: 1024,
+    // Per connection: compress for a browser on a slow link, not for a
+    // service in the same datacenter. Declines the offer, so the peer
+    // learns it from the handshake.
+    filter: (req) => req.headers['x-forwarded-proto'] !== undefined,
+  },
+});
 ```
 
 Messages below `threshold` (1 KiB by default) are sent uncompressed — below it,
-compression costs more than it saves. The negotiated response always asks for
-`server_no_context_takeover` and `client_no_context_takeover`, which trades
-some ratio for bounded per-connection memory: context takeover keeps a zlib
-window alive per peer, and thousands of idle connections each holding one is a
-worse problem than a slightly larger frame.
+compression costs more than it saves. `filter(req)` decides per upgrade
+request whether the peer's offer is accepted at all. The negotiated response
+always asks for `server_no_context_takeover` and
+`client_no_context_takeover`, which trades some ratio for bounded
+per-connection memory: context takeover keeps a zlib window alive per peer,
+and thousands of idle connections each holding one is a worse problem than a
+slightly larger frame.
 
 `server_max_window_bits` is honoured when the client asks for it (8–15).
+
+Because no context spans messages, the compressed bytes of a message depend
+only on the payload and the window size. That is what lets a room broadcast
+share one deflated frame per distinct window across all its recipients
+(`Connection.sendPrepared`, see [performance](../guide/performance#fan-out))
+instead of deflating once per member.
+
+Per message, `send(data, { compress: false })` — and `emit(name, data,
+{ compress: false })` on a room — sends uncompressed past the threshold: for
+a payload that is already compressed, or one where latency matters more than
+bytes.
 
 When deflate is negotiated, `RSV1` becomes a legal bit on data frames and the
 parser is told so through `allowedRsv` — an unnegotiated RSV bit is still a

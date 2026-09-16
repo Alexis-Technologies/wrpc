@@ -74,6 +74,55 @@ const applyMask = (payload, mask) => {
   for (; i < length; i++) payload[i] ^= mask[i & 3];
 };
 
+// Frame header size for a payload of `length` bytes (RFC 6455 5.2).
+const headerSize = (length, masked) => {
+  const base = length < LEN_16_BIT ? 2 : length <= MAX_16_BIT ? 4 : 10;
+  return masked ? base + 4 : base;
+};
+
+// Writes a final-frame header at the start of `target`, returns its size.
+// `mask` is the 4-byte key for a client frame, null for a server frame.
+const writeHeader = (target, opcode, rsv, length, mask) => {
+  const masked = mask !== null ? MASK_MASK : 0;
+  target[0] = FINAL_FRAME | rsv | opcode;
+  let offset;
+  if (length < LEN_16_BIT) {
+    target[1] = masked | length;
+    offset = 2;
+  } else if (length <= MAX_16_BIT) {
+    target[1] = masked | LEN_16_BIT;
+    target.writeUInt16BE(length, 2);
+    offset = 4;
+  } else {
+    target[1] = masked | LEN_64_BIT;
+    target.writeUInt32BE(Math.trunc(length / TWO_32), 2);
+    target.writeUInt32BE(length >>> 0, 6);
+    offset = 10;
+  }
+  if (mask !== null) {
+    mask.copy(target, offset);
+    offset += 4;
+  }
+  return offset;
+};
+
+// One contiguous buffer holding header + payload: a single socket write per
+// frame instead of a cork/write/write/uncork sequence, and no separate
+// header allocation (bench/send-path.js). allocUnsafe is safe here because
+// every byte is written: the header by writeHeader, the rest by the copy.
+const encodeFrame = (opcode, rsv, payload, mask = null) => encodeFrameFrom(opcode, rsv, payload, payload.length, mask);
+
+// Same, from the first `length` bytes of `source` — how sendText frames the
+// scratch buffer without a subarray view per call.
+const encodeFrameFrom = (opcode, rsv, source, length, mask) => {
+  const size = headerSize(length, mask !== null);
+  const frame = Buffer.allocUnsafe(size + length);
+  writeHeader(frame, opcode, rsv, length, mask);
+  source.copy(frame, size, 0, length);
+  if (mask !== null) applyMask(frame.subarray(size), mask);
+  return frame;
+};
+
 class Frame {
   constructor(fin, opcode, masked, payload, mask, rsv = RSV) {
     this.fin = fin;
@@ -220,4 +269,4 @@ class Frame {
   }
 }
 
-module.exports = { Frame, EMPTY_PING, EMPTY_PONG, applyMask };
+module.exports = { Frame, EMPTY_PING, EMPTY_PONG, applyMask, headerSize, writeHeader, encodeFrame, encodeFrameFrom };

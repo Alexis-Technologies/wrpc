@@ -60,10 +60,10 @@ const refusal = (message) => {
 
 class Context {
   #log = null;
+  #uuid = null;
 
   constructor(client, signal = null, target = null) {
     this.client = client;
-    this.uuid = client.generateId();
     this.state = {};
     // Aborted when the caller cancels, unsubscribes, or disconnects. A
     // handler that awaits anything long-lived should pass it along; one
@@ -84,9 +84,15 @@ class Context {
     return this.client.session;
   }
 
+  // Minted on first read: a Context is allocated for every call, and a
+  // random id per call (crypto.randomUUID) is paid only by the handlers and
+  // hooks that correlate on it — the child logger below is the usual one.
+  get uuid() {
+    return (this.#uuid ??= this.client.generateId());
+  }
+
   // Bound lazily: a Context is allocated for every call, subscribe and
-  // inbound event, and most handlers never log. `uuid` is already there, so
-  // the correlation id exists whether or not anyone asks for the child.
+  // inbound event, and most handlers never log.
   get log() {
     return (this.#log ??= this.client.log.child({ callId: this.uuid }));
   }
@@ -116,6 +122,7 @@ class Client extends Emitter {
   // server sent it. See ask()/expectAnswer()/settleAnswer().
   #asks = new Map();
   #ready = null;
+  #isReady = false;
 
   constructor(transport, options = {}) {
     super();
@@ -190,6 +197,22 @@ class Client extends Emitter {
 
   set ready(value) {
     this.#ready = value;
+    this.#isReady = false;
+    // Settled-state flag for the hot path: once the gate opened, a call
+    // skips the `await` (and its microtask) instead of awaiting a promise
+    // that has already resolved. A rejected gate stays "not ready" so the
+    // await keeps surfacing the rejection.
+    Promise.resolve(value).then(
+      () => {
+        if (this.#ready === value) this.#isReady = true;
+      },
+      () => {},
+    );
+  }
+
+  /** True once `ready` has resolved — the dispatcher's cue to skip the await. */
+  get isReady() {
+    return this.#isReady;
   }
 
   /** The connection-scoped writer, reached by the dispatcher and handlers. */
@@ -213,15 +236,27 @@ class Client extends Emitter {
     this.#log.warn({ event: 'rpc.warn', ...entry }, `${this.source}\t${message}`);
   }
 
-  /** Returns false when the transport is above its high-water mark. */
+  /**
+   * Returns false when the transport is above its high-water mark.
+   * `compress: false` sends this packet uncompressed on a transport that
+   * negotiated permessage-deflate (ignored elsewhere).
+   */
   send(obj, options = {}) {
     const { code, method, text } = options;
-    const flushed = this.#transport.send(obj, code, text);
+    const transport = this.#transport;
+    let flushed;
+    if (options.compress === false && typeof transport.writeWith === 'function') {
+      const codec = transport.codec;
+      flushed = transport.writeWith(codec ? codec.encode(obj) : (text ?? JSON.stringify(obj)), options);
+    } else {
+      flushed = transport.send(obj, code, text);
+    }
     // Debug on purpose: one line per successful call is a firehose. A
     // console logger drops debug outright; a structured logger's own level
-    // decides. Failures still log at error, unconditionally.
-    const isSuccessCallback = obj.type === 'callback' && !obj.error;
-    if (isSuccessCallback) {
+    // decides. Failures still log at error, unconditionally. The writer's
+    // `debugEnabled` flag is what keeps the entry object and the message
+    // string from being built for a writer that would drop them.
+    if (this.#log.debugEnabled && obj.type === 'callback' && !obj.error) {
       this.#log.debug({ event: 'call.ok', method, id: obj.id }, `${this.source}\tCALL\t${method}\tOK`);
     }
     return flushed;
@@ -290,7 +325,7 @@ class Client extends Emitter {
     if (!this.#transport.connection) {
       throw refusal(`Can't send wrpc event to http transport`);
     }
-    if (options?.unreliable === true) {
+    if (options !== null && (options.unreliable === true || options.compress === false)) {
       const codec = this.#transport.codec;
       return void this.sendRaw(codec ? codec.encode(packet) : JSON.stringify(packet), options);
     }
@@ -298,21 +333,48 @@ class Client extends Emitter {
   }
 
   /**
-   * Writes an ALREADY-serialized packet. The fan-out seam: a broadcast to N
-   * clients stringifies once and hands every recipient the same text,
-   * instead of paying JSON.stringify per client. Returns the transport's
-   * backpressure signal, like send().
+   * Writes an ALREADY-serialized packet. Returns the transport's
+   * backpressure signal, like send(). `unreliable` and `compress` options
+   * as on sendEvent.
    */
   sendRaw(text, options = null) {
     const transport = this.#transport;
     if (!transport.connection) {
       throw refusal(`Can't send wrpc event to http transport`);
     }
-    // A datagram where the transport can, the reliable write otherwise.
-    if (options?.unreliable === true && typeof transport.writeUnreliable === 'function') {
-      if (transport.writeUnreliable(text)) return true;
+    if (options !== null) {
+      // A datagram where the transport can, the reliable write otherwise.
+      if (options.unreliable === true && typeof transport.writeUnreliable === 'function') {
+        if (transport.writeUnreliable(text)) return true;
+      }
+      if (options.compress === false && typeof transport.writeWith === 'function') {
+        return transport.writeWith(text, options);
+      }
     }
     return transport.write(text);
+  }
+
+  /**
+   * The fan-out seam. `message` is `{ text, frames, compress }` shared by
+   * every recipient of one broadcast: the text is serialized once, and a
+   * transport with the prepared-frame path (`writeShared`) encodes and
+   * deflates it once into `frames` for every recipient after the first,
+   * instead of paying utf8 + deflate + framing per member. Transports
+   * without it write the text. Returns the backpressure signal.
+   */
+  sendShared(message, options = null) {
+    const transport = this.#transport;
+    if (!transport.connection) {
+      throw refusal(`Can't send wrpc event to http transport`);
+    }
+    if (options !== null && options.unreliable === true && typeof transport.writeUnreliable === 'function') {
+      if (transport.writeUnreliable(message.text)) return true;
+    }
+    if (typeof transport.writeShared === 'function') return transport.writeShared(message);
+    if (message.compress === false && typeof transport.writeWith === 'function') {
+      return transport.writeWith(message.text, message);
+    }
+    return transport.write(message.text);
   }
 
   /**

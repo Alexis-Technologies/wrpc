@@ -46,7 +46,30 @@ export interface DeflateParams {
 }
 
 export interface PerMessageDeflateOptions {
+  /** Messages below this many bytes are sent uncompressed. Default 1024. */
   threshold?: number;
+  /**
+   * Per-connection selection: return false to decline the peer's offer —
+   * compression for a browser on a slow link, none for a service in the
+   * same datacenter — decided on the upgrade request.
+   */
+  filter?: (req: IncomingMessage) => boolean;
+}
+
+/**
+ * One message shared by every recipient of a fan-out (see
+ * Connection.sendPrepared): the text plus an engine-owned cache slot.
+ */
+export interface SharedMessage {
+  text: string;
+  frames: unknown | null;
+  compress: boolean;
+}
+
+/** Per-message send options. */
+export interface SendOptions {
+  /** Send uncompressed even when permessage-deflate was negotiated. */
+  compress?: boolean;
 }
 
 export interface WebsocketServerOptions {
@@ -69,6 +92,8 @@ export interface WebsocketServerOptions {
   protocols?: Array<string>;
   handleProtocols?: (offered: Array<string>, req: IncomingMessage) => string | false;
   perMessageDeflate?: boolean | PerMessageDeflateOptions;
+  /** Coalesce every write of one event-loop turn into one flush. Default true for server connections. */
+  coalesce?: boolean;
 }
 
 export declare class WebsocketServer extends EventEmitter {
@@ -106,6 +131,13 @@ export interface ConnectionOptions {
   fragmentThreshold?: number;
   protocol?: string;
   deflate?: DeflateParams | null;
+  /**
+   * Cork the socket on the first write of a turn and uncork on the next
+   * tick, so every frame of that turn leaves in one flush. Off for a bare
+   * Connection (a write is on the socket when send() returns); the server
+   * enables it for the connections it creates.
+   */
+  coalesce?: boolean;
 }
 
 export declare class Connection extends EventEmitter {
@@ -119,9 +151,17 @@ export declare class Connection extends EventEmitter {
   readonly isPaused: boolean;
   readonly remoteAddress: string | undefined;
 
-  send(data: string | Buffer): boolean;
-  sendText(message: string): boolean;
-  sendBinary(buffer: Buffer): boolean;
+  send(data: string | Buffer, options?: SendOptions | null): boolean;
+  sendText(message: string, options?: SendOptions | null): boolean;
+  sendBinary(buffer: Buffer, options?: SendOptions | null): boolean;
+  /**
+   * The fan-out path: writes one message shared by every recipient of a
+   * broadcast. Claims `message.frames` with this engine's cache (the frame,
+   * plus one deflated frame per negotiated window, built lazily and once)
+   * or reuses it; a slot another engine claimed, a client connection and a
+   * fragmenting one fall back to sendText. Same boolean as send().
+   */
+  sendPrepared(message: SharedMessage): boolean;
   sendPing(payload?: Buffer | string): boolean;
   sendPong(payload?: Buffer | string): boolean;
   sendClose(code?: number, reason?: string): void;

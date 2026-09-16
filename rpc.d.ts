@@ -12,6 +12,29 @@ import { Emitter, WrpcError, WrpcReadable, WrpcWritable, WrpcLogWriter, WrpcLogg
 
 export type EventName = PropertyKey;
 
+/** Per-message send options on the server side: `Client.sendEvent`, `Client.sendRaw` and the broadcast `emit`. */
+export interface ServerSendOptions {
+  /** A datagram where the transport has them (WebTransport): lossy, unordered; reliable elsewhere. */
+  unreliable?: boolean;
+  /** Send uncompressed even when permessage-deflate was negotiated and the size clears the threshold. */
+  compress?: boolean;
+}
+
+export type BroadcastEmitOptions = ServerSendOptions;
+
+/**
+ * One message shared by every recipient of a broadcast: the serialized
+ * packet plus an engine-owned cache slot. An engine claims `frames` when it
+ * is null and reuses it when it already holds that engine's own cache; a
+ * slot claimed by a different engine (a mixed room) means "use `text`".
+ * Application code never builds one — `Broadcast.emit` does.
+ */
+export interface SharedMessage {
+  text: string;
+  frames: unknown | null;
+  compress: boolean;
+}
+
 export interface State {
   [key: string]: unknown;
 }
@@ -543,8 +566,14 @@ export declare class Broadcast {
    * received it LOCALLY — remote instances are reached through the
    * backplane, whose delivery this number says nothing about.
    */
-  /** `unreliable: true`: a datagram to every recipient whose transport has them, reliable to the rest; the flag crosses the backplane. */
-  emit(name: string, data?: unknown, options?: { unreliable?: boolean } | null): number;
+  /**
+   * `unreliable: true`: a datagram to every recipient whose transport has
+   * them, reliable to the rest; the flag crosses the backplane.
+   * `compress: false`: sent uncompressed to every recipient that
+   * negotiated permessage-deflate. The packet is serialized — and, on the
+   * built-in engine, framed and deflated — ONCE for the whole fan-out.
+   */
+  emit(name: string, data?: unknown, options?: BroadcastEmitOptions | null): number;
   /**
    * Emits to every matching client — every instance's members included,
    * unless `local()` — and waits for each one's answer (registered
@@ -692,6 +721,8 @@ export class Client extends Emitter {
    * make such a hook wait for itself. Never rejects.
    */
   ready: Promise<unknown>;
+  /** True once `ready` has resolved — what lets the dispatcher skip the await per call. */
+  readonly isReady: boolean;
   streams: Map<string, WrpcReadable | WrpcWritable>;
   /** In-flight calls, by id — what `{type:'cancel'}` reaches. */
   calls: Map<string, AbortController>;
@@ -712,14 +743,26 @@ export class Client extends Emitter {
   /** Resolves when the transport drained, or when it closed. */
   drain(): Promise<void>;
   error(code: number, options?: ErrorOptions): void;
-  /** Returns false when the transport is above its high-water mark. */
-  send(obj: object, options?: { code?: number; method?: string }): boolean;
   /**
-   * Writes an ALREADY-serialized packet — the fan-out seam: a broadcast
-   * stringifies once and hands every recipient the same text.
+   * Returns false when the transport is above its high-water mark.
+   * `compress: false` sends this packet uncompressed on a transport that
+   * negotiated permessage-deflate (ignored elsewhere).
    */
-  /** With `unreliable: true`, as a datagram where the transport can; reliably otherwise. */
-  sendRaw(text: string, options?: { unreliable?: boolean } | null): boolean;
+  send(obj: object, options?: { code?: number; method?: string; compress?: boolean }): boolean;
+  /**
+   * Writes an ALREADY-serialized packet. With `unreliable: true`, as a
+   * datagram where the transport can; reliably otherwise. `compress: false`
+   * as on sendEvent.
+   */
+  sendRaw(text: string, options?: ServerSendOptions | null): boolean;
+  /**
+   * The fan-out seam: one `SharedMessage` for every recipient of a
+   * broadcast. The text is serialized once; a transport with a
+   * prepared-frame path (the built-in engine) encodes and deflates it once
+   * into `frames` for every recipient after the first. Transports without
+   * it write the text. Returns the backpressure signal.
+   */
+  sendShared(message: SharedMessage, options?: ServerSendOptions | null): boolean;
   createContext(signal?: AbortSignal | null): Context;
   /** The LOCAL Emitter emit — nothing reaches the wire; that is sendEvent. */
   emit(name: EventName, data?: unknown): Promise<void>;
@@ -729,7 +772,7 @@ export class Client extends Emitter {
    * has them (WebTransport) — lossy and unordered — and reliably everywhere
    * else; the application code is the same either way.
    */
-  sendEvent(name: string, data?: unknown, options?: { unreliable?: boolean } | null): void;
+  sendEvent(name: string, data?: unknown, options?: ServerSendOptions | null): void;
   /**
    * A call in the other direction: sends `{type:'event', name, data, id}`
    * and resolves with what the peer's responder returns (registered

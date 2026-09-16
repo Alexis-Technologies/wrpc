@@ -70,6 +70,9 @@ class WebsocketServer extends EventEmitter {
     }
     this.#options = {
       pingInterval: PING_INTERVAL,
+      // Server connections coalesce the writes of one event-loop turn into
+      // one flush (Connection's `coalesce`); `coalesce: false` opts out.
+      coalesce: true,
       ...opts,
     };
     this.#startHeartbeat();
@@ -228,6 +231,11 @@ class WebsocketServer extends EventEmitter {
       if (deflate && deflate.malformed) {
         return void abort(socket, 400, 'Invalid Sec-WebSocket-Extensions header');
       }
+      // Per-connection selection: `filter(req)` decides whether THIS peer
+      // gets compression at all — a browser on a slow link yes, a service
+      // in the same datacenter no — by declining the offer, so the peer
+      // learns it from the handshake rather than from a missing RSV1.
+      if (deflate && typeof deflateOptions.filter === 'function' && !deflateOptions.filter(req)) deflate = null;
     }
 
     const extraHeaders = [];

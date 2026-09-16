@@ -143,12 +143,14 @@ const handleRpc = async (client, packet, router) => {
   // The span covers the whole invocation including session wait, access
   // check, validation and the timeout race — an argument error deserves an
   // error span and a duration sample exactly as much as a slow handler does.
-  return client.otel.withSpan({ client, packet, target: method }, async (handle) => {
+  const run = async (handle) => {
     let status = 'ok';
     let code;
     try {
       if (hooks.onRequest.length > 0) await runHooks(hooks.onRequest, context, packet);
-      await client.ready;
+      // One microtask hop per call skipped once the connection is ready —
+      // which is every call after the first (bench/bench.js).
+      if (!client.isReady) await client.ready;
       if (controller.signal.aborted) return void (status = 'cancelled');
       if (!client.session && proc.access !== 'public') {
         status = 'error';
@@ -204,7 +206,12 @@ const handleRpc = async (client, packet, router) => {
         client.otel.recordCall(method, status, code, now() - started);
       }
     }
-  });
+  };
+  // With telemetry off the span options object and the writer's own wrapper
+  // are skipped, not just the no-op recorders — the client side guards its
+  // span the same way.
+  if (!enabled) return run(null);
+  return client.otel.withSpan({ client, packet, target: method }, run);
 };
 
 // Cancellation is best-effort by nature: a handler that never looks at
@@ -254,7 +261,7 @@ const handleSubscribe = async (client, packet, router) => {
   // same turn has something to find.
   const controller = new AbortController();
   client.subscriptions.set(id, controller);
-  await client.ready;
+  if (!client.isReady) await client.ready;
   if (controller.signal.aborted) {
     client.subscriptions.delete(id);
     return;
@@ -397,7 +404,7 @@ const handleEvent = async (client, packet, router) => {
   const { unit, version, name } = parseTarget(target);
   const handler = router.getEventHandler(unit, version, name);
   if (!handler) return void client.warn(`EVENT\t${target}\tno handler`);
-  await client.ready;
+  if (!client.isReady) await client.ready;
   if (!client.session && handler.access !== 'public') {
     return void client.warn(`EVENT\t${target}\tsession required`);
   }

@@ -59,7 +59,7 @@ createUwsEngine({
 | `maxPayloadLength` | 16 MiB | Largest inbound message. |
 | `maxBackpressure` | uws default | Outbound buffer cap. |
 | `closeOnBackpressureLimit` | uws default | Close instead of dropping. |
-| `compression` | `null` | A uws compressor constant; `null` disables permessage-deflate. |
+| `compression` | `null` | A uws compressor constant (e.g. `uws.SHARED_COMPRESSOR`); `null` disables permessage-deflate. |
 | `sendPingsAutomatically` | uws default | uws' own protocol ping. |
 | `maxBodySize` | 10 MiB | Cap for HTTP bodies the engine reads. |
 
@@ -70,14 +70,22 @@ engine in three ways:
 
 ```js
 engine.capabilities;
-// { backpressure: true, ping: false, deflate: Boolean(compression), cork: true, pause: false }
+// { backpressure: true, ping: false, deflate: Boolean(compression), cork: true, pause: false, prepared: false }
 ```
 
 - **`ping: false`** — uws owns peer liveness itself, through `idleTimeout` and
   `sendPingsAutomatically`, so wrpc runs no protocol-ping loop over it. The
   client's [application-level heartbeat](../client#heartbeat) is unaffected and
   still works.
-- **`deflate`** follows `compression`, which is off by default.
+- **`deflate`** follows `compression`, which is off by default. Pass a uws
+  compressor constant (`uws.SHARED_COMPRESSOR` is the one that, like the
+  built-in engine, keeps no per-connection context); the adapter asks uws to
+  compress every outbound message, and `send(data, { compress: false })` —
+  `emit(name, data, { compress: false })` on a room — opts one out.
+- **`prepared: false`** — uws frames and compresses inside its own `send()`,
+  so a room broadcast reaches each member through `send(text)` rather than
+  the built-in engine's shared frame. uws' topic `publish()` is the
+  equivalent seam; mapping rooms onto it is future work.
 - **`pause: false`** — uws exposes no socket-level pause, so receive-side flow
   control is missing: a fast uploader is not throttled by a slow
   [stream](../streams) consumer the way it is on the built-in engine. Outbound

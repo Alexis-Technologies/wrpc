@@ -170,9 +170,11 @@ class ServerHttpTransport extends ServerTransport {
   }
 
   // Building an id index makes this O(n), but the Map costs more than the
-  // quadratic it removes until the batch gets big: the linear scan wins 1.31x
-  // at 4 answers and 1.08x at 8, and loses 1.20x at 16 and 3.92x at 128.
-  // Re-run bench/batch-ordering.js before moving this.
+  // quadratic it removes until the batch gets big: the linear scan wins 1.23x
+  // at 4 answers and 1.05x at 8, and loses 1.18x at 16 and 3.91x at 128
+  // (docs/guide/performance.md) — so the switch sits between 8 and 16; the
+  // client's default batch.maxSize of 16 is the first measured size where
+  // the index wins. Re-run bench/batch-ordering.js before moving either.
   static #INDEX_THRESHOLD = 12;
 
   #ordered() {
@@ -284,6 +286,22 @@ class ServerWsTransport extends ServerTransport {
       data = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     }
     return this.connection.send(data);
+  }
+
+  // A write with per-message options (`compress: false`); the socket
+  // contract's second argument, ignored by sockets that predate it.
+  writeWith(text, options) {
+    return this.connection.send(text, options);
+  }
+
+  // The fan-out seam: a shared `{ text, frames, compress }` message goes to
+  // the socket's prepared-frame path when it has one (the built-in engine),
+  // which encodes and deflates it once for every recipient; a socket
+  // without one (uws, WebTransport) gets the text as an ordinary send.
+  writeShared(message) {
+    const socket = this.connection;
+    if (typeof socket.sendPrepared === 'function') return socket.sendPrepared(message);
+    return socket.send(message.text, message.compress === false ? message : null);
   }
 
   // An event as a datagram where the socket has them (a WebTransport

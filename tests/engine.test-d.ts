@@ -15,6 +15,7 @@ expectType<Engine>(nodeEngine);
 expectType<string>(nodeEngine.name);
 expectType<boolean>(nodeEngine.capabilities.backpressure);
 expectType<boolean>(nodeEngine.capabilities.pause);
+expectType<boolean>(nodeEngine.capabilities.prepared);
 expectType<void>(nodeEngine.close());
 expectType<void>(nodeEngine.close({ code: 1001, reason: 'bye' }));
 
@@ -96,7 +97,7 @@ expectAssignable<WrpcSocket>(connection);
 expectAssignable<Engine>({
   name: 'custom',
   standalone: true,
-  capabilities: { backpressure: true, ping: false, deflate: false, cork: false, pause: false },
+  capabilities: { backpressure: true, ping: false, deflate: false, cork: false, pause: false, prepared: false },
   attach: () => source,
   listen: async () => ({ address: '127.0.0.1', family: 'IPv4', port: 8000 }),
   close: () => {},

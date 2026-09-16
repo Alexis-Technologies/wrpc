@@ -13,6 +13,60 @@ narrower promise — see
 
 ### Added
 
+**The call path, measured and trimmed (phase 1b of the paper's findings)**
+- `bench/support/rpc-stacks.js` gains two rows: the same RPC path over the
+  uws engine, and the own engine with `batch: true`. They answer the
+  question the old table could not: with 64 calls in flight wrpc runs at
+  95.8K over its own engine and 112K over uws against 129K for a raw uws
+  echo — the JavaScript engine is ~17 % of the gap, the RPC layer and the
+  client are the rest; client batching is worth as much as the engine swap.
+- `pnpm bench:browser` (`scripts/bench-browser.js` + `bench/browser/calls.js`,
+  `playwright-core` as a devDependency driving the installed Chrome) measures
+  the client's call path where it ships, over an in-page echo on a
+  `MessageChannel`. Chrome 152: 64 calls in flight 101,666 → 114,158 ops/sec,
+  1024 in flight 90,665 → 104,864 (the table is in `docs/guide/performance.md`).
+- Client call deadlines are one bucketed timer per client instead of a
+  `setTimeout` plus three closures per call: one lane per distinct timeout,
+  buckets of 1/32 of it (a call times out between its deadline and 3 % after,
+  never before), settled calls leave their bucket at once so an idle client
+  arms nothing. `bench/bench.js` call + server event round-trip 14.7K → 17.0K.
+- `Client.isReady` (server side): true once `ready` resolved, so a call
+  after the first skips the `await` and its microtask; `Context.uuid` is
+  minted on first read; `Procedure.invoke` calls the handler directly
+  instead of through `Promise.resolve().then()`; the dispatcher skips the
+  span wrapper and its options object when telemetry is off, as the client
+  already did; logger writers carry `debugEnabled` so the per-call debug
+  entry is not built for a writer that drops it. The client settles a
+  `callback` before the batch and heartbeat checks, without the `#dispatch`
+  hop.
+- Browser budgets raised with the measurement that earned them
+  (`scripts/size.js`): main 19 → 20 KB, sse 20 → 21 KB, webrtc 45 → 46 KB.
+
+**Fan-out frames encoded once (`Connection.sendPrepared`, capability `prepared`)**
+- A room broadcast now hands every recipient ONE shared
+  `{ text, frames, compress }` message (`Client.sendShared`,
+  `ServerWsTransport.writeShared`): the built-in engine encodes the frame —
+  and, with permessage-deflate, deflates it once per negotiated window — into
+  the message's cache slot on first use and writes that buffer to every later
+  recipient. `bench/send-path.js`: room fan-out ×50 went 102,997 → 637,248/sec,
+  ×200 28,651 → 321,820/sec, and ×50 with deflate 2,708 → 101,609/sec (the
+  36× compression cliff was N deflates per emit; it is now one per window).
+  `WrpcSocket.sendPrepared?()` is an optional, feature-detected addition to
+  the engine contract (`EngineCapabilities.prepared`; the contract suite
+  exercises it when present), so third-party engines need no change.
+- **Selective compression.** `perMessageDeflate: { filter: (req) => boolean }`
+  decides per connection whether a peer's offer is accepted — compression for
+  bandwidth-bound browsers, none for in-datacenter peers — and
+  `{ compress: false }` on `server.to(room).emit()`, `client.sendEvent()`,
+  `client.sendRaw()`, `client.send()` and `Connection.send()` sends one
+  message uncompressed past the threshold. `WrpcSocket.send()` gains the
+  optional second argument; sockets that ignore it compress as before.
+- `Connection` option `coalesce` (default `true` for server connections, off
+  for a bare `Connection`): the first write of an event-loop turn corks the
+  socket and the next tick uncorks it, so a batch of N answers or a burst of
+  events leaves in one `writev` instead of N syscalls. The `send()` boolean
+  and `'drain'` are unchanged.
+
 **WebTransport, experimental (`transport: 'wt'`, `@alexify/wrpc/wt`)**
 - `connect(url, { transport: ['wt', 'ws'], wt: { serverCertificateHashes } })`
   runs the ordinary client over a WebTransport session (HTTP/3): every
@@ -731,6 +785,16 @@ only by adapter tests; never a runtime dependency).
 
 ### Fixed
 
+- A ping arriving after the engine had FAILED the connection (a protocol
+  error, an oversized or undecodable message) was still answered with a
+  pong; RFC 6455 7.1.7 says nothing after the failure is acted on. Autobahn
+  cases 4.1.3–4.2.5 flagged it; the full suite now passes. A ping after an
+  app-initiated `close()` is still answered, as before.
+- The uws engine never compressed an outbound frame: `UwsSocket.send` did not
+  pass uws' third `compress` argument (which defaults to false), so a
+  configured `compression` only ever applied to inbound messages while
+  `capabilities.deflate` reported true. It now asks uws to compress, and
+  `tests/adapters/uws.test.js` asserts RSV1 on the wire.
 - `client.sessionReady` is assigned **before** the `onConnect` hooks run —
   the documented `await client.sessionReady` recipe used to await the
   constructor's resolved default and see `session === null`; the packet-POST
@@ -795,6 +859,13 @@ only by adapter tests; never a runtime dependency).
 
 ### Changed
 
+- Unicast frames are one contiguous buffer up to 16 KiB — header and payload
+  in a single socket write, text utf8-encoded from a module scratch buffer
+  instead of an intermediate `Buffer.from` — and header + payload writes
+  above it. `sendText 4 KB` 735,099 → 1,671,520/sec; 200 B unchanged.
+- `docs/guide/performance.md` no longer claims the fan-out frame was encoded
+  once — before this release only the JSON was; utf8, deflate and framing
+  were per recipient.
 - Server transports carry a `kind` — `ws`, `http`, `sse` or `event` — as a
   metric attribute and log field.
 - Every shell and adapter funnels its option bag through `rpcOptions()`

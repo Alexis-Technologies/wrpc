@@ -18,10 +18,14 @@ const createNodeEngine = (engineOptions = {}) => {
       deflate: true,
       cork: true,
       pause: true,
+      // Connection.sendPrepared: a fan-out frame encoded (and deflated)
+      // once, written to every recipient.
+      prepared: true,
     },
     // attachOptions: { server, path, verifyClient, protocols,
     //   handleProtocols, perMessageDeflate, pingInterval, maxBuffer,
-    //   maxPayload, maxBackpressure, fragmentThreshold, closeTimeout }
+    //   maxPayload, maxBackpressure, fragmentThreshold, closeTimeout,
+    //   coalesce }
     // Returns an EventEmitter with 'connection'(socket, req) events.
     attach(attachOptions) {
       wss = new WebsocketServer({ ...engineOptions, ...attachOptions });

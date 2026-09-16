@@ -269,3 +269,126 @@ test('Connection: receiving a close frame after we already sent our own terminat
 
   assert.strictEqual(socket.destroyed, true);
 });
+
+// --- Write coalescing -----------------------------------------------------
+
+const tick = () => new Promise((resolve) => process.nextTick(resolve));
+
+const parseAll = (buffer) => {
+  const frames = [];
+  let rest = buffer;
+  while (rest.length > 0) {
+    const { value } = FrameParser.parse(rest);
+    frames.push(value.frame);
+    rest = rest.subarray(value.bytesUsed);
+  }
+  return frames;
+};
+
+test('Connection: coalesce batches every write of one turn into one cork/uncork', async () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { coalesce: true });
+  assert.strictEqual(conn.sendText('one'), true);
+  assert.strictEqual(conn.sendText('two'), true);
+  assert.strictEqual(conn.sendBinary(Buffer.from('three')), true);
+  assert.strictEqual(socket.corks, 1, 'corked once for the whole turn');
+  assert.strictEqual(socket.uncorks, 0, 'not flushed yet');
+  assert.strictEqual(socket.writtenData.length, 0);
+  await tick();
+  assert.strictEqual(socket.uncorks, 1);
+  assert.strictEqual(socket.writtenData.length, 1, 'one flush carries all three frames');
+  const frames = parseAll(socket.writtenData[0]);
+  assert.deepStrictEqual(
+    frames.map((frame) => [frame.opcode, frame.payload.toString()]),
+    [
+      [OPCODES.TEXT, 'one'],
+      [OPCODES.TEXT, 'two'],
+      [OPCODES.BINARY, 'three'],
+    ],
+  );
+  // The next turn starts a new cork.
+  conn.sendText('four');
+  assert.strictEqual(socket.corks, 2);
+  await tick();
+  assert.strictEqual(socket.writtenData.length, 2);
+  conn.terminate();
+});
+
+test('Connection: without coalesce a small frame is one write with no cork at all', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0));
+  conn.sendText('one');
+  conn.sendText('two');
+  assert.strictEqual(socket.corks, 0);
+  assert.strictEqual(socket.writtenData.length, 2, 'header and payload travel in one buffer');
+  assert.strictEqual(FrameParser.parse(socket.writtenData[1]).value.frame.payload.toString(), 'two');
+  conn.terminate();
+});
+
+test('Connection: a payload above the single-write cutoff is written as header + payload', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0));
+  const big = Buffer.alloc(64 * 1024, 0x61);
+  conn.sendBinary(big);
+  // MockSocket concatenates a corked header+payload pair into one entry.
+  assert.strictEqual(socket.corks, 1);
+  assert.strictEqual(socket.uncorks, 1);
+  const frame = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+  assert.strictEqual(frame.payload.length, big.length);
+  assert.ok(frame.payload.equals(big));
+  conn.terminate();
+});
+
+test('Connection: a client-side single-buffer frame is masked', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { isClient: true });
+  conn.sendText('from the client');
+  const frame = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+  assert.strictEqual(frame.masked, true);
+  frame.unmaskPayload();
+  assert.strictEqual(frame.payload.toString(), 'from the client');
+  conn.terminate();
+});
+
+test('Connection: terminate inside a coalesced turn leaves no dangling uncork', async () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { coalesce: true });
+  conn.sendText('going');
+  conn.terminate();
+  assert.strictEqual(socket.destroyed, true);
+  await tick();
+  assert.strictEqual(socket.uncorks, 0, 'a destroyed socket is not uncorked');
+});
+
+test('Connection: a ping after a protocol-error close is not answered (RFC 6455 7.1.7)', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0));
+  conn.on('error', () => {});
+  const text = Frame.text('Hello, world!');
+  text.maskPayload();
+  socket.emit('data', text.toBuffer());
+  // A reserved non-control opcode fails the connection...
+  const reserved = new Frame(true, 0x06, false, Buffer.from('Hello, world!'), null);
+  reserved.maskPayload();
+  socket.emit('data', reserved.toBuffer());
+  // ...and a ping in a later segment gets no pong, unlike a graceful close.
+  // (Nothing echoes the text here: the only frame written is the Close.)
+  const ping = Frame.ping();
+  ping.maskPayload();
+  socket.emit('data', ping.toBuffer());
+  const frames = socket.writtenData.map((buf) => FrameParser.parse(buf).value.frame.opcode);
+  assert.deepStrictEqual(frames, [OPCODES.CLOSE]);
+  conn.terminate();
+});
+
+test('Connection: a ping after an app-initiated close is still answered', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0));
+  conn.sendClose(1000, 'bye');
+  const ping = Frame.ping();
+  ping.maskPayload();
+  socket.emit('data', ping.toBuffer());
+  const frames = socket.writtenData.map((buf) => FrameParser.parse(buf).value.frame.opcode);
+  assert.deepStrictEqual(frames, [OPCODES.CLOSE, OPCODES.PONG]);
+  conn.terminate();
+});

@@ -64,6 +64,49 @@ async function startWrpc() {
   };
 }
 
+// The same RPC path over the uWebSockets.js engine: what separates the cost
+// of wrpc's dispatch from the cost of its JavaScript WebSocket engine.
+async function startWrpcUws() {
+  const { createUwsEngine } = require('../../src/adapters/uws.js');
+  const uws = require('uWebSockets.js');
+  const { Server } = require('../../src/server.js');
+  const { defineRouter, procedure } = require('../../src/rpc/router.js');
+  const server = new Server({
+    router: defineRouter({ bench: { echo: procedure({ access: 'public', handler: async (_c, args) => args }) } }),
+    host: '127.0.0.1',
+    port: 0,
+    logger: false,
+    engine: createUwsEngine({ uws }),
+  });
+  await server.listen();
+  const { port } = server.address();
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
+  await client.load('bench');
+  return {
+    call: (args) => client.api.bench.echo(args),
+    stop: async () => {
+      client.close();
+      await server.close();
+    },
+  };
+}
+
+// Client batching on: the 64 in-flight calls of the pipelined row share
+// frames instead of each being one.
+async function startWrpcBatch() {
+  const api = { bench: { echo: { handler: async (args) => args } } };
+  const { server, port } = await createWrpcServer(api);
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`, { batch: true });
+  await client.load('bench');
+  return {
+    call: (args) => client.api.bench.echo(args),
+    stop: async () => {
+      client.close();
+      await server.close();
+    },
+  };
+}
+
 async function startWs() {
   const httpServer = http.createServer();
   const wss = new WebSocket.Server({ server: httpServer });
@@ -223,6 +266,8 @@ async function startTrpcWs() {
 
 module.exports = {
   wrpc: { label: 'wrpc (own WS + RPC dispatch)', start: startWrpc },
+  'wrpc-uws': { label: 'wrpc (uws engine + RPC dispatch)', start: startWrpcUws },
+  'wrpc-batch': { label: 'wrpc (own WS, batch: true)', start: startWrpcBatch },
   ws: { label: 'ws (raw echo RPC)', start: startWs },
   uws: { label: 'uWebSockets.js (raw echo RPC)', start: startUws },
   'fastify-websocket': { label: '@fastify/websocket (raw echo RPC)', start: startFastifyWebsocket },

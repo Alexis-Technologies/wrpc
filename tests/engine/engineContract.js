@@ -77,7 +77,7 @@ const runEngineContract = async (harness, t) => {
     // A standalone engine owns the network stack and must be able to listen.
     if (engine.standalone) assert.strictEqual(typeof engine.listen, 'function');
     const caps = engine.capabilities;
-    for (const key of ['backpressure', 'ping', 'deflate', 'cork', 'pause']) {
+    for (const key of ['backpressure', 'ping', 'deflate', 'cork', 'pause', 'prepared']) {
       assert.strictEqual(typeof caps[key], 'boolean', `capability ${key}`);
     }
     engine.close(); // an engine that owns native resources must not be leaked
@@ -235,6 +235,32 @@ const runEngineContract = async (harness, t) => {
     assert.strictEqual(res.headers['sec-websocket-protocol'], 'wrpc');
     const socket = await connected;
     assert.strictEqual(socket.protocol, 'wrpc');
+  });
+
+  await t.test('sendPrepared (when present) delivers one shared message to two peers like send(text)', async (sub) => {
+    const { engine, source, port } = await boot(sub);
+    if (!engine.capabilities.prepared) return void sub.skip('engine has no prepared-frame path');
+    const sockets = [];
+    source.on('connection', (socket) => sockets.push(socket));
+    const first = await openPeer(port);
+    const second = await openPeer(port);
+    sub.after(() => {
+      first.close();
+      second.close();
+    });
+    assert.strictEqual(sockets.length, 2);
+    for (const socket of sockets) assert.strictEqual(typeof socket.sendPrepared, 'function');
+
+    const message = { text: 'shared across peers', frames: null, compress: true };
+    const received = Promise.all([
+      new Promise((resolve) => first.once('message', resolve)),
+      new Promise((resolve) => second.once('message', resolve)),
+    ]);
+    const accepted = sockets.map((socket) => socket.sendPrepared(message));
+    for (const ok of accepted) assert.strictEqual(typeof ok, 'boolean');
+    assert.notStrictEqual(message.frames, null, 'the engine claims the shared slot');
+    const texts = (await received).map(String);
+    assert.deepStrictEqual(texts, ['shared across peers', 'shared across peers']);
   });
 
   await t.test('stopListening (when present) refuses new peers while accepted ones keep working', async (sub) => {

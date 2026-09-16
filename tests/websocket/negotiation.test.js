@@ -201,3 +201,28 @@ test('WebsocketServer: connections getter returns a snapshot', async () => {
     peer.close();
   });
 });
+
+test('deflate: filter(req) decides per connection whether the offer is accepted', async () => {
+  const filter = (req) => req.headers['x-slow-link'] === 'yes';
+  await withServer({ perMessageDeflate: { filter } }, async ({ port }) => {
+    const declined = await ProtocolClient.attemptHandshake({
+      host: 'localhost',
+      port,
+      path: '/',
+      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate' },
+      timeoutMs: 600,
+    });
+    assert.strictEqual(parseStatusCode(declined.statusLine), 101);
+    assert.strictEqual(declined.headers['sec-websocket-extensions'], undefined);
+
+    const accepted = await ProtocolClient.attemptHandshake({
+      host: 'localhost',
+      port,
+      path: '/',
+      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate', 'X-Slow-Link': 'yes' },
+      timeoutMs: 600,
+    });
+    assert.strictEqual(parseStatusCode(accepted.statusLine), 101);
+    assert.match(accepted.headers['sec-websocket-extensions'], /^permessage-deflate/);
+  });
+});

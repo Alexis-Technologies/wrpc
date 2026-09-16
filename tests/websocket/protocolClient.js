@@ -21,11 +21,14 @@ function parseStatusCode(statusLine) {
 // sendText, sendBinary, ping, close
 class ProtocolClient extends EventEmitter {
   #handlers;
-  constructor(url) {
+  // `headers` are extra request headers for the upgrade — how a test
+  // offers `Sec-WebSocket-Extensions: permessage-deflate`.
+  constructor(url, { headers = {} } = {}) {
     super();
     const u = new URL(url);
     const port = u.port || 80;
     const host = u.hostname || 'localhost';
+    this.handshakeHeaders = {};
 
     this._buffer = Buffer.alloc(0);
     this._opened = false;
@@ -42,31 +45,33 @@ class ProtocolClient extends EventEmitter {
       0xa: this.#handlePong,
     };
 
-    this.socket = ProtocolClient.#createSocket(u, host, port);
+    this.socket = ProtocolClient.#createSocket(u, host, port, headers);
     this.#attachSocketListeners();
   }
 
-  static #createSocket(url, host, port) {
+  static #createSocket(url, host, port, headers) {
     const socket = net.connect({ port, host }, () => {
       // Reduce Nagle latency for faster test handshakes/frames
       socket.setNoDelay(true);
       const key = crypto.randomBytes(16).toString('base64');
-      const req = ProtocolClient.#buildUpgradeRequest(host, port, url.pathname, key);
+      const req = ProtocolClient.#buildUpgradeRequest(host, port, url.pathname, key, headers);
       socket.write(req);
     });
     return socket;
   }
 
-  static #buildUpgradeRequest(host, port, path, key) {
-    return [
+  static #buildUpgradeRequest(host, port, path, key, headers) {
+    const lines = [
       `GET ${path || '/'} HTTP/1.1`,
       `Host: ${host}:${port}`,
       'Upgrade: websocket',
       'Connection: Upgrade',
       `Sec-WebSocket-Key: ${key}`,
       'Sec-WebSocket-Version: 13',
-      '\r\n',
-    ].join('\r\n');
+    ];
+    for (const name of Object.keys(headers)) lines.push(`${name}: ${headers[name]}`);
+    lines.push('\r\n');
+    return lines.join('\r\n');
   }
 
   #attachSocketListeners() {
@@ -91,12 +96,18 @@ class ProtocolClient extends EventEmitter {
     const idx = this._buffer.indexOf('\r\n\r\n');
     if (idx === -1) return false;
     const header = this._buffer.subarray(0, idx).toString();
-    const statusLine = header.split('\r\n', 1)[0] || '';
+    const lines = header.split('\r\n');
+    const statusLine = lines[0] || '';
     const code = parseStatusCode(statusLine);
     if (code !== 101) {
       this.socket.destroy();
       this.emit('close');
       return false;
+    }
+    for (let i = 1; i < lines.length; i++) {
+      const colon = lines[i].indexOf(':');
+      if (colon <= 0) continue;
+      this.handshakeHeaders[lines[i].slice(0, colon).trim().toLowerCase()] = lines[i].slice(colon + 1).trim();
     }
     this._opened = true;
     this._buffer = this._buffer.subarray(idx + 4);
@@ -109,6 +120,7 @@ class ProtocolClient extends EventEmitter {
       const b0 = this._buffer[0];
       const b1 = this._buffer[1];
       const fin = (b0 & 0x80) !== 0;
+      const rsv = b0 & 0x70;
       const opcode = b0 & 0x0f;
       const masked = (b1 & 0x80) !== 0;
       let len = b1 & 0x7f;
@@ -139,18 +151,18 @@ class ProtocolClient extends EventEmitter {
 
       this._buffer = this._buffer.subarray(offset + maskLen + len);
 
-      this.#dispatchFrame({ opcode, fin, masked, payload });
+      this.#dispatchFrame({ opcode, fin, masked, rsv, payload });
     }
   }
 
-  #dispatchFrame({ opcode, fin, masked, payload }) {
+  #dispatchFrame({ opcode, fin, masked, rsv, payload }) {
     const handler = this.#handlers && this.#handlers[opcode];
     if (handler) {
-      handler.call(this, { opcode, fin, masked, payload });
+      handler.call(this, { opcode, fin, masked, rsv, payload });
       return;
     }
     // Unknown opcode: just emit the frame raw
-    this.emit('frame', opcode, payload, { fin, masked });
+    this.emit('frame', opcode, payload, { fin, masked, rsv });
   }
 
   #handleContinuation({ fin, masked, payload }) {
@@ -166,21 +178,21 @@ class ProtocolClient extends EventEmitter {
     }
   }
 
-  #handleText({ opcode, fin, masked, payload }) {
+  #handleText({ opcode, fin, masked, rsv, payload }) {
     if (!fin) {
       this._fragments = { opcode, chunks: [payload] };
       return;
     }
-    this.emit('frame', opcode, payload, { fin, masked });
+    this.emit('frame', opcode, payload, { fin, masked, rsv });
     this.emit('message', payload);
   }
 
-  #handleBinary({ opcode, fin, masked, payload }) {
+  #handleBinary({ opcode, fin, masked, rsv, payload }) {
     if (!fin) {
       this._fragments = { opcode, chunks: [payload] };
       return;
     }
-    this.emit('frame', opcode, payload, { fin, masked });
+    this.emit('frame', opcode, payload, { fin, masked, rsv });
   }
 
   #handlePing({ opcode, fin, masked, payload }) {

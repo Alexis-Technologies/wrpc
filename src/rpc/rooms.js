@@ -260,13 +260,19 @@ class Broadcast {
       this.#log.error({ err: error, event: 'broadcast.serialize', name });
       return 0;
     }
+    // ONE shared message for the whole fan-out. `frames` is a slot the
+    // recipient's engine fills with the encoded (and, per negotiated
+    // window, deflated) frame on first use and every later recipient
+    // reuses — so the wire bytes, like the JSON, are built once per emit,
+    // not once per member. Engines without the seam read `text`.
+    const message = { text, frames: null, compress: options === null || options.compress !== false };
     let sent = 0;
     for (const client of this.#recipients()) {
       if (this.#excluded?.has(client)) continue;
       // HTTP clients cannot carry events; skipping beats throwing mid-fan-out.
       if (!client.persistent) continue;
       try {
-        const flushed = client.sendRaw(text, unreliable ? options : null);
+        const flushed = client.sendShared(message, unreliable ? options : null);
         sent++;
         // Not silently discarded any more: a recipient above its high-water
         // mark is visible in the metrics, and the engine's maxBackpressure

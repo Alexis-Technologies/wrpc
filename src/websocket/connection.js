@@ -2,13 +2,27 @@
 
 const { EventEmitter } = require('node:events');
 
+const crypto = require('node:crypto');
+
 const { OPCODES, CLOSE_CODES, RSV1 } = require('./constants.js');
-const { Frame, EMPTY_PING, EMPTY_PONG } = require('./frame.js');
+const { Frame, EMPTY_PING, EMPTY_PONG, encodeFrame, encodeFrameFrom } = require('./frame.js');
 const { FrameParser, isValidUTF8 } = require('./frameParser.js');
 const { SegmentQueue } = require('./segments.js');
+const { PreparedFrames } = require('./prepared.js');
 const permessageDeflate = require('./permessageDeflate.js');
 
 const MAX_BUFFER = 1024 * 1024 * 100;
+// Up to this payload size a data frame is encoded as ONE contiguous buffer
+// (header + payload) and written once; above it the payload is written as
+// its own chunk behind a separate header, because copying a large payload
+// costs more than the second write it saves (bench/send-path.js).
+const SINGLE_WRITE_MAX = 16 * 1024;
+// Module-wide utf8 scratch for sendText: written and copied out within one
+// synchronous call, so sharing it between connections is safe. 48 KiB
+// covers a 16 K-char message at the 3-bytes-per-unit worst case, i.e.
+// every message that can take the single-write path.
+const SCRATCH_SIZE = 48 * 1024;
+const SCRATCH = Buffer.allocUnsafeSlow(SCRATCH_SIZE);
 // The inflated-size cap for permessage-deflate, separate from MAX_BUFFER on
 // purpose: MAX_BUFFER bounds bytes that already crossed the wire, while a
 // compression bomb turns a few KB on the wire into whatever this allows —
@@ -40,6 +54,23 @@ class Connection extends EventEmitter {
   #paused = false;
   #closeCode = CLOSE_CODES.CONNECTION_CLOSED_ABNORMALLY;
   #closeReason = '';
+  // Set when WE failed the connection (a protocol error, an oversized or
+  // undecodable message): RFC 6455 7.1.7 — nothing the peer sends after
+  // that is acted on except its Close, which lets us hang up sooner. A
+  // ping in particular is not answered any more (Autobahn 4.1.3–4.2.5).
+  #failed = false;
+  #coalesce;
+  #corked = false;
+  // Write coalescing: the first write of an event-loop turn corks the socket
+  // and this uncorks it on the next tick, so every frame produced in that
+  // turn — the N callbacks of a batch, a burst of events — leaves in ONE
+  // writev instead of N syscalls. The idiom node:http uses. The `send()`
+  // boolean stays honest: a corked write still reports writableLength
+  // against the high-water mark, and 'drain' is unchanged.
+  #uncork = () => {
+    this.#corked = false;
+    if (!this.#socket.destroyed) this.#socket.uncork();
+  };
 
   constructor(socket, head, options = {}) {
     super();
@@ -59,6 +90,10 @@ class Connection extends EventEmitter {
       fragmentThreshold = 0,
       protocol = '',
       deflate = null,
+      // Off for a bare Connection so a write is on the socket the moment
+      // send() returns; WebsocketServer turns it on for the connections it
+      // creates (a server answering many peers is where bursts happen).
+      coalesce = false,
     } = options;
     this.#isClient = isClient;
     this.#maxBuffer = maxBuffer;
@@ -67,6 +102,7 @@ class Connection extends EventEmitter {
     this.#maxBackpressure = maxBackpressure;
     this.#fragmentThreshold = fragmentThreshold;
     this.#deflate = deflate;
+    this.#coalesce = coalesce && typeof socket.cork === 'function';
     if (deflate) this.#allowedRsv = RSV1;
     this.protocol = protocol;
     this.#init(head);
@@ -130,10 +166,11 @@ class Connection extends EventEmitter {
       const error = new Error('Buffer overflow, closing connection');
       this.emit('error', error);
       if (this.#isClient) {
+        this.#failed = true;
         return void this.sendClose(CLOSE_CODES.MESSAGE_TOO_BIG, 'Message too big');
       }
       const frame = Frame.errorClose('MESSAGE_TOO_BIG');
-      return void this.#close(frame);
+      return void this.#fail(frame);
     }
 
     this.#processFrames();
@@ -155,11 +192,11 @@ class Connection extends EventEmitter {
 
         if (!this.#isClient && !value.masked) {
           const closeFrame = Frame.protocolErrorClose('UNMASKED');
-          return void this.#close(closeFrame);
+          return void this.#fail(closeFrame);
         }
         if (this.#isClient && value.masked) {
           const closeFrame = Frame.protocolErrorClose('MASKED', this.#isClient);
-          return void this.#close(closeFrame);
+          return void this.#fail(closeFrame);
         }
         // A frame that can never fit is rejected on its header, before the
         // payload is buffered.
@@ -191,6 +228,7 @@ class Connection extends EventEmitter {
 
     const { opcode } = frame;
     if (opcode === OPCODES.PING) {
+      if (this.#failed) return;
       this.emit('ping', frame.payload);
       return void this.sendPong(frame.payload);
     }
@@ -221,7 +259,7 @@ class Connection extends EventEmitter {
       type === 'PROTOCOL_ERROR'
         ? Frame.protocolErrorClose(subtype, this.#isClient)
         : Frame.errorClose(type, this.#isClient);
-    this.#close(frame);
+    this.#fail(frame);
   }
 
   #trackMessageSize(size) {
@@ -230,10 +268,11 @@ class Connection extends EventEmitter {
       const error = new Error('Message too big');
       this.emit('error', error);
       if (this.#isClient) {
+        this.#failed = true;
         this.sendClose(CLOSE_CODES.MESSAGE_TOO_BIG, 'Message too big');
       } else {
         const frame = Frame.errorClose('MESSAGE_TOO_BIG');
-        this.#close(frame);
+        this.#fail(frame);
       }
     }
     return !tooBig;
@@ -248,7 +287,7 @@ class Connection extends EventEmitter {
         const error = new Error('Protocol error: Unexpected CONTINUATION without start');
         this.emit('error', error);
         const frame = Frame.protocolErrorClose('COMMON', this.#isClient);
-        return void this.#close(frame);
+        return void this.#fail(frame);
       }
       if (frame.fin) {
         // single frame
@@ -281,14 +320,14 @@ class Connection extends EventEmitter {
         const error = new Error('Invalid UTF-8 in text frame');
         this.emit('error', error);
         const frame = Frame.errorClose('INVALID_PAYLOAD', this.#isClient);
-        return void this.#close(frame);
+        return void this.#fail(frame);
       }
       this.emit('message', fullPayload, isBinary);
     } else {
       const error = new Error('Protocol error: Unexpected data frame during fragments');
       this.emit('error', error);
       const frame = Frame.protocolErrorClose('COMMON', this.#isClient);
-      return void this.#close(frame);
+      return void this.#fail(frame);
     }
   }
 
@@ -303,24 +342,52 @@ class Connection extends EventEmitter {
     } catch (error) {
       this.emit('error', error);
       const type = error.code === 'ERR_BUFFER_TOO_LARGE' ? 'MESSAGE_TOO_BIG' : 'INVALID_PAYLOAD';
-      return void this.#close(Frame.errorClose(type, this.#isClient));
+      return void this.#fail(Frame.errorClose(type, this.#isClient));
     }
     const isText = opcode === OPCODES.TEXT;
     if (isText && !isValidUTF8(inflated)) {
       const error = new Error('Invalid UTF-8 in text frame');
       this.emit('error', error);
-      return void this.#close(Frame.errorClose('INVALID_PAYLOAD', this.#isClient));
+      return void this.#fail(Frame.errorClose('INVALID_PAYLOAD', this.#isClient));
     }
     this.emit('message', inflated, opcode === OPCODES.BINARY);
   }
 
-  send(data) {
-    if (typeof data === 'string') return this.sendText(data);
-    if (Buffer.isBuffer(data)) return this.sendBinary(data);
+  // `options.compress === false` sends this one message uncompressed even
+  // when deflate was negotiated and the payload clears the threshold.
+  send(data, options = null) {
+    if (typeof data === 'string') return this.sendText(data, options);
+    if (Buffer.isBuffer(data)) return this.sendBinary(data, options);
     throw new TypeError('send() accepts only string or Buffer');
   }
 
+  // A message prepared for fan-out: `{ text, frames, compress }` where
+  // `frames` is the engine-owned cache slot (see prepared.js). The slot is
+  // claimed when empty and reused when it already holds our own cache; a
+  // slot another engine claimed means a mixed room, and the text goes the
+  // ordinary way. Client connections and fragmenting ones do too — a client
+  // frame needs a fresh mask, and a fragmented one is not one buffer.
+  sendPrepared(message) {
+    if (this.#closing) return false;
+    if (this.#exceedsBackpressure()) return false;
+    if (this.#isClient || this.#fragmentThreshold) return this.sendText(message.text, message);
+    let frames = message.frames;
+    if (frames === null) {
+      frames = message.frames = new PreparedFrames(message.text);
+    } else if (!(frames instanceof PreparedFrames)) {
+      return this.sendText(message.text, message);
+    }
+    const deflate = this.#deflate;
+    const compressed = deflate !== null && message.compress !== false && frames.length >= deflate.threshold;
+    return this.#write(compressed ? frames.deflated(deflate.windowBits) : frames.plain());
+  }
+
   #write(buffer) {
+    if (this.#coalesce && !this.#corked) {
+      this.#corked = true;
+      this.#socket.cork();
+      process.nextTick(this.#uncork);
+    }
     const ok = this.#socket.write(buffer);
     if (!ok) this.#needsDrain = true;
     return ok;
@@ -344,14 +411,23 @@ class Connection extends EventEmitter {
     return true;
   }
 
-  #sendData(opcode, payload) {
+  #shouldCompress(length, options) {
+    const deflate = this.#deflate;
+    return deflate !== null && length >= deflate.threshold && (options === null || options.compress !== false);
+  }
+
+  #sendData(opcode, payload, options) {
     let rsv = 0;
-    if (this.#deflate && payload.length >= this.#deflate.threshold) {
+    if (this.#shouldCompress(payload.length, options)) {
       payload = permessageDeflate.compress(payload, this.#deflate.windowBits);
       rsv = RSV1;
     }
     const threshold = this.#fragmentThreshold;
     if (!threshold || payload.length <= threshold) {
+      if (payload.length <= SINGLE_WRITE_MAX) {
+        const mask = this.#isClient ? crypto.randomBytes(4) : null;
+        return this.#write(encodeFrame(opcode, rsv, payload, mask));
+      }
       return this.#writeFrame(new Frame(true, opcode, false, payload, null, rsv));
     }
     let ok = true;
@@ -372,17 +448,34 @@ class Connection extends EventEmitter {
 
   // Data send methods return false when the socket did not take the bytes
   // without exceeding its high-water mark — wait for 'drain' before more.
-  sendText(message) {
+  sendText(message, options = null) {
     if (this.#closing) return false;
     if (this.#exceedsBackpressure()) return false;
-    return this.#sendData(OPCODES.TEXT, Buffer.from(message, 'utf8'));
+    // A message that fits the scratch buffer even at 3 bytes per UTF-16
+    // unit is utf8-encoded ONCE into it; the frame then copies those bytes
+    // behind its header. Encoding straight into the frame would need
+    // Buffer.byteLength first — a second pass over the string that costs
+    // more than the memcpy it saves at typical packet sizes, and
+    // Buffer.from + a separate header costs an allocation and two writes
+    // (bench/send-path.js, "sendText 200 B").
+    if (message.length * 3 <= SCRATCH_SIZE) {
+      const length = SCRATCH.write(message, 0, 'utf8');
+      const threshold = this.#fragmentThreshold;
+      if (length <= SINGLE_WRITE_MAX && (!threshold || length <= threshold) && !this.#shouldCompress(length, options)) {
+        const mask = this.#isClient ? crypto.randomBytes(4) : null;
+        return this.#write(encodeFrameFrom(OPCODES.TEXT, 0, SCRATCH, length, mask));
+      }
+      // Compressed, fragmented or large: a copy the scratch can outlive.
+      return this.#sendData(OPCODES.TEXT, Buffer.from(SCRATCH.subarray(0, length)), options);
+    }
+    return this.#sendData(OPCODES.TEXT, Buffer.from(message, 'utf8'), options);
   }
 
-  sendBinary(buffer) {
+  sendBinary(buffer, options = null) {
     if (this.#closing) return false;
     if (this.#exceedsBackpressure()) return false;
     if (!Buffer.isBuffer(buffer)) buffer = Buffer.from(buffer);
-    return this.#sendData(OPCODES.BINARY, buffer);
+    return this.#sendData(OPCODES.BINARY, buffer, options);
   }
 
   sendPing(payload) {
@@ -414,6 +507,13 @@ class Connection extends EventEmitter {
   #fastPong() {
     const buf = this.#isClient ? Frame.emptyClientPongBuffer() : EMPTY_PONG;
     return this.#write(buf);
+  }
+
+  // A close WE initiated because the peer broke the protocol: the close
+  // frame goes out and the connection is failed (see #failed).
+  #fail(frameBuffer) {
+    this.#failed = true;
+    this.#close(frameBuffer);
   }
 
   #close(frameBuffer) {

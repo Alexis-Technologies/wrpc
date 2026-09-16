@@ -80,7 +80,8 @@ is `null` and `server.address()` is the only way to read the bound address.
 | `path` | Restrict upgrades to this pathname. |
 | `verifyClient({ req, socket, head })` | Gate the handshake. `socket`/`head` are `null` for standalone engines. |
 | `protocols` / `handleProtocols(offered, req)` | Subprotocol negotiation; `false` rejects the handshake. |
-| `perMessageDeflate` | `true`, or `{ threshold }`. See [wire format](./wire-format#permessage-deflate). |
+| `perMessageDeflate` | `true`, or `{ threshold, filter }`. See [wire format](./wire-format#permessage-deflate). |
+| `coalesce` | Built-in engine: cork the writes of one event-loop turn into one flush. Default `true`. |
 | `pingInterval` | Protocol-ping interval for engines that own liveness. |
 | `maxBuffer` / `maxBackpressure` / `fragmentThreshold` / `closeTimeout` | Engine limits. |
 | `onHttpCall(call)` | Standalone engines only: the core's HTTP entry point. |
@@ -95,7 +96,8 @@ natively; an adapter normalizes its own socket to this shape.
 
 ```ts
 interface WrpcSocket extends EventEmitter {
-  send(data: string | Buffer): boolean;   // false = above the high-water mark
+  send(data: string | Buffer, options?: { compress?: boolean }): boolean;   // false = above the high-water mark
+  sendPrepared?(message: SharedMessage): boolean;   // optional: capability `prepared`
   readonly bufferedAmount: number;
   readonly remoteAddress?: string;
   protocol?: string;
@@ -119,6 +121,19 @@ Two rules the whole stack depends on:
   consumer into unbounded server memory.
 - **A received payload may share memory with the receive buffer.** Copy it if
   you retain it past the listener call.
+
+Two optional extensions, both feature-detected by the core:
+
+- `send(data, { compress: false })` asks for this one message to go
+  uncompressed on a deflate-negotiated connection. A socket that ignores the
+  second argument simply compresses as usual.
+- `sendPrepared(message)` is the fan-out path (capability `prepared`). A
+  room broadcast hands every recipient **one** `{ text, frames, compress }`
+  object; the socket claims `frames` with its own cache — the encoded frame,
+  plus a deflated one per negotiated window — when it is `null`, reuses it
+  when it already holds that engine's cache, and falls back to `send(text)`
+  when another engine claimed it (a mixed room). The built-in engine
+  implements it; a socket without it receives `send(text)`.
 
 ### `EngineRequest`
 
@@ -147,6 +162,7 @@ interface EngineCapabilities {
   deflate: boolean;
   cork: boolean;
   pause: boolean;
+  prepared: boolean;
 }
 ```
 
@@ -162,6 +178,7 @@ discovered.
 | `deflate` | ✅ (off by default) | follows `compression` |
 | `cork` | ✅ | ✅ |
 | `pause` | ✅ | ❌ — no socket-level pause |
+| `prepared` | ✅ — `sendPrepared`, one frame per fan-out | ❌ — uws frames inside `send()` |
 
 ## The built-in engine
 

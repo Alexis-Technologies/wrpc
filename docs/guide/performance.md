@@ -18,18 +18,25 @@ is worse than no benchmark.
 
 `bench/rpc-comparison.js` puts wrpc's **full RPC path** (router, validation,
 context, callback correlation) next to raw WebSocket echoes with no RPC layer
-at all, and next to two frameworks that do the same job wrpc does.
+at all, and next to two frameworks that do the same job wrpc does. Three
+wrpc rows: the default (own engine, one frame per call), the same RPC path
+over the [uws engine](./adapters/uws), and the own engine with client
+[batching](./client#batching) on.
 
-| Stack | small payload | 10 KB payload | small ×64 batched |
+| Stack | small payload | 10 KB payload | small ×64 in flight |
 | --- | ---: | ---: | ---: |
-| **wrpc** — own WS + RPC dispatch | 26,438 | **13,587** | 101,219 |
-| `ws` — raw echo, no RPC | 35,635 | 12,107 | 108,955 |
-| uWebSockets.js — raw echo, no RPC | 30,196 | 12,169 | 158,567 |
-| `@fastify/websocket` — raw echo, no RPC | 34,888 | 12,307 | 110,184 |
-| socket.io — framework RPC via `emitWithAck` | 25,254 | 11,128 | 99,472 |
-| tRPC — framework RPC over `wsLink` | 661¹ | 587¹ | 23,023 |
+| **wrpc** — own WS + RPC dispatch | 18,027 | **10,346** | 95,807 |
+| **wrpc** — uws engine + RPC dispatch | 19,735 | **11,857** | 112,037 |
+| **wrpc** — own WS, `batch: true` | 18,327 | 8,643 | 116,757 |
+| `ws` — raw echo, no RPC | 13,734 | 9,725 | 83,243 |
+| uWebSockets.js — raw echo, no RPC | 22,654 | 9,759 | 129,312 |
+| `@fastify/websocket` — raw echo, no RPC | 22,620 | 9,638 | 86,585 |
+| fastify-uws — raw echo, no RPC | 23,568 | 7,126 | 152,382 |
+| socket.io — framework RPC via `emitWithAck` | 18,032 | 8,676 | 82,066 |
+| tRPC — framework RPC over `wsLink` | 614¹ | 542¹ | 20,787 |
 
-ops/sec, higher is better.
+ops/sec, higher is better; one run, one machine, so read rows against each
+other rather than against an earlier table.
 
 ¹ tRPC's sequential number is a **client-side flush-timer artifact, not
 throughput**: its per-call latency measures a near-constant ~1.5 ms
@@ -41,20 +48,26 @@ amortizes.
 
 Read it honestly:
 
-- **A raw echo is the ceiling, not a competitor.** `ws` at 1.35× on small
-  payloads is what a socket costs with no router, no access check and no
-  correlation on top. wrpc paying 26% for all of that is the trade.
+- **A raw echo is the ceiling, not a competitor.** uWebSockets.js at 1.26×
+  on small payloads is what a socket costs with no router, no access check
+  and no correlation on top. wrpc paying ~20% for all of that is the trade —
+  and on this run it is level with `@fastify/websocket` and ahead of `ws`.
 - **On real payloads the gap closes and inverts.** At 10 KB, wrpc is the
   fastest entry in the table — including the raw echoes — because the
   send path avoids re-encoding and re-copying what it already has.
+- **The engine is not where the pipelined gap is.** With 64 calls in
+  flight wrpc over its own engine runs at 95.8K and over the uws engine at
+  112K, against 129K for a raw uws echo: swapping the JavaScript WebSocket
+  engine for the native one buys ~17%, and the rest of the distance is the
+  RPC layer plus the client. Turning on client batching — 64 calls sharing
+  frames — is worth about as much as the engine swap, on the same engine.
+  Both are one option away; neither is the default, because a single call
+  should not wait for a flush.
 - **Against frameworks doing the same job**, wrpc is level with socket.io on
-  a single call and the fastest measured stack at 10 KB. The tRPC rows read
-  through footnote ¹: its sequential number is a client flush-timer
-  artifact, and the honest comparison is the batched column — where wrpc is
-  still ~4.4× ahead. tRPC's type story is excellent and unaffected by any
-  of this.
-- **Batching changes the ranking**, and a uWebSockets.js-backed stack wins it —
-  which is exactly why the [uws engine](./adapters/uws) is a supported swap.
+  a single call and ahead pipelined. The tRPC rows read through footnote ¹:
+  its sequential number is a client flush-timer artifact, and the honest
+  comparison is the pipelined column — where wrpc is still ~4.6× ahead.
+  tRPC's type story is excellent and unaffected by any of this.
 
 ## Fan-out
 
@@ -62,22 +75,64 @@ Read it honestly:
 
 | Scenario | rate | throughput |
 | --- | ---: | ---: |
-| `sendText` 200 B | 6,877,224/sec | 1338 MB/s |
-| `sendText` 4 KB | 775,007/sec | 3030 MB/s |
-| room fan-out ×50 | 99,487/sec | 2751 MB/s |
-| room fan-out ×200 | 29,197/sec | 3230 MB/s |
-| room fan-out ×50 **+ deflate** | 2,776/sec | 9 MB/s |
+| `sendText` 200 B | 6,252,035/sec | 1216 MB/s |
+| `sendText` 4 KB | 1,671,520/sec | 6536 MB/s |
+| `sendText` 64 KB | 62,840/sec | 3928 MB/s |
+| room fan-out ×50 | 637,248/sec | 17624 MB/s |
+| room fan-out ×200 | 321,820/sec | 35602 MB/s |
+| room fan-out ×50 **+ deflate** | 101,609/sec | 334 MB/s |
+| room fan-out ×200 **+ deflate** | 75,185/sec | 989 MB/s |
+| room fan-out ×50 + deflate, windows 10/15 | 54,272/sec | 179 MB/s |
 
-Fan-out encodes the frame **once** and writes the same buffer to every member;
-throughput keeps climbing with the member count because the per-recipient cost
-is a write, not a serialize.
+A broadcast is serialized **once**, and on the built-in engine it is also
+framed once: `Broadcast.emit` hands every recipient one shared message, the
+first `Connection` to write it encodes the frame into the message's cache
+slot, and every later recipient writes that same buffer
+(`Connection.sendPrepared`). The per-recipient cost is a socket write, which
+is why throughput keeps climbing with the member count.
 
-::: warning permessage-deflate costs 36× on fan-out
-Compression is per-connection by construction — the same payload has to be
-compressed once per recipient, and the deflate context makes it expensive.
-`sendText 200 B` drops from 6.9 M/s to 206 K/s with deflate on. Enable it for
-bandwidth-bound clients, not for chatty in-datacenter fan-out.
+::: tip permessage-deflate is compressed once per emit, not once per member
+The compressed bytes depend only on the payload and the peer's negotiated
+window (both directions are pinned to no context takeover — see
+[wire format](../reference/wire-format#permessage-deflate)), so the shared
+message caches one deflated frame **per distinct window** and a room of 200
+costs one `deflateRaw` for the whole fan-out. A fleet that negotiates two
+window sizes pays two (the `windows 10/15` row). The remaining gap to the
+uncompressed rows is that one deflate; before the shared frame it was
+**one per recipient** and fan-out ×50 ran at 2,776/sec.
 :::
+
+Unicast sends are one contiguous buffer up to 16 KiB — header and payload
+written together, the text utf8-encoded straight from a scratch buffer — and
+a separate header + payload write above it, where the copy would cost more
+than the write it saves (the 64 KB row). On the server every write of one
+event-loop turn is corked and flushed on the next tick, so a batch of N
+answers leaves in one `writev`.
+
+Compression is still worth choosing per peer and per message: enable it for
+bandwidth-bound clients with the handshake `filter`, and skip it for a
+message that is already compressed or latency-critical with
+`emit(name, data, { compress: false })` — see [rooms](./rooms#compression).
+
+## In the browser
+
+`pnpm bench:browser` runs `bench/browser/calls.js` in the installed Chrome
+(through `playwright-core`, a devDependency — no browser download): the
+client's call path, id to settle, over an in-page echo on a `MessageChannel`
+so no network and no server code is in the number.
+
+| Scenario (Chrome 152) | ops/sec |
+| --- | ---: |
+| call echo, 1 in flight | 94,131 |
+| call echo, 64 in flight | 114,158 |
+| call echo, 1024 in flight | 104,864 |
+| call echo, 64 in flight, per-call `timeout` | 113,810 |
+
+The pipelined rows are what the client's deadline scheduler bought: one
+bucketed timer per client instead of a `setTimeout` and three closures per
+call took 64 in flight from 101,666 to 114,158 and 1024 from 90,665 to
+104,864, with a single awaited call unchanged. `WRPC_ROOT=<checkout>` points
+the runner at another checkout for a before/after.
 
 ## The receive path
 
@@ -106,7 +161,10 @@ buffer on every segment. See [wire format](../reference/wire-format#receive-path
 | 128 | 31,160/s | 121,834/s | indexed 3.91× |
 
 Which is why the client's default `batch.maxSize` is 16: the shape changes
-right there.
+right there. The server's own switch from the scan to the index sits at 12
+(`ServerHttpTransport`, for the HTTP batch reply) — between the last size
+where the scan still wins and the first where the index does; both numbers
+come from this one bench, and re-running it is the way to move either.
 
 ## Cluster operations
 

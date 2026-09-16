@@ -98,12 +98,17 @@ class UwsSocket extends EventEmitter {
     }
   }
 
-  send(data) {
+  // The third uws argument asks for permessage-deflate on this message;
+  // it defaults to false in uws, so without it a compressor configured on
+  // the engine never compressed a single outbound frame. `compress: false`
+  // is the per-message opt-out the built-in engine honours too.
+  send(data, options = null) {
     if (this.#closed) return false;
     const isBinary = typeof data !== 'string';
+    const compress = options === null || options.compress !== false;
     let status;
     try {
-      status = this.#ws.send(data, isBinary);
+      status = this.#ws.send(data, isBinary, compress);
     } catch {
       // Raced a close between the guard and the call.
       return false;
@@ -352,6 +357,9 @@ const createUwsEngine = (engineOptions = {}) => {
       // No receive-side flow control: uws exposes no socket-level pause, so
       // a fast uploader is not throttled by a slow stream consumer.
       pause: false,
+      // No prepared-frame path: uws frames (and compresses) inside send().
+      // Its topic publish() is the equivalent seam — a different design.
+      prepared: false,
     },
     app,
 

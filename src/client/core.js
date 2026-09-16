@@ -675,12 +675,16 @@ class WrpcClient extends Emitter {
     if (this.#calls.size === 0 && this.#pending.length === 0) return;
     const entries = Array.from(this.#calls.values());
     this.#calls.clear();
+    this.#lanes.clear();
+    if (this.#deadlineTimer !== null) {
+      clearTimeout(this.#deadlineTimer);
+      this.#deadlineTimer = null;
+    }
     this.#pending.length = 0;
     this.#pendingBytes = 0;
     this.#cancelled.clear();
     for (const entry of entries) {
-      clearTimeout(entry.timeout);
-      entry.release();
+      entry.release?.();
       entry.reject(new WrpcError(CONNECTION_CLOSED_ERROR));
     }
   }
@@ -692,9 +696,7 @@ class WrpcClient extends Emitter {
   #failCall(id) {
     const entry = this.#calls.get(id);
     if (!entry) return;
-    this.#calls.delete(id);
-    clearTimeout(entry.timeout);
-    entry.release();
+    this.#forget(entry, id);
     entry.reject(new WrpcError(CONNECTION_CLOSED_ERROR));
   }
 
@@ -1317,6 +1319,9 @@ class WrpcClient extends Emitter {
       if (this.#proxyPacket) return void this.#proxyPacket(data, null);
       throw new Error('Invalid JSON packet');
     }
+    // The answer to a call is the commonest inbound packet: settle it here,
+    // before the batch and heartbeat checks and without the #dispatch hop.
+    if (packet.type === 'callback' && packet.id && !this.#proxyPacket) return void this.#settle(packet);
     // A batch frame answers several packets at once; each one is dispatched
     // exactly as it would have been on its own.
     if (Array.isArray(packet)) {
@@ -1363,9 +1368,7 @@ class WrpcClient extends Emitter {
     // rejected the moment it aborted, so the ack is expected, not an error.
     if (!call && this.#cancelled.delete(id)) return;
     if (!call) throw new Error(`Callback ${id} not found`);
-    this.#calls.delete(id);
-    clearTimeout(call.timeout);
-    call.release?.();
+    this.#forget(call, id);
     if (packet.error) return void call.reject(new WrpcError(packet.error));
     call.resolve(packet.result);
   }
@@ -1878,44 +1881,125 @@ class WrpcClient extends Emitter {
   #dispatchCall(target, packet, id, signal, callTimeout) {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) return void reject(new WrpcError(CANCELLED_ERROR));
-      const timeout = setTimeout(
-        () => {
-          if (!this.#calls.has(id)) return;
-          this.#calls.delete(id);
-          this.#unqueue(id);
-          release();
-          reject(new WrpcError(REQUEST_TIMEOUT_ERROR));
-        },
-        callTimeout > 0 ? callTimeout : this.#callTimeout,
-      );
-      const onAbort = () => {
-        if (!this.#calls.has(id)) return;
-        this.#calls.delete(id);
-        clearTimeout(timeout);
-        // Still queued: drop it instead of racing a cancel ahead of the
-        // call. And a request/response transport cannot carry a cancel at
-        // all — sending one there only earns a 400 nobody can route.
-        if (!this.#unqueue(id) && this.active && this.#transport.persistent !== false) {
-          this.#cancelled.add(id);
-          this.send({ type: 'cancel', id });
-        }
-        reject(new WrpcError(CANCELLED_ERROR));
-      };
-      const release = () => signal?.removeEventListener('abort', onAbort);
-      signal?.addEventListener('abort', onAbort, { once: true });
-      this.#calls.set(id, { resolve, reject, timeout, release });
+      const bucket = this.#armCall(id, callTimeout > 0 ? callTimeout : this.#callTimeout);
+      let release = null;
+      if (signal) {
+        const onAbort = () => {
+          const call = this.#calls.get(id);
+          if (!call) return;
+          this.#forget(call, id);
+          // Still queued: drop it instead of racing a cancel ahead of the
+          // call. And a request/response transport cannot carry a cancel at
+          // all — sending one there only earns a 400 nobody can route.
+          if (!this.#unqueue(id) && this.active && this.#transport.persistent !== false) {
+            this.#cancelled.add(id);
+            this.send({ type: 'cancel', id });
+          }
+          reject(new WrpcError(CANCELLED_ERROR));
+        };
+        release = () => signal.removeEventListener('abort', onAbort);
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+      const call = { resolve, reject, bucket, release };
+      this.#calls.set(id, call);
       try {
         this.send(packet);
       } catch (error) {
         // A dead transport throws synchronously ('Not connected'). Reject
         // CODED like every other dead-connection path — and clean up now,
-        // or the armed timer would hold the entry for the full callTimeout.
-        this.#calls.delete(id);
-        clearTimeout(timeout);
-        release();
+        // or the armed deadline would hold the entry for the full callTimeout.
+        this.#forget(call, id);
         reject(new WrpcError({ message: error?.message ?? 'Connection closed', code: 503 }));
       }
     });
+  }
+
+  // --- Call deadlines --------------------------------------------------
+  //
+  // One timer for every call in flight instead of a setTimeout per call.
+  // Calls are bucketed by deadline, one lane per distinct timeout value
+  // (the default callTimeout is one lane; a per-call `timeout` gets its
+  // own), each lane quantized to a bucket width of 1/32 of its timeout: a
+  // call times out between its deadline and deadline + width — never
+  // early, and 3 % late at most. Within a lane deadlines are monotonic, so
+  // a lane's buckets stay ordered by insertion and the earliest is the
+  // first entry. Settling a call removes it from its bucket at once, so an
+  // idle client holds no timer (bench/browser/calls.js, bench/bench.js).
+  #lanes = new Map();
+  #deadlineTimer = null;
+  #deadlineAt = 0;
+
+  #armCall(id, ms) {
+    let lane = this.#lanes.get(ms);
+    if (lane === undefined) {
+      lane = { ms, width: Math.max(1, Math.floor(ms / 32)), buckets: new Map() };
+      this.#lanes.set(ms, lane);
+    }
+    const end = Math.ceil((Date.now() + ms) / lane.width) * lane.width;
+    let bucket = lane.buckets.get(end);
+    if (bucket === undefined) {
+      bucket = new Set();
+      bucket.lane = lane;
+      bucket.end = end;
+      lane.buckets.set(end, bucket);
+    }
+    bucket.add(id);
+    if (this.#deadlineTimer === null || end < this.#deadlineAt) this.#armDeadline(end);
+    return bucket;
+  }
+
+  #armDeadline(at) {
+    if (this.#deadlineTimer !== null) clearTimeout(this.#deadlineTimer);
+    this.#deadlineAt = at;
+    this.#deadlineTimer = setTimeout(this.#onDeadline, Math.max(0, at - Date.now()));
+  }
+
+  #onDeadline = () => {
+    this.#deadlineTimer = null;
+    const now = Date.now();
+    let next = 0;
+    for (const lane of this.#lanes.values()) {
+      for (const bucket of lane.buckets.values()) {
+        if (bucket.end > now) {
+          if (next === 0 || bucket.end < next) next = bucket.end;
+          break;
+        }
+        lane.buckets.delete(bucket.end);
+        for (const id of bucket) this.#timeoutCall(id);
+      }
+      if (lane.buckets.size === 0) this.#lanes.delete(lane.ms);
+    }
+    if (next !== 0) this.#armDeadline(next);
+  };
+
+  #timeoutCall(id) {
+    const call = this.#calls.get(id);
+    if (!call) return;
+    this.#calls.delete(id);
+    this.#unqueue(id);
+    call.release?.();
+    call.reject(new WrpcError(REQUEST_TIMEOUT_ERROR));
+  }
+
+  // Drops a call's bookkeeping: its map entry, its deadline bucket (and the
+  // lane and timer when they empty — an idle client keeps nothing armed)
+  // and its abort listener.
+  #forget(call, id) {
+    this.#calls.delete(id);
+    const { bucket } = call;
+    bucket.delete(id);
+    if (bucket.size === 0) {
+      const { lane } = bucket;
+      lane.buckets.delete(bucket.end);
+      if (lane.buckets.size === 0) {
+        this.#lanes.delete(lane.ms);
+        if (this.#lanes.size === 0 && this.#deadlineTimer !== null) {
+          clearTimeout(this.#deadlineTimer);
+          this.#deadlineTimer = null;
+        }
+      }
+    }
+    call.release?.();
   }
 
   /**
