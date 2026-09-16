@@ -49,3 +49,16 @@ declare const router: Router;
 expectAssignable<RpcServerOptions>({ router, backplane: memory, instanceId: 'node-1' });
 expectAssignable<ServerOptions>({ router, backplane: memory });
 expectAssignable<ServerOptions>({ router, backplane: null });
+
+// The Redis session store: ioredis-shaped client, structural store out.
+declare const redis: {
+  get(k: string): Promise<string | null>;
+  set(k: string, v: string): Promise<'OK'>;
+  del(k: string): Promise<number>;
+  pexpire(k: string, ttl: number): Promise<number>;
+};
+const sessionStore = scaling.createRedisSessionStore({ client: redis, prefix: 'app:s:', ttl: 3600_000 });
+expectType<Promise<Record<string, unknown> | null>>(sessionStore.get('tok'));
+expectAssignable<ServerOptions>({ router: {} as Router, sessions: { store: sessionStore } });
+expectError(scaling.createRedisSessionStore({}));
+expectType<string>(scaling.DEFAULT_SESSION_PREFIX);

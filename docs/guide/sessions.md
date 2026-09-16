@@ -172,7 +172,30 @@ new Server({
 LRU eviction past `maxSessions`, expiry after `ttl` (`0` disables either).
 It is a real store, not a stub — but it lives in one process, so a second
 instance shares nothing with it. Anything running more than one process wants
-an injected store.
+a shared store, and one ships for Redis:
+
+```js
+const { createRedisSessionStore } = require('@alexify/wrpc/scaling');
+const Redis = require('ioredis');
+
+new Server({
+  router,
+  sessions: { store: createRedisSessionStore({ client: new Redis(url), prefix: 'wrpc:session:', ttl: 24 * 3600_000 }) },
+});
+```
+
+ioredis-shaped and injected, like the [backplane](./scaling#redis): `get`,
+`set(key, value, 'PX', ttl)`, `del`, and `pexpire` for the sliding expiry
+`restore()` performs (`touch`). State is stored as JSON under the prefix.
+node-redis v4 spells the expiring set as `set(key, value, { PX })` — a
+two-line wrapper adapts it. With a shared store, no instance owns a session
+and a WebSocket client needs **no sticky routing** — see
+[what stays per-instance](./scaling#what-stays-per-instance).
+
+Writes to `session.state` are coalesced: the assignments of one turn become
+**one** `store.set` on a microtask (the initial state of `create()` is
+written immediately), and a session that was finalized in the meantime is
+not written back.
 
 ## Tokens
 

@@ -62,9 +62,23 @@ const createProxy = (data, save) =>
   });
 
 class Session {
-  constructor(token, data, save) {
+  #lifecycle;
+
+  constructor(token, data, save, lifecycle = { ended: false }) {
     this.token = token;
+    this.#lifecycle = lifecycle;
     this.state = createProxy(data, save);
+  }
+
+  /** True once the session was finalized: no save of its state lands after this. */
+  get ended() {
+    return this.#lifecycle.ended;
+  }
+
+  // Called by finalizeSession before the store delete: a save still queued
+  // for this session (the microtask below) must not resurrect it.
+  end() {
+    this.#lifecycle.ended = true;
   }
 }
 
@@ -209,18 +223,33 @@ class SessionManager {
     this.transport = transport ?? cookieTokenTransport(this);
   }
 
-  #saver(token) {
-    return (state) => {
+  // One store write per turn, not one per assignment: a handler that sets
+  // three fields on `session.state` used to cost three round trips to a
+  // shared store. The first write schedules the save on a microtask, the
+  // rest of the turn rides along, and a session ended meanwhile is not
+  // written back — that would resurrect what finalizeSession just deleted.
+  #saver(token, lifecycle) {
+    let pending = false;
+    const flush = (state) => {
+      pending = false;
+      if (lifecycle.ended) return;
       Promise.resolve(this.store.set(token, state)).catch((error) => {
         this.#log.error({ err: error, event: 'session.save' });
       });
     };
+    return (state, now = false) => {
+      if (now) return void flush(state);
+      if (pending) return;
+      pending = true;
+      queueMicrotask(() => flush(state));
+    };
   }
 
   create(token = this.generateToken(), data = {}) {
-    const save = this.#saver(token);
-    save(data); // persist the initial state so restore works immediately
-    return new Session(token, data, save);
+    const lifecycle = { ended: false };
+    const save = this.#saver(token, lifecycle);
+    save(data, true); // persist the initial state NOW so restore works immediately
+    return new Session(token, data, save, lifecycle);
   }
 
   async restore(token) {
@@ -235,7 +264,8 @@ class SessionManager {
         this.#log.error({ err: error, event: 'session.touch' });
       });
     }
-    return new Session(token, data, this.#saver(token));
+    const lifecycle = { ended: false };
+    return new Session(token, data, this.#saver(token, lifecycle), lifecycle);
   }
 
   async destroy(token) {

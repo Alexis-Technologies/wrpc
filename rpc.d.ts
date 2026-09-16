@@ -179,12 +179,46 @@ export interface RouterHooks {
 export type UnitHooks = Omit<RouterHooks, 'onConnect' | 'onDisconnect'>;
 
 /** A declarative REST mapping: this procedure IS `method path` under basePath. */
+/** How a shared cache may treat a route's successful responses. GET/HEAD only. */
+export interface HttpCache {
+  /** Seconds. */
+  maxAge: number;
+  /** `public` in Cache-Control (a CDN may store it); default false → `private`. */
+  public?: boolean;
+  /** Seconds; adds `stale-while-revalidate`. */
+  staleWhileRevalidate?: number;
+  /** A weak ETag over the body and 304 on a matching If-None-Match; default true. */
+  etag?: boolean;
+}
+
 export interface HttpRoute {
   method: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
   /** Relative to the server's basePath; segments are static or `:name`. */
   path: string;
   /** Success status; 204 discards the result body by contract. */
   status?: number;
+  /** Static response headers on every answer of this route; transport-owned names are refused. */
+  headers?: Record<string, string>;
+  /**
+   * The cache policy of a successful response. Emitted as declared only
+   * for a public procedure on a request that restored no session and set
+   * no cookie; anything session-bearing answers `private, no-store`.
+   */
+  cache?: HttpCache;
+}
+
+/**
+ * The HTTP response seam a REST handler reaches as `context.http`: the
+ * request line and headers, `setHeader()` onto this very response (refused
+ * once it is sent, and for transport-owned names) and `status()` for its
+ * success status. Null on every non-REST transport and on packet-mode HTTP.
+ */
+export interface HttpReply {
+  readonly method: string;
+  readonly url: string;
+  readonly headers: Record<string, string | Array<string> | undefined>;
+  setHeader(name: string, value: string | number): void;
+  status(code: number): void;
 }
 
 /**
@@ -444,6 +478,10 @@ export declare class Session {
   token: string;
   state: State;
   constructor(token: string, data: State, save?: (data: State) => void);
+  /** True once finalized: a save still queued for it does not land. */
+  readonly ended: boolean;
+  /** Marks the session finalized (Client.finalizeSession calls it). */
+  end(): void;
 }
 
 export interface CookieOptions {
@@ -652,6 +690,8 @@ export declare class Context {
    */
   readonly signal: AbortSignal | null;
   readonly session: Session | null;
+  /** The REST response seam; null except on a REST call (see HttpReply). */
+  readonly http: HttpReply | null;
   /**
    * The server this call arrived on — how a handler reaches rooms
    * (`context.server.to(room).emit(...)`) without closing over a server
@@ -723,6 +763,8 @@ export class Client extends Emitter {
   ready: Promise<unknown>;
   /** True once `ready` has resolved — what lets the dispatcher skip the await per call. */
   readonly isReady: boolean;
+  /** The REST response seam (Context.http); null except on a REST call. */
+  http: HttpReply | null;
   streams: Map<string, WrpcReadable | WrpcWritable>;
   /** In-flight calls, by id — what `{type:'cancel'}` reaches. */
   calls: Map<string, AbortController>;

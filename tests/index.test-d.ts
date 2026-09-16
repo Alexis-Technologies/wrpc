@@ -758,3 +758,29 @@ expectError(wrpc.connect('ws://host', { metaFormat: 'base64' }));
 expectAssignable<wrpc.RpcServerOptions>({ router, metaMaxBytes: 4096, cors: { metaHeaders: ['userId', 'tenantId'] } });
 expectError<wrpc.RpcServerOptions>({ router, cors: { metaHeaders: 'userId' } });
 expectError<wrpc.RpcServerOptions>({ router, metaMaxBytes: '4k' });
+
+// REST response seam and cache policy.
+declare const restCtx: wrpc.Context;
+expectType<wrpc.HttpReply | null>(restCtx.http);
+if (restCtx.http) {
+  expectType<string>(restCtx.http.method);
+  restCtx.http.setHeader('X-Trace', 'abc');
+  restCtx.http.status(202);
+}
+wrpc.procedure({
+  access: 'public',
+  http: {
+    method: 'GET',
+    path: '/pub',
+    headers: { 'X-Static': '1' },
+    cache: { maxAge: 60, public: true, staleWhileRevalidate: 30, etag: false },
+  },
+  handler: async () => 1,
+});
+expectError(
+  wrpc.procedure({
+    access: 'public',
+    http: { method: 'GET', path: '/pub', cache: { maxAge: '60' } },
+    handler: async () => 1,
+  }),
+);

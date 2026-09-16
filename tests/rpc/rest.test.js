@@ -750,3 +750,175 @@ test('withMeta reaches callMeta over the mapped REST leg, in both metaFormats', 
     assert.deepStrictEqual(await create({ body: {} }), { tenant: 'acme', 'trace-id': 'connection' });
   }
 });
+
+// --- Response headers, context.http and the cache policy (phase 2) ---------
+
+const cacheApi = () =>
+  defineRouter({
+    pages: {
+      // Static headers + the dynamic seam, on a public GET.
+      show: procedure({
+        access: 'public',
+        http: { method: 'GET', path: '/pages/:id', headers: { 'X-Static': 'yes' } },
+        handler: async (ctx, { params }) => {
+          ctx.http.setHeader('X-Dynamic', ctx.http.method);
+          ctx.http.status(202);
+          return { id: params.id, seam: ctx.http !== null, url: ctx.http.url };
+        },
+      }),
+      // The same procedure over ws sees no seam.
+      seam: procedure({ access: 'public', handler: async (ctx) => ({ http: ctx.http }) }),
+      reserved: procedure({
+        access: 'public',
+        http: { method: 'GET', path: '/pages/reserved' },
+        handler: async (ctx) => {
+          ctx.http.setHeader('Set-Cookie', 'x=1');
+          return 1;
+        },
+      }),
+      // Cacheable public read.
+      catalog: procedure({
+        access: 'public',
+        http: { method: 'GET', path: '/catalog', cache: { maxAge: 60, public: true, staleWhileRevalidate: 30 } },
+        handler: async () => ({ items: [1, 2, 3] }),
+      }),
+      noEtag: procedure({
+        access: 'public',
+        http: { method: 'GET', path: '/catalog/plain', cache: { maxAge: 5, etag: false } },
+        handler: async () => ({ v: 1 }),
+      }),
+      // Cache declared, but session-bearing: downgraded.
+      mine: procedure({
+        access: 'session',
+        http: { method: 'GET', path: '/mine', cache: { maxAge: 60, public: true } },
+        handler: async (ctx) => ({ user: ctx.session.state.user }),
+      }),
+      // A public read that starts a session mid-request: Set-Cookie → no-store.
+      greet: procedure({
+        access: 'public',
+        http: { method: 'GET', path: '/greet', cache: { maxAge: 60, public: true } },
+        handler: async (ctx) => {
+          ctx.client.startSession(undefined, { user: 'ada' });
+          return { hi: true };
+        },
+      }),
+      login: procedure({
+        access: 'public',
+        http: { method: 'POST', path: '/login' },
+        handler: async (ctx) => {
+          ctx.client.startSession(undefined, { user: 'grace' });
+          return { ok: true };
+        },
+      }),
+    },
+  });
+
+test('http.headers and http.cache are validated when the procedure is built', () => {
+  const handler = async () => 1;
+  assert.throws(
+    () => procedure({ handler, http: { method: 'GET', path: '/x', headers: { 'Content-Length': '3' } } }),
+    /the transport owns it/,
+  );
+  assert.throws(
+    () => procedure({ handler, http: { method: 'GET', path: '/x', headers: { 'X-A': 1 } } }),
+    /must be a string/,
+  );
+  assert.throws(
+    () => procedure({ handler, http: { method: 'POST', path: '/x', cache: { maxAge: 1 } } }),
+    /only valid on GET and HEAD/,
+  );
+  assert.throws(
+    () => procedure({ handler, http: { method: 'GET', path: '/x', cache: { maxAge: -1 } } }),
+    /maxAge must be an integer/,
+  );
+  assert.throws(
+    () => procedure({ handler, http: { method: 'GET', path: '/x', cache: {} } }),
+    /maxAge must be an integer/,
+  );
+  const proc = procedure({
+    handler,
+    http: { method: 'GET', path: '/x', cache: { maxAge: 10 }, headers: { 'X-A': 'b' } },
+  });
+  assert.deepStrictEqual(proc.http.cache, { maxAge: 10, public: false, staleWhileRevalidate: null, etag: true });
+  assert.deepStrictEqual(proc.http.headers, { 'X-A': 'b' });
+});
+
+test('REST response seam: static headers, context.http, status(), and null off HTTP', async (t) => {
+  const { server, port, url } = await bootServer(t, { router: cacheApi() });
+  const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+  const res = await fetch(`${base}/pages/7`);
+  assert.strictEqual(res.status, 202);
+  assert.strictEqual(res.headers.get('x-static'), 'yes');
+  assert.strictEqual(res.headers.get('x-dynamic'), 'GET');
+  assert.deepStrictEqual(await res.json(), { id: '7', seam: true, url: `${server.rpc.basePath}/pages/7` });
+
+  const reserved = await fetch(`${base}/pages/reserved`);
+  assert.strictEqual(reserved.status, 500, 'a reserved header name is a handler error');
+
+  const client = await connectClient(t, url);
+  await client.load('pages');
+  assert.deepStrictEqual(await client.api.pages.seam(), { http: null });
+
+  const introspection = server.rpc.router.introspect();
+  assert.deepStrictEqual(introspection.pages.catalog.http.cache, {
+    maxAge: 60,
+    public: true,
+    staleWhileRevalidate: 30,
+    etag: true,
+  });
+  assert.deepStrictEqual(introspection.pages.show.http.headers, { 'X-Static': 'yes' });
+});
+
+test('http.cache: Cache-Control, a weak ETag, 304 on If-None-Match, HEAD parity', async (t) => {
+  const { server, port } = await bootServer(t, { router: cacheApi() });
+  const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+  const first = await fetch(`${base}/catalog`);
+  assert.strictEqual(first.status, 200);
+  assert.strictEqual(first.headers.get('cache-control'), 'public, max-age=60, stale-while-revalidate=30');
+  const etag = first.headers.get('etag');
+  assert.match(etag, /^W\/"[A-Za-z0-9_-]+"$/);
+  assert.deepStrictEqual(await first.json(), { items: [1, 2, 3] });
+
+  const again = await fetch(`${base}/catalog`, { headers: { 'If-None-Match': etag } });
+  assert.strictEqual(again.status, 304);
+  assert.strictEqual(again.headers.get('etag'), etag);
+  assert.strictEqual(again.headers.get('cache-control'), 'public, max-age=60, stale-while-revalidate=30');
+  assert.strictEqual((await again.text()).length, 0);
+
+  const strong = await fetch(`${base}/catalog`, { headers: { 'If-None-Match': `"other", ${etag.slice(2)}` } });
+  assert.strictEqual(strong.status, 304, 'a list with the bare tag matches too');
+
+  const head = await fetch(`${base}/catalog`, { method: 'HEAD' });
+  assert.strictEqual(head.status, 200);
+  assert.strictEqual(head.headers.get('etag'), etag);
+
+  const plain = await fetch(`${base}/catalog/plain`);
+  assert.strictEqual(plain.headers.get('cache-control'), 'private, max-age=5');
+  assert.strictEqual(plain.headers.get('etag'), null, 'etag: false');
+});
+
+test('http.cache: a session-bearing response is private, no-store whatever the route asked', async (t) => {
+  const { server, port } = await bootServer(t, { router: cacheApi() });
+  const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+  // A public read that starts a session sets a cookie: never cacheable.
+  const greet = await fetch(`${base}/greet`);
+  assert.strictEqual(greet.status, 200);
+  assert.ok(greet.headers.get('set-cookie'));
+  assert.strictEqual(greet.headers.get('cache-control'), 'private, no-store');
+  assert.strictEqual(greet.headers.get('etag'), null);
+
+  const login = await fetch(`${base}/login`, { method: 'POST' });
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const mine = await fetch(`${base}/mine`, { headers: { cookie } });
+  assert.strictEqual(mine.status, 200);
+  assert.deepStrictEqual(await mine.json(), { user: 'grace' });
+  assert.strictEqual(mine.headers.get('cache-control'), 'private, no-store');
+
+  // The same public catalog, requested WITH a session: no public caching.
+  const catalog = await fetch(`${base}/catalog`, { headers: { cookie } });
+  assert.strictEqual(catalog.headers.get('cache-control'), 'private, no-store');
+  // Errors carry no cache policy at all.
+  const missing = await fetch(`${base}/mine`);
+  assert.strictEqual(missing.status, 403);
+  assert.strictEqual(missing.headers.get('cache-control'), null);
+});

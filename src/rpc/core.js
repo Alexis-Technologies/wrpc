@@ -893,7 +893,16 @@ class RpcServer extends Emitter {
     }
     const transport = new ServerHttpTransport(call, {
       headers,
-      rest: route ? { status: route.http.status, codec: restCodec } : null,
+      rest: route
+        ? {
+            status: route.http.status,
+            codec: restCodec,
+            headers: route.http.headers,
+            cache: route.http.cache,
+            access: route.proc.access,
+            hasSession: () => Boolean(client?.session),
+          }
+        : null,
     });
     const safeMethod = method === 'GET' || method === 'HEAD';
     // For a per-request client the connection IS the call, so the declared
@@ -915,6 +924,11 @@ class RpcServer extends Emitter {
     // envelope IS the body value, so the rest codec (when configured)
     // takes the packet codec's slot on the transport.
     transport.codec = restCodec;
+    // The response seam a REST handler reaches as `context.http`: the
+    // request line, and setHeader()/status() onto this very response.
+    // Null on every other transport, and on packet-mode HTTP, where one
+    // response answers a whole batch.
+    client.http = httpReply(call, method, transport);
     if (typeof call.onAbort === 'function') call.onAbort(() => transport.emit('close'));
     await client.ready;
     // A request body under a rest codec that fails to decode is the
@@ -958,6 +972,8 @@ class RpcServer extends Emitter {
   }
 
   // Splits and percent-decodes the path, then consults the router's trie.
+  //
+  // (httpReply lives below the class — see the module tail.)
   // A malformed escape answers 400 rather than throwing into the host.
   #matchDeclaredRoute(method, rest) {
     const raw = rest.split('/');
@@ -1030,5 +1046,15 @@ class RpcServer extends Emitter {
     this.#rooms.clear();
   }
 }
+
+// `context.http` on a REST call: what the handler may read about the
+// request and set on the response before it is written.
+const httpReply = (call, method, transport) => ({
+  method,
+  url: call.url ?? '/',
+  headers: call.headers ?? {},
+  setHeader: (name, value) => transport.setHeader(name, value),
+  status: (code) => transport.setStatus(code),
+});
 
 module.exports = { RpcServer, Client, Context, rpcOptions, DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_CALLS };

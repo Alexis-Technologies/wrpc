@@ -16,13 +16,69 @@ const assignKey = (target, key, value) => {
 };
 
 const HTTP_METHODS = ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE'];
+// Response headers the transport owns — a route may not redeclare them.
+const RESERVED_HEADERS = new Set(['content-length', 'set-cookie', 'wrpc-version', 'transfer-encoding', 'connection']);
+
+// The static response headers of a declared route: string -> string, with
+// the transport-owned names refused up front.
+const normalizeHeaders = (headers) => {
+  if (headers === undefined || headers === null) return null;
+  if (typeof headers !== 'object' || Array.isArray(headers)) {
+    throw new TypeError('procedure() http.headers must be an object of header name -> value');
+  }
+  const result = {};
+  for (const name of Object.keys(headers)) {
+    const value = headers[name];
+    if (typeof value !== 'string') throw new TypeError(`procedure() http.headers['${name}'] must be a string`);
+    if (RESERVED_HEADERS.has(name.toLowerCase())) {
+      throw new TypeError(`procedure() http.headers may not set '${name}': the transport owns it`);
+    }
+    result[name] = value;
+  }
+  return Object.keys(result).length > 0 ? result : null;
+};
+
+// `http.cache` — how a shared cache (a CDN, a browser) may treat the
+// route's successful responses. Only a safe method can be cacheable.
+const normalizeCache = (cache, method) => {
+  if (cache === undefined || cache === null) return null;
+  if (typeof cache !== 'object' || Array.isArray(cache)) {
+    throw new TypeError('procedure() http.cache must be an object');
+  }
+  if (method !== 'GET' && method !== 'HEAD') {
+    throw new TypeError('procedure() http.cache is only valid on GET and HEAD');
+  }
+  const { maxAge, public: isPublic = false, staleWhileRevalidate = null, etag = true } = cache;
+  if (!(Number.isInteger(maxAge) && maxAge >= 0)) {
+    throw new TypeError('procedure() http.cache.maxAge must be an integer >= 0 (seconds)');
+  }
+  if (staleWhileRevalidate !== null && !(Number.isInteger(staleWhileRevalidate) && staleWhileRevalidate >= 0)) {
+    throw new TypeError('procedure() http.cache.staleWhileRevalidate must be an integer >= 0 (seconds)');
+  }
+  return { maxAge, public: isPublic === true, staleWhileRevalidate, etag: etag !== false };
+};
+
+// The cache policy for ONE response, decided where the session is known.
+// `public` is emitted only for a public procedure on a request that
+// restored no session and set no cookie; anything session-bearing is
+// `private, no-store` whatever the route asked for — one shared cache
+// serving one user's answer to another is the failure this exists to stop.
+// Returns { control, etag } or null for "no cache headers".
+const cacheHeadersFor = (cache, { access, session, cookies }) => {
+  if (!cache) return null;
+  const bearing = access !== 'public' || session === true || cookies === true;
+  if (bearing) return { control: 'private, no-store', etag: false };
+  let control = `${cache.public ? 'public' : 'private'}, max-age=${cache.maxAge}`;
+  if (cache.staleWhileRevalidate !== null) control += `, stale-while-revalidate=${cache.staleWhileRevalidate}`;
+  return { control, etag: cache.etag };
+};
 const PARAM_SEGMENT = /^:[A-Za-z_$][\w$]*$/;
 const STATIC_SEGMENT = /^[^/:*]+$/;
 
 const normalizeHttp = (http) => {
   if (http === null || http === undefined) return null;
   if (typeof http !== 'object') throw new TypeError('procedure() http must be an object');
-  const { method, path, status = null } = http;
+  const { method, path, status = null, headers, cache } = http;
   if (!HTTP_METHODS.includes(method)) {
     throw new TypeError(`procedure() http.method must be one of ${HTTP_METHODS.join(', ')}`);
   }
@@ -38,7 +94,7 @@ const normalizeHttp = (http) => {
   if (status !== null && !(Number.isInteger(status) && status >= 200 && status <= 599)) {
     throw new TypeError('procedure() http.status must be an integer HTTP status (200-599)');
   }
-  return { method, path, status };
+  return { method, path, status, headers: normalizeHeaders(headers), cache: normalizeCache(cache, method) };
 };
 
 // Router-level REST options; today one strategy: how a versioned unit's
@@ -54,6 +110,17 @@ const normalizeRestOptions = (rest) => {
     throw new TypeError("defineRouter: rest.version must be 'path' or a function (version, path) => path");
   }
   return { version };
+};
+
+// The introspection view of an http mapping: the optional keys only when
+// set, so a client or `wrpc types` sees `{ method, path, status? }` as
+// before and `headers`/`cache` only on routes that declare them.
+const publicHttp = (http) => {
+  const view = { method: http.method, path: http.path };
+  if (http.status !== null && http.status !== undefined) view.status = http.status;
+  if (http.headers) view.headers = http.headers;
+  if (http.cache) view.cache = http.cache;
+  return view;
 };
 
 // The version-aware view of a procedure's http mapping: with a rest.version
@@ -161,7 +228,9 @@ const walk = (node, segments) => {
  */
 const matchRestTrees = (trees, method, segments) => {
   if (!trees) return null;
-  const hit = walk(trees.get(method), segments);
+  // HEAD is answered by the GET route (RFC 9110 9.3.2): the host strips the
+  // body, the headers — the cache policy's included — are the GET's.
+  const hit = walk(trees.get(method), segments) ?? (method === 'HEAD' ? walk(trees.get('GET'), segments) : null);
   if (hit) {
     const params = {};
     for (let i = 0; i < hit.route.paramNames.length; i++) {
@@ -197,6 +266,9 @@ const collectRestRoutes = (units, restOptions) => {
 
 module.exports = {
   normalizeHttp,
+  publicHttp,
+  cacheHeadersFor,
+  RESERVED_HEADERS,
   normalizeRestOptions,
   effectiveHttp,
   buildRestTrees,

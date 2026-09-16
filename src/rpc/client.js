@@ -84,6 +84,16 @@ class Context {
     return this.client.session;
   }
 
+  /**
+   * The HTTP response seam on a REST call — `{ method, url, headers,
+   * setHeader(name, value), status(code) }` — and null on every other
+   * transport (ws, wt, sse, port) and on packet-mode HTTP, where one
+   * response answers a whole batch.
+   */
+  get http() {
+    return this.client.http;
+  }
+
   // Minted on first read: a Context is allocated for every call, and a
   // random id per call (crypto.randomUUID) is paid only by the handlers and
   // hooks that correlate on it — the child logger below is the usual one.
@@ -123,6 +133,8 @@ class Client extends Emitter {
   #asks = new Map();
   #ready = null;
   #isReady = false;
+  /** The REST response seam (see Context.http); null except on a REST call. */
+  http = null;
 
   constructor(transport, options = {}) {
     super();
@@ -499,6 +511,8 @@ class Client extends Emitter {
   async finalizeSession() {
     if (!this.session) return false;
     const { token } = this.session;
+    // A save queued in this turn must not land after the delete below.
+    if (typeof this.session.end === 'function') this.session.end();
     this.session = null;
     // A session that never came from a store (a peer host's link identity)
     // has nothing to destroy.

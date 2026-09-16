@@ -40,6 +40,8 @@ mapping only defines how an HTTP request is unpacked.
 | `method` | `GET`, `HEAD`, `POST`, `PUT`, `PATCH` or `DELETE`. |
 | `path` | Relative to the server's `basePath`. Segments are static or `:name`. |
 | `status` | Success status; default `200`. `204` discards the result body by contract. |
+| `headers` | Static response headers on every answer of this route — see [Response headers](#response-headers). |
+| `cache` | The cache policy of a successful response — see [Caching](#caching). GET/HEAD only. |
 
 Validated when the procedure is built: a typo'd verb, a wildcard segment or
 a status outside 200–599 throws immediately. Subscriptions cannot carry a
@@ -54,6 +56,99 @@ procedures. A known path hit with the wrong verb answers **405** with an
 
 The conventional `ANY {basePath}/:unit/:method` mode keeps working underneath
 as a fallback, unchanged, callback envelopes and all.
+
+## Response headers {#response-headers}
+
+Two seams reach the HTTP response of a mapped route. Statically, on the
+mapping — every answer of the route carries them, results and errors alike:
+
+```js
+export: procedure({
+  access: 'public',
+  http: { method: 'GET', path: '/export', headers: { 'Content-Disposition': 'attachment; filename="rows.json"' } },
+  handler: async () => rows(),
+}),
+```
+
+Dynamically, from the handler (or any hook), through `context.http`:
+
+```js
+handler: async (ctx, { params }) => {
+  ctx.http.setHeader('X-Request-Id', ctx.uuid);
+  ctx.http.status(202);          // this response's success status
+  return queue(params.id);
+},
+```
+
+`context.http` is `{ method, url, headers, setHeader(name, value),
+status(code) }` — the request line and headers to read, the response to
+shape. It is **`null` everywhere else**: on a WebSocket or WebTransport call,
+on SSE, on a worker port, and on packet-mode `POST {basePath}`, where one
+response answers a whole batch and no single call may speak for it — write
+handlers that check it, or keep the HTTP-only ones on mapped routes. The
+transport-owned names (`Content-Length`, `Set-Cookie`, `wrpc-version`,
+`Transfer-Encoding`, `Connection`) are refused, at build time for `headers`
+and with a throw for `setHeader`; so is a `setHeader` after the answer was
+written. `HEAD` is served by the `GET` route, headers included, body stripped
+by the host.
+
+Under the [fastify adapter](./adapters/fastify#declarative-rest-routes) both
+seams map onto fastify's own `reply`.
+
+## Caching {#caching}
+
+A public read behind a CDN is the one thing a single WebSocket connection
+cannot give you — a mapped route can. `cache` declares how a shared cache
+may treat a **successful** response:
+
+```js
+catalog: procedure({
+  access: 'public',
+  http: {
+    method: 'GET',
+    path: '/catalog',
+    cache: { maxAge: 60, public: true, staleWhileRevalidate: 30 },
+  },
+  handler: async () => listCatalog(),
+}),
+```
+
+| Field | Meaning |
+| --- | --- |
+| `maxAge` | Seconds, required. |
+| `public` | `public` in `Cache-Control` (a CDN may store it); default `false` → `private` (browser only). |
+| `staleWhileRevalidate` | Seconds; adds `stale-while-revalidate`. |
+| `etag` | A weak `ETag` over the body and `304 Not Modified` on a matching `If-None-Match`; default `true`. |
+
+What a hit answers:
+
+```
+HTTP/1.1 200 OK
+Cache-Control: public, max-age=60, stale-while-revalidate=30
+ETag: W/"5YgP…"
+```
+
+and a `GET` with `If-None-Match: W/"5YgP…"` (or the bare tag, or a list)
+answers `304` with the same `ETag` and `Cache-Control` and no body. `HEAD`
+gets the same headers.
+
+**The session rule.** The policy is decided once the session is known, and
+it is the same function for every host: the declared `Cache-Control` goes
+out only for a **public** procedure on a request that **restored no
+session** and **set no cookie**. Anything session-bearing — a `session`
+procedure, a public one reached with a valid session cookie, a public one
+whose handler called `startSession` — answers `Cache-Control: private,
+no-store` and no `ETag`, whatever the route declared. One shared cache
+serving one user's answer to another is the failure this exists to stop,
+and it is not a discipline each handler has to remember. Error responses
+carry no cache headers at all.
+
+Two things to know: the `ETag` is a SHA-1 of the body per response (cold,
+but a cost); and under a [`codec.rest`](./codec#rest-bodies-codec-rest)
+whose bytes are not deterministic for equal values (a nonce, a random field
+order) the tag never matches, so `304` never happens and the hash is wasted
+— set `etag: false` there. Under the fastify adapter `Cache-Control` follows
+the same rule and `ETag`/`304` are fastify's business (`@fastify/etag`).
 
 ## Versioning
 

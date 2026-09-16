@@ -9,6 +9,7 @@ const {
   buildRestTrees,
   matchRestTrees,
   collectRestRoutes,
+  publicHttp,
 } = require('./rest.js');
 
 const DEFAULT_VERSION = '*';
@@ -916,7 +917,7 @@ class Router {
           // The REST mapping travels so clients (and codegen/OpenAPI
           // tooling) can address the same procedure as a plain endpoint —
           // effective, so a client's REST leg calls the versioned URL.
-          if (proc.http) info.http = effectiveHttp(proc.http, version, this.#restOptions);
+          if (proc.http) info.http = publicHttp(effectiveHttp(proc.http, version, this.#restOptions));
           if (schemas && proc.schema) {
             const parts = {};
             if (proc.schema.params !== undefined) parts.params = proc.schema.params;

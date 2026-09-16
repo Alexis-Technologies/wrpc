@@ -13,6 +13,30 @@ narrower promise — see
 
 ### Added
 
+**REST response headers and a cache policy (`http.headers`, `http.cache`, `context.http`)**
+- The paper's "loss of intermediate HTTP caching" was a missing seam, not a
+  property of the model: a mapped route can now declare static response
+  `headers`, a handler (or hook) can shape the response through
+  `context.http` — `{ method, url, headers, setHeader(name, value),
+  status(code) }`, null on every non-REST transport and on packet-mode
+  HTTP — and `http.cache: { maxAge, public?, staleWhileRevalidate?, etag? }`
+  answers `Cache-Control`, a weak `ETag` and `304` on `If-None-Match`, on
+  GET and HEAD (HEAD is now served by the GET route, RFC 9110 9.3.2). The
+  policy is decided once the session is known and is the same function on
+  every host (`cacheHeadersFor`): only a public procedure on a request that
+  restored no session and set no cookie gets the declared policy; anything
+  session-bearing answers `private, no-store` and no ETag. Transport-owned
+  header names are refused. The fastify adapter applies both seams onto its
+  `reply` and leaves ETag/304 to `@fastify/etag`. Introspection carries
+  `headers`/`cache` only when declared.
+
+**`createRedisSessionStore` (`@alexify/wrpc/scaling`)**
+- An ioredis-shaped, injected session store — `get`, `set(key, value,
+  'PX', ttl)`, `del`, `pexpire` for the sliding expiry — so a client that
+  reconnects to another instance keeps its session and WebSocket traffic
+  needs no sticky routing. The scaling guide gains an affinity table: with a
+  shared store and a backplane only SSE channels stay pinned.
+
 **Context takeover and async deflate (`perMessageDeflate.contextTakeover`, `.async`)**
 - `contextTakeover: 'server' | 'client' | true` keeps a live zlib stream per
   direction per connection (`src/websocket/deflateContext.js`), so a message
@@ -879,6 +903,11 @@ only by adapter tests; never a runtime dependency).
 
 ### Changed
 
+- Writes to `session.state` coalesce: the assignments of one turn become one
+  `store.set` on a microtask (`create()` still persists the initial state
+  immediately), and a session finalized in the meantime is not written back
+  (`Session.end()`, called by `finalizeSession`). One round trip per turn to
+  a shared store instead of one per assignment.
 - Unicast frames are one contiguous buffer up to 16 KiB — header and payload
   in a single socket write, text utf8-encoded from a module scratch buffer
   instead of an intermediate `Buffer.from` — and header + payload writes

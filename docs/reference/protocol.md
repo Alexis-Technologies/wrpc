@@ -438,7 +438,7 @@ Each method carries:
 | `kind` | `'subscription'`, and **only** then — a client scaffolds a call unless told otherwise |
 | `meta` | The procedure's `meta`, when it is not empty. `meta.description` is the **one** home for prose — `wrpc types` turns it into a doc comment, so it does not also live in `signature` |
 | `signature` | An optional descriptor, below |
-| `http` | The declarative REST mapping (`{ method, path, status? }`), when the procedure carries one. |
+| `http` | The declarative REST mapping (`{ method, path, status?, headers?, cache? }`), when the procedure carries one. `headers` are the route's static response headers, `cache` its `{ maxAge, public, staleWhileRevalidate, etag }` policy — both additive, present only when declared. |
 
 A unit object may additionally carry two **reserved keys** — impossible to
 collide with a method, since both are reserved in the router definition too:

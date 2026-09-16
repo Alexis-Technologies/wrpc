@@ -149,7 +149,36 @@ subscriptions are what let one catch up.
 The backplane carries room events, not sessions. Two instances behind a load
 balancer need a shared [session store](./sessions#stores) as well — the default
 `MemorySessionStore` lives in one process, so a client that reconnects to a
-different instance would arrive anonymous.
+different instance would arrive anonymous. `createRedisSessionStore` from
+this same subpath is that store:
+
+```js
+const { createRedisAdapter, createRedisSessionStore } = require('@alexify/wrpc/scaling');
+const Redis = require('ioredis');
+const redis = new Redis(url);
+
+new Server({
+  router,
+  backplane: createRedisAdapter({ pub: redis }),
+  sessions: { store: createRedisSessionStore({ client: redis }) },
+});
+```
+
+## Who needs sticky routing {#affinity}
+
+With a shared session store and a backplane, the honest answer is: almost
+nothing.
+
+| Transport | Sticky routing? | Why |
+| --- | --- | --- |
+| WebSocket, WebTransport | **No** | The session comes from the shared store on reconnect; rooms and presence cross the backplane; the client id embeds the instance, so a cluster command finds it. |
+| Packet-mode HTTP, REST | **No** | Stateless per request; the session token is on every request. |
+| SSE | **Yes** | The channel — its replay buffer and its `Client` — lives on the instance that opened it; a misrouted POST answers `409`. |
+| Subscriptions with `createEventLog` | No, but visible | The log is per-process; a resume against another instance presents a foreign epoch, `since()` answers `null`, the handler sends a snapshot. |
+
+Share: the session store, the backplane. Keep local: event logs, SSE
+channels. Never pin on anything wrpc emits — the client id is a routing
+address for the cluster, not a cookie for a balancer.
 
 ## The cluster layer
 

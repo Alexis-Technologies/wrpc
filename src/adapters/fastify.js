@@ -10,6 +10,7 @@ const { publicErrorMessage, publicErrorDetails } = require('../transport.js');
 const { createNodeEngine, isEngine } = require('../engine/index.js');
 const { createUwsEngine } = require('./uws.js');
 const { normalizeBody, eachHeader, nodeStream, createUpgradeGate } = require('./common.js');
+const { cacheHeadersFor, RESERVED_HEADERS } = require('../rpc/rest.js');
 const { setupMirror } = require('./mirror.js');
 
 // Fastify plugin. One plugin, two backends, picked by looking at what
@@ -172,7 +173,22 @@ const registerRestRoutes = (fastify, rpc, options) => {
       return wrapped;
     };
     const init = async (request, reply) => {
-      const { release } = await contextOf(request, rpcTarget);
+      const { client, release } = await contextOf(request, rpcTarget);
+      // The same `context.http` seam the core hosts give a REST handler,
+      // onto fastify's own reply.
+      client.http = {
+        method: request.method,
+        url: request.url,
+        headers: request.headers,
+        setHeader: (name, value) => {
+          if (RESERVED_HEADERS.has(String(name).toLowerCase())) {
+            throw new TypeError(`setHeader: '${name}' is owned by the transport`);
+          }
+          reply.header(name, value);
+        },
+        status: (code) => void reply.code(code),
+      };
+      if (http.headers) eachHeader(http.headers, (name, value) => reply.header(name, value));
       // The response's close is the eviction signal, whether the reply was
       // sent, hijacked or the peer vanished.
       reply.raw?.on?.('close', release);
@@ -240,7 +256,17 @@ const registerRestRoutes = (fastify, rpc, options) => {
           // A login that called startSession queued its cookie on the
           // transport nothing will flush — copy it onto the real reply.
           if (transport.pendingCookies.length > 0) reply.header('set-cookie', transport.pendingCookies);
-          reply.code(status);
+          // The route's cache policy, decided with the session known. ETag
+          // and 304 are fastify's business (@fastify/etag) on this path.
+          const policy = http.cache
+            ? cacheHeadersFor(http.cache, {
+                access: proc.access,
+                session: Boolean(client.session),
+                cookies: transport.pendingCookies.length > 0,
+              })
+            : null;
+          if (policy !== null) reply.header('cache-control', policy.control);
+          if (reply.statusCode === 200) reply.code(status);
           // 204 promises "no content": the result is discarded by contract.
           if (status === 204) return reply.send();
           return result === undefined ? null : result;

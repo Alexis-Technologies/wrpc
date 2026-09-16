@@ -1,6 +1,9 @@
 'use strict';
 
+const crypto = require('node:crypto');
+
 const { toKebab } = require('./utils.js');
+const { cacheHeadersFor, RESERVED_HEADERS } = require('./rpc/rest.js');
 const { STATUS_CODES } = require('./status.js');
 const { publicErrorMessage, publicErrorDetails, wireError } = require('./rpc/errors.js');
 const { ServerTransport } = require('./rpc/serverTransport.js');
@@ -104,6 +107,20 @@ const isOriginAllowed = (cors, origin) => {
   return cors.origins.includes(origin);
 };
 
+// If-None-Match: a list of entity tags, weak or strong, or `*`.
+const matchesEtag = (header, etag) => {
+  if (typeof header !== 'string' || header.length === 0) return false;
+  if (header.trim() === '*') return true;
+  const bare = etag.slice(2); // past the W/
+  const parts = header.split(',');
+  for (let i = 0; i < parts.length; i++) {
+    let tag = parts[i].trim();
+    if (tag.startsWith('W/')) tag = tag.slice(2);
+    if (tag === bare) return true;
+  }
+  return false;
+};
+
 // Net-free HTTP transport over an abstract call description:
 // { method, url, headers, body?, remoteAddress?, respond({ status, headers, body }) }.
 // The node Server shell and the framework adapters both speak this shape.
@@ -120,13 +137,37 @@ class ServerHttpTransport extends ServerTransport {
   // `{ status }` carries the route's success status; null everywhere else.
   #rest = null;
 
+  #status = null;
+
   constructor(call, options = {}) {
     super(call.remoteAddress ?? '');
     this.call = call;
     this.headers = options.headers ?? { ...SECURITY_HEADERS };
     this.#respond = call.respond;
     if (Array.isArray(options.batch)) this.#batch = options.batch;
-    if (options.rest) this.#rest = options.rest;
+    if (options.rest) {
+      this.#rest = options.rest;
+      // A declared route's static response headers, applied once here so
+      // every answer — result or error — carries them.
+      if (options.rest.headers) Object.assign(this.headers, options.rest.headers);
+    }
+  }
+
+  // The `context.http.setHeader` seam: one header onto this response,
+  // refused once the answer is written or for a transport-owned name.
+  setHeader(name, value) {
+    if (typeof name !== 'string' || name.length === 0) throw new TypeError('setHeader: name must be a string');
+    if (RESERVED_HEADERS.has(name.toLowerCase())) throw new TypeError(`setHeader: '${name}' is owned by the transport`);
+    if (this.#responded) throw new Error('setHeader: the response was already sent');
+    this.headers[name] = String(value);
+  }
+
+  // The `context.http.status` seam: the success status of THIS response
+  // (a REST route's declared status is the default). Errors keep their code.
+  setStatus(code) {
+    if (!(Number.isInteger(code) && code >= 200 && code <= 599)) throw new TypeError('status: an integer 200-599');
+    if (this.#responded) throw new Error('status: the response was already sent');
+    this.#status = code;
   }
 
   get responded() {
@@ -152,14 +193,21 @@ class ServerHttpTransport extends ServerTransport {
       if (obj.error) {
         return this.write(codec ? codec.encode(obj.error) : JSON.stringify(obj.error), obj.error.code ?? code);
       }
-      const status = this.#rest.status ?? 200;
+      const status = this.#status ?? this.#rest.status ?? 200;
       // 204 promises "no content": the result (if any) is discarded on the
       // wire by contract, not by accident.
       if (status === 204) return this.write('', 204);
       // An undefined result travels as an encoded `null` — one documented
       // behaviour with and without a codec.
-      if (obj.result === undefined) return this.write(codec ? codec.encode(null) : 'null', status);
-      return this.write(codec ? codec.encode(obj.result) : JSON.stringify(obj.result), status);
+      const body =
+        obj.result === undefined
+          ? codec
+            ? codec.encode(null)
+            : 'null'
+          : codec
+            ? codec.encode(obj.result)
+            : JSON.stringify(obj.result);
+      return this.#writeCacheable(body, status);
     }
     if (!this.#batch) return super.send(obj, code, text);
     if (this.#responded) return true;
@@ -217,6 +265,30 @@ class ServerHttpTransport extends ServerTransport {
     }
     for (let i = 0; i < collected.length; i++) if (taken[i] === 0) answers.push(collected[i]);
     return answers;
+  }
+
+  // A successful REST result under the route's cache policy: Cache-Control
+  // as the policy decides once the session is known, a weak ETag over the
+  // body, and 304 for a matching If-None-Match — HEAD and GET alike, since
+  // the host strips a HEAD body itself.
+  #writeCacheable(body, status) {
+    const rest = this.#rest;
+    const policy =
+      rest.cache && status >= 200 && status < 300
+        ? cacheHeadersFor(rest.cache, {
+            access: rest.access,
+            session: rest.hasSession?.() === true,
+            cookies: this.#setCookies.length > 0,
+          })
+        : null;
+    if (policy === null) return this.write(body, status);
+    this.headers['Cache-Control'] = policy.control;
+    if (!policy.etag) return this.write(body, status);
+    const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body);
+    const etag = `W/"${crypto.createHash('sha1').update(bytes).digest('base64url')}"`;
+    this.headers['ETag'] = etag;
+    if (matchesEtag(this.call.headers?.['if-none-match'], etag)) return this.write('', 304);
+    return this.write(bytes, status);
   }
 
   write(data, httpCode = 200) {

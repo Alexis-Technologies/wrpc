@@ -74,9 +74,10 @@ test('SessionManager create', async (t) => {
     session.state.count = 5;
     session.state.name = 'alex';
     await settle();
-    assert.strictEqual(store.sets.length, 3);
-    assert.deepStrictEqual(store.sets[1], { token: 'tok', data: { count: 5 } });
-    assert.deepStrictEqual(store.sets[2], { token: 'tok', data: { count: 5, name: 'alex' } });
+    // The two assignments of one turn coalesce into ONE write (plus the
+    // initial state persisted by create()).
+    assert.strictEqual(store.sets.length, 2);
+    assert.deepStrictEqual(store.sets[1], { token: 'tok', data: { count: 5, name: 'alex' } });
     assert.strictEqual(session.state.count, 5);
     assert.strictEqual(session.state.name, 'alex');
   });
@@ -394,4 +395,26 @@ test('token transport: the cookie default and the structural check', async (t) =
     assert.strictEqual(isTokenTransport({ read: () => null }), false);
     assert.strictEqual(isTokenTransport(null), false);
   });
+});
+
+test('SessionManager: state writes in one turn coalesce into one store.set, and none after end()', async () => {
+  const store = capturingStore();
+  const manager = new SessionManager({ store }, quiet);
+  const session = manager.create('tok', { a: 0 });
+  assert.strictEqual(store.sets.length, 1, 'the initial state is persisted immediately');
+  session.state.a = 1;
+  session.state.b = 2;
+  session.state.c = 3;
+  assert.strictEqual(store.sets.length, 1, 'nothing written synchronously');
+  await settle();
+  assert.strictEqual(store.sets.length, 2, 'three assignments, one write');
+  assert.deepStrictEqual(store.sets[1].data, { a: 1, b: 2, c: 3 });
+  session.state.d = 4;
+  session.end();
+  assert.strictEqual(session.ended, true);
+  await settle();
+  assert.strictEqual(store.sets.length, 2, 'a write queued before end() does not land');
+  session.state.e = 5;
+  await settle();
+  assert.strictEqual(store.sets.length, 2);
 });

@@ -141,6 +141,15 @@ Serve binary REST from a core host (the node shell, express, uws — all
 Buffer-native), or drop the `http` mappings under this plugin; `codec.rest`
 without mappings registers normally.
 
+### Response headers and caching on delegated routes
+
+A mapped route's static `http.headers`, the `context.http` seam
+(`setHeader`, `status`) and its `http.cache` policy apply on the delegated
+path too, onto fastify's own `reply` — with the same session rule as the
+core hosts (`private, no-store` for anything session-bearing). `ETag` and
+`304` are left to fastify: register `@fastify/etag` for them. See the
+[REST guide](../rest#caching).
+
 ## Mirroring existing routes {#mirroring-existing-routes}
 
 The reverse direction: your **existing fastify routes** become wrpc
