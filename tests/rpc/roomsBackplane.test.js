@@ -195,7 +195,16 @@ test('RoomsBackplane: publishing', async (t) => {
     const channels = backplane.state.published.map(([channel]) => channel);
     assert.deepStrictEqual(channels, [roomChannel('chat'), BROADCAST_CHANNEL, BROADCAST_CHANNEL]);
     const envelope = JSON.parse(backplane.state.published[1][1]);
-    assert.deepStrictEqual(envelope, { v: 1, instance: 'node-1', rooms: ['chat', 'lobby'], name: 'msg', data: 2 });
+    // epoch/seq are the loss-detection fields (their own test below).
+    assert.deepStrictEqual(envelope, {
+      v: 1,
+      instance: 'node-1',
+      epoch: binder.epoch,
+      seq: 1,
+      rooms: ['chat', 'lobby'],
+      name: 'msg',
+      data: 2,
+    });
   });
 
   await t.test('a payload that cannot be serialized is reported, not thrown', () => {
@@ -343,4 +352,105 @@ test('RoomsBackplane: the linger window absorbs a reconnect bounce', async () =>
   await timers.setTimeout(80);
   await settle();
   assert.strictEqual(unsubscribed.length, 1);
+});
+
+test('RoomsBackplane: loss detection through epoch and seq', async (t) => {
+  const backplane = createBackplane();
+  const gaps = [];
+  const delivered = [];
+  const binder = new RoomsBackplane({
+    backplane,
+    instance: 'node-1',
+    epoch: 'e1',
+    linger: 0,
+    deliver: (rooms, name) => delivered.push(name),
+    onGap: (gap) => gaps.push(gap),
+    log: { log: noop, error: noop, warn: noop },
+  });
+  binder.start();
+  binder.joinRoom('chat');
+  await settle();
+  const channel = roomChannel('chat');
+  const send = (instance, epoch, seq, name = 'ev') =>
+    backplane.state.handlers.get(channel)(
+      JSON.stringify({ v: 1, instance, epoch, seq, rooms: ['chat'], name, data: null }),
+    );
+
+  await t.test('every envelope published carries the epoch and a per-channel seq', () => {
+    binder.publish({ rooms: ['chat'], name: 'a', data: 1 });
+    binder.publish({ rooms: ['chat'], name: 'b', data: 2 });
+    binder.publish({ rooms: null, name: 'c', data: 3 });
+    const envelopes = backplane.state.published.map(([, message]) => JSON.parse(message));
+    assert.deepStrictEqual(
+      envelopes.map((e) => [e.epoch, e.seq]),
+      [
+        ['e1', 1],
+        ['e1', 2],
+        ['e1', 1],
+      ],
+      'seq counts per channel: the broadcast channel starts its own',
+    );
+    assert.strictEqual(binder.epoch, 'e1');
+  });
+
+  await t.test('a contiguous sequence is no gap', () => {
+    send('node-2', 'x', 1);
+    send('node-2', 'x', 2);
+    send('node-2', 'x', 3);
+    assert.deepStrictEqual(gaps, []);
+    assert.strictEqual(delivered.length, 3);
+  });
+
+  await t.test('a jump reports the envelopes missed, once', () => {
+    send('node-2', 'x', 7);
+    assert.deepStrictEqual(gaps, [{ channel, instance: 'node-2', missed: 3, seq: 7 }]);
+    send('node-2', 'x', 8);
+    assert.strictEqual(gaps.length, 1);
+  });
+
+  await t.test('a late or duplicate envelope never regresses the cursor', () => {
+    send('node-2', 'x', 5);
+    send('node-2', 'x', 8);
+    send('node-2', 'x', 9);
+    assert.strictEqual(gaps.length, 1);
+  });
+
+  await t.test('a new epoch (the publisher restarted) resets rather than reports', () => {
+    send('node-2', 'y', 1);
+    send('node-2', 'y', 2);
+    assert.strictEqual(gaps.length, 1);
+  });
+
+  await t.test('an unknown publisher starts clean; an old instance without the fields is untracked', () => {
+    send('node-3', 'z', 40);
+    backplane.state.handlers.get(channel)(
+      JSON.stringify({ v: 1, instance: 'node-4', rooms: ['chat'], name: 'old', data: null }),
+    );
+    assert.strictEqual(gaps.length, 1);
+    assert.strictEqual(delivered.at(-1), 'old');
+  });
+
+  await t.test('a throwing onGap is contained and the envelope still delivered', async () => {
+    const errors = [];
+    const loud = new RoomsBackplane({
+      backplane,
+      instance: 'node-9',
+      linger: 0,
+      deliver: (rooms, name) => delivered.push(name),
+      onGap: () => {
+        throw new Error('boom');
+      },
+      log: { log: noop, warn: noop, error: (entry) => errors.push(entry) },
+    });
+    loud.start();
+    await settle(); // the subscribe is deferred a microtask; the handler is now loud's
+    const broadcast = backplane.state.handlers.get(BROADCAST_CHANNEL);
+    broadcast(JSON.stringify({ v: 1, instance: 'n', epoch: 'q', seq: 1, rooms: null, name: 'one', data: null }));
+    broadcast(JSON.stringify({ v: 1, instance: 'n', epoch: 'q', seq: 5, rooms: null, name: 'two', data: null }));
+    assert.strictEqual(errors.length, 1);
+    assert.strictEqual(delivered.at(-1), 'two');
+    loud.close();
+  });
+
+  binder.close();
 });

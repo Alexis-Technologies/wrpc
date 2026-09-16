@@ -90,6 +90,8 @@
     "test:perf": "node tests/perf/stream-memory.perf.js",
     "bench": "node bench/run-all.js",
     "bench:browser": "node scripts/bench-browser.js",
+    "redis:up": "docker compose up -d redis",
+    "redis:down": "docker compose down",
     "lint": "oxlint src tests scripts bench bin",
     "format": "oxfmt src tests scripts bench bin",
     "format:check": "oxfmt --check src tests scripts bench bin",

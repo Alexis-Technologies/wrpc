@@ -13,6 +13,32 @@ narrower promise — see
 
 ### Added
 
+**Backplane loss detection (`epoch`/`seq`, `backplane.gap`, `wrpc.server.backplane.gaps`)**
+- Every backplane envelope carries the publisher's boot `epoch` and a
+  per-channel `seq`; a receiver that sees the sequence jump within one
+  epoch logs `backplane.gap` — `{ channel, instance, missed }` — and adds
+  `missed` to the new `wrpc.server.backplane.gaps` counter. Redis pub/sub
+  loses envelopes silently (a subscriber blip, an output-buffer eviction);
+  the loss is now a number on a dashboard. Additive fields: an older
+  instance's envelopes are delivered untracked; a new epoch resets rather
+  than reports. At-most-once stays the contract — the rooms guide gains
+  the three recipes for the cases that need more (a broker-backed
+  subscription, a room-backed event log, an acknowledged `ask`).
+
+**A multi-node bench and the Redis it needs (`bench/cluster-nodes.js`, `compose.yaml`)**
+- `pnpm redis:up` starts a Redis (`compose.yaml`); with `REDIS_URL` set,
+  `bench/cluster-nodes.js` forks N wrpc processes over that Redis (backplane
+  + session store, bearer sessions) with M clients spread across them and
+  measures cross-instance emit rate and latency, presence convergence after
+  a join/leave storm, broadcast ask across instances, and an instance loss —
+  its clients rehomed with their session token and no sticky routing, the
+  presence count converging, the loss detector's count. 4 instances × 200
+  clients: emit latency p50 2 ms / p99 4 ms across the broker, a 200-join
+  storm converging in 6 ms, ask answered 200/200, 50 rehomed clients with
+  50/50 sessions restored and 0 gaps. Without `REDIS_URL` it skips, so
+  `pnpm bench` stays self-contained. CI gains a `redis` job
+  (a Redis service) for `tests/scaling/redis.integration.test.js`.
+
 **REST response headers and a cache policy (`http.headers`, `http.cache`, `context.http`)**
 - The paper's "loss of intermediate HTTP caching" was a missing seam, not a
   property of the model: a mapped route can now declare static response
@@ -829,6 +855,13 @@ only by adapter tests; never a runtime dependency).
 
 ### Fixed
 
+- A cluster node that asked a peer for its presence `state` and never got
+  the answer (the reply travels at-most-once too — the node's own inbox
+  channel may not be subscribed yet on the first digest) kept its
+  `syncing` flag forever and ignored every later digest, so its view of that
+  peer stayed wrong until restart. The wait is now bounded: after two
+  presence intervals without an answer the sync is asked again. Found by
+  the multi-node bench on its first run.
 - A ping arriving after the engine had FAILED the connection (a protocol
   error, an oversized or undecodable message) was still answered with a
   pong; RFC 6455 7.1.7 says nothing after the failure is acted on. Autobahn

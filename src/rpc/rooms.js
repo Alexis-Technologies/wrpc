@@ -404,17 +404,41 @@ class RoomsBackplane {
   #linger;
   #channels = new Map(); // channel -> { count, off, stale, timer, lingerTimer }
   #closed = false;
+  // Loss detection. Every envelope this instance publishes carries its boot
+  // `epoch` and a per-channel `seq`; a receiver keeps the last seq it saw
+  // per (channel, publisher) and reports a jump as a gap — the broker
+  // dropped something, or this instance was between subscriptions. At-most-
+  // once stays the contract; the loss just stops being silent.
+  #epoch;
+  #seq = new Map(); // channel -> last published seq
+  #peers = new Map(); // channel -> Map<instance, { epoch, seq }>
+  #onGap;
   // Channels whose subscribe FAILED and is being retried: while any are
   // pending, cross-instance delivery on them is dark and `healthy` is
   // false — what a readiness probe should drain the node on.
   #pending = 0;
 
-  constructor({ backplane, instance, deliver, log = globalThis.console, linger = DEFAULT_LINGER }) {
+  constructor({
+    backplane,
+    instance,
+    deliver,
+    log = globalThis.console,
+    linger = DEFAULT_LINGER,
+    epoch = Math.random().toString(36).slice(2, 10),
+    onGap = null,
+  }) {
     this.#backplane = backplane;
     this.#instance = instance;
     this.#deliver = deliver;
     this.#log = createLoggerWriter(log);
     this.#linger = linger > 0 ? linger : 0;
+    this.#epoch = String(epoch);
+    this.#onGap = typeof onGap === 'function' ? onGap : null;
+  }
+
+  /** The boot marker stamped on every envelope this instance publishes. */
+  get epoch() {
+    return this.#epoch;
   }
 
   get healthy() {
@@ -452,7 +476,7 @@ class RoomsBackplane {
   // its channel — and on BROADCAST_CHANNEL, permanently deaf to every
   // server.broadcast() — while looking perfectly healthy.
   #subscribe(channel, record, attempt) {
-    const handler = (message) => this.#receive(message);
+    const handler = (message) => this.#receive(channel, message);
     Promise.resolve()
       .then(() => this.#backplane.subscribe(channel, handler))
       .then(
@@ -509,6 +533,7 @@ class RoomsBackplane {
   }
 
   #dispose(channel, record) {
+    this.#peers.delete(channel);
     this.#channels.delete(channel);
     if (record.timer) {
       clearTimeout(record.timer);
@@ -539,7 +564,19 @@ class RoomsBackplane {
 
   publish({ rooms, name, data, unreliable = false }) {
     if (this.#closed) return;
-    const envelope = { v: ENVELOPE_VERSION, instance: this.#instance, rooms: rooms ?? null, name, data };
+    const single = rooms && rooms.length === 1;
+    const channel = single ? roomChannel(rooms[0]) : BROADCAST_CHANNEL;
+    const seq = (this.#seq.get(channel) ?? 0) + 1;
+    this.#seq.set(channel, seq);
+    const envelope = {
+      v: ENVELOPE_VERSION,
+      instance: this.#instance,
+      epoch: this.#epoch,
+      seq,
+      rooms: rooms ?? null,
+      name,
+      data,
+    };
     // Additive: an older instance ignores the field and delivers reliably.
     if (unreliable) envelope.unreliable = true;
     let message = null;
@@ -550,8 +587,6 @@ class RoomsBackplane {
       // is a cross-instance loss, not a lost event.
       return void this.#log.error({ err: error, event: 'backplane.serialize', name });
     }
-    const single = rooms && rooms.length === 1;
-    const channel = single ? roomChannel(rooms[0]) : BROADCAST_CHANNEL;
     try {
       const result = this.#backplane.publish(channel, message);
       if (result && typeof result.catch === 'function') {
@@ -563,7 +598,7 @@ class RoomsBackplane {
     }
   }
 
-  #receive(message) {
+  #receive(channel, message) {
     if (this.#closed) return;
     const envelope = typeof message === 'string' ? jsonParse(message) : message;
     if (!envelope || typeof envelope !== 'object') return;
@@ -572,10 +607,44 @@ class RoomsBackplane {
     const { rooms, name, data } = envelope;
     if (typeof name !== 'string' || name.length === 0) return;
     if (rooms !== null && rooms !== undefined && !Array.isArray(rooms)) return;
+    this.#track(channel, envelope);
     try {
       this.#deliver(rooms ?? null, name, data, envelope.unreliable === true);
     } catch (error) {
       this.#log.error({ err: error, event: 'backplane.deliver', name });
+    }
+  }
+
+  // Sequence tracking per (channel, publisher). A jump within one epoch is
+  // a gap and is reported once with the count of envelopes missed; a new
+  // epoch (the publisher restarted) resets the count rather than reporting
+  // its whole history as lost; an envelope without the fields (an older
+  // instance) is delivered untracked. Out-of-order arrival never regresses
+  // the cursor, so a late envelope is not reported as a second gap.
+  #track(channel, envelope) {
+    const { instance, epoch, seq } = envelope;
+    if (typeof seq !== 'number' || typeof epoch !== 'string') return;
+    let peers = this.#peers.get(channel);
+    if (peers === undefined) {
+      peers = new Map();
+      this.#peers.set(channel, peers);
+    }
+    const peer = peers.get(instance);
+    if (peer === undefined) return void peers.set(instance, { epoch, seq });
+    if (peer.epoch !== epoch) {
+      peer.epoch = epoch;
+      peer.seq = seq;
+      return;
+    }
+    if (seq <= peer.seq) return;
+    const missed = seq - peer.seq - 1;
+    peer.seq = seq;
+    if (missed > 0 && this.#onGap !== null) {
+      try {
+        this.#onGap({ channel, instance, missed, seq });
+      } catch (error) {
+        this.#log.error({ err: error, event: 'backplane.gap' });
+      }
     }
   }
 

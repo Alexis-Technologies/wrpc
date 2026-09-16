@@ -282,12 +282,14 @@ test('metrics', async (t) => {
     otel.recordBroadcast('msg', 3, true);
     otel.recordStreamBytes('receive', 2048);
     otel.recordBackpressure('ws');
+    otel.recordBackplaneGap('room:chat', 2);
     otel.recordSession('restore', 'hit');
     otel.recordSubscription(1, 'feed/live');
     otel.recordSubscriptionValues(7, 'feed/live');
     const names = (await collect()).map((metric) => metric.descriptor.name);
     for (const name of [
       'wrpc.server.broadcasts',
+      'wrpc.server.backplane.gaps',
       'wrpc.server.broadcast.recipients',
       'wrpc.server.stream.bytes',
       'wrpc.server.backpressure',

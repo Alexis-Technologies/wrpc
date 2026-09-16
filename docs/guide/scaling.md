@@ -132,6 +132,20 @@ A failing backplane is isolated: a publish that throws is logged, and local
 delivery happens either way. A broken Redis degrades a cluster to a set of
 independent instances rather than taking the room mechanism down.
 
+## Loss detection {#loss-detection}
+
+Every envelope an instance publishes carries its boot `epoch` and a
+per-channel `seq`. A receiver keeps the last `seq` it saw per (channel,
+publisher) and, when the next one jumps, logs `backplane.gap` — `{ channel,
+instance, missed }` — and adds `missed` to the `wrpc.server.backplane.gaps`
+counter. Redis pub/sub is fire-and-forget: a subscriber connection that
+dropped for 200 ms, or a client the broker disconnected for exceeding its
+output buffer, loses envelopes **silently**; this is what makes the loss a
+number on a dashboard instead of a bug report about a message nobody
+received. It detects, it does not recover — at-most-once is still the
+contract, below. A new epoch (the publisher restarted) resets the count; an
+envelope from an instance that predates the fields is delivered untracked.
+
 ## At-most-once, and what to do about it
 
 Delivery is **at-most-once**, deliberately. A message published while an

@@ -208,6 +208,74 @@ context.client.sendEvent('game/tick', state, { compress: false });
 
 The flag is ignored on connections that never negotiated deflate.
 
+## Delivery, and what to do when it has to be guaranteed {#delivery}
+
+A room emit is a **fire-and-forget fan-out**: no id, no acknowledgement,
+at-most-once across instances (the [backplane](./scaling#at-most-once-and-what-to-do-about-it)
+reports what it lost, it does not replay it). That is the right contract for
+presence, cursors, typing indicators and every other event a later one
+supersedes. When a client must not miss anything — a chat history, an order
+book's deltas — the replayable thing in wrpc is a **subscription**, not a
+room, and three recipes cover the cases:
+
+**A broker-backed feed.** A broker (Kafka, RabbitMQ, a Redis stream)
+guarantees delivery to your *server*, not to a browser: the last hop still
+loses whatever was in flight during a reconnect unless the server replays
+from where the client left off. The offset the broker already keeps is the
+event id:
+
+```js
+feed: procedure.subscription({
+  access: 'session',
+  handler: async function* (ctx, { topic }, { lastEventId, signal }) {
+    // Resume from the client's last offset — the broker's own cursor.
+    for await (const message of consume(topic, { from: lastEventId ?? 'latest', signal })) {
+      yield tracked(message.offset, message.value);
+    }
+  },
+}),
+```
+
+**A room-backed feed.** For events that originate in this process, keep an
+[event log](./subscriptions#resuming) next to the room and serve the
+subscription from it; the room emit stays for the members who only want
+"now":
+
+```js
+const log = createEventLog({ size: 1000 });
+const bus = new Emitter();
+
+const post = (ctx, message) => {
+  const id = log.push(message);              // one id for both audiences
+  ctx.server.to('chat').emit('chat/message', message);
+  bus.emit('message', tracked(id, message));
+};
+
+history: procedure.subscription({
+  handler: async function* (ctx, args, { lastEventId, signal }) {
+    const missed = log.since(lastEventId);
+    if (missed === null) yield { type: 'snapshot', items: await loadRecent() };
+    else for (const item of missed) yield item;
+    for await (const item of createEventStream(bus, 'message', { signal })) yield item;
+  },
+}),
+```
+
+**An acknowledged emit.** When the sender needs to know the event *arrived*,
+ask instead of emitting — [`ask()`](#asking-a-room) is the same event packet
+with an id, and each client's answer is its acknowledgement:
+
+```js
+const { answers, expected, incomplete } = await ctx.server.to('ops').ask('deploy/notice', payload);
+if (incomplete || answers.length < expected) escalate(expected - answers.length);
+```
+
+What wrpc deliberately does not have is a per-room replay buffer with a
+client that "rejoins from an id": it would duplicate subscriptions, and it
+would need a new concept inside the [frozen 1.0 protocol](../reference/protocol#stability).
+If you need a queue's guarantees, you need a queue — and a subscription is
+how its offsets reach the browser.
+
 ## Rooms and reconnects
 
 Membership is **per connection**: a reconnect is a NEW server-side client,

@@ -68,6 +68,7 @@ const createServerTelemetry = (telemetry) => {
   let recipients = null;
   let streamBytes = null;
   let backpressure = null;
+  let backplaneGaps = null;
   let sessions = null;
   let sseChannels = null;
   let clusterMessages = null;
@@ -108,6 +109,10 @@ const createServerTelemetry = (telemetry) => {
         unit: 'By',
         description: 'Binary stream bytes, by direction',
       });
+      backplaneGaps = meter.createCounter('wrpc.server.backplane.gaps', {
+        unit: '{envelope}',
+        description: 'Backplane envelopes a publisher sent that this instance never received',
+      });
       backpressure = meter.createCounter('wrpc.server.backpressure', {
         unit: '{event}',
         description: 'Times a producer parked waiting for the transport to drain',
@@ -144,6 +149,7 @@ const createServerTelemetry = (telemetry) => {
       recipients = null;
       streamBytes = null;
       backpressure = null;
+      backplaneGaps = null;
       sessions = null;
       clusterMessages = null;
       clusterRequests = null;
@@ -260,6 +266,12 @@ const createServerTelemetry = (telemetry) => {
     recordStreamBytes(direction, bytes) {
       try {
         streamBytes?.add(bytes, { 'wrpc.stream.direction': direction });
+      } catch {}
+    },
+
+    recordBackplaneGap(channel, missed) {
+      try {
+        backplaneGaps?.add(missed, { 'wrpc.channel': channel });
       } catch {}
     },
 

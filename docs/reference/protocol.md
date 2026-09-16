@@ -537,11 +537,16 @@ With a backplane configured (`new Server({ backplane })`, see
 non-local emit is published as an envelope:
 
 ```json
-{ "v": 1, "instance": "c0ffee…", "rooms": ["lobby"], "name": "chat/message", "data": { "text": "hi" } }
+{ "v": 1, "instance": "c0ffee…", "epoch": "k3x9…", "seq": 42, "rooms": ["lobby"], "name": "chat/message", "data": { "text": "hi" } }
 ```
 
 - `instance` identifies the publisher, and every instance drops its own
   envelopes — that is the echo suppression.
+- `epoch` is the publisher's boot marker and `seq` its per-channel counter:
+  a receiver that sees `seq` jump within one epoch knows how many envelopes
+  the broker lost between them and reports the gap (`backplane.gap`, the
+  `wrpc.server.backplane.gaps` metric). Additive: an envelope without them
+  is delivered untracked. Detection only — the contract stays at-most-once.
 - `rooms` is `null` for a broadcast to everyone.
 - An emit targeting **exactly one** room is published on that room's channel
   (`room:<name>`), which only instances holding members subscribe to;

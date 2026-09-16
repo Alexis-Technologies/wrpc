@@ -590,6 +590,42 @@ test('cluster: the digest heals a dropped delta through an addressed sync', asyn
   assert.strictEqual(b.cluster.count('lobby'), 1, 'the digest healed the view');
 });
 
+test('cluster: a lost state answer does not freeze the digest heal', async (t) => {
+  const inner = new MemoryBackplane();
+  // A broker that loses the FIRST `state` answer — the at-most-once edge
+  // that used to leave a node's `syncing` flag set forever.
+  let dropped = 0;
+  const backplane = {
+    publish(channel, message) {
+      if (dropped === 0 && message.includes('"t":"state"')) {
+        dropped++;
+        return;
+      }
+      inner.publish(channel, message);
+    },
+    subscribe: (channel, handler) => inner.subscribe(channel, handler),
+    close: () => inner.close(),
+  };
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { presenceInterval: 40 } });
+  const b = boot(t, backplane, { instanceId: 'b', cluster: { presenceInterval: 40 } });
+  await settle(20);
+  attach(a).client.join('lobby');
+  await settle(20);
+  assert.strictEqual(b.cluster.count('lobby'), 1);
+  backplane.publish(
+    'cluster',
+    JSON.stringify({ v: 1, from: 'a', epoch: a.cluster.epoch, t: 'state', rooms: {}, clients: 0 }),
+  );
+  await settle(20);
+  assert.strictEqual(b.cluster.count('lobby'), 0, 'the sabotage took');
+  // First digest -> sync -> the answer is dropped. Two intervals later the
+  // sync is asked again and the answer lands.
+  await timers.setTimeout(300);
+  await settle(20);
+  assert.strictEqual(dropped, 1, 'one state answer was lost');
+  assert.strictEqual(b.cluster.count('lobby'), 1, 'the second sync healed the view');
+});
+
 test('cluster: signature edge branches — tampered payload and malformed commands are dropped', async (t) => {
   const backplane = new MemoryBackplane();
   const a = boot(t, backplane, { instanceId: 'a', cluster: { secret: 's3' } });

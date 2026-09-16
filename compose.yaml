@@ -1,0 +1,16 @@
+# Local infrastructure for the pieces of the test and bench suites that need
+# a real broker: `tests/scaling/redis.integration.test.js` and
+# `bench/cluster-nodes.js`, both gated on REDIS_URL.
+#
+#   pnpm redis:up
+#   REDIS_URL=redis://127.0.0.1:6379 node --test tests/scaling/redis.integration.test.js
+#   REDIS_URL=redis://127.0.0.1:6379 node bench/cluster-nodes.js
+#   pnpm redis:down
+#
+# No volumes: nothing here is worth keeping between runs.
+services:
+  redis:
+    image: redis:7-alpine
+    ports:
+      - '127.0.0.1:6379:6379'
+    command: ['redis-server', '--save', '', '--appendonly', 'no']

@@ -826,7 +826,7 @@ class Cluster extends Emitter {
         this.#post(instanceChannel(from), { t: 'state', ...this.#snapshot() });
         return;
       case 'state':
-        node.syncing = false;
+        node.syncing = 0;
         return void this.#applySnapshot(node, envelope);
       case 'digest': {
         const { clients, n, h } = envelope;
@@ -840,9 +840,15 @@ class Cluster extends Emitter {
         }
         if (count === n && hash === h) return; // the view is correct
         // One outstanding sync per node: the answering 'state' clears it,
-        // so a slow answer cannot stack requests every tick.
-        if (node.syncing) return;
-        node.syncing = true;
+        // so a slow answer cannot stack requests every tick. The wait is
+        // BOUNDED: the answer travels at-most-once too (our own inbox
+        // channel may not even be subscribed yet on the first digest), and
+        // a lost `state` used to leave `syncing` set forever — every later
+        // digest ignored, the view wrong until the node restarted. After
+        // two presence intervals without an answer the sync is asked again.
+        const now = Date.now();
+        if (node.syncing && now - node.syncing < this.#presenceInterval * 2) return;
+        node.syncing = now;
         this.#post(instanceChannel(from), { t: 'sync' });
         return;
       }

@@ -206,6 +206,34 @@ come from this one bench, and re-running it is the way to move either.
 point of [replicating presence](./cluster#presence-replicated-read-locally)
 instead of requesting it.
 
+## Across instances
+
+The paper's numbers were one machine, one process. `bench/cluster-nodes.js`
+is the multi-node stand: N wrpc processes over one Redis (backplane and
+session store, `pnpm redis:up`), M clients spread across them, and every
+scenario crossing a real broker between real processes:
+
+```bash
+pnpm redis:up
+REDIS_URL=redis://127.0.0.1:6379 node bench/cluster-nodes.js   # WRPC_NODES, WRPC_CLIENTS to size it
+```
+
+| Scenario (4 instances, 200 clients) | result |
+| --- | --- |
+| cross-instance emit, one at a time, measured at the farthest member | 166/sec — delivery latency p50 2 ms, p99 4 ms |
+| presence: 200 concurrent joins, then leaves | count agrees on another instance after 0 ms / 6 ms |
+| broadcast `ask` across 4 instances | 250/sec, 200 of 200 answers every time |
+| an instance dies, its 50 clients reconnect elsewhere | 50/50 sessions restored with no sticky routing, presence converged in 6 ms, 0 backplane gaps |
+
+The emit row is a latency measurement (one emit, wait for the remotest
+client, repeat), not a throughput one — the in-process fan-out numbers
+above are the throughput side. The last row is the [affinity
+table](./scaling#affinity) made concrete: with a shared session store and a
+backplane, an instance can vanish and nothing needs a balancer's help. The
+stand found one bug on its first run: a cluster node whose `sync` answer was
+lost (at-most-once, again) never asked again and kept a stale presence view
+for the life of the process — now it retries after two presence intervals.
+
 ## Why the code looks the way it does
 
 Two benchmarks exist to justify code shape rather than to advertise a number.

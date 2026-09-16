@@ -41,6 +41,34 @@ jobs:
       - run: pnpm test:coverage
       - run: pnpm test:types
 
+  # The Redis leg of the scaling suites against a real server — the fake in
+  # tests/scaling/redis.test.js is what `pnpm test` runs; this is the
+  # contract check against ioredis + a broker. The multi-node benchmark
+  # (bench/cluster-nodes.js) stays a manual run: a benchmark in CI is noise.
+  redis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      redis:
+        image: redis:7-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node --test tests/scaling/redis.integration.test.js
+        env:
+          REDIS_URL: redis://127.0.0.1:6379
+
   # Node 22 only: the docs build exercises VitePress, not the package runtime,
   # so repeating it across the test matrix would just repeat the same work.
   docs:
