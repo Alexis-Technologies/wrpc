@@ -294,6 +294,10 @@ The semantics:
   in the list if feeds matter: it carries events, subscriptions and cancel
   (everything but binary streams).
 
+A fallback list is several ways to reach **one** backend. Talking to several
+*different* backends at once — a REST service, a realtime one, a local
+worker — is a separate concern; see [Multiple backends](./multiple-backends).
+
 ## Heartbeat
 
 A browser `WebSocket` exposes no protocol-level ping, so a connection that died
@@ -392,6 +396,13 @@ The packets are identical on both hops, so nothing above the transport
 changes. Each `connect()` gets its own `MessageChannel` to the worker; the
 proxy routes answers back to the port that asked and broadcasts events to
 every port, and lets go of a port when its page closes it.
+
+This is also how a purely local backend — one fronting `IndexedDB`, say —
+joins a client that otherwise talks to remote services over `ws`/`http`/`wt`;
+see [Multiple backends](./multiple-backends#a-local-backend-behind-a-worker)
+for the combined picture, including a sharp edge in `getInstance`'s
+per-page singleton worth knowing about before you reach for two worker
+targets from one page.
 
 ## In a browser bundle
 

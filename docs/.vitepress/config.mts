@@ -173,6 +173,7 @@ export default withMermaid({
             items: [
               { text: 'Client', link: '/guide/client' },
               { text: 'Typed client', link: '/guide/typed-client' },
+              { text: 'Multiple backends', link: '/guide/multiple-backends' },
               { text: 'Browser & bundling', link: '/guide/browser' },
               { text: 'Codegen CLI', link: '/guide/cli' },
               { text: 'TanStack Query', link: '/guide/query' },
