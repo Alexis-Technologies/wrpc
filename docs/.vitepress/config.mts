@@ -178,6 +178,7 @@ export default withMermaid({
               { text: 'Redis', link: '/guide/brokers/redis' },
               { text: 'NATS', link: '/guide/brokers/nats' },
               { text: 'RabbitMQ', link: '/guide/brokers/amqp' },
+              { text: 'Kafka', link: '/guide/brokers/kafka' },
             ],
           },
           {

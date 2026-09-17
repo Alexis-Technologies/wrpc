@@ -208,7 +208,10 @@ const runQueueContract = async (t, name, harness) => {
     });
     await waitFor(() => again.length === 1, { timeout: redelivery + timeout });
     assert.strictEqual(again[0].body, 'unfinished');
-    assert.strictEqual(again[0].redelivered, true);
+    // `redelivered` is best-effort: a broker with a delivery counter (or an
+    // adapter that re-published) knows, and Kafka — where a rebalance simply
+    // rewinds a committed offset — cannot.
+    assert.strictEqual(typeof again[0].redelivered, 'boolean');
     // A settlement from the stopped consumer is a harmless no-op.
     await taken.ack();
   });

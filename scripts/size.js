@@ -79,6 +79,7 @@ const ENTRIES = [
   { label: 'redis broker (@alexify/wrpc/broker/redis)', entry: 'broker/redis.js', platform: 'node' },
   { label: 'nats broker (@alexify/wrpc/broker/nats)', entry: 'broker/nats.js', platform: 'node' },
   { label: 'amqp broker (@alexify/wrpc/broker/amqp)', entry: 'broker/amqp.js', platform: 'node' },
+  { label: 'kafka broker (@alexify/wrpc/broker/kafka)', entry: 'broker/kafka.js', platform: 'node' },
   // 12 -> 13 alongside the main-entry raise: the sse entry bundles the same
   // client core, so the REST-bridge bytes land here too. 13 -> 14 with the
   // main entry's static-introspection raise, for the same reason; 14 -> 15

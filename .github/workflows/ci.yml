@@ -118,6 +118,40 @@ jobs:
         env:
           AMQP_URL: amqp://127.0.0.1:5672
 
+  # The Kafka leg of the broker suites against a real broker (KRaft), on
+  # whichever KafkaJS-shaped clients are installed; the in-repo fake in
+  # tests/broker/fakeKafka.js covers both shapes in `pnpm test`.
+  kafka:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      kafka:
+        image: apache/kafka:3.9.1
+        ports: ['9092:9092']
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node --test tests/broker/kafka.integration.test.js
+        env:
+          KAFKA_BROKERS: 127.0.0.1:9092
+
   # Node 22 only: the docs build exercises VitePress, not the package runtime,
   # so repeating it across the test matrix would just repeat the same work.
   docs:

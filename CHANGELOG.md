@@ -13,6 +13,33 @@ narrower promise — see
 
 ### Added
 
+**Message brokers, part 8: the Kafka adapter (`@alexify/wrpc/broker/kafka`)**
+- `createKafkaBroker({ kafka })` over an injected KafkaJS-shaped client —
+  `kafkajs` or `@confluentinc/kafka-javascript`'s `.KafkaJS`. The two differ
+  in CONFIG, not in method names, and `src/broker/kafka/shape.js`
+  normalizes every difference the phase-0 spike found: the `kafkaJS` config
+  nesting, `fromBeginning`/`autoCommit` placement, the `consumer.events`
+  getter that THROWS on one of them, `fetchTopicMetadata` answering an
+  array vs `{ topics }`, and the join signal (a GROUP_JOIN event vs polling
+  `assignment()`).
+- `log`: a topic per feed, single-partition by default (order), and the
+  resume token is a VECTOR of partition offsets. Readers pin their position
+  by seeking to a watermark captured before the join, because a fresh group
+  resolves `latest` at its first fetch — a race that would otherwise drop
+  the first entries.
+- `queue`: one consumer group, manual commits, `partitionsConsumedConcurrently`
+  as the prefetch. Kafka has no nack, so a retry is a republish carrying
+  `x-wrpc-attempt` (the delay waits in-process, the original stays
+  uncommitted meanwhile) and an exhausted message goes to a dead-letter
+  topic.
+- `backplane`: one topic, the channel in a header, a unique consumer group
+  per instance, publishes chained so a per-channel sequence cannot reorder.
+  Caveated in the guide: an instance is deaf until its group joins.
+- **No `direct`** — and it says so: RPC over a broker refuses Kafka rather
+  than limping.
+- Suites run over an in-repo fake Kafka (both client shapes) in `pnpm test`
+  and against a real broker in CI's new `kafka` job.
+
 **Message brokers, part 7: the RabbitMQ adapter (`@alexify/wrpc/broker/amqp`)**
 - `createAmqpBroker({ connection })` over an injected amqplib connection: a
   direct exchange with one exclusive queue per instance for the backplane,

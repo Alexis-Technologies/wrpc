@@ -1,3 +1,6 @@
 allowBuilds:
   esbuild: true
+  # The Kafka adapter's integration suite runs against both KafkaJS-shaped
+  # clients; this one is a native librdkafka binding.
+  "@confluentinc/kafka-javascript": true
   "@fails-components/webtransport-transport-http3-quiche": true
