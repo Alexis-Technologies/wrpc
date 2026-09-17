@@ -177,6 +177,7 @@ export default withMermaid({
               { text: 'RPC over a broker', link: '/guide/brokers/rpc' },
               { text: 'Redis', link: '/guide/brokers/redis' },
               { text: 'NATS', link: '/guide/brokers/nats' },
+              { text: 'RabbitMQ', link: '/guide/brokers/amqp' },
             ],
           },
           {

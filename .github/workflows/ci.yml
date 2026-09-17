@@ -92,6 +92,32 @@ jobs:
         env:
           NATS_URL: nats://127.0.0.1:4222
 
+  # The RabbitMQ leg of the broker suites against a real server; the in-repo
+  # fake in tests/broker/fakeAmqp.js is what `pnpm test` runs.
+  rabbitmq:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      rabbitmq:
+        image: rabbitmq:4-alpine
+        ports: ['5672:5672']
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node --test tests/broker/amqp.integration.test.js
+        env:
+          AMQP_URL: amqp://127.0.0.1:5672
+
   # Node 22 only: the docs build exercises VitePress, not the package runtime,
   # so repeating it across the test matrix would just repeat the same work.
   docs:

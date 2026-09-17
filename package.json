@@ -59,6 +59,10 @@
       "types": "./broker/nats.d.ts",
       "default": "./broker/nats.js"
     },
+    "./broker/amqp": {
+      "types": "./broker/amqp.d.ts",
+      "default": "./broker/amqp.js"
+    },
     "./sse": {
       "browser": {
         "types": "./sse.browser.d.ts",
@@ -180,6 +184,7 @@
     "@types/node": "^22.10.0",
     "@vercel/analytics": "^2.0.1",
     "@vercel/speed-insights": "^2.0.0",
+    "amqplib": "^2.0.1",
     "c8": "^10.1.3",
     "esbuild": "^0.28.1",
     "express": "^5.2.1",

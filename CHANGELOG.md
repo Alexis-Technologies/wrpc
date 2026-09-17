@@ -13,6 +13,24 @@ narrower promise — see
 
 ### Added
 
+**Message brokers, part 7: the RabbitMQ adapter (`@alexify/wrpc/broker/amqp`)**
+- `createAmqpBroker({ connection })` over an injected amqplib connection: a
+  direct exchange with one exclusive queue per instance for the backplane,
+  stream queues (`x-stream-offset` as the feed's resume token) for logs,
+  quorum queues with a TTL retry queue and a dead-letter queue for work, and
+  a fanout exchange per address for RPC (plain listeners each bind their own
+  exclusive queue, a group binds one durable queue).
+- Two RabbitMQ 4 behaviours the phase-0 spike measured are built in: a
+  requeue does NOT count a delivery, so `retry()` republishes with an
+  `x-wrpc-attempt` header while `release()` is the plain requeue that must
+  not count one; and a transient non-exclusive queue is refused at the
+  CONNECTION level, so every shared queue the adapter declares is durable.
+- `mandatory` + `basic.return` turns "nobody is listening" into the fast
+  `503` an RPC caller wants, and a request's timeout rides as the message's
+  `expiration` so a stale one is dropped rather than executed late.
+- Suites run over an in-repo fake RabbitMQ in `pnpm test` and against a real
+  server in CI's new `rabbitmq` job.
+
 **Message brokers, part 6: the NATS adapter (`@alexify/wrpc/broker/nats`)**
 - `createNatsBroker({ nc, headers, jetstream, jetstreamManager })` over an
   injected nats.js connection: core subjects carry the backplane and RPC

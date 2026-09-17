@@ -35,7 +35,7 @@ Kafka does not load the NATS adapter:
 | in-process | `@alexify/wrpc/broker` | ✓ | ✓ | ✓ | ✓ |
 | [Redis](./brokers/redis) (Streams + pub/sub) | `@alexify/wrpc/broker/redis` | ✓ | ✓ | ✓ | ✓ |
 | [NATS](./brokers/nats) + JetStream | `@alexify/wrpc/broker/nats` | ✓ | ✓ | ✓ | ✓ |
-| RabbitMQ (AMQP 0-9-1) | `@alexify/wrpc/broker/amqp` | ✓ | ✓ | ✓ | ✓ |
+| [RabbitMQ](./brokers/amqp) (AMQP 0-9-1) | `@alexify/wrpc/broker/amqp` | ✓ | ✓ | ✓ | ✓ |
 | Kafka | `@alexify/wrpc/broker/kafka` | caveats | ✓ | ✓ | — |
 
 Kafka has no `direct`: consumer-group rebalances and a topic per instance make
