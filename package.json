@@ -51,6 +51,10 @@
       "types": "./broker.d.ts",
       "default": "./broker.js"
     },
+    "./broker/redis": {
+      "types": "./broker/redis.d.ts",
+      "default": "./broker/redis.js"
+    },
     "./sse": {
       "browser": {
         "types": "./sse.browser.d.ts",
@@ -219,6 +223,7 @@
     "scaling.d.ts",
     "broker.js",
     "broker.d.ts",
+    "broker/",
     "sse.js",
     "sse.browser.js",
     "sse.d.ts",

@@ -13,6 +13,20 @@ narrower promise — see
 
 ### Added
 
+**Message brokers, part 5: the Redis adapter (`@alexify/wrpc/broker/redis`)**
+- `createRedisBroker({ client })` implements all four capabilities over an
+  injected ioredis-shaped client — pub/sub for the backplane (the adapter
+  `./scaling` already shipped), Streams for logs and queues (`XREADGROUP`,
+  `XACK`+`XDEL`, `XAUTOCLAIM` for what a stopped consumer held, a sorted set
+  for delayed retries), pub/sub plus a list for RPC inboxes and service
+  groups. Valkey, KeyDB and Dragonfly need no adapter of their own.
+- One blocking `XREAD` per instance serves every live feed reader
+  (`TopicTails`), and a stream id is the feed's resume token. The adapter
+  opens the extra connections blocking reads need through `duplicate()` (or
+  an injected `connect`) and quits only those — never the injected client.
+- The four contract suites run over an in-repo fake Redis in `pnpm test` and
+  against a real server in CI's `redis` job.
+
 **Message brokers, part 4: RPC over a broker (`attachBrokerRpc`, `transport: 'broker'`)**
 - `attachBrokerRpc(server, broker, { service })` serves wrpc over a broker's
   `direct` capability, and `connect('broker://<service>', { transport:

@@ -33,7 +33,7 @@ Kafka does not load the NATS adapter:
 | Broker | Subpath | backplane | log | queue | direct |
 | --- | --- | :---: | :---: | :---: | :---: |
 | in-process | `@alexify/wrpc/broker` | ✓ | ✓ | ✓ | ✓ |
-| Redis (Streams + pub/sub) | `@alexify/wrpc/broker/redis` | ✓ | ✓ | ✓ | ✓ |
+| [Redis](./brokers/redis) (Streams + pub/sub) | `@alexify/wrpc/broker/redis` | ✓ | ✓ | ✓ | ✓ |
 | NATS + JetStream | `@alexify/wrpc/broker/nats` | ✓ | ✓ | ✓ | ✓ |
 | RabbitMQ (AMQP 0-9-1) | `@alexify/wrpc/broker/amqp` | ✓ | ✓ | ✓ | ✓ |
 | Kafka | `@alexify/wrpc/broker/kafka` | caveats | ✓ | ✓ | — |
