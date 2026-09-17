@@ -12,6 +12,7 @@ import type {
 } from '../broker.js';
 import type { Backplane } from '../scaling.js';
 import type { AttachOptions, RpcServer } from '../index.js';
+import { procedure } from '../index.js';
 
 const memory = new broker.MemoryBroker({ logger: false, retention: { maxEntries: 100 } });
 expectAssignable<Broker>(memory);
@@ -73,3 +74,15 @@ rpc.attach(transport, { session: { token: 'svc', state: { service: 'billing' } }
 rpc.attach(transport, { request: { headers: { authorization: 'Bearer t' } } });
 expectAssignable<AttachOptions>({ meta: null });
 expectError(rpc.attach(transport, { session: { token: 'x' }, request: { headers: {} } }));
+
+// Durable feeds plug straight into a subscription procedure.
+procedure.subscription({
+  access: 'session',
+  handler: broker.brokerFeed(memory, (_ctx, args: { tenant: string }) => `orders.${args.tenant}`, {
+    map: (order: { id: string }, entry) => ({ ...order, tp: entry.headers.tp }),
+    onGap: async (_ctx, _args, { code }) => [{ snapshot: code }],
+    secret: 'feed-secret',
+  }),
+});
+broker.brokerFeed(memory.log, 'orders', { from: 'earliest', decode: 'text' });
+expectError(broker.brokerFeed(memory, 'orders', { from: 'middle' }));

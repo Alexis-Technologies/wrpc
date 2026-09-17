@@ -14,8 +14,10 @@ const { MemoryBroker, createMemoryBroker } = require('./memory.js');
 const { TopicTails } = require('./tail.js');
 const { encodeToken, toText, toBytes, toHeaders } = require('./ids.js');
 const { DEFAULT_RETRY } = require('./retry.js');
+const { brokerFeed } = require('./feed.js');
 
 module.exports = {
+  brokerFeed,
   MemoryBroker,
   createMemoryBroker,
   isBroker,

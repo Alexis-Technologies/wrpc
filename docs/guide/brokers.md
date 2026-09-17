@@ -13,7 +13,7 @@ the capability it needs:
 | Capability | Guarantee | What wrpc builds on it |
 | --- | --- | --- |
 | `backplane` | at-most-once fan-out | [rooms](./rooms) and the [cluster](./cluster) across instances |
-| `log` | ordered, replayable | durable subscription feeds that resume on any instance |
+| `log` | ordered, replayable | [durable subscription feeds](./brokers/feeds) that resume on any instance |
 | `queue` | at-least-once, competing consumers | procedures invoked from a queue, with retry and dead-lettering |
 | `direct` | addressable inboxes | RPC between services over the broker itself |
 

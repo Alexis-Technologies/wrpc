@@ -218,21 +218,19 @@ supersedes. When a client must not miss anything — a chat history, an order
 book's deltas — the replayable thing in wrpc is a **subscription**, not a
 room, and three recipes cover the cases:
 
-**A broker-backed feed.** A broker (Kafka, RabbitMQ, a Redis stream)
+**A broker-backed feed.** A broker (Kafka, RabbitMQ, NATS, a Redis stream)
 guarantees delivery to your *server*, not to a browser: the last hop still
 loses whatever was in flight during a reconnect unless the server replays
 from where the client left off. The offset the broker already keeps is the
-event id:
+event id, and [`brokerFeed`](./brokers/feeds) is that subscription, resuming
+on any instance:
 
 ```js
+const { brokerFeed } = require('@alexify/wrpc/broker');
+
 feed: procedure.subscription({
   access: 'session',
-  handler: async function* (ctx, { topic }, { lastEventId, signal }) {
-    // Resume from the client's last offset — the broker's own cursor.
-    for await (const message of consume(topic, { from: lastEventId ?? 'latest', signal })) {
-      yield tracked(message.offset, message.value);
-    }
-  },
+  handler: brokerFeed(broker, 'chat.lobby', { onGap: (ctx) => loadRecent(ctx) }),
 }),
 ```
 

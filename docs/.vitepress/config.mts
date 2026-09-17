@@ -170,7 +170,10 @@ export default withMermaid({
           },
           {
             text: 'Message brokers',
-            items: [{ text: 'Overview & contracts', link: '/guide/brokers' }],
+            items: [
+              { text: 'Overview & contracts', link: '/guide/brokers' },
+              { text: 'Durable feeds', link: '/guide/brokers/feeds' },
+            ],
           },
           {
             text: 'Client',

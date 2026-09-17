@@ -10,7 +10,7 @@
  * has shipped.
  */
 
-import type { WrpcLogger } from './index.js';
+import type { WrpcLogger, Context, SubscriptionOptions, Tracked } from './index.js';
 import type { Backplane } from './scaling.js';
 
 export type { Backplane } from './scaling.js';
@@ -174,6 +174,53 @@ export declare class MemoryBroker implements Broker {
 }
 
 export declare function createMemoryBroker(options?: MemoryBrokerOptions): MemoryBroker;
+
+// ---------------------------------------------------------------------------
+// Durable feeds
+
+export interface GapInfo {
+  /** What the client holds: the id it sent, or the last token the feed handed it. */
+  lastEventId: string | null | undefined;
+  /** 400 — malformed, forged or past the tip; 410 — history gone or from another log. */
+  code: 400 | 410;
+}
+
+export interface BrokerFeedOptions<Value = unknown, Mapped = Value> {
+  /** A fresh subscription (no lastEventId) reads new entries (default) or everything retained. */
+  from?: 'latest' | 'earliest';
+  /** How an entry's string value becomes the yielded value. Default 'json'. */
+  decode?: 'json' | 'text' | ((text: string) => Value);
+  /** Reshape a value; answer undefined to skip the entry. */
+  map?: (value: Value, entry: LogEntry, context: Context) => Mapped | undefined | Promise<Mapped | undefined>;
+  /**
+   * An unusable lastEventId, or a reader the retention overtook. Answer a
+   * snapshot (a value, an iterable, an async iterable, or nothing); the feed
+   * then continues with everything appended from the moment of the gap.
+   * Without it the subscription ends with the coded error.
+   */
+  onGap?: (
+    context: Context,
+    args: any,
+    info: GapInfo,
+  ) => unknown | Iterable<unknown> | AsyncIterable<unknown> | Promise<unknown>;
+  /** HMAC-sign the yielded ids, refusing any the feed never issued. */
+  secret?: string;
+  /** Longer peer-supplied ids are refused with 400. Default 512. */
+  maxIdLength?: number;
+}
+
+/**
+ * A subscription handler reading a broker log: every value is `tracked()`
+ * with the log's resume token, so a client re-subscribing with
+ * `lastEventId` resumes there — on any instance.
+ *
+ *   feed: procedure.subscription({ access: 'session', handler: brokerFeed(broker, 'orders') })
+ */
+export declare function brokerFeed<Value = unknown, Mapped = Value>(
+  broker: Broker | BrokerLog,
+  topic: string | ((context: Context, args: any) => string | Promise<string>),
+  options?: BrokerFeedOptions<Value, Mapped>,
+): (context: Context, args: any, subscription: SubscriptionOptions) => AsyncGenerator<Tracked<Mapped> | unknown>;
 
 // ---------------------------------------------------------------------------
 // Adapter building blocks

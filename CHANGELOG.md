@@ -13,6 +13,22 @@ narrower promise — see
 
 ### Added
 
+**Message brokers, part 2: durable subscription feeds (`brokerFeed`)**
+- `procedure.subscription({ handler: brokerFeed(broker, topic, options) })`
+  reads a broker log and `tracked()`s every value with the log's resume
+  token, so a client re-subscribing with `lastEventId` resumes on ANY
+  instance — the "broker-backed feed" recipe of the rooms guide, made
+  first-class. The topic may be a function of the context and arguments;
+  `map` reshapes or skips entries; an undecodable entry is logged
+  (`feed.decode`) and skipped.
+- A `lastEventId` the log cannot resume from ends the feed with `400`
+  (malformed, forged, past the tip) or `410` (history gone, another log) —
+  or, with `onGap`, becomes a snapshot followed by everything appended from
+  the moment of the gap (the read is positioned before the snapshot is
+  built). A reader the retention overtook mid-stream takes the same path.
+- `secret` HMAC-signs the ids a feed hands out and refuses any it never
+  issued; `maxIdLength` caps what a peer may send.
+
 **Message brokers, part 1: the broker-agnostic core (`@alexify/wrpc/broker`, experimental)**
 - A broker is described by four capabilities — `backplane` (the existing
   at-most-once fan-out), `log` (ordered, replayable), `queue` (at-least-once,
