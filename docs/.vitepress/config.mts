@@ -174,6 +174,7 @@ export default withMermaid({
               { text: 'Overview & contracts', link: '/guide/brokers' },
               { text: 'Durable feeds', link: '/guide/brokers/feeds' },
               { text: 'Queue consumers & publishing', link: '/guide/brokers/consumers' },
+              { text: 'RPC over a broker', link: '/guide/brokers/rpc' },
             ],
           },
           {

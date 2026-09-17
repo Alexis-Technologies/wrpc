@@ -13,6 +13,25 @@ narrower promise — see
 
 ### Added
 
+**Message brokers, part 4: RPC over a broker (`attachBrokerRpc`, `transport: 'broker'`)**
+- `attachBrokerRpc(server, broker, { service })` serves wrpc over a broker's
+  `direct` capability, and `connect('broker://<service>', { transport:
+  'broker', broker, mode })` calls it — no HTTP, no WebSocket, no service
+  discovery between services that share a broker.
+- `mode: 'stateless'` (default): a request is handled exactly like a
+  packet-mode HTTP POST (`handleHttpCall`: batches, header sessions, meta),
+  by whichever instance the broker's group hands it to.
+- `mode: 'session'`: the full protocol (events, subscriptions, cancellation,
+  binary streams) with one instance, found by a `hello`/`welcome`
+  handshake. Frames are numbered per direction and a gap is a lost
+  connection; `bye` both ways; a server-side `idleTimeout` (90 s) reclaims
+  sessions whose client vanished; backpressure from unconfirmed sends.
+  Losing the instance is an ordinary reconnect, and subscriptions resume.
+- Draining stops consuming the service address while held sessions finish.
+- The carrier is specified as the experimental
+  [Broker binding](./docs/reference/protocol.md#broker-binding) section of
+  the protocol reference.
+
 **Message brokers, part 3: queue consumers and publishing (`attachConsumers`, `createPublisher`, `consumes`)**
 - A unit's reserved `consumes` block declares queue consumers — full
   procedures with an optional `consume` policy — that no call packet can

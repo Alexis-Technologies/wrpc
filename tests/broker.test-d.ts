@@ -12,7 +12,7 @@ import type {
 } from '../broker.js';
 import type { Backplane } from '../scaling.js';
 import type { AttachOptions, RpcServer, Server } from '../index.js';
-import { procedure, defineRouter } from '../index.js';
+import { procedure, defineRouter, connect } from '../index.js';
 
 const memory = new broker.MemoryBroker({ logger: false, retention: { maxEntries: 100 } });
 expectAssignable<Broker>(memory);
@@ -119,3 +119,15 @@ declare const server: Server;
   expectType<Promise<string | undefined>>(publisher.publish('orders.v1/created', { id: 'o-1' }));
 })();
 expectError(broker.attachConsumers(server, memory, { q: { prefetch: 'many' } }));
+
+// RPC over a broker.
+(async () => {
+  const handle = await broker.attachBrokerRpc(server, memory, { service: 'billing', idleTimeout: 60_000 });
+  expectType<string>(handle.address);
+  expectType<number>(handle.sessions);
+  const client = await connect('broker://billing', { transport: 'broker', broker: memory, mode: 'session' });
+  void client;
+  const transport = new broker.ClientBrokerTransport('broker://billing');
+  expectType<'stateless' | 'session'>(transport.mode);
+})();
+expectError(connect('broker://billing', { transport: 'broker', broker: memory, mode: 'duplex' }));

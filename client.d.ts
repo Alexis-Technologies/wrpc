@@ -762,7 +762,7 @@ export interface WrpcClientOptions {
    * takes over ('transport-fallback' fires) and only the last exhausting
    * emits 'reconnect-failed'. No default order — the list is yours.
    */
-  transport?: 'ws' | 'http' | 'sse' | 'webrtc' | 'wt' | string | Array<string>;
+  transport?: 'ws' | 'http' | 'sse' | 'webrtc' | 'wt' | 'broker' | string | Array<string>;
   reconnect?: ReconnectOptions | false;
   /**
    * Presents this connection's credential. Awaited inside `open()` on the
@@ -897,6 +897,19 @@ export interface WrpcClientOptions {
    * Without either, open() throws and a fallback list moves on.
    */
   wt?: WtTransportOptions;
+  /**
+   * @experimental The `broker` transport (`@alexify/wrpc/broker`, Node): a
+   * broker with the `direct` capability, or the capability itself. Typed
+   * structurally here so this browser-safe file never references the Node
+   * subpath; `Broker` in `@alexify/wrpc/broker` is the precise type.
+   */
+  broker?: { direct?: object; inbox?: () => string } | object;
+  /** With `transport: 'broker'`: request/response (default) or a full-protocol session. */
+  mode?: 'stateless' | 'session';
+  /** With `transport: 'broker'`: the service address; default `wrpc.<host of broker://host>`. */
+  address?: string;
+  /** With `transport: 'broker'`: how long the broker may hold a request nobody took (ms). */
+  requestTimeout?: number;
   /**
    * Off by default, unlike the server: a client that printed on every
    * reconnect would be noise in a browser console nobody asked for. A logger

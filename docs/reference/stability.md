@@ -37,8 +37,9 @@ a **minor** (described in the CHANGELOG):
   [control-stream framing](./protocol#webtransport) it speaks — Node has no
   WebTransport of its own yet, and the carrier will follow what lands.
 - the **message-broker family**, whole: `@alexify/wrpc/broker` and every
-  `@alexify/wrpc/broker/*` adapter subpath, their capability contracts, and
-  the broker metrics — until every adapter has shipped
+  `@alexify/wrpc/broker/*` adapter subpath, their capability contracts, the
+  broker metrics, the `broker` client transport and its
+  [broker binding](./protocol#broker-binding) — until every adapter has shipped
   ([Message brokers](../guide/brokers)).
 
 ## The wire protocol's own, stronger promise

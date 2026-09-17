@@ -15,7 +15,7 @@ the capability it needs:
 | `backplane` | at-most-once fan-out | [rooms](./rooms) and the [cluster](./cluster) across instances |
 | `log` | ordered, replayable | [durable subscription feeds](./brokers/feeds) that resume on any instance |
 | `queue` | at-least-once, competing consumers | [procedures invoked from a queue](./brokers/consumers), with retry and dead-lettering |
-| `direct` | addressable inboxes | RPC between services over the broker itself |
+| `direct` | addressable inboxes | [RPC between services](./brokers/rpc) over the broker itself |
 
 ::: warning Experimental
 The whole `@alexify/wrpc/broker*` family is `@experimental`: it may change in a

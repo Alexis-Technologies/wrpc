@@ -320,6 +320,67 @@ export declare function createPublisher(
 ): Publisher;
 
 // ---------------------------------------------------------------------------
+// RPC over a broker
+
+export interface BrokerRpcOptions {
+  /** Served at `wrpc.<service>` unless `address` names the address outright. */
+  service?: string;
+  address?: string;
+  /** A session silent this long is ended; keep above the client heartbeat. Default 90 000. */
+  idleTimeout?: number;
+  /** Unconfirmed frames per session before write() reports backpressure. Default 1024. */
+  highWaterMark?: number;
+  /** false serves stateless requests only. Default true. */
+  sessions?: boolean;
+  logger?: WrpcLogger | boolean | null;
+}
+
+export interface BrokerRpcHandle {
+  /** The shared service address every instance consumes as a group. */
+  readonly address: string;
+  /** This instance's own inbox, where its sessions' frames arrive. */
+  readonly inbox: string;
+  readonly sessions: number;
+  readonly healthy: boolean;
+  /** Also triggered by the server's close(); draining stops taking new work. */
+  stop(): Promise<void>;
+}
+
+/**
+ * Serves wrpc over a broker's `direct` capability: stateless requests
+ * (answered like packet-mode HTTP by any instance) and full-protocol
+ * sessions (one instance each). Clients connect with
+ * `connect('broker://<service>', { transport: 'broker', broker, mode })`.
+ */
+export declare function attachBrokerRpc(
+  server: Server | RpcServer,
+  broker: Broker | BrokerDirect,
+  options: BrokerRpcOptions,
+): Promise<BrokerRpcHandle>;
+
+/** The client transport registered as `WrpcClient.transport.broker`. */
+export declare class ClientBrokerTransport {
+  constructor(url: string);
+  readonly url: string;
+  active: boolean;
+  persistent: boolean;
+  heartbeat: boolean;
+  mode: 'stateless' | 'session';
+  open(options?: {
+    broker: Broker | BrokerDirect;
+    mode?: 'stateless' | 'session';
+    address?: string;
+    requestTimeout?: number;
+    headers?: Record<string, string>;
+    meta?: Record<string, unknown>;
+  }): Promise<void>;
+  write(data: string | Uint8Array): boolean | void;
+  close(): void;
+  terminate(): void;
+  on(event: string, listener: (...args: Array<any>) => void): unknown;
+}
+
+// ---------------------------------------------------------------------------
 // Adapter building blocks
 
 export interface TailEntry {

@@ -17,11 +17,16 @@ const { DEFAULT_RETRY } = require('./retry.js');
 const { brokerFeed } = require('./feed.js');
 const { attachConsumers } = require('./consumers.js');
 const { createPublisher } = require('./publisher.js');
+const { attachBrokerRpc } = require('./rpc/server.js');
+// Registers WrpcClient.transport.broker as a side effect.
+const { ClientBrokerTransport } = require('./rpc/client.js');
 
 module.exports = {
   brokerFeed,
   attachConsumers,
   createPublisher,
+  attachBrokerRpc,
+  ClientBrokerTransport,
   MemoryBroker,
   createMemoryBroker,
   isBroker,

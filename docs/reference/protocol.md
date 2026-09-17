@@ -827,6 +827,82 @@ bytes 1…        the packet
   UTF-8, an empty one) — a lost datagram is the norm, and an unreadable
   one is not worth a hangup.
 
+## Broker binding
+
+A client speaks wrpc to a server **through a message broker** — RabbitMQ,
+NATS, Redis — instead of over a socket: the packets are unmodified wrpc
+packets, carried as broker messages with a few headers around them. **This
+section is experimental**: it describes revision 1 of the carrier, may change
+in a minor release, and sits outside this page's interoperability promise
+until it stabilizes, like the WebTransport carrier above.
+
+The broker supplies addressable inboxes with at-most-once delivery, per-sender
+ordering and optional competing groups (the `direct` capability,
+[Message brokers](../guide/brokers#direct)). A message carries a body, string
+headers, a `correlationId` and a `replyTo` address. The binding's own headers
+all start with `wrpc-`; a peer's connection headers (`authorization`,
+`x-wrpc-meta`, …) ride next to them, lower-cased, and any peer-supplied
+`wrpc-*` name is dropped by the receiver.
+
+| Header | Values |
+| --- | --- |
+| `wrpc-kind` | `request`, `response`, `hello`, `welcome`, `packet`, `chunk`, `bye` |
+| `wrpc-seq` | a session frame's number, from `1`, per direction |
+| `wrpc-inbox` | on `welcome`: the address the session's frames go to |
+| `wrpc-reason` | on `bye`: why, for logs |
+
+Every server instance consumes one **service address** — `wrpc.<service>` by
+default — as members of one competing group, so each message addressed to the
+service reaches exactly one instance.
+
+### Stateless requests {#broker-stateless}
+
+```
+client --request {correlationId, replyTo = client inbox}--> service address
+client <--response {correlationId}------------------------- the instance that took it
+```
+
+The `request` body is exactly what a packet-mode HTTP POST carries — one
+packet or a batch frame — and the `response` body exactly what its answer
+carries. The request's peer headers are that POST's headers: session tokens,
+declared metadata and trace context are read from them the same way. Any
+instance answers any request; nothing binds a client to one. A request that
+cannot carry its answer on a later frame — a `subscribe`, a `cancel`, an
+`event` — is refused as it is on HTTP, with code `400`.
+
+### Sessions {#broker-sessions}
+
+```
+client --hello {correlationId = session id, replyTo = client inbox}--> service address
+client <--welcome {wrpc-inbox = instance inbox}------------------------ the instance that took it
+client --packet | chunk {wrpc-seq, correlationId}--> instance inbox
+client <--packet | chunk {wrpc-seq, correlationId}-- the instance
+either --bye {correlationId}--> the other
+```
+
+- The `session id` is chosen by the client and names the session in every
+  later message, in both directions (`correlationId`). The `hello`'s peer
+  headers are the session's connection metadata, as a WebSocket upgrade's
+  headers are.
+- A `packet` body is one packet or a batch frame, UTF-8; a `chunk` body is a
+  binary stream chunk (a `chunkEncode` frame, see the
+  [wire format](./wire-format)). Everything a WebSocket carries — calls,
+  events, subscriptions, cancellation, streams — travels this way.
+- Frames are numbered from `1` in each direction. A receiver that sees a
+  number other than the next one treats the session as **lost**: the carrier
+  is at-most-once, and a missing frame is a missing packet nobody would ever
+  answer. The server ends the session; the client closes and reconnects.
+- A frame for a session the instance does not hold (it restarted, or the
+  session idled out) is answered with a `bye` to its `replyTo`, and the client
+  reconnects.
+- The server ends a session nothing arrived on for its idle timeout. The
+  client's app-level heartbeat (`ping`/`pong`) is what keeps a live session
+  inside it.
+- A server that refuses sessions answers `hello` with `bye`.
+
+A client that reconnects says `hello` again and may be welcomed by another
+instance; its subscriptions resume with `lastEventId` as on any reconnect.
+
 ## Reconnect
 
 The client reconnects on its own with truncated exponential backoff and full
