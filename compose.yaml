@@ -8,7 +8,7 @@
 #   pnpm redis:down
 #
 # The message-broker family (`@alexify/wrpc/broker*`) adds RabbitMQ, Kafka and
-# NATS; `docker compose up -d` starts all four:
+# NATS; `pnpm brokers:up` (docker compose up -d) starts all four:
 #
 #   AMQP_URL=amqp://127.0.0.1:5672     (management UI on http://127.0.0.1:15672, guest/guest)
 #   KAFKA_BROKERS=127.0.0.1:9092       (single-node KRaft)

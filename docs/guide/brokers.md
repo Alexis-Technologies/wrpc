@@ -44,6 +44,19 @@ Kafka page spells out. Brokers that speak one of these protocols need no
 adapter of their own — Valkey, KeyDB and Dragonfly use the Redis one;
 Redpanda and Azure Event Hubs' Kafka endpoint use the Kafka one.
 
+## Choosing one
+
+| If you… | Use |
+| --- | --- |
+| already run a Redis, and want feeds and queues without new infrastructure | [Redis](./brokers/redis) |
+| want the lowest-latency RPC and a backplane that costs nothing | [NATS](./brokers/nats) (JetStream for the durable half) |
+| need per-message TTLs, dead-letter exchanges and operator tooling | [RabbitMQ](./brokers/amqp) |
+| keep long histories other systems replay, or already stream through Kafka | [Kafka](./brokers/kafka) — for feeds and queues; put the backplane elsewhere |
+| are writing tests, or running one process | the in-process `MemoryBroker` below |
+
+Nothing stops you from using two: a Redis backplane with Kafka feeds is a
+perfectly ordinary deployment, and each binding takes the broker it needs.
+
 ## The in-process broker
 
 ```js

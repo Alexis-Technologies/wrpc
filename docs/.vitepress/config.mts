@@ -50,6 +50,18 @@ const keywords = [
   'webtransport',
   'http3',
   'quic',
+  'message-broker',
+  'broker',
+  'kafka',
+  'rabbitmq',
+  'amqp',
+  'nats',
+  'jetstream',
+  'redis-streams',
+  'queue',
+  'consumer',
+  'event-driven',
+  'durable-feed',
 ].join(', ');
 
 // schema.org structured data — helps search and AI engines understand the

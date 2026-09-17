@@ -13,6 +13,17 @@ narrower promise — see
 
 ### Added
 
+**Message brokers, part 9: benchmarks and the finished guide**
+- `bench/broker.js` measures what the bindings cost on top of a broker, on
+  the in-process `MemoryBroker` so the numbers are wrpc's own overhead and
+  not a network's: a queue delivery into a procedure end to end (~530k
+  ops/sec bare, ~400k through a validator, a hook and a `meta` header),
+  `createPublisher.publish` into a log append (~2.1M ops/sec) and a durable
+  feed's pump, append to tracked value (~750k ops/sec).
+- `docs/guide/brokers.md` gains a "choosing one" table, the README its
+  broker rows, and `pnpm brokers:up`/`brokers:down` bring the four servers
+  in `compose.yaml` up and down for the integration suites.
+
 **Message brokers, part 8: the Kafka adapter (`@alexify/wrpc/broker/kafka`)**
 - `createKafkaBroker({ kafka })` over an injected KafkaJS-shaped client —
   `kafkajs` or `@confluentinc/kafka-javascript`'s `.KafkaJS`. The two differ
