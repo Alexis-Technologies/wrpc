@@ -13,6 +13,38 @@ narrower promise — see
 
 ### Added
 
+**Message brokers, part 1: the broker-agnostic core (`@alexify/wrpc/broker`, experimental)**
+- A broker is described by four capabilities — `backplane` (the existing
+  at-most-once fan-out), `log` (ordered, replayable), `queue` (at-least-once,
+  competing consumers) and `direct` (addressable inboxes) — and every adapter
+  implements the subset natural to it. `isBroker`/`isBrokerLog`/
+  `isBrokerQueue`/`isBrokerDirect` are the structural checks.
+- `MemoryBroker` implements all four in one process: the reference the
+  contracts are written against, and what makes a multi-instance setup
+  testable without infrastructure. The contracts are executable
+  (`tests/broker/*Contract.js`) and run over the memory broker, the scaling
+  backplanes (a first shared backplane contract: `MemoryBackplane` and the
+  Redis adapter over its fake — which surfaced that the fake delivered
+  synchronously inside `publish()`, as no real Redis does) and, from the
+  adapter releases on, real servers.
+- Adapter building blocks: `TopicTails` (one live reader per topic shared by
+  every local read, catch-up joined without a gap or a duplicate, bounded
+  memory per slow reader) and `encodeToken` (arbitrary names into a broker's
+  alphabet, injectively — a room called `room:*` must never become a NATS
+  wildcard subscription).
+- Core seams, additive: `RpcServer.attach(transport, { session })` gives an
+  attached client a vouched-for identity before the onConnect hooks run, and
+  `{ request: { headers, url } }` restores a real one through the token
+  carrier; `drain()` announces itself once as a `'draining'` event; a
+  host-built client may set `spanKind`/`spanAttributes` for its call spans,
+  and the server telemetry writer gains `withMessagingSpan` and the
+  `wrpc.broker.deliveries`/`wrpc.broker.published` counters. The webrtc
+  browser budget moves 46 → 47 KB for those telemetry bytes (PeerHost
+  bundles the server writer).
+- `compose.yaml` starts RabbitMQ 4, Kafka 3.9 (KRaft) and NATS 2 with
+  JetStream next to Redis.
+
+
 **Injectable `fetch` for the http/sse client transports (`options.fetch`)**
 - `WrpcClient.connect(url, { transport: 'http' | 'sse', fetch })` lets the
   transport call an injected `fetch` instead of the runtime's global one,

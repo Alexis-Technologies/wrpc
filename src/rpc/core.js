@@ -658,12 +658,41 @@ class RpcServer extends Emitter {
    * `meta` is a buildMeta() result (rpc/client.js) or null: a transport
    * carries no request, so whatever the application observed about the
    * connection is handed over.
+   *
+   * Two ways to give the client an identity, mutually exclusive:
+   * - `session`: a pseudo-session object the host vouches for (a broker
+   *   binding's service identity, the PeerHost `trust` pattern). Assigned
+   *   before the onConnect hooks run, so a hook already sees it.
+   * - `request: { headers, url, remoteAddress }`: what the peer presented,
+   *   restored through the configured token carrier exactly as
+   *   attachSocket does — a bearer token riding a broker header restores a
+   *   real session.
    */
-  attach(transport, { meta = null } = {}) {
+  attach(transport, { meta = null, session = null, request = null } = {}) {
     if (!isInboundTransport(transport)) {
       throw new TypeError('RpcServer.attach: a persistent transport with write/close/on/once is required');
     }
-    const client = this.#addClient(transport, null, meta);
+    if (session !== null && (typeof session !== 'object' || Array.isArray(session))) {
+      throw new TypeError('RpcServer.attach: options.session must be an object');
+    }
+    if (session !== null && request !== null) {
+      throw new TypeError('RpcServer.attach: options.session and options.request are mutually exclusive');
+    }
+    let restore = null;
+    if (session !== null) {
+      restore = (client) => {
+        client.session = session;
+        return Promise.resolve(true);
+      };
+    } else if (request !== null) {
+      if (typeof request !== 'object') throw new TypeError('RpcServer.attach: options.request must be an object');
+      const headers = request.headers ?? {};
+      const url = request.url ?? '';
+      const data = declaredData(headers, split(url, '?')[1], this.#metaMax, this.#log);
+      restore = (client) => this.#restoreToken(client, { headers, url, declared: headers, meta: data });
+      meta ??= buildMeta({ headers, data, url, remoteAddress: request.remoteAddress });
+    }
+    const client = this.#addClient(transport, restore, meta);
     transport.on('packet', (text) => handleMessage(client, text, this.#router, this.#limits));
     transport.on('chunk', (bytes) => handleBinary(client, bytes));
     return client;
@@ -1027,7 +1056,13 @@ class RpcServer extends Emitter {
    */
   async drain(timeout = 0) {
     if (!(timeout > 0)) return;
-    this.#draining = true;
+    // Announced once: a binding that pulls work on its own (a broker
+    // consumer) stops fetching here instead of taking messages only to
+    // answer them 503.
+    if (!this.#draining) {
+      this.#draining = true;
+      this.emit('draining');
+    }
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
       let busy = 0;

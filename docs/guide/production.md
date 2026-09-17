@@ -28,8 +28,10 @@ What that does, in order:
 
 1. **Intake stops.** The listener closes, so the next health check fails while
    in-flight work is still finishing.
-2. **`rpc.draining` flips true.** New calls answer `503` — the code that tells
-   a well-behaved client to reconnect somewhere else.
+2. **`rpc.draining` flips true** and `rpc` emits `'draining'` once. New calls
+   answer `503` — the code that tells a well-behaved client to reconnect
+   somewhere else — and anything that pulls work on its own (a
+   [broker](./brokers) consumer) stops fetching.
 3. **In-flight calls get up to `drain` ms.** It resolves early the moment
    nothing is in flight.
 4. **Every peer gets a `1001` "going away" close frame**, before the core

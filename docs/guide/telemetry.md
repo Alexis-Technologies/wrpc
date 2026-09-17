@@ -109,6 +109,8 @@ credential, not an identity, and the two do not share a switch.
 | `wrpc.rtc.links` | UpDownCounter | `{link}` |
 | `wrpc.rtc.redials` | Counter | `{attempt}` |
 | `wrpc.rtc.ice_restarts` | Counter | `{restart}` |
+| `wrpc.broker.deliveries` | Counter | `{message}` |
+| `wrpc.broker.published` | Counter | `{message}` |
 | `wrpc.client.reconnects` | Counter | `{attempt}` |
 | `wrpc.client.refreshes` | Counter | `{run}` |
 | `wrpc.client.connections` | UpDownCounter | `{connection}` |
@@ -119,6 +121,14 @@ after a link failed by role, and ICE restarts by `wrpc.rtc.outcome`
 (`requested`, `recovered`, `failed`). A peer's host half also records the
 ordinary server spans and `wrpc.server.connections` under
 `wrpc.transport: 'webrtc'`.
+
+The two `wrpc.broker.*` instruments come from the
+[message-broker](./brokers) bindings: messages consumed into procedures by
+`messaging.system` and `wrpc.broker.outcome` (`ack`, `retry`, `release`,
+`dead`), and messages published by outcome (`ok`, `error`). A consumed
+message's call span is a `CONSUMER` span carrying `messaging.*` attributes,
+parented on the trace context the message arrived with; a published one is a
+`PRODUCER` span whose context rides in the message headers.
 
 `wrpc.server.sse.events` labels a closed kind set — `open`, `reattach`,
 `replay`, `gap`, `expired` — and the `gap`/`expired` series are **real event

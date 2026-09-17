@@ -8,7 +8,7 @@ holds for contributors.
 
 **The `exports` subpaths are the public API.** Everything reachable through
 `@alexify/wrpc` and its subpaths (`/ws`, `/engine`, `/uws`, `/fastify`,
-`/express`, `/scaling`, `/sse`, `/query`, `/auth`, `/webrtc`, `/wt`), as typed by the
+`/express`, `/scaling`, `/sse`, `/query`, `/auth`, `/webrtc`, `/wt`, `/broker`), as typed by the
 hand-maintained root `.d.ts` files, is stable under semver. Deep imports
 into `src/` are **not** addressable and not supported: the module layout
 may change in any release (and has — `rpc/core.js` split twice already).
@@ -24,7 +24,7 @@ may change in any release (and has — `rpc/core.js` split twice already).
 
 ## `@experimental` carve-outs
 
-Three areas are marked `@experimental` in the `.d.ts` files and may change in
+Four areas are marked `@experimental` in the `.d.ts` files and may change in
 a **minor** (described in the CHANGELOG):
 
 - the **telemetry** writer shapes and metric set (the `telemetry` option,
@@ -36,6 +36,10 @@ a **minor** (described in the CHANGELOG):
   option, the `@alexify/wrpc/wt` subpath, and the
   [control-stream framing](./protocol#webtransport) it speaks — Node has no
   WebTransport of its own yet, and the carrier will follow what lands.
+- the **message-broker family**, whole: `@alexify/wrpc/broker` and every
+  `@alexify/wrpc/broker/*` adapter subpath, their capability contracts, and
+  the broker metrics — until every adapter has shipped
+  ([Message brokers](../guide/brokers)).
 
 ## The wire protocol's own, stronger promise
 

@@ -375,11 +375,20 @@ export declare class RpcServer extends Emitter {
    * (text) and 'chunk' (bytes) events — the seam a wire the core never heard
    * of plugs into (`attachChannel` in `@alexify/wrpc/webrtc` does). `meta` is
    * what the application observed about the connection, if anything.
+   *
+   * Identity, one of: `session` — a pseudo-session the host vouches for,
+   * in place before the onConnect hooks run; `request` — what the peer
+   * presented, restored through the configured token carrier (a bearer
+   * token in a broker message's headers restores a real session).
    */
-  attach(transport: InboundTransport, options?: { meta?: ClientMeta | null }): Client;
+  attach(transport: InboundTransport, options?: AttachOptions): Client;
   handleHttpCall(call: HttpCall): Promise<void>;
   matchPath(pathname: string): { mode: 'packet' | 'rest'; rest?: string } | null;
-  /** True while drain() runs: new calls are refused with 503. */
+  /**
+   * True while drain() runs: new calls are refused with 503. Draining is
+   * announced once as a `'draining'` event, so a binding that pulls work
+   * on its own (a broker consumer) stops fetching.
+   */
   readonly draining: boolean;
   /**
    * False while a backplane channel subscribe is failing and being retried
@@ -453,6 +462,15 @@ export class Server extends Emitter {
 export interface TransportOptions {
   headers?: Record<string, string>;
 }
+
+export type AttachOptions = { meta?: ClientMeta | null } & (
+  | { session?: null; request?: null }
+  | { session: { token?: string; state?: Record<string, unknown>; [key: string]: unknown }; request?: null }
+  | {
+      session?: null;
+      request: { headers?: Record<string, string | undefined>; url?: string; remoteAddress?: string };
+    }
+);
 
 /** What RpcServer.attach() accepts: persistent, and announcing 'packet'/'chunk'. */
 export interface InboundTransport extends Emitter {

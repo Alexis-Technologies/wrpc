@@ -73,6 +73,9 @@ const ENTRIES = [
   { label: 'fastify adapter (@alexify/wrpc/fastify)', entry: 'fastify.js', platform: 'node' },
   { label: 'express adapter (@alexify/wrpc/express)', entry: 'express.js', platform: 'node' },
   { label: 'rooms backplane (@alexify/wrpc/scaling)', entry: 'scaling.js', platform: 'node' },
+  // The broker family is Node-only: brokers are reached from servers, never
+  // from a browser bundle.
+  { label: 'broker core (@alexify/wrpc/broker)', entry: 'broker.js', platform: 'node' },
   // 12 -> 13 alongside the main-entry raise: the sse entry bundles the same
   // client core, so the REST-bridge bytes land here too. 13 -> 14 with the
   // main entry's static-introspection raise, for the same reason; 14 -> 15
@@ -108,7 +111,11 @@ const ENTRIES = [
   // 45 -> 46 for the shared fan-out message (`Client.sendShared`, the
   // `compress` option, `isReady`, the lazy Context uuid) — the rpc leaves
   // this entry bundles for PeerHost (+0.5 KB, measured 45.0).
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 46 },
+  // 46 -> 47 for the message-broker telemetry seams (the CONSUMER span kind
+  // a host-built client picks, withMessagingSpan, the wrpc.broker.*
+  // instruments): they live in telemetry/server.js, which PeerHost bundles
+  // (+0.3 KB, measured 46.2 against 45.9).
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 47 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

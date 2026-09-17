@@ -1,8 +1,9 @@
 'use strict';
 
 // The server half: spans for calls, subscriptions and inbound events, plus
-// the twelve instruments a server has anything to say about. Node-only —
-// nothing browser-reachable requires this file.
+// the instruments a server has anything to say about. Browser-reachable
+// through PeerHost (the webrtc browser entry), so it counts against that
+// entry's budget in scripts/size.js.
 
 const {
   SPAN_KIND_SERVER,
@@ -36,6 +37,10 @@ const buildCallAttributes = (client, packet, target, includeIdentity) => {
   // A session TOKEN never appears at any setting: that is a credential, not
   // an identity, and the two must not share one switch.
   if (includeIdentity && client.source) attributes['network.peer.address'] = client.source;
+  // A host-built client (a broker binding) adds its own semantic
+  // attributes — `messaging.*` for a consumed message.
+  const extra = client.spanAttributes;
+  if (extra) for (const key in extra) attributes[key] = extra[key];
   return attributes;
 };
 
@@ -78,6 +83,8 @@ const createServerTelemetry = (telemetry) => {
   let rtcLinks = null;
   let rtcRedials = null;
   let rtcRestarts = null;
+  let brokerDeliveries = null;
+  let brokerPublished = null;
 
   // Checked separately from the others: a meter with counters and histograms
   // but no up/down counter would otherwise disable every instrument here.
@@ -141,6 +148,14 @@ const createServerTelemetry = (telemetry) => {
         unit: '{event}',
         description: 'SSE channel lifecycle events (open/reattach/replay/gap/expired)',
       });
+      brokerDeliveries = meter.createCounter('wrpc.broker.deliveries', {
+        unit: '{message}',
+        description: 'Broker messages consumed into procedures, by broker and settlement',
+      });
+      brokerPublished = meter.createCounter('wrpc.broker.published', {
+        unit: '{message}',
+        description: 'Messages published to a broker, by broker and outcome',
+      });
     } catch {
       duration = null;
       calls = null;
@@ -156,6 +171,8 @@ const createServerTelemetry = (telemetry) => {
       sseEvents = null;
       rtcRedials = null;
       rtcRestarts = null;
+      brokerDeliveries = null;
+      brokerPublished = null;
     }
   }
   if (canGauge) {
@@ -212,11 +229,27 @@ const createServerTelemetry = (telemetry) => {
      * the caller's `finally`, which is the only place that knows the call
      * actually finished.
      */
-    withSpan({ client, packet, target, kind = SPAN_KIND_SERVER, suffix = '' }, fn) {
+    withSpan({ client, packet, target, kind, suffix = '' }, fn) {
       const handle = { span: null, error: false };
       if (!tracer) return fn(handle);
       const attributes = buildCallAttributes(client, packet, target, includeIdentity);
-      return startSpanWith(tracer, `${target}${suffix}`, { kind, attributes }, extract(packet), handle, fn);
+      // An explicit kind wins; otherwise the client's own (a broker consumer
+      // binding marks its client CONSUMER), SERVER for everything else.
+      const spanKind = kind ?? client.spanKind ?? SPAN_KIND_SERVER;
+      return startSpanWith(tracer, `${target}${suffix}`, { kind: spanKind, attributes }, extract(packet), handle, fn);
+    },
+
+    /**
+     * A span that is not a packet's: a message published to (PRODUCER) or
+     * taken from (CONSUMER) a broker outside the dispatcher. `carrier` is the
+     * packet-shaped `{ tp, ts }` a consumed message arrived with; `fn`
+     * receives the handle and runs with the span active, so an `inject`
+     * inside it writes this span's context into the outgoing headers.
+     */
+    withMessagingSpan({ name, kind, attributes, carrier = null }, fn) {
+      const handle = { span: null, error: false };
+      if (!tracer) return fn(handle);
+      return startSpanWith(tracer, name, { kind, attributes }, carrier ? extract(carrier) : null, handle, fn);
     },
 
     recordError(handle, error, code) {
@@ -327,6 +360,21 @@ const createServerTelemetry = (telemetry) => {
     recordRtcRestart(outcome) {
       try {
         rtcRestarts?.add(1, { 'wrpc.rtc.outcome': outcome });
+      } catch {}
+    },
+
+    // `outcome` is a closed set: ack | retry | release | dead (consumed) and
+    // ok | error (published) — bounded labels, never a queue name a peer
+    // could multiply.
+    recordBrokerDelivery(system, outcome) {
+      try {
+        brokerDeliveries?.add(1, { 'messaging.system': system, 'wrpc.broker.outcome': outcome });
+      } catch {}
+    },
+
+    recordBrokerPublish(system, outcome) {
+      try {
+        brokerPublished?.add(1, { 'messaging.system': system, 'wrpc.broker.outcome': outcome });
       } catch {}
     },
 
