@@ -176,6 +176,7 @@ export default withMermaid({
               { text: 'Queue consumers & publishing', link: '/guide/brokers/consumers' },
               { text: 'RPC over a broker', link: '/guide/brokers/rpc' },
               { text: 'Redis', link: '/guide/brokers/redis' },
+              { text: 'NATS', link: '/guide/brokers/nats' },
             ],
           },
           {

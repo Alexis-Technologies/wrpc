@@ -13,6 +13,22 @@ narrower promise — see
 
 ### Added
 
+**Message brokers, part 6: the NATS adapter (`@alexify/wrpc/broker/nats`)**
+- `createNatsBroker({ nc, headers, jetstream, jetstreamManager })` over an
+  injected nats.js connection: core subjects carry the backplane and RPC
+  (queue groups for a service address, native reply subjects for inboxes),
+  JetStream carries feeds (a stream per topic, the message sequence as the
+  resume token) and work queues (a durable pull consumer per group,
+  `max_ack_pending` as the prefetch, `working()` keeping a slow handler's
+  lease and releasing it the moment the consumer stops).
+- Without the JetStream factories the broker has backplane and direct only —
+  the capability checks do the rest.
+- Every application name becomes exactly ONE subject token, so a room called
+  `room:*` can never become a wildcard subscription; stream names are encoded
+  the same way.
+- Suites run over an in-repo fake NATS + JetStream in `pnpm test` and against
+  a real server in CI's new `nats` job.
+
 **Message brokers, part 5: the Redis adapter (`@alexify/wrpc/broker/redis`)**
 - `createRedisBroker({ client })` implements all four capabilities over an
   injected ioredis-shaped client — pub/sub for the backplane (the adapter

@@ -69,6 +69,29 @@ jobs:
         env:
           REDIS_URL: redis://127.0.0.1:6379
 
+  # The NATS leg of the broker suites against a real server (with
+  # JetStream); the in-repo fake in tests/broker/fakeNats.js is what
+  # `pnpm test` runs.
+  nats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      nats:
+        image: nats:2-alpine
+        ports: ['4222:4222']
+        options: --health-cmd "wget -q -O - http://127.0.0.1:8222/healthz || exit 1" --health-interval 5s --health-timeout 3s --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node --test tests/broker/nats.integration.test.js
+        env:
+          NATS_URL: nats://127.0.0.1:4222
+
   # Node 22 only: the docs build exercises VitePress, not the package runtime,
   # so repeating it across the test matrix would just repeat the same work.
   docs:

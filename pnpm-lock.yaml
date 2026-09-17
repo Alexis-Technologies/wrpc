@@ -17,6 +17,12 @@ importers:
       '@fastify/websocket':
         specifier: ^11.3.0
         version: 11.3.0
+      '@nats-io/jetstream':
+        specifier: ^3.4.0
+        version: 3.4.0
+      '@nats-io/transport-node':
+        specifier: ^3.4.0
+        version: 3.4.0
       '@opentelemetry/api':
         specifier: ^1.9.1
         version: 1.9.1
@@ -625,6 +631,24 @@ packages:
     cpu: [x64]
     os: [linux]
     libc: [glibc]
+
+  '@nats-io/jetstream@3.4.0':
+    resolution: {integrity: sha512-GzHQodNJ942+R5LRb8PuZ5ugVWVWMRiufxUYLLVWkXKfwDXYN+Owo0d7L/b9O7BPyrbYD7jQWAC6+ZVuXa9Gyw==}
+
+  '@nats-io/nats-core@3.4.0':
+    resolution: {integrity: sha512-QMDM86EUNm+wudlKC67HLar/KHHQUvJGLfb4jbahje3pUk3K9afeck9fwsxBZF0eUFox6T/TA6m/t+lQqf+QsQ==}
+
+  '@nats-io/nkeys@2.0.3':
+    resolution: {integrity: sha512-JVt56GuE6Z89KUkI4TXUbSI9fmIfAmk6PMPknijmuL72GcD+UgIomTcRWiNvvJKxA01sBbmIPStqJs5cMRBC3A==}
+    engines: {node: '>=18.0.0'}
+
+  '@nats-io/nuid@3.0.0':
+    resolution: {integrity: sha512-QbXZDrxmYlrn5AD06gYcUTmEHwxn96HBQMIk7XTjDlEcx6FPzVBBPjp4AMRh1lEv6B4iJ6Xb/Uz61JugPXFRQg==}
+    engines: {node: '>= 22.x'}
+
+  '@nats-io/transport-node@3.4.0':
+    resolution: {integrity: sha512-hH7u7ejIBTFEJIZ8rIcMrHJI6wl+HhpO5sVFs1+ppmXa8RuB2+Lh1+UwTzZ5xTNNm1TKcRkYy+2qCV56qp8RxA==}
+    engines: {node: '>= 18.0.0'}
 
   '@node-datachannel/android-arm64@0.33.4':
     resolution: {integrity: sha512-Kd1K+drJlxdGmZYBlzh5HHX2E7les99eTWlt7WldZgvJmcGf2z9L/bnUVn4zbhNm2q/MtNZ2tPX2bd+fGlDDpQ==}
@@ -3248,6 +3272,9 @@ packages:
   tunnel-agent@0.6.0:
     resolution: {integrity: sha512-McnNiV1l8RYeY8tBgEpuodCC1mLUdbSN+CYBL7kJsJNInOP8UjDDEwdk6Mw60vdLLrr5NHKZhMAOSrR2NZuQ+w==}
 
+  tweetnacl@1.0.3:
+    resolution: {integrity: sha512-6rt+RN7aOi1nGMyC4Xa5DdYiukl2UWCbcJft7YhxReBGQD7OAM8Pbxw6YMo4r2diNEA8FEmu32YOn9rhaiE5yw==}
+
   type-fest@0.18.1:
     resolution: {integrity: sha512-OIAYXk8+ISY+qTOwkHtKqzAuxchoMiD9Udx+FSGQDuiRR+PJKJHc2NJAXlbhkGwTt/4/nKZxELY1w3ReWOL8mw==}
     engines: {node: '>=10'}
@@ -3887,6 +3914,27 @@ snapshots:
 
   '@napi-rs/lzma-linux-x64-gnu@1.5.1':
     optional: true
+
+  '@nats-io/jetstream@3.4.0':
+    dependencies:
+      '@nats-io/nats-core': 3.4.0
+
+  '@nats-io/nats-core@3.4.0':
+    dependencies:
+      '@nats-io/nkeys': 2.0.3
+      '@nats-io/nuid': 3.0.0
+
+  '@nats-io/nkeys@2.0.3':
+    dependencies:
+      tweetnacl: 1.0.3
+
+  '@nats-io/nuid@3.0.0': {}
+
+  '@nats-io/transport-node@3.4.0':
+    dependencies:
+      '@nats-io/nats-core': 3.4.0
+      '@nats-io/nkeys': 2.0.3
+      '@nats-io/nuid': 3.0.0
 
   '@node-datachannel/android-arm64@0.33.4':
     optional: true
@@ -6472,6 +6520,8 @@ snapshots:
   tunnel-agent@0.6.0:
     dependencies:
       safe-buffer: 5.2.1
+
+  tweetnacl@1.0.3: {}
 
   type-fest@0.18.1: {}
 
