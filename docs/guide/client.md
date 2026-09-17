@@ -45,6 +45,31 @@ const client = await WrpcClient.connect('https://host/api', { transport: 'sse' }
 Anything HTTP cannot carry is an **error**, not a silent no-op: asking for a
 subscription over HTTP is answered with code `400` rather than hanging.
 
+### Injecting `fetch` (http/sse)
+
+The `http` and `sse` transports call `fetch` for every request; `options.fetch`
+lets you hand in your own implementation instead of the runtime's global one —
+re-resolved on every open, like `headers`. The intended use is a Node process
+that talks wrpc to another wrpc server (a microservice calling a sibling
+service) and wants undici's connection pooling, proxying, or caching tuned for
+that traffic, without wrpc depending on undici itself:
+
+```js
+const { Agent, fetch: undiciFetch } = require('undici');
+
+const agent = new Agent({ keepAliveTimeout: 10_000, connections: 128 });
+const client = await WrpcClient.connect('http://internal-service/api', {
+  transport: 'http',
+  fetch: (url, init) => undiciFetch(url, { ...init, dispatcher: agent }),
+});
+```
+
+This is **not** a way to reach arbitrary third-party REST APIs through wrpc —
+the http/sse transports only ever call the one connected wrpc server (packet
+POSTs, or a [mapped REST leg](./rest) against that same server's own base
+URL). Calling another service's API is still a plain, direct `fetch`/undici
+call; `options.fetch` only tunes the transport wrpc itself uses.
+
 ## Options
 
 ```js
@@ -71,6 +96,7 @@ await WrpcClient.connect(url, {
 | `refresh` | — | Single-flight credential refresh with a one-shot retry — see [Refreshing a credential](#refreshing-a-credential). |
 | `headers` | — | Connection-phase headers, re-evaluated per open; validated by `schema.headers` — see [Metadata](./metadata). |
 | `meta` | — | Connection-phase metadata (unvalidated); per-call twin via `{ meta }` / `withMeta()` — see [Metadata](./metadata). |
+| `fetch` | global `fetch` | http/sse only — see [Injecting `fetch`](#injecting-fetch-http-sse). |
 | `random` | `Math.random` | Jitter source; injectable so tests can pin the schedule. |
 | `generateId` | uuid v4 | Packet/subscription/stream ids — bring your own (cuid/ulid/a test counter). Correlation ids, not secrets; stream ids must stay within 255 UTF-8 bytes. |
 | `protocols` | `['wrpc.v1']` | WebSocket subprotocols to offer; the server echoes the wire revision back. `[]` offers nothing. |

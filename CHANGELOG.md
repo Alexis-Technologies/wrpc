@@ -13,6 +13,17 @@ narrower promise — see
 
 ### Added
 
+**Injectable `fetch` for the http/sse client transports (`options.fetch`)**
+- `WrpcClient.connect(url, { transport: 'http' | 'sse', fetch })` lets the
+  transport call an injected `fetch` instead of the runtime's global one,
+  re-resolved on every open like `headers`/`meta`. The seam is for a Node
+  process that talks wrpc to another wrpc server and wants undici's
+  connection pooling, proxying, or a caching interceptor tuned for that
+  traffic — without wrpc ever depending on undici (it stays uninstalled;
+  the caller supplies the function). Not a way to reach arbitrary
+  third-party REST APIs through wrpc: the http/sse transports still only
+  call the one connected wrpc server.
+
 **Backplane loss detection (`epoch`/`seq`, `backplane.gap`, `wrpc.server.backplane.gaps`)**
 - Every backplane envelope carries the publisher's boot `epoch` and a
   per-channel `seq`; a receiver that sees the sequence jump within one

@@ -842,6 +842,14 @@ export interface WrpcClientOptions {
    */
   querystring?: { stringify(query: object): string };
   /**
+   * Fetch implementation for the http/sse transports; defaults to the
+   * runtime's own global `fetch`. Lets a Node server inject undici's
+   * `fetch` bound to a tuned `Agent`/`Pool` (keep-alive, proxying, a
+   * caching interceptor) for server-to-server wrpc traffic, without wrpc
+   * ever depending on undici. Re-resolved on every open, like `headers`.
+   */
+  fetch?: typeof globalThis.fetch;
+  /**
    * Client-side pre-validation: an injected ajv-shaped compiler applied to
    * the introspected input schema parts, so a doomed call rejects locally
    * (WrpcError 400 + details) without the round trip.

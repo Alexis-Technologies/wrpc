@@ -129,9 +129,21 @@ class ClientHttpTransport extends ClientTransport {
   meta = null;
   metaBag = null;
   prefixed = false;
+  // Injectable fetch, defaulted here (not just in open()) so a caller that
+  // uses this transport directly — request() without an open() — still
+  // gets the runtime's own fetch. Re-resolved on open() like headers/meta:
+  // lets a caller hand in undici's fetch bound to a tuned Agent/Pool
+  // (keep-alive, proxy, an undici-cache-interceptor store) without wrpc
+  // ever depending on undici.
+  fetch = globalThis.fetch;
 
   async open(options = {}) {
     this.headers = options.headers ?? null;
+    // Stored and always CALLED unbound (never as this.fetch(...)): native
+    // fetch throws "Illegal invocation" in browsers when invoked with a
+    // receiver other than the global object, which a plain method call
+    // would hand it. An injected fetch is called the same free-function way.
+    this.fetch = options.fetch ?? globalThis.fetch;
     // Built once per open, as a header BLOCK rather than a single encoded
     // value: which spelling it is (one canonical JSON header, or one header
     // per key) is the client's metaFormat choice, and every leg below just
@@ -174,7 +186,8 @@ class ClientHttpTransport extends ClientTransport {
       'Content-Type': rest?.contentType ?? 'application/json',
     };
     const init = body === undefined ? { method, headers, signal } : { method, headers, body, signal };
-    const res = await fetch(url, init);
+    const doFetch = this.fetch;
+    const res = await doFetch(url, init);
     if (rest) return { status: res.status, body: new Uint8Array(await res.arrayBuffer()) };
     return { status: res.status, text: await res.text() };
   }
@@ -213,9 +226,10 @@ class ClientHttpTransport extends ClientTransport {
     const block = meta ? this.#requestMeta(meta) : this.meta;
     const headers = { ...this.headers, ...block, 'Content-Type': this.codec?.contentType ?? 'application/json' };
     const options = { method: 'POST', headers, body: data };
+    const doFetch = this.fetch;
     const send = async () => {
       try {
-        const res = await fetch(this.url, options);
+        const res = await doFetch(this.url, options);
         const text = await res.text();
         // Error statuses normally still carry wrpc callback packets (the
         // server answers errors as JSON with the same code). Only when the

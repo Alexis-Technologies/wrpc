@@ -104,6 +104,11 @@ class ClientSseTransport extends ClientTransport {
   // headers on both the stream GET and every packet POST.
   #headers = null;
   #meta = null;
+  // Injectable fetch, resolved per open like headers/meta. Always CALLED
+  // unbound (never as this.#fetch(...) via a stored `this`) — native fetch
+  // throws "Illegal invocation" in browsers when invoked with a receiver
+  // other than the global object, which a plain method call would hand it.
+  #fetch = null;
 
   get eventsUrl() {
     return joinUrl(this.url, '/events');
@@ -114,6 +119,7 @@ class ClientSseTransport extends ClientTransport {
     // A header BLOCK, not one encoded value: the client's metaFormat picks
     // the spelling, both legs below just spread the result.
     this.#meta = options.meta ? metaHeaders(options.meta, options.metaPrefixed) : null;
+    this.#fetch = options.fetch ?? globalThis.fetch;
     if (this.active) return;
     if (this.#reading) return this.#reading;
     const opening = this.#open(true);
@@ -135,7 +141,8 @@ class ClientSseTransport extends ClientTransport {
     // replays what this channel did not acknowledge.
     if (this.#channel !== null) headers[CHANNEL_HEADER] = this.#channel;
     if (this.#lastEventId !== null) headers['last-event-id'] = this.#lastEventId;
-    const response = await fetch(this.eventsUrl, { headers, signal: controller.signal, cache: 'no-store' });
+    const doFetch = this.#fetch;
+    const response = await doFetch(this.eventsUrl, { headers, signal: controller.signal, cache: 'no-store' });
     // 409: the channel this transport remembers no longer exists. Its
     // replay state is worthless now — drop it and start a fresh channel;
     // the WrpcClient above re-loads and re-subscribes on 'open'/'reconnect'.
@@ -244,8 +251,9 @@ class ClientSseTransport extends ClientTransport {
       'Content-Type': this.codec?.contentType ?? 'application/json',
       [CHANNEL_HEADER]: this.#channel,
     };
+    const doFetch = this.#fetch;
     const post = async () => {
-      const response = await fetch(this.url, { method: 'POST', headers, body: data });
+      const response = await doFetch(this.url, { method: 'POST', headers, body: data });
       // 202 is the expected answer: everything a call produces comes back
       // on the event stream, not in this response.
       if (response.status === 202) return void (await response.body?.cancel?.());
