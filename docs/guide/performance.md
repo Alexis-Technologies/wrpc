@@ -14,6 +14,50 @@ measurement is a new file and nothing else. Nothing in CI runs it: there is no
 stored baseline, and a benchmark that gates a pipeline on a noisy laptop number
 is worse than no benchmark.
 
+## The short version
+
+Skip to whichever section you actually need; this is the two-minute read
+for everyone else — what wins outright, what's behind and expected to be,
+and which knobs are worth turning for your traffic shape.
+
+**Wins outright, no configuration needed:**
+
+- **Broadcasting.** A room's update is serialized, framed and — once a peer
+  has negotiated it — compressed **once per emit**, not once per member.
+  That's why fan-out throughput climbs with room size instead of collapsing
+  under it, and why compressed fan-out is ~34× what a naive
+  per-recipient implementation manages — see [Fan-out](#fan-out).
+- **Payloads that aren't toy-sized.** At 10 KB, wrpc is at or ahead of
+  every raw WebSocket library in the table below — the send path never
+  re-encodes or re-copies what it already built.
+- **Surviving an instance loss.** With a shared session store and any
+  pub/sub as a backplane, 50 clients whose instance just died reconnect,
+  re-authenticate and rejoin their room within single-digit milliseconds —
+  no sticky load balancer, no manual failover. See
+  [Across instances](#across-instances).
+
+**Behind, and expected to be:**
+
+- **A single tiny call against a raw echo.** A socket with no router, no
+  access check and no correlation ID was always going to win that race.
+  wrpc paying roughly a fifth more for real request handling is the trade
+  for getting one, not a defect — see [Against other stacks](#against-other-stacks).
+- **One call at a time in the browser.** The client's deadline scheduler
+  earns its keep once many calls are in flight; a lone awaited call
+  doesn't exercise it either way.
+
+**Leave these as they are by default:**
+
+| Setting | Default | Turn it on when |
+| --- | --- | --- |
+| shared-frame broadcast path | always on | never — it's the fix for the fan-out cost, not a tradeoff to opt into |
+| `contextTakeover` | off | you repeatedly broadcast the **same shape** (price ticks, presence deltas) to bandwidth-constrained clients — ~10× the compression ratio, for ~160 KiB of zlib state per direction per connection |
+| `async: { threshold }` | off | large broadcasts (≥256 KB payloads) would otherwise stall the event loop for the length of the burst |
+| client `batch: true` | off | you fire many RPC calls back to back — bulk hydration, chart backfills — where it beats an engine swap by ~11× below, at the cost of a single call waiting on a flush |
+| [uws engine](./adapters/uws) | Node's own engine | you're CPU-bound on the WS engine at very high concurrency and can take a native dependency |
+
+The rest of this page is where every one of those numbers comes from.
+
 ## Against other stacks
 
 `bench/rpc-comparison.js` puts wrpc's **full RPC path** (router, validation,
@@ -75,6 +119,15 @@ Read it honestly:
   comparison is the pipelined column — where wrpc is still ~5.0× ahead.
   tRPC's type story is excellent and unaffected by any of this.
 
+Step back from the individual rows and the question this table actually
+answers is: is the RPC layer the bottleneck? On every payload size
+measured, no. Tens of thousands of calls per second, locally, with no
+network in the loop, is a number a deployed system will rarely see even a
+fraction of — real traffic is bounded by client concurrency, database
+round-trips and network RTT long before a request queue backs up waiting
+on wrpc's own dispatch. Read this table as proof the floor is high enough
+to stop worrying about, not as a number to chase in production.
+
 ## Fan-out
 
 `bench/send-path.js` — one room, N members, 512-byte payload:
@@ -108,6 +161,14 @@ uncompressed rows is that one deflate; before the shared frame it was
 **one per recipient** and fan-out ×50 ran at 2,806/sec.
 :::
 
+What that means for a real room: a 200-member broadcast with compression on
+costs one `deflateRaw` call and 200 socket writes, and a single instance
+clears that over 60,000 times a second. No legitimate application pushes
+updates to one room at that rate — a live chat, a presence feed, a stock
+ticker are all in the tens-per-second range at most — so in a deployed
+system the ceiling that matters moves to client-side rendering and network
+egress bandwidth, not this code path. The number is headroom, not a target.
+
 Unicast sends are one contiguous buffer up to 16 KiB — header and payload
 written together, the text utf8-encoded straight from a scratch buffer — and
 a separate header + payload write above it, where the copy would cost more
@@ -140,6 +201,14 @@ call took 64 in flight from 110,442 to 121,487 and 1024 from 102,562 to
 114,242, with a single awaited call unchanged. `WRPC_ROOT=<checkout>` points
 the runner at another checkout for a before/after.
 
+Read the 1024-in-flight row as a stress test, not a target: a real UI
+rarely has more than a handful of calls genuinely in flight from one user
+action. What the scheduler actually buys day to day is that a burst of
+calls — a dashboard hydrating a dozen panels on load — produces one timer
+and one deque entry each, not a dozen independent `setTimeout`s and their
+closures; the throughput numbers are evidence that the design doesn't cost
+anything, not the reason it exists.
+
 ## Compression modes
 
 `bench/deflate-context.js` — the stateless default, context takeover and the
@@ -164,6 +233,26 @@ large frames issued in one turn — it is the difference between a loop
 stalled for a third of a second and one that never notices. Both are
 opt-in; see [wire format](../reference/wire-format#permessage-deflate).
 
+Put a scale on the ratio: the stateless default already compresses generic
+JSON about as well as deflate ever will without history to lean on — that
+1.1× is normal, not a bug. Context takeover's 10.6× only shows up because
+the traffic in that row is the same shape repeated (a price tick, a
+presence delta) — each message looks almost like the last one, and that's
+exactly what a persistent zlib window is good at. Spend the ~160 KiB per
+connection on it when the shape really does repeat and the client is
+bandwidth-constrained (mobile, metered); spend it on arbitrary one-off
+payloads and you've paid rent on memory for a discount that never arrives.
+
+The event-loop numbers are the more universal case: any server that
+broadcasts large payloads to many recipients in one turn — that's what a
+fan-out *is* — will eventually issue a burst of compressions in one tick.
+Synchronous deflate on a 252 KB burst held the loop for a third of a
+second, during which every other connection on the process goes
+unserved — not slow, unresponsive. `async: { threshold }` is the
+difference between that and a loop that never notices, and it's the one
+knob on this page worth defaulting toward once your payloads regularly
+cross the threshold, rather than waiting for a stall to prove it.
+
 ## The receive path
 
 `bench/parser-throughput.js`:
@@ -176,6 +265,15 @@ opt-in; see [wire format](../reference/wire-format#permessage-deflate).
 The large-message number is what `SegmentQueue` exists for: buffering
 fragmented reads with O(n) total work instead of re-concatenating a growing
 buffer on every segment. See [wire format](../reference/wire-format#receive-path-performance).
+
+3 GB/s of reassembly throughput is well past what a single gigabit network
+interface can even deliver, and comfortably past most 10-gigabit links too
+— a fragmented multi-megabyte upload will hit the network as its ceiling
+long before it hits this code. What the O(n) behavior actually buys is the
+absence of a cliff: a naive re-concatenating buffer gets quadratically
+slower as a message grows, and the failure mode isn't "a bit slower", it's
+"fine at 1 MB, a stall at 100 MB". `SegmentQueue` exists so that graph
+stays flat.
 
 ## Batching crosses over at 16
 
@@ -196,6 +294,14 @@ right there. The server's own switch from the scan to the index sits at 12
 where the scan still wins and the first where the index does; both numbers
 come from this one bench, and re-running it is the way to move either.
 
+Most request patterns never see this trade at all: a UI queues a handful
+of calls at once, not dozens, so the linear scan — simpler, and the faster
+choice below 16 — is what the common case actually runs. The index earns
+its keep specifically when a burst gets genuinely large: bulk imports,
+chart backfills, a page hydrating many widgets' data at once. If your
+traffic never bursts past a dozen or so calls, this section is trivia, not
+a tuning target.
+
 ## Cluster operations
 
 `bench/cluster.js`, two instances over a `MemoryBackplane`:
@@ -211,6 +317,14 @@ come from this one bench, and re-running it is the way to move either.
 `count()` and `presence()` are local map reads by design — that is the whole
 point of [replicating presence](./cluster#presence-replicated-read-locally)
 instead of requesting it.
+
+Tens of millions of reads per second is not a number an application will
+ever approach — it means these two calls simply leave the "is this fast
+enough" conversation entirely. Check room size on every incoming message,
+poll presence from an admin dashboard every second, call `count()` inside
+a hot loop: none of it registers, because the alternative this replaces —
+a network round-trip to ask another process — is the one with a real,
+visible cost, and that's the comparison that actually matters here.
 
 ## Across instances
 
@@ -239,6 +353,17 @@ backplane, an instance can vanish and nothing needs a balancer's help. The
 stand found one bug on its first run: a cluster node whose `sync` answer was
 lost (at-most-once, again) never asked again and kept a stale presence view
 for the life of the process — now it retries after two presence intervals.
+
+Put a human scale on the milliseconds: a browser repaints roughly every
+16 ms at 60 fps, so a 3–6 ms cross-instance delivery and a 6–7 ms presence
+convergence both land inside a single frame — a user who just joined on
+instance B is visible to a client on instance A before the eye could
+register two separate updates. That's the concrete version of the
+[affinity table](./scaling#affinity)'s claim that ws/wt connections don't
+need sticky routing: losing an instance isn't invisible in the sense of
+"nothing happens" — 50 clients really do drop and reconnect — it's
+invisible in the sense that nothing happens *slowly enough for a person to
+notice*.
 
 ## Why the code looks the way it does
 
@@ -277,8 +402,23 @@ it is a ratchet, and it runs in CI's lint job. See
 [Browser & bundling](./browser#bundle-size) for the table and what is in each
 entry.
 
+The main entry's budget is 20 KB min+gzip, and that is the *whole* client —
+calls, subscriptions, streams, reconnection with backoff, auth hooks — not
+a core that then needs a realtime add-on and a query-binding add-on layered
+on top of it. It is small enough to arrive in the same round trip as your
+app shell, which is the actual reason the budget is a hard CI failure
+rather than a suggestion: a slow leak of a few hundred bytes per feature is
+invisible in any one PR and very visible three years later.
+
 ## Memory, under load
 
 `pnpm test:perf` streams 1 GiB through a [binary stream](./streams) and fails
 if RSS grows with it. It is deliberately not in CI — it is slow and
 memory-sensitive — so run it by hand after touching the stream path.
+
+The property being guarded is boring on purpose: a stream carrying more
+data than fits comfortably in RAM should not accumulate RAM. The failure
+mode this catches — a forgotten backpressure check quietly buffering an
+entire upload in memory — is the kind of bug that passes every functional
+test and then takes a process down under real traffic, weeks after the
+change that caused it shipped.

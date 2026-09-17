@@ -27,6 +27,35 @@ calls *or* binary transfer. wrpc puts them on one socket and one protocol:
 | [Sessions & auth](./sessions) | Cookie or bearer, pluggable stores and carriers, restored on reconnect; `authenticate`/`refresh` client hooks. |
 | [Types](./typed-client) | A contract you declare or [generate](./cli) — no build step, no TypeScript at runtime; typed server→client events. |
 
+## Fast where it counts
+
+wrpc is not the fastest way to echo one message over a bare socket —
+nothing with a router, an access check and a correlation ID between the
+wire and your handler can be. It's fast at the things that are actually
+hard to make fast:
+
+- **Broadcasting.** A room's update is serialized, framed and compressed
+  **once per emit**, not once per member, so throughput climbs with the
+  room instead of collapsing under it — compressed fan-out that used to
+  cost one `deflateRaw` per recipient now costs one per emit, a ~34×
+  difference on the same room.
+- **Payloads that aren't toy-sized.** Bare-socket benchmarks favor tiny
+  messages; at 10 KB, wrpc is at or ahead of every raw WebSocket library
+  measured against it, because the send path never re-encodes or
+  re-copies what it already built.
+- **Failure.** An instance can die with clients on it and, with a shared
+  session store and any pub/sub as a backplane, those clients reconnect,
+  re-authenticate and rejoin their rooms inside a single browser repaint
+  — no sticky load balancer, no manual failover choreography.
+
+None of that needed a flag. The knobs that trade memory or latency for
+more — context takeover, async compression, client-side batching, the uws
+engine — are opt-in on purpose: the right default for a chat app is not
+the right default for a market-data feed, and a library that picks one
+universal "fast" setting is guessing on your behalf. See
+[Performance](./performance) for the full picture — the numbers, what they
+mean in practice, and which knob to reach for and when.
+
 ## Against the alternatives
 
 | | **wrpc** | **tRPC** | **Socket.IO** |
@@ -43,11 +72,10 @@ calls *or* binary transfer. wrpc puts them on one socket and one protocol:
 | Runtime deps | **0** | a few | several |
 | Needs TypeScript | ❌ | effectively yes | ❌ |
 
-On throughput, wrpc is level with Socket.IO on a single call, faster than every
-measured stack on 10 KB payloads, and within 26% of a **raw** `ws` echo that
-does no RPC work at all — see [Performance](./performance) for the table, the
-honest footnotes (tRPC's sequential row is a flush-timer artifact, not
-throughput) and how to reproduce it.
+See [Performance](./performance) for the receipts on all of the above — the
+comparison table against raw sockets and other frameworks, the honest
+footnotes (tRPC's sequential row is a flush-timer artifact, not throughput),
+and how to reproduce every number on your own hardware.
 
 ## When **not** to use wrpc
 
