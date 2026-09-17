@@ -46,7 +46,8 @@ sequenceDiagram
   B-->>C: data 3, 4, …
 ```
 
-Appending is plain `log.append`, from anywhere that holds the broker:
+Appending is plain `log.append` — or a [publisher](./consumers#publishing)
+— from anywhere that holds the broker:
 
 ```js
 await broker.log.append('orders', JSON.stringify(order));

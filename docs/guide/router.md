@@ -234,8 +234,9 @@ On the wire that is the `method` string: `auth/signIn` or `auth.v1/signIn`.
 
 `on` is **reserved** inside a unit — it holds the unit's inbound event
 handlers, so no method may be called `on`. `hooks` is reserved too: the
-unit's slice of the [lifecycle pipeline](./hooks). Neither is usable as a
-method name:
+unit's slice of the [lifecycle pipeline](./hooks), and so are `emits` (the
+declared outbound events) and `consumes` (the unit's
+[queue consumers](./brokers/consumers)). None is usable as a method name:
 
 ```js
 defineRouter({

@@ -213,6 +213,28 @@ const runQueueContract = async (t, name, harness) => {
     await taken.ack();
   });
 
+  await t.test(`${name}: pause() stops new deliveries but keeps held ones settleable`, async (sub) => {
+    const { queue } = await open(sub);
+    const name = await queueFor('q-pause');
+    const seen = [];
+    const consumer = await consume(sub, queue, name, (delivery) => void seen.push(delivery), { prefetch: 4 });
+    assert.strictEqual(typeof consumer.pause, 'function');
+    await queue.produce(name, 'held');
+    await waitFor(() => seen.length === 1, { timeout });
+    await consumer.pause();
+    await queue.produce(name, 'waits');
+    await timers.setTimeout(Math.max(100, harness.settle ?? 0));
+    assert.strictEqual(seen.length, 1, 'a paused consumer took new work');
+    // The held delivery is still ours to settle, and is not redelivered.
+    await seen[0].ack();
+    await consumer.resume();
+    await waitFor(() => seen.length === 2, { timeout });
+    assert.strictEqual(seen[1].body, 'waits');
+    await seen[1].ack();
+    await timers.setTimeout(50);
+    assert.strictEqual(seen.length, 2, 'a message acked while paused came back');
+  });
+
   await t.test(`${name}: a handler that throws does not lose the message`, async (sub) => {
     const { queue } = await open(sub);
     const name = await queueFor('q-throw');

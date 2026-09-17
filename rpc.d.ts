@@ -261,6 +261,52 @@ export interface ProcedureOptions {
   preHandler?: Hook | Array<Hook>;
   preSerialization?: Hook | Array<Hook>;
   onError?: Hook | Array<Hook>;
+  /**
+   * The delivery policy of a queue consumer. Valid only on a procedure
+   * inside a unit's `consumes` block; see `@alexify/wrpc/broker`.
+   * @experimental
+   */
+  consume?: ConsumePolicy;
+}
+
+/**
+ * How a broker binding delivers a queue's messages into a consumer
+ * procedure. Every field may be overridden at attach time
+ * (`attachConsumers(server, broker, { 'unit.v1/source': { ... } })`).
+ * @experimental
+ */
+export interface ConsumePolicy {
+  /** The broker-side queue/topic; defaults to the `consumes` key. */
+  queue?: string;
+  /** The consumer group where the broker needs one; defaults to the queue. */
+  group?: string;
+  /** Unsettled messages held at once; at most the server's maxCalls. Default 16. */
+  prefetch?: number;
+  /** false disables retries (dead-letter on the first failure). */
+  retry?:
+    | false
+    | {
+        attempts?: number;
+        backoff?: { base?: number; max?: number; factor?: number; jitter?: boolean };
+        retryOn?: Array<number>;
+      };
+  /** Where exhausted or refused messages go; default `<queue>.dlq`, false drops them. */
+  deadLetter?: string | false;
+  /**
+   * Who the consumer calls as. 'none' (default): no session — a procedure
+   * with `access: 'session'` refuses to bind. 'service': one pseudo-session
+   * for the binding. 'token': the session a message header's bearer token
+   * restores.
+   */
+  identity?: {
+    trust: 'none' | 'service' | 'token';
+    session?: { token?: string; state?: Record<string, unknown> };
+    header?: string;
+  };
+  /** Message headers copied into `context.callMeta` (lower-case names). */
+  meta?: Array<string>;
+  /** How a message body becomes the procedure's args; default JSON.parse. */
+  args?: (body: string, headers: Record<string, string>) => unknown;
 }
 
 /** Same as ProcedureOptions minus the three a stream cannot mean. */
@@ -279,6 +325,8 @@ export declare class Procedure {
   schema: ProcedureSchema | null;
   kind: 'call' | 'subscription';
   readonly subscription: boolean;
+  /** The consumer policy, frozen; null outside a `consumes` block. */
+  readonly consume: Readonly<ConsumePolicy> | null;
   constructor(options: ProcedureOptions);
   invoke(context: Context, args: unknown, hooks?: Readonly<Record<string, ReadonlyArray<Hook>>>): Promise<unknown>;
   /**
@@ -324,6 +372,12 @@ export type EventsDefinition = Record<string, MethodDefinition>;
 export interface UnitDefinition {
   on?: EventsDefinition;
   hooks?: UnitHooks;
+  /**
+   * Queue consumers: procedures a broker binding invokes per delivered
+   * message, keyed by source queue. Unreachable by a call packet, and not
+   * part of introspection. @experimental
+   */
+  consumes?: EventsDefinition;
   [method: string]: MethodDefinition | EventsDefinition | UnitHooks | undefined;
 }
 
@@ -405,6 +459,10 @@ export declare class Router {
     version: string | undefined,
     name: string,
   ): Procedure | null;
+  /** A unit's queue-consumer procedure, if it declares one. @experimental */
+  getConsumer(unit: string, version: string | undefined, name: string): Procedure | null;
+  /** Every declared queue consumer. @experimental */
+  consumers(): Array<{ unitKey: string; unit: string; version: string; name: string; procedure: Procedure }>;
   introspect(units?: Array<string> | null, options?: { schemas?: boolean }): Record<string, Record<string, MethodInfo>>;
   /** True when at least one procedure declares an `http` mapping. */
   readonly hasRestRoutes: boolean;

@@ -10,7 +10,18 @@
  * has shipped.
  */
 
-import type { WrpcLogger, Context, SubscriptionOptions, Tracked } from './index.js';
+import type {
+  WrpcLogger,
+  Context,
+  SubscriptionOptions,
+  Tracked,
+  ConsumePolicy,
+  Server,
+  RpcServer,
+  Validator,
+} from './index.js';
+
+export type { ConsumePolicy } from './index.js';
 import type { Backplane } from './scaling.js';
 
 export type { Backplane } from './scaling.js';
@@ -84,6 +95,10 @@ export interface ConsumeOptions {
 }
 
 export interface QueueConsumer {
+  /** No new deliveries; the unsettled ones stay settleable and are not handed back. */
+  pause(): Promise<void>;
+  resume(): Promise<void>;
+  /** No new deliveries; the unsettled ones are redelivered later. */
   stop(): Promise<void>;
   readonly healthy: boolean;
 }
@@ -221,6 +236,88 @@ export declare function brokerFeed<Value = unknown, Mapped = Value>(
   topic: string | ((context: Context, args: any) => string | Promise<string>),
   options?: BrokerFeedOptions<Value, Mapped>,
 ): (context: Context, args: any, subscription: SubscriptionOptions) => AsyncGenerator<Tracked<Mapped> | unknown>;
+
+// ---------------------------------------------------------------------------
+// Consumers and publishers
+
+/** A binding-table entry: an override for a declared consumer, or a queue bound to an ordinary procedure. */
+export interface ConsumerBinding extends ConsumePolicy {
+  /** 'unit.vN/method' — only for a key that is not a declared consumer. */
+  target?: string;
+}
+
+export interface DeadLetterInfo {
+  queue: string;
+  method: string;
+  /** The wire code the call failed with (400 for an undecodable body). */
+  code: number;
+  error: Error | null;
+  delivery: Delivery;
+}
+
+export interface AttachConsumersOptions {
+  /** Bind every declared `consumes` procedure, not only the table's. Default true. */
+  auto?: boolean;
+  /** Called before a message is dead-lettered — for alerting. */
+  onDeadLetter?: (info: DeadLetterInfo) => unknown;
+  logger?: WrpcLogger | boolean | null;
+  /** Clients kept per `identity.trust: 'token'` binding (LRU). Default 128. */
+  tokenClients?: number;
+}
+
+export interface ConsumerBindingInfo {
+  key: string;
+  queue: string;
+  group: string;
+  method: string;
+  healthy: boolean;
+}
+
+export interface ConsumersHandle {
+  readonly bindings: Array<ConsumerBindingInfo>;
+  readonly healthy: boolean;
+  /** Also triggered by the server's `'draining'`. */
+  pause(): Promise<void>;
+  resume(): Promise<void>;
+  /** Also triggered by the server's close(). */
+  stop(): Promise<void>;
+}
+
+/**
+ * Delivers broker queues into procedures, at least once, through the same
+ * pipeline a call takes. Keys: 'unit.vN/source' overrides a declared
+ * consumer; any other key is a queue bound to `target`.
+ */
+export declare function attachConsumers(
+  server: Server | RpcServer,
+  broker: Broker | BrokerQueue,
+  table?: Record<string, ConsumerBinding>,
+  options?: AttachConsumersOptions,
+): Promise<ConsumersHandle>;
+
+export interface PublishedEvent {
+  /** Default '<unitKey>.<event>'. */
+  topic?: string;
+  /** Default 'log' when the broker has one, 'queue' otherwise. */
+  to?: 'log' | 'queue';
+  /** A partition/ordering key, or how to derive one from the payload. */
+  key?: string | ((data: any) => string);
+  validate?: Validator;
+}
+
+export interface Publisher {
+  /** Resolves with the log id for a log target, undefined for a queue. */
+  publish(name: string, data: unknown, options?: { headers?: MessageHeaders; key?: string }): Promise<string | undefined>;
+  readonly events: Array<string>;
+}
+
+/** Publishes declared `emits` events; each name must be declared unless `strict: false`. */
+export declare function createPublisher(
+  server: Server | RpcServer,
+  broker: Broker | { name?: string; close(): unknown; log?: BrokerLog; queue?: BrokerQueue },
+  table: Record<string, PublishedEvent>,
+  options?: { strict?: boolean },
+): Publisher;
 
 // ---------------------------------------------------------------------------
 // Adapter building blocks

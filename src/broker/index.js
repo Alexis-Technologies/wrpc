@@ -15,9 +15,13 @@ const { TopicTails } = require('./tail.js');
 const { encodeToken, toText, toBytes, toHeaders } = require('./ids.js');
 const { DEFAULT_RETRY } = require('./retry.js');
 const { brokerFeed } = require('./feed.js');
+const { attachConsumers } = require('./consumers.js');
+const { createPublisher } = require('./publisher.js');
 
 module.exports = {
   brokerFeed,
+  attachConsumers,
+  createPublisher,
   MemoryBroker,
   createMemoryBroker,
   isBroker,

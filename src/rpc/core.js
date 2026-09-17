@@ -64,6 +64,14 @@ const copyTraceHeaders = (headers, packet) => {
 
 const DEFAULT_BASE_PATH = '/api';
 
+const hasTransportMethods = (transport) =>
+  typeof transport === 'object' &&
+  transport !== null &&
+  typeof transport.write === 'function' &&
+  typeof transport.close === 'function' &&
+  typeof transport.on === 'function' &&
+  typeof transport.once === 'function';
+
 // The options the core owns. Every shell and adapter funnels its own option
 // bag through here, so adding a core option cannot be silently dropped by
 // one of the four places that construct an RpcServer.
@@ -429,6 +437,11 @@ class RpcServer extends Emitter {
     return this.#basePath;
   }
 
+  /** The per-connection caps every attached client gets — frozen. */
+  get limits() {
+    return Object.freeze({ ...this.#limits });
+  }
+
   /** The injected codec option, verbatim — how an adapter inspects codec.rest. */
   get codec() {
     return this.#codecOption;
@@ -667,9 +680,20 @@ class RpcServer extends Emitter {
    *   restored through the configured token carrier exactly as
    *   attachSocket does — a bearer token riding a broker header restores a
    *   real session.
+   *
+   * `persistent: false` attaches a request/response carrier instead — a
+   * broker consumer binding, whose client runs calls but carries no events,
+   * streams or subscriptions and is not one of the "connected clients"
+   * broadcasts, presence and fetchClients count. Its transport's
+   * `connection` is cleared, which is exactly what Client.persistent reads.
    */
-  attach(transport, { meta = null, session = null, request = null } = {}) {
-    if (!isInboundTransport(transport)) {
+  attach(transport, { meta = null, session = null, request = null, persistent = true } = {}) {
+    if (persistent === false) {
+      if (!hasTransportMethods(transport)) {
+        throw new TypeError('RpcServer.attach: a transport with write/close/on/once is required');
+      }
+      transport.connection = null;
+    } else if (!isInboundTransport(transport)) {
       throw new TypeError('RpcServer.attach: a persistent transport with write/close/on/once is required');
     }
     if (session !== null && (typeof session !== 'object' || Array.isArray(session))) {
@@ -1073,6 +1097,10 @@ class RpcServer extends Emitter {
   }
 
   async close() {
+    // Announced first, while everything still works: a binding that pulls
+    // work on its own (a broker consumer) stops fetching before its client
+    // is torn down under it.
+    this.emit('close');
     if (this.#sse) this.#sse.close();
     for (const client of this.#clients) client.close();
     this.#clients.clear();

@@ -237,7 +237,7 @@ class MemoryBroker {
     }
     if (this.#closed) return Promise.reject(codedError('Broker is closed', 503));
     const state = this.#queueState(queue);
-    const consumer = { onDelivery, prefetch, deadLetter, inflight: new Set(), active: true };
+    const consumer = { onDelivery, prefetch, deadLetter, inflight: new Set(), active: true, paused: false };
     state.consumers.push(consumer);
     const stop = () => {
       if (!consumer.active) return Promise.resolve();
@@ -263,6 +263,17 @@ class MemoryBroker {
     const broker = this;
     return Promise.resolve({
       stop,
+      // Paused: no new deliveries, but the unsettled ones stay settleable —
+      // a draining node finishes what it holds instead of handing it back.
+      pause: () => {
+        consumer.paused = true;
+        return Promise.resolve();
+      },
+      resume: () => {
+        consumer.paused = false;
+        broker.#pump(state);
+        return Promise.resolve();
+      },
       get healthy() {
         return consumer.active && !broker.#closed;
       },
@@ -283,7 +294,7 @@ class MemoryBroker {
     const { consumers } = state;
     for (let i = 0; i < consumers.length; i++) {
       const consumer = consumers[(state.cursor + i) % consumers.length];
-      if (consumer.active && consumer.inflight.size < consumer.prefetch) {
+      if (consumer.active && !consumer.paused && consumer.inflight.size < consumer.prefetch) {
         state.cursor = (state.cursor + i + 1) % consumers.length;
         return consumer;
       }

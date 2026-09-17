@@ -173,6 +173,7 @@ export default withMermaid({
             items: [
               { text: 'Overview & contracts', link: '/guide/brokers' },
               { text: 'Durable feeds', link: '/guide/brokers/feeds' },
+              { text: 'Queue consumers & publishing', link: '/guide/brokers/consumers' },
             ],
           },
           {

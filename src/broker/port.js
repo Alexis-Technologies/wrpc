@@ -39,7 +39,9 @@
 //   produce(queue, body, { headers, key })          -> Promise<void>
 //   consume(queue, onDelivery, { group, prefetch, deadLetter, signal })
 //                                                    -> Promise<Consumer>
-//     Consumer: { stop(): Promise<void>, readonly healthy: boolean }
+//     Consumer: { pause(), resume(), stop(), readonly healthy }
+//     - pause(): no new deliveries; unsettled ones stay settleable and are
+//       NOT handed back — what a draining node wants. resume() undoes it.
 //     - consumers of one queue compete: a message reaches one of them.
 //       `group` names the broker-side consumer group where one is needed
 //       (Kafka, JetStream, Redis) and defaults to the queue name; one queue

@@ -384,6 +384,8 @@ export declare class RpcServer extends Emitter {
   attach(transport: InboundTransport, options?: AttachOptions): Client;
   handleHttpCall(call: HttpCall): Promise<void>;
   matchPath(pathname: string): { mode: 'packet' | 'rest'; rest?: string } | null;
+  /** The per-connection caps every attached client gets. */
+  readonly limits: Readonly<{ maxBatch: number; maxSubscriptions: number; maxCalls: number }>;
   /**
    * True while drain() runs: new calls are refused with 503. Draining is
    * announced once as a `'draining'` event, so a binding that pulls work
@@ -408,6 +410,7 @@ export declare class RpcServer extends Emitter {
    * for — a live feed has no natural end. Resolves early when idle.
    */
   drain(timeout?: number): Promise<void>;
+  /** Emits `'close'` first, then tears every client, channel and binding down. */
   close(): Promise<void>;
 }
 
@@ -463,7 +466,14 @@ export interface TransportOptions {
   headers?: Record<string, string>;
 }
 
-export type AttachOptions = { meta?: ClientMeta | null } & (
+export type AttachOptions = {
+  meta?: ClientMeta | null;
+  /**
+   * false: a request/response carrier (a broker consumer binding) — calls
+   * only, and not counted among connected clients. Default true.
+   */
+  persistent?: boolean;
+} & (
   | { session?: null; request?: null }
   | { session: { token?: string; state?: Record<string, unknown>; [key: string]: unknown }; request?: null }
   | {
@@ -476,7 +486,8 @@ export type AttachOptions = { meta?: ClientMeta | null } & (
 export interface InboundTransport extends Emitter {
   kind?: string;
   source?: string;
-  connection: unknown;
+  /** Truthy for a persistent transport; ignored (and cleared) with `persistent: false`. */
+  connection?: unknown;
   write(data: string | Uint8Array): boolean;
   close(): void;
 }

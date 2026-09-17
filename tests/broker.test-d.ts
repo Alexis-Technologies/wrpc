@@ -11,8 +11,8 @@ import type {
   QueueConsumer,
 } from '../broker.js';
 import type { Backplane } from '../scaling.js';
-import type { AttachOptions, RpcServer } from '../index.js';
-import { procedure } from '../index.js';
+import type { AttachOptions, RpcServer, Server } from '../index.js';
+import { procedure, defineRouter } from '../index.js';
 
 const memory = new broker.MemoryBroker({ logger: false, retention: { maxEntries: 100 } });
 expectAssignable<Broker>(memory);
@@ -86,3 +86,36 @@ procedure.subscription({
 });
 broker.brokerFeed(memory.log, 'orders', { from: 'earliest', decode: 'text' });
 expectError(broker.brokerFeed(memory, 'orders', { from: 'middle' }));
+
+// Consumers: declared in the router, bound (and overridden) at attach time.
+defineRouter({
+  'billing.v1': {
+    consumes: {
+      'orders.created': procedure({
+        consume: { prefetch: 8, retry: { attempts: 3 }, deadLetter: false, identity: { trust: 'service' } },
+        handler: async (ctx, args: { orderId: string }) => ({ charged: args.orderId, by: ctx.callMeta }),
+      }),
+    },
+  },
+});
+declare const server: Server;
+(async () => {
+  const consumers = await broker.attachConsumers(
+    server,
+    memory,
+    {
+      'billing.v1/orders.created': { queue: 'prod.orders', prefetch: 32 },
+      'audit.events': { target: 'audit.v1/record', args: (body) => ({ body }) },
+    },
+    { onDeadLetter: ({ code, delivery }) => void [code, delivery.attempt] },
+  );
+  expectType<boolean>(consumers.healthy);
+  expectType<string>(consumers.bindings[0].queue);
+  await consumers.stop();
+
+  const publisher = broker.createPublisher(rpc, memory, {
+    'orders.v1/created': { to: 'queue', key: (order: { id: string }) => order.id },
+  });
+  expectType<Promise<string | undefined>>(publisher.publish('orders.v1/created', { id: 'o-1' }));
+})();
+expectError(broker.attachConsumers(server, memory, { q: { prefetch: 'many' } }));

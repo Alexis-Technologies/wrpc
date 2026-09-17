@@ -13,6 +13,34 @@ narrower promise — see
 
 ### Added
 
+**Message brokers, part 3: queue consumers and publishing (`attachConsumers`, `createPublisher`, `consumes`)**
+- A unit's reserved `consumes` block declares queue consumers — full
+  procedures with an optional `consume` policy — that no call packet can
+  reach and introspection does not list. `attachConsumers(server, broker,
+  table)` binds them (and, through the table, overrides their policy or binds
+  ORDINARY procedures to queues) and delivers each message through the same
+  pipeline a call takes: hooks, validators, access, queue/timeout, telemetry.
+- Settlement follows one table for every broker: ack on success; retry with
+  full-jitter backoff on `408/429/500/503` up to `attempts`; dead letter (with
+  `x-wrpc-dead-reason`/`x-wrpc-attempt`, after `onDeadLetter`) on anything
+  else or when exhausted; release on `503` while draining. `ctx.callMeta`
+  carries `messageId`, `attempt`, `queue` and allowlisted headers.
+- Identity per binding: `none` (default; a session procedure refuses to
+  bind), `service` (a pseudo-session) or `token` (a bearer header restores a
+  real session, one LRU-cached client per token).
+- The server's `'draining'` pauses every binding (held messages finish and
+  ack); `close()` now emits `'close'` first and stops them, releasing
+  whatever a close cut off. `RpcServer#limits` exposes the per-connection
+  caps; `attach(transport, { persistent: false })` attaches a
+  request/response carrier that is not counted among connected clients.
+- `createPublisher(server, broker, table)` publishes a unit's declared
+  `emits` by name to a log or a queue, with an optional validator and key;
+  each publish is a `PRODUCER` span whose context rides in the headers, so a
+  trace runs from the call that placed an order to the consumer that charged
+  it.
+- The queue contract gains `pause()`/`resume()`: no new deliveries, held
+  ones stay settleable.
+
 **Message brokers, part 2: durable subscription feeds (`brokerFeed`)**
 - `procedure.subscription({ handler: brokerFeed(broker, topic, options) })`
   reads a broker log and `tracked()`s every value with the log's resume

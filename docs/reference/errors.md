@@ -94,14 +94,19 @@ already-rejected call silently rather than surfacing it twice — you see the
 
 ## Which codes are worth retrying
 
-| Code | Retry? | Why |
-| --- | --- | --- |
-| `400`, `403`, `404`, `501` | **No** | The same request will fail identically. |
-| `408` | Careful | Only if the operation is idempotent — it may have completed. |
-| `409` | Automatic | The SSE transport starts a fresh channel itself. |
-| `429`, `503` | **Yes, with backoff** | Load or a rolling deploy; both are temporary by construction. |
-| `499` | No | You caused it. |
-| `500` | No, alert | A bug, not a condition. |
+| Code | Retry? | Broker consumer | Why |
+| --- | --- | --- | --- |
+| `400`, `403`, `404`, `501` | **No** | dead letter | The same request will fail identically. |
+| `408` | Careful | retry | Only if the operation is idempotent — it may have completed. |
+| `409` | Automatic | — | The SSE transport starts a fresh channel itself. |
+| `429`, `503` | **Yes, with backoff** | retry | Load or a rolling deploy; both are temporary by construction. |
+| `499` | No | — | You caused it. |
+| `500` | No, alert | retry, then dead letter | A bug, not a condition — but on a queue usually a dependency that fell over. |
+
+The **Broker consumer** column is the default `retryOn` policy of
+[queue consumers](../guide/brokers/consumers#what-a-message-becomes): at-least-once
+delivery already requires an idempotent handler, so a transient `408`/`500` is
+retried with backoff up to the attempt limit before the message is dead-lettered.
 
 The client's own [reconnect](../guide/client#reconnecting) already applies
 truncated exponential backoff with full jitter to the *connection*. Per-call
