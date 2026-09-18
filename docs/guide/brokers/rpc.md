@@ -112,3 +112,19 @@ and stops by itself when the server closes.
 
 `headers` and `meta` travel on every stateless request and on a session's
 `hello`, where the server reads them as a WebSocket upgrade's.
+
+## Tracing across the broker
+
+Both halves are instrumented by the ordinary paths, not by anything special
+to this transport: a stateless request reaches the server through
+`handleHttpCall` and a session through `attach`, and the client's own call
+bracket runs whatever carrier is underneath. So a call over a broker produces
+a CLIENT span on one side and a SERVER span on the other, joined into one
+trace by the `tp`/`ts` fields the packet already carries.
+
+Pass [`telemetry`](../telemetry) to both ends and the broker hop is visible
+the same way a WebSocket one is — with `wrpc.transport` naming the carrier.
+
+The session id doubles as the correlation id, and the server holds each
+session's frame state under it, so it is worth minting with a generator of
+known strength — see [Identifiers](../production#identifiers).

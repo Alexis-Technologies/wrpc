@@ -1,4 +1,5 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
+import { trace as otelTrace } from '@opentelemetry/api';
 import * as wrpc from '../index.js';
 import type {
   Emitter,
@@ -784,3 +785,17 @@ expectError(
     handler: async () => 1,
   }),
 );
+
+// The structural OTel views exist so a real SDK is assignable without wrpc
+// depending on @opentelemetry/api. Both of these once failed: a real
+// `Tracer` was rejected because `WrpcSpan.addEvent` was declared narrower
+// than the article it describes, and a tracer implementing only the
+// parented `startActiveSpan` — the overload wrpc calls when the arity
+// allows — had no declaration to match.
+expectAssignable<wrpc.WrpcTracer>(otelTrace.getTracer('tsd'));
+expectAssignable<wrpc.WrpcTracer>({
+  startActiveSpan<T>(_name: string, _options: unknown, _parent: unknown, fn: (span: wrpc.WrpcSpan) => T): T {
+    return fn({ end() {} });
+  },
+});
+expectAssignable<wrpc.WrpcTelemetryOptions>({ tracer: otelTrace.getTracer('tsd') });

@@ -13,6 +13,44 @@ narrower promise — see
 
 ### Added
 
+**Telemetry: the honest set**
+- `wrpc.server.sessions` records all five operations. It only ever said
+  `restore`, while a unit test asserted a `create` shape nothing in the
+  package could produce — the metric described a surface that did not exist.
+  `evict` is the one worth alerting on: unlike `expire` it discards sessions
+  that are still live, which is signed-in users being signed out to stay
+  under `maxSessions`.
+- `wrpc.stream.direction` has both values. The `send` half was never
+  recorded anywhere, so an attribute that promised two values had exactly
+  one for the life of the metric. The server records it; the client does
+  not, where the counter has nothing to feed and the bytes would only cost
+  the browser bundle.
+- **`wrpc.client.heartbeat.rtt`** — the client's only true latency signal
+  that needs no call to produce it. The ping/pong pair is an exact round
+  trip and both ends were already timestamped; nothing read them. A
+  heartbeat that times out is counted, never timed: there is no round trip
+  to measure, and a sample invented from the timeout would describe your
+  configuration rather than the network.
+- **`wrpc.server.queue.wait`** and **`wrpc.server.queue.depth`**. Time spent
+  waiting for a concurrency slot was folded into `rpc.server.duration`,
+  which made a saturated queue and a slow handler indistinguishable — two
+  opposite problems with opposite fixes. `depth` carries no attribute at
+  all: one series per procedure is a cardinality bomb, and the question is a
+  whole-process one.
+- **`wrpc.broker.delivery.attempts`**, recorded on settlement only (an ack
+  or a dead-letter, never a retry), so it is the distribution of deliveries
+  per message rather than a triangle counting each message once per
+  attempt. The number was on every delivery all along and never read.
+- **`wrpc.cluster.verifications`** and **`wrpc.rtc.assertions`** put a
+  counter behind two security signals that had none: a backplane envelope
+  that fails authentication, and a peer presenting a trust assertion that
+  does not bind to the DTLS fingerprint of the connection it arrived on.
+- **`wrpc.client.calls`** and **`wrpc.server.rooms`**: a client error *rate*
+  was not derivable from the duration histogram alone (a call with no
+  elapsed time recorded nothing), and live rooms had no gauge. The room
+  gauge rides the existing first-member/last-member callbacks, so the hot
+  join/leave path is untouched.
+
 **Logging reaches the silent paths**
 - `RpcServer` gains a `log` getter, the pair of the `otel` one that already
   existed for the same reason: a framework adapter or an external attacher
@@ -598,6 +636,15 @@ narrower promise — see
   adapters — which have no compatibility to keep.
 
 ### Fixed
+- **Two public telemetry types rejected the things they exist to accept.**
+  A real `@opentelemetry/api` `Tracer` was not assignable to `WrpcTracer`,
+  because `WrpcSpan` declared `addEvent`, `setStatus` and `recordException`
+  more narrowly than the article they describe — so the structural view that
+  exists precisely to let an SDK in kept it out. And `startActiveSpan` was
+  declared with only its 3-argument form while `startSpanWith` calls the
+  4-argument one whenever the arity allows, so a hand-written parented
+  tracer type-checked and then broke at runtime. Both are typed from what
+  wrpc actually calls now, with tsd assertions against the real SDK.
 - `connect(url, { worker })` builds its own `ClientEventTransport` per
   client instead of sharing a class-level singleton. A second `connect` to a
   DIFFERENT worker on the same page used to reuse the first `MessageChannel`

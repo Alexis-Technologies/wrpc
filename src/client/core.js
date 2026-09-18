@@ -451,6 +451,7 @@ class WrpcClient extends Emitter {
   #metaFormat = 'json';
   #random = Math.random;
   #generateId = generateUUID;
+  #pingSentAt = 0;
   #heartbeat = null;
   #pingTimer = null;
   #pongTimer = null;
@@ -1032,6 +1033,9 @@ class WrpcClient extends Emitter {
     } catch (error) {
       return void this.#escalate(error, 'heartbeat.ping');
     }
+    // Only when something is listening: `now()` on an idle client, every
+    // heartbeat interval forever, is not a cost telemetry-off should pay.
+    this.#pingSentAt = this.#otel.enabled ? now() : 0;
     this.#pongTimer = unref(
       setTimeout(() => {
         this.#pongTimer = null;
@@ -1044,6 +1048,13 @@ class WrpcClient extends Emitter {
     if (!this.#pongTimer) return; // unsolicited pong: nothing was waiting
     clearTimeout(this.#pongTimer);
     this.#pongTimer = null;
+    // AFTER the guard above, deliberately: an unsolicited pong has no ping
+    // to measure against and would record a garbage sample from whenever
+    // the last one happened to go out.
+    if (this.#pingSentAt > 0) {
+      this.#otel.recordHeartbeat('ok', now() - this.#pingSentAt);
+      this.#pingSentAt = 0;
+    }
     if (this.#heartbeat && this.active) this.#armPing();
   }
 
@@ -1051,6 +1062,11 @@ class WrpcClient extends Emitter {
   // the normal reconnect path takes over.
   #onHeartbeatTimeout() {
     this.#log.warn({ event: 'heartbeat.timeout', url: this.url });
+    // Counted, never timed: there is no round trip here, and inventing one
+    // from the timeout would put a spike into the latency percentiles that
+    // says more about the configured timeout than about the network.
+    this.#otel.recordHeartbeat('timeout');
+    this.#pingSentAt = 0;
     // Like every lifecycle emit: a throwing listener on a documented event
     // must surface through #escalate, not as an unhandled rejection.
     this.emit('heartbeat-timeout').catch((error) => this.#escalate(error, 'listener.heartbeat-timeout'));

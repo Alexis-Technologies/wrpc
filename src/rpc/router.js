@@ -360,18 +360,34 @@ class Procedure {
   // semaphore and the deadline behave EXACTLY as in invoke() — the slot is
   // held until the handler settles — but hooks, access and validators are
   // the host's job, already run by the time this is called.
+  // Queue wait, measured once and in one place. Without it the time a call
+  // spends waiting for a slot is folded invisibly into `rpc.server.duration`,
+  // so a saturated queue and a slow handler look identical — and they are
+  // opposite problems with opposite fixes (raise the queue vs. fix the
+  // handler). Both `invoke` and `invokeBare` take this path, so the two
+  // cannot drift apart.
+  async #acquire(context) {
+    const otel = context.client?.otel;
+    // Nothing listening: no clock reads, no counter traffic.
+    const started = otel?.enabled ? Date.now() : 0;
+    if (started > 0) otel.recordQueue(1);
+    try {
+      // Abort-aware: a queued waiter whose caller cancelled or disconnected
+      // leaves the queue instead of taking a slot later.
+      await this.semaphore.enter(context.signal ?? null);
+    } catch (error) {
+      if (started > 0) otel.recordQueue(-1);
+      throw codedError(error.message, 503);
+    }
+    if (started > 0) otel.recordQueue(-1, Date.now() - started);
+  }
+
   async invokeBare(context, args) {
     if (this.kind === SUBSCRIPTION) {
       throw codedError('This procedure is a subscription: use {type:"subscribe"}', 400);
     }
     const deadline = this.timeout > 0 ? Date.now() + this.timeout : 0;
-    if (this.semaphore) {
-      try {
-        await this.semaphore.enter(context.signal ?? null);
-      } catch (error) {
-        throw codedError(error.message, 503);
-      }
-    }
+    if (this.semaphore) await this.#acquire(context);
     let handlerStarted = false;
     try {
       if (deadline > 0 && Date.now() >= deadline) {
@@ -413,15 +429,7 @@ class Procedure {
     const cap = this.timeout > 0 ? this.timeout : 0;
     const limit = budget > 0 && (cap === 0 || budget < cap) ? budget : cap;
     const deadline = limit > 0 ? Date.now() + limit : 0;
-    if (this.semaphore) {
-      try {
-        // Abort-aware: a queued waiter whose caller cancelled or
-        // disconnected leaves the queue instead of taking a slot later.
-        await this.semaphore.enter(context.signal ?? null);
-      } catch (error) {
-        throw codedError(error.message, 503);
-      }
-    }
+    if (this.semaphore) await this.#acquire(context);
     if (deadline > 0 && Date.now() >= deadline) {
       throw codedError('Procedure timeout', 408);
     }

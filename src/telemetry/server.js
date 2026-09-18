@@ -85,6 +85,12 @@ const createServerTelemetry = (telemetry) => {
   let rtcRestarts = null;
   let brokerDeliveries = null;
   let brokerPublished = null;
+  let brokerAttempts = null;
+  let queueWait = null;
+  let clusterVerifications = null;
+  let rtcAssertions = null;
+  let rooms = null;
+  let queueDepth = null;
 
   // Checked separately from the others: a meter with counters and histograms
   // but no up/down counter would otherwise disable every instrument here.
@@ -156,6 +162,29 @@ const createServerTelemetry = (telemetry) => {
         unit: '{message}',
         description: 'Messages published to a broker, by broker and outcome',
       });
+      // A histogram, never an attribute on the delivery counter: the attempt
+      // number is unbounded, and a counter series per value is a cardinality
+      // bomb. Redelivery depth was unmeasurable — the number was available
+      // on every delivery and simply never recorded.
+      brokerAttempts = meter.createHistogram('wrpc.broker.delivery.attempts', {
+        unit: '{attempt}',
+        description: 'How many deliveries a message took to settle',
+      });
+      // Time a call spent waiting for a queue slot, which `rpc.server.duration`
+      // folds in invisibly — so a saturated queue is indistinguishable from
+      // a slow handler, which are opposite problems with opposite fixes.
+      queueWait = meter.createHistogram('wrpc.server.queue.wait', {
+        unit: 'ms',
+        description: 'Time a call waited for a concurrency slot',
+      });
+      clusterVerifications = meter.createCounter('wrpc.cluster.verifications', {
+        unit: '{envelope}',
+        description: 'Backplane envelope authentication outcomes',
+      });
+      rtcAssertions = meter.createCounter('wrpc.rtc.assertions', {
+        unit: '{assertion}',
+        description: 'Peer trust assertion verification outcomes',
+      });
     } catch {
       duration = null;
       calls = null;
@@ -173,6 +202,10 @@ const createServerTelemetry = (telemetry) => {
       rtcRestarts = null;
       brokerDeliveries = null;
       brokerPublished = null;
+      brokerAttempts = null;
+      queueWait = null;
+      clusterVerifications = null;
+      rtcAssertions = null;
     }
   }
   if (canGauge) {
@@ -197,12 +230,25 @@ const createServerTelemetry = (telemetry) => {
         unit: '{instance}',
         description: 'Peer instances this node currently sees on the backplane',
       });
+      rooms = meter.createUpDownCounter('wrpc.server.rooms', {
+        unit: '{room}',
+        description: 'Rooms with at least one local member',
+      });
+      // Deliberately carries NO per-procedure attribute: one series per
+      // procedure would be a cardinality bomb, and the question this answers
+      // — "is the server queueing?" — is a whole-process one.
+      queueDepth = meter.createUpDownCounter('wrpc.server.queue.depth', {
+        unit: '{call}',
+        description: 'Calls waiting for a concurrency slot',
+      });
     } catch {
       connections = null;
       subscriptions = null;
       sseChannels = null;
       clusterInstances = null;
       rtcLinks = null;
+      rooms = null;
+      queueDepth = null;
     }
   }
 
@@ -369,6 +415,37 @@ const createServerTelemetry = (telemetry) => {
     recordBrokerDelivery(system, outcome) {
       try {
         brokerDeliveries?.add(1, { 'messaging.system': system, 'wrpc.broker.outcome': outcome });
+      } catch {}
+    },
+
+    recordBrokerAttempts(system, attempts) {
+      try {
+        brokerAttempts?.record(attempts, { 'messaging.system': system });
+      } catch {}
+    },
+
+    recordQueue(delta, waited) {
+      try {
+        queueDepth?.add(delta);
+        if (waited !== undefined) queueWait?.record(waited);
+      } catch {}
+    },
+
+    recordRooms(delta) {
+      try {
+        rooms?.add(delta);
+      } catch {}
+    },
+
+    recordClusterVerification(outcome) {
+      try {
+        clusterVerifications?.add(1, { 'wrpc.cluster.outcome': outcome });
+      } catch {}
+    },
+
+    recordRtcAssertion(outcome) {
+      try {
+        rtcAssertions?.add(1, { 'wrpc.rtc.outcome': outcome });
       } catch {}
     },
 

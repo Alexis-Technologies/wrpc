@@ -322,6 +322,10 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
   const settle = async (delivery, decision, code, error) => {
     const { action, delay } = decision;
     rpc.otel.recordBrokerDelivery(system, action);
+    // Only on a settlement that ENDS the message: recording on a retry too
+    // would count the same message once per attempt and turn the histogram
+    // into a triangle rather than a distribution.
+    if (action === 'ack' || action === 'dead') rpc.otel.recordBrokerAttempts(system, delivery.attempt ?? 1);
     // Only the terminal outcome used to log, so a queue that was retrying
     // itself in a circle looked identical to one that was healthy. Debug,
     // because this is one line per message: a Console writer drops it and a

@@ -142,12 +142,18 @@ class WrpcWritable extends Emitter {
   #closed = false;
   #ended = false;
 
-  constructor(id, name, size, transport) {
+  constructor(id, name, size, transport, otel = null) {
     super();
     this.id = id;
     this.name = name;
     this.size = size;
     this.transport = transport;
+    // Null on the client, where there is no server-side byte counter to
+    // feed and the bytes would only cost the browser bundle. On the server
+    // it is the writer, so `wrpc.server.stream.bytes` finally has a `send`
+    // direction — the attribute existed from the start with exactly one
+    // value ever recorded, which made it a lie.
+    this.otel = otel;
     // Armed HERE, not lazily inside the backpressure branch: a stream that
     // never happened to stall used to learn nothing when the transport
     // closed — `closed` stayed false and a producer loop kept writing into
@@ -189,6 +195,7 @@ class WrpcWritable extends Emitter {
   write(data) {
     if (this.#closed || this.#ended) return false;
     const chunk = chunkEncode(this.id, data);
+    this.otel?.recordStreamBytes('send', chunk.byteLength ?? chunk.length);
     const accepted = this.transport.write(chunk) !== false;
     if (!accepted && !this.#waitingDrain && typeof this.transport.once === 'function') {
       this.#waitingDrain = true;

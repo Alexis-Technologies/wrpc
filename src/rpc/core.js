@@ -188,7 +188,7 @@ class RpcServer extends Emitter {
     // constructed on every to()/except()/broadcast().
     this.#roomsLog = this.#log.child({ component: 'rooms' });
     this.#sseLog = this.#log.child({ component: 'sse' });
-    this.#sessions = new SessionManager(sessions, this.#log.child({ component: 'sessions' }));
+    this.#sessions = new SessionManager(sessions, this.#log.child({ component: 'sessions' }), this.#otel);
     this.#cors = cors;
     this.#basePath = normalizeBasePath(basePath);
     // Resolved before #instance, because an omitted instanceId is minted BY
@@ -274,8 +274,16 @@ class RpcServer extends Emitter {
       options: enabled ? clusterOptions : {},
     });
     this.#cluster = cluster;
+    // `onSubscribe`/`onUnsubscribe` fire on a room's FIRST member and its
+    // last, which is exactly where a live-room gauge moves — so the
+    // instrument rides the callbacks that already exist rather than costing
+    // the hot join/leave path anything.
+    const countRoom = (delta) => this.#otel.recordRooms(delta);
     if (!backplane) {
-      this.#rooms = new RoomRegistry();
+      this.#rooms = new RoomRegistry({
+        onSubscribe: () => countRoom(1),
+        onUnsubscribe: () => countRoom(-1),
+      });
       return;
     }
     const binder = new RoomsBackplane({
@@ -303,8 +311,14 @@ class RpcServer extends Emitter {
     });
     this.#backplane = binder;
     this.#rooms = new RoomRegistry({
-      onSubscribe: (room) => binder.joinRoom(room),
-      onUnsubscribe: (room) => binder.leaveRoom(room),
+      onSubscribe: (room) => {
+        countRoom(1);
+        binder.joinRoom(room);
+      },
+      onUnsubscribe: (room) => {
+        countRoom(-1);
+        binder.leaveRoom(room);
+      },
       // Every membership change is a presence delta; the periodic snapshot
       // corrects whatever the broker drops.
       onJoin: (room) => cluster.delta(room, 1),

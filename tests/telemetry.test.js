@@ -384,6 +384,42 @@ test('partial and broken meters', async (t) => {
     assert.doesNotThrow(() => otel.recordRtcRedial('responder'));
     assert.doesNotThrow(() => otel.recordRtcRestart('failed'));
     assert.doesNotThrow(() => otel.recordSubscriptionValues(1, 'a/b'));
+    // The instruments added since; a record* that forgot its guard would
+    // take down the request path it is supposed to be observing.
+    assert.doesNotThrow(() => otel.recordBrokerAttempts('memory', 3));
+    assert.doesNotThrow(() => otel.recordQueue(1));
+    assert.doesNotThrow(() => otel.recordQueue(-1, 12));
+    assert.doesNotThrow(() => otel.recordRooms(1));
+    assert.doesNotThrow(() => otel.recordClusterVerification('badsig'));
+    assert.doesNotThrow(() => otel.recordRtcAssertion('ok'));
+  });
+
+  await t.test('a throwing factory disables the WHOLE set, new members included', () => {
+    // The subtle failure this guards: an instrument created outside the
+    // shared try/catch survives a sibling's factory throwing, leaving a
+    // half-initialized writer that records some series and not others.
+    let made = 0;
+    const otel = createServerTelemetry({
+      meter: {
+        createCounter: () => ({ add() {} }),
+        createHistogram: () => {
+          // Throws on the LAST histogram, after several counters exist.
+          if (++made > 1) throw new Error('factory exploded');
+          return { record() {} };
+        },
+        createUpDownCounter: () => ({ add() {} }),
+      },
+    });
+    for (const call of [
+      () => otel.recordCall('a/b', 'ok', 200, 1),
+      () => otel.recordBrokerAttempts('memory', 2),
+      () => otel.recordQueue(-1, 5),
+      () => otel.recordBroadcast('msg', 1, false),
+      () => otel.recordClusterVerification('unsigned'),
+      () => otel.recordRtcAssertion('missing'),
+    ]) {
+      assert.doesNotThrow(call);
+    }
   });
 });
 

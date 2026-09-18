@@ -718,9 +718,24 @@ class WrpcPeer extends Emitter {
   async verifyDescription(from, message, pinned = null, claims = null) {
     const sdp = message.description?.sdp;
     const fingerprint = sdpFingerprint(sdp);
+    // A description on a pc whose fingerprint is already pinned needs no
+    // second verification, and is not counted: it is not an assertion check.
     if (fingerprint !== null && fingerprint === pinned) return { fingerprint, claims };
-    if (!isAssertion(message.assertion)) throw new AssertionError('assertion: missing', 'missing');
-    const verified = await this.#verifier.verify(message.assertion, { from, sdp, now: Date.now() + this.#clock });
+    // A failure here is a SECURITY signal — a peer presenting a token that
+    // does not bind to the DTLS fingerprint of the connection it sent — and
+    // it had no metric at all, so a campaign of them was invisible.
+    if (!isAssertion(message.assertion)) {
+      this.#otel.recordRtcAssertion('missing');
+      throw new AssertionError('assertion: missing', 'missing');
+    }
+    let verified;
+    try {
+      verified = await this.#verifier.verify(message.assertion, { from, sdp, now: Date.now() + this.#clock });
+    } catch (error) {
+      this.#otel.recordRtcAssertion(error?.reason ?? 'invalid');
+      throw error;
+    }
+    this.#otel.recordRtcAssertion('ok');
     return { fingerprint, claims: verified };
   }
 

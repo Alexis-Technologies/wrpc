@@ -3,6 +3,7 @@
 const { generateUUID } = require('../runtime/node.js');
 const { createLoggerWriter } = require('../logging.js');
 const { parseCookies } = require('../transport.js');
+const { DISABLED: DISABLED_TELEMETRY } = require('../telemetry/shared.js');
 
 // TokenTransport — where the session token lives on the wire, injected like
 // a codec or a logger and checked structurally:
@@ -99,12 +100,20 @@ class MemorySessionStore {
   #maxSessions;
   #ttl;
   #log;
+  #otel;
 
-  constructor({ maxSessions = DEFAULT_MAX_SESSIONS, ttl = DEFAULT_SESSION_TTL, now = Date.now, logger = false } = {}) {
+  constructor({
+    maxSessions = DEFAULT_MAX_SESSIONS,
+    ttl = DEFAULT_SESSION_TTL,
+    now = Date.now,
+    logger = false,
+    otel = null,
+  } = {}) {
     this.#maxSessions = maxSessions;
     this.#ttl = ttl;
     this.now = now;
     this.#log = createLoggerWriter(logger);
+    this.#otel = otel ?? DISABLED_TELEMETRY;
   }
 
   get size() {
@@ -150,6 +159,7 @@ class MemorySessionStore {
       for (const [token, entry] of this.#sessions) {
         if (!this.#expired(entry)) break; // oldest first: stop at the first live one
         this.#sessions.delete(token);
+        this.#otel.recordSession('expire', 'ok');
       }
     }
     // Capacity eviction, unlike the TTL sweep above, throws away sessions
@@ -161,6 +171,7 @@ class MemorySessionStore {
     while (this.#maxSessions > 0 && this.#sessions.size > this.#maxSessions) {
       const oldest = this.#sessions.keys().next().value;
       this.#sessions.delete(oldest);
+      this.#otel.recordSession('evict', 'ok');
       evicted++;
     }
     if (evicted > 0) {
@@ -220,14 +231,16 @@ const buildCookie = (name, value, options) => {
 // by every Server in the process).
 class SessionManager {
   #log;
+  #otel;
 
-  constructor(options = {}, logger = globalThis.console) {
+  constructor(options = {}, logger = globalThis.console, otel = null) {
     const { store = null, generateToken = generateUUID, cookie = {}, transport } = options;
     this.#log = createLoggerWriter(logger);
+    this.#otel = otel ?? DISABLED_TELEMETRY;
     // The default store is built HERE so it inherits this writer: a store
     // the application constructed is its own to configure, but the one wrpc
     // makes on its behalf should report where everything else does.
-    this.store = store ?? new MemorySessionStore({ logger: this.#log });
+    this.store = store ?? new MemorySessionStore({ logger: this.#log, otel: this.#otel });
     this.generateToken = generateToken;
     this.cookie = { ...DEFAULT_COOKIE, ...cookie };
     // The injected token carrier; the cookie default keeps the behaviour
@@ -264,6 +277,7 @@ class SessionManager {
     const lifecycle = { ended: false };
     const save = this.#saver(token, lifecycle);
     save(data, true); // persist the initial state NOW so restore works immediately
+    this.#otel.recordSession('create', 'ok');
     return new Session(token, data, save, lifecycle);
   }
 
@@ -275,9 +289,13 @@ class SessionManager {
     // Optional and fire-and-forget — a store without touch() keeps absolute
     // TTLs, which is a valid policy too.
     if (typeof this.store.touch === 'function') {
-      Promise.resolve(this.store.touch(token)).catch((error) => {
-        this.#log.error({ err: error, event: 'session.touch' });
-      });
+      Promise.resolve(this.store.touch(token)).then(
+        () => this.#otel.recordSession('touch', 'ok'),
+        (error) => {
+          this.#otel.recordSession('touch', 'error');
+          this.#log.error({ err: error, event: 'session.touch' });
+        },
+      );
     }
     const lifecycle = { ended: false };
     return new Session(token, data, this.#saver(token, lifecycle), lifecycle);
@@ -292,7 +310,9 @@ class SessionManager {
     // stored row that outlives it expires on its own TTL.
     try {
       await this.store.delete(token);
+      this.#otel.recordSession('destroy', 'ok');
     } catch (error) {
+      this.#otel.recordSession('destroy', 'error');
       this.#log.error({ err: error, event: 'session.destroy' });
     }
   }

@@ -114,6 +114,14 @@ credential, not an identity, and the two do not share a switch.
 | `wrpc.client.reconnects` | Counter | `{attempt}` |
 | `wrpc.client.refreshes` | Counter | `{run}` |
 | `wrpc.client.connections` | UpDownCounter | `{connection}` |
+| `wrpc.client.heartbeat.rtt` | Histogram | `ms` |
+| `wrpc.client.calls` | Counter | `{call}` |
+| `wrpc.server.queue.depth` | UpDownCounter | `{call}` |
+| `wrpc.server.queue.wait` | Histogram | `ms` |
+| `wrpc.server.rooms` | UpDownCounter | `{room}` |
+| `wrpc.cluster.verifications` | Counter | `{envelope}` |
+| `wrpc.rtc.assertions` | Counter | `{assertion}` |
+| `wrpc.broker.delivery.attempts` | Histogram | `{attempt}` |
 
 The three `wrpc.rtc.*` instruments come from a [WebRTC peer](./webrtc): open
 links by `wrpc.rtc.role` (`initiator` / `responder`), redials and knocks
@@ -139,9 +147,76 @@ that keeps recovering stays visible. Early HTTP/SSE refusals that happen
 before any client exists (CORS 403, 404, 405, capacity 429/503) are counted
 on `wrpc.server.calls` under the `<unknown>` target.
 
+`wrpc.client.heartbeat.rtt` is the client's only true latency signal that
+does not need a call to produce it: the app-level ping/pong is an exact round
+trip, and it keeps reporting while the application is idle. A heartbeat that
+timed out records no sample — there is no round trip to measure, and a value
+invented from the timeout would say more about your configuration than about
+the network — it is counted instead, as `timeout` on the same instrument's
+`ok`/`timeout` outcome.
+
+`wrpc.server.sessions` labels five operations — `create`, `restore`,
+`touch`, `destroy`, `evict`, `expire` — where it once only ever said
+`restore`. `evict` is the one to alert on: unlike `expire` it discards
+sessions that are still live, so it means signed-in users were signed out to
+stay under `maxSessions`.
+
+`wrpc.stream.direction` finally has both values. `send` is recorded only by
+the server: on the client the counter has nothing to feed and the bytes
+would only cost the browser bundle.
+
+`wrpc.broker.delivery.attempts` is recorded when a message SETTLES — on an
+ack or a dead-letter, never on a retry — so it is the distribution of how
+many deliveries each message took, not a triangle counting the same message
+once per attempt.
+
 Metric attributes deliberately stay low-cardinality: the method, the status,
 the transport. Packet ids and peer addresses go on spans, never on a metric
-series.
+series. `wrpc.server.queue.depth` carries **no** attribute at all, per
+procedure or otherwise: one series per procedure is a cardinality bomb, and
+the question it answers — "is this server queueing?" — is a whole-process
+one.
+
+## Queue saturation
+
+A call that waits for a concurrency slot spends that time inside
+`rpc.server.duration`, which makes a saturated queue and a slow handler look
+identical on a dashboard. They are opposite problems with opposite fixes:
+one wants a bigger `queue`, the other wants the handler looked at.
+
+`wrpc.server.queue.wait` separates them. It is the time between a call
+asking for a slot and getting one, sampled per queued call;
+`wrpc.server.queue.depth` is how many are waiting right now. A rising
+`wait` with a flat `rpc.server.duration` minus the wait is a capacity
+problem; the reverse is a handler problem.
+
+Both are recorded only when telemetry is on — with no meter there is not even
+a clock read on the path.
+
+## Units
+
+`rpc.server.duration` and `rpc.client.duration` are in **milliseconds**,
+while current OpenTelemetry semantic conventions specify seconds for RPC
+duration histograms. This is a deliberate, documented divergence rather than
+an oversight.
+
+Changing the unit under the same metric name is the worst shape a breaking
+change can take: nothing errors, no alert fires, and every existing
+dashboard silently becomes wrong by a factor of 1000. The `@experimental`
+note on the telemetry option covers *additions* to the metric set, not
+redefining a series already in use. If wrpc moves to seconds it will be
+under new instrument names, at a major version, with both published for one
+release.
+
+## A note on the gauges
+
+The five UpDownCounter-backed gauges (`connections`, `subscriptions`,
+`sse.channels`, `rooms`, `rtc.links`, `cluster.instances`, `queue.depth`)
+are incremented and decremented at lifecycle edges rather than observed from
+a registry. A missed decrement therefore leaks for the life of the process.
+The edges are latched where that risk is real, but if you see a gauge that
+never returns to zero on an idle server, that is the mechanism — report it
+rather than working around it.
 
 ## Trace context
 

@@ -1029,15 +1029,34 @@ export interface WrpcLogWriter {
 
 export interface WrpcSpan {
   setAttribute?(key: string, value: unknown): unknown;
-  addEvent?(name: string, attributes?: Record<string, unknown>): unknown;
-  recordException?(error: unknown): void;
-  setStatus?(status: { code: number; message?: string }): unknown;
-  end(): void;
+  // The optional parameters are `unknown`, not a narrower guess. A real
+  // OTel `Span.addEvent` takes `Attributes | TimeInput` there and a real
+  // `setStatus` takes a `SpanStatus`, and a structural view that describes
+  // them more narrowly than they are does not merely lose precision — it
+  // makes the genuine article UNASSIGNABLE, which is the one thing this
+  // view exists to allow. wrpc only ever calls these, never implements
+  // them, so nothing here needs the narrower shape.
+  addEvent?(name: string, attributes?: unknown, startTime?: unknown): unknown;
+  recordException?(error: unknown, time?: unknown): void;
+  setStatus?(status: unknown): unknown;
+  end(endTime?: unknown): void;
 }
 
 export interface WrpcTracer {
   startSpan?(name: string, options?: unknown): WrpcSpan;
-  startActiveSpan?<T>(name: string, options: unknown, fn: (span: WrpcSpan) => T): T;
+  /**
+   * A UNION of the two shapes, because wrpc calls both and a tracer
+   * implements one: with a parent context when the implementation declares
+   * four parameters, without one otherwise (a 3-argument implementation
+   * handed four arguments never runs its callback at all, so the arity is
+   * checked, not assumed). Declaring only the 3-argument form let a
+   * hand-written parented tracer type-check and then break at runtime; an
+   * overload pair would have demanded both shapes from one implementation,
+   * which no real tracer provides.
+   */
+  startActiveSpan?:
+    | (<T>(name: string, options: unknown, fn: (span: WrpcSpan) => T) => T)
+    | (<T>(name: string, options: unknown, parent: unknown, fn: (span: WrpcSpan) => T) => T);
 }
 
 export interface WrpcCounter {

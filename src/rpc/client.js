@@ -489,7 +489,7 @@ class Client extends Emitter {
     if (typeof id !== 'string' || id.length === 0 || id.length > 255) {
       throw new TypeError('createStream: generateId must return a string of at most 255 characters');
     }
-    const stream = new WrpcWritable(id, name, size, this.#transport);
+    const stream = new WrpcWritable(id, name, size, this.#transport, this.#otel);
     this.streams.set(id, stream);
     return stream;
   }

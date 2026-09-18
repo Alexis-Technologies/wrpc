@@ -388,6 +388,7 @@ class Cluster extends Emitter {
     const sig = envelope.sig;
     if (typeof sig !== 'string' || sig.length === 0) {
       this.#log.warn({ event: 'cluster.unsigned', from });
+      this.#otel.recordClusterVerification('unsigned');
       return false;
     }
     delete envelope.sig;
@@ -401,12 +402,14 @@ class Cluster extends Emitter {
       // siblings above and below both log, so an operator watching
       // `cluster.*` saw two of three reasons a node went quiet.
       this.#log.error({ err: error, event: 'cluster.verify', from });
+      this.#otel.recordClusterVerification('error');
       return false;
     }
     const a = Buffer.from(sig);
     const b = Buffer.from(expected);
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
       this.#log.warn({ event: 'cluster.badsig', from });
+      this.#otel.recordClusterVerification('badsig');
       return false;
     }
     return true;
