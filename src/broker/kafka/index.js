@@ -21,6 +21,14 @@
 
 const { createLoggerWriter } = require('../../logging.js');
 const { generateUUID } = require('../../runtime/node.js');
+const { resolveGenerateId } = require('../../utils.js');
+
+// An injected `generateId` is used VERBATIM for every id this adapter mints
+// — never truncated. Trimming a user's id would quietly weaken the
+// uniqueness they chose it for, and all wrpc knows about their generator is
+// that it answers a string. The cost is that a generator answering
+// characters a broker refuses in a consumer name, subject or queue name
+// fails at the driver, not here.
 const { TopicTails } = require('../tail.js');
 const { codedError, toText, toHeaders, encodeToken } = require('../ids.js');
 const {
@@ -91,7 +99,15 @@ const createKafkaBroker = (options = {}) => {
     replicationFactor = 1,
     backplane: backplaneOptions = {},
     maxRetryDelay = DEFAULT_MAX_RETRY_DELAY,
+    generateId = null,
   } = options;
+  // Strict: a new option, so a bad generator is refused at construction
+  // rather than producing a name the broker rejects at connect time.
+  const nextId = generateId === null ? generateUUID : resolveGenerateId(generateId, 'createKafkaBroker').generate;
+  // Two names the broker itself repeats in every log line and metric label
+  // it emits, so the DEFAULT stays short; an injected generator is used
+  // whole, per nextId above.
+  const shortName = generateId === null ? () => generateUUID().slice(0, 8) : nextId;
   if (!kafka || !isFunction(kafka.producer) || !isFunction(kafka.consumer) || !isFunction(kafka.admin)) {
     throw new TypeError('createKafkaBroker: options.kafka must be a KafkaJS-shaped client (producer/consumer/admin)');
   }
@@ -219,7 +235,7 @@ const createKafkaBroker = (options = {}) => {
       await ensureTopic(backplaneTopic, backplanePartitions);
       // A group per INSTANCE: every instance must see every envelope, which
       // is exactly what a shared group would prevent.
-      const consumer = await openConsumer(`${prefix}-bp-${generateUUID().slice(0, 8)}`, { fromBeginning: false });
+      const consumer = await openConsumer(`${prefix}-bp-${shortName()}`, { fromBeginning: false });
       await consumer.subscribe(subscribeArgs(flavor, [backplaneTopic], false));
       // Registered BEFORE run(): kafkajs' join event fires once.
       const joined = joinWatcher(flavor, consumer);
@@ -297,7 +313,7 @@ const createKafkaBroker = (options = {}) => {
     return { low, high };
   };
 
-  const readerGroup = () => `${prefix}-read-${generateUUID().slice(0, 8)}`;
+  const readerGroup = () => `${prefix}-read-${shortName()}`;
 
   // A seek right after a join can still land before the group is
   // initialized; the readers filter by offset anyway, so a failure here is

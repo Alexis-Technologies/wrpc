@@ -76,18 +76,19 @@ const server = new Server({
 });
 ```
 
-`instanceId` defaults to a fresh UUID per process. Setting it to something your
-orchestrator already knows makes [cluster](./cluster) presence, descriptors and
-logs readable — `node-1` instead of a UUID.
+`instanceId` defaults to an id minted by `generateId`. Setting it to something
+your orchestrator already knows makes [cluster](./cluster) presence,
+descriptors and logs readable — `node-1` instead of a UUID.
 
 It must not contain a `.`, because a client id is `<instanceId>.<generateId()>`
-and the dot is the separator an addressed command splits on. Restart detection
-does not depend on the id being fresh: every boot carries a new **epoch**.
+and the dot is the separator an addressed command splits on. That rule applies
+to a generated id too: a `generateId` answering `a.b` is refused the same way a
+hand-passed `instanceId` would be. Restart detection does not depend on the id
+being fresh: every boot carries a new **epoch**.
 
-## Client and packet ids
+## Identifiers
 
-`generateId` replaces the default UUID everywhere ids are minted — client ids,
-call ids, stream ids:
+`generateId` replaces the default UUID everywhere ids are minted:
 
 ```js
 let counter = 0;
@@ -96,13 +97,43 @@ const generateId = () => `${counter++}`;      // dense, short, per process
 new Server({ router, generateId, instanceId: 'node-1' });
 ```
 
-Two rules: it must return a **string of at most 255 characters**, and ids must
-be unique within an instance — the `instanceId` prefix is what makes them
-unique across the cluster. Short ids measurably shrink per-packet bytes on
+Two rules: it must return a **non-empty string of at most 255 characters**, and
+ids must be unique within an instance — the `instanceId` prefix is what makes
+them unique across the cluster. Short ids measurably shrink per-packet bytes on
 chatty connections; UUIDs are the safe default when you have not thought about
 it.
 
-The client takes the same option for its own call ids.
+The option is checked once, at construction, by calling it. That first id is
+not thrown away — it becomes the `instanceId` when you did not pass one — so a
+counter-based generator still starts where you expect.
+
+### What each generator owns
+
+| Id | Generator | Notes |
+| -- | --------- | ----- |
+| `instanceId`, client ids, context uuids, server stream ids, REST packet ids | `generateId` on the server | One option covers all of them |
+| Cluster boot epoch | `generateId` on the server | Fresh per boot; that is the point |
+| [SSE](./sse) channel id | `generateId` on the server | Server-minted and never read from the request, so holding one proves the server said it |
+| Packet, subscription and stream ids on the client | `generateId` on the [client](./client) | Also the [broker transport's](./brokers/rpc) session and correlation ids |
+| Peer ids and the signaling `instance` | `generateId` on [`wrpcSignaler`](./webrtc) / `PeerHost` | |
+| Consumer names, inboxes, message ids, group ids | `generateId` on each [broker adapter](./brokers) | Used verbatim — wrpc never truncates it |
+| **Session token** | **`sessions.generateToken`** | A credential, not a correlation id. Deliberately a separate option so that widening one never widens the other |
+| Subscription event ids | *not pluggable* | Monotonic by design: resume depends on their order |
+| Rooms/event-log epochs | `rooms.epoch`, or random per boot | Short by design — an epoch prefixes every event id |
+
+### When a generator is rejected
+
+A generator that is not a function, or that answers something other than a
+non-empty string of at most 255 characters, is refused. Options added after 1.0
+— SSE channels, the broker adapters — throw a `TypeError` at construction. The
+three that shipped *in* 1.0 (`Server`/`RpcServer`, the client, `PeerHost`)
+report it through the [logger](./logging) under `event: 'options.generateId'`
+and fall back to the default instead, because they used to ignore a bad value
+silently and turning that into a throw inside a major would break working
+deployments. **2.0 makes all of them throw.**
+
+The one-shot check cannot see a generator that only *sometimes* misbehaves, so
+stream ids are re-checked every time one is minted.
 
 ## Behind a proxy
 

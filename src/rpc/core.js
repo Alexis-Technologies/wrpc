@@ -1,7 +1,6 @@
 'use strict';
 
-const { Emitter, jsonParse, isCodec } = require('../utils.js');
-const { generateUUID } = require('../runtime/node.js');
+const { Emitter, jsonParse, isCodec, resolveGenerateId } = require('../utils.js');
 const { ServerTransport, buildHeaders, isOriginAllowed } = require('../transport.js');
 const { isInboundTransport } = require('./serverTransport.js');
 const { SessionManager } = require('./sessions.js');
@@ -151,7 +150,7 @@ class RpcServer extends Emitter {
       logger = globalThis.console,
       telemetry = null,
       backplane = null,
-      instanceId = generateUUID(),
+      instanceId = null,
       generateId = null,
       introspection = true,
       maxBatch = DEFAULT_MAX_BATCH,
@@ -173,12 +172,6 @@ class RpcServer extends Emitter {
     if (backplane && !isBackplane(backplane)) {
       throw new TypeError('RpcServer: options.backplane does not implement the backplane contract');
     }
-    // The dot separates the instance prefix from the rest of a client id
-    // (`<instanceId>.<generateId()>`), so an instance name carrying one
-    // would make every one of its client ids parse to the wrong address.
-    if (String(instanceId).includes('.')) {
-      throw new TypeError('RpcServer: options.instanceId must not contain "."');
-    }
     // Pluggable query-string codec (qs and friends). Structural: anything
     // with parse(str) -> object. The default is the prototype-safe
     // URLSearchParams path in parseParams; an injected parser takes over
@@ -198,8 +191,22 @@ class RpcServer extends Emitter {
     this.#sessions = new SessionManager(sessions, this.#log.child({ component: 'sessions' }));
     this.#cors = cors;
     this.#basePath = normalizeBasePath(basePath);
-    this.#instance = instanceId;
-    this.#generateId = typeof generateId === 'function' ? generateId : generateUUID;
+    // Resolved before #instance, because an omitted instanceId is minted BY
+    // the generator: a user who injected one gets it used for every id the
+    // server mints, the routing prefix included, not for all of them but one.
+    const ids = resolveGenerateId(generateId, 'RpcServer', this.#log);
+    this.#generateId = ids.generate;
+    this.#instance = instanceId ?? ids.first;
+    // The dot separates the instance prefix from the rest of a client id
+    // (`<instanceId>.<generateId()>`), so an instance name carrying one
+    // would make every one of its client ids parse to the wrong address.
+    // Checked after the mint, so a generator that answers a dotted id is
+    // refused by the same rule as a hand-passed one — and named as the
+    // option that actually produced it.
+    if (String(this.#instance).includes('.')) {
+      const source = instanceId === null ? 'generateId must not return' : 'options.instanceId must not contain';
+      throw new TypeError(`RpcServer: ${source} "."`);
+    }
     this.#querystring = querystring;
     // Two halves, two fields: #codec is the PACKET codec (ws/http/sse/worker
     // frames — a rest-only codec leaves packet mode JSON), #restCodec the
@@ -236,7 +243,16 @@ class RpcServer extends Emitter {
     // must never be enough to act as the channel's session.
     const channelKey = (headers) => this.#requestKey(headers);
     this.#sse =
-      sse === false ? null : new SseChannels({ ...sse, log: this.#sseLog, otel: this.#otel, addClient, channelKey });
+      sse === false
+        ? null
+        : new SseChannels({
+            generateId: this.#generateId,
+            ...sse,
+            log: this.#sseLog,
+            otel: this.#otel,
+            addClient,
+            channelKey,
+          });
   }
 
   #initRooms(backplane, clusterOptions, roomsOptions = {}) {
@@ -267,6 +283,10 @@ class RpcServer extends Emitter {
       instance: this.#instance,
       log: this.#roomsLog,
       linger: roomsOptions?.linger,
+      // The producer-restart marker a resume cursor is validated against.
+      // Accepted by RoomsBackplane all along; forwarded (and declared) only
+      // now, so a deployment that pins it across restarts finally can.
+      epoch: roomsOptions?.epoch,
       // Loss made visible: a jump in a publisher's sequence is logged and
       // counted, so a broker that drops envelopes shows up in dashboards
       // instead of in a bug report about a message nobody received.

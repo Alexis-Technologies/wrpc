@@ -58,6 +58,18 @@ export interface SseOptions {
   replay?: number;
   /** Comment-frame interval in ms; 0 disables. Default 15000. */
   heartbeat?: number;
+  /**
+   * Mints the channel id. The id is server-minted and never taken from the
+   * request, so holding one proves the server said it — replace the default
+   * uuid only with something at least as unguessable.
+   *
+   * An `RpcServer` passes its own `generateId` down, so setting it there
+   * covers channel ids too; this is the override for a standalone
+   * `SseChannels`. Strict: a value that is not a function, or a function
+   * that does not answer a non-empty string of at most 255 characters, is a
+   * TypeError at construction.
+   */
+  generateId?: () => string;
   /** The `retry:` value handed to the peer, in ms. Default 2000. */
   retry?: number;
   /** Byte budget for the replay buffer; evicts oldest first. Default 1 MiB. */

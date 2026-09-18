@@ -165,6 +165,26 @@ broker family adds one requirement the contract tests enforce: channel names
 are **literal**. A room called `room:*` must never become a wildcard
 subscription, and an adapter encodes names into whatever its broker allows.
 
+## Names the adapter mints
+
+Every adapter puts a few names of its own on the wire — a consumer name, a
+reply inbox, a consumer group, a message id — and each takes a `generateId`
+option to replace the default:
+
+```js
+createRedisBroker({ client, generateId: () => myUlid() });
+```
+
+Two things to know. The value is used **verbatim**: wrpc never truncates it,
+because trimming an id would quietly weaken the uniqueness you chose it for.
+And the alphabet is the broker's business, not wrpc's — a generator answering
+characters Redis refuses in a consumer name, NATS in a subject or RabbitMQ in
+a queue name fails at the driver, on connect, not here. Stick to
+`[A-Za-z0-9_-]` unless you know the broker better than that.
+
+The option is strict: a bad generator is a `TypeError` at construction. See
+[Identifiers](./production#identifiers) for the whole picture.
+
 ## Writing an adapter
 
 The contracts are executable. `tests/broker/{backplane,log,queue,direct}Contract.js`

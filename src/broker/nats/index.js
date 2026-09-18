@@ -27,6 +27,14 @@
 
 const { createLoggerWriter } = require('../../logging.js');
 const { generateUUID } = require('../../runtime/node.js');
+const { resolveGenerateId } = require('../../utils.js');
+
+// An injected `generateId` is used VERBATIM for every id this adapter mints
+// — never truncated. Trimming a user's id would quietly weaken the
+// uniqueness they chose it for, and all wrpc knows about their generator is
+// that it answers a string. The cost is that a generator answering
+// characters a broker refuses in a consumer name, subject or queue name
+// fails at the driver, not here.
 const { TopicTails } = require('../tail.js');
 const { codedError, toText, toBytes, toHeaders, encodeToken } = require('../ids.js');
 
@@ -62,7 +70,11 @@ const createNatsBroker = (options = {}) => {
     logger = globalThis.console,
     ackWait = DEFAULT_ACK_WAIT,
     stream: streamConfig = {},
+    generateId = null,
   } = options;
+  // Strict: a new option, so a bad generator is refused at construction
+  // rather than producing a name the broker rejects at connect time.
+  const nextId = generateId === null ? generateUUID : resolveGenerateId(generateId, 'createNatsBroker').generate;
   if (!nc || !isFunction(nc.publish) || !isFunction(nc.subscribe)) {
     throw new TypeError('createNatsBroker: options.nc must be a NATS connection (publish/subscribe/...)');
   }
@@ -516,7 +528,7 @@ const createNatsBroker = (options = {}) => {
   const addressSubject = (address) => `${prefix}.direct.${token(address)}`;
 
   const inbox = () => {
-    const name = isFunction(createInbox) ? createInbox() : `_INBOX.${generateUUID()}`;
+    const name = isFunction(createInbox) ? createInbox() : `_INBOX.${nextId()}`;
     return name;
   };
 

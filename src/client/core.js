@@ -6,7 +6,15 @@
 // Worker proxy in ./proxy.js; ../client.js is the barrel that assembles
 // them, so require paths and the browser field are unchanged.
 
-const { Emitter, jsonParse, isCodec, toKebab, backoffDelay, createEventStream } = require('../utils.js');
+const {
+  Emitter,
+  jsonParse,
+  isCodec,
+  toKebab,
+  backoffDelay,
+  createEventStream,
+  resolveGenerateId,
+} = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { chunkDecode } = require('../chunks.js');
 const { WrpcReadable, WrpcWritable } = require('../streams.js');
@@ -579,7 +587,12 @@ class WrpcClient extends Emitter {
     if (random) this.#random = random; // deterministic jitter in tests
     // Packet, subscription and stream ids; uuid v4 unless the app brings
     // its own (cuid/ulid/a test counter). Correlation ids, not secrets.
-    if (typeof generateId === 'function') this.#generateId = generateId;
+    // Non-strict: the option shipped in 1.0 silently ignoring a bad value,
+    // so it logs and falls back instead of throwing. Resolved after #log so
+    // the complaint has somewhere to go.
+    if (generateId !== undefined && generateId !== null) {
+      this.#generateId = resolveGenerateId(generateId, 'WrpcClient', this.#log).generate;
+    }
     this.#reconnect = normalizeReconnect(options);
     this.#heartbeat = normalizeHeartbeat(options);
     this.#batch = normalizeBatch(options);
@@ -728,6 +741,11 @@ class WrpcClient extends Emitter {
     // to be able to say so where the application can see it.
     if (this.#codec) this.#transport.codec = this.#codec;
     this.#transport.log = this.#log;
+    // A transport that mints ids of its own (the broker transport's session
+    // and correlation ids) gets the generator this client already resolved,
+    // rather than re-resolving the same option in a stricter mode and
+    // disagreeing with it about what a bad value means.
+    this.#transport.generateId = this.#generateId;
     const bind = (event, handler) => {
       this.#boundHandlers ??= [];
       this.#boundHandlers.push([event, handler]);

@@ -13,6 +13,18 @@
 const { MemoryBackplane, DEFAULT_PREFIX } = require('../scaling/memory.js');
 const { createLoggerWriter } = require('../logging.js');
 const { generateUUID } = require('../runtime/node.js');
+const { resolveGenerateId } = require('../utils.js');
+
+// The default for names that go on the wire to a broker: short, because a
+// consumer name or an inbox is repeated in every log line and metric label
+// the broker itself emits, and alphabet-safe for all four brokers.
+//
+// An injected `generateId` is used VERBATIM — never truncated. Trimming a
+// user's id would quietly weaken the uniqueness they chose it for, and the
+// only thing wrpc knows about their generator is that it answers a string.
+// The cost is that a generator answering characters a broker refuses in a
+// consumer name, subject or queue name fails at the driver, not here.
+const shortId = () => generateUUID().replace(/-/g, '').slice(0, 12);
 const { codedError, toText, toHeaders } = require('./ids.js');
 
 const DEFAULT_LOG_ENTRIES = 10_000;
@@ -39,8 +51,21 @@ class MemoryBroker {
   #addresses = new Map(); // address -> { plain: Set, groups: Map(group -> { members, cursor }) }
   #counter = 0;
 
-  constructor({ prefix = DEFAULT_PREFIX, logger = globalThis.console, epoch = null, retention = {} } = {}) {
-    this.#epoch = epoch === null ? generateUUID().replace(/-/g, '').slice(0, 12) : String(epoch);
+  constructor({
+    prefix = DEFAULT_PREFIX,
+    logger = globalThis.console,
+    epoch = null,
+    generateId = null,
+    retention = {},
+  } = {}) {
+    // The epoch is the only id this broker mints at random (message ids and
+    // inboxes are counters off it), so `generateId` feeds exactly that.
+    this.#epoch =
+      epoch === null
+        ? generateId === null
+          ? shortId()
+          : resolveGenerateId(generateId, 'MemoryBroker').first
+        : String(epoch);
     if (!/^[A-Za-z0-9_-]{1,64}$/.test(this.#epoch)) {
       throw new TypeError('MemoryBroker: epoch must be 1-64 characters of [A-Za-z0-9_-]');
     }

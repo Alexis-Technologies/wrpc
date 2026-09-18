@@ -127,13 +127,17 @@ class Cluster extends Emitter {
     this.#backplane = backplane;
     this.#otel = otel ?? DISABLED;
     this.#instance = instance;
-    // The boot marker. instanceId may be STABLE across restarts ('node-1');
-    // the epoch never is, which is how a receiver tells "restarted, replace
-    // its counters" from "same process, merge".
-    this.#epoch = generateUUID();
     this.#local = local;
     this.#log = createLoggerWriter(log);
+    // RpcServer hands down a generator it already resolved and probed, so
+    // this is a trust, not a second validation — an id-per-connection server
+    // must not pay a probe per Cluster either.
     this.#generateId = typeof generateId === 'function' ? generateId : generateUUID;
+    // The boot marker. instanceId may be STABLE across restarts ('node-1');
+    // the epoch never is, which is how a receiver tells "restarted, replace
+    // its counters" from "same process, merge". It comes from the same
+    // generator as every other id so one injection covers the whole server.
+    this.#epoch = this.#generateId();
     const interval = options.presenceInterval > 0 ? options.presenceInterval : DEFAULT_PRESENCE_INTERVAL;
     this.#presenceInterval = interval;
     this.#presenceTimeout = options.presenceTimeout > 0 ? options.presenceTimeout : interval * 3;

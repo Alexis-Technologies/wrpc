@@ -42,7 +42,7 @@ with every adapter; the network half belongs to the shell.
 | `cors` | `null` | See [CORS](#cors) below. |
 | `backplane` | `null` | Carries room events between instances — see [Scaling](./scaling). |
 | `instanceId` | a uuid | Identifies this instance on the backplane. |
-| `generateId` | uuid v4 | Context uuids, server stream ids, REST packet ids — bring your own (cuid/ulid). |
+| `generateId` | uuid v4 | Every id the server mints — `instanceId`, client ids, context uuids, stream ids, REST packet ids, SSE channel ids, the cluster epoch. Bring your own (cuid/ulid). See [Identifiers](./production#identifiers). |
 | `introspection` | `true` | `system/introspect` exposure: `true` public, `'session'` gated, `false` off. |
 | `maxBatch` | `128` | Packets accepted in one [batch frame](./client#batching). |
 | `maxSubscriptions` | `256` | Concurrent [subscriptions](./subscriptions) per client. |

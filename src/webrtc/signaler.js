@@ -44,8 +44,7 @@
 // remembered here and attached to send(), so a relay never has to resolve
 // a peer id on the hot path.
 
-const { Emitter } = require('../utils.js');
-const { generateUUID } = require('../runtime/node.js');
+const { Emitter, resolveGenerateId } = require('../utils.js');
 
 const SIGNAL_MESSAGE_TYPES = Object.freeze(['description', 'candidate', 'close', 'connect']);
 
@@ -105,14 +104,12 @@ class WrpcSignaler extends Emitter {
     if (!isWrpcClientLike(client)) {
       throw new TypeError('wrpcSignaler: client must be a WrpcClient (call, sendEvent, use, on, off)');
     }
-    const { unit = 'signaling', identity = null, generateId = generateUUID } = options;
+    const { unit = 'signaling', identity = null, generateId = null } = options;
     if (typeof unit !== 'string' || unit.length === 0) throw new TypeError('wrpcSignaler: unit must be a unit name');
     if (identity !== null && !isId(identity) && !isFunction(identity)) {
       throw new TypeError('wrpcSignaler: identity must be a non-empty string or a function');
     }
-    if (!isFunction(generateId)) throw new TypeError('wrpcSignaler: generateId must be a function');
-    const instance = generateId();
-    if (!isId(instance)) throw new TypeError('wrpcSignaler: generateId must return a non-empty string');
+    const { first: instance } = resolveGenerateId(generateId, 'wrpcSignaler');
     this.#client = client;
     this.#unit = unit;
     this.#identity = identity;

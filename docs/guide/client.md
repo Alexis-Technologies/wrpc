@@ -98,7 +98,7 @@ await WrpcClient.connect(url, {
 | `meta` | — | Connection-phase metadata (unvalidated); per-call twin via `{ meta }` / `withMeta()` — see [Metadata](./metadata). |
 | `fetch` | global `fetch` | http/sse only — see [Injecting `fetch`](#injecting-fetch-http-sse). |
 | `random` | `Math.random` | Jitter source; injectable so tests can pin the schedule. |
-| `generateId` | uuid v4 | Packet/subscription/stream ids — bring your own (cuid/ulid/a test counter). Correlation ids, not secrets; stream ids must stay within 255 UTF-8 bytes. |
+| `generateId` | uuid v4 | Packet/subscription/stream ids, and the [broker transport's](./brokers/rpc) session and correlation ids — bring your own (cuid/ulid/a test counter). Correlation ids, not secrets; every id must stay within 255 UTF-8 bytes. |
 | `protocols` | `['wrpc.v1']` | WebSocket subprotocols to offer; the server echoes the wire revision back. `[]` offers nothing. |
 | `logger` | off | A Console or pino-shaped logger; observes errors in addition to the `'error'` event. |
 | `telemetry` | off | OTel tracer/meter/api — see [Telemetry](./telemetry). |

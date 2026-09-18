@@ -179,6 +179,10 @@ class Client extends Emitter {
     this.maxCalls = maxCalls;
     // Context uuids and server-side stream ids; uuid v4 unless the app
     // brings its own (cuid/ulid/a test counter) — see RpcServerOptions.
+    // A Client built by a host receives a generator that host already
+    // resolved and probed, so this is a trust rather than a second
+    // validation: probing here would cost one id per CONNECTION, which a
+    // connection storm would feel. A standalone Client falls back.
     this.generateId = typeof generateId === 'function' ? generateId : generateUUID;
     // Instance-prefixed, so the id IS the address: a cluster command for
     // this client goes straight to this instance's channel, no broadcast.

@@ -13,6 +13,51 @@ narrower promise — see
 
 ### Added
 
+**Pluggable identifiers, everywhere an id is minted**
+- `generateId` had shipped on the server, the client, the cluster, a peer
+  host and the signaler, and then fourteen other places went on calling
+  `randomUUID` directly — including the server's own `instanceId`, the SSE
+  channel id and the broker RPC session id. One resolver in `src/utils.js`
+  now backs every one of them, and the ids that had no seam got one.
+- The **SSE channel id** is the one that mattered most: it is peer-visible,
+  it keys the channel registry, and holding one is most of what proves a
+  request belongs to a channel. An `RpcServer` passes its own `generateId`
+  down, so a server that injected a generator now covers channel ids too;
+  `SseChannels` takes the option directly when driven standalone.
+- The **broker RPC session id** is the server's key for a connection's frame
+  state, so a guessable one lets a sender inject frames into somebody else's
+  session. The broker transport now mints it with the owning client's
+  generator, handed down the same seam as `codec` and `log` — one option,
+  resolved once, rather than the same option resolved twice in two modes.
+- `instanceId` on `RpcServer` and `PeerHost` is minted by `generateId` when
+  omitted, instead of a `randomUUID` the option could not reach. The "must
+  not contain `.`" rule now covers a generated id too, and says which of the
+  two options produced the offending one.
+- Each broker adapter (`redis`, `nats`, `amqp`, `kafka`) and `MemoryBroker`
+  takes a `generateId` for the names it puts on the wire — consumer names,
+  inboxes, groups, message ids. An injected generator is used **verbatim**:
+  the two sites that shortened a uuid still shorten the default, never a
+  value you supplied.
+- `rooms.epoch` is declared and forwarded. `RoomsBackplane` had accepted it
+  all along, but `RpcServer` passed only `linger`, so it was unreachable
+  from the public surface.
+- Validation is uniform and happens once: a generator must be a function
+  answering a non-empty string of at most 255 characters — the binary chunk
+  header's own limit, now applied to every id rather than only to stream
+  ids. The check calls the generator, and that first id becomes the
+  `instanceId` rather than being discarded, so a counter-based generator
+  still starts where you expect. The per-stream check stays: it catches a
+  generator that only *sometimes* answers something too long.
+
+### Changed
+
+- **Deprecated behaviour.** `generateId` on `RpcServer`/`Server`, on
+  `WrpcClient` and on `PeerHost` used to ignore a bad value silently. It is
+  now reported through the logger as `event: 'options.generateId'` and
+  replaced with the default. **2.0 will make it a `TypeError`**, as it
+  already is on the options added since — `SseChannels` and the broker
+  adapters — which have no compatibility to keep.
+
 **Message brokers, part 9: benchmarks and the finished guide**
 - `bench/broker.js` measures what the bindings cost on top of a broker, on
   the in-process `MemoryBroker` so the numbers are wrpc's own overhead and

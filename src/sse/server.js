@@ -1,7 +1,7 @@
 'use strict';
 
 const { ServerTransport } = require('../transport.js');
-const { generateUUID } = require('../runtime/node.js');
+const { resolveGenerateId } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
 const { UNKNOWN_TARGET } = require('../rpc/dispatcher.js');
 
@@ -207,9 +207,22 @@ class SseChannels {
   #clientAddress;
   #log;
   #otel;
+  #generateId;
 
-  constructor({ addClient, channelKey = null, log = globalThis.console, otel = null, ...options } = {}) {
+  constructor({
+    addClient,
+    channelKey = null,
+    log = globalThis.console,
+    otel = null,
+    generateId = null,
+    ...options
+  } = {}) {
     this.#addClient = addClient;
+    // Strict, unlike the 1.0 options: this one is new, so a bad generator
+    // is a TypeError here rather than a channel id that fails later.
+    // The core passes its own, so one `generateId` on the server covers
+    // channel ids too.
+    this.#generateId = resolveGenerateId(generateId, 'SseChannels').generate;
     // Extracts the identity a request presents (the session token from its
     // cookie); injected by the core, which owns the SessionManager. Without
     // one every request presents the same identity and only the unguessable
@@ -363,7 +376,7 @@ class SseChannels {
   // the server said it, and the cookie's token is captured as the key every
   // later request must present again.
   #create(call) {
-    const channelId = generateUUID();
+    const channelId = this.#generateId();
     // The capacity key comes from the seam; the transport keeps the raw
     // TCP peer, which is what client.meta reports.
     const address = this.#clientAddress(call);

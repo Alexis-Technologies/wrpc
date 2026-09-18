@@ -61,6 +61,14 @@ class ClientBrokerTransport extends ClientTransport {
   #unconfirmed = 0;
   #welcome = null;
   #generation = 0;
+  // Correlation ids AND the session id. The session id is the key the server
+  // holds this connection's frame state under, so guessing one lets a sender
+  // inject frames into somebody else's session — which is why it is worth
+  // being able to replace the default with a generator of known strength.
+  // `generateId` is assigned by the owning WrpcClient (already resolved from
+  // its own option) the way `codec` and `log` are; a transport driven
+  // standalone falls back.
+  generateId = generateUUID;
 
   async open(options = {}) {
     if (this.active) return;
@@ -94,7 +102,7 @@ class ClientBrokerTransport extends ClientTransport {
   }
 
   async #handshake(generation) {
-    this.#session = generateUUID();
+    this.#session = this.generateId();
     this.#seq = 0;
     this.#expectSeq = 1;
     this.#unconfirmed = 0;
@@ -208,7 +216,7 @@ class ClientBrokerTransport extends ClientTransport {
     this.#direct
       .send(this.#address, data, {
         headers,
-        correlationId: generateUUID(),
+        correlationId: this.generateId(),
         replyTo: this.#inbox,
         timeout: this.#requestTimeout,
       })

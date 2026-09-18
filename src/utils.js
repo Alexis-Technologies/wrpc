@@ -1,5 +1,7 @@
 'use strict';
 
+const { generateUUID } = require('./runtime/node.js');
+
 // Every emit() answers with a promise, and a listener's SYNCHRONOUS throw has
 // to become a rejection: `void emitter.emit('close')` is the house style, and a
 // throw escaping it would land in a socket handler. The async-arrow wrapper on
@@ -382,4 +384,64 @@ const KEBAB_ACRONYM = /([A-Z]+)([A-Z][a-z])/g;
 const KEBAB_BOUNDARY = /([a-z0-9])([A-Z])/g;
 const toKebab = (key) => key.replace(KEBAB_ACRONYM, '$1-$2').replace(KEBAB_BOUNDARY, '$1-$2').toLowerCase();
 
-module.exports = { Emitter, jsonParse, isCodec, toKebab, Semaphore, backoffDelay, EventStream, createEventStream };
+// One resolver for every `generateId` option in the package. The three
+// call-site spellings this replaces had drifted — one threw, one fell back
+// silently, one assigned only when the value happened to be a function —
+// so a user who mistyped the option learned about it in three different
+// ways, or in none.
+//
+// `strict` is the mode a NEW option takes: a bad generator is a TypeError at
+// construction. The options that shipped in 1.0 (`RpcServer`, `WrpcClient`,
+// `PeerHost`) stay non-strict — they silently ignored a bad value, and
+// turning that into a throw inside a major is the kind of break the
+// stability policy exists to prevent. They log an error instead and fall
+// back, and 2.0 is where they join the strict half.
+//
+// The generator is PROBED once here rather than trusted: one that answers a
+// number or an empty string otherwise produces ids that fail much later, on
+// the wire, as a malformed packet. The 255-character cap is the binary chunk
+// header's own limit (see createStream in src/client/core.js), applied to
+// every id so one generator cannot be valid for calls and invalid for
+// streams.
+//
+// The probe's id comes back as `first` rather than being thrown away, and
+// every caller that needs an id AT construction — a server's instanceId, a
+// signaler's instance — uses it. That is what keeps the probe free: a
+// counter-based generator still starts at 1, and "the instance is generated
+// once" stays true. A caller with no such id discards `first` and pays one.
+//
+// Returning a pair rather than a self-replacing wrapper is deliberate: the
+// generator runs per call packet, and a wrapper would put a branch on that
+// path forever to save one id at boot.
+const resolveGenerateId = (value, label, log = null) => {
+  const fail = (message) => {
+    const error = new TypeError(`${label}: generateId ${message}`);
+    if (log === null) throw error;
+    log.error({ event: 'options.generateId', err: error });
+    return { generate: generateUUID, first: generateUUID() };
+  };
+  if (value === null || value === undefined) return { generate: generateUUID, first: generateUUID() };
+  if (typeof value !== 'function') return fail('must be a function');
+  let first;
+  try {
+    first = value();
+  } catch (error) {
+    return fail(`threw when called: ${error.message}`);
+  }
+  if (typeof first !== 'string' || first.length === 0 || first.length > 255) {
+    return fail('must return a non-empty string of at most 255 characters');
+  }
+  return { generate: value, first };
+};
+
+module.exports = {
+  Emitter,
+  jsonParse,
+  isCodec,
+  toKebab,
+  Semaphore,
+  backoffDelay,
+  EventStream,
+  createEventStream,
+  resolveGenerateId,
+};

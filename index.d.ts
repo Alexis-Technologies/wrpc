@@ -93,6 +93,13 @@ export interface ClusterOptions {
 
 export interface RoomsOptions {
   /**
+   * The producer-restart marker every backplane envelope carries, so a
+   * receiver can tell "this instance restarted, its sequence began again"
+   * from a real gap. Random per boot by default, which is what you want
+   * unless a deployment pins it deliberately across restarts.
+   */
+  epoch?: string;
+  /**
    * How long an emptied room's backplane channel stays subscribed, in ms —
    * the grace window that absorbs reconnect churn for single-member rooms
    * and keeps the between-subscriptions loss window shut for the common
@@ -254,13 +261,27 @@ export interface RpcServerOptions {
    */
   backplane?: Backplane | null;
   /**
-   * Identifies this instance on the backplane; a uuid by default. Must not
-   * contain '.' — it prefixes every client id (`<instanceId>.<id>`).
+   * Identifies this instance on the backplane; minted by `generateId` when
+   * omitted. Must not contain '.' — it prefixes every client id
+   * (`<instanceId>.<id>`), and a `generateId` that returns one is refused
+   * by the same rule.
    */
   instanceId?: string;
   /**
-   * Context uuids, server-side stream ids and synthetic REST packet ids;
-   * uuid v4 unless the app brings its own. Correlation ids, not secrets.
+   * Every id this server mints: the `instanceId` above, client ids, context
+   * uuids, server-side stream ids, synthetic REST packet ids, SSE channel
+   * ids and the cluster's boot epoch. uuid v4 unless the app brings its own
+   * (cuid/ulid/a test counter). Correlation ids, not secrets — a session
+   * token has its own generator, `sessions.generateToken`.
+   *
+   * Validated once at construction: it must be a function answering a
+   * non-empty string of at most 255 characters (the binary chunk header's
+   * own limit). The check consumes one id, which becomes the `instanceId`
+   * rather than being discarded.
+   *
+   * @deprecated-behaviour A non-function is reported through the logger and
+   * replaced with the default. 2.0 makes it a TypeError, as it already is
+   * on the options added since (SSE channels, the broker adapters).
    */
   generateId?: () => string;
   /**

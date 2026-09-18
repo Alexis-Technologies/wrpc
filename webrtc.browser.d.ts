@@ -269,6 +269,15 @@ export interface PeerHostOptions {
   router: Router;
   codec?: WrpcCodec | null;
   logger?: WrpcLogger | boolean;
+  /**
+   * Every id this host mints: its `instanceId` when one is not given, the
+   * per-peer client ids, context uuids and stream ids. uuid v4 by default.
+   * Validated once at construction — a function answering a non-empty
+   * string of at most 255 characters.
+   *
+   * @deprecated-behaviour A non-function is reported through the logger and
+   * replaced with the default; 2.0 makes it a TypeError.
+   */
   generateId?: (() => string) | null;
   /** Merge `system/introspect` in (default true); false leaves the router as is. */
   introspection?: boolean;

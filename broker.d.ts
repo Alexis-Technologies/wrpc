@@ -162,6 +162,14 @@ export declare function isBrokerDirect(value: unknown): value is BrokerDirect;
 export declare function isBackplane(value: unknown): value is Backplane;
 
 export interface MemoryBrokerOptions {
+  /**
+   * Mints every id this adapter puts on the wire — in practice just the `epoch`, since message ids and inboxes are counters off it. Used
+   * VERBATIM — wrpc never truncates it, so a generator answering characters
+   * the broker refuses in a name fails at the driver, not here.
+   * Strict: a non-function, or a function that does not answer a non-empty
+   * string of at most 255 characters, is a TypeError at construction.
+   */
+  generateId?: () => string;
   /** Backplane channel namespace; default 'wrpc'. */
   prefix?: string;
   /** Defaults to the global console; `false` silences the broker. */
@@ -366,6 +374,14 @@ export declare class ClientBrokerTransport {
   persistent: boolean;
   heartbeat: boolean;
   mode: 'stateless' | 'session';
+  /**
+   * Mints the session id and per-request correlation ids. Assigned by the
+   * owning `WrpcClient` from its own `generateId` option, the way `codec`
+   * and `log` are; set it yourself only when driving this transport
+   * standalone. The session id is the key the server holds this
+   * connection's frame state under.
+   */
+  generateId: () => string;
   open(options?: {
     broker: Broker | BrokerDirect;
     mode?: 'stateless' | 'session';

@@ -20,6 +20,14 @@ export interface KafkaClient {
 }
 
 export interface KafkaBrokerOptions {
+  /**
+   * Mints every id this adapter puts on the wire — the backplane and reader consumer group ids. Used
+   * VERBATIM — wrpc never truncates it, so a generator answering characters
+   * the broker refuses in a group id fails at the driver, not here.
+   * Strict: a non-function, or a function that does not answer a non-empty
+   * string of at most 255 characters, is a TypeError at construction.
+   */
+  generateId?: () => string;
   kafka: KafkaClient;
   /** Detected from the client; force it when the detection is wrong. */
   flavor?: 'kafkajs' | 'confluent';

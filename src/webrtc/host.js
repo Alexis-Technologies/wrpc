@@ -25,10 +25,9 @@
 // access 'public' procedures answer, and authorization is the
 // application's, in hooks, from `context.meta.data.peer`.
 
-const { Emitter, isCodec } = require('../utils.js');
+const { Emitter, isCodec, resolveGenerateId } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createServerTelemetry } = require('../telemetry/server.js');
-const { generateUUID } = require('../runtime/node.js');
 const { defineRouter, procedure, runHooksSafe } = require('../rpc/router.js');
 const { RoomRegistry, Broadcast } = require('../rpc/rooms.js');
 const { Client, DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_CALLS, buildMeta } = require('../rpc/client.js');
@@ -85,13 +84,22 @@ class PeerHost extends Emitter {
     this.#otel = createServerTelemetry(telemetry);
     this.#roomsLog = this.#log.child({ component: 'rooms' });
     this.#codec = codec && typeof codec.encode === 'function' && typeof codec.decode === 'function' ? codec : null;
-    this.#generateId = typeof generateId === 'function' ? generateId : generateUUID;
+    const ids = resolveGenerateId(generateId, 'PeerHost', this.#log);
+    this.#generateId = ids.generate;
     this.#metaMax = Number.isInteger(metaMaxBytes) && metaMaxBytes > 0 ? metaMaxBytes : DEFAULT_META_MAX;
     this.#limits = { maxBatch, maxSubscriptions, maxCalls };
     this.#trust = trust;
     // The prefix of every client id here; a uuid has no '.', so the id
-    // parses like a server's would (instanceOfClientId).
-    this.#instance = instanceId ?? generateUUID();
+    // parses like a server's would (instanceOfClientId). Minted by the
+    // generator, so an injected one owns this id like it owns the rest.
+    this.#instance = instanceId ?? ids.first;
+    if (String(this.#instance).includes('.')) {
+      const source =
+        instanceId === null || instanceId === undefined
+          ? 'generateId must not return'
+          : 'options.instanceId must not contain';
+      throw new TypeError(`PeerHost: ${source} "."`);
+    }
     this.#router = this.#withIntrospection(router, introspection);
     if (this.#codec && this.#router.hasSerializers) {
       throw new TypeError('PeerHost: options.codec and compiled response serializers are mutually exclusive');

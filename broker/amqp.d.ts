@@ -16,6 +16,14 @@ export interface AmqpConnection {
 }
 
 export interface AmqpBrokerOptions {
+  /**
+   * Mints every id this adapter puts on the wire — message ids and direct inbox queue names. Used
+   * VERBATIM — wrpc never truncates it, so a generator answering characters
+   * the broker refuses in a queue name fails at the driver, not here.
+   * Strict: a non-function, or a function that does not answer a non-empty
+   * string of at most 255 characters, is a TypeError at construction.
+   */
+  generateId?: () => string;
   connection: AmqpConnection;
   /** Exchange, queue and routing-key namespace; default 'wrpc'. */
   prefix?: string;

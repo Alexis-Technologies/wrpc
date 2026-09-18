@@ -22,6 +22,14 @@ export interface NatsConnection {
 }
 
 export interface NatsBrokerOptions {
+  /**
+   * Mints every id this adapter puts on the wire — the direct inbox subject, when `createInbox` is not injected. Used
+   * VERBATIM — wrpc never truncates it, so a generator answering characters
+   * the broker refuses in a subject fails at the driver, not here.
+   * Strict: a non-function, or a function that does not answer a non-empty
+   * string of at most 255 characters, is a TypeError at construction.
+   */
+  generateId?: () => string;
   nc: NatsConnection;
   /** The `headers()` factory — a package export, not a method on the connection. */
   headers: () => any;

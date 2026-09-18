@@ -28,6 +28,14 @@
 const { createRedisAdapter } = require('../../scaling/redis.js');
 const { createLoggerWriter } = require('../../logging.js');
 const { generateUUID } = require('../../runtime/node.js');
+const { resolveGenerateId } = require('../../utils.js');
+
+// An injected `generateId` is used VERBATIM for every id this adapter mints
+// — never truncated. Trimming a user's id would quietly weaken the
+// uniqueness they chose it for, and all wrpc knows about their generator is
+// that it answers a string. The cost is that a generator answering
+// characters a broker refuses in a consumer name, subject or queue name
+// fails at the driver, not here.
 const { TopicTails } = require('../tail.js');
 const { codedError, toText, toBytes, toHeaders, encodeToken } = require('../ids.js');
 
@@ -102,7 +110,15 @@ const createRedisBroker = (options = {}) => {
     claimIdleMs = DEFAULT_CLAIM_IDLE_MS,
     maxLen = 0,
     inboxTtl = DEFAULT_INBOX_TTL_MS,
+    generateId = null,
   } = options;
+  // Strict: a new option, so a bad generator is refused at construction
+  // rather than producing a name the broker rejects at connect time.
+  const nextId = generateId === null ? generateUUID : resolveGenerateId(generateId, 'createRedisBroker').generate;
+  // Two names the broker itself repeats in every log line and metric label
+  // it emits, so the DEFAULT stays short; an injected generator is used
+  // whole, per nextId above.
+  const shortName = generateId === null ? () => generateUUID().slice(0, 8) : nextId;
   checkClient(client, 'createRedisBroker');
   if (connect !== null && !isFunction(connect)) {
     throw new TypeError('createRedisBroker: options.connect must be a function returning a new client');
@@ -321,7 +337,7 @@ const createRedisBroker = (options = {}) => {
     if (!Number.isInteger(prefetch) || prefetch <= 0) {
       throw new TypeError('redis queue.consume: prefetch must be a positive integer');
     }
-    const consumerName = `wrpc-${generateUUID().slice(0, 8)}`;
+    const consumerName = `wrpc-${shortName()}`;
     const stream = queueKey(name);
     await ensureGroup(name, group);
     const connection = spawn();
@@ -704,7 +720,7 @@ const createRedisBroker = (options = {}) => {
     backplane,
     log: Object.freeze({ name: 'redis', append, read, parseId }),
     queue: Object.freeze({ name: 'redis', produce, consume }),
-    direct: Object.freeze({ name: 'redis', inbox: () => `${prefix}.inbox.${generateUUID()}`, listen, send }),
+    direct: Object.freeze({ name: 'redis', inbox: () => `${prefix}.inbox.${nextId()}`, listen, send }),
     close,
   };
 };
