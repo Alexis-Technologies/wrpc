@@ -89,6 +89,67 @@ const send = procedure({
 The entry it writes already carries `callId` and `peer`, so a single call is
 greppable end to end without threading an id through your own code.
 
+## Event catalogue
+
+`event` is the field to build alerts on, so here is what the server emits,
+by component. This is not every line — handlers add their own through
+`context.log` — but it is every line wrpc writes on a path an operator would
+want an alert for.
+
+| `event` | Level | Means |
+| ------- | ----- | ----- |
+| `call.unknown` | warn | A call for a method this router does not have — a stale client, or a typo |
+| `call.duplicate` | warn | Two in-flight calls with one id: a `generateId` that repeats, or a retry that reused one |
+| `call.capacity` | debug | `maxCalls` reached on one connection |
+| `call.draining` | info | Refused because the server is shutting down |
+| `packet.malformed` | warn | A frame that would not parse |
+| `packet.unknown` | warn | Valid JSON that is not a packet — version skew, or somebody else's client |
+| `batch.refused` | debug | A batch outside `1..maxBatch` |
+| `subscribe.refused` | warn | A subscription refused before it started |
+| `ws.frame`, `ws.protocol`, `ws.invalid-utf8` | warn | A peer's frame violated the protocol; the connection was closed |
+| `ws.too-big`, `ws.overflow`, `ws.backpressure` | warn | A configured limit closed the connection — the entry names the limit |
+| `ws.inflate` | warn | permessage-deflate failed, or the inflated message was too big |
+| `uws.dropped` | error | uWebSockets.js discarded an outbound frame: a hole in the stream |
+| `session.destroy`, `session.save`, `session.touch` | error | The session store rejected an operation |
+| `session.evict` | warn | Live sessions dropped for capacity — signed-in users signed out |
+| `session.corrupt` | warn | A stored session would not parse. **Never carries the token** |
+| `backplane.gap`, `backplane.redis` | warn/error | Envelopes lost between instances; a backplane client failed |
+| `cluster.unsigned`, `cluster.badsig`, `cluster.verify` | warn/error | The three ways envelope authentication fails |
+| `broker.dead` | warn | A message exhausted its retries |
+| `broker.evict` | warn | The per-token client cache is thrashing; in-flight calls were released |
+| `broker.feed.resume` | warn/debug | A resume token was refused. `reason: 'signature'` means it was **tampered with** |
+| `broker.feed.gap` | info | A subscriber fell behind retention; the snapshot hook ran |
+| `wt.attach`, `wt.source` | error | A WebTransport session could not be attached |
+| `mesh.dial` | debug | A mesh edge never formed |
+
+### Why some refusals are `debug`
+
+`call.capacity` and `batch.refused` are reachable by any peer, in a loop,
+without authenticating. Logging those at `warn` turns a refused flood into a
+log-pipeline flood — a worse outage than the one being prevented. They go to
+`debug`, which a Console writer drops outright and a structured logger's own
+level decides. The codes that mean something is genuinely wrong stay at
+`warn`.
+
+## What is deliberately not logged
+
+Four places write no lines on purpose, and should stay that way:
+
+- `src/query/` and `src/auth/` **require nothing** — that is what keeps them
+  around a kilobyte and browser-safe. Pulling the logger in would break a
+  stated invariant for a handful of lines.
+- Stream chunking and WebRTC framing run **per chunk and per frame**, under a
+  bundle-size budget. A line there is a firehose and bytes nobody asked for.
+- The telemetry writers swallow every error they meet. That is not an
+  oversight: telemetry must never be the reason a request fails, and a writer
+  that logged its own failures would need a logger, which would need a
+  failure path of its own.
+
+Credentials never appear in an entry. A session token, a bearer token and a
+resume token are all refused-by-name in the code: `session.corrupt` logs that
+a row failed to parse, `broker.feed.resume` logs the *reason* and the length,
+and neither carries the value.
+
 ## Turning it off
 
 ```js

@@ -1,6 +1,6 @@
 import { EventEmitter } from 'node:events';
 import type { Engine, EngineCapabilities, WrpcSocket } from './engine.js';
-import type { HttpCall } from './index.js';
+import type { HttpCall, WrpcLogger } from './index.js';
 
 /**
  * The slice of the uWebSockets.js module this adapter uses. Typed
@@ -38,6 +38,13 @@ export declare class UwsSocket extends EventEmitter implements WrpcSocket {
 }
 
 export interface UwsEngineOptions {
+  /**
+   * Where this engine reports a frame uWebSockets.js discarded on
+   * backpressure — a hole in the frame stream, which terminates the
+   * connection. `false` by default: an engine is usually built by the
+   * `Server` shell, which passes its own writer down.
+   */
+  logger?: WrpcLogger | boolean;
   /** `require('uWebSockets.js')` — injected, never a dependency. */
   uws?: UwsModule;
   /** An existing app to attach to (fastify-uws) instead of creating one. */

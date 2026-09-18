@@ -426,6 +426,14 @@ export declare class RpcServer extends Emitter {
    */
   readonly otel: unknown;
   /**
+   * The normalized log writer — not the `logger` that was passed in. For
+   * hosts and attachers that need somewhere to report a failure which never
+   * reaches a `Client`: a framework adapter, a WebTransport session.
+   * Re-wrapping a writer is free, so passing this straight into another
+   * component's `logger` option is the intended use.
+   */
+  readonly log: WrpcLogWriter;
+  /**
    * The graceful half of a shutdown: refuse new calls (503) and wait up to
    * `timeout` ms for in-flight ones to settle. Subscriptions are not waited
    * for — a live feed has no natural end. Resolves early when idle.

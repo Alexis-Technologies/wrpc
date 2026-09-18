@@ -123,6 +123,13 @@ export interface RedisSessionClient {
 }
 
 export interface RedisSessionStoreOptions {
+  /**
+   * Where a corrupt stored row reports. This store sits below
+   * `SessionManager`, which never sees an entry it rejected, so a row that
+   * fails to parse — a user silently signed out — would otherwise be
+   * invisible from above. The session token is never logged.
+   */
+  logger?: WrpcLogger | boolean;
   client: RedisSessionClient;
   /** Key prefix; default 'wrpc:session:'. */
   prefix?: string;

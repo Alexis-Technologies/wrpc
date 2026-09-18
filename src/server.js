@@ -98,6 +98,10 @@ class Server extends Emitter {
   // and hands the core's HTTP entry point to the engine instead.
   #initStandalone(wsOptions, cors) {
     this.wsServer = this.#engine.attach({
+      // The engine and the connections under it report through the same
+      // writer as everything else, so a framing failure or a dropped frame
+      // lands in the operator's stream rather than in an unlistened 'error'.
+      logger: this.#log,
       ...wsOptions,
       verifyClient: createUpgradeGate({ rpc: this.rpc, cors, ws: wsOptions }),
       onHttpCall: (call) => this.rpc.handleHttpCall(call),
@@ -121,7 +125,7 @@ class Server extends Emitter {
     });
 
     const verifyClient = createUpgradeGate({ rpc: this.rpc, cors, ws: wsOptions });
-    this.wsServer = this.#engine.attach({ server: this.httpServer, ...wsOptions, verifyClient });
+    this.wsServer = this.#engine.attach({ logger: this.#log, server: this.httpServer, ...wsOptions, verifyClient });
     this.wsServer.on('connection', (socket, req) => {
       this.#onConnection(socket, req);
     });

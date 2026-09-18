@@ -13,6 +13,48 @@ narrower promise — see
 
 ### Added
 
+**Logging reaches the silent paths**
+- `RpcServer` gains a `log` getter, the pair of the `otel` one that already
+  existed for the same reason: a framework adapter or an external attacher
+  now has somewhere to report a failure that never reaches a `Client`,
+  instead of emitting an `'error'` nobody listens for. `Client` had both
+  getters all along; the server having only one was the anomaly.
+- The **dispatcher's six refused calls** — unknown method, duplicate id,
+  `maxCalls`, draining, unknown packet type, oversize batch — now log. Their
+  subscription twin had logged from the day it was written, so half of what
+  a dispatcher rejects was invisible to an operator, and the invisible half
+  was the one that says "your client and my router disagree about what
+  exists". The levels are not uniform on purpose: the two any peer can drive
+  in a loop go to `debug`, so a refused flood cannot become a log flood.
+- The **WebSocket engine** logs for the first time. Every way a connection
+  died at the framing layer — invalid UTF-8, a protocol violation, a message
+  past `maxBuffer`, a backpressure limit, a failed inflate — emitted an
+  `'error'` a server rarely listens for and then closed, which is the
+  "it just disconnects sometimes" report with nothing to work from. They go
+  through one seam now and name the limit that closed the connection, since
+  raising it is the operator's decision to make. `WebsocketServer` takes a
+  `logger` option; the `Server` shell passes its own writer down.
+- `acceptSessions` (WebTransport) defaulted `onError` to `null`, so a session
+  that failed to attach vanished without a trace — the one failure mode of a
+  WebTransport server nothing above could observe. It now reports through the
+  server's writer; an explicit `onError` still wins.
+- Broker consumers log every settlement decision, not only the terminal one:
+  a queue retrying itself in a circle used to look exactly like a healthy
+  one. The dead-letter line carries the error, not just its code, and the
+  per-token client cache says when it is thrashing.
+- A tampered **resume token** on a broker feed is now a `warn` naming
+  `reason: 'signature'` — previously indistinguishable from a stale or
+  garbled one, and silent. The token itself is never logged.
+- Session capacity eviction says so. Unlike a TTL sweep it discards sessions
+  that are still live — signed-in users signed out with no error anywhere —
+  and it logs once per sweep with a count, never once per session.
+- `createUwsEngine` and `createRedisSessionStore` take a `logger`.
+  uWebSockets.js dropping an outbound frame, and a stored session row that
+  will not parse, both had no channel at all.
+- `docs/guide/logging.md` gains an **event catalogue** — the `event` names to
+  alert on, by component — and a section on what is deliberately left
+  unlogged, so the four principled zeroes are not "fixed" later.
+
 **Pluggable identifiers, everywhere an id is minted**
 - `generateId` had shipped on the server, the client, the cluster, a peer
   host and the signaler, and then fourteen other places went on calling
@@ -48,15 +90,6 @@ narrower promise — see
   `instanceId` rather than being discarded, so a counter-based generator
   still starts where you expect. The per-stream check stays: it catches a
   generator that only *sometimes* answers something too long.
-
-### Changed
-
-- **Deprecated behaviour.** `generateId` on `RpcServer`/`Server`, on
-  `WrpcClient` and on `PeerHost` used to ignore a bad value silently. It is
-  now reported through the logger as `event: 'options.generateId'` and
-  replaced with the default. **2.0 will make it a `TypeError`**, as it
-  already is on the options added since — `SseChannels` and the broker
-  adapters — which have no compatibility to keep.
 
 **Message brokers, part 9: benchmarks and the finished guide**
 - `bench/broker.js` measures what the bindings cost on top of a broker, on
@@ -557,6 +590,12 @@ narrower promise — see
 - `ServerEventTransport` (the `attachPort` transport) now exposes
   `connection`, so a MessagePort client is `persistent`: events,
   subscriptions and streams work over it as over a socket.
+- **Deprecated behaviour.** `generateId` on `RpcServer`/`Server`, on
+  `WrpcClient` and on `PeerHost` used to ignore a bad value silently. It is
+  now reported through the logger as `event: 'options.generateId'` and
+  replaced with the default. **2.0 will make it a `TypeError`**, as it
+  already is on the options added since — `SseChannels` and the broker
+  adapters — which have no compatibility to keep.
 
 ### Fixed
 - `connect(url, { worker })` builds its own `ClientEventTransport` per
@@ -572,6 +611,14 @@ narrower promise — see
 - `WrpcClient.write()` returns the transport's backpressure signal and the
   client re-announces the transport's `'drain'`, so a `WrpcWritable` on the
   client side actually waits for the wire.
+- **`SessionManager#destroy` could take the process down.**
+  `initializeSession` calls `finalizeSession()` through `void`, so a
+  `store.delete` that rejected became an unhandled rejection: a Redis blip
+  ended the server rather than one session. It is guarded and logged now.
+- The Redis backplane wrote its entries as `{ err, component }` with **no
+  `event` field** — the one writer in the package breaking the convention
+  its own guide documents, so those lines could not be alerted on alongside
+  the rest. A test now asserts the rule on every entry a server writes.
 
 ## [1.0.0] - 2026-08-23
 

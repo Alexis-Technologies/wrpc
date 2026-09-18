@@ -167,8 +167,13 @@ class Mesh extends Emitter {
     this.#away.delete(id);
     // connect() resolves on open and rejects on close; both are announced
     // through the link's events below, so the promise itself is only kept
-    // from being an unhandled rejection.
-    this.#peer.connect(id, { room: this.#room, data, instance }).catch(() => {});
+    // from being an unhandled rejection. It is still worth a line: a mesh
+    // that never forms a particular edge is otherwise indistinguishable
+    // from one whose member simply has nothing to say. Debug, because a
+    // roster churning through unreachable members would repeat it.
+    this.#peer.connect(id, { room: this.#room, data, instance }).catch((error) => {
+      this.#peer.log.debug({ err: error, event: 'mesh.dial', room: this.#room, peer: id });
+    });
     const link = this.#peer.link(id);
     if (link) this.#adopt(link, data);
   }

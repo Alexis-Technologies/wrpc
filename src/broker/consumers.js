@@ -310,6 +310,10 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
       const [oldest, evicted] = tokens.entries().next().value;
       tokens.delete(oldest);
       // Its in-flight calls settle as released: the broker redelivers them.
+      // Correct, but not free — redelivery is duplicated work and a visible
+      // latency bump — and a cache thrashing at its ceiling did it silently.
+      // The token is NOT logged: it is a credential.
+      log.warn({ event: 'broker.evict', queue: policy.queue, cached: tokens.size, max: tokenClients });
       evicted.transport.close();
     }
     return attached;
@@ -318,11 +322,28 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
   const settle = async (delivery, decision, code, error) => {
     const { action, delay } = decision;
     rpc.otel.recordBrokerDelivery(system, action);
+    // Only the terminal outcome used to log, so a queue that was retrying
+    // itself in a circle looked identical to one that was healthy. Debug,
+    // because this is one line per message: a Console writer drops it and a
+    // structured logger's own level decides.
+    if (log.debugEnabled && action !== 'dead') {
+      log.debug({ event: `broker.${action}`, queue: policy.queue, method, code, attempt: delivery.attempt, delay });
+    }
     if (action === 'ack') return delivery.ack();
     if (action === 'retry') return delivery.retry({ delay });
     if (action === 'release') return delivery.release();
     const reason = `${code}${error?.message ? ` ${error.message}` : ''}`;
-    log.warn({ event: 'broker.dead', queue: policy.queue, method, code, attempt: delivery.attempt, id: delivery.id });
+    // `err` alongside the code: the code says a message was dead-lettered,
+    // the error says why, and only the code was ever recorded.
+    log.warn({
+      event: 'broker.dead',
+      queue: policy.queue,
+      method,
+      code,
+      attempt: delivery.attempt,
+      id: delivery.id,
+      err: error,
+    });
     if (onDeadLetter) {
       try {
         await onDeadLetter({ queue: policy.queue, method, code, error, delivery });
@@ -352,7 +373,13 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     if (typeof delivery.headers.tp === 'string') packet[TRACEPARENT] = delivery.headers.tp;
     if (typeof delivery.headers.ts === 'string') packet[TRACESTATE] = delivery.headers.ts;
     const outcome = transport.expect(id);
-    handleRpc(client, packet, view).catch((error) => transport.settle(id, { code: 500, error }));
+    handleRpc(client, packet, view).catch((error) => {
+      // The dispatcher itself threw, not the handler: settled as a 500 so
+      // the delivery is not stuck, but the throw was going nowhere. The
+      // settlement below only sees a code.
+      log.error({ err: error, event: 'broker.dispatch', queue: policy.queue, method, id: delivery.id });
+      transport.settle(id, { code: 500, error });
+    });
     const { code, error, closed } = await outcome;
     if (closed) return void (await settle(delivery, { action: 'release', delay: 0 }));
     const decision = decide({ code, attempt: delivery.attempt, retry: policy.retry, draining: rpc.draining });

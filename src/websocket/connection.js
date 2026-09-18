@@ -1,6 +1,7 @@
 'use strict';
 
 const { EventEmitter } = require('node:events');
+const { createLoggerWriter } = require('../logging.js');
 
 const crypto = require('node:crypto');
 
@@ -40,6 +41,7 @@ const MAX_HEADER_SIZE = 14; // 2 base + 8 extended length + 4 mask key
 
 class Connection extends EventEmitter {
   #socket;
+  #log;
   #isClient;
   #queue = new SegmentQueue();
   #pendingHeader = null;
@@ -111,7 +113,13 @@ class Connection extends EventEmitter {
       // send() returns; WebsocketServer turns it on for the connections it
       // creates (a server answering many peers is where bursts happen).
       coalesce = false,
+      // The writer WebsocketServer hands down, already childed with this
+      // connection's peer. A bare Connection gets the disabled one, whose
+      // methods are frozen no-ops — so the guarded paths below cost nothing
+      // when nobody is listening.
+      logger = false,
     } = options;
+    this.#log = createLoggerWriter(logger);
     this.#isClient = isClient;
     this.#maxBuffer = maxBuffer;
     this.#maxPayload = maxPayload;
@@ -197,7 +205,7 @@ class Connection extends EventEmitter {
 
     if (this.#queue.length > this.#maxBuffer) {
       const error = new Error('Buffer overflow, closing connection');
-      this.emit('error', error);
+      this.#fault('ws.overflow', error, { queued: this.#queue.length, max: this.#maxBuffer });
       if (this.#isClient) {
         this.#failed = true;
         return void this.sendClose(CLOSE_CODES.MESSAGE_TOO_BIG, 'Message too big');
@@ -287,7 +295,7 @@ class Connection extends EventEmitter {
   #processFrameParserError(error) {
     const { code } = error;
     const [type, subtype] = code.split('-');
-    this.emit('error', error);
+    this.#fault('ws.frame', error, { close: code });
     const frame =
       type === 'PROTOCOL_ERROR'
         ? Frame.protocolErrorClose(subtype, this.#isClient)
@@ -299,7 +307,7 @@ class Connection extends EventEmitter {
     const tooBig = size > this.#maxBuffer;
     if (tooBig) {
       const error = new Error('Message too big');
-      this.emit('error', error);
+      this.#fault('ws.too-big', error, { size, max: this.#maxBuffer });
       if (this.#isClient) {
         this.#failed = true;
         this.sendClose(CLOSE_CODES.MESSAGE_TOO_BIG, 'Message too big');
@@ -318,7 +326,7 @@ class Connection extends EventEmitter {
       // Continuation frame without a started fragmented message
       if (opcode === OPCODES.CONTINUATION) {
         const error = new Error('Protocol error: Unexpected CONTINUATION without start');
-        this.emit('error', error);
+        this.#fault('ws.protocol', error);
         const frame = Frame.protocolErrorClose('COMMON', this.#isClient);
         return void this.#fail(frame);
       }
@@ -351,14 +359,14 @@ class Connection extends EventEmitter {
       const isText = firstOpcode === OPCODES.TEXT;
       if (isText && !isValidUTF8(fullPayload)) {
         const error = new Error('Invalid UTF-8 in text frame');
-        this.emit('error', error);
+        this.#fault('ws.invalid-utf8', error);
         const frame = Frame.errorClose('INVALID_PAYLOAD', this.#isClient);
         return void this.#fail(frame);
       }
       this.#emitMessage(fullPayload, isBinary);
     } else {
       const error = new Error('Protocol error: Unexpected data frame during fragments');
-      this.emit('error', error);
+      this.#fault('ws.protocol', error);
       const frame = Frame.protocolErrorClose('COMMON', this.#isClient);
       return void this.#fail(frame);
     }
@@ -405,15 +413,31 @@ class Connection extends EventEmitter {
     }
     if (isText && !isValidUTF8(inflated)) {
       const error = new Error('Invalid UTF-8 in text frame');
-      this.emit('error', error);
+      this.#fault('ws.invalid-utf8', error);
       return void this.#fail(Frame.errorClose('INVALID_PAYLOAD', this.#isClient));
     }
     this.#emitMessage(inflated, isBinary);
   }
 
-  #failInflate(error) {
+  // Every way this connection dies of its own accord used to be an 'error'
+  // event and nothing else. A server rarely listens for 'error' on an
+  // individual socket, so the operator's view was a connection that simply
+  // vanished — the classic "it just disconnects sometimes" report, with
+  // nothing in the log to work from.
+  //
+  // `warn`, not `error`: a peer sending a bad frame or overrunning a limit
+  // is that peer's problem, and a server with many of them must not have its
+  // log dominated by them. The limits (maxPayload, maxBuffer,
+  // maxBackpressure) are the operator's to raise, which is exactly why they
+  // have to be told the limit was what closed the connection.
+  #fault(event, error, extra = null) {
+    this.#log.warn({ ...extra, err: error, event });
     this.emit('error', error);
+  }
+
+  #failInflate(error) {
     const type = error.code === 'ERR_BUFFER_TOO_LARGE' ? 'MESSAGE_TOO_BIG' : 'INVALID_PAYLOAD';
+    this.#fault('ws.inflate', error, { close: type });
     this.#fail(Frame.errorClose(type, this.#isClient));
   }
 
@@ -426,7 +450,7 @@ class Connection extends EventEmitter {
       if (item.error !== null) return void this.#failInflate(item.error);
       if (item.isText && !isValidUTF8(item.data)) {
         const error = new Error('Invalid UTF-8 in text frame');
-        this.emit('error', error);
+        this.#fault('ws.invalid-utf8', error);
         return void this.#fail(Frame.errorClose('INVALID_PAYLOAD', this.#isClient));
       }
       this.emit('message', item.data, item.isBinary);
@@ -502,7 +526,7 @@ class Connection extends EventEmitter {
     if (!this.#maxBackpressure) return false;
     if (this.bufferedAmount <= this.#maxBackpressure) return false;
     const error = new Error('Backpressure limit exceeded, terminating connection');
-    this.emit('error', error);
+    this.#fault('ws.backpressure', error, { buffered: this.bufferedAmount, max: this.#maxBackpressure });
     this.terminate();
     return true;
   }

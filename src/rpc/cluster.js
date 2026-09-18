@@ -394,7 +394,13 @@ class Cluster extends Emitter {
     let expected = null;
     try {
       expected = crypto.createHmac('sha256', this.#secret).update(JSON.stringify(envelope)).digest('hex');
-    } catch {
+    } catch (error) {
+      // The third way verification fails, and the only one that was silent:
+      // an envelope whose JSON will not stringify (a cycle a replicated
+      // payload picked up), or a secret the crypto layer refuses. Its
+      // siblings above and below both log, so an operator watching
+      // `cluster.*` saw two of three reasons a node went quiet.
+      this.#log.error({ err: error, event: 'cluster.verify', from });
       return false;
     }
     const a = Buffer.from(sig);

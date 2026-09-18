@@ -480,6 +480,17 @@ class RpcServer extends Emitter {
     return this.#otel;
   }
 
+  // The logging half of the same seam, and for the same reason: a framework
+  // adapter or an external attacher (a WebTransport session, an express
+  // handler) has somewhere to report a failure that never reaches a Client,
+  // rather than emitting an 'error' nobody listens for. This is the
+  // NORMALIZED writer, not the `logger` that was passed — re-wrapping one is
+  // free, so handing it straight back into another component's `logger`
+  // option is the intended use.
+  get log() {
+    return this.#log;
+  }
+
   /**
    * A host-delegated REST route (the fastify adapter's native routes) runs
    * its procedure outside handleHttpCall: the host owns routing, validation

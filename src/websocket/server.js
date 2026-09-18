@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { createLoggerWriter } = require('../logging.js');
 const { EventEmitter } = require('node:events');
 
 const { Connection } = require('./connection.js');
@@ -55,6 +56,7 @@ const getPathname = (url) => (url ? url.split('?')[0] : '/');
 
 class WebsocketServer extends EventEmitter {
   #options;
+  #log;
   #connections = new Set();
   #heartbeats = new Map(); // { awaiting: boolean }
   #pingTimer;
@@ -63,11 +65,15 @@ class WebsocketServer extends EventEmitter {
   // `server` is optional: without it nothing is bound and upgrades are
   // driven manually through handleUpgrade(req, socket, head) — that is how
   // middleware adapters (express) hook their own 'upgrade' listener.
-  constructor({ server, ...opts } = {}) {
+  constructor({ server, logger = globalThis.console, ...opts } = {}) {
     super();
     if (server !== undefined && (!server || typeof server.on !== 'function')) {
       throw new TypeError('WebsocketServer: options.server must be an http.Server');
     }
+    // Normalized once here, childed per connection below. The `Server` shell
+    // passes its own writer down, and re-wrapping a writer is free, so the
+    // common path allocates nothing extra.
+    this.#log = createLoggerWriter(logger).child({ component: 'ws' });
     this.#options = {
       pingInterval: PING_INTERVAL,
       // Server connections coalesce the writes of one event-loop turn into
@@ -250,6 +256,7 @@ class WebsocketServer extends EventEmitter {
       isClient: false,
       protocol,
       deflate,
+      logger: this.#log.child({ peer: socket.remoteAddress ?? '' }),
     });
     this.#setupHeartbeat(ws);
     this.emit('connection', ws, req);

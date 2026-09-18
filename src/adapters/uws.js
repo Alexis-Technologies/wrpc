@@ -1,6 +1,7 @@
 'use strict';
 
 const { EventEmitter } = require('node:events');
+const { createLoggerWriter } = require('../logging.js');
 
 const { MAX_BODY_SIZE, statusLine, eachHeader } = require('./common.js');
 
@@ -78,11 +79,14 @@ class UwsSocket extends EventEmitter {
   #ws;
   #closed = false;
 
-  constructor(ws, { remoteAddress = '', protocol = '' } = {}) {
+  constructor(ws, { remoteAddress = '', protocol = '', log = null } = {}) {
     super();
     this.#ws = ws;
     this.remoteAddress = remoteAddress;
     this.protocol = protocol;
+    // A writer, already normalized by the engine — this socket reports the
+    // one failure nothing above it can see (uws dropping a frame).
+    this.log = log;
   }
 
   get closed() {
@@ -117,7 +121,12 @@ class UwsSocket extends EventEmitter {
       // uws silently discarded the message (maxBackpressure hit with
       // closeOnBackpressureLimit off). A hole in the frame stream corrupts
       // the RPC protocol, so fail loudly instead of continuing.
-      this.emit('error', new Error('uws dropped an outgoing message: backpressure limit exceeded'));
+      const error = new Error('uws dropped an outgoing message: backpressure limit exceeded');
+      // Logged as well as emitted: 'error' on a socket frequently has no
+      // listener, and this is a connection dying from a limit the operator
+      // configured — exactly the thing they need to see to raise it.
+      this.log?.error({ err: error, event: 'uws.dropped', bytes: this.bufferedAmount });
+      this.emit('error', error);
       this.terminate();
       return false;
     }
@@ -166,7 +175,12 @@ const createUwsEngine = (engineOptions = {}) => {
     compression = null,
     sendPingsAutomatically = true,
     maxBodySize = MAX_BODY_SIZE,
+    // `false` by default and not `globalThis.console`: an engine is usually
+    // built by the `Server` shell, which hands its own writer down, and a
+    // standalone one printing uninvited would be a surprise.
+    logger = false,
   } = engineOptions;
+  const log = createLoggerWriter(logger).child({ component: 'uws' });
 
   if (!providedApp && (typeof uws !== 'object' || uws === null || typeof uws.App !== 'function')) {
     throw new TypeError(
@@ -241,7 +255,7 @@ const createUwsEngine = (engineOptions = {}) => {
 
       open(ws) {
         const data = ws.getUserData();
-        const socket = new UwsSocket(ws, data);
+        const socket = new UwsSocket(ws, { ...data, log });
         data.socket = socket;
         sockets.add(socket);
         source.emit('connection', socket, data.request);

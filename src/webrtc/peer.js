@@ -589,6 +589,13 @@ class WrpcPeer extends Emitter {
     return this.#signaler;
   }
 
+  // The writer this peer was built with, childed with `component: 'peer'`.
+  // A Mesh built on top reports through it rather than carrying a logger
+  // option of its own — same seam as `Client.log` and `RpcServer.log`.
+  get log() {
+    return this.#log;
+  }
+
   get host() {
     return this.#host;
   }

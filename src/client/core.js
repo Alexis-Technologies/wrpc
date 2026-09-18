@@ -1423,8 +1423,12 @@ class WrpcClient extends Emitter {
         .then(() => {
           if (this.active && this.#subscriptions.has(id)) this.#openSubscription(record);
         })
-        .catch(() => {
+        .catch((error) => {
           // The refresh's own failure: deliver the refusal the feed earned.
+          // Logged like its call-side twin (`refresh.failed`): a feed dying
+          // for want of a credential looks, from the application, exactly
+          // like a feed with nothing to say.
+          this.#log.warn({ err: error, event: 'subscription.refresh', id });
           if (this.#subscriptions.delete(id)) this.#failSubscription(record, packet.error);
         });
       return;

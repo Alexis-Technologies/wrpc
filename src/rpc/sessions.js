@@ -98,11 +98,13 @@ class MemorySessionStore {
   #sessions = new Map(); // token -> { data, expires }
   #maxSessions;
   #ttl;
+  #log;
 
-  constructor({ maxSessions = DEFAULT_MAX_SESSIONS, ttl = DEFAULT_SESSION_TTL, now = Date.now } = {}) {
+  constructor({ maxSessions = DEFAULT_MAX_SESSIONS, ttl = DEFAULT_SESSION_TTL, now = Date.now, logger = false } = {}) {
     this.#maxSessions = maxSessions;
     this.#ttl = ttl;
     this.now = now;
+    this.#log = createLoggerWriter(logger);
   }
 
   get size() {
@@ -150,9 +152,19 @@ class MemorySessionStore {
         this.#sessions.delete(token);
       }
     }
+    // Capacity eviction, unlike the TTL sweep above, throws away sessions
+    // that are still LIVE — someone signed in is signed out, with no error
+    // anywhere and no way to tell it from an ordinary expiry. One line per
+    // sweep carrying a count, never one per session: a store pinned at its
+    // ceiling evicts on every create, and a line each would be the flood.
+    let evicted = 0;
     while (this.#maxSessions > 0 && this.#sessions.size > this.#maxSessions) {
       const oldest = this.#sessions.keys().next().value;
       this.#sessions.delete(oldest);
+      evicted++;
+    }
+    if (evicted > 0) {
+      this.#log.warn({ event: 'session.evict', evicted, max: this.#maxSessions });
     }
   }
 }
@@ -210,11 +222,14 @@ class SessionManager {
   #log;
 
   constructor(options = {}, logger = globalThis.console) {
-    const { store = new MemorySessionStore(), generateToken = generateUUID, cookie = {}, transport } = options;
-    this.store = store;
+    const { store = null, generateToken = generateUUID, cookie = {}, transport } = options;
+    this.#log = createLoggerWriter(logger);
+    // The default store is built HERE so it inherits this writer: a store
+    // the application constructed is its own to configure, but the one wrpc
+    // makes on its behalf should report where everything else does.
+    this.store = store ?? new MemorySessionStore({ logger: this.#log });
     this.generateToken = generateToken;
     this.cookie = { ...DEFAULT_COOKIE, ...cookie };
-    this.#log = createLoggerWriter(logger);
     // The injected token carrier; the cookie default keeps the behaviour
     // wrpc always had, byte for byte.
     if (transport !== undefined && !isTokenTransport(transport)) {
@@ -269,7 +284,17 @@ class SessionManager {
   }
 
   async destroy(token) {
-    await this.store.delete(token);
+    // Guarded, and not only for tidiness: `initializeSession` calls
+    // finalizeSession() through `void`, so a store.delete that rejects had
+    // nowhere to land and took the process down with an unhandled rejection
+    // — a Redis blip ending the server rather than one session. Logged
+    // instead: the in-memory half of the session is already gone, and a
+    // stored row that outlives it expires on its own TTL.
+    try {
+      await this.store.delete(token);
+    } catch (error) {
+      this.#log.error({ err: error, event: 'session.destroy' });
+    }
   }
 
   cookieHeader(token) {

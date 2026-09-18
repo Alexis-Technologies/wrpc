@@ -10,6 +10,7 @@
 // WebTransport of its own, and the one an application runs is injected.
 
 const { WtSocket, DEFAULT_HIGH_WATER_MARK, DEFAULT_LOW_WATER_MARK } = require('./socket.js');
+const { createLoggerWriter } = require('../logging.js');
 const { isWtSession, isWtStream, isWtDatagrams } = require('./port.js');
 const { fromQuico } = require('./quico.js');
 // Requiring it registers ServerTransport.transport.wt — what attachSocket
@@ -140,7 +141,19 @@ const iterate = (sessions) => {
  */
 const acceptSessions = (server, sessions, options = {}) => {
   const rpc = rpcOf(server);
-  const { meta = fromFails, onError = null, onClient = null, ...rest } = options;
+  const { meta = fromFails, onError = null, onClient = null, logger = null, ...rest } = options;
+  // `onError` defaulted to null, so a session that failed to attach — a
+  // verify that threw, a source that died — was dropped without a trace:
+  // the one failure mode of a WebTransport server that nothing above could
+  // observe. The default is now the server's own writer (borrowed through
+  // `rpc.log`, which exists for exactly this), and an explicit `onError`
+  // still wins, since a caller that handles the error wants to decide.
+  const log = createLoggerWriter(logger ?? rpc.log).child({ component: 'wt' });
+  const report =
+    onError ??
+    ((error, session) => {
+      log.error({ err: error, event: session === null ? 'wt.source' : 'wt.attach' });
+    });
   const source = iterate(sessions);
   let stopped = false;
   // `done` always resolves: a source that throws ends the loop through
@@ -151,7 +164,7 @@ const acceptSessions = (server, sessions, options = {}) => {
       try {
         next = await source.next();
       } catch (error) {
-        if (onError && !stopped) onError(error, null);
+        if (!stopped) report(error, null);
         return;
       }
       const { value: session, done: finished } = next;
@@ -162,7 +175,7 @@ const acceptSessions = (server, sessions, options = {}) => {
         if (client && onClient) onClient(client, session);
       } catch (error) {
         closeQuietly(session, { closeCode: 500, reason: 'Internal error' });
-        if (onError) onError(error, session);
+        report(error, session);
       }
     }
   })();

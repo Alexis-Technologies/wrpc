@@ -92,30 +92,56 @@ const parseTarget = (target) => {
   return { unit, version, name };
 };
 
+// A call refused before it ever reaches a handler. Its subscription twin
+// (`refuse`, below) logged from the day it was written; these six did not,
+// so half of what a dispatcher rejects was invisible to an operator — and
+// the half that was invisible is the half that says "your client and my
+// router disagree about what exists".
+//
+// The level is deliberately not uniform. 429 and the batch cap are reachable
+// by any peer, in a loop, without authenticating: logging those at `warn`
+// turns a refused flood into a log-pipeline flood, which is a worse outage
+// than the one being prevented. They go to `debug` — dropped outright by a
+// Console writer, left to its own level by a structured one. `503` is the
+// operator's own doing (a draining server), so it is `info`. The codes that
+// mean something is actually wrong stay at `warn`.
+const refuseCall = (client, id, code, method, event) => {
+  const level = code === 429 ? 'debug' : code === 503 ? 'info' : 'warn';
+  client.log[level]({ event, code, id, method }, `${client.source}\tCALL\t${method}\t${code}`);
+  client.otel.recordCall(method, 'error', code);
+  client.error(code, { id });
+};
+
 const handleRpc = async (client, packet, router) => {
   const { id, method, args } = packet;
   const { unit, version, name: methodName } = parseTarget(method);
   const proc = router.getProcedure(unit, version, methodName);
   if (!proc) {
+    // The target is UNKNOWN on the metric (an unbounded method string would
+    // be a cardinality bomb) but present in the log, where it is the whole
+    // point: this is what a stale client or a typo looks like.
+    client.log.warn({ event: 'call.unknown', code: 404, id, method }, `${client.source}\tCALL\t${method}\t404`);
     client.otel.recordCall(UNKNOWN_TARGET, 'error', 404);
     return void client.error(404, { id });
   }
   if (client.calls.has(id)) {
+    // Two calls with one id: a generateId that repeats, or a client that
+    // retried without minting a fresh one. Either is a bug worth seeing.
+    const error = new Error(`Call ${id} is already in flight`);
+    client.log.warn({ event: 'call.duplicate', code: 400, id, method, err: error });
     client.otel.recordCall(method, 'error', 400);
-    return void client.error(400, { id, error: new Error(`Call ${id} is already in flight`) });
+    return void client.error(400, { id, error });
   }
   // Subscriptions are capped, and calls have to be too: each in-flight call
   // holds a controller, a context and (with a queue) a semaphore slot, so an
   // unbounded burst from one connection is memory the app never agreed to.
   if (client.calls.size >= client.maxCalls) {
-    client.otel.recordCall(method, 'error', 429);
-    return void client.error(429, { id });
+    return void refuseCall(client, id, 429, method, 'call.capacity');
   }
   // A draining server finishes what it started and takes nothing new: the
   // 503 tells a well-behaved client to reconnect elsewhere.
   if (client.server?.draining) {
-    client.otel.recordCall(method, 'error', 503);
-    return void client.error(503, { id });
+    return void refuseCall(client, id, 503, method, 'call.draining');
   }
   // The controller is what `{type:'cancel'}` and a disconnect reach: the
   // handler sees it as ctx.signal, and once it is aborted the call has
@@ -509,7 +535,12 @@ const handlePacket = (client, packet, router) => {
   // The id travels with the refusal when the packet carried one: an HTTP
   // batch answers positionally, so an id-less error would lose this slot and
   // shift every answer after it.
+  // Structurally valid JSON that is not a packet this protocol has: a
+  // version skew, a proxy rewriting bodies, or somebody else's client
+  // pointed at this port. `handleMessage` already logs frames that do not
+  // parse; this is the other half of the same funnel, and was silent.
   const error = new Error('Packet structure error');
+  client.log.warn({ event: 'packet.unknown', code: 500, type: typeof type === 'string' ? type : null });
   client.error(500, { id: typeof id === 'string' ? id : '', error });
 };
 
@@ -527,6 +558,10 @@ const handleMessage = (client, data, router, options = {}) => {
   const { maxBatch = DEFAULT_MAX_BATCH } = options;
   if (packet.length === 0 || packet.length > maxBatch) {
     const error = new Error(`Batch size must be between 1 and ${maxBatch}`);
+    // Debug for the same reason as the 429 above: any peer can send an
+    // oversize batch in a loop, and a warn per attempt would make the log
+    // the thing that falls over.
+    client.log.debug({ event: 'batch.refused', code: 400, size: packet.length, max: maxBatch });
     return void client.error(400, { error });
   }
   for (const item of packet) {

@@ -119,7 +119,12 @@ const ENTRIES = [
   // a host-built client picks, withMessagingSpan, the wrpc.broker.*
   // instruments): they live in telemetry/server.js, which PeerHost bundles
   // (+0.3 KB, measured 46.2 against 45.9).
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 47 },
+  // 47 -> 48 for the dispatcher's six refused-call log lines and the mesh
+  // dial's. They had been silent while their subscription twin logged, so
+  // half of what a dispatcher rejects was invisible to an operator; the
+  // bytes are the entry objects on those branches (+0.5 KB, measured 47.0
+  // against 46.5, which is the budget exactly and too thin to leave).
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 48 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

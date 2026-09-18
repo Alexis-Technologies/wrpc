@@ -3,6 +3,7 @@ import { IncomingMessage, Server as HttpServer } from 'node:http';
 import { Server as HttpsServer } from 'node:https';
 import { Socket } from 'node:net';
 import type { Duplex } from 'node:stream';
+import type { WrpcLogger } from './index.js';
 
 export declare const MAGIC: string;
 export declare const CLOSE_TIMEOUT: number;
@@ -102,6 +103,15 @@ export interface SendOptions {
 }
 
 export interface WebsocketServerOptions {
+  /**
+   * Where framing failures report — a peer sending invalid UTF-8, a message
+   * past `maxBuffer`, a backpressure limit hit. These close the connection
+   * and used to emit only an `'error'` that a server rarely listens for.
+   * The `Server` shell passes its own writer down, so this is the knob for
+   * driving `WebsocketServer` directly. Defaults to the global console;
+   * `false` is silent.
+   */
+  logger?: WrpcLogger | boolean;
   /**
    * Binds to this server's 'upgrade' event. Omit it to drive handshakes by
    * hand through handleUpgrade() — how middleware adapters (express) attach

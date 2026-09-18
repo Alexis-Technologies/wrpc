@@ -62,12 +62,20 @@ const brokerFeed = (broker, topic, options = {}) => {
   }
 
   // The resume position a peer-supplied id stands for, or the refusal code.
+  // `reason` separates the three ways it can be refused, because they mean
+  // very different things to an operator: `length` and `syntax` are a stale
+  // or garbled client, while `signature` is a token that was TAMPERED with
+  // — someone trying to read a topic from an offset they made up. That last
+  // one was indistinguishable from the other two, and silent.
   const position = (lastEventId) => {
-    if (lastEventId === undefined || lastEventId === null) return { after: null, code: null };
-    if (typeof lastEventId !== 'string' || lastEventId.length > maxIdLength) return { after: null, code: 400 };
+    if (lastEventId === undefined || lastEventId === null) return { after: null, code: null, reason: null };
+    if (typeof lastEventId !== 'string' || lastEventId.length > maxIdLength) {
+      return { after: null, code: 400, reason: 'length' };
+    }
     const id = secret === null ? lastEventId : openId(secret, lastEventId);
-    if (id === null || log.parseId(id) === null) return { after: null, code: 400 };
-    return { after: id, code: null };
+    if (id === null) return { after: null, code: 400, reason: 'signature' };
+    if (log.parseId(id) === null) return { after: null, code: 400, reason: 'syntax' };
+    return { after: id, code: null, reason: null };
   };
 
   return async function* feed(context, args, { lastEventId = null, signal = null } = {}) {
@@ -75,8 +83,14 @@ const brokerFeed = (broker, topic, options = {}) => {
     if (typeof name !== 'string' || name.length === 0) {
       throw codedError('brokerFeed: the topic resolver must answer a non-empty string', 500);
     }
-    let { after, code } = position(lastEventId);
+    let { after, code, reason } = position(lastEventId);
     let resumedFrom = lastEventId;
+    if (reason !== null) {
+      // The id itself is peer-controlled text and is NOT logged; its length
+      // and the reason are what an operator can act on.
+      const level = reason === 'signature' ? 'warn' : 'debug';
+      context?.log?.[level]({ event: 'broker.feed.resume', topic: name, reason, length: lastEventId.length });
+    }
     for (;;) {
       if (signal?.aborted) return;
       let read;
@@ -84,6 +98,10 @@ const brokerFeed = (broker, topic, options = {}) => {
         if (!onGap) {
           throw codedError(code === 400 ? 'Invalid event id' : 'Event history is no longer available', code);
         }
+        // A subscriber that fell behind retention, or one resuming from a
+        // position this log no longer has: real event loss, answered with a
+        // snapshot. Worth a line — it is the signal retention is tuned from.
+        context?.log?.info({ event: 'broker.feed.gap', topic: name, code });
         // Positioned BEFORE the snapshot is built: whatever is appended
         // while the application assembles it is read afterwards, not lost.
         read = log.read(name, { from: 'latest', signal });

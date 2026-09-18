@@ -25,6 +25,8 @@
 // application assigns, which is JSON by construction (it crosses the
 // Session proxy as own enumerable properties).
 
+const { createLoggerWriter } = require('../logging.js');
+
 const DEFAULT_PREFIX = 'wrpc:session:';
 const DEFAULT_TTL = 24 * 60 * 60 * 1000; // 24h, like MemorySessionStore
 
@@ -40,7 +42,10 @@ const checkClient = (client) => {
 };
 
 const createRedisSessionStore = (options = {}) => {
-  const { client, prefix = DEFAULT_PREFIX, ttl = DEFAULT_TTL } = options;
+  const { client, prefix = DEFAULT_PREFIX, ttl = DEFAULT_TTL, logger = globalThis.console } = options;
+  // This store sits BELOW SessionManager, which never sees a row it
+  // rejected, so a corrupt entry would otherwise be invisible from above.
+  const log = createLoggerWriter(logger).child({ component: 'sessions', store: 'redis' });
   checkClient(client);
   if (typeof prefix !== 'string') throw new TypeError('createRedisSessionStore: options.prefix must be a string');
   if (!(Number.isFinite(ttl) && ttl >= 0)) throw new TypeError('createRedisSessionStore: options.ttl must be >= 0 ms');
@@ -56,9 +61,15 @@ const createRedisSessionStore = (options = {}) => {
       if (raw === null || raw === undefined) return null;
       try {
         const data = JSON.parse(raw);
-        return typeof data === 'object' && data !== null && !Array.isArray(data) ? data : null;
-      } catch {
-        // A corrupt entry is a missing session, not a thrown request.
+        if (typeof data === 'object' && data !== null && !Array.isArray(data)) return data;
+        log.warn({ event: 'session.corrupt', reason: 'not an object' });
+        return null;
+      } catch (error) {
+        // A corrupt entry is a missing session, not a thrown request — but
+        // "missing" here means a signed-in user is silently signed out, and
+        // that is worth one line. The token is NOT logged: it is the
+        // credential, and a log pipeline is not where credentials go.
+        log.warn({ err: error, event: 'session.corrupt' });
         return null;
       }
     },
