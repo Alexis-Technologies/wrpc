@@ -138,6 +138,25 @@ test('dictionaryCompressor: a Compressor whose id carries the dictionary, intero
   assert.throws(() => dictionaryCompressor(42), /bytes or a string/);
 });
 
+test('dictionaryCompressor: async — a message past the threshold deflates on the threadpool, against the same dictionary', async () => {
+  const dictionary = buildDictionary(appRouter());
+  const codec = dictionaryCompressor(dictionary, { async: { threshold: 1024 } });
+  assert.strictEqual(codec.async, 1024);
+  assert.strictEqual(dictionaryCompressor(dictionary).async, null);
+  assert.strictEqual(dictionaryCompressor(dictionary, { async: true }).async, 256 * 1024);
+  const small = Buffer.from(JSON.stringify({ type: 'event', name: 'market/tick', data: { bid: 1 } }));
+  const large = Buffer.from(
+    JSON.stringify({ type: 'callback', id: 'c', result: Array.from({ length: 200 }, (_, i) => ({ i })) }),
+  );
+  assert.ok(small.length < 1024 && large.length >= 1024);
+  assert.ok(codec.encode(small) instanceof Uint8Array, 'synchronous under the threshold');
+  const encoded = await codec.encode(large);
+  assert.deepStrictEqual(zlib.inflateRawSync(encoded, { dictionary }), large);
+  assert.deepStrictEqual(new Uint8Array(codec.decode(encoded, large.length)), new Uint8Array(large));
+  assert.throws(() => dictionaryCompressor(dictionary, { async: { threshold: -5 } }), /async\.threshold/);
+  assert.throws(() => dictionaryCompressor(dictionary, { async: 'soon' }), /async must be true, false or/);
+});
+
 test('dictionaryId: FNV-1a over the bytes, 16 hex characters, sensitive to every byte', () => {
   const a = dictionaryId(new Uint8Array([1, 2, 3]));
   assert.match(a, /^[0-9a-f]{16}$/);

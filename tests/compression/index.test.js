@@ -14,6 +14,8 @@ const {
   DEFAULT_THRESHOLD,
 } = require('../../src/compression/index.js');
 const browser = require('../../src/compression/native.browser.js');
+const { normalizeSyncCompression } = require('../../src/compression/sync.js');
+const { DEFAULT_ASYNC_THRESHOLD, normalizeAsync } = require('../../src/compression/index.js');
 
 const text = (n) => new TextEncoder().encode(JSON.stringify({ rows: Array.from({ length: n }, (_, i) => ({ i })) }));
 
@@ -42,6 +44,52 @@ test('normalizeCompression: off in every spelling of off, the native codec by de
   assert.throws(() => normalizeCompression({ codec: {} }, 'x'), /compression\.codec must provide an id/);
   assert.throws(() => normalizeCompression({ threshold: -1 }, 'x'), /threshold must be a non-negative integer/);
   assert.throws(() => normalizeCompression({ threshold: 1.5 }, 'x'), /threshold/);
+});
+
+test('normalizeCompression: async — the platform codec goes to the threadpool past a threshold, off by default', () => {
+  assert.strictEqual(normalizeCompression(true, 'x').codec.async, null, 'synchronous unless asked');
+  assert.strictEqual(normalizeCompression({ async: true }, 'x').codec.async, DEFAULT_ASYNC_THRESHOLD);
+  assert.strictEqual(DEFAULT_ASYNC_THRESHOLD, 256 * 1024, 'the same default as perMessageDeflate.async');
+  assert.strictEqual(normalizeCompression({ async: { threshold: 4096 } }, 'x').codec.async, 4096);
+  for (const off of [undefined, null, false]) assert.strictEqual(normalizeAsync(off, 'x'), null);
+  assert.throws(() => normalizeCompression({ async: 'yes' }, 'x'), /async must be true, false or \{ threshold \}/);
+  assert.throws(() => normalizeCompression({ async: { threshold: 0 } }, 'x'), /async\.threshold must be a positive/);
+  assert.throws(() => normalizeCompression({ async: { threshold: 1.5 } }, 'x'), /async\.threshold/);
+  // An injected codec decides that for itself: the option is refused, not silently dropped.
+  const codec = { id: 'mine', encode: (b) => b, decode: (b) => b };
+  assert.throws(() => normalizeCompression({ codec, async: true }, 'x'), /applies to the platform codec/);
+  assert.strictEqual(normalizeCompression({ codec, async: false }, 'x').codec, codec, 'off is not a request');
+});
+
+test('native (node): with async, a message under the threshold deflates on the loop and one past it on the threadpool', async () => {
+  const codec = nativeCompressor({ async: 2048 });
+  assert.strictEqual(codec.async, 2048);
+  const small = text(20);
+  const large = text(600);
+  assert.ok(small.length < 2048 && large.length >= 2048, `${small.length} / ${large.length}`);
+  const sync = codec.encode(small);
+  assert.ok(sync instanceof Uint8Array, 'synchronous under the threshold');
+  const pending = codec.encode(large);
+  assert.strictEqual(typeof pending.then, 'function', 'a promise past it');
+  const encoded = await pending;
+  assert.deepStrictEqual(zlib.inflateRawSync(encoded), Buffer.from(large), 'the same raw deflate zlib reads');
+  // decode never goes to the threadpool: an inflate is cheaper than the hand-off at every size.
+  assert.deepStrictEqual(new Uint8Array(codec.decode(encoded, large.length)), large);
+  assert.deepStrictEqual(new Uint8Array(codec.decode(sync, small.length)), small);
+  assert.strictEqual(nativeCompressor().async, null);
+});
+
+test('normalizeSyncCompression: the Node↔Node carriers refuse a codec that declares async, and one that answers a promise', () => {
+  assert.strictEqual(normalizeSyncCompression(true, 'x').codec.async, null);
+  assert.throws(
+    () => normalizeSyncCompression({ async: true }, 'x'),
+    /declares async — this carrier has no ordering queue/,
+  );
+  const hybrid = nativeCompressor({ async: 1 });
+  assert.throws(() => normalizeSyncCompression({ codec: hybrid }, 'x'), /declares async/);
+  const promising = { id: 'p', encode: async (b) => b, decode: (b) => b };
+  assert.throws(() => normalizeSyncCompression({ codec: promising }, 'x'), /must answer synchronously/);
+  assert.strictEqual(normalizeSyncCompression(false, 'x'), null);
 });
 
 test('negotiate: on only when the peer named the same codec', () => {

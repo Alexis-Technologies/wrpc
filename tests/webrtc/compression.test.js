@@ -247,6 +247,30 @@ test('rtc compression (raw channel): an asynchronous codec keeps both directions
   assert.deepStrictEqual(inbound, order);
 });
 
+test('rtc compression (raw channel): the platform codec with async keeps both directions in order across the threadpool', async (t) => {
+  const pair = await rawChannelPair(t, { fake: { maxMessageSize: 4096 } });
+  const compression = { async: { threshold: 2048 } };
+  const client = new ClientRtcTransport('webrtc:test', { channel: pair.a, compression, maxMessageSize: 4096 });
+  const host = new RtcPeerTransport(pair.b, { peer: 'a', compression, maxMessageSize: 4096 });
+  t.after(() => client.close());
+  const packets = [];
+  const inbound = [];
+  host.on('packet', (text) => packets.push(text));
+  client.on('message', (data) => inbound.push(data));
+  await client.open();
+  assert.ok(big.length >= 2048, `${big.length} B goes to the threadpool`);
+  const order = [];
+  for (let i = 0; i < 6; i++) {
+    const text = i % 2 === 0 ? big.replace('"i":0', `"i":${100 + i}`) : small.replace('ping', `p${i}`);
+    order.push(text);
+    client.write(text);
+    host.write(text);
+  }
+  await waitFor(() => packets.length === 6 && inbound.length === 6);
+  assert.deepStrictEqual(packets, order);
+  assert.deepStrictEqual(inbound, order);
+});
+
 test('rtc compression (raw channel): an inflate past maxReassembly is a protocol error', async (t) => {
   const pair = await rawChannelPair(t, { fake: { maxMessageSize: 4096 } });
   const client = new ClientRtcTransport('webrtc:test', { channel: pair.a, compression: true, maxMessageSize: 4096 });

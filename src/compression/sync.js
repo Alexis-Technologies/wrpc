@@ -17,12 +17,18 @@ const DEFAULT_MAX_MESSAGE = 16 * 1024 * 1024;
 const EMPTY = new Uint8Array(0);
 
 /**
- * `normalizeCompression`, then one probe: a codec that answers a promise
- * is refused here at construction rather than at the first message.
+ * `normalizeCompression`, then two checks at construction rather than at
+ * the first message: a codec that declares `async` (the built-in ones
+ * with that option — they answer synchronously on a small probe and a
+ * promise past the threshold), and a probe for one that answers a promise
+ * outright.
  */
 const normalizeSyncCompression = (value, name) => {
   const normalized = normalizeCompression(value, name);
   if (normalized === null) return null;
+  if (normalized.codec.async !== undefined && normalized.codec.async !== null) {
+    throw new TypeError(`${name}: compression.codec declares async — this carrier has no ordering queue for a promise`);
+  }
   if (isPromise(normalized.codec.encode(EMPTY))) {
     throw new TypeError(`${name}: compression.codec must answer synchronously on this carrier`);
   }

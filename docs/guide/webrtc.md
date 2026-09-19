@@ -462,7 +462,10 @@ codec's own default — 1 KiB on Node, 4 KiB in a browser, where the only
 codec a page has is `CompressionStream`, ~6× the cost of zlib per call and
 without a dictionary — and `{ codec, threshold }` injects another codec or
 moves the line; the numbers are on the [WebTransport page](./wt#compression),
-which shares the seam (`bench/message-compression.js`).
+which shares the seam (`bench/message-compression.js`). On Node the
+deflate is synchronous below 256 KB on purpose and `{ async }` hands
+larger messages to zlib's threadpool — a host answering megabyte results
+to many peers is the case; see [the compression guide](./compression#async).
 
 Over a [raw channel](#your-own-connection) there is no description to
 announce in: `compression` on `attachChannel`, on `connect(url, { channel,

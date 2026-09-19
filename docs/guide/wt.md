@@ -312,7 +312,11 @@ threshold — a 1.4 KB callback 84K/sec for 6.4×, a 24 KB one 12K/sec for
 13.8×. Inflating is 3–6× cheaper than deflating at every size. A page's
 `CompressionStream` runs the same ratios at 23K/sec on the small message
 and 9K/sec at 24 KB. An inflated message past `maxMessage` is a protocol
-error (1002), the same cap a plain one has.
+error (1002), the same cap a plain one has. Deflating is synchronous on
+Node by design — zlib's threadpool hand-off costs more than the deflate
+below ~256 KB — and `compression: { async: true | { threshold } }` sends
+messages that large to the threadpool instead, in order; the
+[compression guide](./compression#async) has the numbers.
 
 ## What it cannot do
 

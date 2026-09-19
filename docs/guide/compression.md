@@ -43,6 +43,58 @@ keeps a zlib window per connection (10.6× on a repeated shape, for ~160 KiB
 per direction per connection). Everywhere else — and with no state per
 connection — a **dictionary**.
 
+## On the loop, or on the threadpool {#async}
+
+Every Node codec in wrpc deflates **synchronously** by default, and that is
+a measured choice, not an oversight. `node:zlib` has two APIs: the
+convenience calls that block the event loop for the length of the deflate,
+and the callback ones that hand the work to libuv's threadpool. The hand-off
+costs a fixed ~20 µs per call — a queue, a context switch, a copy back —
+and a message that takes microseconds to compress does not amortize it
+(`bench/zlib-async.js`):
+
+| Message | deflate, sync | deflate, threadpool (one at a time) | inflate, sync | inflate, threadpool |
+| --- | ---: | ---: | ---: | ---: |
+| 291 B | 8.6 µs | 28.4 µs | 3.4 µs | 22.3 µs |
+| 2.6 KB | 15.9 µs | 35.8 µs | 4.3 µs | 22.8 µs |
+| 27 KB | 100 µs | 120 µs | 19 µs | 44 µs |
+| 276 KB | 970 µs | 1,007 µs | 148 µs | 259 µs |
+| 1.1 MB | 4.3 ms | 3.8 ms | 578 µs | 1,136 µs |
+
+Below ~256 KB the threadpool only makes the message **slower**; at 256 KB
+the two are level, and past it the loop is the thing being bought — a
+1 MB result deflates in 4 ms, which is 4 ms during which no other
+connection is served, and fifty peers' worth of it is 200 ms. **Inflate
+never earns the hand-off**: it is eight times faster than deflate, so the
+fixed cost wins at every size up to the 16 MiB cap. That is why every
+knob has the same shape — synchronous, with an opt-in `async` threshold
+for the encode side only:
+
+| Wire | The knob | Default threshold |
+| --- | --- | --- |
+| WebSocket, permessage-deflate | `perMessageDeflate: { async: { threshold } }` — [performance](./performance#compression-modes) | 256 KiB |
+| HTTP | `http: { compression: { async } }` | 256 KiB |
+| Server-Sent Events | none — a gzip stream already runs its writes off the loop | — |
+| WebTransport, WebRTC | `compression: { async }` on the platform codec, `dictionaryCompressor(dict, { async })` on the dictionary one | 256 KiB |
+| The broker binding, the backplane, a Node WebSocket client | none — refused: these carriers have no ordering queue to hide a promise behind | — |
+
+```js
+// A host that answers megabyte results over data channels: those go to
+// the threadpool, everything smaller stays on the loop.
+new WrpcPeer({ router, signaler, compression: { async: true } });
+acceptSessions(server, sessions, { compression: { async: { threshold: 128 * 1024 } } });
+```
+
+The WebTransport and WebRTC transports keep messages in order around the
+promise (the same queue a browser's `CompressionStream` already needs), so
+a small event sent after a large result still leaves after it. With
+sixteen large messages in flight the four threadpool threads bring a
+276 KB deflate to 242 µs of loop time each — a burst is where the option
+pays; a single large message merely stops blocking. In a browser the
+question does not arise: `CompressionStream` is asynchronous by
+construction, and the pure-JS codec of `@alexify/wrpc/deflate` hands
+messages past `nativeAbove` (4 KiB) to it for the same reason.
+
 ## The router dictionary {#dictionary}
 
 One-shot deflate sees every field name and every method target for the

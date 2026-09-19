@@ -51,6 +51,31 @@ const isCompressor = (value) =>
  * Strict on what IS given: a bad codec or threshold is a TypeError at
  * construction, not a message that quietly went out plain.
  */
+// The size from which the Node platform codec hands a message to zlib's
+// threadpool when `async` is on: the hand-off costs a fixed ~20 µs per
+// call and is level with the synchronous deflate at ~256 KB
+// (bench/zlib-async.js) — the same default as permessage-deflate's and the
+// HTTP encoder's `async`.
+const DEFAULT_ASYNC_THRESHOLD = 256 * 1024;
+
+/**
+ * `async: true | { threshold }` into the byte threshold, `null` for off in
+ * every spelling of off. Shared by `compression.async` and the dictionary
+ * codec's own option.
+ */
+const normalizeAsync = (value, name) => {
+  if (value === undefined || value === null || value === false) return null;
+  const options = value === true ? {} : value;
+  if (typeof options !== 'object' || Array.isArray(options)) {
+    throw new TypeError(`${name}: async must be true, false or { threshold }`);
+  }
+  const threshold = options.threshold ?? DEFAULT_ASYNC_THRESHOLD;
+  if (!(Number.isInteger(threshold) && threshold > 0)) {
+    throw new TypeError(`${name}: async.threshold must be a positive integer`);
+  }
+  return threshold;
+};
+
 const normalizeCompression = (value, name) => {
   if (value === undefined || value === null || value === false) return null;
   const options = value === true ? {} : value;
@@ -61,7 +86,13 @@ const normalizeCompression = (value, name) => {
   if (codec !== null && !isCompressor(codec)) {
     throw new TypeError(`${name}: compression.codec must provide an id, encode(bytes) and decode(bytes, maxOutput)`);
   }
-  if (codec === null) codec = nativeCompressor();
+  // `async` shapes the platform codec; an injected codec decides that for
+  // itself (the dictionary codec takes the same option on its factory).
+  const async = normalizeAsync(options.async, `${name}: compression`);
+  if (codec === null) codec = nativeCompressor({ async });
+  else if (async !== null) {
+    throw new TypeError(`${name}: compression.async applies to the platform codec — set it on the codec's factory`);
+  }
   if (codec === null) return null;
   const threshold = options.threshold ?? codec.threshold ?? DEFAULT_THRESHOLD;
   if (!(Number.isInteger(threshold) && threshold >= 0)) {
@@ -136,7 +167,9 @@ class Sequencer {
 
 module.exports = {
   DEFAULT_THRESHOLD,
+  DEFAULT_ASYNC_THRESHOLD,
   DICTIONARY_ID_PREFIX,
+  normalizeAsync,
   isCompressor,
   isPromise,
   normalizeCompression,

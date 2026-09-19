@@ -16,7 +16,8 @@
 
 const zlib = require('node:zlib');
 
-const { dictionaryId, DICTIONARY_ID_PREFIX: ID_PREFIX } = require('./index.js');
+const { dictionaryId, normalizeAsync, DICTIONARY_ID_PREFIX: ID_PREFIX } = require('./index.js');
+const { deflateEncoder } = require('./native.js');
 
 const DEFAULT_THRESHOLD = 64;
 
@@ -31,9 +32,12 @@ const toBuffer = (dictionary) => {
  * `{ id, threshold, dictionary, encode, decode }` — a Compressor over
  * `dictionary` (bytes from `buildDictionary`, or any bytes both ends
  * hold). `level` is zlib's; `threshold` the size under which a message
- * goes plain (64 B).
+ * goes plain (64 B); `async` (`true` or `{ threshold }`, 256 KiB) the size
+ * from which `encode` goes to zlib's threadpool and answers a promise —
+ * for the WebTransport and WebRTC carriers only, the same trade as the
+ * platform codec's (native.js, bench/zlib-async.js).
  */
-const dictionaryCompressor = (dictionary, { level, threshold = DEFAULT_THRESHOLD } = {}) => {
+const dictionaryCompressor = (dictionary, { level, threshold = DEFAULT_THRESHOLD, async: asyncOption } = {}) => {
   const dict = toBuffer(dictionary);
   if (dict.length === 0) throw new TypeError('dictionaryCompressor: dictionary must not be empty');
   if (!(Number.isInteger(threshold) && threshold >= 0)) {
@@ -42,13 +46,15 @@ const dictionaryCompressor = (dictionary, { level, threshold = DEFAULT_THRESHOLD
   if (level !== undefined && !(Number.isInteger(level) && level >= -1 && level <= 9)) {
     throw new TypeError('dictionaryCompressor: level must be an integer from -1 to 9');
   }
+  const async = normalizeAsync(asyncOption, 'dictionaryCompressor');
   const deflate = { dictionary: dict };
   if (level !== undefined) deflate.level = level;
   return {
     id: ID_PREFIX + dictionaryId(dict),
     threshold,
     dictionary: dict,
-    encode: (bytes) => zlib.deflateRawSync(bytes, deflate),
+    async,
+    encode: deflateEncoder(async, deflate),
     decode: (bytes, maxOutput) => zlib.inflateRawSync(bytes, { dictionary: dict, maxOutputLength: maxOutput }),
   };
 };

@@ -205,6 +205,12 @@ test('broker compression: the option is validated, and an asynchronous codec is 
     attachBrokerRpc(rpc, broker, { service: 'x', compression: { codec: asyncCodec } }),
     /must answer synchronously/,
   );
+  // The platform codec's threadpool threshold is a socket-carrier option: a
+  // frame sequence has no ordering queue to hide a promise behind.
+  await assert.rejects(
+    attachBrokerRpc(rpc, broker, { service: 'x', compression: { async: true } }),
+    /declares async — this carrier has no ordering queue/,
+  );
   await assert.rejects(attachBrokerRpc(rpc, broker, { service: 'x', maxMessage: 0 }), /maxMessage/);
   await assert.rejects(
     WrpcClient.connect('broker://x', { transport: 'broker', broker, compression: { threshold: -1 }, logger: false }),

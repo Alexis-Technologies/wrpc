@@ -161,6 +161,33 @@ test('wt compression: announced, negotiated, and applied past the threshold in b
   });
 });
 
+test('wt compression: async — a message past the threadpool threshold leaves compressed, in order with the ones behind it', async (t) => {
+  const pair = await serverPair(t, { compression: { async: { threshold: 2048 } } });
+  await waitFor(() => pair.caps.length === 1);
+  await pair.writer.write(frameCaps(JSON.stringify({ streams: false, deflate: DEFLATE })));
+  await waitFor(() => pair.socket.compression === DEFLATE);
+  assert.ok(big.length >= 2048, `${big.length} B goes to the threadpool`);
+  const medium = JSON.stringify({
+    type: 'event',
+    name: 'm',
+    data: { rows: Array.from({ length: 40 }, (_, i) => ({ i, name: `r${i}`, tags: ['aa', 'bb'] })) },
+  });
+  assert.ok(medium.length >= 1024 && medium.length < 2048, `${medium.length} B deflates on the loop`);
+  pair.socket.send(big);
+  pair.socket.send(medium);
+  pair.socket.send(small);
+  pair.socket.send(big);
+  await waitFor(() => pair.received.length === 4);
+  assert.deepStrictEqual(
+    pair.received.map((m) => m.kind),
+    [KIND_TEXT_DEFLATE, KIND_TEXT_DEFLATE, KIND_TEXT, KIND_TEXT_DEFLATE],
+  );
+  assert.strictEqual(zlib.inflateRawSync(pair.received[0].data).toString(), big);
+  assert.strictEqual(zlib.inflateRawSync(pair.received[1].data).toString(), medium);
+  assert.strictEqual(pair.received[2].data, small);
+  assert.strictEqual(zlib.inflateRawSync(pair.received[3].data).toString(), big);
+});
+
 test('wt compression: a peer naming another codec, or none, keeps the wire plain', async (t) => {
   const pair = await serverPair(t, { compression: true });
   await pair.writer.write(frameCaps(JSON.stringify({ deflate: 'brotli' })));

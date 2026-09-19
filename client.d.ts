@@ -72,6 +72,13 @@ export declare function isCodec(value: unknown): value is WrpcCodec;
 export interface Compressor {
   id: string;
   threshold?: number;
+  /**
+   * The byte size from which `encode` answers a promise (the built-in
+   * codecs' `async` option), or null/absent for a synchronous codec. The
+   * Node↔Node carriers — the broker binding, the backplane envelopes, a
+   * Node WebSocket client — refuse a codec that declares it.
+   */
+  readonly async?: number | null;
   encode(bytes: Uint8Array): Uint8Array | Promise<Uint8Array>;
   decode(bytes: Uint8Array, maxOutput: number): Uint8Array | Promise<Uint8Array>;
 }
@@ -79,16 +86,24 @@ export interface Compressor {
 export declare function isCompressor(value: unknown): value is Compressor;
 
 /**
- * `compression: true | { codec, threshold }` — off by default. `true`
- * takes the platform codec; `codec` injects one (`@alexify/wrpc/deflate`
- * for a dictionary); `threshold` is the byte size under which a message
- * goes plain (the codec's own default, 1 KiB on Node and 4 KiB in a
- * browser). A platform with no native codec and nothing injected stays
- * off.
+ * `compression: true | { codec, threshold, async }` — off by default.
+ * `true` takes the platform codec; `codec` injects one
+ * (`@alexify/wrpc/deflate` for a dictionary); `threshold` is the byte size
+ * under which a message goes plain (the codec's own default, 1 KiB on Node
+ * and 4 KiB in a browser). `async` (Node, the platform codec only — an
+ * injected codec takes it on its own factory) hands a message of
+ * `async.threshold` bytes or more (256 KiB) to zlib's threadpool instead
+ * of deflating it on the event loop: the hand-off costs ~20 µs a call, so
+ * below that size it only slows the message down (`bench/zlib-async.js`);
+ * inflate stays synchronous at every size. Accepted on the WebTransport
+ * and WebRTC carriers, which keep messages in order around a promise;
+ * the Node↔Node carriers refuse it. A platform with no native codec and
+ * nothing injected stays off.
  */
 export interface CompressionOptions {
   codec?: Compressor;
   threshold?: number;
+  async?: boolean | { threshold?: number };
 }
 
 export class WrpcError extends Error {

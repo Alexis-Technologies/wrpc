@@ -46,12 +46,15 @@ export * from './rpc.js';
  * `id` carries the dictionary's hash: two ends compress against the same
  * bytes or, when their routers differ, not at all. `threshold` defaults to
  * 64 B — with the history preloaded, small messages are what it is for.
+ * `async` (`true` or `{ threshold }`, 256 KiB) hands a message that large
+ * to zlib's threadpool and answers a promise for it — for the WebTransport
+ * and WebRTC carriers; the Node↔Node ones refuse a codec that declares it.
  * A browser needs the pure-JS codec of `@alexify/wrpc/deflate` instead.
  */
 export declare function dictionaryCompressor(
   dictionary: Uint8Array | string,
-  options?: { level?: number; threshold?: number },
-): Compressor & { readonly dictionary: Uint8Array };
+  options?: { level?: number; threshold?: number; async?: boolean | { threshold?: number } },
+): Compressor & { readonly dictionary: Uint8Array; readonly async: number | null };
 
 // ---------------------------------------------------------------------------
 // Cluster

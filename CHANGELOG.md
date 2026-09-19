@@ -13,6 +13,25 @@ narrower promise — see
 
 ### Added
 
+**`compression: { async }` — large messages deflate on zlib's threadpool on WebTransport and WebRTC**
+
+- The Node platform codec and `dictionaryCompressor(dict, { async })` take
+  `async: true | { threshold }` (256 KiB): a message that large is handed to
+  zlib's callback API and `encode` answers a promise for it, which the
+  WebTransport and WebRTC transports already keep in order; everything
+  smaller — and every inflate — stays synchronous. Measured, not assumed
+  (`bench/zlib-async.js`): the threadpool hand-off costs ~20 µs a call, so
+  below ~256 KB it only slows a message down (291 B: 28 µs against 9), and
+  inflate is cheaper on the loop at every size up to the cap. The same
+  default as `perMessageDeflate.async` and `http.compression.async`.
+- Off by default, like every compression knob. The Node↔Node carriers
+  (the broker binding, the backplane envelopes, a Node WebSocket client)
+  refuse a codec that declares `async` at construction — they have no
+  ordering queue for a promise; `compression.async` with an injected
+  `codec` is refused too (the option belongs on the codec's factory).
+- `Compressor.async` (a byte threshold or null) in the types; the
+  [compression guide](./docs/guide/compression.md#async) has the table.
+
 **Binary attachments: bytes in args, results and events travel as bytes**
 - A `Uint8Array` in a call's arguments used to arrive as `{"0":137,"1":80,…}`
   — nine times the size, and a plain object, silently. Now any typed
