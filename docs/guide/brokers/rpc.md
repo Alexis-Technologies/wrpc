@@ -147,11 +147,13 @@ const billing = await connect('broker://billing', { transport: 'broker', broker,
 
 Node↔Node by construction, so the codec must answer synchronously: the
 platform codec (raw deflate through `node:zlib`) does; `{ codec }` injects
-another — the dictionary codec of `@alexify/wrpc/deflate` once it exists —
-and a promise-answering one is refused at construction. What it costs,
+another — `'zstd'` for large answers, the router
+[dictionary](../compression#dictionary) for small ones, best as a
+[list](../compression#list) with `'deflate-raw'` behind it — and a
+promise-answering one is refused at construction. What it costs,
 `bench/broker.js` over the in-process `MemoryBroker`: a session call
-answering a 9 KB result runs at 9,315/sec plain and 5,407/sec compressed —
-about 80 µs per round trip for the deflate and the inflate, against ~10×
+answering a 9 KB result runs at 8,273/sec plain and 6,029/sec compressed —
+about 45 µs per round trip for the deflate and the inflate, against ~10×
 fewer bytes through the broker. On a real broker the bytes are the part
 that costs; the [WebTransport page](../wt#compression) has the codec's own
 numbers, since the seam is shared.

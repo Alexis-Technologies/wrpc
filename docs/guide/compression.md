@@ -59,9 +59,9 @@ at a time on Node (`node:zlib`):
 
 | Message | one-shot deflate | rate |
 | --- | ---: | ---: |
-| 108 B event | 1.1× | 143K/sec |
-| 1.4 KB callback | 6.4× | 84K/sec |
-| 24 KB callback | 13.8× | 12K/sec |
+| 108 B event | 1.1× | 129K/sec |
+| 1.4 KB callback | 6.3× | 105K/sec |
+| 24 KB callback | 13.7× | 35K/sec |
 | SSE tick, one gzip member flushed per event | 7.8× | 90K/sec |
 
 The first row is why every per-message knob has a threshold (1 KiB): a
@@ -70,6 +70,68 @@ ways to give it history. On a WebSocket, [`contextTakeover`](../reference/wire-f
 keeps a zlib window per connection (10.6× on a repeated shape, for ~160 KiB
 per direction per connection). Everywhere else — and with no state per
 connection — a **dictionary**.
+
+## Which algorithm {#algorithm}
+
+Deflate is what `true` means everywhere, and that is a measured choice, not
+an inherited one. `bench/algorithms.js`, one callback packet at a time
+through `node:zlib` — bytes out and encode time; deflate 3 is the platform
+codec's default, and every decode is 4–30 µs and decides nothing:
+
+| Plain | deflate 3 | deflate 6 | Brotli 4 | Brotli 11 | zstd 1 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| 361&nbsp;B | 199&nbsp;B&nbsp;·&nbsp;11&nbsp;µs | 199&nbsp;B&nbsp;·&nbsp;11&nbsp;µs | 195&nbsp;B&nbsp;·&nbsp;18&nbsp;µs | 160&nbsp;B&nbsp;·&nbsp;706&nbsp;µs | 203&nbsp;B&nbsp;·&nbsp;7&nbsp;µs |
+| 1.8&nbsp;KB | 385&nbsp;B&nbsp;·&nbsp;12&nbsp;µs | 376&nbsp;B&nbsp;·&nbsp;16&nbsp;µs | 334&nbsp;B&nbsp;·&nbsp;27&nbsp;µs | 296&nbsp;B&nbsp;·&nbsp;2.2&nbsp;ms | 396&nbsp;B&nbsp;·&nbsp;10&nbsp;µs |
+| 27&nbsp;KB | 3,351&nbsp;B&nbsp;·&nbsp;46&nbsp;µs | 3,196&nbsp;B&nbsp;·&nbsp;118&nbsp;µs | 2,601&nbsp;B&nbsp;·&nbsp;93&nbsp;µs | 1,748&nbsp;B&nbsp;·&nbsp;**33&nbsp;ms** | 2,848&nbsp;B&nbsp;·&nbsp;36&nbsp;µs |
+| 255&nbsp;KB | 30.3&nbsp;KB&nbsp;·&nbsp;411&nbsp;µs | 28.0&nbsp;KB&nbsp;·&nbsp;1.3&nbsp;ms | 23.6&nbsp;KB&nbsp;·&nbsp;995&nbsp;µs | 15.2&nbsp;KB&nbsp;·&nbsp;**351&nbsp;ms** | 26.7&nbsp;KB&nbsp;·&nbsp;283&nbsp;µs |
+
+What follows from it:
+
+- **Up to ~2 KB — where RPC messages live — the three are level**, within a
+  few bytes and microseconds. Deflate is also the one format every
+  `CompressionStream`, every Node and the WebSocket extension have, and the
+  one the [router dictionary](#dictionary) works best with (a 150 B event:
+  59 B with a deflate dictionary, 76 B with a zstd one). So it stays the
+  default, and a browser-facing service needs nothing else.
+- **Deflate's knee is level 3**, the platform codec's default: zlib's levels
+  1–3 are its fast strategy and 4+ the lazy one, so level 4 is both slower
+  *and* larger than 3, and level 6 buys 5% at 27 KB for 2.5× the CPU.
+  `deflateCompressor({ level: 6 })` when the bytes matter more.
+- **From ~16 KB, zstd** is a third of deflate-6's cost and 10% smaller: the
+  pick for Node↔Node wires with large answers — the broker binding, the
+  backplane, a Node WebSocket client — as `codec: ['zstd', 'deflate-raw']`,
+  so an older Node still compresses.
+- **Brotli 4 is the smallest at deflate-6's price**: the pick when the link
+  is the cost (mobile, metered egress). Never zlib's own default, quality
+  11 — it is an archive setting, milliseconds a message — which is why
+  `'brotli'` and `brotliCompressor()` exist instead of two lines of zlib.
+- **SSE stays gzip**, and [says why](./sse#compression): flushed per event
+  the other two save nothing and hold 2–3× the memory per open response.
+- **`perMessageDeflate` stays deflate** because RFC 7692 is the only
+  WebSocket extension a browser implements; there is no algorithm to choose
+  there, only `level`, `contextTakeover` and `async`.
+
+LZ4, Snappy and the rest are not in `node:zlib`, and wrpc installs nothing —
+but [the seam](#codec) takes them: wrap the package you chose in `id`,
+`encode`, `decode` and put it first in the list.
+
+```js
+const lz4 = require('lz4-napi'); // your dependency, not wrpc's
+
+const lz4Codec = {
+  id: 'lz4',
+  threshold: 512,
+  encode: (bytes) => lz4.compressSync(bytes),
+  // `decode` MUST stop at maxOutput — the cap is what bounds a compression bomb.
+  decode: (bytes, maxOutput) => {
+    const out = lz4.uncompressSync(bytes);
+    if (out.length > maxOutput) throw new RangeError('inflated message exceeds the cap');
+    return out;
+  },
+};
+
+attachBrokerRpc(server, broker, { compression: { codec: [lz4Codec, 'deflate-raw'] } });
+```
 
 ## On the loop, or on the threadpool {#async}
 

@@ -275,6 +275,14 @@ commitment is the cost per frame. The peers that need it are usually
 identifiable at the handshake, which is what `filter(req)` is for — see
 [when compression is worth it](../guide/performance#compression-is-off-by-default).
 
+The algorithm is not a choice here. RFC 7692 is the only WebSocket extension
+a browser implements, so this wire is DEFLATE whatever else is available;
+the knobs are `level`, `contextTakeover` and `async`. Every other wire takes
+a codec by name or by injection — Brotli, zstd, your own — and
+[the compression guide](../guide/compression#algorithm) has the numbers that
+decide between them. A Node client's own frames are such a wire: its
+`compression` option rides above the extension and takes any codec.
+
 ::: warning A Node client never sends a compressed frame
 Node's built-in `WebSocket` offers `permessage-deflate` on the upgrade and
 inflates what it receives, but never deflates what it sends — every frame it

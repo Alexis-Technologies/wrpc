@@ -13,6 +13,17 @@ narrower promise — see
 
 ### Added
 
+**Docs: which compression algorithm**
+
+- The [compression guide](./docs/guide/compression.md#algorithm) has the
+  table that decides — deflate 3 / 6, Brotli 4 / 11, zstd 1 over 361 B to
+  255 KB — and what follows from it: deflate up to ~2 KB and wherever a
+  browser or the router dictionary is involved, `['zstd', 'deflate-raw']`
+  on Node↔Node wires with large answers, Brotli 4 when the link is the
+  cost, gzip for SSE, and an injected LZ4 as the worked example of the
+  seam. The protocol reference states the list rule once, under its
+  compression table.
+
 **`http.compression.encodings` / `sse.compression.encodings` — Brotli, zstd, or your own coding**
 
 - `encodings` is the server's list of `Content-Encoding`s in **its** order
@@ -297,11 +308,11 @@ narrower promise — see
   ahead of `contextTakeover` and `async`, which do nothing without it; the
   server options, the rooms page, the proxy notes and the deploy checklist
   point at the same section. No behavior changed.
-- The honest limits are written down too: the knob covers the WebSocket
-  only (HTTP, SSE, WebRTC, WebTransport and broker frames are uncompressed
-  today), and a Node client never sends a compressed frame — the built-in
-  `WebSocket` offers `permessage-deflate` but only inflates, so a Node↔Node
-  link compresses server→client only.
+- The honest limits are written down too: `perMessageDeflate` covers the
+  WebSocket only — every other wire has its own knob (the entries above) —
+  and a Node client never sends a compressed frame by itself: the built-in
+  `WebSocket` offers `permessage-deflate` but only inflates, which is what
+  the client's own `compression` option is for.
 
 **Telemetry: the honest set**
 - `wrpc.server.sessions` records all five operations. It only ever said
