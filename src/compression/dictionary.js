@@ -16,10 +16,9 @@
 
 const zlib = require('node:zlib');
 
-const { dictionaryId } = require('./index.js');
+const { dictionaryId, DICTIONARY_ID_PREFIX: ID_PREFIX } = require('./index.js');
 
 const DEFAULT_THRESHOLD = 64;
-const ID_PREFIX = 'deflate-raw+dict:';
 
 const toBuffer = (dictionary) => {
   if (Buffer.isBuffer(dictionary)) return dictionary;

@@ -272,7 +272,7 @@ See [Logging](https://wrpc.vercel.app/guide/logging) and
 
 | Subpath | Exports | Docs |
 | --- | --- | --- |
-| `@alexify/wrpc` | `Server`, `RpcServer`, `WrpcClient`, `connect`, `defineRouter`, `procedure`, `tracked`, `createEventLog`, `createEventStream`, `MemorySessionStore`, `WrpcReadable`, `WrpcWritable`, `WrpcError`, `chunkEncode`/`chunkDecode` | [Server](https://wrpc.vercel.app/guide/server) · [Client](https://wrpc.vercel.app/guide/client) |
+| `@alexify/wrpc` | `Server`, `RpcServer`, `WrpcClient`, `connect`, `defineRouter`, `procedure`, `tracked`, `createEventLog`, `createEventStream`, `MemorySessionStore`, `WrpcReadable`, `WrpcWritable`, `WrpcError`, `chunkEncode`/`chunkDecode`, `buildDictionary`, `dictionaryCompressor`, `isCompressor` | [Server](https://wrpc.vercel.app/guide/server) · [Client](https://wrpc.vercel.app/guide/client) · [Compression](https://wrpc.vercel.app/guide/compression) |
 | `@alexify/wrpc/ws` | `WebsocketServer`, `Connection`, `Frame`, `FrameParser`, `OPCODES`, `CLOSE_CODES` | [Wire format](https://wrpc.vercel.app/reference/wire-format) |
 | `@alexify/wrpc/engine` | `createNodeEngine`, `isEngine`, the `Engine`/`WrpcSocket` contracts | [Engine port](https://wrpc.vercel.app/reference/engine) |
 | `@alexify/wrpc/uws` | `createUwsEngine`, `UwsSocket` | [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws) |
@@ -284,6 +284,7 @@ See [Logging](https://wrpc.vercel.app/guide/logging) and
 | `@alexify/wrpc/sse` | `SseChannels`, `ServerSseTransport`, `ClientSseTransport`, `SseParser` | [Server-Sent Events](https://wrpc.vercel.app/guide/sse) |
 | `@alexify/wrpc/query` | `createQueryUtils` | [TanStack Query](https://wrpc.vercel.app/guide/query) |
 | `@alexify/wrpc/auth` | `bearerAuth`, `memoryStore`, `webStorage`, `cookieStorage`, `bearerTransport`, `payloadTransport` | [Authentication](https://wrpc.vercel.app/guide/auth) |
+| `@alexify/wrpc/deflate` | `createDeflateCodec`, `inflateRaw`, `deflateRaw`, `DeflateError` — a pure-JS DEFLATE codec with a preset dictionary, for browsers and anywhere a synchronous codec is wanted | [Compression](https://wrpc.vercel.app/guide/compression#deflate) |
 | `@alexify/wrpc/webrtc` | `WrpcPeer`, `PeerLink`, `Mesh`, `PeerHost`, `RtcLink`, `wrpcSignaler`, `createSignalingUnit`, `createSignalingHooks`, `createAssertionIssuer`, `createAssertionVerifier`, `createW3cAdapter` | [WebRTC](https://wrpc.vercel.app/guide/webrtc), [identity and trust](https://wrpc.vercel.app/guide/webrtc-trust) |
 | `@alexify/wrpc/wt` | `attachSession`, `acceptSessions`, `fromFails`, `failsRequestCallback`, `fromQuico`, `WtSocket`, `isWtSession` (experimental; the `wt` client transport is in the main entry) | [WebTransport](https://wrpc.vercel.app/guide/wt) |
 | `wrpc` (bin) | `wrpc types <url> --out api.d.ts` | [Codegen CLI](https://wrpc.vercel.app/guide/cli) |

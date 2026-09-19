@@ -13,6 +13,28 @@ narrower promise — see
 
 ### Added
 
+**`@alexify/wrpc/deflate` — the dictionary in a browser, and a synchronous codec anywhere**
+- A DEFLATE codec in plain JavaScript on its own subpath (4.5 KB
+  min+gzip, loaded only by a page that injects it). `createDeflateCodec({
+  dictionary })` is a `Compressor` whose `id` matches
+  `dictionaryCompressor`'s for the same bytes, so a browser peer on it and
+  a Node peer on node:zlib negotiate with each other; without a dictionary
+  it is `deflate-raw`, which the platform codecs read. The inflater is
+  complete — stored, fixed and dynamic blocks, a preset dictionary, the
+  inflated-size cap — and every malformed input is a coded `DeflateError`.
+  The encoder is LZ77 against the dictionary written as one fixed-Huffman
+  block, measured first (`bench/deflate-js.js`): on a 108 B event with the
+  dictionary it produces the same 51 B zlib's dynamic trees do, at 100K/sec
+  against zlib's 136K and CompressionStream's 24K, and its inflate runs at
+  a million a second. Past `nativeAbove` (4 KiB) — where fixed codes fall
+  30–45% behind — a browser hands the message to CompressionStream
+  (dynamic Huffman, no dictionary; the output still inflates on the
+  dictionary side); in Node the codec stays synchronous. `inflateRaw` and
+  `deflateRaw` are exported as primitives.
+- Tests, the main body of it: an interop matrix both ways against
+  node:zlib at every level and strategy and against the platform streams,
+  a 400-payload fuzz corpus, and the malformed-input table.
+
 **A preset dictionary from the router (`buildDictionary`, `dictionaryCompressor`)**
 - One-shot deflate has no history: a 108 B event compresses to 99 B.
   `buildDictionary(router)` reads the router's introspection — field names

@@ -104,6 +104,11 @@ const ENTRIES = [
   // deliberately OUTSIDE the main entry so only apps that opt into the
   // strategies pay for them.
   { label: 'auth strategies (@alexify/wrpc/auth)', entry: 'auth.js', platform: 'browser', budget: 2 },
+  // The pure-JS DEFLATE codec: inflate (stored, fixed, dynamic) and a
+  // fixed-Huffman encoder against a preset dictionary — browser-reachable
+  // by design, and deliberately OUTSIDE every other entry so only a page
+  // that injects it pays for it.
+  { label: 'deflate codec (@alexify/wrpc/deflate)', entry: 'deflate.js', platform: 'browser', budget: 5 },
   // A peer is a client AND a server: the webrtc browser entry bundles the
   // client core plus the router, dispatcher, per-peer Client, rooms and
   // Broadcast (what makes a mesh broadcast/ask a single-encode fan-out),

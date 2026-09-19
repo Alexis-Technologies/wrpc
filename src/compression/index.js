@@ -25,6 +25,9 @@
 const { nativeCompressor } = require('./native.js');
 
 const DEFAULT_THRESHOLD = 1024;
+// A dictionary codec's id: the prefix plus `dictionaryId` of the bytes —
+// shared by the Node zlib codec and the pure-JS one so the two negotiate.
+const DICTIONARY_ID_PREFIX = 'deflate-raw+dict:';
 
 const isPromise = (value) => value !== null && typeof value === 'object' && typeof value.then === 'function';
 
@@ -133,6 +136,7 @@ class Sequencer {
 
 module.exports = {
   DEFAULT_THRESHOLD,
+  DICTIONARY_ID_PREFIX,
   isCompressor,
   isPromise,
   normalizeCompression,

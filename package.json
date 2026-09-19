@@ -85,6 +85,10 @@
       "types": "./auth.d.ts",
       "default": "./auth.js"
     },
+    "./deflate": {
+      "types": "./deflate.d.ts",
+      "default": "./deflate.js"
+    },
     "./webrtc": {
       "browser": {
         "types": "./webrtc.browser.d.ts",
@@ -265,6 +269,8 @@
     "query.d.ts",
     "auth.js",
     "auth.d.ts",
+    "deflate.js",
+    "deflate.d.ts",
     "rpc.d.ts",
     "webrtc.js",
     "webrtc.browser.js",

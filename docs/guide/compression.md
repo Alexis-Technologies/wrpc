@@ -81,15 +81,61 @@ Throughput is the same (118K/sec against 111K on the event), so the
 dictionary codec's threshold is 64 B rather than 1 KiB: small messages are
 what it is for; a large one has all the history it needs inside itself.
 
-Where it works today: every Node↔Node carrier — the broker binding, the
-backplane envelopes, a Node WebSocket client's frames, a Node peer on
-WebRTC or WebTransport. A **browser** has only `CompressionStream`, which
-takes no dictionary; the pure-JS codec of `@alexify/wrpc/deflate` (its own
-subpath, so a page that does not want it never loads it) is what brings
-the dictionary there, and a browser peer builds the same dictionary with
-`buildDictionary` from the WebRTC barrel. On a WebSocket from a browser the
-dictionary is impossible in principle — the browser's own permessage-deflate
-does the compressing — and `contextTakeover` is the tool instead.
+Where it works with the platform codec: every Node↔Node carrier — the
+broker binding, the backplane envelopes, a Node WebSocket client's frames,
+a Node peer on WebRTC or WebTransport. A **browser** has only
+`CompressionStream`, which takes no dictionary — which is what the next
+section is for. On a WebSocket from a browser the dictionary is impossible
+in principle: the browser's own permessage-deflate does the compressing,
+and `contextTakeover` is the tool instead.
+
+## The dictionary in a browser: `@alexify/wrpc/deflate` {#deflate}
+
+A DEFLATE codec in plain JavaScript, on its own subpath so a page that
+does not inject it never loads a byte of it (4.5 KB min+gzip when it does):
+
+```js
+import { createDeflateCodec } from '@alexify/wrpc/deflate';
+
+// `dictionary`: the same bytes the server built — served by the app, or
+// built here from the same router by a browser peer.
+const codec = createDeflateCodec({ dictionary });
+const client = await connect(url, { transport: ['wt', 'ws'], compression: { codec } });
+new WrpcPeer({ router, signaler, compression: { codec: createDeflateCodec({ dictionary: buildDictionary(router) }) } });
+```
+
+Its `id` is the Node dictionary codec's for the same bytes, so a browser
+peer on this codec and a Node peer on `node:zlib` negotiate with each
+other; without a dictionary it is the platform id, and the platform codecs
+read it. The inflater is complete — stored, fixed and dynamic blocks,
+whatever zlib or a `CompressionStream` on the other end chose — takes the
+dictionary, and is capped like every decoder here. The encoder is
+deliberately simple: LZ77 against the dictionary, written as one
+**fixed-Huffman** block, because on the messages this exists for a dynamic
+tree costs more than it saves. `bench/deflate-js.js`:
+
+| Message | own encoder, dictionary | zlib, dictionary | `CompressionStream` |
+| --- | ---: | ---: | ---: |
+| 108 B event | **51 B**, 100K/sec | 51 B, 136K/sec | 97 B, 24K/sec |
+| 2 KB callback | 263 B, 43K/sec | 204 B, 72K/sec | 250 B, 19K/sec |
+| 28 KB callback | 2645 B, 4.5K/sec | 1824 B, 11.6K/sec | 1892 B, 8K/sec |
+
+On the small message fixed codes produce *the same bytes* as zlib's dynamic
+ones at a similar rate — and inflating it back runs at a million a second,
+faster than zlib's own one-shot API. Past a couple of kilobytes fixed codes
+fall 30–45% behind, so the codec is a hybrid: from `nativeAbove` (4 KiB)
+up, a message goes to the platform's `CompressionStream` — dynamic
+Huffman, no dictionary, which a large payload does not need — and the
+output still inflates on a peer holding the dictionary. That hand-off is
+asynchronous and on by default in a browser only; in Node the codec
+answers synchronously whatever the size, so it works on the Node↔Node
+carriers too (where `dictionaryCompressor` on `node:zlib` is the faster
+choice anyway).
+
+Tests are the main body of that subpath, not the codec: an interop matrix
+both ways against `node:zlib` at every level and strategy and against the
+platform streams, a fuzz corpus, and every malformed input answered with a
+coded `DeflateError` rather than a wrong byte.
 
 ## The codec seam {#codec}
 
