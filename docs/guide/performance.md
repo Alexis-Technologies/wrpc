@@ -51,6 +51,7 @@ and which knobs are worth turning for your traffic shape.
 | Setting | Default | Turn it on when |
 | --- | --- | --- |
 | shared-frame broadcast path | always on | never — it's the fix for the fan-out cost, not a tradeoff to opt into |
+| `perMessageDeflate` | off | the peer is bandwidth-bound (mobile, metered, cross-region) and frames are past a kilobyte — [Compression is off by default](#compression-is-off-by-default) has the numbers. Off because a default would spend CPU on every frame of every peer to save bytes only some of them need |
 | `contextTakeover` | off | you repeatedly broadcast the **same shape** (price ticks, presence deltas) to bandwidth-constrained clients — ~10× the compression ratio, for ~160 KiB of zlib state per direction per connection |
 | `async: { threshold }` | off | large broadcasts (≥256 KB payloads) would otherwise stall the event loop for the length of the burst |
 | client `batch: true` | off | you fire many RPC calls back to back — bulk hydration, chart backfills — where it beats an engine swap by ~11× below, at the cost of a single call waiting on a flush |
@@ -208,6 +209,66 @@ calls — a dashboard hydrating a dozen panels on load — produces one timer
 and one deque entry each, not a dozen independent `setTimeout`s and their
 closures; the throughput numbers are evidence that the design doesn't cost
 anything, not the reason it exists.
+
+## Compression is off by default
+
+Nothing in wrpc compresses anything unless you ask: `perMessageDeflate`
+on the built-in engine and `compression` on the [uws engine](./adapters/uws)
+are both off, and the `contextTakeover` / `async` rows above are refinements
+of a knob that has to be on first. That is a choice, not an oversight —
+wrpc's first commitment is the cost per frame, and the same
+`bench/deflate-context.js` that measures the modes below prices the knob
+itself:
+
+| One-shot deflate (the default mode, once enabled) | rate | ratio |
+| --- | ---: | ---: |
+| repeated 90 B JSON event | 108,461/sec | 1.1× |
+| 4 KB JSON | 93,419/sec | 3.1× |
+| 32 KB JSON | 17,744/sec | 3.9× |
+
+Read the first row as the reason for the default: a small event costs a
+deflate call (~9 µs here) to lose a tenth of its bytes. The other two are the
+reason to turn it on for the right peer — a 4 KB call frame is a third of
+its size on the wire, and every frame above the 1 KiB `threshold` pays that
+once. Below the threshold nothing is compressed even when the option is on.
+
+Turn it on where the bytes are worth the CPU, and only there:
+
+```js
+// The batteries-included server — `ws` is forwarded to the engine.
+new Server({
+  router,
+  ws: {
+    perMessageDeflate: {
+      threshold: 1024,
+      // Per peer: a browser on a slow link, not a service next door.
+      filter: (req) => req.headers['x-forwarded-proto'] !== undefined,
+    },
+  },
+});
+
+// The engine directly, or uws with its own compressor constant.
+createNodeEngine({ perMessageDeflate: true });
+createUwsEngine({ uws, compression: uws.SHARED_COMPRESSOR });
+```
+
+Per message, `{ compress: false }` on an emit skips a frame that is already
+compressed or latency-critical — see [rooms](./rooms#compression). The full
+option set is on the [wire format](../reference/wire-format#permessage-deflate)
+page.
+
+Two honest limits of what the knob covers:
+
+- **It compresses the WebSocket only.** Plain HTTP responses, SSE streams,
+  WebRTC data channels, WebTransport streams and broker frames carry
+  exactly the bytes you hand them today — there is no compression on those
+  paths yet, on or off.
+- **A Node client never compresses what it sends.** Node's built-in
+  `WebSocket` offers `permessage-deflate` on the handshake but only ever
+  inflates: every frame it sends leaves with `RSV1` clear, whatever the
+  server negotiated. Server→client frames compress as usual; a browser
+  compresses both directions itself. The same holds for the uws engine —
+  the client's own implementation is what decides its outbound frames.
 
 ## Compression modes
 

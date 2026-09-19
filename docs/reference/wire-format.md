@@ -262,6 +262,20 @@ per-connection memory: context takeover keeps a zlib window alive per peer,
 and thousands of idle connections each holding one is a worse problem than a
 slightly larger frame.
 
+The option is off by default on purpose: a deflate per frame is CPU spent for
+every peer to save bytes only some of them need, and the server's first
+commitment is the cost per frame. The peers that need it are usually
+identifiable at the handshake, which is what `filter(req)` is for — see
+[when compression is worth it](../guide/performance#compression-is-off-by-default).
+
+::: warning A Node client never sends a compressed frame
+Node's built-in `WebSocket` offers `permessage-deflate` on the upgrade and
+inflates what it receives, but never deflates what it sends — every frame it
+emits has `RSV1` clear, whatever the server accepted. Compression on a
+Node↔Node link is therefore server→client only. Browsers compress both
+directions.
+:::
+
 ### Context takeover
 
 `contextTakeover: 'server' | 'client' | true` opts a direction into a live

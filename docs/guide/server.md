@@ -64,7 +64,7 @@ adapter shares.
 | `key` / `cert` / `SNICallback` | — | TLS material, forwarded to `https.createServer`. |
 | `nagle` | `true` | `false` sets `noDelay` on the listener. |
 | `engine` | `createNodeEngine()` | The WebSocket [engine](../reference/engine). |
-| `ws` | `{}` | Forwarded to the engine's `attach()` — `path`, `protocols`, `verifyClient`, `perMessageDeflate`, … |
+| `ws` | `{}` | Forwarded to the engine's `attach()` — `path`, `protocols`, `verifyClient`, `perMessageDeflate`, … Compression is **off** until you pass `perMessageDeflate` — see [performance](./performance#compression-is-off-by-default). |
 | `maxBodySize` | 10 MiB | Request-body cap in bytes for the built-in HTTP path. |
 | `retry` | `3` | `EADDRINUSE` bind attempts before giving up. |
 | `timeouts.bind` | `2000` | Milliseconds between those attempts. |

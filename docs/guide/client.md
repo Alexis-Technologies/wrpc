@@ -45,6 +45,14 @@ const client = await WrpcClient.connect('https://host/api', { transport: 'sse' }
 Anything HTTP cannot carry is an **error**, not a silent no-op: asking for a
 subscription over HTTP is answered with code `400` rather than hanging.
 
+::: tip Compression is the server's decision — and, in Node, one-directional
+`ws` frames are compressed only when the server enables `perMessageDeflate`
+(off by default). A browser then compresses both directions itself; a Node
+client does not — its built-in `WebSocket` inflates but never deflates, so
+client→server frames from Node are always sent as-is. See
+[performance](./performance#compression-is-off-by-default).
+:::
+
 ### Injecting `fetch` (http/sse)
 
 The `http` and `sse` transports call `fetch` for every request; `options.fetch`

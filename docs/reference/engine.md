@@ -187,6 +187,7 @@ discovered.
 ```js
 const { createNodeEngine } = require('@alexify/wrpc/engine');
 
+// Both are opt-in; permessage-deflate in particular is off until asked for.
 const engine = createNodeEngine({ perMessageDeflate: true, maxBackpressure: 1024 * 1024 });
 new Server({ router, engine });
 ```

@@ -13,6 +13,22 @@ narrower promise — see
 
 ### Added
 
+**Compression, documented as the choice it is**
+- Nothing in wrpc compresses by default — `perMessageDeflate` on the
+  built-in engine, `compression` on uws — and that stays: a default would
+  spend a deflate on every frame of every peer to save bytes only some of
+  them need. The performance guide now says so in one place ("Compression is
+  off by default"), with the cost of the knob from `bench/deflate-context.js`
+  next to the ratio it buys; the knob table names `perMessageDeflate` itself
+  ahead of `contextTakeover` and `async`, which do nothing without it; the
+  server options, the rooms page, the proxy notes and the deploy checklist
+  point at the same section. No behavior changed.
+- The honest limits are written down too: the knob covers the WebSocket
+  only (HTTP, SSE, WebRTC, WebTransport and broker frames are uncompressed
+  today), and a Node client never sends a compressed frame — the built-in
+  `WebSocket` offers `permessage-deflate` but only inflates, so a Node↔Node
+  link compresses server→client only.
+
 **Telemetry: the honest set**
 - `wrpc.server.sessions` records all five operations. It only ever said
   `restore`, while a unit test asserted a `create` shape nothing in the

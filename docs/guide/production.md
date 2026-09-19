@@ -147,6 +147,12 @@ stream ids are re-checked every time one is minted.
   WebSockets. This is the single most common "it works locally" failure.
 - **Buffering.** SSE needs the proxy's response buffering **off** for
   `{basePath}/events`, or frames arrive in clumps.
+- **Compression.** Nothing is compressed unless you turn it on
+  (`ws.perMessageDeflate`, off by default — a deliberate
+  [performance choice](./performance#compression-is-off-by-default)). If you
+  do, a proxy that terminates WebSockets itself has to forward the
+  `Sec-WebSocket-Extensions` offer, or the negotiation quietly ends at the
+  proxy and no frame is ever compressed.
 
 ## Sticky routing
 
@@ -188,6 +194,7 @@ carries backpressure all the way into TCP; see [Binary streams](./streams#backpr
 - [ ] `instanceId` comes from the orchestrator
 - [ ] Readiness probe hits the bound port; `server.address()` is how it is read
 - [ ] Proxy forwards upgrades, idle timeout > heartbeat, SSE buffering off
+- [ ] Compression decided — it is off by default; `perMessageDeflate` with a `filter` for the peers that need it
 - [ ] Sticky routing on the session cookie if SSE or event logs are used
 - [ ] A [logger](./logging) is injected — the default writes to `console`
 - [ ] `introspection` decided; per-connection limits reviewed
