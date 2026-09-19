@@ -13,6 +13,20 @@ narrower promise — see
 
 ### Added
 
+**`bench/algorithms.js` — which algorithm, at which level**
+
+- deflate, Brotli and Zstandard out of `node:zlib`, at the levels a
+  per-message codec can afford, over 200 B – 255 KB callback packets, plus
+  the flushed persistent stream an SSE response uses with its memory per
+  open response. What it found: up to ~2 KB deflate is level with zstd in
+  bytes and CPU; deflate's knee is level 3 (27 KB: 46 µs / 3,351 B against
+  level 6's 118 µs / 3,196 B, and level 4 is slower and larger than 3);
+  zstd level 1 is the cheapest at 27 KB and past it (36 µs / 2,848 B);
+  Brotli quality 4 is the smallest at deflate-6 cost (93 µs / 2,601 B), and
+  zlib's own Brotli default, quality 11, takes 33 **ms** there; a flushed
+  Brotli or zstd stream saves nothing over gzip on small events (23 / 18 /
+  20 B an event) and holds 570 / 930 KB per open response against 320.
+
 **`compression: { async }` — large messages deflate on zlib's threadpool on WebTransport and WebRTC**
 
 - The Node platform codec and `dictionaryCompressor(dict, { async })` take
