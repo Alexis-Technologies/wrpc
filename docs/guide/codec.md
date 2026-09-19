@@ -46,6 +46,10 @@ indistinguishable from a stream chunk on a WebSocket, and could not ride
 SSE at all. REST bodies have no such collision, which is exactly what the
 `rest` section below exists for.
 
+A packet codec owns the wire, so [binary attachments](./streams#attachments)
+are off under one: bytes in a packet are the codec's to carry (msgpack does
+natively), and the default frame is not written.
+
 ## REST bodies: codec.rest {#rest-bodies-codec-rest}
 
 The optional `rest` section of the same codec object re-frames **REST

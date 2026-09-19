@@ -245,6 +245,7 @@ class ClientSseTransport extends ClientTransport {
 
   write(data) {
     if (!this.active || this.#channel === null) throw new Error('Not connected');
+    if (typeof data !== 'string') throw new TypeError('SSE carries text only: binary attachments need a WebSocket');
     const headers = {
       ...this.#headers,
       ...this.#meta,

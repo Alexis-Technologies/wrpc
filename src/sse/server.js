@@ -5,6 +5,8 @@ const { resolveGenerateId } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
 const { UNKNOWN_TARGET } = require('../rpc/dispatcher.js');
 const { normalizeCompression, shouldEncode, markEncoded, gzipWriter } = require('../contentEncoding.js');
+const { hasBytes } = require('../attachments.js');
+const { wireError } = require('../rpc/errors.js');
 
 // Server-Sent Events as a wrpc transport.
 //
@@ -99,6 +101,23 @@ class ServerSseTransport extends ServerTransport {
       // The response died under us; the close listener will clean up.
       return false;
     }
+  }
+
+  // Text only, in both directions: a packet holding bytes cannot ride an
+  // event stream, and the answer is an explicit 501 on the call it was —
+  // never the objects JSON makes of typed arrays. An event with bytes has
+  // no id to answer on and is dropped with a warning on the client's log.
+  send(obj, code = 200, text = null) {
+    if (!this.codec && this.attachments !== false && hasBytes(obj)) {
+      if (obj.type === 'callback' && obj.id) {
+        const cause = Object.assign(new Error('Binary attachments need a WebSocket'), { expose: true });
+        const refusal = { type: 'callback', id: obj.id, error: wireError(501, cause) };
+        return super.send(refusal, 501);
+      }
+      this.onRefused?.(obj);
+      return false;
+    }
+    return super.send(obj, code, text);
   }
 
   write(data) {
@@ -398,6 +417,7 @@ class SseChannels {
     // The whole call, not just its headers: the injected addClient builds
     // the client's meta (headers, url, remoteAddress) from it too.
     const client = this.#addClient(transport, call);
+    transport.onRefused = (packet) => client.log.warn({ event: 'sse.bytes', type: packet.type, name: packet.name });
     const key = this.#channelKey(call.headers ?? {});
     const channel = new SseChannel({ id: channelId, key, client, transport, ...this.#options });
     this.#channels.set(channelId, channel);

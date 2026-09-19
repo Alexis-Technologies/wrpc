@@ -155,6 +155,41 @@ A disconnect terminates every stream the client held. `readable.status` is
 `'active'`, `'closed'` or `'terminated'`; `bytesRead` is what has been
 consumed so far, against the announced `size`.
 
+## Bytes inside a call, not as a stream {#attachments}
+
+A stream is for bytes that do not fit in memory or should not wait for
+their end. Bytes that *do* fit — an avatar, a thumbnail, a signature, a
+serialized model — belong in the call, and they can simply be put there:
+
+```js
+await client.api.files.put({ name: 'avatar.png', body: pngBytes }); // a Uint8Array
+const { thumbnail } = await client.api.files.get({ id }); // arrives as a Uint8Array
+context.client.sendEvent('files/ready', { preview: bytes });
+```
+
+Any typed array, `ArrayBuffer` or `DataView` anywhere in a packet's args,
+result, event data or error details travels as **binary attachments**: the
+packet's JSON goes out with `null` at each byte leaf and an index of where
+the leaves were, the buffers follow in the same frame, and the other end
+puts them back — as fresh `Uint8Array`s that own their bytes. No base64
+(a third more), and none of what `JSON.stringify` makes of a typed array
+otherwise: a `{"0":137,"1":80,…}` object nine times the size that used to
+arrive silently as a plain object. Every transport carries it — a binary
+WebSocket frame, a WebTransport or data-channel message, a broker frame, a
+worker port, an HTTP body under `application/octet-stream` — except SSE,
+which is text-only and refuses explicitly: a `TypeError` on the client for
+bytes going up, a `501` on the call for a result coming down.
+
+On by default. The cost is a walk of every outbound packet to find the
+bytes (`bench/attachments.js`: tens of nanoseconds on a small callback, a
+few microseconds on a 30 KB one); `attachments: false` on both ends skips
+it and sends every packet as JSON, as revision 1 did. Under a packet
+[codec](./codec) it is off by itself — the codec owns the wire. A REST
+result holding bytes needs `codec.rest` and answers `501` without it; a
+room event with bytes reaches the instance's own members and is refused
+for the backplane (`backplane.bytes` in the log), whose envelopes are JSON.
+The frame's layout is on the [protocol page](../reference/protocol#binary-chunks).
+
 ## Chunk framing
 
 Each binary frame is one chunk of one stream:

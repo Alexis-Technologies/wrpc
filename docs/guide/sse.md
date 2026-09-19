@@ -166,6 +166,11 @@ oblivion.
 
 ## What it cannot do
 
+- **Bytes.** Neither a binary stream nor a packet with
+  [binary attachments](./streams#attachments): a call with bytes in its
+  arguments is a `TypeError` on the client, a result with bytes answers
+  `501`, and an event with bytes is dropped with `sse.bytes` in the log.
+
 **Binary streams.** SSE frames are text, so wrpc's binary streams are *refused*
 on this transport rather than silently corrupted — `client.binary` is `false`
 server-side, and `createStream`/`getStream` throw. Use a WebSocket for those.

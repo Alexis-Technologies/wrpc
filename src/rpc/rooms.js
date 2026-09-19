@@ -2,6 +2,7 @@
 
 const { jsonParse } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
+const { hasBytes, encodeAttachments } = require('../attachments.js');
 
 // Rooms: named groups of clients, layered on top of the existing
 // `{ type: 'event' }` packets — no new wire type is needed, a room broadcast
@@ -147,6 +148,7 @@ class Broadcast {
   #log;
   #otel;
   #codec;
+  #attachments;
 
   constructor({
     registry,
@@ -156,6 +158,7 @@ class Broadcast {
     log = globalThis.console,
     otel = null,
     codec = null,
+    attachments = true,
     targets = null,
     excluded = null,
     localOnly = false,
@@ -167,6 +170,7 @@ class Broadcast {
     this.#log = createLoggerWriter(log);
     this.#otel = otel;
     this.#codec = codec;
+    this.#attachments = attachments;
     this.#targets = targets;
     this.#excluded = excluded;
     this.#localOnly = localOnly;
@@ -181,6 +185,7 @@ class Broadcast {
       log: this.#log,
       otel: this.#otel,
       codec: this.#codec,
+      attachments: this.#attachments,
       targets: this.#targets,
       excluded: this.#excluded,
       localOnly: this.#localOnly,
@@ -251,11 +256,17 @@ class Broadcast {
     // A payload that cannot serialize (circular) is reported, not thrown:
     // the broadcaster is usually far from whoever built the value.
     let text;
+    let binary = false;
     try {
       // A configured codec is server-wide, so this stays a SINGLE encode
-      // for the whole fan-out — same property the JSON path has.
+      // for the whole fan-out — same property the JSON path has. Bytes in
+      // the data make it ONE attachments frame for every recipient.
       const packet = { type: 'event', name, data };
-      text = this.#codec ? this.#codec.encode(packet) : JSON.stringify(packet);
+      if (this.#codec) text = this.#codec.encode(packet);
+      else if (this.#attachments !== false && hasBytes(packet)) {
+        binary = true;
+        text = encodeAttachments(packet);
+      } else text = JSON.stringify(packet);
     } catch (error) {
       this.#log.error({ err: error, event: 'broadcast.serialize', name });
       return 0;
@@ -283,7 +294,15 @@ class Broadcast {
         this.#log.error({ err: error, event: 'broadcast.send', name });
       }
     }
-    const published = Boolean(!this.#localOnly && this.#publish);
+    let published = Boolean(!this.#localOnly && this.#publish);
+    if (published && binary) {
+      // The backplane carries JSON envelopes: bytes would arrive on the
+      // other instances as the plain objects this frame exists to avoid.
+      // Local delivery happened; the cross-instance half is named, not
+      // silently corrupted.
+      published = false;
+      this.#log.warn({ event: 'backplane.bytes', name });
+    }
     if (published) {
       // The flag rides only when set: the envelope stays what it was.
       this.#publish(

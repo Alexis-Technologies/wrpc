@@ -16,6 +16,7 @@ const { createLoggerWriter } = require('../logging.js');
 // host, a standalone Client) must not pull the whole server facade into a
 // browser bundle for it.
 const { DISABLED: DISABLED_TELEMETRY } = require('../telemetry/shared.js');
+const { hasBytes, encodeAttachments } = require('../attachments.js');
 
 // One peer holding thousands of open generators is a denial of service the
 // application never opted into; the cap is generous but present.
@@ -348,8 +349,14 @@ class Client extends Emitter {
       throw refusal(`Can't send wrpc event to http transport`);
     }
     if (options !== null && (options.unreliable === true || options.compress === false)) {
-      const codec = this.#transport.codec;
-      return void this.sendRaw(codec ? codec.encode(packet) : JSON.stringify(packet), options);
+      const transport = this.#transport;
+      const codec = transport.codec;
+      const wire = codec
+        ? codec.encode(packet)
+        : transport.attachments !== false && hasBytes(packet)
+          ? encodeAttachments(packet)
+          : JSON.stringify(packet);
+      return void this.sendRaw(wire, options);
     }
     this.send(packet);
   }

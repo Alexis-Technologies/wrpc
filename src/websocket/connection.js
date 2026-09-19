@@ -474,23 +474,23 @@ class Connection extends EventEmitter {
   sendPrepared(message) {
     if (this.#closing) return false;
     if (this.#exceedsBackpressure()) return false;
-    if (this.#isClient || this.#fragmentThreshold) return this.sendText(message.text, message);
+    if (this.#isClient || this.#fragmentThreshold) return this.send(message.text, message);
     let frames = message.frames;
     if (frames === null) {
       frames = message.frames = new PreparedFrames(message.text);
     } else if (!(frames instanceof PreparedFrames)) {
-      return this.sendText(message.text, message);
+      return this.send(message.text, message);
     }
     const deflate = this.#deflate;
     if (deflate !== null && message.compress !== false && frames.length >= deflate.threshold) {
       // Context takeover is per connection by construction: the shared
       // frame cannot serve it, the shared utf8 payload still can.
       if (this.#context !== null && deflate.serverTakeover === true) {
-        return this.#enqueueCompress(OPCODES.TEXT, frames.payload, null);
+        return this.#enqueueCompress(frames.opcode, frames.payload, null);
       }
       const async = deflate.async ?? null;
       if (async !== null && frames.length >= async.threshold) {
-        return this.#enqueueCompress(OPCODES.TEXT, frames.payload, frames);
+        return this.#enqueueCompress(frames.opcode, frames.payload, frames);
       }
       return this.#write(frames.deflated(deflate.windowBits));
     }

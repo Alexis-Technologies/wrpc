@@ -24,8 +24,16 @@ class PreparedFrames {
   #plain = null;
   #deflated = null;
 
+  // `text` is a string (a JSON packet, TEXT frames) or bytes (an
+  // attachments frame, BINARY frames) — one opcode per message, decided here.
   constructor(text) {
-    this.payload = Buffer.from(text, 'utf8');
+    if (typeof text === 'string') {
+      this.payload = Buffer.from(text, 'utf8');
+      this.opcode = OPCODES.TEXT;
+    } else {
+      this.payload = Buffer.isBuffer(text) ? text : Buffer.from(text.buffer, text.byteOffset, text.byteLength);
+      this.opcode = OPCODES.BINARY;
+    }
   }
 
   get length() {
@@ -34,7 +42,7 @@ class PreparedFrames {
 
   plain() {
     let frame = this.#plain;
-    if (frame === null) frame = this.#plain = encodeFrame(OPCODES.TEXT, 0, this.payload);
+    if (frame === null) frame = this.#plain = encodeFrame(this.opcode, 0, this.payload);
     return frame;
   }
 
@@ -55,7 +63,7 @@ class PreparedFrames {
     // a synchronous caller then computes the same bytes itself rather than
     // block on the threadpool.
     if (frame === null || !Buffer.isBuffer(frame)) {
-      frame = encodeFrame(OPCODES.TEXT, RSV1, compress(this.payload, windowBits));
+      frame = encodeFrame(this.opcode, RSV1, compress(this.payload, windowBits));
       if (frames[slot] === null) frames[slot] = frame;
     }
     return frame;
@@ -76,7 +84,7 @@ class PreparedFrames {
     const waiters = [cb];
     frames[slot] = waiters;
     compressAsync(this.payload, windowBits, (error, compressed) => {
-      const frame = error ? null : encodeFrame(OPCODES.TEXT, RSV1, compressed);
+      const frame = error ? null : encodeFrame(this.opcode, RSV1, compressed);
       frames[slot] = frame;
       for (let i = 0; i < waiters.length; i++) waiters[i](error, frame);
     });

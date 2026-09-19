@@ -17,6 +17,7 @@ const {
 } = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { chunkDecode } = require('../chunks.js');
+const { hasBytes, encodeAttachments, decodeAttachments, isAttachmentsFrame } = require('../attachments.js');
 const { WrpcReadable, WrpcWritable } = require('../streams.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createClientTelemetry } = require('../telemetry/client.js');
@@ -292,8 +293,15 @@ class ClientTransport extends Emitter {
   send(obj) {
     // The codec is handed to the transport at bind time (client core).
     // `obj.meta` rides along so a transport with a header block can mirror
-    // it; a control packet has none, and ws/worker ignore the argument.
-    this.write(this.codec ? this.codec.encode(obj) : JSON.stringify(obj), obj?.meta);
+    // it; a control packet has none, and ws/worker ignore the argument. A
+    // packet holding bytes leaves as an attachments frame (attachments.js)
+    // unless the client opted out; a codec owns the wire and skips it.
+    const wire = this.codec
+      ? this.codec.encode(obj)
+      : this.attachments !== false && hasBytes(obj)
+        ? encodeAttachments(obj)
+        : JSON.stringify(obj);
+    this.write(wire, obj?.meta);
   }
 
   // Drop the connection without waiting for a close handshake. The default
@@ -424,6 +432,9 @@ class WrpcClient extends Emitter {
   #transportIndex = 0;
   #boundHandlers = null;
   #codec = null;
+  // Binary attachments (attachments.js): on by default, `attachments:
+  // false` sends every packet as JSON as revision 1 did.
+  #attachments = true;
   #codecRest = null;
   #reconnect = RECONNECT;
   #reconnectTimer = null;
@@ -585,6 +596,8 @@ class WrpcClient extends Emitter {
       this.#codecRest = codec.rest ?? null;
     }
     if (proxy) this.#proxyPacket = proxy;
+    // A packet codec owns the wire, so attachments are off under one.
+    this.#attachments = options.attachments !== false && this.#codec === null;
     if (random) this.#random = random; // deterministic jitter in tests
     // Packet, subscription and stream ids; uuid v4 unless the app brings
     // its own (cuid/ulid/a test counter). Correlation ids, not secrets.
@@ -741,6 +754,7 @@ class WrpcClient extends Emitter {
     // seam: a transport that refuses something (an oversize meta block) has
     // to be able to say so where the application can see it.
     if (this.#codec) this.#transport.codec = this.#codec;
+    if (!this.#attachments) this.#transport.attachments = false;
     this.#transport.log = this.#log;
     // A transport that mints ids of its own (the broker transport's session
     // and correlation ids) gets the generator this client already resolved,
@@ -830,8 +844,16 @@ class WrpcClient extends Emitter {
 
     bind('message', (data) => {
       const escalate = (error) => this.#escalate(error, 'message');
-      if (typeof data === 'string') this.#handlePacket(data).catch(escalate);
-      else this.#handleBinary(data).catch(escalate);
+      if (typeof data === 'string') return void this.#handlePacket(data).catch(escalate);
+      // Bytes: a stream chunk, or — under the 0x00 marker no chunk has — an
+      // attachments frame carrying a packet. Classified synchronously, so
+      // a packet and the chunk behind it stay in wire order; the ws
+      // transport sets binaryType to 'arraybuffer' for exactly this.
+      const view = data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : null;
+      if (view !== null && this.#attachments && isAttachmentsFrame(view)) {
+        return void this.#handleFrame(view).catch(escalate);
+      }
+      this.#handleBinary(data).catch(escalate);
     });
   }
 
@@ -1215,6 +1237,12 @@ class WrpcClient extends Emitter {
   }
 
   #enqueue(packet) {
+    // A call holding bytes cannot join a text batch: what is pending
+    // leaves first, in order, and the call goes on its own frame.
+    if (this.#attachments && hasBytes(packet)) {
+      this.flush();
+      return void this.#transport.send(packet);
+    }
     // Serialized ONCE: the same text is the size accounting and the wire
     // bytes — the old path stringified for the length, dropped the string,
     // and paid stringify again at flush. Sizes are UTF-16 code units
@@ -1353,6 +1381,23 @@ class WrpcClient extends Emitter {
       if (this.#proxyPacket) return void this.#proxyPacket(data, null);
       throw new Error('Invalid JSON packet');
     }
+    return this.#handleParsed(data, packet);
+  }
+
+  // An attachments frame: its packet, bytes restored, handled exactly as
+  // the same packet parsed from text would be.
+  async #handleFrame(view) {
+    let packet;
+    try {
+      packet = decodeAttachments(view);
+    } catch (error) {
+      if (this.#proxyPacket) return void this.#proxyPacket(view, null);
+      throw error;
+    }
+    return this.#handleParsed(view, packet);
+  }
+
+  async #handleParsed(data, packet) {
     // The answer to a call is the commonest inbound packet: settle it here,
     // before the batch and heartbeat checks and without the #dispatch hop.
     if (packet.type === 'callback' && packet.id && !this.#proxyPacket) return void this.#settle(packet);

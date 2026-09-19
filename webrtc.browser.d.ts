@@ -289,6 +289,8 @@ export declare class RtcPeerTransport extends Emitter {
 export interface PeerHostOptions {
   router: Router;
   codec?: WrpcCodec | null;
+  /** Binary attachments in packets (see RpcServerOptions.attachments). Default true; off under a codec. */
+  attachments?: boolean;
   logger?: WrpcLogger | boolean;
   /**
    * Every id this host mints: its `instanceId` when one is not given, the

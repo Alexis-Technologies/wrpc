@@ -10,6 +10,7 @@
 
 const { Emitter } = require('../utils.js');
 const { wireError } = require('./errors.js');
+const { hasBytes, encodeAttachments } = require('../attachments.js');
 
 class ServerTransport extends Emitter {
   // Which wire this is, for log entries and metric attributes. Subclasses
@@ -43,7 +44,13 @@ class ServerTransport extends Emitter {
     // re-frames every packet; it wins over precompiled `text` by
     // construction — the server refuses codec + serializers up front.
     if (this.codec) return this.write(this.codec.encode(obj), code);
-    return this.write(text ?? JSON.stringify(obj), code);
+    // Precompiled text was built by the dispatcher on a packet it already
+    // knows holds no bytes; anything else is walked once here, and a
+    // packet with bytes leaves as an attachments frame (attachments.js)
+    // unless the server opted out.
+    if (text !== null && text !== undefined) return this.write(text, code);
+    if (this.attachments !== false && hasBytes(obj)) return this.write(encodeAttachments(obj), code);
+    return this.write(JSON.stringify(obj), code);
   }
 }
 

@@ -13,6 +13,31 @@ narrower promise — see
 
 ### Added
 
+**Binary attachments: bytes in args, results and events travel as bytes**
+- A `Uint8Array` in a call's arguments used to arrive as `{"0":137,"1":80,…}`
+  — nine times the size, and a plain object, silently. Now any typed
+  array, `ArrayBuffer` or `DataView` anywhere in a packet's args, result,
+  event data or error details travels as **binary attachments**: one frame
+  (`0x00 01`, a length-prefixed JSON `[packet, index]` with `null` at each
+  byte leaf and the buffers back to back, paths in the Jupyter
+  `buffer_paths` shape so nothing in user data can collide) and arrives as
+  fresh `Uint8Array`s that own their bytes — copied out of the frame, since
+  the WebSocket engine hands over zero-copy views into its socket segments.
+  Every transport carries it — a BINARY WebSocket frame (the shared fan-out
+  frame included: `PreparedFrames` and `SharedMessage.text` take bytes), a
+  WebTransport or data-channel message, a broker frame, a worker port, a
+  packet-mode HTTP body under `application/octet-stream`, both ways, batches
+  included. SSE refuses explicitly: a `TypeError` on the client, `501` on a
+  call whose result holds bytes, `415` on a channel POST, `sse.bytes` for a
+  dropped event. A REST result with bytes answers `501` without
+  `codec.rest`; a room event with bytes is delivered locally and refused
+  for the JSON backplane (`backplane.bytes`).
+- On by default, with `attachments: false` on either end (set both) for
+  revision-1 JSON; off by itself under a packet codec. The cost is
+  `hasBytes`, a walk of every outbound packet (`bench/attachments.js`);
+  the compiled-serializer fast path walks the result only when a
+  serializer is compiled.
+
 **`@alexify/wrpc/deflate` — the dictionary in a browser, and a synchronous codec anywhere**
 - A DEFLATE codec in plain JavaScript on its own subpath (4.5 KB
   min+gzip, loaded only by a page that injects it). `createDeflateCodec({

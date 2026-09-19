@@ -374,6 +374,10 @@ expectError<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ compression: 'zstd'
 expectAssignable<wrpc.RpcServerOptions>({ router, rooms: { compression: true, maxMessage: 1 << 20 } });
 expectAssignable<wrpc.RpcServerOptions>({ router, cluster: { secret: 's', compression: { threshold: 0 } } });
 expectError<wrpc.RoomsOptions>({ compression: 'lz4' });
+// Binary attachments: a switch on both ends
+expectAssignable<wrpc.RpcServerOptions>({ router, attachments: false });
+expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ attachments: false });
+expectError<wrpc.RpcServerOptions>({ router, attachments: 'auto' });
 // The socket side: a Node ws client's frames
 expectAssignable<wrpc.RpcServerOptions>({ router, compression: true, maxMessage: 1 << 20 });
 expectError<wrpc.RpcServerOptions>({ router, compression: 'lz4' });

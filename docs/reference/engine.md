@@ -131,6 +131,7 @@ Two optional extensions, both feature-detected by the core:
   second argument simply compresses as usual.
 - `sendPrepared(message)` is the fan-out path (capability `prepared`). A
   room broadcast hands every recipient **one** `{ text, frames, compress }`
+  (`text` is the JSON, or the bytes of an attachments frame — a BINARY frame then)
   object; the socket claims `frames` with its own cache — the encoded frame,
   plus a deflated one per negotiated window — when it is `null`, reuses it
   when it already holds that engine's cache, and falls back to `send(text)`

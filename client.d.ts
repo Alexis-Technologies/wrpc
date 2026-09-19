@@ -902,6 +902,12 @@ export interface WrpcClientOptions {
    * the optional `rest` section frames REST-leg BODIES (values, not
    * packets — binary allowed). Either half alone is valid.
    */
+  /**
+   * Binary attachments: bytes in args and results travel as bytes in one
+   * frame and arrive as Uint8Arrays. On by default; `false` sends JSON as
+   * revision 1 did (set it on both ends); off under a packet `codec`.
+   */
+  attachments?: boolean;
   codec?:
     | {
         encode(packet: unknown): string;

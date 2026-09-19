@@ -10,6 +10,13 @@ something at the frame level.
 
 ## Binary chunks
 
+::: tip A binary frame whose first byte is `0x00` is not a chunk
+A stream id is at least one byte long, so `0x00` never begins a chunk: it
+begins a *framed message* — a packet carrying [binary attachments](../guide/streams#attachments),
+or a packet a Node client compressed. The [protocol page](./protocol#binary-chunks)
+has the kinds.
+:::
+
 JSON packets travel as WebSocket **text** frames. Stream payloads travel as
 **binary** frames, and each one is exactly one chunk of one stream:
 

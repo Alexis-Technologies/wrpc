@@ -66,6 +66,9 @@ class ClientWsTransport extends ClientTransport {
       // implementation (connectUrl, shared with the WebTransport transport).
       const url = connectUrl(this.url, bag, options.meta, this.log);
       const socket = protocols.length > 0 ? new WebSocket(url, protocols) : new WebSocket(url);
+      // Bytes arrive as ArrayBuffers, never Blobs: an attachments frame is
+      // classified synchronously on the way in, in order with the packets.
+      socket.binaryType = 'arraybuffer';
       this.#socket = socket;
       const onClose = (error) => {
         // Scoped to the socket it was registered for. Both 'close' and
@@ -249,12 +252,21 @@ class ClientHttpTransport extends ClientTransport {
     // has one header block, so a key carried by several calls shows the last
     // value. Nothing is lost — each call's exact meta rides its own packet.
     const block = meta ? this.#requestMeta(meta) : this.meta;
-    const headers = { ...this.headers, ...block, 'Content-Type': this.codec?.contentType ?? 'application/json' };
+    // An attachments frame is bytes and says so; a text body is the packet
+    // codec's type, JSON by default.
+    const contentType =
+      typeof data === 'string' ? (this.codec?.contentType ?? 'application/json') : 'application/octet-stream';
+    const headers = { ...this.headers, ...block, 'Content-Type': contentType };
     const options = { method: 'POST', headers, body: data };
     const doFetch = this.fetch;
     const send = async () => {
       try {
         const res = await doFetch(this.url, options);
+        // A frame answer (a result holding bytes) is read as bytes and
+        // handed on as one; the core classifies it.
+        if (res.ok && res.headers.get('content-type') === 'application/octet-stream') {
+          return void this.emit('message', new Uint8Array(await res.arrayBuffer()));
+        }
         const text = await res.text();
         // Error statuses normally still carry wrpc callback packets (the
         // server answers errors as JSON with the same code). Only when the

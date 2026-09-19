@@ -91,7 +91,8 @@ export interface PerMessageDeflateOptions {
  * Connection.sendPrepared): the text plus an engine-owned cache slot.
  */
 export interface SharedMessage {
-  text: string;
+  /** The serialized packet: text, or the bytes of an attachments frame (a BINARY frame). */
+  text: string | Uint8Array;
   frames: unknown | null;
   compress: boolean;
 }

@@ -51,6 +51,7 @@ with every adapter; the network half belongs to the shell.
 | `http` | `{}` | The HTTP side's own options: `compression`, off by default — see [Compression](#compression). |
 | `compression` | off | Accept per-message compressed frames from a Node WebSocket client that negotiated them — see [Compression](#compression). |
 | `maxMessage` | 16 MiB | The largest inflated client frame accepted on a socket. |
+| `attachments` | `true` | Bytes in args, results and events travel as [binary attachments](./streams#attachments); `false` sends JSON as revision 1 did. |
 | `logger` | `globalThis.console` | Where the server logs — a Console or a pino-shaped logger; `false` silences it. See [Logging](./logging). |
 | `telemetry` | `null` | OTel traces and metrics — see [Telemetry](./telemetry). |
 

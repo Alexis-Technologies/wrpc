@@ -10,7 +10,8 @@ const { Cluster, instanceOfClientId } = require('./cluster.js');
 const { SseChannels } = require('../sse/server.js');
 const { normalizeCompression } = require('../contentEncoding.js');
 const { createEnvelopeCodec, maxMessageOf, normalizeSyncCompression, decodeOrNull } = require('../compression/sync.js');
-const { FRAME_MARK, FRAME_PACKET_DEFLATE, FRAME_CHUNK_DEFLATE } = require('../wire.js');
+const { FRAME_MARK, FRAME_ATTACHMENTS, FRAME_PACKET_DEFLATE, FRAME_CHUNK_DEFLATE } = require('../wire.js');
+const { isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
 // The channel header from the import-free constants module, NOT from
 // sse/server.js: the string is shared, the implementation is not.
 const { CHANNEL_HEADER } = require('../wire.js');
@@ -95,6 +96,7 @@ const RPC_OPTION_KEYS = [
   'http',
   'compression',
   'maxMessage',
+  'attachments',
   'cluster',
   'rooms',
   'querystring',
@@ -147,6 +149,9 @@ class RpcServer extends Emitter {
   #codec = null;
   #codecOption = null;
   #restCodec = null;
+  // Binary attachments (src/attachments.js): on by default, `attachments:
+  // false` sends every packet as JSON as revision 1 did.
+  #attachments = true;
   #draining = false;
   #clients = new Set();
   #byId = new Map();
@@ -171,6 +176,7 @@ class RpcServer extends Emitter {
       http = {},
       compression = null,
       maxMessage,
+      attachments = true,
       cluster = {},
       rooms = {},
       querystring = null,
@@ -236,11 +242,15 @@ class RpcServer extends Emitter {
     // compressed frames from a Node ws client that negotiated them. Off by
     // default, like the http/sse/rooms/cluster halves; rides in the limits
     // bag so the dispatcher's ping handler sees it.
+    this.#attachments = attachments !== false;
+    // A packet codec owns the wire: attachments are its business, not ours.
+    if (this.#codec) this.#attachments = false;
     this.#limits = {
       maxBatch,
       maxSubscriptions,
       maxCalls,
       compression: normalizeSyncCompression(compression, 'RpcServer: options'),
+      attachments: this.#attachments,
     };
     this.#maxMessage = maxMessageOf(maxMessage, 'RpcServer');
     this.#router = this.#withIntrospection(router, introspection);
@@ -587,6 +597,7 @@ class RpcServer extends Emitter {
       log: this.#roomsLog,
       otel: this.#otel,
       codec: this.#codec,
+      attachments: this.#attachments,
     });
   }
 
@@ -633,6 +644,7 @@ class RpcServer extends Emitter {
     // ones. One server-wide codec — which is what keeps the broadcast
     // fan-out single-encode.
     if (this.#codec) transport.codec = this.#codec;
+    if (!this.#attachments) transport.attachments = false;
     const options = {
       codec: this.#codec,
       sessions: this.#sessions,
@@ -746,14 +758,15 @@ class RpcServer extends Emitter {
       if (!isBinary) return void handleMessage(client, data, this.#router, this.#limits);
       let bytes = new Uint8Array(data);
       // A framed message (wire.js): a compressed packet is dispatched from
-      // here, a compressed chunk falls through to the chunk path inflated.
-      if (bytes[0] === FRAME_MARK) {
+      // here, a compressed chunk falls through to the chunk path inflated;
+      // an attachments frame is the chunk path's to dispatch (handleBinary).
+      if (bytes[0] === FRAME_MARK && bytes[1] !== FRAME_ATTACHMENTS) {
         bytes = this.#inflateFrame(client, bytes);
         if (bytes === null) return;
       }
       inflight++;
       if (inflight === 1 && typeof socket.pause === 'function') socket.pause();
-      handleBinary(client, bytes).then(done, done);
+      handleBinary(client, bytes, this.#router, this.#limits).then(done, done);
     });
     socket.on('error', () => transport.emit('close'));
     return client;
@@ -839,7 +852,7 @@ class RpcServer extends Emitter {
     }
     const client = this.#addClient(transport, restore, meta);
     transport.on('packet', (text) => handleMessage(client, text, this.#router, this.#limits));
-    transport.on('chunk', (bytes) => handleBinary(client, bytes));
+    transport.on('chunk', (bytes) => handleBinary(client, bytes, this.#router, this.#limits));
     return client;
   }
 
@@ -857,7 +870,7 @@ class RpcServer extends Emitter {
       if (typeof data === 'string') {
         handleMessage(client, data, this.#router, this.#limits);
       } else if (ArrayBuffer.isView(data)) {
-        handleBinary(client, new Uint8Array(data.buffer, data.byteOffset, data.byteLength));
+        handleBinary(client, new Uint8Array(data.buffer, data.byteOffset, data.byteLength), this.#router, this.#limits);
       }
     });
     return client;
@@ -881,7 +894,18 @@ class RpcServer extends Emitter {
   // bodies stay JSON on purpose (curl and browsers are that mode's
   // audience). Malformed input answers null either way.
   #decodeBody(body) {
-    if (!this.#codec) return jsonParse(body);
+    if (!this.#codec) {
+      // A POST body that is an attachments frame parses to its packet.
+      if (typeof body !== 'string' && body !== null && isAttachmentsFrame(body)) {
+        if (!this.#attachments) return null;
+        try {
+          return decodeAttachments(body);
+        } catch {
+          return null;
+        }
+      }
+      return jsonParse(body);
+    }
     try {
       return this.#codec.decode(typeof body === 'string' ? body : String(body));
     } catch {
@@ -953,6 +977,12 @@ class RpcServer extends Emitter {
     if (!this.#sse.authorized(channel, call.headers)) {
       const error = { message: 'Channel belongs to another session', code: 403 };
       return void respond(403, { type: 'callback', id: '', error });
+    }
+    // An attachments frame on a channel POST: SSE is text-only in both
+    // directions, and the refusal is explicit rather than a corrupt value.
+    if (typeof call.body !== 'string' && call.body !== null && isAttachmentsFrame(call.body)) {
+      const error = { message: 'Binary attachments need a WebSocket', code: 415 };
+      return void respond(415, { type: 'callback', id: '', error });
     }
     handleMessage(channel.client, call.body, this.#router, this.#limits);
     call.respond({ status: 202, headers: { ...headers, 'Content-Length': 0 } });

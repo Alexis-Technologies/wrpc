@@ -4,6 +4,8 @@ const { jsonParse } = require('../utils.js');
 const { WrpcReadable } = require('../streams.js');
 const { chunkDecode } = require('../chunks.js');
 const { negotiate } = require('../compression/index.js');
+const { hasBytes, isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
+const { FRAME_MARK } = require('../wire.js');
 
 const EMPTY_OPTIONS = Object.freeze({});
 const { runSubscription } = require('./subscriptions.js');
@@ -209,8 +211,10 @@ const handleRpc = async (client, packet, router) => {
       // fast-json-stringify — bench/serialize-callback.js). Correctness
       // gates: an onSend hook may have mutated the packet after the shape
       // the serializer was compiled for, so hooks win over the fast path.
+      // A result holding bytes leaves as an attachments frame, which the
+      // serializer's JSON cannot be: the walk runs only under a serializer.
       const text =
-        compiled?.serialize && hooks.onSend.length === 0
+        compiled?.serialize && hooks.onSend.length === 0 && !hasBytes(result)
           ? `{"type":"callback","id":${JSON.stringify(id)},"result":${compiled.serialize(result)}}`
           : undefined;
       client.send(callback, { method, text });
@@ -396,7 +400,14 @@ const handleStream = async (client, packet) => {
   }
 };
 
-const handleBinary = async (client, data) => {
+const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS) => {
+  // A 0x00 first byte is never a chunk (an id is at least one byte): an
+  // attachments frame is a packet with its bytes, dispatched as one.
+  if (data.length > 1 && data[0] === FRAME_MARK) {
+    if (router !== null && isAttachmentsFrame(data)) return void handleMessage(client, data, router, options);
+    client.log.warn({ event: 'frame.refused', kind: data[1] });
+    return void client.error(400, { error: new Error('Unexpected framed message') });
+  }
   const { id, payload } = chunkDecode(data);
   try {
     const upstream = client.streams.get(id);
@@ -563,8 +574,26 @@ const handlePacket = (client, packet, router, options = EMPTY_OPTIONS) => {
 // A JSON array is a batch frame: several packets in one message, each
 // answered on its own (on a request/response transport the answers come
 // back as an array in the same order — see ServerHttpTransport).
+// An attachments frame's packet, or null when the server opted out or the
+// frame is malformed — both land in the same 'packet.malformed' funnel.
+const parseFrame = (data, options) => {
+  if (options.attachments === false) return null;
+  try {
+    return decodeAttachments(data);
+  } catch {
+    return null;
+  }
+};
+
 const handleMessage = (client, data, router, options = {}) => {
-  const parsed = client.decodePacket ? client.decodePacket(data) : jsonParse(data);
+  // A frame is checked before the codec seam: `decodePacket` is the JSON
+  // (or codec) parse, and a frame is neither.
+  const parsed =
+    typeof data !== 'string' && isAttachmentsFrame(data)
+      ? parseFrame(data, options)
+      : client.decodePacket
+        ? client.decodePacket(data)
+        : jsonParse(data);
   // jsonParse answers null for both "malformed" and "the literal null", and
   // the `|| {}` below hides the difference. This is the single funnel every
   // unparseable packet in the system passes through, so it is worth a line.

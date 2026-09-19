@@ -70,7 +70,13 @@ const ENTRIES = [
   // asynchronous CompressionStream's output in order, the KIND 3/4 framing
   // and the caps negotiation) — +1.3 KB, measured 20.8 against 19.5. Off by
   // default; the bytes are the seam every browser transport shares.
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 22 },
+  // 22 -> 23 for binary attachments (src/attachments.js: the hasBytes walk,
+  // the frame encoder/decoder, and the client's send/receive frame
+  // classification — a Uint8Array in args or data travels as bytes instead
+  // of a `{"0":1,…}` object nine times the size) — +1.2 KB, measured 22.4
+  // against 21.2. On by default because it is a correctness fix, priced in
+  // bench/attachments.js; `attachments: false` skips the walk.
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 23 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
@@ -97,7 +103,9 @@ const ENTRIES = [
   // 18 -> 20 with its datagram + stream-mux raise (measured 19.2).
   // 20 -> 21 with the main entry's call-path raise (measured 19.9).
   // 21 -> 23 with the main entry's compression raise (measured 21.7).
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 23 },
+  // 23 -> 24 with the main entry's attachments raise, plus the sse client's
+  // explicit refusal of bytes (measured 23.4 against 22.0).
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 24 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and
@@ -145,7 +153,11 @@ const ENTRIES = [
   // builds the same router dictionary a Node peer does, for the pure-JS
   // dictionary codec (+0.9 KB, measured 50.3 against 49.4 — the packet
   // skeleton strings are most of it).
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 51 },
+  // 51 -> 53 for binary attachments on both halves this entry bundles: the
+  // client transport's frames and, through PeerHost, the server-side
+  // encoder in serverTransport.js and the dispatcher's frame routing
+  // (+1.5 KB, measured 51.8 against 50.3).
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 53 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

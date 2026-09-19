@@ -10,6 +10,7 @@ const { publicErrorMessage, publicErrorDetails, wireError } = require('./rpc/err
 const { ServerTransport } = require('./rpc/serverTransport.js');
 const { META_HEADER, META_PREFIX, CHANNEL_HEADER } = require('./wire.js');
 const { shouldEncode, markEncoded, gzipOptions } = require('./contentEncoding.js');
+const { hasBytes, encodeAttachments, isAttachmentsFrame } = require('./attachments.js');
 
 // RFC 6265 permits '=' inside cookie values (base64, JWT) — split each
 // pair on the FIRST '=' only, or the value gets silently truncated.
@@ -199,6 +200,13 @@ class ServerHttpTransport extends ServerTransport {
       if (obj.error) {
         return this.write(codec ? codec.encode(obj.error) : JSON.stringify(obj.error), obj.error.code ?? code);
       }
+      // A REST body is a plain value with no frame to carry bytes in: a
+      // result holding them needs codec.rest, and says so instead of
+      // shipping the objects JSON makes of typed arrays.
+      if (codec === null && this.attachments !== false && hasBytes(obj.result)) {
+        const error = { message: 'Binary results on REST need codec.rest', code: 501 };
+        return this.write(JSON.stringify(error), 501);
+      }
       const status = this.#status ?? this.#rest.status ?? 200;
       // 204 promises "no content": the result (if any) is discarded on the
       // wire by contract, not by accident.
@@ -220,7 +228,15 @@ class ServerHttpTransport extends ServerTransport {
     this.#collected.push(obj);
     if (this.#collected.length < this.#batch.length) return true;
     const ordered = this.#ordered();
-    return this.write(this.codec ? this.codec.encode(ordered) : JSON.stringify(ordered), 200);
+    return this.write(this.#encodeBatch(ordered), 200);
+  }
+
+  // One batch answer: the codec's framing, an attachments frame when any
+  // answer holds bytes, JSON otherwise.
+  #encodeBatch(ordered) {
+    if (this.codec) return this.codec.encode(ordered);
+    if (this.attachments !== false && hasBytes(ordered)) return encodeAttachments(ordered);
+    return JSON.stringify(ordered);
   }
 
   // Building an id index makes this O(n), but the Map costs more than the
@@ -308,8 +324,15 @@ class ServerHttpTransport extends ServerTransport {
   write(data, httpCode = 200) {
     if (this.#responded) return true;
     this.#responded = true;
-    const body = Buffer.isBuffer(data) ? data : Buffer.from(data);
+    const body = Buffer.isBuffer(data)
+      ? data
+      : typeof data === 'string'
+        ? Buffer.from(data)
+        : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     const headers = { ...this.headers };
+    // An attachments frame is bytes, and says so — a client reads the body
+    // as bytes only under this type.
+    if (typeof data !== 'string' && isAttachmentsFrame(body)) headers['Content-Type'] = 'application/octet-stream';
     if (this.#setCookies.length > 0) headers['Set-Cookie'] = this.#setCookies;
     const compression = this.#compression;
     if (compression !== null && body.length >= compression.threshold && shouldEncode(compression, this.call, headers)) {
@@ -372,7 +395,7 @@ class ServerHttpTransport extends ServerTransport {
       this.#collected.push({ type: 'callback', id: typeof id === 'string' ? id : '', error: { message, code: 503 } });
     }
     const ordered = this.#ordered();
-    this.write(this.codec ? this.codec.encode(ordered) : JSON.stringify(ordered), 503);
+    this.write(this.#encodeBatch(ordered), 503);
   }
 }
 
@@ -409,6 +432,12 @@ class ServerWsTransport extends ServerTransport {
   // without one (uws, WebTransport) gets the text as an ordinary send.
   writeShared(message) {
     const socket = this.connection;
+    // An attachments frame arrives as a Uint8Array; the engine speaks
+    // Buffers. Converted ONCE on the shared message, for every recipient.
+    const { text } = message;
+    if (typeof text !== 'string' && !Buffer.isBuffer(text)) {
+      message.text = Buffer.from(text.buffer, text.byteOffset, text.byteLength);
+    }
     if (typeof socket.sendPrepared === 'function') return socket.sendPrepared(message);
     return socket.send(message.text, message.compress === false ? message : null);
   }

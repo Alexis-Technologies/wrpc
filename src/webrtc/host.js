@@ -52,6 +52,7 @@ class PeerHost extends Emitter {
   #metaMax;
   #trust;
   #instance;
+  #attachments = true;
 
   constructor({
     router,
@@ -66,6 +67,7 @@ class PeerHost extends Emitter {
     trust = 'link',
     instanceId = null,
     telemetry = null,
+    attachments = true,
   } = {}) {
     super();
     if (!router || typeof router.getProcedure !== 'function') {
@@ -87,7 +89,9 @@ class PeerHost extends Emitter {
     const ids = resolveGenerateId(generateId, 'PeerHost', this.#log);
     this.#generateId = ids.generate;
     this.#metaMax = Number.isInteger(metaMaxBytes) && metaMaxBytes > 0 ? metaMaxBytes : DEFAULT_META_MAX;
-    this.#limits = { maxBatch, maxSubscriptions, maxCalls };
+    // Binary attachments, off under a packet codec (which owns the wire).
+    this.#attachments = attachments !== false && !(codec && typeof codec.encode === 'function');
+    this.#limits = { maxBatch, maxSubscriptions, maxCalls, attachments: this.#attachments };
     this.#trust = trust;
     // The prefix of every client id here; a uuid has no '.', so the id
     // parses like a server's would (instanceOfClientId). Minted by the
@@ -159,6 +163,7 @@ class PeerHost extends Emitter {
       throw new TypeError("PeerHost.attach: trust 'assertion' requires the peer's verified claims");
     }
     if (this.#codec) transport.codec = this.#codec;
+    if (!this.#attachments) transport.attachments = false;
     const about = Object.freeze({
       __proto__: null,
       peer,
@@ -196,7 +201,7 @@ class PeerHost extends Emitter {
       void client.ready.then(() => clearTimeout(stall));
     }
     transport.on('packet', (text) => handleMessage(client, text, this.#router, this.#limits));
-    transport.on('chunk', (bytes) => handleBinary(client, bytes));
+    transport.on('chunk', (bytes) => handleBinary(client, bytes, this.#router, this.#limits));
     transport.once('close', () => {
       const payload = onDisconnect.length > 0 ? { rooms: client.rooms } : null;
       client.destroy();
@@ -219,6 +224,7 @@ class PeerHost extends Emitter {
       log: this.#roomsLog,
       otel: this.#otel,
       codec: this.#codec,
+      attachments: this.#attachments,
     });
   }
 

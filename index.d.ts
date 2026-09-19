@@ -348,6 +348,15 @@ export interface RpcServerOptions {
   /** The largest inflated client frame accepted on a socket (default 16 MiB). */
   maxMessage?: number;
   /**
+   * Binary attachments: raw bytes (typed arrays, ArrayBuffers) anywhere in
+   * a packet's args, result, data or error details travel as bytes in one
+   * binary frame, and arrive as Uint8Arrays — instead of the plain objects
+   * JSON makes of them. On by default; `false` sends every packet as JSON
+   * as revision 1 did (set it on both ends). Off by itself under a packet
+   * `codec`, which owns the wire. SSE refuses them explicitly (501/415).
+   */
+  attachments?: boolean;
+  /**
    * Presence/request tuning for the cluster layer, or `false` to opt out:
    * presence, commands and asks then degrade to their local halves while
    * the rooms backplane keeps working.

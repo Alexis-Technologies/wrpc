@@ -399,10 +399,28 @@ frame is a **framed message**, its second byte the kind:
 
 ```
 0x00  kind  payload
+      1     binary attachments: u32 headerLen (big-endian), JSON `[packet, [[path, byteLength], …]]`, then the buffers back to back
       3     a packet, compressed with the codec negotiated on ping/pong (below); the receiver inflates, then reads it as a text frame
       4     a chunk, compressed likewise; the receiver inflates, then reads it as a binary chunk
       other reserved — a 400 error packet
 ```
+
+An **attachments frame** (kind 1) is a packet — or a batch array — whose
+byte values travel as bytes: in the JSON every typed array, `ArrayBuffer`
+or `DataView` is replaced by `null`, and the index names each one by its
+path from the packet root (object keys and array indexes, the Jupyter
+`buffer_paths` shape) with its length; the buffers follow in index order.
+A receiver MUST refuse a frame whose paths name `__proto__`, `constructor`
+or `prototype`, walk through a non-container, land on anything but `null`,
+exceed 32 levels, or whose lengths do not add up to exactly the bytes that
+follow — with a `400`, never a partial packet — and SHOULD copy the bytes
+out of the frame rather than hold views into it. The same frame is the
+body of a packet-mode HTTP request or response under
+`Content-Type: application/octet-stream`. It is sent whenever a packet
+holds bytes, unless an end opted out (`attachments: false`) or a wire codec
+is in use; a receiver that opted out answers it as a malformed packet.
+SSE, being text-only, refuses one on a channel POST with `415` and answers
+a call whose result holds bytes with `501`. Kind 2 is reserved.
 
 A peer MAY send a kind 3 or 4 frame only after a `pong` named the codec;
 before that, or with a payload that does not inflate under the receiver's
