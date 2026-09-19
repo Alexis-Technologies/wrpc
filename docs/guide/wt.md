@@ -153,9 +153,10 @@ Two consequences:
   the `headers` option) presents the token.
 - The browser constructor cannot set headers either, so declared
   [headers and metadata](./metadata) ride the connect URL as the two reserved
-  query parameters, exactly as on a browser WebSocket; the server reads
+  query parameters — a browser WebSocket at least has its subprotocol offer
+  to carry them, WebTransport has nothing of the kind; the server reads
   the real `CONNECT` headers (`origin`, `user-agent`) first and the query
-  only for names they lack. The same caveat as on ws applies: the URL lands
+  only for names they lack. The caveat of the ws `carrier: 'query'` applies: the URL lands
   in access logs — a device id belongs there, a secret should be short-lived.
 
 `verify` in `attachSession` is the `verifyClient` of this path: it sees the

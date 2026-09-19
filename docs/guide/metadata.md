@@ -82,26 +82,58 @@ travel depends on the transport:
 | --- | --- |
 | `http` | real request headers, on every packet POST and REST leg |
 | `sse` | real request headers, on the stream GET and every POST |
-| `ws` | **one query parameter** (`wrpc_h`) on the connect URL |
+| `ws` from Node | real request headers on the upgrade |
+| `ws` from a browser | a **subprotocol offer**, `wrpc.h.<base64url>`, in `Sec-WebSocket-Protocol` |
 | `event` (worker) | a field in the `wrpc:connect` message |
 
-The ws exception exists because the WHATWG `WebSocket` constructor takes no
-headers — in the browser by specification, and in Node because the client
-uses the same `globalThis.WebSocket`. The server compensates with its read
-order: **observed upgrade headers first, the query only for names they do
-not carry** — so a custom transport that *can* set real upgrade headers
-(registered via `WrpcClient.transport`) needs no query at all, and the query
-can never override a real header.
+The browser row exists because a page cannot set a header on a WebSocket
+handshake — not with the `WebSocket` constructor (its second argument is the
+subprotocol list and nothing else), not with `fetch` (`Upgrade`,
+`Connection` and `Sec-WebSocket-Key` are forbidden header names), and not
+with a library: `ws` refuses to load in a browser, and socket.io's
+`extraHeaders` reach only its polling requests there. The one handshake
+header a page does control is the subprotocol offer, so that is what carries
+the bag:
 
-The query path is sanitized server-side, and every rule is a refusal, never
+```
+Sec-WebSocket-Protocol: wrpc.v1, wrpc.h.eyJ4LWFwcC12ZXJzaW9uIjoiMS4yLjMifQ
+```
+
+The server echoes `wrpc.v1`, reads the token, and never selects or echoes
+it. Node's built-in `WebSocket` has no such limit — it takes
+`{ protocols, headers }` — so from Node the same option is simply real
+headers, and the server needs nothing special to read them. Either way the
+connect URL stays clean, and the server's read order is unchanged:
+**observed upgrade headers first, a declaration only for names they do not
+carry.**
+
+### Choosing the ws carrier: `carrier`
+
+| `carrier` | Node | Browser |
+| --- | --- | --- |
+| `'auto'` (default) | real headers | subprotocol tokens |
+| `'protocol'` | subprotocol tokens | subprotocol tokens |
+| `'query'` | `wrpc_h` / `wrpc_meta` on the connect URL | the same |
+
+`'query'` is the escape hatch for an intermediary that strips or rewrites
+`Sec-WebSocket-Protocol`; it is also what happens under `protocols: []`,
+because a token needs a protocol the server can answer next to it (a client
+fails a handshake whose offers all went unanswered). WebTransport has neither
+headers nor subprotocols and always uses the query.
+
+A declaration is sanitized server-side, and every rule is a refusal, never
 an error — an oversize or malformed label leaves the connection with no
 label, not without a connection:
 
-- capped on the **encoded** length (`metaMaxBytes`, default 2048). On ws the
-  cap is measured over the **whole connect-URL query**, so application query
-  parameters share the budget with the declared bags; the client refuses an
-  oversize bag with a `meta.oversize` warning instead of sending what the
-  server would silently drop whole;
+- capped on the **encoded** length (`metaMaxBytes`, default 2048). The two
+  subprotocol tokens (`headers` + `meta`) share **one** budget, headers
+  first; the query is measured whole, so application query parameters share
+  it. The client applies the same cap and refuses an oversize bag with a
+  `meta.oversize` warning instead of sending what the server would drop.
+  Mind the host too: a handshake is an HTTP request, and uWebSockets.js
+  allows **4096 bytes for all request headers** (`UWS_HTTP_MAX_HEADERS_SIZE`)
+  where node allows 16 KB — a Bearer token rides outside the budget, so a
+  large JWT plus two full bags can reach that limit;
 - a flat `string → string` map only; names normalized to
   [kebab-case](#key-casing);
 - reserved names dropped: `cookie`, `host`, `origin`, `forwarded`, `via`,
@@ -115,12 +147,16 @@ label, not without a connection:
   peer outside a browser can send anything regardless;
 - an own `__proto__` key never carried over.
 
-::: warning The ws form lands in logs
-The connect URL — query included — ends up in proxy access logs and the
-browser's network panel. A device id belongs there; a token does not. For
-credentials, use the [`authenticate` hook](./client#authenticating) and the
-session, where the ws leg's default carrier is the cookie precisely because
-of this.
+::: warning Labels, not secrets
+Neither default carrier touches the connect URL, which is what proxy access
+logs and the browser's network panel keep — only `carrier: 'query'` and
+`protocols: []` do, and the client warns (`declared.exposed`) when an
+`authorization` header ends up there. A subprotocol token is still a request
+header anyone on the path can read and some proxies can log, so treat the
+bags as labels. For credentials use [`bearerAuth`](./auth) — its token rides
+as `wrpc.bearer.<token>` from a browser and as a real `Authorization` header
+from Node — or the [`authenticate` hook](./client#authenticating) and the
+session cookie.
 :::
 
 ### Gating the handshake
@@ -190,9 +226,11 @@ writes them in its own `onRequest`.
 const client = await connect(url, { meta: { v: pkg.version, locale } });
 ```
 
-Carried by the `x-wrpc-meta` request header (http/sse; percent-encoded
-JSON), the `wrpc_meta` connect-URL parameter (ws), or the `wrpc:connect`
-message (worker).
+Carried by the `x-wrpc-meta` request header (http/sse, and ws from Node;
+percent-encoded JSON), a `wrpc.m.<base64url>` subprotocol offer (ws from a
+browser — [the same carrier rules](#choosing-the-ws-carrier-carrier) as
+`headers`, under the same shared budget), or the `wrpc:connect` message
+(worker).
 
 ### Choosing a spelling: `metaFormat`
 
@@ -203,7 +241,8 @@ const client = await connect(url, { meta: { userId, locale }, metaFormat: 'prefi
 | | `'json'` (default) | `'prefixed'` |
 | --- | --- | --- |
 | http / sse wire | one `x-wrpc-meta` header | `x-wrpc-meta-user-id: 7`, one per key |
-| ws / worker wire | one `wrpc_meta` parameter | **unchanged** — one `wrpc_meta` parameter |
+| ws from Node | one `x-wrpc-meta` header | `x-wrpc-meta-user-id: 7`, one per key |
+| ws from a browser / worker wire | one JSON bag (`wrpc.m.` token, `wrpc:connect` field) | **unchanged** — one JSON bag |
 | Value types | JSON (numbers stay numbers) | strings on **every** transport |
 | CORS | one stable allowlist name | one entry per key — see [`cors.metaHeaders`](./server#cors) |
 

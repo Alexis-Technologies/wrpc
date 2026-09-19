@@ -61,6 +61,8 @@ const router = defineRouter({
         protocol: context.meta.protocol,
         hasHeaders: Object.keys(context.meta.headers).length > 0,
         appVersion: context.meta.headers['x-app-version'] ?? null,
+        offer: context.meta.headers['sec-websocket-protocol'] ?? null,
+        data: context.meta.data,
       }),
     }),
     whoami: procedure({
@@ -459,16 +461,27 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(body.result.hasHeaders, true, 'http: meta.headers observed');
     assert.strictEqual(body.result.appVersion, '9.9', 'http: a declared header rides as a real one');
     // The ws upgrade: url, headers, the negotiated subprotocol — and the
-    // declared headers, carried by the wrpc_h query (lowercased on arrival).
-    const client = await WrpcClient.connect(`ws://127.0.0.1:${main.port}/api`, {
-      headers: { 'X-App-Version': '8.8' },
-    });
-    sub.after(() => void client.close());
-    const meta = await client.call('test/peekMeta');
-    assert.ok(meta.url.includes('/api'), `ws: the upgrade url survived (got '${meta.url}')`);
-    assert.strictEqual(meta.hasHeaders, true, 'ws: the upgrade headers survived');
-    assert.strictEqual(meta.protocol, 'wrpc.v1');
-    assert.strictEqual(meta.appVersion, '8.8', 'ws: the declared header arrived through the connect url');
+    // declared bags, on every carrier a client may pick. 'auto' from Node is
+    // REAL headers; 'protocol' is what a browser is left with (subprotocol
+    // carrier tokens); 'query' is the opt-out. Only the last touches the url,
+    // and no host may lose any of them: uws rebuilds the request by hand.
+    for (const carrier of ['auto', 'protocol', 'query']) {
+      const client = await WrpcClient.connect(`ws://127.0.0.1:${main.port}/api`, {
+        carrier,
+        headers: { 'X-App-Version': '8.8', authorization: 'Bearer spec-token' },
+        meta: { deviceId: 'd-1', build: 42 },
+      });
+      sub.after(() => void client.close());
+      const meta = await client.call('test/peekMeta');
+      assert.ok(meta.url.includes('/api'), `ws ${carrier}: the upgrade url survived (got '${meta.url}')`);
+      assert.strictEqual(meta.hasHeaders, true, `ws ${carrier}: the upgrade headers survived`);
+      assert.strictEqual(meta.protocol, 'wrpc.v1', `ws ${carrier}: the revision was echoed next to the tokens`);
+      assert.strictEqual(meta.appVersion, '8.8', `ws ${carrier}: the declared header arrived, kebab-cased`);
+      assert.deepStrictEqual(meta.data, { 'device-id': 'd-1', build: 42 }, `ws ${carrier}: the meta bag arrived`);
+      assert.strictEqual(meta.url.includes('wrpc_'), carrier === 'query', `ws ${carrier}: url was '${meta.url}'`);
+      assert.ok(!meta.url.includes('spec-token'), `ws ${carrier}: the credential never rides the url`);
+      assert.strictEqual(meta.offer, 'wrpc.v1', `ws ${carrier}: carrier tokens left the header a handler sees`);
+    }
   });
 
   await t.test('WebSocket: load, call, event and streams over one connection', async (sub) => {

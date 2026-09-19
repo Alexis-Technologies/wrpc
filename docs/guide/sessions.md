@@ -221,8 +221,9 @@ new Server({ router, sessions: { transport: myTransport } });
 ```
 
 Besides the raw `headers`/`url`, `read()` receives what the core already
-parsed: `declared` — the merged declared+observed header bag (the ws
-`wrpc_h` query included, capped on the configurable `metaMaxBytes`) — and
+parsed: `declared` — the merged declared+observed header bag (whatever a
+ws client declared, through the `wrpc.h.` subprotocol token or the `wrpc_h`
+query, capped on the configurable `metaMaxBytes`) — and
 `meta`, the sanitized connection-metadata bag with **both** `x-wrpc-meta`
 spellings merged and keys kebab-normalized. Prefer them over re-parsing the
 wire: a strategy with its own parser can silently drift from the core's.
@@ -239,14 +240,16 @@ new Server({ router, sessions: { transport: bearerTransport() } });
 ```
 
 - **`bearerTransport()`** reads `Authorization: Bearer <token>` — the real
-  header where the transport can send one (http/sse, curl); on browser ws,
+  header where the transport can send one (http/sse, curl, ws from Node); on browser ws,
   where the WebSocket constructor cannot set headers, the client offers the
   token as a **`wrpc.bearer.<token>` subprotocol** next to the wire
   revision, so the credential travels as a real upgrade header and **never
   lands in the connect URL** (URLs end up in proxy access logs — see the
   [metadata caveat](./metadata#declared-headers-the-headers-client-option)). A token
-  outside the RFC 7230 token charset (spaces, `=` padding) cannot ride a
-  subprotocol and falls back to the declared-headers query, with a warning.
+  outside the RFC 7230 token charset (spaces, `/`, `=` padding) cannot ride
+  bare and travels inside the declared-headers token instead — base64url, so
+  still a header and still off the URL. Only `carrier: 'query'` or
+  `protocols: []` can put it in the query, and the client warns when it does.
 - **`payloadTransport({ field })`** reads a field of the client's declared
   `meta` — for apps that keep `authorization` semantics out of it. Both
   `x-wrpc-meta` spellings are read, the canonical JSON header and the

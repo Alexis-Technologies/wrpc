@@ -243,10 +243,10 @@ const META_MAX = 2048;
 
 // The connect URL of a transport whose constructor cannot set real headers
 // — the WHATWG WebSocket by spec, a browser WebTransport too: connection-
-// phase headers and metadata ride as ONE query parameter each. The server
-// reads observed request headers first and these parameters only for names
-// they do not carry, so a transport that CAN send real headers needs no
-// query at all. Loud caveat: the connect URL lands in proxy access logs — a
+// phase headers and metadata ride as ONE query parameter each. WebTransport
+// has nothing else; ws uses it only by `carrier: 'query'` or under an empty
+// offer (wsHandshake.browser.js). The server reads observed request headers
+// first and these parameters only for names they do not carry. Loud caveat: the connect URL lands in proxy access logs — a
 // device id belongs here, a secret does not.
 const connectUrl = (url, headers, meta, log) => {
   const params = [];
@@ -562,6 +562,21 @@ class WrpcClient extends Emitter {
         throw new TypeError("WrpcClient: options.metaFormat must be 'json' or 'prefixed'");
       }
       this.#metaFormat = metaFormat;
+    }
+    const { carrier } = options;
+    // How the declared bags leave on the ws handshake. 'auto': real request
+    // headers where the platform's WebSocket can set them (Node), subprotocol
+    // carrier tokens where it cannot (a browser). 'protocol' forces the
+    // tokens, 'query' the connect-URL parameters — for an intermediary that
+    // mangles Sec-WebSocket-Protocol, at the price of labels in access logs.
+    if (carrier !== undefined) {
+      if (carrier !== 'auto' && carrier !== 'protocol' && carrier !== 'query') {
+        throw new TypeError("WrpcClient: options.carrier must be 'auto', 'protocol' or 'query'");
+      }
+      // A token needs an offer the server can answer next to it.
+      if (carrier === 'protocol' && options.protocols?.length === 0) {
+        throw new TypeError("WrpcClient: carrier 'protocol' cannot ride an empty `protocols` offer");
+      }
     }
     // Off by default, unlike the server: a client that printed on every
     // reconnect would be noise in a browser console nobody asked for.
@@ -2255,6 +2270,7 @@ module.exports = {
   normalizeReconnect,
   metaHeaders,
   connectUrl,
+  META_MAX,
   unref,
   toByteView,
 };

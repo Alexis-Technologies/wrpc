@@ -303,8 +303,14 @@ const payloadBoot = async (t) => {
 test('payloadTransport: the token restores on every carrier and both meta spellings', async (t) => {
   const { port, token } = await payloadBoot(t);
   const cases = [
+    // ws from Node: a real x-wrpc-meta header; then what a browser is left
+    // with (the wrpc.m. subprotocol token), then the query opt-out.
     ['ws json', `ws://127.0.0.1:${port}/api`, {}],
     ['ws prefixed', `ws://127.0.0.1:${port}/api`, { metaFormat: 'prefixed' }],
+    ['ws token json', `ws://127.0.0.1:${port}/api`, { carrier: 'protocol' }],
+    ['ws token prefixed', `ws://127.0.0.1:${port}/api`, { carrier: 'protocol', metaFormat: 'prefixed' }],
+    ['ws query json', `ws://127.0.0.1:${port}/api`, { carrier: 'query' }],
+    ['ws query prefixed', `ws://127.0.0.1:${port}/api`, { carrier: 'query', metaFormat: 'prefixed' }],
     ['http json', `http://127.0.0.1:${port}/api`, { transport: 'http' }],
     ['http prefixed', `http://127.0.0.1:${port}/api`, { transport: 'http', metaFormat: 'prefixed' }],
     ['sse json', `http://127.0.0.1:${port}/api`, { transport: 'sse' }],
@@ -336,39 +342,38 @@ test('payloadTransport: a hand-written x-wrpc-meta-<field> header restores too',
   assert.strictEqual(body.result, 'zoe');
 });
 
-test('bearerAuth over ws: the token rides the subprotocol offer, never the connect URL', async (t) => {
-  const { server, port } = await bearerBoot(t);
-  const store = memoryStore();
-  const client = await WrpcClient.connect(
-    `ws://127.0.0.1:${port}/api`,
-    Object.assign(
-      { heartbeat: false, logger: false, reconnect: false },
-      bearerAuth({ store, signIn: (c) => c.call('auth/signIn') }),
-    ),
-  );
-  t.after(() => void client.close());
-  await client.load('secure');
-  // Session restored on reconnect-shaped opens proves the carrier works;
-  // here the FIRST connect signs in, so assert on a second connection that
-  // presents the stored token.
-  const stored = await store.get('tokens');
-  assert.ok(stored.access);
-  const again = await WrpcClient.connect(
-    `ws://127.0.0.1:${port}/api`,
-    Object.assign(
-      { heartbeat: false, logger: false, reconnect: false },
-      bearerAuth({ store, signIn: () => assert.fail('stored token must restore without a signIn') }),
-    ),
-  );
-  t.after(() => void again.close());
-  await again.load('secure');
-  // The stored token restored the session with NO signIn — the subprotocol
-  // carrier did the work.
-  assert.strictEqual(await again.api.secure.whoami(), 'noa');
-  // And the upgrade URL the server observed carries no credential: wrpc_h
-  // (the query fallback that lands in access logs) must be absent.
-  for (const peer of server.clients) {
-    assert.ok(!String(peer.meta?.url ?? '').includes('wrpc_h'), 'the bearer token leaked into the connect URL');
+test('bearerAuth over ws: the token never rides the connect URL, whichever carrier brought it', async (t) => {
+  // 'auto' from Node is a real Authorization header; 'protocol' is a
+  // browser's `wrpc.bearer.<token>` offer; 'query' still lifts the token out
+  // of wrpc_h into that same offer.
+  for (const carrier of ['auto', 'protocol', 'query']) {
+    const { server, port } = await bearerBoot(t);
+    const store = memoryStore();
+    const options = { heartbeat: false, logger: false, reconnect: false, carrier };
+    const client = await WrpcClient.connect(
+      `ws://127.0.0.1:${port}/api`,
+      Object.assign({}, options, bearerAuth({ store, signIn: (c) => c.call('auth/signIn') })),
+    );
+    t.after(() => void client.close());
+    await client.load('secure');
+    // The FIRST connect signs in, so assert on a second connection that
+    // presents the stored token.
+    const stored = await store.get('tokens');
+    assert.ok(stored.access);
+    const again = await WrpcClient.connect(
+      `ws://127.0.0.1:${port}/api`,
+      Object.assign({}, options, bearerAuth({ store, signIn: () => assert.fail(`${carrier}: a signIn ran`) })),
+    );
+    t.after(() => void again.close());
+    await again.load('secure');
+    // The stored token restored the session with NO signIn.
+    assert.strictEqual(await again.api.secure.whoami(), 'noa', carrier);
+    for (const peer of server.clients) {
+      const url = String(peer.meta?.url ?? '');
+      assert.ok(!url.includes('wrpc_h') && !url.includes(stored.access), `${carrier}: the token leaked into '${url}'`);
+      // Nor does it sit in the offer a handler may log.
+      assert.ok(!String(peer.meta.headers['sec-websocket-protocol'] ?? '').includes('bearer'), carrier);
+    }
   }
 });
 

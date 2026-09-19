@@ -832,6 +832,11 @@ void wrpc.connect('ws://host', { headers: async () => ({ authorization: 'Bearer 
 void wrpc.connect('ws://host', { metaFormat: 'prefixed' });
 void wrpc.connect('ws://host', { metaFormat: 'json' });
 expectError(wrpc.connect('ws://host', { metaFormat: 'base64' }));
+// carrier: how the declared bags leave on the ws handshake.
+void wrpc.connect('ws://host', { carrier: 'auto' });
+void wrpc.connect('ws://host', { carrier: 'protocol', headers: { 'x-tenant': 'acme' } });
+void wrpc.connect('ws://host', { carrier: 'query', protocols: [] });
+expectError(wrpc.connect('ws://host', { carrier: 'headers' }));
 expectAssignable<wrpc.RpcServerOptions>({ router, metaMaxBytes: 4096, cors: { metaHeaders: ['userId', 'tenantId'] } });
 expectError<wrpc.RpcServerOptions>({ router, cors: { metaHeaders: 'userId' } });
 expectError<wrpc.RpcServerOptions>({ router, metaMaxBytes: '4k' });

@@ -877,14 +877,15 @@ export interface WrpcClientOptions {
   /**
    * Connection-phase headers, re-evaluated on every open (function form
    * included) so a reconnect presents fresh values. They ride as REAL
-   * request headers on http/sse, as one `wrpc_h` query parameter on the
-   * browser ws connect URL (the WHATWG WebSocket constructor takes no
-   * headers — note the URL lands in proxy access logs), and in the
-   * `wrpc:connect` message on the worker transport. The server surfaces
-   * them on `client.meta.headers` / `context.meta.headers`, observed
-   * headers winning, reserved names (cookie, host, origin, sec-*,
-   * content-*, proxy-*, x-wrpc-*) dropped from the query path. Labels,
-   * never credentials on the ws leg.
+   * request headers on http/sse and on ws from Node; on ws from a browser —
+   * whose WebSocket constructor takes no headers — as a `wrpc.h.<base64url>`
+   * subprotocol offer, the one handshake header a page controls (see
+   * `carrier`); and in the `wrpc:connect` message on the worker transport.
+   * The server surfaces them on `client.meta.headers` /
+   * `context.meta.headers`, observed headers winning, and drops the names a
+   * page could forge from a declared bag (cookie, host, origin, forwarded,
+   * via, x-real-ip, sec-*, content-*, proxy-*, x-wrpc-*, x-forwarded-*).
+   * A `Bearer` authorization rides as `wrpc.bearer.<token>`.
    *
    * Keys are normalized to kebab-case (`xAppVersion` -> `x-app-version`), so
    * one spelling addresses a value whatever carrier brought it — and that is
@@ -895,9 +896,10 @@ export interface WrpcClientOptions {
   headers?: Record<string, unknown> | (() => Record<string, unknown> | Promise<Record<string, unknown>>);
   /**
    * Connection-phase metadata — headers' unvalidated sibling. Re-evaluated
-   * on every open; rides the `x-wrpc-meta` request header on http/sse, the
-   * `wrpc_meta` connect-URL parameter on ws, and the `wrpc:connect` message
-   * on the worker transport. Lands on `client.meta.data` server-side. Never
+   * on every open; rides the `x-wrpc-meta` request header on http/sse and
+   * on ws from Node, a `wrpc.m.<base64url>` subprotocol offer on ws from a
+   * browser (see `carrier`), and the `wrpc:connect` message on the worker
+   * transport. Lands on `client.meta.data` server-side. Never
    * runs through schema validation — see the per-call twin in CallOptions.
    *
    * Keys are kebab-normalized like `headers`; values keep their JSON types
@@ -916,12 +918,30 @@ export interface WrpcClientOptions {
    * JSON-stringified, null/undefined drop the key), and cross-origin
    * callers must name each key in `cors.metaHeaders`.
    *
-   * The choice changes the wire only on http/sse; ws and the worker
-   * transport have no headers and keep the one query parameter. What it
-   * changes everywhere is the VALUES: `'prefixed'` flattens on every
+   * The choice changes the wire wherever real headers travel — http, sse,
+   * ws from Node; a browser ws token and the worker message stay one JSON
+   * bag. What it changes everywhere is the VALUES: `'prefixed'` flattens on every
    * transport, so the bag the server observes never depends on the carrier.
    */
   metaFormat?: 'json' | 'prefixed';
+  /**
+   * How the declared `headers`/`meta` leave on the **ws** handshake.
+   *
+   * `'auto'` (default): real request headers where the platform's WebSocket
+   * can set them (Node), subprotocol carrier tokens where it cannot (a
+   * browser: `Sec-WebSocket-Protocol: wrpc.v1, wrpc.h.<b64u>, wrpc.m.<b64u>`).
+   * Either way the connect URL — which lands in access logs — stays clean.
+   *
+   * `'protocol'` forces the tokens. `'query'` sends the `wrpc_h` /
+   * `wrpc_meta` connect-URL parameters instead — for an intermediary that
+   * mangles `Sec-WebSocket-Protocol`. An empty `protocols` offer means the
+   * query too (a token needs a protocol the server can answer next to it),
+   * so `'protocol'` with `protocols: []` is a TypeError.
+   *
+   * The two tokens share ONE 2048-byte budget, headers first; an oversize
+   * bag is dropped with a `meta.oversize` warning, never the connection.
+   */
+  carrier?: 'auto' | 'protocol' | 'query';
   /**
    * Pluggable query-string serializer (qs and friends) for mapped REST
    * requests over the http transport — mirror of the server's option.
@@ -1038,7 +1058,9 @@ export interface WrpcClientOptions {
   /**
    * WebSocket subprotocols to offer. Defaults to ['wrpc.v1'], which the
    * server echoes back as the wire revision; an empty array offers nothing
-   * (the pre-versioning handshake). See protocol.md#versioning.
+   * (the pre-versioning handshake) — and with nothing offered a browser's
+   * declared bags fall back to the connect-URL query, see `carrier`.
+   * See protocol.md#versioning.
    */
   protocols?: Array<string>;
   proxy?: (data: string, packet: object | null) => void;

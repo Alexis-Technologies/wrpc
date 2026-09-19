@@ -111,6 +111,18 @@ forever for an answer that was thrown away. The adapter refuses to continue:
 it raises an error and terminates the socket, which the client sees as a
 disconnect and recovers from by reconnecting.
 
+## Request header limit
+
+uWebSockets.js allows **4096 bytes for all the headers of a request**, where
+node allows 16 KB — and a WebSocket handshake is a request. A browser client
+carries its declared [`headers`/`meta`](../metadata#choosing-the-ws-carrier-carrier)
+in `Sec-WebSocket-Protocol`, capped at 2048 bytes for the two bags together,
+but a Bearer token rides next to them outside that budget: a large JWT, two
+full bags and the browser's own headers can reach the limit, and uws then
+answers 431 — which a browser reports as a bare close `1006`, on every
+reconnect. Keep the bags small, or raise the limit with the runtime
+environment variable `UWS_HTTP_MAX_HEADERS_SIZE` before uws is loaded.
+
 ## Stability
 
 `uWebSockets.js` is distributed from git rather than npm and ships a native

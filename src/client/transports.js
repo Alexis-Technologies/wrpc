@@ -4,13 +4,11 @@
 // exactly the way the SSE subpath registers its own — the registry is the
 // one seam every transport, built-in or not, goes through.
 
-const { WrpcClient, ClientTransport, WRPC_PROTOCOL, metaHeaders, connectUrl } = require('./core.js');
+const { WrpcClient, ClientTransport, WRPC_PROTOCOL, META_MAX, metaHeaders } = require('./core.js');
 const { jsonParse } = require('../utils.js');
 const { createWsCompression } = require('./wsCompression.js');
+const { openSocket } = require('./wsHandshake.js');
 
-// Mirrors the server's metaMaxBytes default — see connectUrl in core.js for
-// the query carrier; the http leg applies the same cap to its header block.
-const META_MAX = 2048;
 const { WebSocket } = globalThis;
 
 class ClientWsTransport extends ClientTransport {
@@ -42,33 +40,11 @@ class ClientWsTransport extends ClientTransport {
       // protocol.md#versioning). `protocols` overrides the offer, and an
       // empty array offers nothing — an escape hatch for a proxy that
       // mangles the header. The selected protocol lands on `this.protocol`.
-      let protocols = options.protocols ?? [WRPC_PROTOCOL];
-      // The Authorization header is the ONE declared name that is a secret,
-      // and the connect URL lands in proxy access logs. RFC 6455 gives ws a
-      // header that survives the WHATWG constructor — the subprotocol offer
-      // — so a Bearer credential rides as `wrpc.bearer.<token>` and is
-      // stripped from the wrpc_h bag (the server's bearer transport reads
-      // sec-websocket-protocol first). A token outside the RFC 7230 token
-      // charset cannot be a subprotocol name and falls back to the query.
-      // Only INTO an offer the server can answer: it never echoes a carrier
-      // token, and a handshake whose every offer went unanswered is failed
-      // by the client (Chrome closes 1006, undici errors) — so under the
-      // `protocols: []` escape hatch the credential stays in the query.
-      let bag = options.headers;
-      const auth = bag?.authorization;
-      const bearer = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
-      if (bearer && protocols.length > 0 && /^[!#$%&'*+.^_`|~A-Za-z0-9-]+$/.test(bearer)) {
-        protocols = [...protocols, `wrpc.bearer.${bearer}`];
-        bag = { ...bag };
-        delete bag.authorization;
-        if (Object.keys(bag).length === 0) bag = null;
-      }
-      // Connection-phase headers ride as ONE query parameter each: the
-      // WHATWG WebSocket constructor cannot set real headers, in the browser
-      // by spec and in Node because the client uses the same globalThis
-      // implementation (connectUrl, shared with the WebTransport transport).
-      const url = connectUrl(this.url, bag, options.meta, this.log);
-      const socket = protocols.length > 0 ? new WebSocket(url, protocols) : new WebSocket(url);
+      // The declared headers/meta leave with the handshake: real request
+      // headers from Node, subprotocol carrier tokens from a browser, the
+      // connect-URL query only by `carrier: 'query'` — see wsHandshake.js
+      // and its browser half.
+      const socket = openSocket(WebSocket, this.url, options.protocols ?? [WRPC_PROTOCOL], options, this.log);
       // Bytes arrive as ArrayBuffers, never Blobs: an attachments frame is
       // classified synchronously on the way in, in order with the packets.
       socket.binaryType = 'arraybuffer';

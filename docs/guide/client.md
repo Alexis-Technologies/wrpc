@@ -106,10 +106,11 @@ await WrpcClient.connect(url, {
 | `refresh` | — | Single-flight credential refresh with a one-shot retry — see [Refreshing a credential](#refreshing-a-credential). |
 | `headers` | — | Connection-phase headers, re-evaluated per open; validated by `schema.headers` — see [Metadata](./metadata). |
 | `meta` | — | Connection-phase metadata (unvalidated); per-call twin via `{ meta }` / `withMeta()` — see [Metadata](./metadata). |
+| `carrier` | `'auto'` | ws only — how `headers`/`meta` leave on the handshake: real headers from Node, subprotocol tokens from a browser; `'protocol'` / `'query'` force one — see [Choosing the ws carrier](./metadata#choosing-the-ws-carrier-carrier). |
 | `fetch` | global `fetch` | http/sse only — see [Injecting `fetch`](#injecting-fetch-http-sse). |
 | `random` | `Math.random` | Jitter source; injectable so tests can pin the schedule. |
 | `generateId` | uuid v4 | Packet/subscription/stream ids, and the [broker transport's](./brokers/rpc) session and correlation ids — bring your own (cuid/ulid/a test counter). Correlation ids, not secrets; every id must stay within 255 UTF-8 bytes. |
-| `protocols` | `['wrpc.v1']` | WebSocket subprotocols to offer; the server echoes the wire revision back. `[]` offers nothing. |
+| `protocols` | `['wrpc.v1']` | WebSocket subprotocols to offer; the server echoes the wire revision back. `[]` offers nothing — and sends a browser's declared bags through the connect-URL query, since a carrier token needs a protocol the server can answer. |
 | `logger` | off | A Console or pino-shaped logger; observes errors in addition to the `'error'` event. |
 | `telemetry` | off | OTel tracer/meter/api — see [Telemetry](./telemetry). |
 

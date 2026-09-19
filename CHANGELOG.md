@@ -939,6 +939,22 @@ narrower promise — see
 
 ### Changed
 
+- **Breaking — the ws client no longer puts `headers`/`meta` in the connect
+  URL.** From Node they are real request headers on the upgrade (the built-in
+  `WebSocket` takes `{ protocols, headers }`); from a browser — where no API
+  can set a handshake header — they are `wrpc.h.` / `wrpc.m.` subprotocol
+  carrier tokens. The new `carrier` option (`'auto'` | `'protocol'` |
+  `'query'`) brings the query back for an intermediary that mangles
+  `Sec-WebSocket-Protocol`; `protocols: []` implies it. What changes for an
+  application: a **new client against an older server loses its ws labels**
+  (that server reads the query only — upgrade the server first, or set
+  `carrier: 'query'`); a Node client's declared `cookie`/`origin` now arrive,
+  being real headers no deny list applies to; `metaFormat: 'prefixed'` now
+  shapes the ws wire from Node too; the client caps the two tokens **together**
+  at 2048 bytes (the query was capped per parameter, against a server that
+  measured it whole); and an `authorization` that ends up in the query is a
+  `declared.exposed` warning. uWebSockets.js hosts: mind its 4096-byte limit
+  on all request headers — see the [uws adapter guide](./docs/guide/adapters/uws.md#request-header-limit).
 - **Declared headers: the deny list grew.** `forwarded`, `via`, `x-real-ip`,
   `x-client-ip`, `true-client-ip`, `cf-connecting-ip` and everything under
   `x-forwarded-` are now dropped from a peer-declared header bag, next to

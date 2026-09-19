@@ -112,6 +112,12 @@ test('readHandshake: malformed or oversize offers are refused, never thrown', ()
     assert.deepStrictEqual(Object.keys(headers), ['x-obs'], offer);
     assert.deepStrictEqual({ ...meta }, {}, offer);
   }
+  // No logger handed in: an oversize label is still a quiet refusal.
+  const silent = readHandshake(
+    { headers: { 'sec-websocket-protocol': offerH({ pad: 'x'.repeat(99) }) } },
+    { metaMaxBytes: 8 },
+  );
+  assert.deepStrictEqual(Object.keys(silent.headers), []);
   assert.deepStrictEqual(readHandshake(undefined), { headers: {}, meta: {} });
   assert.deepStrictEqual(readHandshake({ headers: { 'sec-websocket-protocol': ['a', 'b'] } }).meta, {});
 });

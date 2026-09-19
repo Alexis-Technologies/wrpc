@@ -35,8 +35,8 @@ Three client options make it work end to end:
 cookie is the byte-identical default. Two ready-made strategies ship in
 **`@alexify/wrpc/auth`**:
 
-- **`bearerTransport()`** — `Authorization: Bearer <token>` on http/sse; on
-  browser ws the token rides a `wrpc.bearer.<token>` **subprotocol offer**,
+- **`bearerTransport()`** — `Authorization: Bearer <token>` on http/sse and
+  on ws from Node; on browser ws the token rides a `wrpc.bearer.<token>` **subprotocol offer**,
   a real upgrade header, so it never lands in the connect URL or the access
   logs that keep URLs.
 - **`payloadTransport({ field })`** — a field of the declared
