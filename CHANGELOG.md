@@ -13,6 +13,27 @@ narrower promise — see
 
 ### Added
 
+**The ws handshake: declared `headers`/`meta` as subprotocol offers, and `readHandshake`**
+
+- The server reads a browser client's declared bags from the one handshake
+  header a page controls: `Sec-WebSocket-Protocol: wrpc.v1, wrpc.h.<base64url>,
+  wrpc.m.<base64url>` — the generalization of `wrpc.bearer.<token>`. A
+  carrier is chosen, never merged (real `x-wrpc-meta` header → offer →
+  `wrpc_h`/`wrpc_meta` query, which stays for `carrier: 'query'` and
+  WebTransport), the two offers share **one** `metaMaxBytes` budget, and
+  every rule is still a refusal rather than a closed connection. See the
+  [protocol reference](./docs/reference/protocol.md#connection-metadata).
+- `readHandshake(req, { metaMaxBytes? })` → `{ headers, meta }`: what a
+  `verifyClient` gate should call instead of parsing `wrpc_h` by hand. It is
+  the function `attachSocket` itself runs, so a gate sees exactly what the
+  connection will get.
+- Carrier tokens are data, never a protocol to select: both negotiators (the
+  built-in engine and the uWebSockets.js one) remove `wrpc.h.`, `wrpc.m.` and
+  `wrpc.bearer.` from the offer before `protocols`/`handleProtocols` sees it
+  and refuse to echo one, so a selector like `(offered) => offered.at(-1)`
+  cannot reflect a credential into the response. The tokens also leave the
+  `sec-websocket-protocol` of `context.meta.headers`.
+
 **Docs: which compression algorithm**
 
 - The [compression guide](./docs/guide/compression.md#algorithm) has the
@@ -918,6 +939,14 @@ narrower promise — see
 
 ### Changed
 
+- **Declared headers: the deny list grew.** `forwarded`, `via`, `x-real-ip`,
+  `x-client-ip`, `true-client-ip`, `cf-connecting-ip` and everything under
+  `x-forwarded-` are now dropped from a peer-declared header bag, next to
+  `cookie`/`host`/`origin` and the `sec-`/`content-`/`proxy-`/`x-wrpc-`
+  prefixes. A page could previously ADD `x-forwarded-for` to
+  `context.meta.headers` whenever no proxy had set one. `declaredHeaders` and
+  `RESERVED_DECLARED` moved from `src/rpc/meta.js` to the Node-only
+  `src/rpc/handshake.js` (neither was exported from the package).
 - `http.compression` / `sse.compression`: `level` and `memLevel` moved into
   the coding they tune — `encodings: [{ encoding: 'gzip', level, memLevel }]`
   — and are a `TypeError` at the top level (nothing of this was released).
@@ -957,6 +986,11 @@ narrower promise — see
   adapters — which have no compatibility to keep.
 
 ### Fixed
+- **`protocols: []` with a Bearer credential could not connect.** The client
+  lifted the token into a lone `wrpc.bearer.<token>` offer, which no server
+  echoes — and a client fails a handshake whose offers all went unanswered
+  (Chrome closes 1006, Node's WebSocket errors). With nothing offered the
+  credential now stays in the query carrier.
 - **Two public telemetry types rejected the things they exist to accept.**
   A real `@opentelemetry/api` `Tracer` was not assignable to `WrpcTracer`,
   because `WrpcSpan` declared `addEvent`, `setStatus` and `recordException`

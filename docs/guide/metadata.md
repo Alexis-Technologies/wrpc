@@ -104,10 +104,15 @@ label, not without a connection:
   server would silently drop whole;
 - a flat `string → string` map only; names normalized to
   [kebab-case](#key-casing);
-- reserved names dropped: `cookie`, `host`, `origin`, and the `sec-`,
-  `content-`, `proxy-`, `x-wrpc-` prefixes. On http/sse `fetch` itself
-  refuses to send these, so the deny list exists exactly for the query path
-  — without it a peer could spoof `cookie` through the URL;
+- reserved names dropped: `cookie`, `host`, `origin`, `forwarded`, `via`,
+  `x-real-ip`, `x-client-ip`, `true-client-ip`, `cf-connecting-ip`, and the
+  `sec-`, `content-`, `proxy-`, `x-wrpc-`, `x-forwarded-` prefixes. The list
+  is about a hostile **page**: it controls exactly the connect URL and the
+  subprotocol offers while the victim's cookie rides along by itself, so
+  without the list it could forge a `cookie`, an `origin`, or the address a
+  rate limiter reads when no proxy has set one. Real request headers are not
+  filtered — `fetch` already refuses the dangerous ones on http/sse, and a
+  peer outside a browser can send anything regardless;
 - an own `__proto__` key never carried over.
 
 ::: warning The ws form lands in logs
@@ -121,20 +126,29 @@ of this.
 ### Gating the handshake
 
 Declared headers arrive with the upgrade request, so `verifyClient` can
-refuse a client **before** the connection exists:
+refuse a client **before** the connection exists. No `Client` exists yet, so
+the gate reads the request through `readHandshake` — the same function the
+server runs a moment later, whichever carrier the client used:
 
 ```js
+const { Server, readHandshake } = require('@alexify/wrpc');
+
 const server = new Server({
   router,
   ws: {
     verifyClient: ({ req }) => {
-      const declared = new URL(req.url, 'http://x').searchParams.get('wrpc_h');
-      const headers = declared ? JSON.parse(declared) : {};
-      return supported(headers['x-app-version'] ?? req.headers['x-app-version']);
+      const { headers, meta } = readHandshake(req);
+      return supported(headers['x-app-version']) && !banned(meta['device-id']);
     },
   },
 });
 ```
+
+`headers` is what `context.meta.headers` will be — declared names under the
+observed ones, kebab-cased, reserved names dropped — and `meta` is what
+`context.meta.data` will be. Both are peer-controlled labels: gate on them,
+do not authenticate with them. Pass `{ metaMaxBytes }` when the server sets
+its own.
 
 For per-procedure requirements, declare [`schema.headers`](./rest#the-schema-option)
 instead — it validates `context.meta.headers` with the injected ajv and

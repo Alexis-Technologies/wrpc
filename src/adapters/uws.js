@@ -2,6 +2,7 @@
 
 const { EventEmitter } = require('node:events');
 const { createLoggerWriter } = require('../logging.js');
+const { WRPC_PROTOCOL, CARRIER_PROTOCOL } = require('../wire.js');
 
 const { MAX_BODY_SIZE, statusLine, eachHeader } = require('./common.js');
 
@@ -46,22 +47,21 @@ const createUpgradeRequest = (path, query, headers, remoteAddress) => ({
   socket: { remoteAddress },
 });
 
-// The protocol revision marker; must match the built-in engine's.
-const WRPC_PROTOCOL = 'wrpc.v1';
-
 // Mirrors WebsocketServer's negotiation: `false` from handleProtocols
 // rejects the handshake, anything else selects (or declines) a subprotocol,
 // and with no app configuration the wrpc revision is echoed when offered.
+// Carrier tokens (wire.js) are data riding the offer: removed before the
+// application sees the list, and never echoed back.
 const negotiateProtocol = (header, { protocols, handleProtocols }, request) => {
   if (!header) return '';
   const offered = header
     .split(',')
     .map((token) => token.trim())
-    .filter(Boolean);
+    .filter((token) => token.length > 0 && !CARRIER_PROTOCOL.test(token));
   if (handleProtocols) {
     const selected = handleProtocols(offered, request);
     if (selected === false) return false;
-    return selected || '';
+    return typeof selected === 'string' && !CARRIER_PROTOCOL.test(selected) ? selected : '';
   }
   if (protocols) return offered.find((name) => protocols.includes(name)) ?? '';
   if (offered.includes(WRPC_PROTOCOL)) return WRPC_PROTOCOL;

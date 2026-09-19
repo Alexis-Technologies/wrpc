@@ -130,6 +130,12 @@ export interface WebsocketServerOptions {
   path?: string;
   verifyClient?: (info: VerifyClientInfo) => boolean;
   protocols?: Array<string>;
+  /**
+   * Selects a subprotocol from the offer, `''` for none, `false` to reject
+   * the handshake. `offered` never holds wrpc's carrier tokens (`wrpc.h.`,
+   * `wrpc.m.`, `wrpc.bearer.` — data riding the offer, read from
+   * `req.headers`), and a carrier token returned anyway is not echoed.
+   */
   handleProtocols?: (offered: Array<string>, req: IncomingMessage) => string | false;
   perMessageDeflate?: boolean | PerMessageDeflateOptions;
   /** Coalesce every write of one event-loop turn into one flush. Default true for server connections. */

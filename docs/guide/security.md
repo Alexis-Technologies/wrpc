@@ -184,6 +184,15 @@ The client offers `wrpc.v1`. A server can require it through `protocols` /
 returning `false` rejects the handshake — useful when a shared listener must
 tell wrpc clients apart from everything else pointed at the same port.
 
+The same header also carries data: a browser client rides its declared
+`headers`/`meta` and a Bearer credential as `wrpc.h.`, `wrpc.m.` and
+`wrpc.bearer.` offers ([why](./metadata#declared-headers-the-headers-client-option)).
+Those tokens are taken out of `offered` before your `handleProtocols` runs
+and out of `context.meta.headers`, and an engine never echoes one — a
+selector like `(offered) => offered.at(-1)` cannot reflect a credential into
+the response. They remain on the raw `req.headers`, so keep that header out
+of access logs the way you would `Authorization`.
+
 ## What wrpc does not do for you
 
 - **It is not a firewall.** Rate limiting beyond the per-connection caps is an

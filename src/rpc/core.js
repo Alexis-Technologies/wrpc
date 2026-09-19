@@ -29,7 +29,8 @@ const { createLoggerWriter } = require('../logging.js');
 const { createServerTelemetry } = require('../telemetry/server.js');
 const { TRACEPARENT, TRACESTATE } = require('../telemetry/shared.js');
 const { Context, Client, DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_CALLS, buildMeta } = require('./client.js');
-const { DEFAULT_META_MAX, declaredHeaders, declaredData } = require('./meta.js');
+const { DEFAULT_META_MAX, declaredData } = require('./meta.js');
+const { readDeclared } = require('./handshake.js');
 
 // After this long an unsettled onConnect chain logs a warning: a hook that
 // never resolves holds the client's dispatch (see #addClient), and the warn
@@ -729,11 +730,11 @@ class RpcServer extends Emitter {
 
   attachSocket(socket, meta = {}) {
     const transport = new (socketTransportFor(meta.kind))(socket, meta);
-    // Declared-then-observed: the wrpc_h query can only add names the
-    // upgrade request did not carry (see declaredHeaders).
-    const declared = declaredHeaders(meta.url, this.#metaMax, this.#log);
-    const merged = declared ? { ...declared, ...meta.headers } : meta.headers;
-    const data = declaredData(meta.headers, split(meta.url ?? '', '?')[1], this.#metaMax, this.#log);
+    // Declared-then-observed: whichever carrier brought the bags (subprotocol
+    // offers, the query, real headers), a declaration can only add names the
+    // upgrade request did not carry — see rpc/handshake.js, which a
+    // verifyClient gate reads through as well (readHandshake).
+    const { headers: merged, meta: data } = readDeclared(meta.headers, meta.url, this.#metaMax, this.#log);
     const client = this.#addClient(
       transport,
       (c) => this.#restoreToken(c, { headers: meta.headers, url: meta.url, declared: merged, meta: data }),

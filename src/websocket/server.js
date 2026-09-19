@@ -24,8 +24,8 @@ const hasToken = (value, token) => !!value && value.toLowerCase().includes(token
 // A wrpc client OFFERS it; with no app-configured protocols the server
 // echoes it back, which is what stamps the wire with a version both sides
 // can rely on. A peer that offers nothing gets no subprotocol and speaks
-// 1.0 — additive, nothing breaks.
-const WRPC_PROTOCOL = 'wrpc.v1';
+// 1.0 — additive, nothing breaks. Re-exported below, as it always was.
+const { WRPC_PROTOCOL, CARRIER_PROTOCOL } = require('../wire.js');
 
 const writeResponse = (socket, headerLines) => {
   socket.cork();
@@ -160,10 +160,14 @@ class WebsocketServer extends EventEmitter {
   #negotiateProtocol(req, socket) {
     const header = req.headers['sec-websocket-protocol'];
     if (!header) return { protocol: '' };
+    // Carrier tokens (wire.js) are DATA riding the offer, never a protocol to
+    // select: they leave the list before the application sees it, and one
+    // that comes back anyway is not echoed — `(offered) => offered.at(-1)`
+    // would otherwise reflect a Bearer credential into the response headers.
     const offered = header
       .split(',')
       .map((token) => token.trim())
-      .filter(Boolean);
+      .filter((token) => token.length > 0 && !CARRIER_PROTOCOL.test(token));
     const { protocols, handleProtocols } = this.#options;
     if (handleProtocols) {
       const selected = handleProtocols(offered, req);
@@ -171,7 +175,7 @@ class WebsocketServer extends EventEmitter {
         abort(socket, 400, 'Subprotocol negotiation failed');
         return null;
       }
-      return { protocol: selected || '' };
+      return { protocol: typeof selected === 'string' && !CARRIER_PROTOCOL.test(selected) ? selected : '' };
     }
     if (protocols) {
       const selected = offered.find((name) => protocols.includes(name));

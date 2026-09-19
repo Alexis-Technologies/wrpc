@@ -11,7 +11,7 @@
 // src/wire.js — the import-free wire-name constants (esbuild inlines them,
 // so the subpath stays ~1 KB) — one file serves both sides, like ./query.
 
-const { META_PARAM, META_HEADER, META_PREFIX } = require('../wire.js');
+const { META_PARAM, META_HEADER, META_PREFIX, BEARER_PROTOCOL } = require('../wire.js');
 
 // ---------------------------------------------------------------------------
 // Client-side token stores. The contract is three functions, sync or async
@@ -182,8 +182,7 @@ const declaredFromUrl = (url, param) => {
 // an Authorization header, and the connect URL lands in proxy access logs —
 // but RFC 6455 lets the client OFFER subprotocols, which travel as a real
 // upgrade header. The ws transport offers `wrpc.bearer.<token>` next to the
-// wire revision; this is where the server reads it back.
-const SUBPROTOCOL_PREFIX = 'wrpc.bearer.';
+// wire revision; this is where the server reads it back (BEARER_PROTOCOL).
 
 /**
  * Session token in `Authorization: <scheme> <token>` — the observed header
@@ -204,7 +203,7 @@ const bearerTransport = ({ scheme = 'Bearer' } = {}) => {
       if (typeof offered === 'string' && offered.length > 0) {
         for (const part of offered.split(',')) {
           const name = part.trim();
-          if (name.startsWith(SUBPROTOCOL_PREFIX)) return name.slice(SUBPROTOCOL_PREFIX.length);
+          if (name.startsWith(BEARER_PROTOCOL)) return name.slice(BEARER_PROTOCOL.length);
         }
       }
       // The bag the core already parsed and capped (wrpc_h included) — this

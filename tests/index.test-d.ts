@@ -875,3 +875,11 @@ expectAssignable<wrpc.WrpcTracer>({
   },
 });
 expectAssignable<wrpc.WrpcTelemetryOptions>({ tracer: otelTrace.getTracer('tsd') });
+
+// readHandshake: what a verifyClient gate reads the declared bags through —
+// a node IncomingMessage and the uws look-alike both satisfy the request.
+declare const upgradeRequest: import('node:http').IncomingMessage;
+expectType<wrpc.DeclaredHandshake>(wrpc.readHandshake(upgradeRequest));
+expectType<wrpc.DeclaredHandshake>(wrpc.readHandshake({ url: '/api', headers: {} }, { metaMaxBytes: 4096 }));
+expectType<string | Array<string> | undefined>(wrpc.readHandshake(upgradeRequest).headers['x-app-version']);
+expectError(wrpc.readHandshake(upgradeRequest, { metaMaxBytes: '4096' }));

@@ -237,6 +237,39 @@ const runEngineContract = async (harness, t) => {
     assert.strictEqual(socket.protocol, 'wrpc');
   });
 
+  await t.test('carrier tokens are hidden from handleProtocols and never echoed', async (sub) => {
+    // wrpc.h./wrpc.m./wrpc.bearer. offers are DATA riding the header: every
+    // engine drops them from the offer an application selects from, and
+    // refuses to reflect one into the response.
+    let seen = null;
+    const handleProtocols = (offered, req) => {
+      seen = offered;
+      return req.headers['sec-websocket-protocol'].includes('reflect') ? 'wrpc.bearer.secret' : offered.at(-1);
+    };
+    const { port } = await boot(sub, { handleProtocols });
+    const handshake = (offer) =>
+      ProtocolClient.attemptHandshake({
+        host: '127.0.0.1',
+        port,
+        path: '/',
+        headers: {
+          Upgrade: 'websocket',
+          Connection: 'Upgrade',
+          'Sec-WebSocket-Version': '13',
+          'Sec-WebSocket-Key': Buffer.from('0123456789abcdef').toString('base64'),
+          'Sec-WebSocket-Protocol': offer,
+        },
+        timeoutMs: 600,
+      });
+    const res = await handshake('wrpc.h.eyJhIjoiMSJ9, wrpc.v1, wrpc.bearer.secret');
+    assert.strictEqual(parseInt(res.statusLine.split(' ')[1], 10), 101);
+    assert.deepStrictEqual(seen, ['wrpc.v1']);
+    assert.strictEqual(res.headers['sec-websocket-protocol'], 'wrpc.v1');
+    const reflected = await handshake('reflect, wrpc.bearer.secret');
+    assert.strictEqual(parseInt(reflected.statusLine.split(' ')[1], 10), 101);
+    assert.strictEqual(reflected.headers['sec-websocket-protocol'], undefined);
+  });
+
   await t.test('sendPrepared (when present) delivers one shared message to two peers like send(text)', async (sub) => {
     const { engine, source, port } = await boot(sub);
     if (!engine.capabilities.prepared) return void sub.skip('engine has no prepared-frame path');

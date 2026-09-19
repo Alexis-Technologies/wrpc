@@ -8,6 +8,7 @@ const { buildDictionary } = require('./rpc/dictionary.js');
 const { WrpcClient, WrpcClientProxy, WrpcError, connect } = require('./client.js');
 const { Server } = require('./server.js');
 const { RpcServer, Client, Context } = require('./rpc/core.js');
+const { readHandshake } = require('./rpc/handshake.js');
 const { defineRouter, procedure, Router, Procedure, effectiveSchema } = require('./rpc/router.js');
 const { RoomRegistry, Broadcast } = require('./rpc/rooms.js');
 const { Cluster } = require('./rpc/cluster.js');
@@ -53,6 +54,7 @@ module.exports = {
   brotliCompressor,
   zstdCompressor,
   isTokenTransport,
+  readHandshake,
   MemorySessionStore,
   ServerTransport,
   buildHeaders,

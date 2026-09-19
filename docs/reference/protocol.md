@@ -54,7 +54,9 @@ The rules that keep this compatible in every direction:
   one it knows and nothing breaks. What `v2` may change is exactly what the
   stability section above says `v1` never will.
 - The name `wrpc.` is reserved as a prefix: applications must not mint their
-  own subprotocols under it.
+  own subprotocols under it. Besides revisions it holds the **carrier
+  tokens** of [connection metadata](#connection-metadata) — offers that are
+  read, never selected.
 
 HTTP and SSE requests carry no subprotocol. Their marker is the reserved
 **`wrpc-version`** header: every response echoes `wrpc-version: 1`, and a
@@ -109,23 +111,63 @@ below.
 
 ### Connection metadata
 
-A client may declare connection-phase metadata at connect time. This is a
-transport-level convention, not a packet: real request headers where the
-transport can send them (HTTP, SSE), and two reserved query parameters on
-the WebSocket connect URL where it cannot — `wrpc_h` (declared headers) and
-`wrpc_meta` (declared data), each a percent-encoded JSON object. A peer that
-sends none is perfectly normal, and a server that ignores them is
-conformant. A server that consumes them MUST treat them as untrusted labels:
-size-capped, sanitized, and never able to override an observed request
-header — wrpc's own implementation reads observed headers first and drops
-reserved names (`cookie`, `host`, `origin`, `sec-*`, `content-*`, `proxy-*`,
-`x-wrpc-*`) from the query path outright. The `x-wrpc-meta` request header
-(percent-encoded JSON) carries per-request metadata for plain HTTP callers,
-with `x-wrpc-meta-<key>: <value>` accepted as an equivalent per-key
-spelling — string values only, the JSON header winning a key collision. A
-conformant client MAY emit either; on a transport without headers the
-prefixed *mode* still travels as the `wrpc_meta` parameter, because the
-guarantee is about the bag the server observes, not the wire.
+A client may declare connection-phase metadata at connect time: a bag of
+**declared headers** and a bag of **declared data**. This is a
+transport-level convention, not a packet, and it has one carrier per thing a
+transport can actually send:
+
+| Carrier | Declared headers | Declared data | Who can send it |
+| --- | --- | --- | --- |
+| Real request headers | the headers themselves | `x-wrpc-meta` (percent-encoded JSON), or one `x-wrpc-meta-<key>: <value>` per key | HTTP, SSE; a WebSocket client outside a browser |
+| Subprotocol offers | `wrpc.h.<base64url>` | `wrpc.m.<base64url>` | a browser WebSocket |
+| Connect-URL query | `wrpc_h` (percent-encoded JSON) | `wrpc_meta` (percent-encoded JSON) | any WebSocket client that opts into it; WebTransport |
+
+A browser's WebSocket constructor cannot set a request header and `fetch`
+refuses to perform the upgrade by hand, so the one handshake header a page
+controls is `Sec-WebSocket-Protocol`. A carrier token is the JSON object,
+UTF-8, base64url **without padding** — a subprotocol name is an RFC 7230
+token, so neither raw JSON nor `=` is admissible:
+
+```
+Sec-WebSocket-Protocol: wrpc.v1, wrpc.h.eyJ4LXRlbmFudCI6ImFjbWUifQ, wrpc.m.eyJ1c2VySWQiOjd9
+```
+
+Carrier tokens — `wrpc.h.`, `wrpc.m.` and the credential token
+`wrpc.bearer.<token>` — are **data riding the offer, never a protocol to
+select**. A server MUST NOT echo one: the response would reflect a credential,
+and the client did not ask for it. Because a client fails a handshake whose
+offers all went unanswered, a client MUST offer a selectable protocol
+(`wrpc.v1`) next to a carrier token, and MUST NOT emit carrier tokens when it
+offers nothing else. wrpc's negotiators remove the tokens from the offer
+before an application's `protocols`/`handleProtocols` sees it.
+
+The `x-wrpc-meta-<key>` spelling carries string values only and the JSON
+header wins a key collision. A conformant client MAY emit either; on a
+carrier without headers the prefixed *mode* still travels as the JSON bag,
+because the guarantee is about the bag the server observes, not the wire.
+
+A peer that declares nothing is perfectly normal, and a server that ignores
+the declarations is conformant. A server that consumes them MUST treat them
+as untrusted labels, whichever carrier brought them:
+
+- **Size-capped on the encoded input**, before any decoding. wrpc's default is
+  2048 bytes: one budget for the two offers together (headers first), the
+  query measured whole, the `x-wrpc-meta` header on its own. Keep the budget
+  under the smallest request-header limit in the deployment — a WebSocket
+  handshake is an HTTP request, and uWebSockets.js allows 4096 bytes for
+  **all** of its headers where node allows 16 KB.
+- **Refused, never fatal.** A malformed or oversize declaration leaves the
+  connection unlabelled; it does not close it.
+- **A carrier is chosen, never merged.** For each bag: the real header, else
+  the offer, else the query. An offered token that is refused still silences
+  the query, so garbage cannot downgrade a connection to the other carrier.
+- **Never able to override an observed request header.** Declared names only
+  add, and wrpc drops the names a hostile page could otherwise forge next to
+  a victim's cookie: `cookie`, `host`, `origin`, `forwarded`, `via`,
+  `x-real-ip`, `x-client-ip`, `true-client-ip`, `cf-connecting-ip`, and
+  everything under `sec-`, `content-`, `proxy-`, `x-wrpc-` and
+  `x-forwarded-`. Real headers are not filtered — a peer that can send them
+  is not a page, and no deny list binds it.
 
 Keys of both declared bags are normalized to **kebab-case**
 (`userId` → `user-id`), so one spelling addresses a value whatever carrier

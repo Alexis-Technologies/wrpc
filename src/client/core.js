@@ -21,7 +21,7 @@ const { hasBytes, encodeAttachments, decodeAttachments, isAttachmentsFrame } = r
 const { WrpcReadable, WrpcWritable } = require('../streams.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createClientTelemetry } = require('../telemetry/client.js');
-const { META_HEADER, META_PREFIX, HEADERS_PARAM, META_PARAM } = require('../wire.js');
+const { META_HEADER, META_PREFIX, HEADERS_PARAM, META_PARAM, WRPC_PROTOCOL } = require('../wire.js');
 
 const CALL_TIMEOUT = 7 * 1000;
 
@@ -36,9 +36,6 @@ const CONNECT_TIMEOUT_ERROR = { message: 'Connect timeout', code: 408 };
 // What a call that outlived callTimeout rejects with: 408, coded like every
 // other client-produced refusal, so `error.code` checks work here too.
 const REQUEST_TIMEOUT_ERROR = { message: 'Request timeout', code: 408 };
-
-// The wire revision this client speaks, offered as a WebSocket subprotocol.
-const WRPC_PROTOCOL = 'wrpc.v1';
 
 // Monotonic where available; Date.now is the fallback for a host without it.
 const now = () => (typeof performance === 'object' ? performance.now() : Date.now());

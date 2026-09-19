@@ -82,6 +82,34 @@ export declare function zstdCompressor(
 ): Compressor & { readonly async: number | null };
 
 // ---------------------------------------------------------------------------
+// The ws handshake
+
+/** What a peer declared on an upgrade request, merged the way `attachSocket` merges it. */
+export interface DeclaredHandshake {
+  /**
+   * The header bag a procedure will see: the declared names (kebab-cased,
+   * reserved names dropped) UNDER the observed ones, with wrpc's carrier
+   * tokens taken out of `sec-websocket-protocol`.
+   */
+  headers: Record<string, string | Array<string> | undefined>;
+  /** The sanitized connection-metadata bag; empty when nothing was declared. */
+  meta: Readonly<Record<string, unknown>>;
+}
+
+/**
+ * Reads the declared `headers`/`meta` of an upgrade request from whichever
+ * carrier the client used — real headers (a Node client), the `wrpc.h.` /
+ * `wrpc.m.` subprotocol offers (a browser), or the `wrpc_h` / `wrpc_meta`
+ * query (`carrier: 'query'`, WebTransport). For a `verifyClient` gate, which
+ * runs before any `Client` exists; PEER-CONTROLLED, exactly like the result
+ * on `context.meta`. Malformed or oversize input is refused, never thrown.
+ */
+export declare function readHandshake(
+  req: { headers?: Record<string, string | Array<string> | undefined>; url?: string },
+  options?: { metaMaxBytes?: number; log?: { warn(record: Record<string, unknown>): void } },
+): DeclaredHandshake;
+
+// ---------------------------------------------------------------------------
 // Cluster
 
 /** Narrows a cluster operation: one room, or every persistent client. */
@@ -406,9 +434,10 @@ export interface RpcServerOptions {
   codec?: WrpcCodec;
   /**
    * Cap on peer-declared metadata, measured on the ENCODED input: the ws
-   * `wrpc_h` connect-URL parameter and the per-packet `meta` field. Over
-   * the cap the label is refused (a warn is logged), never the connection.
-   * Default 2048.
+   * handshake carriers (the `wrpc.h.` + `wrpc.m.` subprotocol offers share
+   * ONE budget; the connect-URL query is measured whole), the `x-wrpc-meta`
+   * header and the per-packet `meta` field. Over the cap the label is
+   * refused (a warn is logged), never the connection. Default 2048.
    */
   metaMaxBytes?: number;
 }

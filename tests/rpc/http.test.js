@@ -359,6 +359,8 @@ test('ws attach: declared headers (wrpc_h) merge UNDER the observed ones', async
     cookie: 'token=forged', // reserved: cannot be spoofed through the URL
     'x-wrpc-channel': 'forged', // reserved prefix
     'Sec-Fetch-Site': 'same-origin', // reserved prefix
+    'X-Forwarded-For': '10.0.0.1', // reserved: the caller's address is never declared
+    'x-real-ip': '10.0.0.1', // reserved
     num: 5, // not a string: dropped
     nested: { a: 1 }, // not a string: dropped
     __proto__: { polluted: 1 }, // never carried over
@@ -373,6 +375,8 @@ test('ws attach: declared headers (wrpc_h) merge UNDER the observed ones', async
   assert.strictEqual(client.meta.headers.cookie, 'token=real');
   assert.strictEqual(client.meta.headers['x-wrpc-channel'], undefined);
   assert.strictEqual(client.meta.headers['sec-fetch-site'], undefined);
+  assert.strictEqual(client.meta.headers['x-forwarded-for'], undefined);
+  assert.strictEqual(client.meta.headers['x-real-ip'], undefined);
   assert.strictEqual(client.meta.headers.num, undefined);
   assert.strictEqual(client.meta.headers.nested, undefined);
   assert.strictEqual({}.polluted, undefined, 'Object.prototype survived');
