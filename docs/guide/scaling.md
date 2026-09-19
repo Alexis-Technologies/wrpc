@@ -50,7 +50,10 @@ it. **Off by default**, and — unlike the socket transports — with nothing
 to negotiate against: an instance *without* the option cannot read such an
 envelope, drops it and logs `backplane.encoded`. Roll it out in two steps
 (every instance on a version that has the option, then the option on),
-and the same for turning it off. The codec must be synchronous; the
+and the same for turning it off. Changing the codec needs no such gap: an
+instance encodes with the head of [a list](./compression#list) and reads
+anything on it, so list both everywhere (`codec: ['deflate-raw', 'zstd']`),
+then swap the order. The codec must be synchronous; the
 platform one is. `rooms.maxMessage` (16 MiB) caps an inflated envelope.
 The [cluster layer](./cluster) has its own `cluster: { compression }`,
 applied after signing.

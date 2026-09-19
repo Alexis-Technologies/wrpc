@@ -13,6 +13,29 @@ narrower promise — see
 
 ### Added
 
+**`compression: { codec: [...] }` — a preference list, negotiated per direction**
+
+- `codec` takes a list in order of preference, names and injected codecs
+  alike. Each end announces the ids it can decode and **a sender compresses
+  with the first codec of its own list the other end announced** — so a
+  list is the fallback (a peer without zstd is served deflate instead of
+  plain), the two directions choose independently (a Node server answers in
+  zstd a browser that sends deflate), and no frame has to name its codec.
+  A name the platform lacks is skipped in a list, refused alone. A peer's
+  list is bounded (16 ids) and only ever compared, never a key.
+- On every negotiated wire: the `enc` list of the WebTransport capabilities
+  message and of the WebRTC description `caps`, `{ type: 'ping', enc: [ids] }`
+  from a Node WebSocket client (the `pong` names the one to send with), the
+  comma-separated `wrpc-enc` of a broker `request` / `hello` / `welcome`.
+- The backplane and cluster envelopes negotiate nothing, so there an
+  instance **encodes with the head of the list and decodes any codec on
+  it** — a change of codec becomes a rollout without a lost envelope (list
+  both everywhere, then swap the order). A raw WebRTC channel uses the head
+  both ways.
+- `transport.compression` (WebTransport, WebRTC, the broker client) is
+  `{ encode, decode } | null`; `NegotiatedCompression` in the types. The
+  Node↔Node carriers probe every codec of the list for a synchronous answer.
+
 **`compression: { codec: 'zstd' | 'brotli' }` — the platform codecs by name, and their factories**
 
 - `codec` takes the name of a platform codec beside an injected one. The ids
@@ -90,7 +113,7 @@ narrower promise — see
   serializer is compiled.
 
 **`@alexify/wrpc/deflate` — the dictionary in a browser, and a synchronous codec anywhere**
-- A DEFLATE codec in plain JavaScript on its own subpath (4.5 KB
+- A DEFLATE codec in plain JavaScript on its own subpath (3.8 KB
   min+gzip, loaded only by a page that injects it). `createDeflateCodec({
   dictionary })` is a `Compressor` whose `id` matches
   `dictionaryCompressor`'s for the same bytes, so a browser peer on it and
@@ -863,6 +886,16 @@ narrower promise — see
 
 ### Changed
 
+- Wire names that said "deflate" while carrying any codec are neutral
+  (nothing of this was released): the capabilities key `deflate` → `enc`
+  (WebTransport, WebRTC `caps`), `KIND_TEXT_DEFLATE` / `KIND_BINARY_DEFLATE`
+  → `KIND_TEXT_COMPRESSED` / `KIND_BINARY_COMPRESSED` and
+  `StreamParser.deflate` → `.compressed` in `@alexify/wrpc/wt`, the WebRTC
+  header's DEFLATE bit → COMPRESSED. Byte values are unchanged.
+- `@alexify/wrpc/deflate` is 3.8 KB min+gzip (was 4.5): it takes the
+  dictionary id from a leaf instead of the whole negotiation; its budget
+  goes 5 → 4. The main browser entry's goes 23 → 24 for the codec list
+  (+0.4 KB, measured 23.1), sse 24 → 25.
 - The platform deflate codec (`compression: true` on WebTransport, WebRTC,
   the broker binding, the backplane envelopes and a Node WebSocket client)
   compresses at zlib level **3** instead of 6: the knee of the curve — at

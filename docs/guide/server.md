@@ -207,9 +207,10 @@ by itself, in browsers and in Node. The event stream has its own option,
 built-in `WebSocket` only ever inflates, so its uploads — a 4 KB call, a
 stream chunk — arrive as they are. The server-level `compression` option
 accepts per-message compressed frames from a Node client that asked for
-them: the client sends `{ type: 'ping', enc: 'deflate-raw' }` on open, a
-server with the same codec answers the `enc` on its `pong`, and from then
-on the client sends every packet or chunk past the threshold as a binary
+them: the client sends `{ type: 'ping', enc: ['deflate-raw'] }` on open —
+its codecs, in its [order of preference](./compression#list) — a server
+answers with the first of them it holds as the `enc` of its `pong`, and
+from then on the client sends every packet or chunk past the threshold as a binary
 frame under a `0x00` marker (a stream chunk never starts with one) that
 the server inflates before dispatch. Off on both ends by default; a lone
 end stays plain. A browser never needs it — it compresses both directions

@@ -803,7 +803,7 @@ class WrpcPeer extends Emitter {
       connectTimeout: this.#connectTimeout,
       restartTimeout: this.#restartTimeout,
       log: this.#log,
-      caps: this.#compression === null ? null : { deflate: this.#compression.id },
+      caps: this.#compression === null ? null : { enc: this.#compression.ids },
       signal: this.#verifier === null ? relay : stamped,
     });
     const peerLink = new PeerLink(this, {

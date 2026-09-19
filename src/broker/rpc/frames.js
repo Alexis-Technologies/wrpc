@@ -22,9 +22,10 @@ const HEADER_KIND = 'wrpc-kind';
 const HEADER_SEQ = 'wrpc-seq';
 const HEADER_INBOX = 'wrpc-inbox';
 const HEADER_REASON = 'wrpc-reason';
-// Per-message compression (src/compression): on a `request` and a `hello`,
-// the codec the sender accepts; on a `welcome`, the codec the server agreed
-// to; on a `response`, `packet` or `chunk`, that its body IS compressed.
+// Per-message compression (src/compression): on a `request`, a `hello` and
+// a `welcome`, the codecs the sender holds — ids joined by commas, in its
+// order of preference; on a `response`, `packet` or `chunk`, the ONE codec
+// its body IS compressed with.
 const HEADER_ENC = 'wrpc-enc';
 const RESERVED_PREFIX = 'wrpc-';
 

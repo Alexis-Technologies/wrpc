@@ -17,7 +17,7 @@ const {
   FramingError,
   KIND_TEXT,
   FLAG_FIN,
-  FLAG_DEFLATE,
+  FLAG_COMPRESSED,
 } = require('../../src/webrtc/framing.js');
 const { chunkEncode } = require('../../src/chunks.js');
 const { createFakeRtc } = require('./fakeRtc.js');
@@ -76,9 +76,9 @@ const spy = (channel) => {
 test('rtc framing: bit 2 is the deflate flag — reserved until the decoder is told', () => {
   const encoder16 = new FrameEncoder(16 * 1024);
   const frames = [];
-  encoder16.encode(KIND_TEXT | FLAG_DEFLATE, new Uint8Array(40_000), (frame) => frames.push(frame.slice()));
+  encoder16.encode(KIND_TEXT | FLAG_COMPRESSED, new Uint8Array(40_000), (frame) => frames.push(frame.slice()));
   assert.strictEqual(frames.length, 3);
-  for (const frame of frames) assert.ok(frame[0] & FLAG_DEFLATE, 'the flag rides every fragment');
+  for (const frame of frames) assert.ok(frame[0] & FLAG_COMPRESSED, 'the flag rides every fragment');
   assert.strictEqual(frames[2][0] & FLAG_FIN, FLAG_FIN);
 
   const strict = new FrameDecoder();
@@ -88,15 +88,15 @@ test('rtc framing: bit 2 is the deflate flag — reserved until the decoder is t
   );
 
   const lenient = new FrameDecoder();
-  lenient.deflate = true;
+  lenient.compressed = true;
   assert.strictEqual(lenient.push(frames[0]), null);
   assert.strictEqual(lenient.push(frames[1]), null);
   const message = lenient.push(frames[2]);
   assert.deepStrictEqual(
-    { kind: message.kind, deflated: message.deflated, length: message.data.length },
+    { kind: message.kind, compressed: message.compressed, length: message.data.length },
     {
       kind: KIND_TEXT,
-      deflated: true,
+      compressed: true,
       length: 40_000,
     },
   );
@@ -105,19 +105,19 @@ test('rtc framing: bit 2 is the deflate flag — reserved until the decoder is t
   // A continuation that drops the flag is a mismatch, like a changed kind.
   lenient.push(frames[0]);
   const plain = frames[1].slice();
-  plain[0] &= ~FLAG_DEFLATE;
+  plain[0] &= ~FLAG_COMPRESSED;
   assert.throws(
     () => lenient.push(plain),
     (error) => error.code === 'kind',
   );
 
-  // A plain single-fragment message still decodes as text, deflated: false.
+  // A plain single-fragment message still decodes as text, compressed: false.
   const single = new FrameEncoder(1024);
   let text;
   single.encodeText(small, (frame) => {
     text = lenient.push(frame);
   });
-  assert.deepStrictEqual(text, { kind: KIND_TEXT, data: small, deflated: false });
+  assert.deepStrictEqual(text, { kind: KIND_TEXT, data: small, compressed: false });
   // Bits 3-7 stay reserved even with deflate on.
   assert.throws(
     () => lenient.push(new Uint8Array([0b1000 | FLAG_FIN, 1])),
@@ -142,7 +142,7 @@ test('rtc compression (raw channel): off by default; on when both ends say so; t
   await waitFor(() => packets.length === 1);
   assert.strictEqual(packets[0], big);
   assert.ok(
-    sentByClient.every((h) => (h & FLAG_DEFLATE) === 0),
+    sentByClient.every((h) => (h & FLAG_COMPRESSED) === 0),
     'nothing compressed by default',
   );
 });
@@ -161,16 +161,16 @@ test('rtc compression (raw channel): explicit on both sides — packets and chun
   host.on('chunk', (bytes) => chunks.push(bytes));
   client.on('message', (data) => inbound.push(data));
   await client.open();
-  assert.strictEqual(client.compression, DEFLATE);
-  assert.strictEqual(host.compression, DEFLATE);
+  assert.deepStrictEqual(client.compression, { encode: DEFLATE, decode: DEFLATE });
+  assert.deepStrictEqual(host.compression, { encode: DEFLATE, decode: DEFLATE });
 
   await t.test('client → host: a large packet compressed, a small one plain, order kept', async () => {
     client.write(big);
     client.write(small);
     await waitFor(() => packets.length === 2);
     assert.deepStrictEqual(packets, [big, small]);
-    const flags = sentByClient.map((h) => h & FLAG_DEFLATE);
-    assert.deepStrictEqual(flags, [FLAG_DEFLATE, 0]);
+    const flags = sentByClient.map((h) => h & FLAG_COMPRESSED);
+    assert.deepStrictEqual(flags, [FLAG_COMPRESSED, 0]);
     sentByClient.length = 0;
   });
 
@@ -183,7 +183,7 @@ test('rtc compression (raw channel): explicit on both sides — packets and chun
     await waitFor(() => chunks.length === 1);
     assert.deepStrictEqual(new Uint8Array(chunks[0]), chunk);
     assert.ok(sentByClient.length >= 1 && sentByClient.length < 13, `${sentByClient.length} fragments for 50 KB`);
-    assert.ok(sentByClient.every((h) => h & FLAG_DEFLATE));
+    assert.ok(sentByClient.every((h) => h & FLAG_COMPRESSED));
     sentByClient.length = 0;
   });
 
@@ -197,8 +197,8 @@ test('rtc compression (raw channel): explicit on both sides — packets and chun
     assert.strictEqual(inbound[2].length, 8192 + 1 + 4);
     // The plain 4.6 KB packet is two fragments at this message size.
     assert.deepStrictEqual(
-      sentByHost.map((h) => h & FLAG_DEFLATE),
-      [FLAG_DEFLATE, 0, 0, FLAG_DEFLATE],
+      sentByHost.map((h) => h & FLAG_COMPRESSED),
+      [FLAG_COMPRESSED, 0, 0, FLAG_COMPRESSED],
     );
   });
 });
@@ -313,7 +313,7 @@ test('rtc compression: the option is validated, and connect() carries it to the 
   await client.call('data/echo', { pad: 'y'.repeat(5000) }).catch(() => {});
   await waitFor(() => packets.length >= 1);
   assert.ok(
-    sent.some((h) => h & FLAG_DEFLATE),
+    sent.some((h) => h & FLAG_COMPRESSED),
     'the call packet left compressed',
   );
 });
@@ -350,26 +350,26 @@ const linkPair = async (t, capsA, capsB, options = {}) => {
 };
 
 test("rtc compression (link): each side learns the other's caps from the description before the channels open", async (t) => {
-  const { a, b } = await linkPair(t, { deflate: DEFLATE }, { deflate: DEFLATE });
-  assert.deepStrictEqual(a.peerCaps, { deflate: DEFLATE });
-  assert.deepStrictEqual(b.peerCaps, { deflate: DEFLATE });
+  const { a, b } = await linkPair(t, { enc: [DEFLATE] }, { enc: [DEFLATE] });
+  assert.deepStrictEqual(a.peerCaps, { enc: [DEFLATE] });
+  assert.deepStrictEqual(b.peerCaps, { enc: [DEFLATE] });
   const client = new ClientRtcTransport('webrtc:b', { link: a, compression: true });
   const host = new RtcPeerTransport(b, { peer: 'a', compression: true });
   t.after(() => client.close());
   await client.open();
-  assert.strictEqual(client.compression, DEFLATE);
-  assert.strictEqual(host.compression, DEFLATE);
+  assert.deepStrictEqual(client.compression, { encode: DEFLATE, decode: DEFLATE });
+  assert.deepStrictEqual(host.compression, { encode: DEFLATE, decode: DEFLATE });
   const sent = spy(a.clientChannel);
   const packets = [];
   host.on('packet', (text) => packets.push(text));
   client.write(big);
   await waitFor(() => packets.length === 1);
   assert.strictEqual(packets[0], big);
-  assert.ok(sent[0] & FLAG_DEFLATE);
+  assert.ok(sent[0] & FLAG_COMPRESSED);
 });
 
 test('rtc compression (link): a peer that announced nothing, or another codec, is served plain — no hangup', async (t) => {
-  const { a, b } = await linkPair(t, { deflate: DEFLATE }, null);
+  const { a, b } = await linkPair(t, { enc: [DEFLATE] }, null);
   assert.strictEqual(a.peerCaps, null);
   const client = new ClientRtcTransport('webrtc:b', { link: a, compression: true });
   const host = new RtcPeerTransport(b, { peer: 'a' });
@@ -381,12 +381,49 @@ test('rtc compression (link): a peer that announced nothing, or another codec, i
   host.on('packet', (text) => packets.push(text));
   client.write(big);
   await waitFor(() => packets.length === 1);
-  assert.strictEqual(sent[0] & FLAG_DEFLATE, 0);
-  const other = await linkPair(t, { deflate: DEFLATE }, { deflate: 'brotli' });
+  assert.strictEqual(sent[0] & FLAG_COMPRESSED, 0);
+  const other = await linkPair(t, { enc: [DEFLATE] }, { enc: ['brotli'] });
   const client2 = new ClientRtcTransport('webrtc:b', { link: other.a, compression: true });
   t.after(() => client2.close());
   await client2.open();
   assert.strictEqual(client2.compression, null);
+});
+
+test('rtc compression (list): the two directions choose independently, and each end inflates what the other chose', async (t) => {
+  const listA = ['brotli', DEFLATE];
+  const listB = [DEFLATE, 'brotli'];
+  const { a, b } = await linkPair(t, { enc: listA }, { enc: listB });
+  const client = new ClientRtcTransport('webrtc:b', { link: a, compression: { codec: listA } });
+  const host = new RtcPeerTransport(b, { peer: 'a', compression: { codec: listB } });
+  t.after(() => client.close());
+  await client.open();
+  assert.deepStrictEqual(client.compression, { encode: 'brotli', decode: DEFLATE });
+  assert.deepStrictEqual(host.compression, { encode: DEFLATE, decode: 'brotli' });
+  const packets = [];
+  const inbound = [];
+  host.on('packet', (text) => packets.push(text));
+  client.on('message', (data) => inbound.push(data));
+  client.write(big);
+  host.write(big);
+  await waitFor(() => packets.length === 1 && inbound.length === 1);
+  assert.strictEqual(packets[0], big, 'Brotli up');
+  assert.strictEqual(inbound[0], big, 'deflate down');
+});
+
+test('rtc compression (raw channel, list): the head of the list both ways — there is nothing to negotiate through', async (t) => {
+  const pair = await rawChannelPair(t, { fake: { maxMessageSize: 4096 } });
+  const compression = { codec: ['brotli', DEFLATE] };
+  const client = new ClientRtcTransport('webrtc:test', { channel: pair.a, compression, maxMessageSize: 4096 });
+  const host = new RtcPeerTransport(pair.b, { peer: 'a', compression, maxMessageSize: 4096 });
+  t.after(() => client.close());
+  await client.open();
+  assert.deepStrictEqual(client.compression, { encode: 'brotli', decode: 'brotli' });
+  assert.deepStrictEqual(host.compression, { encode: 'brotli', decode: 'brotli' });
+  const packets = [];
+  host.on('packet', (text) => packets.push(text));
+  client.write(big);
+  await waitFor(() => packets.length === 1);
+  assert.strictEqual(packets[0], big);
 });
 
 // ---- WrpcPeer end to end ---------------------------------------------
@@ -437,9 +474,9 @@ test('rtc compression (peer): both peers on — calls with large payloads both w
   assert.strictEqual(rows.length, 400);
   const echoed = await api.echo({ pad: 'z'.repeat(40_000) });
   assert.strictEqual(echoed.pad.length, 40_000);
-  assert.deepStrictEqual(linkToB.link.peerCaps, { deflate: DEFLATE });
+  assert.deepStrictEqual(linkToB.link.peerCaps, { enc: [DEFLATE] });
   const linkToA = b.links.get('a');
-  assert.deepStrictEqual(linkToA.link.peerCaps, { deflate: DEFLATE });
+  assert.deepStrictEqual(linkToA.link.peerCaps, { enc: [DEFLATE] });
   await linkToA.load('calc');
   assert.strictEqual((await linkToA.api.calc.big({ rows: 300 })).length, 300);
 });
@@ -501,7 +538,7 @@ test('rtc compression (attachChannel): the server half takes the option like eve
   const rows = await client.api.calc.big({ rows: 600 });
   assert.strictEqual(rows.length, 600);
   assert.ok(
-    sentByServer.some((h) => h & FLAG_DEFLATE),
+    sentByServer.some((h) => h & FLAG_COMPRESSED),
     'the answer left compressed',
   );
 });

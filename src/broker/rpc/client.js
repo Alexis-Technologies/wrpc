@@ -33,18 +33,20 @@ const {
 } = require('./frames.js');
 const {
   normalizeSyncCompression,
-  negotiate,
+  codecById,
+  headerNegotiator,
   maxMessageOf,
   encodeIfSmaller,
   decodeOrNull,
 } = require('../../compression/sync.js');
 
-// A frame's body, inflated when marked — see the server's frameBody.
-const frameBody = (message, active, maxMessage) => {
+// A frame's body, inflated when marked, with whichever codec of `local`
+// the frame names — see the server's frameBody.
+const frameBody = (message, local, maxMessage) => {
   const encoding = message.headers?.[HEADER_ENC];
   if (encoding === undefined || encoding === null || encoding === '') return message.body;
-  if (active === null || encoding !== active.id) return null;
-  return decodeOrNull(active, toBytes(message.body), maxMessage);
+  const entry = local === null || typeof encoding !== 'string' ? null : codecById(local, encoding);
+  return entry === null ? null : decodeOrNull(entry, toBytes(message.body), maxMessage);
 };
 
 const DEFAULT_REQUEST_TIMEOUT = 30_000;
@@ -105,9 +107,9 @@ class ClientBrokerTransport extends ClientTransport {
     this.#compression = normalizeSyncCompression(options.compression, 'broker transport: options');
     this.#maxMessage = maxMessageOf(options.maxMessage, 'broker transport');
     this.#active = null;
-    // What every stateless request and the hello announce: the codec an
-    // answer may come back in.
-    if (this.#compression !== null) this.#headers[HEADER_ENC] = this.#compression.id;
+    // What every stateless request and the hello announce: the codecs an
+    // answer may come back in, in this end's order of preference.
+    if (this.#compression !== null) this.#headers[HEADER_ENC] = this.#compression.ids.join(',');
     this.mode = mode;
     this.persistent = mode === 'session';
     this.heartbeat = mode === 'session';
@@ -167,7 +169,7 @@ class ClientBrokerTransport extends ClientTransport {
       const remote = message.headers?.[HEADER_INBOX];
       const pending = this.#welcome;
       this.#welcome = null;
-      this.#active = negotiate(this.#compression, message.headers?.[HEADER_ENC]);
+      this.#active = headerNegotiator(this.#compression)(message.headers?.[HEADER_ENC]);
       if (pending && typeof remote === 'string' && remote.length > 0) pending.resolve(remote);
       return;
     }
@@ -180,15 +182,16 @@ class ClientBrokerTransport extends ClientTransport {
       return void this.#lost(new Error(`Session frame gap: expected ${this.#expectSeq}, got ${seq}`), true);
     }
     this.#expectSeq++;
-    const body = frameBody(message, this.#active, this.#maxMessage);
+    const body = frameBody(message, this.#active === null ? null : this.#compression, this.#maxMessage);
     if (body === null) return void this.#lost(new Error('Session frame cannot be inflated'), true);
     if (kind === KIND.CHUNK) this.emit('message', toBytes(body));
     else this.emit('message', packetBody(body));
   }
 
-  /** The compression codec id in effect on the session — both ends named it — or null. */
+  /** The codec ids in effect on the session — `{ encode, decode }` — or null. */
   get compression() {
-    return this.#active === null ? null : this.#active.id;
+    const active = this.#active;
+    return active === null ? null : { encode: active.encode.id, decode: active.decode.id };
   }
 
   #escalate(error) {
@@ -234,10 +237,10 @@ class ClientBrokerTransport extends ClientTransport {
     let body = binary ? toBytes(data) : data;
     const active = this.#active;
     if (active !== null && (options === null || options.compress !== false)) {
-      const encoded = encodeIfSmaller(active, body);
+      const encoded = encodeIfSmaller(active.encode, body);
       if (encoded !== null) {
         body = encoded;
-        headers[HEADER_ENC] = active.id;
+        headers[HEADER_ENC] = active.encode.id;
       }
     }
     this.#unconfirmed++;

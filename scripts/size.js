@@ -76,7 +76,14 @@ const ENTRIES = [
   // of a `{"0":1,…}` object nine times the size) — +1.2 KB, measured 22.4
   // against 21.2. On by default because it is a correctness fix, priced in
   // bench/attachments.js; `attachments: false` skips the walk.
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 23 },
+  // 23 -> 24 for the choice of compression algorithm: `codec` as a name, a
+  // Compressor or a preference LIST of them, the negotiation that gives
+  // each direction its own codec (`{ encode, decode }` over two id lists,
+  // bounded against a peer's junk), and the platform half that asks
+  // CompressionStream which formats it has — +0.4 KB, measured 23.1
+  // against 22.7. What it buys is the fallback: a peer without zstd is
+  // served deflate instead of plain.
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 24 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
@@ -105,7 +112,8 @@ const ENTRIES = [
   // 21 -> 23 with the main entry's compression raise (measured 21.7).
   // 23 -> 24 with the main entry's attachments raise, plus the sse client's
   // explicit refusal of bytes (measured 23.4 against 22.0).
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 24 },
+  // 24 -> 25 with the main entry's codec-list raise (measured 24.1 against 23.6).
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 25 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and
@@ -115,8 +123,10 @@ const ENTRIES = [
   // The pure-JS DEFLATE codec: inflate (stored, fixed, dynamic) and a
   // fixed-Huffman encoder against a preset dictionary — browser-reachable
   // by design, and deliberately OUTSIDE every other entry so only a page
-  // that injects it pays for it.
-  { label: 'deflate codec (@alexify/wrpc/deflate)', entry: 'deflate.js', platform: 'browser', budget: 5 },
+  // that injects it pays for it. 5 -> 4: it takes the dictionary id from
+  // the src/compression/ids.js leaf instead of the whole negotiation
+  // (measured 3.8 against 4.5) — the ratchet, turned the other way.
+  { label: 'deflate codec (@alexify/wrpc/deflate)', entry: 'deflate.js', platform: 'browser', budget: 4 },
   // A peer is a client AND a server: the webrtc browser entry bundles the
   // client core plus the router, dispatcher, per-peer Client, rooms and
   // Broadcast (what makes a mesh broadcast/ask a single-encode fan-out),

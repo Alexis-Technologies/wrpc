@@ -502,14 +502,17 @@ const needsConnection = (client, id, what) => {
   return true;
 };
 
-// A ping that names a codec (`enc`) is a Node ws client offering
-// per-message compression for its own frames: with the same codec
-// configured here (`options.compression`) the pong names it back and the
-// client's marked binary frames are inflated from then on (core
-// attachSocket); otherwise a plain pong, and the client stays plain. Only
-// on a WebSocket: the other carriers negotiate their own way.
+// A ping that names codecs (`enc`: its ids, in its order of preference) is
+// a Node ws client offering per-message compression for its own frames.
+// Only the client compresses on this wire, so the rule of src/compression
+// reduces to one choice — the first codec of ITS list configured here
+// (`options.compression`): the pong names that one id back and the client's
+// marked binary frames are inflated with it from then on (core
+// attachSocket); nothing in common, a plain pong, and the client stays
+// plain. Only on a WebSocket: the other carriers negotiate their own way.
 const negotiatePing = (client, enc, options) => {
-  const active = client.transportKind === 'ws' ? negotiate(options.compression ?? null, enc) : null;
+  const agreed = client.transportKind === 'ws' ? negotiate(options.compression ?? null, enc) : null;
+  const active = agreed === null ? null : agreed.decode;
   client.compression = active;
   client.send(active === null ? { type: 'pong' } : { type: 'pong', enc: active.id });
 };
@@ -554,7 +557,7 @@ const handlePacket = (client, packet, router, options = EMPTY_OPTIONS) => {
   } else if (type === 'ping') {
     // App-level heartbeat: a browser WebSocket cannot see protocol pings,
     // so liveness is measured with packets the client can observe.
-    if (typeof packet.enc === 'string') return void negotiatePing(client, packet.enc, options);
+    if (packet.enc !== undefined) return void negotiatePing(client, packet.enc, options);
     return void client.send({ type: 'pong' });
   } else if (type === 'pong' && client.persistent) {
     return; // answer to a server-initiated ping; liveness is the transport's

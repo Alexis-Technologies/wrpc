@@ -377,6 +377,10 @@ expectError<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ compression: 'zstd'
 expectAssignable<wrpc.CompressionOptions>({ codec: 'zstd' });
 expectAssignable<wrpc.CompressionOptions>({ codec: 'brotli', async: true });
 expectError<wrpc.CompressionOptions>({ codec: 'lz4' });
+// …or a list in order of preference, names and injected codecs alike
+expectAssignable<wrpc.CompressionOptions>({ codec: ['zstd', wrpc.brotliCompressor({ quality: 5 }), 'deflate-raw'] });
+expectError<wrpc.CompressionOptions>({ codec: ['zstd', 'lz4'] });
+expectAssignable<wrpc.RpcServerOptions>({ router, rooms: { compression: { codec: ['deflate-raw', 'zstd'] } } });
 expectAssignable<wrpc.RpcServerOptions>({ router, compression: { codec: 'zstd' } });
 expectAssignable<wrpc.Compressor>(wrpc.deflateCompressor({ level: 1 }));
 expectAssignable<wrpc.Compressor>(wrpc.brotliCompressor({ quality: 5, threshold: 256 }));

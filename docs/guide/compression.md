@@ -17,12 +17,40 @@ the router dictionary.
 | Server-Sent Events | `sse: { compression }` | the opening GET's `Accept-Encoding`, per response | [SSE](./sse#compression) |
 | WebTransport | `compression` on both ends | the capabilities message | [WebTransport](./wt#compression) |
 | WebRTC | `compression` on both peers | the description signal (`caps`) — a raw channel by agreement | [WebRTC](./webrtc#compression) |
-| The broker binding | `compression` on both ends | `hello`/`welcome`; a stateless request names what it accepts | [broker RPC](./brokers/rpc#compression) |
-| The rooms backplane, the cluster channels | `rooms: { compression }`, `cluster: { compression }` | nothing — every instance, in a two-step rollout | [scaling](./scaling#compression) |
+| The broker binding | `compression` on both ends | `hello`/`welcome`; a stateless request lists what it accepts | [broker RPC](./brokers/rpc#compression) |
+| The rooms backplane, the cluster channels | `rooms: { compression }`, `cluster: { compression }` | nothing — the marker names the codec; [a list](#list) makes the rollout lossless | [scaling](./scaling#compression) |
 
 Every one of them is off until you turn it on, and every one is negotiated
 where the wire allows it: a lone end is served plain. The
 [protocol reference](../reference/protocol#compression) has the wire forms.
+
+## One codec, or a list {#list}
+
+`codec` takes one codec or a list in order of preference. Each end announces
+the ids it holds, and **a sender compresses with the first codec of its own
+list the other end announced**:
+
+```js
+// A Node service that prefers zstd, serving Node clients that may be older
+// and browsers whose CompressionStream may not have it:
+attachBrokerRpc(server, broker, { compression: { codec: ['zstd', 'deflate-raw'] } });
+new WrpcPeer({ router, signaler, compression: { codec: ['zstd', 'brotli', 'deflate-raw'] } });
+```
+
+That makes the list the fallback — a peer without zstd is served deflate
+instead of plain — and lets the two directions differ: a server answers in
+zstd a browser that sends deflate, and `transport.compression` shows both
+(`{ encode: 'zstd', decode: 'deflate-raw' }`). A name the platform lacks
+(zstd before Node 22.15, a format this browser has not) is **skipped in a
+list** and refused when it is the only thing asked for. Lists that share
+nothing leave the wire plain; nothing hangs up.
+
+The backplane negotiates nothing, so there the list means: **encode with the
+head, decode anything on it**. A change of codec is then a rollout without a
+lost envelope — every instance lists both (`['deflate-raw', 'zstd']`), then
+the order is swapped (`['zstd', 'deflate-raw']`), then the old one is dropped.
+Over a raw WebRTC data channel, which has no handshake either, both ends use
+the head of their list.
 
 ## What it costs, what it buys
 
@@ -144,7 +172,7 @@ and `contextTakeover` is the tool instead.
 ## The dictionary in a browser: `@alexify/wrpc/deflate` {#deflate}
 
 A DEFLATE codec in plain JavaScript, on its own subpath so a page that
-does not inject it never loads a byte of it (4.5 KB min+gzip when it does):
+does not inject it never loads a byte of it (3.8 KB min+gzip when it does):
 
 ```js
 import { createDeflateCodec } from '@alexify/wrpc/deflate';

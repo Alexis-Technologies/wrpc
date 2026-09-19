@@ -16,8 +16,8 @@ const {
   frameCaps,
   KIND_TEXT,
   KIND_CAPS,
-  KIND_TEXT_DEFLATE,
-  KIND_BINARY_DEFLATE,
+  KIND_TEXT_COMPRESSED,
+  KIND_BINARY_COMPRESSED,
 } = require('../../src/webtransport/framing.js');
 const { chunkEncode } = require('../../src/chunks.js');
 const { createFakeWt } = require('./fakeWebTransport.js');
@@ -68,7 +68,7 @@ const serverPair = async (t, options = {}) => {
       else received.push({ kind, data });
     },
   });
-  parser.deflate = true;
+  parser.compressed = true;
   void (async () => {
     const r = stream.readable.getReader();
     try {
@@ -90,17 +90,17 @@ const serverPair = async (t, options = {}) => {
 test('wt compression: off by default — nothing announced, a compressed kind from the peer is a 1002', async (t) => {
   const pair = await serverPair(t);
   await waitFor(() => pair.caps.length === 1);
-  assert.strictEqual(pair.caps[0].deflate, undefined);
+  assert.strictEqual(pair.caps[0].enc, undefined);
   const closed = new Promise((resolve) => pair.socket.once('close', (code) => resolve(code)));
-  await pair.writer.write(frameCaps(JSON.stringify({ deflate: DEFLATE })));
-  await pair.writer.write(frame(KIND_TEXT_DEFLATE, zlib.deflateRawSync(encoder.encode(big))));
+  await pair.writer.write(frameCaps(JSON.stringify({ enc: [DEFLATE] })));
+  await pair.writer.write(frame(KIND_TEXT_COMPRESSED, zlib.deflateRawSync(encoder.encode(big))));
   assert.strictEqual(await closed, 1002);
 });
 
 test('wt compression: announced, negotiated, and applied past the threshold in both directions', async (t) => {
   const pair = await serverPair(t, { compression: true });
   await waitFor(() => pair.caps.length === 1);
-  assert.strictEqual(pair.caps[0].deflate, DEFLATE);
+  assert.deepStrictEqual(pair.caps[0].enc, [DEFLATE]);
   assert.strictEqual(pair.socket.compression, null, 'not until the peer named it');
 
   await t.test('before the peer announced, everything goes plain', async () => {
@@ -110,14 +110,14 @@ test('wt compression: announced, negotiated, and applied past the threshold in b
     pair.received.length = 0;
   });
 
-  await pair.writer.write(frameCaps(JSON.stringify({ streams: false, deflate: DEFLATE })));
-  await waitFor(() => pair.socket.compression === DEFLATE);
+  await pair.writer.write(frameCaps(JSON.stringify({ streams: false, enc: [DEFLATE] })));
+  await waitFor(() => pair.socket.compression?.encode === DEFLATE);
 
   await t.test('a large packet leaves as KIND 3 and reads back; a small one stays KIND 0', async () => {
     pair.socket.send(big);
     pair.socket.send(small);
     await waitFor(() => pair.received.length === 2);
-    assert.strictEqual(pair.received[0].kind, KIND_TEXT_DEFLATE);
+    assert.strictEqual(pair.received[0].kind, KIND_TEXT_COMPRESSED);
     assert.ok(pair.received[0].data.length < big.length / 4, `${big.length} -> ${pair.received[0].data.length}`);
     assert.strictEqual(zlib.inflateRawSync(pair.received[0].data).toString(), big);
     assert.deepStrictEqual(pair.received[1], { kind: KIND_TEXT, data: small });
@@ -128,7 +128,7 @@ test('wt compression: announced, negotiated, and applied past the threshold in b
     const chunk = chunkEncode('s1', new Uint8Array(4096).fill(7));
     pair.socket.send(chunk);
     await waitFor(() => pair.received.length === 1);
-    assert.strictEqual(pair.received[0].kind, KIND_BINARY_DEFLATE);
+    assert.strictEqual(pair.received[0].kind, KIND_BINARY_COMPRESSED);
     assert.deepStrictEqual(new Uint8Array(zlib.inflateRawSync(pair.received[0].data)), chunk);
     pair.received.length = 0;
   });
@@ -141,9 +141,9 @@ test('wt compression: announced, negotiated, and applied past the threshold in b
   });
 
   await t.test('inbound KIND 3 and KIND 4 are inflated before delivery', async () => {
-    await pair.writer.write(frame(KIND_TEXT_DEFLATE, zlib.deflateRawSync(encoder.encode(big))));
+    await pair.writer.write(frame(KIND_TEXT_COMPRESSED, zlib.deflateRawSync(encoder.encode(big))));
     const chunk = chunkEncode('s2', new Uint8Array(2048).fill(9));
-    await pair.writer.write(frame(KIND_BINARY_DEFLATE, zlib.deflateRawSync(chunk)));
+    await pair.writer.write(frame(KIND_BINARY_COMPRESSED, zlib.deflateRawSync(chunk)));
     await pair.writer.write(frameText(small));
     await waitFor(() => pair.messages.length === 3);
     assert.deepStrictEqual(pair.messages[0], { data: big, isBinary: false });
@@ -156,7 +156,7 @@ test('wt compression: announced, negotiated, and applied past the threshold in b
   await t.test('a packet that inflates past maxMessage is a 1002', async () => {
     const closed = new Promise((resolve) => pair.socket.once('close', (code) => resolve(code)));
     const bomb = zlib.deflateRawSync(Buffer.alloc(20 * 1024 * 1024, 0x20));
-    await pair.writer.write(frame(KIND_TEXT_DEFLATE, bomb));
+    await pair.writer.write(frame(KIND_TEXT_COMPRESSED, bomb));
     assert.strictEqual(await closed, 1002);
   });
 });
@@ -164,8 +164,8 @@ test('wt compression: announced, negotiated, and applied past the threshold in b
 test('wt compression: async — a message past the threadpool threshold leaves compressed, in order with the ones behind it', async (t) => {
   const pair = await serverPair(t, { compression: { async: { threshold: 2048 } } });
   await waitFor(() => pair.caps.length === 1);
-  await pair.writer.write(frameCaps(JSON.stringify({ streams: false, deflate: DEFLATE })));
-  await waitFor(() => pair.socket.compression === DEFLATE);
+  await pair.writer.write(frameCaps(JSON.stringify({ streams: false, enc: [DEFLATE] })));
+  await waitFor(() => pair.socket.compression?.encode === DEFLATE);
   assert.ok(big.length >= 2048, `${big.length} B goes to the threadpool`);
   const medium = JSON.stringify({
     type: 'event',
@@ -180,7 +180,7 @@ test('wt compression: async — a message past the threadpool threshold leaves c
   await waitFor(() => pair.received.length === 4);
   assert.deepStrictEqual(
     pair.received.map((m) => m.kind),
-    [KIND_TEXT_DEFLATE, KIND_TEXT_DEFLATE, KIND_TEXT, KIND_TEXT_DEFLATE],
+    [KIND_TEXT_COMPRESSED, KIND_TEXT_COMPRESSED, KIND_TEXT, KIND_TEXT_COMPRESSED],
   );
   assert.strictEqual(zlib.inflateRawSync(pair.received[0].data).toString(), big);
   assert.strictEqual(zlib.inflateRawSync(pair.received[1].data).toString(), medium);
@@ -190,7 +190,7 @@ test('wt compression: async — a message past the threadpool threshold leaves c
 
 test('wt compression: a peer naming another codec, or none, keeps the wire plain', async (t) => {
   const pair = await serverPair(t, { compression: true });
-  await pair.writer.write(frameCaps(JSON.stringify({ deflate: 'brotli' })));
+  await pair.writer.write(frameCaps(JSON.stringify({ enc: ['brotli'] })));
   await timers.setTimeout(10);
   assert.strictEqual(pair.socket.compression, null);
   pair.socket.send(big);
@@ -198,14 +198,39 @@ test('wt compression: a peer naming another codec, or none, keeps the wire plain
   assert.strictEqual(pair.received[0].kind, KIND_TEXT);
   // And a compressed kind from such a peer is still a violation.
   const closed = new Promise((resolve) => pair.socket.once('close', (code) => resolve(code)));
-  await pair.writer.write(frame(KIND_TEXT_DEFLATE, zlib.deflateRawSync(encoder.encode(big))));
+  await pair.writer.write(frame(KIND_TEXT_COMPRESSED, zlib.deflateRawSync(encoder.encode(big))));
   assert.strictEqual(await closed, 1002);
+});
+
+test('wt compression (list): each direction takes the sender’s first codec the peer announced', async (t) => {
+  const mine = { id: 'mine', encode: (b) => zlib.deflateRawSync(b), decode: (b) => zlib.inflateRawSync(b) };
+  const pair = await serverPair(t, { compression: { codec: [mine, 'brotli', DEFLATE] } });
+  await waitFor(() => pair.caps.length === 1);
+  assert.deepStrictEqual(pair.caps[0].enc, ['mine', 'brotli', DEFLATE], 'the whole list, in order');
+  // The peer prefers deflate, holds Brotli too, and has never heard of `mine`.
+  await pair.writer.write(frameCaps(JSON.stringify({ streams: false, enc: [DEFLATE, 'brotli', 7, null] })));
+  await waitFor(() => pair.socket.compression !== null);
+  assert.deepStrictEqual(pair.socket.compression, { encode: 'brotli', decode: DEFLATE });
+  // Out: Brotli — this side's first codec the peer holds.
+  pair.socket.send(big);
+  await waitFor(() => pair.received.length === 1);
+  assert.strictEqual(pair.received[0].kind, KIND_TEXT_COMPRESSED);
+  assert.strictEqual(zlib.brotliDecompressSync(pair.received[0].data).toString(), big);
+  // In: deflate — the peer's first codec this side holds; no frame names its codec.
+  await pair.writer.write(frame(KIND_TEXT_COMPRESSED, zlib.deflateRawSync(encoder.encode(big))));
+  await waitFor(() => pair.messages.length === 1);
+  assert.strictEqual(pair.messages[0].data.toString(), big);
+  // The legacy shape — one id, not a list — still negotiates.
+  const single = await serverPair(t, { compression: { codec: ['brotli', DEFLATE] } });
+  await single.writer.write(frameCaps(JSON.stringify({ enc: DEFLATE })));
+  await waitFor(() => single.socket.compression !== null);
+  assert.deepStrictEqual(single.socket.compression, { encode: DEFLATE, decode: DEFLATE });
 });
 
 test('wt compression: an asynchronous codec keeps the wire in order, both ways', async (t) => {
   const pair = await serverPair(t, { compression: { codec: slowCodec(4) } });
-  await pair.writer.write(frameCaps(JSON.stringify({ deflate: DEFLATE })));
-  await waitFor(() => pair.socket.compression === DEFLATE);
+  await pair.writer.write(frameCaps(JSON.stringify({ enc: [DEFLATE] })));
+  await waitFor(() => pair.socket.compression?.encode === DEFLATE);
   // Outbound: big (slow), small (would overtake), big, small, and a stream
   // control packet through the mux path — all in send order.
   const order = [];
@@ -216,18 +241,18 @@ test('wt compression: an asynchronous codec keeps the wire in order, both ways',
   }
   await waitFor(() => pair.received.length === 4);
   const sent = pair.received.map((m) =>
-    m.kind === KIND_TEXT_DEFLATE ? zlib.inflateRawSync(m.data).toString() : m.data,
+    m.kind === KIND_TEXT_COMPRESSED ? zlib.inflateRawSync(m.data).toString() : m.data,
   );
   assert.deepStrictEqual(sent, order);
   assert.deepStrictEqual(
     pair.received.map((m) => m.kind),
-    [KIND_TEXT_DEFLATE, KIND_TEXT, KIND_TEXT_DEFLATE, KIND_TEXT],
+    [KIND_TEXT_COMPRESSED, KIND_TEXT, KIND_TEXT_COMPRESSED, KIND_TEXT],
   );
   // Inbound: compressed, plain, compressed, plain — delivered in wire order.
   const inbound = ['a', 'b', 'c', 'd'].map((k) => big.replace('"i":0', `"${k}":0`));
-  await pair.writer.write(frame(KIND_TEXT_DEFLATE, zlib.deflateRawSync(encoder.encode(inbound[0]))));
+  await pair.writer.write(frame(KIND_TEXT_COMPRESSED, zlib.deflateRawSync(encoder.encode(inbound[0]))));
   await pair.writer.write(frameText(inbound[1]));
-  await pair.writer.write(frame(KIND_TEXT_DEFLATE, zlib.deflateRawSync(encoder.encode(inbound[2]))));
+  await pair.writer.write(frame(KIND_TEXT_COMPRESSED, zlib.deflateRawSync(encoder.encode(inbound[2]))));
   await pair.writer.write(frameText(inbound[3]));
   await waitFor(() => pair.messages.length === 4);
   assert.deepStrictEqual(
@@ -250,8 +275,8 @@ test('wt compression: a codec that fails or does not shrink the message sends it
     decode: (bytes) => bytes,
   };
   const pair = await serverPair(t, { compression: { codec } });
-  await pair.writer.write(frameCaps(JSON.stringify({ deflate: DEFLATE })));
-  await waitFor(() => pair.socket.compression === DEFLATE);
+  await pair.writer.write(frameCaps(JSON.stringify({ enc: [DEFLATE] })));
+  await waitFor(() => pair.socket.compression?.encode === DEFLATE);
   pair.socket.send(big);
   pair.socket.send(big);
   pair.socket.send(big);
@@ -294,7 +319,7 @@ const controlStream = async (session) => {
       else received.push({ kind, data });
     },
   });
-  parser.deflate = true;
+  parser.compressed = true;
   void (async () => {
     const streamReader = stream.readable.getReader();
     try {
@@ -320,17 +345,17 @@ test('wt compression (client): the wt bag or connect() names it; negotiated agai
   const session = await world.next();
   const server = await controlStream(session);
   await waitFor(() => server.caps.length === 1);
-  assert.deepStrictEqual(server.caps[0], { streams: true, deflate: DEFLATE });
+  assert.deepStrictEqual(server.caps[0], { streams: true, enc: [DEFLATE] });
   assert.strictEqual(transport.compression, null);
-  await server.writer.write(frameCaps(JSON.stringify({ streams: true, deflate: DEFLATE })));
-  await waitFor(() => transport.compression === DEFLATE);
+  await server.writer.write(frameCaps(JSON.stringify({ streams: true, enc: [DEFLATE] })));
+  await waitFor(() => transport.compression?.encode === DEFLATE);
   transport.write(big);
   transport.write(small);
   await waitFor(() => server.received.length === 2);
-  assert.strictEqual(server.received[0].kind, KIND_TEXT_DEFLATE);
+  assert.strictEqual(server.received[0].kind, KIND_TEXT_COMPRESSED);
   assert.strictEqual(zlib.inflateRawSync(server.received[0].data).toString(), big);
   assert.strictEqual(server.received[1].kind, KIND_TEXT);
-  await server.writer.write(frame(KIND_TEXT_DEFLATE, zlib.deflateRawSync(encoder.encode(big))));
+  await server.writer.write(frame(KIND_TEXT_COMPRESSED, zlib.deflateRawSync(encoder.encode(big))));
   await waitFor(() => messages.length === 1);
   assert.strictEqual(messages[0], big);
   // A chunk of a stream the mux never opened (no `stream` packet preceded
@@ -338,7 +363,7 @@ test('wt compression (client): the wt bag or connect() names it; negotiated agai
   const chunk = chunkEncode('up', new Uint8Array(4096));
   transport.write(chunk);
   await waitFor(() => server.received.length === 3);
-  assert.strictEqual(server.received[2].kind, KIND_BINARY_DEFLATE);
+  assert.strictEqual(server.received[2].kind, KIND_BINARY_COMPRESSED);
   assert.deepStrictEqual(new Uint8Array(zlib.inflateRawSync(server.received[2].data)), chunk);
 });
 
@@ -351,7 +376,7 @@ test('wt compression (client): connect()-level `compression` reaches the transpo
   const session = await world.next();
   const server = await controlStream(session);
   await waitFor(() => server.caps.length === 1);
-  assert.strictEqual(server.caps[0].deflate, DEFLATE);
+  assert.deepStrictEqual(server.caps[0].enc, [DEFLATE]);
 });
 
 test('wt compression (client): a server that inflates past maxMessage, or sends a compressed kind unannounced, is hung up', async (t) => {
@@ -367,10 +392,10 @@ test('wt compression (client): a server that inflates past maxMessage, or sends 
   await transport.open();
   const session = await world.next();
   const server = await controlStream(session);
-  await server.writer.write(frameCaps(JSON.stringify({ deflate: DEFLATE })));
-  await waitFor(() => transport.compression === DEFLATE);
+  await server.writer.write(frameCaps(JSON.stringify({ enc: [DEFLATE] })));
+  await waitFor(() => transport.compression?.encode === DEFLATE);
   const closed = new Promise((resolve) => transport.once('close', resolve));
-  await server.writer.write(frame(KIND_TEXT_DEFLATE, zlib.deflateRawSync(Buffer.alloc(64 * 1024, 0x20))));
+  await server.writer.write(frame(KIND_TEXT_COMPRESSED, zlib.deflateRawSync(Buffer.alloc(64 * 1024, 0x20))));
   await closed;
   assert.strictEqual(transport.active, false);
   assert.ok(errors.length >= 1);
@@ -456,7 +481,7 @@ test('wt compression (e2e): a WrpcClient and an attached session, both on, do ev
   const before = spy.kinds.length;
   const echoed = await api.echo({ text: 'y'.repeat(50_000) });
   assert.strictEqual(echoed.text.length, 50_000);
-  assert.ok(spy.kinds.slice(before).includes(KIND_TEXT_DEFLATE), `kinds after: ${spy.kinds.slice(before)}`);
+  assert.ok(spy.kinds.slice(before).includes(KIND_TEXT_COMPRESSED), `kinds after: ${spy.kinds.slice(before)}`);
   const seen = [];
   api.ticks.subscribe({ count: 5 }, { onData: (v) => seen.push(v.i) });
   await waitFor(() => seen.length === 5);
@@ -484,7 +509,7 @@ test('wt compression (e2e): one side on, the other off — plain, and nothing br
   assert.strictEqual(rows.length, 300);
   const echoed = await client.api.data.echo({ text: 'y'.repeat(50_000) });
   assert.strictEqual(echoed.text.length, 50_000);
-  assert.ok(!spy.kinds.includes(KIND_TEXT_DEFLATE), 'the server named no codec, so nothing left compressed');
+  assert.ok(!spy.kinds.includes(KIND_TEXT_COMPRESSED), 'the server named no codec, so nothing left compressed');
 });
 
 test('wt compression (e2e): attachSession takes the option too', async (t) => {
@@ -506,5 +531,5 @@ test('wt compression (e2e): attachSession takes the option too', async (t) => {
   assert.strictEqual((await client.api.data.big({ rows: 200 })).length, 200);
   const echoed = await client.api.data.echo({ text: 'y'.repeat(50_000) });
   assert.strictEqual(echoed.text.length, 50_000);
-  assert.ok(spy.kinds.includes(KIND_TEXT_DEFLATE));
+  assert.ok(spy.kinds.includes(KIND_TEXT_COMPRESSED));
 });

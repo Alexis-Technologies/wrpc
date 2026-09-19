@@ -137,6 +137,59 @@ test('rooms backplane: envelopes compressed on the wire when every instance turn
   assert.ok(published.find((m) => m.channel.includes('lobby')).message.startsWith('{'));
 });
 
+test('envelope codec (list): encodes with the head, decodes any codec on the list — the marker names which', () => {
+  const big = JSON.stringify(bigData);
+  const deflate = createEnvelopeCodec(true, 'x');
+  const both = createEnvelopeCodec({ codec: ['deflate-raw', 'brotli'] }, 'x');
+  const swapped = createEnvelopeCodec({ codec: ['brotli', 'deflate-raw'] }, 'x');
+  assert.deepStrictEqual(both.ids, ['deflate-raw', 'brotli']);
+  assert.ok(both.encode(big).startsWith(`${ENVELOPE_PREFIX}deflate-raw:`), 'the head is what goes out');
+  assert.ok(swapped.encode(big).startsWith(`${ENVELOPE_PREFIX}brotli:`));
+  assert.strictEqual(both.decode(swapped.encode(big)), big, 'a codec further down the list still reads');
+  assert.strictEqual(swapped.decode(both.encode(big)), big);
+  assert.strictEqual(deflate.decode(swapped.encode(big)), null, 'a codec not on the list: unreadable, and known to be');
+  // An id that is a prefix of another (a dictionary id holds a colon) claims only its own envelopes.
+  const plain = {
+    id: 'deflate-raw+dict',
+    threshold: 0,
+    encode: (b) => b.subarray(1),
+    decode: () => Buffer.from('short'),
+  };
+  const long = {
+    id: 'deflate-raw+dict:abcd',
+    threshold: 0,
+    encode: (b) => b.subarray(1),
+    decode: () => Buffer.from('long'),
+  };
+  const nested = createEnvelopeCodec({ codec: [plain, long] }, 'x');
+  assert.strictEqual(nested.decode(`${ENVELOPE_PREFIX}deflate-raw+dict:abcd:AAAA`), 'long');
+  assert.strictEqual(nested.decode(`${ENVELOPE_PREFIX}deflate-raw+dict:AAAA`), 'short');
+});
+
+test('rooms backplane: a change of codec is a rollout without a lost message', async (t) => {
+  const backplane = new MemoryBackplane({ logger: false });
+  const published = spied(backplane);
+  const rooms = (codec) => ({ rooms: { compression: { codec } } });
+  // Mid-rollout, every stage at once: one instance still on deflate alone is
+  // NOT in this picture — step 1 (everyone lists both) comes before step 2.
+  const old = instance(t, backplane, rooms(['deflate-raw', 'brotli']));
+  const moved = instance(t, backplane, rooms(['brotli', 'deflate-raw']));
+  const { log, warnings } = logs();
+  const watcher = instance(t, backplane, rooms(['deflate-raw', 'brotli']), log);
+  await timers.setTimeout(10);
+  old.rpc.to('lobby').emit('from-old', bigData);
+  moved.rpc.to('lobby').emit('from-moved', bigData);
+  // Each instance delivers its own emit locally and the other's off the backplane.
+  await waitFor(() => [watcher, old, moved].every((node) => node.socket.events.length === 2));
+  const markers = published.filter((m) => m.channel.includes('lobby')).map((m) => m.message.split(':', 2)[1]);
+  assert.deepStrictEqual(markers.sort(), ['brotli', 'deflate-raw'], 'both codecs were on the wire at once');
+  assert.deepStrictEqual(
+    watcher.socket.events.map((e) => e.data),
+    [bigData, bigData],
+  );
+  assert.strictEqual(warnings.filter((w) => w.event === 'backplane.encoded').length, 0, 'nothing was dropped');
+});
+
 test('rooms backplane: an instance without the option drops an encoded envelope loudly, not silently', async (t) => {
   const backplane = new MemoryBackplane({ logger: false });
   const a = instance(t, backplane, { rooms: { compression: true } });

@@ -158,7 +158,7 @@ test('framing: malformed frames throw a coded FramingError and reset the decoder
   assert.deepStrictEqual(decoder.push(new Uint8Array([KIND_TEXT | FLAG_FIN, 0x6f, 0x6b])), {
     kind: KIND_TEXT,
     data: 'ok',
-    deflated: false,
+    compressed: false,
   });
   // reset() drops a half message on request too.
   decoder.push(new Uint8Array([KIND_BINARY, 1]));
@@ -174,5 +174,5 @@ test('framing: a multi-byte character split across fragments reassembles', () =>
   assert.strictEqual(frames.length, 3);
   let out = null;
   for (const frame of frames) out = decoder.push(frame) ?? out;
-  assert.deepStrictEqual(out, { kind: KIND_TEXT, data: 'є😀', deflated: false });
+  assert.deepStrictEqual(out, { kind: KIND_TEXT, data: 'є😀', compressed: false });
 });

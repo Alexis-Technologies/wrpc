@@ -35,8 +35,8 @@ const KIND_BINARY = 1;
 const KIND_CAPS = 2;
 // Compressed twins of KIND_TEXT and KIND_BINARY: the payload is what the
 // negotiated codec produced, and the receiver inflates before it reads.
-const KIND_TEXT_DEFLATE = 3;
-const KIND_BINARY_DEFLATE = 4;
+const KIND_TEXT_COMPRESSED = 3;
+const KIND_BINARY_COMPRESSED = 4;
 const DEFAULT_MAX_MESSAGE = 16 * 1024 * 1024;
 // A packet up to this many UTF-16 code units is encoded straight into a
 // frame sized for the worst case (three bytes per code unit) with
@@ -173,7 +173,7 @@ const parseDatagram = (input) => {
 class StreamParser {
   // Whether the compressed kinds (3, 4) are accepted: set by the transport
   // once both ends named the same codec, a protocol error before.
-  deflate = false;
+  compressed = false;
 
   #max;
   #onMessage;
@@ -215,7 +215,7 @@ class StreamParser {
         const header = this.#take(HEADER_BYTES);
         const length = ((header[0] << 24) >>> 0) + (header[1] << 16) + (header[2] << 8) + header[3];
         const kind = header[4];
-        if (kind > KIND_CAPS && !(this.deflate && kind <= KIND_BINARY_DEFLATE)) {
+        if (kind > KIND_CAPS && !(this.compressed && kind <= KIND_BINARY_COMPRESSED)) {
           throw this.#fail('unknown message kind', 'kind');
         }
         if (length > this.#max) throw this.#fail('message exceeds maxMessage', 'too-large');
@@ -248,7 +248,7 @@ class StreamParser {
     this.#kind = -1;
     // Bytes as they are for a chunk and for either compressed kind — a
     // compressed packet is text only once the transport has inflated it.
-    if (kind === KIND_BINARY || kind >= KIND_TEXT_DEFLATE) return void this.#onMessage(kind, payload);
+    if (kind === KIND_BINARY || kind >= KIND_TEXT_COMPRESSED) return void this.#onMessage(kind, payload);
     let text;
     try {
       text = TEXT_DECODER.decode(payload);
@@ -312,8 +312,8 @@ module.exports = {
   KIND_TEXT,
   KIND_BINARY,
   KIND_CAPS,
-  KIND_TEXT_DEFLATE,
-  KIND_BINARY_DEFLATE,
+  KIND_TEXT_COMPRESSED,
+  KIND_BINARY_COMPRESSED,
   DEFAULT_MAX_MESSAGE,
   INLINE_TEXT,
   FramingError,

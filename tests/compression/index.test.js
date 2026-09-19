@@ -92,13 +92,89 @@ test('normalizeSyncCompression: the Node↔Node carriers refuse a codec that dec
   assert.strictEqual(normalizeSyncCompression(false, 'x'), null);
 });
 
-test('negotiate: on only when the peer named the same codec', () => {
-  const local = normalizeCompression(true, 'x');
-  assert.strictEqual(negotiate(local, 'deflate-raw'), local);
-  assert.strictEqual(negotiate(local, 'brotli'), null);
-  assert.strictEqual(negotiate(local, undefined), null);
-  assert.strictEqual(negotiate(local, true), null, 'a boolean names nothing');
-  assert.strictEqual(negotiate(null, 'deflate-raw'), null);
+const fake = (id, extra = {}) => ({ id, encode: (b) => b, decode: (b) => b, ...extra });
+
+test('normalizeCompression: `codec` is one codec or a list of them, names and injected alike, in order', () => {
+  const mine = fake('mine', { threshold: 7 });
+  const local = normalizeCompression({ codec: ['brotli', mine, 'deflate-raw'] }, 'x');
+  assert.deepStrictEqual(local.ids, ['brotli', 'mine', 'deflate-raw']);
+  assert.strictEqual(Object.isFrozen(local) && Object.isFrozen(local.codecs) && Object.isFrozen(local.ids), true);
+  assert.strictEqual(local.id, 'brotli', 'the head is what a carrier with no negotiation encodes with');
+  assert.strictEqual(local.codec, local.codecs[0].codec);
+  assert.deepStrictEqual(
+    local.codecs.map((entry) => entry.threshold),
+    [1024, 7, 1024],
+    'each codec its own threshold',
+  );
+  const flat = normalizeCompression({ codec: ['brotli', mine], threshold: 32 }, 'x');
+  assert.deepStrictEqual(
+    flat.codecs.map((entry) => entry.threshold),
+    [32, 32],
+    'an explicit threshold is every codec’s',
+  );
+  assert.deepStrictEqual(normalizeCompression(true, 'x').ids, ['deflate-raw'], 'one codec is a list of one');
+  assert.throws(() => normalizeCompression({ codec: [] }, 'x'), /must not be an empty list/);
+  assert.throws(() => normalizeCompression({ codec: ['brotli', 'brotli'] }, 'x'), /names brotli twice/);
+  assert.throws(() => normalizeCompression({ codec: [mine, fake('mine')] }, 'x'), /names mine twice/);
+  assert.throws(() => normalizeCompression({ codec: ['brotli', {}] }, 'x'), /compression\.codec must provide an id/);
+  assert.throws(() => normalizeCompression({ codec: ['lz4', 'brotli'] }, 'x'), /unknown algorithm "lz4"/);
+  assert.throws(() => normalizeCompression({ codec: fake('a,b') }, 'x'), /must not contain a comma or whitespace/);
+  assert.throws(() => normalizeCompression({ codec: fake('a b') }, 'x'), /comma or whitespace/);
+  // async shapes the named codecs of a list and leaves the injected ones be.
+  const mixed = normalizeCompression({ codec: [mine, 'deflate-raw'], async: true }, 'x');
+  assert.strictEqual(mixed.codecs[1].codec.async, DEFAULT_ASYNC_THRESHOLD);
+  assert.throws(() => normalizeCompression({ codec: [mine], async: true }, 'x'), /applies to the platform codec/);
+});
+
+test('normalizeSyncCompression: every codec of the list is probed, not only the head', () => {
+  const promising = { id: 'p', encode: async (b) => b, decode: (b) => b };
+  assert.throws(
+    () => normalizeSyncCompression({ codec: ['deflate-raw', promising] }, 'x'),
+    /must answer synchronously/,
+  );
+  const hybrid = nativeCompressor({ async: 1 });
+  assert.throws(() => normalizeSyncCompression({ codec: ['brotli', hybrid] }, 'x'), /declares async/);
+  assert.deepStrictEqual(normalizeSyncCompression({ codec: ['brotli', 'deflate-raw'] }, 'x').ids, [
+    'brotli',
+    'deflate-raw',
+  ]);
+});
+
+test('negotiate: each side sends with the first of ITS list the peer announced', () => {
+  const a = normalizeCompression({ codec: [fake('zstd'), fake('brotli'), fake('deflate-raw')] }, 'a');
+  const b = normalizeCompression({ codec: [fake('deflate-raw'), fake('brotli')] }, 'b');
+  const atA = negotiate(a, b.ids);
+  const atB = negotiate(b, a.ids);
+  assert.strictEqual(atA.encode.id, 'brotli', 'A’s zstd is not on B’s list; brotli is its next');
+  assert.strictEqual(atB.encode.id, 'deflate-raw', 'B’s own first choice, which A holds');
+  // The two directions choose independently, and each end knows the other's choice.
+  assert.strictEqual(atA.decode.id, atB.encode.id);
+  assert.strictEqual(atB.decode.id, atA.encode.id);
+  assert.strictEqual(atA.encode, a.codecs[1], 'an entry of the local list, threshold and all');
+  // One id is a list of one: a peer of the single-codec days.
+  const single = negotiate(a, 'deflate-raw');
+  assert.deepStrictEqual([single.encode.id, single.decode.id], ['deflate-raw', 'deflate-raw']);
+  // Nothing in common, nothing announced, nothing configured: plain.
+  assert.strictEqual(negotiate(a, ['lz4']), null);
+  assert.strictEqual(negotiate(a, []), null);
+  assert.strictEqual(negotiate(a, undefined), null);
+  assert.strictEqual(negotiate(a, true), null, 'a boolean names nothing');
+  assert.strictEqual(negotiate(a, { length: 1, 0: 'zstd' }), null, 'an array-like is not a list');
+  assert.strictEqual(negotiate(null, ['deflate-raw']), null);
+});
+
+test('negotiate: a peer’s list is peer-controlled — junk is skipped, the length is bounded, ids are only compared', () => {
+  const local = normalizeCompression({ codec: [fake('zstd'), fake('deflate-raw')] }, 'x');
+  const junk = negotiate(local, [1, null, {}, ['zstd'], 'deflate-raw']);
+  assert.deepStrictEqual([junk.encode.id, junk.decode.id], ['deflate-raw', 'deflate-raw']);
+  for (const id of ['__proto__', 'constructor', 'toString', 'hasOwnProperty']) {
+    assert.strictEqual(negotiate(local, [id]), null, `${id} names no codec`);
+  }
+  // Only the first 16 entries are looked at, whatever the peer sent.
+  const flood = Array.from({ length: 1000 }, (_, i) => `x${i}`);
+  assert.strictEqual(negotiate(local, [...flood, 'zstd']), null);
+  const near = [...flood.slice(0, 15), 'zstd'];
+  assert.strictEqual(negotiate(local, near).encode.id, 'zstd');
 });
 
 test('native (node): raw deflate through zlib, and the cap bounds an inflate', () => {

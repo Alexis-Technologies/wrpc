@@ -41,8 +41,8 @@ const {
   KIND_TEXT,
   KIND_BINARY,
   KIND_CAPS,
-  KIND_TEXT_DEFLATE,
-  KIND_BINARY_DEFLATE,
+  KIND_TEXT_COMPRESSED,
+  KIND_BINARY_COMPRESSED,
   DEFAULT_MAX_MESSAGE,
 } = require('./framing.js');
 const { StreamMux } = require('./streams.js');
@@ -193,24 +193,29 @@ class WtSocket extends EventEmitter {
     return this.#paused;
   }
 
-  /** The codec id in effect — both ends named it — or null. */
+  /**
+   * The codec ids in effect — `{ encode, decode }`, what this side sends
+   * with and what the peer does — or null while the two lists share none.
+   */
   get compression() {
-    return this.#active === null ? null : this.#active.id;
+    const active = this.#active;
+    return active === null ? null : { encode: active.encode.id, decode: active.decode.id };
   }
 
-  // What we announce: the mux's streams, plus the codec when the option is
-  // on. The peer compresses only once it has read this and named the same.
+  // What we announce: the mux's streams, plus the codecs we hold, in our
+  // order, when the option is on. The peer compresses only once it has read
+  // this, with the first of ITS list found here.
   #caps(session) {
     if (this.#compression === null) return StreamMux.caps(session);
     const caps = parseCaps(StreamMux.caps(session)) ?? {};
-    caps.deflate = this.#compression.id;
+    caps.enc = this.#compression.ids;
     return JSON.stringify(caps);
   }
 
   #negotiate(text) {
-    const active = negotiate(this.#compression, parseCaps(text)?.deflate);
+    const active = negotiate(this.#compression, parseCaps(text)?.enc);
     this.#active = active;
-    this.#parser.deflate = active !== null;
+    this.#parser.compressed = active !== null;
   }
 
   // An inbound message past the capabilities: plain kinds are delivered at
@@ -223,10 +228,10 @@ class WtSocket extends EventEmitter {
       if (active === null || this.#inbound.pending === 0) return void this.#deliver(kind, data);
       return void this.#inbound.push(data, (bytes) => this.#deliver(kind, bytes));
     }
-    const plainKind = kind === KIND_TEXT_DEFLATE ? KIND_TEXT : KIND_BINARY;
+    const plainKind = kind === KIND_TEXT_COMPRESSED ? KIND_TEXT : KIND_BINARY;
     let inflated;
     try {
-      inflated = active.codec.decode(data, this.#maxMessage);
+      inflated = active.decode.codec.decode(data, this.#maxMessage);
     } catch (error) {
       return void this.#violation(error);
     }
@@ -344,12 +349,12 @@ class WtSocket extends EventEmitter {
     const active = this.#active;
     const plain = active === null || (options !== null && options.compress === false);
     if (typeof data === 'string') {
-      if (plain || data.length < active.threshold) return this.#enqueue(frameText(data));
+      if (plain || data.length < active.encode.threshold) return this.#enqueue(frameText(data));
       return this.#compress(KIND_TEXT, TEXT_ENCODER.encode(data));
     }
     const chunk = toBytes(data);
     if (this.#mux.chunk(chunk)) return this.#queued <= this.#highWater;
-    if (plain || chunk.length < active.threshold) return this.#enqueue(frame(KIND_BINARY, chunk));
+    if (plain || chunk.length < active.encode.threshold) return this.#enqueue(frame(KIND_BINARY, chunk));
     return this.#compress(KIND_BINARY, chunk);
   }
 
@@ -374,14 +379,14 @@ class WtSocket extends EventEmitter {
   #compress(kind, bytes) {
     const size = bytes.length;
     this.#queued += size;
-    const deflated = kind === KIND_TEXT ? KIND_TEXT_DEFLATE : KIND_BINARY_DEFLATE;
+    const compressed = kind === KIND_TEXT ? KIND_TEXT_COMPRESSED : KIND_BINARY_COMPRESSED;
     const plain = () => {
       this.#queued -= size;
       this.#writeFrame(frame(kind, bytes));
     };
     let encoded;
     try {
-      encoded = this.#active.codec.encode(bytes);
+      encoded = this.#active.encode.codec.encode(bytes);
     } catch {
       plain();
       return this.#queued <= this.#highWater;
@@ -391,7 +396,7 @@ class WtSocket extends EventEmitter {
       (out) => {
         if (out.length >= size) return void plain();
         this.#queued -= size;
-        this.#writeFrame(frame(deflated, out));
+        this.#writeFrame(frame(compressed, out));
       },
       plain,
     );

@@ -279,8 +279,9 @@ Nothing compresses a QUIC stream's payload for you — HTTP/3 compresses
 headers (QPACK), never bodies — so a WebTransport session carries exactly
 the bytes wrpc hands it. Per-message compression is the answer, **off by
 default** like every compression knob in wrpc, and negotiated: each end
-names its codec in the [capabilities message](../reference/protocol#webtransport-streams)
-and compresses only once the other end named the same one, so a client
+names its codecs in the [capabilities message](../reference/protocol#webtransport-streams)
+and compresses — with the first of its own [list](./compression#list) the
+other end holds — only once they share one, so a client
 with the option talking to a server without it is served plain, and the
 other way round.
 

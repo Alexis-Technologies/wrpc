@@ -95,6 +95,16 @@ export declare function isCompressor(value: unknown): value is Compressor;
 export type CompressionAlgorithm = 'deflate-raw' | 'brotli' | 'zstd';
 
 /**
+ * The codecs in effect on a connection, by id: what this side sends with
+ * and what the peer does. The two may differ — each end sends with the
+ * first codec of its own list the other announced.
+ */
+export interface NegotiatedCompression {
+  readonly encode: string;
+  readonly decode: string;
+}
+
+/**
  * `compression: true | { codec, threshold, async }` — off by default.
  * `true` takes the platform's raw deflate; `codec` names another platform
  * codec (`'zstd'`, `'brotli'`) or injects one (`zstdCompressor({ level })`,
@@ -111,7 +121,17 @@ export type CompressionAlgorithm = 'deflate-raw' | 'brotli' | 'zstd';
  * nothing injected stays off.
  */
 export interface CompressionOptions {
-  codec?: CompressionAlgorithm | Compressor;
+  /**
+   * One codec, or a list in order of preference. Each end announces the
+   * ids it holds and a sender compresses with the FIRST codec of its own
+   * list the peer announced — so a list is the fallback (`['zstd',
+   * 'deflate-raw']` still compresses for a peer without zstd), the two
+   * directions choose independently, and a name the platform lacks is
+   * skipped in a list rather than refused. On the backplane, which
+   * negotiates nothing, an instance encodes with the head and decodes any
+   * codec on the list: a change of codec is a rollout, not an outage.
+   */
+  codec?: CompressionAlgorithm | Compressor | ReadonlyArray<CompressionAlgorithm | Compressor>;
   threshold?: number;
   async?: boolean | { threshold?: number };
 }
@@ -278,8 +298,8 @@ export declare class ClientWtTransport extends ClientTransport {
   constructor(url: string, options?: WtTransportOptions);
   /** The WebTransport session spoken on; null before open() and after close. */
   readonly session: unknown;
-  /** The compression codec id in effect — both ends named it — or null. */
-  readonly compression: string | null;
+  /** The codecs in effect — null until the two lists share one. */
+  readonly compression: NegotiatedCompression | null;
   /** The largest datagram the session carries; 0 when it carries none. */
   readonly maxDatagramSize: number;
   writeUnreliable(data: string): boolean;

@@ -36,20 +36,23 @@ const {
 } = require('./frames.js');
 const {
   normalizeSyncCompression,
-  negotiate,
+  codecById,
+  headerNegotiator,
   maxMessageOf,
   encodeIfSmaller,
   decodeOrNull,
 } = require('../../compression/sync.js');
 
-// A frame's body as sent, inflated when its `wrpc-enc` header says it was
-// compressed with the codec `active` names — or null: marked but no codec
-// agreed, another codec, a body that does not inflate under the cap.
-const frameBody = (message, active, maxMessage) => {
+// A frame's body as sent, inflated when its `wrpc-enc` header names the
+// codec it was compressed with — any codec of `local`, the list this end
+// holds, passed only once the session agreed on something — or null:
+// marked but nothing agreed, a codec not held, a body that does not
+// inflate under the cap.
+const frameBody = (message, local, maxMessage) => {
   const encoding = message.headers?.[HEADER_ENC];
   if (encoding === undefined || encoding === null || encoding === '') return message.body;
-  if (active === null || encoding !== active.id) return null;
-  return decodeOrNull(active, toBytes(message.body), maxMessage);
+  const entry = local === null || typeof encoding !== 'string' ? null : codecById(local, encoding);
+  return entry === null ? null : decodeOrNull(entry, toBytes(message.body), maxMessage);
 };
 
 const DEFAULT_IDLE_TIMEOUT = 90_000; // 3x the client's 30 s heartbeat
@@ -68,7 +71,7 @@ class BrokerSessionTransport extends ServerTransport {
   #highWaterMark;
   #closed = false;
   #onFailure;
-  // The compression both ends agreed to on hello/welcome, or null.
+  // What both ends agreed to on hello/welcome — `{ encode, decode }` — or null.
   #compression;
 
   constructor({ direct, peer, session, highWaterMark, onFailure, compression = null }) {
@@ -81,9 +84,10 @@ class BrokerSessionTransport extends ServerTransport {
     this.#compression = compression;
   }
 
-  /** The compression codec id in effect on this session, or null. */
+  /** The codec ids in effect on this session — `{ encode, decode }` — or null. */
   get compression() {
-    return this.#compression === null ? null : this.#compression.id;
+    const active = this.#compression;
+    return active === null ? null : { encode: active.encode.id, decode: active.decode.id };
   }
 
   // Frames go out in call order (the direct contract keeps one sender's
@@ -105,10 +109,10 @@ class BrokerSessionTransport extends ServerTransport {
     let body = binary ? toBytes(data) : data;
     const active = this.#compression;
     if (active !== null && (options === null || options.compress !== false)) {
-      const encoded = encodeIfSmaller(active, body);
+      const encoded = encodeIfSmaller(active.encode, body);
       if (encoded !== null) {
         body = encoded;
-        headers[HEADER_ENC] = active.id;
+        headers[HEADER_ENC] = active.encode.id;
       }
     }
     this.#unconfirmed++;
@@ -168,10 +172,13 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     maxMessage,
   } = options;
   const address = serviceAddress(service, addressOption, 'attachBrokerRpc');
-  // Off by default. On, it is announced back on `welcome` to a client that
-  // named the same codec on `hello`, and applied to a stateless answer for
-  // a request that named it — a client without it is served plain.
+  // Off by default. On, this end's list is announced back on `welcome` to a
+  // client whose `hello` list shares a codec with it, and a stateless answer
+  // is compressed with the first codec here that the request named — a
+  // client without the option is served plain.
   const codec = normalizeSyncCompression(compression, 'attachBrokerRpc: options');
+  const agree = headerNegotiator(codec);
+  const announce = codec === null ? '' : codec.ids.join(',');
   const cap = maxMessageOf(maxMessage, 'attachBrokerRpc');
   if (!(Number.isFinite(idleTimeout) && idleTimeout > 0)) {
     throw new TypeError('attachBrokerRpc: idleTimeout must be a positive number of milliseconds');
@@ -192,11 +199,11 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
 
   // Stateless: a packet-mode POST in all but carrier. The request itself
   // travels plain (the client cannot know yet what this instance speaks);
-  // its `wrpc-enc` is the codec the answer may come back in.
+  // its `wrpc-enc` lists the codecs the answer may come back in.
   const onRequest = (message) => {
     if (typeof message.replyTo !== 'string' || message.replyTo.length === 0) return;
     const headers = peerHeaders(message.headers);
-    const active = negotiate(codec, message.headers?.[HEADER_ENC]);
+    const active = agree(message.headers?.[HEADER_ENC]);
     void rpc.handleHttpCall({
       method: 'POST',
       url: basePath,
@@ -205,9 +212,9 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
       remoteAddress: 'broker',
       respond: ({ body }) => {
         const text = typeof body === 'string' ? body : packetBody(body);
-        const encoded = active === null ? null : encodeIfSmaller(active, text);
+        const encoded = active === null ? null : encodeIfSmaller(active.encode, text);
         if (encoded === null) return void reply(message, { [HEADER_KIND]: KIND.RESPONSE }, text);
-        reply(message, { [HEADER_KIND]: KIND.RESPONSE, [HEADER_ENC]: active.id }, encoded);
+        reply(message, { [HEADER_KIND]: KIND.RESPONSE, [HEADER_ENC]: active.encode.id }, encoded);
       },
     });
   };
@@ -230,7 +237,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     // A client re-saying hello with the same id (its welcome was lost) gets
     // a fresh session: the old one could not have seen a frame yet.
     if (sessions.has(id)) endSession(id, 'replaced', { notify: false });
-    const active = negotiate(codec, message.headers?.[HEADER_ENC]);
+    const active = agree(message.headers?.[HEADER_ENC]);
     const transport = new BrokerSessionTransport({
       direct,
       peer: message.replyTo,
@@ -252,7 +259,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
       request: { headers: peerHeaders(message.headers), url: '', remoteAddress: 'broker' },
     });
     const welcome = { [HEADER_KIND]: KIND.WELCOME, [HEADER_INBOX]: inbox };
-    if (active !== null) welcome[HEADER_ENC] = active.id;
+    if (active !== null) welcome[HEADER_ENC] = announce;
     void reply(message, welcome, '');
   };
 
@@ -278,7 +285,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     // A frame marked compressed on a session that agreed to nothing, with
     // another codec, or that does not inflate under the cap: the peer's
     // protocol violation, and the session ends as on a sequence gap.
-    const body = frameBody(message, session.compression, cap);
+    const body = frameBody(message, session.compression === null ? null : codec, cap);
     if (body === null) return void endSession(id, 'undecodable frame');
     if (kind === KIND.CHUNK) session.transport.emit('chunk', toBytes(body));
     else session.transport.emit('packet', packetBody(body));

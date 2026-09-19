@@ -404,8 +404,8 @@ export declare class ClientBrokerTransport {
     /** The largest inflated frame accepted (default 16 MiB). */
     maxMessage?: number;
   }): Promise<void>;
-  /** The compression codec id in effect on the session — both ends named it — or null. */
-  readonly compression: string | null;
+  /** The codecs in effect — null until the two lists share one. */
+  readonly compression: import('./client.js').NegotiatedCompression | null;
   write(data: string | Uint8Array): boolean | void;
   close(): void;
   terminate(): void;

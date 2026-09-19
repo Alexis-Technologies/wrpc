@@ -14,7 +14,7 @@
 //   bit 0   KIND   0 = a wrpc packet (UTF-8 JSON, what a WebSocket text frame carries)
 //                  1 = a binary stream chunk (a chunkEncode frame)
 //   bit 1   FIN    1 = the last fragment of this message
-//   bit 2   DEFLATE 1 = the message is compressed (src/compression) — only once
+//   bit 2   COMPRESSED 1 = the message is compressed (src/compression) — only once
 //                  both ends negotiated it; reserved, and a protocol error, before
 //   bit 3-7 reserved, MUST be 0 — a set bit is a protocol error
 //
@@ -29,10 +29,10 @@
 const KIND_TEXT = 0;
 const KIND_BINARY = 1;
 const FLAG_FIN = 0b10;
-const FLAG_DEFLATE = 0b100;
+const FLAG_COMPRESSED = 0b100;
 const KIND_MASK = 0b01;
 // What a continuation must repeat: the kind and the deflate flag.
-const MESSAGE_MASK = KIND_MASK | FLAG_DEFLATE;
+const MESSAGE_MASK = KIND_MASK | FLAG_COMPRESSED;
 const RESERVED_MASK = 0b11111000;
 const HEADER_BYTES = 1;
 
@@ -162,7 +162,7 @@ class FrameEncoder {
 class FrameDecoder {
   // Whether the DEFLATE flag is accepted: set by the transport once both
   // ends named the same codec, a reserved bit — a protocol error — before.
-  deflate = false;
+  compressed = false;
 
   #maxReassembly;
   #parts = null;
@@ -183,7 +183,7 @@ class FrameDecoder {
   }
 
   /**
-   * Feeds one channel message. Returns `{ kind, data, deflated }` when it
+   * Feeds one channel message. Returns `{ kind, data, compressed }` when it
    * completes a message — `data` is a string for KIND_TEXT and a Uint8Array
    * for KIND_BINARY, and for a DEFLATED message of either kind the bytes
    * the codec produced, text only once the transport inflated them — or
@@ -197,7 +197,7 @@ class FrameDecoder {
     const frame = toBytes(input);
     if (frame.length < HEADER_BYTES) throw this.#fail('empty frame', 'empty');
     const header = frame[0];
-    if ((header & RESERVED_MASK) !== 0 || ((header & FLAG_DEFLATE) !== 0 && !this.deflate)) {
+    if ((header & RESERVED_MASK) !== 0 || ((header & FLAG_COMPRESSED) !== 0 && !this.compressed)) {
       throw this.#fail('reserved header bits set', 'reserved');
     }
     const kind = header & MESSAGE_MASK;
@@ -244,10 +244,10 @@ class FrameDecoder {
 
   #finish(flags, bytes) {
     const kind = flags & KIND_MASK;
-    if (flags !== kind) return { kind, data: bytes, deflated: true };
-    if (kind === KIND_BINARY) return { kind, data: bytes, deflated: false };
+    if (flags !== kind) return { kind, data: bytes, compressed: true };
+    if (kind === KIND_BINARY) return { kind, data: bytes, compressed: false };
     try {
-      return { kind, data: TEXT_DECODER.decode(bytes), deflated: false };
+      return { kind, data: TEXT_DECODER.decode(bytes), compressed: false };
     } catch {
       throw this.#fail('invalid UTF-8 in a text frame', 'utf8');
     }
@@ -258,7 +258,7 @@ module.exports = {
   KIND_TEXT,
   KIND_BINARY,
   FLAG_FIN,
-  FLAG_DEFLATE,
+  FLAG_COMPRESSED,
   HEADER_BYTES,
   MIN_MESSAGE_SIZE,
   MAX_MESSAGE_SIZE,

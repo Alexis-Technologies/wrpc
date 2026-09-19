@@ -117,8 +117,8 @@ export interface AttachSessionOptions extends SessionMeta, WtSocketOptions {
  */
 export declare class WtSocket {
   constructor(session: WtSession, stream: WtStream, options?: WtSocketOptions);
-  /** The compression codec id in effect — both ends named it — or null. */
-  readonly compression: string | null;
+  /** The codecs in effect — null until the two lists share one. */
+  readonly compression: import('./client.js').NegotiatedCompression | null;
   readonly session: WtSession;
   readonly stream: WtStream;
   readonly bufferedAmount: number;
@@ -236,9 +236,9 @@ export declare const KIND_TEXT: 0;
 export declare const KIND_BINARY: 1;
 /** The capabilities message each end sends first on the control stream. */
 export declare const KIND_CAPS: 2;
-/** A packet (3) or a chunk (4) compressed with the negotiated codec — accepted only once both ends named it. */
-export declare const KIND_TEXT_DEFLATE: 3;
-export declare const KIND_BINARY_DEFLATE: 4;
+/** A packet (3) or a chunk (4) compressed with the sender's negotiated codec — accepted only once the two lists share one. */
+export declare const KIND_TEXT_COMPRESSED: 3;
+export declare const KIND_BINARY_COMPRESSED: 4;
 export declare const DEFAULT_MAX_MESSAGE: number;
 export declare const INLINE_TEXT: number;
 export declare const DEFAULT_ACCEPT_TIMEOUT: number;
@@ -278,7 +278,7 @@ export declare function datagramWriter(datagrams: WtDatagrams | null | undefined
 export declare class StreamParser {
   constructor(options: { maxMessage?: number; onMessage: (kind: 0 | 1 | 2 | 3 | 4, data: string | Uint8Array) => void });
   /** Whether the compressed kinds (3, 4) are accepted; a protocol error until the transport sets it. */
-  deflate: boolean;
+  compressed: boolean;
   readonly pending: number;
   push(input: ArrayBuffer | ArrayBufferView): void;
   reset(): void;

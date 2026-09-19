@@ -27,7 +27,7 @@ class ClientWsTransport extends ClientTransport {
 
   /** The compression codec id in effect on this side's frames, or null. */
   get compression() {
-    return this.#compression !== null && this.#compression.active ? this.#compression.id : null;
+    return this.#compression === null ? null : this.#compression.id;
   }
 
   async open(options = {}) {

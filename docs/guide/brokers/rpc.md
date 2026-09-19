@@ -129,17 +129,18 @@ await attachBrokerRpc(server, broker, { service: 'billing', compression: true })
 const billing = await connect('broker://billing', { transport: 'broker', broker, compression: true });
 ```
 
-- A **session** names its codec on `hello` (`wrpc-enc: deflate-raw`); the
-  server that agreed answers it on `welcome`, and from then on every frame
+- A **session** names its codecs on `hello` (`wrpc-enc: zstd,deflate-raw`,
+  in its [order of preference](../compression#list)); a server that holds
+  one of them answers its own list on `welcome`, and from then on every frame
   past the threshold (1 KiB) travels compressed in both directions —
   packets, events, subscription values and stream chunks alike — with
-  `wrpc-enc` on the frames that are. `{ compress: false }` on an emit
+  `wrpc-enc` naming the codec on the frames that are. `{ compress: false }` on an emit
   sends that one plain. A server without the option answers no `wrpc-enc`
   and the session runs plain.
-- A **stateless request** names the codec it accepts and travels plain
+- A **stateless request** lists the codecs it accepts and travels plain
   itself (the client cannot know which instance takes it); the answer
-  comes back compressed when the instance has the same codec and the body
-  is past the threshold — the shape of HTTP's `Accept-Encoding`.
+  comes back compressed — with the instance's first codec on that list —
+  when the body is past the threshold — the shape of HTTP's `Accept-Encoding`.
 - A frame marked compressed that the receiver cannot inflate (no codec
   agreed, another codec, a body past `maxMessage`) ends the session like a
   sequence gap, and the client reconnects.

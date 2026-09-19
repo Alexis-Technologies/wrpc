@@ -31,8 +31,8 @@ const META_PREFIX = 'x-wrpc-meta-';
 // stays reserved for a binary packet codec, should one ever be needed.
 const FRAME_MARK = 0;
 const FRAME_ATTACHMENTS = 1;
-const FRAME_PACKET_DEFLATE = 3;
-const FRAME_CHUNK_DEFLATE = 4;
+const FRAME_PACKET_COMPRESSED = 3;
+const FRAME_CHUNK_COMPRESSED = 4;
 
 module.exports = {
   HEADERS_PARAM,
@@ -42,6 +42,6 @@ module.exports = {
   CHANNEL_HEADER,
   FRAME_MARK,
   FRAME_ATTACHMENTS,
-  FRAME_PACKET_DEFLATE,
-  FRAME_CHUNK_DEFLATE,
+  FRAME_PACKET_COMPRESSED,
+  FRAME_CHUNK_COMPRESSED,
 };

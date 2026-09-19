@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const zlib = require('node:zlib');
 
 const { RpcServer, defineRouter, procedure, WrpcClient } = require('../../index.js');
-const { FRAME_MARK, FRAME_PACKET_DEFLATE, FRAME_CHUNK_DEFLATE } = require('../../src/wire.js');
+const { FRAME_MARK, FRAME_PACKET_COMPRESSED, FRAME_CHUNK_COMPRESSED } = require('../../src/wire.js');
 const { ProtocolClient } = require('../websocket/protocolClient.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 
@@ -74,7 +74,7 @@ test('ws compression: both ends on — negotiated over ping/pong, packets and ch
     const marked = markedFrames(frames);
     assert.strictEqual(marked.length, 1);
     const frame = marked[0].bytes;
-    assert.strictEqual(frame[1], FRAME_PACKET_DEFLATE);
+    assert.strictEqual(frame[1], FRAME_PACKET_COMPRESSED);
     assert.ok(frame.length < 500, `${frame.length} B on the wire for a 20 KB packet`);
     const packet = JSON.parse(zlib.inflateRawSync(frame.subarray(2)).toString());
     assert.strictEqual(packet.method, 'data/echo');
@@ -94,7 +94,7 @@ test('ws compression: both ends on — negotiated over ping/pong, packets and ch
     up.write(new Uint8Array(30_000).fill(7));
     up.end();
     assert.strictEqual(await call, 30_000);
-    const chunks = markedFrames(frames).filter((f) => f.bytes[1] === FRAME_CHUNK_DEFLATE);
+    const chunks = markedFrames(frames).filter((f) => f.bytes[1] === FRAME_CHUNK_COMPRESSED);
     assert.ok(chunks.length >= 1);
     assert.ok(
       chunks.every((f) => f.bytes.length < 1000),
@@ -145,7 +145,7 @@ test('ws compression (wire): the pong carries enc only when the server agreed; f
   const frame = (kind, body) => Buffer.concat([Buffer.from([FRAME_MARK, kind]), body]);
 
   // Before any negotiation a marked frame is a 400, not a hang-up.
-  socket.sendBinary(frame(FRAME_PACKET_DEFLATE, zlib.deflateRawSync(call)));
+  socket.sendBinary(frame(FRAME_PACKET_COMPRESSED, zlib.deflateRawSync(call)));
   let answer = await nextMessage(messages, 0);
   assert.strictEqual(answer.error.code, 400);
 
@@ -160,7 +160,7 @@ test('ws compression (wire): the pong carries enc only when the server agreed; f
   assert.deepStrictEqual(answer, { type: 'pong', enc: DEFLATE });
 
   // A compressed call packet now dispatches.
-  socket.sendBinary(frame(FRAME_PACKET_DEFLATE, zlib.deflateRawSync(call)));
+  socket.sendBinary(frame(FRAME_PACKET_COMPRESSED, zlib.deflateRawSync(call)));
   answer = await nextMessage(messages, 3);
   assert.strictEqual(answer.id, 'c1');
   assert.strictEqual(answer.result.length, 3);
@@ -169,7 +169,7 @@ test('ws compression (wire): the pong carries enc only when the server agreed; f
   socket.sendBinary(frame(9, zlib.deflateRawSync(call)));
   answer = await nextMessage(messages, 4);
   assert.strictEqual(answer.error.code, 400);
-  socket.sendBinary(frame(FRAME_PACKET_DEFLATE, zlib.deflateRawSync(Buffer.alloc(100_000, 0x20))));
+  socket.sendBinary(frame(FRAME_PACKET_COMPRESSED, zlib.deflateRawSync(Buffer.alloc(100_000, 0x20))));
   answer = await nextMessage(messages, 5);
   assert.strictEqual(answer.error.code, 400);
 
@@ -177,6 +177,41 @@ test('ws compression (wire): the pong carries enc only when the server agreed; f
   socket.sendText(JSON.stringify({ type: 'call', id: 'c2', method: 'data/big', args: { rows: 2 } }));
   answer = await nextMessage(messages, 6);
   assert.strictEqual(answer.result.length, 2);
+});
+
+test('ws compression (list): the pong names the first codec of the CLIENT’s list the server holds', async (t) => {
+  const { server, url } = await bootServer(t, { router, compression: { codec: ['deflate-raw', 'brotli'] } });
+  const { frames, clients } = spyInbound(server);
+
+  await t.test('wire: a list, junk in it skipped, the client’s order deciding', async () => {
+    const { socket, messages } = await rawClient(t, url);
+    socket.sendText(JSON.stringify({ type: 'ping', enc: ['lz4', 7, 'brotli', DEFLATE] }));
+    assert.deepStrictEqual(await nextMessage(messages, 0), { type: 'pong', enc: 'brotli' });
+    const call = Buffer.from(JSON.stringify({ type: 'call', id: 'c1', method: 'data/big', args: { rows: 3 } }));
+    socket.sendBinary(
+      Buffer.concat([Buffer.from([FRAME_MARK, FRAME_PACKET_COMPRESSED]), zlib.brotliCompressSync(call)]),
+    );
+    assert.strictEqual((await nextMessage(messages, 1)).result.length, 3);
+    // Nothing in common: a plain pong, and the earlier agreement is gone.
+    socket.sendText(JSON.stringify({ type: 'ping', enc: ['lz4'] }));
+    assert.deepStrictEqual(await nextMessage(messages, 2), { type: 'pong' });
+    socket.sendText(JSON.stringify({ type: 'ping', enc: {} }));
+    assert.deepStrictEqual(await nextMessage(messages, 3), { type: 'pong' });
+  });
+
+  await t.test('a client that prefers a codec the server lacks falls back to its next, not to plain', async () => {
+    const mine = { id: 'mine', encode: (b) => zlib.deflateRawSync(b), decode: (b) => zlib.inflateRawSync(b) };
+    const client = await connectClient(t, url, { compression: { codec: [mine, 'brotli', 'deflate-raw'] } });
+    await waitFor(() => clients.at(-1).compression !== null, 'never negotiated');
+    assert.strictEqual(clients.at(-1).compression.id, 'brotli');
+    await client.load('data');
+    frames.length = 0;
+    const echoed = await client.api.data.echo({ text: 'y'.repeat(20_000) });
+    assert.strictEqual(echoed.text.length, 20_000);
+    const [marked] = markedFrames(frames);
+    const packet = JSON.parse(zlib.brotliDecompressSync(marked.bytes.subarray(2)).toString());
+    assert.strictEqual(packet.args.text.length, 20_000, 'the frame is Brotli, as the pong said');
+  });
 });
 
 test('ws compression (wire): a server without the option answers every ping plainly', async (t) => {

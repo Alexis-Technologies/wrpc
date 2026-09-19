@@ -139,4 +139,5 @@ expectAssignable<BrokerRpcOptions>({ service: 'x', compression: true, maxMessage
 expectAssignable<BrokerRpcOptions>({ service: 'x', compression: { threshold: 512 } });
 expectError<BrokerRpcOptions>({ service: 'x', compression: 'lz4' });
 declare const brokerTransport: ClientBrokerTransport;
-expectType<string | null>(brokerTransport.compression);
+expectType<{ readonly encode: string; readonly decode: string } | null>(brokerTransport.compression);
+expectAssignable<BrokerRpcOptions>({ service: 'x', compression: { codec: ['zstd', 'deflate-raw'] } });

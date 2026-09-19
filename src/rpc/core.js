@@ -10,7 +10,7 @@ const { Cluster, instanceOfClientId } = require('./cluster.js');
 const { SseChannels } = require('../sse/server.js');
 const { normalizeCompression } = require('../contentEncoding.js');
 const { createEnvelopeCodec, maxMessageOf, normalizeSyncCompression, decodeOrNull } = require('../compression/sync.js');
-const { FRAME_MARK, FRAME_ATTACHMENTS, FRAME_PACKET_DEFLATE, FRAME_CHUNK_DEFLATE } = require('../wire.js');
+const { FRAME_MARK, FRAME_ATTACHMENTS, FRAME_PACKET_COMPRESSED, FRAME_CHUNK_COMPRESSED } = require('../wire.js');
 const { isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
 // The channel header from the import-free constants module, NOT from
 // sse/server.js: the string is shared, the implementation is not.
@@ -781,7 +781,7 @@ class RpcServer extends Emitter {
   #inflateFrame(client, bytes) {
     const kind = bytes[1];
     const active = client.compression;
-    if (active === null || (kind !== FRAME_PACKET_DEFLATE && kind !== FRAME_CHUNK_DEFLATE)) {
+    if (active === null || (kind !== FRAME_PACKET_COMPRESSED && kind !== FRAME_CHUNK_COMPRESSED)) {
       client.log.warn({ event: 'frame.refused', kind, negotiated: active !== null });
       client.error(400, { error: new Error('Unexpected framed message') });
       return null;
@@ -792,7 +792,7 @@ class RpcServer extends Emitter {
       client.error(400, { error: new Error('Framed message does not inflate') });
       return null;
     }
-    if (kind === FRAME_CHUNK_DEFLATE) return new Uint8Array(out.buffer, out.byteOffset, out.byteLength);
+    if (kind === FRAME_CHUNK_COMPRESSED) return new Uint8Array(out.buffer, out.byteOffset, out.byteLength);
     handleMessage(client, out, this.#router, this.#limits);
     return null;
   }

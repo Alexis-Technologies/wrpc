@@ -36,7 +36,7 @@ const {
   FramingError,
   KIND_TEXT,
   KIND_BINARY,
-  FLAG_DEFLATE,
+  FLAG_COMPRESSED,
   MIN_MESSAGE_SIZE,
   DEFAULT_MAX_REASSEMBLY,
   decodeText,
@@ -81,18 +81,24 @@ const waitChannelOpen = (channel) =>
     channel.addEventListener('error', onError);
   });
 
-// The per-message compression in effect on a channel: the local option
-// alone over a raw channel (both applications turned it on, or neither —
-// there is no handshake on a raw channel to negotiate through), and over a
-// link only once the peer's description named the same codec.
-const activeCompression = (compression, link) =>
-  compression === null ? null : link === null ? compression : negotiate(compression, link.peerCaps?.deflate);
+// The per-message compression in effect on a channel, `{ encode, decode }`:
+// over a link, what the two lists agree on once the peer's description
+// announced its own (src/compression negotiate); over a raw channel the
+// HEAD of the local list both ways — there is no handshake on a raw channel
+// to negotiate through, so both applications name the same first codec, or
+// neither turns it on.
+const activeCompression = (compression, link) => {
+  if (compression === null) return null;
+  if (link !== null) return negotiate(compression, link.peerCaps?.enc);
+  const head = compression.codecs[0];
+  return { encode: head, decode: head };
+};
 
 // One place for what both halves do with a channel: encode outbound frames
 // into it and decode inbound ones from it. `sink` is bound once so the hot
 // path allocates nothing per call. With compression in effect a message
 // past the threshold is compressed BEFORE fragmentation — here, the one
-// place it exists whole — and the DEFLATE flag rides every fragment; the
+// place it exists whole — and the COMPRESSED flag rides every fragment; the
 // two Sequencers keep each direction in order around a codec that answers
 // asynchronously, and cost nothing while nothing is in flight.
 class ChannelCodec {
@@ -114,7 +120,7 @@ class ChannelCodec {
     this.#channel = channel;
     this.#encoder = new FrameEncoder(maxMessageSize);
     this.#decoder = new FrameDecoder(framing);
-    this.#decoder.deflate = compression !== null;
+    this.#decoder.compressed = compression !== null;
     this.#sink = (frame) => channel.send(frame);
     this.#compression = compression;
     this.#maxInflate = framing?.maxReassembly ?? DEFAULT_MAX_REASSEMBLY;
@@ -124,9 +130,10 @@ class ChannelCodec {
     this.#inbound = new Sequencer(onError);
   }
 
-  /** The codec id in effect, or null. */
+  /** The codec ids in effect — `{ encode, decode }` — or null. */
   get compression() {
-    return this.#compression === null ? null : this.#compression.id;
+    const active = this.#compression;
+    return active === null ? null : { encode: active.encode.id, decode: active.decode.id };
   }
 
   /**
@@ -138,11 +145,11 @@ class ChannelCodec {
     const compression = this.#compression;
     const plain = compression === null || (options !== null && options.compress === false);
     if (typeof data === 'string') {
-      if (plain || data.length < compression.threshold) this.#enqueueText(data);
+      if (plain || data.length < compression.encode.threshold) this.#enqueueText(data);
       else this.#compress(KIND_TEXT, TEXT_ENCODER.encode(data));
     } else {
       const bytes = toBytes(data);
-      if (plain || bytes.length < compression.threshold) this.#enqueue(KIND_BINARY, bytes);
+      if (plain || bytes.length < compression.encode.threshold) this.#enqueue(KIND_BINARY, bytes);
       else this.#compress(KIND_BINARY, bytes);
     }
     return this.#channel.bufferedAmount + this.#pending;
@@ -177,7 +184,7 @@ class ChannelCodec {
     };
     let encoded;
     try {
-      encoded = this.#compression.codec.encode(bytes);
+      encoded = this.#compression.encode.codec.encode(bytes);
     } catch {
       return void plain();
     }
@@ -186,7 +193,7 @@ class ChannelCodec {
       (out) => {
         if (out.length >= size) return void plain();
         this.#pending -= size;
-        this.#encoder.encode(kind | FLAG_DEFLATE, out, this.#sink);
+        this.#encoder.encode(kind | FLAG_COMPRESSED, out, this.#sink);
       },
       plain,
     );
@@ -203,13 +210,13 @@ class ChannelCodec {
     const message = this.#decoder.push(data);
     if (message === null) return;
     const { kind } = message;
-    if (!message.deflated) {
+    if (!message.compressed) {
       if (this.#inbound.pending === 0) return void this.#onMessage(kind, message.data);
       return void this.#inbound.push(message.data, (bytes) => this.#onMessage(kind, bytes));
     }
     let inflated;
     try {
-      inflated = this.#compression.codec.decode(message.data, this.#maxInflate);
+      inflated = this.#compression.decode.codec.decode(message.data, this.#maxInflate);
     } catch (error) {
       return void this.#onError(inflateError(error));
     }

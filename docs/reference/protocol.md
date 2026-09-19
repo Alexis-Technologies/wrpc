@@ -422,8 +422,12 @@ is in use; a receiver that opted out answers it as a malformed packet.
 SSE, being text-only, refuses one on a channel POST with `415` and answers
 a call whose result holds bytes with `501`. Kind 2 is reserved.
 
-A peer MAY send a kind 3 or 4 frame only after a `pong` named the codec;
-before that, or with a payload that does not inflate under the receiver's
+The negotiation is a `ping` whose `enc` is the client's codec ids in its
+order of preference (a list; one id is a list of one), answered by a `pong`
+whose `enc` is ONE id — the first of the client's list the server holds —
+or by a plain `pong` when it holds none. Only the client compresses on this
+wire, so that id is the codec of every kind 3 or 4 frame that follows. A
+peer MAY send one only after such a `pong`; before that, or with a payload that does not inflate under the receiver's
 cap, the frame is answered with an id-less `400` and the connection goes
 on. Today only a Node client sends them (a browser's WebSocket compresses
 both directions under permessage-deflate, and a server's own frames use
@@ -597,9 +601,12 @@ mechanism, not a queue.
 With `rooms: { compression }` on, an envelope past the threshold is
 published as `wrpc-enc:<codec id>:<base64 of the codec's output over the
 JSON text>` — a message that starts with `w` rather than `{`. There is
-nothing to negotiate against on a fan-out, so a receiver without the same
-codec drops it (and logs); the deployment turns it on only once every
-instance can read it. The cluster channels below do the same under
+nothing to negotiate against on a fan-out, so the marker names the codec:
+an instance encodes with the FIRST codec of its list and reads any codec on
+it, and a receiver that holds no such codec drops the envelope (and logs).
+A deployment turns compression on only once every instance can read it,
+and changes codec the same way — every instance lists both, then the order
+is swapped. The cluster channels below do the same under
 `cluster: { compression }`, applied after the HMAC signature.
 
 ### Cluster channels
@@ -705,29 +712,30 @@ more fragments, each under a one-byte header:
 bit 0   KIND   0 = a wrpc packet (UTF-8 JSON — what a WebSocket text frame carries)
                1 = a binary stream chunk (a chunkEncode frame, see the wire-format page)
 bit 1   FIN    1 = the last fragment of this message
-bit 2   DEFLATE 1 = the message is compressed with the negotiated codec — only once negotiated
+bit 2   COMPRESSED 1 = the message is compressed with the sender's negotiated codec — only once negotiated
 bit 3–7        reserved, MUST be 0
 ```
 
 - Fragments of one message are sent back to back on one ordered, reliable
   channel, so there is no message id and no sequence number: a receiver
   concatenates fragments until FIN.
-- The KIND and DEFLATE bits of a continuation MUST equal those of the
-  message it continues; a set reserved bit, a DEFLATE bit before both peers
-  named the same codec, a mismatched continuation, a text message that is
+- The KIND and COMPRESSED bits of a continuation MUST equal those of the
+  message it continues; a set reserved bit, a COMPRESSED bit before the two
+  peers' lists shared a codec, a mismatched continuation, a text message that is
   not valid UTF-8, a reassembly past the receiver's cap (16 MiB by default)
   or a compressed message that does not inflate under that cap is a
   protocol error, and the receiver closes the channel — the data-channel
   analogue of a WebSocket `1002`.
 - **Compression** is negotiated through signaling, since the channels have
   no handshake: a `description` signal MAY carry `caps`, a JSON object whose
-  known key is `deflate` (a codec id, `"deflate-raw"` for raw DEFLATE, RFC
-  1951). A peer MAY set the DEFLATE bit only once the other peer's last
-  description named the same codec; the payload is then the codec's output
-  over the bytes the message would otherwise carry, compressed before
-  fragmentation and inflated after reassembly. Over a channel the
-  application negotiated itself, whether the bit is in use is the
-  application's agreement.
+  known key is `enc` — the peer's codec ids in its order of preference
+  ([the rule](#compression)). A peer MAY set the COMPRESSED bit only once
+  the other peer's last description announced a codec it holds; the payload
+  is then the output of the SENDER's chosen codec over the bytes the message
+  would otherwise carry, compressed before fragmentation and inflated after
+  reassembly. Over a channel the application negotiated itself there is
+  nothing to announce through: both ends use the first codec of their list,
+  and whether the bit is in use at all is the application's agreement.
 - Fragment size is the negotiated `sctp.maxMessageSize` capped at 256 KiB,
   and 16 KiB when nothing is reported. A peer MAY send smaller fragments.
 
@@ -810,7 +818,7 @@ bytes 0–3  LENGTH  payload byte length, unsigned, big-endian
 byte  4    KIND    0 = a wrpc packet (UTF-8 JSON — what a WebSocket text frame carries)
                    1 = a binary stream chunk (a chunkEncode frame, see the wire-format page)
                    2 = a capabilities message (UTF-8 JSON) — see below
-                   3 = a packet, compressed with the negotiated codec — only once `deflate` was negotiated
+                   3 = a packet, compressed with the sender's negotiated codec — only once `enc` was negotiated
                    4 = a chunk, compressed — likewise
                    5–255 reserved
 ```
@@ -836,19 +844,20 @@ new session the way it does across a reconnected socket.
 
 Each end's **first message** on the control stream MAY be a capabilities
 message (KIND 2): a JSON object whose known keys are `streams`
-(`{"streams":true}`) and `deflate` (a codec id, `"deflate-raw"` for the
-platform codec). Unknown keys are ignored; an end that sends none, or `{}`,
+(`{"streams":true}`) and `enc` (the end's codec ids in its order of
+preference, `["deflate-raw"]` for the platform default). Unknown keys are
+ignored; an end that sends none, or `{}`,
 has announced nothing, and its peer treats it as a revision-1 peer.
 
-When **both** ends announced the same `deflate` id, either MAY send a packet
-as KIND 3 or a chunk as KIND 4: the payload is the codec's output over the
+Once the two `enc` lists share a codec, either end MAY send a packet as
+KIND 3 or a chunk as KIND 4: the payload is the output of the SENDER's codec
+([the rule](#compression) — no frame names it) over the
 bytes KIND 0 or 1 would have carried, and the receiver inflates it before
 reading — a KIND 3 payload is UTF-8 JSON only after inflation. The choice is
 per message and the sender's (a message under its threshold, or one the
 codec did not shrink, goes as KIND 0 or 1 at any time). A compressed kind
-before both ends named the same codec, a payload that does not inflate, or
-one that inflates past the receiver's cap is a protocol error (1002).
-`deflate-raw` is raw DEFLATE (RFC 1951), no zlib or gzip wrapper. Datagrams
+before the lists shared a codec, a payload that does not inflate, or one
+that inflates past the receiver's cap is a protocol error (1002). Datagrams
 and chunks on their own streams are never compressed.
 
 When **both** ends announced `streams`, a sender MAY carry a binary
@@ -920,7 +929,7 @@ all start with `wrpc-`; a peer's connection headers (`authorization`,
 | `wrpc-seq` | a session frame's number, from `1`, per direction |
 | `wrpc-inbox` | on `welcome`: the address the session's frames go to |
 | `wrpc-reason` | on `bye`: why, for logs |
-| `wrpc-enc` | on a `request` or `hello`: the compression codec the sender accepts (`deflate-raw`); on a `welcome`: the codec the server agreed to; on a `response`, `packet` or `chunk`: that its body is that codec's output. A marked frame a receiver cannot inflate ends the session. |
+| `wrpc-enc` | on a `request`, `hello` or `welcome`: the sender's codec ids, joined by commas, in its order of preference (`zstd,deflate-raw`); on a `response`, `packet` or `chunk`: the ONE codec its body is the output of — the sender's first that the other end listed. A `welcome` carries it only when the lists share a codec. A marked frame a receiver cannot inflate ends the session. |
 
 Every server instance consumes one **service address** — `wrpc.<service>` by
 default — as members of one competing group, so each message addressed to the
@@ -985,11 +994,25 @@ mechanism, never a field of a wrpc packet:
 | WebSocket | RFC 7692 `permessage-deflate` (`perMessageDeflate` on the engine) | the upgrade handshake |
 | HTTP, packet mode and REST | `Content-Encoding: gzip` on the response (`http.compression`) | the request's `Accept-Encoding`; the response carries `Vary: Accept-Encoding` |
 | Server-Sent Events | `Content-Encoding: gzip` on the stream — one gzip member, sync-flushed after every event (`sse.compression`) | the opening GET's `Accept-Encoding`, per response |
-| WebTransport | per message, KIND 3/4 on the control stream (`compression` on both ends) | the `deflate` key of the capabilities message — on only when both ends named the same codec |
-| WebSocket, client → server from Node | per message, framed binary (`0x00 03` / `0x00 04`) above the extension (`compression` on both ends) | `{ type: 'ping', enc }` from the client, answered by `{ type: 'pong', enc }` when the server has the same codec |
-| WebRTC | per message, the DEFLATE bit of the data-channel header (`compression` on both peers) | the `caps.deflate` field of the description signal — on only when both peers named the same codec; a raw channel by the application's agreement |
-| The broker binding | per frame, `wrpc-enc` on the frame (`compression` on both ends) | `hello`/`welcome` for a session; a stateless request names what it accepts and only the answer is compressed |
-| The rooms backplane, the cluster channels | the whole envelope, base64 under a `wrpc-enc:<id>:` marker (`rooms.compression`, `cluster.compression`) | none — every instance must run it, in a two-step rollout |
+| WebTransport | per message, KIND 3/4 on the control stream (`compression` on both ends) | the `enc` list of the capabilities message |
+| WebSocket, client → server from Node | per message, framed binary (`0x00 03` / `0x00 04`) above the extension (`compression` on both ends) | `{ type: 'ping', enc: [ids] }` from the client, answered by `{ type: 'pong', enc: id }` — the first of them the server holds |
+| WebRTC | per message, the COMPRESSED bit of the data-channel header (`compression` on both peers) | the `caps.enc` list of the description signal; a raw channel by the application's agreement |
+| The broker binding | per frame, `wrpc-enc` on the frame (`compression` on both ends) | the `wrpc-enc` lists of `hello`/`welcome` for a session; a stateless request lists what it accepts and only the answer is compressed |
+| The rooms backplane, the cluster channels | the whole envelope, base64 under a `wrpc-enc:<id>:` marker (`rooms.compression`, `cluster.compression`) | none — the marker names the codec; every instance must hold it, in a two-step rollout |
+
+**Choosing the codec.** A codec is named by an id — `deflate-raw` (raw
+DEFLATE, RFC 1951, no zlib or gzip wrapper), `brotli` (RFC 7932), `zstd`
+(RFC 8878), `deflate-raw+dict:<hash>` for a preset dictionary, or an
+application's own; an id holds no comma and no whitespace. Wherever two ends
+negotiate, each announces the ids it can **decode**, in its order of
+preference, and a sender compresses with **the first codec of its own list
+the other end announced**. The receiver holds both lists, so it knows which
+codec that is: no frame names it (the broker binding's frames do, its
+header being there anyway), the two directions choose independently — a
+server may answer in `zstd` a client that sends `deflate-raw` — and there is
+no tie to break. Lists that share nothing, or an end that announced
+nothing, leave the wire plain. A receiver looks at no more than the first 16
+ids of a peer's list and ignores entries that are not strings.
 
 An HTTP response is encoded only when its body is at or over the configured
 threshold and nothing upstream already set a `Content-Encoding`; a `204` and

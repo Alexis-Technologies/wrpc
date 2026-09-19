@@ -228,5 +228,9 @@ expectAssignable<Parameters<typeof webrtc.attachChannel>[2]>({ peer: 'p', compre
 declare const link: RtcLink;
 expectType<Record<string, unknown> | null>(link.peerCaps);
 declare const rtcTransport: ClientRtcTransport;
-expectType<string | null>(rtcTransport.compression);
+expectType<{ readonly encode: string; readonly decode: string } | null>(rtcTransport.compression);
+expectAssignable<ConstructorParameters<typeof WrpcPeer>[0]>({
+  signaler: {} as Signaler,
+  compression: { codec: ['zstd', 'brotli', 'deflate-raw'] },
+});
 expectError<ConstructorParameters<typeof WrpcPeer>[0]>({ signaler: {} as Signaler, compression: 'lz4' });

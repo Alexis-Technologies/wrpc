@@ -166,8 +166,8 @@ export interface RtcLinkOptions {
   /**
    * Announced in every description this side sends (`caps`) — the
    * negotiation the channels have no handshake of their own for; what the
-   * peer announced is `peerCaps`. WrpcPeer sets `{ deflate: id }` from its
-   * `compression` option.
+   * peer announced is `peerCaps`. WrpcPeer sets `{ enc: [ids] }` — its codecs,
+   * in its order of preference — from its `compression` option.
    */
   caps?: Record<string, unknown> | null;
 }
@@ -252,8 +252,8 @@ export type ChannelSource = RtcDataChannelLike | (() => RtcDataChannelLike | Pro
  * once closed.
  */
 export declare class ClientRtcTransport extends ClientTransport {
-  /** The compression codec id in effect on the channel — both ends named it — or null. */
-  readonly compression: string | null;
+  /** The codecs in effect — null until the two lists share one. */
+  readonly compression: import('./client.js').NegotiatedCompression | null;
   constructor(url: string, options?: RtcTransportOptions & { link?: RtcLink | null; channel?: ChannelSource | null });
   readonly link: RtcLink | null;
   /** The channel spoken on; null before open() and after close. */
@@ -265,8 +265,8 @@ export declare class ClientRtcTransport extends ClientTransport {
  * or over a raw data channel — what RpcServer.attachChannel() builds.
  */
 export declare class RtcPeerTransport extends Emitter {
-  /** The compression codec id in effect on the channel — both ends named it — or null. */
-  readonly compression: string | null;
+  /** The codecs in effect — null until the two lists share one. */
+  readonly compression: import('./client.js').NegotiatedCompression | null;
   constructor(link: RtcLink, options: RtcTransportOptions & { peer: string; onError?: (error: Error) => void });
   /** `peer` defaults to the channel's label. */
   constructor(

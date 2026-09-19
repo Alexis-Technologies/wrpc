@@ -6,10 +6,16 @@
 // context across messages, so a peer holds no window per connection and
 // the frames of a fan-out stay shareable.
 //
-// Off by default, like every compression knob in wrpc. When on, both ends
-// announce the codec's `id` — in the WebTransport capabilities message, in
-// the WebRTC description signal — and compress only once the peer named
-// the same one; a peer that announced nothing gets plain frames, as before.
+// Off by default, like every compression knob in wrpc. When on, each end
+// announces the ids of the codecs it holds, in its order of preference —
+// in the WebTransport capabilities message, in the WebRTC description
+// signal, in a ws ping, in the broker's `wrpc-enc` header — and a sender
+// compresses with the FIRST codec of ITS OWN list the peer announced. The
+// receiver holds both lists, so it knows which one that is: no frame names
+// its codec, the two directions choose independently (a Node server may
+// answer in zstd a browser that sends deflate), and there is no tie to
+// break. No codec in common, or a peer that announced nothing: plain
+// frames, as before.
 //
 // The codec is a structural seam, checked by `isCompressor`: the platform
 // default (native.js — node:zlib on Node, CompressionStream in a browser,
@@ -22,14 +28,11 @@
 // Browser-budgeted: this file lands in the main and webrtc browser entries
 // through the client transports. Manual checks, no spread on a hot path.
 
-const { nativeCompressor } = require('./native.js');
+const { nativeCompressor, NATIVE_ID } = require('./native.js');
+
+const { dictionaryId, DICTIONARY_ID_PREFIX, isPromise } = require('./ids.js');
 
 const DEFAULT_THRESHOLD = 1024;
-// A dictionary codec's id: the prefix plus `dictionaryId` of the bytes —
-// shared by the Node zlib codec and the pure-JS one so the two negotiate.
-const DICTIONARY_ID_PREFIX = 'deflate-raw+dict:';
-
-const isPromise = (value) => value !== null && typeof value === 'object' && typeof value.then === 'function';
 
 /**
  * `{ id, encode(bytes) -> bytes | Promise<bytes>, decode(bytes, maxOutput)
@@ -78,54 +81,113 @@ const normalizeAsync = (value, name) => {
   return threshold;
 };
 
+// One entry of the list: a Compressor, or the name of a platform codec. A
+// name the platform lacks (zstd on an older Node, a format this browser's
+// CompressionStream has not) is skipped in a LIST — that is what a list is
+// for — and refused when it is the only thing asked for (native.js).
+const resolveCodec = (value, async, optional, name) => {
+  if (typeof value === 'string') return nativeCompressor({ algorithm: value, async, optional });
+  if (!isCompressor(value)) {
+    throw new TypeError(
+      `${name}: compression.codec must provide an id, encode(bytes) and decode(bytes, maxOutput), or name an algorithm`,
+    );
+  }
+  // An id travels in a comma-separated header and a space-free marker.
+  if (/[,\s]/.test(value.id)) {
+    throw new TypeError(`${name}: compression.codec id must not contain a comma or whitespace`);
+  }
+  return value;
+};
+
 const normalizeCompression = (value, name) => {
   if (value === undefined || value === null || value === false) return null;
   const options = value === true ? {} : value;
   if (typeof options !== 'object' || Array.isArray(options)) {
     throw new TypeError(`${name}: compression must be true, false or an options object`);
   }
-  let codec = options.codec ?? null;
-  if (codec !== null && typeof codec !== 'string' && !isCompressor(codec)) {
-    throw new TypeError(
-      `${name}: compression.codec must provide an id, encode(bytes) and decode(bytes, maxOutput), or name an algorithm`,
-    );
-  }
   // `async` shapes the platform codecs; an injected codec decides that for
   // itself (the codec factories take the same option).
   const async = normalizeAsync(options.async, `${name}: compression`);
-  if (codec === null) codec = nativeCompressor({ async });
-  else if (typeof codec === 'string') codec = nativeCompressor({ algorithm: codec, async });
-  else if (async !== null) {
+  const asked = options.codec ?? null;
+  const list = Array.isArray(asked);
+  if (list && asked.length === 0) throw new TypeError(`${name}: compression.codec must not be an empty list`);
+  const wanted = list ? asked : [asked ?? NATIVE_ID];
+  if (async !== null && !wanted.some((entry) => typeof entry === 'string')) {
     throw new TypeError(`${name}: compression.async applies to the platform codec — set it on the codec's factory`);
   }
-  if (codec === null) return null;
-  const threshold = options.threshold ?? codec.threshold ?? DEFAULT_THRESHOLD;
-  if (!(Number.isInteger(threshold) && threshold >= 0)) {
+  const override = options.threshold;
+  if (override !== undefined && !(Number.isInteger(override) && override >= 0)) {
     throw new TypeError(`${name}: compression.threshold must be a non-negative integer`);
   }
-  return Object.freeze({ codec, id: codec.id, threshold });
+  const codecs = [];
+  const ids = [];
+  for (const entry of wanted) {
+    const codec = resolveCodec(entry, async, list, name);
+    if (codec === null) continue;
+    if (ids.includes(codec.id)) throw new TypeError(`${name}: compression.codec names ${codec.id} twice`);
+    const threshold = override ?? codec.threshold ?? DEFAULT_THRESHOLD;
+    if (!(Number.isInteger(threshold) && threshold >= 0)) {
+      throw new TypeError(`${name}: compression.threshold must be a non-negative integer`);
+    }
+    ids.push(codec.id);
+    codecs.push(Object.freeze({ codec, id: codec.id, threshold }));
+  }
+  if (codecs.length === 0) return null;
+  // `codec` / `id` / `threshold` are the head's — what a carrier with no
+  // negotiation (a raw data channel, the backplane) encodes with.
+  const head = codecs[0];
+  return Object.freeze({
+    codec: head.codec,
+    id: head.id,
+    threshold: head.threshold,
+    codecs: Object.freeze(codecs),
+    ids: Object.freeze(ids),
+  });
+};
+
+// A peer's list is peer-controlled: only so many entries are looked at, and
+// an id is only ever COMPARED with ours — never a key into anything.
+const MAX_PEER_IDS = 16;
+
+/** The entry of `local` named `id`, or null. A handful of codecs: a scan. */
+const codecById = (local, id) => {
+  const { codecs } = local;
+  for (let i = 0; i < codecs.length; i++) if (codecs[i].id === id) return codecs[i];
+  return null;
+};
+
+const announced = (peer, count, id) => {
+  for (let i = 0; i < count; i++) if (peer[i] === id) return true;
+  return false;
 };
 
 /**
- * A short, deterministic id for dictionary bytes — FNV-1a over the bytes,
- * 64 bits as 16 hex characters — what a dictionary codec's `id` carries so
- * two ends compress against the same bytes or not at all. A fingerprint
- * for negotiation, not a security property; it runs in a browser too,
- * where a hash from crypto.subtle would be asynchronous.
+ * What the two lists agree on, or null when they share nothing (or the
+ * peer announced nothing): `{ encode, decode }`, each an entry of `local` —
+ * `encode` the first of OUR codecs the peer announced, which is what we
+ * send with; `decode` the first of THE PEER's we hold, which by the same
+ * rule is what it sends with. `peer` is a list of ids, or one id.
  */
-const dictionaryId = (bytes) => {
-  let h1 = 0x811c9dc5;
-  let h2 = 0x01000193 ^ bytes.length;
-  for (let i = 0; i < bytes.length; i++) {
-    h1 = Math.imul(h1 ^ bytes[i], 0x01000193) >>> 0;
-    h2 = Math.imul(h2 ^ bytes[i], 0x0100019d) >>> 0;
+const negotiate = (local, peer) => {
+  if (local === null) return null;
+  const ids = typeof peer === 'string' ? [peer] : peer;
+  if (!Array.isArray(ids)) return null;
+  const count = Math.min(ids.length, MAX_PEER_IDS);
+  let decode = null;
+  for (let i = 0; i < count && decode === null; i++) {
+    if (typeof ids[i] === 'string') decode = codecById(local, ids[i]);
   }
-  return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
+  if (decode === null) return null;
+  const { codecs } = local;
+  let encode = decode;
+  for (let i = 0; i < codecs.length; i++) {
+    if (announced(ids, count, codecs[i].id)) {
+      encode = codecs[i];
+      break;
+    }
+  }
+  return { encode, decode };
 };
-
-/** The local setting when the peer announced the same codec, null otherwise. */
-const negotiate = (local, peerId) =>
-  local !== null && typeof peerId === 'string' && peerId === local.id ? local : null;
 
 /**
  * Keeps messages in order around a codec that may answer asynchronously.
@@ -179,6 +241,7 @@ module.exports = {
   isPromise,
   normalizeCompression,
   negotiate,
+  codecById,
   nativeCompressor,
   dictionaryId,
   Sequencer,

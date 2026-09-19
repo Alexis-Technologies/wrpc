@@ -163,6 +163,49 @@ test('broker compression (stateless): the request names the codec, only the answ
   assert.ok(response.size < 1000, `${response.size} B answer`);
 });
 
+test('broker compression (list): each direction takes the sender’s first codec the other end holds', async (t) => {
+  const { broker, sent } = await boot(t, { compression: { codec: ['brotli', 'deflate-raw'], threshold: 256 } });
+  const mine = { id: 'mine', encode: (b) => zlib.deflateRawSync(b), decode: (b) => zlib.inflateRawSync(b) };
+  const client = await connect(t, broker, {
+    mode: 'session',
+    compression: { codec: [mine, 'deflate-raw', 'brotli'], threshold: 256 },
+  });
+  const hello = sent.find((m) => m.headers[HEADER_KIND] === KIND.HELLO);
+  const welcome = sent.find((m) => m.headers[HEADER_KIND] === KIND.WELCOME);
+  assert.strictEqual(hello.headers[HEADER_ENC], 'mine,deflate-raw,brotli', 'the client’s list, in its order');
+  assert.strictEqual(welcome.headers[HEADER_ENC], 'brotli,deflate-raw', 'the server’s, in its own');
+  await client.load('calc');
+  sent.length = 0;
+  const echoed = await client.api.calc.echo({ text: 'y'.repeat(20_000) });
+  assert.strictEqual(echoed.text.length, 20_000);
+  const frames = sent.filter((m) => m.headers[HEADER_KIND] === KIND.PACKET && m.headers[HEADER_ENC]);
+  // Up: the client's first codec the server holds (its own `mine` is not). Down: the server's first.
+  assert.deepStrictEqual(frames.map((m) => m.headers[HEADER_ENC]).sort(), ['brotli', 'deflate-raw']);
+
+  await t.test('stateless: the answer comes back in the server’s first codec the request listed', async () => {
+    const stateless = await connect(t, broker, { compression: { codec: [mine, 'deflate-raw'] } });
+    await stateless.load('calc');
+    sent.length = 0;
+    assert.strictEqual((await stateless.api.calc.big({ rows: 400 })).length, 400);
+    const request = sent.find((m) => m.headers[HEADER_KIND] === KIND.REQUEST);
+    const response = sent.find((m) => m.headers[HEADER_KIND] === KIND.RESPONSE);
+    assert.strictEqual(request.headers[HEADER_ENC], 'mine,deflate-raw');
+    assert.strictEqual(
+      response.headers[HEADER_ENC],
+      'deflate-raw',
+      'brotli is the server’s first, but not on this list',
+    );
+  });
+
+  await t.test('nothing in common: plain both ways, and everything still answers', async () => {
+    const other = await connect(t, broker, { mode: 'session', compression: { codec: mine } });
+    await other.load('calc');
+    sent.length = 0;
+    assert.strictEqual((await other.api.calc.big({ rows: 400 })).length, 400);
+    assert.strictEqual(encodedFrames(sent).length, 0);
+  });
+});
+
 test('broker compression: one side on, the other off — plain, and everything still answers', async (t) => {
   const { broker, sent } = await boot(t, { compression: true });
   const client = await connect(t, broker, { mode: 'session' });

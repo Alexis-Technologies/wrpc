@@ -451,12 +451,13 @@ carries exactly what wrpc hands it. Per-message compression is the answer,
 new WrpcPeer({ router, signaler, compression: true });
 ```
 
-Every description this peer sends then names its codec (`caps: { deflate:
-'deflate-raw' }` in the signal, next to the assertion when there is one),
-and a link compresses only once the other peer named the same one — a peer
-without the option is served plain, and nothing hangs up. A packet or chunk
+Every description this peer sends then names its codecs (`caps: { enc:
+['deflate-raw'] }` in the signal, next to the assertion when there is one),
+and a link compresses only once the two [lists](./compression#list) share a
+codec, each direction with its sender's first choice — a peer without the
+option is served plain, and nothing hangs up. A packet or chunk
 at or over the threshold is compressed **before** fragmentation, the one
-place it exists whole, and every fragment carries the deflate bit;
+place it exists whole, and every fragment carries the compressed bit;
 `{ compress: false }` on an emit sends that one plain. The threshold is the
 codec's own default — 1 KiB on Node, 4 KiB in a browser, where the only
 codec a page has is `CompressionStream`, ~6× the cost of zlib per call and
