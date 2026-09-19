@@ -79,6 +79,7 @@ from "same process, merge them".
 | `rooms` | all | Which rooms replicate: an array, predicate or RegExp. See the cardinality note below. |
 | `maxFetch` | `1000` | Per-node ceiling on one `fetchClients` reply; a node over it answers its first `maxFetch` descriptors and the result carries `truncated: true` (never silent). `0` disables. |
 | `secret` | — | Opt-in HMAC-SHA256 envelope authentication — see [Trusting the backplane](#trusting-the-backplane). |
+| `compression` | off | Deflate the cluster envelopes this node publishes, after signing — the same marker and two-step rollout rule as [`rooms.compression`](./scaling#compression); an unreadable envelope logs `cluster.encoded`. |
 
 `cluster: false` opts out of the cluster layer entirely: presence, commands
 and asks degrade to their local halves while the [rooms

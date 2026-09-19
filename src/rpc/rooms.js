@@ -417,6 +417,11 @@ class RoomsBackplane {
   // pending, cross-instance delivery on them is dark and `healthy` is
   // false — what a readiness probe should drain the node on.
   #pending = 0;
+  // The envelope codec (src/compression/sync.js) the core built from
+  // `rooms.compression`, or null: `encode(text)` on the way out, `decode`
+  // on the way in. Injected, so this browser-bundled file carries none of
+  // zlib, base64 or the option parsing.
+  #envelope;
 
   constructor({
     backplane,
@@ -426,6 +431,7 @@ class RoomsBackplane {
     linger = DEFAULT_LINGER,
     epoch = Math.random().toString(36).slice(2, 10),
     onGap = null,
+    envelope = null,
   }) {
     this.#backplane = backplane;
     this.#instance = instance;
@@ -434,6 +440,7 @@ class RoomsBackplane {
     this.#linger = linger > 0 ? linger : 0;
     this.#epoch = String(epoch);
     this.#onGap = typeof onGap === 'function' ? onGap : null;
+    this.#envelope = envelope;
   }
 
   /** The boot marker stamped on every envelope this instance publishes. */
@@ -587,6 +594,7 @@ class RoomsBackplane {
       // is a cross-instance loss, not a lost event.
       return void this.#log.error({ err: error, event: 'backplane.serialize', name });
     }
+    if (this.#envelope !== null) message = this.#envelope.encode(message);
     try {
       const result = this.#backplane.publish(channel, message);
       if (result && typeof result.catch === 'function') {
@@ -600,7 +608,17 @@ class RoomsBackplane {
 
   #receive(channel, message) {
     if (this.#closed) return;
-    const envelope = typeof message === 'string' ? jsonParse(message) : message;
+    let text = message;
+    if (typeof message === 'string') {
+      // An encoded envelope this instance cannot read — no codec, another
+      // instance's, a body that does not inflate: named, because the
+      // alternative is an event that silently never arrives, the
+      // rolling-deploy symptom this option's documentation warns about.
+      if (this.#envelope !== null) text = this.#envelope.decode(message);
+      else if (message.charCodeAt(0) === 119 && message.startsWith('wrpc-enc:')) text = null;
+      if (text === null) return void this.#log.warn({ event: 'backplane.encoded', channel });
+    }
+    const envelope = typeof text === 'string' ? jsonParse(text) : text;
     if (!envelope || typeof envelope !== 'object') return;
     // Echo suppression: every instance sees its own publishes.
     if (envelope.instance === this.#instance) return;

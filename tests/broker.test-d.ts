@@ -3,6 +3,8 @@ import * as broker from '../broker.js';
 import type {
   Broker,
   BrokerDirect,
+  BrokerRpcOptions,
+  ClientBrokerTransport,
   BrokerLog,
   BrokerQueue,
   Delivery,
@@ -131,3 +133,10 @@ expectError(broker.attachConsumers(server, memory, { q: { prefetch: 'many' } }))
   expectType<'stateless' | 'session'>(transport.mode);
 })();
 expectError(connect('broker://billing', { transport: 'broker', broker: memory, mode: 'duplex' }));
+
+// Per-message compression on the binding: the server option, the client's, and the getter
+expectAssignable<BrokerRpcOptions>({ service: 'x', compression: true, maxMessage: 1 << 20 });
+expectAssignable<BrokerRpcOptions>({ service: 'x', compression: { threshold: 512 } });
+expectError<BrokerRpcOptions>({ service: 'x', compression: 'lz4' });
+declare const brokerTransport: ClientBrokerTransport;
+expectType<string | null>(brokerTransport.compression);

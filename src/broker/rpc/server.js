@@ -27,12 +27,30 @@ const {
   HEADER_SEQ,
   HEADER_INBOX,
   HEADER_REASON,
+  HEADER_ENC,
   KIND,
   serviceAddress,
   peerHeaders,
   seqOf,
   packetBody,
 } = require('./frames.js');
+const {
+  normalizeSyncCompression,
+  negotiate,
+  maxMessageOf,
+  encodeIfSmaller,
+  decodeOrNull,
+} = require('../../compression/sync.js');
+
+// A frame's body as sent, inflated when its `wrpc-enc` header says it was
+// compressed with the codec `active` names — or null: marked but no codec
+// agreed, another codec, a body that does not inflate under the cap.
+const frameBody = (message, active, maxMessage) => {
+  const encoding = message.headers?.[HEADER_ENC];
+  if (encoding === undefined || encoding === null || encoding === '') return message.body;
+  if (active === null || encoding !== active.id) return null;
+  return decodeOrNull(active, toBytes(message.body), maxMessage);
+};
 
 const DEFAULT_IDLE_TIMEOUT = 90_000; // 3x the client's 30 s heartbeat
 const DEFAULT_HIGH_WATER_MARK = 1024;
@@ -50,24 +68,51 @@ class BrokerSessionTransport extends ServerTransport {
   #highWaterMark;
   #closed = false;
   #onFailure;
+  // The compression both ends agreed to on hello/welcome, or null.
+  #compression;
 
-  constructor({ direct, peer, session, highWaterMark, onFailure }) {
+  constructor({ direct, peer, session, highWaterMark, onFailure, compression = null }) {
     super(`broker:${session}`);
     this.#direct = direct;
     this.#peer = peer;
     this.#session = session;
     this.#highWaterMark = highWaterMark;
     this.#onFailure = onFailure;
+    this.#compression = compression;
+  }
+
+  /** The compression codec id in effect on this session, or null. */
+  get compression() {
+    return this.#compression === null ? null : this.#compression.id;
   }
 
   // Frames go out in call order (the direct contract keeps one sender's
   // order); the broker's confirmation is what backpressure counts.
   write(data) {
+    return this.#send(data, null);
+  }
+
+  // A write with per-message options (`compress: false`) — what
+  // Client.sendRaw and a Broadcast use, as on a WebSocket.
+  writeWith(text, options) {
+    return this.#send(text, options);
+  }
+
+  #send(data, options) {
     if (this.#closed) return false;
     const binary = typeof data !== 'string';
     const headers = { [HEADER_KIND]: binary ? KIND.CHUNK : KIND.PACKET, [HEADER_SEQ]: String(++this.#seq) };
+    let body = binary ? toBytes(data) : data;
+    const active = this.#compression;
+    if (active !== null && (options === null || options.compress !== false)) {
+      const encoded = encodeIfSmaller(active, body);
+      if (encoded !== null) {
+        body = encoded;
+        headers[HEADER_ENC] = active.id;
+      }
+    }
     this.#unconfirmed++;
-    this.#direct.send(this.#peer, binary ? toBytes(data) : data, { headers, correlationId: this.#session }).then(
+    this.#direct.send(this.#peer, body, { headers, correlationId: this.#session }).then(
       () => this.#confirmed(),
       (error) => {
         this.#confirmed();
@@ -119,8 +164,15 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     highWaterMark = DEFAULT_HIGH_WATER_MARK,
     sessions: allowSessions = true,
     logger = null,
+    compression = null,
+    maxMessage,
   } = options;
   const address = serviceAddress(service, addressOption, 'attachBrokerRpc');
+  // Off by default. On, it is announced back on `welcome` to a client that
+  // named the same codec on `hello`, and applied to a stateless answer for
+  // a request that named it — a client without it is served plain.
+  const codec = normalizeSyncCompression(compression, 'attachBrokerRpc: options');
+  const cap = maxMessageOf(maxMessage, 'attachBrokerRpc');
   if (!(Number.isFinite(idleTimeout) && idleTimeout > 0)) {
     throw new TypeError('attachBrokerRpc: idleTimeout must be a positive number of milliseconds');
   }
@@ -138,18 +190,25 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
       log.warn({ event: 'broker.rpc.reply', err: error, to: message.replyTo });
     });
 
-  // Stateless: a packet-mode POST in all but carrier.
+  // Stateless: a packet-mode POST in all but carrier. The request itself
+  // travels plain (the client cannot know yet what this instance speaks);
+  // its `wrpc-enc` is the codec the answer may come back in.
   const onRequest = (message) => {
     if (typeof message.replyTo !== 'string' || message.replyTo.length === 0) return;
     const headers = peerHeaders(message.headers);
+    const active = negotiate(codec, message.headers?.[HEADER_ENC]);
     void rpc.handleHttpCall({
       method: 'POST',
       url: basePath,
       headers,
       body: packetBody(message.body),
       remoteAddress: 'broker',
-      respond: ({ body }) =>
-        void reply(message, { [HEADER_KIND]: KIND.RESPONSE }, typeof body === 'string' ? body : packetBody(body)),
+      respond: ({ body }) => {
+        const text = typeof body === 'string' ? body : packetBody(body);
+        const encoded = active === null ? null : encodeIfSmaller(active, text);
+        if (encoded === null) return void reply(message, { [HEADER_KIND]: KIND.RESPONSE }, text);
+        reply(message, { [HEADER_KIND]: KIND.RESPONSE, [HEADER_ENC]: active.id }, encoded);
+      },
     });
   };
 
@@ -171,17 +230,19 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     // A client re-saying hello with the same id (its welcome was lost) gets
     // a fresh session: the old one could not have seen a frame yet.
     if (sessions.has(id)) endSession(id, 'replaced', { notify: false });
+    const active = negotiate(codec, message.headers?.[HEADER_ENC]);
     const transport = new BrokerSessionTransport({
       direct,
       peer: message.replyTo,
       session: id,
       highWaterMark,
+      compression: active,
       onFailure: (error) => {
         log.warn({ event: 'broker.rpc.send', err: error, session: id });
         endSession(id, 'send failed', { notify: false });
       },
     });
-    const session = { transport, client: null, expectSeq: 1, lastSeen: Date.now() };
+    const session = { transport, client: null, expectSeq: 1, lastSeen: Date.now(), compression: active };
     sessions.set(id, session);
     // The core's own close path (RpcServer.close, client.close()) removes it.
     transport.once('close', () => {
@@ -190,7 +251,9 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     session.client = rpc.attach(transport, {
       request: { headers: peerHeaders(message.headers), url: '', remoteAddress: 'broker' },
     });
-    void reply(message, { [HEADER_KIND]: KIND.WELCOME, [HEADER_INBOX]: inbox }, '');
+    const welcome = { [HEADER_KIND]: KIND.WELCOME, [HEADER_INBOX]: inbox };
+    if (active !== null) welcome[HEADER_ENC] = active.id;
+    void reply(message, welcome, '');
   };
 
   const onFrame = (message) => {
@@ -212,8 +275,13 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     }
     session.expectSeq++;
     session.lastSeen = Date.now();
-    if (kind === KIND.CHUNK) session.transport.emit('chunk', toBytes(message.body));
-    else session.transport.emit('packet', packetBody(message.body));
+    // A frame marked compressed on a session that agreed to nothing, with
+    // another codec, or that does not inflate under the cap: the peer's
+    // protocol violation, and the session ends as on a sequence gap.
+    const body = frameBody(message, session.compression, cap);
+    if (body === null) return void endSession(id, 'undecodable frame');
+    if (kind === KIND.CHUNK) session.transport.emit('chunk', toBytes(body));
+    else session.transport.emit('packet', packetBody(body));
   };
 
   const onService = (message) => {

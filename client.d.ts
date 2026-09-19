@@ -940,10 +940,10 @@ export interface WrpcClientOptions {
   wt?: WtTransportOptions;
   /**
    * @experimental Per-message compression on the transports that have no
-   * compression under them — WebTransport, and WebRTC over `channel` or
-   * `link`. Off by default; on only once the peer named the same codec (a
-   * raw channel has no handshake: both applications turn it on). The
-   * WebSocket has the server's `perMessageDeflate` instead.
+   * compression under them — WebTransport, WebRTC over `channel` or `link`,
+   * and the broker binding. Off by default; on only once the peer named the
+   * same codec (a raw channel has no handshake: both applications turn it
+   * on). The WebSocket has the server's `perMessageDeflate` instead.
    */
   compression?: boolean | CompressionOptions;
   /**
@@ -959,6 +959,8 @@ export interface WrpcClientOptions {
   address?: string;
   /** With `transport: 'broker'`: how long the broker may hold a request nobody took (ms). */
   requestTimeout?: number;
+  /** @experimental With `transport: 'broker'`: the largest inflated frame accepted (default 16 MiB). */
+  maxMessage?: number;
   /**
    * Off by default, unlike the server: a client that printed on every
    * reconnect would be noise in a browser console nobody asked for. A logger

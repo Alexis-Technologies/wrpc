@@ -341,6 +341,16 @@ export interface BrokerRpcOptions {
   /** false serves stateless requests only. Default true. */
   sessions?: boolean;
   logger?: WrpcLogger | boolean | null;
+  /**
+   * Per-message compression on the binding (src/compression), off by
+   * default. A session's frames both ways once the client named the same
+   * codec on `hello` (answered on `welcome`); a stateless answer when the
+   * request named it — the request itself always travels plain. Node↔Node,
+   * so the codec must answer synchronously (the platform one does).
+   */
+  compression?: boolean | import('./client.js').CompressionOptions;
+  /** The largest inflated frame accepted (default 16 MiB); past it the session ends. */
+  maxMessage?: number;
 }
 
 export interface BrokerRpcHandle {
@@ -389,7 +399,13 @@ export declare class ClientBrokerTransport {
     requestTimeout?: number;
     headers?: Record<string, string>;
     meta?: Record<string, unknown>;
+    /** Per-message compression, off by default; on a session only once the server agreed on `welcome`. */
+    compression?: boolean | import('./client.js').CompressionOptions;
+    /** The largest inflated frame accepted (default 16 MiB). */
+    maxMessage?: number;
   }): Promise<void>;
+  /** The compression codec id in effect on the session — both ends named it — or null. */
+  readonly compression: string | null;
   write(data: string | Uint8Array): boolean | void;
   close(): void;
   terminate(): void;

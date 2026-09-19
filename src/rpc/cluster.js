@@ -93,6 +93,7 @@ class Cluster extends Emitter {
   #maxFetch;
   #roomsFilter;
   #secret;
+  #envelope = null;
   #generateId;
   // instance -> { epoch, lastSeen, clients, rooms: Map<room, count> }
   #nodes = new Map();
@@ -151,6 +152,9 @@ class Cluster extends Emitter {
     // AND holds the shared secret". Node-only by construction (node:crypto)
     // — this file never ships to a browser.
     this.#secret = typeof options.secret === 'string' && options.secret.length > 0 ? options.secret : null;
+    // The envelope codec the core built from `cluster.compression`, or null —
+    // applied AFTER signing, so the signature is over the JSON text as ever.
+    this.#envelope = options.envelope ?? null;
   }
 
   get instanceId() {
@@ -324,6 +328,7 @@ class Cluster extends Emitter {
         envelope.sig = crypto.createHmac('sha256', this.#secret).update(message).digest('hex');
         message = JSON.stringify(envelope);
       }
+      if (this.#envelope !== null) message = this.#envelope.encode(message);
     } catch (error) {
       this.#log.error({ err: error, event: 'cluster.serialize', type: body.t });
       return false;
@@ -806,7 +811,13 @@ class Cluster extends Emitter {
 
   #receive(message) {
     if (this.#closed) return;
-    const envelope = typeof message === 'string' ? jsonParse(message) : message;
+    let text = message;
+    if (typeof message === 'string') {
+      if (this.#envelope !== null) text = this.#envelope.decode(message);
+      else if (message.charCodeAt(0) === 119 && message.startsWith('wrpc-enc:')) text = null;
+      if (text === null) return void this.#log.warn({ event: 'cluster.encoded' });
+    }
+    const envelope = typeof text === 'string' ? jsonParse(text) : text;
     if (!envelope || typeof envelope !== 'object') return;
     const { from, epoch, t } = envelope;
     if (from === this.#instance || typeof from !== 'string' || from.length === 0) return;

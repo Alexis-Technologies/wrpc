@@ -8,13 +8,23 @@
 //     pipeline (hooks, validators, access), the settlement;
 //   - the same with a validator and a hook, so the pipeline's share shows;
 //   - a publish through createPublisher (validate, encode, append);
-//   - a durable feed's pump: append -> tail -> tracked value on the wire.
+//   - a durable feed's pump: append -> tail -> tracked value on the wire;
+//   - an RPC session call answering a ~9 KB result, plain and with
+//     per-message compression on (the wrpc-enc frames), so the deflate's
+//     share of a broker round trip shows against the binding's own cost.
 //
 // Run with `pnpm bench` (bench/run-all.js) or `node bench/broker.js`.
 
 const { RpcServer } = require('../src/rpc/core.js');
 const { defineRouter, procedure } = require('../src/rpc/router.js');
-const { MemoryBroker, attachConsumers, createPublisher, brokerFeed } = require('../src/broker/index.js');
+const {
+  MemoryBroker,
+  attachConsumers,
+  createPublisher,
+  brokerFeed,
+  attachBrokerRpc,
+} = require('../src/broker/index.js');
+const { WrpcClient } = require('../src/client.js');
 const { bench } = require('./support/harness.js');
 
 const quiet = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
@@ -107,6 +117,36 @@ const run = async () => {
   await iterator.return?.();
   await rpc.close();
   broker.close();
+
+  // RPC over the broker, a session: the same ~9 KB answer plain and
+  // compressed — what turning `compression` on costs per round trip.
+  const rows = Array.from({ length: 300 }, (_, i) => ({ id: i, name: `row-${i}`, tags: ['a', 'b'] }));
+  const rpcRound = async (label, compression) => {
+    const memory = new MemoryBroker({ logger: quiet });
+    const server = new RpcServer({
+      router: defineRouter({ calc: { big: procedure({ access: 'public', handler: async () => rows }) } }),
+      logger: quiet,
+      sse: false,
+    });
+    const handle = await attachBrokerRpc(server, memory, { service: 'calc', logger: quiet, compression });
+    const client = await WrpcClient.connect('broker://calc', {
+      transport: 'broker',
+      broker: memory,
+      mode: 'session',
+      compression,
+      heartbeat: false,
+      reconnect: false,
+      logger: false,
+    });
+    await client.load('calc');
+    await bench(label, () => client.api.calc.big());
+    client.close();
+    await handle.stop();
+    await server.close();
+    memory.close();
+  };
+  await rpcRound('rpc session: a 9 KB answer, plain', false);
+  await rpcRound('rpc session: a 9 KB answer, compression on', true);
 };
 
 if (require.main === module) {

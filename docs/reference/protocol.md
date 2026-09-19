@@ -558,6 +558,14 @@ Delivery is **at-most-once**. A message published while an instance is
 between subscriptions, or dropped by the broker, is gone: rooms are a fan-out
 mechanism, not a queue.
 
+With `rooms: { compression }` on, an envelope past the threshold is
+published as `wrpc-enc:<codec id>:<base64 of the codec's output over the
+JSON text>` — a message that starts with `w` rather than `{`. There is
+nothing to negotiate against on a fan-out, so a receiver without the same
+codec drops it (and logs); the deployment turns it on only once every
+instance can read it. The cluster channels below do the same under
+`cluster: { compression }`, applied after the HMAC signature.
+
 ### Cluster channels
 
 The cluster layer (`server.cluster` — presence, introspection, node-to-node
@@ -876,6 +884,7 @@ all start with `wrpc-`; a peer's connection headers (`authorization`,
 | `wrpc-seq` | a session frame's number, from `1`, per direction |
 | `wrpc-inbox` | on `welcome`: the address the session's frames go to |
 | `wrpc-reason` | on `bye`: why, for logs |
+| `wrpc-enc` | on a `request` or `hello`: the compression codec the sender accepts (`deflate-raw`); on a `welcome`: the codec the server agreed to; on a `response`, `packet` or `chunk`: that its body is that codec's output. A marked frame a receiver cannot inflate ends the session. |
 
 Every server instance consumes one **service address** — `wrpc.<service>` by
 default — as members of one competing group, so each message addressed to the
@@ -942,7 +951,8 @@ mechanism, never a field of a wrpc packet:
 | Server-Sent Events | `Content-Encoding: gzip` on the stream — one gzip member, sync-flushed after every event (`sse.compression`) | the opening GET's `Accept-Encoding`, per response |
 | WebTransport | per message, KIND 3/4 on the control stream (`compression` on both ends) | the `deflate` key of the capabilities message — on only when both ends named the same codec |
 | WebRTC | per message, the DEFLATE bit of the data-channel header (`compression` on both peers) | the `caps.deflate` field of the description signal — on only when both peers named the same codec; a raw channel by the application's agreement |
-| The broker binding | none | — |
+| The broker binding | per frame, `wrpc-enc` on the frame (`compression` on both ends) | `hello`/`welcome` for a session; a stateless request names what it accepts and only the answer is compressed |
+| The rooms backplane, the cluster channels | the whole envelope, base64 under a `wrpc-enc:<id>:` marker (`rooms.compression`, `cluster.compression`) | none — every instance must run it, in a two-step rollout |
 
 An HTTP response is encoded only when its body is at or over the configured
 threshold and nothing upstream already set a `Content-Encoding`; a `204` and

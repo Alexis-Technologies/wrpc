@@ -9,6 +9,7 @@ const { RoomRegistry, Broadcast, RoomsBackplane } = require('./rooms.js');
 const { Cluster, instanceOfClientId } = require('./cluster.js');
 const { SseChannels } = require('../sse/server.js');
 const { normalizeCompression } = require('../contentEncoding.js');
+const { createEnvelopeCodec, maxMessageOf } = require('../compression/sync.js');
 // The channel header from the import-free constants module, NOT from
 // sse/server.js: the string is shared, the implementation is not.
 const { CHANNEL_HEADER } = require('../wire.js');
@@ -273,6 +274,17 @@ class RpcServer extends Emitter {
     // presence replication, commands and asks degrade to their local
     // halves, while the rooms backplane below is untouched.
     const enabled = clusterOptions !== false;
+    // Envelope compression on the backplane, per layer and off by default:
+    // a string carrier, so a compressed envelope rides as base64 under a
+    // marker — and unlike the socket carriers there is no negotiation, so
+    // every instance must run it (documented as a two-step rollout).
+    const clusterEnvelope = enabled
+      ? createEnvelopeCodec(
+          clusterOptions?.compression,
+          'RpcServer: options.cluster',
+          maxMessageOf(clusterOptions?.maxMessage, 'RpcServer: options.cluster'),
+        )
+      : null;
     const cluster = new Cluster({
       backplane: enabled ? backplane : null,
       instance: this.#instance,
@@ -280,7 +292,7 @@ class RpcServer extends Emitter {
       log: this.#log.child({ component: 'cluster' }),
       otel: this.#otel,
       generateId: this.#generateId,
-      options: enabled ? clusterOptions : {},
+      options: enabled ? { ...clusterOptions, envelope: clusterEnvelope } : {},
     });
     this.#cluster = cluster;
     // `onSubscribe`/`onUnsubscribe` fire on a room's FIRST member and its
@@ -300,6 +312,11 @@ class RpcServer extends Emitter {
       instance: this.#instance,
       log: this.#roomsLog,
       linger: roomsOptions?.linger,
+      envelope: createEnvelopeCodec(
+        roomsOptions?.compression,
+        'RpcServer: options.rooms',
+        maxMessageOf(roomsOptions?.maxMessage, 'RpcServer: options.rooms'),
+      ),
       // The producer-restart marker a resume cursor is validated against.
       // Accepted by RoomsBackplane all along; forwarded (and declared) only
       // now, so a deployment that pins it across restarts finally can.

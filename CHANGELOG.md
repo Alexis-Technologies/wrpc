@@ -13,6 +13,33 @@ narrower promise — see
 
 ### Added
 
+**Per-message compression on the broker binding and the backplane (`compression`)**
+- The broker binding: `attachBrokerRpc(server, broker, { compression })`
+  and `connect('broker://…', { compression })`, off by default and
+  negotiated so the two ends upgrade in any order. A session names its
+  codec on `hello` (`wrpc-enc`), the server that agreed answers it on
+  `welcome`, and every frame past the threshold then travels compressed
+  both ways — packets, events, subscription values, stream chunks —
+  marked `wrpc-enc` on the frame; `{ compress: false }` per message and
+  `writeWith` as on a WebSocket. A stateless request names what it accepts
+  and travels plain itself (HTTP's `Accept-Encoding` shape); only the
+  answer is compressed. A marked frame the receiver cannot inflate ends
+  the session like a sequence gap; `maxMessage` (16 MiB) caps the inflate.
+  Node↔Node, so the codec must answer synchronously — a promise-answering
+  one is refused at construction (`src/compression/sync.js`). Measured
+  (`bench/broker.js`): a session call answering a 9 KB result 9,315/sec
+  plain, 5,407/sec compressed — ~80 µs a round trip for ~10× fewer bytes.
+- The backplane envelopes: `rooms: { compression }` and `cluster:
+  { compression }` deflate what this instance publishes past the threshold
+  and carry it as base64 under a `wrpc-enc:<id>:` marker, since the
+  backplane contract is strings. Nothing to negotiate against on a fan-out,
+  so this one is a two-step rollout: an instance without the option drops
+  such an envelope and logs `backplane.encoded` / `cluster.encoded` rather
+  than staying silent. The cluster signs first, then compresses, so HMAC
+  verification is unchanged. The codec is injected into `RoomsBackplane`
+  and `Cluster` by the core, so the browser-bundled `rooms.js` carries none
+  of zlib or base64.
+
 **Per-message compression on WebRTC (`compression` on the peer, the transports and `attachChannel`)**
 - The other half of the transports with nothing under them: SCTP over
   DTLS carries a data channel's bytes as they are. `new WrpcPeer({

@@ -24,12 +24,28 @@ const {
   HEADER_KIND,
   HEADER_SEQ,
   HEADER_INBOX,
+  HEADER_ENC,
   KIND,
   serviceAddress,
   peerHeaders,
   seqOf,
   packetBody,
 } = require('./frames.js');
+const {
+  normalizeSyncCompression,
+  negotiate,
+  maxMessageOf,
+  encodeIfSmaller,
+  decodeOrNull,
+} = require('../../compression/sync.js');
+
+// A frame's body, inflated when marked — see the server's frameBody.
+const frameBody = (message, active, maxMessage) => {
+  const encoding = message.headers?.[HEADER_ENC];
+  if (encoding === undefined || encoding === null || encoding === '') return message.body;
+  if (active === null || encoding !== active.id) return null;
+  return decodeOrNull(active, toBytes(message.body), maxMessage);
+};
 
 const DEFAULT_REQUEST_TIMEOUT = 30_000;
 const DEFAULT_HIGH_WATER_MARK = 1024;
@@ -61,6 +77,11 @@ class ClientBrokerTransport extends ClientTransport {
   #unconfirmed = 0;
   #welcome = null;
   #generation = 0;
+  // Per-message compression: the option, and what the server agreed to on
+  // welcome (a session) — stateless answers are decided per request.
+  #compression = null;
+  #active = null;
+  #maxMessage;
   // Correlation ids AND the session id. The session id is the key the server
   // holds this connection's frame state under, so guessing one lets a sender
   // inject frames into somebody else's session — which is why it is worth
@@ -81,6 +102,12 @@ class ClientBrokerTransport extends ClientTransport {
     this.#headers = peerHeaders(options.headers);
     if (options.meta) this.#headers['x-wrpc-meta'] = JSON.stringify(options.meta);
     this.#requestTimeout = options.requestTimeout ?? DEFAULT_REQUEST_TIMEOUT;
+    this.#compression = normalizeSyncCompression(options.compression, 'broker transport: options');
+    this.#maxMessage = maxMessageOf(options.maxMessage, 'broker transport');
+    this.#active = null;
+    // What every stateless request and the hello announce: the codec an
+    // answer may come back in.
+    if (this.#compression !== null) this.#headers[HEADER_ENC] = this.#compression.id;
     this.mode = mode;
     this.persistent = mode === 'session';
     this.heartbeat = mode === 'session';
@@ -129,7 +156,10 @@ class ClientBrokerTransport extends ClientTransport {
     if (generation !== this.#generation) return;
     const kind = message.headers?.[HEADER_KIND];
     if (this.mode === 'stateless') {
-      if (kind === KIND.RESPONSE) this.emit('message', packetBody(message.body));
+      if (kind !== KIND.RESPONSE) return;
+      const body = frameBody(message, this.#compression, this.#maxMessage);
+      if (body === null) return void this.#escalate(new Error('broker transport: an answer that cannot be inflated'));
+      this.emit('message', packetBody(body));
       return;
     }
     if (message.correlationId !== this.#session) return;
@@ -137,6 +167,7 @@ class ClientBrokerTransport extends ClientTransport {
       const remote = message.headers?.[HEADER_INBOX];
       const pending = this.#welcome;
       this.#welcome = null;
+      this.#active = negotiate(this.#compression, message.headers?.[HEADER_ENC]);
       if (pending && typeof remote === 'string' && remote.length > 0) pending.resolve(remote);
       return;
     }
@@ -149,8 +180,20 @@ class ClientBrokerTransport extends ClientTransport {
       return void this.#lost(new Error(`Session frame gap: expected ${this.#expectSeq}, got ${seq}`), true);
     }
     this.#expectSeq++;
-    if (kind === KIND.CHUNK) this.emit('message', toBytes(message.body));
-    else this.emit('message', packetBody(message.body));
+    const body = frameBody(message, this.#active, this.#maxMessage);
+    if (body === null) return void this.#lost(new Error('Session frame cannot be inflated'), true);
+    if (kind === KIND.CHUNK) this.emit('message', toBytes(body));
+    else this.emit('message', packetBody(body));
+  }
+
+  /** The compression codec id in effect on the session — both ends named it — or null. */
+  get compression() {
+    return this.#active === null ? null : this.#active.id;
+  }
+
+  #escalate(error) {
+    if (this.listenerCount('error') === 0) return;
+    void this.emit('error', error).catch(() => {});
   }
 
   // The connection is gone: announced as a close the reconnect cycle
@@ -183,15 +226,24 @@ class ClientBrokerTransport extends ClientTransport {
     if (stop) await stop().catch(() => {});
   }
 
-  write(data) {
+  write(data, options = null) {
     if (!this.active) throw new Error('Not connected');
     if (this.mode === 'stateless') return this.#request(data);
     const binary = typeof data !== 'string';
     const headers = { [HEADER_KIND]: binary ? KIND.CHUNK : KIND.PACKET, [HEADER_SEQ]: String(++this.#seq) };
+    let body = binary ? toBytes(data) : data;
+    const active = this.#active;
+    if (active !== null && (options === null || options.compress !== false)) {
+      const encoded = encodeIfSmaller(active, body);
+      if (encoded !== null) {
+        body = encoded;
+        headers[HEADER_ENC] = active.id;
+      }
+    }
     this.#unconfirmed++;
     const generation = this.#generation;
     this.#direct
-      .send(this.#remote, binary ? toBytes(data) : data, {
+      .send(this.#remote, body, {
         headers,
         correlationId: this.#session,
         replyTo: this.#inbox,

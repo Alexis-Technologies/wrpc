@@ -94,6 +94,8 @@ close.
 | `idleTimeout` | `90000` | A session silent this long is ended |
 | `highWaterMark` | `1024` | Unconfirmed frames per session before `write()` reports backpressure |
 | `sessions` | `true` | `false` serves stateless requests only |
+| `compression` | off | Per-message deflate on the binding — see [Compression](#compression) |
+| `maxMessage` | 16 MiB | The largest inflated frame accepted; past it the session ends |
 
 `attachBrokerRpc` resolves with `{ address, inbox, sessions, healthy, stop() }`
 and stops by itself when the server closes.
@@ -109,9 +111,49 @@ and stops by itself when the server closes.
 | `mode` | `'stateless'` | `'session'` for the full protocol |
 | `address` | `wrpc.<service>` | Where the service listens |
 | `requestTimeout` | `30000` | How long the broker may hold a request nobody took |
+| `compression` | off | Per-message deflate — connect()'s own option, shared with the socket transports |
+| `maxMessage` | 16 MiB | The largest inflated frame accepted |
 
 `headers` and `meta` travel on every stateless request and on a session's
 `hello`, where the server reads them as a WebSocket upgrade's.
+
+## Compression {#compression}
+
+A broker carries the bytes it is handed — and NATS and Kafka cap a message
+at 1 MiB, Redis' `direct` wraps a binary body in base64. Per-message
+compression is **off by default**, like every compression knob in wrpc,
+and negotiated so a client and a service can be upgraded in any order:
+
+```js
+await attachBrokerRpc(server, broker, { service: 'billing', compression: true });
+const billing = await connect('broker://billing', { transport: 'broker', broker, compression: true });
+```
+
+- A **session** names its codec on `hello` (`wrpc-enc: deflate-raw`); the
+  server that agreed answers it on `welcome`, and from then on every frame
+  past the threshold (1 KiB) travels compressed in both directions —
+  packets, events, subscription values and stream chunks alike — with
+  `wrpc-enc` on the frames that are. `{ compress: false }` on an emit
+  sends that one plain. A server without the option answers no `wrpc-enc`
+  and the session runs plain.
+- A **stateless request** names the codec it accepts and travels plain
+  itself (the client cannot know which instance takes it); the answer
+  comes back compressed when the instance has the same codec and the body
+  is past the threshold — the shape of HTTP's `Accept-Encoding`.
+- A frame marked compressed that the receiver cannot inflate (no codec
+  agreed, another codec, a body past `maxMessage`) ends the session like a
+  sequence gap, and the client reconnects.
+
+Node↔Node by construction, so the codec must answer synchronously: the
+platform codec (raw deflate through `node:zlib`) does; `{ codec }` injects
+another — the dictionary codec of `@alexify/wrpc/deflate` once it exists —
+and a promise-answering one is refused at construction. What it costs,
+`bench/broker.js` over the in-process `MemoryBroker`: a session call
+answering a 9 KB result runs at 9,315/sec plain and 5,407/sec compressed —
+about 80 µs per round trip for the deflate and the inflate, against ~10×
+fewer bytes through the broker. On a real broker the bytes are the part
+that costs; the [WebTransport page](../wt#compression) has the codec's own
+numbers, since the seam is shared.
 
 ## Tracing across the broker
 

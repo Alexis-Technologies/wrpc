@@ -266,7 +266,8 @@ Two honest limits of what the knob covers:
   SSE tick 7.8×), and [`compression`](./wt#compression) on WebTransport and
   [WebRTC](./webrtc#compression) — per message, negotiated, off unless both
   ends turn it on (`bench/message-compression.js`: a 1.4 KB callback 6.4× at
-  84K/sec). Broker frames carry exactly the bytes you hand them today.
+  84K/sec) — and on the [broker binding](./brokers/rpc#compression) and the
+  [backplane envelopes](./scaling#compression), both Node↔Node.
 - **A Node client never compresses what it sends.** Node's built-in
   `WebSocket` offers `permessage-deflate` on the handshake but only ever
   inflates: every frame it sends leaves with `RSV1` clear, whatever the

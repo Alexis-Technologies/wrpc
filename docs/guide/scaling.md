@@ -39,6 +39,22 @@ const backplane = {
 Each may return a promise. `isBackplane(value)` is the structural check
 `RpcServer` runs, exported so you can run it yourself.
 
+### Compressing the envelopes {#compression}
+
+The message is always a string, so a room envelope carries its JSON as it
+is — a 5 KB event is 5 KB on Redis, per instance that receives it. `rooms:
+{ compression: true }` deflates every envelope this instance publishes
+past the threshold (1 KiB) and carries it as base64 under a
+`wrpc-enc:deflate-raw:` marker; a receiver with the same option inflates
+it. **Off by default**, and — unlike the socket transports — with nothing
+to negotiate against: an instance *without* the option cannot read such an
+envelope, drops it and logs `backplane.encoded`. Roll it out in two steps
+(every instance on a version that has the option, then the option on),
+and the same for turning it off. The codec must be synchronous; the
+platform one is. `rooms.maxMessage` (16 MiB) caps an inflated envelope.
+The [cluster layer](./cluster) has its own `cluster: { compression }`,
+applied after signing.
+
 ## Adapters
 
 ### Memory

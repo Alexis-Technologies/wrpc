@@ -22,6 +22,10 @@ const HEADER_KIND = 'wrpc-kind';
 const HEADER_SEQ = 'wrpc-seq';
 const HEADER_INBOX = 'wrpc-inbox';
 const HEADER_REASON = 'wrpc-reason';
+// Per-message compression (src/compression): on a `request` and a `hello`,
+// the codec the sender accepts; on a `welcome`, the codec the server agreed
+// to; on a `response`, `packet` or `chunk`, that its body IS compressed.
+const HEADER_ENC = 'wrpc-enc';
 const RESERVED_PREFIX = 'wrpc-';
 
 const KIND = Object.freeze({
@@ -81,6 +85,7 @@ module.exports = {
   HEADER_SEQ,
   HEADER_INBOX,
   HEADER_REASON,
+  HEADER_ENC,
   KIND,
   serviceAddress,
   peerHeaders,

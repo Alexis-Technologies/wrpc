@@ -29,6 +29,7 @@ import {
   WrpcLogWriter,
   WrpcTelemetryOptions,
   WrpcCodec,
+  CompressionOptions,
 } from './client.js';
 
 // The browser-safe half of the surface lives in client.d.ts (which is what
@@ -89,6 +90,14 @@ export interface ClusterOptions {
    * node". Room events travel unsigned; ACL the broker for those.
    */
   secret?: string;
+  /**
+   * Compresses the cluster envelopes this node publishes, after signing —
+   * the same marker, rollout rule and synchronous-codec requirement as
+   * `rooms.compression`; an unreadable envelope logs `cluster.encoded`.
+   */
+  compression?: boolean | CompressionOptions;
+  /** The largest inflated envelope accepted (default 16 MiB). */
+  maxMessage?: number;
 }
 
 export interface RoomsOptions {
@@ -106,6 +115,17 @@ export interface RoomsOptions {
    * bounce. Default 5000; `0` unsubscribes immediately.
    */
   linger?: number;
+  /**
+   * Compresses every room envelope this instance publishes past the
+   * threshold (src/compression), off by default. A string carrier, so a
+   * compressed envelope rides as base64 under a `wrpc-enc:<id>:` marker —
+   * and there is no negotiation: an instance without the option drops such
+   * an envelope and logs `backplane.encoded`. Roll it out in two steps
+   * (deploy the version, then turn it on). The codec must be synchronous.
+   */
+  compression?: boolean | CompressionOptions;
+  /** The largest inflated envelope accepted (default 16 MiB). */
+  maxMessage?: number;
 }
 
 export interface ClusterAskResult {
