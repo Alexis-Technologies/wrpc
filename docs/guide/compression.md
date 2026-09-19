@@ -13,7 +13,7 @@ the router dictionary.
 | --- | --- | --- | --- |
 | WebSocket, server → client (and both ways from a browser) | `perMessageDeflate` on the engine, `contextTakeover`, `async` | the upgrade handshake (RFC 7692) | [performance](./performance#compression-is-off-by-default) |
 | WebSocket, client → server from Node | `compression` on the client and `compression` on the server | the first ping/pong | [server](./server#node-client-frames) |
-| HTTP, packet mode and REST | `http: { compression }` | `Accept-Encoding` | [server](./server#compression) |
+| HTTP, packet mode and REST | `http: { compression }`, `encodings` for Brotli / zstd / your own | `Accept-Encoding`, the server's order | [server](./server#compression) |
 | Server-Sent Events | `sse: { compression }` | the opening GET's `Accept-Encoding`, per response | [SSE](./sse#compression) |
 | WebTransport | `compression` on both ends | the capabilities message | [WebTransport](./wt#compression) |
 | WebRTC | `compression` on both peers | the description signal (`caps`) — a raw channel by agreement | [WebRTC](./webrtc#compression) |

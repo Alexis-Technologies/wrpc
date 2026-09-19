@@ -2,14 +2,17 @@
 
 // `Content-Encoding` on the two HTTP-shaped transports, priced: a one-shot
 // gzip of a packet/REST answer at the sizes RPC answers actually come in,
-// and the SSE path — one gzip member per response, sync-flushed after every
-// event — against the same events sent plain. Both options are off by
-// default; this is what turning them on costs and buys.
+// the SSE path — one gzip member per response, sync-flushed after every
+// event — against the same events sent plain, and the Accept-Encoding scan
+// that picks the coding (src/contentEncoding.js pickEncoding) against the
+// split-and-map it is written to avoid. Both options are off by default;
+// this is what turning them on costs and buys. Which coding, at which
+// level, is bench/algorithms.js.
 
 const zlib = require('node:zlib');
 const { performance } = require('node:perf_hooks');
 
-const { gzipWriter } = require('../src/contentEncoding.js');
+const { encodedWriter, normalizeCompression, pickEncoding } = require('../src/contentEncoding.js');
 
 const report = (name, count, elapsedMs, extra = '') =>
   console.log(
@@ -65,7 +68,7 @@ const sseStream = (count) =>
       onClose: () => {},
       onDrain: () => {},
     };
-    const writer = gzipWriter(sink, { level: undefined, memLevel: undefined, filter: null });
+    const writer = encodedWriter(sink, normalizeCompression(true, 'bench').encoders[0]);
     const started = performance.now();
     for (let i = 0; i < count; i++) {
       const text = event(i);
@@ -76,7 +79,37 @@ const sseStream = (count) =>
     if (done === count) writer.end();
   });
 
+// The idiomatic spelling of the same choice: split, map, find.
+const pickBySplit = (header, encoders) => {
+  const accepted = new Map(
+    header.split(',').map((part) => {
+      const [token, ...params] = part.split(';');
+      const zero = params.some((param) => /^\s*q\s*=\s*0(?:\.0{0,3})?\s*$/i.test(param));
+      return [token.trim().toLowerCase(), !zero];
+    }),
+  );
+  return encoders.find((encoder) => accepted.get(encoder.token) ?? accepted.get('*') ?? false) ?? null;
+};
+
+const negotiation = () => {
+  const { encoders } = normalizeCompression({ encodings: ['br', 'gzip'] }, 'bench');
+  const headers = ['gzip, deflate, br, zstd', 'gzip, deflate', 'br;q=1.0, gzip;q=0.8, *;q=0.1'];
+  const iterations = 1_000_000;
+  for (const [name, pick] of [
+    ['pickEncoding (one scan)', pickEncoding],
+    ['split + map + find', pickBySplit],
+  ]) {
+    let hits = 0;
+    const started = performance.now();
+    for (let i = 0; i < iterations; i++) if (pick(headers[i % 3], encoders) !== null) hits++;
+    report(name, iterations, performance.now() - started, hits === iterations ? '' : '   MISMATCH');
+  }
+};
+
 const main = async () => {
+  console.log('HTTP: choosing the coding from Accept-Encoding');
+  negotiation();
+
   console.log('HTTP: one-shot gzip of an answer (packet mode / REST)');
   oneShot('callback, 2 rows', answer(2), 20_000);
   oneShot('callback, 12 rows', answer(12), 20_000);

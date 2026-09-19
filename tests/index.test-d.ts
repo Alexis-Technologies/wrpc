@@ -339,14 +339,19 @@ expectAssignable<wrpc.RpcServerOptions>({
   http: {
     compression: {
       threshold: 2048,
-      level: 6,
-      memLevel: 8,
+      encodings: ['zstd', { encoding: 'br', quality: 5 }, { encoding: 'gzip', level: 6, memLevel: 8 }],
       filter: (call) => call.method === 'POST',
       async: { threshold: 65536 },
     },
   },
 });
 expectAssignable<wrpc.HttpCompressionOptions>({ async: true });
+// An application's own coding, one-shot or streaming; the zlib knobs live in the coding they belong to
+expectAssignable<wrpc.HttpEncoding>({ encoding: 'x-mine', encode: (body: Uint8Array) => body });
+expectAssignable<wrpc.HttpEncoding>({ encoding: 'x-mine', encode: async (body: Uint8Array) => body });
+expectError<wrpc.HttpCompressionOptions>({ encodings: ['deflate'] });
+expectError<wrpc.HttpCompressionOptions>({ level: 6 });
+expectError<wrpc.HttpEncoding>({ encoding: 'br', level: 5 });
 // A dictionary from the router, and the codec over it, injected anywhere a codec goes
 expectType<Uint8Array>(wrpc.buildDictionary(router));
 expectType<Uint8Array>(wrpc.buildDictionary(router, { limit: 8192 }));

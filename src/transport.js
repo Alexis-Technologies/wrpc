@@ -1,7 +1,6 @@
 'use strict';
 
 const crypto = require('node:crypto');
-const zlib = require('node:zlib');
 
 const { toKebab } = require('./utils.js');
 const { cacheHeadersFor, RESERVED_HEADERS } = require('./rpc/rest.js');
@@ -9,7 +8,8 @@ const { STATUS_CODES } = require('./status.js');
 const { publicErrorMessage, publicErrorDetails, wireError } = require('./rpc/errors.js');
 const { ServerTransport } = require('./rpc/serverTransport.js');
 const { META_HEADER, META_PREFIX, CHANNEL_HEADER } = require('./wire.js');
-const { shouldEncode, markEncoded, gzipOptions } = require('./contentEncoding.js');
+const { chooseEncoding, markEncoded } = require('./contentEncoding.js');
+const { isPromise } = require('./compression/ids.js');
 const { hasBytes, encodeAttachments, isAttachmentsFrame } = require('./attachments.js');
 
 // RFC 6265 permits '=' inside cookie values (base64, JWT) — split each
@@ -316,7 +316,7 @@ class ServerHttpTransport extends ServerTransport {
   // The one funnel every HTTP answer leaves through — packet, batch, REST,
   // error — which is what makes `Content-Encoding` a single decision:
   // enabled, past the threshold, accepted by the peer, not already encoded
-  // upstream, admitted by the filter. Below the async threshold the gzip is
+  // upstream, admitted by the filter. Below the async threshold the encode is
   // synchronous, like permessage-deflate's default; at or over it the body
   // goes to zlib's threadpool and the response is written from the
   // callback — `responded` is already true, so a second write and a close
@@ -335,24 +335,34 @@ class ServerHttpTransport extends ServerTransport {
     if (typeof data !== 'string' && isAttachmentsFrame(body)) headers['Content-Type'] = 'application/octet-stream';
     if (this.#setCookies.length > 0) headers['Set-Cookie'] = this.#setCookies;
     const compression = this.#compression;
-    if (compression !== null && body.length >= compression.threshold && shouldEncode(compression, this.call, headers)) {
-      markEncoded(headers);
-      if (compression.async !== null && body.length >= compression.async.threshold) {
-        zlib.gzip(body, gzipOptions(compression), (error, encoded) => {
-          if (error) {
-            // zlib refused the body (out of memory is the realistic case):
-            // the plain bytes still answer, and honestly labelled.
-            delete headers['Content-Encoding'];
-            this.#answer(headers, body, httpCode);
-          } else {
-            this.#answer(headers, encoded, httpCode);
-          }
-        });
-        return true;
-      }
-      return this.#answer(headers, zlib.gzipSync(body, gzipOptions(compression)), httpCode);
+    const encoder =
+      compression !== null && body.length >= compression.threshold
+        ? chooseEncoding(compression, this.call, headers)
+        : null;
+    if (encoder === null) return this.#answer(headers, body, httpCode);
+    markEncoded(headers, encoder.token);
+    // The encoder refused the body (out of memory is the realistic case):
+    // the plain bytes still answer, and honestly labelled.
+    const plain = () => {
+      delete headers['Content-Encoding'];
+      return this.#answer(headers, body, httpCode);
+    };
+    if (encoder.encodeAsync !== null && compression.async !== null && body.length >= compression.async.threshold) {
+      encoder.encodeAsync(body, (error, encoded) => void (error ? plain() : this.#answer(headers, encoded, httpCode)));
+      return true;
     }
-    return this.#answer(headers, body, httpCode);
+    let encoded;
+    try {
+      encoded = encoder.encode(body);
+    } catch {
+      return plain();
+    }
+    // An application's own coding may answer a promise.
+    if (isPromise(encoded)) {
+      encoded.then((out) => this.#answer(headers, out, httpCode), plain);
+      return true;
+    }
+    return this.#answer(headers, encoded, httpCode);
   }
 
   #answer(headers, body, httpCode) {

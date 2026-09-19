@@ -365,7 +365,7 @@ const runAdapterSpec = async (entry, t) => {
     // Every host hands the encoded Buffer through unchanged — fastify
     // derives its own Content-Length from it, uws from end(), express
     // writes it as is.
-    const encoded = await boot({ http: { compression: true } });
+    const encoded = await boot({ http: { compression: { encodings: ['br', 'gzip'] } } });
     const url = `http://127.0.0.1:${encoded.port}/api`;
     const packet = callPacket('test/echo', { pad: 'x'.repeat(4096) });
     const { res, bytes } = await rawPost(url, JSON.stringify(packet), { 'Accept-Encoding': 'gzip' });
@@ -375,6 +375,11 @@ const runAdapterSpec = async (entry, t) => {
     const body = JSON.parse(zlib.gunzipSync(bytes).toString());
     assert.strictEqual(body.id, packet.id);
     assert.strictEqual(body.result.pad.length, 4096);
+    // The server's first choice for a peer that takes it — the same seam, another coding.
+    const brotli = await rawPost(url, JSON.stringify(packet), { 'Accept-Encoding': 'gzip, br' });
+    assert.strictEqual(brotli.res.headers['content-encoding'], 'br');
+    assert.strictEqual(Number(brotli.res.headers['content-length']), brotli.bytes.length);
+    assert.strictEqual(JSON.parse(zlib.brotliDecompressSync(brotli.bytes).toString()).result.pad.length, 4096);
     // Under the threshold, and on the un-configured boot, nothing changes.
     const small = await rawPost(url, JSON.stringify(callPacket('test/hello', { name: 'Ada' })), {
       'Accept-Encoding': 'gzip',

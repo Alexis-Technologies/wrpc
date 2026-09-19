@@ -178,23 +178,43 @@ new Server({
       threshold: 1024,                            // bytes; smaller answers go plain
       filter: (call) => !call.headers['x-internal'], // per request, optional
       async: { threshold: 256 * 1024 },           // hand bodies this large to the threadpool
-      level: 6,
+      encodings: ['zstd', 'br', 'gzip'],          // this server's order; the default is ['gzip']
     },
   },
 });
 ```
 
-`compression: true` takes the defaults. An answer is gzipped when the
-request's `Accept-Encoding` admits gzip, the body is at or over `threshold`,
+`compression: true` takes the defaults — gzip alone. An answer is encoded
+when the request's `Accept-Encoding` admits one of the server's codings, the
+body is at or over `threshold`,
 nothing upstream set a `Content-Encoding` already (a route's own
 [`headers`](./rest#response-headers), a framework compression plugin), and
 `filter(call)` — when given — returns `true`. The response then carries
-`Content-Encoding: gzip`, `Vary: Accept-Encoding` (joined onto the CORS
+`Content-Encoding`, `Vary: Accept-Encoding` (joined onto the CORS
 `Vary: Origin`) and the encoded `Content-Length`. Packet-mode POSTs, batch
 frames, REST results and errors all leave through the same funnel; a REST
 route's [ETag](./rest#caching) is computed over the plain body, so a `304` is
 the same validator whichever encoding was asked for, and a `204` or `304` is
 never encoded.
+
+**Which coding** is `encodings`, the server's list in **its** order of
+preference: the first one on it the request accepts is used. A weight of
+zero refuses a coding and `*` covers the ones not named; other weights say
+*acceptable*, not *preferred* — which acceptable coding costs this server
+least is not the client's to know (nginx reads the header the same way).
+
+| `encodings` entry | Default level | On a 27 KB answer (`bench/algorithms.js`) |
+| --- | --- | --- |
+| `'gzip'` or `{ encoding: 'gzip', level, memLevel }` | zlib's 6 | 110 µs, 3,214 B — what every client accepts |
+| `'br'` or `{ encoding: 'br', quality }` | 4 | 93 µs, 2,601 B — the smallest at gzip's cost |
+| `'zstd'` or `{ encoding: 'zstd', level }` | 1 | 36 µs, 2,848 B — a third of the CPU; Node 22.15+ / 23.8+, a `TypeError` at construction before |
+| `{ encoding, encode(bytes), createStream? }` | — | your own coding; `encode` may answer a promise, a failure answers the plain body |
+
+Under ~2 KB the three are within a few bytes and microseconds of each other,
+so the list earns its place on large answers. zlib's own Brotli default is
+quality 11 — **33 ms** on that answer — which is why the default here is 4.
+Browsers announce `br` and `zstd` over HTTPS only, so plain-HTTP development
+sees gzip whatever the list says.
 
 Nothing changes on the client: `fetch` sends `Accept-Encoding` and inflates
 by itself, in browsers and in Node. The event stream has its own option,

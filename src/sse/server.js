@@ -4,7 +4,7 @@ const { ServerTransport } = require('../transport.js');
 const { resolveGenerateId } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
 const { UNKNOWN_TARGET } = require('../rpc/dispatcher.js');
-const { normalizeCompression, shouldEncode, markEncoded, gzipWriter } = require('../contentEncoding.js');
+const { normalizeCompression, chooseEncoding, markEncoded, encodedWriter } = require('../contentEncoding.js');
 const { hasBytes } = require('../attachments.js');
 const { wireError } = require('../rpc/errors.js');
 
@@ -241,7 +241,7 @@ class SseChannels {
     compression = null,
     ...options
   } = {}) {
-    this.#compression = normalizeCompression(compression, 'SseChannels: options');
+    this.#compression = normalizeCompression(compression, 'SseChannels: options', { streaming: true });
     this.#addClient = addClient;
     // Strict, unlike the 1.0 options: this one is new, so a bad generator
     // is a TypeError here rather than a channel id that fails later.
@@ -342,11 +342,11 @@ class SseChannels {
     }
     // Encoded when the option is on and this GET asked for it: the decision
     // is per response, so a re-attach from a peer that stopped accepting
-    // gzip gets a plain stream on the same channel.
+    // the coding gets a plain stream on the same channel.
     const streamHeaders = { ...headers, ...SSE_HEADERS };
     const compression = this.#compression;
-    const encoded = compression !== null && shouldEncode(compression, call, streamHeaders);
-    if (encoded) markEncoded(streamHeaders);
+    const encoder = compression === null ? null : chooseEncoding(compression, call, streamHeaders);
+    if (encoder !== null) markEncoded(streamHeaders, encoder.token);
     let writer = call.stream({ status: 200, headers: streamHeaders });
     if (!writer) {
       // The host could not open the stream. A channel created for it would
@@ -355,7 +355,7 @@ class SseChannels {
       if (!existing) channel.transport.close();
       return;
     }
-    if (encoded) writer = gzipWriter(writer, compression);
+    if (encoder !== null) writer = encodedWriter(writer, encoder);
     // Replacing a live writer: the superseded response is nobody's now, so
     // end it rather than leaking it open until a proxy times it out.
     const previous = channel.writer;

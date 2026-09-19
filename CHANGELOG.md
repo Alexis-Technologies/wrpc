@@ -13,6 +13,27 @@ narrower promise — see
 
 ### Added
 
+**`http.compression.encodings` / `sse.compression.encodings` — Brotli, zstd, or your own coding**
+
+- `encodings` is the server's list of `Content-Encoding`s in **its** order
+  of preference; the first one the request's `Accept-Encoding` admits is
+  used (a zero weight refuses a coding, `*` covers the unnamed, other
+  weights say acceptable rather than preferred — as nginx reads it).
+  Default `['gzip']`, so nothing changes until it is set. Entries: `'gzip'`,
+  `'br'`, `'zstd'`, the same with their knobs (`{ encoding: 'br', quality }`),
+  or an application's own `{ encoding, encode(bytes), createStream? }` —
+  `encode` may answer a promise, and a coding that throws or rejects
+  answers the plain body, honestly labelled.
+- Measured defaults (`bench/algorithms.js`, a 27 KB answer): gzip 110 µs /
+  3,214 B, Brotli quality 4 93 µs / 2,601 B, zstd level 1 36 µs / 2,848 B.
+  `'zstd'` is a `TypeError` at construction where `node:zlib` has none.
+- SSE takes the same list, every coding flushed per event; a coding with
+  no `createStream()` is refused at construction. gzip stays the default
+  and the recommendation there — Brotli and zstd save nothing on small
+  events and hold 570 / 930 KB per open response against gzip's 320.
+- The `Accept-Encoding` scan stays one pass with no per-token allocation:
+  twice the split-and-map spelling (`bench/http-compression.js`).
+
 **`compression: { codec: [...] }` — a preference list, negotiated per direction**
 
 - `codec` takes a list in order of preference, names and injected codecs
@@ -886,6 +907,9 @@ narrower promise — see
 
 ### Changed
 
+- `http.compression` / `sse.compression`: `level` and `memLevel` moved into
+  the coding they tune — `encodings: [{ encoding: 'gzip', level, memLevel }]`
+  — and are a `TypeError` at the top level (nothing of this was released).
 - Wire names that said "deflate" while carrying any codec are neutral
   (nothing of this was released): the capabilities key `deflate` → `enc`
   (WebTransport, WebRTC `caps`), `KIND_TEXT_DEFLATE` / `KIND_BINARY_DEFLATE`

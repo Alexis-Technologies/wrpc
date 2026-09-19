@@ -90,7 +90,7 @@ new Server({
 | `maxChannels` | `10000` | Live channels per server; past it a new GET is `503`. |
 | `maxChannelsPerAddress` | `100` | Live channels per remote address; past it `429`. **Behind a proxy this counts the proxy**, not your users — see the warning below. |
 | `clientAddress` | socket peer | `(call) => string` — what the per-address cap counts by. Inject a reader for your proxy's client header. |
-| `compression` | off | `true` or `{ filter, level, memLevel }` — gzip the stream for peers that accept it, one member per response, flushed after every event. See [Compression](#compression). |
+| `compression` | off | `true` or `{ filter, encodings }` — gzip (by default) the stream for peers that accept it, one member per response, flushed after every event. See [Compression](#compression). |
 
 ::: warning Behind a load balancer, set `clientAddress`
 The per-address cap defaults to the TCP peer address. Behind nginx/ALB that
@@ -122,16 +122,23 @@ new Server({
   sse: {
     compression: {
       filter: (call) => call.headers['x-forwarded-proto'] !== undefined, // per GET, optional
-      level: 6,
-      memLevel: 8,
+      encodings: [{ encoding: 'gzip', level: 6, memLevel: 8 }],          // the default is ['gzip']
     },
   },
 });
 ```
 
+`encodings` is the same list [`http.compression`](./server#compression)
+takes — `'br'`, `'zstd'`, your own coding with a `createStream()` — and gzip
+is the default here **on purpose**: flushed per event, Brotli and zstd save
+nothing on small events (23 and 18 B against gzip's 20) and hold 570 and
+930 KB per open response against gzip's 320, which a smaller window does not
+give back (`bench/algorithms.js`). Reach for another coding only for a stream
+of large events.
+
 The client changes nothing: `fetch` inflates the stream incrementally, in
 browsers and in Node, and the wrpc SSE client is that `fetch`. The decision
-is per response — a re-attach that stops accepting gzip gets a plain stream
+is per response — a re-attach that stops accepting the coding gets a plain stream
 on the same channel, replay included. What it costs is one zlib deflate
 state per live stream (~256 KiB at the defaults; `memLevel` lowers it) and a
 deflate call per event (~11 µs). A proxy that buffers compressed responses

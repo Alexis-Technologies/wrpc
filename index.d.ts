@@ -580,34 +580,73 @@ export interface TransportOptions {
   compression?: Readonly<{
     threshold: number;
     filter: ((call: HttpCall) => boolean) | null;
-    level?: number;
-    memLevel?: number;
     async: { threshold: number } | null;
+    /** The codings, in the server's order — what `encodings` resolved to. */
+    encoders: ReadonlyArray<{
+      readonly token: string;
+      encode(body: Uint8Array): Uint8Array | Promise<Uint8Array>;
+    }>;
   }> | null;
 }
 
 /**
- * gzip for packet-mode and REST answers — `http: { compression }`, off
- * by default. A response is encoded when the request's `Accept-Encoding`
- * admits gzip, the body is at or over `threshold`, nothing upstream set a
+ * `Content-Encoding` for packet-mode and REST answers — `http: {
+ * compression }`, off by default, gzip unless `encodings` says otherwise.
+ * A response is encoded when the request's `Accept-Encoding` admits one of
+ * the server's codings, the body is at or over `threshold`, nothing upstream set a
  * `Content-Encoding`, and `filter` (when given) says yes; it then carries
  * `Content-Encoding: gzip` and `Vary: Accept-Encoding`. Nothing changes on
  * the client: `fetch` inflates by itself.
  */
+/**
+ * One `Content-Encoding` the server may answer in: a built-in by name, a
+ * built-in with its own knobs, or an application's own coding. Levels
+ * default to the measured ones (`bench/algorithms.js`) — Brotli quality 4,
+ * zstd level 1 — never zlib's Brotli default of 11, which costs
+ * milliseconds a response. `'zstd'` is a TypeError at construction where
+ * node:zlib has none (before Node 22.15 / 23.8).
+ */
+export type HttpEncoding =
+  | 'gzip'
+  | 'br'
+  | 'zstd'
+  | { encoding: 'gzip'; /** zlib level, -1..9. */ level?: number; /** zlib memLevel, 1..9. */ memLevel?: number }
+  | { encoding: 'br'; /** 0..11 (4). */ quality?: number }
+  | { encoding: 'zstd'; /** 1..22 (1). */ level?: number }
+  | CustomHttpEncoding;
+
+/**
+ * An application's own coding. `encoding` is the `Content-Encoding` token;
+ * `encode` takes the whole body and may answer a promise (a throw or a
+ * rejection answers the plain body instead). `createStream` — a Node
+ * Transform that emits every write's output without waiting for more — is
+ * what an SSE response needs; without it the coding serves one-shot
+ * answers only and `sse.compression` refuses it.
+ */
+export interface CustomHttpEncoding {
+  encoding: string;
+  encode(body: Uint8Array): Uint8Array | Promise<Uint8Array>;
+  createStream?(): NodeJS.ReadWriteStream;
+}
+
 export interface HttpCompressionOptions {
   /** Bytes; smaller bodies go plain. Default 1024. */
   threshold?: number;
   /** Per request: compress this answer at all? Runs after the cheaper checks. */
   filter?: (call: HttpCall) => boolean;
-  /** zlib level, -1..9. */
-  level?: number;
-  /** zlib memLevel, 1..9. */
-  memLevel?: number;
   /**
-   * Bodies at or over `threshold` bytes gzip on zlib's threadpool and the
-   * response is written from the callback — the same shape as
+   * The codings this server answers in, in ITS order of preference — the
+   * first one the request's `Accept-Encoding` admits is used (a weight of
+   * zero refuses a coding; other weights say acceptable, not preferred, as
+   * in nginx). Default `['gzip']`. `['zstd', 'br', 'gzip']` earns its place
+   * on answers from ~16 KB; browsers announce `br` and `zstd` over HTTPS only.
+   */
+  encodings?: ReadonlyArray<HttpEncoding>;
+  /**
+   * Bodies at or over `threshold` bytes are encoded on zlib's threadpool and
+   * the response is written from the callback — the same shape as
    * `perMessageDeflate.async`. Default threshold 256 KiB; `{}` or `true`
-   * takes it. Off by default.
+   * takes it. Off by default; a custom coding decides that for itself.
    */
   async?: boolean | { threshold?: number };
 }

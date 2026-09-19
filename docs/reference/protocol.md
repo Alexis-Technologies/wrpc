@@ -992,8 +992,8 @@ mechanism, never a field of a wrpc packet:
 | Transport | Mechanism | Negotiated by |
 | --- | --- | --- |
 | WebSocket | RFC 7692 `permessage-deflate` (`perMessageDeflate` on the engine) | the upgrade handshake |
-| HTTP, packet mode and REST | `Content-Encoding: gzip` on the response (`http.compression`) | the request's `Accept-Encoding`; the response carries `Vary: Accept-Encoding` |
-| Server-Sent Events | `Content-Encoding: gzip` on the stream — one gzip member, sync-flushed after every event (`sse.compression`) | the opening GET's `Accept-Encoding`, per response |
+| HTTP, packet mode and REST | `Content-Encoding` on the response — `gzip` by default, `br`, `zstd` or an application's coding by `http.compression.encodings` | the request's `Accept-Encoding` against the server's list, in the server's order; the response carries `Vary: Accept-Encoding` |
+| Server-Sent Events | `Content-Encoding` on the stream — one encoder for the response (for gzip, one member), flushed after every event (`sse.compression`) | the opening GET's `Accept-Encoding`, per response |
 | WebTransport | per message, KIND 3/4 on the control stream (`compression` on both ends) | the `enc` list of the capabilities message |
 | WebSocket, client → server from Node | per message, framed binary (`0x00 03` / `0x00 04`) above the extension (`compression` on both ends) | `{ type: 'ping', enc: [ids] }` from the client, answered by `{ type: 'pong', enc: id }` — the first of them the server holds |
 | WebRTC | per message, the COMPRESSED bit of the data-channel header (`compression` on both peers) | the `caps.enc` list of the description signal; a raw channel by the application's agreement |
