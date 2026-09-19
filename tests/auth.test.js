@@ -372,6 +372,28 @@ test('bearerAuth over ws: the token rides the subprotocol offer, never the conne
   }
 });
 
+test('bearerAuth over ws with `protocols: []`: nothing is offered, so the token is not lifted into an offer', async (t) => {
+  const { server, port } = await bearerBoot(t);
+  const store = memoryStore();
+  const options = { heartbeat: false, logger: false, reconnect: false, connectTimeout: 2000, protocols: [] };
+  const first = await WrpcClient.connect(
+    `ws://127.0.0.1:${port}/api`,
+    Object.assign({}, options, bearerAuth({ store, signIn: (c) => c.call('auth/signIn') })),
+  );
+  t.after(() => void first.close());
+  // A lone `wrpc.bearer.<token>` offer is one the server never echoes, and a
+  // client fails a handshake whose offers all went unanswered: the second
+  // connect, which PRESENTS the stored token, used to die right here.
+  const again = await WrpcClient.connect(
+    `ws://127.0.0.1:${port}/api`,
+    Object.assign({}, options, bearerAuth({ store, signIn: () => assert.fail('the stored token must restore') })),
+  );
+  t.after(() => void again.close());
+  await again.load('secure');
+  assert.strictEqual(await again.api.secure.whoami(), 'noa');
+  for (const peer of server.clients) assert.strictEqual(peer.meta.protocol, '', 'nothing was offered');
+});
+
 test('payloadTransport: raw fallbacks — prefixed header, oversize canonical, camelCase field', () => {
   const transport = payloadTransport();
   // The per-key spelling as a raw header (no parsed bag: the SSE key path).

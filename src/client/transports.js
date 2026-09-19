@@ -49,12 +49,15 @@ class ClientWsTransport extends ClientTransport {
       // — so a Bearer credential rides as `wrpc.bearer.<token>` and is
       // stripped from the wrpc_h bag (the server's bearer transport reads
       // sec-websocket-protocol first). A token outside the RFC 7230 token
-      // charset cannot be a subprotocol name and falls back to the query,
-      // with the loud caveat below.
+      // charset cannot be a subprotocol name and falls back to the query.
+      // Only INTO an offer the server can answer: it never echoes a carrier
+      // token, and a handshake whose every offer went unanswered is failed
+      // by the client (Chrome closes 1006, undici errors) — so under the
+      // `protocols: []` escape hatch the credential stays in the query.
       let bag = options.headers;
       const auth = bag?.authorization;
       const bearer = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
-      if (bearer && /^[!#$%&'*+.^_`|~A-Za-z0-9-]+$/.test(bearer)) {
+      if (bearer && protocols.length > 0 && /^[!#$%&'*+.^_`|~A-Za-z0-9-]+$/.test(bearer)) {
         protocols = [...protocols, `wrpc.bearer.${bearer}`];
         bag = { ...bag };
         delete bag.authorization;
