@@ -148,7 +148,10 @@ A mapped route's static `http.headers`, the `context.http` seam
 path too, onto fastify's own `reply` — with the same session rule as the
 core hosts (`private, no-store` for anything session-bearing). `ETag` and
 `304` are left to fastify: register `@fastify/etag` for them. See the
-[REST guide](../rest#caching).
+[REST guide](../rest#caching). So is compression: a delegated route answers
+through fastify's reply, where `@fastify/compress` does that job —
+[`http.compression`](../server#compression) covers the packet endpoint and
+the conventional REST paths under the plugin, like on every other host.
 
 ## Mirroring existing routes {#mirroring-existing-routes}
 

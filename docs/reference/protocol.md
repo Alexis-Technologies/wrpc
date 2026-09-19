@@ -903,6 +903,27 @@ either --bye {correlationId}--> the other
 A client that reconnects says `hello` again and may be welcomed by another
 instance; its subscriptions resume with `lastEventId` as on any reconnect.
 
+## Compression
+
+Every transport carries plain bytes unless the application turns compression
+on; nothing negotiates it by default. Where it exists it is the carrier's own
+mechanism, never a field of a wrpc packet:
+
+| Transport | Mechanism | Negotiated by |
+| --- | --- | --- |
+| WebSocket | RFC 7692 `permessage-deflate` (`perMessageDeflate` on the engine) | the upgrade handshake |
+| HTTP, packet mode and REST | `Content-Encoding: gzip` on the response (`http.compression`) | the request's `Accept-Encoding`; the response carries `Vary: Accept-Encoding` |
+| Server-Sent Events | `Content-Encoding: gzip` on the stream — one gzip member, sync-flushed after every event (`sse.compression`) | the opening GET's `Accept-Encoding`, per response |
+| WebRTC, WebTransport, the broker binding | none | — |
+
+An HTTP response is encoded only when its body is at or over the configured
+threshold and nothing upstream already set a `Content-Encoding`; a `204` and
+a `304` never are. A REST route's weak ETag is computed over the plain body,
+so it is the same validator whichever encoding the peer asked for. On an
+event stream the encoding is a property of one response: a re-attach
+negotiates it again, and a replay goes out in whatever the new response
+negotiated.
+
 ## Reconnect
 
 The client reconnects on its own with truncated exponential backoff and full

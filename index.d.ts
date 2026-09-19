@@ -301,6 +301,8 @@ export interface RpcServerOptions {
   maxCalls?: number;
   /** SSE channel options, or `false` to remove the events endpoint. */
   sse?: import('./sse.js').SseOptions | false;
+  /** The HTTP side's own options: `compression`, off by default. */
+  http?: { compression?: boolean | HttpCompressionOptions };
   /**
    * Presence/request tuning for the cluster layer, or `false` to opt out:
    * presence, commands and asks then degrade to their local halves while
@@ -493,6 +495,40 @@ export class Server extends Emitter {
 
 export interface TransportOptions {
   headers?: Record<string, string>;
+  /** The normalized `http.compression` option; the core passes its own. */
+  compression?: Readonly<{
+    threshold: number;
+    filter: ((call: HttpCall) => boolean) | null;
+    level?: number;
+    memLevel?: number;
+    async: { threshold: number } | null;
+  }> | null;
+}
+
+/**
+ * gzip for packet-mode and REST answers — `http: { compression }`, off
+ * by default. A response is encoded when the request's `Accept-Encoding`
+ * admits gzip, the body is at or over `threshold`, nothing upstream set a
+ * `Content-Encoding`, and `filter` (when given) says yes; it then carries
+ * `Content-Encoding: gzip` and `Vary: Accept-Encoding`. Nothing changes on
+ * the client: `fetch` inflates by itself.
+ */
+export interface HttpCompressionOptions {
+  /** Bytes; smaller bodies go plain. Default 1024. */
+  threshold?: number;
+  /** Per request: compress this answer at all? Runs after the cheaper checks. */
+  filter?: (call: HttpCall) => boolean;
+  /** zlib level, -1..9. */
+  level?: number;
+  /** zlib memLevel, 1..9. */
+  memLevel?: number;
+  /**
+   * Bodies at or over `threshold` bytes gzip on zlib's threadpool and the
+   * response is written from the callback — the same shape as
+   * `perMessageDeflate.async`. Default threshold 256 KiB; `{}` or `true`
+   * takes it. Off by default.
+   */
+  async?: boolean | { threshold?: number };
 }
 
 export type AttachOptions = {

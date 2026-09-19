@@ -13,6 +13,31 @@ narrower promise — see
 
 ### Added
 
+**`Content-Encoding` on the HTTP side (`http.compression`, `sse.compression`)**
+- gzip for packet-mode and REST answers, opt-in and off by default:
+  `http: { compression: true | { threshold, filter, level, memLevel, async } }`.
+  Applied in the one funnel every HTTP answer leaves through, so packet
+  POSTs, batch frames, REST results and errors all qualify. A response is
+  encoded when the peer's `Accept-Encoding` admits gzip, the body is at or
+  over `threshold` (1 KiB), nothing upstream set a `Content-Encoding` (a
+  route's own `headers`, a framework plugin) and `filter(call)` agrees; it
+  then carries `Vary: Accept-Encoding`, joined onto the CORS `Vary`. A REST
+  ETag stays over the plain body, a `204`/`304` is never encoded, and
+  `async: { threshold }` hands large bodies to zlib's threadpool — the same
+  shape as `perMessageDeflate.async`. Nothing changes on the client: `fetch`
+  inflates by itself. `bench/http-compression.js` prices it: a 1.6 KB
+  callback 5.5× at 77K/sec, an 8.5 KB one 9.9× at 28K/sec.
+- The event stream: `sse: { compression: true | { filter, level, memLevel } }`
+  — one gzip member per response, flushed after every event, which is
+  context takeover for free: a repeated 125 B tick leaves as 16 B (7.8×),
+  and the `ready` frame is not held back by it. Decided per GET, so a
+  re-attach negotiates again and replays through the new member. The wrpc
+  SSE client needed no change; every host's `stream` writer is wrapped the
+  same way.
+- `rpcOptions` learned the `http` key: an `http` option given to `Server`,
+  `wrpcFastify` or `createWrpc` reaches the core. Fastify's delegated REST
+  routes stay fastify's — `@fastify/compress` encodes those.
+
 **Compression, documented as the choice it is**
 - Nothing in wrpc compresses by default — `perMessageDeflate` on the
   built-in engine, `compression` on uws — and that stays: a default would

@@ -90,7 +90,9 @@ transport-owned names (`Content-Length`, `Set-Cookie`, `wrpc-version`,
 `Transfer-Encoding`, `Connection`) are refused, at build time for `headers`
 and with a throw for `setHeader`; so is a `setHeader` after the answer was
 written. `HEAD` is served by the `GET` route, headers included, body stripped
-by the host.
+by the host. A `Content-Encoding` set here is honoured by
+[`http.compression`](./server#compression): a route that ships pre-encoded
+bytes is never re-encoded.
 
 Under the [fastify adapter](./adapters/fastify#declarative-rest-routes) both
 seams map onto fastify's own `reply`.

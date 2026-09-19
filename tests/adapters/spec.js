@@ -17,6 +17,8 @@
 // close would wedge the whole run instead of failing it.
 
 const assert = require('node:assert');
+const http = require('node:http');
+const zlib = require('node:zlib');
 const { randomUUID } = require('node:crypto');
 const { Blob } = require('node:buffer');
 
@@ -206,6 +208,19 @@ const rpcPost = async (url, method, args = {}, headers = {}) => {
   return { res, body, id: packet.id };
 };
 
+// The same POST through node:http, bytes untouched — fetch would inflate a
+// gzip body before an assertion could see it.
+const rawPost = (url, body, headers = {}) =>
+  new Promise((resolve, reject) => {
+    const req = http.request(url, { method: 'POST', headers: { ...JSON_HEADERS, ...headers } }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve({ res, bytes: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
+
 const rpcGet = async (url, headers = {}) => {
   const res = await fetch(url, { headers });
   const body = await res.json();
@@ -344,6 +359,29 @@ const runAdapterSpec = async (entry, t) => {
     const bare = await rpcGet(url, { cookie });
     assert.strictEqual(bare.res.status, 200);
     assert.deepStrictEqual(bare.body.result, { user: 'ada' });
+  });
+
+  await t.test('http.compression: a gzip-accepting request past the threshold is answered gzip', async () => {
+    // Every host hands the encoded Buffer through unchanged — fastify
+    // derives its own Content-Length from it, uws from end(), express
+    // writes it as is.
+    const encoded = await boot({ http: { compression: true } });
+    const url = `http://127.0.0.1:${encoded.port}/api`;
+    const packet = callPacket('test/echo', { pad: 'x'.repeat(4096) });
+    const { res, bytes } = await rawPost(url, JSON.stringify(packet), { 'Accept-Encoding': 'gzip' });
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.headers['content-encoding'], 'gzip');
+    assert.strictEqual(Number(res.headers['content-length']), bytes.length, 'Content-Length is the encoded size');
+    const body = JSON.parse(zlib.gunzipSync(bytes).toString());
+    assert.strictEqual(body.id, packet.id);
+    assert.strictEqual(body.result.pad.length, 4096);
+    // Under the threshold, and on the un-configured boot, nothing changes.
+    const small = await rawPost(url, JSON.stringify(callPacket('test/hello', { name: 'Ada' })), {
+      'Accept-Encoding': 'gzip',
+    });
+    assert.strictEqual(small.res.headers['content-encoding'], undefined);
+    const plain = await rawPost(base, JSON.stringify(packet), { 'Accept-Encoding': 'gzip' });
+    assert.strictEqual(plain.res.headers['content-encoding'], undefined, 'off by default');
   });
 
   await t.test('a path outside basePath is 404', async () => {

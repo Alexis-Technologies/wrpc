@@ -48,6 +48,7 @@ with every adapter; the network half belongs to the shell.
 | `maxSubscriptions` | `256` | Concurrent [subscriptions](./subscriptions) per client. |
 | `maxCalls` | `1000` | In-flight calls per client; past it a call answers `429`. |
 | `sse` | `{}` | [SSE](./sse) channel options, or `false` to remove the endpoint. |
+| `http` | `{}` | The HTTP side's own options: `compression`, off by default — see [Compression](#compression). |
 | `logger` | `globalThis.console` | Where the server logs — a Console or a pino-shaped logger; `false` silences it. See [Logging](./logging). |
 | `telemetry` | `null` | OTel traces and metrics — see [Telemetry](./telemetry). |
 
@@ -159,6 +160,59 @@ policy to WebSockets, so without an allowlist any page anywhere can open a
 socket to your server with the user's cookies attached. Configure
 `cors.origins` and the default `verifyClient` refuses a mismatched `Origin`
 outright.
+
+## Compression {#compression}
+
+Off by default, like every compression knob in wrpc: a gzip per answer is
+CPU spent for every peer to save bytes only some of them need. Turn it on
+for the HTTP side with `http.compression`:
+
+```js
+new Server({
+  router,
+  http: {
+    compression: {
+      threshold: 1024,                            // bytes; smaller answers go plain
+      filter: (call) => !call.headers['x-internal'], // per request, optional
+      async: { threshold: 256 * 1024 },           // hand bodies this large to the threadpool
+      level: 6,
+    },
+  },
+});
+```
+
+`compression: true` takes the defaults. An answer is gzipped when the
+request's `Accept-Encoding` admits gzip, the body is at or over `threshold`,
+nothing upstream set a `Content-Encoding` already (a route's own
+[`headers`](./rest#response-headers), a framework compression plugin), and
+`filter(call)` — when given — returns `true`. The response then carries
+`Content-Encoding: gzip`, `Vary: Accept-Encoding` (joined onto the CORS
+`Vary: Origin`) and the encoded `Content-Length`. Packet-mode POSTs, batch
+frames, REST results and errors all leave through the same funnel; a REST
+route's [ETag](./rest#caching) is computed over the plain body, so a `304` is
+the same validator whichever encoding was asked for, and a `204` or `304` is
+never encoded.
+
+Nothing changes on the client: `fetch` sends `Accept-Encoding` and inflates
+by itself, in browsers and in Node. The event stream has its own option,
+[`sse.compression`](./sse#compression); the WebSocket has
+[`perMessageDeflate`](./performance#compression-is-off-by-default).
+
+What it costs — `bench/http-compression.js`, one-shot gzip of a callback:
+
+| Answer | rate | ratio |
+| --- | ---: | ---: |
+| 295 B (2 rows) | 110,649/sec | 1.7× |
+| 1.6 KB (12 rows) | 76,920/sec | 5.5× |
+| 8.5 KB (64 rows) | 27,563/sec | 9.9× |
+| 135 KB (1000 rows) | 2,056/sec | 12.0× |
+
+The first row is the reason for the 1 KiB threshold; the last one — half a
+millisecond on the event loop — is what `async` is for. Under the fastify
+adapter, [delegated REST routes](./adapters/fastify#response-headers-and-caching-on-delegated-routes)
+answer through fastify's own reply and are `@fastify/compress`'s to encode;
+the packet endpoint and conventional REST paths under the plugin follow this
+option like any host.
 
 ## Lifecycle
 

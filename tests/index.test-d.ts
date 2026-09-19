@@ -331,6 +331,24 @@ expectAssignable<wrpc.WrpcClientOptions>({ generateId: () => 'id-1', protocols: 
 expectAssignable<wrpc.WrpcClientOptions>({ protocols: [] });
 expectAssignable<wrpc.RpcServerOptions>({ router, generateId: () => 'id-1' });
 expectAssignable<wrpc.RpcServerOptions>({ router, introspection: 'session', maxCalls: 64 });
+// http.compression: off unless asked for; every field optional, the filter sees the abstract call
+expectAssignable<wrpc.RpcServerOptions>({ router, http: { compression: true } });
+expectAssignable<wrpc.RpcServerOptions>({ router, http: {} });
+expectAssignable<wrpc.RpcServerOptions>({
+  router,
+  http: {
+    compression: {
+      threshold: 2048,
+      level: 6,
+      memLevel: 8,
+      filter: (call) => call.method === 'POST',
+      async: { threshold: 65536 },
+    },
+  },
+});
+expectAssignable<wrpc.HttpCompressionOptions>({ async: true });
+expectError<wrpc.RpcServerOptions>({ router, http: { compression: 'gzip' } });
+expectError<wrpc.RpcServerOptions>({ router, http: { compression: { threshold: 'big' } } });
 expectAssignable<wrpc.ServerOptions>({ router, maxBodySize: 1024 });
 
 // Cluster: identity, replicated presence, introspection, commands, messaging

@@ -8,6 +8,7 @@ const { defineRouter, procedure, runHooksSafe } = require('./router.js');
 const { RoomRegistry, Broadcast, RoomsBackplane } = require('./rooms.js');
 const { Cluster, instanceOfClientId } = require('./cluster.js');
 const { SseChannels } = require('../sse/server.js');
+const { normalizeCompression } = require('../contentEncoding.js');
 // The channel header from the import-free constants module, NOT from
 // sse/server.js: the string is shared, the implementation is not.
 const { CHANNEL_HEADER } = require('../wire.js');
@@ -89,6 +90,7 @@ const RPC_OPTION_KEYS = [
   'maxSubscriptions',
   'maxCalls',
   'sse',
+  'http',
   'cluster',
   'rooms',
   'querystring',
@@ -131,6 +133,8 @@ class RpcServer extends Emitter {
   #limits;
   #generateId;
   #sse = null;
+  // The normalized `http.compression` option, or null (off, the default).
+  #compression = null;
   #querystring = null;
   #metaMax = DEFAULT_META_MAX;
   #codec = null;
@@ -157,6 +161,7 @@ class RpcServer extends Emitter {
       maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
       maxCalls = DEFAULT_MAX_CALLS,
       sse = {},
+      http = {},
       cluster = {},
       rooms = {},
       querystring = null,
@@ -208,6 +213,10 @@ class RpcServer extends Emitter {
       throw new TypeError(`RpcServer: ${source} "."`);
     }
     this.#querystring = querystring;
+    if (typeof http !== 'object' || http === null) throw new TypeError('RpcServer: options.http must be an object');
+    // gzip on packet-mode and REST answers for peers that ask for it — off
+    // unless the app turns it on; the SSE half has its own under `sse`.
+    this.#compression = normalizeCompression(http.compression, 'RpcServer: options.http');
     // Two halves, two fields: #codec is the PACKET codec (ws/http/sse/worker
     // frames — a rest-only codec leaves packet mode JSON), #restCodec the
     // REST body codec. The raw option survives for the public getter.
@@ -945,7 +954,7 @@ class RpcServer extends Emitter {
     // Mode-aware: only packet-mode responses carry the packet codec's type.
     if (this.#codec?.contentType) headers['Content-Type'] = this.#codec.contentType;
     const batch = call.method === 'POST' ? this.#batchIds(call.body) : null;
-    const transport = new ServerHttpTransport(call, { headers, batch });
+    const transport = new ServerHttpTransport(call, { headers, batch, compression: this.#compression });
     if (call.method !== 'POST') {
       this.#log.warn({ event: 'http.refused', code: 403, method: call.method });
       this.#otel.recordCall(UNKNOWN_TARGET, 'error', 403);
@@ -998,6 +1007,7 @@ class RpcServer extends Emitter {
     }
     const transport = new ServerHttpTransport(call, {
       headers,
+      compression: this.#compression,
       rest: route
         ? {
             status: route.http.status,

@@ -259,10 +259,12 @@ page.
 
 Two honest limits of what the knob covers:
 
-- **It compresses the WebSocket only.** Plain HTTP responses, SSE streams,
-  WebRTC data channels, WebTransport streams and broker frames carry
-  exactly the bytes you hand them today — there is no compression on those
-  paths yet, on or off.
+- **It compresses the WebSocket only.** The HTTP side has its own knobs,
+  off too: [`http.compression`](./server#compression) for packet-mode and
+  REST answers, [`sse.compression`](./sse#compression) for the event stream
+  (`bench/http-compression.js`: a 1.6 KB answer 5.5× at 77K/sec, a repeated
+  SSE tick 7.8×). WebRTC data channels, WebTransport streams and broker
+  frames carry exactly the bytes you hand them today.
 - **A Node client never compresses what it sends.** Node's built-in
   `WebSocket` offers `permessage-deflate` on the handshake but only ever
   inflates: every frame it sends leaves with `RSV1` clear, whatever the

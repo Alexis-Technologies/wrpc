@@ -90,6 +90,7 @@ new Server({
 | `maxChannels` | `10000` | Live channels per server; past it a new GET is `503`. |
 | `maxChannelsPerAddress` | `100` | Live channels per remote address; past it `429`. **Behind a proxy this counts the proxy**, not your users — see the warning below. |
 | `clientAddress` | socket peer | `(call) => string` — what the per-address cap counts by. Inject a reader for your proxy's client header. |
+| `compression` | off | `true` or `{ filter, level, memLevel }` — gzip the stream for peers that accept it, one member per response, flushed after every event. See [Compression](#compression). |
 
 ::: warning Behind a load balancer, set `clientAddress`
 The per-address cap defaults to the TCP peer address. Behind nginx/ALB that
@@ -103,6 +104,39 @@ your proxy's header only when the proxy is yours), set
 
 
 `sse: false` removes the endpoint entirely.
+
+## Compression {#compression}
+
+Off by default. `sse: { compression: true }` gzips the event stream for a
+GET whose `Accept-Encoding` admits gzip — one gzip member for the life of
+the response, **flushed after every event**, so nothing waits for a next
+event and every event compresses against the stream's own history. The same
+shape repeated is where it pays: a 125 B tick leaves as 16 B on the wire
+(7.8×, `bench/http-compression.js`), the effect
+[context takeover](../reference/wire-format#context-takeover) has on a
+WebSocket, without the extra option.
+
+```js
+new Server({
+  router,
+  sse: {
+    compression: {
+      filter: (call) => call.headers['x-forwarded-proto'] !== undefined, // per GET, optional
+      level: 6,
+      memLevel: 8,
+    },
+  },
+});
+```
+
+The client changes nothing: `fetch` inflates the stream incrementally, in
+browsers and in Node, and the wrpc SSE client is that `fetch`. The decision
+is per response — a re-attach that stops accepting gzip gets a plain stream
+on the same channel, replay included. What it costs is one zlib deflate
+state per live stream (~256 KiB at the defaults; `memLevel` lowers it) and a
+deflate call per event (~11 µs). A proxy that buffers compressed responses
+needs the same `X-Accel-Buffering: no` treatment as a plain stream; the
+stream's `Cache-Control: no-transform` already asks it not to re-encode.
 
 ## Replay is honest
 

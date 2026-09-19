@@ -87,6 +87,24 @@ export interface SseOptions {
    * (trust it only when the proxy is yours).
    */
   clientAddress?: (call: { headers?: Record<string, unknown>; remoteAddress?: string }) => string;
+  /**
+   * gzip the event stream for a GET whose `Accept-Encoding` admits it — one
+   * gzip member per response, flushed after every event, so a repeated
+   * event shape compresses against the stream's own history and nothing
+   * waits for a next event. Off by default; decided per response, so a
+   * re-attach negotiates again. `filter(call)` decides per GET, `level` and
+   * `memLevel` tune zlib (one deflate state per live stream — ~256 KiB at
+   * the defaults). The wrpc client needs nothing: `fetch` inflates.
+   */
+  compression?: boolean | SseCompressionOptions;
+}
+
+export interface SseCompressionOptions {
+  filter?: (call: { headers?: Record<string, unknown>; remoteAddress?: string; method?: string; url?: string }) => boolean;
+  /** zlib level, -1..9. */
+  level?: number;
+  /** zlib memLevel, 1..9. */
+  memLevel?: number;
 }
 
 /** The server-side transport behind one event stream. Text-only. */

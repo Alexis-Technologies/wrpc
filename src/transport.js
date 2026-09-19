@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const zlib = require('node:zlib');
 
 const { toKebab } = require('./utils.js');
 const { cacheHeadersFor, RESERVED_HEADERS } = require('./rpc/rest.js');
@@ -8,6 +9,7 @@ const { STATUS_CODES } = require('./status.js');
 const { publicErrorMessage, publicErrorDetails, wireError } = require('./rpc/errors.js');
 const { ServerTransport } = require('./rpc/serverTransport.js');
 const { META_HEADER, META_PREFIX, CHANNEL_HEADER } = require('./wire.js');
+const { shouldEncode, markEncoded, gzipOptions } = require('./contentEncoding.js');
 
 // RFC 6265 permits '=' inside cookie values (base64, JWT) — split each
 // pair on the FIRST '=' only, or the value gets silently truncated.
@@ -138,12 +140,16 @@ class ServerHttpTransport extends ServerTransport {
   #rest = null;
 
   #status = null;
+  // The normalized `http.compression` option (contentEncoding.js), or null:
+  // the core hands it to the transports it builds for real answers.
+  #compression = null;
 
   constructor(call, options = {}) {
     super(call.remoteAddress ?? '');
     this.call = call;
     this.headers = options.headers ?? { ...SECURITY_HEADERS };
     this.#respond = call.respond;
+    if (options.compression) this.#compression = options.compression;
     if (Array.isArray(options.batch)) this.#batch = options.batch;
     if (options.rest) {
       this.#rest = options.rest;
@@ -291,12 +297,43 @@ class ServerHttpTransport extends ServerTransport {
     return this.write(bytes, status);
   }
 
+  // The one funnel every HTTP answer leaves through — packet, batch, REST,
+  // error — which is what makes `Content-Encoding` a single decision:
+  // enabled, past the threshold, accepted by the peer, not already encoded
+  // upstream, admitted by the filter. Below the async threshold the gzip is
+  // synchronous, like permessage-deflate's default; at or over it the body
+  // goes to zlib's threadpool and the response is written from the
+  // callback — `responded` is already true, so a second write and a close
+  // racing it are no-ops either way.
   write(data, httpCode = 200) {
     if (this.#responded) return true;
     this.#responded = true;
     const body = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    const headers = { ...this.headers, 'Content-Length': body.length };
+    const headers = { ...this.headers };
     if (this.#setCookies.length > 0) headers['Set-Cookie'] = this.#setCookies;
+    const compression = this.#compression;
+    if (compression !== null && body.length >= compression.threshold && shouldEncode(compression, this.call, headers)) {
+      markEncoded(headers);
+      if (compression.async !== null && body.length >= compression.async.threshold) {
+        zlib.gzip(body, gzipOptions(compression), (error, encoded) => {
+          if (error) {
+            // zlib refused the body (out of memory is the realistic case):
+            // the plain bytes still answer, and honestly labelled.
+            delete headers['Content-Encoding'];
+            this.#answer(headers, body, httpCode);
+          } else {
+            this.#answer(headers, encoded, httpCode);
+          }
+        });
+        return true;
+      }
+      return this.#answer(headers, zlib.gzipSync(body, gzipOptions(compression)), httpCode);
+    }
+    return this.#answer(headers, body, httpCode);
+  }
+
+  #answer(headers, body, httpCode) {
+    headers['Content-Length'] = body.length;
     this.#respond({ status: httpCode, headers, body });
     this.emit('close');
     return true;

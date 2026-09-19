@@ -32,6 +32,13 @@ expectAssignable<RpcServerOptions>({ router, sse: { retention: 60_000, replay: 2
 expectAssignable<RpcServerOptions>({ router, sse: false });
 expectError<RpcServerOptions>({ router, sse: { retention: 'soon' } });
 expectAssignable<SseOptions>({ retry: 1000 });
+// sse.compression: off by default, per-GET filter, zlib tuning
+expectAssignable<SseOptions>({ compression: true });
+expectAssignable<SseOptions>({
+  compression: { level: 9, memLevel: 8, filter: (call) => call.headers?.['x-a'] === '1' },
+});
+expectAssignable<RpcServerOptions>({ router, sse: { compression: { filter: () => true } } });
+expectError<SseOptions>({ compression: 'gzip' });
 
 // A call that can stream is what the events endpoint needs
 expectAssignable<HttpCall>({
