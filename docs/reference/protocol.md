@@ -754,7 +754,9 @@ bytes 0–3  LENGTH  payload byte length, unsigned, big-endian
 byte  4    KIND    0 = a wrpc packet (UTF-8 JSON — what a WebSocket text frame carries)
                    1 = a binary stream chunk (a chunkEncode frame, see the wire-format page)
                    2 = a capabilities message (UTF-8 JSON) — see below
-                   3–255 reserved
+                   3 = a packet, compressed with the negotiated codec — only once `deflate` was negotiated
+                   4 = a chunk, compressed — likewise
+                   5–255 reserved
 ```
 
 - A message is one contiguous run of bytes; there is no fragmentation and
@@ -777,9 +779,21 @@ new session the way it does across a reconnected socket.
 ### Capabilities and per-stream transport {#webtransport-streams}
 
 Each end's **first message** on the control stream MAY be a capabilities
-message (KIND 2): a JSON object whose known key is `streams`
-(`{"streams":true}`). Unknown keys are ignored; an end that sends none, or
-`{}`, has announced nothing, and its peer treats it as a revision-1 peer.
+message (KIND 2): a JSON object whose known keys are `streams`
+(`{"streams":true}`) and `deflate` (a codec id, `"deflate-raw"` for the
+platform codec). Unknown keys are ignored; an end that sends none, or `{}`,
+has announced nothing, and its peer treats it as a revision-1 peer.
+
+When **both** ends announced the same `deflate` id, either MAY send a packet
+as KIND 3 or a chunk as KIND 4: the payload is the codec's output over the
+bytes KIND 0 or 1 would have carried, and the receiver inflates it before
+reading — a KIND 3 payload is UTF-8 JSON only after inflation. The choice is
+per message and the sender's (a message under its threshold, or one the
+codec did not shrink, goes as KIND 0 or 1 at any time). A compressed kind
+before both ends named the same codec, a payload that does not inflate, or
+one that inflates past the receiver's cap is a protocol error (1002).
+`deflate-raw` is raw DEFLATE (RFC 1951), no zlib or gzip wrapper. Datagrams
+and chunks on their own streams are never compressed.
 
 When **both** ends announced `streams`, a sender MAY carry a binary
 stream's chunks on a **unidirectional WebTransport stream of their own**
@@ -914,7 +928,8 @@ mechanism, never a field of a wrpc packet:
 | WebSocket | RFC 7692 `permessage-deflate` (`perMessageDeflate` on the engine) | the upgrade handshake |
 | HTTP, packet mode and REST | `Content-Encoding: gzip` on the response (`http.compression`) | the request's `Accept-Encoding`; the response carries `Vary: Accept-Encoding` |
 | Server-Sent Events | `Content-Encoding: gzip` on the stream — one gzip member, sync-flushed after every event (`sse.compression`) | the opening GET's `Accept-Encoding`, per response |
-| WebRTC, WebTransport, the broker binding | none | — |
+| WebTransport | per message, KIND 3/4 on the control stream (`compression` on both ends) | the `deflate` key of the capabilities message — on only when both ends named the same codec |
+| WebRTC, the broker binding | none | — |
 
 An HTTP response is encoded only when its body is at or over the configured
 threshold and nothing upstream already set a `Content-Encoding`; a `204` and

@@ -59,6 +59,38 @@ export type WrpcCodec = WrpcPacketCodec | { rest: WrpcRestCodec };
  */
 export declare function isCodec(value: unknown): value is WrpcCodec;
 
+/**
+ * A per-message compression codec for the transports that have nothing
+ * under them (WebRTC data channels, WebTransport streams): `id` is what
+ * the two ends compare — a peer compresses only for a peer that named the
+ * same codec — and either method may answer a promise (a browser's
+ * CompressionStream can only). `decode` MUST stop at `maxOutput` bytes.
+ * The platform default is raw deflate (`'deflate-raw'`: node:zlib on
+ * Node, CompressionStream in a browser); `threshold` is the codec's own
+ * default for the size under which a message goes plain.
+ */
+export interface Compressor {
+  id: string;
+  threshold?: number;
+  encode(bytes: Uint8Array): Uint8Array | Promise<Uint8Array>;
+  decode(bytes: Uint8Array, maxOutput: number): Uint8Array | Promise<Uint8Array>;
+}
+/** Structural check for the `Compressor` contract. */
+export declare function isCompressor(value: unknown): value is Compressor;
+
+/**
+ * `compression: true | { codec, threshold }` — off by default. `true`
+ * takes the platform codec; `codec` injects one (`@alexify/wrpc/deflate`
+ * for a dictionary); `threshold` is the byte size under which a message
+ * goes plain (the codec's own default, 1 KiB on Node and 4 KiB in a
+ * browser). A platform with no native codec and nothing injected stays
+ * off.
+ */
+export interface CompressionOptions {
+  codec?: Compressor;
+  threshold?: number;
+}
+
 export class WrpcError extends Error {
   code: number;
   /** Structured issue lists the server attached; an optional wire field. */
@@ -198,6 +230,13 @@ export interface WtTransportOptions {
   lowWaterMark?: number;
   /** The largest inbound message accepted (default 16 MiB); past it the session is hung up. */
   maxMessage?: number;
+  /**
+   * @experimental Per-message compression on the control stream, off by
+   * default; connect()'s own `compression` wins over this one. Negotiated
+   * through the capabilities message: on only once the server named the
+   * same codec.
+   */
+  compression?: boolean | CompressionOptions;
 }
 
 /**
@@ -214,6 +253,8 @@ export declare class ClientWtTransport extends ClientTransport {
   constructor(url: string, options?: WtTransportOptions);
   /** The WebTransport session spoken on; null before open() and after close. */
   readonly session: unknown;
+  /** The compression codec id in effect — both ends named it — or null. */
+  readonly compression: string | null;
   /** The largest datagram the session carries; 0 when it carries none. */
   readonly maxDatagramSize: number;
   writeUnreliable(data: string): boolean;
@@ -897,6 +938,13 @@ export interface WrpcClientOptions {
    * Without either, open() throws and a fallback list moves on.
    */
   wt?: WtTransportOptions;
+  /**
+   * @experimental Per-message compression on the transports that have no
+   * compression under them — WebTransport today. Off by default; on only
+   * once the peer named the same codec. The WebSocket has the server's
+   * `perMessageDeflate` instead.
+   */
+  compression?: boolean | CompressionOptions;
   /**
    * @experimental The `broker` transport (`@alexify/wrpc/broker`, Node): a
    * broker with the `direct` capability, or the capability itself. Typed

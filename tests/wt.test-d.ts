@@ -8,6 +8,9 @@ expectType<typeof wt.StreamParser>(wt.StreamParser);
 expectType<0>(wt.KIND_TEXT);
 expectType<1>(wt.KIND_BINARY);
 expectType<5>(wt.HEADER_BYTES);
+// The compressed kinds, accepted only once negotiated
+expectType<3>(wt.KIND_TEXT_DEFLATE);
+expectType<4>(wt.KIND_BINARY_DEFLATE);
 
 // The session contract is structural: anything W3C-shaped qualifies
 declare const stream: WtStream;

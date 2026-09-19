@@ -89,6 +89,7 @@ const attachSession = async (server, session, options = {}) => {
     lowWaterMark,
     maxMessage,
     idleTimeout,
+    compression,
   } = options;
   if (verify && (await verify({ headers, url, remoteAddress, session })) === false) {
     closeQuietly(session, { closeCode: 403, reason: 'Forbidden' });
@@ -100,7 +101,14 @@ const attachSession = async (server, session, options = {}) => {
     closeQuietly(session, { closeCode: 408, reason: 'No control stream' });
     return null;
   }
-  const socket = new WtSocket(session, stream, { remoteAddress, highWaterMark, lowWaterMark, maxMessage, idleTimeout });
+  const socket = new WtSocket(session, stream, {
+    remoteAddress,
+    highWaterMark,
+    lowWaterMark,
+    maxMessage,
+    idleTimeout,
+    compression,
+  });
   return rpc.attachSocket(socket, { headers, url, remoteAddress, kind });
 };
 

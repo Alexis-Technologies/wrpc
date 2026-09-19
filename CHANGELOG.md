@@ -13,6 +13,30 @@ narrower promise — see
 
 ### Added
 
+**Per-message compression on WebTransport (`compression`, both ends)**
+- Nothing compresses a QUIC stream's payload — HTTP/3 does headers only —
+  so a WebTransport session carried exactly the bytes wrpc handed it. Now
+  `attachSession`/`acceptSessions` and the client (`connect(url,
+  { compression })` or the `wt` bag) take `compression: true | { codec,
+  threshold }`, off by default and negotiated: each end names its codec in
+  the capabilities message (`deflate: "deflate-raw"`) and compresses only
+  once the other named the same, so a lone end is served plain. A packet
+  or chunk past the threshold leaves as KIND 3 or 4 and is inflated before
+  delivery; `{ compress: false }` per message still works; chunks on their
+  own streams and datagrams are never compressed; an inflate past
+  `maxMessage` is a 1002.
+- `src/compression/`: the structural `Compressor` seam (`isCompressor`,
+  exported from the main entry — `id`, `encode`, `decode(bytes, maxOutput)`,
+  either may answer a promise), the platform codec as a browser-swapped
+  pair (node:zlib raw deflate, sync, 1 KiB threshold; `CompressionStream`,
+  async, 4 KiB — ~6× the cost per call and no dictionary), and the
+  `Sequencer` that keeps the wire in order around an asynchronous codec
+  with a synchronous fast path when nothing is in flight. Measured
+  (`bench/message-compression.js`): a 1.4 KB callback 6.4× at 84K/sec, a
+  24 KB one 13.8× at 12K/sec, a 108 B event 1.1× — the threshold's reason.
+- The main browser entry's budget 20 → 22 KB (measured 20.8), sse 21 → 23:
+  the seam every browser transport will share.
+
 **`Content-Encoding` on the HTTP side (`http.compression`, `sse.compression`)**
 - gzip for packet-mode and REST answers, opt-in and off by default:
   `http: { compression: true | { threshold, filter, level, memLevel, async } }`.

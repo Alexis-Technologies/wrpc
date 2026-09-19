@@ -347,6 +347,22 @@ expectAssignable<wrpc.RpcServerOptions>({
   },
 });
 expectAssignable<wrpc.HttpCompressionOptions>({ async: true });
+// Per-message compression (WebTransport, WebRTC): a structural codec, negotiated by id
+expectType<boolean>(wrpc.isCompressor({}));
+declare const maybeCodec: unknown;
+if (wrpc.isCompressor(maybeCodec)) expectType<string>(maybeCodec.id);
+expectAssignable<wrpc.Compressor>({ id: 'x', encode: (b: Uint8Array) => b, decode: (b: Uint8Array) => b });
+expectAssignable<wrpc.Compressor>({
+  id: 'x',
+  threshold: 512,
+  encode: async (b: Uint8Array) => b,
+  decode: async (b: Uint8Array, max: number) => b.subarray(0, max),
+});
+expectError<wrpc.Compressor>({ encode: (b: Uint8Array) => b, decode: (b: Uint8Array) => b });
+expectAssignable<wrpc.CompressionOptions>({ threshold: 2048 });
+expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ transport: 'wt', compression: true });
+expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ wt: { compression: { threshold: 4096 } } });
+expectError<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ compression: 'zstd' });
 expectError<wrpc.RpcServerOptions>({ router, http: { compression: 'gzip' } });
 expectError<wrpc.RpcServerOptions>({ router, http: { compression: { threshold: 'big' } } });
 expectAssignable<wrpc.ServerOptions>({ router, maxBodySize: 1024 });

@@ -90,6 +90,15 @@ export interface WtSocketOptions {
    * end (quico 0.4) needs it to shed a peer that vanished.
    */
   idleTimeout?: number;
+  /**
+   * Per-message compression on the control stream (src/compression), off
+   * by default: `true` for the platform codec (raw deflate through
+   * node:zlib), `{ codec, threshold }` to inject one or move the size
+   * under which a message goes plain (1 KiB). Announced in the
+   * capabilities message; applied only once the client named the same
+   * codec, so a client without it is served plain.
+   */
+  compression?: boolean | import('./client.js').CompressionOptions;
 }
 
 export interface AttachSessionOptions extends SessionMeta, WtSocketOptions {
@@ -108,6 +117,8 @@ export interface AttachSessionOptions extends SessionMeta, WtSocketOptions {
  */
 export declare class WtSocket {
   constructor(session: WtSession, stream: WtStream, options?: WtSocketOptions);
+  /** The compression codec id in effect — both ends named it — or null. */
+  readonly compression: string | null;
   readonly session: WtSession;
   readonly stream: WtStream;
   readonly bufferedAmount: number;
@@ -225,6 +236,9 @@ export declare const KIND_TEXT: 0;
 export declare const KIND_BINARY: 1;
 /** The capabilities message each end sends first on the control stream. */
 export declare const KIND_CAPS: 2;
+/** A packet (3) or a chunk (4) compressed with the negotiated codec — accepted only once both ends named it. */
+export declare const KIND_TEXT_DEFLATE: 3;
+export declare const KIND_BINARY_DEFLATE: 4;
 export declare const DEFAULT_MAX_MESSAGE: number;
 export declare const INLINE_TEXT: number;
 export declare const DEFAULT_ACCEPT_TIMEOUT: number;
@@ -241,6 +255,10 @@ export declare function toBytes(input: ArrayBuffer | ArrayBufferView): Uint8Arra
 export declare function frame(kind: 0 | 1 | 2, bytes: Uint8Array): Uint8Array;
 /** A capabilities message: UTF-8 JSON under a KIND 2 header. */
 export declare function frameCaps(text: string): Uint8Array;
+/** A packet's bytes as text — the parser's own decode, for a packet inflated after parsing; throws FramingError on invalid UTF-8. */
+export declare function decodeText(bytes: Uint8Array): string;
+/** The object a capabilities message carries, or null when it is not one. */
+export declare function parseCaps(text: string): Record<string, unknown> | null;
 /** A packet: UTF-8 under a KIND 0 header. */
 export declare function frameText(text: string): Uint8Array;
 
@@ -258,7 +276,9 @@ export declare function datagramWriter(datagrams: WtDatagrams | null | undefined
  * malformed header and resets.
  */
 export declare class StreamParser {
-  constructor(options: { maxMessage?: number; onMessage: (kind: 0 | 1 | 2, data: string | Uint8Array) => void });
+  constructor(options: { maxMessage?: number; onMessage: (kind: 0 | 1 | 2 | 3 | 4, data: string | Uint8Array) => void });
+  /** Whether the compressed kinds (3, 4) are accepted; a protocol error until the transport sets it. */
+  deflate: boolean;
   readonly pending: number;
   push(input: ArrayBuffer | ArrayBufferView): void;
   reset(): void;

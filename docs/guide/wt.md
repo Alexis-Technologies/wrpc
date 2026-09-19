@@ -246,6 +246,7 @@ attachSession(server, session, {
   maxMessage: 16 * 1024 * 1024, // the largest inbound message; past it the peer is hung up (1002)
   idleTimeout: 0, // ms without inbound data before the session is terminated (0 = off)
   kind: 'wt', // what Client.transportKind reports
+  compression: false, // per-message deflate on the control stream — see below
 });
 
 acceptSessions(server, sessions, {
@@ -268,8 +269,50 @@ connect(url, {
     lowWaterMark,
     maxMessage,
   },
+  compression: false, // per-message deflate, both ends must turn it on — see below
 });
 ```
+
+## Compression {#compression}
+
+Nothing compresses a QUIC stream's payload for you — HTTP/3 compresses
+headers (QPACK), never bodies — so a WebTransport session carries exactly
+the bytes wrpc hands it. Per-message compression is the answer, **off by
+default** like every compression knob in wrpc, and negotiated: each end
+names its codec in the [capabilities message](../reference/protocol#webtransport-streams)
+and compresses only once the other end named the same one, so a client
+with the option talking to a server without it is served plain, and the
+other way round.
+
+```js
+// Server: one word for the platform codec (raw deflate through node:zlib).
+acceptSessions(server, sessions, { compression: true });
+
+// Client: connect()'s own option, or the `wt` bag's; both ends must agree.
+connect(url, { transport: ['wt', 'ws'], compression: { threshold: 2048 } });
+```
+
+A packet or a chunk at or over `threshold` bytes leaves as its compressed
+kind (3 for a packet, 4 for a chunk) and is inflated before delivery;
+smaller ones go as they are. The threshold is the codec's own default —
+1 KiB on Node, 4 KiB in a browser, where the only codec a page has is
+`CompressionStream`, ~6× the cost of zlib per call and without a
+dictionary, so a small message barely shrinks. The codec is a structural
+seam: `{ codec }` injects anything with an `id`, `encode(bytes)` and
+`decode(bytes, maxOutput)` — the dictionary codec of `@alexify/wrpc/deflate`
+once it exists, or your own — and either method may answer a promise;
+messages stay in order around it. Per message, `{ compress: false }` on an
+emit sends that one plain, as on a WebSocket. Chunks that ride their own
+WebTransport stream (the [stream mux](#streams-without-head-of-line-blocking))
+and datagrams are never compressed.
+
+What it costs and buys, `bench/message-compression.js` (one message at a
+time, node:zlib): a 108 B event 143K/sec for 1.1× — the reason for the
+threshold — a 1.4 KB callback 84K/sec for 6.4×, a 24 KB one 12K/sec for
+13.8×. Inflating is 3–6× cheaper than deflating at every size. A page's
+`CompressionStream` runs the same ratios at 23K/sec on the small message
+and 9K/sec at 24 KB. An inflated message past `maxMessage` is a protocol
+error (1002), the same cap a plain one has.
 
 ## What it cannot do
 

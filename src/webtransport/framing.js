@@ -11,7 +11,9 @@
 //   byte  4    KIND    0 = a wrpc packet (UTF-8 JSON, what a WebSocket text frame carries)
 //                      1 = a binary stream chunk (a chunkEncode frame)
 //                      2 = a capabilities message (UTF-8 JSON), each end's first message
-//                      3-255 reserved — a protocol error
+//                      3 = a packet, compressed (src/compression) — only once negotiated
+//                      4 = a chunk, compressed — likewise
+//                      5-255 reserved — a protocol error, as are 3 and 4 before negotiation
 //
 // No fragmentation and no FIN bit: a QUIC stream is ordered and reliable and
 // a message of any size is one contiguous run of bytes. The receiver's cap
@@ -31,6 +33,10 @@ const HEADER_BYTES = 5;
 const KIND_TEXT = 0;
 const KIND_BINARY = 1;
 const KIND_CAPS = 2;
+// Compressed twins of KIND_TEXT and KIND_BINARY: the payload is what the
+// negotiated codec produced, and the receiver inflates before it reads.
+const KIND_TEXT_DEFLATE = 3;
+const KIND_BINARY_DEFLATE = 4;
 const DEFAULT_MAX_MESSAGE = 16 * 1024 * 1024;
 // A packet up to this many UTF-16 code units is encoded straight into a
 // frame sized for the worst case (three bytes per code unit) with
@@ -60,6 +66,25 @@ const toBytes = (input) => {
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
   if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
   throw new TypeError('framing: expected an ArrayBuffer or an ArrayBufferView');
+};
+
+/** A packet's bytes as text — the parser's own decode, for a packet inflated after parsing. */
+const decodeText = (bytes) => {
+  try {
+    return TEXT_DECODER.decode(bytes);
+  } catch {
+    throw new FramingError('invalid UTF-8 in a packet', 'utf8');
+  }
+};
+
+/** The object a capabilities message carries, or null when it is not one. */
+const parseCaps = (text) => {
+  try {
+    const caps = JSON.parse(text);
+    return typeof caps === 'object' && caps !== null ? caps : null;
+  } catch {
+    return null;
+  }
 };
 
 const writeHeader = (out, length, kind) => {
@@ -146,6 +171,10 @@ const parseDatagram = (input) => {
  * parser is reset so the caller can hang up cleanly.
  */
 class StreamParser {
+  // Whether the compressed kinds (3, 4) are accepted: set by the transport
+  // once both ends named the same codec, a protocol error before.
+  deflate = false;
+
   #max;
   #onMessage;
   // Buffered reads, the index of the first live one and the read cursor
@@ -186,7 +215,9 @@ class StreamParser {
         const header = this.#take(HEADER_BYTES);
         const length = ((header[0] << 24) >>> 0) + (header[1] << 16) + (header[2] << 8) + header[3];
         const kind = header[4];
-        if (kind > KIND_CAPS) throw this.#fail('unknown message kind', 'kind');
+        if (kind > KIND_CAPS && !(this.deflate && kind <= KIND_BINARY_DEFLATE)) {
+          throw this.#fail('unknown message kind', 'kind');
+        }
         if (length > this.#max) throw this.#fail('message exceeds maxMessage', 'too-large');
         if (length === 0) {
           this.#deliver(kind, EMPTY);
@@ -215,7 +246,9 @@ class StreamParser {
     this.#need = HEADER_BYTES;
     this.#length = -1;
     this.#kind = -1;
-    if (kind === KIND_BINARY) return void this.#onMessage(kind, payload);
+    // Bytes as they are for a chunk and for either compressed kind — a
+    // compressed packet is text only once the transport has inflated it.
+    if (kind === KIND_BINARY || kind >= KIND_TEXT_DEFLATE) return void this.#onMessage(kind, payload);
     let text;
     try {
       text = TEXT_DECODER.decode(payload);
@@ -279,10 +312,14 @@ module.exports = {
   KIND_TEXT,
   KIND_BINARY,
   KIND_CAPS,
+  KIND_TEXT_DEFLATE,
+  KIND_BINARY_DEFLATE,
   DEFAULT_MAX_MESSAGE,
   INLINE_TEXT,
   FramingError,
   toBytes,
+  decodeText,
+  parseCaps,
   frame,
   frameText,
   frameCaps,

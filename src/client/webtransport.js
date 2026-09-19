@@ -31,12 +31,19 @@ const {
   parseDatagram,
   datagramWriter,
   toBytes,
+  decodeText,
+  parseCaps,
   KIND_TEXT,
   KIND_BINARY,
   KIND_CAPS,
+  KIND_TEXT_DEFLATE,
+  KIND_BINARY_DEFLATE,
   DEFAULT_MAX_MESSAGE,
 } = require('../webtransport/framing.js');
 const { StreamMux } = require('../webtransport/streams.js');
+const { normalizeCompression, negotiate, Sequencer } = require('../compression/index.js');
+
+const TEXT_ENCODER = new TextEncoder();
 
 // Outbound flow control, in bytes handed to the writer and not yet taken
 // by it: write() answers false above the high-water mark, and 'drain'
@@ -83,6 +90,13 @@ class ClientWtTransport extends ClientTransport {
   #highWater;
   #lowWater;
   #maxMessage;
+  // Per-message compression (src/compression): the option resolved per
+  // open — connect()'s `compression`, else the `wt` bag's — and what is in
+  // effect once the server named the same codec.
+  #compression = null;
+  #active = null;
+  #outbound = null;
+  #inbound = null;
 
   /**
    * `options` are the same `wt` options connect() takes, for a transport
@@ -127,6 +141,7 @@ class ClientWtTransport extends ClientTransport {
     const wt = options.wt ? { ...this.#options, ...options.wt } : this.#options;
     const WebTransport = wt.WebTransport ?? globalThis.WebTransport;
     if (typeof WebTransport !== 'function') throw new Error(UNAVAILABLE);
+    this.#compression = normalizeCompression(options.compression ?? wt.compression, 'wt transport: options');
     const attempt = ++this.#attempt;
     const init = {};
     for (let i = 0; i < INIT_KEYS.length; i++) {
@@ -173,19 +188,27 @@ class ClientWtTransport extends ClientTransport {
             this.#queued += size;
           },
           onSent: (size) => this.#sent(size),
-          writeControl: (chunk) => this.#writeFrame(frame(KIND_BINARY, chunk)),
+          // Through the outbound order: a stream packet must not overtake
+          // a message still being compressed.
+          writeControl: (chunk) => this.#enqueue(frame(KIND_BINARY, chunk)),
           sendControl: (packet) => super.send(packet),
         });
     this.#mux = mux;
-    this.#parser = new StreamParser({
+    this.#active = null;
+    this.#outbound = new Sequencer((error) => this.#escalate(error));
+    this.#inbound = new Sequencer((error) => this.#violation(session, error));
+    const parser = new StreamParser({
       maxMessage: this.#maxMessage,
       onMessage: (kind, data) => {
-        if (kind === KIND_CAPS) return void mux?.peerCaps(data);
-        if (kind === KIND_TEXT && mux !== null && mux.packet(data)) return;
-        this.emit('message', data);
+        if (kind === KIND_CAPS) {
+          mux?.peerCaps(data);
+          return void this.#negotiate(parser, data);
+        }
+        this.#receive(session, kind, data);
       },
     });
-    this.#writer.write(frameCaps(mux ? StreamMux.caps(session) : '{}')).catch(() => {});
+    this.#parser = parser;
+    this.#writer.write(frameCaps(this.#caps(session, mux))).catch(() => {});
     void this.#read(session, stream.readable);
     if (mux && typeof session.incomingUnidirectionalStreams?.getReader === 'function') {
       void this.#readUni(session, session.incomingUnidirectionalStreams, mux);
@@ -244,6 +267,65 @@ class ClientWtTransport extends ClientTransport {
     super.send(obj);
   }
 
+  /** The codec id in effect — both ends named it — or null. */
+  get compression() {
+    return this.#active === null ? null : this.#active.id;
+  }
+
+  // What we announce: the mux's streams (none under a codec), plus the
+  // compression codec when the option is on.
+  #caps(session, mux) {
+    const text = mux ? StreamMux.caps(session) : '{}';
+    if (this.#compression === null) return text;
+    const caps = parseCaps(text) ?? {};
+    caps.deflate = this.#compression.id;
+    return JSON.stringify(caps);
+  }
+
+  #negotiate(parser, text) {
+    const active = negotiate(this.#compression, parseCaps(text)?.deflate);
+    this.#active = active;
+    parser.deflate = active !== null;
+  }
+
+  // Plain kinds are delivered at once while nothing is being inflated
+  // ahead of them; a compressed kind is inflated — possibly asynchronously
+  // — and everything behind it waits its turn.
+  #receive(session, kind, data) {
+    const active = this.#active;
+    if (kind <= KIND_BINARY) {
+      if (active === null || this.#inbound.pending === 0) return void this.#deliver(kind, data);
+      return void this.#inbound.push(data, (bytes) => this.#deliver(kind, bytes));
+    }
+    const plainKind = kind === KIND_TEXT_DEFLATE ? KIND_TEXT : KIND_BINARY;
+    let inflated;
+    try {
+      inflated = active.codec.decode(data, this.#maxMessage);
+    } catch (error) {
+      return void this.#violation(session, error);
+    }
+    this.#inbound.push(
+      inflated,
+      (bytes) => this.#deliver(plainKind, plainKind === KIND_TEXT ? decodeText(bytes) : bytes),
+      (error) => this.#violation(session, error),
+    );
+  }
+
+  #deliver(kind, data) {
+    if (!this.active) return;
+    if (kind === KIND_TEXT && this.#mux !== null && this.#mux.packet(data)) return;
+    this.emit('message', data);
+  }
+
+  // A message the server sent that cannot be read is its protocol
+  // violation: reported, and the session hung up like a framing error.
+  #violation(session, error) {
+    if (this.#session !== session) return;
+    this.#escalate(error);
+    this.#down(session);
+    closeQuietly(session);
+  }
+
   async #readDatagrams(session, readable) {
     const reader = readable.getReader();
     try {
@@ -278,18 +360,62 @@ class ClientWtTransport extends ClientTransport {
    * connected (the core turns that into a coded 503); answers false above
    * the high-water mark, after which 'drain' follows.
    */
-  write(data) {
+  write(data, options = null) {
     if (!this.active) throw new Error('Not connected');
-    let bytes;
+    const active = this.#active;
+    const plain = active === null || (options !== null && options.compress === false);
     if (typeof data === 'string') {
-      bytes = frameText(data);
-    } else {
-      const chunk = toBytes(data);
-      // A chunk of a stream that has its own WebTransport stream goes there.
-      if (this.#mux !== null && this.#mux.chunk(chunk)) return this.#queued <= this.#highWater;
-      bytes = frame(KIND_BINARY, chunk);
+      if (plain || data.length < active.threshold) return this.#enqueue(frameText(data));
+      return this.#compress(KIND_TEXT, TEXT_ENCODER.encode(data));
     }
-    return this.#writeFrame(bytes);
+    const chunk = toBytes(data);
+    // A chunk of a stream that has its own WebTransport stream goes there.
+    if (this.#mux !== null && this.#mux.chunk(chunk)) return this.#queued <= this.#highWater;
+    if (plain || chunk.length < active.threshold) return this.#enqueue(frame(KIND_BINARY, chunk));
+    return this.#compress(KIND_BINARY, chunk);
+  }
+
+  // A ready frame, in order: straight to the writer while nothing is being
+  // compressed ahead of it, behind the queue otherwise.
+  #enqueue(bytes) {
+    if (this.#outbound.pending === 0) return this.#writeFrame(bytes);
+    const size = bytes.length;
+    this.#queued += size;
+    this.#outbound.push(bytes, (ready) => {
+      this.#queued -= size;
+      if (this.active) this.#writeFrame(ready);
+    });
+    return this.#queued <= this.#highWater;
+  }
+
+  // Compresses one message past the threshold — at once or later, as the
+  // codec answers — and sends it under the compressed kind when smaller,
+  // plain when not or when the codec failed.
+  #compress(kind, bytes) {
+    const size = bytes.length;
+    this.#queued += size;
+    const deflated = kind === KIND_TEXT ? KIND_TEXT_DEFLATE : KIND_BINARY_DEFLATE;
+    const plain = () => {
+      this.#queued -= size;
+      if (this.active) this.#writeFrame(frame(kind, bytes));
+    };
+    let encoded;
+    try {
+      encoded = this.#active.codec.encode(bytes);
+    } catch {
+      plain();
+      return this.#queued <= this.#highWater;
+    }
+    this.#outbound.push(
+      encoded,
+      (out) => {
+        if (out.length >= size) return void plain();
+        this.#queued -= size;
+        if (this.active) this.#writeFrame(frame(deflated, out));
+      },
+      plain,
+    );
+    return this.#queued <= this.#highWater;
   }
 
   #writeFrame(bytes) {

@@ -65,7 +65,12 @@ const ENTRIES = [
   // of a setTimeout + three closures per call), the synchronous `callback`
   // fast path and the per-message `compress` option — +0.6 KB (measured
   // 19.0), earned by bench/browser/calls.js and bench/bench.js.
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 20 },
+  // 20 -> 22 for per-message compression on the WebTransport client
+  // (src/compression: the structural codec seam, the Sequencer that keeps an
+  // asynchronous CompressionStream's output in order, the KIND 3/4 framing
+  // and the caps negotiation) — +1.3 KB, measured 20.8 against 19.5. Off by
+  // default; the bytes are the seam every browser transport shares.
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 22 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
@@ -91,7 +96,8 @@ const ENTRIES = [
   // 17 -> 18 with the main entry's WebTransport raise, for the same reason (measured 17.8);
   // 18 -> 20 with its datagram + stream-mux raise (measured 19.2).
   // 20 -> 21 with the main entry's call-path raise (measured 19.9).
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 21 },
+  // 21 -> 23 with the main entry's compression raise (measured 21.7).
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 23 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and
