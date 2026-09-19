@@ -3,6 +3,7 @@
 const { Emitter, createEventStream, EventStream, isCodec } = require('./utils.js');
 const { isCompressor } = require('./compression/index.js');
 const { dictionaryCompressor } = require('./compression/dictionary.js');
+const { deflateCompressor, brotliCompressor, zstdCompressor } = require('./compression/codecs.js');
 const { buildDictionary } = require('./rpc/dictionary.js');
 const { WrpcClient, WrpcClientProxy, WrpcError, connect } = require('./client.js');
 const { Server } = require('./server.js');
@@ -48,6 +49,9 @@ module.exports = {
   isCompressor,
   buildDictionary,
   dictionaryCompressor,
+  deflateCompressor,
+  brotliCompressor,
+  zstdCompressor,
   isTokenTransport,
   MemorySessionStore,
   ServerTransport,

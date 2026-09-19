@@ -193,9 +193,32 @@ coded `DeflateError` rather than a wrong byte.
 
 Every per-message knob takes `{ codec }`: anything with an `id`,
 `encode(bytes)` and `decode(bytes, maxOutput)` — `isCompressor` is the
-structural check, exported from the main entry. The platform codec is raw
-deflate (`'deflate-raw'`: `node:zlib` on Node, `CompressionStream` in a
-browser); the dictionary codec above is one injection; yours is another.
+structural check, exported from the main entry. `codec` also takes the
+**name** of a platform codec — the ids are `CompressionStream`'s format
+names, so a Node peer and a browser peer negotiate the same one:
+
+| `codec` | Node | Browser | Default level |
+| --- | --- | --- | --- |
+| `'deflate-raw'` — what `compression: true` means | every Node | every `CompressionStream` | zlib 3 |
+| `'brotli'` | every Node | some (the constructor answers) | quality 4 |
+| `'zstd'` | 22.15+ / 23.8+, a `TypeError` before | some | 1 |
+
+```js
+const { zstdCompressor, brotliCompressor } = require('@alexify/wrpc');
+
+attachBrokerRpc(server, broker, { compression: { codec: 'zstd' } });
+new RpcServer({ router, rooms: { backplane, compression: { codec: zstdCompressor({ level: 3 }) } } });
+```
+
+The factories (`deflateCompressor({ level })`, `brotliCompressor({ quality })`,
+`zstdCompressor({ level })`, Node only) are for another level, threshold or
+`async` than the name takes; an id names the format, never the level, so two
+ends on different levels still negotiate. The defaults are measured
+(`bench/algorithms.js`), not zlib's — and for Brotli that matters: zlib's own
+default is quality 11, which takes **33 ms** on a 27 KB answer where
+quality 4 takes 93 µs. In a browser a format the platform lacks leaves
+compression off rather than throwing. The dictionary codec above is another
+injection; yours is another still.
 Either method may answer a promise on the socket transports (a
 `CompressionStream` can only), and the transport keeps messages in order
 around it; the Node↔Node carriers require a synchronous answer and say so

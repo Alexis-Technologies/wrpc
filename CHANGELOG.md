@@ -13,6 +13,24 @@ narrower promise — see
 
 ### Added
 
+**`compression: { codec: 'zstd' | 'brotli' }` — the platform codecs by name, and their factories**
+
+- `codec` takes the name of a platform codec beside an injected one. The ids
+  are `CompressionStream`'s format names — `'deflate-raw'`, `'brotli'`,
+  `'zstd'` — so Node (`node:zlib`) and a browser negotiate the same id with
+  no table between them. `compression: true` still means `'deflate-raw'`:
+  level with zstd up to ~2 KB and the one format every platform has.
+  `'zstd'` is detected, not assumed (`node:zlib` has it since 22.15 / 23.8):
+  a `TypeError` at construction where it is missing; in a browser a format
+  the `CompressionStream` lacks leaves compression off.
+- `deflateCompressor({ level })`, `brotliCompressor({ quality })` and
+  `zstdCompressor({ level })` from the main entry (Node), each with
+  `threshold` and `async`, for another level than the name takes. An id
+  names the format, never the level.
+- The default levels are measured (`bench/algorithms.js`): Brotli quality 4
+  and zstd level 1 with the source size pledged — zlib's own Brotli default,
+  quality 11, is 33 ms on a 27 KB message.
+
 **`bench/algorithms.js` — which algorithm, at which level**
 
 - deflate, Brotli and Zstandard out of `node:zlib`, at the levels a
@@ -844,6 +862,13 @@ narrower promise — see
   typed as (see Changed).
 
 ### Changed
+
+- The platform deflate codec (`compression: true` on WebTransport, WebRTC,
+  the broker binding, the backplane envelopes and a Node WebSocket client)
+  compresses at zlib level **3** instead of 6: the knee of the curve — at
+  27 KB 46 µs for 3,351 B against 118 µs for 3,196 B, and the same bytes
+  under ~400 B (`bench/algorithms.js`). `deflateCompressor({ level: 6 })`
+  is the old behaviour.
 - `ClientEventTransport.getInstance` is deprecated. It still returns the
   class-level singleton it always did, but `connect({ worker })` no longer
   uses it — construct one with `new WrpcClient.transport.event(url)`.

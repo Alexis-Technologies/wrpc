@@ -86,11 +86,21 @@ export interface Compressor {
 export declare function isCompressor(value: unknown): value is Compressor;
 
 /**
+ * A platform codec by name — the ids are CompressionStream's format names,
+ * so Node and a browser negotiate the same one. `'deflate-raw'` is what
+ * `compression: true` means and exists everywhere; `'zstd'` needs Node
+ * 22.15+ / 23.8+ (a TypeError otherwise) and `'brotli'`/`'zstd'` only some
+ * browsers (compression stays off in one that lacks the format).
+ */
+export type CompressionAlgorithm = 'deflate-raw' | 'brotli' | 'zstd';
+
+/**
  * `compression: true | { codec, threshold, async }` — off by default.
- * `true` takes the platform codec; `codec` injects one
- * (`@alexify/wrpc/deflate` for a dictionary); `threshold` is the byte size
+ * `true` takes the platform's raw deflate; `codec` names another platform
+ * codec (`'zstd'`, `'brotli'`) or injects one (`zstdCompressor({ level })`,
+ * `@alexify/wrpc/deflate` for a dictionary, your own); `threshold` is the byte size
  * under which a message goes plain (the codec's own default, 1 KiB on Node
- * and 4 KiB in a browser). `async` (Node, the platform codec only — an
+ * and 4 KiB in a browser). `async` (Node, the platform codecs only — an
  * injected codec takes it on its own factory) hands a message of
  * `async.threshold` bytes or more (256 KiB) to zlib's threadpool instead
  * of deflating it on the event loop: the hand-off costs ~20 µs a call, so
@@ -101,7 +111,7 @@ export declare function isCompressor(value: unknown): value is Compressor;
  * nothing injected stays off.
  */
 export interface CompressionOptions {
-  codec?: Compressor;
+  codec?: CompressionAlgorithm | Compressor;
   threshold?: number;
   async?: boolean | { threshold?: number };
 }

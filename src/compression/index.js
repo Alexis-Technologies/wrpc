@@ -45,11 +45,13 @@ const isCompressor = (value) =>
   value.id.length > 0;
 
 /**
- * `compression: true | { codec, threshold }` into the frozen shape the
- * transports read — `{ codec, id, threshold }` — or null for off, which is
- * also what a platform with no native codec and nothing injected gets.
- * Strict on what IS given: a bad codec or threshold is a TypeError at
- * construction, not a message that quietly went out plain.
+ * `compression: true | { codec, threshold, async }` into the frozen shape
+ * the transports read — `{ codec, id, threshold }` — or null for off, which
+ * is also what a platform with no native codec and nothing injected gets.
+ * `codec` is a Compressor, or the name of a platform one ('deflate-raw',
+ * 'brotli', 'zstd' — native.js). Strict on what IS given: a bad codec or
+ * threshold is a TypeError at construction, not a message that quietly
+ * went out plain.
  */
 // The size from which the Node platform codec hands a message to zlib's
 // threadpool when `async` is on: the hand-off costs a fixed ~20 µs per
@@ -83,13 +85,16 @@ const normalizeCompression = (value, name) => {
     throw new TypeError(`${name}: compression must be true, false or an options object`);
   }
   let codec = options.codec ?? null;
-  if (codec !== null && !isCompressor(codec)) {
-    throw new TypeError(`${name}: compression.codec must provide an id, encode(bytes) and decode(bytes, maxOutput)`);
+  if (codec !== null && typeof codec !== 'string' && !isCompressor(codec)) {
+    throw new TypeError(
+      `${name}: compression.codec must provide an id, encode(bytes) and decode(bytes, maxOutput), or name an algorithm`,
+    );
   }
-  // `async` shapes the platform codec; an injected codec decides that for
-  // itself (the dictionary codec takes the same option on its factory).
+  // `async` shapes the platform codecs; an injected codec decides that for
+  // itself (the codec factories take the same option).
   const async = normalizeAsync(options.async, `${name}: compression`);
   if (codec === null) codec = nativeCompressor({ async });
+  else if (typeof codec === 'string') codec = nativeCompressor({ algorithm: codec, async });
   else if (async !== null) {
     throw new TypeError(`${name}: compression.async applies to the platform codec — set it on the codec's factory`);
   }

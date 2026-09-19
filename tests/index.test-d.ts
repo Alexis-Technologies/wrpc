@@ -373,6 +373,16 @@ expectAssignable<wrpc.CompressionOptions>({ threshold: 2048 });
 expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ transport: 'wt', compression: true });
 expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ wt: { compression: { threshold: 4096 } } });
 expectError<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ compression: 'zstd' });
+// A platform codec by name, or built with its own level — the name lives under `codec`
+expectAssignable<wrpc.CompressionOptions>({ codec: 'zstd' });
+expectAssignable<wrpc.CompressionOptions>({ codec: 'brotli', async: true });
+expectError<wrpc.CompressionOptions>({ codec: 'lz4' });
+expectAssignable<wrpc.RpcServerOptions>({ router, compression: { codec: 'zstd' } });
+expectAssignable<wrpc.Compressor>(wrpc.deflateCompressor({ level: 1 }));
+expectAssignable<wrpc.Compressor>(wrpc.brotliCompressor({ quality: 5, threshold: 256 }));
+expectType<number | null>(wrpc.zstdCompressor({ level: 3, async: { threshold: 65536 } }).async);
+expectError(wrpc.brotliCompressor({ level: 5 }));
+expectAssignable<wrpc.RpcServerOptions>({ router, rooms: { compression: { codec: wrpc.zstdCompressor() } } });
 // The backplane envelopes, per layer
 expectAssignable<wrpc.RpcServerOptions>({ router, rooms: { compression: true, maxMessage: 1 << 20 } });
 expectAssignable<wrpc.RpcServerOptions>({ router, cluster: { secret: 's', compression: { threshold: 0 } } });

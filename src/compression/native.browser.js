@@ -1,11 +1,13 @@
 'use strict';
 
-// The platform's own per-message codec, browser half: raw deflate through
-// CompressionStream / DecompressionStream, which is all a page has —
-// asynchronous, no flush control, no preset dictionary (a dictionary needs
-// the codec of @alexify/wrpc/deflate, injected). Where the globals are
-// missing the platform has no codec and `nativeCompressor()` answers null:
-// compression stays off unless one is injected.
+// The platform's own per-message codecs, browser half: CompressionStream /
+// DecompressionStream, which is all a page has — asynchronous, no level, no
+// flush control, no preset dictionary (a dictionary needs the codec of
+// @alexify/wrpc/deflate, injected). 'deflate-raw' is in every one of them;
+// 'brotli' and 'zstd' only in some, which the constructor answers — so a
+// format this browser lacks is null, never a throw, and a preference list
+// moves on to the next. Where the globals are missing the platform has no
+// codec at all and compression stays off unless one is injected.
 //
 // The threshold is higher than Node's 1 KiB: a CompressionStream costs
 // ~46 µs per message against zlib's 7.5 µs, and without a dictionary a
@@ -44,13 +46,21 @@ const through = async (stream, bytes, maxOutput) => {
   return out;
 };
 
-const nativeCompressor = () => {
-  if (typeof CompressionStream !== 'function' || typeof DecompressionStream !== 'function') return null;
+const nativeCompressor = ({ algorithm = ID } = {}) => {
+  if (algorithm !== ID && algorithm !== 'brotli' && algorithm !== 'zstd') {
+    throw new TypeError(`compression: unknown algorithm ${JSON.stringify(algorithm)} — deflate-raw, brotli or zstd`);
+  }
+  try {
+    void new CompressionStream(algorithm);
+    void new DecompressionStream(algorithm);
+  } catch {
+    return null;
+  }
   return {
-    id: ID,
+    id: algorithm,
     threshold: 4096,
-    encode: (bytes) => through(new CompressionStream('deflate-raw'), bytes, Infinity),
-    decode: (bytes, maxOutput) => through(new DecompressionStream('deflate-raw'), bytes, maxOutput),
+    encode: (bytes) => through(new CompressionStream(algorithm), bytes, Infinity),
+    decode: (bytes, maxOutput) => through(new DecompressionStream(algorithm), bytes, maxOutput),
   };
 };
 

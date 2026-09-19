@@ -56,6 +56,31 @@ export declare function dictionaryCompressor(
   options?: { level?: number; threshold?: number; async?: boolean | { threshold?: number } },
 ): Compressor & { readonly dictionary: Uint8Array; readonly async: number | null };
 
+/** What every platform-codec factory takes beside its level. */
+export interface PlatformCodecOptions {
+  /** The byte size under which a message goes plain (1 KiB). */
+  threshold?: number;
+  /** Hand an encode of this many bytes (256 KiB) to zlib's threadpool — WebTransport and WebRTC only. */
+  async?: boolean | { threshold?: number };
+}
+/**
+ * The platform codecs with their knobs out (Node only) — for another level
+ * than `codec: '<name>'` takes. An id names the format, never the level, so
+ * two ends on different levels still negotiate. Defaults are measured
+ * (`bench/algorithms.js`): deflate 3, Brotli quality 4, zstd 1.
+ */
+export declare function deflateCompressor(
+  options?: PlatformCodecOptions & { /** zlib level, -1..9 (3). */ level?: number },
+): Compressor & { readonly async: number | null };
+/** Brotli. zlib's own default quality, 11, costs milliseconds a message — hence 4. */
+export declare function brotliCompressor(
+  options?: PlatformCodecOptions & { /** 0..11 (4). */ quality?: number },
+): Compressor & { readonly async: number | null };
+/** Zstandard. Throws a TypeError where node:zlib has none (before Node 22.15 / 23.8). */
+export declare function zstdCompressor(
+  options?: PlatformCodecOptions & { /** 1..22 (1). */ level?: number },
+): Compressor & { readonly async: number | null };
+
 // ---------------------------------------------------------------------------
 // Cluster
 
