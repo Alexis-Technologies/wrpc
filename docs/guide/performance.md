@@ -212,7 +212,9 @@ anything, not the reason it exists.
 
 ## Compression is off by default
 
-Nothing in wrpc compresses anything unless you ask: `perMessageDeflate`
+Nothing in wrpc compresses anything unless you ask — on any transport; the
+[compression guide](./compression) is the map of every knob and of the
+router dictionary they can share. On the WebSocket: `perMessageDeflate`
 on the built-in engine and `compression` on the [uws engine](./adapters/uws)
 are both off, and the `contextTakeover` / `async` rows above are refinements
 of a knob that has to be on first. That is a choice, not an oversight —

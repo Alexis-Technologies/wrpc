@@ -19,8 +19,11 @@ const { tracked, createEventLog } = require('../rpc/subscriptions.js');
 const { WrpcPeer, PeerLink } = require('./peer.js');
 const { Mesh } = require('./mesh.js');
 
+const { buildDictionary } = require('../rpc/dictionary.js');
+
 module.exports = {
   defineRouter,
+  buildDictionary,
   procedure,
   tracked,
   createEventLog,

@@ -136,7 +136,11 @@ const ENTRIES = [
   // DEFLATE header bit, the link's caps in the description signal and
   // WrpcPeer's option (+1.7 KB, measured 49.2 against 47.5). Off by
   // default; both peers must name the codec before a byte changes.
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 50 },
+  // 50 -> 51 for `buildDictionary` in the browser barrel: a browser peer
+  // builds the same router dictionary a Node peer does, for the pure-JS
+  // dictionary codec (+0.9 KB, measured 50.3 against 49.4 — the packet
+  // skeleton strings are most of it).
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 51 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

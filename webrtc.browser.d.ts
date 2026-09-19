@@ -18,7 +18,7 @@ import { AskOptions, AskResult, Broadcast, Client, ClientHost, RoomRegistry, Rou
 // A browser peer defines its router with these, which the main browser
 // entry deliberately leaves out (its byte budget); they are the same
 // functions the Node barrel exports.
-export { defineRouter, procedure, tracked, createEventLog } from './rpc.js';
+export { defineRouter, procedure, tracked, createEventLog, buildDictionary } from './rpc.js';
 
 // ---------------------------------------------------------------------------
 // The RTC port: wrpc's own W3C-shaped structural contract. A browser

@@ -13,6 +13,25 @@ narrower promise — see
 
 ### Added
 
+**A preset dictionary from the router (`buildDictionary`, `dictionaryCompressor`)**
+- One-shot deflate has no history: a 108 B event compresses to 99 B.
+  `buildDictionary(router)` reads the router's introspection — field names
+  from signatures and schemas, every `unit/method` target and `unit/event`
+  name, the packet skeletons — ordered least to most frequent and cut from
+  the front past 32 KiB, deterministically, so a fleet builds the same
+  bytes. `dictionaryCompressor(dictionary)` is the codec over them (raw
+  deflate through node:zlib), its `id` carrying the dictionary's hash so
+  every wire's negotiation compares dictionaries too: a rolling deploy's
+  odd instance names another id and stays plain. Injected as
+  `compression: { codec }` on any Node↔Node carrier. Measured
+  (`bench/dictionary.js`, a 546 B dictionary): a 108 B event 99 → 55 B, an
+  84 B call 77 → 30 B, a 1.1 KB callback 201 → 160 B, at the same rate — so
+  the dictionary codec's threshold is 64 B against the plain codec's 1 KiB.
+  `buildDictionary` is browser-safe and in the WebRTC browser barrel too,
+  for the pure-JS codec that follows.
+- A **Compression** guide page collecting every knob, its negotiation and
+  its numbers in one place.
+
 **Per-message compression from a Node WebSocket client (`compression` on both ends)**
 - Node's built-in `WebSocket` only ever inflates: a Node client's uploads
   arrived as they were whatever the server negotiated. Now

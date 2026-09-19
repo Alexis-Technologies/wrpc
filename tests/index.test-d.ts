@@ -347,6 +347,13 @@ expectAssignable<wrpc.RpcServerOptions>({
   },
 });
 expectAssignable<wrpc.HttpCompressionOptions>({ async: true });
+// A dictionary from the router, and the codec over it, injected anywhere a codec goes
+expectType<Uint8Array>(wrpc.buildDictionary(router));
+expectType<Uint8Array>(wrpc.buildDictionary(router, { limit: 8192 }));
+const dictCodec = wrpc.dictionaryCompressor(wrpc.buildDictionary(router), { threshold: 32 });
+expectAssignable<wrpc.Compressor>(dictCodec);
+expectType<Uint8Array>(dictCodec.dictionary);
+expectAssignable<wrpc.RpcServerOptions>({ router, compression: { codec: dictCodec } });
 // Per-message compression (WebTransport, WebRTC): a structural codec, negotiated by id
 expectType<boolean>(wrpc.isCompressor({}));
 declare const maybeCodec: unknown;
@@ -370,8 +377,8 @@ expectError<wrpc.RoomsOptions>({ compression: 'lz4' });
 // The socket side: a Node ws client's frames
 expectAssignable<wrpc.RpcServerOptions>({ router, compression: true, maxMessage: 1 << 20 });
 expectError<wrpc.RpcServerOptions>({ router, compression: 'lz4' });
-declare const serverClient: wrpc.Client;
-expectType<{ readonly id: string; readonly threshold: number } | null>(serverClient.compression);
+declare const negotiatedClient: wrpc.Client;
+expectType<{ readonly id: string; readonly threshold: number } | null>(negotiatedClient.compression);
 expectError<wrpc.RpcServerOptions>({ router, http: { compression: 'gzip' } });
 expectError<wrpc.RpcServerOptions>({ router, http: { compression: { threshold: 'big' } } });
 expectAssignable<wrpc.ServerOptions>({ router, maxBodySize: 1024 });

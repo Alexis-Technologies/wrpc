@@ -30,6 +30,7 @@ import {
   WrpcTelemetryOptions,
   WrpcCodec,
   CompressionOptions,
+  Compressor,
 } from './client.js';
 
 // The browser-safe half of the surface lives in client.d.ts (which is what
@@ -38,6 +39,19 @@ import {
 // WebRTC peer types; this file is both plus the Node server.
 export * from './client.js';
 export * from './rpc.js';
+
+/**
+ * The dictionary codec (raw deflate through node:zlib with a preset
+ * dictionary), for `compression: { codec }` on any Node↔Node carrier. Its
+ * `id` carries the dictionary's hash: two ends compress against the same
+ * bytes or, when their routers differ, not at all. `threshold` defaults to
+ * 64 B — with the history preloaded, small messages are what it is for.
+ * A browser needs the pure-JS codec of `@alexify/wrpc/deflate` instead.
+ */
+export declare function dictionaryCompressor(
+  dictionary: Uint8Array | string,
+  options?: { level?: number; threshold?: number },
+): Compressor & { readonly dictionary: Uint8Array };
 
 // ---------------------------------------------------------------------------
 // Cluster

@@ -225,6 +225,7 @@ export default withMermaid({
               { text: 'Running in production', link: '/guide/production' },
               { text: 'Testing', link: '/guide/testing' },
               { text: 'Performance', link: '/guide/performance' },
+              { text: 'Compression', link: '/guide/compression' },
               { text: 'Logging', link: '/guide/logging' },
               { text: 'OpenTelemetry', link: '/guide/telemetry' },
             ],

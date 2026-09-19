@@ -907,3 +907,13 @@ export class Client extends Emitter {
   close(): void;
   destroy(): void;
 }
+
+/**
+ * A preset dictionary for the per-message codecs, built from what `router`
+ * declares — field names from signatures and schemas, every `unit/method`
+ * target and `unit/event` name, the packet skeletons — least to most
+ * frequent, at most `limit` bytes (32 KiB, what zlib looks at), the front
+ * cut past it. Deterministic for a router definition, so a fleet agrees on
+ * the id `dictionaryCompressor` derives. Browser-safe.
+ */
+export declare function buildDictionary(router: { introspect(units?: unknown, options?: object): object }, options?: { limit?: number }): Uint8Array;

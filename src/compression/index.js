@@ -67,6 +67,23 @@ const normalizeCompression = (value, name) => {
   return Object.freeze({ codec, id: codec.id, threshold });
 };
 
+/**
+ * A short, deterministic id for dictionary bytes — FNV-1a over the bytes,
+ * 64 bits as 16 hex characters — what a dictionary codec's `id` carries so
+ * two ends compress against the same bytes or not at all. A fingerprint
+ * for negotiation, not a security property; it runs in a browser too,
+ * where a hash from crypto.subtle would be asynchronous.
+ */
+const dictionaryId = (bytes) => {
+  let h1 = 0x811c9dc5;
+  let h2 = 0x01000193 ^ bytes.length;
+  for (let i = 0; i < bytes.length; i++) {
+    h1 = Math.imul(h1 ^ bytes[i], 0x01000193) >>> 0;
+    h2 = Math.imul(h2 ^ bytes[i], 0x0100019d) >>> 0;
+  }
+  return h1.toString(16).padStart(8, '0') + h2.toString(16).padStart(8, '0');
+};
+
 /** The local setting when the peer announced the same codec, null otherwise. */
 const negotiate = (local, peerId) =>
   local !== null && typeof peerId === 'string' && peerId === local.id ? local : null;
@@ -121,5 +138,6 @@ module.exports = {
   normalizeCompression,
   negotiate,
   nativeCompressor,
+  dictionaryId,
   Sequencer,
 };
