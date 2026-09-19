@@ -13,6 +13,28 @@ narrower promise — see
 
 ### Added
 
+**Per-message compression on WebRTC (`compression` on the peer, the transports and `attachChannel`)**
+- The other half of the transports with nothing under them: SCTP over
+  DTLS carries a data channel's bytes as they are. `new WrpcPeer({
+  compression: true })` names the codec in every description this peer
+  sends (`caps: { deflate: "deflate-raw" }` in the signal, next to the
+  assertion when there is one) and a link compresses only once the other
+  peer named the same — a peer without the option is served plain, and
+  nothing hangs up. Bit 2 of the data-channel header is the DEFLATE flag,
+  a reserved bit (a protocol error) until negotiated; a message past the
+  threshold is compressed **before** fragmentation, the one place it
+  exists whole, and every fragment carries the flag. `{ compress: false }`
+  per message and `writeWith` on the peer transport, as on a WebSocket;
+  an inflate past `maxReassembly` closes the channel like any bad frame.
+- Over a raw channel there is no description to announce in:
+  `compression` on `attachChannel`, on `connect(url, { channel,
+  compression })` and on either transport is applied as given, so both
+  applications turn it on or neither — documented, and tested: the plain
+  side closes on the first flagged frame.
+- `RtcLink` grew `caps` (announced) and `peerCaps` (read before the
+  description is applied, so the channels open already knowing). The
+  webrtc browser entry's budget 48 → 50 KB (measured 49.2).
+
 **Per-message compression on WebTransport (`compression`, both ends)**
 - Nothing compresses a QUIC stream's payload — HTTP/3 does headers only —
   so a WebTransport session carried exactly the bytes wrpc handed it. Now

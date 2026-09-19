@@ -263,11 +263,10 @@ Two honest limits of what the knob covers:
   off too: [`http.compression`](./server#compression) for packet-mode and
   REST answers, [`sse.compression`](./sse#compression) for the event stream
   (`bench/http-compression.js`: a 1.6 KB answer 5.5× at 77K/sec, a repeated
-  SSE tick 7.8×), and [`compression`](./wt#compression) on WebTransport —
-  per message, negotiated, off unless both ends turn it on
-  (`bench/message-compression.js`: a 1.4 KB callback 6.4× at 84K/sec).
-  WebRTC data channels and broker frames carry exactly the bytes you hand
-  them today.
+  SSE tick 7.8×), and [`compression`](./wt#compression) on WebTransport and
+  [WebRTC](./webrtc#compression) — per message, negotiated, off unless both
+  ends turn it on (`bench/message-compression.js`: a 1.4 KB callback 6.4× at
+  84K/sec). Broker frames carry exactly the bytes you hand them today.
 - **A Node client never compresses what it sends.** Node's built-in
   `WebSocket` offers `permessage-deflate` on the handshake but only ever
   inflates: every frame it sends leaves with `RSV1` clear, whatever the

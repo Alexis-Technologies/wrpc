@@ -34,6 +34,7 @@ const { ClientRtcTransport, RtcPeerTransport } = require('./transport.js');
 const { PeerHost } = require('./host.js');
 const { isSignaler, isSignalMessage } = require('./signaler.js');
 const { createAssertionVerifier, sdpFingerprint, isAssertion, AssertionError } = require('./assertions.js');
+const { normalizeCompression } = require('../compression/index.js');
 
 const REDIAL = { retries: 5, minDelay: 500, maxDelay: 10_000, factor: 2, jitter: true };
 // The remote WrpcClient's reconnect: quick, since the link itself carries
@@ -82,6 +83,7 @@ class PeerLink extends Emitter {
   constructor(peer, options) {
     super();
     const { id, instance, room, data, link, host, hostOptions, client, framing, redial, log, otel } = options;
+    const { compression } = hostOptions;
     this.#peer = peer;
     this.#id = id;
     this.#instance = instance;
@@ -96,7 +98,7 @@ class PeerLink extends Emitter {
     this.#log = log;
     this.#otel = otel;
     this.#opened = deferred();
-    const transport = new ClientRtcTransport(`webrtc:${id}`, { link, framing, ...hostOptions.water });
+    const transport = new ClientRtcTransport(`webrtc:${id}`, { link, framing, compression, ...hostOptions.water });
     this.#remote = new WrpcClient(`webrtc:${id}`, transport, {
       logger: false,
       ...client,
@@ -343,6 +345,7 @@ class PeerLink extends Emitter {
     const transport = new RtcPeerTransport(this.#link, {
       peer: this.#id,
       framing: this.#hostOptions.framing,
+      compression: this.#hostOptions.compression,
       ...this.#hostOptions.water,
       onError: (error) => this.#error(error),
     });
@@ -485,6 +488,7 @@ class WrpcPeer extends Emitter {
   #clientOptions;
   #hostOptions;
   #framing;
+  #compression = null;
   #connectTimeout;
   #restartTimeout;
   #redial;
@@ -517,6 +521,7 @@ class WrpcPeer extends Emitter {
       client = {},
       host = {},
       framing = {},
+      compression = null,
       connectTimeout,
       restartTimeout,
       redial = {},
@@ -562,7 +567,11 @@ class WrpcPeer extends Emitter {
     const water = {};
     if (highWaterMark !== undefined) water.highWaterMark = highWaterMark;
     if (lowWaterMark !== undefined) water.lowWaterMark = lowWaterMark;
-    this.#hostOptions = { water, framing };
+    // Per-message compression on every link, both directions: announced in
+    // each description this peer sends, applied on a link whose peer named
+    // the same codec — a peer without it is served plain.
+    this.#compression = normalizeCompression(compression, 'WrpcPeer: options');
+    this.#hostOptions = { water, framing, compression: this.#compression };
     this.#framing = framing;
     this.#connectTimeout = connectTimeout;
     this.#restartTimeout = restartTimeout;
@@ -794,6 +803,7 @@ class WrpcPeer extends Emitter {
       connectTimeout: this.#connectTimeout,
       restartTimeout: this.#restartTimeout,
       log: this.#log,
+      caps: this.#compression === null ? null : { deflate: this.#compression.id },
       signal: this.#verifier === null ? relay : stamped,
     });
     const peerLink = new PeerLink(this, {

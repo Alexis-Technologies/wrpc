@@ -30,7 +30,20 @@
 const { ClientTransport, WrpcClient } = require('../client/core.js');
 const { ServerTransport } = require('../rpc/serverTransport.js');
 const { isRtcDataChannel } = require('./port.js');
-const { FrameEncoder, FrameDecoder, KIND_TEXT, KIND_BINARY, MIN_MESSAGE_SIZE } = require('./framing.js');
+const {
+  FrameEncoder,
+  FrameDecoder,
+  FramingError,
+  KIND_TEXT,
+  KIND_BINARY,
+  FLAG_DEFLATE,
+  MIN_MESSAGE_SIZE,
+  DEFAULT_MAX_REASSEMBLY,
+  decodeText,
+} = require('./framing.js');
+const { normalizeCompression, negotiate, Sequencer } = require('../compression/index.js');
+
+const TEXT_ENCODER = new TextEncoder();
 
 // Outbound flow control, in bytes queued on the channel: write() answers
 // false above the high-water mark, and 'drain' fires once the channel is
@@ -68,33 +81,153 @@ const waitChannelOpen = (channel) =>
     channel.addEventListener('error', onError);
   });
 
+// The per-message compression in effect on a channel: the local option
+// alone over a raw channel (both applications turned it on, or neither —
+// there is no handshake on a raw channel to negotiate through), and over a
+// link only once the peer's description named the same codec.
+const activeCompression = (compression, link) =>
+  compression === null ? null : link === null ? compression : negotiate(compression, link.peerCaps?.deflate);
+
 // One place for what both halves do with a channel: encode outbound frames
 // into it and decode inbound ones from it. `sink` is bound once so the hot
-// path allocates nothing per call.
+// path allocates nothing per call. With compression in effect a message
+// past the threshold is compressed BEFORE fragmentation — here, the one
+// place it exists whole — and the DEFLATE flag rides every fragment; the
+// two Sequencers keep each direction in order around a codec that answers
+// asynchronously, and cost nothing while nothing is in flight.
 class ChannelCodec {
   #channel;
   #encoder;
   #decoder;
   #sink;
+  #compression;
+  #maxInflate;
+  #onMessage;
+  #onError;
+  #outbound;
+  #inbound;
+  // Bytes accepted by send() and not yet framed: counted with the
+  // channel's bufferedAmount so backpressure sees them.
+  #pending = 0;
 
-  constructor(channel, maxMessageSize, framing) {
+  constructor(channel, maxMessageSize, framing, { compression = null, onMessage, onError }) {
     this.#channel = channel;
     this.#encoder = new FrameEncoder(maxMessageSize);
     this.#decoder = new FrameDecoder(framing);
+    this.#decoder.deflate = compression !== null;
     this.#sink = (frame) => channel.send(frame);
+    this.#compression = compression;
+    this.#maxInflate = framing?.maxReassembly ?? DEFAULT_MAX_REASSEMBLY;
+    this.#onMessage = onMessage;
+    this.#onError = onError;
+    this.#outbound = new Sequencer(onError);
+    this.#inbound = new Sequencer(onError);
   }
 
-  send(data) {
-    if (typeof data === 'string') this.#encoder.encodeText(data, this.#sink);
-    else this.#encoder.encode(KIND_BINARY, toBytes(data), this.#sink);
-    return this.#channel.bufferedAmount;
+  /** The codec id in effect, or null. */
+  get compression() {
+    return this.#compression === null ? null : this.#compression.id;
   }
 
-  /** null while a message is still being reassembled. */
+  /**
+   * A string is a packet, bytes are a chunk; `options.compress === false`
+   * sends this one plain. Answers the bytes queued on the channel, the
+   * ones still being compressed included.
+   */
+  send(data, options = null) {
+    const compression = this.#compression;
+    const plain = compression === null || (options !== null && options.compress === false);
+    if (typeof data === 'string') {
+      if (plain || data.length < compression.threshold) this.#enqueueText(data);
+      else this.#compress(KIND_TEXT, TEXT_ENCODER.encode(data));
+    } else {
+      const bytes = toBytes(data);
+      if (plain || bytes.length < compression.threshold) this.#enqueue(KIND_BINARY, bytes);
+      else this.#compress(KIND_BINARY, bytes);
+    }
+    return this.#channel.bufferedAmount + this.#pending;
+  }
+
+  #enqueueText(text) {
+    if (this.#outbound.pending === 0) return void this.#encoder.encodeText(text, this.#sink);
+    this.#pending += text.length;
+    this.#outbound.push(text, (ready) => {
+      this.#pending -= text.length;
+      this.#encoder.encodeText(ready, this.#sink);
+    });
+  }
+
+  #enqueue(kind, bytes) {
+    if (this.#outbound.pending === 0) return void this.#encoder.encode(kind, bytes, this.#sink);
+    this.#pending += bytes.length;
+    this.#outbound.push(bytes, (ready) => {
+      this.#pending -= bytes.length;
+      this.#encoder.encode(kind, ready, this.#sink);
+    });
+  }
+
+  // Compressed under the flag when the codec shrank it, plain when it did
+  // not or failed — a message is never lost to compression.
+  #compress(kind, bytes) {
+    const size = bytes.length;
+    this.#pending += size;
+    const plain = () => {
+      this.#pending -= size;
+      this.#encoder.encode(kind, bytes, this.#sink);
+    };
+    let encoded;
+    try {
+      encoded = this.#compression.codec.encode(bytes);
+    } catch {
+      return void plain();
+    }
+    this.#outbound.push(
+      encoded,
+      (out) => {
+        if (out.length >= size) return void plain();
+        this.#pending -= size;
+        this.#encoder.encode(kind | FLAG_DEFLATE, out, this.#sink);
+      },
+      plain,
+    );
+  }
+
+  /**
+   * Feeds one channel message; a completed message reaches `onMessage(kind,
+   * data)` in wire order — at once on the plain path, after its inflate
+   * (and behind whatever is still inflating) otherwise. Throws FramingError
+   * on a malformed frame, exactly as the decoder does; an inflate that
+   * fails or blows the cap reaches `onError` as one instead.
+   */
   receive(data) {
-    return this.#decoder.push(data);
+    const message = this.#decoder.push(data);
+    if (message === null) return;
+    const { kind } = message;
+    if (!message.deflated) {
+      if (this.#inbound.pending === 0) return void this.#onMessage(kind, message.data);
+      return void this.#inbound.push(message.data, (bytes) => this.#onMessage(kind, bytes));
+    }
+    let inflated;
+    try {
+      inflated = this.#compression.codec.decode(message.data, this.#maxInflate);
+    } catch (error) {
+      return void this.#onError(inflateError(error));
+    }
+    this.#inbound.push(
+      inflated,
+      (bytes) => this.#onMessage(kind, kind === KIND_TEXT ? decodeText(bytes) : bytes),
+      (error) => this.#onError(inflateError(error)),
+    );
   }
 }
+
+// An inflate failure is the peer's protocol violation, reported in the
+// decoder's own shape so both transports treat it as they treat a bad frame.
+const inflateError = (error) => {
+  const wrapped = new FramingError(`inflate failed: ${error?.message ?? error}`, 'inflate');
+  wrapped.cause = error;
+  return wrapped;
+};
 
 class ClientRtcTransport extends ClientTransport {
   // A data channel can die silently exactly like a socket (ICE stalls, the
@@ -113,6 +246,7 @@ class ClientRtcTransport extends ClientTransport {
   #framing;
   #highWater;
   #lowWater;
+  #compression = null;
   #codec = null;
   #detach = null;
   #opening = null;
@@ -125,7 +259,15 @@ class ClientRtcTransport extends ClientTransport {
 
   constructor(
     url,
-    { link = null, channel = null, maxMessageSize = MIN_MESSAGE_SIZE, framing = {}, highWaterMark, lowWaterMark } = {},
+    {
+      link = null,
+      channel = null,
+      maxMessageSize = MIN_MESSAGE_SIZE,
+      framing = {},
+      highWaterMark,
+      lowWaterMark,
+      compression = null,
+    } = {},
   ) {
     super(url);
     if (link && channel) throw new TypeError('ClientRtcTransport: link and channel are mutually exclusive');
@@ -135,11 +277,17 @@ class ClientRtcTransport extends ClientTransport {
     this.#framing = framing;
     this.#highWater = highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
     this.#lowWater = lowWaterMark ?? DEFAULT_LOW_WATER_MARK;
+    this.#compression = normalizeCompression(compression, 'ClientRtcTransport: options');
     if (link) this.#bindLink(link);
   }
 
   get link() {
     return this.#link;
+  }
+
+  /** The compression codec id in effect on the channel — both ends named it — or null. */
+  get compression() {
+    return this.#codec === null ? null : this.#codec.compression;
   }
 
   /** The data channel spoken on — a link's client channel or the raw one; null before open(). */
@@ -171,6 +319,11 @@ class ClientRtcTransport extends ClientTransport {
       this.#source = source;
       if (options.maxMessageSize !== undefined) this.#maxMessageSize = options.maxMessageSize;
     }
+    // connect()'s own `compression` — the option a Node ws client and a
+    // WebTransport client share — resolved per open like link/channel.
+    if (options.compression !== undefined) {
+      this.#compression = normalizeCompression(options.compression, 'webrtc transport: options');
+    }
     if (this.active) return;
     if (this.#opening) return this.#opening;
     this.#opening = link ? this.#openLink(link) : this.#openChannel(source);
@@ -187,7 +340,7 @@ class ClientRtcTransport extends ClientTransport {
     if (attempt !== this.#attempt) throw new Error('Connection terminated');
     const channel = link.clientChannel;
     if (!channel || channel.readyState !== 'open') throw new Error('The link has no open client channel');
-    this.#attach(channel, link.maxMessageSize);
+    this.#attach(channel, link.maxMessageSize, activeCompression(this.#compression, link));
   }
 
   async #openChannel(source) {
@@ -202,12 +355,16 @@ class ClientRtcTransport extends ClientTransport {
     if (attempt !== this.#attempt) throw new Error('Connection terminated');
     // A browser's default is 'blob'; the framing reads bytes.
     channel.binaryType = 'arraybuffer';
-    this.#attach(channel, this.#maxMessageSize);
+    this.#attach(channel, this.#maxMessageSize, activeCompression(this.#compression, null));
   }
 
-  #attach(channel, maxMessageSize) {
+  #attach(channel, maxMessageSize, compression) {
     this.#channel = channel;
-    this.#codec = new ChannelCodec(channel, maxMessageSize, this.#framing);
+    this.#codec = new ChannelCodec(channel, maxMessageSize, this.#framing, {
+      compression,
+      onMessage: (_kind, data) => void this.emit('message', data),
+      onError: (error) => this.#violation(error),
+    });
     channel.bufferedAmountLowThreshold = this.#lowWater;
     // Scoped to THIS channel: a stale channel's late events after a redial
     // must not reach a transport that has moved on.
@@ -280,18 +437,21 @@ class ClientRtcTransport extends ClientTransport {
   }
 
   #receive(data) {
-    let message;
     try {
-      message = this.#codec.receive(data);
+      this.#codec.receive(data);
     } catch (error) {
-      // A protocol error on the wire — the data-channel 1002: the peer's
-      // framing is broken, so is the link.
-      this.#escalate(error);
-      this.close();
-      return;
+      this.#violation(error);
     }
-    if (message === null) return;
-    this.emit('message', message.kind === KIND_TEXT ? message.data : message.data);
+  }
+
+  // A protocol error on the wire — the data-channel 1002: the peer's
+  // framing is broken (or what it compressed does not inflate), so is the
+  // link. Scoped to the codec that saw it: a late inflate on a channel
+  // already replaced must not close its successor.
+  #violation(error) {
+    if (this.#codec === null) return;
+    this.#escalate(error);
+    this.close();
   }
 
   #down() {
@@ -335,7 +495,15 @@ class RtcPeerTransport extends ServerTransport {
    */
   constructor(
     source,
-    { peer, maxMessageSize = MIN_MESSAGE_SIZE, framing = {}, highWaterMark, lowWaterMark, onError = null } = {},
+    {
+      peer,
+      maxMessageSize = MIN_MESSAGE_SIZE,
+      framing = {},
+      highWaterMark,
+      lowWaterMark,
+      onError = null,
+      compression = null,
+    } = {},
   ) {
     const raw = isRtcDataChannel(source);
     const channel = raw ? source : (source?.hostChannel ?? null);
@@ -349,7 +517,12 @@ class RtcPeerTransport extends ServerTransport {
     // A link's channels are already binary; a raw one carries the browser
     // default ('blob') until told otherwise.
     if (raw) channel.binaryType = 'arraybuffer';
-    this.#codec = new ChannelCodec(channel, raw ? maxMessageSize : link.maxMessageSize, framing);
+    const normalized = normalizeCompression(compression, 'RtcPeerTransport: options');
+    this.#codec = new ChannelCodec(channel, raw ? maxMessageSize : link.maxMessageSize, framing, {
+      compression: activeCompression(normalized, link),
+      onMessage: (kind, data) => void this.emit(kind === KIND_TEXT ? 'packet' : 'chunk', data),
+      onError: (error) => this.#violation(error),
+    });
     // What Client.persistent checks: a channel stays open like a socket.
     this.connection = this;
     channel.bufferedAmountLowThreshold = lowWaterMark ?? DEFAULT_LOW_WATER_MARK;
@@ -380,10 +553,22 @@ class RtcPeerTransport extends ServerTransport {
     return this.#channel;
   }
 
+  /** The compression codec id in effect on the channel — both ends named it — or null. */
+  get compression() {
+    return this.#codec.compression;
+  }
+
   /** The backpressure boolean the dispatcher and Broadcast read; false once down. */
   write(data) {
     if (!this.#up) return false;
     return this.#codec.send(data) <= this.#highWater;
+  }
+
+  // A write with per-message options (`compress: false`) — what
+  // Client.sendRaw and a Broadcast use, as on a WebSocket.
+  writeWith(text, options) {
+    if (!this.#up) return false;
+    return this.#codec.send(text, options) <= this.#highWater;
   }
 
   /** Ends the link (or closes the raw channel) — the peer's client sees its transport close too. */
@@ -394,16 +579,17 @@ class RtcPeerTransport extends ServerTransport {
   }
 
   #receive(data) {
-    let message;
     try {
-      message = this.#codec.receive(data);
+      this.#codec.receive(data);
     } catch (error) {
-      this.#error(error);
-      this.close();
-      return;
+      this.#violation(error);
     }
-    if (message === null) return;
-    void this.emit(message.kind === KIND_TEXT ? 'packet' : 'chunk', message.data);
+  }
+
+  #violation(error) {
+    if (!this.#up) return;
+    this.#error(error);
+    this.close();
   }
 
   #down() {

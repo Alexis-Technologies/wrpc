@@ -661,17 +661,29 @@ more fragments, each under a one-byte header:
 bit 0   KIND   0 = a wrpc packet (UTF-8 JSON — what a WebSocket text frame carries)
                1 = a binary stream chunk (a chunkEncode frame, see the wire-format page)
 bit 1   FIN    1 = the last fragment of this message
-bit 2–7        reserved, MUST be 0
+bit 2   DEFLATE 1 = the message is compressed with the negotiated codec — only once negotiated
+bit 3–7        reserved, MUST be 0
 ```
 
 - Fragments of one message are sent back to back on one ordered, reliable
   channel, so there is no message id and no sequence number: a receiver
   concatenates fragments until FIN.
-- The KIND of a continuation MUST equal the KIND of the message it
-  continues; a set reserved bit, a mismatched continuation, a text message
-  that is not valid UTF-8 or a reassembly past the receiver's cap
-  (16 MiB by default) is a protocol error, and the receiver closes the
-  channel — the data-channel analogue of a WebSocket `1002`.
+- The KIND and DEFLATE bits of a continuation MUST equal those of the
+  message it continues; a set reserved bit, a DEFLATE bit before both peers
+  named the same codec, a mismatched continuation, a text message that is
+  not valid UTF-8, a reassembly past the receiver's cap (16 MiB by default)
+  or a compressed message that does not inflate under that cap is a
+  protocol error, and the receiver closes the channel — the data-channel
+  analogue of a WebSocket `1002`.
+- **Compression** is negotiated through signaling, since the channels have
+  no handshake: a `description` signal MAY carry `caps`, a JSON object whose
+  known key is `deflate` (a codec id, `"deflate-raw"` for raw DEFLATE, RFC
+  1951). A peer MAY set the DEFLATE bit only once the other peer's last
+  description named the same codec; the payload is then the codec's output
+  over the bytes the message would otherwise carry, compressed before
+  fragmentation and inflated after reassembly. Over a channel the
+  application negotiated itself, whether the bit is in use is the
+  application's agreement.
 - Fragment size is the negotiated `sctp.maxMessageSize` capped at 256 KiB,
   and 16 KiB when nothing is reported. A peer MAY send smaller fragments.
 
@@ -929,7 +941,8 @@ mechanism, never a field of a wrpc packet:
 | HTTP, packet mode and REST | `Content-Encoding: gzip` on the response (`http.compression`) | the request's `Accept-Encoding`; the response carries `Vary: Accept-Encoding` |
 | Server-Sent Events | `Content-Encoding: gzip` on the stream — one gzip member, sync-flushed after every event (`sse.compression`) | the opening GET's `Accept-Encoding`, per response |
 | WebTransport | per message, KIND 3/4 on the control stream (`compression` on both ends) | the `deflate` key of the capabilities message — on only when both ends named the same codec |
-| WebRTC, the broker binding | none | — |
+| WebRTC | per message, the DEFLATE bit of the data-channel header (`compression` on both peers) | the `caps.deflate` field of the description signal — on only when both peers named the same codec; a raw channel by the application's agreement |
+| The broker binding | none | — |
 
 An HTTP response is encoded only when its body is at or over the configured
 threshold and nothing upstream already set a `Content-Encoding`; a `204` and

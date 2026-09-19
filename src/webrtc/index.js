@@ -24,7 +24,8 @@ const { RtcPeerTransport } = require('./transport.js');
  */
 const attachChannel = (server, channel, options = {}) => {
   if (typeof server?.attach !== 'function') throw new TypeError('attachChannel: a server with attach() is required');
-  const { peer, headers, data, remoteAddress, maxMessageSize, framing, highWaterMark, lowWaterMark } = options;
+  const { peer, headers, data, remoteAddress, maxMessageSize, framing, highWaterMark, lowWaterMark, compression } =
+    options;
   let client = null;
   const transport = new RtcPeerTransport(channel, {
     peer,
@@ -32,6 +33,7 @@ const attachChannel = (server, channel, options = {}) => {
     framing,
     highWaterMark,
     lowWaterMark,
+    compression,
     onError: (error) => client?.log.warn({ event: 'channel.error', peer: transport.source, err: error }),
   });
   const observed = headers || data || remoteAddress ? buildMeta({ headers, data, remoteAddress }) : null;

@@ -940,9 +940,10 @@ export interface WrpcClientOptions {
   wt?: WtTransportOptions;
   /**
    * @experimental Per-message compression on the transports that have no
-   * compression under them — WebTransport today. Off by default; on only
-   * once the peer named the same codec. The WebSocket has the server's
-   * `perMessageDeflate` instead.
+   * compression under them — WebTransport, and WebRTC over `channel` or
+   * `link`. Off by default; on only once the peer named the same codec (a
+   * raw channel has no handshake: both applications turn it on). The
+   * WebSocket has the server's `perMessageDeflate` instead.
    */
   compression?: boolean | CompressionOptions;
   /**

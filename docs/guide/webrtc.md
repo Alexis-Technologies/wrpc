@@ -124,9 +124,10 @@ A data channel has a message-size limit (16 KiB is the only value every
 implementation agrees on; the negotiated `sctp.maxMessageSize` is used up to
 a 256 KiB ceiling), and wrpc packets — a batch of calls, a 64 KiB stream
 chunk — exceed it. Every message therefore travels as binary behind a
-**one-byte header**: a kind bit (text packet or binary chunk), a FIN bit,
-six reserved bits. Fragments of one message are sent back to back on the
-ordered channel, so no message id is needed. The
+**one-byte header**: a kind bit (text packet or binary chunk), a FIN bit, a
+deflate bit ([compression](#compression), off unless both ends turned it
+on), five reserved bits. Fragments of one message are sent back to back on
+the ordered channel, so no message id is needed. The
 [protocol reference](../reference/protocol#webrtc) has the exact layout.
 
 ## Symmetric peers
@@ -425,6 +426,7 @@ new WrpcPeer({
   client: { heartbeat: { interval: 30_000, timeout: 10_000 }, codec },   // every link's WrpcClient
   host: { trust: 'link', maxCalls: 64, highWaterMark: 1 << 20 },       // the PeerHost, plus water marks
   framing: { maxReassembly: 16 << 20 },
+  compression: false,        // per-message deflate on every link — see below
   connectTimeout: 30_000,
   restartTimeout: 15_000,
   redial: { retries: 5, minDelay: 500, maxDelay: 10_000 },
@@ -437,6 +439,36 @@ new WrpcPeer({
 The link's `write()` answers `false` above `highWaterMark` (1 MiB of
 `bufferedAmount`) and `drain` fires at `lowWaterMark` (256 KiB), so a stream
 producer on either end sees the same backpressure it does on a socket.
+
+### Compression {#compression}
+
+Nothing compresses a data channel's payload for you — SCTP over DTLS
+carries the bytes as they are (TLS 1.3 dropped compression) — so a link
+carries exactly what wrpc hands it. Per-message compression is the answer,
+**off by default** like every compression knob in wrpc:
+
+```js
+new WrpcPeer({ router, signaler, compression: true });
+```
+
+Every description this peer sends then names its codec (`caps: { deflate:
+'deflate-raw' }` in the signal, next to the assertion when there is one),
+and a link compresses only once the other peer named the same one — a peer
+without the option is served plain, and nothing hangs up. A packet or chunk
+at or over the threshold is compressed **before** fragmentation, the one
+place it exists whole, and every fragment carries the deflate bit;
+`{ compress: false }` on an emit sends that one plain. The threshold is the
+codec's own default — 1 KiB on Node, 4 KiB in a browser, where the only
+codec a page has is `CompressionStream`, ~6× the cost of zlib per call and
+without a dictionary — and `{ codec, threshold }` injects another codec or
+moves the line; the numbers are on the [WebTransport page](./wt#compression),
+which shares the seam (`bench/message-compression.js`).
+
+Over a [raw channel](#your-own-connection) there is no description to
+announce in: `compression` on `attachChannel`, on `connect(url, { channel,
+compression })` and on either transport is applied as given, so **both
+applications turn it on, or neither** — a plain peer closes the channel on
+the first flagged frame, exactly as it does on any reserved header bit.
 
 ## Telemetry
 

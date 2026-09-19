@@ -120,7 +120,7 @@ export declare function createSignalingHooks(options?: { name?: string; prefix?:
 };
 
 export interface AttachChannelOptions
-  extends Pick<RtcTransportOptions, 'maxMessageSize' | 'framing' | 'highWaterMark' | 'lowWaterMark'> {
+  extends Pick<RtcTransportOptions, 'maxMessageSize' | 'framing' | 'highWaterMark' | 'lowWaterMark' | 'compression'> {
   /** The client's `source`; defaults to the channel's label. */
   peer?: string;
   /** Observed about the connection by the application; lands in `context.meta`. */

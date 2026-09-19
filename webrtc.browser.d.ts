@@ -163,6 +163,13 @@ export interface RtcLinkOptions {
   /** ms an ICE restart may take before the link fails. Default 15000. */
   restartTimeout?: number;
   log?: WrpcLogger | false;
+  /**
+   * Announced in every description this side sends (`caps`) — the
+   * negotiation the channels have no handshake of their own for; what the
+   * peer announced is `peerCaps`. WrpcPeer sets `{ deflate: id }` from its
+   * `compression` option.
+   */
+  caps?: Record<string, unknown> | null;
 }
 
 /**
@@ -187,6 +194,8 @@ export declare class RtcLink extends Emitter {
   readonly hostChannel: RtcDataChannelLike | null;
   /** The negotiated message size once connected. */
   readonly maxMessageSize: number;
+  /** What the peer's last description announced, or null. */
+  readonly peerCaps: Record<string, unknown> | null;
   readonly open: boolean;
   start(): void;
   /** A fresh connection after 'failed'; false when the link is in any other state. */
@@ -205,6 +214,14 @@ export declare class RtcLink extends Emitter {
 
 export interface RtcTransportOptions {
   framing?: FramingOptions;
+  /**
+   * Per-message compression on the channel (`src/compression`), off by
+   * default. Over a link: announced in the description signal and applied
+   * only once the peer named the same codec. Over a raw channel there is
+   * no handshake — both applications turn it on, or neither; a plain peer
+   * closes the channel on the first flagged frame, as on any reserved bit.
+   */
+  compression?: boolean | import('./client.js').CompressionOptions;
   /** bufferedAmount above which write() answers false. Default 1 MiB. */
   highWaterMark?: number;
   /** bufferedAmountLowThreshold, where 'drain' fires. Default 256 KiB. */
@@ -235,6 +252,8 @@ export type ChannelSource = RtcDataChannelLike | (() => RtcDataChannelLike | Pro
  * once closed.
  */
 export declare class ClientRtcTransport extends ClientTransport {
+  /** The compression codec id in effect on the channel — both ends named it — or null. */
+  readonly compression: string | null;
   constructor(url: string, options?: RtcTransportOptions & { link?: RtcLink | null; channel?: ChannelSource | null });
   readonly link: RtcLink | null;
   /** The channel spoken on; null before open() and after close. */
@@ -246,6 +265,8 @@ export declare class ClientRtcTransport extends ClientTransport {
  * or over a raw data channel — what RpcServer.attachChannel() builds.
  */
 export declare class RtcPeerTransport extends Emitter {
+  /** The compression codec id in effect on the channel — both ends named it — or null. */
+  readonly compression: string | null;
   constructor(link: RtcLink, options: RtcTransportOptions & { peer: string; onError?: (error: Error) => void });
   /** `peer` defaults to the channel's label. */
   constructor(
@@ -559,6 +580,12 @@ export interface WrpcPeerOptions {
   /** PeerHost options (trust, codec, limits) plus the host transport's water marks. */
   host?: Omit<PeerHostOptions, 'router'> & Pick<RtcTransportOptions, 'highWaterMark' | 'lowWaterMark'>;
   framing?: FramingOptions;
+  /**
+   * Per-message compression on every link, both directions, off by default:
+   * announced in each description this peer sends, applied on a link whose
+   * peer named the same codec — a peer without it is served plain.
+   */
+  compression?: boolean | import('./client.js').CompressionOptions;
   connectTimeout?: number;
   restartTimeout?: number;
   redial?: RedialOptions | false;

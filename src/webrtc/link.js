@@ -110,6 +110,11 @@ class RtcLink extends Emitter {
   #connectTimer = null;
   #restartTimer = null;
   #closeSent = false;
+  // What this side announces in every description it sends (`caps`), and
+  // what the peer's last description announced — the negotiation the
+  // channels have no handshake of their own for (per-message compression).
+  #caps;
+  #peerCaps = null;
 
   constructor({
     localId,
@@ -121,8 +126,13 @@ class RtcLink extends Emitter {
     connectTimeout = DEFAULT_CONNECT_TIMEOUT,
     restartTimeout = DEFAULT_RESTART_TIMEOUT,
     log = null,
+    caps = null,
   }) {
     super();
+    if (caps !== null && (typeof caps !== 'object' || Array.isArray(caps))) {
+      throw new TypeError('caps must be an object or null');
+    }
+    this.#caps = caps;
     if (typeof localId !== 'string' || localId.length === 0) throw new TypeError('localId must be a non-empty string');
     if (typeof remoteId !== 'string' || remoteId.length === 0) {
       throw new TypeError('remoteId must be a non-empty string');
@@ -183,6 +193,11 @@ class RtcLink extends Emitter {
   /** What the pair negotiated (framing splits at it); the floor until connected. */
   get maxMessageSize() {
     return this.#maxMessageSize;
+  }
+
+  /** What the peer's last description announced, or null before one arrived (or when it announced nothing). */
+  get peerCaps() {
+    return this.#peerCaps;
   }
 
   get open() {
@@ -248,7 +263,13 @@ class RtcLink extends Emitter {
     if (typeof message !== 'object' || message === null) return void this.#log.warn({ event: 'rtc.signal.malformed' });
     const { type } = message;
     if (type === 'close') return void this.#finish(false);
-    if (type === 'description') return void (await this.#receiveDescription(message.description));
+    if (type === 'description') {
+      // Read before the description is applied, so the caps are known by
+      // the time the channels open and the transports attach.
+      const { caps } = message;
+      this.#peerCaps = typeof caps === 'object' && caps !== null && !Array.isArray(caps) ? caps : null;
+      return void (await this.#receiveDescription(message.description));
+    }
     if (type === 'candidate') return void (await this.#receiveCandidate(message.candidate));
     this.#log.warn({ event: 'rtc.signal.unknown', type });
   }
@@ -385,7 +406,7 @@ class RtcLink extends Emitter {
         await pc.setLocalDescription();
       }
       if (this.#pc !== pc) return;
-      await this.#send({ type: 'description', description: describe(pc.localDescription) });
+      await this.#send(this.#describe(pc));
     } catch (error) {
       if (this.#pc === pc) this.#error(error, 'offer');
     } finally {
@@ -414,7 +435,7 @@ class RtcLink extends Emitter {
       if (description.type === 'offer') {
         await pc.setLocalDescription();
         if (this.#pc !== pc) return;
-        await this.#send({ type: 'description', description: describe(pc.localDescription) });
+        await this.#send(this.#describe(pc));
       }
       await this.#flushCandidates(pc);
     } catch (error) {
@@ -558,6 +579,15 @@ class RtcLink extends Emitter {
   }
 
   // ---- plumbing
+
+  // A description signal, with this side's caps when it has any — every
+  // description, so a redial's fresh pc and an ICE restart announce them
+  // again and the peer never reads a stale answer.
+  #describe(pc) {
+    const message = { type: 'description', description: describe(pc.localDescription) };
+    if (this.#caps !== null) message.caps = this.#caps;
+    return message;
+  }
 
   #setState(state) {
     const previous = this.#state;

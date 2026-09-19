@@ -130,7 +130,13 @@ const ENTRIES = [
   // half of what a dispatcher rejects was invisible to an operator; the
   // bytes are the entry objects on those branches (+0.5 KB, measured 47.0
   // against 46.5, which is the budget exactly and too thin to leave).
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 48 },
+  // 48 -> 50 for per-message compression on the data channels: the
+  // src/compression seam (shared with the main entry's wt client), the
+  // ChannelCodec's two Sequencers and compress-before-fragmentation, the
+  // DEFLATE header bit, the link's caps in the description signal and
+  // WrpcPeer's option (+1.7 KB, measured 49.2 against 47.5). Off by
+  // default; both peers must name the codec before a byte changes.
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 50 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

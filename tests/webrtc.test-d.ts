@@ -216,3 +216,17 @@ expectAssignable<ClientHost>(host);
 expectType<number>(host.to('mesh:lobby').emit('x/y', 1));
 expectType<Set<Client>>(host.clients);
 expectType<boolean>(host.otel.enabled);
+
+// Per-message compression: on the peer, on either transport, on attachChannel, and in the link's caps
+expectAssignable<ConstructorParameters<typeof WrpcPeer>[0]>({ signaler: {} as Signaler, compression: true });
+expectAssignable<ConstructorParameters<typeof WrpcPeer>[0]>({
+  signaler: {} as Signaler,
+  compression: { threshold: 2048 },
+});
+expectAssignable<ConstructorParameters<typeof ClientRtcTransport>[1]>({ compression: true });
+expectAssignable<Parameters<typeof webrtc.attachChannel>[2]>({ peer: 'p', compression: { threshold: 512 } });
+declare const link: RtcLink;
+expectType<Record<string, unknown> | null>(link.peerCaps);
+declare const rtcTransport: ClientRtcTransport;
+expectType<string | null>(rtcTransport.compression);
+expectError<ConstructorParameters<typeof WrpcPeer>[0]>({ signaler: {} as Signaler, compression: 'lz4' });

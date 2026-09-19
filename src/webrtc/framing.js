@@ -14,7 +14,9 @@
 //   bit 0   KIND   0 = a wrpc packet (UTF-8 JSON, what a WebSocket text frame carries)
 //                  1 = a binary stream chunk (a chunkEncode frame)
 //   bit 1   FIN    1 = the last fragment of this message
-//   bit 2-7 reserved, MUST be 0 — a set bit is a protocol error
+//   bit 2   DEFLATE 1 = the message is compressed (src/compression) — only once
+//                  both ends negotiated it; reserved, and a protocol error, before
+//   bit 3-7 reserved, MUST be 0 — a set bit is a protocol error
 //
 // No message id, no sequence number: the channel is ordered and reliable,
 // all fragments of one message are sent back to back, and the KIND of a
@@ -27,8 +29,11 @@
 const KIND_TEXT = 0;
 const KIND_BINARY = 1;
 const FLAG_FIN = 0b10;
+const FLAG_DEFLATE = 0b100;
 const KIND_MASK = 0b01;
-const RESERVED_MASK = 0b11111100;
+// What a continuation must repeat: the kind and the deflate flag.
+const MESSAGE_MASK = KIND_MASK | FLAG_DEFLATE;
+const RESERVED_MASK = 0b11111000;
 const HEADER_BYTES = 1;
 
 // The interop floor (RFC 8831 §6.6, what old Firefox honoured) — used when
@@ -72,6 +77,15 @@ const toBytes = (input) => {
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
   if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
   throw new TypeError('framing: expected an ArrayBuffer or an ArrayBufferView');
+};
+
+/** A packet's bytes as text — the decoder's own decode, for a packet inflated after decoding. */
+const decodeText = (bytes) => {
+  try {
+    return TEXT_DECODER.decode(bytes);
+  } catch {
+    throw new FramingError('invalid UTF-8 in a text frame', 'utf8');
+  }
 };
 
 class FrameEncoder {
@@ -146,8 +160,13 @@ class FrameEncoder {
 }
 
 class FrameDecoder {
+  // Whether the DEFLATE flag is accepted: set by the transport once both
+  // ends named the same codec, a reserved bit — a protocol error — before.
+  deflate = false;
+
   #maxReassembly;
   #parts = null;
+  // The kind and flags of the message being reassembled (MESSAGE_MASK).
   #kind = -1;
   #size = 0;
 
@@ -164,20 +183,24 @@ class FrameDecoder {
   }
 
   /**
-   * Feeds one channel message. Returns `{ kind, data }` when it completes a
-   * message — `data` is a string for KIND_TEXT and a Uint8Array for
-   * KIND_BINARY — or null while one is still being reassembled. A
-   * single-fragment binary message is answered as a view over the input
-   * (no copy): every channel message is a fresh buffer, so nothing aliases.
-   * Throws FramingError on a malformed frame; the decoder is reset so the
-   * caller can terminate cleanly.
+   * Feeds one channel message. Returns `{ kind, data, deflated }` when it
+   * completes a message — `data` is a string for KIND_TEXT and a Uint8Array
+   * for KIND_BINARY, and for a DEFLATED message of either kind the bytes
+   * the codec produced, text only once the transport inflated them — or
+   * null while one is still being reassembled. A single-fragment binary
+   * message is answered as a view over the input (no copy): every channel
+   * message is a fresh buffer, so nothing aliases. Throws FramingError on a
+   * malformed frame; the decoder is reset so the caller can terminate
+   * cleanly.
    */
   push(input) {
     const frame = toBytes(input);
     if (frame.length < HEADER_BYTES) throw this.#fail('empty frame', 'empty');
     const header = frame[0];
-    if ((header & RESERVED_MASK) !== 0) throw this.#fail('reserved header bits set', 'reserved');
-    const kind = header & KIND_MASK;
+    if ((header & RESERVED_MASK) !== 0 || ((header & FLAG_DEFLATE) !== 0 && !this.deflate)) {
+      throw this.#fail('reserved header bits set', 'reserved');
+    }
+    const kind = header & MESSAGE_MASK;
     const fin = (header & FLAG_FIN) !== 0;
     const payload = frame.subarray(HEADER_BYTES);
     if (this.#parts === null) {
@@ -219,10 +242,12 @@ class FrameDecoder {
     return new FramingError(message, code);
   }
 
-  #finish(kind, bytes) {
-    if (kind === KIND_BINARY) return { kind, data: bytes };
+  #finish(flags, bytes) {
+    const kind = flags & KIND_MASK;
+    if (flags !== kind) return { kind, data: bytes, deflated: true };
+    if (kind === KIND_BINARY) return { kind, data: bytes, deflated: false };
     try {
-      return { kind, data: TEXT_DECODER.decode(bytes) };
+      return { kind, data: TEXT_DECODER.decode(bytes), deflated: false };
     } catch {
       throw this.#fail('invalid UTF-8 in a text frame', 'utf8');
     }
@@ -233,12 +258,14 @@ module.exports = {
   KIND_TEXT,
   KIND_BINARY,
   FLAG_FIN,
+  FLAG_DEFLATE,
   HEADER_BYTES,
   MIN_MESSAGE_SIZE,
   MAX_MESSAGE_SIZE,
   DEFAULT_MAX_REASSEMBLY,
   FramingError,
   negotiateMessageSize,
+  decodeText,
   FrameEncoder,
   FrameDecoder,
 };
