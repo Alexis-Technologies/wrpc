@@ -367,6 +367,11 @@ expectError<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ compression: 'zstd'
 expectAssignable<wrpc.RpcServerOptions>({ router, rooms: { compression: true, maxMessage: 1 << 20 } });
 expectAssignable<wrpc.RpcServerOptions>({ router, cluster: { secret: 's', compression: { threshold: 0 } } });
 expectError<wrpc.RoomsOptions>({ compression: 'lz4' });
+// The socket side: a Node ws client's frames
+expectAssignable<wrpc.RpcServerOptions>({ router, compression: true, maxMessage: 1 << 20 });
+expectError<wrpc.RpcServerOptions>({ router, compression: 'lz4' });
+declare const serverClient: wrpc.Client;
+expectType<{ readonly id: string; readonly threshold: number } | null>(serverClient.compression);
 expectError<wrpc.RpcServerOptions>({ router, http: { compression: 'gzip' } });
 expectError<wrpc.RpcServerOptions>({ router, http: { compression: { threshold: 'big' } } });
 expectAssignable<wrpc.ServerOptions>({ router, maxBodySize: 1024 });

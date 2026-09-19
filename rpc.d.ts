@@ -838,6 +838,8 @@ export class Client extends Emitter {
   readonly otel: object;
   /** 'ws' | 'http' | 'sse' | 'event' — a metric attribute and a log field. */
   readonly transportKind: string;
+  /** The per-message compression the peer negotiated for its own frames (a Node ws client's `compression`), or null. */
+  readonly compression: { readonly id: string; readonly threshold: number } | null;
   /** False on a text-only transport (SSE), where binary streams cannot go. */
   readonly binary: boolean;
   /** Resolves when the transport drained, or when it closed. */

@@ -13,6 +13,21 @@ narrower promise — see
 
 ### Added
 
+**Per-message compression from a Node WebSocket client (`compression` on both ends)**
+- Node's built-in `WebSocket` only ever inflates: a Node client's uploads
+  arrived as they were whatever the server negotiated. Now
+  `connect(url, { compression: true })` in Node sends `{ type: 'ping', enc:
+  'deflate-raw' }` on open; a server with `new Server({ compression: true
+  })` answers the `enc` on its `pong`, and from then on every packet or
+  chunk past the threshold leaves as a binary frame under a `0x00` marker
+  — a stream chunk never starts with one — that the server inflates before
+  dispatch (`maxMessage`, 16 MiB, caps it; a frame before negotiation, of
+  an unknown kind or past the cap is an id-less 400, not a hang-up). Off
+  on both ends by default; a lone end stays plain; a browser is untouched
+  (it compresses both directions under permessage-deflate) and its bundle
+  carries none of this — the client half is a `package.json#browser` pair
+  whose browser side is a stub.
+
 **Per-message compression on the broker binding and the backplane (`compression`)**
 - The broker binding: `attachBrokerRpc(server, broker, { compression })`
   and `connect('broker://…', { compression })`, off by default and

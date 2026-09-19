@@ -324,6 +324,16 @@ export interface RpcServerOptions {
   /** The HTTP side's own options: `compression`, off by default. */
   http?: { compression?: boolean | HttpCompressionOptions };
   /**
+   * Accept per-message compressed frames from a Node WebSocket client that
+   * negotiated them (its own `compression` option, agreed over the first
+   * ping/pong) — the direction permessage-deflate cannot cover, since
+   * Node's built-in WebSocket only inflates. Off by default; a browser
+   * client is untouched. The codec must answer synchronously.
+   */
+  compression?: boolean | CompressionOptions;
+  /** The largest inflated client frame accepted on a socket (default 16 MiB). */
+  maxMessage?: number;
+  /**
    * Presence/request tuning for the cluster layer, or `false` to opt out:
    * presence, commands and asks then degrade to their local halves while
    * the rooms backplane keeps working.

@@ -49,6 +49,8 @@ with every adapter; the network half belongs to the shell.
 | `maxCalls` | `1000` | In-flight calls per client; past it a call answers `429`. |
 | `sse` | `{}` | [SSE](./sse) channel options, or `false` to remove the endpoint. |
 | `http` | `{}` | The HTTP side's own options: `compression`, off by default — see [Compression](#compression). |
+| `compression` | off | Accept per-message compressed frames from a Node WebSocket client that negotiated them — see [Compression](#compression). |
+| `maxMessage` | 16 MiB | The largest inflated client frame accepted on a socket. |
 | `logger` | `globalThis.console` | Where the server logs — a Console or a pino-shaped logger; `false` silences it. See [Logging](./logging). |
 | `telemetry` | `null` | OTel traces and metrics — see [Telemetry](./telemetry). |
 
@@ -197,6 +199,25 @@ Nothing changes on the client: `fetch` sends `Accept-Encoding` and inflates
 by itself, in browsers and in Node. The event stream has its own option,
 [`sse.compression`](./sse#compression); the WebSocket has
 [`perMessageDeflate`](./performance#compression-is-off-by-default).
+
+### The Node client's frames {#node-client-frames}
+
+`perMessageDeflate` compresses what the server sends; a **Node** client's
+built-in `WebSocket` only ever inflates, so its uploads — a 4 KB call, a
+stream chunk — arrive as they are. The server-level `compression` option
+accepts per-message compressed frames from a Node client that asked for
+them: the client sends `{ type: 'ping', enc: 'deflate-raw' }` on open, a
+server with the same codec answers the `enc` on its `pong`, and from then
+on the client sends every packet or chunk past the threshold as a binary
+frame under a `0x00` marker (a stream chunk never starts with one) that
+the server inflates before dispatch. Off on both ends by default; a lone
+end stays plain. A browser never needs it — it compresses both directions
+itself under `perMessageDeflate`.
+
+```js
+new Server({ router, compression: true });                   // accept them
+const client = await connect('wss://host/api', { compression: true }); // send them (Node)
+```
 
 What it costs — `bench/http-compression.js`, one-shot gzip of a callback:
 

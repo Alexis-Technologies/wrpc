@@ -268,12 +268,14 @@ Two honest limits of what the knob covers:
   ends turn it on (`bench/message-compression.js`: a 1.4 KB callback 6.4× at
   84K/sec) — and on the [broker binding](./brokers/rpc#compression) and the
   [backplane envelopes](./scaling#compression), both Node↔Node.
-- **A Node client never compresses what it sends.** Node's built-in
-  `WebSocket` offers `permessage-deflate` on the handshake but only ever
-  inflates: every frame it sends leaves with `RSV1` clear, whatever the
-  server negotiated. Server→client frames compress as usual; a browser
-  compresses both directions itself. The same holds for the uws engine —
-  the client's own implementation is what decides its outbound frames.
+- **A Node client never compresses what it sends — on its own.** Node's
+  built-in `WebSocket` offers `permessage-deflate` on the handshake but only
+  ever inflates: every frame it sends leaves with `RSV1` clear, whatever
+  the server negotiated. Server→client frames compress as usual; a browser
+  compresses both directions itself. The way out is the client's own
+  [`compression`](./server#node-client-frames) option against a server
+  that accepts it: per-message frames the server inflates, negotiated over
+  the first ping/pong, off on both ends by default.
 
 ## Compression modes
 

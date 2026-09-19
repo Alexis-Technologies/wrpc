@@ -939,11 +939,12 @@ export interface WrpcClientOptions {
    */
   wt?: WtTransportOptions;
   /**
-   * @experimental Per-message compression on the transports that have no
-   * compression under them — WebTransport, WebRTC over `channel` or `link`,
-   * and the broker binding. Off by default; on only once the peer named the
-   * same codec (a raw channel has no handshake: both applications turn it
-   * on). The WebSocket has the server's `perMessageDeflate` instead.
+   * @experimental Per-message compression of what this client sends —
+   * WebTransport, WebRTC over `channel` or `link`, the broker binding, and
+   * the WebSocket from Node (where the built-in WebSocket only inflates;
+   * negotiated over the first ping/pong, a no-op in a browser). Off by
+   * default; on only once the peer named the same codec (a raw WebRTC
+   * channel has no handshake: both applications turn it on).
    */
   compression?: boolean | CompressionOptions;
   /**

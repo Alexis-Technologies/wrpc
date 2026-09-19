@@ -9,7 +9,8 @@
     "./webrtc.js": "./webrtc.browser.js",
     "./src/chunks.js": "./src/chunks.browser.js",
     "./src/runtime/node.js": "./src/runtime/browser.js",
-    "./src/compression/native.js": "./src/compression/native.browser.js"
+    "./src/compression/native.js": "./src/compression/native.browser.js",
+    "./src/client/wsCompression.js": "./src/client/wsCompression.browser.js"
   },
   "imports": {
     "#ws": "./src/websocket/ws.js"

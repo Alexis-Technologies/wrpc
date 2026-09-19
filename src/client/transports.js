@@ -6,6 +6,7 @@
 
 const { WrpcClient, ClientTransport, WRPC_PROTOCOL, metaHeaders, connectUrl } = require('./core.js');
 const { jsonParse } = require('../utils.js');
+const { createWsCompression } = require('./wsCompression.js');
 
 // Mirrors the server's metaMaxBytes default — see connectUrl in core.js for
 // the query carrier; the http leg applies the same cap to its header block.
@@ -18,10 +19,24 @@ class ClientWsTransport extends ClientTransport {
 
   #socket = null;
   #opening = null;
+  // Per-message compression of what THIS side sends (wsCompression.js —
+  // a stub in a browser): the offer goes out in a ping on open, and frames
+  // change only once the server's pong agreed. Re-negotiated per open.
+  #compression = null;
+  #negotiating = false;
+
+  /** The compression codec id in effect on this side's frames, or null. */
+  get compression() {
+    return this.#compression !== null && this.#compression.active ? this.#compression.id : null;
+  }
 
   async open(options = {}) {
     if (this.active) return Promise.resolve();
     if (this.#opening) return this.#opening;
+    // Under a wire codec a packet is not JSON, and the negotiation ping
+    // would not be either: the option is left off there.
+    this.#compression = this.codec ? null : createWsCompression(options.compression);
+    this.#negotiating = this.#compression !== null;
     const opening = new Promise((resolve, reject) => {
       // The client OFFERS the protocol revision; the server echoes it (see
       // protocol.md#versioning). `protocols` overrides the offer, and an
@@ -70,6 +85,9 @@ class ClientWsTransport extends ClientTransport {
       };
       const onOpen = () => {
         this.protocol = socket.protocol || '';
+        // First on the wire, before the core's own open handler sends
+        // anything: the pong that answers it is what turns compression on.
+        if (this.#compression !== null) socket.send(this.#compression.offer);
         this.active = true;
         this.emit('open');
         this.#opening = null;
@@ -79,6 +97,9 @@ class ClientWsTransport extends ClientTransport {
       socket.addEventListener('close', onClose, { once: true });
       socket.addEventListener('error', onClose, { once: true });
       socket.addEventListener('message', ({ data }) => {
+        // Only until the first pong answered the offer — a plain pong is a
+        // no, and either way nothing is inspected after that.
+        if (this.#negotiating && this.#compression.accept(data) !== null) this.#negotiating = false;
         this.emit('message', data);
       });
     });
@@ -109,6 +130,10 @@ class ClientWsTransport extends ClientTransport {
 
   write(data) {
     if (!this.active) throw new Error('Not connected');
+    if (this.#compression !== null) {
+      const frame = this.#compression.encode(data);
+      if (frame !== null) return void this.#socket.send(frame);
+    }
     this.#socket.send(data);
   }
 }

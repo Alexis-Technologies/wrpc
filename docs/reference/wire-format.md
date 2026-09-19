@@ -272,8 +272,10 @@ identifiable at the handshake, which is what `filter(req)` is for — see
 Node's built-in `WebSocket` offers `permessage-deflate` on the upgrade and
 inflates what it receives, but never deflates what it sends — every frame it
 emits has `RSV1` clear, whatever the server accepted. Compression on a
-Node↔Node link is therefore server→client only. Browsers compress both
-directions.
+Node↔Node link is therefore server→client only — unless the client's
+`compression` option and the server's agree on per-message frames above
+the extension ([the Node client's frames](../guide/server#node-client-frames)).
+Browsers compress both directions.
 :::
 
 ### Context takeover

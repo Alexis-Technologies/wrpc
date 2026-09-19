@@ -3,6 +3,9 @@
 const { jsonParse } = require('../utils.js');
 const { WrpcReadable } = require('../streams.js');
 const { chunkDecode } = require('../chunks.js');
+const { negotiate } = require('../compression/index.js');
+
+const EMPTY_OPTIONS = Object.freeze({});
 const { runSubscription } = require('./subscriptions.js');
 const { runHooks, runHooksSafe } = require('./router.js');
 const { publicErrorMessage, publicErrorDetails, wireError } = require('./errors.js');
@@ -488,7 +491,19 @@ const needsConnection = (client, id, what) => {
   return true;
 };
 
-const handlePacket = (client, packet, router) => {
+// A ping that names a codec (`enc`) is a Node ws client offering
+// per-message compression for its own frames: with the same codec
+// configured here (`options.compression`) the pong names it back and the
+// client's marked binary frames are inflated from then on (core
+// attachSocket); otherwise a plain pong, and the client stays plain. Only
+// on a WebSocket: the other carriers negotiate their own way.
+const negotiatePing = (client, enc, options) => {
+  const active = client.transportKind === 'ws' ? negotiate(options.compression ?? null, enc) : null;
+  client.compression = active;
+  client.send(active === null ? { type: 'pong' } : { type: 'pong', enc: active.id });
+};
+
+const handlePacket = (client, packet, router, options = EMPTY_OPTIONS) => {
   const { id, type, method, name } = packet;
   // The target is type-checked, not just truthiness-checked: a non-string
   // `method`/`name` would throw inside parseTarget, and these calls are not
@@ -528,6 +543,7 @@ const handlePacket = (client, packet, router) => {
   } else if (type === 'ping') {
     // App-level heartbeat: a browser WebSocket cannot see protocol pings,
     // so liveness is measured with packets the client can observe.
+    if (typeof packet.enc === 'string') return void negotiatePing(client, packet.enc, options);
     return void client.send({ type: 'pong' });
   } else if (type === 'pong' && client.persistent) {
     return; // answer to a server-initiated ping; liveness is the transport's
@@ -554,7 +570,7 @@ const handleMessage = (client, data, router, options = {}) => {
   // unparseable packet in the system passes through, so it is worth a line.
   if (parsed === null) client.log.warn({ event: 'packet.malformed', bytes: data?.length ?? 0 });
   const packet = parsed || {};
-  if (!Array.isArray(packet)) return void handlePacket(client, packet, router);
+  if (!Array.isArray(packet)) return void handlePacket(client, packet, router, options);
   const { maxBatch = DEFAULT_MAX_BATCH } = options;
   if (packet.length === 0 || packet.length > maxBatch) {
     const error = new Error(`Batch size must be between 1 and ${maxBatch}`);
@@ -565,7 +581,7 @@ const handleMessage = (client, data, router, options = {}) => {
     return void client.error(400, { error });
   }
   for (const item of packet) {
-    handlePacket(client, item && typeof item === 'object' ? item : {}, router);
+    handlePacket(client, item && typeof item === 'object' ? item : {}, router, options);
   }
 };
 

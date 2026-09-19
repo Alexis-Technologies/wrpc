@@ -49,7 +49,9 @@ subscription over HTTP is answered with code `400` rather than hanging.
 `ws` frames are compressed only when the server enables `perMessageDeflate`
 (off by default). A browser then compresses both directions itself; a Node
 client does not — its built-in `WebSocket` inflates but never deflates, so
-client→server frames from Node are always sent as-is. See
+client→server frames from Node are sent as-is unless the client's own
+`compression` option is on and the server accepts it
+([the Node client's frames](./server#node-client-frames)). See
 [performance](./performance#compression-is-off-by-default).
 :::
 

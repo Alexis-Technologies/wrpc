@@ -9,7 +9,8 @@ const { RoomRegistry, Broadcast, RoomsBackplane } = require('./rooms.js');
 const { Cluster, instanceOfClientId } = require('./cluster.js');
 const { SseChannels } = require('../sse/server.js');
 const { normalizeCompression } = require('../contentEncoding.js');
-const { createEnvelopeCodec, maxMessageOf } = require('../compression/sync.js');
+const { createEnvelopeCodec, maxMessageOf, normalizeSyncCompression, decodeOrNull } = require('../compression/sync.js');
+const { FRAME_MARK, FRAME_PACKET_DEFLATE, FRAME_CHUNK_DEFLATE } = require('../wire.js');
 // The channel header from the import-free constants module, NOT from
 // sse/server.js: the string is shared, the implementation is not.
 const { CHANNEL_HEADER } = require('../wire.js');
@@ -92,6 +93,8 @@ const RPC_OPTION_KEYS = [
   'maxCalls',
   'sse',
   'http',
+  'compression',
+  'maxMessage',
   'cluster',
   'rooms',
   'querystring',
@@ -136,6 +139,9 @@ class RpcServer extends Emitter {
   #sse = null;
   // The normalized `http.compression` option, or null (off, the default).
   #compression = null;
+  // The largest inflated client frame accepted on a socket (the Node ws
+  // client's per-message compression, negotiated on ping/pong).
+  #maxMessage;
   #querystring = null;
   #metaMax = DEFAULT_META_MAX;
   #codec = null;
@@ -163,6 +169,8 @@ class RpcServer extends Emitter {
       maxCalls = DEFAULT_MAX_CALLS,
       sse = {},
       http = {},
+      compression = null,
+      maxMessage,
       cluster = {},
       rooms = {},
       querystring = null,
@@ -224,7 +232,17 @@ class RpcServer extends Emitter {
     this.#codecOption = codec;
     this.#codec = codec && typeof codec.encode === 'function' && typeof codec.decode === 'function' ? codec : null;
     this.#restCodec = codec?.rest ?? null;
-    this.#limits = { maxBatch, maxSubscriptions, maxCalls };
+    // `compression` here is the SOCKET side: accepting per-message
+    // compressed frames from a Node ws client that negotiated them. Off by
+    // default, like the http/sse/rooms/cluster halves; rides in the limits
+    // bag so the dispatcher's ping handler sees it.
+    this.#limits = {
+      maxBatch,
+      maxSubscriptions,
+      maxCalls,
+      compression: normalizeSyncCompression(compression, 'RpcServer: options'),
+    };
+    this.#maxMessage = maxMessageOf(maxMessage, 'RpcServer');
     this.#router = this.#withIntrospection(router, introspection);
     // A compiled fjs serializer emits JSON; a packet codec re-frames the
     // whole wire. Both at once would mean the serializer's output is thrown
@@ -726,12 +744,44 @@ class RpcServer extends Emitter {
     };
     socket.on('message', (data, isBinary) => {
       if (!isBinary) return void handleMessage(client, data, this.#router, this.#limits);
+      let bytes = new Uint8Array(data);
+      // A framed message (wire.js): a compressed packet is dispatched from
+      // here, a compressed chunk falls through to the chunk path inflated.
+      if (bytes[0] === FRAME_MARK) {
+        bytes = this.#inflateFrame(client, bytes);
+        if (bytes === null) return;
+      }
       inflight++;
       if (inflight === 1 && typeof socket.pause === 'function') socket.pause();
-      handleBinary(client, new Uint8Array(data)).then(done, done);
+      handleBinary(client, bytes).then(done, done);
     });
     socket.on('error', () => transport.emit('close'));
     return client;
+  }
+
+  // A 0x00-marked binary frame from a socket peer: inflated with the codec
+  // the peer negotiated on ping/pong. Anything else — a frame before the
+  // negotiation, an unknown kind, a body that does not inflate under
+  // `maxMessage` — is answered with an id-less 400 and logged, never a
+  // hang-up: the connection itself is fine. Answers the inflated chunk for
+  // kind 4, null otherwise (a packet was dispatched, or the frame refused).
+  #inflateFrame(client, bytes) {
+    const kind = bytes[1];
+    const active = client.compression;
+    if (active === null || (kind !== FRAME_PACKET_DEFLATE && kind !== FRAME_CHUNK_DEFLATE)) {
+      client.log.warn({ event: 'frame.refused', kind, negotiated: active !== null });
+      client.error(400, { error: new Error('Unexpected framed message') });
+      return null;
+    }
+    const out = decodeOrNull(active, bytes.subarray(2), this.#maxMessage);
+    if (out === null) {
+      client.log.warn({ event: 'frame.refused', kind, reason: 'inflate' });
+      client.error(400, { error: new Error('Framed message does not inflate') });
+      return null;
+    }
+    if (kind === FRAME_CHUNK_DEFLATE) return new Uint8Array(out.buffer, out.byteOffset, out.byteLength);
+    handleMessage(client, out, this.#router, this.#limits);
+    return null;
   }
 
   /**

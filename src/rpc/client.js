@@ -135,6 +135,12 @@ class Client extends Emitter {
   #isReady = false;
   /** The REST response seam (see Context.http); null except on a REST call. */
   http = null;
+  /**
+   * The per-message compression this connection's peer negotiated for ITS
+   * frames (a Node ws client's `compression`, agreed on ping/pong), or
+   * null. Set by the dispatcher, read by the core's frame path.
+   */
+  compression = null;
 
   constructor(transport, options = {}) {
     super();

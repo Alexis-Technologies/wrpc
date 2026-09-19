@@ -393,7 +393,25 @@ closes it. The payload travels as binary chunks in between.
 
 ### Binary chunks
 
-Each binary frame is one chunk of one stream:
+Each binary frame is one chunk of one stream — unless its first byte is
+`0x00`, which no chunk has (a stream id is at least one byte long): such a
+frame is a **framed message**, its second byte the kind:
+
+```
+0x00  kind  payload
+      3     a packet, compressed with the codec negotiated on ping/pong (below); the receiver inflates, then reads it as a text frame
+      4     a chunk, compressed likewise; the receiver inflates, then reads it as a binary chunk
+      other reserved — a 400 error packet
+```
+
+A peer MAY send a kind 3 or 4 frame only after a `pong` named the codec;
+before that, or with a payload that does not inflate under the receiver's
+cap, the frame is answered with an id-less `400` and the connection goes
+on. Today only a Node client sends them (a browser's WebSocket compresses
+both directions under permessage-deflate, and a server's own frames use
+that extension too).
+
+Each ordinary binary frame is one chunk of one stream:
 
 ```
 ┌────────┬──────────────────┬──────────────────────────┐
@@ -950,6 +968,7 @@ mechanism, never a field of a wrpc packet:
 | HTTP, packet mode and REST | `Content-Encoding: gzip` on the response (`http.compression`) | the request's `Accept-Encoding`; the response carries `Vary: Accept-Encoding` |
 | Server-Sent Events | `Content-Encoding: gzip` on the stream — one gzip member, sync-flushed after every event (`sse.compression`) | the opening GET's `Accept-Encoding`, per response |
 | WebTransport | per message, KIND 3/4 on the control stream (`compression` on both ends) | the `deflate` key of the capabilities message — on only when both ends named the same codec |
+| WebSocket, client → server from Node | per message, framed binary (`0x00 03` / `0x00 04`) above the extension (`compression` on both ends) | `{ type: 'ping', enc }` from the client, answered by `{ type: 'pong', enc }` when the server has the same codec |
 | WebRTC | per message, the DEFLATE bit of the data-channel header (`compression` on both peers) | the `caps.deflate` field of the description signal — on only when both peers named the same codec; a raw channel by the application's agreement |
 | The broker binding | per frame, `wrpc-enc` on the frame (`compression` on both ends) | `hello`/`welcome` for a session; a stateless request names what it accepts and only the answer is compressed |
 | The rooms backplane, the cluster channels | the whole envelope, base64 under a `wrpc-enc:<id>:` marker (`rooms.compression`, `cluster.compression`) | none — every instance must run it, in a two-step rollout |

@@ -23,4 +23,22 @@ const META_PARAM = 'wrpc_meta';
 const META_HEADER = 'x-wrpc-meta';
 const META_PREFIX = 'x-wrpc-meta-';
 
-module.exports = { HEADERS_PARAM, META_PARAM, META_HEADER, META_PREFIX, CHANNEL_HEADER };
+// A binary WebSocket frame whose first byte is 0 is not a stream chunk (a
+// chunk's first byte is its id length, at least 1) but a FRAMED MESSAGE,
+// its second byte the kind: a packet or a chunk compressed with the codec
+// negotiated on ping/pong (protocol.md#binary-chunks). Kinds 1-2 are
+// reserved for the binary attachments and packet codec that come next.
+const FRAME_MARK = 0;
+const FRAME_PACKET_DEFLATE = 3;
+const FRAME_CHUNK_DEFLATE = 4;
+
+module.exports = {
+  HEADERS_PARAM,
+  META_PARAM,
+  META_HEADER,
+  META_PREFIX,
+  CHANNEL_HEADER,
+  FRAME_MARK,
+  FRAME_PACKET_DEFLATE,
+  FRAME_CHUNK_DEFLATE,
+};
