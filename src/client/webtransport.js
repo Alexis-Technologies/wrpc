@@ -69,6 +69,10 @@ const closeQuietly = (session, info) => {
 };
 
 class ClientWtTransport extends ClientTransport {
+  // Carries `options.encryption`: the handshake runs over the control
+  // stream inside open(), and every message after it is sealed.
+  static encrypts = true;
+
   // A session can die silently exactly like a socket (a NAT rebinding, a
   // suspended tab): the client's app-level ping/pong is the detector, and
   // the core owns every timer of it.
@@ -80,6 +84,16 @@ class ClientWtTransport extends ClientTransport {
   #writer = null;
   #datagrams = null;
   #mux = null;
+  // Session encryption (`options.encryption`): `{ ready, send, receive }`
+  // for this session, null otherwise. Under it everything rides the control
+  // stream sealed — no per-stream transport, no datagrams, no compression
+  // of what is already ciphertext: each would be a way around the channel.
+  #secure = null;
+  #encryption = null;
+
+  /** The session's facts once established (see WrpcClient#encryption), or null. */
+  encryption = null;
+
   #parser = null;
   #opening = null;
   // Bumped by terminate(): an open() that was waiting on the handshake when
@@ -141,14 +155,21 @@ class ClientWtTransport extends ClientTransport {
     const wt = options.wt ? { ...this.#options, ...options.wt } : this.#options;
     const WebTransport = wt.WebTransport ?? globalThis.WebTransport;
     if (typeof WebTransport !== 'function') throw new Error(UNAVAILABLE);
-    this.#compression = normalizeCompression(options.compression ?? wt.compression, 'wt transport: options');
+    this.#encryption = options.encryption ?? null;
+    this.#compression =
+      this.#encryption === null
+        ? normalizeCompression(options.compression ?? wt.compression, 'wt transport: options')
+        : null;
     const attempt = ++this.#attempt;
     const init = {};
     for (let i = 0; i < INIT_KEYS.length; i++) {
       const key = INIT_KEYS[i];
       if (wt[key] !== undefined) init[key] = wt[key];
     }
-    const session = new WebTransport(connectUrl(this.url, options.headers, options.meta, this.log), init);
+    let target = connectUrl(this.url, options.headers, options.meta, this.log);
+    // Announced in the URL, as on ws: the server may be the first to send.
+    if (this.#encryption !== null) target += `${target.includes('?') ? '&' : '?'}${this.#encryption.param}=1`;
+    const session = new WebTransport(target, init);
     this.#session = session;
     // The session's own end — a peer close, a transport failure, our own
     // close() — is one 'close' here; a failure while still opening is
@@ -162,7 +183,8 @@ class ClientWtTransport extends ClientTransport {
       if (attempt !== this.#attempt) throw new Error('Connection terminated');
       const stream = await session.createBidirectionalStream();
       if (attempt !== this.#attempt) throw new Error('Connection terminated');
-      this.#attach(session, stream);
+      await this.#attach(session, stream);
+      if (attempt !== this.#attempt) throw new Error('Connection terminated');
     } catch (error) {
       if (this.#session === session) {
         this.#session = null;
@@ -179,20 +201,22 @@ class ClientWtTransport extends ClientTransport {
     // Binary streams on their own WebTransport streams, negotiated through
     // the capabilities message each end sends first. Not under a codec: the
     // mux reads stream packets off the wire, which only JSON allows.
-    const mux = this.codec
-      ? null
-      : new StreamMux(session, {
-          emitPacket: (text) => void this.emit('message', text),
-          emitChunk: (chunk) => void this.emit('message', chunk),
-          onQueued: (size) => {
-            this.#queued += size;
-          },
-          onSent: (size) => this.#sent(size),
-          // Through the outbound order: a stream packet must not overtake
-          // a message still being compressed.
-          writeControl: (chunk) => this.#enqueue(frame(KIND_BINARY, chunk)),
-          sendControl: (packet) => super.send(packet),
-        });
+    const encryption = this.#encryption;
+    const mux =
+      this.codec || encryption !== null
+        ? null
+        : new StreamMux(session, {
+            emitPacket: (text) => void this.emit('message', text),
+            emitChunk: (chunk) => void this.emit('message', chunk),
+            onQueued: (size) => {
+              this.#queued += size;
+            },
+            onSent: (size) => this.#sent(size),
+            // Through the outbound order: a stream packet must not overtake
+            // a message still being compressed.
+            writeControl: (chunk) => this.#enqueue(frame(KIND_BINARY, chunk)),
+            sendControl: (packet) => super.send(packet),
+          });
     this.#mux = mux;
     this.#active = null;
     this.#outbound = new Sequencer((error) => this.#escalate(error));
@@ -217,15 +241,37 @@ class ClientWtTransport extends ClientTransport {
     // events on, a reader loop that hands the packets they carry to the
     // same 'message' path a stream packet takes.
     const datagrams = session.datagrams;
-    const writer = datagramWriter(datagrams);
+    const writer = encryption === null ? datagramWriter(datagrams) : null;
     if (writer && typeof datagrams.readable?.getReader === 'function') {
       this.#datagrams = writer;
       void this.#readDatagrams(session, datagrams.readable);
     }
-    this.active = true;
-    // Announced before open() resolves — the core's 'open' handler runs
-    // synchronously here, which is the invariant every transport keeps.
-    this.emit('open');
+    const established = () => {
+      this.active = true;
+      // Announced before open() resolves — the core's 'open' handler runs
+      // synchronously here, which is the invariant every transport keeps.
+      this.emit('open');
+    };
+    if (encryption === null) return void established();
+    // The handshake, over the control stream, before anything else of this
+    // session: a failure hangs the session up, which is open()'s rejection.
+    const secure = encryption.secure({
+      kind: 'wt',
+      write: (bytes) => void this.#enqueue(frame(KIND_BINARY, bytes)),
+      deliver: (data) => {
+        if (this.#session === session) this.emit('message', data);
+      },
+      fail: (error) => {
+        this.log?.warn({ event: 'encryption.failed', err: error });
+        closeQuietly(session);
+      },
+    });
+    this.#secure = secure;
+    return secure.ready.then((info) => {
+      if (this.#session !== session) throw new Error('Connection terminated');
+      this.encryption = info;
+      established();
+    });
   }
 
   async #read(session, readable) {
@@ -313,6 +359,9 @@ class ClientWtTransport extends ClientTransport {
   }
 
   #deliver(kind, data) {
+    // Sealed: every message is the channel's to open, from the first byte —
+    // the handshake answer arrives before this transport is active.
+    if (this.#secure !== null) return void this.#secure.receive(data);
     if (!this.active) return;
     if (kind === KIND_TEXT && this.#mux !== null && this.#mux.packet(data)) return;
     this.emit('message', data);
@@ -363,6 +412,10 @@ class ClientWtTransport extends ClientTransport {
    */
   write(data, options = null) {
     if (!this.active) throw new Error('Not connected');
+    if (this.#secure !== null) {
+      this.#secure.send(data);
+      return this.#queued <= this.#highWater;
+    }
     const active = this.#active;
     const plain = active === null || (options !== null && options.compress === false);
     if (typeof data === 'string') {
@@ -463,6 +516,8 @@ class ClientWtTransport extends ClientTransport {
     this.#session = null;
     this.#writer = null;
     this.#datagrams = null;
+    this.#secure = null;
+    this.encryption = null;
     this.#mux?.close();
     this.#mux = null;
     this.#parser = null;

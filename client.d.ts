@@ -302,6 +302,8 @@ export declare class ClientWtTransport extends ClientTransport {
   readonly session: unknown;
   /** The codecs in effect — null until the two lists share one. */
   readonly compression: NegotiatedCompression | null;
+  /** The facts of this session's encryption once established, or null. */
+  encryption: EncryptionInfo | null;
   /** The largest datagram the session carries; 0 when it carries none. */
   readonly maxDatagramSize: number;
   writeUnreliable(data: string): boolean;

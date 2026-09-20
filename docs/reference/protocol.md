@@ -1138,6 +1138,14 @@ under `"wrpc hpke static v1"` for the per-request binding — and published as
 the bundle `<kid>:<noise key>:<hpke key>` (base64url), which is what a
 client pins.
 
+On **WebTransport** the same frames ride the control stream as `KIND_BINARY`
+messages, after the capabilities exchange, with `wt` as the transport kind
+in the prologue. A sealed session announces no `streams` capability and
+uses no datagrams — binary streams fall back to chunks on the control stream
+and an `unreliable` event is sent reliably — because a stream or a datagram
+of its own would be a way around the channel; the carrier's own per-message
+compression is left off as well, since what it would compress is ciphertext.
+
 What stays outside the sealed channel is everything the upgrade carried:
 the URL, real headers, the `wrpc.bearer.` / `wrpc.h.` / `wrpc.m.` subprotocol
 tokens, cookies. Under session encryption a credential belongs in

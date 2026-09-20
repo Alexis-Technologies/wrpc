@@ -13,6 +13,22 @@ narrower promise — see
 
 ### Added
 
+**Session encryption over WebTransport**
+
+- The `wt` client transport carries `options.encryption` too (`static
+  encrypts`), and the server needs nothing new: `attachSession` hands its
+  `WtSocket` to `attachSocket`, which wraps it exactly as it wraps a
+  WebSocket. The handshake runs over the control stream after the
+  capabilities exchange, with `wt` bound into the prologue — a handshake
+  recorded on one kind of connection does not finish on the other.
+- Under it everything rides the control stream, sealed: no per-stream
+  transport (no `streams` capability is announced, so binary streams fall
+  back to control-stream chunks), no datagrams (an `unreliable` event goes
+  reliably), and the carrier's per-message compression is left off — each
+  would be a way around the channel, or work spent on ciphertext. QUIC is
+  already TLS 1.3, so what this protects against is the edge that
+  terminates it.
+
 **Session encryption: a Noise handshake on the WebSocket, then every frame sealed**
 
 - `new Server({ encryption: { keys } })` and

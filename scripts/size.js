@@ -83,11 +83,11 @@ const ENTRIES = [
   // CompressionStream which formats it has — +0.4 KB, measured 23.1
   // against 22.7. What it buys is the fallback: a peer without zstd is
   // served deflate instead of plain.
-  // 24 -> 25 for the session-encryption SEAM — not the encryption: the ws
-  // transport runs an injected handshake inside open() and hands every
+  // 24 -> 25 for the session-encryption SEAM — not the encryption: the ws and wt
+  // transports run an injected handshake inside open() and hand every
   // frame to it afterwards, the client refuses up front a transport that
   // cannot carry `options.encryption`, and the worker proxy forwards the
-  // option — +0.4 KB, measured 24.0 against 23.6. Noise, the AEADs and the
+  // option — +0.6 KB, measured 24.2 against 23.6. Noise, the AEADs and the
   // rest live in @alexify/wrpc/encryption, and only a page that injects
   // them pays for them.
   { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 25 },
