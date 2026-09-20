@@ -6,4 +6,6 @@
 // envelopes, the sealed session store, the server halves of the session
 // handshake and of HPKE.
 
-module.exports = { ...require('./browser.js') };
+const { sealedStore } = require('./store.js');
+
+module.exports = { ...require('./browser.js'), sealedStore };

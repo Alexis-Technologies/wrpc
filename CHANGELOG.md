@@ -13,6 +13,25 @@ narrower promise — see
 
 ### Added
 
+**`sealedStore()`: a session store that holds nothing readable**
+
+- `sealedStore(store, { keys })` from `@alexify/wrpc/encryption` wraps any
+  `sessions: { store }` — the Redis one, a table, the in-memory default.
+  Until now the Redis store kept each session's state as JSON **under the
+  bearer token itself**: a keyspace listing was a list of live credentials.
+  Wrapped, a row is keyed by `HMAC-SHA256(index key, token)` and holds the
+  state sealed (the backplane envelope's frame — a key per writing process,
+  a counter nonce) with the row's own key as additional data, so a row
+  copied into another session's slot does not open.
+- A key rotation signs nobody out: a read that misses under the current kid
+  finds the row under an older one and moves it (the index key rotates with
+  the rest). `acceptPlaintext: true` is the same move for adopting it over a
+  store that already holds sessions. `touch` is forwarded when the wrapped
+  store has one.
+- A row that does not open is a missing session and one warning
+  (`session.open`, `session.unsealed`, `session.migrate`); the token is
+  never logged. See [Sessions](./docs/guide/sessions.md#sealed).
+
 **`rooms.encryption` / `cluster.encryption`: sealed backplane envelopes**
 
 - TLS to Redis protects the hop, not what Redis holds: until now every room

@@ -143,8 +143,9 @@ const readCounter = (buffer, offset) => buffer.readUInt32BE(offset) * 0x10000000
  * it never travels. An envelope sealed by this same sealer answers null:
  * a pub/sub backplane echoes every publish to its publisher, which would
  * otherwise decrypt and parse each of its own messages only to drop them.
+ * `echo: true` opens them like any other — a store reads back what it wrote.
  */
-const createEnvelopeSealer = ({ encryption, layer, randomBytes = crypto.randomBytes }) => {
+const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = crypto.randomBytes }) => {
   const { keys, cipher, replayWindow } = encryption;
   const ciphers = new Map([[SUITES[cipher.id] ?? SUITE_INJECTED, cipher]]);
   // A built-in suite is opened whichever one this instance seals with, so a
@@ -226,7 +227,7 @@ const createEnvelopeSealer = ({ encryption, layer, randomBytes = crypto.randomBy
     const active = ciphers.get(sealed[1]);
     if (active === undefined || sealed.length < HEADER_LENGTH + active.tagLength) refuse('format');
     const saltKey = sealed.latin1Slice(2, 2 + SALT_LENGTH);
-    if (mine.has(saltKey)) return null;
+    if (!echo && mine.has(saltKey)) return null;
     const counter = readCounter(sealed, 2 + SALT_LENGTH);
     const id = `${kid}\0${saltKey}`;
     let entry = senders.get(id);

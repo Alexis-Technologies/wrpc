@@ -5,6 +5,8 @@
 export * from './encryption.browser.js';
 
 import type { Cipher, CipherAlgorithm, KeysOption } from './encryption.browser.js';
+import type { SessionStore } from './rpc.js';
+import type { WrpcLogger } from './client.js';
 
 /**
  * `encryption` on a Node↔Node carrier — `rooms.encryption`,
@@ -37,3 +39,31 @@ export interface EnvelopeEncryptionOptions {
    */
   replayWindow?: number | false;
 }
+
+export interface SealedStoreOptions {
+  /** One key, a ring with its current kid, or a provider — as everywhere. */
+  keys: KeysOption;
+  /** Default `'aes-256-gcm'`; an injected `Cipher` must answer synchronously. */
+  cipher?: CipherAlgorithm | Cipher;
+  /**
+   * The first deploy over a store that already holds sessions: a row the
+   * unwrapped store wrote is read once, sealed, and its plaintext deleted.
+   * Default false. Turn it off again once the longest session TTL passed.
+   */
+  acceptPlaintext?: boolean;
+  /** `session.unsealed`, `session.open`, `session.migrate` warnings. The token is never logged. */
+  logger?: WrpcLogger | boolean;
+}
+
+/**
+ * A session store that holds nothing readable — neither a session's state
+ * nor its token. Rows are keyed by an HMAC of the token and hold the state
+ * sealed, with the row's key as additional data: a row copied into another
+ * session's slot does not open. A key rotation signs nobody out — a row
+ * found under an older kid moves to the current one on its next read, so a
+ * kid can be dropped once the longest session TTL passed since it stopped
+ * being current. `touch` is forwarded when the wrapped store has one.
+ *
+ *   sessions: { store: sealedStore(createRedisSessionStore({ client }), { keys }) }
+ */
+export declare function sealedStore(store: SessionStore, options: SealedStoreOptions): SessionStore;

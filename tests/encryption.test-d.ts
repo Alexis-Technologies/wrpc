@@ -11,7 +11,8 @@ import type {
   Keyring,
   KeysOption,
 } from '../encryption.js';
-import type { RpcServerOptions, Router } from '../index.js';
+import type { RpcServerOptions, Router, SessionStore } from '../index.js';
+import { MemorySessionStore } from '../index.js';
 
 // A platform AEAD is a Cipher; `optional` widens the answer to null
 const cipher = encryption.aead();
@@ -92,3 +93,10 @@ expectAssignable<RpcServerOptions>({
 });
 expectAssignable<RpcServerOptions>({ router, rooms: { encryption: false }, cluster: { encryption: null } });
 expectError<RpcServerOptions>({ router, rooms: { encryption: true } });
+
+// A sealed session store is a session store
+const sealed = encryption.sealedStore(new MemorySessionStore(), { keys: 'k', acceptPlaintext: true, logger: false });
+expectType<SessionStore>(sealed);
+expectAssignable<RpcServerOptions>({ router, sessions: { store: sealed } });
+expectError(encryption.sealedStore(new MemorySessionStore()));
+expectError(encryption.sealedStore({}, { keys: 'k' }));

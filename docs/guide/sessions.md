@@ -192,6 +192,44 @@ two-line wrapper adapts it. With a shared store, no instance owns a session
 and a WebSocket client needs **no sticky routing** — see
 [what stays per-instance](./scaling#what-stays-per-instance).
 
+### Sealing what rests in the store {#sealed}
+
+A shared store is a third party. The Redis store keeps each session's state
+as JSON **under the token itself** — so a keyspace listing is a list of live
+bearer credentials, and a dump is every user's state. `sealedStore` wraps
+any store so that neither rests in it:
+
+```js
+const { sealedStore } = require('@alexify/wrpc/encryption');
+
+new Server({
+  router,
+  sessions: {
+    store: sealedStore(createRedisSessionStore({ client: new Redis(url) }), {
+      keys: process.env.WRPC_SESSION_KEY, // 32 bytes: base64, hex or a Uint8Array
+    }),
+  },
+});
+```
+
+A row is keyed by an HMAC of the token and holds the state sealed
+(AES-256-GCM), with the row's own key as additional data — a row copied
+into another session's slot does not open. A row that does not open is a
+missing session and one `session.open` warning; the token is never logged.
+
+- **Rotation signs nobody out.** With `keys: { current: 'k2', ring: { k1,
+  k2 } }` a read that misses under `k2` finds the row under `k1` and moves
+  it. Drop `k1` once your longest session TTL has passed since it stopped
+  being current.
+- **Adopting it over a store that already holds sessions:** `acceptPlaintext:
+  true` reads a row the unwrapped store wrote once, seals it and deletes the
+  plaintext. Turn it off after the same TTL.
+- It costs one extra `get` per *older* kid on a miss — an unknown token
+  included — so keep the ring short.
+
+What it does not do: hide how many sessions exist or when they are touched,
+or protect a session from someone holding the key — every instance does.
+
 Writes to `session.state` are coalesced: the assignments of one turn become
 **one** `store.set` on a microtask (the initial state of `create()` is
 written immediately), and a session that was finalized in the meantime is
