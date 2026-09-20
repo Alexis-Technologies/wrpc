@@ -23,6 +23,7 @@ import type {
 
 export type { ConsumePolicy } from './index.js';
 import type { Backplane } from './scaling.js';
+import type { EnvelopeEncryptionOptions } from './encryption.js';
 
 export type { Backplane } from './scaling.js';
 
@@ -230,6 +231,15 @@ export interface BrokerFeedOptions<Value = unknown, Mapped = Value> {
   secret?: string;
   /** Longer peer-supplied ids are refused with 400. Default 512. */
   maxIdLength?: number;
+  /**
+   * Opens what a publisher's `encryption` sealed — an entry that does not open is skipped and logged `feed.refused`. Seals what rests in the topic under a shared keyring
+   * (`@alexify/wrpc/encryption`): the value AND its headers, bound to the
+   * topic — base64 text, as every log keeps a string. The publisher, the
+   * feeds and the consumers of a topic take the same option; the partition
+   * `key` stays readable, the broker routes by it. Off by default; rolled
+   * out like `rooms.encryption`. No replay window: a log is read again.
+   */
+  encryption?: EnvelopeEncryptionOptions | false | null;
 }
 
 /**
@@ -271,6 +281,13 @@ export interface AttachConsumersOptions {
   logger?: WrpcLogger | boolean | null;
   /** Clients kept per `identity.trust: 'token'` binding (LRU). Default 128. */
   tokenClients?: number;
+  /**
+   * Opens what a publisher's `encryption` sealed, before anything reads the
+   * delivery — its headers may carry the credential a binding restores a
+   * session from. A delivery that does not open is dead-lettered (400) and
+   * logged `broker.refused`.
+   */
+  encryption?: EnvelopeEncryptionOptions | false | null;
 }
 
 export interface ConsumerBindingInfo {
@@ -324,7 +341,18 @@ export declare function createPublisher(
   server: Server | RpcServer,
   broker: Broker | { name?: string; close(): unknown; log?: BrokerLog; queue?: BrokerQueue },
   table: Record<string, PublishedEvent>,
-  options?: { strict?: boolean },
+  options?: {
+    strict?: boolean;
+    /**
+     * Seals what rests in the topic under a shared keyring
+     * (`@alexify/wrpc/encryption`): the value AND its headers, bound to the
+     * topic — base64 text, as every log keeps a string. The publisher, the
+     * feeds and the consumers of a topic take the same option; the partition
+     * `key` stays readable, the broker routes by it. Off by default; rolled
+     * out like `rooms.encryption`. No replay window: a log is read again.
+     */
+    encryption?: EnvelopeEncryptionOptions | false | null;
+  },
 ): Publisher;
 
 // ---------------------------------------------------------------------------
@@ -349,6 +377,16 @@ export interface BrokerRpcOptions {
    * so the codec must answer synchronously (the platform one does).
    */
   compression?: boolean | import('./client.js').CompressionOptions;
+  /**
+   * Seals every frame of the binding under a keyring the service and its
+   * clients share (`@alexify/wrpc/encryption`) — body AND headers, so the
+   * `authorization` a client presents no longer rests in the broker; only
+   * `wrpc-kind`, `wrpc-seq` and the key id stay readable, and they are bound
+   * into the seal with the address and the correlation id. A frame that does
+   * not open is dropped and logged `broker.rpc.refused`, never answered. A
+   * sealed binding is also what `encryption.required` on the server accepts.
+   */
+  encryption?: EnvelopeEncryptionOptions | false | null;
   /** The largest inflated frame accepted (default 16 MiB); past it the session ends. */
   maxMessage?: number;
 }
@@ -401,6 +439,8 @@ export declare class ClientBrokerTransport {
     meta?: Record<string, unknown>;
     /** Per-message compression, off by default; on a session only once the server agreed on `welcome`. */
     compression?: boolean | import('./client.js').CompressionOptions;
+    /** The binding's sealing under a shared keyring — `{ keys, … }`, NOT the session object of `createEncryption()`. */
+    encryption?: EnvelopeEncryptionOptions | false | null;
     /** The largest inflated frame accepted (default 16 MiB). */
     maxMessage?: number;
   }): Promise<void>;

@@ -111,7 +111,10 @@ expectType<Encryption>(session);
 expectType<'NN' | 'NK' | 'XX' | 'NNpsk0'>(session.pattern);
 expectAssignable<WrpcClientOptions>({ encryption: session });
 expectAssignable<WrpcClientOptions>({ encryption: null });
-expectError<WrpcClientOptions>({ encryption: { keys: 'k' } });
+// …or, for the broker transport, the keyring it shares with the service
+expectAssignable<WrpcClientOptions>({ encryption: { keys: 'k', acceptPlaintext: true } });
+expectError<WrpcClientOptions>({ encryption: 'k' });
+expectError<WrpcClientOptions>({ encryption: { required: true } });
 encryption.createEncryption({ pattern: 'XX', staticKey: new Uint8Array(32), verifyServer: async () => true });
 encryption.createEncryption({ pattern: 'NNpsk0', psk: new Uint8Array(32), cipher: 'chacha20-poly1305', rekeyAfter: 0 });
 expectError(encryption.createEncryption({ pattern: 'IK' }));

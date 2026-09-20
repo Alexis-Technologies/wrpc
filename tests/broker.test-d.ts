@@ -141,3 +141,16 @@ expectError<BrokerRpcOptions>({ service: 'x', compression: 'lz4' });
 declare const brokerTransport: ClientBrokerTransport;
 expectType<{ readonly encode: string; readonly decode: string } | null>(brokerTransport.compression);
 expectAssignable<BrokerRpcOptions>({ service: 'x', compression: { codec: ['zstd', 'deflate-raw'] } });
+
+// Sealing: the same keyring option on every binding
+declare const sealedServer: import('../index.js').RpcServer;
+declare const sealedBroker: import('../broker.js').Broker;
+broker.attachBrokerRpc(sealedServer, sealedBroker, { service: 'calc', encryption: { keys: 'k' } });
+broker.createPublisher(
+  sealedServer,
+  sealedBroker,
+  {},
+  { encryption: { keys: 'k', seal: false, acceptPlaintext: true } },
+);
+broker.attachConsumers(sealedServer, sealedBroker, {}, { encryption: { keys: { current: 'k1', ring: { k1: 'a' } } } });
+broker.brokerFeed(sealedBroker, 'orders', { encryption: { keys: 'k' } });

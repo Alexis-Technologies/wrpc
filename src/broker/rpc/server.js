@@ -33,7 +33,10 @@ const {
   peerHeaders,
   seqOf,
   packetBody,
+  sealFrame,
+  openFrame,
 } = require('./frames.js');
+const { createBrokerSealing } = require('../sealing.js');
 const {
   normalizeSyncCompression,
   codecById,
@@ -73,8 +76,10 @@ class BrokerSessionTransport extends ServerTransport {
   #onFailure;
   // What both ends agreed to on hello/welcome — `{ encode, decode }` — or null.
   #compression;
+  // The binding's sealing (../sealing.js) or null: compress, then seal.
+  #sealing;
 
-  constructor({ direct, peer, session, highWaterMark, onFailure, compression = null }) {
+  constructor({ direct, peer, session, highWaterMark, onFailure, compression = null, sealing = null }) {
     super(`broker:${session}`);
     this.#direct = direct;
     this.#peer = peer;
@@ -82,6 +87,7 @@ class BrokerSessionTransport extends ServerTransport {
     this.#highWaterMark = highWaterMark;
     this.#onFailure = onFailure;
     this.#compression = compression;
+    this.#sealing = sealing;
   }
 
   /** The codec ids in effect on this session — `{ encode, decode }` — or null. */
@@ -116,7 +122,8 @@ class BrokerSessionTransport extends ServerTransport {
       }
     }
     this.#unconfirmed++;
-    this.#direct.send(this.#peer, body, { headers, correlationId: this.#session }).then(
+    const frame = sealFrame(this.#sealing, this.#peer, this.#session, headers, body);
+    this.#direct.send(this.#peer, frame.body, { headers: frame.headers, correlationId: this.#session }).then(
       () => this.#confirmed(),
       (error) => {
         this.#confirmed();
@@ -170,6 +177,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     logger = null,
     compression = null,
     maxMessage,
+    encryption = null,
   } = options;
   const address = serviceAddress(service, addressOption, 'attachBrokerRpc');
   // Off by default. On, this end's list is announced back on `welcome` to a
@@ -180,6 +188,12 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
   const agree = headerNegotiator(codec);
   const announce = codec === null ? '' : codec.ids.join(',');
   const cap = maxMessageOf(maxMessage, 'attachBrokerRpc');
+  // Off by default. On, every frame is sealed under the shared keyring —
+  // body AND headers, so the bearer token a client presents no longer rests
+  // in the broker — and a frame that is not is refused (`acceptPlaintext`
+  // for the rollout). A sealed frame is also what `encryption.required` on
+  // the server accepts from this binding.
+  const sealing = createBrokerSealing(encryption, 'attachBrokerRpc: options', { layer: 'broker-rpc', replay: true });
   if (!(Number.isFinite(idleTimeout) && idleTimeout > 0)) {
     throw new TypeError('attachBrokerRpc: idleTimeout must be a positive number of milliseconds');
   }
@@ -192,10 +206,24 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
   const sessions = new Map(); // session id -> { transport, client, expectSeq, lastSeen }
   const basePath = rpc.basePath || '/';
 
-  const reply = (message, headers, body) =>
-    direct.send(message.replyTo, body, { headers, correlationId: message.correlationId }).catch((error) => {
-      log.warn({ event: 'broker.rpc.reply', err: error, to: message.replyTo });
-    });
+  const reply = (message, headers, body) => {
+    const frame = sealFrame(sealing, message.replyTo, message.correlationId, headers, body);
+    return direct
+      .send(message.replyTo, frame.body, { headers: frame.headers, correlationId: message.correlationId })
+      .catch((error) => {
+        log.warn({ event: 'broker.rpc.reply', err: error, to: message.replyTo });
+      });
+  };
+
+  // One inbound frame, opened — or null for one that was refused: logged
+  // with its reason, never answered (an answer would be an oracle, and the
+  // sender of a frame that does not open is not the peer anyway).
+  const opened = (at, message) => {
+    const frame = openFrame(sealing, at, message);
+    if (frame.refused === undefined) return frame;
+    log.warn({ event: 'broker.rpc.refused', reason: frame.refused, kind: message.headers?.[HEADER_KIND] });
+    return null;
+  };
 
   // Stateless: a packet-mode POST in all but carrier. The request itself
   // travels plain (the client cannot know yet what this instance speaks);
@@ -210,6 +238,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
       headers,
       body: packetBody(message.body),
       remoteAddress: 'broker',
+      encrypted: message.sealed === true,
       respond: ({ body }) => {
         const text = typeof body === 'string' ? body : packetBody(body);
         const encoded = active === null ? null : encodeIfSmaller(active.encode, text);
@@ -244,6 +273,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
       session: id,
       highWaterMark,
       compression: active,
+      sealing,
       onFailure: (error) => {
         log.warn({ event: 'broker.rpc.send', err: error, session: id });
         endSession(id, 'send failed', { notify: false });
@@ -255,15 +285,25 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     transport.once('close', () => {
       if (sessions.get(id) === session) sessions.delete(id);
     });
-    session.client = rpc.attach(transport, {
-      request: { headers: peerHeaders(message.headers), url: '', remoteAddress: 'broker' },
-    });
+    try {
+      session.client = rpc.attach(transport, {
+        request: { headers: peerHeaders(message.headers), url: '', remoteAddress: 'broker' },
+        encrypted: message.sealed === true,
+      });
+    } catch (error) {
+      // `encryption.required` on the server, and a hello that was not sealed.
+      sessions.delete(id);
+      log.warn({ event: 'broker.rpc.refused', reason: 'plaintext', err: error });
+      return void reply(message, { [HEADER_KIND]: KIND.BYE, [HEADER_REASON]: 'encryption required' }, '');
+    }
     const welcome = { [HEADER_KIND]: KIND.WELCOME, [HEADER_INBOX]: inbox };
     if (active !== null) welcome[HEADER_ENC] = announce;
     void reply(message, welcome, '');
   };
 
-  const onFrame = (message) => {
+  const onFrame = (raw) => {
+    const message = opened(inbox, raw);
+    if (message === null) return;
     const id = message.correlationId;
     const session = typeof id === 'string' ? sessions.get(id) : undefined;
     if (!session) {
@@ -291,7 +331,9 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     else session.transport.emit('packet', packetBody(body));
   };
 
-  const onService = (message) => {
+  const onService = (raw) => {
+    const message = opened(address, raw);
+    if (message === null) return;
     const kind = message.headers?.[HEADER_KIND];
     if (kind === KIND.REQUEST) return void onRequest(message);
     if (kind === KIND.HELLO) return void onHello(message);

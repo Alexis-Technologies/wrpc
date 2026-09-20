@@ -17,6 +17,7 @@ const { runValidator } = require('../rpc/router.js');
 const { SPAN_KIND_PRODUCER } = require('../telemetry/shared.js');
 const { capabilityOf, brokerName, isBrokerLog, isBrokerQueue } = require('./port.js');
 const { codedError } = require('./ids.js');
+const { createBrokerSealing } = require('./sealing.js');
 const { rpcOf } = require('./host.js');
 
 const isValidatorShape = (value) =>
@@ -27,7 +28,16 @@ const createPublisher = (server, broker, table = {}, options = {}) => {
   if (typeof table !== 'object' || table === null || Array.isArray(table)) {
     throw new TypeError('createPublisher: the event table must be an object');
   }
-  const { strict = true } = options;
+  const { strict = true, encryption = null } = options;
+  // Off by default. On, what rests in the topic is sealed under the shared
+  // keyring — the value AND its headers (the trace context, whatever the
+  // caller added), bound to the topic it was published to. The partition
+  // `key` stays readable: the broker routes by it.
+  const sealing = createBrokerSealing(encryption, 'createPublisher: options', {
+    layer: 'broker-log',
+    replay: false,
+    text: true,
+  });
   const hasLog = isBrokerLog(broker) || isBrokerLog(broker?.log);
   const hasQueue = isBrokerQueue(broker) || isBrokerQueue(broker?.queue);
   if (!hasLog && !hasQueue) {
@@ -91,9 +101,11 @@ const createPublisher = (server, broker, table = {}, options = {}) => {
           const carried = headers ? { ...headers } : {};
           otel.inject(carried);
           const key = keyOverride ?? (typeof event.key === 'function' ? event.key(value) : event.key);
-          const body = JSON.stringify(value);
+          const plain = JSON.stringify(value);
+          const out = sealing === null ? { headers: carried, body: plain } : sealing.seal(topic, carried, plain);
+          const { body } = out;
           const message =
-            key === null || key === undefined ? { headers: carried } : { headers: carried, key: String(key) };
+            key === null || key === undefined ? { headers: out.headers } : { headers: out.headers, key: String(key) };
           const result =
             to === 'log' ? await target.append(topic, body, message) : await target.produce(topic, body, message);
           otel.recordBrokerPublish(system, 'ok');

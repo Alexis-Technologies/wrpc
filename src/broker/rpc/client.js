@@ -30,7 +30,10 @@ const {
   peerHeaders,
   seqOf,
   packetBody,
+  sealFrame,
+  openFrame,
 } = require('./frames.js');
+const { createBrokerSealing } = require('../sealing.js');
 const {
   normalizeSyncCompression,
   codecById,
@@ -59,6 +62,10 @@ const serviceOf = (url) => {
 };
 
 class ClientBrokerTransport extends ClientTransport {
+  // `options.encryption` here is the KEYRING form — `{ keys, … }`, shared
+  // with the service — not the session object of createEncryption().
+  static encrypts = 'keys';
+
   // Decided per open() from `mode`; the defaults describe stateless.
   persistent = false;
   heartbeat = false;
@@ -82,6 +89,8 @@ class ClientBrokerTransport extends ClientTransport {
   // Per-message compression: the option, and what the server agreed to on
   // welcome (a session) — stateless answers are decided per request.
   #compression = null;
+  // The binding's sealing under a shared keyring (../sealing.js), or null.
+  #sealing = null;
   #active = null;
   #maxMessage;
   // Correlation ids AND the session id. The session id is the key the server
@@ -106,6 +115,14 @@ class ClientBrokerTransport extends ClientTransport {
     this.#requestTimeout = options.requestTimeout ?? DEFAULT_REQUEST_TIMEOUT;
     this.#compression = normalizeSyncCompression(options.compression, 'broker transport: options');
     this.#maxMessage = maxMessageOf(options.maxMessage, 'broker transport');
+    // `encryption: { keys }` — the binding's own sealing under a keyring the
+    // service shares (NOT the session object of createEncryption: there is
+    // no connection here to hold a handshake). Headers move inside with the
+    // body, so `authorization` no longer rests in the broker.
+    this.#sealing = createBrokerSealing(options.encryption, 'broker transport: options', {
+      layer: 'broker-rpc',
+      replay: true,
+    });
     this.#active = null;
     // What every stateless request and the hello announce: the codecs an
     // answer may come back in, in this end's order of preference.
@@ -141,9 +158,15 @@ class ClientBrokerTransport extends ClientTransport {
     // Settled by a close() that may come after a failed hello already
     // abandoned the await below: never an unhandled rejection.
     welcomed.catch(() => {});
-    const headers = { ...this.#headers, [HEADER_KIND]: KIND.HELLO };
-    await this.#direct.send(this.#address, '', {
-      headers,
+    const hello = sealFrame(
+      this.#sealing,
+      this.#address,
+      this.#session,
+      { ...this.#headers, [HEADER_KIND]: KIND.HELLO },
+      '',
+    );
+    await this.#direct.send(this.#address, hello.body, {
+      headers: hello.headers,
       correlationId: this.#session,
       replyTo: this.#inbox,
       timeout: this.#requestTimeout,
@@ -154,8 +177,13 @@ class ClientBrokerTransport extends ClientTransport {
     if (generation !== this.#generation) throw new Error('Connection closed');
   }
 
-  #onMessage(message, generation) {
+  #onMessage(raw, generation) {
     if (generation !== this.#generation) return;
+    const message = openFrame(this.#sealing, this.#inbox, raw);
+    // A frame that does not open is not the service's: dropped, and said so.
+    if (message.refused !== undefined) {
+      return void this.log?.warn({ event: 'broker.rpc.refused', reason: message.refused });
+    }
     const kind = message.headers?.[HEADER_KIND];
     if (this.mode === 'stateless') {
       if (kind !== KIND.RESPONSE) return;
@@ -217,9 +245,8 @@ class ClientBrokerTransport extends ClientTransport {
 
   #bye() {
     if (!this.#remote || !this.#session) return;
-    this.#direct
-      .send(this.#remote, '', { headers: { [HEADER_KIND]: KIND.BYE }, correlationId: this.#session })
-      .catch(() => {});
+    const bye = sealFrame(this.#sealing, this.#remote, this.#session, { [HEADER_KIND]: KIND.BYE }, '');
+    this.#direct.send(this.#remote, bye.body, { headers: bye.headers, correlationId: this.#session }).catch(() => {});
   }
 
   async #release() {
@@ -245,9 +272,10 @@ class ClientBrokerTransport extends ClientTransport {
     }
     this.#unconfirmed++;
     const generation = this.#generation;
+    const frame = sealFrame(this.#sealing, this.#remote, this.#session, headers, body);
     this.#direct
-      .send(this.#remote, body, {
-        headers,
+      .send(this.#remote, frame.body, {
+        headers: frame.headers,
         correlationId: this.#session,
         replyTo: this.#inbox,
       })
@@ -267,11 +295,18 @@ class ClientBrokerTransport extends ClientTransport {
   }
 
   #request(data) {
-    const headers = { ...this.#headers, [HEADER_KIND]: KIND.REQUEST };
+    const correlationId = this.generateId();
+    const request = sealFrame(
+      this.#sealing,
+      this.#address,
+      correlationId,
+      { ...this.#headers, [HEADER_KIND]: KIND.REQUEST },
+      data,
+    );
     this.#direct
-      .send(this.#address, data, {
-        headers,
-        correlationId: this.generateId(),
+      .send(this.#address, request.body, {
+        headers: request.headers,
+        correlationId,
         replyTo: this.#inbox,
         timeout: this.#requestTimeout,
       })

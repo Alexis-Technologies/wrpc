@@ -1031,8 +1031,10 @@ export interface WrpcClientOptions {
    * transport that cannot carry it (checked up front, the fallback list
    * included) is a TypeError, a server that does not answer is a failed
    * connection. With `worker`, it belongs to the `WrpcClientProxy` instead.
+   * The `broker` transport takes the KEYRING form instead — `{ keys, … }`,
+   * shared with the service (`EnvelopeEncryptionOptions`).
    */
-  encryption?: Encryption | null;
+  encryption?: Encryption | { keys: unknown; [option: string]: unknown } | null;
   /**
    * @experimental The `broker` transport (`@alexify/wrpc/broker`, Node): a
    * broker with the `direct` capability, or the capability itself. Typed

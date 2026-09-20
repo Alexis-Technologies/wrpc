@@ -77,6 +77,39 @@ const seqOf = (headers) => {
   return Number.isSafeInteger(value) && value > 0 ? value : 0;
 };
 
+// Sealed frames (../sealing.js): what a frame is bound to — where it was
+// sent, what kind it is, whose conversation, which frame of it. The kind and
+// the sequence number stay readable (the binding routes by them before it
+// can open anything) and are part of this string, so neither can be
+// rewritten; everything else a frame carried in its headers — the peer's
+// `authorization`, `x-wrpc-meta`, the codec id, the inbox, the reason — is
+// inside.
+const contextOf = (address, kind, correlationId, seq) =>
+  `${address}\0${kind ?? ''}\0${correlationId ?? ''}\0${seq ?? ''}`;
+
+const sealFrame = (sealing, address, correlationId, headers, body) => {
+  if (sealing === null) return { headers, body };
+  const inner = { ...headers };
+  const kind = inner[HEADER_KIND];
+  const seq = inner[HEADER_SEQ];
+  delete inner[HEADER_KIND];
+  delete inner[HEADER_SEQ];
+  const outer = seq === undefined ? { [HEADER_KIND]: kind } : { [HEADER_KIND]: kind, [HEADER_SEQ]: seq };
+  return sealing.seal(contextOf(address, kind, correlationId, seq), inner, body, outer);
+};
+
+/** The frame as it was before sealing, `{ refused: reason }`, or the message itself when nothing seals. */
+const openFrame = (sealing, address, message) => {
+  if (sealing === null) return message;
+  const kind = message.headers?.[HEADER_KIND];
+  const seq = message.headers?.[HEADER_SEQ];
+  const result = sealing.open(contextOf(address, kind, message.correlationId, seq), message);
+  if (result.refused !== undefined || result.sealed === false) return result.refused === undefined ? message : result;
+  const headers = { ...result.headers, [HEADER_KIND]: kind };
+  if (seq !== undefined) headers[HEADER_SEQ] = seq;
+  return { headers, body: result.body, correlationId: message.correlationId, replyTo: message.replyTo, sealed: true };
+};
+
 // A packet frame's body is text, a chunk frame's bytes — normalized here so
 // neither side trusts the broker to have preserved the JS type.
 const packetBody = (body) => toText(body);
@@ -92,4 +125,6 @@ module.exports = {
   peerHeaders,
   seqOf,
   packetBody,
+  sealFrame,
+  openFrame,
 };

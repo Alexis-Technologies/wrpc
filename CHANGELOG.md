@@ -13,6 +13,32 @@ narrower promise — see
 
 ### Added
 
+**Sealed broker messages: `encryption` on every broker binding**
+
+- A broker KEEPS what it carries — a Kafka topic, a stream, a quorum queue
+  hold every message for their retention. Until now that was every RPC
+  packet, every published event, and the bearer token in a client's headers
+  (`authorization` rode as a plaintext broker header on every `hello` and
+  every stateless `request`). `encryption: { keys }` — the keyring option of
+  `rooms.encryption`, rollout flags included — on `attachBrokerRpc`, the
+  `broker` client transport, `createPublisher`, `brokerFeed` and
+  `attachConsumers` seals them.
+- **The headers move inside with the body.** What stays readable is what the
+  binding routes by — `wrpc-kind`, `wrpc-seq`, the key id — and that is bound
+  into the seal with the address and the correlation id, so it cannot be
+  rewritten and a frame does not open in another conversation. RPC frames
+  get a replay window; published events are bound to their topic and have
+  none (a log is read again, a delivery redelivered).
+- Compression composes: compress, then seal, the codec id inside.
+- A message that does not open is dropped (`broker.rpc.refused`), skipped by
+  a feed (`feed.refused`) or dead-lettered with 400 by a consumer
+  (`broker.refused`) — logged with its reason, never answered.
+- A sealed binding is what `encryption.required` on the server accepts from
+  a broker; an unsealed `hello` is answered `bye: encryption required`.
+- Published bodies ride as base64 text: a log or a queue is only promised to
+  keep a string as it was (a Redis stream field is one). The partition `key`
+  stays the broker's to read.
+
 **Sealed Server-Sent Events**
 
 - The `sse` client transport carries `options.encryption` through the same

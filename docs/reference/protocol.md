@@ -1051,6 +1051,32 @@ either --bye {correlationId}--> the other
 A client that reconnects says `hello` again and may be welcomed by another
 instance; its subscriptions resume with `lastEventId` as on any reconnect.
 
+### Sealed frames and events {#broker-sealing}
+
+A broker keeps what it carries — for a topic's whole retention, for whoever
+can read it or its backups. With `encryption: { keys }` on the binding (the
+service and its clients share the keyring, as instances share
+`rooms.encryption`) every message is sealed with the
+[backplane envelope's frame](#across-instances):
+
+```
+headers   wrpc-sealed: <kid>     + wrpc-kind, wrpc-seq on an RPC frame
+body      sealed( u32 headerLength ‖ JSON(headers) ‖ body )
+```
+
+The HEADERS move inside with the body — a client's `authorization` and
+`x-wrpc-meta`, the trace context, `wrpc-enc`, `wrpc-inbox`, `wrpc-reason` —
+so a bearer token no longer rests in the broker. An RPC frame is bound to
+`address ‖ 0 ‖ kind ‖ 0 ‖ correlation id ‖ 0 ‖ seq` (label
+`"wrpc broker-rpc v1"`): the readable `wrpc-kind` and `wrpc-seq` cannot be
+rewritten, a frame does not open in another conversation, and a per-sender
+window drops a replay. A published event is bound to its **topic** (label
+`"wrpc broker-log v1"`), carried as base64 text — a log is only promised to
+keep a string — and has no replay window: a log is read again and a delivery
+redelivered, by design. The partition `key` stays readable; the broker
+routes by it. A message that does not open is dropped (RPC), skipped (a
+feed) or dead-lettered with `400` (a consumer), logged, and never answered.
+
 ## Compression
 
 Every transport carries plain bytes unless the application turns compression

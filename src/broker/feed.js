@@ -18,7 +18,8 @@
 
 const { tracked } = require('../rpc/subscriptions.js');
 const { capabilityOf } = require('./port.js');
-const { codedError, signId, openId } = require('./ids.js');
+const { codedError, signId, openId, toText } = require('./ids.js');
+const { createBrokerSealing } = require('./sealing.js');
 
 const DEFAULT_MAX_ID_LENGTH = 512;
 
@@ -44,7 +45,16 @@ const brokerFeed = (broker, topic, options = {}) => {
     onGap = null,
     secret = null,
     maxIdLength = DEFAULT_MAX_ID_LENGTH,
+    encryption = null,
   } = options;
+  // The reading half of a publisher's `encryption`: entries are opened
+  // before they are decoded, bound to the topic they are read from. No
+  // replay window — a log is read again, by design.
+  const sealing = createBrokerSealing(encryption, 'brokerFeed: options', {
+    layer: 'broker-log',
+    replay: false,
+    text: true,
+  });
   if (from !== 'latest' && from !== 'earliest') {
     throw new TypeError("brokerFeed: from must be 'latest' or 'earliest'");
   }
@@ -115,9 +125,19 @@ const brokerFeed = (broker, topic, options = {}) => {
       }
       let delivered = false;
       try {
-        for await (const entry of read) {
+        for await (const raw of read) {
           delivered = true;
-          after = entry.id;
+          after = raw.id;
+          let entry = raw;
+          if (sealing !== null) {
+            const opened = sealing.open(name, { headers: raw.headers, body: raw.value });
+            if (opened.refused !== undefined) {
+              // Skipped like an undecodable entry — and never yielded as it is.
+              context?.log?.warn({ event: 'feed.refused', topic: name, id: raw.id, reason: opened.refused });
+              continue;
+            }
+            if (opened.sealed) entry = { ...raw, headers: opened.headers, value: toText(opened.body) };
+          }
           let value;
           try {
             value = decodeValue(entry.value);

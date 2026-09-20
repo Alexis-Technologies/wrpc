@@ -667,6 +667,9 @@ class WrpcClient extends Emitter {
   static #checkEncryption(options, name, Transport) {
     const { encryption } = options;
     if (encryption === undefined || encryption === null) return;
+    // A transport over a shared carrier (the broker binding) seals under a
+    // keyring instead of a handshake, and says so: `encrypts = 'keys'`.
+    if (Transport.encrypts === 'keys' && typeof encryption === 'object' && encryption.keys !== undefined) return;
     if (typeof encryption !== 'object' || typeof encryption.secure !== 'function') {
       throw new TypeError("options.encryption must come from createEncryption() ('@alexify/wrpc/encryption')");
     }

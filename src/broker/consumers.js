@@ -30,6 +30,8 @@ const { createLoggerWriter } = require('../logging.js');
 const { capabilityOf, brokerName } = require('./port.js');
 const { normalizeRetry, decide } = require('./retry.js');
 const { rpcOf } = require('./host.js');
+const { toText } = require('./ids.js');
+const { createBrokerSealing } = require('./sealing.js');
 
 const DEFAULT_PREFETCH = 16;
 const DEFAULT_TOKEN_CLIENTS = 128;
@@ -160,7 +162,22 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
   if (typeof table !== 'object' || table === null || Array.isArray(table)) {
     throw new TypeError('attachConsumers: the binding table must be an object');
   }
-  const { auto = true, onDeadLetter = null, logger = null, tokenClients = DEFAULT_TOKEN_CLIENTS } = options;
+  const {
+    auto = true,
+    onDeadLetter = null,
+    logger = null,
+    tokenClients = DEFAULT_TOKEN_CLIENTS,
+    encryption = null,
+  } = options;
+  // The consuming half of a publisher's `encryption`: a delivery is opened
+  // before anything reads it — its headers carry the credential a binding
+  // may restore a session from — bound to the queue it was produced to. No
+  // replay window: a redelivery is the same message, on purpose.
+  const sealing = createBrokerSealing(encryption, 'attachConsumers: options', {
+    layer: 'broker-log',
+    replay: false,
+    text: true,
+  });
   if (onDeadLetter !== null && typeof onDeadLetter !== 'function') {
     throw new TypeError('attachConsumers: onDeadLetter must be a function');
   }
@@ -221,7 +238,7 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
   }
 
   const handles = bindings.map((binding) =>
-    bindConsumer({ rpc, queue, system, binding, log, onDeadLetter, tokenClients }),
+    bindConsumer({ rpc, queue, system, binding, log, onDeadLetter, tokenClients, sealing }),
   );
   try {
     await Promise.all(handles.map((handle) => handle.start()));
@@ -258,7 +275,7 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
 };
 
 // One binding: its clients, its broker consumer, the per-delivery dispatch.
-const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenClients }) => {
+const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenClients, sealing }) => {
   const { policy, procedure, method } = binding;
   const router = rpc.router;
   // The one-procedure router view handleRpc dispatches against.
@@ -360,22 +377,36 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
 
   const onDelivery = async (delivery) => {
     if (stopped || rpc.draining) return void (await settle(delivery, { action: 'release', delay: 0 }));
+    let { body, headers } = delivery;
+    if (sealing !== null) {
+      const opened = sealing.open(policy.queue, delivery);
+      if (opened.refused !== undefined) {
+        // Not a message this service can read, and retrying will not change
+        // that: dead-lettered, with the reason in the log only.
+        log.warn({ event: 'broker.refused', queue: policy.queue, reason: opened.refused });
+        return void (await settle(delivery, { action: 'dead', delay: 0 }, 400, new Error('Sealed delivery refused')));
+      }
+      if (opened.sealed) {
+        body = toText(opened.body);
+        headers = opened.headers;
+      }
+    }
     let args;
     try {
-      args = policy.args(delivery.body, delivery.headers, delivery);
+      args = policy.args(body, headers, delivery);
     } catch (error) {
       return void (await settle(delivery, { action: 'dead', delay: 0 }, 400, error));
     }
-    const { client, transport } = clientFor(delivery.headers);
+    const { client, transport } = clientFor(headers);
     const id = client.generateId();
     const meta = { messageId: delivery.id, attempt: delivery.attempt, queue: policy.queue };
     for (const name of policy.meta) {
-      const value = delivery.headers[name];
+      const value = headers[name];
       if (value !== undefined) meta[name] = value;
     }
     const packet = { type: 'call', id, method, args, meta };
-    if (typeof delivery.headers.tp === 'string') packet[TRACEPARENT] = delivery.headers.tp;
-    if (typeof delivery.headers.ts === 'string') packet[TRACESTATE] = delivery.headers.ts;
+    if (typeof headers.tp === 'string') packet[TRACEPARENT] = headers.tp;
+    if (typeof headers.ts === 'string') packet[TRACESTATE] = headers.ts;
     const outcome = transport.expect(id);
     handleRpc(client, packet, view).catch((error) => {
       // The dispatcher itself threw, not the handler: settled as a 500 so
