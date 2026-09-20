@@ -1181,6 +1181,25 @@ never sealed and never detailed — and a client that encrypts treats ANY
 response that is not `application/wrpc-sealed` as an error, whatever its
 status.
 
+**Server-Sent Events** ride the same binding: the stream request and every
+channel POST are sealed requests — so the channel id and `Last-Event-ID`
+travel inside — and the stream comes back as
+
+```
+Content-Type: text/event-stream; wrpc-sealed=1
+data: <base64( AEAD( one chunk of the real stream ) )>
+```
+
+one opaque `data:` event per chunk of the real stream, control frames
+(`ready`, `gap`, the heartbeat comment) included. The key is
+`Export("wrpc sse stream", Nk)` from the context of the request that opened
+THIS stream and the nonce is the frame counter from zero, so a re-attached
+stream has a new key and replays under it; a frame that is dropped,
+reordered or altered errors the stream, which the client sees as a broken
+connection and re-attaches from. The type stays `text/event-stream` so that
+intermediaries treat it as one; an HTTP content coding is never applied to a
+sealed stream or a sealed answer.
+
 `GET <basePath>/encryption-key` answers `{ "key": "<bundle>" }` — the one
 plaintext answer under `required` (`discovery: false` removes it). It is
 trust on first use.

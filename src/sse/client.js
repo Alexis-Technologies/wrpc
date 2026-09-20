@@ -91,6 +91,9 @@ class SseParser {
 const joinUrl = (base, path) => (base.endsWith('/') ? base.slice(0, -1) : base) + path;
 
 class ClientSseTransport extends ClientTransport {
+  // Carries `options.encryption`, per request like http — see open().
+  static encrypts = true;
+
   // The stream can die without a close frame just like a socket can.
   heartbeat = true;
 
@@ -120,6 +123,16 @@ class ClientSseTransport extends ClientTransport {
     // the spelling, both legs below just spread the result.
     this.#meta = options.meta ? metaHeaders(options.meta, options.metaPrefixed) : null;
     this.#fetch = options.fetch ?? globalThis.fetch;
+    // Session encryption has no session here: every request — the stream
+    // GET and each packet POST — is sealed on its own (HPKE), and the
+    // stream comes back sealed frame by frame, all inside a wrapped fetch.
+    const { encryption = null } = options;
+    if (encryption !== null) {
+      if (typeof encryption.fetch !== 'function') {
+        throw new TypeError('options.encryption has no serverKey to seal a request to — the sse transport needs one');
+      }
+      this.#fetch = encryption.fetch(this.#fetch, this.url);
+    }
     if (this.active) return;
     if (this.#reading) return this.#reading;
     const opening = this.#open(true);

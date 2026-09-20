@@ -10,9 +10,12 @@
 // terminates the TLS — is exactly the one who could replay: so `t` (the
 // sender's clock) must be fresh, and an `enc` is accepted once.
 
-const { concat, toBase64Url } = require('./bytes.js');
+const { concat, toBase64Url, counterNonce } = require('./bytes.js');
 const {
   responseKey,
+  streamKey,
+  SEALED_STREAM_TYPE,
+  STREAM_TYPE,
   pack,
   unpack,
   isSealedType,
@@ -116,6 +119,10 @@ const createHttpSealing = ({
     const headers = { ...call.headers };
     delete headers['content-type'];
     delete headers['content-length'];
+    // What the outer request accepts is not what the inner answer may be:
+    // the client reads the answer's bytes as they are, and compressing what
+    // is about to be sealed is the outer layer's business, never the inner's.
+    delete headers['accept-encoding'];
     if (typeof declared === 'object' && declared !== null) {
       for (const name of Object.keys(declared)) {
         if (typeof declared[name] === 'string') headers[name.toLowerCase()] = declared[name];
@@ -157,6 +164,34 @@ const createHttpSealing = ({
       respond,
     };
     if (typeof call.onAbort === 'function') inner.onAbort = (listener) => call.onAbort(listener);
+    // An event stream (SSE): the key is exported now, because the core opens
+    // the stream synchronously — and only when the request asked for one.
+    if (typeof call.stream === 'function' && String(headers.accept ?? '').includes(STREAM_TYPE)) {
+      const key = await streamKey(suite.cipher, context);
+      inner.stream = ({ headers: streamHeaders = {} }) => {
+        const outer = { ...outerHeaders };
+        for (const name of Object.keys(streamHeaders)) {
+          const lower = name.toLowerCase();
+          if (lower !== 'content-type' && lower !== 'content-encoding') outer[name] = streamHeaders[name];
+        }
+        const writer = call.stream({ status: 200, headers: { ...outer, 'Content-Type': SEALED_STREAM_TYPE } });
+        if (!writer) return writer;
+        let counter = 0;
+        // Every chunk of the real stream — an event, the `ready` frame that
+        // hands out the channel id, a heartbeat comment — leaves as one
+        // opaque `data:` event under the next counter.
+        const sealedWriter = {
+          write: (chunk) => {
+            const sealed = key.seal(counterNonce(counter++), Buffer.from(chunk), null);
+            return writer.write(`data: ${sealed.toString('base64')}\n\n`);
+          },
+          end: () => writer.end(),
+        };
+        if (typeof writer.onClose === 'function') sealedWriter.onClose = (listener) => writer.onClose(listener);
+        if (typeof writer.onDrain === 'function') sealedWriter.onDrain = (listener) => writer.onDrain(listener);
+        return sealedWriter;
+      };
+    }
     return inner;
   };
 

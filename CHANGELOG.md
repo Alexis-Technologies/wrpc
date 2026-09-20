@@ -13,6 +13,27 @@ narrower promise — see
 
 ### Added
 
+**Sealed Server-Sent Events**
+
+- The `sse` client transport carries `options.encryption` through the same
+  per-request binding as `http`: the stream request and every channel POST
+  are sealed requests, so the channel id and `Last-Event-ID` travel inside —
+  the channel id is no longer something an observer can lift.
+- The stream comes back as `text/event-stream; wrpc-sealed=1`: one opaque
+  `data:` event per chunk of the real stream, the `ready` frame that hands
+  out the channel id and the heartbeat included. Each stream has its own key,
+  exported from the request that opened it, and counts its frames from zero —
+  so a re-attach with `Last-Event-ID` replays under a NEW key and nothing of
+  the first stream repeats on the wire. A dropped, reordered or altered
+  frame errors the stream; the client re-attaches as it does after any drop.
+- It is sealed at the writer, not in the channel: the replay ring, retention
+  and `resume()` are untouched. The type stays `text/event-stream` for the
+  intermediaries; no HTTP content coding is applied to a sealed stream or a
+  sealed answer (the outer `Accept-Encoding` no longer reaches the inner
+  request).
+- With this, `encryption.required` holds on every client↔server transport:
+  ws, WebTransport, http and sse.
+
 **Sealed HTTP requests: HPKE per request**
 
 - The `http` client transport carries `options.encryption` too. A request is

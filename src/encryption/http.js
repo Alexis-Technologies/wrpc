@@ -23,7 +23,7 @@
 // This file is the client half and what the two share — bundled for a page.
 // The server half is httpServer.js, Node-only.
 
-const { concat, utf8 } = require('./bytes.js');
+const { concat, utf8, counterNonce, fromBase64 } = require('./bytes.js');
 const { OpenError } = require('./contracts.js');
 
 const CONTENT_TYPE = 'application/wrpc-sealed';
@@ -31,12 +31,21 @@ const VERSION = 1;
 const RESPONSE_NONCE = 32;
 const INFO = utf8('wrpc http v1\0');
 const RESPONSE_LABEL = utf8('wrpc http response');
+const STREAM_LABEL = utf8('wrpc sse stream');
+// A sealed event stream keeps the type every proxy knows how to treat (no
+// buffering, no transformation) and says what it is in a parameter — the
+// one response header a cross-origin page can always read.
+const STREAM_TYPE = 'text/event-stream';
+const SEALED_STREAM_TYPE = `${STREAM_TYPE}; wrpc-sealed=1`;
 const KEY_LABEL = utf8('key');
 const NONCE_LABEL = utf8('nonce');
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
 
 const isSealedType = (value) => typeof value === 'string' && value.toLowerCase().startsWith(CONTENT_TYPE);
+
+const isSealedStream = (value) =>
+  typeof value === 'string' && value.toLowerCase().startsWith(STREAM_TYPE) && value.includes('wrpc-sealed=1');
 
 // `u32 headerLength ‖ JSON ‖ body` — one JSON header, then bytes as they are.
 const pack = (header, body) => {
@@ -82,6 +91,45 @@ const responseKey = async ({ kdf, cipher }, context, enc, nonce) => {
   return { key: await cipher.key(key), iv };
 };
 
+// The key of a sealed event stream: exported from the context of the request
+// that opened it, so every stream — a reconnect included — has its own, and
+// its frames count from zero.
+const streamKey = async (cipher, context) => cipher.key(await context.export(STREAM_LABEL, cipher.keyLength));
+
+/**
+ * A sealed event stream, opened: the outer body is `data: <base64>` events,
+ * each the AEAD of one chunk of the REAL stream under a counter nonce; what
+ * comes out is that real stream's bytes, for an SSE parser that never knew.
+ * A frame that does not open — altered, dropped, reordered — errors the
+ * stream, which the transport sees as a broken connection.
+ */
+const openSealedStream = (body, key) => {
+  const reader = body.getReader();
+  const text = new TextDecoder();
+  let pending = '';
+  let counter = 0;
+  return new ReadableStream({
+    async pull(controller) {
+      for (;;) {
+        const end = pending.indexOf('\n\n');
+        if (end !== -1) {
+          const event = pending.slice(0, end);
+          pending = pending.slice(end + 2);
+          // Anything but a data line is an intermediary's (a comment, a retry).
+          if (!event.startsWith('data: ')) continue;
+          const sealed = fromBase64(event.slice(6));
+          if (sealed === null) throw new OpenError();
+          return void controller.enqueue(await key.open(counterNonce(counter++), sealed, null));
+        }
+        const { value, done } = await reader.read();
+        if (done) return void controller.close();
+        pending += text.decode(value, { stream: true });
+      }
+    },
+    cancel: (reason) => reader.cancel(reason),
+  });
+};
+
 /**
  * The client half: `sealedFetch({ hpke, kdf, cipher, serverKey })`
  * answers `(fetch, endpoint) => fetch-shaped function`. The wrapper answers
@@ -112,7 +160,12 @@ const sealedFetch = ({ hpke, kdf, cipher, serverKey, now = Date.now }) => {
         signal: init.signal,
         credentials: init.credentials,
       });
-      if (!isSealedType(response.headers.get('content-type'))) {
+      const type = response.headers.get('content-type');
+      if (isSealedStream(type)) {
+        const stream = openSealedStream(response.body, await streamKey(cipher, context));
+        return new Response(stream, { status: 200, headers: { 'Content-Type': STREAM_TYPE } });
+      }
+      if (!isSealedType(type)) {
         throw new Error(`encryption: the server answered in plaintext (${response.status})`);
       }
       const bytes = new Uint8Array(await response.arrayBuffer());
@@ -132,6 +185,11 @@ const sealedFetch = ({ hpke, kdf, cipher, serverKey, now = Date.now }) => {
 module.exports = {
   sealedFetch,
   responseKey,
+  streamKey,
+  openSealedStream,
+  isSealedStream,
+  SEALED_STREAM_TYPE,
+  STREAM_TYPE,
   pack,
   unpack,
   isSealedType,
