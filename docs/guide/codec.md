@@ -1,8 +1,9 @@
 # Wire codec
 
 By default every wrpc packet travels as JSON. The `codec` option replaces
-that framing with your own — superjson, devalue, an encrypting wrapper —
-injected on **both** sides:
+that framing with your own — superjson, devalue — injected on **both** sides
+(for encryption, see [Encryption](./encryption): a codec is synchronous and
+text-only, so it cannot reach WebCrypto and does not cover stream chunks):
 
 ```js
 const codec = {

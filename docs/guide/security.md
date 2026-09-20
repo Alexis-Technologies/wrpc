@@ -200,7 +200,10 @@ of access logs the way you would `Authorization`.
   [Rate limiting & throttling](./rate-limiting).
 - **It does not authenticate.** `startSession` trusts whatever your login
   handler verified.
-- **It does not encrypt.** Run `protocol: 'https'`, or terminate TLS at a proxy
-  and run `'http'` behind it.
+- **It does not encrypt by default.** Run `protocol: 'https'`, or terminate TLS
+  at a proxy and run `'http'` behind it — that comes first, always. Where TLS
+  ends before the data does (a Redis backplane, a broker's log, a shared
+  session store, a TLS terminator you do not run, a relay that should not
+  read what it relays), [Encryption](./encryption) is the opt-in layer.
 - **It does not sanitize your data.** `input`/`output` validators are yours to
   write; wrpc only runs them.

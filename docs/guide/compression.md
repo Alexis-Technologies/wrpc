@@ -20,6 +20,12 @@ the router dictionary.
 | The broker binding | `compression` on both ends | `hello`/`welcome`; a stateless request lists what it accepts | [broker RPC](./brokers/rpc#compression) |
 | The rooms backplane, the cluster channels | `rooms: { compression }`, `cluster: { compression }` | nothing — the marker names the codec; [a list](#list) makes the rollout lossless | [scaling](./scaling#compression) |
 
+Under [session encryption](./encryption#session) compression happens
+*inside* the sealed frame — ciphertext does not compress, so
+`permessage-deflate` is switched off for such a connection — and
+compress-then-encrypt leaks length: send a message that mixes a secret with
+attacker-influenced data with `compress: false`.
+
 Every one of them is off until you turn it on, and every one is negotiated
 where the wire allows it: a lone end is served plain. The
 [protocol reference](../reference/protocol#compression) has the wire forms.

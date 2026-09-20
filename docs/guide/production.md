@@ -138,7 +138,8 @@ stream ids are re-checked every time one is minted.
 ## Behind a proxy
 
 - **TLS.** Either run `protocol: 'https'` with `key`/`cert`, or terminate TLS
-  at the proxy and run `'http'` behind it. Both are normal.
+  at the proxy and run `'http'` behind it. Both are normal. If the box that terminates
+  it is not yours, see [session encryption](./encryption#session).
 - **Idle timeouts.** wrpc's own app-level
   [heartbeat](./client#heartbeat) is 30 s by default; keep the proxy's idle
   timeout above it or the proxy will close connections the client believes are

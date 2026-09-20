@@ -13,6 +13,17 @@ narrower promise — see
 
 ### Added
 
+**Docs: the encryption guide**
+
+- [Encryption](./docs/guide/encryption.md): whether you need it at all (a
+  table of where TLS ends before the data does — and the row that says you
+  do not), what it is built from and what is left to injection, keys and
+  rotation, each layer with its cost, what it does NOT protect. Linked from
+  the security, production, codec, compression, scaling and sessions pages;
+  the security page no longer says "it does not encrypt" without saying
+  where the opt-in is, and the codec page no longer offers a codec as the
+  way to encrypt.
+
 **End-to-end helpers: `createIdentity`, `createSealer`, `createOpener`**
 
 - For a payload the SERVER should not read — a chat message it only relays.
