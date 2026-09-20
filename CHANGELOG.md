@@ -13,6 +13,25 @@ narrower promise — see
 
 ### Added
 
+**End-to-end helpers: `createIdentity`, `createSealer`, `createOpener`**
+
+- For a payload the SERVER should not read — a chat message it only relays.
+  `createSealer({ recipientPublicKey }).seal(data)` answers bytes (`enc ‖
+  ciphertext`, HPKE with a fresh context per message) that wrpc carries as
+  they are: in a call, an event, a room broadcast and — since the previous
+  change — across the backplane. `createOpener({ keyPair }).open(sealed)`.
+- With `senderKey` / `senderPublicKey` it is HPKE **auth mode**: the
+  recipient learns which identity sealed the message, and one from anybody
+  else does not open. `info` says what the messages are for (a room, a
+  conversation), and one sealed for one purpose does not open for another.
+- HPKE gained the auth and auth_psk modes for it (RFC 9180 vectors for all
+  four modes now).
+- Said plainly, in the types and the guide: this is not a messaging
+  protocol — no forward secrecy for the recipient, no group key, no replay
+  memory; an application that needs those runs Double Ratchet or MLS over
+  the same bytes. And in a browser it protects against a server that READS,
+  not one that serves the page a different script.
+
 **Room events with bytes cross the backplane**
 
 - An event whose data holds a `Uint8Array` used to reach only the members on

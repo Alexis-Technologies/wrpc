@@ -161,3 +161,18 @@ hpke.setupSender(new Uint8Array(32), { info: new Uint8Array(4) }).then(({ enc, c
   expectType<Uint8Array>(enc);
   expectType<Promise<Uint8Array>>(context.export(new Uint8Array(1), 32));
 });
+
+// End to end, between clients
+encryption.createIdentity().then((identity) => {
+  expectType<Uint8Array>(identity.seed);
+  const sealer = encryption.createSealer({
+    recipientPublicKey: identity.publicKey,
+    senderKey: identity.keyPair,
+    info: 'room:lobby',
+  });
+  expectType<Promise<Uint8Array>>(sealer.seal('text', 'aad'));
+  const opener = encryption.createOpener({ keyPair: identity.keyPair, senderPublicKey: identity.publicKey });
+  expectType<Promise<Uint8Array>>(opener.open(new Uint8Array(64)));
+});
+expectError(encryption.createSealer({}));
+expectError(encryption.createOpener({ senderPublicKey: new Uint8Array(32) }));

@@ -28,6 +28,10 @@ test('hpke: the vectors are RFC 9180, for every suite this package names', () =>
     '0/32/1/3',
     '1/32/1/2',
     '1/32/1/3',
+    '2/32/1/2',
+    '2/32/1/3',
+    '3/32/1/2',
+    '3/32/1/3',
   ]);
   assert.deepStrictEqual({ ...AEAD_IDS }, { 'aes-256-gcm': 2, 'chacha20-poly1305': 3 });
 });
@@ -46,8 +50,14 @@ for (const vector of vectors) {
       assert.strictEqual(toHex(ephemeral.publicKey), vector.pkEm);
       assert.strictEqual(toHex(recipient.publicKey), vector.pkRm);
       const options = { info: fromHex(vector.info) };
-      if (vector.mode === 1) Object.assign(options, { psk: fromHex(vector.psk), pskId: fromHex(vector.psk_id) });
-      const sender = await hpke.setupSender(recipient.publicKey, { ...options, ephemeral });
+      if (vector.mode === 1 || vector.mode === 3) {
+        Object.assign(options, { psk: fromHex(vector.psk), pskId: fromHex(vector.psk_id) });
+      }
+      // The auth modes: the sender has a static key pair, and the recipient names its public half
+      const senderKey = vector.mode >= 2 ? await kem.deriveKeyPair(fromHex(vector.ikmS)) : null;
+      if (senderKey !== null) assert.strictEqual(toHex(senderKey.publicKey), vector.pkSm);
+      const sender = await hpke.setupSender(recipient.publicKey, { ...options, ephemeral, senderKey });
+      if (senderKey !== null) options.senderPublicKey = senderKey.publicKey;
       assert.strictEqual(toHex(sender.enc), vector.enc);
       const receiver = await hpke.setupRecipient(sender.enc, recipient, options);
       let sequence = 0;

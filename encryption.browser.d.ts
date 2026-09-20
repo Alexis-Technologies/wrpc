@@ -264,8 +264,12 @@ export interface Kem {
   readonly secretLength: number;
   generateKeyPair(): Promise<KeyPair>;
   keyPair(seed: Bytes): Promise<KeyPair>;
-  encap(recipientPublicKey: Bytes, ephemeral?: KeyPair | null): Promise<{ sharedSecret: Bytes; enc: Bytes }>;
-  decap(enc: Bytes, recipient: KeyPair): Promise<Bytes>;
+  encap(
+    recipientPublicKey: Bytes,
+    ephemeral?: KeyPair | null,
+    sender?: KeyPair | null,
+  ): Promise<{ sharedSecret: Bytes; enc: Bytes }>;
+  decap(enc: Bytes, recipient: KeyPair, senderPublicKey?: Bytes | null): Promise<Bytes>;
 }
 
 export declare function isKem(value: unknown): value is Kem;
@@ -274,6 +278,10 @@ export declare function dhKem(dh: Dh, kdf: Kdf, id?: number): Kem & { deriveKeyP
 export interface HpkeOptions {
   /** What the message is FOR: one sealed for one purpose does not open for another. */
   info?: Bytes;
+  /** Auth mode, on the sender: its static key pair — the recipient learns WHICH key sealed the message. */
+  senderKey?: KeyPair | null;
+  /** Auth mode, on the recipient: the sender it expects. A message anyone else sealed does not open. */
+  senderPublicKey?: Bytes | null;
   /** psk mode: the recipient also learns the sender held this key. With `pskId`. */
   psk?: Bytes | null;
   pskId?: Bytes | null;
@@ -286,7 +294,7 @@ export interface HpkeContext {
   export(context: Bytes, length: number): Promise<Bytes>;
 }
 
-/** HPKE (RFC 9180), base and psk modes, HKDF-SHA256. */
+/** HPKE (RFC 9180): base, psk, auth and auth_psk modes, HKDF-SHA256. */
 export declare function createHpke(options: { kem: Kem; kdf: Kdf; cipher: Cipher }): {
   readonly suite: Bytes;
   readonly aeadId: number;
@@ -323,3 +331,51 @@ export declare function createNoise(options: { pattern: NoisePattern; dh: Dh; ci
   initiator(options?: NoiseHandshakeOptions): Promise<NoiseHandshake>;
   responder(options?: NoiseHandshakeOptions): Promise<NoiseHandshake>;
 };
+
+/**
+ * An end-to-end identity. The SEED is the secret — 32 bytes to keep wherever
+ * this client keeps secrets, and the same identity again from the same seed;
+ * `publicKey` is what others seal to and verify against.
+ */
+export interface Identity {
+  readonly seed: Bytes;
+  readonly publicKey: Bytes;
+  readonly keyPair: KeyPair;
+}
+
+export interface E2eePrimitives {
+  cipher?: Cipher;
+  dh?: Dh;
+}
+
+export declare function createIdentity(
+  seed?: Bytes | null,
+  options?: E2eePrimitives & { crypto?: Pick<Crypto, 'getRandomValues'> },
+): Promise<Identity>;
+
+/**
+ * Seals one message to one recipient (HPKE, a fresh context per message):
+ * `enc ‖ ciphertext`, bytes wrpc carries as they are through a server that
+ * cannot read them. With `senderKey` the recipient can check who sealed it.
+ * Not a messaging protocol: no forward secrecy for the recipient, no group
+ * key, no replay memory — run Double Ratchet or MLS over the same bytes for
+ * those. In a browser it protects against a server that READS, not one that
+ * serves the page a different script.
+ */
+export declare function createSealer(
+  options: E2eePrimitives & {
+    recipientPublicKey: Bytes;
+    senderKey?: KeyPair | null;
+    /** What the messages are for — a room, a conversation id. */
+    info?: Bytes | string | null;
+  },
+): { seal(data: Bytes | string, aad?: Bytes | string | null): Promise<Bytes> };
+
+export declare function createOpener(
+  options: E2eePrimitives & {
+    keyPair: KeyPair;
+    /** A message this identity did not seal does not open. Without it, anyone who knows the public key could have sent it. */
+    senderPublicKey?: Bytes | null;
+    info?: Bytes | string | null;
+  },
+): { open(sealed: Bytes, aad?: Bytes | string | null): Promise<Bytes> };

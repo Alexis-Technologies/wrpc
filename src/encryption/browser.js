@@ -18,10 +18,14 @@ const { OpenError, isCipher, isCipherKey, isDh, isKeyProvider } = require('./con
 const { toBase64Url, fromBase64, equal } = require('./bytes.js');
 const { createEncryption, isEncryption, fetchServerKey } = require('./client.js');
 const { createHpke, dhKem, isKem } = require('./hpke.js');
+const { createIdentity, createSealer, createOpener } = require('./e2ee.js');
 const { createNoise, PATTERN_NAMES } = require('./noise.js');
 const { parseBundle } = require('./statics.js');
 
 module.exports = {
+  createIdentity,
+  createSealer,
+  createOpener,
   createEncryption,
   isEncryption,
   fetchServerKey,

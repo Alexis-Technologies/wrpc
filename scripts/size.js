@@ -142,12 +142,13 @@ const ENTRIES = [
   // (3.1). 4 -> 9 for the session: the Noise handshake (NN, NK, XX, NNpsk0),
   // the sealed framing and `createEncryption` — measured 7.8. 9 -> 11 for
   // HPKE (RFC 9180 base + psk, DHKEM, the exporter) and the sealed `fetch` of
-  // the http transport — measured 9.9.
+  // the http transport — measured 9.9. 11 -> 12 for the sealed event stream
+  // (sse), HPKE's auth modes and the end-to-end helpers — measured 10.8.
   {
     label: 'encryption — browser (@alexify/wrpc/encryption)',
     entry: 'encryption.browser.js',
     platform: 'browser',
-    budget: 11,
+    budget: 12,
   },
   { label: 'encryption — node (@alexify/wrpc/encryption)', entry: 'encryption.js', platform: 'node' },
   // A peer is a client AND a server: the webrtc browser entry bundles the
