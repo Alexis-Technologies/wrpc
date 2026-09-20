@@ -185,9 +185,11 @@ bytes (`bench/attachments.js`: tens of nanoseconds on a small callback, a
 few microseconds on a 30 KB one); `attachments: false` on both ends skips
 it and sends every packet as JSON, as revision 1 did. Under a packet
 [codec](./codec) it is off by itself — the codec owns the wire. A REST
-result holding bytes needs `codec.rest` and answers `501` without it; a
-room event with bytes reaches the instance's own members and is refused
-for the backplane (`backplane.bytes` in the log), whose envelopes are JSON.
+result holding bytes needs `codec.rest` and answers `501` without it. A
+room event with bytes crosses the [backplane](./scaling) too: its envelope
+rides as the same frame, base64 under a `wrpc-bin:` marker (or inside the
+sealed envelope, under `rooms.encryption`), and the members on another
+instance receive bytes.
 The frame's layout is on the [protocol page](../reference/protocol#binary-chunks).
 
 ## Chunk framing

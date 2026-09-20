@@ -500,10 +500,15 @@ test('envelope: the option is validated where the server is built', () => {
   backplane.close();
 });
 
-test('createEnvelope: off is off, compression alone is the codec it always was', () => {
+test('createEnvelope: with no option it only carries bytes; compression alone is the codec it always was', () => {
   const { log } = logs();
   const base = { maxMessage: 1 << 20, name: 'x', layer: 'rooms', event: 'backplane', log };
-  assert.strictEqual(createEnvelope({ ...base }), null);
+  const off = createEnvelope({ ...base });
+  assert.strictEqual(off.sealed, undefined);
+  assert.strictEqual(off.encode('{"v":1}', 'ch'), '{"v":1}', 'text is left exactly as it is');
+  assert.strictEqual(off.decode('{"v":1}', 'ch'), '{"v":1}');
+  assert.strictEqual(off.decode('wrpc-enc:deflate-raw:AAAA', 'ch'), null, 'compressed, and no codec here');
+  assert.strictEqual(off.decode('wrpc-sealed:0:AAAA', 'ch'), 'wrpc-sealed:0:AAAA', 'named by the caller');
   const codec = createEnvelope({ ...base, compression: true });
   assert.strictEqual(codec.sealed, undefined);
   assert.strictEqual(codec.decode(codec.encode(JSON.stringify(bigData))), JSON.stringify(bigData));

@@ -13,6 +13,20 @@ narrower promise — see
 
 ### Added
 
+**Room events with bytes cross the backplane**
+
+- An event whose data holds a `Uint8Array` used to reach only the members on
+  the emitting instance: the backplane's envelopes are JSON, so the
+  cross-instance half was refused and logged `backplane.bytes`. The envelope
+  now rides as the binary attachments frame itself — base64 under a
+  `wrpc-bin:` marker, or inside the sealed envelope (flag bit 1) under
+  `rooms.encryption` — and members on every instance receive bytes. This is
+  what a relayed end-to-end payload needs: opaque bytes, room-wide,
+  cluster-wide.
+- The core always injects the envelope now (it used to be `null` without
+  `compression`); text envelopes pass through it untouched. A
+  `RoomsBackplane` wired by hand without one still names the loss.
+
 **Sealed broker messages: `encryption` on every broker binding**
 
 - A broker KEEPS what it carries — a Kafka topic, a stream, a quorum queue

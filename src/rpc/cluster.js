@@ -819,7 +819,7 @@ class Cluster extends Emitter {
       // Refused by a sealing envelope, which reported why — or our own echo.
       if (text === undefined) return;
       // Still sealed: this node holds no keys, and says so.
-      if (text.charCodeAt(0) === 119 && text.startsWith('wrpc-sealed:')) {
+      if (typeof text === 'string' && text.charCodeAt(0) === 119 && text.startsWith('wrpc-sealed:')) {
         return void this.#log.warn({ event: 'cluster.sealed', channel });
       }
     }

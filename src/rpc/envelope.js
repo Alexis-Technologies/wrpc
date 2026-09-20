@@ -7,12 +7,14 @@
 // Node-only and built by the core, so the browser-bundled rooms.js carries
 // none of it.
 //
-// Without `encryption` this is createEnvelopeCodec, unchanged. With it the
+// Without `encryption` this is createEnvelopeCodec — plus, always, the
+// way an envelope whose data holds BYTES crosses a string carrier. With it the
 // two compose INSIDE one frame rather than one marker inside another — a
 // backplane carries strings, and base64 twice is 78 % overhead where once
 // is 33 %:
 //
 //   wrpc-sealed:<kid>:base64( sealed( u8 flags ‖ [u8 idLength ‖ codec id] ‖ body ) )
+//   flags: bit 0 compressed, bit 1 the body is an attachments frame
 //
 // Compress-then-encrypt, because ciphertext does not compress. The codec id
 // travels inside, as the `wrpc-enc:<id>:` marker names it outside, so the
@@ -31,13 +33,52 @@ const {
   encodeIfSmaller,
   decodeOrNull,
   codecById,
+  isEncodedEnvelope,
 } = require('../compression/sync.js');
 const { normalizeEnvelopeEncryption, createEnvelopeSealer } = require('../encryption/envelope.js');
+const { encodeAttachments, decodeAttachments } = require('../attachments.js');
 
 const SEALED_PREFIX = 'wrpc-sealed:';
+// An envelope whose event data holds BYTES: a backplane carries strings and
+// JSON has no bytes, so the envelope rides as the binary attachments frame
+// of src/attachments.js (its encoder is generic over any object), base64'd
+// under this marker — or inside the sealed frame, flagged, when sealing.
+const BINARY_PREFIX = 'wrpc-bin:';
 const FLAG_COMPRESSED = 1;
+const FLAG_BINARY = 2;
 
 const isSealedEnvelope = (message) => typeof message === 'string' && message.startsWith(SEALED_PREFIX);
+
+const asBuffer = (bytes) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+
+// The envelope object an attachments frame carries, or null: a frame that
+// does not decode is a peer's malformed message, never a throw in a handler.
+const binaryEnvelope = (bytes) => {
+  try {
+    return decodeAttachments(bytes);
+  } catch {
+    return null;
+  }
+};
+
+// What every backplane gets, options or not: bytes across instances. `inner`
+// is the text codec underneath (compression), or null.
+const withBytes = (inner) => ({
+  ...inner,
+  encode: inner === null ? (text) => text : (text) => inner.encode(text),
+  encodeBytes: (envelope) => BINARY_PREFIX + asBuffer(encodeAttachments(envelope)).toString('base64'),
+  decode(message) {
+    // JSON never starts with a `w`: one compare on the common path.
+    if (message.charCodeAt(0) !== 119) return message;
+    if (message.startsWith(BINARY_PREFIX)) {
+      return binaryEnvelope(Buffer.from(message.slice(BINARY_PREFIX.length), 'base64'));
+    }
+    if (inner !== null) return inner.decode(message);
+    // Compressed, and this instance holds no codec: unreadable, and known
+    // to be — the callers' `*.encoded` warning.
+    return isEncodedEnvelope(message) ? null : message;
+  },
+});
 
 /**
  * `{ encode(text, channel), decode(message, channel) }`, or null when
@@ -47,24 +88,27 @@ const isSealedEnvelope = (message) => typeof message === 'string' && message.sta
  */
 const createEnvelope = ({ compression, encryption, maxMessage, name, layer, event, log }) => {
   const sealing = normalizeEnvelopeEncryption(encryption, name);
-  if (sealing === null) return createEnvelopeCodec(compression, name, maxMessage);
+  if (sealing === null) return withBytes(createEnvelopeCodec(compression, name, maxMessage));
   const codecs = normalizeSyncCompression(compression, name);
   const head = codecs === null ? null : codecs.codecs[0];
   // What an instance still mid-rollout sends, and what `seal: false` sends.
-  const plain = createEnvelopeCodec(compression, name, maxMessage);
+  const plain = withBytes(createEnvelopeCodec(compression, name, maxMessage));
   const sealer = createEnvelopeSealer({ encryption: sealing, layer });
 
-  const frame = (text) => {
+  // `text` is the JSON envelope, or — with `binary` — the attachments frame
+  // of an envelope that holds bytes.
+  const frame = (text, binary = 0) => {
     const packed = head === null ? null : encodeIfSmaller(head, text);
     if (packed === null) {
       const body = Buffer.allocUnsafe(1 + Buffer.byteLength(text));
-      body[0] = 0;
-      body.write(text, 1);
+      body[0] = binary;
+      if (typeof text === 'string') body.write(text, 1);
+      else body.set(text, 1);
       return body;
     }
     const idLength = Buffer.byteLength(head.id);
     const body = Buffer.allocUnsafe(2 + idLength + packed.length);
-    body[0] = FLAG_COMPRESSED;
+    body[0] = FLAG_COMPRESSED | binary;
     body[1] = idLength;
     body.write(head.id, 2);
     body.set(packed, 2 + idLength);
@@ -73,24 +117,35 @@ const createEnvelope = ({ compression, encryption, maxMessage, name, layer, even
 
   const unframe = (body) => {
     if (body.length === 0) return null;
-    if ((body[0] & FLAG_COMPRESSED) === 0) return body.toString('utf8', 1);
-    if (codecs === null || body.length < 2) return null;
-    const end = 2 + body[1];
-    const entry = end > body.length ? null : codecById(codecs, body.toString('utf8', 2, end));
-    const out = entry === null ? null : decodeOrNull(entry, body.subarray(end), maxMessage);
-    return out === null ? null : Buffer.from(out.buffer, out.byteOffset, out.byteLength).toString();
+    const binary = (body[0] & FLAG_BINARY) !== 0;
+    let bytes;
+    if ((body[0] & FLAG_COMPRESSED) === 0) bytes = body.subarray(1);
+    else {
+      if (codecs === null || body.length < 2) return null;
+      const end = 2 + body[1];
+      const entry = end > body.length ? null : codecById(codecs, body.toString('utf8', 2, end));
+      const out = entry === null ? null : decodeOrNull(entry, body.subarray(end), maxMessage);
+      if (out === null) return null;
+      bytes = asBuffer(out);
+    }
+    return binary ? binaryEnvelope(bytes) : bytes.toString();
   };
 
   return {
     sealed: true,
     encode(text, channel) {
-      if (!sealing.seal) return plain === null ? text : plain.encode(text);
+      if (!sealing.seal) return plain.encode(text);
       const { kid, sealed } = sealer.seal(frame(text), channel);
+      return `${SEALED_PREFIX}${kid}:${sealed.toString('base64')}`;
+    },
+    encodeBytes(envelope, channel) {
+      if (!sealing.seal) return plain.encodeBytes(envelope);
+      const { kid, sealed } = sealer.seal(frame(asBuffer(encodeAttachments(envelope)), FLAG_BINARY), channel);
       return `${SEALED_PREFIX}${kid}:${sealed.toString('base64')}`;
     },
     decode(message, channel) {
       if (!message.startsWith(SEALED_PREFIX)) {
-        if (sealing.acceptPlaintext) return plain === null ? message : plain.decode(message);
+        if (sealing.acceptPlaintext) return plain.decode(message);
         return void log.warn({ event: `${event}.unsealed`, channel });
       }
       const colon = message.indexOf(':', SEALED_PREFIX.length);
@@ -118,4 +173,4 @@ const createEnvelope = ({ compression, encryption, maxMessage, name, layer, even
   };
 };
 
-module.exports = { createEnvelope, isSealedEnvelope, SEALED_PREFIX };
+module.exports = { createEnvelope, isSealedEnvelope, SEALED_PREFIX, BINARY_PREFIX };

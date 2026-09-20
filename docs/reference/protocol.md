@@ -651,12 +651,17 @@ and changes codec the same way — every instance lists both, then the order
 is swapped. The cluster channels below do the same under
 `cluster: { compression }`, applied after the HMAC signature.
 
+An event whose data holds bytes cannot be a JSON envelope. It is published
+as `wrpc-bin:<base64 of the envelope as a binary attachments frame>` — the
+[frame](#binary-chunks) a socket carries such a packet in, over the envelope
+object instead — and delivered on the other instances as bytes.
+
 With `rooms: { encryption }` on, every envelope is published sealed:
 
 ```
 wrpc-sealed:<kid>:<base64( header ‖ AEAD( frame ) )>
 header = u8 version (1) ‖ u8 suite ‖ salt (16) ‖ u64 counter
-frame  = u8 flags ‖ [ u8 idLength ‖ codec id ] ‖ body        flags bit 0: compressed
+frame  = u8 flags ‖ [ u8 idLength ‖ codec id ] ‖ body        flags bit 0: compressed, bit 1: body is a binary envelope
 ```
 
 `kid` names the key of the shared keyring (1–32 of `A-Z a-z 0-9 . _ -`) and

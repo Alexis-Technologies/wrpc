@@ -294,20 +294,16 @@ class Broadcast {
         this.#log.error({ err: error, event: 'broadcast.send', name });
       }
     }
-    let published = Boolean(!this.#localOnly && this.#publish);
-    if (published && binary) {
-      // The backplane carries JSON envelopes: bytes would arrive on the
-      // other instances as the plain objects this frame exists to avoid.
-      // Local delivery happened; the cross-instance half is named, not
-      // silently corrupted.
-      published = false;
-      this.#log.warn({ event: 'backplane.bytes', name });
-    }
+    const published = Boolean(!this.#localOnly && this.#publish);
     if (published) {
-      // The flag rides only when set: the envelope stays what it was.
-      this.#publish(
-        unreliable ? { rooms: this.#targets, name, data, unreliable } : { rooms: this.#targets, name, data },
-      );
+      // The flags ride only when set: the envelope stays what it was. An
+      // event whose data holds bytes crosses as a binary envelope — JSON has
+      // no bytes, and they would arrive as the plain objects the
+      // attachments frame exists to avoid.
+      const envelope = { rooms: this.#targets, name, data };
+      if (unreliable) envelope.unreliable = true;
+      if (binary) envelope.binary = true;
+      this.#publish(envelope);
     }
     this.#otel?.recordBroadcast(name, sent, published);
     return sent;
@@ -588,7 +584,7 @@ class RoomsBackplane {
     this.release(roomChannel(room));
   }
 
-  publish({ rooms, name, data, unreliable = false }) {
+  publish({ rooms, name, data, unreliable = false, binary = false }) {
     if (this.#closed) return;
     const single = rooms && rooms.length === 1;
     const channel = single ? roomChannel(rooms[0]) : BROADCAST_CHANNEL;
@@ -607,14 +603,24 @@ class RoomsBackplane {
     if (unreliable) envelope.unreliable = true;
     let message = null;
     try {
-      message = JSON.stringify(envelope);
+      if (binary) {
+        // Bytes in the data: the injected envelope carries them (the core's
+        // always can). Without one — a registry wired by hand — the
+        // cross-instance half is named, not silently corrupted.
+        if (typeof this.#envelope?.encodeBytes !== 'function') {
+          return void this.#log.warn({ event: 'backplane.bytes', name });
+        }
+        message = this.#envelope.encodeBytes(envelope, channel);
+      } else {
+        message = JSON.stringify(envelope);
+        // The channel rides along for a sealing envelope, which binds it.
+        if (this.#envelope !== null) message = this.#envelope.encode(message, channel);
+      }
     } catch (error) {
       // Non-serializable payload: local delivery already happened, so this
       // is a cross-instance loss, not a lost event.
       return void this.#log.error({ err: error, event: 'backplane.serialize', name });
     }
-    // The channel rides along for a sealing envelope, which binds it.
-    if (this.#envelope !== null) message = this.#envelope.encode(message, channel);
     try {
       const result = this.#backplane.publish(channel, message);
       if (result && typeof result.catch === 'function') {
@@ -642,7 +648,7 @@ class RoomsBackplane {
       // Still sealed: this instance holds no keys (with or without a
       // compression codec, which passes through what is not its own), and
       // says so — JSON never starts with a `w`, so the test is one compare.
-      if (text.charCodeAt(0) === 119 && text.startsWith('wrpc-sealed:')) {
+      if (typeof text === 'string' && text.charCodeAt(0) === 119 && text.startsWith('wrpc-sealed:')) {
         return void this.#log.warn({ event: 'backplane.sealed', channel });
       }
     }
