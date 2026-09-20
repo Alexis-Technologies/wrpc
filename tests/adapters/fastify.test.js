@@ -179,8 +179,8 @@ test('options.engine short-circuits detection and preClose owns teardown', async
   assert.ok(instance.decorations.get('wrpc') instanceof RpcServer);
   assert.deepStrictEqual(
     instance.routes.map((route) => route.url),
-    ['/api', '/api/events', '/api/:unit/:method'],
-    'packet route + SSE stream + REST route',
+    ['/api', '/api/events', '/api/encryption-key', '/api/:unit/:method'],
+    'packet route + SSE stream + key discovery + REST route',
   );
   assert.ok(instance.hooks.has('preClose'));
 

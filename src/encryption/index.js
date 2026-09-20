@@ -7,5 +7,6 @@
 // handshake and of HPKE.
 
 const { sealedStore } = require('./store.js');
+const { createReplayCache } = require('./httpServer.js');
 
-module.exports = { ...require('./browser.js'), sealedStore };
+module.exports = { ...require('./browser.js'), sealedStore, createReplayCache };

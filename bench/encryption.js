@@ -221,6 +221,26 @@ async function main() {
   }
   console.log(`a whole NN handshake, both ends     ${cell(((performance.now() - started) * 1000) / 200)}`);
 
+  // One sealed HTTP request, both ends (src/encryption/http.js over hpke.js):
+  // an X25519 each way, the key schedule, the request and its answer.
+  const { createHpke, dhKem } = require('../src/encryption/hpke.js');
+  const kdfForHpke = createKdf();
+  const kem = dhKem(x25519(), kdfForHpke);
+  const hpke = createHpke({ kem, kdf: kdfForHpke, cipher: node.aead() });
+  const recipient = await kem.generateKeyPair();
+  const requestBody = payload(1024);
+  const requests = 300;
+  const hpkeStarted = performance.now();
+  for (let i = 0; i < requests; i++) {
+    const sent = await hpke.setupSender(recipient.publicKey, { info: AAD });
+    const sealedRequest = await sent.context.seal(null, requestBody);
+    const received = await hpke.setupRecipient(sent.enc, recipient, { info: AAD });
+    await received.open(null, sealedRequest);
+    await received.export(AAD, 32);
+    await sent.context.export(AAD, 32);
+  }
+  console.log(`\na sealed HTTP request, both ends    ${cell(((performance.now() - hpkeStarted) * 1000) / requests)}`);
+
   console.log(
     '\nfan-out of one 1 KB event, per emit'.padEnd(35) + [10, 1000, 10000].map((n) => `${n}`.padStart(12)).join(''),
   );

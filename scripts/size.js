@@ -140,13 +140,14 @@ const ENTRIES = [
   // deflate codec: the base entry carries an injection seam, the page that
   // injects pays for the rest. Set from the measurement when the row landed
   // (3.1). 4 -> 9 for the session: the Noise handshake (NN, NK, XX, NNpsk0),
-  // the sealed framing and `createEncryption` — measured 7.8; HPKE lands in
-  // the same row.
+  // the sealed framing and `createEncryption` — measured 7.8. 9 -> 11 for
+  // HPKE (RFC 9180 base + psk, DHKEM, the exporter) and the sealed `fetch` of
+  // the http transport — measured 9.9.
   {
     label: 'encryption — browser (@alexify/wrpc/encryption)',
     entry: 'encryption.browser.js',
     platform: 'browser',
-    budget: 9,
+    budget: 11,
   },
   { label: 'encryption — node (@alexify/wrpc/encryption)', entry: 'encryption.js', platform: 'node' },
   // A peer is a client AND a server: the webrtc browser entry bundles the

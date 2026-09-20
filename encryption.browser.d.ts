@@ -238,7 +238,62 @@ export interface Encryption {
   readonly protocol: string;
   readonly pattern: NoisePattern;
   secure(link: EncryptionLink): EncryptedConnection;
+  /**
+   * The per-request half, for a transport with no connection to hold a
+   * session (http, sse): wraps a `fetch` so that every request is sealed to
+   * the pinned server key (HPKE) and POSTed to `endpoint`, and answers a real
+   * `Response`. Null without a `serverKey`, or under a cipher HPKE has no
+   * registered id for.
+   */
+  readonly fetch: ((fetch: typeof globalThis.fetch, endpoint: string) => typeof globalThis.fetch) | null;
 }
+
+/**
+ * The server's key bundle from its discovery endpoint, `GET
+ * <url>/encryption-key`. TRUST ON FIRST USE: only as trustworthy as the
+ * connection it came over — ship the bundle with the client where you can.
+ */
+export declare function fetchServerKey(url: string, options?: { fetch?: typeof globalThis.fetch }): Promise<string>;
+
+/** A key-encapsulation mechanism, structurally — DHKEM over a `Dh`, or an injected one (ML-KEM, a hybrid). */
+export interface Kem {
+  /** The registered HPKE KEM id (`0x0020` for DHKEM(X25519, HKDF-SHA256)). */
+  readonly id: number;
+  readonly publicLength: number;
+  readonly encLength: number;
+  readonly secretLength: number;
+  generateKeyPair(): Promise<KeyPair>;
+  keyPair(seed: Bytes): Promise<KeyPair>;
+  encap(recipientPublicKey: Bytes, ephemeral?: KeyPair | null): Promise<{ sharedSecret: Bytes; enc: Bytes }>;
+  decap(enc: Bytes, recipient: KeyPair): Promise<Bytes>;
+}
+
+export declare function isKem(value: unknown): value is Kem;
+export declare function dhKem(dh: Dh, kdf: Kdf, id?: number): Kem & { deriveKeyPair(ikm: Bytes): Promise<KeyPair> };
+
+export interface HpkeOptions {
+  /** What the message is FOR: one sealed for one purpose does not open for another. */
+  info?: Bytes;
+  /** psk mode: the recipient also learns the sender held this key. With `pskId`. */
+  psk?: Bytes | null;
+  pskId?: Bytes | null;
+}
+
+export interface HpkeContext {
+  seal(aad: Bytes | null, plaintext: Bytes): Bytes | Promise<Bytes>;
+  open(aad: Bytes | null, sealed: Bytes): Bytes | Promise<Bytes>;
+  /** A secret both ends derive and nobody else: `length` bytes bound to `context`. */
+  export(context: Bytes, length: number): Promise<Bytes>;
+}
+
+/** HPKE (RFC 9180), base and psk modes, HKDF-SHA256. */
+export declare function createHpke(options: { kem: Kem; kdf: Kdf; cipher: Cipher }): {
+  readonly suite: Bytes;
+  readonly aeadId: number;
+  readonly encLength: number;
+  setupSender(recipientPublicKey: Bytes, options?: HpkeOptions): Promise<{ enc: Bytes; context: HpkeContext }>;
+  setupRecipient(enc: Bytes, recipient: KeyPair, options?: HpkeOptions): Promise<HpkeContext>;
+};
 
 export declare function createEncryption(options?: CreateEncryptionOptions): Encryption;
 export declare function isEncryption(value: unknown): value is Encryption;

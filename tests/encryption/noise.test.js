@@ -9,6 +9,7 @@ const browser = require('../../src/encryption/aead.browser.js');
 const nodeDh = require('../../src/encryption/dh.js');
 const browserDh = require('../../src/encryption/dh.browser.js');
 const { createKdf } = require('../../src/encryption/hkdf.js');
+const browserKdf = require('../../src/encryption/hkdf.browser.js');
 const { OpenError } = require('../../src/encryption/contracts.js');
 const { fromHex, toHex, utf8 } = require('../../src/encryption/bytes.js');
 const { vectors, source } = require('./vectors/noise.json');
@@ -19,8 +20,8 @@ const ALGORITHM = { AESGCM: 'aes-256-gcm', ChaChaPoly: 'chacha20-poly1305' };
 // Both platform halves where they exist: the Node server's primitives and a
 // browser client's must speak the same protocol, byte for byte.
 const PLATFORMS = [
-  { name: 'node', aead: node.aead, dh: nodeDh.x25519() },
-  { name: 'browser', aead: browser.aead, dh: browserDh.x25519() },
+  { name: 'node', aead: node.aead, dh: nodeDh.x25519(), kdf },
+  { name: 'browser', aead: browser.aead, dh: browserDh.x25519(), kdf: browserKdf.createKdf() },
 ];
 
 const optionsOf = async (vector, side, dh) => ({
@@ -47,7 +48,7 @@ for (const vector of vectors) {
     // ChaCha20-Poly1305 is not in WebCrypto: a browser names AESGCM.
     if (cipher === null) continue;
     test(`noise (${platform.name}): ${vector.protocol_name} — every message, the handshake hash, the transport`, async () => {
-      const noise = createNoise({ pattern, dh: platform.dh, cipher, kdf });
+      const noise = createNoise({ pattern, dh: platform.dh, cipher, kdf: platform.kdf });
       assert.strictEqual(noise.name, vector.protocol_name);
       assert.strictEqual(noise.cipher, cipherName);
       const initiator = await noise.initiator(await optionsOf(vector, 'init', platform.dh));
@@ -103,7 +104,12 @@ const run = async (a, b) => {
 
 test('noise: a Node responder and a browser initiator finish the same handshake', async () => {
   const server = createNoise({ pattern: 'NK', dh: nodeDh.x25519(), cipher: node.aead(), kdf });
-  const client = createNoise({ pattern: 'NK', dh: browserDh.x25519(), cipher: browser.aead(), kdf });
+  const client = createNoise({
+    pattern: 'NK',
+    dh: browserDh.x25519(),
+    cipher: browser.aead(),
+    kdf: browserKdf.createKdf(),
+  });
   const staticKey = await nodeDh.x25519().generateKeyPair();
   const prologue = utf8('wrpc.v1\0ws\0');
   const initiator = await client.initiator({ prologue, remoteStatic: staticKey.publicKey });

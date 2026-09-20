@@ -104,6 +104,27 @@ export interface ServerEncryptionOptions {
   handshakeTimeout?: number;
   /** Default 2^20; both ends must agree. */
   rekeyAfter?: number;
+  /**
+   * The per-request binding (http, sse): how far a sender's clock may be
+   * from this server's, in ms — a sealed request outside it is refused
+   * (409), and one inside it is accepted ONCE. Default 300000.
+   */
+  maxSkew?: number;
+  /**
+   * The "accepted once" memory. In process by default — behind a balancer a
+   * replay can land on another instance, so inject a shared one: `seen(id,
+   * ttl)` answers true for an id it was shown within `ttl` ms (Redis: `SET
+   * id 1 NX PX ttl`).
+   */
+  replay?: { seen(id: string, ttl: number): boolean | Promise<boolean> } | null;
+  /** Serve the public key bundle at `GET <basePath>/encryption-key`. Default true; it is trust on first use. */
+  discovery?: boolean;
 }
+
+/** The default `replay` memory: bounded, in process. */
+export declare function createReplayCache(options?: { max?: number; now?: () => number }): {
+  seen(id: string, ttl: number): boolean;
+  readonly size: number;
+};
 
 type Bytes = Uint8Array;

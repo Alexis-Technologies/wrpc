@@ -358,11 +358,22 @@ const wrpcFastify = async (fastify, options = {}) => {
   // handler runs. `maxBodySize` only narrows that per route; left unset, the
   // app's limit stands, because a plugin silently RAISING the host's body
   // limit would be a security regression the app never asked for.
-  // The SSE endpoint is a static segment, so find-my-way prefers it over
+  // The key-discovery path of session encryption is a single static
+  // segment the parametric route would never match (the core answers 404
+  // for it when encryption is off). The SSE endpoint is a static segment, so find-my-way prefers it over
   // the parametric '/:unit/:method' it would otherwise fall into — where the
   // core never sees it as an events request.
+  // A sealed request (@alexify/wrpc/encryption) is opaque bytes under its
+  // own content type — which fastify would answer 415 before this handler
+  // ran. Registered once, and only if the app has not claimed it.
+  const sealed = 'application/wrpc-sealed';
+  if (typeof fastify.hasContentTypeParser === 'function' && !fastify.hasContentTypeParser(sealed)) {
+    fastify.addContentTypeParser(sealed, { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
+  }
   const routes =
-    base === '' ? ['/', rpc.eventsPath, '/:unit/:method'] : [base, rpc.eventsPath, `${base}/:unit/:method`];
+    base === ''
+      ? ['/', rpc.eventsPath, '/encryption-key', '/:unit/:method']
+      : [base, rpc.eventsPath, `${base}/encryption-key`, `${base}/:unit/:method`];
   for (const url of routes) {
     fastify.route({
       method: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],

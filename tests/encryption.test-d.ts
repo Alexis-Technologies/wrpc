@@ -138,3 +138,23 @@ expectType<EncryptionInfo | null>(peer.encryption);
 declare const wrpc: WrpcClient;
 expectType<EncryptionInfo | null>(wrpc.encryption);
 if (wrpc.encryption) expectType<Uint8Array>(wrpc.encryption.handshakeHash);
+
+// The per-request half
+expectType<((fetch: typeof globalThis.fetch, endpoint: string) => typeof globalThis.fetch) | null>(session.fetch);
+expectType<Promise<string>>(encryption.fetchServerKey('https://api.example.com/api'));
+expectAssignable<ServerEncryptionOptions>({
+  keys: 'k',
+  maxSkew: 60_000,
+  discovery: false,
+  replay: { seen: async (id: string, ttl: number) => id.length > ttl },
+});
+expectError<ServerEncryptionOptions>({ keys: 'k', replay: {} });
+expectType<boolean>(encryption.createReplayCache().seen('id', 1000));
+const kem = encryption.dhKem(encryption.x25519(), encryption.createKdf());
+expectType<boolean>(encryption.isKem(kem));
+const hpke = encryption.createHpke({ kem, kdf: encryption.createKdf(), cipher: encryption.aead() });
+expectType<number>(hpke.aeadId);
+hpke.setupSender(new Uint8Array(32), { info: new Uint8Array(4) }).then(({ enc, context }) => {
+  expectType<Uint8Array>(enc);
+  expectType<Promise<Uint8Array>>(context.export(new Uint8Array(1), 32));
+});

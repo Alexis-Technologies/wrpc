@@ -22,6 +22,9 @@ const { createKdf } = require('./hkdf.js');
 const { normalizeKeys, parseKey } = require('./keyring.js');
 const { createNoise, PATTERN_NAMES } = require('./noise.js');
 const { deriveStatics, formatBundle } = require('./statics.js');
+const { createHpke, dhKem, AEAD_IDS } = require('./hpke.js');
+const { createHttpSealing, DEFAULT_MAX_SKEW } = require('./httpServer.js');
+const { randomSource } = require('./bytes.js');
 const { Sequencer } = require('../sequencer.js');
 const { ENCRYPTION_PARAM } = require('../wire.js');
 const {
@@ -70,7 +73,17 @@ const normalizeServerEncryption = (value, name) => {
     psk = null,
     handshakeTimeout = DEFAULT_HANDSHAKE_TIMEOUT,
     rekeyAfter = DEFAULT_REKEY_AFTER,
+    maxSkew = DEFAULT_MAX_SKEW,
+    replay = null,
+    discovery = true,
   } = value;
+  if (!(Number.isInteger(maxSkew) && maxSkew > 0)) {
+    throw new TypeError(`${name}: encryption.maxSkew must be a positive integer (ms)`);
+  }
+  if (replay !== null && typeof replay?.seen !== 'function') {
+    throw new TypeError(`${name}: encryption.replay must be { seen(id, ttl) }`);
+  }
+  if (typeof discovery !== 'boolean') throw new TypeError(`${name}: encryption.discovery must be a boolean`);
   if (typeof required !== 'boolean') throw new TypeError(`${name}: encryption.required must be a boolean`);
   if (authorize !== null && typeof authorize !== 'function') {
     throw new TypeError(`${name}: encryption.authorize must be a function`);
@@ -99,6 +112,13 @@ const normalizeServerEncryption = (value, name) => {
       protocols.set(noise.name, noise);
     }
   }
+  // The per-request binding's suites, by the AEAD id a request names.
+  const kem = dhKem(dh, kdf);
+  const suites = new Map();
+  for (const id of ciphers) {
+    const cipher = aead({ algorithm: id });
+    suites.set(AEAD_IDS[id], { cipher, hpke: createHpke({ kem, kdf, cipher }) });
+  }
   // kid → promise of the derived static key pairs, derived once.
   const derived = new Map();
   const statics = (kid) => {
@@ -122,6 +142,19 @@ const normalizeServerEncryption = (value, name) => {
     rekeyAfter,
     protocols,
     statics,
+    discovery,
+    /** The per-request (HPKE) half, built by the core with its logger and its way of refusing. */
+    http: ({ log, refuse }) =>
+      createHttpSealing({
+        suites,
+        statics,
+        kdf,
+        maxSkew,
+        replay: replay ?? undefined,
+        random: randomSource(),
+        log,
+        refuse,
+      }),
     /** The public bundle of the current key — what a client pins, safe to publish. */
     bundle: async () => formatBundle(keys.current, await statics(keys.current)),
   });

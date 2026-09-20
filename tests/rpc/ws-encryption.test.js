@@ -225,13 +225,18 @@ test('ws encryption: a client that encrypts never settles for less', async (t) =
   assert.ok(await refused(url, { encryption: createEncryption({ serverKey: other.serverKey }) }));
   // A transport that cannot carry it is refused before anything is opened — fallback candidates included
   const encryption = createEncryption({ serverKey: other.serverKey });
+  class PlainTransport extends WrpcClient.transport.ws {
+    static encrypts = false;
+  }
+  WrpcClient.transport.plain = PlainTransport;
+  t.after(() => delete WrpcClient.transport.plain);
   await assert.rejects(
-    WrpcClient.connect(url, { encryption, transport: 'http' }),
-    /'http' cannot carry options\.encryption/,
+    WrpcClient.connect(url, { encryption, transport: 'plain' }),
+    /'plain' cannot carry options\.encryption/,
   );
   await assert.rejects(
-    WrpcClient.connect(url, { encryption, transport: ['ws', 'http'] }),
-    /'http' cannot carry options\.encryption — and plaintext is not a fallback/,
+    WrpcClient.connect(url, { encryption, transport: ['ws', 'plain'] }),
+    /'plain' cannot carry options\.encryption — and plaintext is not a fallback/,
   );
   await assert.rejects(WrpcClient.connect(url, { encryption: { keys: 'x' } }), /must come from createEncryption/);
   await assert.rejects(WrpcClient.connect(url, { encryption, worker: {} }), /belongs to the WrpcClientProxy/);

@@ -177,6 +177,10 @@ class ClientWsTransport extends ClientTransport {
 }
 
 class ClientHttpTransport extends ClientTransport {
+  // Carries `options.encryption`: no session here, so every request is
+  // sealed to the pinned server key on its own (HPKE) — by wrapping fetch.
+  static encrypts = true;
+
   // One request, one response: nothing to cancel or subscribe on.
   persistent = false;
   // Can carry procedure-mapped REST requests (client/core #restCall): a
@@ -207,6 +211,13 @@ class ClientHttpTransport extends ClientTransport {
     // receiver other than the global object, which a plain method call
     // would hand it. An injected fetch is called the same free-function way.
     this.fetch = options.fetch ?? globalThis.fetch;
+    const { encryption = null } = options;
+    if (encryption !== null) {
+      if (typeof encryption.fetch !== 'function') {
+        throw new TypeError('options.encryption has no serverKey to seal a request to — the http transport needs one');
+      }
+      this.fetch = encryption.fetch(this.fetch, this.url);
+    }
     // Built once per open, as a header BLOCK rather than a single encoded
     // value: which spelling it is (one canonical JSON header, or one header
     // per key) is the client's metaFormat choice, and every leg below just

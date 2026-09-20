@@ -13,6 +13,41 @@ narrower promise — see
 
 ### Added
 
+**Sealed HTTP requests: HPKE per request**
+
+- The `http` client transport carries `options.encryption` too. A request is
+  not a connection, so each one is sealed on its own with **HPKE (RFC 9180)**
+  — `DHKEM(X25519, HKDF-SHA256)`, AES-256-GCM or ChaCha20Poly1305, checked
+  against the RFC's vectors on both primitive halves — to the pinned server
+  key, and the answer under a key both ends export from that same context
+  (the Oblivious HTTP construction, RFC 9458 §4, without the relay).
+- The real request is INSIDE: an observer sees `POST <endpoint>` with
+  `Content-Type: application/wrpc-sealed` and a `200`, whatever the method,
+  route or status really was. On the server it is one block in
+  `handleHttpCall`: the call is unwrapped before routing and carries on as an
+  ordinary one, so packets, batches and mapped REST routes all ride it — over
+  the built-in server, uWebSockets.js, express and fastify (whose adapter now
+  registers the content type, which fastify would otherwise answer 415, and
+  the discovery route).
+- On the client it is a wrapped `fetch`: `createEncryption(...).fetch`. A
+  response that is not sealed is an error whatever its status — a client
+  that encrypts does not read plaintext.
+- Replay: HPKE has none, so a sealed request carries the sender's clock and
+  is accepted once — `maxSkew` (5 min) and an `enc` memory, in process by
+  default, injectable as `replay: { seen(id, ttl) }` for a shared one.
+  Refusals are bare statuses (`400` does not parse or open, `409` stale or
+  replayed, `426` plaintext under `required`), the reason in the log only.
+- `Set-Cookie` stays on the outer response, so a cookie session keeps
+  working; everything else of the answer is inside.
+- `GET <basePath>/encryption-key` publishes the bundle (`fetchServerKey(url)`
+  on the client; `discovery: false` removes it). Trust on first use — pin the
+  bundle wherever the client can be shipped it.
+- `createHpke`, `dhKem`, `isKem` are exported: the KEM is a structural seam,
+  which is where ML-KEM or a hybrid is injected.
+- HKDF is now a platform pair as well: `node:crypto` on Node. A sealed
+  request costs 219 µs for both ends against 550 µs over `crypto.subtle`, and
+  a Noise handshake 291 µs against 745 (`bench/encryption.js`).
+
 **Session encryption over WebTransport**
 
 - The `wt` client transport carries `options.encryption` too (`static

@@ -14,7 +14,8 @@
     "./src/client/wsCompression.js": "./src/client/wsCompression.browser.js",
     "./src/client/wsHandshake.js": "./src/client/wsHandshake.browser.js",
     "./src/encryption/aead.js": "./src/encryption/aead.browser.js",
-    "./src/encryption/dh.js": "./src/encryption/dh.browser.js"
+    "./src/encryption/dh.js": "./src/encryption/dh.browser.js",
+    "./src/encryption/hkdf.js": "./src/encryption/hkdf.browser.js"
   },
   "imports": {
     "#ws": "./src/websocket/ws.js"

@@ -152,6 +152,8 @@ class RpcServer extends Emitter {
   #metaMax = DEFAULT_META_MAX;
   // Session encryption (@alexify/wrpc/encryption), normalized; null when off.
   #encryption = null;
+  // Its per-request half: sealed HTTP calls unwrapped before routing.
+  #sealing = null;
   #codec = null;
   #codecOption = null;
   #restCodec = null;
@@ -212,6 +214,18 @@ class RpcServer extends Emitter {
     }
     this.#log = createLoggerWriter(logger);
     this.#otel = createServerTelemetry(telemetry);
+    if (this.#encryption !== null) {
+      const log = this.#log.child({ component: 'encryption' });
+      this.#sealing = this.#encryption.http({
+        log,
+        // One bare status for every refusal; WHICH check it was is for the log.
+        refuse: (call, headers, status, reason) => {
+          log.warn({ event: 'encryption.refused', reason, kind: 'http' });
+          this.#otel.recordCall(UNKNOWN_TARGET, 'error', status);
+          new ServerHttpTransport(call, { headers }).error(status);
+        },
+      });
+    }
     // Built once here rather than per broadcast or per channel: Broadcast is
     // constructed on every to()/except()/broadcast().
     this.#roomsLog = this.#log.child({ component: 'rooms' });
@@ -747,6 +761,11 @@ class RpcServer extends Emitter {
     );
   }
 
+  #isKeyPath(url) {
+    const [pathname] = split(url ?? '/', '?');
+    return pathname === `${this.#basePath}/encryption-key`;
+  }
+
   // The socket a connection is attached through: a SealedSocket when the
   // peer announced encryption, one that refuses when `required` and it did
   // not, null for a plaintext connection that is allowed to be one.
@@ -1078,9 +1097,24 @@ class RpcServer extends Emitter {
       this.#otel.recordCall(UNKNOWN_TARGET, 'error', 403);
       return void new ServerHttpTransport(call, { headers }).error(403);
     }
-    // Under `encryption.required` nothing plaintext is answered — a request
-    // is not a session, so what it needs is the per-request sealing of the
-    // HPKE binding; until a request arrives that way, it is refused.
+    if (this.#encryption !== null) {
+      // The public key bundle a client pins, for whoever has no other way
+      // to learn it. Trust on first use: what travels here is only as
+      // trustworthy as the connection it travelled over.
+      if (this.#encryption.discovery && call.method === 'GET' && this.#isKeyPath(call.url)) {
+        const body = Buffer.from(JSON.stringify({ key: await this.#encryption.bundle() }));
+        const type = { 'Content-Type': 'application/json', 'Cache-Control': 'no-store', 'Content-Length': body.length };
+        return void call.respond({ status: 200, headers: { ...headers, ...type }, body });
+      }
+      // A sealed request: the real one is inside. Unwrapped here, before
+      // anything is routed — from this line on it is an ordinary call,
+      // marked `encrypted`, whose respond() seals the answer.
+      if (this.#sealing.isSealed(call)) {
+        call = await this.#sealing.unwrap(call, headers);
+        if (!call) return;
+      }
+    }
+    // Under `encryption.required` nothing plaintext is answered.
     if (this.#encryption?.required && call.encrypted !== true) {
       this.#log.warn({ event: 'encryption.refused', reason: 'plaintext', kind: 'http' });
       this.#otel.recordCall(UNKNOWN_TARGET, 'error', 426);

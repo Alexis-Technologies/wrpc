@@ -1146,6 +1146,45 @@ and an `unreliable` event is sent reliably — because a stream or a datagram
 of its own would be a way around the channel; the carrier's own per-message
 compression is left off as well, since what it would compress is ciphertext.
 
+### Sealed requests {#sealed-requests}
+
+A request is not a connection, so the **HTTP** transport seals each one on
+its own with [HPKE](https://www.rfc-editor.org/rfc/rfc9180) (base mode,
+`DHKEM(X25519, HKDF-SHA256)`, `HKDF-SHA256`, and `AES-256-GCM` or
+`ChaCha20Poly1305`) to the server's `hpke` static key — the construction of
+Oblivious HTTP ([RFC 9458](https://www.rfc-editor.org/rfc/rfc9458) §4),
+without its relay:
+
+```
+POST <the transport's endpoint>        Content-Type: application/wrpc-sealed
+request    u8 version (1) ‖ u8 aead id ‖ u8 kidLength ‖ kid ‖ enc (32) ‖ ct
+plaintext  u32 headerLength ‖ JSON { m, u, h, t } ‖ body
+response   nonce (32) ‖ AEAD( u32 headerLength ‖ JSON { s, h } ‖ body )
+```
+
+The real request is inside — method `m`, path and query `u`, headers `h`, the
+sender's clock `t` in ms — so an observer sees one endpoint being POSTed to,
+and a `GET` REST route travels as that POST too. HPKE `info` is
+`"wrpc http v1" ‖ 0 ‖` the request prefix (version, AEAD id, kid). The answer
+is sealed under a key both ends export from the same context:
+`secret = Export("wrpc http response", Nk)`,
+`prk = Extract(enc ‖ nonce, secret)`, then `Expand(prk, "key")` and
+`Expand(prk, "nonce")`. The outer status is always `200`; the real status `s`
+and headers `h` are inside, except `Set-Cookie`, which stays on the outer
+response because script cannot set an `HttpOnly` cookie.
+
+HPKE has no replay protection, and the party this exists for is exactly the
+one who could replay: a request whose `t` is further than `maxSkew` (5 min)
+from the server's clock, or whose `enc` was already accepted, is refused
+`409`. Anything that does not parse or open is refused `400`. A refusal is
+never sealed and never detailed — and a client that encrypts treats ANY
+response that is not `application/wrpc-sealed` as an error, whatever its
+status.
+
+`GET <basePath>/encryption-key` answers `{ "key": "<bundle>" }` — the one
+plaintext answer under `required` (`discovery: false` removes it). It is
+trust on first use.
+
 What stays outside the sealed channel is everything the upgrade carried:
 the URL, real headers, the `wrpc.bearer.` / `wrpc.h.` / `wrpc.m.` subprotocol
 tokens, cookies. Under session encryption a credential belongs in

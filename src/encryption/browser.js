@@ -16,13 +16,18 @@ const { createKdf } = require('./hkdf.js');
 const { normalizeKeys, generateKey, isKid } = require('./keyring.js');
 const { OpenError, isCipher, isCipherKey, isDh, isKeyProvider } = require('./contracts.js');
 const { toBase64Url, fromBase64, equal } = require('./bytes.js');
-const { createEncryption, isEncryption } = require('./client.js');
+const { createEncryption, isEncryption, fetchServerKey } = require('./client.js');
+const { createHpke, dhKem, isKem } = require('./hpke.js');
 const { createNoise, PATTERN_NAMES } = require('./noise.js');
 const { parseBundle } = require('./statics.js');
 
 module.exports = {
   createEncryption,
   isEncryption,
+  fetchServerKey,
+  createHpke,
+  dhKem,
+  isKem,
   createNoise,
   PATTERN_NAMES,
   parseBundle,

@@ -22,6 +22,8 @@ const { createKdf } = require('./hkdf.js');
 const { isCipher, isDh } = require('./contracts.js');
 const { createNoise, PATTERN_NAMES } = require('./noise.js');
 const { parseBundle } = require('./statics.js');
+const { createHpke, dhKem, AEAD_IDS } = require('./hpke.js');
+const { sealedFetch } = require('./http.js');
 const { equal } = require('./bytes.js');
 const { Sequencer } = require('../sequencer.js');
 const { ENCRYPTION_PARAM } = require('../wire.js');
@@ -80,7 +82,16 @@ const createEncryption = (options = {}) => {
   }
   const dh = options.dh ?? x25519();
   if (!isDh(dh)) throw new TypeError('createEncryption: dh must be a Dh');
-  const noise = createNoise({ pattern, dh, cipher: resolveCipher(options.cipher), kdf: createKdf() });
+  const cipher = resolveCipher(options.cipher);
+  const kdf = createKdf();
+  const noise = createNoise({ pattern, dh, cipher, kdf });
+  // The per-request half, for the transports that have no connection to
+  // hold a session (http): HPKE to the pinned server key — which is why it
+  // exists only with a `serverKey`, and only for a cipher HPKE registers.
+  const fetch =
+    pinned === null || AEAD_IDS[cipher.id] === undefined
+      ? null
+      : sealedFetch({ hpke: createHpke({ kem: dhKem(dh, kdf), kdf, cipher }), kdf, cipher, serverKey: pinned });
   const kid = pinned === null ? '' : pinned.kid;
   let identity = null;
 
@@ -201,11 +212,27 @@ const createEncryption = (options = {}) => {
     };
   };
 
-  return Object.freeze({ param: ENCRYPTION_PARAM, protocol: noise.name, pattern, secure });
+  return Object.freeze({ param: ENCRYPTION_PARAM, protocol: noise.name, pattern, secure, fetch });
+};
+
+/**
+ * The server's key bundle from its discovery endpoint — `GET
+ * <url>/encryption-key`. TRUST ON FIRST USE: the answer is only as
+ * trustworthy as the connection it came over, so a client that can be
+ * shipped the bundle (a Node service, a mobile app, a build-time constant)
+ * should be, and this is for the ones that cannot.
+ */
+const fetchServerKey = async (url, { fetch = globalThis.fetch } = {}) => {
+  const base = String(url).replace(/^ws/, 'http').replace(/\/+$/, '');
+  const response = await fetch(`${base}/encryption-key`);
+  if (!response.ok) throw new Error(`encryption: no key at ${base}/encryption-key (${response.status})`);
+  const { key } = await response.json();
+  parseBundle(key, 'the discovered key');
+  return key;
 };
 
 /** What the base entry checks before it trusts an `encryption` option. */
 const isEncryption = (value) =>
   typeof value === 'object' && value !== null && typeof value.secure === 'function' && typeof value.param === 'string';
 
-module.exports = { createEncryption, isEncryption };
+module.exports = { createEncryption, isEncryption, fetchServerKey };

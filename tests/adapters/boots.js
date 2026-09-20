@@ -66,6 +66,7 @@ const rpcOptions = (options) => ({
   cors: options.cors ?? null,
   basePath: options.basePath,
   http: options.http,
+  encryption: options.encryption,
   logger: false,
 });
 
