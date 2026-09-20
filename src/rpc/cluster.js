@@ -222,7 +222,7 @@ class Cluster extends Emitter {
   // used to be terminal and silent — the node kept publishing but could
   // never hear again, a half-connected state nothing surfaced.
   #subscribeTo(channel, attempt = 0) {
-    const handler = (message) => this.#receive(message);
+    const handler = (message) => this.#receive(message, channel);
     return Promise.resolve()
       .then(() => this.#backplane.subscribe(channel, handler))
       .then(
@@ -328,7 +328,7 @@ class Cluster extends Emitter {
         envelope.sig = crypto.createHmac('sha256', this.#secret).update(message).digest('hex');
         message = JSON.stringify(envelope);
       }
-      if (this.#envelope !== null) message = this.#envelope.encode(message);
+      if (this.#envelope !== null) message = this.#envelope.encode(message, channel);
     } catch (error) {
       this.#log.error({ err: error, event: 'cluster.serialize', type: body.t });
       return false;
@@ -809,13 +809,19 @@ class Cluster extends Emitter {
     }
   }
 
-  #receive(message) {
+  #receive(message, channel) {
     if (this.#closed) return;
     let text = message;
     if (typeof message === 'string') {
-      if (this.#envelope !== null) text = this.#envelope.decode(message);
+      if (this.#envelope !== null) text = this.#envelope.decode(message, channel);
       else if (message.charCodeAt(0) === 119 && message.startsWith('wrpc-enc:')) text = null;
       if (text === null) return void this.#log.warn({ event: 'cluster.encoded' });
+      // Refused by a sealing envelope, which reported why — or our own echo.
+      if (text === undefined) return;
+      // Still sealed: this node holds no keys, and says so.
+      if (text.charCodeAt(0) === 119 && text.startsWith('wrpc-sealed:')) {
+        return void this.#log.warn({ event: 'cluster.sealed', channel });
+      }
     }
     const envelope = typeof text === 'string' ? jsonParse(text) : text;
     if (!envelope || typeof envelope !== 'object') return;

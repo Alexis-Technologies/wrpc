@@ -58,6 +58,57 @@ platform one is. `rooms.maxMessage` (16 MiB) caps an inflated envelope.
 The [cluster layer](./cluster) has its own `cluster: { compression }`,
 applied after signing.
 
+### Sealing the envelopes {#encryption}
+
+TLS to Redis protects the hop, not what Redis holds: every room event
+crosses the backplane as readable JSON — payload, event name, room list —
+for its operator, a `MONITOR` session, or a neighbour on a shared instance
+to read. `rooms: { encryption: { keys } }` seals each envelope under a key
+the backplane never sees:
+
+```js
+const { generateKey } = require('@alexify/wrpc/encryption');
+// once, into your secret store: Buffer.from(generateKey()).toString('base64url')
+
+new Server({
+  router,
+  backplane,
+  rooms: { encryption: { keys: process.env.WRPC_ROOMS_KEY } },
+  cluster: { secret, encryption: { keys: process.env.WRPC_CLUSTER_KEY } },
+});
+```
+
+**Off by default**, AES-256-GCM (or `cipher: 'chacha20-poly1305'`), about
+3.5 µs per 1 KB envelope each way (13 µs at 16 KB — `bench/encryption.js`). It composes with `compression` — compress,
+then seal, one base64. An envelope that does not open — another key, a
+flipped bit, one moved from another room's channel, a replay — is dropped
+and logged `backplane.open`; it is never delivered and never answered.
+
+Two things it does not hide: the **channel name**, which names the room,
+and sizes and timing. And it is a fan-out under one shared key, not
+end-to-end: every instance holds the key, and so reads every room.
+
+A backplane delivers at most once, so turning it on is **three deploys**,
+never a flag day:
+
+| Deploy | `encryption` | Publishes | Accepts |
+| --- | --- | --- | --- |
+| 1 | `{ keys, seal: false, acceptPlaintext: true }` | plaintext | both |
+| 2 | `{ keys, acceptPlaintext: true }` | sealed | both |
+| 3 | `{ keys }` | sealed | sealed only — plaintext logs `backplane.unsealed` |
+
+Rotating a key is the same shape: `keys: { current: 'k1', ring: { k1, k2 }
+}` everywhere, then `current: 'k2'`, then drop `k1`. The key id travels in
+the clear beside the ciphertext; it selects the key, nothing is tried until
+it fits. `keys` also takes a provider — `{ current(), get(kid) }`, both
+synchronous — for keys that live in a KMS or Vault and are refreshed on
+your own schedule.
+
+The cluster layer takes the same option. `cluster.secret` says a command
+came from a node; `cluster.encryption` hides what it says — presence,
+`sendTo` payloads, `fetchClients` replies with their `client.data` — and
+refuses a plaintext command outright.
+
 ## Adapters
 
 ### Memory

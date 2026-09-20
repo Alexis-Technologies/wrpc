@@ -6,6 +6,7 @@ import {
 import type { Connection } from './ws.js';
 import type { Engine, EngineConnectionSource, WrpcSocket, EngineAttachOptions } from './engine.js';
 import type { Backplane } from './scaling.js';
+import type { EnvelopeEncryptionOptions } from './encryption.js';
 import type {
   Broadcast,
   Client,
@@ -168,6 +169,14 @@ export interface ClusterOptions {
   compression?: boolean | CompressionOptions;
   /** The largest inflated envelope accepted (default 16 MiB). */
   maxMessage?: number;
+  /**
+   * Seals the cluster envelopes — presence, commands, `sendTo` payloads,
+   * asks, `fetchClients` replies — under a shared keyring, after signing
+   * and compression (`@alexify/wrpc/encryption`). `secret` authenticates a
+   * node; this hides what it says, and refuses a plaintext command too.
+   * Same rollout and log events as `rooms.encryption`, prefixed `cluster.`.
+   */
+  encryption?: EnvelopeEncryptionOptions | false | null;
 }
 
 export interface RoomsOptions {
@@ -196,6 +205,18 @@ export interface RoomsOptions {
   compression?: boolean | CompressionOptions;
   /** The largest inflated envelope accepted (default 16 MiB). */
   maxMessage?: number;
+  /**
+   * Seals every room envelope this instance publishes under a shared
+   * keyring (`@alexify/wrpc/encryption`), after compression: the backplane
+   * carries `wrpc-sealed:<kid>:<base64>` and its operator reads nothing —
+   * not the payload, not the event name, not the room list (the CHANNEL
+   * name still names the room). Off by default; a three-deploy rollout. An
+   * envelope that does not open is dropped and logged `backplane.open`
+   * (unknown kid, another key, a moved or replayed envelope), plaintext
+   * where none is accepted `backplane.unsealed`, and an instance without
+   * the keys logs `backplane.sealed`.
+   */
+  encryption?: EnvelopeEncryptionOptions | false | null;
 }
 
 export interface ClusterAskResult {

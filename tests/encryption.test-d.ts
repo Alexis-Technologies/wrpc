@@ -1,6 +1,17 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
 import * as encryption from '../encryption.js';
-import type { Cipher, CipherKey, Dh, Kdf, KeyPair, KeyProvider, Keyring, KeysOption } from '../encryption.js';
+import type {
+  Cipher,
+  CipherKey,
+  Dh,
+  EnvelopeEncryptionOptions,
+  Kdf,
+  KeyPair,
+  KeyProvider,
+  Keyring,
+  KeysOption,
+} from '../encryption.js';
+import type { RpcServerOptions, Router } from '../index.js';
 
 // A platform AEAD is a Cipher; `optional` widens the answer to null
 const cipher = encryption.aead();
@@ -60,3 +71,24 @@ expectType<'open'>(failure.code);
 expectType<string>(encryption.toBase64Url(new Uint8Array(4)));
 expectType<Uint8Array | null>(encryption.fromBase64('AAAA'));
 expectType<boolean>(encryption.equal(new Uint8Array(4), new Uint8Array(4)));
+
+// Envelope encryption on the Node↔Node carriers
+declare const router: Router;
+expectAssignable<EnvelopeEncryptionOptions>({ keys: new Uint8Array(32) });
+expectAssignable<EnvelopeEncryptionOptions>({
+  keys: { current: 'k2', ring: { k1: 'aa', k2: 'bb' } },
+  cipher: 'chacha20-poly1305',
+  seal: false,
+  acceptPlaintext: true,
+  replayWindow: false,
+});
+expectAssignable<EnvelopeEncryptionOptions>({ keys: provider, cipher });
+expectError<EnvelopeEncryptionOptions>({ cipher: 'aes-256-gcm' });
+expectError<EnvelopeEncryptionOptions>({ keys: 'k', replayWindow: true });
+expectAssignable<RpcServerOptions>({
+  router,
+  rooms: { encryption: { keys: 'k' } },
+  cluster: { secret: 's', encryption: { keys: 'k', acceptPlaintext: true } },
+});
+expectAssignable<RpcServerOptions>({ router, rooms: { encryption: false }, cluster: { encryption: null } });
+expectError<RpcServerOptions>({ router, rooms: { encryption: true } });

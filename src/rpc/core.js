@@ -9,7 +9,8 @@ const { RoomRegistry, Broadcast, RoomsBackplane } = require('./rooms.js');
 const { Cluster, instanceOfClientId } = require('./cluster.js');
 const { SseChannels } = require('../sse/server.js');
 const { normalizeCompression } = require('../contentEncoding.js');
-const { createEnvelopeCodec, maxMessageOf, normalizeSyncCompression, decodeOrNull } = require('../compression/sync.js');
+const { maxMessageOf, normalizeSyncCompression, decodeOrNull } = require('../compression/sync.js');
+const { createEnvelope } = require('./envelope.js');
 const { FRAME_MARK, FRAME_ATTACHMENTS, FRAME_PACKET_COMPRESSED, FRAME_CHUNK_COMPRESSED } = require('../wire.js');
 const { isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
 // The channel header from the import-free constants module, NOT from
@@ -307,18 +308,26 @@ class RpcServer extends Emitter {
     // a string carrier, so a compressed envelope rides as base64 under a
     // marker — and unlike the socket carriers there is no negotiation, so
     // every instance must run it (documented as a two-step rollout).
+    const clusterLog = this.#log.child({ component: 'cluster' });
+    // `encryption` seals what compression left, per layer as well, under a
+    // shared keyring (./envelope.js): Redis and whoever operates it then
+    // carry ciphertext. Off by default; the rollout is three deploys.
     const clusterEnvelope = enabled
-      ? createEnvelopeCodec(
-          clusterOptions?.compression,
-          'RpcServer: options.cluster',
-          maxMessageOf(clusterOptions?.maxMessage, 'RpcServer: options.cluster'),
-        )
+      ? createEnvelope({
+          compression: clusterOptions?.compression,
+          encryption: clusterOptions?.encryption,
+          maxMessage: maxMessageOf(clusterOptions?.maxMessage, 'RpcServer: options.cluster'),
+          name: 'RpcServer: options.cluster',
+          layer: 'cluster',
+          event: 'cluster',
+          log: clusterLog,
+        })
       : null;
     const cluster = new Cluster({
       backplane: enabled ? backplane : null,
       instance: this.#instance,
       local: this.#clusterOps(),
-      log: this.#log.child({ component: 'cluster' }),
+      log: clusterLog,
       otel: this.#otel,
       generateId: this.#generateId,
       options: enabled ? { ...clusterOptions, envelope: clusterEnvelope } : {},
@@ -341,11 +350,15 @@ class RpcServer extends Emitter {
       instance: this.#instance,
       log: this.#roomsLog,
       linger: roomsOptions?.linger,
-      envelope: createEnvelopeCodec(
-        roomsOptions?.compression,
-        'RpcServer: options.rooms',
-        maxMessageOf(roomsOptions?.maxMessage, 'RpcServer: options.rooms'),
-      ),
+      envelope: createEnvelope({
+        compression: roomsOptions?.compression,
+        encryption: roomsOptions?.encryption,
+        maxMessage: maxMessageOf(roomsOptions?.maxMessage, 'RpcServer: options.rooms'),
+        name: 'RpcServer: options.rooms',
+        layer: 'rooms',
+        event: 'backplane',
+        log: this.#roomsLog,
+      }),
       // The producer-restart marker a resume cursor is validated against.
       // Accepted by RoomsBackplane all along; forwarded (and declared) only
       // now, so a deployment that pins it across restarts finally can.

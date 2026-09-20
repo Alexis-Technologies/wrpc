@@ -651,6 +651,32 @@ and changes codec the same way — every instance lists both, then the order
 is swapped. The cluster channels below do the same under
 `cluster: { compression }`, applied after the HMAC signature.
 
+With `rooms: { encryption }` on, every envelope is published sealed:
+
+```
+wrpc-sealed:<kid>:<base64( header ‖ AEAD( frame ) )>
+header = u8 version (1) ‖ u8 suite ‖ salt (16) ‖ u64 counter
+frame  = u8 flags ‖ [ u8 idLength ‖ codec id ] ‖ body        flags bit 0: compressed
+```
+
+`kid` names the key of the shared keyring (1–32 of `A-Z a-z 0-9 . _ -`) and
+travels in the clear; `suite` is `1` AES-256-GCM, `2` ChaCha20-Poly1305,
+`255` a cipher both ends were handed. A sender draws `salt` once per
+process, derives its own key — `HKDF-SHA256(key[kid], salt, "wrpc rooms v1"
+‖ 0 ‖ kid ‖ 0 ‖ cipher id)` — and counts under it: the nonce is the counter,
+64 bits big-endian at the end of the nonce, so no two messages share a
+(key, nonce) pair, and the salt is drawn again after 2^32 messages. The
+additional data is `"wrpc-sealed v1" ‖ 0 ‖ layer ‖ 0 ‖ kid ‖ 0 ‖ channel`,
+so an envelope moved to another channel, another layer or another key id
+does not open. Compression happens INSIDE the frame (compress, then seal)
+and names its codec there; a `wrpc-enc:` marker never appears inside a
+sealed envelope. A receiver keeps a sliding window of each sender's
+counters and drops a repeat. An envelope that does not open is dropped and
+logged, never answered. The cluster channels do the same under `cluster: {
+encryption }` with the label `"wrpc cluster v1"`, after signing and
+compression. What stays visible to the backplane: the channel name (and so
+the room name), the kid, the sender's salt, message sizes and timing.
+
 ### Cluster channels
 
 The cluster layer (`server.cluster` — presence, introspection, node-to-node

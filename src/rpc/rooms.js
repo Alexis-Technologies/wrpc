@@ -613,7 +613,8 @@ class RoomsBackplane {
       // is a cross-instance loss, not a lost event.
       return void this.#log.error({ err: error, event: 'backplane.serialize', name });
     }
-    if (this.#envelope !== null) message = this.#envelope.encode(message);
+    // The channel rides along for a sealing envelope, which binds it.
+    if (this.#envelope !== null) message = this.#envelope.encode(message, channel);
     try {
       const result = this.#backplane.publish(channel, message);
       if (result && typeof result.catch === 'function') {
@@ -633,9 +634,17 @@ class RoomsBackplane {
       // instance's, a body that does not inflate: named, because the
       // alternative is an event that silently never arrives, the
       // rolling-deploy symptom this option's documentation warns about.
-      if (this.#envelope !== null) text = this.#envelope.decode(message);
+      if (this.#envelope !== null) text = this.#envelope.decode(message, channel);
       else if (message.charCodeAt(0) === 119 && message.startsWith('wrpc-enc:')) text = null;
       if (text === null) return void this.#log.warn({ event: 'backplane.encoded', channel });
+      // Refused by a sealing envelope, which reported why — or our own echo.
+      if (text === undefined) return;
+      // Still sealed: this instance holds no keys (with or without a
+      // compression codec, which passes through what is not its own), and
+      // says so — JSON never starts with a `w`, so the test is one compare.
+      if (text.charCodeAt(0) === 119 && text.startsWith('wrpc-sealed:')) {
+        return void this.#log.warn({ event: 'backplane.sealed', channel });
+      }
     }
     const envelope = typeof text === 'string' ? jsonParse(text) : text;
     if (!envelope || typeof envelope !== 'object') return;

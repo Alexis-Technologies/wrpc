@@ -13,6 +13,43 @@ narrower promise — see
 
 ### Added
 
+**`rooms.encryption` / `cluster.encryption`: sealed backplane envelopes**
+
+- TLS to Redis protects the hop, not what Redis holds: until now every room
+  event, presence delta, `sendTo` payload and `fetchClients` reply crossed
+  the backplane as readable JSON. `rooms: { encryption: { keys } }` and
+  `cluster: { encryption: { keys } }` seal each envelope under a shared
+  keyring (AES-256-GCM, or `cipher: 'chacha20-poly1305'`, or an injected
+  synchronous `Cipher`): the backplane carries
+  `wrpc-sealed:<kid>:<base64>`. Off by default; ~3.5 µs per 1 KB envelope
+  each way (`bench/encryption.js`). See
+  [Scaling](./docs/guide/scaling.md#encryption) and the
+  [protocol reference](./docs/reference/protocol.md).
+- No random nonces: each process derives its own key from the keyring key
+  and a salt it draws at boot (HKDF-SHA256) and counts under it, reseeding
+  after 2^32 messages — GCM's random-nonce bound is hours away on a busy
+  fan-out. The additional data binds layer, key id and **channel**, so an
+  envelope moved to another room's channel does not open, and a per-sender
+  sliding window (`replayWindow`, default 1024) drops a replay.
+- Composes with `compression` inside ONE frame — compress, then seal, one
+  base64 — rather than a marker inside a marker.
+- A pub/sub backplane delivers at most once, so turning it on is three
+  deploys, not a flag day: `{ seal: false, acceptPlaintext: true }`, then
+  `{ acceptPlaintext: true }`, then neither. Key rotation is the same shape
+  through `keys: { current, ring }`; the key id selects the key, nothing is
+  tried until it fits.
+- New log events, all warnings: `backplane.open` / `cluster.open` (does not
+  open — `reason`: `kid`, `open`, `replay`, `format`, `codec`; for the log
+  only, nothing is answered), `backplane.unsealed` / `cluster.unsealed`
+  (plaintext where none is accepted — which also makes a sealing cluster
+  refuse a forged plaintext command even without `secret`),
+  `backplane.sealed` / `cluster.sealed` (an instance without the keys).
+- A sealing instance no longer decodes its own echo: it recognizes its salt
+  and skips the envelope before any cryptography or JSON parsing.
+- Not hidden, by construction: the channel name (it names the room), the
+  key id, sizes and timing. Every instance holds the key — this is a sealed
+  fan-out, not end-to-end.
+
 **`@alexify/wrpc/encryption`: the primitives (experimental)**
 
 - A new subpath, with a `browser` condition, for application-level encryption

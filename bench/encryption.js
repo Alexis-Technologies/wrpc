@@ -132,6 +132,26 @@ async function main() {
   console.log(`\nhkdfSync subkey (a cache miss)     ${cell(derive)}`);
   console.log(`cipher.key(raw) (a KeyObject)      ${cell(keyed)}`);
 
+  // The whole backplane path (src/rpc/envelope.js): frame, seal, base64 —
+  // and back, through the sender cache and the replay window. What a room
+  // emit pays per publish, and every other instance per receive.
+  const { createEnvelope } = require('../src/rpc/envelope.js');
+  const quiet = { warn() {} };
+  const envelopeOptions = { maxMessage: 1 << 24, name: 'bench', layer: 'rooms', event: 'backplane', log: quiet };
+  const sending = createEnvelope({ ...envelopeOptions, encryption: { keys: RAW } });
+  const receiving = createEnvelope({ ...envelopeOptions, encryption: { keys: RAW, replayWindow: false } });
+  console.log('\nbackplane envelope, per message'.padEnd(35) + SIZES.map((size) => `${size} B`.padStart(12)).join(''));
+  const encodes = [];
+  const decodes = [];
+  for (const size of SIZES) {
+    const text = payload(size).toString();
+    encodes.push(micros(() => sending.encode(text, 'room:lobby')));
+    const wire = sending.encode(text, 'room:lobby');
+    decodes.push(micros(() => receiving.decode(wire, 'room:lobby')));
+  }
+  console.log('seal + base64 (encode)'.padEnd(34) + encodes.map(cell).join(''));
+  console.log('base64 + open (decode)'.padEnd(34) + decodes.map(cell).join(''));
+
   console.log(
     '\nfan-out of one 1 KB event, per emit'.padEnd(35) + [10, 1000, 10000].map((n) => `${n}`.padStart(12)).join(''),
   );
