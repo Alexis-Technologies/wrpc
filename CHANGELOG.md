@@ -13,6 +13,42 @@ narrower promise — see
 
 ### Added
 
+**`@alexify/wrpc/encryption`: the primitives (experimental)**
+
+- A new subpath, with a `browser` condition, for application-level encryption
+  — opt-in like every knob in wrpc and **never a substitute for TLS**: it is
+  for where TLS ends before the data does (a backplane, a broker's log, a
+  TLS-terminating proxy, a relay that should not read what it relays). This
+  release lands the primitives the later pieces are built from; nothing in
+  the core reads them yet.
+- `aead({ algorithm })` — the platform AEADs behind one structural `Cipher`
+  contract (`isCipher`): `'aes-256-gcm'` on both platforms and
+  `'chacha20-poly1305'` on Node. Synchronous over `node:crypto` on Node (a
+  1 KB seal is 2.4 µs against 14 µs through `crypto.subtle` on the same
+  machine — `bench/encryption.js`), promise-answering over `crypto.subtle` in
+  a browser, where a key is imported once into a **non-extractable**
+  `CryptoKey`. Every failure to open is one `OpenError`, whatever the cause.
+  An application injects its own cipher (XChaCha20, AES-GCM-SIV, AEGIS)
+  through the same contract.
+- `x25519()` (RFC 7748, the `Dh` contract Noise and HPKE's DHKEM consume;
+  a low-order public key is refused), `createKdf()` (SHA-256, HMAC and
+  HKDF with Extract and Expand apart). HKDF is one implementation over
+  `crypto.subtle` for both platforms; X25519 is a platform pair like the
+  AEADs — `node:crypto` on Node, because the same algorithm through subtle
+  prints an `ExperimentalWarning` on the early Node 22 releases `engines`
+  admits (22.10 does, 22.23 does not).
+- `normalizeKeys(keys)` — the keyring: one key, `{ current, ring }` for
+  rotation, or an injected provider (`isKeyProvider` — a KMS or Vault
+  client). A kid is a closed alphabet and SELECTS the key; nothing tries key
+  after key on one message.
+- No `Math.random` fallback anywhere in it: without `crypto.getRandomValues`
+  and `crypto.subtle` (a page served over plain http has neither) the
+  factories throw where they are built.
+- `Sequencer` moved to the `src/sequencer.js` leaf so the new entry keeps
+  message order around an asynchronous cipher without carrying the
+  compression negotiation; `src/compression/index.js` still exports it.
+  Bundle: 3.1 KB min+gzip, its own row and budget in `scripts/size.js`.
+
 **The ws handshake: declared `headers`/`meta` as subprotocol offers, and `readHandshake`**
 
 - The server reads a browser client's declared bags from the one handshake

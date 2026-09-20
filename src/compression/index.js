@@ -22,8 +22,8 @@
 // swapped through package.json#browser) or an injected one — the
 // dictionary codec of @alexify/wrpc/deflate, or anything else that answers
 // `encode(bytes)` and `decode(bytes, maxOutput)`. Either may answer a
-// promise: CompressionStream can only, and the Sequencer below keeps
-// messages in order around that.
+// promise: CompressionStream can only, and the Sequencer (src/sequencer.js)
+// keeps messages in order around that.
 //
 // Browser-budgeted: this file lands in the main and webrtc browser entries
 // through the client transports. Manual checks, no spread on a hot path.
@@ -31,6 +31,10 @@
 const { nativeCompressor, NATIVE_ID } = require('./native.js');
 
 const { dictionaryId, DICTIONARY_ID_PREFIX, isPromise } = require('./ids.js');
+
+// The ordering queue is a leaf of its own (the encryption entry needs it
+// without this file's negotiation); it stays an export of this one.
+const { Sequencer } = require('../sequencer.js');
 
 const DEFAULT_THRESHOLD = 1024;
 
@@ -188,49 +192,6 @@ const negotiate = (local, peer) => {
   }
   return { encode, decode };
 };
-
-/**
- * Keeps messages in order around a codec that may answer asynchronously.
- * `push(value, deliver, recover)`: `value` is the message, or a promise of
- * it; `deliver` runs with the settled value in push order; `recover` runs
- * with the error when the promise rejected (send it plain, hang up). A
- * push with nothing in flight and a plain value delivers synchronously —
- * the common path costs no promise — and once something is in flight
- * every later push waits behind it, plain or not, which is what keeps the
- * wire ordered. Errors thrown by deliver/recover go to `onError`.
- */
-class Sequencer {
-  #tail = null;
-  #pending = 0;
-  #onError;
-
-  constructor(onError = null) {
-    this.#onError = onError;
-  }
-
-  /** Pushes waiting on an earlier one; 0 when nothing is in flight. */
-  get pending() {
-    return this.#pending;
-  }
-
-  push(value, deliver, recover) {
-    const async = isPromise(value);
-    if (this.#tail === null && !async) return void deliver(value);
-    this.#pending++;
-    const run = () => (async ? value.then(deliver, recover) : deliver(value));
-    const previous = this.#tail;
-    const step = previous === null ? new Promise((resolve) => resolve(run())) : previous.then(run, run);
-    const settled = () => {
-      this.#pending--;
-      if (this.#tail === done) this.#tail = null;
-    };
-    const done = step.then(settled, (error) => {
-      settled();
-      if (this.#onError) this.#onError(error);
-    });
-    this.#tail = done;
-  }
-}
 
 module.exports = {
   DEFAULT_THRESHOLD,

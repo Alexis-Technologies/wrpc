@@ -1,0 +1,168 @@
+'use strict';
+
+// What sealing a message costs, on the shapes @alexify/wrpc/encryption uses
+// (src/encryption/aead.js and aead.browser.js), and the three decisions the
+// numbers make:
+//
+//   1. node:crypto synchronously against crypto.subtle on the SAME machine —
+//      why the Node half is a platform pair and not the one subtle file the
+//      rest of the directory is. subtle pays a threadpool hand-off per call,
+//      the argument bench/zlib-async.js makes for zlib.
+//   2. A key prepared once against the raw key handed to every call — why
+//      the contract is `cipher.key(raw)` and not `seal(rawKey, …)`. On Node
+//      it is a wash (a KeyObject saves nothing measurable); over
+//      crypto.subtle an importKey per message costs half as much again,
+//      and the import is what makes the key non-extractable in a page.
+//   3. The fan-out: under session encryption every recipient has its own
+//      key, so a broadcast is N seals where plain wrpc serializes ONCE
+//      (sendPrepared). The last rows are that price, per emit.
+//
+// Sizes are a small packet, a typical one and a large result.
+
+const crypto = require('node:crypto');
+const { performance } = require('node:perf_hooks');
+const node = require('../src/encryption/aead.js');
+const browser = require('../src/encryption/aead.browser.js');
+const { counterNonce } = require('../src/encryption/bytes.js');
+
+const SIZES = [64, 1024, 16 * 1024];
+const RAW = crypto.randomBytes(32);
+const AAD = Buffer.from('wrpc-sealed v1\0rooms\0k1\0room:lobby');
+
+const payload = (size) => {
+  const row = JSON.stringify({ type: 'event', name: 'chat/message', data: { from: 'u1', text: 'x'.repeat(24) } });
+  return Buffer.from(row.repeat(Math.ceil(size / row.length)).slice(0, size));
+};
+
+const MEASURE_MS = 400;
+
+const micros = (fn) => {
+  for (let i = 0; i < 2000; i++) fn(i);
+  let iterations = 0;
+  const started = performance.now();
+  while (performance.now() - started < MEASURE_MS) {
+    for (let i = 0; i < 100; i++) fn(iterations + i);
+    iterations += 100;
+  }
+  return ((performance.now() - started) * 1000) / iterations;
+};
+
+const microsAsync = async (fn) => {
+  for (let i = 0; i < 500; i++) await fn(i);
+  let iterations = 0;
+  const started = performance.now();
+  while (performance.now() - started < MEASURE_MS) {
+    await fn(iterations);
+    iterations++;
+  }
+  return ((performance.now() - started) * 1000) / iterations;
+};
+
+const cell = (value) => `${value.toFixed(2)} µs`.padStart(12);
+
+async function main() {
+  const gcm = node.aead().key(RAW);
+  const chacha = node.aead({ algorithm: 'chacha20-poly1305' }).key(RAW);
+  const subtle = await browser.aead().key(RAW);
+  const nonce = new Uint8Array(12);
+
+  console.log('seal, per message'.padEnd(34) + SIZES.map((size) => `${size} B`.padStart(12)).join(''));
+  const rows = [
+    ['JSON copy (no encryption)', (body) => () => Buffer.from(body)],
+    ['aes-256-gcm  node:crypto sync', (body) => (i) => gcm.seal(counterNonce(i, nonce), body, AAD)],
+    ['chacha20-poly1305  node:crypto sync', (body) => (i) => chacha.seal(counterNonce(i, nonce), body, AAD)],
+    [
+      'aes-256-gcm  raw key per call',
+      (body) => (i) => {
+        const cipher = crypto.createCipheriv('aes-256-gcm', RAW, counterNonce(i, nonce));
+        cipher.setAAD(AAD);
+        return Buffer.concat([cipher.update(body), cipher.final(), cipher.getAuthTag()]);
+      },
+    ],
+  ];
+  for (const [label, make] of rows) {
+    console.log(label.padEnd(34) + SIZES.map((size) => cell(micros(make(payload(size))))).join(''));
+  }
+  const awaited = [];
+  for (const size of SIZES) {
+    const body = payload(size);
+    awaited.push(await microsAsync((i) => subtle.seal(counterNonce(i, new Uint8Array(12)), body, AAD)));
+  }
+  console.log('aes-256-gcm  crypto.subtle (await)'.padEnd(34) + awaited.map(cell).join(''));
+  const imported = [];
+  for (const size of SIZES) {
+    const body = payload(size);
+    imported.push(
+      await microsAsync(async (i) =>
+        (await browser.aead().key(RAW)).seal(counterNonce(i, new Uint8Array(12)), body, AAD),
+      ),
+    );
+  }
+  console.log('aes-256-gcm  subtle + importKey'.padEnd(34) + imported.map(cell).join(''));
+
+  console.log('\nopen, per message'.padEnd(35) + SIZES.map((size) => `${size} B`.padStart(12)).join(''));
+  const opens = [];
+  const opensCopied = [];
+  const opensAsync = [];
+  const key = crypto.createSecretKey(RAW);
+  for (const size of SIZES) {
+    const sealed = gcm.seal(nonce.fill(0), payload(size), AAD);
+    const split = sealed.length - 16;
+    opens.push(micros(() => gcm.open(nonce, sealed, AAD)));
+    // The idiomatic spelling aead.js does not use on this path: the body
+    // copied once more through Buffer.concat.
+    opensCopied.push(
+      micros(() => {
+        const decipher = crypto.createDecipheriv('aes-256-gcm', key, nonce, { authTagLength: 16 });
+        decipher.setAuthTag(sealed.subarray(split));
+        decipher.setAAD(AAD);
+        return Buffer.concat([decipher.update(sealed.subarray(0, split)), decipher.final()]);
+      }),
+    );
+    opensAsync.push(await microsAsync(() => subtle.open(nonce, sealed, AAD)));
+  }
+  console.log('aes-256-gcm  node:crypto sync'.padEnd(34) + opens.map(cell).join(''));
+  console.log('aes-256-gcm  … via Buffer.concat'.padEnd(34) + opensCopied.map(cell).join(''));
+  console.log('aes-256-gcm  crypto.subtle (await)'.padEnd(34) + opensAsync.map(cell).join(''));
+
+  // A subkey per sender salt is derived once and cached; this is the miss.
+  const salt = crypto.randomBytes(16);
+  const derive = micros(() => crypto.hkdfSync('sha256', RAW, salt, AAD, 32));
+  const keyed = micros(() => node.aead().key(RAW));
+  console.log(`\nhkdfSync subkey (a cache miss)     ${cell(derive)}`);
+  console.log(`cipher.key(raw) (a KeyObject)      ${cell(keyed)}`);
+
+  console.log(
+    '\nfan-out of one 1 KB event, per emit'.padEnd(35) + [10, 1000, 10000].map((n) => `${n}`.padStart(12)).join(''),
+  );
+  const body = payload(1024);
+  const recipients = Array.from({ length: 10000 }, () => node.aead().key(crypto.randomBytes(32)));
+  const shared = [];
+  const sealedEach = [];
+  for (const count of [10, 1000, 10000]) {
+    // Plain wrpc: the frame is built once and the same bytes go to everyone.
+    shared.push(
+      micros(() => {
+        const frame = Buffer.from(body);
+        let sent = 0;
+        for (let r = 0; r < count; r++) sent += frame.length;
+        return sent;
+      }),
+    );
+    sealedEach.push(
+      micros((i) => {
+        counterNonce(i, nonce);
+        let sent = 0;
+        for (let r = 0; r < count; r++) sent += recipients[r].seal(nonce, body, null).length;
+        return sent;
+      }),
+    );
+  }
+  console.log('one shared frame (today)'.padEnd(34) + shared.map(cell).join(''));
+  console.log('one seal per recipient'.padEnd(34) + sealedEach.map(cell).join(''));
+}
+
+main().catch((error) => {
+  console.error(error);
+  process.exitCode = 1;
+});

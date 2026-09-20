@@ -127,6 +127,18 @@ const ENTRIES = [
   // the src/compression/ids.js leaf instead of the whole negotiation
   // (measured 3.8 against 4.5) — the ratchet, turned the other way.
   { label: 'deflate codec (@alexify/wrpc/deflate)', entry: 'deflate.js', platform: 'browser', budget: 4 },
+  // Encryption: the AEAD, X25519, HKDF and keyring primitives over
+  // crypto.subtle — browser-reachable, and OUTSIDE every other entry like the
+  // deflate codec: the base entry carries an injection seam, the page that
+  // injects pays for the rest. Set from the measurement when the row landed
+  // (3.1); the Noise and HPKE halves will raise it as they land.
+  {
+    label: 'encryption — browser (@alexify/wrpc/encryption)',
+    entry: 'encryption.browser.js',
+    platform: 'browser',
+    budget: 4,
+  },
+  { label: 'encryption — node (@alexify/wrpc/encryption)', entry: 'encryption.js', platform: 'node' },
   // A peer is a client AND a server: the webrtc browser entry bundles the
   // client core plus the router, dispatcher, per-peer Client, rooms and
   // Broadcast (what makes a mesh broadcast/ask a single-encode fan-out),

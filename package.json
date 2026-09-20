@@ -7,11 +7,14 @@
     "./index.js": "./browser.js",
     "./sse.js": "./sse.browser.js",
     "./webrtc.js": "./webrtc.browser.js",
+    "./encryption.js": "./encryption.browser.js",
     "./src/chunks.js": "./src/chunks.browser.js",
     "./src/runtime/node.js": "./src/runtime/browser.js",
     "./src/compression/native.js": "./src/compression/native.browser.js",
     "./src/client/wsCompression.js": "./src/client/wsCompression.browser.js",
-    "./src/client/wsHandshake.js": "./src/client/wsHandshake.browser.js"
+    "./src/client/wsHandshake.js": "./src/client/wsHandshake.browser.js",
+    "./src/encryption/aead.js": "./src/encryption/aead.browser.js",
+    "./src/encryption/dh.js": "./src/encryption/dh.browser.js"
   },
   "imports": {
     "#ws": "./src/websocket/ws.js"
@@ -89,6 +92,14 @@
     "./deflate": {
       "types": "./deflate.d.ts",
       "default": "./deflate.js"
+    },
+    "./encryption": {
+      "browser": {
+        "types": "./encryption.browser.d.ts",
+        "default": "./encryption.browser.js"
+      },
+      "types": "./encryption.d.ts",
+      "default": "./encryption.js"
     },
     "./webrtc": {
       "browser": {
@@ -272,6 +283,10 @@
     "auth.d.ts",
     "deflate.js",
     "deflate.d.ts",
+    "encryption.js",
+    "encryption.browser.js",
+    "encryption.d.ts",
+    "encryption.browser.d.ts",
     "rpc.d.ts",
     "webrtc.js",
     "webrtc.browser.js",
