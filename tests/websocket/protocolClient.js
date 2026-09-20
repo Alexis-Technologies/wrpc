@@ -54,7 +54,7 @@ class ProtocolClient extends EventEmitter {
       // Reduce Nagle latency for faster test handshakes/frames
       socket.setNoDelay(true);
       const key = crypto.randomBytes(16).toString('base64');
-      const req = ProtocolClient.#buildUpgradeRequest(host, port, url.pathname, key, headers);
+      const req = ProtocolClient.#buildUpgradeRequest(host, port, url.pathname + url.search, key, headers);
       socket.write(req);
     });
     return socket;

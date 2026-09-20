@@ -152,3 +152,119 @@ export declare function toBase64Url(bytes: Bytes): string;
 export declare function fromBase64(text: string): Bytes | null;
 /** Constant-time equality of two byte strings. */
 export declare function equal(a: Bytes, b: Bytes): boolean;
+
+/** The one-round-trip Noise patterns a session may run. */
+export type NoisePattern = 'NN' | 'NK' | 'XX' | 'NNpsk0';
+
+export declare const PATTERN_NAMES: ReadonlyArray<NoisePattern>;
+
+/**
+ * What both ends of an encrypted session know about it once the handshake
+ * is done — `client.encryption` on a `WrpcClient`, and on the server's
+ * `Client`. `handshakeHash` is unique to the handshake and identical on
+ * both ends: bind a credential to it (send `HMAC(token, handshakeHash)`)
+ * and a credential relayed onto another connection is worthless there.
+ */
+export interface EncryptionInfo {
+  /** The Noise protocol name, e.g. `'Noise_NK_25519_AESGCM_SHA256'`. */
+  readonly protocol: string;
+  readonly pattern: NoisePattern;
+  /** `'AESGCM'`, `'ChaChaPoly'`, or an injected cipher's id. */
+  readonly cipher: string;
+  /** The server key id the client pinned; `''` for NN and NNpsk0. */
+  readonly kid: string;
+  /** The peer's static public key: the pinned one (NK), the one that arrived (XX), null otherwise. */
+  readonly remoteStatic: Bytes | null;
+  readonly handshakeHash: Bytes;
+}
+
+/** A server's public key bundle — `"<kid>:<noise key>:<hpke key>"`, or the same as an object. */
+export type ServerKey = string | { kid: string; noise: Bytes | string; hpke: Bytes | string };
+
+export declare function parseBundle(value: ServerKey, name?: string): { kid: string; noise: Bytes; hpke: Bytes };
+
+export interface CreateEncryptionOptions {
+  /**
+   * The server's key bundle, from `rpc.encryptionKey()` — what this client
+   * PINS: only the holder of the matching private key can finish the
+   * handshake. With it the pattern defaults to `'NK'`.
+   */
+  serverKey?: ServerKey | null;
+  /**
+   * `'NK'` (the default with a `serverKey`), `'XX'` (mutual — needs
+   * `staticKey`), `'NN'` (anonymous: encrypted, nobody authenticated) or
+   * `'NNpsk0'` (needs `psk`). `'NN'` is never a default: it has to be named.
+   */
+  pattern?: NoisePattern;
+  /** XX: this client's long-lived private key, 32 bytes — its identity to the server's `authorize`. */
+  staticKey?: Bytes | null;
+  /** XX without a `serverKey`: decides whether the key that answered is trusted. Must answer `true`. */
+  verifyServer?: ((publicKey: Bytes) => boolean | Promise<boolean>) | null;
+  /** NNpsk0: the pre-shared key, 32 bytes. */
+  psk?: Bytes | null;
+  /** Default `'aes-256-gcm'` — the one cipher a browser has. */
+  cipher?: CipherAlgorithm | Cipher;
+  dh?: Dh;
+  /** Messages per direction between deterministic rekeys. Default 2^20; both ends must agree; 0 disables. */
+  rekeyAfter?: number;
+  /** Default 10000 ms. */
+  handshakeTimeout?: number;
+}
+
+/** The transport's side of the seam `Encryption.secure()` is handed. */
+export interface EncryptionLink {
+  /** `'ws'`, `'wt'` — bound into the handshake, so one cannot be replayed onto the other. */
+  kind: string;
+  write(bytes: Bytes): void;
+  deliver(message: string | Bytes): void;
+  fail(error: Error): void;
+}
+
+export interface EncryptedConnection {
+  readonly ready: Promise<EncryptionInfo>;
+  send(data: string | Bytes | ArrayBuffer): void;
+  receive(data: string | Bytes | ArrayBuffer): void;
+}
+
+/**
+ * What a client is handed as `encryption`. A client that has one NEVER
+ * speaks plaintext: a server that does not answer the handshake, a key that
+ * is not the pinned one, a transport that cannot carry it — each is a
+ * failed connection, never a fallback.
+ */
+export interface Encryption {
+  /** The connect-URL parameter that announces the mode: `'wrpc_e'`. */
+  readonly param: string;
+  readonly protocol: string;
+  readonly pattern: NoisePattern;
+  secure(link: EncryptionLink): EncryptedConnection;
+}
+
+export declare function createEncryption(options?: CreateEncryptionOptions): Encryption;
+export declare function isEncryption(value: unknown): value is Encryption;
+
+export interface NoiseHandshake {
+  readonly writing: boolean;
+  readonly done: boolean;
+  readonly remoteStatic: Bytes | null;
+  write(payload?: Bytes): Promise<Bytes>;
+  read(message: Bytes): Promise<Bytes>;
+  finish(): Promise<{ send: unknown; receive: unknown; handshakeHash: Bytes; remoteStatic: Bytes | null }>;
+}
+
+export interface NoiseHandshakeOptions {
+  prologue?: Bytes;
+  staticKey?: KeyPair;
+  remoteStatic?: Bytes;
+  psk?: Bytes;
+  rekeyAfter?: number;
+}
+
+/** One Noise protocol over injected primitives — the canonical name is `name`. */
+export declare function createNoise(options: { pattern: NoisePattern; dh: Dh; cipher: Cipher; kdf: Kdf }): {
+  readonly name: string;
+  readonly pattern: NoisePattern;
+  readonly cipher: string;
+  initiator(options?: NoiseHandshakeOptions): Promise<NoiseHandshake>;
+  responder(options?: NoiseHandshakeOptions): Promise<NoiseHandshake>;
+};

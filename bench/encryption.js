@@ -152,6 +152,75 @@ async function main() {
   console.log('seal + base64 (encode)'.padEnd(34) + encodes.map(cell).join(''));
   console.log('base64 + open (decode)'.padEnd(34) + decodes.map(cell).join(''));
 
+  // A session frame (src/encryption/session.js) as the server sends one:
+  // the inner kind byte, the seal, the 00 06 header — against the bare
+  // AEAD above, which is the floor.
+  const { SecureChannel } = require('../src/encryption/session.js');
+  const { createNoise } = require('../src/encryption/noise.js');
+  const { x25519 } = require('../src/encryption/dh.js');
+  const { createKdf } = require('../src/encryption/hkdf.js');
+  const noise = createNoise({ pattern: 'NN', dh: x25519(), cipher: node.aead(), kdf: createKdf() });
+  // A fresh pair per row: a frame opens once, in order — the counter is the nonce.
+  const channels = async () => {
+    const [initiator, responder] = [await noise.initiator(), await noise.responder()];
+    await responder.read(await initiator.write());
+    await initiator.read(await responder.write());
+    return [new SecureChannel(await initiator.finish()), new SecureChannel(await responder.finish())];
+  };
+  console.log('\nsession frame, per message'.padEnd(35) + SIZES.map((size) => `${size} B`.padStart(12)).join(''));
+  const sessionSeals = [];
+  const sessionOpens = [];
+  for (const size of SIZES) {
+    const text = payload(size).toString();
+    const [sealing] = await channels();
+    sessionSeals.push(micros(() => sealing.seal(text)));
+    const [server, page] = await channels();
+    // Each frame opens once (the counter moves), so a batch is sealed ahead.
+    const batch = 20000;
+    let frames = [];
+    let next = 0;
+    sessionOpens.push(
+      micros(() => {
+        if (next === frames.length) {
+          frames = Array.from({ length: batch }, () => server.seal(text));
+          next = 0;
+        }
+        return page.open(frames[next++]);
+      }),
+    );
+  }
+  // The inner frame of a text packet, the two ways session.js can build it.
+  const textEncoder = new TextEncoder();
+  const inners = { encodeInto: [], buffer: [] };
+  for (const size of SIZES) {
+    const text = payload(size).toString();
+    inners.encodeInto.push(
+      micros(() => {
+        const scratch = new Uint8Array(1 + text.length * 3);
+        return scratch.subarray(0, 1 + textEncoder.encodeInto(text, scratch.subarray(1)).written);
+      }),
+    );
+    inners.buffer.push(
+      micros(() => {
+        const inner = Buffer.allocUnsafe(1 + Buffer.byteLength(text));
+        inner.write(text, 1);
+        return inner;
+      }),
+    );
+  }
+  console.log('inner frame  TextEncoder.encodeInto'.padEnd(34) + inners.encodeInto.map(cell).join(''));
+  console.log('inner frame  Buffer.write'.padEnd(34) + inners.buffer.map(cell).join(''));
+  console.log('seal a text packet'.padEnd(34) + sessionSeals.map(cell).join(''));
+  console.log('open a text packet (incl. sealing)'.padEnd(34) + sessionOpens.map(cell).join(''));
+  const started = performance.now();
+  for (let i = 0; i < 200; i++) {
+    const [a, b] = [await noise.initiator(), await noise.responder()];
+    await b.read(await a.write());
+    await a.read(await b.write());
+    await Promise.all([a.finish(), b.finish()]);
+  }
+  console.log(`a whole NN handshake, both ends     ${cell(((performance.now() - started) * 1000) / 200)}`);
+
   console.log(
     '\nfan-out of one 1 KB event, per emit'.padEnd(35) + [10, 1000, 10000].map((n) => `${n}`.padStart(12)).join(''),
   );

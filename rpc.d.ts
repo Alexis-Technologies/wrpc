@@ -5,6 +5,7 @@
 // data channel) share, exactly as client.d.ts is shared by the two halves of
 // the client. There is no rpc.js at runtime: the names below ship through
 // the main barrel and, for a browser peer, through @alexify/wrpc/webrtc.
+import type { EncryptionInfo } from './encryption.browser.js';
 import { Emitter, WrpcError, WrpcReadable, WrpcWritable, WrpcLogWriter, WrpcLogger, WrpcCodec } from './client.js';
 
 // ---------------------------------------------------------------------------
@@ -840,6 +841,13 @@ export class Client extends Emitter {
   readonly transportKind: string;
   /** The per-message compression the peer negotiated for its own frames (a Node ws client's `compression`), or null. */
   readonly compression: { readonly id: string; readonly threshold: number } | null;
+  /**
+   * The facts of a session-encrypted connection once its handshake is done,
+   * null on one that is not. An `onConnect` hook that awaits
+   * `client.sessionReady` reads it: `remoteStatic` is the client's
+   * authenticated key under XX.
+   */
+  readonly encryption: EncryptionInfo | null;
   /** False on a text-only transport (SSE), where binary streams cannot go. */
   readonly binary: boolean;
   /** Resolves when the transport drained, or when it closed. */

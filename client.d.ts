@@ -4,6 +4,8 @@
 // re-exports all of it and adds the server surface on top; browser.d.ts
 // (the `browser` types condition) re-exports ONLY this.
 
+import type { Encryption, EncryptionInfo } from './encryption.browser.js';
+
 /**
  * Structural view of a node Writable — what finalize()/pipe() need. Typed
  * structurally so this file stays free of node imports: a browser TS
@@ -356,6 +358,8 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
    */
   api: TypedApi<Api>;
   readonly active: boolean;
+  /** The facts of this connection's encrypted session, or null when it is not one. */
+  readonly encryption: EncryptionInfo | null;
 
   constructor(
     url: string,
@@ -1018,6 +1022,15 @@ export interface WrpcClientOptions {
    * channel has no handshake: both applications turn it on).
    */
   compression?: boolean | CompressionOptions;
+  /**
+   * @experimental Session encryption, from `createEncryption()` of
+   * `@alexify/wrpc/encryption`: a Noise handshake inside `open()`, then
+   * every frame sealed. A client that has one never speaks plaintext — a
+   * transport that cannot carry it (checked up front, the fallback list
+   * included) is a TypeError, a server that does not answer is a failed
+   * connection. With `worker`, it belongs to the `WrpcClientProxy` instead.
+   */
+  encryption?: Encryption | null;
   /**
    * @experimental The `broker` transport (`@alexify/wrpc/broker`, Node): a
    * broker with the `direct` capability, or the capability itself. Typed

@@ -83,7 +83,14 @@ const ENTRIES = [
   // CompressionStream which formats it has — +0.4 KB, measured 23.1
   // against 22.7. What it buys is the fallback: a peer without zstd is
   // served deflate instead of plain.
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 24 },
+  // 24 -> 25 for the session-encryption SEAM — not the encryption: the ws
+  // transport runs an injected handshake inside open() and hands every
+  // frame to it afterwards, the client refuses up front a transport that
+  // cannot carry `options.encryption`, and the worker proxy forwards the
+  // option — +0.4 KB, measured 24.0 against 23.6. Noise, the AEADs and the
+  // rest live in @alexify/wrpc/encryption, and only a page that injects
+  // them pays for them.
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 25 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
@@ -113,7 +120,8 @@ const ENTRIES = [
   // 23 -> 24 with the main entry's attachments raise, plus the sse client's
   // explicit refusal of bytes (measured 23.4 against 22.0).
   // 24 -> 25 with the main entry's codec-list raise (measured 24.1 against 23.6).
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 25 },
+  // 25 -> 26 with the main entry's session-encryption seam (measured 24.9 against 24.5).
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 26 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and
@@ -131,12 +139,14 @@ const ENTRIES = [
   // crypto.subtle — browser-reachable, and OUTSIDE every other entry like the
   // deflate codec: the base entry carries an injection seam, the page that
   // injects pays for the rest. Set from the measurement when the row landed
-  // (3.1); the Noise and HPKE halves will raise it as they land.
+  // (3.1). 4 -> 9 for the session: the Noise handshake (NN, NK, XX, NNpsk0),
+  // the sealed framing and `createEncryption` — measured 7.8; HPKE lands in
+  // the same row.
   {
     label: 'encryption — browser (@alexify/wrpc/encryption)',
     entry: 'encryption.browser.js',
     platform: 'browser',
-    budget: 4,
+    budget: 9,
   },
   { label: 'encryption — node (@alexify/wrpc/encryption)', entry: 'encryption.js', platform: 'node' },
   // A peer is a client AND a server: the webrtc browser entry bundles the

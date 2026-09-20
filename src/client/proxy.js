@@ -17,6 +17,7 @@ class WrpcClientProxy extends Emitter {
   #heartbeat = undefined;
   #logger = undefined;
   #telemetry = undefined;
+  #encryption = undefined;
   #url = undefined;
 
   // The control bus: `wrpc:*` objects, a transferred port riding on
@@ -30,7 +31,7 @@ class WrpcClientProxy extends Emitter {
 
   constructor(options = {}) {
     super();
-    const { callTimeout, heartbeat, logger, telemetry, url } = options;
+    const { callTimeout, heartbeat, logger, telemetry, url, encryption } = options;
     if (callTimeout) this.#callTimeout = callTimeout;
     this.#reconnect = normalizeReconnect(options);
     this.#heartbeat = heartbeat;
@@ -38,6 +39,9 @@ class WrpcClientProxy extends Emitter {
     // is silently lost on the connection it owns.
     this.#logger = logger;
     this.#telemetry = telemetry;
+    // The hop that leaves the machine is this worker's, so session
+    // encryption (createEncryption) is configured here, not on the page.
+    this.#encryption = encryption;
     this.#url = url;
     if (typeof self === 'undefined') {
       throw new Error('WrpcClientProxy must run in a worker context');
@@ -66,6 +70,7 @@ class WrpcClientProxy extends Emitter {
       heartbeat: this.#heartbeat,
       logger: this.#logger,
       telemetry: this.#telemetry,
+      encryption: this.#encryption,
       proxy: (data, packet) => this.#proxyPacket(data, packet),
     };
     this.#connection = await WrpcClient.connect(url, options);

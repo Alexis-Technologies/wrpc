@@ -1,0 +1,523 @@
+'use strict';
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+
+const { defineRouter, procedure, WrpcClient } = require('../../index.js');
+const { createEncryption, generateKey } = require('../../encryption.js');
+const { createUwsEngine } = require('../../uws.js');
+const { FRAME_MARK, FRAME_HANDSHAKE, FRAME_SEALED } = require('../../src/wire.js');
+const { MAX_QUEUED } = require('../../src/encryption/server.js');
+const { ProtocolClient } = require('../websocket/protocolClient.js');
+const { requireUws } = require('../adapters/boots.js');
+const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
+
+const SECRET = 'a card number nobody on the path should read: 4111 1111 1111 1111';
+
+const routerWith = (hooks = {}) =>
+  defineRouter(
+    {
+      data: {
+        echo: procedure({ access: 'public', handler: async (_ctx, args) => args }),
+        session: procedure({
+          access: 'public',
+          handler: async (ctx) => {
+            const info = ctx.client.encryption;
+            if (info === null) return null;
+            return {
+              protocol: info.protocol,
+              pattern: info.pattern,
+              cipher: info.cipher,
+              kid: info.kid,
+              hash: Buffer.from(info.handshakeHash).toString('hex'),
+              peer: info.remoteStatic ? Buffer.from(info.remoteStatic).toString('hex') : null,
+            };
+          },
+        }),
+        big: procedure({
+          access: 'public',
+          handler: async (_ctx, { rows }) => Array.from({ length: rows }, (_, i) => ({ i, name: `row-${i}` })),
+        }),
+        bytes: procedure({ access: 'public', handler: async (_ctx, { blob }) => ({ size: blob.length, blob }) }),
+        upload: procedure({
+          access: 'public',
+          handler: async (ctx, { stream }) => {
+            let bytes = 0;
+            for await (const chunk of ctx.client.getStream(stream)) bytes += chunk.length;
+            return bytes;
+          },
+        }),
+        shout: procedure({
+          access: 'public',
+          handler: async (ctx, { text }) => {
+            ctx.server.broadcast('data/shouted', { text });
+            return true;
+          },
+        }),
+      },
+    },
+    { hooks },
+  );
+
+const router = routerWith();
+
+// Every frame in both directions of every upgraded socket, as the wire saw it.
+const spyWire = (server) => {
+  const inbound = [];
+  const outbound = [];
+  const attachSocket = server.rpc.attachSocket.bind(server.rpc);
+  server.rpc.attachSocket = (socket, meta) => {
+    socket.on('message', (data, isBinary) => inbound.push({ isBinary, bytes: Buffer.from(data) }));
+    const send = socket.send.bind(socket);
+    socket.send = (data, options) => {
+      outbound.push({ isBinary: typeof data !== 'string', bytes: Buffer.from(data), options });
+      return send(data, options);
+    };
+    return attachSocket(socket, meta);
+  };
+  return { inbound, outbound };
+};
+
+const secure = async (t, options = {}, clientOptions = {}) => {
+  const booted = await bootServer(t, { router, encryption: { keys: generateKey() }, ...options });
+  const serverKey = await booted.server.rpc.encryptionKey();
+  const connect = (extra = {}, encryption = {}) =>
+    connectClient(t, booted.url, {
+      encryption: createEncryption({ serverKey, ...encryption }),
+      ...clientOptions,
+      ...extra,
+    });
+  return { ...booted, serverKey, connect };
+};
+
+const hex = (bytes) => Buffer.from(bytes).toString('hex');
+
+// A bare WebSocket peer: what it was closed with, after `act` had its say.
+const rawClose = (url, act = () => {}) =>
+  new Promise((resolve) => {
+    const raw = new ProtocolClient(url);
+    let close = { code: 1006, reason: '' };
+    raw.on('frame', (opcode, payload) => {
+      if (opcode !== 0x8) return;
+      close = { code: payload.length >= 2 ? payload.readUInt16BE(0) : 1005, reason: payload.subarray(2).toString() };
+    });
+    raw.once('open', () => act(raw));
+    raw.once('close', () => resolve(close));
+  });
+
+// A client the server hangs up on right after the upgrade: connect() may
+// resolve first (an upgrade is not a session), so what is asserted is that
+// the connection does not live.
+const refused = async (url, options = {}) => {
+  let client;
+  try {
+    client = await WrpcClient.connect(url, { heartbeat: false, reconnect: false, logger: false, ...options });
+  } catch (error) {
+    return error;
+  }
+  if (client.active) await new Promise((resolve) => client.once('close', resolve));
+  const active = client.active;
+  client.close();
+  return active ? null : new Error('closed');
+};
+
+test('ws encryption: a whole session — calls, big results, bytes, a stream, an event — and nothing readable on the wire', async (t) => {
+  const { server, connect } = await secure(t);
+  const wire = spyWire(server);
+  const client = await connect();
+  await client.load('data');
+  assert.deepStrictEqual(await client.api.data.echo({ note: SECRET }), { note: SECRET });
+  assert.strictEqual((await client.api.data.big({ rows: 2000 })).length, 2000);
+  const blob = Uint8Array.from({ length: 300 }, (_, i) => i % 251);
+  const answered = await client.api.data.bytes({ blob });
+  assert.strictEqual(answered.size, 300);
+  assert.deepStrictEqual(Uint8Array.from(answered.blob), blob);
+  const upload = client.createStream('data', 100_000);
+  const uploaded = client.api.data.upload({ stream: upload.id });
+  upload.write(new Uint8Array(60_000).fill(7));
+  upload.write(new Uint8Array(40_000).fill(9));
+  upload.end();
+  assert.strictEqual(await uploaded, 100_000);
+  const heard = new Promise((resolve) => client.api.data.on('shouted', resolve));
+  await client.api.data.shout({ text: SECRET });
+  assert.deepStrictEqual(await heard, { text: SECRET });
+
+  const frames = [...wire.inbound, ...wire.outbound];
+  assert.ok(frames.length > 10);
+  for (const { isBinary, bytes } of frames) {
+    assert.ok(isBinary, 'never a text frame');
+    assert.strictEqual(bytes[0], FRAME_MARK);
+    assert.ok(bytes[1] === FRAME_HANDSHAKE || bytes[1] === FRAME_SEALED);
+    for (const needle of ['4111', 'echo', 'callback', 'shouted', 'row-1']) assert.ok(!bytes.includes(needle), needle);
+  }
+  const handshakes = (list) => list.filter((f) => f.bytes[1] === FRAME_HANDSHAKE).length;
+  assert.deepStrictEqual([handshakes(wire.inbound), handshakes(wire.outbound)], [1, 1], 'NK is one message each way');
+  assert.ok(
+    wire.outbound.every((f) => f.options?.compress === false),
+    'permessage-deflate is told to leave ciphertext alone',
+  );
+});
+
+test('ws encryption: both ends hold the same session facts — the hash is what a credential binds to', async (t) => {
+  const { connect, serverKey } = await secure(t);
+  const client = await connect();
+  await client.load('data');
+  const seen = await client.api.data.session();
+  const mine = client.encryption;
+  assert.deepStrictEqual(seen, {
+    protocol: 'Noise_NK_25519_AESGCM_SHA256',
+    pattern: 'NK',
+    cipher: 'AESGCM',
+    kid: '0',
+    hash: hex(mine.handshakeHash),
+    peer: null,
+  });
+  assert.strictEqual(mine.protocol, seen.protocol);
+  assert.strictEqual(Buffer.from(mine.remoteStatic).toString('base64url'), serverKey.split(':')[1]);
+  assert.ok(Object.isFrozen(mine));
+  // Another connection, another handshake: never the same hash twice
+  const other = await connect();
+  assert.notStrictEqual(hex(other.encryption.handshakeHash), hex(mine.handshakeHash));
+});
+
+test('ws encryption: optional by default — a plaintext client still connects, and is told apart', async (t) => {
+  const { url, connect } = await secure(t);
+  const plain = await connectClient(t, url);
+  await plain.load('data');
+  assert.strictEqual(await plain.api.data.session(), null);
+  assert.strictEqual(plain.encryption, null);
+  const sealed = await connect();
+  await sealed.load('data');
+  // One broadcast reaches both, each in its own clothes
+  const heard = [plain, sealed].map((client) => new Promise((resolve) => client.api.data.on('shouted', resolve)));
+  await sealed.api.data.shout({ text: 'to everyone' });
+  assert.deepStrictEqual(await Promise.all(heard), [{ text: 'to everyone' }, { text: 'to everyone' }]);
+});
+
+test('ws encryption: required — plaintext is refused on the socket, over http, and on an unvouched transport', async (t) => {
+  const { server, url, origin, connect } = await secure(t, { encryption: { keys: generateKey(), required: true } });
+  assert.ok(await refused(url), 'a plaintext client does not stay connected');
+  assert.deepStrictEqual(await rawClose(url), { code: 1008, reason: 'encryption' });
+  const response = await fetch(`${origin}${server.rpc.basePath}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: JSON.stringify({ type: 'call', id: '1', method: 'data/echo', args: { note: SECRET } }),
+  });
+  assert.strictEqual(response.status, 426);
+  assert.ok(!(await response.text()).includes('4111'));
+  // A wire the core cannot see into has to be vouched for by whoever attaches it
+  const transport = { write() {}, close() {}, on() {}, once() {} };
+  assert.throws(() => server.rpc.attach(transport, { persistent: false }), /encryption is required/);
+  server.rpc.attach(transport, { persistent: false, encrypted: true });
+  const client = await connect();
+  await client.load('data');
+  assert.deepStrictEqual(await client.api.data.echo({ ok: 1 }), { ok: 1 });
+});
+
+test('ws encryption: a client that encrypts never settles for less', async (t) => {
+  // A server that was never configured for it
+  const bare = await bootServer(t, { router });
+  const foreign = createEncryption({ serverKey: `0:${'A'.repeat(43)}:${'A'.repeat(43)}`, handshakeTimeout: 300 });
+  assert.ok(await refused(bare.url, { encryption: foreign }));
+  // The wrong pinned key: the handshake does not complete
+  const { url } = await secure(t);
+  const other = await secure(t);
+  assert.ok(await refused(url, { encryption: createEncryption({ serverKey: other.serverKey }) }));
+  // A transport that cannot carry it is refused before anything is opened — fallback candidates included
+  const encryption = createEncryption({ serverKey: other.serverKey });
+  await assert.rejects(
+    WrpcClient.connect(url, { encryption, transport: 'http' }),
+    /'http' cannot carry options\.encryption/,
+  );
+  await assert.rejects(
+    WrpcClient.connect(url, { encryption, transport: ['ws', 'http'] }),
+    /'http' cannot carry options\.encryption — and plaintext is not a fallback/,
+  );
+  await assert.rejects(WrpcClient.connect(url, { encryption: { keys: 'x' } }), /must come from createEncryption/);
+  await assert.rejects(WrpcClient.connect(url, { encryption, worker: {} }), /belongs to the WrpcClientProxy/);
+});
+
+test('ws encryption: a server that takes the connection for a plaintext one is refused at once, not at the timeout', async (t) => {
+  // The flag stripped from the URL on the way: the server answers the hello
+  // with a plaintext error, and plaintext is where this client stops.
+  const booted = await bootServer(t, { router, encryption: { keys: generateKey() } });
+  const attachSocket = booted.server.rpc.attachSocket.bind(booted.server.rpc);
+  booted.server.rpc.attachSocket = (socket, meta) => attachSocket(socket, { ...meta, url: '/' });
+  const serverKey = await booted.server.rpc.encryptionKey();
+  const started = Date.now();
+  assert.ok(await refused(booted.url, { encryption: createEncryption({ serverKey, handshakeTimeout: 5_000 }) }));
+  assert.ok(Date.now() - started < 2_000);
+});
+
+test('ws encryption: a server that never answers is given up on at the handshake timeout', async (t) => {
+  const booted = await bootServer(t, { router });
+  // Upgrades, then swallows everything: no answer of any kind
+  booted.server.rpc.attachSocket = () => null;
+  const encryption = createEncryption({ serverKey: `0:${'A'.repeat(43)}:${'A'.repeat(43)}`, handshakeTimeout: 100 });
+  const started = Date.now();
+  assert.ok(await refused(booted.url, { encryption }));
+  assert.ok(Date.now() - started < 2_000);
+});
+
+test('ws encryption: XX — the server learns who, and authorize decides', async (t) => {
+  const seen = [];
+  const allowed = new Set();
+  const { url, serverKey } = await secure(t, {
+    encryption: {
+      keys: generateKey(),
+      authorize: async (peer) => {
+        seen.push(peer);
+        return allowed.has(hex(peer.remoteStatic));
+      },
+    },
+  });
+  const staticKey = generateKey();
+  const xx = (options) => ({ encryption: createEncryption({ pattern: 'XX', staticKey, ...options }) });
+  assert.ok(await refused(url, xx({ serverKey })), 'a key nobody allowed');
+  assert.strictEqual(seen.length, 1);
+  assert.strictEqual(seen[0].pattern, 'XX');
+  allowed.add(hex(seen[0].remoteStatic));
+  const client = await connectClient(t, url, xx({ serverKey }));
+  await client.load('data');
+  const session = await client.api.data.session();
+  assert.strictEqual(session.protocol, 'Noise_XX_25519_AESGCM_SHA256');
+  assert.strictEqual(session.peer, hex(seen[0].remoteStatic), 'the same static key, connection after connection');
+  // Without a pin the client is asked — and a no ends it before its own key is sent
+  const asked = [];
+  const trusting = await connectClient(t, url, xx({ verifyServer: async (key) => asked.push(key) === 1 }));
+  assert.strictEqual(Buffer.from(asked[0]).toString('base64url'), serverKey.split(':')[1]);
+  assert.strictEqual(trusting.encryption.pattern, 'XX');
+  await waitFor(() => seen.length === 3);
+  const before = seen.length;
+  assert.ok(await refused(url, xx({ verifyServer: async () => false })));
+  assert.strictEqual(seen.length, before, 'the server never saw that client finish');
+  // A pin that does not match the key that answered
+  const elsewhere = await secure(t);
+  assert.ok(await refused(url, xx({ serverKey: elsewhere.serverKey })));
+});
+
+test('ws encryption: NN and NNpsk0 are opted into by name, on both sides', async (t) => {
+  const psk = generateKey();
+  const { url } = await secure(t, { encryption: { keys: generateKey(), patterns: ['NK', 'NNpsk0'], psk } });
+  const shared = await connectClient(t, url, { encryption: createEncryption({ pattern: 'NNpsk0', psk }) });
+  await shared.load('data');
+  assert.strictEqual((await shared.api.data.session()).protocol, 'Noise_NNpsk0_25519_AESGCM_SHA256');
+  assert.strictEqual((await shared.api.data.session()).kid, '');
+  assert.ok(
+    await refused(url, { encryption: createEncryption({ pattern: 'NNpsk0', psk: generateKey() }) }),
+    'another psk',
+  );
+  assert.ok(
+    await refused(url, { encryption: createEncryption({ pattern: 'NN' }) }),
+    'a pattern the server does not list',
+  );
+  const open = await secure(t, {
+    encryption: { keys: generateKey(), patterns: ['NN'], ciphers: ['chacha20-poly1305'] },
+  });
+  const anonymous = await connectClient(t, open.url, {
+    encryption: createEncryption({ pattern: 'NN', cipher: 'chacha20-poly1305' }),
+  });
+  assert.strictEqual(anonymous.encryption.protocol, 'Noise_NN_25519_ChaChaPoly_SHA256');
+  assert.ok(
+    await refused(open.url, { encryption: createEncryption({ pattern: 'NN' }) }),
+    'a cipher the server does not list',
+  );
+});
+
+test('ws encryption: an old pin keeps working while its key is on the ring, and stops when it is dropped', async (t) => {
+  const [k1, k2] = [generateKey(), generateKey()];
+  const before = await bootServer(t, { router, encryption: { keys: { current: 'k1', ring: { k1 } } } });
+  const pinned = await before.server.rpc.encryptionKey();
+  assert.ok(pinned.startsWith('k1:'));
+  const rotated = await bootServer(t, { router, encryption: { keys: { current: 'k2', ring: { k1, k2 } } } });
+  assert.ok((await rotated.server.rpc.encryptionKey()).startsWith('k2:'));
+  const client = await connectClient(t, rotated.url, { encryption: createEncryption({ serverKey: pinned }) });
+  await client.load('data');
+  assert.strictEqual((await client.api.data.session()).kid, 'k1');
+  const dropped = await bootServer(t, { router, encryption: { keys: { current: 'k2', ring: { k2 } } } });
+  assert.ok(await refused(dropped.url, { encryption: createEncryption({ serverKey: pinned }) }));
+});
+
+test('ws encryption: the server may speak first — what it sent before the handshake arrives after it, in order', async (t) => {
+  const hooks = {
+    onConnect: (client) => {
+      for (let i = 0; i < 5; i++) client.sendEvent('data/greeting', { i });
+    },
+  };
+  const booted = await bootServer(t, { router: routerWith(hooks), encryption: { keys: generateKey() } });
+  const wire = spyWire(booted.server);
+  const serverKey = await booted.server.rpc.encryptionKey();
+  // Built by hand so the listener is there before the first frame is
+  const Transport = WrpcClient.transport.ws;
+  const options = { encryption: createEncryption({ serverKey }), heartbeat: false, reconnect: false, logger: false };
+  const client = new WrpcClient(booted.url, new Transport(booted.url), options);
+  t.after(() => void client.close());
+  const greetings = [];
+  client.on('unhandled-event', ({ name, data }) => greetings.push([name, data.i]));
+  await client.open();
+  await waitFor(() => greetings.length === 5);
+  assert.deepStrictEqual(
+    greetings,
+    [0, 1, 2, 3, 4].map((i) => ['data/greeting', i]),
+  );
+  assert.strictEqual(wire.outbound[0].bytes[1], FRAME_HANDSHAKE, 'nothing left before the handshake answer');
+  assert.ok(wire.outbound.slice(1).every((f) => f.bytes[1] === FRAME_SEALED));
+});
+
+test('ws encryption: a reconnect is a new handshake — new keys, the same pin', async (t) => {
+  const { server, connect } = await secure(t);
+  const client = await connect({ reconnect: { delay: 10, maxDelay: 20 } });
+  await client.load('data');
+  const first = hex(client.encryption.handshakeHash);
+  const reconnected = new Promise((resolve) => client.once('reconnect', resolve));
+  for (const peer of server.rpc.clients) peer.close();
+  await reconnected;
+  assert.notStrictEqual(hex(client.encryption.handshakeHash), first);
+  assert.deepStrictEqual(await client.api.data.echo({ again: true }), { again: true });
+});
+
+test('ws encryption: compression happens inside the sealed frame', async (t) => {
+  const { server, connect } = await secure(t, { compression: true });
+  const wire = spyWire(server);
+  const client = await connect({ compression: true });
+  await client.load('data');
+  const text = 'y'.repeat(50_000);
+  assert.strictEqual((await client.api.data.echo({ text })).text.length, 50_000);
+  const [peer] = [...server.rpc.clients];
+  assert.strictEqual(peer.compression?.id, 'deflate-raw', 'the offer was answered — through the sealed channel');
+  const largest = Math.max(...wire.inbound.map((f) => f.bytes.length));
+  assert.ok(largest < 5_000, `a 50 KB call travelled as ${largest} sealed bytes`);
+  assert.ok(wire.inbound.every((f) => f.bytes[1] === FRAME_HANDSHAKE || f.bytes[1] === FRAME_SEALED));
+});
+
+// What an attacker on the path can do to a sealed connection: all of it ends the connection.
+test('ws encryption: a forged, plaintext or never-finished handshake is closed, with one reason on the wire', async (t) => {
+  const warnings = [];
+  const logger = {
+    log() {},
+    info() {},
+    debug() {},
+    error() {},
+    warn: (entry) => warnings.push(entry),
+    child: () => logger,
+  };
+  const { url } = await secure(t, { logger, encryption: { keys: generateKey(), handshakeTimeout: 150 } });
+  const sealedUrl = `${url}?wrpc_e=1`;
+  const unknown = Buffer.concat([Buffer.from([0, 5, 1, 4]), Buffer.from('nope'), Buffer.from([0]), Buffer.alloc(48)]);
+  const closes = [
+    await rawClose(sealedUrl, (raw) => raw.sendText('{"type":"ping"}')),
+    await rawClose(sealedUrl, (raw) => raw.sendBinary(Buffer.from([0, 5, 1, 200]))),
+    await rawClose(sealedUrl, (raw) => raw.sendBinary(Buffer.from([0, 6, 1, 2, 3]))),
+    await rawClose(sealedUrl, (raw) => raw.sendBinary(unknown)),
+    await rawClose(sealedUrl),
+  ];
+  assert.deepStrictEqual(
+    closes.map((close) => [close.code, close.reason]),
+    [
+      [1002, 'encryption'],
+      [1002, 'encryption'],
+      [1002, 'encryption'],
+      [1008, 'encryption'],
+      [1008, 'encryption'],
+    ],
+  );
+  assert.deepStrictEqual(
+    warnings.filter((w) => w.event === 'encryption.refused').map((w) => w.reason),
+    ['plaintext', 'handshake', 'handshake', 'protocol', 'timeout'],
+  );
+});
+
+test('ws encryption: a sealed frame altered in flight, or sent twice, ends the session', async (t) => {
+  const { server, connect } = await secure(t);
+  const sockets = [];
+  const attachSocket = server.rpc.attachSocket.bind(server.rpc);
+  server.rpc.attachSocket = (socket, meta) => {
+    sockets.push(socket);
+    return attachSocket(socket, meta);
+  };
+  for (const tamper of ['flip', 'replay']) {
+    const client = await connect();
+    await client.load('data');
+    const socket = sockets.at(-1);
+    // The wrapper listens on the engine socket: hand it a frame as the wire would
+    const listeners = socket.listeners('message');
+    const captured = [];
+    socket.prependListener('message', (data) => captured.push(Buffer.from(data)));
+    await client.api.data.echo({ n: 1 });
+    const closed = new Promise((resolve) => client.once('close', resolve));
+    const frame = Buffer.from(captured.at(-1));
+    if (tamper === 'flip') frame[frame.length - 1] ^= 1;
+    for (const listener of listeners) listener(frame, true);
+    await closed;
+    assert.strictEqual(client.active, false, tamper);
+  }
+});
+
+test('ws encryption: a server that sends without bound before the handshake is cut off', async (t) => {
+  const hooks = {
+    onConnect: (client) => {
+      for (let i = 0; i <= MAX_QUEUED; i++) client.sendEvent('data/flood', { i });
+    },
+  };
+  const booted = await bootServer(t, { router: routerWith(hooks), encryption: { keys: generateKey() } });
+  assert.strictEqual((await rawClose(`${booted.url}?wrpc_e=1`)).code, 1008);
+});
+
+test('ws encryption: the option is validated where the server is built', async (t) => {
+  const keys = generateKey();
+  const build = (encryption) => bootServer(t, { router, encryption });
+  await assert.rejects(build(true), /encryption must be \{ keys/);
+  await assert.rejects(build({ keys: 'short' }), /encryption\.keys must be 32 bytes/);
+  await assert.rejects(build({ keys, required: 'yes' }), /required must be a boolean/);
+  await assert.rejects(build({ keys, authorize: true }), /authorize must be a function/);
+  await assert.rejects(build({ keys, handshakeTimeout: 0 }), /handshakeTimeout/);
+  await assert.rejects(build({ keys, rekeyAfter: -1 }), /rekeyAfter/);
+  await assert.rejects(build({ keys, patterns: ['IK'] }), /patterns must be a non-empty list of NN, NK, XX, NNpsk0/);
+  await assert.rejects(build({ keys, patterns: [] }), /patterns must be a non-empty list/);
+  await assert.rejects(build({ keys, ciphers: ['rot13'] }), /ciphers must be a non-empty list/);
+  await assert.rejects(build({ keys, patterns: ['NNpsk0'] }), /NNpsk0, which needs encryption\.psk/);
+  await assert.rejects(build({ keys, patterns: ['NNpsk0'], psk: 'short' }), /encryption\.psk must be 32 bytes/);
+  const off = await bootServer(t, { router });
+  assert.strictEqual(await off.server.rpc.encryptionKey(), null);
+});
+
+test('createEncryption: the options are validated where the object is built', () => {
+  const serverKey = `k1:${'A'.repeat(43)}:${'B'.repeat(43)}`;
+  assert.throws(() => createEncryption(), /a serverKey, or an explicit pattern — NN, NK, XX, NNpsk0/);
+  assert.throws(() => createEncryption({ pattern: 'IK' }), /a serverKey, or an explicit pattern/);
+  assert.throws(() => createEncryption({ pattern: 'NK' }), /NK needs the serverKey it pins/);
+  assert.throws(() => createEncryption({ serverKey: 'k1:short:short' }), /serverKey must be a key bundle/);
+  assert.throws(() => createEncryption({ serverKey: 'not a bundle' }), /must be a key bundle/);
+  assert.throws(() => createEncryption({ serverKey: 7 }), /must be a key bundle/);
+  assert.throws(() => createEncryption({ serverKey: { kid: 'k 1', noise: 'A', hpke: 'B' } }), /must be a key bundle/);
+  assert.throws(() => createEncryption({ pattern: 'XX', serverKey }), /staticKey \(XX\) must be 32 bytes/);
+  assert.throws(
+    () => createEncryption({ pattern: 'XX', staticKey: generateKey() }),
+    /XX needs a serverKey to pin, or verifyServer/,
+  );
+  assert.throws(() => createEncryption({ pattern: 'NNpsk0' }), /psk \(NNpsk0\) must be 32 bytes/);
+  assert.throws(() => createEncryption({ serverKey, rekeyAfter: -1 }), /rekeyAfter/);
+  assert.throws(() => createEncryption({ serverKey, cipher: { id: 'x' } }), /cipher must be a cipher name or a Cipher/);
+  assert.throws(() => createEncryption({ serverKey, dh: {} }), /dh must be a Dh/);
+  const encryption = createEncryption({ serverKey: { kid: 'k1', noise: 'A'.repeat(43), hpke: new Uint8Array(32) } });
+  assert.deepStrictEqual(
+    [encryption.param, encryption.pattern, encryption.protocol],
+    ['wrpc_e', 'NK', 'Noise_NK_25519_AESGCM_SHA256'],
+  );
+  assert.ok(Object.isFrozen(encryption));
+});
+
+const uws = requireUws();
+
+test(
+  'ws encryption: over the uWebSockets.js engine — the same wrapper, the same session',
+  { skip: uws ? false : 'uWebSockets.js unavailable' },
+  async (t) => {
+    const { connect } = await secure(t, { engine: createUwsEngine({ uws }) });
+    const client = await connect();
+    await client.load('data');
+    assert.deepStrictEqual(await client.api.data.echo({ note: SECRET }), { note: SECRET });
+    assert.strictEqual((await client.api.data.big({ rows: 1500 })).length, 1500);
+    assert.strictEqual((await client.api.data.session()).protocol, 'Noise_NK_25519_AESGCM_SHA256');
+  },
+);

@@ -12,6 +12,10 @@ const { openSocket } = require('./wsHandshake.js');
 const { WebSocket } = globalThis;
 
 class ClientWsTransport extends ClientTransport {
+  // Carries `options.encryption` (@alexify/wrpc/encryption): the handshake
+  // runs inside open(), and every frame after it is sealed.
+  static encrypts = true;
+
   // The one transport that can die without saying so.
   heartbeat = true;
 
@@ -22,6 +26,13 @@ class ClientWsTransport extends ClientTransport {
   // change only once the server's pong agreed. Re-negotiated per open.
   #compression = null;
   #negotiating = false;
+  // The encrypted session of this connection, from `options.encryption`:
+  // `{ ready, send, receive }`. Re-made per open — a reconnect is a new
+  // handshake and new keys.
+  #secure = null;
+
+  /** The session's facts once established (see WrpcClient#encryption), or null. */
+  encryption = null;
 
   /** The compression codec id in effect on this side's frames, or null. */
   get compression() {
@@ -44,7 +55,13 @@ class ClientWsTransport extends ClientTransport {
       // headers from Node, subprotocol carrier tokens from a browser, the
       // connect-URL query only by `carrier: 'query'` — see wsHandshake.js
       // and its browser half.
-      const socket = openSocket(WebSocket, this.url, options.protocols ?? [WRPC_PROTOCOL], options, this.log);
+      const { encryption = null } = options;
+      // Announced in the URL: the server may be the first to send, so it
+      // has to know the mode before any frame. Not a secret — stripping it
+      // gets a refusal, never plaintext.
+      const url =
+        encryption === null ? this.url : `${this.url}${this.url.includes('?') ? '&' : '?'}${encryption.param}=1`;
+      const socket = openSocket(WebSocket, url, options.protocols ?? [WRPC_PROTOCOL], options, this.log);
       // Bytes arrive as ArrayBuffers, never Blobs: an attachments frame is
       // classified synchronously on the way in, in order with the packets.
       socket.binaryType = 'arraybuffer';
@@ -56,6 +73,8 @@ class ClientWsTransport extends ClientTransport {
         // replacement a reconnect has already installed.
         if (this.#socket !== socket) return;
         this.#socket = null;
+        this.#secure = null;
+        this.encryption = null;
         if (this.#opening) {
           this.#opening = null;
           this.emit('error', error);
@@ -65,24 +84,47 @@ class ClientWsTransport extends ClientTransport {
         this.active = false;
         this.emit('close', error);
       };
-      const onOpen = () => {
-        this.protocol = socket.protocol || '';
+      const established = () => {
         // First on the wire, before the core's own open handler sends
         // anything: the pong that answers it is what turns compression on.
-        if (this.#compression !== null) socket.send(this.#compression.offer);
+        if (this.#compression !== null) this.#send(this.#compression.offer);
         this.active = true;
         this.emit('open');
         this.#opening = null;
         resolve();
       };
+      const onOpen = () => {
+        this.protocol = socket.protocol || '';
+        if (encryption === null) return void established();
+        // The handshake first: nothing of this connection leaves in the
+        // clear, the compression offer included. `connectTimeout` is racing
+        // open(), so it covers this too; a failure closes the socket, which
+        // is what rejects the pending open.
+        this.#secure = encryption.secure({
+          kind: 'ws',
+          write: (bytes) => socket.send(bytes),
+          deliver: (data) => this.#deliver(data),
+          fail: (error) => {
+            this.log?.warn({ event: 'encryption.failed', err: error });
+            socket.close();
+          },
+        });
+        this.#secure.ready.then(
+          (info) => {
+            if (this.#socket !== socket) return;
+            this.encryption = info;
+            established();
+          },
+          () => {},
+        );
+      };
       socket.addEventListener('open', onOpen, { once: true });
       socket.addEventListener('close', onClose, { once: true });
       socket.addEventListener('error', onClose, { once: true });
       socket.addEventListener('message', ({ data }) => {
-        // Only until the first pong answered the offer — a plain pong is a
-        // no, and either way nothing is inspected after that.
-        if (this.#negotiating && this.#compression.accept(data) !== null) this.#negotiating = false;
-        this.emit('message', data);
+        if (this.#socket !== socket) return;
+        if (this.#secure !== null) return void this.#secure.receive(data);
+        this.#deliver(data);
       });
     });
     this.#opening = opening;
@@ -110,13 +152,27 @@ class ClientWsTransport extends ClientTransport {
     socket?.close();
   }
 
+  // One inbound message, decrypted already when the connection is sealed.
+  #deliver(data) {
+    // Only until the first pong answered the offer — a plain pong is a
+    // no, and either way nothing is inspected after that.
+    if (this.#negotiating && this.#compression.accept(data) !== null) this.#negotiating = false;
+    this.emit('message', data);
+  }
+
+  // Compress, then seal: ciphertext does not compress.
+  #send(data) {
+    if (this.#secure !== null) return void this.#secure.send(data);
+    this.#socket.send(data);
+  }
+
   write(data) {
     if (!this.active) throw new Error('Not connected');
     if (this.#compression !== null) {
       const frame = this.#compression.encode(data);
-      if (frame !== null) return void this.#socket.send(frame);
+      if (frame !== null) return void this.#send(frame);
     }
-    this.#socket.send(data);
+    this.#send(data);
   }
 }
 

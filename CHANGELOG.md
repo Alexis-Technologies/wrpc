@@ -13,6 +13,51 @@ narrower promise — see
 
 ### Added
 
+**Session encryption: a Noise handshake on the WebSocket, then every frame sealed**
+
+- `new Server({ encryption: { keys } })` and
+  `connect(url, { encryption: createEncryption({ serverKey }) })` from
+  `@alexify/wrpc/encryption`. For the TLS terminator you do not trust — a
+  CDN, a corporate proxy, a body-logging balancer — and for `ws://` where no
+  certificate can be had. Opt-in, and never in place of TLS.
+- The handshake is the **Noise Protocol Framework under its canonical
+  names**: `Noise_{NN,NK,XX,NNpsk0}_25519_{AESGCM,ChaChaPoly}_SHA256`,
+  checked against the cacophony vectors on both the `node:crypto` and the
+  `crypto.subtle` primitives. `NK` is the default — the client pins the
+  server's key, as TLS does for a browser; `XX` is mutual, and the server's
+  `authorize(peer)` sees the client's authenticated key; `NN` and `NNpsk0`
+  have to be named on both sides. A client names its protocol and the
+  server holds it or refuses: nothing is negotiated down.
+- On the server it is a wrapper around the engine's socket (`SealedSocket`),
+  not a change to the dispatcher: decrypted messages are re-announced as the
+  engine would, so compression (now inside the sealed frame), attachments
+  and stream chunks work unchanged — over the built-in engine and
+  uWebSockets.js alike. `attachSocket` stays synchronous: the session
+  restore waits for the handshake, and `client.encryption` is set by then.
+- `client.encryption` on both ends: `{ protocol, pattern, cipher, kid,
+  remoteStatic, handshakeHash }`. The hash is unique to the handshake and
+  the same on both sides — bind a credential to it and a relayed credential
+  is worthless on another connection.
+- A client that was handed `encryption` never speaks plaintext: a transport
+  that cannot carry it is a `TypeError` at `connect()`, the fallback list
+  included; a server that does not answer, or answers in plaintext, is a
+  failed connection. `encryption.required` is the server's half: sockets
+  close `1008`, HTTP answers `426` (until the per-request binding lands),
+  `attach()` must be told `encrypted: true`.
+- `rpc.encryptionKey()` → the public bundle `<kid>:<noise key>:<hpke key>`
+  a client pins. Static keys are derived from one secret per kid, never
+  shared between the two protocols; an old pin keeps working while its kid
+  is on the ring.
+- **What it costs** (`bench/encryption.js`): 3.6 µs to seal a 1 KB packet,
+  0.6 ms for a handshake — and the single shared frame of a broadcast: each
+  recipient has its own key, so an emit to N sealed clients is N seals, and
+  permessage-deflate is told to leave the ciphertext alone.
+- Not covered, by design: whatever the upgrade itself carried — the URL,
+  headers, `wrpc.bearer.` tokens, cookies. Under session encryption a
+  credential belongs in `authenticate`. Wire format in the
+  [protocol reference](./docs/reference/protocol.md#session-encryption);
+  main browser entry +0.4 KB for the seam, `./encryption` 7.8 KB.
+
 **`sealedStore()`: a session store that holds nothing readable**
 
 - `sealedStore(store, { keys })` from `@alexify/wrpc/encryption` wraps any

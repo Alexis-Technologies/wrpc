@@ -4,7 +4,10 @@ import type {
   Cipher,
   CipherKey,
   Dh,
+  Encryption,
+  EncryptionInfo,
   EnvelopeEncryptionOptions,
+  ServerEncryptionOptions,
   Kdf,
   KeyPair,
   KeyProvider,
@@ -12,7 +15,8 @@ import type {
   KeysOption,
 } from '../encryption.js';
 import type { RpcServerOptions, Router, SessionStore } from '../index.js';
-import { MemorySessionStore } from '../index.js';
+import { MemorySessionStore, RpcServer, WrpcClient } from '../index.js';
+import type { Client, WrpcClientOptions } from '../index.js';
 
 // A platform AEAD is a Cipher; `optional` widens the answer to null
 const cipher = encryption.aead();
@@ -100,3 +104,37 @@ expectType<SessionStore>(sealed);
 expectAssignable<RpcServerOptions>({ router, sessions: { store: sealed } });
 expectError(encryption.sealedStore(new MemorySessionStore()));
 expectError(encryption.sealedStore({}, { keys: 'k' }));
+
+// Session encryption: the client object, the server option, the facts both ends read
+const session = encryption.createEncryption({ serverKey: 'k1:a:b' });
+expectType<Encryption>(session);
+expectType<'NN' | 'NK' | 'XX' | 'NNpsk0'>(session.pattern);
+expectAssignable<WrpcClientOptions>({ encryption: session });
+expectAssignable<WrpcClientOptions>({ encryption: null });
+expectError<WrpcClientOptions>({ encryption: { keys: 'k' } });
+encryption.createEncryption({ pattern: 'XX', staticKey: new Uint8Array(32), verifyServer: async () => true });
+encryption.createEncryption({ pattern: 'NNpsk0', psk: new Uint8Array(32), cipher: 'chacha20-poly1305', rekeyAfter: 0 });
+expectError(encryption.createEncryption({ pattern: 'IK' }));
+expectType<boolean>(encryption.isEncryption(session));
+expectType<{ kid: string; noise: Uint8Array; hpke: Uint8Array }>(encryption.parseBundle('k1:a:b'));
+
+expectAssignable<ServerEncryptionOptions>({ keys: 'k' });
+expectAssignable<ServerEncryptionOptions>({
+  keys: { current: 'k2', ring: { k1: 'a', k2: 'b' } },
+  required: true,
+  patterns: ['NK', 'XX'],
+  ciphers: ['aes-256-gcm'],
+  authorize: async (peer) => peer.remoteStatic !== null,
+  handshakeTimeout: 5000,
+});
+expectError<ServerEncryptionOptions>({ keys: 'k', patterns: ['IK'] });
+expectAssignable<RpcServerOptions>({ router, encryption: { keys: 'k', required: true } });
+expectAssignable<RpcServerOptions>({ router, encryption: false });
+
+declare const rpc: RpcServer;
+expectType<Promise<string | null>>(rpc.encryptionKey());
+declare const peer: Client;
+expectType<EncryptionInfo | null>(peer.encryption);
+declare const wrpc: WrpcClient;
+expectType<EncryptionInfo | null>(wrpc.encryption);
+if (wrpc.encryption) expectType<Uint8Array>(wrpc.encryption.handshakeHash);

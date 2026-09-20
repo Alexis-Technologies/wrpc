@@ -142,6 +142,10 @@ class Client extends Emitter {
    * null. Set by the dispatcher, read by the core's frame path.
    */
   compression = null;
+  // The facts of a session-encrypted connection once its handshake is done
+  // — `{ protocol, pattern, cipher, kid, remoteStatic, handshakeHash }` —
+  // and null on a connection that is not one (src/encryption/server.js).
+  encryption = null;
 
   constructor(transport, options = {}) {
     super();

@@ -11,6 +11,7 @@ const { SseChannels } = require('../sse/server.js');
 const { normalizeCompression } = require('../contentEncoding.js');
 const { maxMessageOf, normalizeSyncCompression, decodeOrNull } = require('../compression/sync.js');
 const { createEnvelope } = require('./envelope.js');
+const { normalizeServerEncryption, wantsEncryption, SealedSocket } = require('../encryption/server.js');
 const { FRAME_MARK, FRAME_ATTACHMENTS, FRAME_PACKET_COMPRESSED, FRAME_CHUNK_COMPRESSED } = require('../wire.js');
 const { isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
 // The channel header from the import-free constants module, NOT from
@@ -104,6 +105,7 @@ const RPC_OPTION_KEYS = [
   'querystring',
   'codec',
   'metaMaxBytes',
+  'encryption',
 ];
 
 const rpcOptions = (options = {}) => {
@@ -148,6 +150,8 @@ class RpcServer extends Emitter {
   #maxMessage;
   #querystring = null;
   #metaMax = DEFAULT_META_MAX;
+  // Session encryption (@alexify/wrpc/encryption), normalized; null when off.
+  #encryption = null;
   #codec = null;
   #codecOption = null;
   #restCodec = null;
@@ -184,10 +188,12 @@ class RpcServer extends Emitter {
       querystring = null,
       codec = null,
       metaMaxBytes = DEFAULT_META_MAX,
+      encryption,
     } = options;
     // The cap on peer-declared metadata (the ws wrpc_h query parameter and
     // the per-packet meta field), measured on the encoded input.
     this.#metaMax = Number.isInteger(metaMaxBytes) && metaMaxBytes > 0 ? metaMaxBytes : DEFAULT_META_MAX;
+    this.#encryption = normalizeServerEncryption(encryption, 'RpcServer: options');
     if (!router || typeof router.getProcedure !== 'function') {
       throw new TypeError('RpcServer: options.router (a Router from defineRouter) is required');
     }
@@ -741,7 +747,37 @@ class RpcServer extends Emitter {
     );
   }
 
+  // The socket a connection is attached through: a SealedSocket when the
+  // peer announced encryption, one that refuses when `required` and it did
+  // not, null for a plaintext connection that is allowed to be one.
+  #sealSocket(socket, meta) {
+    const encryption = this.#encryption;
+    if (encryption === null) return null;
+    const log = this.#log.child({ component: 'encryption' });
+    const kind = typeof meta.kind === 'string' && meta.kind ? meta.kind : 'ws';
+    if (wantsEncryption(meta.url)) return new SealedSocket(socket, { encryption, kind, log });
+    return encryption.required ? new SealedSocket(socket, { encryption, kind, log, refuse: 'plaintext' }) : null;
+  }
+
+  /**
+   * The public key bundle of the current encryption key — what a client
+   * pins as `serverKey`. Safe to publish; null when encryption is off.
+   */
+  encryptionKey() {
+    return this.#encryption === null ? Promise.resolve(null) : this.#encryption.bundle();
+  }
+
   attachSocket(socket, meta = {}) {
+    // Session encryption: a client announces it in the connect URL, because
+    // the server may be the first to send (an onConnect hook, a broadcast)
+    // and has to know the mode before any frame. The socket is then a
+    // SealedSocket — the handshake, and every message after it decrypted and
+    // re-announced as an engine socket would — and nothing below this line
+    // changes. The flag is not a secret and stripping it buys an attacker a
+    // refusal: a client configured to encrypt never accepts plaintext, and
+    // under `required` neither does this server.
+    const sealed = this.#sealSocket(socket, meta);
+    if (sealed !== null) socket = sealed;
     const transport = new (socketTransportFor(meta.kind))(socket, meta);
     // Declared-then-observed: whichever carrier brought the bags (subprotocol
     // offers, the query, real headers), a declaration can only add names the
@@ -750,7 +786,21 @@ class RpcServer extends Emitter {
     const { headers: merged, meta: data } = readDeclared(meta.headers, meta.url, this.#metaMax, this.#log);
     const client = this.#addClient(
       transport,
-      (c) => this.#restoreToken(c, { headers: meta.headers, url: meta.url, declared: merged, meta: data }),
+      // The session is restored once the handshake is done: the dispatcher
+      // awaits `client.ready`, so no call runs on a channel still in the
+      // clear, and an onConnect hook that awaits `client.sessionReady` reads
+      // `client.encryption` — the peer's static key under XX, the handshake
+      // hash to bind a credential to.
+      (c) => {
+        const restore = () =>
+          this.#restoreToken(c, { headers: meta.headers, url: meta.url, declared: merged, meta: data });
+        if (sealed === null) return restore();
+        return sealed.ready.then((info) => {
+          if (info === null) return false;
+          c.encryption = info;
+          return restore();
+        });
+      },
       buildMeta({
         headers: merged,
         data,
@@ -835,7 +885,13 @@ class RpcServer extends Emitter {
    * broadcasts, presence and fetchClients count. Its transport's
    * `connection` is cleared, which is exactly what Client.persistent reads.
    */
-  attach(transport, { meta = null, session = null, request = null, persistent = true } = {}) {
+  attach(transport, { meta = null, session = null, request = null, persistent = true, encrypted = false } = {}) {
+    // Under `encryption.required` a wire this core cannot see into has to
+    // be vouched for: a WebRTC data channel is (DTLS, end to end), a broker
+    // binding is when it seals its own frames.
+    if (this.#encryption?.required && encrypted !== true) {
+      throw new Error('RpcServer.attach: encryption is required, and this transport was not declared encrypted');
+    }
     if (persistent === false) {
       if (!hasTransportMethods(transport)) {
         throw new TypeError('RpcServer.attach: a transport with write/close/on/once is required');
@@ -1021,6 +1077,14 @@ class RpcServer extends Emitter {
       this.#log.warn({ event: 'cors.refused', origin: call.headers?.origin });
       this.#otel.recordCall(UNKNOWN_TARGET, 'error', 403);
       return void new ServerHttpTransport(call, { headers }).error(403);
+    }
+    // Under `encryption.required` nothing plaintext is answered — a request
+    // is not a session, so what it needs is the per-request sealing of the
+    // HPKE binding; until a request arrives that way, it is refused.
+    if (this.#encryption?.required && call.encrypted !== true) {
+      this.#log.warn({ event: 'encryption.refused', reason: 'plaintext', kind: 'http' });
+      this.#otel.recordCall(UNKNOWN_TARGET, 'error', 426);
+      return void new ServerHttpTransport(call, { headers }).error(426);
     }
     // No Content-Type override here: which codec's type applies depends on
     // the MODE (packet vs REST), decided below — a blanket header would

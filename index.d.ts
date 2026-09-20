@@ -6,7 +6,7 @@ import {
 import type { Connection } from './ws.js';
 import type { Engine, EngineConnectionSource, WrpcSocket, EngineAttachOptions } from './engine.js';
 import type { Backplane } from './scaling.js';
-import type { EnvelopeEncryptionOptions } from './encryption.js';
+import type { EnvelopeEncryptionOptions, ServerEncryptionOptions } from './encryption.js';
 import type {
   Broadcast,
   Client,
@@ -425,6 +425,12 @@ export interface RpcServerOptions {
   /** The largest inflated client frame accepted on a socket (default 16 MiB). */
   maxMessage?: number;
   /**
+   * @experimental Session encryption of the persistent connections
+   * (`@alexify/wrpc/encryption`): a Noise handshake, then every frame
+   * sealed; `required` refuses plaintext on every transport. Off by default.
+   */
+  encryption?: ServerEncryptionOptions | false | null;
+  /**
    * Binary attachments: raw bytes (typed arrays, ArrayBuffers) anywhere in
    * a packet's args, result, data or error details travel as bytes in one
    * binary frame, and arrive as Uint8Arrays — instead of the plain objects
@@ -536,6 +542,12 @@ export declare class RpcServer extends Emitter {
    * token in a broker message's headers restores a real session).
    */
   attach(transport: InboundTransport, options?: AttachOptions): Client;
+  /**
+   * The public key bundle of the current `encryption` key — what a client
+   * pins as `createEncryption({ serverKey })`. Safe to publish; resolves
+   * null when encryption is off.
+   */
+  encryptionKey(): Promise<string | null>;
   handleHttpCall(call: HttpCall): Promise<void>;
   matchPath(pathname: string): { mode: 'packet' | 'rest'; rest?: string } | null;
   /** The per-connection caps every attached client gets. */
@@ -708,6 +720,13 @@ export type AttachOptions = {
    * only, and not counted among connected clients. Default true.
    */
   persistent?: boolean;
+  /**
+   * Vouches for a wire the core cannot see into: under
+   * `encryption.required`, `attach()` throws without it. A WebRTC data
+   * channel is (DTLS, end to end); a broker binding is when it seals its
+   * own frames.
+   */
+  encrypted?: boolean;
 } & (
   | { session?: null; request?: null }
   | { session: { token?: string; state?: Record<string, unknown>; [key: string]: unknown }; request?: null }

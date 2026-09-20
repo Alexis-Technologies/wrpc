@@ -4,7 +4,7 @@
 
 export * from './encryption.browser.js';
 
-import type { Cipher, CipherAlgorithm, KeysOption } from './encryption.browser.js';
+import type { Cipher, CipherAlgorithm, EncryptionInfo, KeysOption, NoisePattern } from './encryption.browser.js';
 import type { SessionStore } from './rpc.js';
 import type { WrpcLogger } from './client.js';
 
@@ -67,3 +67,43 @@ export interface SealedStoreOptions {
  *   sessions: { store: sealedStore(createRedisSessionStore({ client }), { keys }) }
  */
 export declare function sealedStore(store: SessionStore, options: SealedStoreOptions): SessionStore;
+
+/**
+ * `encryption` on a server: session encryption of its persistent
+ * connections (WebSocket, WebTransport) — a Noise handshake, then every
+ * frame sealed. A client opts in with `createEncryption()`; with `required`
+ * nothing plaintext is accepted on any transport. Off by default, and never
+ * a substitute for TLS: it is for the TLS terminator you do not trust, and
+ * for `ws://` where no certificate can be had.
+ *
+ * It costs every broadcast its single shared frame: each recipient has its
+ * own key, so an emit to N sealed clients is N seals (bench/encryption.js).
+ */
+export interface ServerEncryptionOptions {
+  /**
+   * One SECRET per key id — the static key pairs are derived from it. The
+   * current kid is what `encryptionKey()` publishes; a client names the kid
+   * it pinned, so an old pin works for as long as its key is on the ring.
+   */
+  keys: KeysOption;
+  /** Refuse everything plaintext: sockets close 1008, HTTP answers 426, `attach()` must be told `encrypted`. Default false. */
+  required?: boolean;
+  /** Default `['NK', 'XX']`. `'NN'` (anonymous) and `'NNpsk0'` have to be listed to be accepted. */
+  patterns?: ReadonlyArray<NoisePattern>;
+  /** Default both. A protocol a client names that is not on these lists is refused — never negotiated down. */
+  ciphers?: ReadonlyArray<CipherAlgorithm>;
+  /** NNpsk0: the pre-shared key. */
+  psk?: Bytes | string | null;
+  /**
+   * Runs once the handshake is done, before any call: answer `false` to
+   * close the connection (1008). Under XX `peer.remoteStatic` is the
+   * client's authenticated public key.
+   */
+  authorize?: ((peer: EncryptionInfo) => boolean | void | Promise<boolean | void>) | null;
+  /** Default 10000 ms. */
+  handshakeTimeout?: number;
+  /** Default 2^20; both ends must agree. */
+  rekeyAfter?: number;
+}
+
+type Bytes = Uint8Array;

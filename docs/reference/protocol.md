@@ -1090,6 +1090,59 @@ event stream the encoding is a property of one response: a re-attach
 negotiates it again, and a replay goes out in whatever the new response
 negotiated.
 
+## Session encryption {#session-encryption}
+
+Opt-in (`@alexify/wrpc/encryption`), on the persistent transports, and never
+in place of TLS. A client announces it with `wrpc_e=1` in the connect URL —
+the server may be the first to send, so it has to know the mode before any
+frame. The flag is not a secret: a client configured to encrypt never
+accepts plaintext, so stripping it buys a refusal.
+
+Every frame of such a connection is a binary
+[framed message](#binary-chunks):
+
+```
+handshake, first   00 05 ‖ u8 version (1) ‖ u8 nameLength ‖ protocol name
+                         ‖ u8 kidLength ‖ kid ‖ noise message
+handshake, later   00 05 ‖ noise message
+sealed             00 06 ‖ AEAD( u8 inner ‖ payload )        inner: 0 text, 1 bytes
+```
+
+The handshake is the [Noise Protocol Framework](https://noiseprotocol.org/noise.html)
+(revision 34) under its canonical names —
+`Noise_<pattern>_25519_<AESGCM|ChaChaPoly>_SHA256`, patterns `NN`, `NK`
+(the default: the client pinned the server's static key), `XX` (mutual) and
+`NNpsk0`. The first message **names** the protocol and the key id of the
+server static it was written for; the server holds it or closes the
+connection. Nothing is negotiated back — a reply of "try this instead" would
+be a downgrade channel. The prologue is
+`"wrpc.v1" ‖ 0 ‖ transport kind ‖ 0 ‖ hello header`, so a header rewritten in
+flight, or a handshake replayed onto another kind of connection, fails the
+handshake.
+
+After it, each direction is a Noise CipherState: the nonce is the message
+counter (four zero bytes, then 64 bits — big-endian for AESGCM, little-endian
+for ChaChaPoly), the additional data is empty, and both ends rekey
+(`REKEY`, Noise §11.3) every 2^20 messages. Text packets, stream chunks and
+the other framed kinds all travel as the payload of a sealed frame, so
+compression happens inside it. A frame that does not open — altered,
+replayed, out of order — closes the connection: `1002` for anything that did
+not verify or parse, `1008` for a refusal of policy (an unlisted protocol, an
+unknown kid, `authorize`, the handshake timeout, plaintext under `required`).
+The close reason is always `encryption`; which check it was is in the
+server's log only.
+
+A server's static keys are derived from one configured secret per kid —
+`X25519(HKDF-SHA256(secret, "wrpc noise static v1"))`, and a second pair
+under `"wrpc hpke static v1"` for the per-request binding — and published as
+the bundle `<kid>:<noise key>:<hpke key>` (base64url), which is what a
+client pins.
+
+What stays outside the sealed channel is everything the upgrade carried:
+the URL, real headers, the `wrpc.bearer.` / `wrpc.h.` / `wrpc.m.` subprotocol
+tokens, cookies. Under session encryption a credential belongs in
+`authenticate` or a per-call `meta`, not in the handshake request.
+
 ## Reconnect
 
 The client reconnects on its own with truncated exponential backoff and full

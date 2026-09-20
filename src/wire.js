@@ -50,6 +50,15 @@ const FRAME_MARK = 0;
 const FRAME_ATTACHMENTS = 1;
 const FRAME_PACKET_COMPRESSED = 3;
 const FRAME_CHUNK_COMPRESSED = 4;
+// Session encryption (@alexify/wrpc/encryption): a Noise handshake message,
+// then every message of the connection sealed — the framed kinds above, the
+// text packets and the stream chunks all travel INSIDE a kind-6 frame, so
+// nothing of the connection is left outside it. A client announces the mode
+// with `wrpc_e=1` in the connect URL: the server may be the first to send
+// (an onConnect hook, a broadcast), so it has to know before any frame.
+const FRAME_HANDSHAKE = 5;
+const FRAME_SEALED = 6;
+const ENCRYPTION_PARAM = 'wrpc_e';
 
 module.exports = {
   HEADERS_PARAM,
@@ -66,4 +75,7 @@ module.exports = {
   FRAME_ATTACHMENTS,
   FRAME_PACKET_COMPRESSED,
   FRAME_CHUNK_COMPRESSED,
+  FRAME_HANDSHAKE,
+  FRAME_SEALED,
+  ENCRYPTION_PARAM,
 };

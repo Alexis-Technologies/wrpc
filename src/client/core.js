@@ -482,6 +482,16 @@ class WrpcClient extends Emitter {
     return this.#attempt;
   }
 
+  /**
+   * The facts of this connection's encrypted session — `{ protocol, pattern,
+   * cipher, kid, remoteStatic, handshakeHash }` — or null when it is not
+   * one. `handshakeHash` is unique to the handshake and the same on both
+   * ends: what an `authenticate` hook binds a credential to.
+   */
+  get encryption() {
+    return this.#transport.encryption ?? null;
+  }
+
   constructor(url, transport, options = {}) {
     super();
     const { callTimeout, proxy, random, generateId, logger, telemetry, querystring, validation, codec } = options;
@@ -651,8 +661,27 @@ class WrpcClient extends Emitter {
     }
   }
 
+  // A client that was handed `encryption` never speaks plaintext: every
+  // transport it may use — the fallback candidates included, checked up
+  // front like their names — must be one that carries it (`static encrypts`).
+  static #checkEncryption(options, name, Transport) {
+    const { encryption } = options;
+    if (encryption === undefined || encryption === null) return;
+    if (typeof encryption !== 'object' || typeof encryption.secure !== 'function') {
+      throw new TypeError("options.encryption must come from createEncryption() ('@alexify/wrpc/encryption')");
+    }
+    if (Transport.encrypts !== true) {
+      throw new TypeError(`Transport '${name}' cannot carry options.encryption — and plaintext is not a fallback`);
+    }
+  }
+
   static async connect(url, options = {}) {
     if (options.worker) {
+      // The port to a worker is in-process; the hop that leaves the machine
+      // is the one WrpcClientProxy opens, and that is where the option goes.
+      if (options.encryption) {
+        throw new TypeError('options.encryption belongs to the WrpcClientProxy in the worker, not to its page');
+      }
       // One transport per client, never the class-level getInstance(): a
       // shared one made a second connect() to ANOTHER worker reuse the first
       // MessageChannel, and one client's close() close the other's port.
@@ -678,6 +707,7 @@ class WrpcClient extends Emitter {
         if (!isClientTransport(WrpcClient.transport[candidate])) {
           throw new TypeError(`Transport '${candidate}' does not satisfy the ClientTransport contract`);
         }
+        WrpcClient.#checkEncryption(options, candidate, WrpcClient.transport[candidate]);
       }
     }
     const name = Array.isArray(options.transport)
@@ -690,6 +720,7 @@ class WrpcClient extends Emitter {
     if (!isClientTransport(Transport)) {
       throw new TypeError(`Transport '${name}' does not satisfy the ClientTransport contract`);
     }
+    WrpcClient.#checkEncryption(options, name, Transport);
     const transport = new Transport(mapScheme(url, name));
     const client = new WrpcClient(url, transport, options);
     return WrpcClient.#openOrClose(client);
