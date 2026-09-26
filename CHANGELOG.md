@@ -1575,6 +1575,17 @@ narrower promise — see
   an id, or any stream from a peer that announced none is cancelled at
   once — each a `wt.mux.refused` line with the reason, the session left
   alone. Both options ride `attachSession` / `WtSocket` and are validated.
+- **WebTransport: one silent session blocked every session behind it.**
+  `acceptSessions` attached sessions one at a time, so a peer that
+  connected and never opened its control stream held the accept loop for
+  the whole `acceptTimeout` (10 s) — and a session whose `ready` never
+  settled held it forever, outside any timeout. Sessions attach
+  concurrently now, at most `maxPending` (256) in their handshake at once
+  — the next is refused `503` and `wt.accept.saturated` is logged once per
+  episode — under ONE `acceptTimeout` that covers `verify`, the session's
+  `ready` and the first stream; `stop()` closes what is still handshaking
+  (`1001`) and `done` waits for it; `attachSession` takes a `signal` for
+  the same. `onClient` may therefore be called out of arrival order.
 
 ## [1.0.0] - 2026-08-23
 

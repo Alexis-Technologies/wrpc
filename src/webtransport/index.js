@@ -21,6 +21,9 @@ const framing = require('./framing.js');
 // How long a session may sit without opening its control stream before it
 // is refused: a client that connected and never spoke.
 const DEFAULT_ACCEPT_TIMEOUT = 10_000;
+// Sessions acceptSessions may hold in their handshake at once; the next one
+// is refused 503 rather than queued behind them.
+const DEFAULT_MAX_PENDING = 256;
 
 const closeQuietly = (session, info) => {
   try {
@@ -39,22 +42,52 @@ const rpcOf = (server) => {
   throw new TypeError('attachSession: a Server or RpcServer (something with attachSocket) is required');
 };
 
+// ONE deadline for the whole accept path — verify, the session's own
+// `ready`, the first stream — and the acceptor's stop() as a second way to
+// end it: `interruption` resolves 'timeout' or 'stopped', and `race`
+// answers `{ value }` or `{ why }`. A session whose `ready` never settled
+// used to hold attachSession forever, outside acceptTimeout.
+const interruptible = (timeout, signal) => {
+  let timer = null;
+  let onAbort = null;
+  const interruption = new Promise((resolve) => {
+    timer = setTimeout(() => resolve('timeout'), timeout);
+    timer.unref?.();
+    if (signal) {
+      onAbort = () => resolve('stopped');
+      if (signal.aborted) onAbort();
+      else signal.addEventListener('abort', onAbort, { once: true });
+    }
+  });
+  const stopped = interruption.then((why) => ({ why }));
+  return {
+    race: (promise) => Promise.race([Promise.resolve(promise).then((value) => ({ value })), stopped]),
+    interruption,
+    clear: () => {
+      clearTimeout(timer);
+      if (onAbort) signal.removeEventListener('abort', onAbort);
+    },
+  };
+};
+
 // The first bidirectional stream the client opens is the control stream.
 // Read with a reader released afterwards, so the incoming-streams stream
 // stays usable for what comes next.
-const firstStream = async (session, timeout) => {
+const firstStream = async (session, race) => {
   const reader = session.incomingBidirectionalStreams.getReader();
-  let timer = null;
-  const expired = new Promise((resolve) => {
-    timer = setTimeout(() => resolve({ done: true, timeout: true }), timeout);
-  });
   try {
-    const result = await Promise.race([reader.read(), expired]);
-    return result.done ? null : result.value;
+    const { value: result, why } = await race(reader.read());
+    if (why) return { stream: null, why };
+    return { stream: result.done ? null : result.value, why: result.done ? 'ended' : null };
   } finally {
-    clearTimeout(timer);
     reader.releaseLock();
   }
+};
+
+const refusals = {
+  timeout: { closeCode: 408, reason: 'No control stream' },
+  stopped: { closeCode: 1001, reason: 'Server is closing' },
+  ended: { closeCode: 408, reason: 'No control stream' },
 };
 
 /**
@@ -68,8 +101,10 @@ const firstStream = async (session, timeout) => {
  *
  * Resolves with the Client, or null when the session was refused — by
  * `verify` (closed 403) or for never opening a control stream within
- * `acceptTimeout` (closed 408). `idleTimeout` (off by default) terminates a
- * session that sends nothing for that long — see WtSocket.
+ * `acceptTimeout` (closed 408; the deadline covers `verify` and the
+ * session's own `ready` too), or because `signal` aborted meanwhile (closed
+ * 1001 — what acceptSessions' stop() does). `idleTimeout` (off by default)
+ * terminates a session that sends nothing for that long — see WtSocket.
  */
 const attachSession = async (server, session, options = {}) => {
   const rpc = rpcOf(server);
@@ -92,16 +127,35 @@ const attachSession = async (server, session, options = {}) => {
     compression,
     maxHeldStreams,
     holdTimeout,
+    signal = null,
   } = options;
-  if (verify && (await verify({ headers, url, remoteAddress, session })) === false) {
-    closeQuietly(session, { closeCode: 403, reason: 'Forbidden' });
-    return null;
+  if (!Number.isInteger(acceptTimeout) || acceptTimeout <= 0) {
+    throw new TypeError('attachSession: acceptTimeout must be a positive integer (ms)');
   }
-  if (session.ready) await session.ready;
-  const stream = await firstStream(session, acceptTimeout);
-  if (!stream) {
-    closeQuietly(session, { closeCode: 408, reason: 'No control stream' });
+  const { race, clear } = interruptible(acceptTimeout, signal);
+  const refuse = (why) => {
+    closeQuietly(session, refusals[why]);
     return null;
+  };
+  let stream = null;
+  try {
+    if (verify) {
+      const { value, why } = await race(verify({ headers, url, remoteAddress, session }));
+      if (why) return refuse(why);
+      if (value === false) {
+        closeQuietly(session, { closeCode: 403, reason: 'Forbidden' });
+        return null;
+      }
+    }
+    if (session.ready) {
+      const { why } = await race(session.ready);
+      if (why) return refuse(why);
+    }
+    const first = await firstStream(session, race);
+    if (first.why) return refuse(first.why);
+    stream = first.stream;
+  } finally {
+    clear();
   }
   const socket = new WtSocket(session, stream, {
     remoteAddress,
@@ -119,7 +173,13 @@ const attachSession = async (server, session, options = {}) => {
   socket.on('stream-refused', ({ reason, id }) => {
     rpc.log.warn({ event: 'wt.mux.refused', reason, id, remoteAddress });
   });
-  return rpc.attachSocket(socket, { headers, url, remoteAddress, kind });
+  const client = rpc.attachSocket(socket, { headers, url, remoteAddress, kind });
+  // Stopped while the handshake was finishing: the client is not kept.
+  if (signal?.aborted) {
+    client.close();
+    return null;
+  }
+  return client;
 };
 
 // A ReadableStream or any (async) iterable of sessions, as one iterator
@@ -152,14 +212,30 @@ const iterate = (sessions) => {
  * Attaches every session a host hands out — a `sessionStream(path)` from
  * @fails-components/webtransport, or any async iterable. `meta(session)`
  * reads the CONNECT request off each (fromFails by default); the rest of
- * the options go to attachSession. Returns `{ stop, done }`: stop() ends
- * the loop — cancelling a ReadableStream, asking an iterator to return —
- * and `done` settles once the source has yielded its last session (at once
- * for a stream; an iterator blocked on its own await, when that settles).
+ * the options go to attachSession. Sessions are attached CONCURRENTLY —
+ * one that opens no control stream waits out its acceptTimeout on its own,
+ * not in front of the sessions behind it, so `onClient` may be called out
+ * of arrival order — and at most `maxPending` (256) of them at once: the
+ * next one is refused 503 rather than queued. Returns `{ stop, done }`:
+ * stop() ends the loop — cancelling a ReadableStream, asking an iterator to
+ * return — and closes what is still handshaking (1001); `done` settles once
+ * the source has yielded its last session (at once for a stream; an
+ * iterator blocked on its own await, when that settles) and every pending
+ * attach has ended.
  */
 const acceptSessions = (server, sessions, options = {}) => {
   const rpc = rpcOf(server);
-  const { meta = fromFails, onError = null, onClient = null, logger = null, ...rest } = options;
+  const {
+    meta = fromFails,
+    onError = null,
+    onClient = null,
+    logger = null,
+    maxPending = DEFAULT_MAX_PENDING,
+    ...rest
+  } = options;
+  if (!Number.isInteger(maxPending) || maxPending <= 0) {
+    throw new TypeError('acceptSessions: maxPending must be a positive integer');
+  }
   // `onError` defaulted to null, so a session that failed to attach — a
   // verify that threw, a source that died — was dropped without a trace:
   // the one failure mode of a WebTransport server that nothing above could
@@ -173,7 +249,20 @@ const acceptSessions = (server, sessions, options = {}) => {
       log.error({ err: error, event: session === null ? 'wt.source' : 'wt.attach' });
     });
   const source = iterate(sessions);
+  const controller = new AbortController();
+  const pending = new Set();
   let stopped = false;
+  let saturated = false;
+  const attachOne = async (session) => {
+    try {
+      const observed = await meta(session);
+      const client = await attachSession(rpc, session, { ...rest, ...observed, signal: controller.signal });
+      if (client && onClient) onClient(client, session);
+    } catch (error) {
+      closeQuietly(session, { closeCode: 500, reason: 'Internal error' });
+      report(error, session);
+    }
+  };
   // `done` always resolves: a source that throws ends the loop through
   // onError, never as a rejection nobody awaited.
   const done = (async () => {
@@ -183,23 +272,31 @@ const acceptSessions = (server, sessions, options = {}) => {
         next = await source.next();
       } catch (error) {
         if (!stopped) report(error, null);
-        return;
+        break;
       }
       const { value: session, done: finished } = next;
-      if (finished || stopped) return;
-      try {
-        const observed = await meta(session);
-        const client = await attachSession(rpc, session, { ...rest, ...observed });
-        if (client && onClient) onClient(client, session);
-      } catch (error) {
-        closeQuietly(session, { closeCode: 500, reason: 'Internal error' });
-        report(error, session);
+      if (finished || stopped) break;
+      if (pending.size >= maxPending) {
+        // Refused now, not queued behind sessions still in their handshake
+        // — and said once per episode, not once per refused session.
+        closeQuietly(session, { closeCode: 503, reason: 'Busy' });
+        if (!saturated) {
+          saturated = true;
+          log.warn({ event: 'wt.accept.saturated', pending: pending.size, maxPending });
+        }
+        continue;
       }
+      saturated = false;
+      const task = attachOne(session);
+      pending.add(task);
+      void task.then(() => pending.delete(task));
     }
+    await Promise.all(pending);
   })();
   return {
     stop() {
       stopped = true;
+      controller.abort();
       return source.stop();
     },
     done,
@@ -257,6 +354,7 @@ module.exports = {
   isWtStream,
   isWtDatagrams,
   DEFAULT_ACCEPT_TIMEOUT,
+  DEFAULT_MAX_PENDING,
   DEFAULT_HIGH_WATER_MARK,
   DEFAULT_LOW_WATER_MARK,
   ...framing,

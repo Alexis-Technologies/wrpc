@@ -241,7 +241,7 @@ attachSession(server, session, {
   url,
   remoteAddress, // the CONNECT request, as the host saw it
   verify: ({ headers, url, remoteAddress, session }) => boolean,
-  acceptTimeout: 10_000, // the client has this long to open its control stream (408 past it)
+  acceptTimeout: 10_000, // verify, the session's ready and the control stream, all within this (408 past it)
   highWaterMark: 1024 * 1024, // outbound bytes queued before send() answers false
   lowWaterMark: 256 * 1024, // 'drain' fires under this
   maxMessage: 16 * 1024 * 1024, // the largest inbound message; past it the peer is hung up (1002)
@@ -254,8 +254,9 @@ attachSession(server, session, {
 
 acceptSessions(server, sessions, {
   meta: fromFails, // reads the CONNECT request off each session
-  onClient: (client, session) => {},
+  onClient: (client, session) => {}, // sessions attach concurrently: not necessarily in arrival order
   onError: (error, session) => {},
+  maxPending: 256, // sessions held in their handshake at once; the next is refused 503 (wt.accept.saturated)
   ...attachSessionOptions,
 });
 

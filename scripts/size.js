@@ -127,7 +127,9 @@ const ENTRIES = [
   // explicit refusal of bytes (measured 23.4 against 22.0).
   // 24 -> 25 with the main entry's codec-list raise (measured 24.1 against 23.6).
   // 25 -> 26 with the main entry's session-encryption seam (measured 24.9 against 24.5).
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 26 },
+  // 26 -> 27 with the main entry's 2.0 review raise, plus the SSE channel
+  // secret the client carries after the id (measured 26.2 against 25.7).
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 27 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and

@@ -177,10 +177,100 @@ test('wt attach: attachSession refuses on verify and on a silent client, and val
   assert.strictEqual(timedOut, null);
   assert.deepStrictEqual(await silent.closed, { closeCode: 408, reason: 'No control stream' });
 
+  // ONE deadline for the whole path: a session whose `ready` never settles,
+  // or a verify that never answers, is a 408 too — it used to hold
+  // attachSession forever, outside acceptTimeout.
+  const never = () => new Promise(() => {});
+  const hanging = (extra) => {
+    const closes = [];
+    const session = {
+      incomingBidirectionalStreams: new ReadableStream(),
+      createBidirectionalStream: never,
+      close: (info) => closes.push(info),
+      closed: never(),
+      ...extra,
+    };
+    return { session, closes };
+  };
+  const notReady = hanging({ ready: never() });
+  assert.strictEqual(await attachSession(server, notReady.session, { acceptTimeout: 20 }), null);
+  assert.deepStrictEqual(notReady.closes, [{ closeCode: 408, reason: 'No control stream' }]);
+  const stuckVerify = hanging({});
+  assert.strictEqual(await attachSession(server, stuckVerify.session, { acceptTimeout: 20, verify: never }), null);
+  assert.deepStrictEqual(stuckVerify.closes, [{ closeCode: 408, reason: 'No control stream' }]);
+  // And a signal ends an accept still in its handshake with 1001.
+  const controller = new AbortController();
+  const stopped = hanging({});
+  const attaching = attachSession(server, stopped.session, { acceptTimeout: 5_000, signal: controller.signal });
+  await timers.setTimeout(5);
+  controller.abort();
+  assert.strictEqual(await attaching, null);
+  assert.deepStrictEqual(stopped.closes, [{ closeCode: 1001, reason: 'Server is closing' }]);
+
   await assert.rejects(attachSession({}, session), TypeError);
   await assert.rejects(attachSession(server, {}), TypeError);
+  await assert.rejects(attachSession(server, late, { acceptTimeout: 0 }), TypeError);
   assert.throws(() => acceptSessions(server, 42), TypeError);
+  assert.throws(() => acceptSessions(server, createFakeWt().sessions, { maxPending: 0 }), TypeError);
   assert.strictEqual(server.rpc.clients.size, 0);
+});
+
+test('wt attach: a silent session does not block the sessions behind it; stop() closes what is still handshaking', async (t) => {
+  const { server, url } = await bootServer(t, { router: router() });
+  const world = createFakeWt();
+  const clients = [];
+  const acceptor = acceptSessions(server, world.sessions, {
+    acceptTimeout: 5_000,
+    onClient: (client) => clients.push(client),
+    onError: (error) => t.diagnostic(String(error)),
+  });
+  t.after(() => acceptor.stop());
+  // A peer that connected and went silent: no control stream, ever.
+  const silent = new world.WebTransport(url);
+  await silent.ready;
+  await timers.setTimeout(20);
+  // The next client is attached at once — the silent one waits out its
+  // acceptTimeout on its own, not in front of everybody.
+  const started = Date.now();
+  const client = await wtClient(t, world, url);
+  assert.ok(Date.now() - started < 1000, `attached in ${Date.now() - started} ms`);
+  await waitFor(() => clients.length === 1, 'accepted');
+  assert.strictEqual(client.active, true);
+  // stop(): the silent session is closed now, not at its timeout, and
+  // `done` waits for it.
+  const closed = silent.closed;
+  await acceptor.stop();
+  world.close();
+  await acceptor.done;
+  assert.deepStrictEqual(await closed, { closeCode: 1001, reason: 'Server is closing' });
+});
+
+test('wt attach: past maxPending a session is refused 503 at once, said once per episode', async (t) => {
+  const { server, url } = await bootServer(t, { router: router() });
+  const world = createFakeWt();
+  const warnings = [];
+  const logger = {
+    log() {},
+    info() {},
+    debug() {},
+    error() {},
+    warn: (entry) => warnings.push(entry),
+    child: () => logger,
+  };
+  const acceptor = acceptSessions(server, world.sessions, { acceptTimeout: 5_000, maxPending: 1, logger });
+  t.after(() => acceptor.stop());
+  const silent = new world.WebTransport(url);
+  await silent.ready;
+  await timers.setTimeout(20);
+  for (let i = 0; i < 2; i++) {
+    const refused = new world.WebTransport(url);
+    await refused.ready;
+    assert.deepStrictEqual(await refused.closed, { closeCode: 503, reason: 'Busy' });
+  }
+  assert.deepStrictEqual(
+    warnings.filter((w) => w.event === 'wt.accept.saturated').map((w) => [w.pending, w.maxPending]),
+    [[1, 1]],
+  );
 });
 
 test('wt attach: acceptSessions over an iterable, meta hook, onClient, stop', async (t) => {

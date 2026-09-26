@@ -114,8 +114,13 @@ export interface WtSocketOptions {
 export interface AttachSessionOptions extends SessionMeta, WtSocketOptions {
   /** Refuses the session (closed 403) when it answers false. */
   verify?: (info: SessionMeta & { session: WtSession }) => boolean | Promise<boolean>;
-  /** How long the client has to open its control stream (default 10 s; closed 408 past it). */
+  /**
+   * How long the whole accept path — `verify`, the session's `ready`, the
+   * first stream — may take (default 10 s; closed 408 past it).
+   */
   acceptTimeout?: number;
+  /** Aborting it ends an accept still in its handshake (closed 1001); what acceptSessions' stop() does. */
+  signal?: AbortSignal;
   /** What `Client.transportKind` reports (default 'wt'). */
   kind?: string;
 }
@@ -177,17 +182,20 @@ export declare function attachSession(
   options?: AttachSessionOptions,
 ): Promise<Client | null>;
 
-export interface AcceptSessionsOptions extends Omit<AttachSessionOptions, keyof SessionMeta> {
+export interface AcceptSessionsOptions extends Omit<AttachSessionOptions, keyof SessionMeta | 'signal'> {
   /** Reads the CONNECT request off each session (fromFails by default). */
   meta?: (session: WtSession) => SessionMeta | Promise<SessionMeta>;
+  /** Sessions are attached concurrently: this may be called out of arrival order. */
   onClient?: (client: Client, session: WtSession) => void;
   onError?: (error: Error, session: WtSession) => void;
+  /** Sessions held in their handshake at once (default 256); the next one is refused 503, logged `wt.accept.saturated` once per episode. */
+  maxPending?: number;
 }
 
 export interface SessionAcceptor {
-  /** Ends the loop and cancels the stream. */
+  /** Ends the loop, cancels the stream, and closes what is still handshaking (1001). */
   stop(): Promise<void>;
-  /** Settles once the loop has ended. */
+  /** Settles once the loop has ended and every pending attach with it. */
   readonly done: Promise<void>;
 }
 
