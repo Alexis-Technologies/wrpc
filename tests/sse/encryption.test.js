@@ -6,11 +6,20 @@ const assert = require('node:assert');
 const { defineRouter, procedure, WrpcClient } = require('../../index.js');
 require('../../sse.js');
 const { createEncryption, generateKey } = require('../../encryption.js');
-const { openSealedStream, isSealedStream, SEALED_STREAM_TYPE } = require('../../src/encryption/http.js');
+const {
+  openSealedStream,
+  isSealedStream,
+  streamKey,
+  streamNonce,
+  sealedStreamType,
+  SEALED_STREAM_TYPE,
+} = require('../../src/encryption/http.js');
 const { aead } = require('../../src/encryption/aead.js');
 const browser = require('../../src/encryption/aead.browser.js');
 const { OpenError } = require('../../src/encryption/contracts.js');
 const { counterNonce } = require('../../src/encryption/bytes.js');
+const { createKdf } = require('../../src/encryption/hkdf.js');
+const { randomBytes } = require('node:crypto');
 const { bootServer, waitFor } = require('../helpers/server.js');
 
 const SECRET = 'not for the proxy that holds this stream open: 4111 1111 1111 1111';
@@ -99,7 +108,11 @@ test('sse encryption: a whole channel — the stream, the calls, an event — an
 
   const stream = spy.seen.find((entry) => isSealedStream(entry.type));
   assert.ok(stream, 'the events request was answered with a sealed stream');
-  assert.strictEqual(stream.type, SEALED_STREAM_TYPE);
+  assert.match(
+    stream.type,
+    new RegExp(`^${SEALED_STREAM_TYPE}; n=[A-Za-z0-9_-]{43}$`),
+    'the server nonce rides the type',
+  );
   await waitFor(() => stream.text.split('\n\n').length > 3);
   for (const event of stream.text.split('\n\n').filter(Boolean)) {
     assert.match(event, /^data: [A-Za-z0-9+/]+=*$/, 'every event is one opaque data line — no id, no event name');
@@ -135,6 +148,78 @@ test('sse encryption: a dropped stream re-attaches and replays — under a new k
   const streams = spy.seen.filter((entry) => isSealedStream(entry.type));
   assert.strictEqual(streams.length, 2);
   assert.notStrictEqual(streams[0].text.slice(0, 60), streams[1].text.slice(0, 60), 'another key: nothing repeats');
+});
+
+test('sse encryption: the same open request replayed onto another instance opens a stream under another key', async (t) => {
+  // Two instances behind one balancer: one keyring, and — a counter, as
+  // the production guide shows — one id sequence, so the `ready` frame
+  // that opens each stream is the same plaintext on both. Their replay
+  // memories are their own, so the second accepts what the first did.
+  const keys = generateKey();
+  const counting = () => {
+    let n = 0;
+    return () => `id-${++n}`;
+  };
+  const a = await secure(t, { encryption: { keys, required: true }, generateId: counting() });
+  const b = await secure(t, { encryption: { keys, required: true }, generateId: counting() });
+  const spy = spyingFetch();
+  const client = await a.connect({ fetch: spy.fetch });
+  await client.load('data');
+  const opened = spy.seen.find((entry) => isSealedStream(entry.type));
+  await waitFor(() => opened.text.includes('\n\n'), "a's ready frame");
+  // The very bytes that opened a's stream, POSTed to b.
+  const replayed = await fetch(b.endpoint, { method: 'POST', headers: opened.init.headers, body: opened.init.body });
+  const type = replayed.headers.get('content-type');
+  assert.ok(isSealedStream(type), `b answered a sealed stream: ${replayed.status} ${type}`);
+  const reader = replayed.body.getReader();
+  let text = '';
+  while (!text.includes('\n\n')) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    text += Buffer.from(value).toString('latin1');
+  }
+  await reader.cancel().catch(() => {});
+  const first = (body) => body.split('\n\n')[0];
+  assert.notStrictEqual(
+    Buffer.from(streamNonce(type)).toString('hex'),
+    Buffer.from(streamNonce(opened.type)).toString('hex'),
+  );
+  assert.notStrictEqual(first(text), first(opened.text), 'the same frame, counter zero on both — under two keys');
+});
+
+test('sealed stream: the key is salted with the server nonce, which the Content-Type carries', async () => {
+  const kdf = createKdf();
+  const cipher = aead();
+  // What a replayed request exports on both instances: the same secret.
+  const context = { export: async (_label, length) => new Uint8Array(length).fill(7) };
+  const enc = new Uint8Array(32).fill(1);
+  const [n1, n2] = [randomBytes(32), randomBytes(32)];
+  const frame = async (nonce) => {
+    const key = await streamKey({ kdf, cipher }, context, enc, nonce);
+    return Buffer.from(key.seal(counterNonce(0), Buffer.from('event: ready'), null)).toString('hex');
+  };
+  assert.strictEqual(await frame(n1), await frame(n1), 'deterministic in the nonce');
+  assert.notStrictEqual(await frame(n1), await frame(n2), 'another nonce, another key');
+  assert.deepStrictEqual(Buffer.from(streamNonce(sealedStreamType(n1))), n1);
+  assert.ok(isSealedStream(sealedStreamType(n1)));
+  for (const type of [
+    SEALED_STREAM_TYPE,
+    `${SEALED_STREAM_TYPE}; n=short`,
+    `${SEALED_STREAM_TYPE}; n=${'A'.repeat(44)}`,
+  ]) {
+    assert.strictEqual(streamNonce(type), null, type);
+  }
+});
+
+test('sse encryption: a sealed stream without its nonce is refused by the client', async (t) => {
+  const { serverKey, endpoint } = await secure(t);
+  const empty = () => new ReadableStream({ start: (controller) => controller.close() });
+  const answering = (type) => async () => new Response(empty(), { headers: { 'Content-Type': type } });
+  const wrapped = (type) => createEncryption({ serverKey }).fetch(answering(type), endpoint);
+  const open = (type) => wrapped(type)('/events', { headers: { accept: 'text/event-stream' } });
+  await assert.rejects(open(SEALED_STREAM_TYPE), OpenError);
+  await assert.rejects(open(`${SEALED_STREAM_TYPE}; n=short`), OpenError);
+  assert.ok((await open(sealedStreamType(randomBytes(32)))) instanceof Response, 'a nonce of 32 bytes opens');
 });
 
 test('sse encryption: the http content coding is not applied to a sealed stream or a sealed answer', async (t) => {

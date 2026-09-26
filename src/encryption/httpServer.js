@@ -14,7 +14,7 @@ const { concat, toBase64Url, counterNonce } = require('./bytes.js');
 const {
   responseKey,
   streamKey,
-  SEALED_STREAM_TYPE,
+  sealedStreamType,
   STREAM_TYPE,
   pack,
   unpack,
@@ -167,14 +167,19 @@ const createHttpSealing = ({
     // An event stream (SSE): the key is exported now, because the core opens
     // the stream synchronously — and only when the request asked for one.
     if (typeof call.stream === 'function' && String(headers.accept ?? '').includes(STREAM_TYPE)) {
-      const key = await streamKey(suite.cipher, context);
+      // Drawn here, per stream: the salt of the stream key, carried to the
+      // client in the Content-Type — a replay of this request onto another
+      // instance opens a stream under another key (http.js).
+      const nonce = random(RESPONSE_NONCE);
+      const key = await streamKey({ kdf, cipher: suite.cipher }, context, enc, nonce);
+      const type = sealedStreamType(nonce);
       inner.stream = ({ headers: streamHeaders = {} }) => {
         const outer = { ...outerHeaders };
         for (const name of Object.keys(streamHeaders)) {
           const lower = name.toLowerCase();
           if (lower !== 'content-type' && lower !== 'content-encoding') outer[name] = streamHeaders[name];
         }
-        const writer = call.stream({ status: 200, headers: { ...outer, 'Content-Type': SEALED_STREAM_TYPE } });
+        const writer = call.stream({ status: 200, headers: { ...outer, 'Content-Type': type } });
         if (!writer) return writer;
         let counter = 0;
         // Every chunk of the real stream — an event, the `ready` frame that

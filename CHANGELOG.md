@@ -92,10 +92,13 @@ narrower promise — see
 - The stream comes back as `text/event-stream; wrpc-sealed=1`: one opaque
   `data:` event per chunk of the real stream, the `ready` frame that hands
   out the channel id and the heartbeat included. Each stream has its own key,
-  exported from the request that opened it, and counts its frames from zero —
-  so a re-attach with `Last-Event-ID` replays under a NEW key and nothing of
-  the first stream repeats on the wire. A dropped, reordered or altered
-  frame errors the stream; the client re-attaches as it does after any drop.
+  exported from the request that opened it and salted with a nonce the
+  server draws per stream (the `n` parameter of the `Content-Type`), and
+  counts its frames from zero — so a re-attach with `Last-Event-ID` replays
+  under a NEW key, nothing of the first stream repeats on the wire, and the
+  same open request replayed onto another instance gets a different key
+  too. A dropped, reordered or altered frame errors the stream; the client
+  re-attaches as it does after any drop.
 - It is sealed at the writer, not in the channel: the replay ring, retention
   and `resume()` are untouched. The type stays `text/event-stream` for the
   intermediaries; no HTTP content coding is applied to a sealed stream or a
@@ -1413,6 +1416,18 @@ narrower promise — see
   delivered, stepped or sealed once the connection failed; the counter
   advancing on a failed decrypt (a departure from Noise §5.1) is documented
   as the deliberate choice it is.
+- **A sealed event stream's key was a function of the request alone.** It
+  was `Export("wrpc sse stream")` from the HPKE context, and its frames
+  counted from zero — so the same open request, replayed onto another
+  instance (whose replay memory is its own) or accepted twice by a shared
+  replay store that evicted early, opened a second stream under the SAME
+  key with the SAME nonces: two ciphertexts of the `ready` frame under one
+  (key, nonce), which is the one thing an AEAD must never be given. The
+  server now draws 32 bytes per stream and carries them as the `n`
+  parameter of the stream's `Content-Type`; the key is
+  `Expand(Extract(enc ‖ n, Export(…)), "key")`, and a client refuses a
+  sealed stream without a 32-byte `n`. A wire change, before the format is
+  frozen. `protocol.md#sealed-requests` says so.
 
 ## [1.0.0] - 2026-08-23
 

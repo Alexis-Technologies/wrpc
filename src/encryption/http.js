@@ -23,7 +23,7 @@
 // This file is the client half and what the two share — bundled for a page.
 // The server half is httpServer.js, Node-only.
 
-const { concat, utf8, counterNonce, fromBase64 } = require('./bytes.js');
+const { concat, utf8, counterNonce, fromBase64, toBase64Url } = require('./bytes.js');
 const { OpenError } = require('./contracts.js');
 
 const CONTENT_TYPE = 'application/wrpc-sealed';
@@ -91,10 +91,31 @@ const responseKey = async ({ kdf, cipher }, context, enc, nonce) => {
   return { key: await cipher.key(key), iv };
 };
 
-// The key of a sealed event stream: exported from the context of the request
-// that opened it, so every stream — a reconnect included — has its own, and
-// its frames count from zero.
-const streamKey = async (cipher, context) => cipher.key(await context.export(STREAM_LABEL, cipher.keyLength));
+// The key of a sealed event stream: the secret only the two ends of the
+// request that opened THIS stream can export, salted with the request's enc
+// and a nonce the SERVER draws per stream — carried as the `n` parameter of
+// the stream's Content-Type — so every stream has its own key and counts
+// its frames from zero. The salt is what makes a replayed open request (on
+// another instance, whose replay memory is its own) a different key: the
+// export alone is a function of the request, and two streams opened by the
+// same bytes counted from zero under one key — a repeated (key, nonce).
+const streamKey = async ({ kdf, cipher }, context, enc, nonce) => {
+  const secret = await context.export(STREAM_LABEL, cipher.keyLength);
+  const prk = await kdf.extract(concat(enc, nonce), secret);
+  return cipher.key(await kdf.expand(prk, KEY_LABEL, cipher.keyLength));
+};
+
+const STREAM_NONCE_PARAM = /;\s*n=([A-Za-z0-9_-]+)/;
+
+/** The Content-Type of a sealed stream under `nonce`. */
+const sealedStreamType = (nonce) => `${SEALED_STREAM_TYPE}; n=${toBase64Url(nonce)}`;
+
+/** The server nonce a sealed stream's Content-Type carries — exactly RESPONSE_NONCE bytes — or null. */
+const streamNonce = (type) => {
+  const match = typeof type === 'string' ? STREAM_NONCE_PARAM.exec(type) : null;
+  const nonce = match === null ? null : fromBase64(match[1]);
+  return nonce !== null && nonce.length === RESPONSE_NONCE ? nonce : null;
+};
 
 /**
  * A sealed event stream, opened: the outer body is `data: <base64>` events,
@@ -162,7 +183,10 @@ const sealedFetch = ({ hpke, kdf, cipher, serverKey, now = Date.now }) => {
       });
       const type = response.headers.get('content-type');
       if (isSealedStream(type)) {
-        const stream = openSealedStream(response.body, await streamKey(cipher, context));
+        // A stream without its 32-byte nonce is not one this client opens.
+        const nonce = streamNonce(type);
+        if (nonce === null) throw new OpenError();
+        const stream = openSealedStream(response.body, await streamKey({ kdf, cipher }, context, enc, nonce));
         return new Response(stream, { status: 200, headers: { 'Content-Type': STREAM_TYPE } });
       }
       if (!isSealedType(type)) {
@@ -186,6 +210,8 @@ module.exports = {
   sealedFetch,
   responseKey,
   streamKey,
+  streamNonce,
+  sealedStreamType,
   openSealedStream,
   isSealedStream,
   SEALED_STREAM_TYPE,

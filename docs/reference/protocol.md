@@ -1229,15 +1229,22 @@ channel POST are sealed requests — so the channel id and `Last-Event-ID`
 travel inside — and the stream comes back as
 
 ```
-Content-Type: text/event-stream; wrpc-sealed=1
+Content-Type: text/event-stream; wrpc-sealed=1; n=<base64url(nonce32)>
 data: <base64( AEAD( one chunk of the real stream ) )>
 ```
 
 one opaque `data:` event per chunk of the real stream, control frames
 (`ready`, `gap`, the heartbeat comment) included. The key is
-`Export("wrpc sse stream", Nk)` from the context of the request that opened
-THIS stream and the nonce is the frame counter from zero, so a re-attached
-stream has a new key and replays under it; a frame that is dropped,
+`Expand(Extract(enc ‖ n, Export("wrpc sse stream", Nk)), "key", Nk)`: the
+secret only the two ends of the request that opened THIS stream can
+export, salted with the request's `enc` and 32 bytes `n` the SERVER draws
+per stream and carries in the `Content-Type` parameter (the one response
+header a cross-origin page can always read; a stream without a 32-byte
+`n` MUST be refused). The frame nonce is the counter from zero. So a
+re-attached stream has a new key and replays under it, and so does the
+same open request replayed onto another instance, whose replay memory is
+its own — without `n` the two streams would count from zero under one key.
+A frame that is dropped,
 reordered or altered errors the stream, which the client sees as a broken
 connection and re-attaches from. The type stays `text/event-stream` so that
 intermediaries treat it as one; an HTTP content coding is never applied to a
