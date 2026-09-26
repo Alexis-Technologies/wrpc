@@ -45,6 +45,21 @@ const main = () => {
   time('3 KB callback, JSON.stringify', () => JSON.stringify(medium).length > 0, 100_000);
   time('30 KB callback, walk', () => hasBytes(large), 10_000);
   time('30 KB callback, JSON.stringify', () => JSON.stringify(large).length > 0, 10_000);
+  // A graph with back-references: every child points at its parent. A walk
+  // with no memory of what it visited is exponential here (8^16 paths
+  // before the depth cap); the ancestor stack the slow walk keeps makes it
+  // linear — and the fast walk hands over the moment it hits the cap.
+  const graph = { children: [] };
+  for (let i = 0; i < 8; i++) graph.children.push({ parent: graph, name: `c${i}`, tags: ['a'] });
+  time('graph, 8 children with parent refs, walk', () => hasBytes(graph), 100_000);
+  const entity = { toJSON: () => ({ id: 1 }), passwordHash: new Uint8Array(32) };
+  time('toJSON() entity holding a Buffer, walk (opaque)', () => hasBytes(entity), 1_000_000);
+
+  console.log('strip: the path copies when a packet has bytes (encodeAttachments minus the frame copy)');
+  const withBytes = { ...rows(400), attachment: new Uint8Array(1024) };
+  time('30 KB rows + 1 KB attachment: encodeAttachments', () => encodeAttachments(withBytes).length > 0, 5_000);
+  const tiny = { type: 'event', name: 'x', data: { name: 'a.bin', body: new Uint8Array(16) } };
+  time('tiny packet + 16 B attachment: encodeAttachments', () => encodeAttachments(tiny).length > 0, 500_000);
 
   console.log('a packet with a 1 KB and a 64 KB attachment: the frame against the alternatives');
   for (const size of [1024, 65536]) {

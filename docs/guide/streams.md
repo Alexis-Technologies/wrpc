@@ -190,6 +190,16 @@ room event with bytes crosses the [backplane](./scaling) too: its envelope
 rides as the same frame, base64 under a `wrpc-bin:` marker (or inside the
 sealed envelope, under `rooms.encryption`), and the members on another
 instance receive bytes.
+
+Two things the walk leaves to JSON. An object with a `toJSON()` **is its
+projection**: what `toJSON()` answers is what travels, and a typed array
+kept behind it (a password hash on a user entity, say) is never lifted out
+and sent — put the bytes in the projection if they should go. And a packet
+with a cycle in it answers `false` to the walk and is handed to
+`JSON.stringify`, whose "Converting circular structure" `TypeError` is the
+one you would have seen anyway; the walk itself stays linear on a graph
+with back-references (a parent every child points at), where a walk with
+no memory of what it visited would take 12^16 steps.
 The frame's layout is on the [protocol page](../reference/protocol#binary-chunks).
 
 ## Chunk framing

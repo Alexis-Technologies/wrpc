@@ -1351,6 +1351,26 @@ narrower promise — see
   compare), and `stamp()` refuses to sign an ambiguous local description.
   The `algorithm` parameter of `sdpFingerprint` (unreleased) is gone with
   it. `protocol.md#webrtc-assertions` says every line MUST equal `fp`.
+- **Binary attachments lifted bytes out from behind `toJSON()`.** The walk
+  that finds the bytes in a packet went through every enumerable field of
+  every object, `toJSON()` or not — so a domain object that keeps a Buffer
+  (a password hash on a user entity) and projects it away in `toJSON()`
+  had the Buffer sent anyway, as an attachment, on every result and event
+  that carried the object. An object with a `toJSON()` is opaque to the
+  walk now: its projection is what travels, exactly as `JSON.stringify`
+  would write it (the projection itself is never called by the walk), and
+  the frame skips inherited keys like JSON does.
+- **A packet with back-references hung the event loop.** `hasBytes` kept
+  no memory of what it had visited, so a parent whose children point back
+  at it was walked once per path — 12 children, 12^16 paths before the
+  depth cap. The fast walk now hands over to one with an ancestor stack
+  the moment it reaches the depth cap; a cycle answers `false` and the
+  packet goes to `JSON.stringify`, whose "Converting circular structure"
+  `TypeError` is the one the caller saw before attachments existed
+  (`encodeAttachments` throws the same one). The frame's path bookkeeping
+  is one mutable path copied at each leaf instead of an array per
+  container: 414 → 137 µs on a 30 KB result with an attachment
+  (`bench/attachments.js`).
 
 ## [1.0.0] - 2026-08-23
 

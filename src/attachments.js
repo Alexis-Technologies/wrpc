@@ -33,20 +33,80 @@ const decoder = new TextDecoder('utf-8', { fatal: true });
 
 const isBytes = (value) => value instanceof Uint8Array || ArrayBuffer.isView(value) || value instanceof ArrayBuffer;
 
+// An object with toJSON() IS its projection: JSON.stringify serializes what
+// toJSON answers, never the fields — so a domain object keeping a Buffer
+// behind toJSON() (a password hash, say) must not have the Buffer lifted
+// out from under it and sent. Checked AFTER isBytes: a Buffer has a toJSON
+// of its own. The projection is never called here (acks.test.js pins one
+// call per fan-out); it travels as JSON, as it always did.
+const isOpaque = (value) => typeof value.toJSON === 'function';
+
+const NONE = 0;
+const BYTES = 1;
+const DEEP = 2;
+const CYCLE = 3;
+
+// The fast walk keeps no memory of what it visited — that is what keeps it
+// at the cost bench/attachments.js measures (rows(400): 17 µs, 160 ns on
+// a 233 B packet; the ancestor stack below is an `includes` per container)
+// — and what makes a graph with back-references (parent <-> children)
+// exponential in it: 8^16 paths before the depth cap. So it hands over the
+// moment it reaches MAX_DEPTH: a tree that deep is rare, a graph with a
+// cycle gets there at once, and either way the slow walk answers (the
+// 8-child graph of the bench: 0.5 µs).
+const fast = (value, depth) => {
+  if (typeof value !== 'object' || value === null) return NONE;
+  if (isBytes(value)) return BYTES;
+  if (isOpaque(value)) return NONE;
+  if (depth >= MAX_DEPTH) return DEEP;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length; i++) {
+      const found = fast(value[i], depth + 1);
+      if (found !== NONE) return found;
+    }
+    return NONE;
+  }
+  for (const key in value) {
+    const found = fast(value[key], depth + 1);
+    if (found !== NONE) return found;
+  }
+  return NONE;
+};
+
+// The slow walk keeps its ancestors: a value met again on the way down is
+// a cycle, and the whole packet is then left to JSON.stringify, whose
+// "Converting circular structure" TypeError is the one the caller saw
+// before attachments existed. Bounded by depth × nodes, not paths.
+const slow = (value, stack) => {
+  if (typeof value !== 'object' || value === null) return NONE;
+  if (isBytes(value)) return BYTES;
+  if (isOpaque(value)) return NONE;
+  if (stack.includes(value)) return CYCLE;
+  if (stack.length >= MAX_DEPTH) return NONE;
+  stack.push(value);
+  let found = NONE;
+  if (Array.isArray(value)) {
+    for (let i = 0; i < value.length && found === NONE; i++) found = slow(value[i], stack);
+  } else {
+    for (const key in value) {
+      found = slow(value[key], stack);
+      if (found !== NONE) break;
+    }
+  }
+  stack.pop();
+  return found;
+};
+
 /**
  * Whether `value` holds bytes anywhere (a typed array, a DataView, an
  * ArrayBuffer) within 32 levels — what decides between JSON and a frame.
+ * An object with toJSON() is opaque (its projection is what travels), and
+ * a circular packet answers false: JSON.stringify's own TypeError follows.
  */
-const hasBytes = (value, depth = 0) => {
-  if (typeof value !== 'object' || value === null) return false;
-  if (isBytes(value)) return true;
-  if (depth >= MAX_DEPTH) return false;
-  if (Array.isArray(value)) {
-    for (let i = 0; i < value.length; i++) if (hasBytes(value[i], depth + 1)) return true;
-    return false;
-  }
-  for (const key in value) if (hasBytes(value[key], depth + 1)) return true;
-  return false;
+const hasBytes = (value) => {
+  const found = fast(value, 0);
+  if (found !== DEEP) return found === BYTES;
+  return slow(value, []) === BYTES;
 };
 
 const asUint8 = (value) => {
@@ -63,41 +123,59 @@ const asUint8 = (value) => {
 const encodeAttachments = (packet) => {
   const index = [];
   const buffers = [];
+  // ONE mutable path, copied only at a byte leaf — a `path.concat(key)`
+  // per node allocated an array per container visited: 414 → 137 µs on
+  // rows(400) + 1 KB, 1.57 → 1.11 µs on a tiny event (bench/attachments.js).
+  // The copy at the leaf is load-bearing: the index would otherwise hold
+  // one array, rewritten by every step after.
+  const path = [];
+  // The ancestors of the value being stripped: a cycle is JSON's own
+  // TypeError here, not an exponential walk that throws it later.
+  const stack = [];
   let total = 0;
-  const strip = (value, path, depth) => {
+  const strip = (value) => {
     if (typeof value !== 'object' || value === null) return value;
     if (isBytes(value)) {
       const bytes = asUint8(value);
-      index.push([path, bytes.length]);
+      index.push([path.slice(), bytes.length]);
       buffers.push(bytes);
       total += bytes.length;
       return null;
     }
-    if (depth >= MAX_DEPTH) return value;
+    if (isOpaque(value)) return value;
+    if (stack.includes(value)) throw new TypeError('Converting circular structure to JSON');
+    if (stack.length >= MAX_DEPTH) return value;
+    stack.push(value);
+    let copy = null;
     if (Array.isArray(value)) {
-      let copy = null;
       for (let i = 0; i < value.length; i++) {
         const item = value[i];
-        const next = strip(item, path.concat(i), depth + 1);
+        path.push(i);
+        const next = strip(item);
+        path.pop();
         if (next !== item) {
           if (copy === null) copy = value.slice();
           copy[i] = next;
         }
       }
-      return copy === null ? value : copy;
-    }
-    let copy = null;
-    for (const key in value) {
-      const item = value[key];
-      const next = strip(item, path.concat(key), depth + 1);
-      if (next !== item) {
-        if (copy === null) copy = { ...value };
-        copy[key] = next;
+    } else {
+      // Own keys only, as JSON.stringify serializes them.
+      for (const key in value) {
+        if (!Object.hasOwn(value, key)) continue;
+        const item = value[key];
+        path.push(key);
+        const next = strip(item);
+        path.pop();
+        if (next !== item) {
+          if (copy === null) copy = { ...value };
+          copy[key] = next;
+        }
       }
     }
+    stack.pop();
     return copy === null ? value : copy;
   };
-  const stripped = strip(packet, [], 0);
+  const stripped = strip(packet);
   const header = encoder.encode(JSON.stringify([stripped, index]));
   const frame = new Uint8Array(HEADER_BYTES + header.length + total);
   frame[0] = FRAME_MARK;

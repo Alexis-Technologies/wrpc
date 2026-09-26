@@ -31,6 +31,56 @@ test('hasBytes: typed arrays, ArrayBuffers and DataViews anywhere within 32 leve
   assert.strictEqual(hasBytes(deep), false, 'past the depth cap, JSON would not reach it either');
 });
 
+test('hasBytes/encode: an object with toJSON() is opaque — its projection travels, never its fields', () => {
+  class Account {
+    constructor() {
+      this.id = 7;
+      this.passwordHash = new Uint8Array(32).fill(1);
+    }
+    toJSON() {
+      return { id: this.id };
+    }
+  }
+  assert.strictEqual(hasBytes(new Account()), false);
+  assert.strictEqual(hasBytes({ result: [new Account()] }), false);
+  assert.strictEqual(hasBytes({ user: new Account(), avatar: new Uint8Array(2) }), true, 'real bytes beside it count');
+  assert.strictEqual(hasBytes(Buffer.from('x')), true, 'a Buffer has a toJSON of its own and is bytes first');
+  const packet = { type: 'callback', id: '1', result: { user: new Account(), avatar: new Uint8Array([1, 2]) } };
+  const decoded = decodeAttachments(encodeAttachments(packet));
+  assert.deepStrictEqual(decoded.result.user, { id: 7 }, 'the projection, as JSON.stringify writes it');
+  assert.deepStrictEqual(Array.from(decoded.result.avatar), [1, 2]);
+  // Inherited enumerable keys are not JSON's business either.
+  const child = Object.create({ hidden: new Uint8Array(1) });
+  child.own = 1;
+  child.body = new Uint8Array([9]);
+  const inherited = decodeAttachments(encodeAttachments({ type: 'event', name: 'x', data: child }));
+  assert.deepStrictEqual(inherited.data, { own: 1, body: new Uint8Array([9]) });
+});
+
+test("hasBytes/encode: a circular packet is JSON's own TypeError, not an exponential walk", () => {
+  // Parent <-> children: a walk without memory explores 12^16 paths
+  // before the depth cap stops it.
+  const parent = { name: 'root', children: [] };
+  for (let i = 0; i < 12; i++) parent.children.push({ name: `c${i}`, parent, tags: ['x', 'y'] });
+  const started = performance.now();
+  assert.strictEqual(hasBytes(parent), false);
+  assert.strictEqual(hasBytes({ type: 'event', data: parent, body: new Uint8Array(1) }), false, 'a cycle: JSON decides');
+  assert.ok(performance.now() - started < 200, `linear, not exponential: ${performance.now() - started} ms`);
+  assert.throws(() => JSON.stringify(parent), /circular/i);
+  assert.throws(() => encodeAttachments({ type: 'event', data: parent, body: new Uint8Array(1) }), /circular/i);
+  // An opaque object may hold a cycle: its projection is what matters.
+  const entity = { toJSON: () => 'e' };
+  entity.self = entity;
+  assert.strictEqual(hasBytes({ entity }), false);
+  assert.strictEqual(JSON.stringify({ entity }), '{"entity":"e"}');
+  // A deep-but-acyclic branch hands over to the slow walk, which still
+  // finds the bytes beside it.
+  let chain = { leaf: true };
+  for (let i = 0; i < 40; i++) chain = { chain };
+  assert.strictEqual(hasBytes({ chain, body: new Uint8Array(1) }), true);
+  assert.strictEqual(hasBytes({ chain }), false);
+});
+
 test('encode/decode: every byte leaf travels as bytes, the packet is not mutated, and the copies own their bytes', () => {
   const chunk = bytes(1000, 7);
   const packet = {
