@@ -113,7 +113,7 @@ counter-based generator still starts where you expect.
 | -- | --------- | ----- |
 | `instanceId`, client ids, context uuids, server stream ids, REST packet ids | `generateId` on the server | One option covers all of them |
 | Cluster boot epoch | `generateId` on the server | Fresh per boot; that is the point |
-| [SSE](./sse) channel id | `generateId` on the server | Server-minted and never read from the request, so holding one proves the server said it |
+| [SSE](./sse) channel id | `generateId` on the server | Server-minted and never read from the request. An *identifier*, not a credential: the channel's secret is drawn by the server separately, so a counter is fine here |
 | Packet, subscription and stream ids on the client | `generateId` on the [client](./client) | Also the [broker transport's](./brokers/rpc) session and correlation ids |
 | Peer ids and the signaling `instance` | `generateId` on [`wrpcSignaler`](./webrtc) / `PeerHost` | |
 | Consumer names, inboxes, message ids, group ids | `generateId` on each [broker adapter](./brokers) | Used verbatim — wrpc never truncates it |

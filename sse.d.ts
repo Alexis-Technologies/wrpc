@@ -5,14 +5,18 @@ import type { Client, HttpCall, HttpEncoding, WrpcLogger } from './index.js';
  *
  * SSE is one-way, so a channel is two halves that find each other by id:
  *
- *   GET  {basePath}/events                        opens a NEW channel
- *   GET  {basePath}/events  x-wrpc-channel: <id>  re-attaches to it
- *   POST {basePath}         x-wrpc-channel: <id>  client -> server
+ *   GET  {basePath}/events                                 opens a NEW channel
+ *   GET  {basePath}/events  x-wrpc-channel: <id>.<secret>  re-attaches to it
+ *   POST {basePath}         x-wrpc-channel: <id>.<secret>  client -> server
  *
- * The id is SERVER-minted and handed out once, in the `ready` frame; the
- * channel is bound to the cookie identity of the GET that created it, and
- * every re-attach and POST must present the same one (403 otherwise; 409
- * when the id is unknown). Both halves belong to ONE server-side `Client`,
+ * The id is SERVER-minted (by the application's `generateId` — a uuid, a
+ * cuid, a counter: its format is the application's business) and the secret
+ * server-drawn; both are handed out in the `ready` frame, and every
+ * re-attach and POST presents them after each other in one header, split
+ * at the last dot. The secret is the credential: a request without the
+ * channel's is answered 409, exactly like an unknown id. On top, a channel
+ * is bound to the cookie identity of the GET that created it, and a request
+ * presenting the secret without that identity is 403. Both halves belong to ONE server-side `Client`,
  * which is what lets a subscription opened by a POST deliver its values
  * down the stream. A POST answers `202` with no body — every reply,
  * callbacks included, travels on the stream.
@@ -123,9 +127,16 @@ export declare class ServerSseTransport {
 export declare class SseChannel {
   readonly id: string;
   /**
+   * The channel's credential: 18 random bytes as base64url, drawn by the
+   * server at creation and handed out in the `ready` frame. Every re-attach
+   * and POST presents it after the id (`<id>.<secret>`); the id alone is
+   * never enough, whatever generator made it.
+   */
+  readonly secret: string;
+  /**
    * The identity the channel was created under: the session token read from
    * the opening GET's cookie, or '' for an anonymous peer. Every re-attach
-   * and POST must present it again — the id alone is never enough.
+   * and POST must present it again, on top of the secret.
    */
   readonly key: string;
   readonly client: Client;
@@ -158,20 +169,28 @@ export declare class SseChannels {
   );
   readonly size: number;
   get(channelId: string): SseChannel | null;
+  /** True when `secret` is the channel's (constant-time). Checked before `authorized`. */
+  holds(channel: SseChannel, secret: string): boolean;
   /** True when `headers` present the identity the channel was created under. */
   authorized(channel: SseChannel, requestHeaders?: Record<string, string | undefined>): boolean;
   /**
    * Opens or re-attaches the server -> client half. The call must provide
    * `stream`; a host that cannot keep a response open gets a 501. Ids are
-   * server-minted: an unknown `channelId` answers 409, a known one with the
-   * wrong cookie identity 403, and creation past the caps 503/429.
+   * server-minted: an unknown `channelId`, or a known one without its
+   * `secret`, answers 409; a known one with the wrong cookie identity 403;
+   * creation past the caps 503/429.
    *
    * `headers` are RESPONSE headers (CORS and the rest); the request headers a
    * new channel's client is built from come off `call` itself.
    */
   open(
     call: HttpCall,
-    options?: { channelId?: string | null; lastEventId?: string | null; headers?: Record<string, string> },
+    options?: {
+      channelId?: string | null;
+      secret?: string;
+      lastEventId?: string | null;
+      headers?: Record<string, string>;
+    },
   ): SseChannel | undefined;
   close(): void;
 }

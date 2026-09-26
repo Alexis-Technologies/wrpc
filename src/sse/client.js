@@ -1,7 +1,7 @@
 'use strict';
 
 const { WrpcClient, ClientTransport, metaHeaders } = require('../client.js');
-const { CHANNEL_HEADER } = require('./constants.js');
+const { CHANNEL_HEADER, joinChannelRef } = require('./constants.js');
 
 // The client half of the SSE transport. Browser-safe: `fetch`, streams and
 // TextDecoder only — no node builtins, and deliberately not `EventSource`,
@@ -99,6 +99,9 @@ class ClientSseTransport extends ClientTransport {
 
   #controller = null;
   #channel = null;
+  // The channel's credential, from the same `ready` frame as the id: sent
+  // after the id on every POST and re-attach, forgotten with the channel.
+  #secret = null;
   #lastEventId = null;
   #parser = null;
   #reading = null;
@@ -152,7 +155,7 @@ class ClientSseTransport extends ClientTransport {
     const headers = { ...this.#headers, ...this.#meta, accept: 'text/event-stream' };
     // A reconnect presents the channel and where it stopped; the server
     // replays what this channel did not acknowledge.
-    if (this.#channel !== null) headers[CHANNEL_HEADER] = this.#channel;
+    if (this.#channel !== null) headers[CHANNEL_HEADER] = joinChannelRef(this.#channel, this.#secret);
     if (this.#lastEventId !== null) headers['last-event-id'] = this.#lastEventId;
     const doFetch = this.#fetch;
     const response = await doFetch(this.eventsUrl, { headers, signal: controller.signal, cache: 'no-store' });
@@ -162,6 +165,7 @@ class ClientSseTransport extends ClientTransport {
     if (response.status === 409 && retryOnGone && this.#channel !== null) {
       await response.body?.cancel?.();
       this.#channel = null;
+      this.#secret = null;
       this.#lastEventId = null;
       return this.#open(false);
     }
@@ -221,14 +225,19 @@ class ClientSseTransport extends ClientTransport {
       // loud: this is event loss, not routine reconnection.
       this.log?.warn({ event: 'sse.gap', channel: this.#channel });
       this.#channel = null;
+      this.#secret = null;
       this.#lastEventId = null;
       this.close();
       return;
     }
     if (event.event === 'ready') {
       const ready = JSON.parse(event.data);
-      // The server mints the id; this frame is the only place it is learned.
-      if (ready.channel) this.#channel = ready.channel;
+      // The server mints the id and draws the secret; this frame is the
+      // only place either is learned.
+      if (ready.channel) {
+        this.#channel = ready.channel;
+        this.#secret = typeof ready.secret === 'string' && ready.secret.length > 0 ? ready.secret : null;
+      }
       if (this.#onReady) {
         this.#onReady();
         this.#onReady = null;
@@ -263,7 +272,7 @@ class ClientSseTransport extends ClientTransport {
       ...this.#headers,
       ...this.#meta,
       'Content-Type': this.codec?.contentType ?? 'application/json',
-      [CHANNEL_HEADER]: this.#channel,
+      [CHANNEL_HEADER]: joinChannelRef(this.#channel, this.#secret),
     };
     const doFetch = this.#fetch;
     const post = async () => {

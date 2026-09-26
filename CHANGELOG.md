@@ -1471,6 +1471,24 @@ narrower promise — see
   close, on `client.close()` from a handler — and went on waiting for a
   session that was over. It rides `sealFrame` like the rest now, the
   reason inside.
+- **An SSE channel opened without a cookie or a bearer was held by its id
+  alone.** The channel's identity key is `''` for such a channel, so the
+  authorization check compared `''` with `''` and the id — minted by the
+  application's `generateId`, which the production guide happily shows as
+  a counter — was the whole credential: whoever guessed it could POST on
+  the channel, replay its stream, and take over the session it signed
+  into. The id stays the application's (a uuid, a cuid, a counter — the
+  format is its business, and `generateId` still covers it); what
+  authorizes a request is now a **channel secret** the server draws (18
+  random bytes, base64url) and hands out with the id in the `ready` frame.
+  A re-attach or POST presents both in the one `x-wrpc-channel` header as
+  `<id>.<secret>` (split at the last dot; no new header, so a CORS
+  `Access-Control-Allow-Headers` stays what it was), compared in constant
+  time; a request without the channel's secret is answered `409` exactly
+  like an unknown id. The cookie/bearer binding stays on top. **A wire
+  change of the SSE binding**: a pre-2.0 client presenting the id alone is
+  refused and starts a fresh channel on every reconnect. `protocol.md`'s
+  SSE section says so.
 
 ## [1.0.0] - 2026-08-23
 

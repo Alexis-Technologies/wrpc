@@ -17,6 +17,7 @@ const { isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
 // The channel header from the import-free constants module, NOT from
 // sse/server.js: the string is shared, the implementation is not.
 const { CHANNEL_HEADER } = require('../wire.js');
+const { splitChannelRef } = require('../sse/constants.js');
 const { isBackplane } = require('../scaling/index.js');
 const {
   handleMessage,
@@ -1066,25 +1067,30 @@ class RpcServer extends Emitter {
   // by a POST deliver its values down the peer's event stream. The POST
   // itself answers 202 — every reply travels on the stream.
   //
-  // The channel id alone is NOT enough: the POST must also present the
-  // cookie identity the channel was created under, or knowing an id (they
-  // ride in URLs and logs) would be a bearer token for someone else's
+  // The channel id alone is NOT enough: the POST must present the channel's
+  // secret (the `ready` frame's, after the id in the header) — the id is
+  // whatever the application's generator makes of it, a counter included —
+  // and, on top, the cookie identity the channel was created under, or
+  // knowing an id would be a bearer token for someone else's
   // session-carrying client.
   //
   // `headers` are the same CORS-bearing response headers every other HTTP
   // answer carries: without them a browser on another origin cannot read
   // this response at all, which makes cross-origin SSE impossible.
-  #handleChannelPost(call, channelId, headers) {
+  #handleChannelPost(call, channelRef, headers) {
     // Channel POSTs answer packet-mode bodies, so the packet codec's type.
     if (this.#codec?.contentType) headers = { ...headers, 'Content-Type': this.#codec.contentType };
-    const channel = this.#sse.get(channelId);
+    const ref = splitChannelRef(channelRef);
+    const channel = ref === null ? null : this.#sse.get(ref.id);
     const respond = (status, packet) => {
       const body = Buffer.from(this.#codec ? this.#codec.encode(packet) : JSON.stringify(packet));
       call.respond({ status, headers: { ...headers, 'Content-Length': body.length }, body });
     };
-    if (!channel) {
+    if (!channel || !this.#sse.holds(channel, ref.secret)) {
       // 409, matching the events endpoint: "this channel is gone" is the
-      // signal the client recovers from by starting a fresh channel.
+      // signal the client recovers from by starting a fresh channel — and
+      // the same answer for a live channel whose secret was not presented,
+      // so a guessed id learns nothing.
       return void respond(409, { type: 'callback', id: '', error: { message: 'Unknown channel', code: 409 } });
     }
     if (!this.#sse.authorized(channel, call.headers)) {
@@ -1185,9 +1191,10 @@ class RpcServer extends Emitter {
   // may arrive by header (preferred — URLs end up in logs) or query param.
   #handleSseOpen(call, params, headers) {
     const query = this.#parseQuery(params);
-    const channelId = call.headers?.[CHANNEL_HEADER] || query.channel || null;
+    // `<id>.<secret>` — the header, else the query (URLs end up in logs).
+    const ref = splitChannelRef(call.headers?.[CHANNEL_HEADER] || query.channel || '');
     const lastEventId = call.headers?.['last-event-id'] ?? query.lastEventId ?? null;
-    this.#sse.open(call, { channelId, lastEventId, headers });
+    this.#sse.open(call, { channelId: ref?.id ?? null, secret: ref?.secret ?? '', lastEventId, headers });
   }
 
   // POST {basePath} — a JSON call packet (or a batch array) in the body.

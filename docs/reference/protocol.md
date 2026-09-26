@@ -701,31 +701,37 @@ protocol clients speak — they never reach a client connection.
 SSE is one-way, so a channel is two halves that find each other by id:
 
 ```
-GET  {basePath}/events                        opens a NEW channel
-GET  {basePath}/events  x-wrpc-channel: <id>  re-attaches to an existing one
-POST {basePath}         x-wrpc-channel: <id>  client -> server
+GET  {basePath}/events                                 opens a NEW channel
+GET  {basePath}/events  x-wrpc-channel: <id>.<secret>  re-attaches to an existing one
+POST {basePath}         x-wrpc-channel: <id>.<secret>  client -> server
 ```
 
-**The channel id is minted by the server** and handed out exactly once, in
-the `ready` frame that opens every stream:
+**The channel id is minted by the server** — by the application's
+`generateId`, so its format (a uuid, a cuid, a counter) is the application's
+— and the **channel secret drawn by the server**: 18 random bytes as
+base64url. Both are handed out in the `ready` frame that opens every stream:
 
 ```
 event: ready
-data: {"channel":"b1f0…"}
+data: {"channel":"b1f0…","secret":"Kx9…"}
 ```
 
-A client cannot propose its own id: a GET naming an id the server does not
-hold answers `409`, which is the client's signal to drop its channel state
-and start a fresh one. (`?channel=<id>` in the query string is accepted for
-re-attach as well, but the header is preferred — URLs end up in proxy logs.)
+A request presents them in one header, the secret after the id, split at
+the LAST dot (the secret holds none; the id may). **The secret is the
+credential.** A client cannot propose its own id, and a GET or POST naming
+an id without the channel's secret answers `409` — the same answer as for an
+id the server does not hold, so a guessed id learns nothing; `409` is the
+client's signal to drop its channel state and start a fresh one.
+(`?channel=<id>.<secret>` in the query string is accepted for re-attach as
+well, but the header is preferred — URLs end up in proxy logs.) A value
+without a dot presents no secret.
 
-The channel is **bound to the identity that created it**: the session token
-in the opening GET's cookie (or "anonymous" when it carries none). Every
-re-attach and every POST must present the same cookie identity — a request
-that names a live channel id without it is refused with `403`. Knowing an id
-is never enough to act on someone else's channel. Channel creation is also
-capped (`maxChannels`, `maxChannelsPerAddress`): past the caps a new GET
-answers `503` or `429`.
+On top, the channel is **bound to the identity that created it**: the
+session token in the opening GET's cookie (or "anonymous" when it carries
+none). Every re-attach and every POST must present the same cookie identity
+— a request that presents the secret without it is refused with `403`.
+Channel creation is also capped (`maxChannels`, `maxChannelsPerAddress`):
+past the caps a new GET answers `503` or `429`.
 
 Both halves belong to **one** server-side client, which is what lets a
 subscription opened by a POST deliver its values down the stream. A POST

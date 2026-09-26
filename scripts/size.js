@@ -190,8 +190,13 @@ const ENTRIES = [
   // 51 -> 53 for binary attachments on both halves this entry bundles: the
   // client transport's frames and, through PeerHost, the server-side
   // encoder in serverTransport.js and the dispatcher's frame routing
-  // (+1.5 KB, measured 51.8 against 50.3).
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 53 },
+  // (+1.5 KB, measured 51.8 against 50.3). 53 -> 54 for the 2.0 security
+  // review's fixes on the peer half: roster data written under
+  // peer/room/claims, the fragment count cap and the 1 KiB message-size
+  // floor, every a=fingerprint line compared, the stale-leave incarnation
+  // check, the attachments walk's toJSON/cycle guards and the seal-failure
+  // path of rooms (+0.6 KB, measured 53.4 against 52.8).
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 54 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

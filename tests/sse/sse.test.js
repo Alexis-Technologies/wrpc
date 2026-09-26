@@ -248,6 +248,7 @@ test('sse: the channel is what ties the two halves together', async (t) => {
   const base = `http://127.0.0.1:${port}/api`;
 
   let channelId = null;
+  let secret = null;
 
   await t.test('a POST with an unknown channel is a 409', async () => {
     const res = await fetch(base, {
@@ -287,20 +288,75 @@ test('sse: the channel is what ties the two halves together', async (t) => {
       events.push(...parser.push(decoder.decode(value, { stream: true })));
     }
     assert.strictEqual(events[0].event, 'ready');
-    channelId = JSON.parse(events[0].data).channel;
+    const ready = JSON.parse(events[0].data);
+    channelId = ready.channel;
+    secret = ready.secret;
     assert.match(channelId, /^[0-9a-f][0-9a-f-]{34}[0-9a-f]$/, 'the id comes from the server, not the request');
+    assert.match(secret, /^[A-Za-z0-9_-]{24}$/, 'and so does the secret: 18 bytes, base64url');
+    assert.notStrictEqual(secret, channelId);
     assert.strictEqual(server.rpc.sse.size, 1);
+  });
+
+  await t.test('the id alone is a 409 — the secret is the credential, and its absence is not told apart', async () => {
+    const post = (ref, id) =>
+      fetch(base, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', [CHANNEL_HEADER]: ref },
+        body: JSON.stringify({ type: 'call', id, method: 'test/hello', args: { name: 'x' } }),
+      });
+    assert.strictEqual((await post(channelId, 'n1')).status, 409, 'the id alone');
+    assert.strictEqual((await post(`${channelId}.`, 'n2')).status, 409, 'an empty secret');
+    assert.strictEqual((await post(`${channelId}.${'A'.repeat(24)}`, 'n3')).status, 409, 'a wrong one');
+    assert.strictEqual((await post(`${channelId}.${secret.slice(1)}`, 'n4')).status, 409, 'a short one');
+    const reattach = await fetch(`${base}/events?channel=${encodeURIComponent(channelId)}`, {
+      headers: { accept: 'text/event-stream', 'last-event-id': '-1' },
+    });
+    assert.strictEqual(reattach.status, 409, 'a replay without the secret');
+    await reattach.body?.cancel?.();
+    assert.strictEqual(server.rpc.sse.size, 1, 'the channel is untouched');
   });
 
   await t.test('a POST on that channel answers 202 and replies on the stream', async () => {
     const res = await fetch(base, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', [CHANNEL_HEADER]: channelId },
+      headers: { 'Content-Type': 'application/json', [CHANNEL_HEADER]: `${channelId}.${secret}` },
       body: JSON.stringify({ type: 'call', id: 'c1', method: 'test/hello', args: { name: 'Channel' } }),
     });
     assert.strictEqual(res.status, 202);
     assert.strictEqual((await res.text()).length, 0, 'the answer travels on the stream, not here');
   });
+});
+
+test('sse: a guessable channel id is not a hijack — the application counts, the server draws the secret', async (t) => {
+  // A counter is what the production guide offers as a generateId; it
+  // used to make every SSE channel opened without a cookie or a bearer the
+  // next attacker's, together with the session it signed into.
+  let n = 0;
+  const { server, port } = await createServer({ generateId: () => `id-${++n}` });
+  t.after(() => server.close());
+  const base = `http://127.0.0.1:${port}/api`;
+  const victim = await readStream(`${base}/events`);
+  t.after(() => victim.controller.abort());
+  await waitFor(() => victim.events.some((event) => event.event === 'ready'), 'the ready event never arrived');
+  const ready = JSON.parse(victim.events.find((event) => event.event === 'ready').data);
+  assert.match(ready.channel, /^id-\d+$/, "the id is the application's — a counter here");
+  const post = (ref, id) =>
+    fetch(base, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json', [CHANNEL_HEADER]: ref },
+      body: JSON.stringify({ type: 'call', id, method: 'test/hello', args: { name: 'x' } }),
+    });
+  // The attacker counts too.
+  assert.strictEqual((await post(ready.channel, 'a1')).status, 409);
+  assert.strictEqual((await post(`${ready.channel}.${'B'.repeat(24)}`, 'a2')).status, 409);
+  const replay = await fetch(`${base}/events?channel=${encodeURIComponent(ready.channel)}`, {
+    headers: { accept: 'text/event-stream', 'last-event-id': '-1' },
+  });
+  assert.strictEqual(replay.status, 409);
+  await replay.body?.cancel?.();
+  assert.strictEqual((await post(`${ready.channel}.${ready.secret}`, 'v1')).status, 202, 'the holder');
+  await waitFor(() => victim.events.some((event) => event.event === 'message'), 'the holder was not answered');
+  assert.strictEqual(victim.events.filter((event) => event.event === 'message').length, 1, 'only the holder');
 });
 
 test('sse: Last-Event-ID replays what the dropped stream missed', async (t) => {
@@ -335,7 +391,8 @@ test('sse: Last-Event-ID replays what the dropped stream missed', async (t) => {
 
   const first = await open();
   await waitFor(() => first.events.length >= 1, 'the ready event never arrived');
-  const keep = JSON.parse(first.events[0].data).channel;
+  const ready = JSON.parse(first.events[0].data);
+  const keep = `${ready.channel}.${ready.secret}`;
   await fetch(base, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json', [CHANNEL_HEADER]: keep },
@@ -409,7 +466,9 @@ test('sse: a channel restores the session its GET arrived with', async (t) => {
   const openChannel = async (headers = {}) => {
     const stream = await readStream(`${base}/events`, headers);
     await waitFor(() => stream.events.some((event) => event.event === 'ready'), 'the ready event never arrived');
-    stream.channel = JSON.parse(stream.events.find((event) => event.event === 'ready').data).channel;
+    const ready = JSON.parse(stream.events.find((event) => event.event === 'ready').data);
+    // What a request presents: the id and the secret, in one header.
+    stream.channel = `${ready.channel}.${ready.secret}`;
     return stream;
   };
 
@@ -518,7 +577,8 @@ test('sse: a cross-origin channel is granted, not silently blocked', async (t) =
     assert.strictEqual(stream.res.headers.get('access-control-allow-origin'), origin);
     assert.strictEqual(stream.res.headers.get('access-control-allow-credentials'), 'true');
     await waitFor(() => stream.events.some((event) => event.event === 'ready'), 'the ready event never arrived');
-    const channel = JSON.parse(stream.events.find((event) => event.event === 'ready').data).channel;
+    const ready = JSON.parse(stream.events.find((event) => event.event === 'ready').data);
+    const channel = `${ready.channel}.${ready.secret}`;
 
     const res = await fetch(base, {
       method: 'POST',
@@ -576,7 +636,8 @@ test('sse: a resume past the replay buffer gets an honest gap frame', async (t) 
 
   const first = await readStream(`${base}/events`);
   await waitFor(() => first.events.some((event) => event.event === 'ready'), 'ready never arrived');
-  const channel = JSON.parse(first.events.find((event) => event.event === 'ready').data).channel;
+  const ready = JSON.parse(first.events.find((event) => event.event === 'ready').data);
+  const channel = `${ready.channel}.${ready.secret}`;
 
   const call = (id) =>
     fetch(base, {
@@ -618,19 +679,19 @@ test('sse: the replay buffer is capped by bytes, not only frames', async (t) => 
   const stream = await readStream(`${base}/events`);
   t.after(() => stream.controller.abort());
   await waitFor(() => stream.events.some((event) => event.event === 'ready'), 'ready never arrived');
-  const channel = JSON.parse(stream.events.find((event) => event.event === 'ready').data).channel;
+  const ready = JSON.parse(stream.events.find((event) => event.event === 'ready').data);
 
   // Each answer is ~300 bytes; after several the byte budget must evict old
   // frames long before the 100-frame cap would.
   for (let i = 0; i < 5; i++) {
     await fetch(base, {
       method: 'POST',
-      headers: { 'Content-Type': 'application/json', [CHANNEL_HEADER]: channel },
+      headers: { 'Content-Type': 'application/json', [CHANNEL_HEADER]: `${ready.channel}.${ready.secret}` },
       body: JSON.stringify({ type: 'call', id: `b${i}`, method: 'test/hello', args: { name: 'x'.repeat(200) } }),
     });
   }
   await waitFor(() => stream.events.filter((event) => event.event === 'message').length === 5, 'answers arrived');
-  const held = server.rpc.sse.get(channel);
+  const held = server.rpc.sse.get(ready.channel);
   assert.ok(held.bytes <= 512, `the buffer holds ${held.bytes} bytes, over the 512 budget`);
   // `count` is the ring's live-entry counter (buffer.length is the ring's
   // preallocated capacity, constant by design).

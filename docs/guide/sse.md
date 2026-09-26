@@ -32,8 +32,8 @@ SSE is one-way, so a channel is two halves that find each other by id:
 
 ```
 GET  {basePath}/events                        opens a NEW channel
-GET  {basePath}/events  x-wrpc-channel: <id>  re-attaches to an existing one
-POST {basePath}         x-wrpc-channel: <id>  client -> server
+GET  {basePath}/events  x-wrpc-channel: <id>.<secret>  re-attaches to an existing one
+POST {basePath}         x-wrpc-channel: <id>.<secret>  client -> server
 ```
 
 ```mermaid
@@ -52,14 +52,19 @@ sequenceDiagram
   S-->>C: replay of what was missed, then live frames
 ```
 
-**The server mints the id** and hands it out exactly once, in the `ready`
-frame that opens every stream — a client never proposes its own. The channel
-is bound to the cookie identity of the GET that created it, and every
-re-attach and POST must present the same one: a request naming a live id
-without it is refused with `403`, so a leaked id (URLs end up in logs) is
-not a bearer token for the channel's session. An id the server no longer
-holds answers `409` — the built-in transport reacts by starting a fresh
-channel and letting the client re-load and re-subscribe.
+**The server mints the id and draws the secret**, and hands both out in the
+`ready` frame that opens every stream — a client never proposes its own.
+The id is whatever your `generateId` makes of it (a uuid, a cuid, a counter:
+one option covers every id the server mints); the secret is 18 random bytes
+from the server, and it is the credential: every re-attach and POST presents
+it after the id in the one `x-wrpc-channel` header, and a request naming a
+live id without it is refused with `409`, exactly like an id the server does
+not hold — a guessed id learns nothing, and a leaked id (URLs end up in
+logs) opens nothing. On top, the channel is bound to the cookie identity of
+the GET that created it, and a request presenting the secret without that
+identity is `403`. An id the server no longer holds answers `409` — the
+built-in transport reacts by starting a fresh channel and letting the client
+re-load and re-subscribe.
 
 Both halves belong to **one** server-side `Client`, which is what lets a
 subscription opened by a POST deliver its values down the stream. A POST

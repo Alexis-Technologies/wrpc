@@ -161,8 +161,12 @@ test('generateId: one generator feeds every id an RpcServer mints', async (t) =>
   const { value } = await reader.read();
   const ready = new TextDecoder().decode(value);
   await reader.cancel();
-  const channel = JSON.parse(/^data: (.*)$/m.exec(ready)[1]).channel;
+  const { channel, secret } = JSON.parse(/^data: (.*)$/m.exec(ready)[1]);
   assert.match(channel, /^x\d+$/, 'the SSE channel id comes from the injected generator');
+  // The credential does not: whatever the generator, the secret is the
+  // server's 18 random bytes, and it is what a request must present.
+  assert.match(secret, /^[A-Za-z0-9_-]{24}$/, 'the secret is not from the generator');
+  assert.notStrictEqual(secret, channel);
 });
 
 test('generateId: an instance id may not contain a dot, whoever produced it', () => {
