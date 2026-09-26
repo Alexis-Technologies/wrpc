@@ -373,3 +373,63 @@ test('amqp broker: a lost connection is reported once, marks everything unhealth
   await stopListening();
   await consumer.stop();
 });
+
+test('amqp broker: the backplane multiplexes every room over one channel and one queue', async (t) => {
+  // A server's channel_max: 16 is plenty for the adapter's fixed set of
+  // channels, and far fewer than the rooms below.
+  const connection = createFakeAmqp({ channelMax: 16 });
+  const { logger, entries } = recording();
+  const broker = open(connection, { logger });
+  t.after(() => broker.close());
+  const seen = new Map();
+  const unsubscribes = [];
+  for (let i = 0; i < 300; i++) {
+    const room = `room-${i}`;
+    seen.set(room, []);
+    unsubscribes.push(await broker.backplane.subscribe(room, (message) => seen.get(room).push(message)));
+  }
+  assert.ok(connection.openChannels <= 16, `${connection.openChannels} channels for 300 rooms`);
+  const bindings = () => connection.server.exchanges.get('wrpc.bp')?.size ?? 0;
+  assert.strictEqual(bindings(), 300);
+  broker.backplane.publish('room-7', 'seven');
+  broker.backplane.publish('room-299', 'last');
+  await waitFor(() => seen.get('room-7').length === 1 && seen.get('room-299').length === 1);
+  assert.deepStrictEqual(seen.get('room-8'), []);
+  // Two subscribers on one room share the binding; the room unbinds with its last one.
+  const twice = [];
+  const stopTwice = await broker.backplane.subscribe('room-7', (message) => twice.push(message));
+  broker.backplane.publish('room-7', 'again');
+  await waitFor(() => twice.length === 1 && seen.get('room-7').length === 2);
+  await unsubscribes[7]();
+  assert.strictEqual(bindings(), 300, 'still bound for the second subscriber');
+  await stopTwice();
+  assert.strictEqual(bindings(), 299);
+  for (let i = 0; i < 150; i++) if (i !== 7) await unsubscribes[i]();
+  assert.strictEqual(bindings(), 150);
+  broker.backplane.publish('room-7', 'gone');
+  await timers.setTimeout(20);
+  assert.strictEqual(seen.get('room-7').length, 2, 'an unsubscribed room receives nothing');
+  // The consumer channel closed under the live rooms: a fresh channel and
+  // queue, every remaining room bound again, one line when it is back.
+  const consumerChannel = connection.channels.find(
+    (channel) =>
+      !channel.closed &&
+      channel.prefetchLimit === Infinity &&
+      channel.confirm === false &&
+      [...connection.server.queues.values()].some((queue) =>
+        [...queue.consumers.values()].some(
+          (consumer) => consumer.channel === channel && queue.name.startsWith('amq.gen'),
+        ),
+      ),
+  );
+  assert.ok(consumerChannel, 'the one backplane consumer channel');
+  connection.server.killChannel(consumerChannel, 320);
+  await waitFor(
+    () => entries.some((entry) => entry.event === 'broker.amqp.backplane.rebind' && entry.level === 'warn'),
+    { timeout: 3000 },
+  );
+  assert.strictEqual(bindings(), 150);
+  broker.backplane.publish('room-200', 'after');
+  await waitFor(() => seen.get('room-200').length === 1);
+  assert.ok(connection.openChannels <= 16);
+});

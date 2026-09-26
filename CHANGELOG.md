@@ -1352,6 +1352,17 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **RabbitMQ backplane: one channel and one queue for every room, not
+  one of each per room.** Every `subscribe` opened its own channel and
+  declared its own exclusive queue — a room is a subscription, so a
+  server with a few hundred rooms ran into RabbitMQ's `channel_max`
+  (2047 by default, lower behind many proxies), after which every new
+  room failed to subscribe. An instance now keeps one consumer channel
+  and one exclusive auto-delete queue for the whole backplane, bound and
+  unbound per room by routing key (bind and unbind of one room run in
+  order, so a subscribe racing an unsubscribe settles as the last caller
+  asked); a consumer channel closed under live rooms is replaced and every
+  room bound again with a backoff (`broker.amqp.backplane.rebind`).
 - **RabbitMQ: a channel the server closed is not used again, and a
   consumer comes back.** A channel-level error — a declaration that did
   not match what the server held (`406`), a queue deleted under a reader

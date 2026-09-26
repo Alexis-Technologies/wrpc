@@ -202,6 +202,112 @@ const createAmqpBroker = (options = {}) => {
 
   const exchange = `${prefix}.bp`;
 
+  // One consumer channel and ONE exclusive queue for the whole backplane,
+  // bound and unbound by routing key as rooms come and go. It used to be a
+  // channel and a queue per subscription — and a room is a subscription —
+  // so a server with a few hundred rooms ran into RabbitMQ's channel_max
+  // (2047 by default, lower behind many proxies), after which every new
+  // room failed to subscribe. The channel count is constant now, and the
+  // same idea as src/scaling/redis.js: one connection, many channels.
+  const handlers = new Map(); // routing key -> Set<handler>
+  const bound = new Set(); // routing keys bound on the current queue
+  const chains = new Map(); // routing key -> its last bind/unbind, so they run in order
+  let consumerQueue = null;
+  let rebinding = false;
+  const consuming = memoChannel(false, {
+    setup: async (consumerChannel) => {
+      await ensureExchange(exchange, 'direct');
+      // Exclusive and auto-delete: this instance's own copy of the traffic,
+      // gone the moment it disconnects.
+      const { queue } = await consumerChannel.assertQueue('', { exclusive: true, autoDelete: true });
+      consumerQueue = queue;
+      bound.clear();
+      await consumerChannel.consume(
+        queue,
+        (message) => {
+          // null = the server cancelled this consumer; the channel closes
+          // with it, and onClose rebinds on a fresh one.
+          if (message === null) return;
+          const set = handlers.get(message.fields?.routingKey);
+          if (set === undefined) return;
+          const text = message.content.toString();
+          // Handlers are synchronous (a RoomsBackplane's), so the copy is
+          // what lets one unsubscribe from inside its own callback.
+          for (const handler of Array.from(set)) {
+            try {
+              handler(text);
+            } catch (error) {
+              report('broker.amqp.handler', error, { channel: message.fields?.routingKey });
+            }
+          }
+        },
+        { noAck: true },
+      );
+    },
+    onClose: () => {
+      consumerQueue = null;
+      bound.clear();
+      if (closed || lost || handlers.size === 0) return;
+      void rebind();
+    },
+  });
+
+  // Binds or unbinds one routing key to match `handlers`, serialized per
+  // key: AMQP answers bind and unbind in order on one channel, so a
+  // subscribe racing an unsubscribe on the same room settles as the last
+  // caller asked.
+  const reconcile = (key) => {
+    const step = async () => {
+      const want = handlers.has(key);
+      if (want === bound.has(key)) return;
+      const consumerChannel = await consuming();
+      const queue = consumerQueue;
+      if (queue === null) throw new Error('backplane channel closed');
+      if (want) await consumerChannel.bindQueue(queue, exchange, key);
+      else await consumerChannel.unbindQueue(queue, exchange, key);
+      // The queue may have gone while the bind was in flight: onClose
+      // cleared `bound`, and the rebind will do this key again.
+      if (consumerQueue !== queue) return;
+      if (want) bound.add(key);
+      else bound.delete(key);
+    };
+    const next = (chains.get(key) ?? Promise.resolve()).then(step, step);
+    chains.set(key, next);
+    next
+      .finally(() => {
+        if (chains.get(key) === next) chains.delete(key);
+      })
+      .catch(() => {});
+    return next;
+  };
+
+  // The consumer channel closed under live subscriptions (a node went
+  // away, the server cancelled the consumer): a fresh channel, a fresh
+  // queue, every key bound again — with a backoff, and one line when it
+  // is back. Events published meanwhile are lost, which the rooms layer
+  // sees as a sequence gap (a backplane is at-most-once).
+  const rebind = async () => {
+    if (rebinding) return;
+    rebinding = true;
+    try {
+      for (let attempt = 0; ; attempt++) {
+        if (closed || lost || handlers.size === 0) return;
+        await sleep(backoffDelay({ ...REOPEN_BACKOFF, attempt }));
+        if (closed || lost || handlers.size === 0) return;
+        try {
+          await consuming();
+          await Promise.all(Array.from(handlers.keys(), (key) => reconcile(key)));
+          log.warn({ event: 'broker.amqp.backplane.rebind', channels: handlers.size, attempt: attempt + 1 });
+          return;
+        } catch (error) {
+          report('broker.amqp.backplane.rebind', error, { attempt: attempt + 1 });
+        }
+      }
+    } finally {
+      rebinding = false;
+    }
+  };
+
   const backplane = {
     name: 'amqp',
     publish(channel, message) {
@@ -219,39 +325,33 @@ const createAmqpBroker = (options = {}) => {
     },
     subscribe(channel, handler) {
       if (!isFunction(handler)) throw new TypeError('amqp backplane.subscribe: handler must be a function');
-      const routingKey = encodeToken(channel, { maxLength: 180 });
-      const ready = (async () => {
-        await ensureExchange(exchange, 'direct');
-        const consumerChannel = await openChannel();
-        // Exclusive and auto-delete: this instance's own copy of the
-        // channel's traffic, gone the moment it disconnects.
-        const { queue } = await consumerChannel.assertQueue('', { exclusive: true, autoDelete: true });
-        await consumerChannel.bindQueue(queue, exchange, routingKey);
-        const { consumerTag } = await consumerChannel.consume(
-          queue,
-          (message) => {
-            // null = the broker cancelled this consumer.
-            if (message === null) {
-              return void report('broker.amqp.cancelled', new Error('consumer cancelled'), { channel });
-            }
-            try {
-              handler(message.content.toString());
-            } catch (error) {
-              report('broker.amqp.handler', error, { channel });
-            }
-          },
-          { noAck: true },
-        );
-        return async () => {
-          try {
-            await consumerChannel.cancel(consumerTag);
-          } catch {
-            // The channel is already gone.
-          }
-          await closeChannel(consumerChannel);
-        };
-      })();
-      return ready;
+      const key = encodeToken(channel, { maxLength: 180 });
+      let set = handlers.get(key);
+      if (set === undefined) {
+        set = new Set();
+        handlers.set(key, set);
+      }
+      set.add(handler);
+      let active = true;
+      const unsubscribe = async () => {
+        if (!active) return;
+        active = false;
+        const current = handlers.get(key);
+        if (current === undefined) return;
+        current.delete(handler);
+        if (current.size > 0) return;
+        handlers.delete(key);
+        if (closed || lost) return;
+        await reconcile(key).catch((error) => report('broker.amqp.unbind', error, { channel }));
+      };
+      return reconcile(key).then(
+        () => unsubscribe,
+        (error) => {
+          set.delete(handler);
+          if (set.size === 0) handlers.delete(key);
+          throw error;
+        },
+      );
     },
     close() {
       // Channels are closed by the broker's own close().
@@ -842,6 +942,9 @@ const createAmqpBroker = (options = {}) => {
     topology.reset();
     publisher.reset();
     directing.reset();
+    consuming.reset();
+    handlers.clear();
+    bound.clear();
     // The CONNECTION is injected: closing it is the caller's business.
   };
 

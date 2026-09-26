@@ -30,7 +30,7 @@ channels it opened but never your connection.
 
 | Capability | RabbitMQ |
 | --- | --- |
-| `backplane` | a direct exchange; every instance binds its **own** exclusive auto-delete queue per channel, so a room event fans out without a shared queue |
+| `backplane` | a direct exchange; every instance has **one** exclusive auto-delete queue and one consumer channel for all of its rooms, bound and unbound per room by routing key — a room event fans out without a shared queue, and the channel count does not grow with the rooms |
 | `log` | a **stream queue** (`x-queue-type: stream`); the delivery's `x-stream-offset` is the feed's resume token |
 | `queue` | a quorum queue, prefetch per consumer channel, a TTL retry queue that dead-letters back into the main one, and a dead-letter queue for what is exhausted |
 | `direct` | **one** direct exchange (`<prefix>.direct`), the address as the routing key: an inbox binds an exclusive queue, a service group binds one durable queue its members compete over |

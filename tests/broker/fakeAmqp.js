@@ -102,7 +102,12 @@ class FakeAmqpServer {
     const message = {
       content: entry.content,
       properties: { ...entry.properties, headers: { ...(entry.properties.headers ?? {}) } },
-      fields: { deliveryTag, redelivered: entry.redelivered === true, consumerTag: consumer.tag },
+      fields: {
+        deliveryTag,
+        redelivered: entry.redelivered === true,
+        consumerTag: consumer.tag,
+        routingKey: entry.routingKey ?? queue.name,
+      },
     };
     if (queue.stream) message.properties.headers['x-stream-offset'] = entry.offset;
     if (!consumer.noAck) {
@@ -126,7 +131,7 @@ class FakeAmqpServer {
       const queue = this.queues.get(name);
       if (!queue) continue;
       routed = true;
-      const entry = { content, properties: { ...properties }, offset: queue.offset++ };
+      const entry = { content, properties: { ...properties }, offset: queue.offset++, routingKey };
       if (properties.expiration) entry.expires = now() + Number(properties.expiration);
       queue.messages.push(entry);
       if (entry.expires) {
@@ -225,6 +230,15 @@ class FakeChannel extends EventEmitter {
     const set = bindings.get(routingKey) ?? new Set();
     set.add(queue);
     bindings.set(routingKey, set);
+  }
+
+  async unbindQueue(queue, exchange, routingKey) {
+    this.#open();
+    const bindings = this.server.exchanges.get(exchange);
+    const set = bindings?.get(routingKey);
+    if (!set) return;
+    set.delete(queue);
+    if (set.size === 0) bindings.delete(routingKey);
   }
 
   async prefetch(count) {
@@ -332,24 +346,33 @@ class FakeChannel extends EventEmitter {
 class FakeAmqpConnection extends EventEmitter {
   closed = false;
 
-  constructor(server = new FakeAmqpServer()) {
+  constructor(server = new FakeAmqpServer(), { channelMax = Infinity } = {}) {
     super();
     this.server = server;
     this.channels = [];
+    this.channelMax = channelMax;
+  }
+
+  /** Channels open right now — what a server's channel_max counts. */
+  get openChannels() {
+    return this.channels.filter((channel) => !channel.closed).length;
+  }
+
+  #allocate(options) {
+    if (this.closed) throw new Error('Connection closed');
+    // amqplib's own wording when the negotiated channel_max is reached.
+    if (this.openChannels >= this.channelMax) throw new Error('No channels left to allocate');
+    const channel = new FakeChannel(this.server, options);
+    this.channels.push(channel);
+    return channel;
   }
 
   async createChannel() {
-    if (this.closed) throw new Error('Connection closed');
-    const channel = new FakeChannel(this.server);
-    this.channels.push(channel);
-    return channel;
+    return this.#allocate({});
   }
 
   async createConfirmChannel() {
-    if (this.closed) throw new Error('Connection closed');
-    const channel = new FakeChannel(this.server, { confirm: true });
-    this.channels.push(channel);
-    return channel;
+    return this.#allocate({ confirm: true });
   }
 
   async close() {
@@ -365,6 +388,6 @@ class FakeAmqpConnection extends EventEmitter {
   }
 }
 
-const createFakeAmqp = () => new FakeAmqpConnection();
+const createFakeAmqp = (options = {}) => new FakeAmqpConnection(new FakeAmqpServer(), options);
 
 module.exports = { createFakeAmqp, FakeAmqpConnection, FakeAmqpServer };
