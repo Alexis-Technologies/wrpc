@@ -46,7 +46,7 @@ const {
   DEFAULT_MAX_MESSAGE,
 } = require('./framing.js');
 const { StreamMux } = require('./streams.js');
-const { normalizeCompression, negotiate, Sequencer } = require('../compression/index.js');
+const { normalizeCompression, negotiate, Sequencer, INFLIGHT_LIMIT } = require('../compression/index.js');
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -271,11 +271,17 @@ class WtSocket extends EventEmitter {
       return void this.#inbound.push(data, (bytes) => this.#deliver(kind, bytes));
     }
     const plainKind = kind === KIND_TEXT_COMPRESSED ? KIND_TEXT : KIND_BINARY;
-    let inflated;
-    try {
-      inflated = active.decode.codec.decode(data, this.#maxMessage);
-    } catch (error) {
-      return void this.#violation(error);
+    const codec = active.decode.codec;
+    const decode = () => codec.decode(data, this.#maxMessage);
+    // Started now while few are in flight, in its slot past the limit: a
+    // burst of compressed frames is not a burst of parallel inflates.
+    let inflated = decode;
+    if (this.#inbound.pending < INFLIGHT_LIMIT) {
+      try {
+        inflated = decode();
+      } catch (error) {
+        return void this.#violation(error);
+      }
     }
     this.#inbound.push(
       inflated,
@@ -304,6 +310,9 @@ class WtSocket extends EventEmitter {
     try {
       for (;;) {
         if (this.#paused) await this.#gate;
+        // Enough inflates in flight: the next read waits for them — the
+        // bytes wait in the stream, under QUIC's flow control.
+        if (this.#inbound.pending >= INFLIGHT_LIMIT) await this.#inbound.idle;
         const { value, done } = await reader.read();
         if (done || this.#closed) break;
         this.#touch();

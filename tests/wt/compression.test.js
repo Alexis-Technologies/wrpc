@@ -533,3 +533,37 @@ test('wt compression (e2e): attachSession takes the option too', async (t) => {
   assert.strictEqual(echoed.text.length, 50_000);
   assert.ok(spy.kinds.includes(KIND_TEXT_COMPRESSED));
 });
+
+test('wt compression: no more than four inflates run at once — the reader waits for them, and the wire stays in order', async (t) => {
+  let inflight = 0;
+  let peak = 0;
+  const codec = {
+    id: DEFLATE,
+    threshold: 64,
+    encode: (bytes) => zlib.deflateRawSync(bytes),
+    decode: async (bytes, max) => {
+      inflight++;
+      peak = Math.max(peak, inflight);
+      await timers.setTimeout(10);
+      inflight--;
+      return zlib.inflateRawSync(bytes, { maxOutputLength: max });
+    },
+  };
+  const pair = await serverPair(t, { compression: { codec } });
+  await pair.writer.write(frameCaps(JSON.stringify({ enc: [DEFLATE] })));
+  await waitFor(() => pair.socket.compression !== null, 'negotiated');
+  const sent = [];
+  for (let i = 0; i < 12; i++) {
+    const text = big.replace('"i":0', `"i":${100 + i}`);
+    sent.push(text);
+    // One write per frame, back to back: each is its own read at the socket.
+    await pair.writer.write(frame(KIND_TEXT_COMPRESSED, zlib.deflateRawSync(encoder.encode(text))));
+  }
+  await waitFor(() => pair.messages.length === 12, 'all delivered');
+  assert.deepStrictEqual(
+    pair.messages.map((m) => m.data),
+    sent,
+  );
+  assert.ok(peak <= 4, `${peak} inflates ran at once`);
+  assert.ok(peak >= 2, 'and more than one: the limit is a bound, not a serialization');
+});

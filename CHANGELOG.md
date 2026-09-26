@@ -1352,6 +1352,20 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **Compression on WebTransport and WebRTC: an inflate is never an
+  unhandled rejection, and no more than four run at once.** The
+  `Sequencer` that keeps an asynchronous codec's output in order attached
+  its handler to a promise only when that promise's turn came, so a decode
+  rejecting behind a slower one (a bomb, a truncated frame) was reported
+  unhandled before it was handled; a promise queued behind another is
+  adopted the moment it is pushed. Every compressed frame used to start
+  its inflate at once — a burst of them was a burst of parallel inflates
+  on `CompressionStream` or the threadpool: past four in flight the rest
+  start in their slot (the `Sequencer` takes a thunk), and a WebTransport
+  reader waits for them before it reads on, so the bytes wait in the
+  stream under QUIC's flow control. `bench/message-compression.js`: the
+  plain path is unchanged (104M vs 107M pushes/s), the queued-promise path
+  pays the adoption (1.65M vs 1.93M/s on 200 000 resolved promises).
 - **`RpcServer.attach` and `PeerHost.attach`: the transport contract is
   checked whole, and nothing a packet handler throws escapes as an
   unhandled rejection.** The structural check accepted a transport with

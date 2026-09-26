@@ -580,3 +580,41 @@ test('rtc backpressure (raw channel): a false answered for bytes still in the co
   await timers.setTimeout(30);
   assert.deepStrictEqual(drains, { client: 1, host: 1 });
 });
+
+test('rtc compression (raw channel): no more than four inflates run at once, and the wire stays in order', async (t) => {
+  let inflight = 0;
+  let peak = 0;
+  const counting = () => ({
+    id: DEFLATE,
+    threshold: 64,
+    encode: (bytes) => zlib.deflateRawSync(bytes),
+    decode: async (bytes, max) => {
+      inflight++;
+      peak = Math.max(peak, inflight);
+      await timers.setTimeout(10);
+      inflight--;
+      return zlib.inflateRawSync(bytes, { maxOutputLength: max });
+    },
+  });
+  const pair = await rawChannelPair(t, { fake: { maxMessageSize: 65536 } });
+  const client = new ClientRtcTransport('webrtc:test', {
+    channel: pair.a,
+    compression: { codec: counting() },
+    maxMessageSize: 65536,
+  });
+  const host = new RtcPeerTransport(pair.b, { peer: 'a', compression: { codec: counting() }, maxMessageSize: 65536 });
+  t.after(() => client.close());
+  const packets = [];
+  host.on('packet', (text) => packets.push(text));
+  await client.open();
+  const sent = [];
+  for (let i = 0; i < 12; i++) {
+    const text = big.replace('"i":0', `"i":${200 + i}`);
+    sent.push(text);
+    client.write(text);
+  }
+  await waitFor(() => packets.length === 12);
+  assert.deepStrictEqual(packets, sent);
+  assert.ok(peak <= 4, `${peak} inflates ran at once`);
+  assert.ok(peak >= 2, 'a bound, not a serialization');
+});

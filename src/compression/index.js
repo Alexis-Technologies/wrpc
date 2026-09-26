@@ -34,7 +34,7 @@ const { dictionaryId, DICTIONARY_ID_PREFIX, isPromise } = require('./ids.js');
 
 // The ordering queue is a leaf of its own (the encryption entry needs it
 // without this file's negotiation); it stays an export of this one.
-const { Sequencer } = require('../sequencer.js');
+const { Sequencer, INFLIGHT_LIMIT } = require('../sequencer.js');
 
 const DEFAULT_THRESHOLD = 1024;
 
@@ -206,4 +206,5 @@ module.exports = {
   nativeCompressor,
   dictionaryId,
   Sequencer,
+  INFLIGHT_LIMIT,
 };

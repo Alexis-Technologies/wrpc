@@ -41,7 +41,7 @@ const {
   DEFAULT_MAX_MESSAGE,
 } = require('../webtransport/framing.js');
 const { StreamMux } = require('../webtransport/streams.js');
-const { normalizeCompression, negotiate, Sequencer } = require('../compression/index.js');
+const { normalizeCompression, negotiate, Sequencer, INFLIGHT_LIMIT } = require('../compression/index.js');
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -295,6 +295,8 @@ class ClientWtTransport extends ClientTransport {
     const reader = readable.getReader();
     try {
       for (;;) {
+        // Enough inflates in flight: the next read waits for them.
+        if (this.#inbound.pending >= INFLIGHT_LIMIT) await this.#inbound.idle;
         const { value, done } = await reader.read();
         if (done || this.#session !== session) break;
         this.#parser.push(value);
@@ -362,11 +364,16 @@ class ClientWtTransport extends ClientTransport {
       return void this.#inbound.push(data, (bytes) => this.#deliver(kind, bytes));
     }
     const plainKind = kind === KIND_TEXT_COMPRESSED ? KIND_TEXT : KIND_BINARY;
-    let inflated;
-    try {
-      inflated = active.decode.codec.decode(data, this.#maxMessage);
-    } catch (error) {
-      return void this.#violation(session, error);
+    const codec = active.decode.codec;
+    const decode = () => codec.decode(data, this.#maxMessage);
+    // Started now while few are in flight, in its slot past the limit.
+    let inflated = decode;
+    if (this.#inbound.pending < INFLIGHT_LIMIT) {
+      try {
+        inflated = decode();
+      } catch (error) {
+        return void this.#violation(session, error);
+      }
     }
     this.#inbound.push(
       inflated,

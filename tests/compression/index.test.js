@@ -269,3 +269,123 @@ test('Sequencer: a deliver that throws is reported, not swallowed, and does not 
   assert.deepStrictEqual(seen, ['b']);
   assert.strictEqual(queue.pending, 0);
 });
+
+test('Sequencer: a promise that rejects before its turn is handled in its slot, never reported unhandled', async (t) => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  const queue = new Sequencer();
+  const seen = [];
+  let release;
+  const slow = new Promise((resolve) => {
+    release = resolve;
+  });
+  queue.push(slow, (v) => seen.push(v));
+  // Rejects at once, long before its turn behind `slow`: the handler that
+  // recovers it used to be attached only in its slot.
+  queue.push(
+    Promise.reject(new Error('early')),
+    (v) => seen.push(v),
+    (error) => seen.push(`recovered:${error.message}`),
+  );
+  await timers.setTimeout(20);
+  assert.deepStrictEqual(unhandled, []);
+  release('a');
+  await timers.setImmediate();
+  assert.deepStrictEqual(seen, ['a', 'recovered:early']);
+  assert.strictEqual(queue.pending, 0);
+});
+
+test('Sequencer: a thunk runs at once with nothing in flight, in its slot behind others, and a throw is recovered', async () => {
+  const queue = new Sequencer();
+  const seen = [];
+  let calls = 0;
+  // Nothing in flight: called now, a plain answer delivered synchronously.
+  queue.push(
+    () => {
+      calls++;
+      return 'now';
+    },
+    (v) => seen.push(v),
+  );
+  assert.deepStrictEqual(seen, ['now']);
+  assert.strictEqual(calls, 1);
+  assert.strictEqual(queue.pending, 0);
+  // A thunk answering a promise takes the async path.
+  queue.push(
+    () => Promise.resolve('promised'),
+    (v) => seen.push(v),
+  );
+  assert.strictEqual(queue.pending, 1);
+  // Behind it: NOT called until its slot — what bounds the work in flight.
+  let started = false;
+  queue.push(
+    () => {
+      started = true;
+      return Promise.resolve('later');
+    },
+    (v) => seen.push(v),
+  );
+  assert.strictEqual(started, false, 'not started ahead of its turn');
+  await timers.setImmediate();
+  await timers.setImmediate();
+  assert.deepStrictEqual(seen, ['now', 'promised', 'later']);
+  assert.strictEqual(started, true);
+  // A thunk that throws — at once, or in its slot — is recovered in order.
+  queue.push(
+    () => {
+      throw new Error('sync');
+    },
+    () => seen.push('never'),
+    (error) => seen.push(`recovered:${error.message}`),
+  );
+  assert.deepStrictEqual(seen.at(-1), 'recovered:sync');
+  queue.push(Promise.resolve('x'), (v) => seen.push(v));
+  queue.push(
+    () => {
+      throw new Error('slot');
+    },
+    () => seen.push('never'),
+    (error) => seen.push(`recovered:${error.message}`),
+  );
+  await timers.setImmediate();
+  await timers.setImmediate();
+  assert.deepStrictEqual(seen.slice(-2), ['x', 'recovered:slot']);
+  // Without recover, a thunk's throw is the onError's, like a deliver's.
+  const errors = [];
+  const reporting = new Sequencer((error) => errors.push(error.message));
+  reporting.push(
+    () => {
+      throw new Error('unrecovered');
+    },
+    () => {},
+  );
+  assert.deepStrictEqual(errors, ['unrecovered']);
+  assert.strictEqual(reporting.pending, 0);
+});
+
+test('Sequencer: idle settles once everything pushed has been delivered', async () => {
+  const queue = new Sequencer();
+  assert.strictEqual(queue.idle, queue.idle, 'resolved and shared while nothing is in flight');
+  await queue.idle;
+  const seen = [];
+  let release;
+  queue.push(
+    new Promise((resolve) => {
+      release = resolve;
+    }),
+    (v) => seen.push(v),
+  );
+  queue.push('b', (v) => seen.push(v));
+  let settled = false;
+  void queue.idle.then(() => {
+    settled = true;
+  });
+  await timers.setImmediate();
+  assert.strictEqual(settled, false);
+  release('a');
+  await queue.idle;
+  assert.deepStrictEqual(seen, ['a', 'b']);
+  assert.strictEqual(queue.pending, 0);
+});

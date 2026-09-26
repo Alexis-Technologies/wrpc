@@ -315,8 +315,11 @@ dictionary, so a small message barely shrinks. The codec is a structural
 seam: `{ codec }` injects anything with an `id`, `encode(bytes)` and
 `decode(bytes, maxOutput)` — the dictionary codec of `@alexify/wrpc/deflate`
 once it exists, or your own — and either method may answer a promise;
-messages stay in order around it. Per message, `{ compress: false }` on an
-emit sends that one plain, as on a WebSocket. Chunks that ride their own
+messages stay in order around it, and no more than four inflates run at
+once: past that the reader waits for them, and the bytes wait in the stream
+under QUIC's flow control — a burst of compressed frames is not a burst of
+parallel inflates. Per message, `{ compress: false }` on an emit sends that
+one plain, as on a WebSocket. Chunks that ride their own
 WebTransport stream (the [stream mux](#streams-without-head-of-line-blocking))
 and datagrams are never compressed.
 

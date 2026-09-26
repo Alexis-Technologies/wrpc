@@ -488,6 +488,8 @@ which shares the seam (`bench/message-compression.js`). On Node the
 deflate is synchronous below 256 KB on purpose and `{ async }` hands
 larger messages to zlib's threadpool — a host answering megabyte results
 to many peers is the case; see [the compression guide](./compression#async).
+Inbound, no more than four inflates run at once; the rest of a burst start
+in their turn, in order.
 
 Over a [raw channel](#your-own-connection) there is no description to
 announce in: `compression` on `attachChannel`, on `connect(url, { channel,

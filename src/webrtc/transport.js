@@ -41,7 +41,7 @@ const {
   DEFAULT_MAX_REASSEMBLY,
   decodeText,
 } = require('./framing.js');
-const { normalizeCompression, negotiate, Sequencer } = require('../compression/index.js');
+const { normalizeCompression, negotiate, Sequencer, INFLIGHT_LIMIT } = require('../compression/index.js');
 
 const TEXT_ENCODER = new TextEncoder();
 
@@ -341,11 +341,18 @@ class ChannelCodec {
       if (this.#inbound.pending === 0) return void this.#onMessage(kind, message.data);
       return void this.#inbound.push(message.data, (bytes) => this.#onMessage(kind, bytes));
     }
-    let inflated;
-    try {
-      inflated = this.#compression.decode.codec.decode(message.data, this.#maxInflate);
-    } catch (error) {
-      return void this.#onError(inflateError(error));
+    const codec = this.#compression.decode.codec;
+    const payload = message.data;
+    const decode = () => codec.decode(payload, this.#maxInflate);
+    // Started now while few are in flight, in its slot past the limit: a
+    // burst of compressed messages is not a burst of parallel inflates.
+    let inflated = decode;
+    if (this.#inbound.pending < INFLIGHT_LIMIT) {
+      try {
+        inflated = decode();
+      } catch (error) {
+        return void this.#onError(inflateError(error));
+      }
     }
     this.#inbound.push(
       inflated,
