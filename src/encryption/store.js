@@ -24,6 +24,7 @@
 
 const crypto = require('node:crypto');
 const { normalizeEnvelopeEncryption, createEnvelopeSealer } = require('./envelope.js');
+const { isKeyProvider } = require('./contracts.js');
 const { createLoggerWriter } = require('../logging.js');
 
 const isFunction = (value) => typeof value === 'function';
@@ -44,9 +45,16 @@ const sealedStore = (store, options = {}) => {
   if (!store || !isFunction(store.get) || !isFunction(store.set) || !isFunction(store.delete)) {
     throw new TypeError('sealedStore: store must be a session store with get(token), set(token, data), delete(token)');
   }
-  const { acceptPlaintext = false, logger = globalThis.console } = options;
+  const { acceptPlaintext = false, seal = true, logger = globalThis.console } = options;
   if (typeof acceptPlaintext !== 'boolean') {
     throw new TypeError('sealedStore: options.acceptPlaintext must be a boolean');
+  }
+  if (typeof seal !== 'boolean') throw new TypeError('sealedStore: options.seal must be a boolean');
+  // A rotation is walked through kids(): a provider without it would keep
+  // every session under an older kid unreadable — a mass logout the
+  // moment `current` moved. Refused here, not discovered at the rotation.
+  if (isKeyProvider(options.keys) && typeof options.keys.kids !== 'function') {
+    throw new TypeError('sealedStore: a key provider must implement kids() — the kids a rotation is walked through');
   }
   const encryption = normalizeEnvelopeEncryption(
     { keys: options.keys, cipher: options.cipher, replayWindow: false },
@@ -69,11 +77,38 @@ const sealedStore = (store, options = {}) => {
     return crypto.createHmac('sha256', indexKey).update(String(token)).digest('base64url');
   };
 
+  const sealedKeys = (token) => {
+    const current = keys.current;
+    const found = [[current, slot(current, token)]];
+    const kids = keys.kids;
+    for (let i = 0; i < kids.length; i++) {
+      if (kids[i] !== current) found.push([kids[i], slot(kids[i], token)]);
+    }
+    return found;
+  };
+
   // Under the current kid; with `prune`, the token's slots under every
   // other kid go too — one row per token, so a fleet mid-rotation (one
   // instance writing under k1, another under k2) converges on the latest
   // write instead of each reading its own kid's stale row.
   const write = async (token, data, prune) => {
+    // seal: false — the first of the three deploys (sessions guide): every
+    // instance reads sealed rows already, none writes them yet, so a
+    // rollback finds every session where it always was. The token's sealed
+    // slots go, best effort: one row per token.
+    if (!seal) {
+      await store.set(token, data);
+      const slots = sealedKeys(token);
+      for (let i = 0; i < slots.length; i++) {
+        if (slots[i][1] === null) continue;
+        try {
+          await store.delete(slots[i][1]);
+        } catch (error) {
+          log.warn({ err: error, event: 'session.migrate' });
+        }
+      }
+      return;
+    }
     const kid = keys.current;
     const key = slot(kid, token);
     if (key === null) throw new Error(`sealedStore: the keyring does not hold its current key ${JSON.stringify(kid)}`);
@@ -135,16 +170,6 @@ const sealedStore = (store, options = {}) => {
     }
   };
 
-  const sealedKeys = (token) => {
-    const current = keys.current;
-    const found = [[current, slot(current, token)]];
-    const kids = keys.kids;
-    for (let i = 0; i < kids.length; i++) {
-      if (kids[i] !== current) found.push([kids[i], slot(kids[i], token)]);
-    }
-    return found;
-  };
-
   const wrapped = {
     name: `sealed(${store.name ?? 'store'})`,
     async get(token) {
@@ -156,10 +181,11 @@ const sealedStore = (store, options = {}) => {
         if (row === null || row === undefined) continue;
         const data = read(kid, key, row);
         if (data === undefined) return null;
-        if (i > 0) await migrate(token, data, key, kid, row.s);
+        // Not sealing yet: a sealed row is read where it is, never moved.
+        if (i > 0 && seal) await migrate(token, data, key, kid, row.s);
         return data;
       }
-      if (!acceptPlaintext) return null;
+      if (!acceptPlaintext && seal) return null;
       const plain = await store.get(token);
       if (plain === null || plain === undefined) return null;
       // A row under the raw token that is not a session: a sealed record
@@ -170,7 +196,7 @@ const sealedStore = (store, options = {}) => {
         log.warn({ event: 'session.unsealed', kid: null });
         return null;
       }
-      await migrate(token, plain, token, null, null);
+      if (seal) await migrate(token, plain, token, null, null);
       return plain;
     },
     // Async on purpose: a keyring without its current key throws in write()
@@ -180,13 +206,15 @@ const sealedStore = (store, options = {}) => {
     async delete(token) {
       const slots = sealedKeys(token);
       for (let i = 0; i < slots.length; i++) if (slots[i][1] !== null) await store.delete(slots[i][1]);
-      if (acceptPlaintext) await store.delete(token);
+      if (acceptPlaintext || !seal) await store.delete(token);
     },
   };
   if (isFunction(store.touch)) {
     wrapped.touch = async (token) => {
       const key = slot(keys.current, token);
       if (key !== null) await store.touch(key);
+      // The row may still be plaintext, on either side of the rollout.
+      if (acceptPlaintext || !seal) await store.touch(token);
     };
   }
   return wrapped;

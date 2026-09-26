@@ -14,7 +14,14 @@
  */
 export * from './encryption.browser.js';
 
-import type { Cipher, CipherAlgorithm, EncryptionInfo, KeysOption, NoisePattern } from './encryption.browser.js';
+import type {
+  Cipher,
+  CipherAlgorithm,
+  EncryptionInfo,
+  KeyProvider,
+  KeysOption,
+  NoisePattern,
+} from './encryption.browser.js';
 import type { SessionStore } from './rpc.js';
 import type { WrpcLogger } from './client.js';
 
@@ -50,9 +57,19 @@ export interface EnvelopeEncryptionOptions {
   replayWindow?: number | false;
 }
 
+/** A provider for the sealed store must answer `kids()`: a rotation is walked through it. */
+export type SealedStoreKeys = Exclude<KeysOption, KeyProvider> | (KeyProvider & { kids(): ReadonlyArray<string> });
+
 export interface SealedStoreOptions {
-  /** One key, a ring with its current kid, or a provider — as everywhere. */
-  keys: KeysOption;
+  /** One key, a ring with its current kid, or a provider that answers `kids()` (a TypeError otherwise). */
+  keys: SealedStoreKeys;
+  /**
+   * Whether writes are sealed. `false` is the first of the three deploys
+   * over a store that already holds sessions: every instance reads sealed
+   * rows already, none writes them yet, so a rollback finds every session
+   * where it always was. Default true.
+   */
+  seal?: boolean;
   /** Default `'aes-256-gcm'`; an injected `Cipher` must answer synchronously. */
   cipher?: CipherAlgorithm | Cipher;
   /**

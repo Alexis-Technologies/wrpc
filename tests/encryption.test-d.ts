@@ -104,6 +104,14 @@ expectType<SessionStore>(sealed);
 expectAssignable<RpcServerOptions>({ router, sessions: { store: sealed } });
 expectError(encryption.sealedStore(new MemorySessionStore()));
 expectError(encryption.sealedStore({}, { keys: 'k' }));
+// A provider for the sealed store must answer kids(); seal: false is the first deploy.
+encryption.sealedStore(new MemorySessionStore(), {
+  keys: { current: () => 'k1', get: () => null, kids: () => ['k1'] },
+  seal: false,
+  acceptPlaintext: true,
+});
+expectError(encryption.sealedStore(new MemorySessionStore(), { keys: { current: () => 'k1', get: () => null } }));
+expectError(encryption.sealedStore(new MemorySessionStore(), { keys: 'k', seal: 'later' }));
 
 // Session encryption: the client object, the server option, the facts both ends read
 const session = encryption.createEncryption({ serverKey: 'k1:a:b' });

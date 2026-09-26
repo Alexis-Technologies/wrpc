@@ -410,3 +410,43 @@ test('sealedStore: a migration deletes the stale row only while it is the row it
   assert.deepStrictEqual(await current.get(TOKEN), { ...STATE, n: 2 });
   assert.ok(!rows.rows.has(staleKey));
 });
+
+test('sealedStore: a key provider must answer kids() — a rotation is walked through it', () => {
+  const key = generateKey();
+  const provider = { current: () => 'k1', get: () => Buffer.from(key, 'base64') };
+  assert.throws(() => sealedStore(mapStore(), { keys: provider, logger: false }), /must implement kids\(\)/);
+  const store = sealedStore(mapStore(), { keys: { ...provider, kids: () => ['k1'] }, logger: false });
+  assert.strictEqual(typeof store.get, 'function');
+  assert.throws(() => sealedStore(mapStore(), { keys: key, seal: 'later' }), /options\.seal must be a boolean/);
+});
+
+test('sealedStore: seal: false is the first deploy — reads sealed rows where they are, writes plaintext, touches and deletes both', async () => {
+  const redis = new FakeRedis();
+  const keys = generateKey();
+  // A row sealed by an instance already on the last deploy.
+  const sealing = sealedStore(redisStore(redis), { keys, logger: false });
+  await sealing.set(TOKEN, STATE);
+  const [sealedKey] = [...redis.entries.keys()];
+  const first = sealedStore(redisStore(redis), { keys, seal: false, acceptPlaintext: true, logger: false });
+  // Read where it is, never moved: an instance rolled back to plaintext
+  // must still find it there.
+  assert.deepStrictEqual(await first.get(TOKEN), STATE);
+  assert.strictEqual(redis.entries.size, 1);
+  assert.ok(redis.entries.has(sealedKey), 'not migrated');
+  // A write is plaintext, and the sealed slot goes with it: one row.
+  await first.set(TOKEN, { ...STATE, n: 2 });
+  assert.strictEqual(redis.entries.size, 1);
+  assert.ok(!redis.entries.has(sealedKey));
+  assert.ok(redis.dump().includes(TOKEN), 'plaintext, under the token');
+  assert.deepStrictEqual(await first.get(TOKEN), { ...STATE, n: 2 });
+  // The sealing instance still reads it (acceptPlaintext), and migrates it.
+  const later = sealedStore(redisStore(redis), { keys, acceptPlaintext: true, logger: false });
+  assert.deepStrictEqual(await later.get(TOKEN), { ...STATE, n: 2 });
+  assert.ok(!redis.dump().includes(TOKEN), 'sealed by the second deploy');
+  // touch and delete reach the row on either side.
+  const touched = redis.commands.length;
+  await first.touch(TOKEN);
+  assert.ok(redis.commands.slice(touched).some(([command, key]) => command === 'pexpire' && key !== undefined));
+  await first.delete(TOKEN);
+  assert.strictEqual(redis.entries.size, 0);
+});

@@ -1352,6 +1352,17 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **`sealedStore`: a key provider must answer `kids()`, and `seal: false`
+  is the first of three deploys.** A provider without `kids()` was
+  accepted and every session under an older kid became unreadable the
+  moment `current` moved — a mass logout at the first rotation; it is a
+  TypeError at construction now. Adopting the store over a fleet that
+  already holds sessions needed a deploy that reads sealed rows without
+  writing them (an instance rolled back must still find every session):
+  `seal: false` writes plaintext under the token and removes the token's
+  sealed slots, reads a sealed row where it is without moving it, and
+  touches and deletes the row on either side. The sessions guide has the
+  three-deploy table, mirroring the backplane's.
 - **permessage-deflate: `level` and `memLevel` apply on every deflate
   path, and are validated at construction.** The two knobs, introduced on
   this branch with context takeover, reached the live context only: a

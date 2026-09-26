@@ -234,6 +234,28 @@ missing session and one `session.open` warning; the token is never logged.
 - It costs one extra `get` per *older* kid on a miss — an unknown token
   included — so keep the ring short.
 
+Adopting it over a fleet that already holds sessions is **three deploys**,
+because an instance on the previous deploy must still find every session
+where it looks for it:
+
+| Deploy | `sealedStore(store, …)` | Writes | Reads |
+| --- | --- | --- | --- |
+| 1 | `{ keys, seal: false, acceptPlaintext: true }` | plaintext | both — a sealed row is read where it is, never moved |
+| 2 | `{ keys, acceptPlaintext: true }` | sealed | both — a plaintext row is sealed on its first read |
+| 3 | `{ keys }` | sealed | sealed only |
+
+Move on once every instance runs the deploy before, and leave deploy 2 on
+for the longest session TTL. A key **provider** for the store must answer
+`kids()` — a rotation is walked through it, and a provider without it would
+keep every session under an older kid unreadable the moment `current`
+moved (a `TypeError` at construction, not a mass logout later):
+
+```js
+sealedStore(store, {
+  keys: { current: () => vault.current, get: (kid) => vault.get(kid), kids: () => vault.kids },
+});
+```
+
 What it does not do: hide how many sessions exist or when they are touched,
 or protect a session from someone holding the key — every instance does.
 
