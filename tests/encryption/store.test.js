@@ -105,6 +105,44 @@ test('sealedStore: a process reads back what it wrote, and what another process 
   assert.deepStrictEqual(await a.get(TOKEN), { ...STATE, roles: [] });
 });
 
+test('sealedStore: an injected cipher keeps the key it was handed', async () => {
+  // The guide's shape — the key by reference, read at seal time — under
+  // which a sealer wiping the bytes after key() sealed every row with zeros.
+  const handed = [];
+  const xor = {
+    id: 'test-xor',
+    keyLength: 32,
+    nonceLength: 24,
+    tagLength: 4,
+    key: (raw) => {
+      handed.push(raw);
+      const tag = () => Buffer.from(raw.subarray(0, 4));
+      return {
+        seal: (nonce, plaintext) =>
+          Buffer.concat([Buffer.from(plaintext).map((byte) => byte ^ raw[0] ^ nonce[23]), tag()]),
+        open: (nonce, sealed) => {
+          const bytes = Buffer.from(sealed);
+          if (!bytes.subarray(-4).equals(tag())) throw new Error('bad tag');
+          return Buffer.from(bytes.subarray(0, -4).map((byte) => byte ^ raw[0] ^ nonce[23]));
+        },
+      };
+    },
+  };
+  const redis = new FakeRedis();
+  const keys = generateKey();
+  const a = sealedStore(redisStore(redis), { keys, cipher: xor, logger: false });
+  const b = sealedStore(redisStore(redis), { keys, cipher: xor, logger: false });
+  await a.set(TOKEN, STATE);
+  assert.deepStrictEqual(await b.get(TOKEN), STATE);
+  assert.ok(handed.length >= 2);
+  for (const raw of handed)
+    assert.ok(
+      raw.some((byte) => byte !== 0),
+      'the cipher saw the derived key, not zeros',
+    );
+  assert.ok(!redis.dump().includes('ada@example.com'), 'and the row is not readable as it rests');
+});
+
 test('sealedStore: a row moved into another session slot does not open there', async () => {
   const redis = new FakeRedis();
   const { logger, warnings } = logs();

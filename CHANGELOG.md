@@ -1383,6 +1383,20 @@ narrower promise — see
   `failPackets` — the http/sse leg's "this request died" answer — reads a
   frame too, so a call with bytes that failed no longer waits out its
   `callTimeout`.
+- **An injected `Cipher` sealed envelopes under an all-zero key.** The
+  envelope sealer behind `rooms.encryption`, `cluster.encryption`, every
+  broker binding's `encryption` and `sealedStore` wiped the derived subkey
+  right after `cipher.key(subkey)` — correct for the built-in ciphers,
+  which copy it into a `KeyObject`, and exactly wrong for a cipher that
+  keeps the reference, which is the shape the guide shows (`key: (raw) =>
+  ({ seal: … xchacha20poly1305(raw, …) })`): every message was sealed with
+  32 zero bytes, and its opener, seeing the same zeros, opened it. From
+  `key(raw)` on the bytes belong to the cipher (the contract says so now);
+  the sealer wipes only what a cipher built by wrpc was handed. The probe
+  that admits a cipher is a round trip under a random key — one that
+  cannot open its own seal is refused where it is configured — and the
+  guide no longer suggests an injected cipher for a Noise session, whose
+  server half takes the two built-in names only.
 
 ## [1.0.0] - 2026-08-23
 

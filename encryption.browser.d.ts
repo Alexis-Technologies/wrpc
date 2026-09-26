@@ -35,6 +35,7 @@ export interface Cipher {
   readonly keyLength: number;
   readonly nonceLength: number;
   readonly tagLength: number;
+  /** From this call on `raw` is the cipher's: wrpc neither reuses nor wipes it, so keeping the reference is fine. */
   key(raw: Bytes): CipherKey | Promise<CipherKey>;
 }
 

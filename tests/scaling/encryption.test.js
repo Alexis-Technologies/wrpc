@@ -444,25 +444,49 @@ test('sealer: replayWindow: false delivers a repeat — for a carrier that redel
   assert.strictEqual(b.open(kid, sealed, 'topic').toString(), 'again');
 });
 
-test('envelope: an injected cipher rides under the injected suite, and must answer synchronously', () => {
-  const xor = {
-    id: 'test-xor',
-    keyLength: 32,
-    nonceLength: 24,
-    tagLength: 4,
-    key: (raw) => ({
-      seal: (nonce, plaintext) =>
-        Buffer.concat([plaintext.map((byte) => byte ^ raw[0] ^ nonce[23]), Buffer.from('TAG!')]),
+// A toy cipher in the guide's shape — the key kept by REFERENCE, read at
+// seal time — whose tag depends on the key: the two properties that catch a
+// sealer wiping the bytes it handed over (both ends then agree on zeros).
+const xorCipher = (handed = []) => ({
+  id: 'test-xor',
+  keyLength: 32,
+  nonceLength: 24,
+  tagLength: 4,
+  key: (raw) => {
+    handed.push(raw);
+    const tag = () => Buffer.from(raw.subarray(0, 4));
+    return {
+      seal: (nonce, plaintext) => Buffer.concat([plaintext.map((byte) => byte ^ raw[0] ^ nonce[23]), tag()]),
       open: (nonce, sealed) => {
-        if (sealed.subarray(-4).toString() !== 'TAG!') throw new Error('bad tag');
+        if (!sealed.subarray(-4).equals(tag())) throw new Error('bad tag');
         return Buffer.from(sealed.subarray(0, -4).map((byte) => byte ^ raw[0] ^ nonce[23]));
       },
-    }),
-  };
+    };
+  },
+});
+
+test('envelope: an injected cipher rides under the injected suite, and must answer synchronously', () => {
+  const handed = [];
+  const xor = xorCipher(handed);
   const [a, b] = sealerPair({ cipher: xor });
   const { kid, sealed } = a.seal(Buffer.from('injected'), 'ch');
   assert.strictEqual(sealed[1], 0xff);
   assert.strictEqual(b.open(kid, sealed, 'ch').toString(), 'injected');
+  // The key handed to the cipher is the derived one, intact — not wiped
+  // under a cipher that kept the reference (the probe's random key first).
+  assert.ok(handed.length >= 2);
+  for (const raw of handed)
+    assert.ok(
+      raw.some((byte) => byte !== 0),
+      'a key that is not all zeros',
+    );
+  // And a sealer over ANOTHER keyring does not open it: the tag depends on
+  // the key, so agreeing on zeros would have passed this.
+  const [c] = sealerPair({ cipher: xorCipher() });
+  assert.throws(
+    () => c.open(kid, sealed, 'ch'),
+    (error) => error.name === 'OpenError' && error.reason === 'open',
+  );
   // A built-in sender is still opened by an instance that injects its own
   const builtin = createEnvelopeSealer({ encryption: { ...sealerPair()[2], keys: keysOf(b) }, layer: 'rooms' });
   const aes = builtin.seal(Buffer.from('from aes'), 'ch');
@@ -473,6 +497,22 @@ test('envelope: an injected cipher rides under the injected suite, and must answ
   const bad = (cipher, pattern) => assert.throws(() => normalizeEnvelopeEncryption({ keys, cipher }, 'x'), pattern);
   bad({ ...xor, key: async () => ({}) }, /synchronously/);
   bad({ ...xor, key: () => ({ seal: async () => Buffer.alloc(1), open() {} }) }, /synchronously/);
+  bad({ ...xor, key: () => ({ seal: () => Buffer.alloc(1), open: async () => Buffer.alloc(1) }) }, /synchronously/);
+  // The probe is a round trip: a cipher that cannot open its own seal, or
+  // opens it to something else, is refused where it is configured.
+  bad({ ...xor, key: () => ({ seal: () => Buffer.alloc(1), open: () => Buffer.from('other') }) }, /does not open/);
+  bad(
+    {
+      ...xor,
+      key: () => ({
+        seal: () => Buffer.alloc(1),
+        open: () => {
+          throw new Error('never');
+        },
+      }),
+    },
+    /does not open/,
+  );
   bad({ ...xor, nonceLength: 4 }, /nonce of 8 bytes or more/);
   bad({ id: 'x' }, /cipher must be a cipher name or a Cipher/);
   bad('aes-128-cbc', /unknown cipher/);

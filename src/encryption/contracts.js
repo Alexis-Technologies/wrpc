@@ -15,8 +15,11 @@
 // into a non-extractable CryptoKey (a promise), and a contract of
 // `seal(rawKey, …)` would pay that import per message — half as much again
 // (bench/encryption.js). On Node the prepared key saves nothing measurable;
-// it is the same shape so one caller serves both. Either method may answer
-// a promise; a carrier with no ordering queue refuses a cipher that does.
+// it is the same shape so one caller serves both. From key() on, `raw`
+// belongs to the cipher: wrpc neither reuses nor wipes it, so a cipher may
+// keep the reference (the guide's closure form) or copy it, as it likes.
+// Either method may answer a promise; a carrier with no ordering queue
+// refuses a cipher that does.
 //
 // A Dh is a Diffie-Hellman function in the shape Noise and HPKE's DHKEM
 // consume, keys as bytes on the wire and opaque in memory:

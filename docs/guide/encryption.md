@@ -49,7 +49,7 @@ What wrpc does **not** build in, and takes by injection instead:
 
 | You want | Inject |
 | --- | --- |
-| XChaCha20-Poly1305 / NaCl / libsodium, AES-GCM-SIV, AEGIS | a [`Cipher`](#contracts) |
+| XChaCha20-Poly1305 / NaCl / libsodium, AES-GCM-SIV, AEGIS | a [`Cipher`](#contracts), on the keyring layers and in HPKE (a Noise session names a built-in) |
 | Post-quantum key exchange — ML-KEM, X-Wing, a hybrid | a [`Kem`](#contracts) for HPKE. Node 24.7+ has ML-KEM natively; no browser's WebCrypto does yet, which is why it is not a built-in. |
 | Keys that live in a KMS or Vault | a [key provider](#keys) |
 | Double Ratchet, MLS, JWE | nothing — they produce bytes, and wrpc [carries bytes](#end-to-end) |
@@ -300,9 +300,16 @@ const cipher = {
   }),
 };
 
-rooms: { encryption: { keys, cipher } }   // must answer synchronously on a backplane or a broker
-createEncryption({ serverKey, cipher });  // may answer promises
+rooms: { encryption: { keys, cipher } }   // the keyring layers: must answer synchronously on a backplane or a broker
+createHpke({ kem, kdf, cipher });         // your own HPKE — may answer promises
 ```
+
+From `key(raw)` on the bytes are the cipher's: wrpc neither reuses nor
+wipes them, so keeping the reference, as above, is fine. A **Noise
+session** is the one place an injected cipher has nowhere to go for now:
+the server's `encryption.ciphers` is a list of the two built-in names, so a
+`Cipher` handed to `createEncryption` meets nothing on the other side —
+name `'aes-256-gcm'` or `'chacha20-poly1305'` there.
 
 `isCipher`, `isDh`, `isKem` and `isKeyProvider` are the checks the options
 run. A `Kem` (`createHpke({ kem, kdf, cipher })`) is where ML-KEM or a hybrid

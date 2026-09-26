@@ -44,19 +44,35 @@ const MAX_SENDERS = 1024;
 
 const SUITES = Object.freeze({ __proto__: null, 'aes-256-gcm': SUITE_AES, 'chacha20-poly1305': SUITE_CHACHA });
 
+// → { cipher, injected }: `injected` tells the sealer whose key bytes it
+// may wipe (see `owned` in createEnvelopeSealer).
 const resolveCipher = (value, name) => {
-  if (value === undefined || value === null || value === true) return aead();
-  if (typeof value === 'string') return aead({ algorithm: value });
+  if (value === undefined || value === null || value === true) return { cipher: aead(), injected: false };
+  if (typeof value === 'string') return { cipher: aead({ algorithm: value }), injected: false };
   if (!isCipher(value)) throw new TypeError(`${name}: cipher must be a cipher name or a Cipher`);
   // The nonce is the message counter, 64 bits at its end.
   if (value.nonceLength < 8) throw new TypeError(`${name}: cipher needs a nonce of 8 bytes or more`);
   // Probed where it is built, like a codec in normalizeSyncCompression: a
   // cipher over crypto.subtle answers promises, and nothing here can wait.
-  const key = value.key(new Uint8Array(value.keyLength));
-  if (isPromise(key) || isPromise(key.seal(new Uint8Array(value.nonceLength), new Uint8Array(1), null))) {
-    throw new TypeError(`${name}: cipher must answer synchronously on this carrier`);
+  // A round trip under a random key, so a cipher that seals but cannot
+  // open — or opens anything — fails at boot, not in a log line later.
+  const synchronous = `${name}: cipher must answer synchronously on this carrier`;
+  const key = value.key(crypto.randomBytes(value.keyLength));
+  if (isPromise(key)) throw new TypeError(synchronous);
+  const nonce = new Uint8Array(value.nonceLength);
+  const sealed = key.seal(nonce, Buffer.from('probe'), null);
+  if (isPromise(sealed)) throw new TypeError(synchronous);
+  let opened = null;
+  try {
+    opened = key.open(nonce, sealed, null);
+  } catch {
+    opened = null;
   }
-  return value;
+  if (isPromise(opened)) throw new TypeError(synchronous);
+  if (opened === null || Buffer.from(opened).toString() !== 'probe') {
+    throw new TypeError(`${name}: cipher does not open what it sealed`);
+  }
+  return { cipher: value, injected: true };
 };
 
 /**
@@ -84,9 +100,11 @@ const normalizeEnvelopeEncryption = (value, name) => {
   if (!seal && !acceptPlaintext) {
     throw new TypeError(`${name}: encryption with seal: false must accept plaintext — it sends nothing else`);
   }
+  const { cipher, injected } = resolveCipher(value.cipher, `${name}: encryption`);
   return Object.freeze({
     keys: normalizeKeys(value.keys, `${name}: encryption.keys`),
-    cipher: resolveCipher(value.cipher, `${name}: encryption`),
+    cipher,
+    injected,
     seal,
     acceptPlaintext,
     replayWindow: replayWindow === false ? 0 : replayWindow,
@@ -146,11 +164,24 @@ const readCounter = (buffer, offset) => buffer.readUInt32BE(offset) * 0x10000000
  * `echo: true` opens them like any other — a store reads back what it wrote.
  */
 const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = crypto.randomBytes }) => {
-  const { keys, cipher, replayWindow } = encryption;
+  const { keys, cipher, injected = false, replayWindow } = encryption;
   const ciphers = new Map([[SUITES[cipher.id] ?? SUITE_INJECTED, cipher]]);
+  // The ciphers built HERE — whose key() copies the bytes into a KeyObject
+  // — are the ones whose subkey may be wiped after key(). An injected
+  // cipher may close over `raw` (the guide's form does) and OWNS it from
+  // key() on: wiping it left such a cipher sealing under all zeros, with
+  // nothing to notice — its own opener saw the same zeros. Decided by how
+  // the cipher arrived, never by its id: an injected one may name a suite.
+  const owned = new WeakSet();
+  if (!injected) owned.add(cipher);
   // A built-in suite is opened whichever one this instance seals with, so a
   // change of cipher is a config change, not a rollout.
-  for (const id in SUITES) if (!ciphers.has(SUITES[id])) ciphers.set(SUITES[id], aead({ algorithm: id }));
+  for (const id in SUITES) {
+    if (ciphers.has(SUITES[id])) continue;
+    const built = aead({ algorithm: id });
+    ciphers.set(SUITES[id], built);
+    owned.add(built);
+  }
   const suite = SUITES[cipher.id] ?? SUITE_INJECTED;
   const label = `wrpc ${layer} v1`;
   const aadPrefix = `wrpc-sealed v1\0${layer}\0`;
@@ -161,11 +192,9 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
     const active = ciphers.get(suiteByte);
     const info = Buffer.from(`${label}\0${kid}\0${active.id}`);
     const subkey = Buffer.from(crypto.hkdfSync('sha256', master, salt, info, active.keyLength));
-    try {
-      return active.key(subkey);
-    } finally {
-      subkey.fill(0);
-    }
+    const key = active.key(subkey);
+    if (owned.has(active)) subkey.fill(0);
+    return key;
   };
 
   const nonceOf = (active, counter) => {

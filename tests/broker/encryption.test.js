@@ -247,6 +247,45 @@ test('broker encryption: the options are validated, and a keyring is not a sessi
   await timers.setTimeout(1);
 });
 
+test('broker sealing: an injected cipher keeps the key it was handed — another keyring does not open', () => {
+  // The guide's shape: the key kept by reference and read at seal time,
+  // with a tag that depends on it. A sealer wiping the bytes after key()
+  // left such a cipher sealing under zeros — on both ends, unnoticed.
+  const handed = [];
+  const xor = {
+    id: 'test-xor',
+    keyLength: 32,
+    nonceLength: 24,
+    tagLength: 4,
+    key: (raw) => {
+      handed.push(raw);
+      const tag = () => Buffer.from(raw.subarray(0, 4));
+      return {
+        seal: (nonce, plaintext) =>
+          Buffer.concat([Buffer.from(plaintext).map((byte) => byte ^ raw[0] ^ nonce[23]), tag()]),
+        open: (nonce, sealed) => {
+          const bytes = Buffer.from(sealed);
+          if (!bytes.subarray(-4).equals(tag())) throw new Error('bad tag');
+          return Buffer.from(bytes.subarray(0, -4).map((byte) => byte ^ raw[0] ^ nonce[23]));
+        },
+      };
+    },
+  };
+  const keys = generateKey();
+  const options = { layer: 'broker-log', replay: false };
+  const a = createBrokerSealing({ keys, cipher: xor }, 'x', options);
+  const b = createBrokerSealing({ keys, cipher: xor }, 'x', options);
+  const other = createBrokerSealing({ keys: generateKey(), cipher: xor }, 'x', options);
+  const sealed = a.seal('orders', { n: 1 }, 'body', {});
+  assert.strictEqual(Buffer.from(b.open('orders', sealed).body).toString(), 'body');
+  assert.deepStrictEqual(other.open('orders', sealed), { refused: 'open' });
+  for (const raw of handed)
+    assert.ok(
+      raw.some((byte) => byte !== 0),
+      'the cipher saw the derived key, not zeros',
+    );
+});
+
 test('broker sealing: headers go inside as a null-prototype string map; off is null', () => {
   const keys = generateKey();
   assert.strictEqual(createBrokerSealing(null, 'x', { layer: 'broker-log', replay: false }), null);
