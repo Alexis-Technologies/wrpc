@@ -979,6 +979,12 @@ const createAmqpBroker = (options = {}) => {
       { noAck: true },
     );
     return async () => {
+      // An inbox's own queue is unbound FIRST, so a publish racing this stop
+      // gets a basic.return (nobody there) rather than a nack from a queue
+      // being deleted under it. A group's queue is shared and stays bound.
+      if (group === null || group === undefined) {
+        await channel.unbindQueue(queue, exchangeName, routingKeyOf(address)).catch(() => {});
+      }
       try {
         await channel.cancel(consumerTag);
       } catch {
@@ -1006,7 +1012,11 @@ const createAmqpBroker = (options = {}) => {
     if (timeout > 0) properties.expiration = String(Math.round(timeout));
     await new Promise((resolve, reject) => {
       channel.publish(exchangeName, routingKeyOf(address), Buffer.from(toBytes(body)), properties, (error) => {
-        if (error) return void reject(error);
+        // A nack: the broker took nothing — the queue it routed to was
+        // being deleted under a listener that just stopped, an overflow, a
+        // node on its way out. Whichever, the message reached nobody, which
+        // is the 503 the RPC binding retries or fails on.
+        if (error) return void reject(codedError(`Broker refused the message for ${address}: ${error.message}`, 503));
         if (returned.delete(messageId)) return void reject(codedError(`No listener at ${address}`, 503));
         resolve();
       });
