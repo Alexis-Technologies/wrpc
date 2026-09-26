@@ -88,7 +88,7 @@ const brokerFeed = (broker, topic, options = {}) => {
     return { after: id, code: null, reason: null };
   };
 
-  return async function* feed(context, args, { lastEventId = null, signal = null } = {}) {
+  return async function* feed(context, args, { lastEventId = null, signal: outer = null } = {}) {
     const name = typeof topic === 'function' ? await topic(context, args) : topic;
     if (typeof name !== 'string' || name.length === 0) {
       throw codedError('brokerFeed: the topic resolver must answer a non-empty string', 500);
@@ -101,70 +101,84 @@ const brokerFeed = (broker, topic, options = {}) => {
       const level = reason === 'signature' ? 'warn' : 'debug';
       context?.log?.[level]({ event: 'broker.feed.resume', topic: name, reason, length: lastEventId.length });
     }
-    for (;;) {
-      if (signal?.aborted) return;
-      let read;
-      if (code !== null) {
-        if (!onGap) {
-          throw codedError(code === 400 ? 'Invalid event id' : 'Event history is no longer available', code);
+    // Every read this feed opens is scoped to the feed: a read left behind
+    // — the gap read a snapshot ran under, a read a refused position ended
+    // — is aborted when the feed ends, not when the subscriber's own signal
+    // (which a pump may never fire) lets it go.
+    const scope = new AbortController();
+    const signal = scope.signal;
+    const onAbort = () => scope.abort();
+    outer?.addEventListener('abort', onAbort, { once: true });
+    if (outer?.aborted) scope.abort();
+    try {
+      for (;;) {
+        if (signal.aborted) return;
+        let read;
+        if (code !== null) {
+          if (!onGap) {
+            throw codedError(code === 400 ? 'Invalid event id' : 'Event history is no longer available', code);
+          }
+          // A subscriber that fell behind retention, or one resuming from a
+          // position this log no longer has: real event loss, answered with a
+          // snapshot. Worth a line — it is the signal retention is tuned from.
+          context?.log?.info({ event: 'broker.feed.gap', topic: name, code });
+          // Positioned BEFORE the snapshot is built: whatever is appended
+          // while the application assembles it is read afterwards, not lost.
+          read = log.read(name, { from: 'latest', signal });
+          await read.ready;
+          const snapshot = await onGap(context, args, { lastEventId: resumedFrom, code });
+          if (isIterable(snapshot)) yield* snapshot;
+          else if (snapshot !== undefined) yield snapshot;
+          code = null;
+        } else {
+          read = log.read(name, after !== null ? { after, signal } : { from, signal });
         }
-        // A subscriber that fell behind retention, or one resuming from a
-        // position this log no longer has: real event loss, answered with a
-        // snapshot. Worth a line — it is the signal retention is tuned from.
-        context?.log?.info({ event: 'broker.feed.gap', topic: name, code });
-        // Positioned BEFORE the snapshot is built: whatever is appended
-        // while the application assembles it is read afterwards, not lost.
-        read = log.read(name, { from: 'latest', signal });
-        await read.ready;
-        const snapshot = await onGap(context, args, { lastEventId: resumedFrom, code });
-        if (isIterable(snapshot)) yield* snapshot;
-        else if (snapshot !== undefined) yield snapshot;
-        code = null;
-      } else {
-        read = log.read(name, after !== null ? { after, signal } : { from, signal });
-      }
-      let delivered = false;
-      try {
-        for await (const raw of read) {
-          delivered = true;
-          after = raw.id;
-          let entry = raw;
-          if (sealing !== null) {
-            const opened = sealing.open(name, { headers: raw.headers, body: raw.value });
-            if (opened.refused !== undefined) {
-              // Skipped like an undecodable entry — and never yielded as it is.
-              context?.log?.warn({ event: 'feed.refused', topic: name, id: raw.id, reason: opened.refused });
+        let delivered = false;
+        try {
+          for await (const raw of read) {
+            delivered = true;
+            after = raw.id;
+            let entry = raw;
+            if (sealing !== null) {
+              const opened = sealing.open(name, { headers: raw.headers, body: raw.value });
+              if (opened.refused !== undefined) {
+                // Skipped like an undecodable entry — and never yielded as it is.
+                context?.log?.warn({ event: 'feed.refused', topic: name, id: raw.id, reason: opened.refused });
+                continue;
+              }
+              if (opened.sealed) entry = { ...raw, headers: opened.headers, value: toText(opened.body) };
+            }
+            let value;
+            try {
+              value = decodeValue(entry.value);
+            } catch (error) {
+              // One undecodable entry must not end every subscriber's feed.
+              context?.log?.warn({ event: 'feed.decode', topic: name, id: entry.id, err: error });
               continue;
             }
-            if (opened.sealed) entry = { ...raw, headers: opened.headers, value: toText(opened.body) };
+            if (map !== null) {
+              value = await map(value, entry, context);
+              if (value === undefined) continue;
+            }
+            yield tracked(secret === null ? entry.id : signId(secret, entry.id), value);
           }
-          let value;
-          try {
-            value = decodeValue(entry.value);
-          } catch (error) {
-            // One undecodable entry must not end every subscriber's feed.
-            context?.log?.warn({ event: 'feed.decode', topic: name, id: entry.id, err: error });
-            continue;
-          }
-          if (map !== null) {
-            value = await map(value, entry, context);
-            if (value === undefined) continue;
-          }
-          yield tracked(secret === null ? entry.id : signId(secret, entry.id), value);
+          return;
+        } catch (error) {
+          // A position the log refuses — at the start (a stale or forged id)
+          // or mid-stream (a reader the retention overtook) — becomes a gap
+          // the application can answer with a snapshot.
+          const refused = error?.code === 410 || (error?.code === 400 && !delivered);
+          if (!refused || signal.aborted) throw error;
+          code = error.code;
+          // What the client itself holds: its own id at the start, the last
+          // token this feed handed it mid-stream.
+          resumedFrom = after === null ? lastEventId : secret === null ? after : signId(secret, after);
+          after = null;
         }
-        return;
-      } catch (error) {
-        // A position the log refuses — at the start (a stale or forged id)
-        // or mid-stream (a reader the retention overtook) — becomes a gap
-        // the application can answer with a snapshot.
-        const refused = error?.code === 410 || (error?.code === 400 && !delivered);
-        if (!refused || signal?.aborted) throw error;
-        code = error.code;
-        // What the client itself holds: its own id at the start, the last
-        // token this feed handed it mid-stream.
-        resumedFrom = after === null ? lastEventId : secret === null ? after : signId(secret, after);
-        after = null;
       }
+    } finally {
+      outer?.removeEventListener('abort', onAbort);
+      scope.abort();
     }
   };
 };

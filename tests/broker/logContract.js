@@ -83,6 +83,42 @@ const runLogContract = async (t, name, harness) => {
     );
   });
 
+  await t.test(`${name}: 'latest' keeps what is appended between ready and the first next()`, async (sub) => {
+    const { log } = await open(sub);
+    const topic = await topicFor('log-ready');
+    await appendAll(log, topic, ['old']);
+    const read = log.read(topic, { from: 'latest' });
+    await read.ready;
+    await appendAll(log, topic, ['during']);
+    // A window, not a wait: by now the entry sits in the shared tail's queue
+    // on every adapter, and the read has not been iterated yet. A position
+    // taken at the first next() rather than at ready would call it covered.
+    await timers.setTimeout(50);
+    const pending = collect(read, 2, { timeout });
+    await appendAll(log, topic, ['after']);
+    assert.deepStrictEqual(
+      (await pending).map((entry) => entry.value),
+      ['during', 'after'],
+    );
+  });
+
+  await t.test(`${name}: a read abandoned before its first next() releases the broker's live read`, async (sub) => {
+    const env = await open(sub);
+    // Only where the harness can count: an in-process broker has nothing to
+    // release, and a fake can say how many readers are joined.
+    if (typeof env.liveReads !== 'function') return;
+    const topic = await topicFor('log-abandon');
+    const read = env.log.read(topic, { from: 'latest' });
+    await read.ready;
+    await read[Symbol.asyncIterator]().return();
+    await waitFor(() => env.liveReads() === 0, { timeout, message: `live reads held: ${env.liveReads()}` });
+    const controller = new AbortController();
+    const other = env.log.read(topic, { from: 'latest', signal: controller.signal });
+    await other.ready;
+    controller.abort();
+    await waitFor(() => env.liveReads() === 0, { timeout, message: `live reads held: ${env.liveReads()}` });
+  });
+
   await t.test(`${name}: a yielded id resumes exactly after its entry`, async (sub) => {
     const { log } = await open(sub);
     const topic = await topicFor('log-resume');

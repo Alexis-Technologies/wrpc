@@ -1374,6 +1374,25 @@ narrower promise — see
   reader whose subscribe or run fails leaves neither a joined consumer nor
   a group behind (it used to leave both, one per failed read). A group the
   broker refuses to delete yet (`NON_EMPTY_GROUP`) is a debug line.
+- **A `'latest'` feed read lost what was appended between `ready` and its
+  first `next()`.** `TopicTails` took a reader's start position from the
+  shared tail at the first `next()`, not at `ready` — and the tail had
+  already advanced past whatever arrived in between, so those entries,
+  sitting in the reader's own queue, were called "covered" and dropped.
+  The contract says entries appended after `ready` are read; the position
+  is fixed at `ready` now, on every adapter built on `TopicTails` (Redis,
+  NATS, AMQP, Kafka — `MemoryBroker` always did), and the log contract
+  pins it.
+- **A feed read closed before its first `next()` held the live tail
+  forever.** `return()` on an async generator that never started runs no
+  `finally`, so a subscription refused at once (a stale `lastEventId`, a
+  snapshot that threw) left its reader on the shared tail — one broker
+  consumer per such subscription, for the life of the process — and the
+  same for a read whose iterator was taken and abandoned. The place is
+  released from the iterator's `return`/`throw` now, an abort lets go until
+  the body runs, a tail still positioning is stopped once it is (never in
+  the middle of the adapter's setup), and `brokerFeed` scopes every read it
+  opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
 - **WebRTC: roster data could impersonate another peer.** `PeerHost.attach`

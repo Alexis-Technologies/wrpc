@@ -29,7 +29,9 @@
 //       iteration throw a coded 410; an id beyond the tip, a coded 400.
 //     - without `after`: `from: 'latest'` (default) reads only new entries,
 //       `'earliest'` everything retained.
-//     - `signal` aborting, or breaking out of the loop, ends it cleanly.
+//     - `signal` aborting, or breaking out of the loop, ends it cleanly; a
+//       read never iterated, or returned before its first next(), holds
+//       nothing once its signal aborts or return() was called.
 //   parseId(text)                                   -> id | null
 //     Syntax only — `lastEventId` is peer-controlled, and garbage must be
 //     refused before it reaches the broker.

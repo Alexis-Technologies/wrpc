@@ -66,7 +66,7 @@ class TopicTails {
     let tail = this.#tails.get(topic);
     if (!tail) {
       const controller = new AbortController();
-      tail = { readers: new Set(), ready: null, current: null, controller, failure: null };
+      tail = { readers: new Set(), ready: null, current: null, positioned: false, controller, failure: null };
       const onEntry = (entry) => {
         tail.current = this.#advance(tail.current, entry);
         for (const member of tail.readers) member.push(entry);
@@ -76,6 +76,12 @@ class TopicTails {
         .then(
           (cursor) => {
             tail.current = cursor ?? null;
+            tail.positioned = true;
+            // A 'latest' reader starts where the tail stood the moment it
+            // was READY — not where it stands at the reader's first next():
+            // what is appended in between is in the reader's queue, and a
+            // start taken later would call it covered and drop it.
+            for (const member of tail.readers) member.start = tail.current;
           },
           (error) => {
             tail.failure = error;
@@ -88,6 +94,7 @@ class TopicTails {
       this.#tails.set(topic, tail);
     }
     tail.readers.add(reader);
+    if (tail.positioned) reader.start = tail.current;
     return tail;
   }
 
@@ -95,7 +102,14 @@ class TopicTails {
     tail.readers.delete(reader);
     if (tail.readers.size > 0 || this.#tails.get(topic) !== tail) return;
     this.#tails.delete(topic);
-    tail.controller.abort();
+    this.#stop(tail);
+  }
+
+  // A tail still positioning is stopped once it is: an adapter's live()
+  // aborted in the middle of its own setup is a consumer half opened.
+  #stop(tail) {
+    if (tail.positioned || tail.failure !== null) return void tail.controller.abort();
+    void tail.ready.then(() => tail.controller.abort());
   }
 
   read(topic, { after = null, from = 'latest', signal = null } = {}) {
@@ -105,6 +119,8 @@ class TopicTails {
       queue: [],
       lagging: false,
       failure: null,
+      // Where a 'latest' read starts: the tail's cursor as of ready (#join).
+      start: null,
       push(entry) {
         if (reader.lagging) return;
         if (reader.queue.length >= tails.#highWaterMark) {
@@ -121,13 +137,18 @@ class TopicTails {
     const tail = this.#join(topic, reader);
     const catchUp = (after !== null && after !== undefined) || from === 'earliest';
 
+    // `entered`: the generator's body ran — and with it the `finally` that
+    // leaves the tail. A generator returned before its first next() never
+    // runs its body, so its place is released from the iterator instead.
+    let entered = false;
     const iterate = async function* () {
+      entered = true;
       const onAbort = () => wake?.();
       signal?.addEventListener('abort', onAbort, { once: true });
       try {
         await tail.ready;
         if (tail.failure) throw tail.failure;
-        let cursor = catchUp ? (after ?? null) : tail.current;
+        let cursor = catchUp ? (after ?? null) : reader.start;
         let pending = catchUp;
         for (;;) {
           if (signal?.aborted) return;
@@ -172,8 +193,8 @@ class TopicTails {
 
     let started = false;
     // A read that is never iterated still holds a place on the tail; its
-    // signal is how it lets go.
-    signal?.addEventListener('abort', () => started || tails.#leave(topic, tail, reader), { once: true });
+    // signal is how it lets go — until the body runs, whose `finally` does.
+    signal?.addEventListener('abort', () => entered || tails.#leave(topic, tail, reader), { once: true });
     const ready = tail.ready.then(() => {
       if (tail.failure) throw tail.failure;
     });
@@ -185,13 +206,30 @@ class TopicTails {
         // would split its queue between two consumers.
         if (started) throw codedError('A log read can be iterated once', 500);
         started = true;
-        return iterate();
+        const iterator = iterate();
+        // return()/throw() before the first next() end a generator without
+        // running its body: the reader's place on the tail is released here
+        // instead — a feed that closed its read at once used to hold a live
+        // reader for the life of the broker. `next` is not wrapped: hot path.
+        const release = () => {
+          if (!entered) tails.#leave(topic, tail, reader);
+        };
+        const { return: end, throw: raise } = iterator;
+        iterator.return = (value) => {
+          release();
+          return end.call(iterator, value);
+        };
+        iterator.throw = (error) => {
+          release();
+          return raise.call(iterator, error);
+        };
+        return iterator;
       },
     };
   }
 
   close() {
-    for (const tail of this.#tails.values()) tail.controller.abort();
+    for (const tail of this.#tails.values()) this.#stop(tail);
     this.#tails.clear();
   }
 }

@@ -223,6 +223,67 @@ test('TopicTails: iteration rules', async (t) => {
     assert.strictEqual(tails.size, 0);
   });
 
+  await t.test("'latest' keeps what is appended between ready and the first next()", async () => {
+    const log = createLog();
+    const tails = log.tails();
+    log.append('t', 'old');
+    const read = tails.read('t');
+    await read.ready;
+    log.append('t', 'during');
+    await timers.setTimeout(5);
+    const pending = collect(read, 2);
+    log.append('t', 'after');
+    assert.deepStrictEqual(
+      (await pending).map((entry) => entry.value),
+      ['during', 'after'],
+    );
+  });
+
+  await t.test('a read returned or thrown into before its first next() releases the tail', async () => {
+    const log = createLog();
+    const tails = log.tails();
+    const read = tails.read('t');
+    await read.ready;
+    assert.strictEqual(tails.size, 1);
+    await read[Symbol.asyncIterator]().return();
+    assert.strictEqual(tails.size, 0, 'return() before next() let go');
+    const thrown = tails.read('t');
+    await thrown.ready;
+    await assert.rejects(thrown[Symbol.asyncIterator]().throw(new Error('gone')));
+    assert.strictEqual(tails.size, 0, 'throw() before next() let go');
+    // A read whose iterator was taken but never advanced still lets go
+    // through its signal.
+    const controller = new AbortController();
+    const other = tails.read('t', { signal: controller.signal });
+    await other.ready;
+    const iterator = other[Symbol.asyncIterator]();
+    controller.abort();
+    assert.strictEqual(tails.size, 0, 'the abort let go');
+    await iterator.return();
+  });
+
+  await t.test('a reader leaving a tail that is still positioning stops it once it is', async () => {
+    const log = createLog();
+    let release = null;
+    const gate = new Promise((resolve) => (release = resolve));
+    const aborted = [];
+    const tails = log.tails({
+      live: async (topic, { signal }) => {
+        signal.addEventListener('abort', () => aborted.push(signal.aborted), { once: true });
+        await gate;
+        return null;
+      },
+    });
+    const read = tails.read('t');
+    await read[Symbol.asyncIterator]().return();
+    assert.strictEqual(tails.size, 0, 'forgotten at once');
+    assert.deepStrictEqual(aborted, [], 'but not aborted in the middle of its setup');
+    release();
+    await read.ready;
+    await timers.setTimeout(1);
+    assert.deepStrictEqual(aborted, [true], 'stopped once positioned');
+  });
+
   await t.test('an abort during catch-up ends the read', async () => {
     const log = createLog();
     const tails = log.tails({ page: 2 });

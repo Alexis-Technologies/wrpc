@@ -60,6 +60,8 @@ for (const flavor of FLAVORS) {
             await broker.close();
             await peer.close();
           },
+          // Joined consumers on the fake: what an abandoned read leaks as.
+          liveReads: () => kafka.server.members,
           beyondTip: (_topic, id) => {
             const cursor = decodeVector(id);
             for (const partition of Object.keys(cursor)) cursor[partition] += 1000;
