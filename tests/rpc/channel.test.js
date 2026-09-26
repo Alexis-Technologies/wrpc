@@ -275,6 +275,32 @@ test('attachChannel: a static channel cannot come back — reconnect: false ends
   assert.strictEqual(client.active, false);
 });
 
+test('attachChannel: under encryption.required a data channel is served as DTLS — unless told it is not', async (t) => {
+  const { generateKey } = require('../../encryption.js');
+  const served = routerOf({});
+  const rpc = new RpcServer({
+    router: served.router,
+    logger: quiet,
+    encryption: { keys: generateKey(), required: true },
+  });
+  t.after(() => rpc.close());
+  const pair = await rawChannelPair(t);
+  const attached = attachChannel(rpc, pair.b, { peer: 'dtls' });
+  assert.strictEqual(rpc.getClient(attached.id), attached, 'vouched for by default: an RTCDataChannel is DTLS');
+  const client = await WrpcClient.connect('webrtc:server', {
+    transport: 'webrtc',
+    channel: pair.a,
+    heartbeat: false,
+    reconnect: false,
+  });
+  t.after(() => client.close());
+  await client.load('calc');
+  assert.strictEqual(await client.api.calc.add({ a: 1, b: 1 }), 2);
+  // A channel the application knows to be relayed in the clear is refused.
+  const relayed = await rawChannelPair(t);
+  assert.throws(() => attachChannel(rpc, relayed.b, { encrypted: false }), /encryption is required/);
+});
+
 test('attachChannel: a framing error from the client is logged and closes the channel', async (t) => {
   const warnings = [];
   const logger = { ...quiet, warn: (entry) => warnings.push(entry), child: () => logger };

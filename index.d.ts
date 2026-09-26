@@ -553,6 +553,12 @@ export declare class RpcServer extends Emitter {
   /** The per-connection caps every attached client gets. */
   readonly limits: Readonly<{ maxBatch: number; maxSubscriptions: number; maxCalls: number }>;
   /**
+   * Whether `encryption.required` is on: what a binding built on `attach`
+   * (the broker consumers, a raw data channel) reads to vouch for its
+   * transport, or refuse to attach, before a delivery arrives.
+   */
+  readonly encryptionRequired: boolean;
+  /**
    * True while drain() runs: new calls are refused with 503. Draining is
    * announced once as a `'draining'` event, so a binding that pulls work
    * on its own (a broker consumer) stops fetching.

@@ -24,8 +24,21 @@ const { RtcPeerTransport } = require('./transport.js');
  */
 const attachChannel = (server, channel, options = {}) => {
   if (typeof server?.attach !== 'function') throw new TypeError('attachChannel: a server with attach() is required');
-  const { peer, headers, data, remoteAddress, maxMessageSize, framing, highWaterMark, lowWaterMark, compression } =
-    options;
+  const {
+    peer,
+    headers,
+    data,
+    remoteAddress,
+    maxMessageSize,
+    framing,
+    highWaterMark,
+    lowWaterMark,
+    compression,
+    // An RTCDataChannel is DTLS end to end, so under `encryption.required`
+    // the channel vouches for itself; `false` is for a channel the
+    // application knows to be relayed in the clear.
+    encrypted = true,
+  } = options;
   let client = null;
   const transport = new RtcPeerTransport(channel, {
     peer,
@@ -37,7 +50,7 @@ const attachChannel = (server, channel, options = {}) => {
     onError: (error) => client?.log.warn({ event: 'channel.error', peer: transport.source, err: error }),
   });
   const observed = headers || data || remoteAddress ? buildMeta({ headers, data, remoteAddress }) : null;
-  client = server.attach(transport, { meta: observed });
+  client = server.attach(transport, { meta: observed, encrypted: encrypted === true });
   return client;
 };
 

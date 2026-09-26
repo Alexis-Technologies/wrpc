@@ -181,6 +181,14 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
   if (onDeadLetter !== null && typeof onDeadLetter !== 'function') {
     throw new TypeError('attachConsumers: onDeadLetter must be a function');
   }
+  // A server that serves sealed transports only: a binding that does not
+  // seal would attach clients it refuses every delivery on — and used to
+  // attach them anyway, with every delivery settling nowhere.
+  if (rpc.encryptionRequired === true && sealing === null) {
+    throw new TypeError(
+      'attachConsumers: the server requires encryption — bind with { encryption: { keys } } (the sealed log)',
+    );
+  }
   const router = rpc.router;
   const log = createLoggerWriter(logger ?? globalThis.console).child({ component: 'broker', broker: system });
   const { maxCalls } = rpc.limits;
@@ -295,7 +303,10 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
 
   const attachClient = (identity) => {
     const transport = new ConsumerTransport(`broker:${policy.queue}`);
-    const client = rpc.attach(transport, { persistent: false, ...identity });
+    // Vouched for at the binding, not per delivery: a sealing binding
+    // opens every delivery before it dispatches (a plaintext one under
+    // `required` is dead-lettered below), so its clients are encrypted ones.
+    const client = rpc.attach(transport, { persistent: false, encrypted: sealing !== null, ...identity });
     client.spanKind = SPAN_KIND_CONSUMER;
     client.spanAttributes = spanAttributes;
     return { client, transport };
@@ -389,6 +400,17 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
       if (opened.sealed) {
         body = toText(opened.body);
         headers = opened.headers;
+      } else if (rpc.encryptionRequired === true) {
+        // acceptPlaintext let it through the opener; the server's rule is
+        // stricter than the rollout's, and a plaintext delivery is not
+        // served — parity with `unsealed`.
+        log.warn({ event: 'broker.refused', queue: policy.queue, reason: 'plaintext' });
+        return void (await settle(
+          delivery,
+          { action: 'dead', delay: 0 },
+          400,
+          new Error('Plaintext delivery refused'),
+        ));
       }
     }
     let args;
@@ -397,7 +419,18 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     } catch (error) {
       return void (await settle(delivery, { action: 'dead', delay: 0 }, 400, error));
     }
-    const { client, transport } = clientFor(headers);
+    // attach() may refuse (a transport the server will not serve, a bad
+    // identity): a bounded retry, then dead — never a delivery that settles
+    // nowhere.
+    let attached;
+    try {
+      attached = clientFor(headers);
+    } catch (error) {
+      log.error({ err: error, event: 'broker.attach', queue: policy.queue });
+      const decision = decide({ code: 500, attempt: delivery.attempt, retry: policy.retry, draining: rpc.draining });
+      return void (await settle(delivery, decision, 500, error));
+    }
+    const { client, transport } = attached;
     const id = client.generateId();
     const meta = { messageId: delivery.id, attempt: delivery.attempt, queue: policy.queue };
     for (const name of policy.meta) {

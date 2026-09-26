@@ -458,6 +458,52 @@ test('attachConsumers: a start failure stops whatever already started', async (t
   assert.strictEqual(stops, 1);
 });
 
+test('attachConsumers: under encryption.required a binding that does not seal is refused, a plaintext delivery is dead', async (t) => {
+  const { generateKey } = require('../../encryption.js');
+  const { createBrokerSealing } = require('../../src/broker/sealing.js');
+  const keys = generateKey();
+  const handled = [];
+  const { broker, rpc } = boot(
+    t,
+    {
+      jobs: {
+        consumes: {
+          sealed: procedure({ access: 'public', handler: async (_ctx, args) => void handled.push(args) }),
+        },
+      },
+    },
+    { rpc: { encryption: { keys, required: true } } },
+  );
+  // Fail-fast: a binding without a sealer would attach clients the server
+  // refuses every delivery on — it used to, and every delivery settled nowhere.
+  await assert.rejects(attachConsumers(rpc, broker, {}), /requires encryption/);
+  const dead = await drain(t, broker, 'sealed.dlq');
+  const deadLetters = [];
+  const consumers = await attachConsumers(
+    rpc,
+    broker,
+    {},
+    {
+      encryption: { keys, acceptPlaintext: true },
+      onDeadLetter: (info) => deadLetters.push(info),
+    },
+  );
+  t.after(() => consumers.stop());
+  // A sealed delivery is served; a plaintext one — which acceptPlaintext
+  // lets through the opener — is not what a `required` server serves.
+  const sealing = createBrokerSealing({ keys }, 'test', { layer: 'broker-log', replay: false, text: true });
+  const frame = sealing.seal('sealed', {}, JSON.stringify({ n: 1 }), {});
+  await broker.queue.produce('sealed', frame.body, { headers: frame.headers });
+  await broker.queue.produce('sealed', JSON.stringify({ n: 2 }));
+  await waitFor(() => handled.length === 1 && dead.length === 1);
+  assert.deepStrictEqual(handled, [{ n: 1 }]);
+  assert.match(dead[0].headers['x-wrpc-dead-reason'], /^400 Plaintext/);
+  assert.deepStrictEqual(
+    deadLetters.map((info) => [info.queue, info.code]),
+    [['sealed', 400]],
+  );
+});
+
 test('attachConsumers: a settlement the broker refuses is logged, never thrown', async (t) => {
   const errors = [];
   const { broker, rpc } = boot(t, {

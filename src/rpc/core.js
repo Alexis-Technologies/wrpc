@@ -570,6 +570,15 @@ class RpcServer extends Emitter {
     return Object.freeze({ ...this.#limits });
   }
 
+  /**
+   * Whether `encryption.required` is on: what a binding built on `attach`
+   * (the broker consumers, a raw data channel) reads to vouch for its
+   * transport — or refuse to attach at all — before a delivery arrives.
+   */
+  get encryptionRequired() {
+    return this.#encryption?.required === true;
+  }
+
   /** The injected codec option, verbatim — how an adapter inspects codec.rest. */
   get codec() {
     return this.#codecOption;

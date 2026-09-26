@@ -203,7 +203,12 @@ nothing plaintext is served on any transport — sockets close `1008`, HTTP
 answers `426` (the fastify adapter's native REST routes included: a
 plaintext request there is refused before a client is added), and a
 transport the core cannot see into (`attach`, the broker binding) must be
-one that seals.
+one that seals: `attachConsumers` refuses to bind at all without
+`encryption` and dead-letters a plaintext delivery its `acceptPlaintext`
+let through, `attachBrokerRpc` serves sealed sessions only, and
+`attachChannel` vouches for a data channel (DTLS end to end) unless told
+`encrypted: false`. `rpc.encryptionRequired` is the flag a binding of your
+own reads.
 
 ### Bind your credentials to the channel
 

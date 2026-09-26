@@ -129,11 +129,18 @@ export interface AttachChannelOptions
   headers?: Record<string, string>;
   data?: Record<string, unknown>;
   remoteAddress?: string;
+  /**
+   * Whether the channel is one the server may serve under
+   * `encryption.required`. Default true: an RTCDataChannel is DTLS end to
+   * end. `false` for a channel the application knows to be relayed in the
+   * clear — refused by such a server.
+   */
+  encrypted?: boolean;
 }
 
 /** What attachChannel needs of a server: RpcServer's `attach`. */
 export interface AttachingServer {
-  attach(transport: RtcPeerTransport, options?: { meta?: ClientMeta | null }): Client;
+  attach(transport: RtcPeerTransport, options?: { meta?: ClientMeta | null; encrypted?: boolean }): Client;
 }
 
 /**
