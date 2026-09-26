@@ -137,6 +137,10 @@ const consumer = await queue.consume('invoices', async (delivery) => {
 | `release()` | back to the queue now (a draining node handing work over) | unchanged |
 | `deadLetter(reason)` | moved to the `deadLetter` queue with `x-wrpc-dead-reason` (one line, at most 512 characters) and `x-wrpc-attempt` headers | — |
 
+- A handler that throws (or rejects) has settled nothing: the adapter
+  **retries** the delivery after a backoff (50 ms doubling to 1 s), attempt
+  + 1, and logs it — never a release, which would put the message back at the
+  head of the queue and spin it. `release()` is for draining and stopping.
 - The attempt counter belongs to the adapter, not the broker: RabbitMQ 4 does
   not count a requeue, so the adapters carry it in an `x-wrpc-attempt` header
   where the broker has none.

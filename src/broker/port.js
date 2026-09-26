@@ -59,6 +59,10 @@
 //       requeue), carried in `x-wrpc-attempt` where the broker has none.
 //     - release: back to the queue, attempt unchanged (a draining node
 //       handing work to a healthy one).
+//     - a handler that throws or rejects has settled nothing: the adapter
+//       RETRIES the delivery after a backoff (attempt + 1, `crashDelay` in
+//       retry.js) — never a release, which would put it back at the head
+//       and spin a queue whose handler always throws.
 //     - deadLetter: to the `deadLetter` queue with `x-wrpc-dead-reason` and
 //       `x-wrpc-attempt` headers, or dropped when none is configured. The
 //       reason is folded to ONE line of at most 512 characters (control

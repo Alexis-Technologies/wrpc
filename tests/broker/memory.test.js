@@ -2,6 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const timers = require('node:timers/promises');
 
 const { MemoryBroker, createMemoryBroker, isBroker } = require('../../broker.js');
 const { runBackplaneContract } = require('./backplaneContract.js');
@@ -199,4 +200,40 @@ test('MemoryBroker: retention and closing', async (t) => {
     await new Promise((resolve) => setTimeout(resolve, 10));
     assert.deepStrictEqual(seen, []);
   });
+});
+
+test('MemoryBroker: a handler that always throws is retried with backoff, not spun at the head', async (t) => {
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(() => broker.close());
+  const attempts = [];
+  await broker.queue.consume('q', (delivery) => {
+    attempts.push(delivery.attempt);
+    throw new Error('always');
+  });
+  await broker.queue.produce('q', 'x');
+  // It used to be released at the head and re-dispatched on a microtask:
+  // this timer never fired, and neither did any other in the process.
+  await timers.setTimeout(30);
+  assert.deepStrictEqual(attempts, [1], 'one attempt within the first backoff (50 ms)');
+  await waitFor(() => attempts.length === 2, { timeout: 500 });
+  assert.deepStrictEqual(attempts, [1, 2], 'a retry, attempt + 1 — not a release');
+});
+
+test('MemoryBroker: trim() compacts the dead prefix and readers stay consistent across it', async (t) => {
+  const broker = new MemoryBroker({ logger: quiet, retention: { maxEntries: 10_000 } });
+  t.after(() => broker.close());
+  for (let i = 0; i < 3000; i++) await broker.log.append('t', String(i));
+  const read = broker.log.read('t', { from: 'earliest' });
+  const iterator = read[Symbol.asyncIterator]();
+  assert.strictEqual((await iterator.next()).value.value, '0');
+  // The head moves past half the array, so the prefix is sliced away — the
+  // same compaction the cap does; trim() used to leave it in place.
+  broker.trim('t', 1);
+  await assert.rejects(iterator.next(), (error) => error.code === 410, 'a reader behind the trim fails 410');
+  await broker.log.append('t', '3000');
+  const kept = await collect(broker.log.read('t', { from: 'earliest' }), 2);
+  assert.deepStrictEqual(
+    kept.map((entry) => entry.value),
+    ['2999', '3000'],
+  );
 });

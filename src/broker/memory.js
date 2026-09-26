@@ -26,6 +26,7 @@ const { resolveGenerateId } = require('../utils.js');
 // consumer name, subject or queue name fails at the driver, not here.
 const shortId = () => generateUUID().replace(/-/g, '').slice(0, 12);
 const { codedError, toText, toHeaders, reasonText } = require('./ids.js');
+const { crashDelay } = require('./retry.js');
 
 const DEFAULT_LOG_ENTRIES = 10_000;
 const DEFAULT_PREFETCH = 16;
@@ -134,12 +135,7 @@ class MemoryBroker {
       const excess = retained - this.#maxEntries;
       state.head += excess;
       state.first += excess;
-      // A head index instead of shift(): trimming at the cap would otherwise
-      // be O(retained) per append. Compacted once the dead prefix dominates.
-      if (state.head > 1024 && state.head * 2 > state.entries.length) {
-        state.entries = state.entries.slice(state.head);
-        state.head = 0;
-      }
+      this.#compact(state);
     }
     if (state.waiters.size > 0) {
       const waiters = Array.from(state.waiters);
@@ -151,6 +147,17 @@ class MemoryBroker {
     return Promise.resolve(id);
   }
 
+  // A head index instead of shift(): trimming at the cap would otherwise be
+  // O(retained) per append. The dead prefix is dropped once it dominates the
+  // array — from the cap and from trim() alike; trim() used to move the head
+  // only, so a topic trimmed by hand kept every trimmed entry alive.
+  #compact(state) {
+    if (state.head > 1024 && state.head * 2 > state.entries.length) {
+      state.entries = state.entries.slice(state.head);
+      state.head = 0;
+    }
+  }
+
   /** Drops all but the newest `keep` entries of a topic — XTRIM's analogue. */
   trim(topic, keep) {
     const state = this.#topics.get(topic);
@@ -159,6 +166,7 @@ class MemoryBroker {
     if (excess <= 0) return;
     state.head += excess;
     state.first += excess;
+    this.#compact(state);
   }
 
   #parseId(text) {
@@ -381,11 +389,14 @@ class MemoryBroker {
       } catch (error) {
         result = Promise.reject(error);
       }
-      // A handler that throws has not settled anything: the message goes
-      // back rather than disappearing with the exception.
+      // A handler that throws has not settled anything: the message comes
+      // back rather than disappearing with the exception — as a RETRY after
+      // a backoff, attempt + 1. It used to be released, back at the head and
+      // re-dispatched on the next microtask, so a handler that always threw
+      // spun this loop without ever yielding to a timer.
       Promise.resolve(result).catch((error) => {
         broker.#log.error({ err: error, event: 'broker.delivery' });
-        void delivery.release();
+        void delivery.retry({ delay: crashDelay(message.attempt) });
       });
     });
   }
