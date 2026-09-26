@@ -1758,6 +1758,19 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **WebTransport and WebRTC: a consumer that never drains is disconnected
+  at `maxBackpressure`.** Neither carrier had the cap the WebSocket engine
+  has behind its high-water mark, so a peer that stopped reading could
+  hold as much as the process had — every broadcast to it queued without
+  bound. `WtSocket`/`attachSession` and the client's `wt` options take
+  `maxBackpressure` (64 MiB by default, `0` off), checked before a frame is
+  queued, as the engine counts it: one frame past the cap on an empty queue
+  is sent, a queue the peer never drains terminates the session (the
+  error's `code` is `backpressure`). `ClientRtcTransport`,
+  `RtcPeerTransport`, `attachChannel` and a `WrpcPeer`'s `host` take the
+  same option; a write that would put the channel past it — its buffer, the
+  codec's pending bytes and the message together — is refused and the
+  channel closed locally, a redial over a link, the end of a raw channel.
 - **Broker RPC: a sealed session takes no plaintext frame.** Under
   `encryption: { keys, acceptPlaintext: true }` — the rollout's second
   deploy — a plaintext frame carrying the right session id and the next

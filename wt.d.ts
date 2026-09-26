@@ -81,6 +81,13 @@ export interface WtSocketOptions {
   highWaterMark?: number;
   /** Queue level under which 'drain' fires (default 256 KiB). */
   lowWaterMark?: number;
+  /**
+   * Outbound bytes queued before the session is terminated for a peer that
+   * never drains (default 64 MiB; 0 = off) — the cap behind the high-water
+   * mark, as the WebSocket engine's. Checked before a frame is queued: one
+   * frame past it on an empty queue is sent.
+   */
+  maxBackpressure?: number;
   /** The largest inbound message accepted (default 16 MiB); past it the peer is hung up with 1002. */
   maxMessage?: number;
   /**

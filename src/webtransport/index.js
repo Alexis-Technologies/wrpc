@@ -9,7 +9,7 @@
 // for quico). No implementation is required from here: Node has no
 // WebTransport of its own, and the one an application runs is injected.
 
-const { WtSocket, DEFAULT_HIGH_WATER_MARK, DEFAULT_LOW_WATER_MARK } = require('./socket.js');
+const { WtSocket, normalizeBackpressure, DEFAULT_HIGH_WATER_MARK, DEFAULT_LOW_WATER_MARK } = require('./socket.js');
 const { createLoggerWriter } = require('../logging.js');
 const { isWtSession, isWtStream, isWtDatagrams } = require('./port.js');
 const { fromQuico } = require('./quico.js');
@@ -122,6 +122,7 @@ const attachSession = async (server, session, options = {}) => {
     kind = 'wt',
     highWaterMark,
     lowWaterMark,
+    maxBackpressure,
     maxMessage,
     idleTimeout,
     compression,
@@ -132,6 +133,8 @@ const attachSession = async (server, session, options = {}) => {
   if (!Number.isInteger(acceptTimeout) || acceptTimeout <= 0) {
     throw new TypeError('attachSession: acceptTimeout must be a positive integer (ms)');
   }
+  // Checked before the handshake, not after it by the socket.
+  normalizeBackpressure(maxBackpressure, 'attachSession');
   const { race, clear } = interruptible(acceptTimeout, signal);
   const refuse = (why) => {
     closeQuietly(session, refusals[why]);
@@ -161,6 +164,7 @@ const attachSession = async (server, session, options = {}) => {
     remoteAddress,
     highWaterMark,
     lowWaterMark,
+    maxBackpressure,
     maxMessage,
     idleTimeout,
     compression,

@@ -210,6 +210,7 @@ test('wt attach: attachSession refuses on verify and on a silent client, and val
   await assert.rejects(attachSession({}, session), TypeError);
   await assert.rejects(attachSession(server, {}), TypeError);
   await assert.rejects(attachSession(server, late, { acceptTimeout: 0 }), TypeError);
+  await assert.rejects(attachSession(server, late, { maxBackpressure: -1 }), /maxBackpressure/);
   assert.throws(() => acceptSessions(server, 42), TypeError);
   assert.throws(() => acceptSessions(server, createFakeWt().sessions, { maxPending: 0 }), TypeError);
   assert.strictEqual(server.rpc.clients.size, 0);

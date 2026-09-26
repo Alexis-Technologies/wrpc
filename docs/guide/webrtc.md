@@ -450,7 +450,12 @@ producer on either end sees the same backpressure it does on a socket — and
 every `false` is followed by exactly one `drain`, whether the bytes waited
 on the channel or in the codec. Both marks are positive integers, the low
 one no higher than the high one (a `TypeError` otherwise); a `highWaterMark`
-set below the default low mark pulls the low mark down with it.
+set below the default low mark pulls the low mark down with it. Behind the
+marks sits `maxBackpressure` (64 MiB, `0` to switch it off): a write that
+would put the channel past it — its buffer, the codec's pending bytes and
+the message together — is refused and the channel closed, locally, so a
+peer that never drains cannot hold the process's memory. Over a link that
+is a redial; over a raw channel it is the end of the channel.
 
 ### Compression {#compression}
 

@@ -52,6 +52,19 @@ const TEXT_ENCODER = new TextEncoder();
 
 const DEFAULT_HIGH_WATER_MARK = 1024 * 1024;
 const DEFAULT_LOW_WATER_MARK = 256 * 1024;
+// The cap behind the high-water mark: a peer that never drains is
+// terminated once this much is queued for it, as the WebSocket engine's
+// maxBackpressure does — a slow consumer used to be able to hold as much
+// as the process had. 0 switches it off.
+const DEFAULT_MAX_BACKPRESSURE = 64 * 1024 * 1024;
+
+const normalizeBackpressure = (value, label) => {
+  if (value === undefined) return DEFAULT_MAX_BACKPRESSURE;
+  if (!Number.isInteger(value) || value < 0) {
+    throw new TypeError(`${label}: maxBackpressure must be a non-negative integer of bytes (0 = off)`);
+  }
+  return value;
+};
 
 const closeQuietly = (session, info) => {
   try {
@@ -83,6 +96,7 @@ class WtSocket extends EventEmitter {
   #release = null;
   #highWater;
   #lowWater;
+  #maxBackpressure;
   #maxMessage;
   #idle = 0;
   #idleTimer = null;
@@ -112,6 +126,7 @@ class WtSocket extends EventEmitter {
       remoteAddress = '',
       highWaterMark,
       lowWaterMark,
+      maxBackpressure,
       maxMessage,
       idleTimeout = 0,
       compression = null,
@@ -125,6 +140,7 @@ class WtSocket extends EventEmitter {
     this.remoteAddress = remoteAddress;
     this.#highWater = highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
     this.#lowWater = lowWaterMark ?? DEFAULT_LOW_WATER_MARK;
+    this.#maxBackpressure = normalizeBackpressure(maxBackpressure, 'WtSocket: options');
     this.#maxMessage = maxMessage ?? DEFAULT_MAX_MESSAGE;
     this.#compression = normalizeCompression(compression, 'WtSocket: options');
     this.#idle = idleTimeout;
@@ -148,10 +164,14 @@ class WtSocket extends EventEmitter {
       onSent: (size) => this.#sent(size),
       // Through the outbound order, not straight to the writer: a stream
       // packet must not overtake a message still being compressed.
-      writeControl: (chunk) => this.#enqueue(frame(KIND_BINARY, chunk)),
+      writeControl: (chunk) => {
+        if (!this.#exceedsBackpressure()) this.#enqueue(frame(KIND_BINARY, chunk));
+      },
       // No codec where the mux is on (the peer announced streams only
       // without one), so a packet is its JSON.
-      sendControl: (packet) => this.#enqueue(frameText(JSON.stringify(packet))),
+      sendControl: (packet) => {
+        if (!this.#exceedsBackpressure()) this.#enqueue(frameText(JSON.stringify(packet)));
+      },
       // An inbound stream cancelled unread (streams.js): announced for the
       // host to log — a peer opening streams it never names is a signal.
       onRefused: (reason, id) => void this.emit('stream-refused', { reason, id }),
@@ -363,7 +383,7 @@ class WtSocket extends EventEmitter {
    * passes through writeWith) sends this one plain whatever was negotiated.
    */
   send(data, options = null) {
-    if (this.#closed) return false;
+    if (this.#closed || this.#exceedsBackpressure()) return false;
     const active = this.#active;
     const plain = active === null || (options !== null && options.compress === false);
     if (typeof data === 'string') {
@@ -374,6 +394,19 @@ class WtSocket extends EventEmitter {
     if (this.#mux.chunk(chunk)) return this.#accepted();
     if (plain || chunk.length < active.encode.threshold) return this.#enqueue(frame(KIND_BINARY, chunk));
     return this.#compress(KIND_BINARY, chunk);
+  }
+
+  // What is queued already, against the cap — before this frame is added,
+  // as the WebSocket engine counts it: one frame past the cap on an empty
+  // queue is sent, a queue the peer never drains is not.
+  #exceedsBackpressure() {
+    const max = this.#maxBackpressure;
+    if (max === 0 || this.#queued <= max) return false;
+    const error = new Error(`Backpressure limit exceeded (${this.#queued} > ${max} bytes), terminating session`);
+    error.code = 'backpressure';
+    this.#error(error);
+    this.terminate();
+    return true;
   }
 
   // The answer to a send: true under the high-water mark, false past it —
@@ -519,4 +552,10 @@ class WtSocket extends EventEmitter {
   }
 }
 
-module.exports = { WtSocket, DEFAULT_HIGH_WATER_MARK, DEFAULT_LOW_WATER_MARK };
+module.exports = {
+  WtSocket,
+  normalizeBackpressure,
+  DEFAULT_HIGH_WATER_MARK,
+  DEFAULT_LOW_WATER_MARK,
+  DEFAULT_MAX_BACKPRESSURE,
+};

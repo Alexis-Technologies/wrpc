@@ -179,6 +179,46 @@ const runChannelContract = async (t, name, harness) => {
   });
 
   await t.test(
+    `${name}: past maxBackpressure the session is terminated; one frame past the cap on an empty queue is not`,
+    async (sub) => {
+      const { world, end, peer } = await harness.open(sub, { ...marks, maxBackpressure: 200 });
+      const release = world.hold();
+      const errors = [];
+      const closes = [];
+      end.on('error', (error) => errors.push(error));
+      end.on('close', () => closes.push(1));
+      // Checked before the frame is queued, as the WebSocket engine counts
+      // it: the first frame goes whatever its size, the next finds the queue
+      // past the cap.
+      assert.strictEqual(end.send('x'.repeat(300)), false, 'past the high mark, and sent');
+      assert.strictEqual(closes.length, 0, 'one frame past the cap on an empty queue is not a fault');
+      assert.strictEqual(end.send('y'), false, 'the queue is past the cap: terminated');
+      await waitFor(() => closes.length === 1, 'terminated');
+      await timers.setImmediate();
+      assert.strictEqual(errors.length, 1);
+      assert.strictEqual(errors[0].code, 'backpressure');
+      assert.match(errors[0].message, /Backpressure limit exceeded/);
+      assert.strictEqual(end.bufferedAmount, 0);
+      release();
+      await peer.session.closed;
+      // Off: nothing is ever terminated for its queue.
+      const open = await harness.open(sub, { ...marks, maxBackpressure: 0 });
+      const hold = open.world.hold();
+      const ended = [];
+      open.end.on('close', () => ended.push(1));
+      for (let i = 0; i < 20; i++) open.end.send('z'.repeat(100));
+      assert.strictEqual(ended.length, 0);
+      hold();
+    },
+  );
+
+  await t.test(`${name}: maxBackpressure is validated at construction`, async (sub) => {
+    for (const maxBackpressure of [-1, 1.5, '64mb']) {
+      await assert.rejects(harness.open(sub, { maxBackpressure }), /maxBackpressure must be a non-negative integer/);
+    }
+  });
+
+  await t.test(
     `${name}: bufferedAmount is 0 after terminate(), and a write settling late does not take it below`,
     async (sub) => {
       const { world, end, peer } = await harness.open(sub, marks);

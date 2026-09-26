@@ -53,6 +53,22 @@ const DEFAULT_LOW_WATER_MARK = 256 * 1024;
 
 const positiveInteger = (value) => Number.isInteger(value) && value > 0;
 
+// The cap behind the high-water mark: a message that would put the channel
+// past it — its own buffer, the codec's pending bytes and the message
+// together — is refused and the CHANNEL is closed, locally: over a link
+// that is a redial, over a raw channel the end of it. A browser closes the
+// channel itself somewhere past 16 MiB of bufferedAmount, with an exception
+// out of send(); this is the same outcome, announced. 0 switches it off.
+const DEFAULT_MAX_BACKPRESSURE = 64 * 1024 * 1024;
+
+const normalizeBackpressure = (value, label) => {
+  if (value === undefined) return DEFAULT_MAX_BACKPRESSURE;
+  if (!Number.isInteger(value) || value < 0) {
+    throw new TypeError(`${label}: maxBackpressure must be a non-negative integer of bytes (0 = off)`);
+  }
+  return value;
+};
+
 // The two marks, checked: positive integers, the low one no higher than the
 // high one, and a low default that follows a high mark set below it — a
 // low mark above the high one used to mean a 'drain' that never came.
@@ -142,12 +158,17 @@ class ChannelCodec {
   #lowWater;
   #onDrain;
   #blocked = false;
+  // The cap, the fault it reports through, and whether it fired: after it
+  // the channel is closing and send() answers false without touching it.
+  #maxBackpressure;
+  #onFault;
+  #faulted = false;
 
   constructor(
     channel,
     maxMessageSize,
     framing,
-    { compression = null, onMessage, onError, highWater, lowWater, onDrain },
+    { compression = null, onMessage, onError, highWater, lowWater, onDrain, maxBackpressure = 0, onFault = null },
   ) {
     this.#channel = channel;
     this.#encoder = new FrameEncoder(maxMessageSize);
@@ -161,6 +182,8 @@ class ChannelCodec {
     this.#highWater = highWater;
     this.#lowWater = lowWater;
     this.#onDrain = onDrain;
+    this.#maxBackpressure = maxBackpressure;
+    this.#onFault = onFault;
     this.#outbound = new Sequencer(onError);
     this.#inbound = new Sequencer(onError);
   }
@@ -178,16 +201,26 @@ class ChannelCodec {
    * exactly one 'drain' follows.
    */
   send(data, options = null) {
+    if (this.#faulted) return false;
+    const text = typeof data === 'string';
+    const bytes = text ? null : toBytes(data);
+    const size = text ? data.length : bytes.length;
+    const max = this.#maxBackpressure;
+    if (max !== 0 && this.#channel.bufferedAmount + this.#pending + size > max) {
+      this.#faulted = true;
+      const error = new Error(`Backpressure limit exceeded (${size} bytes over ${max}), closing the channel`);
+      error.code = 'backpressure';
+      if (this.#onFault !== null) this.#onFault(error);
+      this.#channel.close();
+      return false;
+    }
     const compression = this.#compression;
     const plain = compression === null || (options !== null && options.compress === false);
-    if (typeof data === 'string') {
-      if (plain || data.length < compression.encode.threshold) this.#enqueueText(data);
+    if (text) {
+      if (plain || size < compression.encode.threshold) this.#enqueueText(data);
       else this.#compress(KIND_TEXT, TEXT_ENCODER.encode(data));
-    } else {
-      const bytes = toBytes(data);
-      if (plain || bytes.length < compression.encode.threshold) this.#enqueue(KIND_BINARY, bytes);
-      else this.#compress(KIND_BINARY, bytes);
-    }
+    } else if (plain || size < compression.encode.threshold) this.#enqueue(KIND_BINARY, bytes);
+    else this.#compress(KIND_BINARY, bytes);
     if (this.#channel.bufferedAmount + this.#pending <= this.#highWater) return true;
     this.#blocked = true;
     return false;
@@ -305,6 +338,7 @@ class ClientRtcTransport extends ClientTransport {
   #framing;
   #highWater;
   #lowWater;
+  #maxBackpressure;
   #compression = null;
   #codec = null;
   #detach = null;
@@ -325,11 +359,13 @@ class ClientRtcTransport extends ClientTransport {
       framing = {},
       highWaterMark,
       lowWaterMark,
+      maxBackpressure,
       compression = null,
     } = {},
   ) {
     super(url);
     if (link && channel) throw new TypeError('ClientRtcTransport: link and channel are mutually exclusive');
+    this.#maxBackpressure = normalizeBackpressure(maxBackpressure, 'ClientRtcTransport: options');
     this.#link = link;
     this.#source = channel;
     this.#maxMessageSize = maxMessageSize;
@@ -427,6 +463,8 @@ class ClientRtcTransport extends ClientTransport {
       highWater: this.#highWater,
       lowWater: this.#lowWater,
       onDrain: () => void this.emit('drain').catch((error) => this.#escalate(error)),
+      maxBackpressure: this.#maxBackpressure,
+      onFault: (error) => this.#escalate(error),
     });
     this.#codec = codec;
     channel.bufferedAmountLowThreshold = this.#lowWater;
@@ -564,6 +602,7 @@ class RtcPeerTransport extends ServerTransport {
       framing = {},
       highWaterMark,
       lowWaterMark,
+      maxBackpressure,
       onError = null,
       compression = null,
     } = {},
@@ -588,6 +627,8 @@ class RtcPeerTransport extends ServerTransport {
       highWater: marks.high,
       lowWater: marks.low,
       onDrain: () => void this.emit('drain'),
+      maxBackpressure: normalizeBackpressure(maxBackpressure, 'RtcPeerTransport: options'),
+      onFault: (error) => this.#error(error),
     });
     this.#codec = codec;
     // What Client.persistent checks: a channel stays open like a socket.
@@ -683,6 +724,8 @@ module.exports = {
   ClientRtcTransport,
   RtcPeerTransport,
   normalizeWaterMarks,
+  normalizeBackpressure,
   DEFAULT_HIGH_WATER_MARK,
   DEFAULT_LOW_WATER_MARK,
+  DEFAULT_MAX_BACKPRESSURE,
 };

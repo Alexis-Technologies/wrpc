@@ -275,6 +275,12 @@ export interface WtTransportOptions {
   highWaterMark?: number;
   /** Queue level under which 'drain' fires (default 256 KiB). */
   lowWaterMark?: number;
+  /**
+   * Outbound bytes queued before the session is terminated for a server
+   * that never drains (default 64 MiB; 0 = off) — the cap behind the
+   * high-water mark.
+   */
+  maxBackpressure?: number;
   /** The largest inbound message accepted (default 16 MiB); past it the session is hung up. */
   maxMessage?: number;
   /**

@@ -30,7 +30,7 @@ const { createLoggerWriter } = require('../logging.js');
 const { createServerTelemetry } = require('../telemetry/server.js');
 const { isRtcAdapter, createW3cAdapter } = require('./port.js');
 const { RtcLink, DEFAULT_CHANNELS, normalizeChannels } = require('./link.js');
-const { ClientRtcTransport, RtcPeerTransport, normalizeWaterMarks } = require('./transport.js');
+const { ClientRtcTransport, RtcPeerTransport, normalizeWaterMarks, normalizeBackpressure } = require('./transport.js');
 const { PeerHost } = require('./host.js');
 const { isSignaler, isSignalMessage } = require('./signaler.js');
 const { isPeerId } = require('./ids.js');
@@ -562,11 +562,15 @@ class WrpcPeer extends Emitter {
     this.#router = router;
     this.#log = createLoggerWriter(logger).child({ component: 'peer' });
     this.#clientOptions = client;
-    const { highWaterMark, lowWaterMark, ...hostRest } = host;
+    const { highWaterMark, lowWaterMark, maxBackpressure, ...hostRest } = host;
     // Checked here, at construction — not at the first link, where a bad
     // mark used to surface.
     const marks = normalizeWaterMarks(highWaterMark, lowWaterMark, 'WrpcPeer: options.host');
-    const water = { highWaterMark: marks.high, lowWaterMark: marks.low };
+    const water = {
+      highWaterMark: marks.high,
+      lowWaterMark: marks.low,
+      maxBackpressure: normalizeBackpressure(maxBackpressure, 'WrpcPeer: options.host'),
+    };
     // Per-message compression on every link, both directions: announced in
     // each description this peer sends, applied on a link whose peer named
     // the same codec — a peer without it is served plain.

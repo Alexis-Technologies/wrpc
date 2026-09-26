@@ -177,7 +177,7 @@ The engine limits decide when a slow peer stops being your problem:
 
 | Option | What it does |
 | --- | --- |
-| `maxBackpressure` | Outbound bytes buffered for one socket before it is dropped. |
+| `maxBackpressure` | Outbound bytes buffered for one connection before it is dropped — the engine's for a socket, `attachSession`'s for a WebTransport session, a `WrpcPeer`'s `host` (or `attachChannel`) for a data channel. |
 | `maxBuffer` | Inbound assembly buffer per connection. |
 | `fragmentThreshold` | Above this, an outbound message is sent fragmented. |
 | `maxPayload` | Largest inbound message (16 MiB default). |

@@ -31,6 +31,8 @@ expectType<Promise<Client | null>>(
   wt.attachSession(server.rpc, session, { headers: { origin: 'https://a' }, url: '/api?wrpc_h=%7B%7D' }),
 );
 expectAssignable<AttachSessionOptions>({ verify: () => false, acceptTimeout: 1000, kind: 'wt', highWaterMark: 1 });
+expectAssignable<AttachSessionOptions>({ maxBackpressure: 0 });
+expectError<AttachSessionOptions>({ maxBackpressure: '64mb' });
 expectError(wt.attachSession(server, session, { acceptTimeout: 'soon' }));
 expectError(wt.attachSession(server, session, { maxHeldStreams: 'many' }));
 wt.attachSession(server, session, { maxHeldStreams: 8, holdTimeout: 5_000 });

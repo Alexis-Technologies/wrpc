@@ -251,6 +251,7 @@ attachSession(server, session, {
   acceptTimeout: 10_000, // verify, the session's ready and the control stream, all within this (408 past it)
   highWaterMark: 1024 * 1024, // outbound bytes queued before send() answers false
   lowWaterMark: 256 * 1024, // 'drain' fires under this
+  maxBackpressure: 64 * 1024 * 1024, // queued bytes past which a peer that never drains is terminated (0 = off)
   maxMessage: 16 * 1024 * 1024, // the largest inbound message; past it the peer is hung up (1002)
   idleTimeout: 0, // ms without inbound data before the session is terminated (0 = off)
   maxHeldStreams: 32, // inbound streams held for their open packet at once; a further one is cancelled unread
@@ -278,6 +279,7 @@ connect(url, {
     protocols,
     highWaterMark,
     lowWaterMark,
+    maxBackpressure, // the same cap, against a server that never drains
     maxMessage,
   },
   compression: false, // per-message deflate, both ends must turn it on — see below

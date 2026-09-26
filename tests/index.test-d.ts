@@ -377,6 +377,7 @@ expectError<wrpc.Compressor>({ encode: (b: Uint8Array) => b, decode: (b: Uint8Ar
 expectAssignable<wrpc.CompressionOptions>({ threshold: 2048 });
 expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ transport: 'wt', compression: true });
 expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ wt: { compression: { threshold: 4096 } } });
+expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ wt: { maxBackpressure: 0 } });
 expectError<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ compression: 'zstd' });
 // A platform codec by name, or built with its own level — the name lives under `codec`
 expectAssignable<wrpc.CompressionOptions>({ codec: 'zstd' });

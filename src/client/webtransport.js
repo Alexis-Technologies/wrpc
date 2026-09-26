@@ -50,6 +50,10 @@ const TEXT_ENCODER = new TextEncoder();
 // fires once the queue is back under the low-water mark.
 const DEFAULT_HIGH_WATER_MARK = 1024 * 1024;
 const DEFAULT_LOW_WATER_MARK = 256 * 1024;
+// The cap behind the high-water mark: past it the session is terminated
+// rather than buffering without bound for a server that never drains;
+// 0 switches it off.
+const DEFAULT_MAX_BACKPRESSURE = 64 * 1024 * 1024;
 
 // The `WebTransportOptions` handed to the constructor as-is.
 const INIT_KEYS = ['serverCertificateHashes', 'congestionControl', 'allowPooling', 'requireUnreliable', 'protocols'];
@@ -103,6 +107,7 @@ class ClientWtTransport extends ClientTransport {
   #pressured = false;
   #highWater;
   #lowWater;
+  #maxBackpressure;
   #maxMessage;
   // Per-message compression (src/compression): the option resolved per
   // open — connect()'s `compression`, else the `wt` bag's — and what is in
@@ -121,6 +126,11 @@ class ClientWtTransport extends ClientTransport {
     this.#options = options;
     this.#highWater = options.highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
     this.#lowWater = options.lowWaterMark ?? DEFAULT_LOW_WATER_MARK;
+    const max = options.maxBackpressure;
+    if (max !== undefined && (!Number.isInteger(max) || max < 0)) {
+      throw new TypeError('wt transport: options.maxBackpressure must be a non-negative integer of bytes (0 = off)');
+    }
+    this.#maxBackpressure = max ?? DEFAULT_MAX_BACKPRESSURE;
     this.#maxMessage = options.maxMessage ?? DEFAULT_MAX_MESSAGE;
   }
 
@@ -219,7 +229,9 @@ class ClientWtTransport extends ClientTransport {
             onSent: (size) => this.#sent(session, size),
             // Through the outbound order: a stream packet must not overtake
             // a message still being compressed.
-            writeControl: (chunk) => this.#enqueue(frame(KIND_BINARY, chunk)),
+            writeControl: (chunk) => {
+              if (!this.#exceedsBackpressure()) this.#enqueue(frame(KIND_BINARY, chunk));
+            },
             sendControl: (packet) => super.send(packet),
           });
     this.#mux = mux;
@@ -417,6 +429,7 @@ class ClientWtTransport extends ClientTransport {
    */
   write(data, options = null) {
     if (!this.active) throw new Error('Not connected');
+    if (this.#exceedsBackpressure()) return false;
     if (this.#secure !== null) {
       this.#secure.send(data);
       return this.#accepted();
@@ -432,6 +445,19 @@ class ClientWtTransport extends ClientTransport {
     if (this.#mux !== null && this.#mux.chunk(chunk)) return this.#accepted();
     if (plain || chunk.length < active.encode.threshold) return this.#enqueue(frame(KIND_BINARY, chunk));
     return this.#compress(KIND_BINARY, chunk);
+  }
+
+  // What is queued already, against the cap — before this frame is added:
+  // one frame past the cap on an empty queue goes, a queue the server never
+  // drains does not.
+  #exceedsBackpressure() {
+    const max = this.#maxBackpressure;
+    if (max === 0 || this.#queued <= max) return false;
+    const error = new Error(`Backpressure limit exceeded (${this.#queued} > ${max} bytes), terminating session`);
+    error.code = 'backpressure';
+    this.#escalate(error);
+    this.terminate();
+    return true;
   }
 
   // The answer to a write: true under the high-water mark, false past it —
@@ -557,4 +583,10 @@ class ClientWtTransport extends ClientTransport {
 
 WrpcClient.transport.wt = ClientWtTransport;
 
-module.exports = { ClientWtTransport, DEFAULT_HIGH_WATER_MARK, DEFAULT_LOW_WATER_MARK, UNAVAILABLE };
+module.exports = {
+  ClientWtTransport,
+  DEFAULT_HIGH_WATER_MARK,
+  DEFAULT_LOW_WATER_MARK,
+  DEFAULT_MAX_BACKPRESSURE,
+  UNAVAILABLE,
+};

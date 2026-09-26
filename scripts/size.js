@@ -204,7 +204,12 @@ const ENTRIES = [
   // floor, every a=fingerprint line compared, the stale-leave incarnation
   // check, the attachments walk's toJSON/cycle guards and the seal-failure
   // path of rooms (+0.6 KB, measured 53.4 against 52.8).
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 54 },
+  // 54 → 55 (2026-09-27): the channel codec owns the 'drain' after a false
+  // (bytes waiting in an asynchronous codec never cross the channel's own
+  // threshold), the water marks and maxBackpressure are validated, and a
+  // consumer that never drains is disconnected at the cap — ~0.5 KB of
+  // backpressure correctness the wt/ws carriers already had.
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 55 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

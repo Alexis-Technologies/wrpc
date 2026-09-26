@@ -626,3 +626,71 @@ test('webrtc transport: the water marks are validated at construction, and a low
   assert.strictEqual(a.bufferedAmountLowThreshold, 1000);
   assert.strictEqual(host.write('x'), true);
 });
+
+test('webrtc transport: past maxBackpressure a write is refused and the channel closed, locally; validated at construction', async (t) => {
+  const { a, b } = await rawChannelPair(t, { fake: { latency: 40 } });
+  for (const maxBackpressure of [-1, 1.5, '64mb']) {
+    assert.throws(() => new ClientRtcTransport('webrtc:x', { channel: a, maxBackpressure }), /maxBackpressure/);
+    assert.throws(() => new RtcPeerTransport(b, { peer: 'a', maxBackpressure }), /maxBackpressure/);
+  }
+  const client = new ClientRtcTransport('webrtc:x', { channel: a, maxBackpressure: 500, highWaterMark: 100 });
+  const errors = [];
+  client.on('error', (error) => errors.push(error));
+  const hostErrors = [];
+  const host = new RtcPeerTransport(b, {
+    peer: 'a',
+    maxBackpressure: 500,
+    highWaterMark: 100,
+    onError: (error) => hostErrors.push(error),
+  });
+  t.after(() => client.close());
+  await client.open();
+  const closes = [];
+  client.on('close', () => closes.push('client'));
+  host.on('close', () => closes.push('host'));
+  // The channel's buffer, the codec's pending bytes and the message itself:
+  // 300 on an empty channel passes (past the high mark, so false), the next
+  // 300 would put it past 500 — refused, and the channel closed.
+  assert.strictEqual(client.write(new Uint8Array(300)), false, 'past the high mark, sent');
+  assert.strictEqual(closes.length, 0);
+  assert.strictEqual(client.write(new Uint8Array(300)), false, 'refused');
+  await timers.setImmediate();
+  assert.strictEqual(errors.length, 1);
+  assert.strictEqual(errors[0].code, 'backpressure');
+  await within(
+    waitFor(() => closes.length === 2, 'both halves down'),
+    'both halves down',
+  );
+  assert.strictEqual(client.active, false);
+  // The host half the same way, on a fresh pair.
+  const second = await rawChannelPair(t, { fake: { latency: 40 } });
+  const peer = new RtcPeerTransport(second.b, {
+    peer: 'a',
+    maxBackpressure: 500,
+    highWaterMark: 100,
+    onError: (error) => hostErrors.push(error),
+  });
+  const other = new ClientRtcTransport('webrtc:x', { channel: second.a });
+  t.after(() => other.close());
+  await other.open();
+  assert.strictEqual(peer.write(new Uint8Array(300)), false);
+  assert.strictEqual(peer.write(new Uint8Array(300)), false, 'refused');
+  assert.strictEqual(hostErrors.length, 1);
+  assert.strictEqual(hostErrors[0].code, 'backpressure');
+  assert.strictEqual(peer.write('after'), false, 'closing: nothing more is sent');
+});
+
+test('webrtc transport: over a link the backpressure fault closes the channel, and the link lives to redial', async (t) => {
+  const { a, b } = await linkPair(t, { fake: { latency: 40 } });
+  const client = new ClientRtcTransport('webrtc:b', { link: a, maxBackpressure: 500, highWaterMark: 100 });
+  const host = new RtcPeerTransport(b, { peer: 'a', maxBackpressure: 500, highWaterMark: 100 });
+  await client.open();
+  const clientClosed = onceEvent(client, 'close');
+  const hostClosed = onceEvent(host, 'close');
+  assert.strictEqual(client.write(new Uint8Array(300)), false);
+  assert.strictEqual(client.write(new Uint8Array(300)), false, 'refused: the channel is closed');
+  await within(Promise.all([clientClosed, hostClosed]), 'both halves down');
+  // The LINK is not closed for it: what closed is the channel.
+  assert.notStrictEqual(a.state, 'closed');
+  assert.notStrictEqual(b.state, 'closed');
+});

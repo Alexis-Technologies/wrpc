@@ -107,7 +107,7 @@ const peer = new webrtc.WrpcPeer({
   iceServers: [{ urls: 'stun:stun.example' }],
   channels: { initiator: 0, responder: 1 },
   client: { heartbeat: false },
-  host: { trust: 'none', highWaterMark: 65536 },
+  host: { trust: 'none', highWaterMark: 65536, maxBackpressure: 1 << 26 },
   redial: { retries: 3 },
   telemetry: { includeIdentity: false },
   accept: (from, room, about) => {

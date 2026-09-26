@@ -33,6 +33,7 @@ const attachChannel = (server, channel, options = {}) => {
     framing,
     highWaterMark,
     lowWaterMark,
+    maxBackpressure,
     compression,
     // An RTCDataChannel is DTLS end to end, so under `encryption.required`
     // the channel vouches for itself; `false` is for a channel the
@@ -46,6 +47,7 @@ const attachChannel = (server, channel, options = {}) => {
     framing,
     highWaterMark,
     lowWaterMark,
+    maxBackpressure,
     compression,
     onError: (error) => client?.log.warn({ event: 'channel.error', peer: transport.source, err: error }),
   });

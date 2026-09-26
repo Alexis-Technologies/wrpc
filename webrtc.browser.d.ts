@@ -243,6 +243,14 @@ export interface RtcTransportOptions {
    */
   lowWaterMark?: number;
   /**
+   * Bytes buffered — on the channel, in the codec, and the message itself
+   * — past which a write is refused and the channel closed, locally: over
+   * a link that is a redial, over a raw channel the end of it (default
+   * 64 MiB; 0 = off). A browser closes the channel itself past ~16 MiB,
+   * with an exception out of send(); this is the same outcome, announced.
+   */
+  maxBackpressure?: number;
+  /**
    * Raw-channel mode only (a link negotiates its own): the message size to
    * fragment at. Default 16 KiB, the interop floor; `negotiateMessageSize(pc.sctp)`
    * for what the connection actually allows.
@@ -601,7 +609,8 @@ export interface WrpcPeerOptions {
   /** Options of every link's remote WrpcClient (heartbeat, reconnect, codec, ...). */
   client?: WrpcClientOptions;
   /** PeerHost options (trust, codec, limits) plus the host transport's water marks. */
-  host?: Omit<PeerHostOptions, 'router'> & Pick<RtcTransportOptions, 'highWaterMark' | 'lowWaterMark'>;
+  host?: Omit<PeerHostOptions, 'router'> &
+    Pick<RtcTransportOptions, 'highWaterMark' | 'lowWaterMark' | 'maxBackpressure'>;
   framing?: FramingOptions;
   /**
    * Per-message compression on every link, both directions, off by default:

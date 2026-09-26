@@ -286,8 +286,10 @@ class Broadcast {
         const flushed = client.sendShared(message, unreliable ? options : null);
         sent++;
         // Not silently discarded any more: a recipient above its high-water
-        // mark is visible in the metrics, and the engine's maxBackpressure
-        // cap is what disconnects one that never drains.
+        // mark is visible in the metrics, and every persistent carrier's
+        // maxBackpressure cap — the WebSocket engine's, the WebTransport
+        // socket's, a data channel's — is what disconnects one that never
+        // drains.
         if (flushed === false) this.#otel?.recordBackpressure(client.transportKind);
       } catch (error) {
         // One dead socket must not truncate the fan-out.
