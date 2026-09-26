@@ -1352,6 +1352,21 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **WebRTC: a `false` from `write()` under an asynchronous codec is
+  followed by `'drain'`; the water marks are validated.** The transports
+  counted the bytes a codec was still compressing towards the high-water
+  mark but left `'drain'` to the channel's own `bufferedamountlow`, which
+  bytes waiting in a codec never cross — so a `false` answered for them
+  (a large message under `CompressionStream`, or zlib's threadpool) was a
+  false with no drain ever after, and a `WrpcWritable` waiting for it hung.
+  The codec now owns the decision: one `'drain'` after a false, once the
+  channel's buffer and its own pending bytes are under the low mark,
+  whichever of the two settled last. `highWaterMark`/`lowWaterMark` on
+  `ClientRtcTransport`, `RtcPeerTransport`, `attachChannel` and
+  `WrpcPeer`'s `host` are validated at construction: positive integers,
+  the low mark no higher than the high one (a `TypeError`), and a high mark
+  set below the default low mark pulls the low mark down with it — a low
+  mark above the high one used to mean a drain that never came.
 - **WebTransport: `pause()` stops the side streams too, and their bytes
   keep the session alive.** The server socket's `pause()` — what the core
   calls while a binary stream's readable is over its high-water mark —

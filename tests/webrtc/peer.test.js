@@ -127,6 +127,12 @@ test('peer: option validation and redial normalization', () => {
   const base = { signaler: hub.signaler('a'), rtc: fake.adapter };
   assert.throws(() => new WrpcPeer({}), /signaler must satisfy/);
   assert.throws(() => new WrpcPeer({ ...base, rtc: {} }), /rtc must satisfy/);
+  // The host's water marks are checked at construction, not at the first link.
+  assert.throws(() => new WrpcPeer({ ...base, host: { highWaterMark: 0 } }), /highWaterMark must be a positive/);
+  assert.throws(
+    () => new WrpcPeer({ ...base, host: { highWaterMark: 100, lowWaterMark: 200 } }),
+    /lowWaterMark must not exceed/,
+  );
   assert.throws(() => new WrpcPeer({ ...base, accept: 'yes' }), /accept must be a function/);
   assert.throws(() => new WrpcPeer({ ...base, client: null }), /client must be an object/);
   assert.throws(() => new WrpcPeer({ ...base, host: 3 }), /host must be an object/);

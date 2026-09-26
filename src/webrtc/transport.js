@@ -51,6 +51,24 @@ const TEXT_ENCODER = new TextEncoder();
 const DEFAULT_HIGH_WATER_MARK = 1024 * 1024;
 const DEFAULT_LOW_WATER_MARK = 256 * 1024;
 
+const positiveInteger = (value) => Number.isInteger(value) && value > 0;
+
+// The two marks, checked: positive integers, the low one no higher than the
+// high one, and a low default that follows a high mark set below it — a
+// low mark above the high one used to mean a 'drain' that never came.
+const normalizeWaterMarks = (highWaterMark, lowWaterMark, label) => {
+  if (highWaterMark !== undefined && !positiveInteger(highWaterMark)) {
+    throw new TypeError(`${label}: highWaterMark must be a positive integer of bytes`);
+  }
+  if (lowWaterMark !== undefined && !positiveInteger(lowWaterMark)) {
+    throw new TypeError(`${label}: lowWaterMark must be a positive integer of bytes`);
+  }
+  const high = highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
+  if (lowWaterMark === undefined) return { high, low: Math.min(DEFAULT_LOW_WATER_MARK, high) };
+  if (lowWaterMark > high) throw new TypeError(`${label}: lowWaterMark must not exceed highWaterMark`);
+  return { high, low: lowWaterMark };
+};
+
 const toBytes = (data) => {
   if (data instanceof Uint8Array) return data;
   if (data instanceof ArrayBuffer) return new Uint8Array(data);
@@ -115,8 +133,22 @@ class ChannelCodec {
   // Bytes accepted by send() and not yet framed: counted with the
   // channel's bufferedAmount so backpressure sees them.
   #pending = 0;
+  // The marks, and whether a send() answered false since the last drain:
+  // the codec owns the 'drain' because it owns half of what is buffered.
+  // The channel's bufferedamountlow alone could not say it — bytes waiting
+  // in an asynchronous codec never cross the channel's threshold, so a
+  // false answered for them used to be a false with no drain ever after.
+  #highWater;
+  #lowWater;
+  #onDrain;
+  #blocked = false;
 
-  constructor(channel, maxMessageSize, framing, { compression = null, onMessage, onError }) {
+  constructor(
+    channel,
+    maxMessageSize,
+    framing,
+    { compression = null, onMessage, onError, highWater, lowWater, onDrain },
+  ) {
     this.#channel = channel;
     this.#encoder = new FrameEncoder(maxMessageSize);
     this.#decoder = new FrameDecoder(framing);
@@ -126,6 +158,9 @@ class ChannelCodec {
     this.#maxInflate = framing?.maxReassembly ?? DEFAULT_MAX_REASSEMBLY;
     this.#onMessage = onMessage;
     this.#onError = onError;
+    this.#highWater = highWater;
+    this.#lowWater = lowWater;
+    this.#onDrain = onDrain;
     this.#outbound = new Sequencer(onError);
     this.#inbound = new Sequencer(onError);
   }
@@ -138,8 +173,9 @@ class ChannelCodec {
 
   /**
    * A string is a packet, bytes are a chunk; `options.compress === false`
-   * sends this one plain. Answers the bytes queued on the channel, the
-   * ones still being compressed included.
+   * sends this one plain. Answers true under the high-water mark — the
+   * bytes still being compressed counted — and false past it, after which
+   * exactly one 'drain' follows.
    */
   send(data, options = null) {
     const compression = this.#compression;
@@ -152,7 +188,19 @@ class ChannelCodec {
       if (plain || bytes.length < compression.encode.threshold) this.#enqueue(KIND_BINARY, bytes);
       else this.#compress(KIND_BINARY, bytes);
     }
-    return this.#channel.bufferedAmount + this.#pending;
+    if (this.#channel.bufferedAmount + this.#pending <= this.#highWater) return true;
+    this.#blocked = true;
+    return false;
+  }
+
+  /**
+   * Something buffered was taken — the channel's bufferedamountlow, or a
+   * codec settling: the one 'drain' after a false, once under the low mark.
+   */
+  drained() {
+    if (!this.#blocked || this.#channel.bufferedAmount + this.#pending > this.#lowWater) return;
+    this.#blocked = false;
+    this.#onDrain();
   }
 
   #enqueueText(text) {
@@ -161,6 +209,7 @@ class ChannelCodec {
     this.#outbound.push(text, (ready) => {
       this.#pending -= text.length;
       this.#encoder.encodeText(ready, this.#sink);
+      this.drained();
     });
   }
 
@@ -170,6 +219,7 @@ class ChannelCodec {
     this.#outbound.push(bytes, (ready) => {
       this.#pending -= bytes.length;
       this.#encoder.encode(kind, ready, this.#sink);
+      this.drained();
     });
   }
 
@@ -181,6 +231,7 @@ class ChannelCodec {
     const plain = () => {
       this.#pending -= size;
       this.#encoder.encode(kind, bytes, this.#sink);
+      this.drained();
     };
     let encoded;
     try {
@@ -194,6 +245,7 @@ class ChannelCodec {
         if (out.length >= size) return void plain();
         this.#pending -= size;
         this.#encoder.encode(kind | FLAG_COMPRESSED, out, this.#sink);
+        this.drained();
       },
       plain,
     );
@@ -282,8 +334,9 @@ class ClientRtcTransport extends ClientTransport {
     this.#source = channel;
     this.#maxMessageSize = maxMessageSize;
     this.#framing = framing;
-    this.#highWater = highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
-    this.#lowWater = lowWaterMark ?? DEFAULT_LOW_WATER_MARK;
+    const marks = normalizeWaterMarks(highWaterMark, lowWaterMark, 'ClientRtcTransport: options');
+    this.#highWater = marks.high;
+    this.#lowWater = marks.low;
     this.#compression = normalizeCompression(compression, 'ClientRtcTransport: options');
     if (link) this.#bindLink(link);
   }
@@ -367,17 +420,21 @@ class ClientRtcTransport extends ClientTransport {
 
   #attach(channel, maxMessageSize, compression) {
     this.#channel = channel;
-    this.#codec = new ChannelCodec(channel, maxMessageSize, this.#framing, {
+    const codec = new ChannelCodec(channel, maxMessageSize, this.#framing, {
       compression,
       onMessage: (_kind, data) => void this.emit('message', data),
       onError: (error) => this.#violation(error),
+      highWater: this.#highWater,
+      lowWater: this.#lowWater,
+      onDrain: () => void this.emit('drain').catch((error) => this.#escalate(error)),
     });
+    this.#codec = codec;
     channel.bufferedAmountLowThreshold = this.#lowWater;
     // Scoped to THIS channel: a stale channel's late events after a redial
     // must not reach a transport that has moved on.
     const onMessage = ({ data }) => this.#receive(data);
     const onClose = () => this.#down();
-    const onDrain = () => void this.emit('drain').catch((error) => this.#escalate(error));
+    const onDrain = () => codec.drained();
     const onError = (event) => this.#escalate(event?.error ?? new Error('data channel error'));
     channel.addEventListener('message', onMessage);
     channel.addEventListener('close', onClose);
@@ -402,7 +459,7 @@ class ClientRtcTransport extends ClientTransport {
    */
   write(data) {
     if (!this.active) throw new Error('Not connected');
-    return this.#codec.send(data) <= this.#highWater;
+    return this.#codec.send(data);
   }
 
   /**
@@ -485,7 +542,6 @@ class RtcPeerTransport extends ServerTransport {
   #link;
   #channel;
   #codec;
-  #highWater;
   #up = true;
   #detach = null;
   #onError;
@@ -520,22 +576,26 @@ class RtcPeerTransport extends ServerTransport {
     this.#link = link;
     this.#channel = channel;
     this.#onError = onError;
-    this.#highWater = highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
+    const marks = normalizeWaterMarks(highWaterMark, lowWaterMark, 'RtcPeerTransport: options');
     // A link's channels are already binary; a raw one carries the browser
     // default ('blob') until told otherwise.
     if (raw) channel.binaryType = 'arraybuffer';
     const normalized = normalizeCompression(compression, 'RtcPeerTransport: options');
-    this.#codec = new ChannelCodec(channel, raw ? maxMessageSize : link.maxMessageSize, framing, {
+    const codec = new ChannelCodec(channel, raw ? maxMessageSize : link.maxMessageSize, framing, {
       compression: activeCompression(normalized, link),
       onMessage: (kind, data) => void this.emit(kind === KIND_TEXT ? 'packet' : 'chunk', data),
       onError: (error) => this.#violation(error),
+      highWater: marks.high,
+      lowWater: marks.low,
+      onDrain: () => void this.emit('drain'),
     });
+    this.#codec = codec;
     // What Client.persistent checks: a channel stays open like a socket.
     this.connection = this;
-    channel.bufferedAmountLowThreshold = lowWaterMark ?? DEFAULT_LOW_WATER_MARK;
+    channel.bufferedAmountLowThreshold = marks.low;
     const onMessage = ({ data }) => this.#receive(data);
     const onClose = () => this.#down();
-    const onDrain = () => void this.emit('drain');
+    const onDrain = () => codec.drained();
     const onChannelError = (event) => this.#error(event?.error ?? new Error('data channel error'));
     channel.addEventListener('message', onMessage);
     channel.addEventListener('close', onClose);
@@ -568,14 +628,14 @@ class RtcPeerTransport extends ServerTransport {
   /** The backpressure boolean the dispatcher and Broadcast read; false once down. */
   write(data) {
     if (!this.#up) return false;
-    return this.#codec.send(data) <= this.#highWater;
+    return this.#codec.send(data);
   }
 
   // A write with per-message options (`compress: false`) — what
   // Client.sendRaw and a Broadcast use, as on a WebSocket.
   writeWith(text, options) {
     if (!this.#up) return false;
-    return this.#codec.send(text, options) <= this.#highWater;
+    return this.#codec.send(text, options);
   }
 
   /** Ends the link (or closes the raw channel) — the peer's client sees its transport close too. */
@@ -619,4 +679,10 @@ WrpcClient.transport.webrtc = ClientRtcTransport;
 // addEventListener ignores a duplicate of the same listener.
 WrpcClient.initialize();
 
-module.exports = { ClientRtcTransport, RtcPeerTransport, DEFAULT_HIGH_WATER_MARK, DEFAULT_LOW_WATER_MARK };
+module.exports = {
+  ClientRtcTransport,
+  RtcPeerTransport,
+  normalizeWaterMarks,
+  DEFAULT_HIGH_WATER_MARK,
+  DEFAULT_LOW_WATER_MARK,
+};

@@ -542,3 +542,41 @@ test('rtc compression (attachChannel): the server half takes the option like eve
     'the answer left compressed',
   );
 });
+
+test('rtc backpressure (raw channel): a false answered for bytes still in the codec is followed by drain', async (t) => {
+  // The message is bigger than the high mark while it compresses, and
+  // smaller than the LOW mark once compressed: the channel's own buffer
+  // never crosses its threshold, so bufferedamountlow never fires — the
+  // codec settling is the only thing that can say 'drain'. It used not to.
+  const pair = await rawChannelPair(t, { fake: { maxMessageSize: 16384 } });
+  const marks = { highWaterMark: 3000, lowWaterMark: 2000 };
+  const client = new ClientRtcTransport('webrtc:test', {
+    channel: pair.a,
+    compression: { codec: slowCodec(10) },
+    maxMessageSize: 16384,
+    ...marks,
+  });
+  const host = new RtcPeerTransport(pair.b, {
+    peer: 'a',
+    compression: { codec: slowCodec(10) },
+    maxMessageSize: 16384,
+    ...marks,
+  });
+  t.after(() => client.close());
+  await client.open();
+  assert.ok(big.length > marks.highWaterMark && zlib.deflateRawSync(big).length < marks.lowWaterMark);
+  const drains = { client: 0, host: 0 };
+  client.on('drain', () => drains.client++);
+  host.on('drain', () => drains.host++);
+  assert.strictEqual(client.write(big), false, 'in the codec, past the high mark');
+  assert.strictEqual(host.write(big), false);
+  await timers.setTimeout(2);
+  assert.deepStrictEqual(drains, { client: 0, host: 0 });
+  await waitFor(() => drains.client === 1 && drains.host === 1, 'drain once the codec settled');
+  await timers.setTimeout(30);
+  assert.deepStrictEqual(drains, { client: 1, host: 1 }, 'exactly one each');
+  // Under the mark again: true, and no drain for a true.
+  assert.strictEqual(client.write(small), true);
+  await timers.setTimeout(30);
+  assert.deepStrictEqual(drains, { client: 1, host: 1 });
+});

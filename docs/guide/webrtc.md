@@ -444,8 +444,13 @@ new WrpcPeer({
 ```
 
 The link's `write()` answers `false` above `highWaterMark` (1 MiB of
-`bufferedAmount`) and `drain` fires at `lowWaterMark` (256 KiB), so a stream
-producer on either end sees the same backpressure it does on a socket.
+`bufferedAmount`, the bytes a compression codec is still working on
+included) and `drain` fires at `lowWaterMark` (256 KiB), so a stream
+producer on either end sees the same backpressure it does on a socket — and
+every `false` is followed by exactly one `drain`, whether the bytes waited
+on the channel or in the codec. Both marks are positive integers, the low
+one no higher than the high one (a `TypeError` otherwise); a `highWaterMark`
+set below the default low mark pulls the low mark down with it.
 
 ### Compression {#compression}
 

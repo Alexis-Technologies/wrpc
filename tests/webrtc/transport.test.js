@@ -596,3 +596,33 @@ test('webrtc transport: raw channel — channel and maxMessageSize arrive throug
   );
   assert.ok(a.sent >= 4, `fragmented at 64 bytes: ${a.sent} frames`);
 });
+
+test('webrtc transport: the water marks are validated at construction, and a low high mark pulls the low one down', async (t) => {
+  const { a, b } = await rawChannelPair(t);
+  for (const marks of [{ highWaterMark: 0 }, { highWaterMark: -1 }, { highWaterMark: '1mb' }, { highWaterMark: 1.5 }]) {
+    assert.throws(
+      () => new ClientRtcTransport('webrtc:x', { channel: a, ...marks }),
+      /highWaterMark must be a positive/,
+    );
+    assert.throws(() => new RtcPeerTransport(b, { peer: 'a', ...marks }), /highWaterMark must be a positive/);
+  }
+  for (const marks of [{ lowWaterMark: 0 }, { lowWaterMark: -5 }, { lowWaterMark: '256k' }]) {
+    assert.throws(
+      () => new ClientRtcTransport('webrtc:x', { channel: a, ...marks }),
+      /lowWaterMark must be a positive/,
+    );
+    assert.throws(() => new RtcPeerTransport(b, { peer: 'a', ...marks }), /lowWaterMark must be a positive/);
+  }
+  const inverted = { highWaterMark: 100, lowWaterMark: 200 };
+  assert.throws(() => new ClientRtcTransport('webrtc:x', { channel: a, ...inverted }), /lowWaterMark must not exceed/);
+  assert.throws(() => new RtcPeerTransport(b, { peer: 'a', ...inverted }), /lowWaterMark must not exceed/);
+  // A high mark under the default low mark: the low mark follows it, so a
+  // 'drain' can still come — a low mark above the high one never fired.
+  const host = new RtcPeerTransport(b, { peer: 'a', highWaterMark: 1000 });
+  assert.strictEqual(b.bufferedAmountLowThreshold, 1000);
+  const client = new ClientRtcTransport('webrtc:x', { channel: a, highWaterMark: 1000 });
+  t.after(() => client.close());
+  await client.open();
+  assert.strictEqual(a.bufferedAmountLowThreshold, 1000);
+  assert.strictEqual(host.write('x'), true);
+});

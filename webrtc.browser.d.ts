@@ -229,9 +229,18 @@ export interface RtcTransportOptions {
    * closes the channel on the first flagged frame, as on any reserved bit.
    */
   compression?: boolean | import('./client.js').CompressionOptions;
-  /** bufferedAmount above which write() answers false. Default 1 MiB. */
+  /**
+   * Bytes buffered — on the channel and in a compression codec still at
+   * work — above which write() answers false. A positive integer; default
+   * 1 MiB. Every false is followed by exactly one 'drain'.
+   */
   highWaterMark?: number;
-  /** bufferedAmountLowThreshold, where 'drain' fires. Default 256 KiB. */
+  /**
+   * Where 'drain' fires after a false (the channel's
+   * bufferedAmountLowThreshold). A positive integer no higher than
+   * highWaterMark — a TypeError otherwise; default 256 KiB, or the
+   * high-water mark when that is set lower.
+   */
   lowWaterMark?: number;
   /**
    * Raw-channel mode only (a link negotiates its own): the message size to
