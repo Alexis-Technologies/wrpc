@@ -725,6 +725,12 @@ export interface ClientMeta {
   readonly data: Readonly<Record<string, unknown>>;
   /** Request/upgrade headers; `{}` on a worker port. */
   readonly headers: Readonly<Record<string, string | Array<string> | undefined>>;
+  /**
+   * The names in `headers` the peer DECLARED on a ws handshake (a label it
+   * attached through a carrier — subprotocol token, query — rather than a
+   * header the connection carried); `[]` elsewhere.
+   */
+  readonly declared: ReadonlyArray<string>;
   /** The request/upgrade URL with its query string; `''` on a worker port. */
   readonly url: string;
   readonly remoteAddress: string;

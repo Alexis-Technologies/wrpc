@@ -118,7 +118,7 @@ test('readHandshake: malformed or oversize offers are refused, never thrown', ()
     { metaMaxBytes: 8 },
   );
   assert.deepStrictEqual(Object.keys(silent.headers), []);
-  assert.deepStrictEqual(readHandshake(undefined), { headers: {}, meta: {} });
+  assert.deepStrictEqual(readHandshake(undefined), { headers: {}, meta: {}, declared: [] });
   assert.deepStrictEqual(readHandshake({ headers: { 'sec-websocket-protocol': ['a', 'b'] } }).meta, {});
 });
 
@@ -176,4 +176,72 @@ test('the deny list covers what a hostile page could forge, on the name that is 
   );
   assert.strictEqual(sanitizeDeclared({ cookie: 'a' }), null, 'nothing kept is null, not an empty bag');
   assert.ok(RESERVED_DECLARED.test('x-forwarded-for'));
+});
+
+test('the deny list names the identity-aware proxies exactly, on both carriers, and an allowlist narrows the rest', () => {
+  const declared = {
+    'x-auth-request-user': 'forged', // oauth2-proxy
+    'x-auth-request-email': 'forged',
+    'x-amzn-oidc-identity': 'forged', // ALB OIDC
+    'x-goog-authenticated-user-email': 'forged', // IAP
+    'x-goog-iap-jwt-assertion': 'forged',
+    'x-ms-client-principal-name': 'forged', // Azure Easy Auth
+    'x-ms-client-principal': 'forged',
+    'remote-user': 'forged',
+    'fastly-client-ip': '10.0.0.1',
+    'fly-client-ip': '10.0.0.1',
+    // Kept: the application's own names that merely resemble one.
+    'x-auth-token': 'kept',
+    'x-auth': 'kept',
+    'x-tenant': 'kept',
+    authorization: 'Bearer kept',
+  };
+  const kept = { 'x-auth-token': 'kept', 'x-auth': 'kept', 'x-tenant': 'kept', authorization: 'Bearer kept' };
+  for (const [carrier, headers, url] of [
+    ['wrpc.h.', { 'sec-websocket-protocol': `wrpc.v1, ${offerH(declared)}` }, '/api'],
+    ['wrpc_h', {}, `/api?${query('wrpc_h', declared)}`],
+  ]) {
+    const read = readHandshake({ url, headers });
+    for (const name of Object.keys(declared)) {
+      assert.strictEqual(read.headers[name], kept[name], `${carrier}: ${name}`);
+    }
+    // What came from the declaration, by name: a handler can tell a label
+    // the client attached from a header the connection carried.
+    assert.deepStrictEqual([...read.declared].sort(), Object.keys(kept).sort(), carrier);
+    assert.ok(Object.isFrozen(read.declared));
+    // An allowlist: only its names, cookie never. (The observed subprotocol
+    // header comes back without the carrier tokens, as it always did.)
+    const narrowed = readHandshake({ url, headers }, { declaredHeaders: ['Authorization', 'cookie', 'x-tenant'] });
+    for (const name of Object.keys(declared)) {
+      const expected = name === 'authorization' || name === 'x-tenant' ? kept[name] : undefined;
+      assert.strictEqual(narrowed.headers[name], expected, `${carrier} allowlist: ${name}`);
+    }
+    assert.deepStrictEqual([...narrowed.declared].sort(), ['authorization', 'x-tenant']);
+  }
+  // A declared name the connection also carried is the connection's, and not in the list.
+  const shadowed = readHandshake({
+    url: '/api',
+    headers: {
+      'x-tenant': 'observed',
+      'sec-websocket-protocol': `wrpc.v1, ${offerH({ 'x-tenant': 'declared', 'x-app': 'v1' })}`,
+    },
+  });
+  assert.strictEqual(shadowed.headers['x-tenant'], 'observed');
+  assert.deepStrictEqual([...shadowed.declared], ['x-app']);
+  assert.deepStrictEqual([...readHandshake({ url: '/api', headers: {} }).declared], []);
+  assert.throws(() => readHandshake({}, { declaredHeaders: 'authorization' }), /declaredHeaders must be an array/);
+  assert.throws(() => readHandshake({}, { declaredHeaders: [''] }), /declaredHeaders must be an array/);
+  for (const name of [
+    'x-auth-request-user',
+    'x-amzn-oidc-data',
+    'x-goog-iap-jwt-assertion',
+    'x-ms-client-principal-id',
+    'remote-user',
+    'fly-client-ip',
+  ]) {
+    assert.ok(RESERVED_DECLARED.test(name), name);
+  }
+  for (const name of ['x-auth-token', 'x-auth', 'x-authorization', 'remote-user-agent']) {
+    assert.ok(!RESERVED_DECLARED.test(name), name);
+  }
 });

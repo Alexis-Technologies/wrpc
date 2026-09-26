@@ -40,13 +40,16 @@ const NO_LOG = { warn() {} };
 // tested AFTER the transform: toKebab can only lowercase and insert hyphens,
 // so it cannot turn a permitted name into a reserved one, but the honest
 // order is to check the name that will actually be kept.
-const sanitizeDeclared = (value) => {
+// `allow`: the server's allowlist of declarable names (a Set, lowercase),
+// or null for every name the deny list does not refuse.
+const sanitizeDeclared = (value, allow = null) => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   let declared = null;
   for (const key of Object.keys(value)) {
     if (typeof value[key] !== 'string') continue;
     const name = toKebab(key);
     if (name === '__proto__' || RESERVED_DECLARED.test(name)) continue;
+    if (allow !== null && !allow.has(name)) continue;
     (declared ??= { __proto__: null })[name] = value[key];
   }
   return declared;
@@ -87,7 +90,7 @@ const carriedBags = (offer, limit, log) => {
   return carried;
 };
 
-const queryHeaders = (query, limit, log) => {
+const queryHeaders = (query, limit, log, allow) => {
   if (!query) return null;
   // Capped on the ENCODED length, before any decoding work.
   if (query.length > limit) {
@@ -95,8 +98,10 @@ const queryHeaders = (query, limit, log) => {
     return null;
   }
   const raw = new URLSearchParams(query).get(HEADERS_PARAM);
-  return raw ? sanitizeDeclared(jsonParse(raw)) : null;
+  return raw ? sanitizeDeclared(jsonParse(raw), allow) : null;
 };
+
+const NO_NAMES = Object.freeze([]);
 
 // `{ headers, meta }` — the header bag a procedure will see (declared names
 // UNDER the observed ones) and the sanitized connection-metadata bag. A
@@ -104,30 +109,64 @@ const queryHeaders = (query, limit, log) => {
 // the query is not consulted for that bag. The carrier tokens are taken out
 // of the `sec-websocket-protocol` the application sees — the bag is what
 // handlers log, and a Bearer credential has no business sitting in it twice.
-const readDeclared = (observed, url, limit, log) => {
+// `declared` in the answer: the names that REALLY came from the peer's
+// declaration and stand in the bag — not shadowed by an observed header —
+// so a handler can tell a label the client attached from a header the
+// connection carried; `allow` narrows what a declaration may name at all.
+const readDeclared = (observed, url, limit, log, allow = null) => {
   const carried = carriedBags(observed?.[PROTOCOL_HEADER], limit, log);
   const query = split(url ?? '', '?')[1];
   const declared =
     carried === null || carried.headers === undefined
-      ? queryHeaders(query, limit, log)
-      : sanitizeDeclared(jsonParse(carried.headers));
+      ? queryHeaders(query, limit, log, allow)
+      : sanitizeDeclared(jsonParse(carried.headers), allow);
   const meta = declaredData(observed, query, limit, log, carried === null ? undefined : carried.meta);
-  if (carried === null && declared === null) return { headers: observed, meta };
+  if (carried === null && declared === null) return { headers: observed, meta, declared: NO_NAMES };
   const headers = { ...declared, ...observed };
   if (carried !== null) {
     if (carried.rest.length > 0) headers[PROTOCOL_HEADER] = carried.rest.join(', ');
     else delete headers[PROTOCOL_HEADER];
   }
-  return { headers, meta };
+  let names = NO_NAMES;
+  if (declared !== null) {
+    names = [];
+    for (const name in declared) if (!(name in observed)) names.push(name);
+    Object.freeze(names);
+  }
+  return { headers, meta, declared: names };
 };
 
 /**
  * What the peer declared on an upgrade request — for a `verifyClient` gate,
  * which runs before any `Client` exists. The same read `attachSocket` does.
  */
-const readHandshake = (req, { metaMaxBytes = DEFAULT_META_MAX, log = NO_LOG } = {}) => {
-  const { headers, meta } = readDeclared(req?.headers ?? {}, req?.url, metaMaxBytes, log);
-  return { headers, meta: meta ?? {} };
+const readHandshake = (req, { metaMaxBytes = DEFAULT_META_MAX, log = NO_LOG, declaredHeaders = null } = {}) => {
+  const allow = normalizeDeclaredHeaders(declaredHeaders, 'readHandshake');
+  const { headers, meta, declared } = readDeclared(req?.headers ?? {}, req?.url, metaMaxBytes, log, allow);
+  return { headers, meta: meta ?? {}, declared };
 };
 
-module.exports = { RESERVED_DECLARED, sanitizeDeclared, carriedBags, readDeclared, readHandshake };
+// The allowlist option in every spelling → a Set of lowercase names, or
+// null for "everything the deny list allows". `cookie` is never declarable,
+// allowlisted or not: it is the one name a hostile page most wants.
+const normalizeDeclaredHeaders = (value, label) => {
+  if (value === null || value === undefined) return null;
+  if (!Array.isArray(value) || !value.every((name) => typeof name === 'string' && name.length > 0)) {
+    throw new TypeError(`${label}: declaredHeaders must be an array of header names, or null`);
+  }
+  const allow = new Set();
+  for (const name of value) {
+    const lower = name.toLowerCase();
+    if (lower !== 'cookie') allow.add(lower);
+  }
+  return allow;
+};
+
+module.exports = {
+  RESERVED_DECLARED,
+  sanitizeDeclared,
+  carriedBags,
+  readDeclared,
+  readHandshake,
+  normalizeDeclaredHeaders,
+};

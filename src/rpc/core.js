@@ -35,7 +35,7 @@ const { createServerTelemetry } = require('../telemetry/server.js');
 const { TRACEPARENT, TRACESTATE } = require('../telemetry/shared.js');
 const { Context, Client, DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_CALLS, buildMeta } = require('./client.js');
 const { DEFAULT_META_MAX, declaredData } = require('./meta.js');
-const { readDeclared } = require('./handshake.js');
+const { readDeclared, normalizeDeclaredHeaders } = require('./handshake.js');
 const { AMBIENT_HEADERS } = require('./reserved.js');
 
 // After this long an unsettled onConnect chain logs a warning: a hook that
@@ -101,6 +101,7 @@ const RPC_OPTION_KEYS = [
   'querystring',
   'codec',
   'metaMaxBytes',
+  'declaredHeaders',
   'encryption',
 ];
 
@@ -146,6 +147,7 @@ class RpcServer extends Emitter {
   #maxMessage;
   #querystring = null;
   #metaMax = DEFAULT_META_MAX;
+  #declared = null;
   // Session encryption (@alexify/wrpc/encryption), normalized; null when off.
   #encryption = null;
   // Its per-request half: sealed HTTP calls unwrapped before routing.
@@ -186,11 +188,16 @@ class RpcServer extends Emitter {
       querystring = null,
       codec = null,
       metaMaxBytes = DEFAULT_META_MAX,
+      declaredHeaders = null,
       encryption,
     } = options;
     // The cap on peer-declared metadata (the ws wrpc_h query parameter and
     // the per-packet meta field), measured on the encoded input.
     this.#metaMax = Number.isInteger(metaMaxBytes) && metaMaxBytes > 0 ? metaMaxBytes : DEFAULT_META_MAX;
+    // Opt-in allowlist of the names a ws handshake may DECLARE (beside the
+    // deny list, which always applies): `['authorization']` for a deployment
+    // whose handlers read nothing else from a declaration.
+    this.#declared = normalizeDeclaredHeaders(declaredHeaders, 'RpcServer: options');
     this.#encryption = normalizeServerEncryption(encryption, 'RpcServer: options');
     if (!router || typeof router.getProcedure !== 'function') {
       throw new TypeError('RpcServer: options.router (a Router from defineRouter) is required');
@@ -833,7 +840,11 @@ class RpcServer extends Emitter {
     // offers, the query, real headers), a declaration can only add names the
     // upgrade request did not carry — see rpc/handshake.js, which a
     // verifyClient gate reads through as well (readHandshake).
-    const { headers: merged, meta: data } = readDeclared(meta.headers, meta.url, this.#metaMax, this.#log);
+    const {
+      headers: merged,
+      meta: data,
+      declared,
+    } = readDeclared(meta.headers, meta.url, this.#metaMax, this.#log, this.#declared);
     const client = this.#addClient(
       transport,
       // The session is restored once the handshake is done: the dispatcher
@@ -853,6 +864,7 @@ class RpcServer extends Emitter {
       },
       buildMeta({
         headers: merged,
+        declared,
         data,
         url: meta.url,
         remoteAddress: meta.remoteAddress ?? socket.remoteAddress,

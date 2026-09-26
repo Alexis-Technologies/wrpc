@@ -43,10 +43,16 @@ const EMPTY_META = Object.freeze({
 // The frozen snapshot of what the peer presented when the connection was
 // made. `headers` is copied, not adopted: the source object belongs to the
 // host request and other code may still be reading (or mutating) it.
-const buildMeta = ({ headers, url, remoteAddress, protocol, data } = {}) =>
+// The names in `headers` a ws handshake DECLARED (a carrier token, the
+// query) rather than carried — what readDeclared answers; `[]` on every
+// other transport, so a handler reads `meta.declared.includes(name)` bare.
+const NO_NAMES = Object.freeze([]);
+
+const buildMeta = ({ headers, url, remoteAddress, protocol, data, declared } = {}) =>
   Object.freeze({
     data: data ?? FROZEN_EMPTY,
     headers: headers ? Object.freeze({ __proto__: null, ...headers }) : FROZEN_EMPTY,
+    declared: declared ?? NO_NAMES,
     url: url ?? '',
     remoteAddress: remoteAddress ?? '',
     protocol: protocol ?? '',

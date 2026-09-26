@@ -413,3 +413,48 @@ test('payloadTransport: raw fallbacks — prefixed header, oversize canonical, c
   assert.strictEqual(camel.read({ headers: {}, meta: { 'auth-token': 'k1' } }), 'k1');
   assert.strictEqual(camel.read({ headers: { 'x-wrpc-meta-auth-token': 'k2' } }), 'k2');
 });
+
+test('declaredHeaders: the server allowlists what a ws handshake may declare, and meta.declared names what did', async (t) => {
+  const router = defineRouter({
+    who: {
+      headers: procedure({
+        access: 'public',
+        handler: async (ctx) => ({
+          authorization: ctx.meta.headers.authorization ?? null,
+          tenant: ctx.meta.headers['x-tenant'] ?? null,
+          declared: [...ctx.meta.declared],
+        }),
+      }),
+    },
+  });
+  const server = new Server({
+    router,
+    logger: false,
+    host: '127.0.0.1',
+    port: 0,
+    protocol: 'http',
+    declaredHeaders: ['authorization'],
+  });
+  await server.listen();
+  t.after(() => server.close());
+  const { port } = server.address();
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    carrier: 'query',
+    // A Basic value, deliberately: a Bearer rides the `wrpc.bearer.` lift
+    // for the bearer transport and is never a declared header.
+    headers: { authorization: 'Basic Zm9vOmJhcg==', 'x-tenant': 'acme', cookie: 'sid=forged' },
+  });
+  t.after(() => client.close());
+  await client.load('who');
+  // Only the allowlisted name got through the declaration; the rest is
+  // as if never declared — and the handler can see it was a declaration.
+  assert.deepStrictEqual(await client.api.who.headers(), {
+    authorization: 'Basic Zm9vOmJhcg==',
+    tenant: null,
+    declared: ['authorization'],
+  });
+  assert.throws(() => new Server({ router, logger: false, declaredHeaders: 'authorization' }), /declaredHeaders/);
+});

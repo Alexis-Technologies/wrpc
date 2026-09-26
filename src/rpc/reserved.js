@@ -20,7 +20,15 @@
 const AMBIENT_HEADERS =
   /^(?:host|origin|forwarded|via|x-real-ip|x-client-ip|true-client-ip|cf-connecting-ip)$|^(?:sec-|proxy-|x-forwarded-)/;
 
+// Beside the connection facts, the names an identity-aware proxy sets ABOUT
+// the user it authenticated — an OAuth2 proxy (`x-auth-request-*`, not the
+// wider `x-auth-`, which an application's own `x-auth-token` lives in), AWS
+// ALB OIDC (`x-amzn-oidc-*`), Google IAP (`x-goog-authenticated-user-*`,
+// `x-goog-iap-*`), Azure Easy Auth (`x-ms-client-principal*`), the
+// `remote-user` of Apache/nginx auth modules, and the client-ip spellings
+// of Fastly and Fly. A page declaring one of these would be declaring who
+// the proxy said it is.
 const RESERVED_DECLARED =
-  /^(?:cookie|host|origin|forwarded|via|x-real-ip|x-client-ip|true-client-ip|cf-connecting-ip)$|^(?:sec-|content-|proxy-|x-wrpc-|x-forwarded-)/;
+  /^(?:cookie|host|origin|forwarded|via|x-real-ip|x-client-ip|true-client-ip|cf-connecting-ip|fastly-client-ip|fly-client-ip|remote-user)$|^(?:sec-|content-|proxy-|x-wrpc-|x-forwarded-|x-auth-request-|x-amzn-oidc-|x-goog-authenticated-user-|x-goog-iap-|x-ms-client-principal)/;
 
 module.exports = { AMBIENT_HEADERS, RESERVED_DECLARED };

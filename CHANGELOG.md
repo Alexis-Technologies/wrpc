@@ -1913,6 +1913,21 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **Declared ws headers: an exact deny list for identity-aware proxies, an
+  opt-in allowlist, and `meta.declared` naming what came from the
+  declaration.** A hostile page could declare the headers an OAuth2 proxy,
+  an ALB, IAP, Azure Easy Auth or an auth module set ABOUT the user they
+  authenticated (`x-auth-request-*`, `x-amzn-oidc-*`,
+  `x-goog-authenticated-user-*`, `x-goog-iap-*`, `x-ms-client-principal*`,
+  `remote-user`) and the client-ip spellings of Fastly and Fly, and a
+  handler reading them as the proxy's word could not tell; they are refused
+  by name now, exactly (`x-auth-request-`, not `x-auth-` — an application's
+  `x-auth-token` passes). `new RpcServer({ declaredHeaders:
+  ['authorization'] })` allowlists the names a declaration may carry at
+  all (`cookie` never), and `context.meta.declared` lists which of
+  `meta.headers` the peer declared rather than the connection carried —
+  the one thing a handler needed to tell a label from a fact.
+  `readHandshake()` takes the allowlist and answers the list too.
 - **The sealed-request replay memory refuses at its cap, and checks before
   it evicts.** Full of live entries, the built-in cache evicted the oldest
   to make room BEFORE looking the id up — so past ~167 requests a second

@@ -137,14 +137,25 @@ label, not without a connection:
 - a flat `string → string` map only; names normalized to
   [kebab-case](#key-casing);
 - reserved names dropped: `cookie`, `host`, `origin`, `forwarded`, `via`,
-  `x-real-ip`, `x-client-ip`, `true-client-ip`, `cf-connecting-ip`, and the
-  `sec-`, `content-`, `proxy-`, `x-wrpc-`, `x-forwarded-` prefixes. The list
-  is about a hostile **page**: it controls exactly the connect URL and the
-  subprotocol offers while the victim's cookie rides along by itself, so
-  without the list it could forge a `cookie`, an `origin`, or the address a
-  rate limiter reads when no proxy has set one. Real request headers are not
-  filtered — `fetch` already refuses the dangerous ones on http/sse, and a
-  peer outside a browser can send anything regardless;
+  `x-real-ip`, `x-client-ip`, `true-client-ip`, `cf-connecting-ip`,
+  `fastly-client-ip`, `fly-client-ip`, `remote-user`, and the `sec-`,
+  `content-`, `proxy-`, `x-wrpc-`, `x-forwarded-`, `x-auth-request-`
+  (oauth2-proxy), `x-amzn-oidc-` (ALB), `x-goog-authenticated-user-` /
+  `x-goog-iap-` (IAP) and `x-ms-client-principal` (Azure) prefixes — the
+  names an identity-aware proxy sets about the user it authenticated, exact,
+  so an application's own `x-auth-token` is not caught. The list is about a
+  hostile **page**: it controls exactly the connect URL and the subprotocol
+  offers while the victim's cookie rides along by itself, so without the list
+  it could forge a `cookie`, an `origin`, or the address a rate limiter
+  reads when no proxy has set one. Real request headers are not filtered —
+  `fetch` already refuses the dangerous ones on http/sse, and a peer outside
+  a browser can send anything regardless. Beside the list, an **allowlist**
+  narrows what may be declared at all: `new Server({ declaredHeaders:
+  ['authorization'] })` keeps only those names from a declaration (`cookie`
+  is never declarable, allowlisted or not). And `context.meta.declared`
+  names which of `meta.headers` came from the declaration — a label the
+  client attached, as opposed to a header the connection carried — so a
+  handler that must not trust a label can tell;
 - an own `__proto__` key never carried over.
 
 ::: warning Labels, not secrets

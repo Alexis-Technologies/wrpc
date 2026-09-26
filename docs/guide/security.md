@@ -34,9 +34,14 @@ never authorization inputs. wrpc holds that line structurally: both bags are
 size-capped on the encoded input (`metaMaxBytes`), plain-object-checked,
 `__proto__`-stripped and frozen; the ws query path cannot spoof an observed
 header (observed always wins the merge, and reserved names — `cookie`,
-`host`, `origin`, `sec-*`, `content-*`, `proxy-*`, `x-wrpc-*` — are dropped
-from it outright); and every violation is a refusal that leaves the
-connection unlabelled, never an error that leaks parsing internals. The one
+`host`, `origin`, the forwarding and client-ip spellings, `sec-*`,
+`content-*`, `proxy-*`, `x-wrpc-*`, and the exact namespaces identity-aware
+proxies set about the user they authenticated (`x-auth-request-*`,
+`x-amzn-oidc-*`, `x-goog-iap-*`, `x-ms-client-principal*`, `remote-user`) —
+are dropped from it outright; `declaredHeaders: [...]` allowlists the rest,
+and `context.meta.declared` names what came from a declaration); and every
+violation is a refusal that leaves the connection unlabelled, never an
+error that leaks parsing internals. The one
 rule the framework cannot enforce for you: never branch an access decision
 on `client.meta` — that is the session's job.
 

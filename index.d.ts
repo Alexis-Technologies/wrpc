@@ -91,6 +91,8 @@ export interface DeclaredHandshake {
   headers: Record<string, string | Array<string> | undefined>;
   /** The sanitized connection-metadata bag; empty when nothing was declared. */
   meta: Readonly<Record<string, unknown>>;
+  /** The names in `headers` that came from the declaration and stand (not shadowed by an observed header). */
+  declared: ReadonlyArray<string>;
 }
 
 /**
@@ -103,7 +105,11 @@ export interface DeclaredHandshake {
  */
 export declare function readHandshake(
   req: { headers?: Record<string, string | Array<string> | undefined>; url?: string },
-  options?: { metaMaxBytes?: number; log?: { warn(record: Record<string, unknown>): void } },
+  options?: {
+    metaMaxBytes?: number;
+    log?: { warn(record: Record<string, unknown>): void };
+    declaredHeaders?: ReadonlyArray<string> | null;
+  },
 ): DeclaredHandshake;
 
 // ---------------------------------------------------------------------------
@@ -454,6 +460,14 @@ export interface RpcServerOptions {
    * refused (a warn is logged), never the connection. Default 2048.
    */
   metaMaxBytes?: number;
+  /**
+   * Opt-in allowlist of the header names a ws handshake may DECLARE (the
+   * subprotocol token or query carriers), beside the deny list that always
+   * applies — `['authorization']` for a deployment whose handlers read
+   * nothing else from a declaration. `cookie` is never declarable. Default
+   * null: everything the deny list allows.
+   */
+  declaredHeaders?: ReadonlyArray<string> | null;
 }
 
 // The codec types (WrpcCodec, WrpcPacketCodec, WrpcRestCodec) and the
