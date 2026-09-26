@@ -86,7 +86,11 @@ on purpose: a peer fetches the keys before it has a session, and they are
 public keys.
 
 Rotation is a `kid`: sign with a new key while `keys()` publishes both,
-and a verifier that meets an unknown `kid` asks for the keys once more
+and a verifier that meets an unknown `kid` asks for the keys once more —
+at most once per `refreshInterval` (30 s), so a flood of tokens under
+unknown kids is not a flood on the keys endpoint; a `keys()` that fails is
+asked again on the next verify, and a refresh that fails keeps the set that
+was —
 before it refuses. The `iat`/`exp` in the answer are also how peers learn
 the server's clock — each peer measures the offset from its own tokens
 and checks every `exp` against the server's time, so two peers with

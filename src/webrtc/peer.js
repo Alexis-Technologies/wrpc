@@ -583,7 +583,11 @@ class WrpcPeer extends Emitter {
       if (keys === null) {
         throw new TypeError('WrpcPeer: options.assertions.keys is required when the signaler has no keys()');
       }
-      this.#verifier = createAssertionVerifier({ keys, issuer: assertions.issuer ?? null });
+      this.#verifier = createAssertionVerifier({
+        keys,
+        issuer: assertions.issuer ?? null,
+        ...(assertions.refreshInterval === undefined ? {} : { refreshInterval: assertions.refreshInterval }),
+      });
     }
     if (host.trust === 'assertion' && this.#verifier === null) {
       throw new TypeError("WrpcPeer: host.trust 'assertion' needs options.assertions");

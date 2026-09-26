@@ -4,6 +4,7 @@
 // keys from WebCrypto, no WebRTC in sight. Every refusal code is reached.
 
 const { test } = require('node:test');
+const timers = require('node:timers/promises');
 const assert = require('node:assert');
 
 const {
@@ -202,11 +203,13 @@ test('assertions: a keys function is asked once, and again for an unknown kid (r
   const second = await generateAssertionKeys({ kid: 'k2' });
   let published = [first.publicKey];
   let asked = 0;
+  // Every unknown kid asks again here: the throttle has a test of its own.
   const verifier = createAssertionVerifier({
     keys: async () => {
       asked++;
       return published;
     },
+    refreshInterval: 0,
   });
   const sign = (keys) => createAssertionIssuer({ key: keys.privateKey }).sign({ sub: 'alice', fp: FP });
   const context = { from: 'alice', sdp: CHROME_SDP };
@@ -272,4 +275,108 @@ test('assertions: option validation on both halves', async () => {
   const plain = await bare.sign({ sub: 'alice', fp: FP });
   assert.strictEqual(parseJws(plain.assertion).header.kid, undefined);
   assert.strictEqual((await bare.publicKeys())[0].kid, undefined);
+});
+
+test('assertions: a keys() that fails once is asked again on the next verify, and concurrent verifies share one load', async () => {
+  const first = await generateAssertionKeys({ kid: 'k1' });
+  const sign = (keys) => createAssertionIssuer({ key: keys.privateKey }).sign({ sub: 'alice', fp: FP });
+  const context = { from: 'alice', sdp: CHROME_SDP };
+  const token = (await sign(first)).assertion;
+  let asked = 0;
+  const verifier = createAssertionVerifier({
+    keys: async () => {
+      asked++;
+      if (asked === 1) throw new Error('offline');
+      return [first.publicKey];
+    },
+  });
+  await assert.rejects(
+    verifier.verify(token, context),
+    (error) => error.code === 'kid' && /offline/.test(error.message),
+  );
+  // The next verify loads again — it used to await the same rejection
+  // for the life of the verifier.
+  assert.strictEqual((await verifier.verify(token, context)).sub, 'alice');
+  assert.strictEqual(asked, 2);
+  let loads = 0;
+  const busy = createAssertionVerifier({
+    keys: async () => {
+      loads++;
+      await timers.setTimeout(10);
+      return [first.publicKey];
+    },
+  });
+  await Promise.all([busy.verify(token, context), busy.verify(token, context), busy.verify(token, context)]);
+  assert.strictEqual(loads, 1, 'one load, shared');
+});
+
+test('assertions: a JWK the platform refuses is no unhandled rejection, the good keys verify, a failed refresh keeps the set', async (t) => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  const good = await generateAssertionKeys({ kid: 'good' });
+  // WebCrypto refuses an EC key whose `use` is not 'sig' for verify.
+  const bad = { ...good.publicKey, kid: 'bad', use: 'enc' };
+  const sign = (keys, kid) => createAssertionIssuer({ key: keys.privateKey, kid }).sign({ sub: 'alice', fp: FP });
+  const context = { from: 'alice', sdp: CHROME_SDP };
+  let down = false;
+  const verifier = createAssertionVerifier({
+    keys: async () => {
+      if (down) throw new Error('down');
+      return [good.publicKey, bad];
+    },
+    refreshInterval: 0,
+  });
+  assert.strictEqual((await verifier.verify((await sign(good, 'good')).assertion, context)).sub, 'alice');
+  await timers.setTimeout(10);
+  assert.deepStrictEqual(unhandled, [], 'the bad import rejected with nobody to hear it');
+  await assert.rejects(verifier.verify((await sign(good, 'bad')).assertion, context), refused('kid'));
+  // The keys endpoint goes down: an unknown kid is refused, and the set
+  // that was still verifies.
+  down = true;
+  const other = await generateAssertionKeys({ kid: 'other' });
+  await assert.rejects(verifier.verify((await sign(other, 'other')).assertion, context), refused('kid'));
+  assert.strictEqual((await verifier.verify((await sign(good, 'good')).assertion, context)).sub, 'alice');
+  await timers.setTimeout(10);
+  assert.deepStrictEqual(unhandled, []);
+});
+
+test('assertions: a refresh for an unknown kid happens at most once per refreshInterval', async () => {
+  const first = await generateAssertionKeys({ kid: 'k1' });
+  const stranger = await generateAssertionKeys({ kid: 'stranger' });
+  const sign = (keys) => createAssertionIssuer({ key: keys.privateKey }).sign({ sub: 'alice', fp: FP });
+  const context = { from: 'alice', sdp: CHROME_SDP };
+  const token = (await sign(stranger)).assertion;
+  let now = 0;
+  let asked = 0;
+  const verifier = createAssertionVerifier({
+    keys: async () => {
+      asked++;
+      return [first.publicKey];
+    },
+    refreshInterval: 30_000,
+    clock: () => now,
+  });
+  // Fifty tokens under a kid nobody publishes: one refresh, not fifty —
+  // a flood of them used to be a flood on the keys endpoint.
+  for (let i = 0; i < 50; i++) await assert.rejects(verifier.verify(token, context), refused('kid'));
+  assert.strictEqual(asked, 2, 'the initial load and one refresh');
+  now = 30_000;
+  await assert.rejects(verifier.verify(token, context), refused('kid'));
+  assert.strictEqual(asked, 3, 'one more once the interval passed');
+  let eagerly = 0;
+  const eager = createAssertionVerifier({
+    keys: async () => {
+      eagerly++;
+      return [first.publicKey];
+    },
+    refreshInterval: 0,
+  });
+  await assert.rejects(eager.verify(token, context), refused('kid'));
+  await assert.rejects(eager.verify(token, context), refused('kid'));
+  assert.strictEqual(eagerly, 3, '0: every unknown kid asks again');
+  assert.throws(() => createAssertionVerifier({ keys: first.publicKey, refreshInterval: -1 }), /refreshInterval/);
+  assert.throws(() => createAssertionVerifier({ keys: first.publicKey, refreshInterval: 1.5 }), /refreshInterval/);
+  assert.throws(() => createAssertionVerifier({ keys: first.publicKey, clock: 5 }), /clock must be/);
 });

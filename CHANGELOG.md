@@ -1352,6 +1352,19 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **Trust assertions: one failure of `keys()` no longer poisons the
+  verifier, a broken JWK is no unhandled rejection, and a refresh for an
+  unknown kid is bounded.** The verifier kept a failed first load as "the"
+  load, so every verify after an outage of the keys endpoint awaited the
+  same rejection until the process restarted; the set and the load in
+  flight are kept apart now — a failed first load is retried on the next
+  verify, concurrent verifies share one load, and a refresh that fails
+  keeps the set that was. A JWK the platform refuses (`use: 'enc'`, bad
+  coordinates) rejected its import with nobody listening until a token
+  named its kid — handled then, never unhandled. Every token under an
+  unknown kid asked `keys()` again: at most once per `refreshInterval`
+  now (30 s; 0 asks every time), on `createAssertionVerifier` and
+  `WrpcPeer`'s `assertions`.
 - **WebRTC redial: a responder no longer burns its budget in milliseconds
   or kills the link its initiator is rebuilding; a knock on a link the
   initiator thinks is up rebuilds it.** A responder whose link failed

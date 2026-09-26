@@ -53,7 +53,10 @@ export interface RtcPeerConnectionLike {
   readonly connectionState: string;
   readonly iceConnectionState: string;
   readonly sctp: RtcSctpLike | null;
-  createDataChannel(label: string, options?: { negotiated?: boolean; id?: number; ordered?: boolean }): RtcDataChannelLike;
+  createDataChannel(
+    label: string,
+    options?: { negotiated?: boolean; id?: number; ordered?: boolean },
+  ): RtcDataChannelLike;
   createOffer(options?: { iceRestart?: boolean }): Promise<RtcDescriptionLike>;
   createAnswer(): Promise<RtcDescriptionLike>;
   setLocalDescription(description?: RtcDescriptionLike): Promise<void>;
@@ -510,6 +513,15 @@ export interface AssertionVerifierOptions {
   keys: JsonWebKey | Array<JsonWebKey> | (() => Promise<Array<JsonWebKey>> | Array<JsonWebKey>);
   /** The `iss` every assertion must carry, when the issuer sets one. */
   issuer?: string | null;
+  /**
+   * How often a `keys` function is asked again for a kid the set does not
+   * know: at most once per this many ms (default 30 000; 0 asks every
+   * time). A keys function that fails is asked again on the next verify;
+   * a refresh that fails keeps the set that was.
+   */
+  refreshInterval?: number;
+  /** The clock `refreshInterval` is measured on; defaults to `Date.now`. */
+  clock?: () => number;
   /** WebCrypto; defaults to `globalThis.crypto.subtle`. */
   subtle?: SubtleCrypto;
 }
@@ -643,7 +655,11 @@ export interface WrpcPeerOptions {
    * from `signaler.assert()` for every dial. `keys` defaults to
    * `signaler.keys()`. Required for `host.trust: 'assertion'`.
    */
-  assertions?: { keys?: AssertionVerifierOptions['keys']; issuer?: string | null } | null;
+  assertions?: {
+    keys?: AssertionVerifierOptions['keys'];
+    issuer?: string | null;
+    refreshInterval?: AssertionVerifierOptions['refreshInterval'];
+  } | null;
   logger?: WrpcLogger | boolean;
   /**
    * Telemetry for the peer's server half and its links (the host's spans and

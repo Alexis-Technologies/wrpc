@@ -138,10 +138,19 @@ const publicJwk = (jwk) => {
   return rest;
 };
 
+// How often a keys() function is asked again for a kid the set does not
+// know: once per interval, however many tokens name unknown kids — a flood
+// of them used to be a flood on the keys endpoint. 0 asks every time.
+const DEFAULT_REFRESH_INTERVAL = 30_000;
+const noop = () => {};
+
 /**
  * Verifies assertions against a set of public keys. `keys` is a JWK, an
  * array of JWKs, or a function answering them (a signaler's `keys()`, say)
- * — asked once, and once more when a `kid` is unknown, for rotation.
+ * — asked once, and once more when a `kid` is unknown, for rotation, at
+ * most once per `refreshInterval`. A keys() that fails is asked again on
+ * the next verify (nothing is remembered of a failure); a refresh that
+ * fails keeps the set that was.
  *
  *   verify(token, { from, sdp, now? }) -> claims
  *
@@ -151,48 +160,76 @@ const publicJwk = (jwk) => {
  * minute of skew), `iss` must match when one is expected. Throws an
  * AssertionError with a `code` — the reason a link was refused.
  */
-const createAssertionVerifier = ({ keys, issuer = null, subtle = globalThis.crypto?.subtle } = {}) => {
+const createAssertionVerifier = ({
+  keys,
+  issuer = null,
+  subtle = globalThis.crypto?.subtle,
+  refreshInterval = DEFAULT_REFRESH_INTERVAL,
+  clock = Date.now,
+} = {}) => {
   if (!subtle || typeof subtle.verify !== 'function') {
     throw new TypeError('createAssertionVerifier: WebCrypto (crypto.subtle) is required');
   }
+  if (!Number.isInteger(refreshInterval) || refreshInterval < 0) {
+    throw new TypeError('createAssertionVerifier: refreshInterval must be a non-negative integer (ms)');
+  }
+  if (typeof clock !== 'function') throw new TypeError('createAssertionVerifier: clock must be a function');
   if (typeof keys !== 'function' && !isJwk(keys) && !(Array.isArray(keys) && keys.every(isJwk))) {
     throw new TypeError('createAssertionVerifier: keys must be an EC P-256 JWK, an array of them, or a function');
   }
   if (issuer !== null && (typeof issuer !== 'string' || issuer.length === 0)) {
     throw new TypeError('createAssertionVerifier: issuer must be a non-empty string');
   }
-  const imported = new Map(); // kid -> Promise<CryptoKey>
+  let imported = new Map(); // kid -> Promise<CryptoKey>
   // A lone key with no kid of its own is a wildcard: it answers any kid a
   // token names. A labelled key answers its own only — so a kid the set
   // does not know means a rotation to look up, not a key to try.
   let wildcard = null;
-  let loaded = null;
+  // Whether a set was ever loaded, and the load in flight, which every
+  // verify waiting on one shares. Kept apart: a load that failed used to
+  // stay as "the" load, and every verify after it awaited the same
+  // rejection — one outage of the keys endpoint poisoned the verifier.
+  let ready = false;
+  let inflight = null;
+  let refreshedAt = -Infinity;
 
-  const load = async () => {
-    const list = typeof keys === 'function' ? await keys() : Array.isArray(keys) ? keys : [keys];
-    if (!Array.isArray(list) || list.length === 0 || !list.every(isJwk)) {
-      throw new TypeError('assertion keys: expected a non-empty array of EC P-256 JWKs');
-    }
-    imported.clear();
-    for (const jwk of list) {
-      const kid = typeof jwk.kid === 'string' ? jwk.kid : '';
-      imported.set(kid, subtle.importKey('jwk', publicJwk(jwk), ES256, false, ['verify']));
-    }
-    wildcard = list.length === 1 && typeof list[0].kid !== 'string' ? imported.get('') : null;
-  };
+  const load = () =>
+    (inflight ??= (async () => {
+      const list = typeof keys === 'function' ? await keys() : Array.isArray(keys) ? keys : [keys];
+      if (!Array.isArray(list) || list.length === 0 || !list.every(isJwk)) {
+        throw new TypeError('assertion keys: expected a non-empty array of EC P-256 JWKs');
+      }
+      const fresh = new Map();
+      for (const jwk of list) {
+        const kid = typeof jwk.kid === 'string' ? jwk.kid : '';
+        const key = subtle.importKey('jwk', publicJwk(jwk), ES256, false, ['verify']);
+        // A JWK the platform refuses rejects here, and nobody awaits it
+        // until a token names its kid: handled then, never unhandled now.
+        key.catch(noop);
+        fresh.set(kid, key);
+      }
+      // Swapped whole, once it loaded: a refresh that fails keeps the set that was.
+      imported = fresh;
+      wildcard = list.length === 1 && typeof list[0].kid !== 'string' ? fresh.get('') : null;
+      ready = true;
+    })().finally(() => {
+      inflight = null;
+    }));
 
   const lookup = (kid) => imported.get(kid) ?? wildcard;
 
   const keyFor = async (kid) => {
-    if (loaded === null) loaded = load();
-    await loaded;
+    if (!ready) await load();
     const found = lookup(kid);
     if (found) return found;
     if (typeof keys === 'function') {
-      loaded = load();
-      await loaded;
-      const refreshed = lookup(kid);
-      if (refreshed) return refreshed;
+      const now = clock();
+      if (refreshInterval === 0 || now - refreshedAt >= refreshInterval) {
+        refreshedAt = now;
+        await load();
+        const refreshed = lookup(kid);
+        if (refreshed) return refreshed;
+      }
     }
     return refuse(`assertion: unknown key '${kid}'`, 'kid');
   };
@@ -250,4 +287,5 @@ module.exports = {
   isJwk,
   publicJwk,
   createAssertionVerifier,
+  DEFAULT_REFRESH_INTERVAL,
 };
