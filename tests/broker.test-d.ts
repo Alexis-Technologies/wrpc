@@ -113,6 +113,7 @@ declare const server: Server;
   );
   expectType<boolean>(consumers.healthy);
   expectType<string>(consumers.bindings[0].queue);
+  expectType<boolean>(consumers.forget('Bearer t'));
   await consumers.stop();
 
   const publisher = broker.createPublisher(rpc, memory, {

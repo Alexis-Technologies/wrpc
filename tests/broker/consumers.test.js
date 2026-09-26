@@ -598,3 +598,114 @@ test('attachConsumers: an evicted token client finishes its in-flight delivery, 
   assert.deepStrictEqual(seen, ['ada', 'bob'], 'the delivery was acked once, never redelivered');
   assert.deepStrictEqual(dead, []);
 });
+
+// A token binding over a session store the test can fail and count.
+const tokenWorld = (t, { tokenTtl, failGets = 0 } = {}) => {
+  const { MemorySessionStore } = require('../../index.js');
+  const inner = new MemorySessionStore();
+  const store = {
+    gets: 0,
+    failing: failGets,
+    async get(token) {
+      store.gets++;
+      if (store.failing > 0) {
+        store.failing--;
+        throw new Error('store down');
+      }
+      return inner.get(token);
+    },
+    set: (token, data) => inner.set(token, data),
+    delete: (token) => inner.delete(token),
+  };
+  const seen = [];
+  const rpc = new RpcServer({
+    router: defineRouter({
+      acct: {
+        consumes: {
+          work: procedure({
+            consume: { identity: { trust: 'token' }, retry: false, deadLetter: 'work.dead' },
+            handler: async (ctx) => void seen.push(ctx.session.state.user),
+          }),
+        },
+      },
+    }),
+    logger: quiet,
+    sse: false,
+    sessions: { transport: bearerTransport(), store },
+  });
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(async () => {
+    await rpc.close();
+    broker.close();
+  });
+  return { rpc, broker, store, seen, options: tokenTtl === undefined ? {} : { tokenTtl } };
+};
+
+test('attachConsumers: tokenTtl is validated', async (t) => {
+  const { broker, rpc } = boot(t, {
+    jobs: { consumes: { x: procedure({ access: 'public', handler: async () => {} }) } },
+  });
+  for (const tokenTtl of [-1, 1.5, '60s', null]) {
+    await assert.rejects(attachConsumers(rpc, broker, {}, { tokenTtl }), /tokenTtl must be a non-negative integer/);
+  }
+});
+
+test('attachConsumers: a token whose session did not restore is not cached as anonymous', async (t) => {
+  const { rpc, broker, store, seen } = tokenWorld(t, { failGets: 1 });
+  const dead = await drain(t, broker, 'work.dead');
+  const ada = rpc.sessions.create(undefined, { user: 'ada' });
+  await timers.setTimeout(5);
+  const consumers = await attachConsumers(rpc, broker);
+  t.after(() => consumers.stop());
+  const headers = { authorization: `Bearer ${ada.token}` };
+  // The store is down for the first restore: that delivery is refused 403
+  // (dead, retry: false). It used to leave an anonymous client cached
+  // under Ada's token, refusing every later delivery of hers as well.
+  await broker.queue.produce('work', '{}', { headers });
+  await waitFor(() => dead.length === 1);
+  assert.match(dead[0].headers['x-wrpc-dead-reason'], /^403/);
+  await broker.queue.produce('work', '{}', { headers });
+  await waitFor(() => seen.length === 1);
+  assert.deepStrictEqual(seen, ['ada']);
+  assert.strictEqual(store.gets, 2, 'the second delivery went to the store again');
+});
+
+test('attachConsumers: past tokenTtl a token is presented to the store again, so a logout takes effect', async (t) => {
+  const { rpc, broker, store, seen, options } = tokenWorld(t, { tokenTtl: 20 });
+  const dead = await drain(t, broker, 'work.dead');
+  const ada = rpc.sessions.create(undefined, { user: 'ada' });
+  await timers.setTimeout(5);
+  const consumers = await attachConsumers(rpc, broker, {}, options);
+  t.after(() => consumers.stop());
+  const headers = { authorization: `Bearer ${ada.token}` };
+  await broker.queue.produce('work', '{}', { headers });
+  await broker.queue.produce('work', '{}', { headers });
+  await waitFor(() => seen.length === 2);
+  assert.strictEqual(store.gets, 1, 'within the ttl the cached client serves');
+  await rpc.sessions.destroy(ada.token);
+  await timers.setTimeout(25);
+  // The session is gone: past the ttl the delivery restores nothing and the
+  // session procedure refuses it. A cached client would have run it as Ada.
+  await broker.queue.produce('work', '{}', { headers });
+  await waitFor(() => dead.length === 1);
+  assert.deepStrictEqual(seen, ['ada', 'ada']);
+  assert.strictEqual(store.gets, 2);
+});
+
+test('attachConsumers: forget(token) drops the cached client at once', async (t) => {
+  const { rpc, broker, store, seen, options } = tokenWorld(t, { tokenTtl: 0 });
+  const ada = rpc.sessions.create(undefined, { user: 'ada' });
+  await timers.setTimeout(5);
+  const consumers = await attachConsumers(rpc, broker, {}, options);
+  t.after(() => consumers.stop());
+  const value = `Bearer ${ada.token}`;
+  await broker.queue.produce('work', '{}', { headers: { authorization: value } });
+  await waitFor(() => seen.length === 1);
+  assert.strictEqual(consumers.forget('nope'), false);
+  assert.strictEqual(consumers.forget(value), true);
+  await waitFor(() => rpc.clients.size === 0, { message: 'the forgotten client closed' });
+  await broker.queue.produce('work', '{}', { headers: { authorization: value } });
+  await waitFor(() => seen.length === 2);
+  assert.strictEqual(store.gets, 2, 'the next delivery restored the session afresh');
+  assert.throws(() => consumers.forget(42), /must be a string/);
+});

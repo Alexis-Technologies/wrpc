@@ -129,6 +129,14 @@ distinct tokens in flight is a session restore per message, logged
 `broker.evict`. A message without a token runs anonymous, so a session
 procedure refuses it with `403` — which dead-letters.
 
+A cached client is trusted for `tokenTtl` (default 60 s, `0` for the life of
+the binding); past that the token is presented to the session store again, so
+a logout or a rotation takes effect within one ttl. `consumers.forget(value)`
+— the header value as messages carry it, `Bearer …` — makes it immediate,
+which is what a logout handler calls. A restore that did not happen (the store
+was down, the token names no session) is never cached as "anonymous": the next
+message under that token tries the store again.
+
 ## Draining and shutdown
 
 A server that starts [draining](../production#graceful-shutdown) emits

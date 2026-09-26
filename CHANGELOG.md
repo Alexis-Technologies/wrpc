@@ -1477,6 +1477,17 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **`attachConsumers` under `identity.trust: 'token'`: a logout takes
+  effect, and a failed restore is not remembered.** The per-token client
+  cache kept a client, and with it the session it had restored, for the
+  life of the binding: a token whose session had since been destroyed kept
+  running deliveries as that user, and a token whose first restore failed
+  — a store that was down, a token naming no session — was cached as an
+  anonymous client that refused every later delivery `403`. A cached
+  client is now re-validated after `tokenTtl` (default 60 s, `0` disables),
+  `consumers.forget(value)` drops one at once (the logout hook), and a
+  restore that did not happen is never cached. A client dropped
+  mid-delivery finishes it first.
 - **WebRTC: roster data could impersonate another peer.** `PeerHost.attach`
   spread what a peer said about itself at `join` OVER `peer` and `room`, so
   a member joining with `data: { peer: 'alice' }` ran every handler on the

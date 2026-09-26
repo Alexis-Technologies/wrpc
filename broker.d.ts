@@ -286,6 +286,14 @@ export interface AttachConsumersOptions {
    */
   tokenClients?: number;
   /**
+   * How long a cached token client is trusted before the token is presented
+   * to the session store again (ms; default 60 000; `0` keeps a client for
+   * the life of the binding). A logout or a rotation takes effect within
+   * one ttl; `forget(token)` makes it immediate. A restore that failed is
+   * never cached.
+   */
+  tokenTtl?: number;
+  /**
    * Opens what a publisher's `encryption` sealed, before anything reads the
    * delivery — its headers may carry the credential a binding restores a
    * session from. A delivery that does not open is dead-lettered (400) and
@@ -308,6 +316,13 @@ export interface ConsumersHandle {
   /** Also triggered by the server's `'draining'`. */
   pause(): Promise<void>;
   resume(): Promise<void>;
+  /**
+   * Drops the cached client of a token (the `identity.header` value as
+   * messages carry it, `Bearer …`) across every binding — the logout hook.
+   * The next delivery under it attaches afresh; a client mid-delivery
+   * finishes first. True when any binding held one.
+   */
+  forget(token: string): boolean;
   /** Also triggered by the server's close(). */
   stop(): Promise<void>;
 }

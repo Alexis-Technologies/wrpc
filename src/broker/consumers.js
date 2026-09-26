@@ -35,6 +35,7 @@ const { createBrokerSealing } = require('./sealing.js');
 
 const DEFAULT_PREFETCH = 16;
 const DEFAULT_TOKEN_CLIENTS = 128;
+const DEFAULT_TOKEN_TTL = 60_000;
 const DEFAULT_VERSION = '*';
 const TRUST = new Set(['none', 'service', 'token']);
 
@@ -172,6 +173,7 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
     onDeadLetter = null,
     logger = null,
     tokenClients = DEFAULT_TOKEN_CLIENTS,
+    tokenTtl = DEFAULT_TOKEN_TTL,
     encryption = null,
   } = options;
   // The consuming half of a publisher's `encryption`: a delivery is opened
@@ -190,6 +192,12 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
   // arrived, and a string compared as a number never evicted at all.
   if (!Number.isInteger(tokenClients) || tokenClients <= 0) {
     throw new TypeError('attachConsumers: tokenClients must be a positive integer');
+  }
+  // A cached token client is presented to the session store again once it
+  // is this old, so a logout or a rotation takes effect within one ttl; 0
+  // keeps a client for the life of the binding (`forget()` stays immediate).
+  if (!Number.isInteger(tokenTtl) || tokenTtl < 0) {
+    throw new TypeError('attachConsumers: tokenTtl must be a non-negative integer of milliseconds (0 disables it)');
   }
   // A server that serves sealed transports only: a binding that does not
   // seal would attach clients it refuses every delivery on — and used to
@@ -256,7 +264,7 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
   }
 
   const handles = bindings.map((binding) =>
-    bindConsumer({ rpc, queue, system, binding, log, onDeadLetter, tokenClients, sealing }),
+    bindConsumer({ rpc, queue, system, binding, log, onDeadLetter, tokenClients, tokenTtl, sealing }),
   );
   try {
     await Promise.all(handles.map((handle) => handle.start()));
@@ -288,12 +296,20 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
     },
     pause: () => Promise.all(handles.map((handle) => handle.pause())).then(() => undefined),
     resume: () => Promise.all(handles.map((handle) => handle.resume())).then(() => undefined),
+    // The logout hook: the next delivery under this header value attaches
+    // afresh, whatever `tokenTtl` says. The value as messages carry it.
+    forget: (token) => {
+      if (typeof token !== 'string') throw new TypeError('ConsumersHandle.forget: token must be a string');
+      let found = false;
+      for (const handle of handles) found = handle.forget(token) || found;
+      return found;
+    },
     stop,
   };
 };
 
 // One binding: its clients, its broker consumer, the per-delivery dispatch.
-const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenClients, sealing }) => {
+const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenClients, tokenTtl, sealing }) => {
   const { policy, procedure, method } = binding;
   const router = rpc.router;
   // The one-procedure router view handleRpc dispatches against.
@@ -335,6 +351,13 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     if (attached.transport.pending === 0) attached.transport.close();
     else attached.retired = true;
   };
+  const forget = (token) => {
+    const cached = tokens.get(token);
+    if (!cached) return false;
+    tokens.delete(token);
+    retire(cached);
+    return true;
+  };
   const clientFor = (headers) => {
     if (policy.identity.trust !== 'token') {
       if (!shared) {
@@ -349,12 +372,34 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     const token = headers[policy.identity.header] ?? '';
     const cached = tokens.get(token);
     if (cached) {
+      // '' is the anonymous client: there is nothing to re-validate.
+      if (token === '' || tokenTtl === 0 || Date.now() - cached.attachedAt < tokenTtl) {
+        tokens.delete(token);
+        tokens.set(token, cached);
+        return cached;
+      }
+      // Past its ttl: the token goes to the session store again, so a
+      // logout or a rotation since the first delivery is what this one sees.
       tokens.delete(token);
-      tokens.set(token, cached);
-      return cached;
+      retire(cached);
     }
-    const attached = { ...attachClient({ request: { headers: { authorization: token } } }), retired: false };
+    const attached = {
+      ...attachClient({ request: { headers: { authorization: token } } }),
+      retired: false,
+      attachedAt: Date.now(),
+    };
     tokens.set(token, attached);
+    // A restore that did not happen — the store was down, the token names
+    // no session — used to be cached as "this token is anonymous", and every
+    // later delivery under it was refused 403 until an eviction. Dropped
+    // instead: the next delivery presents the token to the store again.
+    if (token !== '') {
+      void attached.client.sessionReady.then((restored) => {
+        if (restored === true || tokens.get(token) !== attached) return;
+        tokens.delete(token);
+        retire(attached);
+      });
+    }
     if (tokens.size > tokenClients) {
       const [oldest, evicted] = tokens.entries().next().value;
       tokens.delete(oldest);
@@ -509,6 +554,7 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
   return {
     start,
     stop,
+    forget,
     pause: async () => {
       if (consumer && !stopped) await consumer.pause();
     },
