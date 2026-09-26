@@ -37,7 +37,7 @@ const { resolveGenerateId } = require('../../utils.js');
 // fails at the driver, not here.
 const { TopicTails } = require('../tail.js');
 const { codedError, toText, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
-const { crashDelay } = require('../retry.js');
+const { crashDelay, positiveInteger } = require('../retry.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_PREFETCH = 16;
@@ -88,9 +88,19 @@ const createNatsBroker = (options = {}) => {
   if (jetstream !== null && (!isFunction(jetstream) || !isFunction(jetstreamManager))) {
     throw new TypeError('createNatsBroker: options.jetstream/jetstreamManager must be the nats JetStream factories');
   }
+  // Strict, at construction: `ackWait` becomes nanoseconds in a consumer
+  // config, and a string from the environment multiplied is NaN — a
+  // consumer the server refuses at the first consume(), not here.
+  if (!positiveInteger(ackWait)) {
+    throw new TypeError('createNatsBroker: options.ackWait must be a positive integer of milliseconds');
+  }
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'nats' });
   const report = (event, error, extra = {}) => log.error({ err: error, event, ...extra });
   let closed = false;
+  // The queue consumers alive on this broker, so close() stops them: a
+  // consumer left pulling on a closed broker kept its keepalives and its
+  // pump running against a connection the caller was about to drain.
+  const consumers = new Set();
 
   const encodeHeaders = (bag, extra = null) => {
     const merged = { ...toHeaders(bag), ...(extra ?? {}) };
@@ -367,6 +377,9 @@ const createNatsBroker = (options = {}) => {
     if (!Number.isInteger(prefetch) || prefetch <= 0) {
       throw new TypeError('nats queue.consume: prefetch must be a positive integer');
     }
+    if (deadLetter !== null && (typeof deadLetter !== 'string' || deadLetter.length === 0)) {
+      throw new TypeError('nats queue.consume: deadLetter must be a queue name or null');
+    }
     const { js: stream, jsm: manager } = await managers();
     const { name: streamId, subject, config } = queueStream(name);
     await ensureStream(streamId, subject, config);
@@ -505,8 +518,10 @@ const createNatsBroker = (options = {}) => {
     const stop = async () => {
       if (!state.running) return;
       state.running = false;
+      consumers.delete(stop);
       await halt();
     };
+    consumers.add(stop);
     if (signal) signal.addEventListener('abort', () => void stop(), { once: true });
     return {
       stop,
@@ -590,6 +605,7 @@ const createNatsBroker = (options = {}) => {
     closed = true;
     tails.close();
     ensured.clear();
+    await Promise.all(Array.from(consumers, (stop) => stop()));
     // The connection is INJECTED: draining or closing it is the caller's.
   };
 

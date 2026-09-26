@@ -1352,6 +1352,18 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **Broker adapters: a bad numeric option is a `TypeError` at construction,
+  not a silent misbehaviour later.** Redis `blockMs` (`0` was `XREAD BLOCK
+  0`, forever, and no pause after a failed read), `claimIdleMs` (`0` stole
+  every other consumer's in-flight message), `maxLen`, `inboxTtl`; NATS
+  `ackWait`; RabbitMQ `queueType` (`'quorum'` or `'classic'`), `inboxTtl`,
+  `streamMaxBytes`; Kafka `replicationFactor` (a positive integer or `-1`
+  for the broker's default) and `maxRetryDelay` — a string read from an
+  environment variable compared as a number in each of these places.
+  `queue.consume` on every adapter refuses a `deadLetter` that is not a
+  queue name, as the in-process broker did. The NATS broker's `close()`
+  stops its queue consumers, which kept their keepalives and their pull
+  loop running against a connection the caller was about to drain.
 - **`attachBrokerRpc`: a cap on sessions, and a live session cannot be
   taken over by a second `hello`.** Every `hello` that reached the service
   address opened a session — a Client, a transport, a table entry until

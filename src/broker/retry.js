@@ -64,4 +64,4 @@ const decide = ({ code, attempt, retry = DEFAULT_RETRY, draining = false, random
 const CRASH_BACKOFF = Object.freeze({ minDelay: 50, maxDelay: 1000, factor: 2, jitter: false });
 const crashDelay = (attempt) => backoffDelay({ ...CRASH_BACKOFF, attempt: Math.max(0, attempt - 1) });
 
-module.exports = { DEFAULT_RETRY, DEFAULT_RETRY_ON, normalizeRetry, decide, crashDelay };
+module.exports = { DEFAULT_RETRY, DEFAULT_RETRY_ON, normalizeRetry, decide, crashDelay, positiveInteger, nonNegative };

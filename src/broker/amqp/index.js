@@ -37,7 +37,7 @@ const { resolveGenerateId } = require('../../utils.js');
 // fails at the driver, not here.
 const { TopicTails } = require('../tail.js');
 const { codedError, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
-const { crashDelay } = require('../retry.js');
+const { crashDelay, positiveInteger } = require('../retry.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_PREFETCH = 16;
@@ -68,6 +68,19 @@ const createAmqpBroker = (options = {}) => {
   const nextId = generateId === null ? generateUUID : resolveGenerateId(generateId, 'createAmqpBroker').generate;
   if (!connection || !isFunction(connection.createChannel) || !isFunction(connection.createConfirmChannel)) {
     throw new TypeError('createAmqpBroker: options.connection must be an amqplib connection');
+  }
+  // Strict, at construction: these become queue ARGUMENTS, and RabbitMQ
+  // refuses a redeclaration with different ones with a channel-level error
+  // long after the typo — a `queueType` it does not know, an `inboxTtl`
+  // read as a string.
+  if (queueType !== 'quorum' && queueType !== 'classic') {
+    throw new TypeError("createAmqpBroker: options.queueType must be 'quorum' or 'classic'");
+  }
+  if (!positiveInteger(inboxTtl)) {
+    throw new TypeError('createAmqpBroker: options.inboxTtl must be a positive integer of milliseconds');
+  }
+  if (!Number.isInteger(streamMaxBytes) || streamMaxBytes < 0) {
+    throw new TypeError('createAmqpBroker: options.streamMaxBytes must be a non-negative integer (0 for unbounded)');
   }
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'amqp' });
   const report = (event, error, extra = {}) => log.error({ err: error, event, ...extra });
@@ -479,6 +492,9 @@ const createAmqpBroker = (options = {}) => {
     const { prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = options;
     if (!Number.isInteger(prefetch) || prefetch <= 0) {
       throw new TypeError('amqp queue.consume: prefetch must be a positive integer');
+    }
+    if (deadLetter !== null && (typeof deadLetter !== 'string' || deadLetter.length === 0)) {
+      throw new TypeError('amqp queue.consume: deadLetter must be a queue name or null');
     }
     const main = await ensureQueue(queue, deadLetter);
     const channel = await openChannel();

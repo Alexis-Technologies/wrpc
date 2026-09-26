@@ -277,3 +277,29 @@ test('redis broker: closing refuses further work', async (t) => {
   );
   await assert.rejects(broker.direct.send('a', 'x'), (error) => error.code === 503);
 });
+
+test('redis broker: numeric options are refused at construction, deadLetter at consume', async () => {
+  const client = createFakeRedis();
+  // A string from the environment used to compare as a number and do the
+  // wrong thing silently; blockMs: 0 was XREAD BLOCK 0 — forever.
+  const rejected = [
+    ['blockMs', [0, -1, 1.5, '1000']],
+    ['claimIdleMs', [0, '60000']],
+    ['maxLen', [-1, 1.5, '100']],
+    ['inboxTtl', [0, '60000']],
+  ];
+  for (const [option, values] of rejected) {
+    for (const value of values) {
+      assert.throws(
+        () => createRedisBroker({ client, logger: quiet, [option]: value }),
+        new RegExp(`options\\.${option}`),
+      );
+    }
+  }
+  const broker = createRedisBroker({ client, logger: quiet, maxLen: 0 });
+  await assert.rejects(
+    broker.queue.consume('q', () => {}, { deadLetter: '' }),
+    /deadLetter must be a queue name or null/,
+  );
+  await broker.close();
+});

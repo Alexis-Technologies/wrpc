@@ -230,3 +230,22 @@ test('amqp broker: closing releases every channel and refuses new work', async (
   await assert.rejects(broker.direct.send('a', 'x'), (error) => error.code === 503);
   void t;
 });
+
+test('amqp broker: queue arguments are refused at construction, deadLetter at consume', async () => {
+  const connection = createFakeAmqp();
+  // These become queue ARGUMENTS: RabbitMQ refuses a redeclaration with
+  // different ones with a channel-level error long after the typo.
+  assert.throws(() => createAmqpBroker({ connection, logger: quiet, queueType: 'lazy' }), /options\.queueType/);
+  for (const inboxTtl of [0, -5, 1.5, '60000']) {
+    assert.throws(() => createAmqpBroker({ connection, logger: quiet, inboxTtl }), /options\.inboxTtl/);
+  }
+  for (const streamMaxBytes of [-1, 2.5, '1gb']) {
+    assert.throws(() => createAmqpBroker({ connection, logger: quiet, streamMaxBytes }), /options\.streamMaxBytes/);
+  }
+  const broker = open(connection, { streamMaxBytes: 0 });
+  await assert.rejects(
+    broker.queue.consume('q', () => {}, { deadLetter: '' }),
+    /deadLetter must be a queue name or null/,
+  );
+  await broker.close();
+});

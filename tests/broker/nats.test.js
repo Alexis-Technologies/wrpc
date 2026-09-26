@@ -218,3 +218,42 @@ test('nats broker: a feed resumes across instances on the shared stream', async 
     ['two'],
   );
 });
+
+test('nats broker: ackWait is refused at construction, deadLetter at consume', async () => {
+  const world = createFakeNats();
+  // ackWait becomes nanoseconds in the consumer config: a string from the
+  // environment multiplied is NaN, refused by the server at the first
+  // consume() rather than here.
+  for (const ackWait of [0, -1, 1.5, '30000']) {
+    assert.throws(() => createNatsBroker({ ...world, logger: quiet, ackWait }), /options\.ackWait/);
+  }
+  const broker = createNatsBroker({ ...world, logger: quiet });
+  await assert.rejects(
+    broker.queue.consume('q', () => {}, { deadLetter: '' }),
+    /deadLetter must be a queue name or null/,
+  );
+  await broker.close();
+});
+
+test('nats broker: close() stops its queue consumers', async (t) => {
+  const timersPromises = require('node:timers/promises');
+  const { world, broker } = open();
+  const other = createNatsBroker({ ...world, logger: quiet });
+  t.after(() => other.close());
+  const queue = `closing-${Date.now().toString(36)}`;
+  const seen = [];
+  const consumer = await broker.queue.consume(queue, (delivery) => {
+    seen.push(delivery.body);
+    return delivery.ack();
+  });
+  await other.queue.produce(queue, 'before');
+  await waitFor(() => seen.length === 1);
+  // The pull in flight used to outlive close(): a message arriving inside
+  // it was still dispatched, and the keepalives kept ticking.
+  await broker.close();
+  await other.queue.produce(queue, 'after');
+  await timersPromises.setTimeout(80);
+  assert.deepStrictEqual(seen, ['before'], 'a closed broker takes no more deliveries');
+  assert.strictEqual(consumer.healthy, false);
+  await consumer.stop();
+});

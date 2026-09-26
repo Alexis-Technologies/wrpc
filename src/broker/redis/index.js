@@ -38,7 +38,7 @@ const { resolveGenerateId } = require('../../utils.js');
 // fails at the driver, not here.
 const { TopicTails } = require('../tail.js');
 const { codedError, toText, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
-const { crashDelay } = require('../retry.js');
+const { crashDelay, positiveInteger } = require('../retry.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_BLOCK_MS = 1000;
@@ -121,6 +121,23 @@ const createRedisBroker = (options = {}) => {
   // whole, per nextId above.
   const shortName = generateId === null ? () => generateUUID().slice(0, 8) : nextId;
   checkClient(client, 'createRedisBroker');
+  // Strict numbers, refused here: `blockMs: 0` is `XREAD BLOCK 0` — forever —
+  // and no pause after a failed read, a hot loop; `claimIdleMs: 0` steals
+  // every other consumer's in-flight message; and a string read from an
+  // environment variable compares as a number in each of these places and
+  // does the wrong thing silently.
+  if (!positiveInteger(blockMs)) {
+    throw new TypeError('createRedisBroker: options.blockMs must be a positive integer of milliseconds');
+  }
+  if (!positiveInteger(claimIdleMs)) {
+    throw new TypeError('createRedisBroker: options.claimIdleMs must be a positive integer of milliseconds');
+  }
+  if (!Number.isInteger(maxLen) || maxLen < 0) {
+    throw new TypeError('createRedisBroker: options.maxLen must be a non-negative integer (0 for unbounded)');
+  }
+  if (!positiveInteger(inboxTtl)) {
+    throw new TypeError('createRedisBroker: options.inboxTtl must be a positive integer of milliseconds');
+  }
   if (connect !== null && !isFunction(connect)) {
     throw new TypeError('createRedisBroker: options.connect must be a function returning a new client');
   }
@@ -337,6 +354,9 @@ const createRedisBroker = (options = {}) => {
     const { group = name, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = options;
     if (!Number.isInteger(prefetch) || prefetch <= 0) {
       throw new TypeError('redis queue.consume: prefetch must be a positive integer');
+    }
+    if (deadLetter !== null && (typeof deadLetter !== 'string' || deadLetter.length === 0)) {
+      throw new TypeError('redis queue.consume: deadLetter must be a queue name or null');
     }
     const consumerName = `wrpc-${shortName()}`;
     const stream = queueKey(name);

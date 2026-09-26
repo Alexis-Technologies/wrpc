@@ -264,3 +264,22 @@ test('kafka broker: pause and resume ride the consumer, not the group', async (t
   await consumer.resume();
   await waitFor(() => seen.length === 2, { timeout: 5000 });
 });
+
+test('kafka broker: replicationFactor and maxRetryDelay are refused at construction, deadLetter at consume', async () => {
+  const kafka = createFakeKafka({ flavor: 'kafkajs' });
+  for (const replicationFactor of [0, -2, 1.5, '3']) {
+    assert.throws(
+      () => createKafkaBroker({ kafka, logger: quiet, replicationFactor }),
+      /options\.replicationFactor must be a positive integer, or -1/,
+    );
+  }
+  for (const maxRetryDelay of [-1, 0.5, '1s']) {
+    assert.throws(() => createKafkaBroker({ kafka, logger: quiet, maxRetryDelay }), /options\.maxRetryDelay/);
+  }
+  const broker = createKafkaBroker({ kafka, logger: quiet, replicationFactor: -1, maxRetryDelay: 0 });
+  await assert.rejects(
+    broker.queue.consume('q', () => {}, { deadLetter: '' }),
+    /deadLetter must be a queue name or null/,
+  );
+  await broker.close();
+});

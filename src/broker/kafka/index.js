@@ -121,6 +121,16 @@ const createKafkaBroker = (options = {}) => {
   if (!Number.isInteger(logPartitions) || logPartitions <= 0) {
     throw new TypeError('createKafkaBroker: options.logPartitions must be a positive integer');
   }
+  // -1 is the broker's own `default.replication.factor` (KIP-464); a string
+  // from the environment would be sent to createTopics as it is.
+  if (!Number.isInteger(replicationFactor) || (replicationFactor !== -1 && replicationFactor < 1)) {
+    throw new TypeError(
+      'createKafkaBroker: options.replicationFactor must be a positive integer, or -1 for the broker default',
+    );
+  }
+  if (!Number.isInteger(maxRetryDelay) || maxRetryDelay < 0) {
+    throw new TypeError('createKafkaBroker: options.maxRetryDelay must be a non-negative integer of milliseconds');
+  }
   const flavor = flavorOption ?? detectFlavor(kafka);
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'kafka' });
   const report = (event, error, extra = {}) => log.error({ err: error, event, ...extra });
@@ -567,6 +577,9 @@ const createKafkaBroker = (options = {}) => {
     const { group = queue, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = options;
     if (!Number.isInteger(prefetch) || prefetch <= 0) {
       throw new TypeError('kafka queue.consume: prefetch must be a positive integer');
+    }
+    if (deadLetter !== null && (typeof deadLetter !== 'string' || deadLetter.length === 0)) {
+      throw new TypeError('kafka queue.consume: deadLetter must be a queue name or null');
     }
     const topic = await ensureTopic(queueTopic(queue));
     if (deadLetter) await ensureTopic(queueTopic(deadLetter));
