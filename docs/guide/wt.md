@@ -86,9 +86,11 @@ On the server, the session becomes a `WrpcSocket` — the engine port's socket
 contract — and is attached exactly the way a WebSocket connection is
 (`RpcServer.attachSocket`), so session restore, declared headers, receive-side
 flow control and the server-side transport all apply unchanged. Outbound
-backpressure counts the bytes the stream's writer has not taken yet; inbound,
-pausing simply stops reading, and QUIC's own flow control carries the
-pressure to the peer.
+backpressure counts the bytes the session has not taken yet — on the control
+stream, on a binary stream's own WebTransport stream, and what waits for one
+of those to open — so a `false` from `send()`/`write()` is always followed
+by `'drain'`, whichever path answered it. Inbound, pausing simply stops
+reading, and QUIC's own flow control carries the pressure to the peer.
 
 Close codes carry over: the server's 1001 on shutdown and 1002 on a framing
 violation arrive at the client as the session's `closeCode`, and a client
@@ -110,7 +112,10 @@ Nothing changes in application code: `WrpcReadable`/`WrpcWritable`,
 backpressure and `getStream()` are the same, and a client whose transport
 announced no such capability (an older peer, a wire codec in use — the
 mapping reads stream packets, which only JSON allows) gets every chunk on
-the control stream as before. The ordering subtleties are the transport's
+the control stream as before. So does one whose host never answers
+`createUnidirectionalStream()` — a browser waits for stream credit, and a
+host that grants none leaves it waiting: after five seconds that stream, and
+every later one, rides the control stream instead. The ordering subtleties are the transport's
 to handle and are spelled out in
 [the protocol reference](../reference/protocol#webtransport-streams).
 

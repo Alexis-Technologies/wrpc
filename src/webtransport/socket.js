@@ -367,9 +367,20 @@ class WtSocket extends EventEmitter {
       return this.#compress(KIND_TEXT, TEXT_ENCODER.encode(data));
     }
     const chunk = toBytes(data);
-    if (this.#mux.chunk(chunk)) return this.#queued <= this.#highWater;
+    if (this.#mux.chunk(chunk)) return this.#accepted();
     if (plain || chunk.length < active.encode.threshold) return this.#enqueue(frame(KIND_BINARY, chunk));
     return this.#compress(KIND_BINARY, chunk);
+  }
+
+  // The answer to a send: true under the high-water mark, false past it —
+  // and with a false, the promise of a 'drain'. Every path answers through
+  // here: a false from the side-stream path, a compress in flight or a
+  // frame queued behind one used to set no mark, so a caller waiting for
+  // 'drain' after it waited forever.
+  #accepted() {
+    if (this.#queued <= this.#highWater) return true;
+    this.#pressured = true;
+    return false;
   }
 
   // A ready frame, in order: straight to the writer while nothing is being
@@ -383,7 +394,7 @@ class WtSocket extends EventEmitter {
       this.#queued -= size;
       this.#writeFrame(ready);
     });
-    return this.#queued <= this.#highWater;
+    return this.#accepted();
   }
 
   // Compresses one message past the threshold. The codec may answer at
@@ -403,7 +414,7 @@ class WtSocket extends EventEmitter {
       encoded = this.#active.encode.codec.encode(bytes);
     } catch {
       plain();
-      return this.#queued <= this.#highWater;
+      return this.#accepted();
     }
     this.#outbound.push(
       encoded,
@@ -414,7 +425,7 @@ class WtSocket extends EventEmitter {
       },
       plain,
     );
-    return this.#queued <= this.#highWater;
+    return this.#accepted();
   }
 
   #writeFrame(bytes) {
@@ -426,16 +437,15 @@ class WtSocket extends EventEmitter {
       () => this.#sent(size),
       () => {},
     );
-    if (this.#queued > this.#highWater) {
-      this.#pressured = true;
-      return false;
-    }
-    return true;
+    return this.#accepted();
   }
 
+  // A write the stream took. After the close nothing is counted: the
+  // count was zeroed, and a late settlement used to take it negative.
   #sent(size) {
+    if (this.#closed) return;
     this.#queued -= size;
-    if (this.#closed || !this.#pressured || this.#queued > this.#lowWater) return;
+    if (!this.#pressured || this.#queued > this.#lowWater) return;
     this.#pressured = false;
     this.emit('drain');
   }

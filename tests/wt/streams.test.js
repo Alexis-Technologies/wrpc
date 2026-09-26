@@ -275,6 +275,72 @@ test('wt streams: an empty id, a second stream for an id, and a stream from a pe
   assert.ok(world.cancelled >= 3);
   assert.throws(() => new StreamMux(sessions[1], { maxHeldStreams: 0 }), TypeError);
   assert.throws(() => new StreamMux(sessions[1], { holdTimeout: 0 }), TypeError);
+  assert.throws(() => new StreamMux(sessions[1], { openTimeout: 0 }), TypeError);
+});
+
+test('wt streams: chunks held for a stream still opening are counted once, when held', async () => {
+  const queued = [];
+  const sent = [];
+  const { a, b, world } = await muxPair({ onQueued: (n) => queued.push(n), onSent: (n) => sent.push(n) });
+  world.uniQuota = 'hang';
+  const open = { type: 'stream', id: 'h', name: 'blob', size: 5 };
+  assert.strictEqual(a.mux.control(open), false);
+  assert.strictEqual(a.mux.chunk(chunkEncode('h', new Uint8Array([1, 2]))), true);
+  assert.strictEqual(a.mux.chunk(chunkEncode('h', new Uint8Array([3, 4, 5]))), true);
+  // Counted the moment they are held — what waits for the open used to be
+  // invisible to the transport's bufferedAmount, without bound.
+  assert.deepStrictEqual(queued, [2, 3]);
+  assert.deepStrictEqual(sent, []);
+  world.grant();
+  // The stream reaches the peer once granted; its open packet passes after.
+  await timers.setTimeout(20);
+  assert.strictEqual(b.mux.packet(JSON.stringify(open)), true);
+  await waitFor(() => b.out.length === 3, 'delivered once the stream opened');
+  await waitFor(() => sent.length === 2, 'taken');
+  // Routed when the stream opened, without a second count.
+  assert.deepStrictEqual(queued, [2, 3]);
+  assert.deepStrictEqual(
+    sent.slice().sort((x, y) => x - y),
+    [2, 3],
+  );
+});
+
+test('wt streams: an open the host never answers falls back to the control stream after openTimeout; a late grant is reset unused', async () => {
+  const control = [];
+  const packets = [];
+  const queued = [];
+  const { a, b, sessions, world } = await muxPair({
+    openTimeout: 30,
+    onQueued: (n) => queued.push(n),
+    writeControl: (frame) => control.push(Array.from(chunkDecode(frame).payload)),
+    sendControl: (packet) => packets.push(packet),
+  });
+  world.uniQuota = 'hang';
+  const open = { type: 'stream', id: 'p', name: 'blob', size: 3 };
+  assert.strictEqual(a.mux.control(open), false);
+  a.mux.chunk(chunkEncode('p', new Uint8Array([1])));
+  a.mux.chunk(chunkEncode('p', new Uint8Array([2, 3])));
+  assert.strictEqual(a.mux.control({ type: 'stream', id: 'p', status: 'end' }), true, 'the end waits with the chunks');
+  assert.strictEqual(a.mux.enabled, true);
+  await waitFor(() => packets.length === 1, 'the deadline passed');
+  // In order, the end packet last, and this stream's side of the mux off
+  // for every stream after it — exactly what a refused open does.
+  assert.deepStrictEqual(control, [[1], [2, 3]]);
+  assert.deepStrictEqual(packets, [{ type: 'stream', id: 'p', status: 'end' }]);
+  assert.strictEqual(a.mux.enabled, false);
+  // Counted when held, uncounted when handed to the control stream (which
+  // counts them as its own): net nothing.
+  assert.strictEqual(
+    queued.reduce((sum, n) => sum + n, 0),
+    0,
+  );
+  assert.strictEqual(a.mux.chunk(chunkEncode('p', new Uint8Array([4]))), false, 'gone from the mux');
+  // The host grants the stream after all: reset unused, nothing reaches the peer.
+  world.grant();
+  await waitFor(() => sessions[0].uniOpened === 1, 'granted late');
+  await timers.setTimeout(20);
+  assert.deepStrictEqual(b.out, []);
+  assert.deepStrictEqual(b.refused, []);
 });
 
 test('wt streams: a peer without the capability disables the mux; close() resets what is open', async () => {

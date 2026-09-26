@@ -46,6 +46,11 @@ const CAPS_STREAMS = '{"streams":true}';
 // byte of them buffered here, before any authentication, past maxMessage.
 const DEFAULT_MAX_HELD_STREAMS = 32;
 const DEFAULT_HOLD_TIMEOUT = 10_000;
+// How long createUnidirectionalStream() may take before the stream — and
+// every one after it — goes on the control stream instead. A browser parks
+// the promise until the peer grants stream credit, forever against a host
+// that never does; the chunks held for it were the only bound.
+const DEFAULT_OPEN_TIMEOUT = 5_000;
 
 // The chunk header a unidirectional stream opens with — chunkEncode's,
 // without the payload.
@@ -75,6 +80,7 @@ class StreamMux {
   #onRefused;
   #maxHeld;
   #holdTimeout;
+  #openTimeout;
   #enabled = false;
   // Whether the peer announced streams — what makes an inbound
   // unidirectional stream one of ours to read. Kept apart from #enabled,
@@ -102,7 +108,8 @@ class StreamMux {
    * hears of an inbound stream cancelled unread: `'unannounced'` (the peer
    * announced no streams), `'id'` (an empty one), `'duplicate'` (a second
    * stream for an id), `'held'` (past maxHeldStreams), `'timeout'` (its
-   * open packet never came within holdTimeout).
+   * open packet never came within holdTimeout). `openTimeout` bounds a
+   * createUnidirectionalStream() that never settles.
    */
   constructor(
     session,
@@ -116,6 +123,7 @@ class StreamMux {
       onRefused = null,
       maxHeldStreams = DEFAULT_MAX_HELD_STREAMS,
       holdTimeout = DEFAULT_HOLD_TIMEOUT,
+      openTimeout = DEFAULT_OPEN_TIMEOUT,
     },
   ) {
     if (!Number.isInteger(maxHeldStreams) || maxHeldStreams <= 0) {
@@ -123,6 +131,9 @@ class StreamMux {
     }
     if (!Number.isInteger(holdTimeout) || holdTimeout <= 0) {
       throw new TypeError('StreamMux: holdTimeout must be a positive integer (ms)');
+    }
+    if (!Number.isInteger(openTimeout) || openTimeout <= 0) {
+      throw new TypeError('StreamMux: openTimeout must be a positive integer (ms)');
     }
     this.#session = session;
     this.#emitPacket = emitPacket;
@@ -134,6 +145,7 @@ class StreamMux {
     this.#onRefused = onRefused;
     this.#maxHeld = maxHeldStreams;
     this.#holdTimeout = holdTimeout;
+    this.#openTimeout = openTimeout;
   }
 
   /** What we announce: streams, when the session can open unidirectional ones. */
@@ -199,39 +211,62 @@ class StreamMux {
   #open(id) {
     const entry = { writer: null, chain: Promise.resolve(), pending: [], ended: null };
     this.#out.set(id, entry);
+    let expired = false;
+    const timer = setTimeout(() => {
+      expired = true;
+      this.#fallback(id, entry);
+    }, this.#openTimeout);
+    timer.unref?.();
     this.#session.createUnidirectionalStream().then(
       (writable) => {
-        if (this.#closed || this.#out.get(id) !== entry) return;
+        clearTimeout(timer);
+        if (expired || this.#closed || this.#out.get(id) !== entry) {
+          // Granted too late, or to a stream that is gone: reset unused.
+          const abort = writable.abort();
+          if (abort && typeof abort.catch === 'function') abort.catch(() => {});
+          return;
+        }
         entry.writer = writable.getWriter();
         entry.chain = entry.writer.write(idHeader(id)).catch(() => {});
         const pending = entry.pending;
         entry.pending = null;
-        for (let i = 0; i < pending.length; i++) this.#route(entry, pending[i]);
+        // Counted when held (chunk()): routed without counting again.
+        for (let i = 0; i < pending.length; i++) this.#route(entry, pending[i], true);
         if (entry.ended) {
           this.#out.delete(id);
           this.#finishOut(entry, entry.ended);
         }
       },
       () => {
-        // No stream to be had (the host grants none): this stream, and
-        // every one after it, goes on the control stream — what was held
-        // for it is replayed there in order, its end packet last.
-        if (this.#closed || this.#out.get(id) !== entry) return;
-        this.#enabled = false;
-        this.#out.delete(id);
-        const pending = entry.pending;
-        entry.pending = null;
-        if (this.#writeControl) for (let i = 0; i < pending.length; i++) this.#writeControl(pending[i]);
-        if (entry.ended && this.#sendControl) this.#sendControl({ type: 'stream', id, status: entry.ended });
+        clearTimeout(timer);
+        if (!expired) this.#fallback(id, entry);
       },
     );
   }
 
-  #route(entry, frame) {
+  // No stream to be had (the host grants none, or not within openTimeout):
+  // this stream, and every one after it, goes on the control stream — what
+  // was held for it is replayed there in order, its end packet last.
+  #fallback(id, entry) {
+    if (this.#closed || this.#out.get(id) !== entry) return;
+    this.#enabled = false;
+    this.#out.delete(id);
+    const pending = entry.pending;
+    entry.pending = null;
+    for (let i = 0; i < pending.length; i++) {
+      const frame = pending[i];
+      // Uncounted here; the control stream counts it as its own.
+      this.#onQueued(readId(frame).offset - frame.length);
+      if (this.#writeControl) this.#writeControl(frame);
+    }
+    if (entry.ended && this.#sendControl) this.#sendControl({ type: 'stream', id, status: entry.ended });
+  }
+
+  #route(entry, frame, counted) {
     const { offset } = readId(frame);
     const payload = frame.subarray(offset);
     const size = payload.length;
-    this.#onQueued(size);
+    if (!counted) this.#onQueued(size);
     entry.chain = entry.chain
       .then(() => entry.writer.write(payload))
       .then(
@@ -247,11 +282,16 @@ class StreamMux {
    */
   chunk(frame) {
     if (this.#out.size === 0) return false;
-    const { id } = readId(frame);
+    const { id, offset } = readId(frame);
     const entry = this.#out.get(id);
     if (!entry) return false;
-    if (entry.writer === null) entry.pending.push(frame);
-    else this.#route(entry, frame);
+    if (entry.writer === null) {
+      // Held for the stream to open, and counted against the transport's
+      // marks from now: what waits for the open is as buffered as what
+      // waits in a writer — it used to be invisible to bufferedAmount.
+      entry.pending.push(frame);
+      this.#onQueued(frame.length - offset);
+    } else this.#route(entry, frame, false);
     return true;
   }
 
@@ -471,6 +511,7 @@ module.exports = {
   CAPS_STREAMS,
   DEFAULT_MAX_HELD_STREAMS,
   DEFAULT_HOLD_TIMEOUT,
+  DEFAULT_OPEN_TIMEOUT,
   idHeader,
   readId,
 };

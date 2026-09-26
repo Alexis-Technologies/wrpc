@@ -306,6 +306,8 @@ export declare class ClientWtTransport extends ClientTransport {
   encryption: EncryptionInfo | null;
   /** The largest datagram the session carries; 0 when it carries none. */
   readonly maxDatagramSize: number;
+  /** Bytes handed to the session and not yet taken by it; 0 between sessions. */
+  readonly bufferedAmount: number;
   writeUnreliable(data: string): boolean;
 }
 

@@ -18,6 +18,7 @@ const {
 } = require('../../src/webtransport/framing.js');
 const { chunkEncode } = require('../../src/chunks.js');
 const { createFakeWt } = require('./fakeWebTransport.js');
+const { runChannelContract, peerEnd } = require('./channelContract.js');
 const { runTransportContract } = require('../client/transportContract.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 
@@ -185,20 +186,35 @@ test('wt transport: a peer close is one close event; close() tells the peer; ter
   assert.ok(await third.session.closed);
 });
 
-test('wt transport: write() reports backpressure and drain follows', async (t) => {
-  const world = createFakeWt();
-  const { transport, session } = await opened(t, world, { highWaterMark: 100, lowWaterMark: 20 });
-  await controlStream(session);
-  const release = world.hold();
-  const drains = [];
-  transport.on('drain', () => drains.push(1));
-  assert.strictEqual(transport.write('x'.repeat(50)), true);
-  assert.strictEqual(transport.write('y'.repeat(50)), false, 'above the high-water mark');
-  assert.strictEqual(transport.write('z'), false, 'still above');
-  await timers.setImmediate();
-  assert.deepStrictEqual(drains, []);
-  release();
-  await waitFor(() => drains.length === 1, 'drain');
+// The channel contract shared with the server socket: write/drain on
+// every path, order under an async codec, the count after terminate().
+test('wt transport: the channel contract', async (t) => {
+  await runChannelContract(t, 'wt transport', {
+    async open(sub, options = {}) {
+      const world = createFakeWt();
+      const transport = new ClientWtTransport(ENDPOINT, { WebTransport: world.WebTransport, ...options });
+      sub.after(() => transport.close());
+      await transport.open();
+      const session = await world.next();
+      const reader = session.incomingBidirectionalStreams.getReader();
+      const { value: stream } = await reader.read();
+      reader.releaseLock();
+      const end = {
+        session: transport.session,
+        send: (data, writeOptions) => transport.write(data, writeOptions),
+        stream: (packet) => transport.send(packet),
+        on: (event, listener) => transport.on(event, listener),
+        get bufferedAmount() {
+          return transport.bufferedAmount;
+        },
+        get compression() {
+          return transport.compression;
+        },
+        terminate: () => transport.terminate(),
+      };
+      return { world, end, peer: peerEnd(session, stream) };
+    },
+  });
 });
 
 test("wt transport: a peer's framing violation is escalated and hangs up", async (t) => {

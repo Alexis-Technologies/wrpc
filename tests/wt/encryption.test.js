@@ -2,12 +2,14 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const timers = require('node:timers/promises');
 
 const { defineRouter, procedure } = require('../../index.js');
 const { acceptSessions } = require('../../wt.js');
 const { createEncryption, generateKey } = require('../../encryption.js');
 const { FRAME_MARK, FRAME_HANDSHAKE, FRAME_SEALED } = require('../../src/wire.js');
 const { createFakeWt } = require('./fakeWebTransport.js');
+const { ClientWtTransport } = require('../../src/client/webtransport.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 
 const SECRET = 'not for the edge that terminates QUIC: 4111 1111 1111 1111';
@@ -128,6 +130,32 @@ test('wt encryption: a server that refuses the handshake is a failed open at onc
     connect({ reconnect: false, encryption: createEncryption({ serverKey: pinned, handshakeTimeout: 5_000 }) }),
   );
   assert.ok(Date.now() - started < 2_000, 'rejected when the session closed');
+});
+
+test('wt encryption: a sealed write past the high-water mark answers false, and drain follows', async (t) => {
+  const { url, serverKey, world } = await boot(t);
+  // The transport by hand, its session sealed by the server boot() accepts on.
+  const transport = new ClientWtTransport(url.replace(/^http/, 'https'), {
+    WebTransport: world.WebTransport,
+    highWaterMark: 100,
+    lowWaterMark: 20,
+  });
+  t.after(() => transport.close());
+  await transport.open({ encryption: createEncryption({ serverKey }) });
+  assert.ok(transport.encryption, 'sealed');
+  const drains = [];
+  transport.on('drain', () => drains.push(1));
+  const release = world.hold();
+  // Sealing is asynchronous: the bytes are counted once the channel hands
+  // them over, so the first write answers on what was queued before it.
+  transport.write('x'.repeat(200));
+  await waitFor(() => transport.bufferedAmount > 100, 'sealed and queued');
+  assert.strictEqual(transport.write('y'), false, 'past the mark on the sealed path');
+  await timers.setTimeout(10);
+  assert.deepStrictEqual(drains, []);
+  release();
+  await waitFor(() => drains.length === 1, 'drain after a sealed false');
+  assert.strictEqual(transport.bufferedAmount, 0);
 });
 
 test('wt encryption: required — a plaintext WebTransport session is hung up on', async (t) => {

@@ -129,6 +129,11 @@ class ClientWtTransport extends ClientTransport {
     return this.#session;
   }
 
+  /** Bytes handed to the session and not yet taken by it; 0 between sessions. */
+  get bufferedAmount() {
+    return this.#queued;
+  }
+
   /**
    * The largest datagram the session carries, 0 when it carries none —
    * what the core checks before sending an event unreliably.
@@ -211,7 +216,7 @@ class ClientWtTransport extends ClientTransport {
             onQueued: (size) => {
               this.#queued += size;
             },
-            onSent: (size) => this.#sent(size),
+            onSent: (size) => this.#sent(session, size),
             // Through the outbound order: a stream packet must not overtake
             // a message still being compressed.
             writeControl: (chunk) => this.#enqueue(frame(KIND_BINARY, chunk)),
@@ -414,7 +419,7 @@ class ClientWtTransport extends ClientTransport {
     if (!this.active) throw new Error('Not connected');
     if (this.#secure !== null) {
       this.#secure.send(data);
-      return this.#queued <= this.#highWater;
+      return this.#accepted();
     }
     const active = this.#active;
     const plain = active === null || (options !== null && options.compress === false);
@@ -424,9 +429,18 @@ class ClientWtTransport extends ClientTransport {
     }
     const chunk = toBytes(data);
     // A chunk of a stream that has its own WebTransport stream goes there.
-    if (this.#mux !== null && this.#mux.chunk(chunk)) return this.#queued <= this.#highWater;
+    if (this.#mux !== null && this.#mux.chunk(chunk)) return this.#accepted();
     if (plain || chunk.length < active.encode.threshold) return this.#enqueue(frame(KIND_BINARY, chunk));
     return this.#compress(KIND_BINARY, chunk);
+  }
+
+  // The answer to a write: true under the high-water mark, false past it —
+  // and with a false, the promise of a 'drain', whichever path answered
+  // (the sealed, side-stream and compress paths used to set no mark).
+  #accepted() {
+    if (this.#queued <= this.#highWater) return true;
+    this.#pressured = true;
+    return false;
   }
 
   // A ready frame, in order: straight to the writer while nothing is being
@@ -439,7 +453,7 @@ class ClientWtTransport extends ClientTransport {
       this.#queued -= size;
       if (this.active) this.#writeFrame(ready);
     });
-    return this.#queued <= this.#highWater;
+    return this.#accepted();
   }
 
   // Compresses one message past the threshold — at once or later, as the
@@ -458,7 +472,7 @@ class ClientWtTransport extends ClientTransport {
       encoded = this.#active.encode.codec.encode(bytes);
     } catch {
       plain();
-      return this.#queued <= this.#highWater;
+      return this.#accepted();
     }
     this.#outbound.push(
       encoded,
@@ -469,25 +483,25 @@ class ClientWtTransport extends ClientTransport {
       },
       plain,
     );
-    return this.#queued <= this.#highWater;
+    return this.#accepted();
   }
 
   #writeFrame(bytes) {
+    const session = this.#session;
     const size = bytes.length;
     this.#queued += size;
     // A rejected write is the session failing, which `closed` reports.
     this.#writer.write(bytes).then(
-      () => this.#sent(size),
+      () => this.#sent(session, size),
       () => {},
     );
-    if (this.#queued > this.#highWater) {
-      this.#pressured = true;
-      return false;
-    }
-    return true;
+    return this.#accepted();
   }
 
-  #sent(size) {
+  // A write the stream took — of THIS session: one that settles after the
+  // session is gone counts against nothing (the next session starts at 0).
+  #sent(session, size) {
+    if (this.#session !== session) return;
     this.#queued -= size;
     if (!this.#pressured || this.#queued > this.#lowWater) return;
     this.#pressured = false;
@@ -515,6 +529,8 @@ class ClientWtTransport extends ClientTransport {
     if (this.#session !== session) return;
     this.#session = null;
     this.#writer = null;
+    this.#queued = 0;
+    this.#pressured = false;
     this.#datagrams = null;
     // A handshake still running is over with the session: open() rejects
     // now, not at the handshake timeout.

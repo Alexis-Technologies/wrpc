@@ -18,6 +18,7 @@ const {
 const { isWtSession, isWtStream, isWtDatagrams } = require('../../src/webtransport/port.js');
 const { idHeader } = require('../../src/webtransport/streams.js');
 const { createFakeWt } = require('./fakeWebTransport.js');
+const { runChannelContract, peerEnd } = require('./channelContract.js');
 const { waitFor } = require('../helpers/server.js');
 
 // A client end by hand: the session, its control stream, a parser over
@@ -152,21 +153,46 @@ test('wt socket: a peer close, a terminate and a peer framing violation', async 
   assert.deepStrictEqual(done, [1000]);
 });
 
-test('wt socket: backpressure — send() false above the mark, drain under it; pause() stops reading', async (t) => {
-  const { world, socket, received, writer } = await pair(t, { highWaterMark: 100, lowWaterMark: 20 });
-  const release = world.hold();
-  const drains = [];
-  socket.on('drain', () => drains.push(1));
-  assert.strictEqual(socket.send('x'.repeat(50)), true);
-  assert.strictEqual(socket.send('y'.repeat(50)), false);
-  assert.ok(socket.bufferedAmount > 100);
-  await timers.setImmediate();
-  assert.deepStrictEqual(drains, []);
-  release();
-  await waitFor(() => drains.length === 1, 'drain');
-  assert.strictEqual(socket.bufferedAmount, 0);
-  await waitFor(() => received.length === 2, 'delivered');
+// The channel contract shared with the client transport: send/drain on
+// every path, order under an async codec, the count after terminate().
+test('wt socket: the channel contract', async (t) => {
+  await runChannelContract(t, 'wt socket', {
+    async open(sub, options = {}) {
+      const world = createFakeWt();
+      const client = new world.WebTransport('https://h/api');
+      await client.ready;
+      const session = await world.next();
+      const stream = await client.createBidirectionalStream();
+      const reader = session.incomingBidirectionalStreams.getReader();
+      const { value: control } = await reader.read();
+      reader.releaseLock();
+      const socket = new WtSocket(session, control, options);
+      sub.after(() => socket.terminate());
+      const end = {
+        session,
+        send: (data, sendOptions) => socket.send(data, sendOptions),
+        // What ServerWtTransport does with an outbound stream packet: the
+        // mux is told first, the control stream carries it unless the mux
+        // took it.
+        stream: (packet) => {
+          if (!socket.streamControl(packet)) socket.send(JSON.stringify(packet));
+        },
+        on: (event, listener) => socket.on(event, listener),
+        get bufferedAmount() {
+          return socket.bufferedAmount;
+        },
+        get compression() {
+          return socket.compression;
+        },
+        terminate: () => socket.terminate(),
+      };
+      return { world, end, peer: peerEnd(client, stream) };
+    },
+  });
+});
 
+test('wt socket: pause() stops reading the control stream, resume() takes it up', async (t) => {
+  const { socket, writer } = await pair(t);
   const messages = [];
   socket.on('message', (data) => messages.push(data));
   socket.pause();

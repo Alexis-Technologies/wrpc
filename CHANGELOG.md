@@ -1352,6 +1352,24 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **WebTransport: every `false` from `send()`/`write()` is followed by a
+  `'drain'`; chunks waiting for a side stream are counted; an open the
+  host never answers falls back.** A `false` answered from the side-stream
+  path, from a message compressing in flight or from a frame queued behind
+  one set no mark, so the `'drain'` that should follow never came and a
+  `WrpcWritable` waiting for it waited forever — the same on the client
+  transport's sealed path under session encryption. Every path now answers
+  through one gate that arms the drain. Chunks held for a WebTransport
+  stream still opening did not count towards `bufferedAmount` (an unbounded
+  hold against a host that never opened it); they count from the moment
+  they are held, once. A `createUnidirectionalStream()` that never settles
+  — a browser waits for stream credit — is given five seconds, after which
+  that stream and every later one ride the control stream, as a refused
+  open already did; a stream granted late is reset unused. A write that
+  settled after `terminate()` took `bufferedAmount` negative; the count
+  is zeroed and stays so. `ClientWtTransport` gained `bufferedAmount`.
+  The two ends of the channel now share one behavioural suite
+  (`tests/wt/channelContract.js`), so a fix on one cannot skip the other.
 - **Kafka: topics are created with the broker's default replication
   factor, and their creation is logged.** `replicationFactor` defaulted to
   `1`, so every topic the adapter made on a production cluster was a

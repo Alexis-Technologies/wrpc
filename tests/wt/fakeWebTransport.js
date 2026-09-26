@@ -219,11 +219,17 @@ class FakeSession {
   }
 
   async createUnidirectionalStream() {
+    // No credit yet — Chrome parks the promise until the peer grants some:
+    // released by world.grant(), or never. Parked at the call, so a grant()
+    // right after it counts.
+    const parked = this.#world.uniQuota === 'hang' ? new Promise((resolve) => this.#world.parked.push(resolve)) : null;
     await this.ready;
     if (this.#closed) throw new Error('fake: the session is closed');
     // A host that never grants unidirectional streams (quico 0.4): Chrome's
     // QuotaExceededError.
     if (this.#world.uniQuota === 0) throw new DOMException('No streams available', 'QuotaExceededError');
+    if (parked !== null) await parked;
+    if (this.#closed) throw new Error('fake: the session is closed');
     this.uniOpened++;
     const { local, remote } = this.#pair();
     this.#peer.incoming('uni', remote.readable);
@@ -266,8 +272,15 @@ const createFakeWt = ({ maxDatagramSize = 1200, random = Math.random, origin = '
     maxDatagramSize,
     random,
     lossRate: 0,
-    // -1 = unlimited; 0 = createUnidirectionalStream() rejects (no credit).
+    // -1 = unlimited; 0 = createUnidirectionalStream() rejects (no credit);
+    // 'hang' = it waits for grant().
     uniQuota: -1,
+    parked: [],
+    /** Grants every createUnidirectionalStream() parked under uniQuota 'hang'. */
+    grant() {
+      const parked = world.parked.splice(0);
+      for (let i = 0; i < parked.length; i++) parked[i]();
+    },
     // Streams a receiver cancelled unread (STOP_SENDING at the sender).
     cancelled: 0,
     origin,
