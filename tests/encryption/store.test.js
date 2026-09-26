@@ -335,3 +335,78 @@ test('sealedStore: plugs into SessionManager — a session survives an "instance
   assert.strictEqual(await first.restore(TOKEN), null);
   assert.strictEqual(redis.entries.size, 0);
 });
+
+test('sealedStore: a row under the raw token that is not a session is not adopted — a sealed record least of all', async () => {
+  // While acceptPlaintext is on, the raw token is a name the store answers
+  // to; a sealed record moved there — what someone holding one would try —
+  // used to be adopted as the session's state, re-sealed and the original
+  // deleted.
+  const redis = new FakeRedis();
+  const keys = generateKey();
+  const donor = sealedStore(redisStore(redis), { keys, logger: false });
+  await donor.set('victim', STATE);
+  const [rowKey] = [...redis.entries.keys()];
+  const record = JSON.parse(redis.entries.get(rowKey));
+  await redisStore(redis).set(TOKEN, record);
+  const { logger, warnings } = logs();
+  const store = sealedStore(redisStore(redis), { keys, acceptPlaintext: true, logger });
+  assert.strictEqual(await store.get(TOKEN), null);
+  assert.strictEqual(warnings.filter((w) => w.event === 'session.unsealed').length, 1);
+  assert.strictEqual(redis.entries.size, 2, 'nothing migrated, nothing deleted');
+  assert.deepStrictEqual(JSON.parse(redis.entries.get(`wrpc:session:${TOKEN}`)), record, 'left as it was');
+  // A scalar or an array under the token is no session either.
+  const plain = mapStore();
+  plain.rows.set('t1', [1, 2]);
+  plain.rows.set('t2', 'yes');
+  const over = sealedStore(plain, { keys, acceptPlaintext: true, logger: false });
+  assert.strictEqual(await over.get('t1'), null);
+  assert.strictEqual(await over.get('t2'), null);
+  assert.strictEqual(plain.rows.size, 2);
+});
+
+test('sealedStore: a fleet mid-rotation keeps one row per token and reads the latest write', async () => {
+  const redis = new FakeRedis();
+  const [k1, k2] = [generateKey(), generateKey()];
+  const a = sealedStore(redisStore(redis), { keys: { current: 'k1', ring: { k1, k2 } }, logger: false });
+  const b = sealedStore(redisStore(redis), { keys: { current: 'k2', ring: { k1, k2 } }, logger: false });
+  const state = (n) => ({ ...STATE, n });
+  await a.set(TOKEN, state(1));
+  assert.strictEqual(redis.entries.size, 1);
+  assert.deepStrictEqual(await b.get(TOKEN), state(1));
+  assert.strictEqual(redis.entries.size, 1, 'moved under k2');
+  // a, still on k1, writes: the k2 row goes with it — two rows for one
+  // token used to stay, and b then read its own kid's stale one.
+  await a.set(TOKEN, state(2));
+  assert.strictEqual(redis.entries.size, 1);
+  assert.deepStrictEqual(await b.get(TOKEN), state(2));
+  assert.strictEqual(redis.entries.size, 1);
+  await b.set(TOKEN, state(3));
+  assert.strictEqual(redis.entries.size, 1);
+  assert.deepStrictEqual(await a.get(TOKEN), state(3));
+  assert.strictEqual(redis.entries.size, 1);
+});
+
+test('sealedStore: a migration deletes the stale row only while it is the row it read', async () => {
+  const [k1, k2] = [generateKey(), generateKey()];
+  const rows = mapStore();
+  const old = sealedStore(rows, { keys: { current: 'k1', ring: { k1 } }, logger: false });
+  await old.set(TOKEN, { ...STATE, n: 1 });
+  const [staleKey] = [...rows.rows.keys()];
+  // Between the read and the migration's delete, an instance still on k1
+  // writes a newer state under the stale key.
+  let reads = 0;
+  const racing = {
+    get: async (key) => {
+      if (key === staleKey && ++reads === 2) await old.set(TOKEN, { ...STATE, n: 2 });
+      return rows.get(key);
+    },
+    set: rows.set,
+    delete: rows.delete,
+  };
+  const current = sealedStore(racing, { keys: { current: 'k2', ring: { k1, k2 } }, logger: false });
+  assert.deepStrictEqual(await current.get(TOKEN), { ...STATE, n: 1 }, 'what was read');
+  // The newer state was moved instead, and the stale row is gone.
+  assert.strictEqual(rows.rows.size, 1);
+  assert.deepStrictEqual(await current.get(TOKEN), { ...STATE, n: 2 });
+  assert.ok(!rows.rows.has(staleKey));
+});

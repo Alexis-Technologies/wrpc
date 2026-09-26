@@ -223,7 +223,14 @@ missing session and one `session.open` warning; the token is never logged.
   being current.
 - **Adopting it over a store that already holds sessions:** `acceptPlaintext:
   true` reads a row the unwrapped store wrote once, seals it and deletes the
-  plaintext. Turn it off after the same TTL.
+  plaintext. Turn it off after the same TTL — while it is on, the raw token
+  is a name the store still answers to, and only a session-shaped object
+  under it is taken for one (a sealed record put there is refused).
+- **A fleet mid-rotation** — one instance writing under `k1`, another under
+  `k2` — keeps one row per token: a write removes the token's rows under
+  the other kids, and a migration deletes the old row only while it is
+  still the row that was read (a newer state written there meanwhile is
+  moved instead).
 - It costs one extra `get` per *older* kid on a miss — an unknown token
   included — so keep the ring short.
 

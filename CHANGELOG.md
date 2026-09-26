@@ -1881,6 +1881,19 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **`sealedStore`: a sealed record under the raw token is refused, and a
+  fleet mid-rotation keeps one row per token.** With `acceptPlaintext` on,
+  the raw token is a row name the store still answers to, and a sealed
+  record placed there — a row copied from another session's slot, what
+  someone holding one would try — was adopted as that session's state,
+  re-sealed under the token and the original deleted; only a session-shaped
+  object is taken for a plaintext session now, anything else is a missing
+  session and a `session.unsealed` line. Two instances on different
+  `current` kids over one store left two rows per token, each reading its
+  own kid's stale one: a write removes the token's rows under the other
+  kids, and a migration deletes the old row only while it is still the row
+  that was read — a newer state an instance on the old kid wrote meanwhile
+  is moved instead of dropped.
 - **WebSocket engine: the inbound inflate queue has backpressure.** Under
   context takeover or `async` inflation every compressed frame the peer
   sent started its inflate at once, each holding its output until
