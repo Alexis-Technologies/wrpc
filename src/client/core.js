@@ -654,7 +654,15 @@ class WrpcClient extends Emitter {
         await client.open();
         return client;
       } catch (error) {
-        if (client.#advanceTransport()) continue;
+        // A candidate that never opened hands over to the next. A hook that
+        // refused AFTER the transport opened is the application's verdict
+        // on the connection, not the transport's failure: connect() rejects
+        // — it used to advance with `#connected` still set from the first
+        // candidate, so the next one opened as a "reconnect", the hook ran
+        // unawaited, and connect() resolved unauthenticated.
+        const beforeOpen = !client.#connected;
+        client.#resetSession();
+        if (beforeOpen && client.#advanceTransport()) continue;
         client.close();
         throw error;
       }
@@ -1215,12 +1223,21 @@ class WrpcClient extends Emitter {
     await opened;
   }
 
-  close() {
+  // What close() and a failed first connect share: the timers, the pending
+  // authenticate hand-off, and the connected/attempt state — so the next
+  // open() is a first open, never a reconnect of a connection that was.
+  #resetSession() {
     clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = null;
     clearTimeout(this.#stableTimer);
     this.#stableTimer = null;
     this.#opened = null;
+    this.#connected = false;
+    this.#attempt = 0;
+  }
+
+  close() {
+    this.#resetSession();
     this.#stopHeartbeat();
     // Anything still queued leaves before the socket does; a call whose
     // packet never shipped would otherwise wait out its whole timeout.
@@ -1231,10 +1248,9 @@ class WrpcClient extends Emitter {
     // reads true by the time it is asked.
     const ended = Array.from(this.#subscriptions.values());
     this.#subscriptions.clear();
-    // An explicit close ends the session: a later open() is a fresh start,
-    // not a reconnect, so it must not replay 'reconnect'.
-    this.#connected = false;
-    this.#attempt = 0;
+    // An explicit close ends the session (#resetSession above): a later
+    // open() is a fresh start, not a reconnect, so it must not replay
+    // 'reconnect'.
     WrpcClient.connections.delete(this);
     // An explicit close settles everything in flight the same way a dropped
     // connection does — flushed packets included, since their answers can

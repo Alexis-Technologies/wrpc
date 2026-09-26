@@ -974,6 +974,66 @@ test('authenticate: a hook that closes the client stops the retry cycle', async 
   assert.strictEqual(reconnecting.length, settled, 'the cycle kept scheduling after close()');
 });
 
+test('authenticate: a hook refusing the FIRST candidate rejects connect() — it does not resolve unauthenticated on the next', async (t) => {
+  const a = registerFake('authfirst-a');
+  const b = registerFake('authfirst-b');
+  t.after(() => {
+    a.teardown();
+    b.teardown();
+  });
+  const before = WrpcClient.connections.size;
+  let calls = 0;
+  await assert.rejects(
+    WrpcClient.connect('fake://x', {
+      transport: ['authfirst-a', 'authfirst-b'],
+      heartbeat: false,
+      logger: false,
+      reconnect: { minDelay: 5, maxDelay: 10, jitter: false, retries: 2 },
+      authenticate: () => {
+        calls++;
+        throw new Error('bad credentials');
+      },
+    }),
+    /bad credentials/,
+  );
+  // The hook's verdict is the application's: no second candidate was
+  // tried behind its back, nothing was kept, nothing reconnects.
+  assert.strictEqual(calls, 1);
+  assert.strictEqual(b.instances.length, 0, 'candidate B was never opened');
+  assert.strictEqual(a.instances[0].active, false, 'candidate A was closed');
+  assert.strictEqual(WrpcClient.connections.size, before);
+  await timers.setTimeout(40);
+  assert.strictEqual(a.instances.length, 1, 'no reconnect cycle survived the rejection');
+  assert.strictEqual(b.instances.length, 0);
+
+  // A candidate that never OPENS, on the other hand, hands over — and the
+  // hook is awaited on the one that did before connect() resolves.
+  const dead = registerFake('deadfirst-a');
+  const live = registerFake('deadfirst-b');
+  t.after(() => {
+    dead.teardown();
+    live.teardown();
+  });
+  WrpcClient.transport['deadfirst-a'].prototype.open = async function open() {
+    throw new Error('unreachable');
+  };
+  let authenticated = false;
+  const client = await WrpcClient.connect('fake://x', {
+    transport: ['deadfirst-a', 'deadfirst-b'],
+    heartbeat: false,
+    logger: false,
+    reconnect: { minDelay: 5, maxDelay: 10, jitter: false, retries: 1 },
+    authenticate: async () => {
+      await timers.setTimeout(5);
+      authenticated = true;
+    },
+  });
+  t.after(() => void client.close());
+  assert.strictEqual(authenticated, true, 'connect() resolved authenticated, on candidate B');
+  assert.strictEqual(client.active, true);
+  assert.strictEqual(live.instances[0].active, true);
+});
+
 test('authenticate: exhausted retries fall through to the next transport candidate', async (t) => {
   const a = registerFake('authfba');
   const b = registerFake('authfbb');

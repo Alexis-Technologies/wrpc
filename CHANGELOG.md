@@ -1340,6 +1340,29 @@ narrower promise — see
   `Broadcast.emit()` into the handler, or was filed as a serialization
   problem (`backplane.seal` / `cluster.seal` now, and the event stays
   local: never plaintext across the wire).
+- **`connect()` with a transport list resolved unauthenticated when the
+  hook refused the first candidate.** The `authenticate` hook throwing on
+  candidate A was treated like A failing to open: the client advanced to
+  B with `#connected` still set from A, so B opened as a "reconnect", the
+  hook ran unawaited on the reconnect path, and `connect()` resolved with
+  a client the application had just refused. A candidate that never opens
+  still hands over to the next; a hook that refused after the transport
+  opened is the application's verdict, and `connect()` rejects with it —
+  the state a failed first connect leaves is reset the way `close()`
+  resets it (`#resetSession`).
+- **`encryption.required` broke `attachConsumers` and `attachChannel`.** A
+  consumer binding attached its clients through `attach()` without
+  vouching for the transport, so under `required` every attach threw
+  inside the delivery path and every delivery settled nowhere — the queue
+  stood still with no line to say why; a raw data channel (DTLS end to
+  end) was refused the same way. `attachConsumers` now refuses to bind
+  without `encryption` (a `TypeError` at bind time), attaches a sealing
+  binding's clients as encrypted, dead-letters a plaintext delivery its
+  `acceptPlaintext` let through (`broker.refused reason: 'plaintext'`,
+  `400`) and settles a delivery whose `attach()` threw as a bounded retry
+  then dead; `attachChannel` vouches for the channel by default
+  (`encrypted: true`, `false` for one relayed in the clear).
+  `RpcServer.encryptionRequired` is the flag a binding of your own reads.
 
 ### Security
 - **WebRTC: roster data could impersonate another peer.** `PeerHost.attach`

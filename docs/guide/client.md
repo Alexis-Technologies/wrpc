@@ -238,7 +238,11 @@ The hook is awaited in two places:
 
 - **Inside `open()` on the first connect** — `await connect(...)` resolves an
   already-authenticated client. A throw here rejects `connect()` and leaves
-  nothing behind (no reconnect timer, no registered connection).
+  nothing behind (no reconnect timer, no registered connection) — with a
+  [transport list](#transport-fallback) too: the hook's refusal is the
+  application's verdict on the connection, not a transport failure, so no
+  further candidate is tried behind its back. Only a candidate that never
+  opened hands over to the next.
 - **On every reconnect, BEFORE the restore** — the subscriptions are
   re-opened and the units re-loaded only after the hook resolved, so a
   `session`-gated feed resumes instead of being refused with a terminal 403.
