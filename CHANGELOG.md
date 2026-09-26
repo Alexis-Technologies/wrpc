@@ -77,6 +77,13 @@ narrower promise — see
 - A message that does not open is dropped (`broker.rpc.refused`), skipped by
   a feed (`feed.refused`) or dead-lettered with 400 by a consumer
   (`broker.refused`) — logged with its reason, never answered.
+- A dead letter is forwarded as it arrived — sealed, key id and all — so a
+  dead-letter queue is as unreadable as the work queue. `onDeadLetter`
+  receives `opened` (the body and headers as the binding opened them);
+  a binding on the dead-letter queue names the queue its messages were
+  sealed for with `sealedFor`, since the seal binds a message to its queue;
+  and `openSealedMessage(encryption, { topic, headers, body })` opens one
+  by hand for a script.
 - A sealed binding is what `encryption.required` on the server accepts from
   a broker; an unsealed `hello` is answered `bye: encryption required`.
 - Published bodies ride as base64 text: a log or a queue is only promised to

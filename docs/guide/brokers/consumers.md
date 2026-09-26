@@ -117,6 +117,31 @@ and the ack, a redelivery after `release`, a broker failover. Make handlers
 idempotent — `ctx.callMeta.messageId` is a stable key to deduplicate on.
 :::
 
+## Dead letters under encryption
+
+A dead letter is forwarded **as it arrived**: under
+[`encryption`](../encryption#brokers) that is the sealed message, its
+`wrpc-sealed` key id still on it, so whoever reads the dead-letter queue
+reads nothing — the same promise the work queue makes. Two ways in:
+
+- `onDeadLetter` receives `opened` — the delivery's body and headers as the
+  binding opened them — for the alert or the audit row. It is the one place
+  the plaintext is in hand; log the id, the code and what you need, not the
+  whole body.
+- A binding on the dead-letter queue (a re-drive, a quarantine review) names
+  the queue the messages were sealed for with `sealedFor`, because the seal
+  binds a message to its queue:
+
+```js
+await attachConsumers(server, broker, {
+  'orders.dlq': { target: 'ops.v1/review', sealedFor: 'orders' },
+}, { encryption: { keys } });
+```
+
+For a script, `openSealedMessage(encryption, { topic, headers, body })` opens
+one message by hand under the same option and answers `{ headers, body }` —
+or `{ refused }` with the reason.
+
 ## Identity
 
 | `identity.trust` | The procedure runs with |

@@ -155,3 +155,15 @@ broker.createPublisher(
 );
 broker.attachConsumers(sealedServer, sealedBroker, {}, { encryption: { keys: { current: 'k1', ring: { k1: 'a' } } } });
 broker.brokerFeed(sealedBroker, 'orders', { encryption: { keys: 'k' } });
+
+// Sealed dead letters: opened by hand, or by a re-drive binding naming the queue they were sealed for.
+declare const sealedDeadLetter: { headers: Record<string, string>; body: string };
+const openedDeadLetter = broker.openSealedMessage({ keys: 'k' }, { topic: 'orders', ...sealedDeadLetter });
+if ('refused' in openedDeadLetter) expectType<string>(openedDeadLetter.refused);
+else expectType<string>(openedDeadLetter.body);
+broker.attachConsumers(
+  server,
+  memory,
+  { 'orders.dlq': { target: 'ops.v1/review', sealedFor: 'orders' } },
+  { encryption: { keys: 'k' }, onDeadLetter: ({ opened }) => void opened?.body },
+);

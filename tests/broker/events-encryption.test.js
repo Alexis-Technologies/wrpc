@@ -330,3 +330,84 @@ test('events encryption: headers are strings whether the message was sealed or n
   });
   assert.deepStrictEqual({ ...plain.seal('t', { n: 7, flag: true }, 'body').headers }, { n: '7', flag: 'true' });
 });
+
+test('events encryption: a dead letter stays sealed on the queue, opens for onDeadLetter, a re-drive and by hand', async (t) => {
+  const { openSealedMessage } = require('../../broker.js');
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(() => broker.close());
+  const keys = generateKey();
+  const publisher = publisherOf(t, broker, { encryption: { keys } });
+  const reviewed = [];
+  const router = defineRouter({
+    billing: {
+      consumes: {
+        charges: procedure({
+          access: 'public',
+          consume: { retry: false, deadLetter: 'charges.dead' },
+          handler: async () => {
+            throw Object.assign(new Error('card declined'), { code: 402 });
+          },
+        }),
+      },
+    },
+    ops: {
+      review: procedure({
+        access: 'public',
+        handler: async (ctx, args) => void reviewed.push({ args, attempt: ctx.callMeta.attempt }),
+      }),
+    },
+  });
+  const rpc = new RpcServer({ router, logger: quiet, sse: false });
+  t.after(() => rpc.close());
+  const graveyard = [];
+  const drained = await broker.queue.consume('charges.dead', (delivery) => {
+    graveyard.push(delivery);
+    return delivery.ack();
+  });
+  const seen = [];
+  const consumers = await attachConsumers(
+    rpc,
+    broker,
+    {},
+    { encryption: { keys }, onDeadLetter: (info) => seen.push({ code: info.code, opened: info.opened }) },
+  );
+  t.after(() => consumers.stop());
+  await publisher.publish('orders.v1/charged', { id: 'o-1', note: SECRET }, { headers: { 'x-tenant': 'acme' } });
+  await waitFor(() => graveyard.length === 1 && seen.length === 1);
+  // The hook holds the plaintext; the queue holds the seal.
+  assert.deepStrictEqual(seen[0].code, 402);
+  assert.deepStrictEqual(JSON.parse(seen[0].opened.body), { id: 'o-1', note: SECRET });
+  assert.strictEqual(seen[0].opened.headers['x-tenant'], 'acme');
+  const dead = graveyard[0];
+  assert.strictEqual(typeof dead.headers[HEADER_SEALED], 'string');
+  assert.ok(!dead.body.includes('4111'), 'the dead letter is still sealed');
+  assert.match(dead.headers['x-wrpc-dead-reason'], /^402/);
+  // By hand, under the queue it was sealed for — and not under the DLQ's name.
+  const opened = openSealedMessage({ keys }, { topic: 'charges', headers: dead.headers, body: dead.body });
+  assert.deepStrictEqual(JSON.parse(opened.body), { id: 'o-1', note: SECRET });
+  assert.strictEqual(opened.headers['x-tenant'], 'acme');
+  assert.deepStrictEqual(
+    openSealedMessage({ keys }, { topic: 'charges.dead', headers: dead.headers, body: dead.body }),
+    {
+      refused: 'open',
+    },
+  );
+  assert.throws(() => openSealedMessage(null, { topic: 'charges', headers: {}, body: '' }), /encryption is required/);
+  assert.throws(() => openSealedMessage({ keys }, { headers: {}, body: '' }), /topic must be/);
+  // A re-drive binding on the dead-letter queue names the queue the messages were sealed for.
+  await drained.stop();
+  await broker.queue.produce('charges.dead', dead.body, { headers: dead.headers });
+  const redrive = await attachConsumers(
+    rpc,
+    broker,
+    { 'charges.dead': { target: 'ops/review', sealedFor: 'charges' } },
+    { encryption: { keys }, auto: false },
+  );
+  t.after(() => redrive.stop());
+  await waitFor(() => reviewed.length === 1);
+  assert.deepStrictEqual(reviewed[0].args, { id: 'o-1', note: SECRET });
+  await assert.rejects(
+    attachConsumers(rpc, broker, { 'charges.dead': { target: 'ops/review', sealedFor: '' } }, { auto: false }),
+    /sealedFor must be/,
+  );
+});

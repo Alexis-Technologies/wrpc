@@ -274,6 +274,12 @@ export declare function brokerFeed<Value = unknown, Mapped = Value>(
 export interface ConsumerBinding extends ConsumePolicy {
   /** 'unit.vN/method' — only for a key that is not a declared consumer. */
   target?: string;
+  /**
+   * For a binding on a dead-letter queue under `encryption`: the queue its
+   * messages were sealed for (the seal binds a message to its queue), so a
+   * re-drive opens them. Default: the bound queue itself.
+   */
+  sealedFor?: string | null;
 }
 
 export interface DeadLetterInfo {
@@ -283,7 +289,25 @@ export interface DeadLetterInfo {
   code: number;
   error: Error | null;
   delivery: Delivery;
+  /**
+   * What a sealed delivery held — its opened body (text) and headers — or
+   * null for a plaintext delivery and for a sealed one that did not open.
+   * The dead letter itself is forwarded as it arrived, sealed: this is the
+   * one place the plaintext is in hand. Do not log it whole.
+   */
+  opened: { headers: Record<string, string>; body: string } | null;
 }
+
+/**
+ * Opens one sealed log entry or delivery by hand — a dead letter, a row
+ * read off a topic — under the keyring that sealed it (`topic`: the queue
+ * or topic it was sealed for). `{ headers, body, sealed }` with the body as
+ * text, or `{ refused }` with the reason.
+ */
+export declare function openSealedMessage(
+  encryption: EnvelopeEncryptionOptions,
+  message: { topic: string; headers: Record<string, string> | null | undefined; body: string | Uint8Array },
+): { headers: Record<string, string>; body: string; sealed: boolean } | { refused: string };
 
 export interface AttachConsumersOptions {
   /** Bind every declared `consumes` procedure, not only the table's. Default true. */

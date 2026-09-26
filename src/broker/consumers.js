@@ -112,6 +112,7 @@ const normalizePolicy = (policy, { label, queue: defaultQueue, maxCalls }) => {
     prefetch = DEFAULT_PREFETCH,
     retry,
     deadLetter,
+    sealedFor = null,
     identity = { trust: 'none' },
     meta = [],
     args = parseJson,
@@ -134,6 +135,12 @@ const normalizePolicy = (policy, { label, queue: defaultQueue, maxCalls }) => {
   if (dead !== false && dead !== null && (typeof dead !== 'string' || dead.length === 0)) {
     throw new TypeError(`${label}: deadLetter must be a queue name or false`);
   }
+  // A binding on a dead-letter queue: the messages there were sealed for the
+  // queue they came from (the seal binds body to queue), so that is the
+  // context they open under.
+  if (sealedFor !== null && (typeof sealedFor !== 'string' || sealedFor.length === 0)) {
+    throw new TypeError(`${label}: sealedFor must be the name of the queue the messages were sealed for`);
+  }
   if (!identity || typeof identity !== 'object' || !TRUST.has(identity.trust)) {
     throw new TypeError(`${label}: identity.trust must be 'none', 'service' or 'token'`);
   }
@@ -147,6 +154,7 @@ const normalizePolicy = (policy, { label, queue: defaultQueue, maxCalls }) => {
     prefetch,
     retry: normalizeRetry(retry, label),
     deadLetter: dead || null,
+    sealedFor,
     identity: { trust: identity.trust, session: identity.session ?? null, header: identity.header ?? 'authorization' },
     meta: meta.map((name) => name.toLowerCase()),
     args,
@@ -412,7 +420,7 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     return attached;
   };
 
-  const settle = async (delivery, decision, code, error) => {
+  const settle = async (delivery, decision, code, error, unsealed = null) => {
     const { action, delay } = decision;
     rpc.otel.recordBrokerDelivery(system, action);
     // Only on a settlement that ENDS the message: recording on a retry too
@@ -446,7 +454,10 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     });
     if (onDeadLetter) {
       try {
-        await onDeadLetter({ queue: policy.queue, method, code, error, delivery });
+        // `opened`: what a sealed delivery held — the dead letter itself is
+        // forwarded as it arrived, sealed, so this is where an operator
+        // reads it (and must not log it whole).
+        await onDeadLetter({ queue: policy.queue, method, code, error, delivery, opened: unsealed });
       } catch (hookError) {
         log.error({ event: 'broker.onDeadLetter', err: hookError });
       }
@@ -457,8 +468,9 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
   const onDelivery = async (delivery) => {
     if (stopped || rpc.draining) return void (await settle(delivery, { action: 'release', delay: 0 }));
     let { body, headers } = delivery;
+    let unsealed = null;
     if (sealing !== null) {
-      const opened = sealing.open(policy.queue, delivery);
+      const opened = sealing.open(policy.sealedFor ?? policy.queue, delivery);
       if (opened.refused !== undefined) {
         rpc.otel.recordBrokerRefusal(system, opened.refused);
         log.warn({
@@ -489,6 +501,7 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
       if (opened.sealed) {
         body = toText(opened.body);
         headers = opened.headers;
+        unsealed = { body, headers };
       } else if (rpc.encryptionRequired === true) {
         // acceptPlaintext let it through the opener; the server's rule is
         // stricter than the rollout's, and a plaintext delivery is not
@@ -506,7 +519,7 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     try {
       args = policy.args(body, headers, delivery);
     } catch (error) {
-      return void (await settle(delivery, { action: 'dead', delay: 0 }, 400, error));
+      return void (await settle(delivery, { action: 'dead', delay: 0 }, 400, error, unsealed));
     }
     // attach() may refuse (a transport the server will not serve, a bad
     // identity): a bounded retry, then dead — never a delivery that settles
@@ -517,7 +530,7 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     } catch (error) {
       log.error({ err: error, event: 'broker.attach', queue: policy.queue });
       const decision = decide({ code: 500, attempt: delivery.attempt, retry: policy.retry, draining: rpc.draining });
-      return void (await settle(delivery, decision, 500, error));
+      return void (await settle(delivery, decision, 500, error, unsealed));
     }
     const { client, transport } = attached;
     const id = client.generateId();
@@ -542,7 +555,7 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
       const decision = closed
         ? { action: 'release', delay: 0 }
         : decide({ code, attempt: delivery.attempt, retry: policy.retry, draining: rpc.draining });
-      await settle(delivery, decision, code, error);
+      await settle(delivery, decision, code, error, unsealed);
     } finally {
       // Retired while this delivery was in flight (evicted from the cache):
       // closed once its last call has settled — here, after settle(), never
