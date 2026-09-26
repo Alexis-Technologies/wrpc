@@ -38,6 +38,11 @@ export interface KafkaBrokerOptions {
   partitions?: number;
   /** Partitions for log topics; 1 (the default) keeps a feed globally ordered. */
   logPartitions?: number;
+  /**
+   * Replication factor of the topics the adapter creates. Default `-1`: the
+   * broker's own `default.replication.factor` (KIP-464, Kafka 2.4+). An
+   * existing topic keeps the factor it was created with.
+   */
   replicationFactor?: number;
   backplane?: { topic?: string; partitions?: number };
   /** Cap on how long a retry's delay may wait in-process. Default 60 000. */

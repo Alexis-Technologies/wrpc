@@ -1352,6 +1352,15 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **Kafka: topics are created with the broker's default replication
+  factor, and their creation is logged.** `replicationFactor` defaulted to
+  `1`, so every topic the adapter made on a production cluster was a
+  single-replica topic whatever the cluster's own default said. The default
+  is now `-1` — the broker's `default.replication.factor` (KIP-464, Kafka
+  2.4+), verified on both client shapes — and each creation is logged once
+  as `broker.kafka.topic` with the partition count and replication factor.
+  An existing topic keeps what it was created with; the option is
+  documented, and the guide has a Topics section on sizing replication.
 - **NATS queues: `prefetch` is each instance's, the group's cap is
   `maxAckPending`; a pause keeps its leases; readers delete their
   consumers.** `prefetch` was written into the durable consumer's

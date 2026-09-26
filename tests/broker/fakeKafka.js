@@ -18,6 +18,8 @@ class Topic {
     this.name = name;
     this.partitions = Array.from({ length: partitions }, () => []);
     this.cursor = 0;
+    // What createTopics asked for; a topic made on first use has none.
+    this.replicationFactor = null;
   }
 
   append(message) {
@@ -317,7 +319,8 @@ class FakeAdmin {
         const error = new Error('Topic already exists');
         throw error;
       }
-      this.server.topic(entry.topic, entry.numPartitions ?? 3);
+      const topic = this.server.topic(entry.topic, entry.numPartitions ?? 3);
+      topic.replicationFactor = entry.replicationFactor ?? null;
     }
     return true;
   }

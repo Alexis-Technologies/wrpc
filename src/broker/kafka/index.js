@@ -106,7 +106,10 @@ const createKafkaBroker = (options = {}) => {
     // unless the application says otherwise — a durable feed that reordered
     // itself under load would be a subtle, permanent bug.
     logPartitions = 1,
-    replicationFactor = 1,
+    // -1 is the broker's own `default.replication.factor` (KIP-464, Kafka
+    // 2.4+): a topic the adapter creates is as replicated as the cluster
+    // says, not a single-replica one because a library said 1.
+    replicationFactor = -1,
     backplane: backplaneOptions = {},
     maxRetryDelay = DEFAULT_MAX_RETRY_DELAY,
     generateId = null,
@@ -190,16 +193,25 @@ const createKafkaBroker = (options = {}) => {
     if (pending) return pending;
     pending = (async () => {
       const client = await admin();
+      let created = false;
       try {
-        await client.createTopics({ topics: [{ topic, numPartitions, replicationFactor }] });
-        return topic;
+        // kafkajs answers false for a topic that already exists, the
+        // confluent facade throws: both are "already there".
+        created = (await client.createTopics({ topics: [{ topic, numPartitions, replicationFactor }] })) !== false;
       } catch (error) {
         // Already there (another instance, or a previous run).
         if (!/already exists|TOPIC_ALREADY_EXISTS/i.test(String(error?.message))) throw error;
       }
-      // An existing topic keeps the partition count it was created with,
-      // which is worth saying out loud for a FEED: more partitions than the
-      // adapter would have made means its order is per partition, not global.
+      if (created) {
+        // Once per topic, at creation: what the cluster now holds is the
+        // adapter's doing, and an operator sizing replication wants to know.
+        log.info({ event: 'broker.kafka.topic', topic, partitions: numPartitions, replicationFactor });
+        return topic;
+      }
+      // An existing topic keeps the partition count — and the replication
+      // factor — it was created with, which is worth saying out loud for a
+      // FEED: more partitions than the adapter would have made means its
+      // order is per partition, not global.
       try {
         const metadata = metadataTopics(await client.fetchTopicMetadata({ topics: [topic] }));
         const actual = metadata[0]?.partitions?.length;

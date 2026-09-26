@@ -125,6 +125,7 @@ want an alert for.
 | `broker.kafka.settle`, `broker.amqp.settle` | error | The broker refused a settlement three times (`action`, `id`, `attempt`); the message was handed back — a seek to its offset on Kafka (`healthy` false until a settlement lands), a requeue on RabbitMQ — never committed or acked past |
 | `broker.kafka.rebalanced` | info | A retry's in-process wait ended in a failed heartbeat: the group is rebalancing, and the message is the new owner's to fetch — no copy published, nothing committed |
 | `broker.nats.consumer.config` | warn | A queue's durable consumer already existed with another `ackWait`/`maxAckPending`; the old values stay until the consumer is updated |
+| `broker.kafka.topic` | info | The adapter created a topic (`topic`, `partitions`, `replicationFactor`) — once per topic, never for one that already existed |
 | `broker.kafka.crash` | error | A kafkajs consumer's fetch loop died (`restart` says whether it rejoins by itself); the binding is unhealthy until it rejoins |
 | `broker.kafka.join-timeout` | info | A queue consumer got no partition within the join window — more instances than partitions, most likely; it stays healthy |
 | `broker.amqp.connection` | error | The injected RabbitMQ connection closed: every binding on this broker is unhealthy and stays so — open a new connection and a new broker on it |

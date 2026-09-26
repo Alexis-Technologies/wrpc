@@ -403,3 +403,37 @@ for (const flavor of FLAVORS) {
     assert.deepStrictEqual(seen[3], ['y', 1], 'fetched again from the committed offset, attempt untouched');
   });
 }
+
+for (const flavor of FLAVORS) {
+  test(`kafka broker (fake, ${flavor}): a topic is created with the broker's default replication factor, and said once`, async (t) => {
+    const kafka = createFakeKafka({ flavor });
+    const { logger, entries } = recording();
+    const broker = createKafkaBroker({ kafka, logger, partitions: 2 });
+    t.after(() => broker.close());
+    const name = unique('topic');
+    await broker.queue.produce(name, 'a');
+    await broker.queue.produce(name, 'b');
+    const topic = kafka.server.topics.get(`wrpc.q.${name}`);
+    assert.ok(topic, 'the queue topic was created');
+    // -1 is KIP-464: the broker's own default.replication.factor, so a
+    // production cluster's three replicas are three, not the one a library
+    // default used to ask for.
+    assert.strictEqual(topic.replicationFactor, -1);
+    assert.strictEqual(topic.partitions.length, 2);
+    const created = entries.filter((entry) => entry.event === 'broker.kafka.topic');
+    assert.deepStrictEqual(created, [
+      { level: 'info', event: 'broker.kafka.topic', topic: `wrpc.q.${name}`, partitions: 2, replicationFactor: -1 },
+    ]);
+    // A second broker finds the topic: no creation, nothing logged.
+    const other = createKafkaBroker({ kafka, logger, partitions: 5, replicationFactor: 3 });
+    t.after(() => other.close());
+    await other.queue.produce(name, 'c');
+    assert.strictEqual(topic.replicationFactor, -1, 'an existing topic keeps its replication factor');
+    assert.strictEqual(topic.partitions.length, 2, 'and its partition count');
+    assert.strictEqual(entries.filter((entry) => entry.event === 'broker.kafka.topic').length, 1);
+    // An explicit factor is passed as it is.
+    const explicit = unique('explicit');
+    await other.queue.produce(explicit, 'd');
+    assert.strictEqual(kafka.server.topics.get(`wrpc.q.${explicit}`).replicationFactor, 3);
+  });
+}

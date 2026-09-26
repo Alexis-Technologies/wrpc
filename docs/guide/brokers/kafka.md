@@ -31,6 +31,7 @@ supports both and CI exercises both.
 | `prefix` | `'wrpc'` | Topic namespace |
 | `partitions` | `3` | Partitions for **queue** topics — the concurrency ceiling |
 | `logPartitions` | `1` | Partitions for **log** topics; one keeps a feed globally ordered |
+| `replicationFactor` | `-1` | Replication factor of the topics the adapter creates; `-1` is the broker's `default.replication.factor` (Kafka 2.4+) |
 | `backplane.topic` / `.partitions` | `<prefix>.backplane` / `1` | The backplane topic |
 | `maxRetryDelay` | `60000` | Cap on how long a retry's delay waits in-process |
 
@@ -50,6 +51,22 @@ addressable inbox per instance and low, predictable latency, and Kafka gives
 neither — a topic per instance plus a rebalance pause on every join is the
 opposite of what an RPC caller wants. Use Redis, NATS or RabbitMQ for
 [RPC over a broker](./rpc), alongside Kafka for feeds and queues.
+
+## Topics
+
+The adapter creates the topics it needs on first use — one per feed, one per
+queue, one for the backplane — and logs each creation once
+(`broker.kafka.topic`, with the partition count and replication factor). It
+never alters a topic that exists: the partition count and the replication
+factor stay what the topic was created with, whoever created it.
+
+Replication is the cluster's to decide. The default `replicationFactor` of
+`-1` asks for the broker's `default.replication.factor`, so a production
+cluster configured for three replicas and `min.insync.replicas=2` gets
+exactly that, and a single-node development broker gets one. Pass a number
+only when the topics wrpc creates should differ from the cluster's default,
+or create them ahead of time (IaC, `kafka-topics.sh`) with the settings
+you want — the adapter will find and use them.
 
 ## The backplane's caveats
 
