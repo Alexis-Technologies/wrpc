@@ -1274,6 +1274,14 @@ narrower promise — see
   subscriptions and streams work over it as over a socket. A server that
   relied on a port client being request-scoped — one `Client` per call, no
   `onConnect` — sees one long-lived `Client` per port instead.
+- **`generateId` on `RpcServer`/`Server`, `WrpcClient` and `PeerHost` is
+  validated strictly.** A value that is not a function, or a function that
+  answers something other than a non-empty string of at most 255
+  characters, is a `TypeError` at construction — as it has been on every
+  option added since 1.0 (`SseChannels`, the broker adapters, the
+  signaler). 1.0 ignored such a value silently; 1.x reported it through the
+  logger as `event: 'options.generateId'` and fell back to uuid v4, with
+  the note that 2.0 would throw. That log event is gone with the fallback.
 
 #### Migrating from 1.0
 
@@ -1295,6 +1303,9 @@ bytes it sends. In that order:
 5. **`@alexify/wrpc/ws` directly**: `WebsocketServer` logs through
    `globalThis.console` by default (it had no logger); `logger: false`
    restores the silence, `logger: pino` routes it.
+6. **`generateId`**: a bad value is a `TypeError` at construction now (it
+   was ignored in 1.0, logged in 1.x) — fix the option rather than catch
+   the error; a valid generator behaves exactly as before.
 
 ### Changed
 
@@ -1321,12 +1332,6 @@ bytes it sends. In that order:
   class-level singleton it always did, but `connect({ worker })` no longer
   uses it — construct one with `new WrpcClient.transport.event(url)`.
   `WrpcClient.transport.event` is now typed as that constructor.
-- **Deprecated behaviour.** `generateId` on `RpcServer`/`Server`, on
-  `WrpcClient` and on `PeerHost` used to ignore a bad value silently. It is
-  now reported through the logger as `event: 'options.generateId'` and
-  replaced with the default. **2.0 will make it a `TypeError`**, as it
-  already is on the options added since — `SseChannels` and the broker
-  adapters — which have no compatibility to keep.
 
 ### Fixed
 - **`protocols: []` with a Bearer credential could not connect.** The client

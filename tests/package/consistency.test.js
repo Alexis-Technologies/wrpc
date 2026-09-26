@@ -232,3 +232,24 @@ test('every **Breaking entry of [Unreleased] sits under ### Changed (breaking)',
     'the breaking section must carry a "#### Migrating from <version>" block',
   );
 });
+
+// The 1.x deprecation notes promised that "2.0 makes it a TypeError"; 2.0
+// kept the promise, so the sentence has nothing left to announce. A copy
+// of it surviving in the source, the types or the docs would describe a
+// fallback that no longer exists.
+test('no text still promises what 2.0 already did', () => {
+  const { readdirSync, readFileSync } = require('node:fs');
+  const STALE = /2\.0 (?:will make|makes) (?:it|all of them)/;
+  const walk = (dir, out) => {
+    for (const entry of readdirSync(path.join(ROOT, dir), { withFileTypes: true }) ?? []) {
+      const relative = path.join(dir, entry.name);
+      if (entry.isDirectory()) walk(relative, out);
+      else if (/\.(?:js|md|ts)$/.test(entry.name)) out.push(relative);
+    }
+    return out;
+  };
+  const files = [...walk('src', []), ...walk('docs/guide', []), ...walk('docs/reference', [])];
+  for (const name of readdirSync(ROOT)) if (name.endsWith('.d.ts')) files.push(name);
+  const stale = files.filter((file) => STALE.test(readFileSync(path.join(ROOT, file), 'utf8')));
+  assert.deepStrictEqual(stale, [], 'these files still promise what 2.0 already did');
+});

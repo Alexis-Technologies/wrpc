@@ -86,7 +86,7 @@ class PeerHost extends Emitter {
     this.#otel = createServerTelemetry(telemetry);
     this.#roomsLog = this.#log.child({ component: 'rooms' });
     this.#codec = codec && typeof codec.encode === 'function' && typeof codec.decode === 'function' ? codec : null;
-    const ids = resolveGenerateId(generateId, 'PeerHost', this.#log);
+    const ids = resolveGenerateId(generateId, 'PeerHost');
     this.#generateId = ids.generate;
     this.#metaMax = Number.isInteger(metaMaxBytes) && metaMaxBytes > 0 ? metaMaxBytes : DEFAULT_META_MAX;
     // Binary attachments, off under a packet codec (which owns the wire).

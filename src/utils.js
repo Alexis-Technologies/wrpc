@@ -390,12 +390,12 @@ const toKebab = (key) => key.replace(KEBAB_ACRONYM, '$1-$2').replace(KEBAB_BOUND
 // so a user who mistyped the option learned about it in three different
 // ways, or in none.
 //
-// `strict` is the mode a NEW option takes: a bad generator is a TypeError at
-// construction. The options that shipped in 1.0 (`RpcServer`, `WrpcClient`,
-// `PeerHost`) stay non-strict — they silently ignored a bad value, and
-// turning that into a throw inside a major is the kind of break the
-// stability policy exists to prevent. They log an error instead and fall
-// back, and 2.0 is where they join the strict half.
+// A bad generator is a TypeError at construction, on every option alike. In
+// 1.x the three that shipped in 1.0 (`RpcServer`, `WrpcClient`, `PeerHost`)
+// could not throw — they had silently ignored a bad value, and turning that
+// into a throw inside a major is the kind of break the stability policy
+// exists to prevent — so they logged `options.generateId` and fell back to
+// uuid v4, with the promise that 2.0 would make them throw. 2.0 does.
 //
 // The generator is PROBED once here rather than trusted: one that answers a
 // number or an empty string otherwise produces ids that fail much later, on
@@ -413,12 +413,9 @@ const toKebab = (key) => key.replace(KEBAB_ACRONYM, '$1-$2').replace(KEBAB_BOUND
 // Returning a pair rather than a self-replacing wrapper is deliberate: the
 // generator runs per call packet, and a wrapper would put a branch on that
 // path forever to save one id at boot.
-const resolveGenerateId = (value, label, log = null) => {
+const resolveGenerateId = (value, label) => {
   const fail = (message) => {
-    const error = new TypeError(`${label}: generateId ${message}`);
-    if (log === null) throw error;
-    log.error({ event: 'options.generateId', err: error });
-    return { generate: generateUUID, first: generateUUID() };
+    throw new TypeError(`${label}: generateId ${message}`);
   };
   if (value === null || value === undefined) return { generate: generateUUID, first: generateUUID() };
   if (typeof value !== 'function') return fail('must be a function');

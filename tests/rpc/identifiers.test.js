@@ -8,7 +8,8 @@
 // depending on which constructor received it. The table below is what makes
 // "one canonical resolver" a fact rather than an intention: every
 // constructor that takes the option answers the same five cases the same
-// way, modulo the one deliberate difference (strict vs. reported).
+// way. (Through 1.x the three that shipped in 1.0 could only report a bad
+// value and fall back; 2.0 made them throw like the rest.)
 
 const test = require('node:test');
 const assert = require('node:assert');
@@ -24,25 +25,6 @@ const router = defineRouter({
   unit: { ping: procedure({ access: 'public', handler: async () => 'pong' }) },
 });
 
-/** Collects error entries so the reported mode can be asserted, not merely survived. */
-const recorder = () => {
-  const entries = [];
-  const writer = {
-    level: 'debug',
-    child() {
-      return this;
-    },
-    log() {},
-    info() {},
-    debug() {},
-    warn() {},
-    error(entry) {
-      entries.push(entry);
-    },
-  };
-  return { entries, writer };
-};
-
 // A client the signaler will accept without a server behind it — the same
 // shape tests/webrtc/signaler.test.js drives it with.
 class FakeClient extends Emitter {
@@ -57,42 +39,34 @@ class FakeClient extends Emitter {
   sendEvent() {}
 }
 
-// `mode` is the only axis the constructors differ on: 'strict' throws on a
-// bad generator, 'reported' logs it and falls back. Options added since 1.0
-// are strict; the three that shipped in it cannot become strict before 2.0
-// without breaking the stability policy.
+// Every constructor that takes the option, the three that shipped in 1.0
+// first. Since 2.0 they all throw on a bad generator; nothing is logged.
 const CONSTRUCTORS = [
   {
     label: 'RpcServer',
-    mode: 'reported',
-    build: (generateId, logger) => new RpcServer({ router, generateId, logger }),
+    build: (generateId) => new RpcServer({ router, generateId, logger: false }),
   },
   {
     label: 'WrpcClient',
-    mode: 'reported',
     // The transport is the second POSITIONAL argument; an unconnected one
     // is enough, because the option is resolved in the constructor.
-    build: (generateId, logger) =>
-      new WrpcClient('http://127.0.0.1:1/', new ClientTransport('http://127.0.0.1:1/'), { generateId, logger }),
+    build: (generateId) =>
+      new WrpcClient('http://127.0.0.1:1/', new ClientTransport('http://127.0.0.1:1/'), { generateId, logger: false }),
   },
   {
     label: 'PeerHost',
-    mode: 'reported',
-    build: (generateId, logger) => new PeerHost({ router, generateId, logger }),
+    build: (generateId) => new PeerHost({ router, generateId, logger: false }),
   },
   {
     label: 'SseChannels',
-    mode: 'strict',
     build: (generateId) => new SseChannels({ addClient: () => {}, generateId }),
   },
   {
     label: 'MemoryBroker',
-    mode: 'strict',
     build: (generateId) => new MemoryBroker({ generateId, logger: false }),
   },
   {
     label: 'wrpcSignaler',
-    mode: 'strict',
     build: (generateId) => wrpcSignaler(new FakeClient(), { generateId }),
   },
 ];
@@ -113,27 +87,15 @@ const REJECTED = [
   ],
 ];
 
-for (const { label, mode, build } of CONSTRUCTORS) {
+for (const { label, build } of CONSTRUCTORS) {
   test(`generateId: ${label} accepts a valid generator and defaults without one`, () => {
-    const { writer } = recorder();
-    assert.doesNotThrow(() => build(undefined, writer), 'omitted means uuid v4');
-    assert.doesNotThrow(() => build(() => `id-${Math.random().toString(36).slice(2)}`, writer));
+    assert.doesNotThrow(() => build(undefined), 'omitted means uuid v4');
+    assert.doesNotThrow(() => build(() => `id-${Math.random().toString(36).slice(2)}`));
   });
 
   for (const [what, value] of REJECTED) {
     test(`generateId: ${label} refuses ${what}`, () => {
-      const { entries, writer } = recorder();
-      if (mode === 'strict') {
-        assert.throws(() => build(value, writer), new RegExp(`^TypeError: ${label}: generateId `));
-        return;
-      }
-      // Reported: an observability-shaped mistake must not stop a server
-      // booting or a client connecting, so it lands in the log instead.
-      assert.doesNotThrow(() => build(value, writer));
-      assert.strictEqual(entries.length, 1, 'exactly one entry, not one per id');
-      assert.strictEqual(entries[0].event, 'options.generateId');
-      assert.ok(entries[0].err instanceof TypeError);
-      assert.match(entries[0].err.message, new RegExp(`^${label}: generateId `));
+      assert.throws(() => build(value), new RegExp(`^TypeError: ${label}: generateId `));
     });
   }
 }

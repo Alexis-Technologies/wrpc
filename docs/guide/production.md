@@ -124,13 +124,11 @@ counter-based generator still starts where you expect.
 ### When a generator is rejected
 
 A generator that is not a function, or that answers something other than a
-non-empty string of at most 255 characters, is refused. Options added after 1.0
-— SSE channels, the broker adapters — throw a `TypeError` at construction. The
-three that shipped *in* 1.0 (`Server`/`RpcServer`, the client, `PeerHost`)
-report it through the [logger](./logging) under `event: 'options.generateId'`
-and fall back to the default instead, because they used to ignore a bad value
-silently and turning that into a throw inside a major would break working
-deployments. **2.0 makes all of them throw.**
+non-empty string of at most 255 characters, is a `TypeError` at construction —
+on every option that takes one, `Server`/`RpcServer`, the client and `PeerHost`
+included. (Those three shipped in 1.0 ignoring a bad value, so 1.x could only
+report it through the logger under `event: 'options.generateId'` and fall back
+to the default; 2.0 makes them throw like the options added since.)
 
 The one-shot check cannot see a generator that only *sometimes* misbehaves, so
 stream ids are re-checked every time one is minted.

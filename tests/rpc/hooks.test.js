@@ -575,27 +575,12 @@ test('generateId: an oversize id is caught at construction, and again per stream
     unit: { noop: procedure({ access: 'public', handler: async () => null }) },
   });
   const { url } = await boot(t, router);
-  // The option shipped in 1.0, so a bad generator is reported and replaced
-  // rather than thrown: an observability-shaped mistake must not be the
-  // thing that stops a client connecting.
-  const entries = [];
-  const logger = {
-    level: 'debug',
-    child() {
-      return this;
-    },
-    log() {},
-    info() {},
-    debug() {},
-    warn() {},
-    error(entry) {
-      entries.push(entry);
-    },
-  };
-  const refused = await connect(t, url, { generateId: () => 'x'.repeat(256), logger });
-  assert.strictEqual(entries[0]?.event, 'options.generateId');
-  assert.match(entries[0]?.err?.message, /at most 255 characters/);
-  assert.match(refused.createStream('name', 10).id, /^[0-9a-f-]{36}$/, 'it fell back to the default');
+  // A bad generator is a TypeError at construction since 2.0 — 1.x reported
+  // it and fell back, because the option had shipped ignoring a bad value.
+  await assert.rejects(
+    connect(t, url, { generateId: () => 'x'.repeat(256) }),
+    (error) => error instanceof TypeError && /at most 255 characters/.test(error.message),
+  );
   // The per-stream check is not redundant: it catches a generator that only
   // SOMETIMES answers a long id, which the one-shot probe cannot see.
   let call = 0;

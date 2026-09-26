@@ -242,7 +242,7 @@ class RpcServer extends Emitter {
     // Resolved before #instance, because an omitted instanceId is minted BY
     // the generator: a user who injected one gets it used for every id the
     // server mints, the routing prefix included, not for all of them but one.
-    const ids = resolveGenerateId(generateId, 'RpcServer', this.#log);
+    const ids = resolveGenerateId(generateId, 'RpcServer');
     this.#generateId = ids.generate;
     this.#instance = instanceId ?? ids.first;
     // The dot separates the instance prefix from the rest of a client id

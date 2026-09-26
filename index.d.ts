@@ -388,11 +388,8 @@ export interface RpcServerOptions {
    * Validated once at construction: it must be a function answering a
    * non-empty string of at most 255 characters (the binary chunk header's
    * own limit). The check consumes one id, which becomes the `instanceId`
-   * rather than being discarded.
-   *
-   * @deprecated-behaviour A non-function is reported through the logger and
-   * replaced with the default. 2.0 makes it a TypeError, as it already is
-   * on the options added since (SSE channels, the broker adapters).
+   * rather than being discarded. A bad value is a TypeError at construction
+   * (1.x reported it through the logger and fell back to uuid v4).
    */
   generateId?: () => string;
   /**

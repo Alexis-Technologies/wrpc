@@ -622,12 +622,10 @@ class WrpcClient extends Emitter {
     this.#attachments = options.attachments !== false && this.#codec === null;
     if (random) this.#random = random; // deterministic jitter in tests
     // Packet, subscription and stream ids; uuid v4 unless the app brings
-    // its own (cuid/ulid/a test counter). Correlation ids, not secrets.
-    // Non-strict: the option shipped in 1.0 silently ignoring a bad value,
-    // so it logs and falls back instead of throwing. Resolved after #log so
-    // the complaint has somewhere to go.
+    // its own (cuid/ulid/a test counter). Correlation ids, not secrets. A
+    // bad generator is a TypeError here, as on every other option since 2.0.
     if (generateId !== undefined && generateId !== null) {
-      this.#generateId = resolveGenerateId(generateId, 'WrpcClient', this.#log).generate;
+      this.#generateId = resolveGenerateId(generateId, 'WrpcClient').generate;
     }
     this.#reconnect = normalizeReconnect(options);
     this.#heartbeat = normalizeHeartbeat(options);
