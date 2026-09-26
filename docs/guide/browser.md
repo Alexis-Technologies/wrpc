@@ -136,7 +136,10 @@ const worker = new SharedWorker('/wrpc-worker.js', { name: 'wrpc' });
 const client = await WrpcClient.connect(url, { worker });
 ```
 
-The packets are identical on both hops, so nothing above the transport changes.
+The packets are identical on both hops, so nothing above the transport changes
+— [binary attachments](./streams#attachments) included: a frame crosses the
+port as bytes and is routed by the packet inside it, an answer to the tab
+that asked, an event to every tab.
 Pick the worker by what you need from it: a **Service Worker** also serves the
 page offline and outlives a reload, at the price of registration and a
 lifecycle the browser controls; a **SharedWorker** is only the shared socket —

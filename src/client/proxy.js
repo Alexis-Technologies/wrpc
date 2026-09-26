@@ -7,6 +7,21 @@
 
 const { Emitter, jsonParse } = require('../utils.js');
 const { WrpcClient, CALL_TIMEOUT, normalizeReconnect } = require('./core.js');
+const { isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
+
+// The page's packet: JSON text, or an attachments frame carrying one (a
+// call with bytes in its args). Anything else — bytes that are no frame,
+// text that is no JSON — is null: not a packet.
+const parsePacket = (data) => {
+  if (typeof data === 'string') return jsonParse(data);
+  const view = data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : null;
+  if (view === null || !isAttachmentsFrame(view)) return null;
+  try {
+    return decodeAttachments(view);
+  } catch {
+    return null;
+  }
+};
 
 class WrpcClientProxy extends Emitter {
   #ports = new Set();
@@ -89,7 +104,10 @@ class WrpcClientProxy extends Emitter {
       if (!port) throw new Error('MessagePort not provided');
       this.#ports.add(port);
       port.addEventListener('message', (messageEvent) => {
-        this.#handleMessage(messageEvent, port);
+        // A failure to forward — nothing to connect to, a packet that is
+        // none — answers the caller when there is one, instead of leaving
+        // it to its callTimeout, and is never an unhandled rejection.
+        this.#handleMessage(messageEvent, port).catch((error) => this.#refuse(messageEvent.data, port, error));
       });
       // Best effort: the page half closing fires `close` here in current
       // engines (and in Node), so a closed tab does not pin its port — or
@@ -111,27 +129,39 @@ class WrpcClientProxy extends Emitter {
   async #handleMessage(event, port) {
     const { data } = event;
     if (data === undefined) throw new Error('Message data is undefined');
-    await this.open();
-    if (!this.#connection || !this.#connection.active) {
-      throw new Error('Not connected to server');
-    }
-    const packet = jsonParse(data);
+    const packet = parsePacket(data);
     if (!packet) throw new Error('Invalid JSON packet');
     // The worker is the page's peer: it answers the page's heartbeat itself
     // rather than paying for a round trip to the server for every port.
     if (packet.type === 'ping') return void port.postMessage(JSON.stringify({ type: 'pong' }));
     if (packet.type === 'pong') return;
     if (!packet.id) throw new Error('Invalid JSON packet');
+    await this.open();
+    if (!this.#connection || !this.#connection.active) {
+      throw new Error('Not connected to server');
+    }
     this.#pending.set(packet.id, port);
-    this.#connection.write(data);
+    // What the page wrote goes upstream as it is: a frame stays a frame.
+    this.#connection.write(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
   }
 
-  // `packet` is the already-parsed form of `data` (the client parses once);
-  // it is null when the frame was not JSON at all.
+  // The page's call could not be forwarded: it hears a coded error now
+  // rather than its callTimeout later. Anything without a caller is dropped.
+  #refuse(data, port, error) {
+    const packet = parsePacket(data);
+    if (!packet || packet.type !== 'call' || typeof packet.id !== 'string') return;
+    const code = Number.isInteger(error?.code) ? error.code : 503;
+    const message = typeof error?.message === 'string' ? error.message : 'Proxy could not forward the call';
+    port.postMessage(JSON.stringify({ type: 'callback', id: packet.id, error: { message, code } }));
+  }
+
+  // `packet` is the already-parsed form of `data` (the client parses once —
+  // for an attachments frame `data` is the frame and `packet` the packet it
+  // carries, routed exactly like its JSON twin); it is null when the frame
+  // was no packet at all, and a batch array is broadcast as it always was.
   #proxyPacket(data, packet) {
-    if (typeof data !== 'string') return void this.#broadcast(data);
-    const parsed = packet ?? jsonParse(data);
-    if (!parsed) return void this.#broadcast(data);
+    const parsed = packet ?? (typeof data === 'string' ? jsonParse(data) : null);
+    if (!parsed || Array.isArray(parsed)) return void this.#broadcast(data);
     const { type, id, status } = parsed;
     if (type === 'event') return void this.#broadcast(data);
     const port = this.#pending.get(id);

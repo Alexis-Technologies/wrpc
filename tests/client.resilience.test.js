@@ -1584,6 +1584,22 @@ test('a call issued while the transport is down rejects with a coded 503', async
   assert.ok(Date.now() - started < 5000, 'rejected on write, not at the timeout');
 });
 
+test('failPackets: a request that left as an attachments frame is answered too', () => {
+  const { encodeAttachments } = require('../src/attachments.js');
+  const transport = new ClientTransport('x');
+  const seen = [];
+  transport.on('message', (text) => void seen.push(jsonParse(text)));
+  const frame = encodeAttachments({ type: 'call', id: 'b', method: 'files/put', args: { body: new Uint8Array(3) } });
+  transport.failPackets(frame, 503);
+  assert.deepStrictEqual(seen, [
+    { type: 'callback', id: 'b', error: { message: 'HTTP request failed (503)', code: 503 } },
+  ]);
+  // Bytes that are no frame, and a frame that does not decode, answer nothing.
+  transport.failPackets(new Uint8Array([1, 2, 3]), 503);
+  transport.failPackets(frame.subarray(0, 12), 503);
+  assert.strictEqual(seen.length, 1);
+});
+
 test('failPackets: only call packets earn synthesized answers', () => {
   const transport = new ClientTransport('x');
   const seen = [];

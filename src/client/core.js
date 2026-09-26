@@ -323,14 +323,14 @@ class ClientTransport extends Emitter {
   // subscribe's terminal signal is an `end`, not a callback.
   failPackets(data, status) {
     let parsed = null;
-    if (this.codec) {
-      try {
-        parsed = this.codec.decode(data);
-      } catch {
-        parsed = null;
-      }
-    } else {
-      parsed = jsonParse(data);
+    try {
+      if (this.codec) parsed = this.codec.decode(data);
+      // A request with bytes left as an attachments frame: its calls are
+      // parked on their ids like any other's.
+      else if (typeof data === 'string') parsed = jsonParse(data);
+      else if (isAttachmentsFrame(data)) parsed = decodeAttachments(data);
+    } catch {
+      parsed = null;
     }
     if (!parsed) return;
     const packets = Array.isArray(parsed) ? parsed : [parsed];

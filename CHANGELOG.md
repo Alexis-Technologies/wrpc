@@ -1371,6 +1371,18 @@ narrower promise — see
   is one mutable path copied at each leaf instead of an array per
   container: 414 → 137 µs on a 30 KB result with an attachment
   (`bench/attachments.js`).
+- **The worker proxy did not know the attachments frame.** A call with
+  bytes from a page arrived at `WrpcClientProxy` as a frame, which it
+  refused as "not JSON" (an unhandled rejection in the worker, a call that
+  waited out its timeout on the page); an answer with bytes from the
+  server was broadcast to EVERY tab instead of the one that asked, and a
+  batch or an unparseable frame the same. The proxy routes a frame by the
+  packet inside it now, exactly like its JSON twin, forwards the page's
+  frames upstream as they are, and answers a call it could not forward
+  (no connection, no packet) with a coded error instead of silence.
+  `failPackets` — the http/sse leg's "this request died" answer — reads a
+  frame too, so a call with bytes that failed no longer waits out its
+  `callTimeout`.
 
 ## [1.0.0] - 2026-08-23
 
