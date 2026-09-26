@@ -240,12 +240,16 @@ export interface BrokerFeedOptions<Value = unknown, Mapped = Value> {
   /** Longer peer-supplied ids are refused with 400. Default 512. */
   maxIdLength?: number;
   /**
-   * Opens what a publisher's `encryption` sealed — an entry that does not open is skipped and logged `feed.refused`. Seals what rests in the topic under a shared keyring
-   * (`@alexify/wrpc/encryption`): the value AND its headers, bound to the
-   * topic — base64 text, as every log keeps a string. The publisher, the
-   * feeds and the consumers of a topic take the same option; the partition
-   * `key` stays readable, the broker routes by it. Off by default; rolled
-   * out like `rooms.encryption`. No replay window: a log is read again.
+   * Opens what a publisher's `encryption` sealed; an entry that does not
+   * open is skipped and logged `feed.refused`.
+   *
+   * The publisher, the feeds and the consumers of a topic take the same
+   * option (`@alexify/wrpc/encryption`): the value AND its headers are
+   * sealed, bound to the topic, as base64 text since every log keeps a
+   * string; the partition `key` stays readable, the broker routes by it.
+   * Off by default; rolled out like `rooms.encryption`, except that a
+   * retired key stays in the ring until the backlog sealed under it has
+   * drained. No replay window: a log is read again.
    */
   encryption?: EnvelopeEncryptionOptions | false | null;
 }

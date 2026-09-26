@@ -85,6 +85,15 @@ keys: { current: 'k2', ring: { k1: process.env.KEY_1, k2: process.env.KEY_2 } }
 Add the new key everywhere, make it `current` everywhere, drop the old one —
 three deploys, no flag day. A key id is 1–32 of `A-Z a-z 0-9 . _ -`.
 
+On a **broker log or queue** the third deploy waits. A backplane message is
+gone the moment it is delivered, but what a publisher sealed under the old key
+stays in the topic for its retention and in the queue until it is consumed —
+retries and dead letters included — and a service that dropped that key can
+open none of it. Keep a retired key in `ring` for at least the topic's
+retention plus the longest retry backoff, until the backlog sealed under it
+has drained, and only then drop it; a key you dropped too early goes back
+into the ring, no harm done.
+
 A **provider** puts the keys somewhere else. Both methods are synchronous —
 they are read where a backplane message is opened, and that path cannot
 wait — so unwrap your data keys at boot and refresh them on your own clock:
@@ -132,7 +141,9 @@ by (`wrpc-kind`, `wrpc-seq`, a partition `key`), and the first two are bound
 into the seal. A message that does not open is dropped (RPC), skipped (a
 feed) or dead-lettered with `400` (a consumer) — logged, never answered.
 Rolled out like the backplane: `{ keys, seal: false, acceptPlaintext: true }`,
-then `{ keys, acceptPlaintext: true }`, then `{ keys }`.
+then `{ keys, acceptPlaintext: true }`, then `{ keys }` — and a key is
+[dropped from the ring](#keys) only once the backlog sealed under it has
+drained, which a backplane never made you wait for.
 
 This is a shared key: every service that holds it reads every message.
 
