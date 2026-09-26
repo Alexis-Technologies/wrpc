@@ -135,11 +135,12 @@ test('sealedStore: an injected cipher keeps the key it was handed', async () => 
   await a.set(TOKEN, STATE);
   assert.deepStrictEqual(await b.get(TOKEN), STATE);
   assert.ok(handed.length >= 2);
-  for (const raw of handed)
+  for (const raw of handed) {
     assert.ok(
       raw.some((byte) => byte !== 0),
       'the cipher saw the derived key, not zeros',
     );
+  }
   assert.ok(!redis.dump().includes('ada@example.com'), 'and the row is not readable as it rests');
 });
 

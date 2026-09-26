@@ -328,10 +328,19 @@ class Cluster extends Emitter {
         envelope.sig = crypto.createHmac('sha256', this.#secret).update(message).digest('hex');
         message = JSON.stringify(envelope);
       }
-      if (this.#envelope !== null) message = this.#envelope.encode(message, channel);
     } catch (error) {
       this.#log.error({ err: error, event: 'cluster.serialize', type: body.t });
       return false;
+    }
+    // A sealer that cannot seal (a keyring without its current key) is
+    // named as such, and nothing leaves: never plaintext across the wire.
+    if (this.#envelope !== null) {
+      try {
+        message = this.#envelope.encode(message, channel);
+      } catch (error) {
+        this.#log.error({ err: error, event: 'cluster.seal', type: body.t });
+        return false;
+      }
     }
     try {
       const result = this.#backplane.publish(channel, message);

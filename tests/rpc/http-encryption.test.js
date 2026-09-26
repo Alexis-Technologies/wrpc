@@ -263,6 +263,46 @@ test('http encryption: the inner header is bounded before it is parsed', async (
   );
 });
 
+test('http encryption: a replay store that cannot be asked refuses the request — 503, one line, no crash', async (t) => {
+  const errors = [];
+  const logger = {
+    log() {},
+    info() {},
+    debug() {},
+    warn() {},
+    error: (entry) => errors.push(entry),
+    child: () => logger,
+  };
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  const seen = async () => {
+    throw new Error('redis down');
+  };
+  const booted = await bootServer(t, { router, logger, encryption: { keys: generateKey(), replay: { seen } } });
+  const endpoint = `${booted.origin}${booted.server.rpc.basePath}`;
+  const serverKey = await booted.server.rpc.encryptionKey();
+  const spy = spyingFetch();
+  const client = await WrpcClient.connect(endpoint, {
+    transport: 'http',
+    encryption: createEncryption({ serverKey }),
+    logger: false,
+    fetch: spy.fetch,
+  });
+  t.after(() => void client.close());
+  await assert.rejects(client.load('data'));
+  assert.strictEqual(spy.seen.at(-1).status, 503, 'refused, not served unvouched');
+  assert.ok(!isSealedType(spy.seen.at(-1).type));
+  assert.deepStrictEqual(
+    errors.map((entry) => entry.event),
+    ['encryption.replay'],
+  );
+  assert.strictEqual(errors[0].err.message, 'redis down');
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepStrictEqual(unhandled, []);
+});
+
 test('http encryption: a client that encrypts does not read a plaintext answer, whatever its status', async (t) => {
   const bare = await bootServer(t, { router });
   const endpoint = `${bare.origin}${bare.server.rpc.basePath}`;

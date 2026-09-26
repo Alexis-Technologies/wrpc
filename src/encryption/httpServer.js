@@ -129,7 +129,16 @@ const createHttpSealing = ({
     }
     // Fresh, and once: what HPKE itself does not promise.
     if (Math.abs(now() - sent) > maxSkew) return void refuse(call, outerHeaders, 409, 'stale');
-    const replayed = await cache.seen(toBase64Url(enc), 2 * maxSkew);
+    let replayed;
+    try {
+      replayed = await cache.seen(toBase64Url(enc), 2 * maxSkew);
+    } catch (error) {
+      // A shared replay memory that cannot be asked (Redis down) is a
+      // request that cannot be vouched fresh: refused, not served — and not
+      // an unhandled rejection per request.
+      log.error({ err: error, event: 'encryption.replay' });
+      return void refuse(call, outerHeaders, 503, 'replay-store');
+    }
     if (replayed === true) return void refuse(call, outerHeaders, 409, 'replay');
 
     // The outer request's own headers stay underneath, and what the client

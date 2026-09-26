@@ -128,6 +128,12 @@ const normalizeServerEncryption = (value, name) => {
       if (secret === null) return null;
       pending = deriveStatics(secret, { dh, kdf });
       derived.set(kid, pending);
+      // A derivation that failed is not the answer for this kid forever:
+      // forgotten, so the next hello derives again (and the cached
+      // rejection is not an unhandled one when nobody is waiting on it).
+      pending.catch(() => {
+        if (derived.get(kid) === pending) derived.delete(kid);
+      });
     }
     return pending;
   };

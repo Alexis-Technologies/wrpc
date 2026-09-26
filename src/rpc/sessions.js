@@ -261,7 +261,15 @@ class SessionManager {
     const flush = (state) => {
       pending = false;
       if (lifecycle.ended) return;
-      Promise.resolve(this.store.set(token, state)).catch((error) => {
+      // A store whose set() throws instead of rejecting would otherwise
+      // throw out of a microtask — the process, not the session.
+      let saved;
+      try {
+        saved = Promise.resolve(this.store.set(token, state));
+      } catch (error) {
+        saved = Promise.reject(error);
+      }
+      saved.catch((error) => {
         this.#log.error({ err: error, event: 'session.save' });
       });
     };

@@ -127,7 +127,10 @@ const sealedStore = (store, options = {}) => {
       await migrate(token, plain, token);
       return plain;
     },
-    set: (token, data) => write(token, data),
+    // Async on purpose: a keyring without its current key throws in write()
+    // before the store is reached, and a SessionStore's set() answers a
+    // rejection, never a throw — the session manager's flush counts on it.
+    set: async (token, data) => write(token, data),
     async delete(token) {
       const slots = sealedKeys(token);
       for (let i = 0; i < slots.length; i++) if (slots[i][1] !== null) await store.delete(slots[i][1]);

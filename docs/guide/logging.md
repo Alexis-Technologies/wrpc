@@ -114,7 +114,9 @@ want an alert for.
 | `session.evict` | warn | Live sessions dropped for capacity — signed-in users signed out |
 | `session.corrupt` | warn | A stored session would not parse. **Never carries the token** |
 | `backplane.gap`, `backplane.redis` | warn/error | Envelopes lost between instances; a backplane client failed |
+| `backplane.seal`, `cluster.seal` | error | A sealing envelope could not seal (a keyring without its current key); the event stayed local, nothing left in the clear |
 | `cluster.unsigned`, `cluster.badsig`, `cluster.verify` | warn/error | The three ways envelope authentication fails |
+| `encryption.replay`, `encryption.unwrap` | error | The shared replay store could not be asked (the request was refused `503`); a primitive threw while unwrapping a sealed request (`500`) |
 | `broker.dead` | warn | A message exhausted its retries |
 | `broker.evict` | warn | The per-token client cache is thrashing; in-flight calls were released |
 | `broker.feed.resume` | warn/debug | A resume token was refused. `reason: 'signature'` means it was **tampered with** |

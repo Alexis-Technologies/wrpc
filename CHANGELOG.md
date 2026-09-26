@@ -1327,6 +1327,19 @@ narrower promise — see
   `cancel(error)`: the ws transport calls it from its close and terminate
   paths, the WebTransport client from its teardown, and a pending `ready`
   rejects the moment the connection does. The handshake timer is `unref`ed.
+- **Five encryption seams could take the process down, or crash a handler.**
+  `sealedStore.set` threw synchronously when the keyring lost its current
+  key, out of the session manager's microtask flush (now `session.save`,
+  logged); a shared replay store that rejected (`replay.seen` over a Redis
+  that is down) was an unhandled rejection per sealed request (now a `503`
+  and one `encryption.replay` line — a request that cannot be vouched
+  fresh is not served); a primitive throwing inside `unwrap` was one too
+  (now a `500` and `encryption.unwrap`); a static-key derivation that
+  failed was cached as the answer for that kid forever (forgotten now);
+  and a sealer that could not seal — the same lost key — threw out of
+  `Broadcast.emit()` into the handler, or was filed as a serialization
+  problem (`backplane.seal` / `cluster.seal` now, and the event stays
+  local: never plaintext across the wire).
 
 ### Security
 - **WebRTC: roster data could impersonate another peer.** `PeerHost.attach`
@@ -1452,6 +1465,12 @@ narrower promise — see
   `encryption.refused` line; the adapter's onSend/onError/onResponse
   wrappers leave a refused request's payload alone instead of throwing
   the refusal a second time into the error reply.
+- **The broker binding's goodbye went past the sealer.** Every frame of a
+  sealed broker session was sealed except `bye`, so a sealed client
+  dropped the binding's goodbye as `unsealed` — on `stop()`, on a server
+  close, on `client.close()` from a handler — and went on waiting for a
+  session that was over. It rides `sealFrame` like the rest now, the
+  reason inside.
 
 ## [1.0.0] - 2026-08-23
 

@@ -1134,7 +1134,16 @@ class RpcServer extends Emitter {
       // anything is routed — from this line on it is an ordinary call,
       // marked `encrypted`, whose respond() seals the answer.
       if (this.#sealing.isSealed(call)) {
-        call = await this.#sealing.unwrap(call, headers);
+        // unwrap refuses everything it recognizes itself; what it does not
+        // (a primitive that threw) is one request answered 500, not a
+        // rejection the transport never hears of.
+        try {
+          call = await this.#sealing.unwrap(call, headers);
+        } catch (error) {
+          this.#log.error({ err: error, event: 'encryption.unwrap' });
+          this.#otel.recordCall(UNKNOWN_TARGET, 'error', 500);
+          return void new ServerHttpTransport(call, { headers }).error(500);
+        }
         if (!call) return;
       }
     }

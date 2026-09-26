@@ -82,6 +82,40 @@ test('SessionManager create', async (t) => {
     assert.strictEqual(session.state.name, 'alex');
   });
 
+  await t.test('a store whose set() throws synchronously is a logged save failure, not a crash', async () => {
+    // sealedStore over a keyring that lost its current key threw from
+    // set() before its first await; the flush ran it in a microtask.
+    const errors = [];
+    // A structured (child-bearing) logger receives the entry as it is; a
+    // console-shaped one would be handed the Error alone.
+    const log = {
+      ...quiet,
+      error: (entry) => errors.push(entry),
+      child() {
+        return log;
+      },
+    };
+    const store = {
+      async get() {
+        return null;
+      },
+      set() {
+        throw new Error('the keyring does not hold its current key');
+      },
+      async delete() {},
+    };
+    const manager = new SessionManager({ store }, log);
+    const session = manager.create('tok', { count: 0 });
+    session.state.count = 1;
+    await settle();
+    assert.deepStrictEqual(
+      errors.map((entry) => entry.event),
+      ['session.save', 'session.save'],
+      'the initial write and the one auto-save',
+    );
+    assert.match(errors[0].err.message, /current key/);
+  });
+
   await t.test('custom generateToken is used for omitted tokens', () => {
     let n = 0;
     const manager = new SessionManager({ generateToken: () => `tok-${++n}` }, quiet);

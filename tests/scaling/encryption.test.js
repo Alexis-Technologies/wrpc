@@ -219,6 +219,44 @@ test('rooms backplane: plaintext is refused where encryption is on, and named wh
   assert.strictEqual(packed.socket.events.length, 1, "only the plain instance's emit");
 });
 
+test('rooms backplane: a sealer that cannot seal keeps the event local and names it — never plaintext', async (t) => {
+  const backplane = new MemoryBackplane({ logger: false });
+  const published = spied(backplane);
+  let current = 'a';
+  const held = { a: generateKey() };
+  const keys = { current: () => current, get: (kid) => held[kid] ?? null };
+  const errors = [];
+  const log = {
+    log() {},
+    info() {},
+    debug() {},
+    warn() {},
+    error: (entry) => errors.push(entry),
+    child() {
+      return log;
+    },
+  };
+  const sealing = instance(t, backplane, { rooms: { encryption: { keys } } }, log);
+  const other = instance(t, backplane, { rooms: { encryption: { keys } } });
+  await timers.setTimeout(10);
+  sealing.rpc.to('lobby').emit('before', { n: 1 });
+  await waitFor(() => other.socket.events.length === 1);
+  // The provider rotated to a key it does not hold: emit() is not a throw
+  // into the handler, the event reaches the local members, and nothing —
+  // plaintext least of all — crosses the backplane.
+  current = 'gone';
+  assert.doesNotThrow(() => sealing.rpc.to('lobby').emit('payment', SECRET));
+  await timers.setTimeout(20);
+  assert.deepStrictEqual(
+    errors.map((entry) => entry.event),
+    ['backplane.seal'],
+  );
+  assert.match(errors[0].err.message, /current key "gone"/);
+  assert.strictEqual(sealing.socket.events.length, 2, 'delivered locally');
+  assert.strictEqual(other.socket.events.length, 1, 'and nowhere else');
+  assert.ok(!JSON.stringify(published).includes('4111'), 'nothing plaintext crossed the backplane');
+});
+
 test('rooms backplane: the rollout is three deploys and loses nothing', async (t) => {
   const backplane = new MemoryBackplane({ logger: false });
   const published = spied(backplane);
@@ -475,11 +513,12 @@ test('envelope: an injected cipher rides under the injected suite, and must answ
   // The key handed to the cipher is the derived one, intact — not wiped
   // under a cipher that kept the reference (the probe's random key first).
   assert.ok(handed.length >= 2);
-  for (const raw of handed)
+  for (const raw of handed) {
     assert.ok(
       raw.some((byte) => byte !== 0),
       'a key that is not all zeros',
     );
+  }
   // And a sealer over ANOTHER keyring does not open it: the tag depends on
   // the key, so agreeing on zeros would have passed this.
   const [c] = sealerPair({ cipher: xorCipher() });

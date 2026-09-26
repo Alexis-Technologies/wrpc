@@ -613,13 +613,21 @@ class RoomsBackplane {
         message = this.#envelope.encodeBytes(envelope, channel);
       } else {
         message = JSON.stringify(envelope);
-        // The channel rides along for a sealing envelope, which binds it.
-        if (this.#envelope !== null) message = this.#envelope.encode(message, channel);
       }
     } catch (error) {
       // Non-serializable payload: local delivery already happened, so this
       // is a cross-instance loss, not a lost event.
       return void this.#log.error({ err: error, event: 'backplane.serialize', name });
+    }
+    // The channel rides along for a sealing envelope, which binds it. A
+    // sealer that cannot (a keyring without its current key) is named as
+    // such, and the event stays local: never plaintext across the wire.
+    if (!binary && this.#envelope !== null) {
+      try {
+        message = this.#envelope.encode(message, channel);
+      } catch (error) {
+        return void this.#log.error({ err: error, event: 'backplane.seal', name });
+      }
     }
     try {
       const result = this.#backplane.publish(channel, message);
