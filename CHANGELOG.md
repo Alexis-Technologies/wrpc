@@ -1913,6 +1913,18 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **The sealed-request replay memory refuses at its cap, and checks before
+  it evicts.** Full of live entries, the built-in cache evicted the oldest
+  to make room BEFORE looking the id up — so past ~167 requests a second
+  (the default 100 000 entries over twice the five-minute skew) a replayed
+  request whose entry had just been evicted was accepted again, and the
+  "accepted once" guarantee did not hold under exactly the load an
+  attacker brings. A known live id is a replay whatever the fill now, and
+  at the cap the cache refuses (`409`, `encryption.replay.overflow` once
+  per ten seconds with the count, no line per request) unless
+  `overflow: 'evict'` asks for the old behaviour by name;
+  `encryption.replay` takes the built-in cache's `{ max, overflow }`
+  beside a shared `{ seen }`. The guide has the sizing formula.
 - **Secrets stay out of logs and transport labels.** A broker RPC session
   id — what its client speaks under, a credential — was the transport's
   `source` (every log line and span of that client) and the `session`

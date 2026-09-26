@@ -80,8 +80,21 @@ const normalizeServerEncryption = (value, name) => {
   if (!(Number.isInteger(maxSkew) && maxSkew > 0)) {
     throw new TypeError(`${name}: encryption.maxSkew must be a positive integer (ms)`);
   }
-  if (replay !== null && typeof replay?.seen !== 'function') {
-    throw new TypeError(`${name}: encryption.replay must be { seen(id, ttl) }`);
+  // A shared memory (`seen`), or the built-in cache's own knobs.
+  if (replay !== null && (typeof replay !== 'object' || Array.isArray(replay))) {
+    throw new TypeError(`${name}: encryption.replay must be { seen(id, ttl) } or { max, overflow }`);
+  }
+  if (replay !== null && replay.seen !== undefined && typeof replay.seen !== 'function') {
+    throw new TypeError(`${name}: encryption.replay must be { seen(id, ttl) } or { max, overflow }`);
+  }
+  if (replay !== null && typeof replay.seen !== 'function') {
+    const { max, overflow } = replay;
+    if (max !== undefined && !(Number.isInteger(max) && max > 0)) {
+      throw new TypeError(`${name}: encryption.replay.max must be a positive integer`);
+    }
+    if (overflow !== undefined && overflow !== 'refuse' && overflow !== 'evict') {
+      throw new TypeError(`${name}: encryption.replay.overflow must be 'refuse' or 'evict'`);
+    }
   }
   if (typeof discovery !== 'boolean') throw new TypeError(`${name}: encryption.discovery must be a boolean`);
   if (typeof required !== 'boolean') throw new TypeError(`${name}: encryption.required must be a boolean`);

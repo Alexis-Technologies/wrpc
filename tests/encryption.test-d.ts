@@ -159,7 +159,7 @@ expectAssignable<ServerEncryptionOptions>({
   discovery: false,
   replay: { seen: async (id: string, ttl: number) => id.length > ttl },
 });
-expectError<ServerEncryptionOptions>({ keys: 'k', replay: {} });
+expectError<ServerEncryptionOptions>({ keys: 'k', replay: { seen: 'later' } });
 expectType<boolean>(encryption.createReplayCache().seen('id', 1000));
 const kem = encryption.dhKem(encryption.x25519(), encryption.createKdf());
 expectType<boolean>(encryption.isKem(kem));

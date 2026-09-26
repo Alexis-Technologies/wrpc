@@ -162,6 +162,16 @@ instance you inject `encryption.replay`, a shared "seen once" memory with the
 same `seen(id, ttl)` method `createReplayCache()` has (`SET id 1 NX PX ttl`
 in Redis). A memory that cannot be asked serves nothing.
 
+The built-in memory is bounded, and the bound is a capacity to size: it must
+hold every sealed request of the last `2 · maxSkew`, so
+`max ≥ rps × 2·maxSkew/1000` — the default (100 000 entries, five minutes
+of skew) holds about 167 requests a second. Past it, full of live entries,
+it **refuses** (`409`, said once per ten seconds as
+`encryption.replay.overflow`) rather than forget an entry and accept its
+request twice; `encryption: { replay: { max, overflow: 'evict' } }` sizes it
+and trades that for availability if you would rather. A traffic that
+outgrows one process's memory is the case for the shared memory above.
+
 ## Sessions at rest {#sessions}
 
 ```js

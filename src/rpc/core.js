@@ -219,8 +219,11 @@ class RpcServer extends Emitter {
         // src/encryption/ never requires src/rpc/).
         reserved: AMBIENT_HEADERS,
         // One bare status for every refusal; WHICH check it was is for the log.
-        refuse: (call, headers, status, reason) => {
-          log.warn({ event: 'encryption.refused', reason, kind: 'http' });
+        // `quiet`: the sealing already said it, rate-limited (a replay cache
+        // full of live entries refuses a flood, and a line per request is
+        // the flood's second victim).
+        refuse: (call, headers, status, reason, quiet = false) => {
+          if (!quiet) log.warn({ event: 'encryption.refused', reason, kind: 'http' });
           this.#otel.recordCall(UNKNOWN_TARGET, 'error', status);
           new ServerHttpTransport(call, { headers }).error(status);
         },

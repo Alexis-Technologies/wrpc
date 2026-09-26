@@ -143,13 +143,33 @@ export interface ServerEncryptionOptions {
    * ttl)` answers true for an id it was shown within `ttl` ms (Redis: `SET
    * id 1 NX PX ttl`).
    */
-  replay?: { seen(id: string, ttl: number): boolean | Promise<boolean> } | null;
+  /**
+   * The "seen once" memory of sealed requests: a shared one (`seen` — Redis
+   * `SET id 1 NX PX ttl` behind more than one instance), or the built-in
+   * cache's knobs. It must hold every request of the last 2·maxSkew, so
+   * `max ≥ rps × 2·maxSkew/1000`; full of live entries it refuses (409,
+   * `encryption.replay.overflow` once per ten seconds) unless `overflow:
+   * 'evict'` trades "accepted once" for availability.
+   */
+  replay?:
+    | { seen(id: string, ttl: number): boolean | Promise<boolean> }
+    | { max?: number; overflow?: 'refuse' | 'evict' }
+    | null;
   /** Serve the public key bundle at `GET <basePath>/encryption-key`. Default true; it is trust on first use. */
   discovery?: boolean;
 }
 
-/** The default `replay` memory: bounded, in process. */
-export declare function createReplayCache(options?: { max?: number; now?: () => number }): {
+/**
+ * The default `replay` memory: bounded, in process. Full of live entries it
+ * answers `true` (`overflow: 'refuse'`, the default) or forgets the oldest
+ * (`'evict'`); `onOverflow` hears of each id that met the cap.
+ */
+export declare function createReplayCache(options?: {
+  max?: number;
+  now?: () => number;
+  overflow?: 'refuse' | 'evict';
+  onOverflow?: () => void;
+}): {
   seen(id: string, ttl: number): boolean;
   readonly size: number;
 };

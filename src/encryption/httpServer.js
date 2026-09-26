@@ -35,22 +35,55 @@ const MAX_INNER_HEADER = 16 * 1024;
 // Hop-by-hop and framing names: the outer request's, never the inner's.
 const FRAMING = /^(?:content-length|transfer-encoding|connection)$/;
 
+// Past `max` live entries the cache is FULL, and what happens then is a
+// policy: 'refuse' (the default) answers true — seen, as a replay is — so
+// nothing is served that cannot be vouched once; 'evict' forgets the
+// oldest live entry to make room, which a flood turns into "accepted
+// twice" for whatever it pushed out. Size it for the traffic: it must hold
+// every request of the last 2·maxSkew, so max ≥ rps × 2·maxSkew/1000 —
+// the default holds ~167 req/s at the default skew.
+const OVERFLOW = ['refuse', 'evict'];
+// One line per interval for a flood of overflow refusals, not one each.
+const OVERFLOW_INTERVAL = 10_000;
+
 /**
  * A bounded "seen once" memory: `seen(id, ttl)` answers true for an id it
  * was shown within `ttl` ms. In memory and per process — behind a balancer,
  * inject a shared one (`SET id 1 NX PX ttl` in Redis) with the same method.
+ * `onOverflow()` hears of every id refused (or evicted for) at the cap.
  */
-const createReplayCache = ({ max = DEFAULT_REPLAY_ENTRIES, now = Date.now } = {}) => {
+const createReplayCache = ({
+  max = DEFAULT_REPLAY_ENTRIES,
+  now = Date.now,
+  overflow = 'refuse',
+  onOverflow = null,
+} = {}) => {
+  if (!Number.isInteger(max) || max <= 0) throw new TypeError('createReplayCache: max must be a positive integer');
+  if (!OVERFLOW.includes(overflow)) throw new TypeError("createReplayCache: overflow must be 'refuse' or 'evict'");
+  if (onOverflow !== null && typeof onOverflow !== 'function') {
+    throw new TypeError('createReplayCache: onOverflow must be a function');
+  }
   const entries = new Map();
   return {
     seen(id, ttl) {
       const time = now();
+      // Known and live: a replay, whatever the fill — a live entry used to
+      // be evicted first to make room at the cap, and so accepted again.
+      const known = entries.get(id);
+      if (known !== undefined) {
+        if (known > time) return true;
+        entries.delete(id);
+      }
       // Insertion order is time order, so the expired are at the front.
       for (const [key, expires] of entries) {
-        if (expires > time && entries.size < max) break;
+        if (expires > time) break;
         entries.delete(key);
       }
-      if (entries.has(id)) return true;
+      if (entries.size >= max) {
+        if (onOverflow !== null) onOverflow();
+        if (overflow === 'refuse') return true;
+        entries.delete(entries.keys().next().value);
+      }
       entries.set(id, time + ttl);
       return false;
     },
@@ -80,7 +113,22 @@ const createHttpSealing = ({
   reserved = null,
   now = Date.now,
 }) => {
-  const cache = replay ?? createReplayCache({ now });
+  // An injected memory (`seen`), or the options of the built-in one. Only
+  // the built-in reports its overflow: the flag is set inside seen(), read
+  // right after — it answers synchronously.
+  let overflowed = false;
+  const cache =
+    replay && typeof replay.seen === 'function'
+      ? replay
+      : createReplayCache({
+          ...(replay ?? {}),
+          now,
+          onOverflow: () => {
+            overflowed = true;
+          },
+        });
+  let overflows = 0;
+  let overflowSaid = -Infinity;
 
   const unwrap = async (call, outerHeaders) => {
     const raw = call.body;
@@ -130,6 +178,7 @@ const createHttpSealing = ({
     // Fresh, and once: what HPKE itself does not promise.
     if (Math.abs(now() - sent) > maxSkew) return void refuse(call, outerHeaders, 409, 'stale');
     let replayed;
+    overflowed = false;
     try {
       replayed = await cache.seen(toBase64Url(enc), 2 * maxSkew);
     } catch (error) {
@@ -139,7 +188,21 @@ const createHttpSealing = ({
       log.error({ err: error, event: 'encryption.replay' });
       return void refuse(call, outerHeaders, 503, 'replay-store');
     }
-    if (replayed === true) return void refuse(call, outerHeaders, 409, 'replay');
+    if (replayed === true) {
+      if (!overflowed) return void refuse(call, outerHeaders, 409, 'replay');
+      // The cache is full of live entries: nothing more can be vouched
+      // fresh, and each refusal is one line per interval, not one each — a
+      // flood past the cap is exactly when a line per request would drown
+      // the log.
+      overflows++;
+      const at = now();
+      if (at - overflowSaid >= OVERFLOW_INTERVAL) {
+        overflowSaid = at;
+        log.warn({ event: 'encryption.replay.overflow', refused: overflows });
+        overflows = 0;
+      }
+      return void refuse(call, outerHeaders, 409, 'replay-full', true);
+    }
 
     // The outer request's own headers stay underneath, and what the client
     // declared inside wins — except for what the connection, or a proxy in

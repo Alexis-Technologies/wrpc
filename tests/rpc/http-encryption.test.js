@@ -344,7 +344,8 @@ test('http encryption: the options are validated where the server is built', asy
   const keys = generateKey();
   const build = (encryption) => bootServer(t, { router, encryption: { keys, ...encryption } });
   await assert.rejects(build({ maxSkew: 0 }), /maxSkew must be a positive integer/);
-  await assert.rejects(build({ replay: {} }), /replay must be \{ seen\(id, ttl\) \}/);
+  await assert.rejects(build({ replay: [] }), /replay must be \{ seen\(id, ttl\) \} or/);
+  await assert.rejects(build({ replay: { seen: 'later' } }), /replay must be/);
   await assert.rejects(build({ discovery: 'no' }), /discovery must be a boolean/);
   // An injected replay memory is asked, once per request, with a ttl of twice the window
   const asked = [];
@@ -358,9 +359,10 @@ test('http encryption: the options are validated where the server is built', asy
   await assert.rejects(client.api.data.echo({}), /./, 'the second request was called a replay');
 });
 
-test('replay cache: once within the ttl, again after it, bounded', () => {
+test('replay cache: once within the ttl, again after it; full of live entries it refuses, or evicts by choice', () => {
   let time = 1000;
-  const cache = createReplayCache({ max: 3, now: () => time });
+  const overflows = [];
+  const cache = createReplayCache({ max: 3, now: () => time, onOverflow: () => overflows.push(time) });
   assert.strictEqual(cache.seen('a', 100), false);
   assert.strictEqual(cache.seen('a', 100), true);
   time += 101;
@@ -368,9 +370,83 @@ test('replay cache: once within the ttl, again after it, bounded', () => {
   assert.strictEqual(cache.seen('b', 100), false);
   assert.strictEqual(cache.seen('c', 100), false);
   assert.strictEqual(cache.size, 3);
+  // Full, and every entry live: a replay is still a replay — the live
+  // entry used to be evicted to make room at the cap, and so accepted
+  // again — and a new id is refused rather than served unvouched.
+  assert.strictEqual(cache.seen('a', 100), true, 'known and live, whatever the fill');
+  assert.strictEqual(cache.seen('d', 100), true, 'refused: nothing can be vouched once any more');
+  assert.strictEqual(cache.size, 3, 'nothing evicted');
+  assert.deepStrictEqual(overflows, [time]);
+  // Once the head expires there is room again.
+  time += 101;
   assert.strictEqual(cache.seen('d', 100), false);
-  assert.ok(cache.size <= 3, 'the oldest made room');
+  // 'evict' is the old policy, by choice: the oldest live entry goes.
+  const evicting = createReplayCache({ max: 2, now: () => time, overflow: 'evict' });
+  assert.strictEqual(evicting.seen('x', 100), false);
+  assert.strictEqual(evicting.seen('y', 100), false);
+  assert.strictEqual(evicting.seen('z', 100), false, 'made room');
+  assert.strictEqual(evicting.size, 2);
+  assert.strictEqual(evicting.seen('x', 100), false, 'x was evicted, so it is accepted twice — the price of evict');
   assert.strictEqual(createReplayCache().seen('x', 1), false);
+  assert.throws(() => createReplayCache({ max: 0 }), /max must be/);
+  assert.throws(() => createReplayCache({ overflow: 'drop' }), /overflow must be/);
+  assert.throws(() => createReplayCache({ onOverflow: 1 }), /onOverflow must be/);
+});
+
+test('http encryption: a replay cache full of live entries refuses (409), one line per interval — or evicts by choice', async (t) => {
+  const warnings = [];
+  const logger = {
+    log() {},
+    info() {},
+    debug() {},
+    error() {},
+    warn: (entry) => warnings.push(entry),
+    child: () => logger,
+  };
+  // The built-in cache with room for ONE request: the second distinct one
+  // meets the cap.
+  const full = await bootServer(t, { router, logger, encryption: { keys: generateKey(), replay: { max: 1 } } });
+  const endpoint = `${full.origin}${full.server.rpc.basePath}`;
+  const serverKey = await full.server.rpc.encryptionKey();
+  const spy = spyingFetch();
+  const client = await WrpcClient.connect(endpoint, {
+    transport: 'http',
+    encryption: createEncryption({ serverKey }),
+    logger: false,
+    fetch: spy.fetch,
+    reconnect: false,
+  });
+  t.after(() => void client.close());
+  await client.load('data');
+  await assert.rejects(client.api.data.echo({ ok: 1 }), /./, 'the second distinct request met the cap');
+  assert.strictEqual(spy.seen.at(-1).status, 409);
+  const overflow = warnings.filter((w) => w.event === 'encryption.replay.overflow');
+  assert.strictEqual(overflow.length, 1, 'said once for the interval');
+  assert.strictEqual(overflow[0].refused, 1);
+  assert.ok(
+    !warnings.some((w) => w.event === 'encryption.refused' && w.reason === 'replay-full'),
+    'not a line per request',
+  );
+  // Evicting: served, at the price the option names.
+  const evicting = await bootServer(t, {
+    router,
+    logger,
+    encryption: { keys: generateKey(), replay: { max: 1, overflow: 'evict' } },
+  });
+  const other = await WrpcClient.connect(`${evicting.origin}${evicting.server.rpc.basePath}`, {
+    transport: 'http',
+    encryption: createEncryption({ serverKey: await evicting.server.rpc.encryptionKey() }),
+    logger: false,
+    reconnect: false,
+  });
+  t.after(() => void other.close());
+  await other.load('data');
+  assert.deepStrictEqual((await other.api.data.echo({ ok: 1 })).args, { ok: 1 });
+  // The knobs are validated where the server is built.
+  const build = (replay) => bootServer(t, { router, encryption: { keys: generateKey(), replay } });
+  await assert.rejects(build({ max: 0 }), /replay\.max/);
+  await assert.rejects(build({ overflow: 'drop' }), /replay\.overflow/);
+  await assert.rejects(build('later'), /encryption\.replay must be/);
 });
 
 test('sealed body format: a JSON header and bytes, and every malformed one is an OpenError', () => {
