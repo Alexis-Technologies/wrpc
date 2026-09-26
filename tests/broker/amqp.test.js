@@ -36,6 +36,10 @@ test('amqp broker (fake): log contract', async (t) => {
   await runLogContract(t, 'amqp', {
     open: async () => {
       const connection = createFakeAmqp();
+      // Every 40th stream delivery arrives 120 ms late: the pauses a real
+      // broker's flow control puts in, which a catch-up page must not take
+      // for the end of the stream (it did, at a 50 ms idle).
+      connection.server.streamStall = { every: 40, ms: 120 };
       const broker = open(connection);
       const peer = open(connection);
       return {

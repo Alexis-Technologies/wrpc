@@ -1352,6 +1352,27 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **A feed's catch-up no longer mistakes a slow page for the tip.** A
+  reader resuming from a position, or reading from `'earliest'`, catches
+  up through range reads until a page comes back short — which is the end
+  for a log read straight off its store (memory, Redis), and was taken for
+  the end on the three brokers that page by *time* too: a RabbitMQ stream
+  reader that paused for 60 ms handed back a page called complete with
+  entries still behind it, a Kafka page whose 10-second window opened
+  before the group had joined, a NATS pull cut by its expiry. The reader
+  then joined the live tail past what it had not read: a silent hole in a
+  durable feed. Those three now answer `{ entries, done }`, complete only
+  once the page reached the tip read before it started — RabbitMQ reads
+  the stream's last offset first and waits up to 250 ms of idle / 10 s
+  overall, Kafka opens its window after the join and the seek and counts
+  from the low watermark, NATS stops at the stream's last sequence instead
+  of parking for the expiry — and `TopicTails` pages on until `done`,
+  asking again after a pause when a page brought nothing (503 after ten).
+  RabbitMQ also declares its offsets dense: a page whose head skipped past
+  the cursor is asked again rather than yielded with a hole. The in-repo
+  fakes now pause stream deliveries and park a NATS fetch for its expiry,
+  as the brokers do, and the log contract reads 300 entries across two
+  pages on every adapter.
 - **Kafka and RabbitMQ: a settlement the broker refuses no longer loses
   the message.** On Kafka a refused settlement — a retry's copy the
   producer could not write, a commit the group would not take — was

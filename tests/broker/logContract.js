@@ -119,6 +119,26 @@ const runLogContract = async (t, name, harness) => {
     await waitFor(() => env.liveReads() === 0, { timeout, message: `live reads held: ${env.liveReads()}` });
   });
 
+  await t.test(`${name}: a catch-up reads every entry to the tip, however the broker pages`, async (sub) => {
+    const { log } = await open(sub);
+    const topic = await topicFor('catchup');
+    // More than one page (256), with whatever pauses the broker puts in the
+    // deliveries: a page cut short by a pause used to pass for the tip, and
+    // the reader joined the live tail past what it had not read.
+    const values = Array.from({ length: 300 }, (_, i) => String(i));
+    const ids = await appendAll(log, topic, values);
+    const everything = await collect(log.read(topic, { from: 'earliest' }), 300, { timeout: timeout * 4 });
+    assert.deepStrictEqual(
+      everything.map((entry) => entry.value),
+      values,
+    );
+    const rest = await collect(log.read(topic, { after: ids[100] }), 199, { timeout: timeout * 4 });
+    assert.deepStrictEqual(
+      rest.map((entry) => entry.value),
+      values.slice(101),
+    );
+  });
+
   await t.test(`${name}: a yielded id resumes exactly after its entry`, async (sub) => {
     const { log } = await open(sub);
     const topic = await topicFor('log-resume');

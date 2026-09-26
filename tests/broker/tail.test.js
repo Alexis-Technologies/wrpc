@@ -327,3 +327,83 @@ test('TopicTails: a vector cursor (Kafka-shaped) is advanced, not replaced', asy
   const got = await pending;
   assert.deepStrictEqual(got[2].id, { 0: 1, 1: 0 });
 });
+
+test('TopicTails: a range that pages by time says whether it reached the tip', async (t) => {
+  await t.test('`done: false` pages are followed by another range call from the advanced cursor', async () => {
+    const { append, tails, stats } = createLog();
+    for (let i = 1; i <= 9; i++) append('t', `v${i}`);
+    // Three entries per call, and only the third call reaches the tip —
+    // an array of three would have passed for a short page, the end.
+    const paged = tails({
+      range: async (_topic, { after }) => {
+        stats.range++;
+        const start = after === null ? 0 : after;
+        const entries = [];
+        for (let seq = start + 1; seq <= Math.min(start + 3, 9); seq++) {
+          entries.push({ seq, value: `v${seq}`, headers: {} });
+        }
+        return { entries, done: start + 3 >= 9 };
+      },
+    });
+    const values = await collect(paged.read('t', { from: 'earliest' }), 9);
+    assert.deepStrictEqual(
+      values.map((entry) => entry.value),
+      Array.from({ length: 9 }, (_, i) => `v${i + 1}`),
+    );
+    assert.strictEqual(stats.range, 3, 'three pages, no fourth: the third said done');
+  });
+
+  await t.test('an incomplete page with nothing in it is asked again, a bounded number of times', async () => {
+    const { tails, stats } = createLog();
+    const stalled = tails({
+      range: async () => {
+        stats.range++;
+        return { entries: [], done: false };
+      },
+    });
+    const read = stalled.read('t', { from: 'earliest' });
+    const started = Date.now();
+    await assert.rejects(
+      collect(read, 1, { timeout: 5000 }),
+      (error) => error.code === 503 && /reach the tip/.test(error.message),
+    );
+    assert.ok(stats.range > 10, `asked ${stats.range} times`);
+    assert.ok(Date.now() - started >= 400, 'with a pause between the asks');
+  });
+
+  await t.test('a page whose head skips past the cursor is not yielded — asked again, then 503', async () => {
+    const { append, tails } = createLog();
+    for (let i = 1; i <= 4; i++) append('t', `v${i}`);
+    let skips = 2;
+    const gappy = tails({
+      contiguous: (cursor, entry) => entry.seq === cursor + 1,
+      range: async (_topic, { after, limit }) => {
+        const start = after === null ? 0 : after;
+        // Twice the reader is handed a page that starts one entry too far.
+        const from = skips-- > 0 && start > 0 ? start + 1 : start;
+        return {
+          entries: [1, 2, 3, 4]
+            .filter((seq) => seq > from)
+            .slice(0, limit)
+            .map((seq) => ({ seq, value: `v${seq}`, headers: {} })),
+          done: true,
+        };
+      },
+    });
+    const values = await collect(gappy.read('t', { after: 1 }), 3);
+    assert.deepStrictEqual(
+      values.map((entry) => entry.value),
+      ['v2', 'v3', 'v4'],
+      'nothing skipped: the page was asked again until it followed the cursor',
+    );
+    const broken = tails({
+      contiguous: (cursor, entry) => entry.seq === cursor + 1,
+      range: async () => ({ entries: [{ seq: 4, value: 'v4', headers: {} }], done: true }),
+    });
+    await assert.rejects(
+      collect(broken.read('t', { after: 1 }), 1, { timeout: 5000 }),
+      (error) => error.code === 503 && /gap/.test(error.message),
+    );
+    assert.throws(() => tails({ contiguous: 'yes' }), /contiguous must be a function or null/);
+  });
+});

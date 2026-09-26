@@ -280,9 +280,10 @@ class FakeConsumer {
         while (taken < max && Date.now() < deadline) {
           const seq = consumer.#next();
           if (seq === null) {
-            // A fetch answers what it has; it does not park for the full
-            // window once the stream has nothing more.
-            if (taken > 0) return;
+            // A fetch parks for its whole window once the stream has
+            // nothing more — the real server sends the 408 at expiry, not
+            // when the stream runs dry — which is why a reader that knows
+            // the tip breaks out itself.
             await consumer.wait(10);
             continue;
           }

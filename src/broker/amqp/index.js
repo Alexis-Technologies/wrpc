@@ -68,6 +68,16 @@ const REOPEN_BACKOFF = Object.freeze({ minDelay: 200, maxDelay: 5000, factor: 2,
 // that may close later.
 const SETTLE_ATTEMPTS = 3;
 const SETTLE_BACKOFF = Object.freeze({ minDelay: 100, maxDelay: 1000, factor: 2, jitter: false });
+// A catch-up page over a stream queue: a stream reader has no "end", so a
+// page is complete when it reaches the tip read BEFORE the reader started
+// — never when the deliveries merely paused. `RANGE_IDLE` is how long a
+// pause may last before the page is handed back incomplete (TopicTails
+// asks again from the cursor), `RANGE_TIMEOUT` the most one page waits
+// overall, `RANGE_TIP_TIMEOUT` how long an EMPTY stream is given to
+// answer "last" before it is taken for empty.
+const RANGE_IDLE = 250;
+const RANGE_TIMEOUT = 10_000;
+const RANGE_TIP_TIMEOUT = 500;
 
 const createAmqpBroker = (options = {}) => {
   const {
@@ -444,28 +454,49 @@ const createAmqpBroker = (options = {}) => {
       return messageCount > 0 ? messageCount - 1 : null;
     },
     range: async (topic, { after, limit }) => {
+      const start = after === null || after === undefined ? -1 : after;
+      // The tip FIRST, then the page: it is complete once it reaches that
+      // offset, whatever the timing of the deliveries. "Nothing for 50 ms"
+      // used to be the end of a page, and a broker that paused for 60 ms
+      // handed back a page called complete with entries still behind it —
+      // which the reader then joined the live tail past.
+      const tip = await tipOffset(topic, RANGE_TIP_TIMEOUT);
+      if (tip === null || start >= tip) return { entries: [], done: true };
       const entries = [];
+      let last = start;
+      let failure = null;
       await new Promise((resolve, reject) => {
         let settled = false;
         let idle = null;
+        let stopReader = null;
         const finish = async () => {
           if (settled) return;
           settled = true;
           clearTimeout(idle);
+          clearTimeout(overall);
           await stopReader?.();
           resolve();
         };
-        let stopReader = null;
         const rearm = () => {
           clearTimeout(idle);
-          // A stream read has no "end": what has arrived when the flow
-          // pauses IS the page.
-          idle = setTimeout(() => void finish(), 50);
+          idle = setTimeout(() => void finish(), RANGE_IDLE);
           if (isFunction(idle.unref)) idle.unref();
         };
-        openStreamReader(topic, after === null || after === undefined ? 'first' : after + 1, (message) => {
-          entries.push(entryOf(message));
-          if (entries.length >= limit) return void finish();
+        const overall = setTimeout(() => void finish(), RANGE_TIMEOUT);
+        if (isFunction(overall.unref)) overall.unref();
+        openStreamReader(topic, start + 1, (message) => {
+          if (settled) return;
+          const entry = entryOf(message);
+          // RabbitMQ silently starts a stream reader at the OLDEST retained
+          // message when the requested offset is gone: a first entry past
+          // the one asked for is history the retention took, not a page.
+          if (entries.length === 0 && start >= 0 && entry.offset > start + 1) {
+            failure = codedError('Event history was trimmed past this id', 410);
+            return void finish();
+          }
+          entries.push(entry);
+          last = entry.offset;
+          if (entries.length >= limit || last >= tip) return void finish();
           rearm();
         }).then((stop) => {
           stopReader = stop;
@@ -473,8 +504,12 @@ const createAmqpBroker = (options = {}) => {
           else rearm();
         }, reject);
       });
-      return entries;
+      if (failure !== null) throw failure;
+      return { entries, done: last >= tip };
     },
+    // Stream offsets are dense: the entry after `n` is `n + 1`, and a
+    // page whose head is further along came from a reader that skipped.
+    contiguous: (cursor, entry) => entry.offset === cursor + 1,
     covered: (cursor, entry) => entry.offset <= cursor,
     advance: (_cursor, entry) => entry.offset,
   });
@@ -557,13 +592,13 @@ const createAmqpBroker = (options = {}) => {
   // producer should publish through a `log` on a broker that answers with
   // the offset (Redis, NATS, Kafka) or ignore the receipt and let readers
   // yield the authoritative ids.
-  const tipOffset = async (topic) => {
+  const tipOffset = async (topic, timeout = 2000) => {
     const queue = await ensureLog(topic);
     const channel = await openChannel();
     try {
       await channel.prefetch(1);
       return await new Promise((resolve, reject) => {
-        const timer = setTimeout(() => resolve(null), 2000);
+        const timer = setTimeout(() => resolve(null), timeout);
         if (isFunction(timer.unref)) timer.unref();
         channel
           .consume(

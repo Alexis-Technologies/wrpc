@@ -45,6 +45,10 @@ class FakeAmqpServer {
   // `failures.publish = { error, times }` makes the next confirm publishes
   // fail with that error, that many times.
   failures = { publish: null };
+  // A stream delivery that pauses: every `every`-th message of a stream is
+  // handed over `ms` later — the flow control and the network a real
+  // broker has, which a catch-up page must not mistake for the end.
+  streamStall = { every: 0, ms: 0 };
   #tag = 0;
   #delivery = 0;
 
@@ -118,7 +122,27 @@ class FakeAmqpServer {
       queue.unacked.set(deliveryTag, { message: entry, channel: consumer.channel });
     }
     const handler = consumer.handler;
-    queueMicrotask(() => handler(message));
+    const { every, ms } = this.streamStall;
+    const stall = queue.stream && every > 0 && entry.offset % every === every - 1 ? ms : 0;
+    // One consumer's deliveries stay in order through one chain, so a
+    // stall holds everything behind it — as a real channel's would. The
+    // handler's own promise is NOT awaited: deliveries to a work queue run
+    // concurrently up to the prefetch.
+    consumer.chain = (consumer.chain ?? Promise.resolve())
+      .then(() => {
+        if (stall === 0) return undefined;
+        return new Promise((resolve) => {
+          const timer = setTimeout(resolve, stall);
+          if (typeof timer.unref === 'function') timer.unref();
+        });
+      })
+      .then(() => {
+        try {
+          handler(message);
+        } catch {
+          // A handler that throws synchronously is the consumer's problem.
+        }
+      });
   }
 
   publish(exchange, routingKey, content, properties) {

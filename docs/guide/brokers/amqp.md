@@ -75,6 +75,12 @@ against a real 4.x server:
   reads the tip back to answer with a real id. A high-rate producer should
   either ignore the receipt — readers yield the authoritative ids — or use a
   broker whose publish answers with the position (Redis, NATS, Kafka).
+- **A catch-up page ends at the tip, not at a pause.** A stream reader has
+  no "end", so a page reads the stream's last offset first and is complete
+  when it reaches it — a delivery that pauses (flow control, a slow link)
+  hands the page back incomplete, and the reader asks again from where it
+  stopped. An empty stream is given half a second to answer "last" before
+  it is taken for empty.
 - **A trimmed offset is detected, not reported by the broker.** RabbitMQ
   silently starts a stream reader at the oldest retained message; the
   adapter notices that the first entry is past what was asked for and fails

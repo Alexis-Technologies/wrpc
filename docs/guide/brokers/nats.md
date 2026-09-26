@@ -55,6 +55,10 @@ illegal in one).
   where a log with an epoch would say `410`. Sign the ids
   ([`brokerFeed({ secret })`](./feeds#signed-ids)) when clients may send ids
   from elsewhere.
+- **A catch-up page stops at the stream's last sequence**, read before the
+  pull, instead of parking for the fetch's expiry once the stream has nothing
+  more — and a page the expiry cut short is asked for again, never taken for
+  the tip.
 - **Retention is yours to choose.** The adapter creates a log stream with the
   server's defaults; pass `stream.log` (`max_msgs`, `max_age`, `storage`) for
   something else. A feed resuming past a purge answers `410`, which `onGap`

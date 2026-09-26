@@ -429,17 +429,24 @@ const createKafkaBroker = (options = {}) => {
     },
     range: async (topic, { after, limit }) => {
       const name = await ensureTopic(logTopic(topic), logPartitions);
-      const { high } = await watermarks(topic);
+      const { low, high } = await watermarks(topic);
+      // Per partition: where the page starts (never below the low
+      // watermark — what retention took cannot be waited for) and the
+      // offset it must reach to be complete.
       const wanted = {};
+      const target = {};
       let pending = 0;
-      for (const [partition, tip] of Object.entries(high)) {
-        const from = after === null || after === undefined ? 0 : (after[Number(partition)] ?? -1) + 1;
+      for (const [key, tip] of Object.entries(high)) {
+        const partition = Number(key);
+        const asked = after === null || after === undefined ? 0 : (after[partition] ?? -1) + 1;
+        const from = Math.max(asked, low[partition] ?? 0);
         if (from < tip) {
-          wanted[Number(partition)] = from;
+          wanted[partition] = from;
+          target[partition] = tip - 1;
           pending += tip - from;
         }
       }
-      if (pending === 0) return [];
+      if (pending === 0) return { entries: [], done: true };
       const entries = [];
       const consumer = await openConsumer(readerGroup(), { fromBeginning: true }, { ephemeral: true });
       let timer = null;
@@ -456,8 +463,6 @@ const createKafkaBroker = (options = {}) => {
             done = true;
             resolve();
           };
-          timer = setTimeout(finish, 10_000);
-          if (isFunction(timer.unref)) timer.unref();
           consumer
             .run(
               runArgs(flavor, {
@@ -477,8 +482,14 @@ const createKafkaBroker = (options = {}) => {
               }),
             )
             .then(async () => {
+              // The page's window opens once the group is joined and the
+              // seek landed: a window that opened before the join — a slow
+              // rebalance eats seconds — closed on a page that had not
+              // started, and the short page was taken for the tip.
               await joined;
               await seekAll(consumer, name, wanted);
+              timer = setTimeout(finish, 10_000);
+              if (isFunction(timer.unref)) timer.unref();
             })
             .catch(reject);
         });
@@ -487,7 +498,13 @@ const createKafkaBroker = (options = {}) => {
         await closeConsumer(consumer);
       }
       entries.sort((a, b) => (a.partition === b.partition ? a.offset - b.offset : a.partition - b.partition));
-      return entries.slice(0, limit);
+      const page = entries.slice(0, limit);
+      // Complete when every wanted partition reached its tip WITHIN the
+      // page — what was fetched beyond `limit` is not handed over.
+      const reached = {};
+      for (const entry of page) reached[entry.partition] = entry.offset;
+      const done = Object.keys(target).every((partition) => (reached[partition] ?? -1) >= target[partition]);
+      return { entries: page, done };
     },
     covered: (cursor, entry) => entry.offset <= (cursor?.[entry.partition] ?? -1),
     advance: (cursor, entry) => ({ ...(cursor ?? {}), [entry.partition]: entry.offset }),

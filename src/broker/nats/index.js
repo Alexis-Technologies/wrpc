@@ -255,19 +255,27 @@ const createNatsBroker = (options = {}) => {
     },
     range: async (topic, { after, limit }) => {
       const { js: stream } = await managers();
-      const { name } = await streamState(topic);
+      // The tip first: a fetch parks for its whole expiry once the stream
+      // has nothing more, and a page cut short by that expiry is not the
+      // end — the sequence says where the end is.
+      const { name, last } = await streamState(topic);
+      const start = (after ?? 0) + 1;
+      if (start > last) return { entries: [], done: true };
       const consumer = await stream.consumers.get(name, {
-        opt_start_seq: (after ?? 0) + 1,
+        opt_start_seq: start,
         deliver_policy: 'by_start_sequence',
       });
       const batch = await consumer.fetch({ max_messages: limit, expires: DEFAULT_FETCH_EXPIRES });
       const entries = [];
+      let seq = start - 1;
       for await (const message of batch) {
         message.ack();
-        entries.push(entryOf(message));
-        if (entries.length >= limit) break;
+        const entry = entryOf(message);
+        entries.push(entry);
+        seq = entry.seq;
+        if (entries.length >= limit || seq >= last) break;
       }
-      return entries;
+      return { entries, done: seq >= last };
     },
     covered: (cursor, entry) => entry.seq <= cursor,
     advance: (_cursor, entry) => entry.seq,

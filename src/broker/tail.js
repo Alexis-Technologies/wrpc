@@ -12,12 +12,23 @@
 //     Starts ONE tail. Resolves once positioned, with the cursor of the
 //     tip at that moment; afterwards calls onEntry(entry) for every entry
 //     appended past it, in order, until the signal aborts.
-//   range(topic, { after, limit })    -> Promise<entry[]>
+//   range(topic, { after, limit })    -> Promise<entry[] | { entries, done }>
 //     Entries strictly after the cursor `after` (null: the oldest
 //     retained), at most `limit`, in order. Throws coded 410/400 for an
-//     unusable cursor.
+//     unusable cursor. A log read straight off its store (memory, Redis)
+//     answers an array, and a SHORT page is the end. A broker that pages
+//     by TIME — a stream reader with no "end" (AMQP), a consumer group's
+//     fetch (Kafka), a pull with an expiry (NATS) — answers `{ entries,
+//     done }`, where `done` says the page reached the tip as of the call:
+//     a page cut short by a pause is not the end, and it used to be taken
+//     for one, leaving whatever came after the pause unread by a reader
+//     that then joined the live tail past it.
 //   covered(cursor, entry)            -> boolean  (already delivered?)
 //   advance(cursor, entry)            -> cursor   (the resume token after it)
+//   contiguous?(cursor, entry)        -> boolean  (optional, dense ids only)
+//     Whether `entry` is the one right after `cursor`. A page whose head
+//     is not — a stream reader that skipped — is not yielded; the range is
+//     asked again from the cursor, a bounded number of times, then 503.
 //
 // A reader resuming from a cursor catches up through range() and then
 // joins the shared tail; the live tail was positioned BEFORE the range
@@ -35,24 +46,48 @@ const { codedError } = require('./ids.js');
 
 const DEFAULT_HIGH_WATER_MARK = 1024;
 const DEFAULT_PAGE = 256;
+// A catch-up that makes no progress — a page answered `done: false` with
+// nothing in it, or one whose head does not follow the cursor — is asked
+// again after this pause, this many times, before the read fails 503.
+const STALL_DELAY = 50;
+const MAX_STALLS = 10;
+
+const sleep = (ms) =>
+  new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
 
 class TopicTails {
   #live;
   #range;
   #covered;
   #advance;
+  #contiguous;
   #highWaterMark;
   #page;
   #tails = new Map(); // topic -> { readers, ready, current, controller, failure }
 
-  constructor({ live, range, covered, advance, highWaterMark = DEFAULT_HIGH_WATER_MARK, page = DEFAULT_PAGE }) {
+  constructor({
+    live,
+    range,
+    covered,
+    advance,
+    contiguous = null,
+    highWaterMark = DEFAULT_HIGH_WATER_MARK,
+    page = DEFAULT_PAGE,
+  }) {
     for (const [name, fn] of Object.entries({ live, range, covered, advance })) {
       if (typeof fn !== 'function') throw new TypeError(`TopicTails: ${name} must be a function`);
+    }
+    if (contiguous !== null && typeof contiguous !== 'function') {
+      throw new TypeError('TopicTails: contiguous must be a function or null');
     }
     this.#live = live;
     this.#range = range;
     this.#covered = covered;
     this.#advance = advance;
+    this.#contiguous = contiguous;
     this.#highWaterMark = highWaterMark;
     this.#page = page;
   }
@@ -156,17 +191,43 @@ class TopicTails {
           if (pending || reader.lagging) {
             reader.lagging = false;
             pending = false;
-            // Page until a short page: that is "caught up to the tip as of
-            // now"; whatever arrived meanwhile is in the live queue.
+            // Page until the tip: that is "caught up as of now"; whatever
+            // arrived meanwhile is in the live queue. The tip is a short
+            // page for a store read directly, and what `done` says for a
+            // broker that pages by time (see the header).
+            let stalls = 0;
             for (;;) {
-              const page = await tails.#range(topic, { after: cursor, limit: tails.#page });
+              const result = await tails.#range(topic, { after: cursor, limit: tails.#page });
+              const page = Array.isArray(result) ? result : result.entries;
+              const done = Array.isArray(result) ? page.length < tails.#page : result.done === true;
+              let advanced = false;
+              let hole = false;
               for (const entry of page) {
                 if (cursor !== null && tails.#covered(cursor, entry)) continue;
+                if (cursor !== null && tails.#contiguous !== null && !tails.#contiguous(cursor, entry)) {
+                  hole = true;
+                  break;
+                }
                 cursor = tails.#advance(cursor, entry);
+                advanced = true;
                 yield { id: cursor, value: entry.value, headers: entry.headers };
                 if (signal?.aborted) return;
               }
-              if (page.length < tails.#page) break;
+              if (!hole && done) break;
+              if (advanced && !hole) {
+                stalls = 0;
+                continue;
+              }
+              // No progress: a hole at the head of the page, or a page the
+              // adapter called incomplete with nothing in it. Asked again
+              // after a pause, a bounded number of times.
+              if (++stalls > MAX_STALLS) {
+                throw codedError(
+                  hole ? 'Log read fell behind a gap in the topic' : 'Log read could not reach the tip',
+                  503,
+                );
+              }
+              await sleep(STALL_DELAY);
             }
             continue;
           }

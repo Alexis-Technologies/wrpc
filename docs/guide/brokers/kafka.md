@@ -86,6 +86,11 @@ join**: a fresh group resolves `latest` at its first fetch, which can land
 after the next append. Without the seek, the first entries of a live feed
 would vanish now and then — a race the phase-0 spike caught.
 
+A catch-up page is complete only once every partition it wanted reached the
+high watermark read before the page started; its window opens after the
+group joined and the seek landed, so a slow rebalance cannot cut a page short
+and pass it off as the tip. What retention already took is not waited for.
+
 Every reader is its own consumer group — a live tail's for as long as it
 runs, a catch-up page's for the page — deleted the moment the reader is
 done (a page's group used to wait for `close()`; a failed read used to leave

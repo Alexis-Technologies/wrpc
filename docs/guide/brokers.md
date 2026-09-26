@@ -210,7 +210,12 @@ Two building blocks carry the parts every adapter would otherwise get wrong:
   (a blocked connection each). The adapter supplies `live` (a positioned tail)
   and `range` (a catch-up page); `TopicTails` joins them without a gap or a
   duplicate, and sends a reader that falls behind back to `range` so memory per
-  slow subscriber stays bounded.
+  slow subscriber stays bounded. A `range` read straight off a store answers an
+  array, and a short page is the end; one that pages by *time* — a stream
+  reader, a consumer group's fetch, a pull with an expiry — answers
+  `{ entries, done }`, so a page cut short by a pause is never taken for the
+  tip. An optional `contiguous(cursor, entry)` lets a log with dense ids
+  refuse a page whose head skipped.
 - **`encodeToken(name, { safe, escape, maxLength })`** maps an arbitrary name
   into one token of a broker's alphabet, injectively, shortening past
   `maxLength` with a digest (AMQP routing keys stop at 255 bytes, Kafka topic
