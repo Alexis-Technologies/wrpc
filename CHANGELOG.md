@@ -1862,6 +1862,19 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **WebSocket engine: the inbound inflate queue has backpressure.** Under
+  context takeover or `async` inflation every compressed frame the peer
+  sent started its inflate at once, each holding its output until
+  delivered in order — thousands of them in one segment were thousands of
+  inflates in flight, bounded only by the segment queue's `maxBuffer`. At
+  most 32 messages (4 on the threadpool path) or `maxPayload` of
+  compressed bytes are in flight now: past that the socket is paused and
+  the frame loop stops, taken up again once the queue drained below 8
+  messages and half the bytes. An internal hold, apart from the
+  application's `pause()` (`resume()` while held keeps the socket paused,
+  a hold released under an application pause leaves it paused), and
+  `isPaused` reports both so the heartbeat does not take a held
+  connection for dead.
 - **The signaling relay has ceilings, one lookup per room, and bounded
   queues on the peer.** One connection could join rooms without bound,
   replicate any amount of join `data` to every instance, relay a signal

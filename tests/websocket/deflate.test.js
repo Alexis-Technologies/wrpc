@@ -602,3 +602,67 @@ test('async: bufferedAmount counts the queue, and drain follows once it empties'
   assert.strictEqual(socket.writtenData.length, 1);
   conn.terminate();
 });
+
+// A burst of compressed frames in ONE segment: the inflate queue is bounded,
+// the socket paused meanwhile, and every message still arrives in order.
+const burst = async (config, count, size) => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { deflate: config, maxPayload: 1 << 20 });
+  const messages = [];
+  conn.on('message', (data) => messages.push(data.toString()));
+  const deflate = config.clientTakeover ? liveDeflater() : async (payload) => compress(payload);
+  const texts = [];
+  const frames = [];
+  for (let i = 0; i < count; i++) {
+    // Incompressible: the threadpool path is taken past the async threshold.
+    const text = `${i}:${require('node:crypto').randomBytes(size).toString('base64')}`;
+    texts.push(text);
+    const frame = new Frame(true, OPCODES.TEXT, false, await deflate(Buffer.from(text)), null, RSV1);
+    frame.maskPayload();
+    frames.push(frame.toBuffer());
+  }
+  return { socket, conn, messages, texts, segment: Buffer.concat(frames) };
+};
+
+test('takeover: a burst of compressed frames pauses the socket at the inflate mark, and arrives whole, in order', async () => {
+  const { socket, conn, messages, texts, segment } = await burst(TAKEOVER, 2000, 200);
+  socket.emit('data', segment);
+  // Held at once: the frame loop stopped at the mark, the rest waits in
+  // the segment queue, and the socket reads no more meanwhile. It used to
+  // start every inflate of the segment at once.
+  assert.strictEqual(socket.paused, true, 'paused for the inflate queue');
+  assert.strictEqual(conn.isPaused, true, 'the heartbeat must not take a held connection for dead');
+  await tickUntil(() => messages.length === texts.length, 5000);
+  assert.deepStrictEqual(messages, texts);
+  assert.strictEqual(socket.paused, false, 'taken up again once it drained');
+  assert.strictEqual(conn.isPaused, false);
+  conn.terminate();
+});
+
+test("async inflate: the threadpool path holds at four in flight; the application's pause() outlives the hold", async () => {
+  const { socket, conn, messages, texts, segment } = await burst(ASYNC, 200, 300);
+  socket.emit('data', segment);
+  assert.strictEqual(socket.paused, true);
+  // The application pauses while the queue is held: once the queue drains
+  // the socket stays paused — that pause is the application's to lift.
+  conn.pause();
+  await tickUntil(() => messages.length >= 4, 1000);
+  await tickUntil(() => messages.length === texts.length, 5000);
+  assert.deepStrictEqual(messages, texts);
+  assert.strictEqual(socket.paused, true, "the application's pause holds");
+  assert.strictEqual(conn.isPaused, true);
+  conn.resume();
+  assert.strictEqual(socket.paused, false);
+  assert.strictEqual(conn.isPaused, false);
+  // And resume() while the queue is still held keeps the socket paused.
+  const again = await burst(ASYNC, 200, 300);
+  again.socket.emit('data', again.segment);
+  assert.strictEqual(again.socket.paused, true);
+  again.conn.pause();
+  again.conn.resume();
+  assert.strictEqual(again.socket.paused, true, 'held for the queue, not for the application');
+  await tickUntil(() => again.messages.length === again.texts.length, 5000);
+  assert.strictEqual(again.socket.paused, false);
+  again.conn.terminate();
+  conn.terminate();
+});

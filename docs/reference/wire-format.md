@@ -356,6 +356,15 @@ When deflate is negotiated, `RSV1` becomes a legal bit on data frames and the
 parser is told so through `allowedRsv` — an unnegotiated RSV bit is still a
 protocol error.
 
+Inbound, the inflate queue has backpressure of its own: at most 32 messages
+(4 on the threadpool path, which inflates them in parallel) or `maxPayload`
+of compressed bytes are in flight per connection, past which the socket is
+paused and the frame loop stops until enough landed — a peer that sent
+thousands of compressed frames in one segment used to have every one of
+them inflating at once, each holding its output. The pause is the engine's,
+apart from the application's `pause()`; `isPaused` reports both, so the
+heartbeat does not take a held connection for dead.
+
 ## Conformance
 
 The receive path is covered by a large RFC 6455 conformance suite in

@@ -39,6 +39,13 @@ const CLOSE_TIMEOUT = 1000;
 const CLOSE_GRACE = 200;
 const MAX_HEADER_SIZE = 14; // 2 base + 8 extended length + 4 mask key
 
+// The inflate queue's marks (messages): held at INBOX_HIGH — INBOX_ASYNC_HIGH
+// on the threadpool path, where inflates run in parallel — and taken up
+// again at INBOX_LOW. Bytes are bounded by maxPayload alongside.
+const INBOX_HIGH = 32;
+const INBOX_ASYNC_HIGH = 4;
+const INBOX_LOW = 8;
+
 class Connection extends EventEmitter {
   #socket;
   #log;
@@ -59,6 +66,14 @@ class Connection extends EventEmitter {
   #closeTimer = null;
   #needsDrain = false;
   #paused = false;
+  // Receive-side backpressure of the INFLATE queue: while this many
+  // messages (or maxPayload of compressed bytes) are inflating off the
+  // loop, the socket is paused — apart from the public pause(), which the
+  // application owns — and the frame loop stops, until enough landed. A
+  // peer that sent thousands of compressed frames in one segment used to
+  // have every one of them inflating at once, each holding its output.
+  #inboxBytes = 0;
+  #inboxHeld = false;
   #closeCode = CLOSE_CODES.CONNECTION_CLOSED_ABNORMALLY;
   #closeReason = '';
   // Set when WE failed the connection (a protocol error, an oversized or
@@ -183,7 +198,7 @@ class Connection extends EventEmitter {
   // paused, inbound pongs are not read either — liveness checks must not
   // treat a paused connection as dead (see the heartbeat's isPaused skip).
   get isPaused() {
-    return this.#paused;
+    return this.#paused || this.#inboxHeld;
   }
 
   pause() {
@@ -195,7 +210,24 @@ class Connection extends EventEmitter {
   resume() {
     if (this.#socket.destroyed) return;
     this.#paused = false;
-    this.#socket.resume();
+    // Held for the inflate queue: the socket stays paused until it drains.
+    if (!this.#inboxHeld) this.#socket.resume();
+  }
+
+  #holdInbox() {
+    if (this.#inboxHeld) return;
+    this.#inboxHeld = true;
+    if (!this.#socket.destroyed) this.#socket.pause();
+  }
+
+  // Enough inflates landed: the socket reads again (unless the application
+  // paused it), and the frames already buffered are taken up — no 'data'
+  // event will come for those.
+  #releaseInbox() {
+    this.#inboxHeld = false;
+    if (this.#socket.destroyed) return;
+    if (!this.#paused) this.#socket.resume();
+    this.#processFrames();
   }
 
   #receive(data) {
@@ -224,6 +256,9 @@ class Connection extends EventEmitter {
       // so anything pipelined behind the peer's Close in the same segment is
       // not just pointless to handle, it would write past end().
       if (this.#closeReceived) break;
+      // The inflate queue is full: what is left waits in the segment queue
+      // (under maxBuffer) until it drains — see #releaseInbox.
+      if (this.#inboxHeld) break;
       if (!this.#pendingHeader) {
         const headerBytes = this.#queue.peek(MAX_HEADER_SIZE);
         const result = FrameParser.parseHeader(headerBytes, { allowedRsv: this.#allowedRsv });
@@ -376,7 +411,7 @@ class Connection extends EventEmitter {
   // the loop waits behind them: the inbox is what keeps arrival order.
   #emitMessage(data, isBinary) {
     if (this.#inbox.length > 0) {
-      this.#inbox.push({ done: true, error: null, data, isBinary, isText: false });
+      this.#inbox.push({ done: true, error: null, data, isBinary, isText: false, size: 0 });
       return;
     }
     this.emit('message', data, isBinary);
@@ -393,8 +428,13 @@ class Connection extends EventEmitter {
     const viaContext = this.#context !== null && deflate.clientTakeover === true;
     const async = deflate.async ?? null;
     if (viaContext || (async !== null && payload.length >= async.threshold)) {
-      const item = { done: false, error: null, data: null, isBinary, isText };
+      const size = payload.length;
+      const item = { done: false, error: null, data: null, isBinary, isText, size };
       this.#inbox.push(item);
+      this.#inboxBytes += size;
+      // Never called inside decompress(): zlib's callback API and the live
+      // stream both settle off the loop, which is what lets #deliver take
+      // the socket up again without a re-entrancy guard here.
       const settle = (error, inflated) => {
         item.done = true;
         item.error = error ?? null;
@@ -403,6 +443,11 @@ class Connection extends EventEmitter {
       };
       if (viaContext) this.#context.decompress(payload, limit, settle);
       else permessageDeflate.decompressAsync(payload, limit, settle);
+      // The context is one stream, so its inflates are serial anyway and
+      // the bound is on what waits; the threadpool path runs them in
+      // parallel, and libuv's pool is four threads wide.
+      const high = viaContext ? INBOX_HIGH : INBOX_ASYNC_HIGH;
+      if (this.#inbox.length >= high || this.#inboxBytes >= this.#maxPayload) this.#holdInbox();
       return;
     }
     let inflated = null;
@@ -446,6 +491,7 @@ class Connection extends EventEmitter {
     const inbox = this.#inbox;
     while (inbox.length > 0 && inbox[0].done) {
       const item = inbox.shift();
+      this.#inboxBytes -= item.size;
       if (this.#closing) continue;
       if (item.error !== null) return void this.#failInflate(item.error);
       if (item.isText && !isValidUTF8(item.data)) {
@@ -454,6 +500,9 @@ class Connection extends EventEmitter {
         return void this.#fail(Frame.errorClose('INVALID_PAYLOAD', this.#isClient));
       }
       this.emit('message', item.data, item.isBinary);
+    }
+    if (this.#inboxHeld && inbox.length <= INBOX_LOW && this.#inboxBytes <= this.#maxPayload / 2) {
+      this.#releaseInbox();
     }
   }
 
@@ -626,6 +675,8 @@ class Connection extends EventEmitter {
     this.#outbox.length = 0;
     this.#outboxBytes = 0;
     this.#inbox.length = 0;
+    this.#inboxBytes = 0;
+    this.#inboxHeld = false;
     if (this.#context !== null) this.#context.close();
   }
 
