@@ -30,13 +30,18 @@ const copy = (chunk) => {
   throw new TypeError('fake: a WebTransport stream carries bytes');
 };
 
-// A readable whose controller stays reachable, so a session close can end it.
-const readableSource = () => {
+// A readable whose controller stays reachable, so a session close can end
+// it. `onCancel` hears the consumer's cancel() — a STOP_SENDING at the peer.
+const readableSource = (onCancel = null) => {
   let controller = null;
   let ended = false;
   const readable = new ReadableStream({
     start(c) {
       controller = c;
+    },
+    cancel() {
+      ended = true;
+      onCancel?.();
     },
   });
   return {
@@ -182,8 +187,9 @@ class FakeSession {
   // A pair of directions; `toPeer` is what the peer reads, `fromPeer` what
   // we read. The peer receives the mirror image.
   #pair() {
-    const here = readableSource();
-    const there = readableSource();
+    const world = this.#world;
+    const here = readableSource(() => world.cancelled++);
+    const there = readableSource(() => world.cancelled++);
     const toPeer = writableSink(this.#world, (bytes) => there.push(bytes), {
       end: () => there.end(),
       fail: (error) => there.fail(error),
@@ -262,6 +268,8 @@ const createFakeWt = ({ maxDatagramSize = 1200, random = Math.random, origin = '
     lossRate: 0,
     // -1 = unlimited; 0 = createUnidirectionalStream() rejects (no credit).
     uniQuota: -1,
+    // Streams a receiver cancelled unread (STOP_SENDING at the sender).
+    cancelled: 0,
     origin,
     sessions: accepted.readable,
     /** The next accepted server session. */

@@ -9,12 +9,14 @@ const {
   StreamParser,
   frame,
   frameText,
+  frameCaps,
   datagramText,
   KIND_BINARY,
   KIND_TEXT,
   KIND_CAPS,
 } = require('../../src/webtransport/framing.js');
 const { isWtSession, isWtStream, isWtDatagrams } = require('../../src/webtransport/port.js');
+const { idHeader } = require('../../src/webtransport/streams.js');
 const { createFakeWt } = require('./fakeWebTransport.js');
 const { waitFor } = require('../helpers/server.js');
 
@@ -193,6 +195,25 @@ test('wt socket: idleTimeout terminates a silent peer and every read re-arms it'
   assert.deepStrictEqual(closes, [1006]);
   assert.deepStrictEqual(errors, ['No data for 60 ms']);
   assert.ok(await session.closed);
+});
+
+test('wt socket: a stream opened for an id the peer never names is cancelled after holdTimeout, and said so', async (t) => {
+  await assert.rejects(pair(t, { maxHeldStreams: 0 }), TypeError);
+  await assert.rejects(pair(t, { holdTimeout: -1 }), TypeError);
+  const { client, socket, writer } = await pair(t, { holdTimeout: 30 });
+  const refused = [];
+  socket.on('stream-refused', (info) => refused.push(info));
+  // The client announces streams, then opens one for an id it never names
+  // on the control stream — before any packet, before any session.
+  await writer.write(frameCaps('{"streams":true}'));
+  const uni = await client.createUnidirectionalStream();
+  const w = uni.getWriter();
+  await w.write(idHeader('ghost'));
+  await w.write(new Uint8Array(1000));
+  await waitFor(() => refused.length === 1);
+  assert.deepStrictEqual(refused, [{ reason: 'timeout', id: 'ghost' }]);
+  // The session lives on: it is the stream that was refused, not the peer.
+  assert.strictEqual(socket.send('still here'), true);
 });
 
 test('wt socket: datagrams — sendUnreliable is one datagram, an inbound one is a text message', async (t) => {

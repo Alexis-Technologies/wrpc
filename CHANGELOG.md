@@ -1562,6 +1562,19 @@ narrower promise — see
   versioned, length-prefixed layout; a token from one feed is a `400` on
   another. A MAC change: ids clients hold from before are refused once,
   and `onGap` answers as for any rotation.
+- **WebTransport: a peer could fill the server's memory through streams it
+  never named.** The server read every incoming unidirectional stream to
+  its end and buffered the chunks of any whose open packet had not passed
+  — for an id the peer never named, forever — from any session, before any
+  authentication and past `maxMessage`; a stream from a peer that never
+  announced streams was read the same way. A stream is now read no further
+  than the read that carried its header until its open packet passes (the
+  rest waits in the peer's stream under QUIC's own flow control), at most
+  `maxHeldStreams` (32) are held at once, a held stream is cancelled
+  unread after `holdTimeout` (10 s), and an empty id, a second stream for
+  an id, or any stream from a peer that announced none is cancelled at
+  once — each a `wt.mux.refused` line with the reason, the session left
+  alone. Both options ride `attachSession` / `WtSocket` and are validated.
 
 ## [1.0.0] - 2026-08-23
 

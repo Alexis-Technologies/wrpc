@@ -91,6 +91,16 @@ export interface WtSocketOptions {
    */
   idleTimeout?: number;
   /**
+   * Inbound unidirectional streams held for their open packet at once —
+   * read no further than their first read meanwhile — before a further
+   * one is cancelled unread (default 32). A peer that opens streams for
+   * ids it never names used to have every byte of them buffered, before
+   * any authentication, past `maxMessage`.
+   */
+  maxHeldStreams?: number;
+  /** How long a held stream waits for its open packet before it is cancelled (ms, default 10 s). */
+  holdTimeout?: number;
+  /**
    * Per-message compression on the control stream (src/compression), off
    * by default: `true` for the platform codec (raw deflate through
    * node:zlib), `{ codec, threshold }` to inject one or move the size

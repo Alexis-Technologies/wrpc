@@ -10,7 +10,7 @@ const timers = require('node:timers/promises');
 
 const { defineRouter, procedure } = require('../../index.js');
 const { acceptSessions, StreamParser, frameCaps, KIND_CAPS, KIND_TEXT } = require('../../wt.js');
-const { StreamMux } = require('../../src/webtransport/streams.js');
+const { StreamMux, idHeader } = require('../../src/webtransport/streams.js');
 const { ClientWtTransport } = require('../../src/client/webtransport.js');
 const { chunkEncode, chunkDecode } = require('../../src/chunks.js');
 const { createFakeWt } = require('./fakeWebTransport.js');
@@ -156,13 +156,14 @@ test('wt streams: a peer that announces no streams gets every chunk on the contr
 });
 
 // The mux alone, driven by hand: the ordering rules it exists for.
-const muxPair = async () => {
+const muxPair = async (options = {}) => {
   const world = createFakeWt();
   const a = new world.WebTransport('https://h/api');
   await a.ready;
   const b = await world.next();
   const make = (session) => {
     const out = [];
+    const refused = [];
     const mux = new StreamMux(session, {
       emitPacket: (text) => out.push(JSON.parse(text)),
       emitChunk: (frame) => {
@@ -171,6 +172,8 @@ const muxPair = async () => {
       },
       onQueued() {},
       onSent() {},
+      onRefused: (reason, id) => refused.push([reason, id]),
+      ...options,
     });
     mux.peerCaps('{"streams":true}');
     void (async () => {
@@ -181,9 +184,9 @@ const muxPair = async () => {
         mux.accept(value);
       }
     })();
-    return { mux, out };
+    return { mux, out, refused };
   };
-  return { a: make(a), b: make(b), sessions: [a, b] };
+  return { a: make(a), b: make(b), sessions: [a, b], world };
 };
 
 test('wt streams: the mux holds early chunks until the open packet passes, and ends after the last chunk', async () => {
@@ -211,6 +214,67 @@ test('wt streams: the mux holds early chunks until the open packet passes, and e
   assert.strictEqual(b.mux.packet('{"type":"stream","id":"y","status":"end"}'), false);
   assert.strictEqual(b.mux.packet('{"type":"call","id":"1"}'), false);
   assert.strictEqual(b.mux.packet('{"type":"stream" broken'), false);
+});
+
+test('wt streams: a stream for an id the peer never names is held no longer than holdTimeout, and no more than the cap', async () => {
+  const { a, b, world } = await muxPair({ holdTimeout: 40, maxHeldStreams: 2 });
+  // a opens three streams whose open packets b never sees — what a peer
+  // that wants the receiver's memory does, before any authentication.
+  for (const id of ['h1', 'h2', 'h3']) {
+    a.mux.control({ type: 'stream', id, name: 'n', size: 1 });
+    a.mux.chunk(chunkEncode(id, new Uint8Array([1])));
+  }
+  await waitFor(() => b.refused.length === 1, 'the third is past the cap');
+  assert.strictEqual(b.refused[0][0], 'held');
+  assert.deepStrictEqual(b.out, [], 'nothing delivered');
+  await waitFor(() => b.refused.length === 3, 'the two held time out');
+  assert.deepStrictEqual(
+    b.refused.slice(1).map(([reason]) => reason),
+    ['timeout', 'timeout'],
+  );
+  assert.ok(world.cancelled >= 3, `STOP_SENDING reached the sender: ${world.cancelled}`);
+  // A late open packet opens nothing: what was held is gone.
+  const late = b.refused[1][1];
+  assert.strictEqual(b.mux.packet(JSON.stringify({ type: 'stream', id: late, name: 'n', size: 1 })), false);
+  await timers.setTimeout(10);
+  assert.deepStrictEqual(b.out, []);
+  // The mux still serves: a stream whose open packet comes is delivered.
+  a.mux.control({ type: 'stream', id: 'ok', name: 'n', size: 1 });
+  a.mux.chunk(chunkEncode('ok', new Uint8Array([7])));
+  await timers.setTimeout(10);
+  assert.strictEqual(b.mux.packet(JSON.stringify({ type: 'stream', id: 'ok', name: 'n', size: 1 })), true);
+  await waitFor(() => b.out.length === 2, 'delivered');
+  assert.deepStrictEqual(b.out[1], { chunk: 'ok', bytes: [7] });
+});
+
+test('wt streams: an empty id, a second stream for an id, and a stream from a peer that announced none are cancelled unread', async () => {
+  const { a, b, sessions, world } = await muxPair();
+  const raw = async (bytes) => {
+    const writable = await sessions[0].createUnidirectionalStream();
+    const writer = writable.getWriter();
+    await writer.write(bytes);
+    return writer;
+  };
+  await raw(Uint8Array.of(0));
+  await waitFor(() => b.refused.length === 1, 'an empty id');
+  assert.deepStrictEqual(b.refused[0], ['id', '']);
+  // A stream for an id another stream already claimed.
+  a.mux.control({ type: 'stream', id: 'd', name: 'n', size: 1 });
+  a.mux.chunk(chunkEncode('d', new Uint8Array([1])));
+  await timers.setTimeout(10);
+  assert.strictEqual(b.mux.packet(JSON.stringify({ type: 'stream', id: 'd', name: 'n', size: 1 })), true);
+  await waitFor(() => b.out.length === 2, 'the first stream is the stream');
+  await raw(idHeader('d'));
+  await waitFor(() => b.refused.length === 2, 'a duplicate');
+  assert.deepStrictEqual(b.refused[1], ['duplicate', 'd']);
+  // A peer that announced no streams: not read at all.
+  b.mux.peerCaps('{}');
+  await raw(idHeader('u'));
+  await waitFor(() => b.refused.length === 3, 'unannounced');
+  assert.deepStrictEqual(b.refused[2], ['unannounced', null]);
+  assert.ok(world.cancelled >= 3);
+  assert.throws(() => new StreamMux(sessions[1], { maxHeldStreams: 0 }), TypeError);
+  assert.throws(() => new StreamMux(sessions[1], { holdTimeout: 0 }), TypeError);
 });
 
 test('wt streams: a peer without the capability disables the mux; close() resets what is open', async () => {

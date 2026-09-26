@@ -38,6 +38,14 @@ const TEXT_DECODER = new TextDecoder();
 // What JSON.stringify makes of every wrpc stream packet's first key.
 const STREAM_PREFIX = '{"type":"stream"';
 const CAPS_STREAMS = '{"streams":true}';
+// An inbound stream whose open packet has not passed is HELD: read no
+// further than the read that carried its header (the rest waits in the
+// peer's stream, under QUIC's own per-stream flow control), for at most
+// `holdTimeout`, and at most `maxHeldStreams` of them at once — a peer
+// used to be able to open streams for ids it never named and have every
+// byte of them buffered here, before any authentication, past maxMessage.
+const DEFAULT_MAX_HELD_STREAMS = 32;
+const DEFAULT_HOLD_TIMEOUT = 10_000;
 
 // The chunk header a unidirectional stream opens with — chunkEncode's,
 // without the payload.
@@ -64,13 +72,23 @@ class StreamMux {
   #onSent;
   #writeControl;
   #sendControl;
+  #onRefused;
+  #maxHeld;
+  #holdTimeout;
   #enabled = false;
+  // Whether the peer announced streams — what makes an inbound
+  // unidirectional stream one of ours to read. Kept apart from #enabled,
+  // which the fallback in #open switches off for OUR sending only.
+  #peerStreams = false;
   #closed = false;
+  // Inbound streams held for their open packet, against #maxHeld.
+  #held = 0;
   // Outbound: id -> { writer, chain, pending, ended } — pending holds the
   // chunk frames written while the stream is still opening, ended the
   // status that arrived meanwhile.
   #out = new Map();
-  // Inbound: id -> { opened, queue, ended }.
+  // Inbound: id -> { opened, queue, ended, stream, release, released,
+  // timer, refused, cancel } (see #entry).
   #in = new Map();
 
   /**
@@ -80,9 +98,32 @@ class StreamMux {
    * `writeControl(frame)` and `sendControl(packet)` put a chunk frame or a
    * stream packet on the control stream — where a stream's chunks go when
    * its own WebTransport stream could not be opened (a host that grants no
-   * unidirectional streams; quico 0.4 does not).
+   * unidirectional streams; quico 0.4 does not). `onRefused(reason, id)`
+   * hears of an inbound stream cancelled unread: `'unannounced'` (the peer
+   * announced no streams), `'id'` (an empty one), `'duplicate'` (a second
+   * stream for an id), `'held'` (past maxHeldStreams), `'timeout'` (its
+   * open packet never came within holdTimeout).
    */
-  constructor(session, { emitPacket, emitChunk, onQueued, onSent, writeControl = null, sendControl = null }) {
+  constructor(
+    session,
+    {
+      emitPacket,
+      emitChunk,
+      onQueued,
+      onSent,
+      writeControl = null,
+      sendControl = null,
+      onRefused = null,
+      maxHeldStreams = DEFAULT_MAX_HELD_STREAMS,
+      holdTimeout = DEFAULT_HOLD_TIMEOUT,
+    },
+  ) {
+    if (!Number.isInteger(maxHeldStreams) || maxHeldStreams <= 0) {
+      throw new TypeError('StreamMux: maxHeldStreams must be a positive integer');
+    }
+    if (!Number.isInteger(holdTimeout) || holdTimeout <= 0) {
+      throw new TypeError('StreamMux: holdTimeout must be a positive integer (ms)');
+    }
     this.#session = session;
     this.#emitPacket = emitPacket;
     this.#emitChunk = emitChunk;
@@ -90,6 +131,9 @@ class StreamMux {
     this.#onSent = onSent;
     this.#writeControl = writeControl;
     this.#sendControl = sendControl;
+    this.#onRefused = onRefused;
+    this.#maxHeld = maxHeldStreams;
+    this.#holdTimeout = holdTimeout;
   }
 
   /** What we announce: streams, when the session can open unidirectional ones. */
@@ -110,8 +154,9 @@ class StreamMux {
     } catch {
       return;
     }
+    this.#peerStreams = Boolean(caps?.streams);
     this.#enabled =
-      Boolean(caps?.streams) &&
+      this.#peerStreams &&
       typeof this.#session.createUnidirectionalStream === 'function' &&
       typeof this.#session.incomingUnidirectionalStreams?.getReader === 'function';
   }
@@ -235,7 +280,7 @@ class StreamMux {
     }
     const entry = this.#in.get(id);
     if (!entry) {
-      this.#in.set(id, { opened: true, queue: [], ended: null });
+      this.#in.set(id, this.#entry(true));
       return false;
     }
     entry.opened = true;
@@ -243,12 +288,46 @@ class StreamMux {
     const queue = entry.queue;
     for (let i = 0; i < queue.length; i++) this.#emitChunk(chunkEncode(id, queue[i]));
     queue.length = 0;
+    this.#unhold(entry);
     if (entry.ended) this.#finish(id, entry.ended);
     return true;
   }
 
-  /** An incoming unidirectional stream: reads it to the end. */
+  // An inbound stream's record. `stream`: a unidirectional stream claimed
+  // the id; `release`/`released`: the hold on a stream read ahead of its
+  // open packet; `timer`: the hold's deadline; `refused`: cancelled unread;
+  // `cancel`: how (the reader's STOP_SENDING).
+  #entry(opened) {
+    return {
+      opened,
+      queue: [],
+      ended: null,
+      stream: false,
+      release: null,
+      released: null,
+      timer: null,
+      refused: false,
+      cancel: null,
+    };
+  }
+
+  /**
+   * An incoming unidirectional stream: reads it to the end — once its open
+   * packet has passed; only what the first read carried is held before.
+   */
   accept(readable) {
+    // A peer that announced no streams sends nothing on one: cancelled
+    // unread, never held.
+    if (!this.#peerStreams) {
+      try {
+        const cancelled = readable.cancel();
+        if (cancelled && typeof cancelled.catch === 'function') cancelled.catch(() => {});
+      } catch {
+        // Not cancellable: nothing is read from it either way.
+      }
+      this.#onRefused?.('unannounced', null);
+      return;
+    }
     void this.#consume(readable);
   }
 
@@ -256,8 +335,15 @@ class StreamMux {
     const reader = readable.getReader();
     let id = null;
     let header = null;
+    let entry = null;
+    let refused = null;
     try {
       for (;;) {
+        // Held for its open packet: only what the read that carried the
+        // header brought is queued; the rest waits in the peer's stream,
+        // under QUIC's own per-stream flow control, never in this process.
+        if (entry !== null && !entry.opened) await entry.released;
+        if (entry !== null && entry.refused) return;
         const { value, done } = await reader.read();
         if (done) break;
         if (this.#closed) return;
@@ -269,23 +355,81 @@ class StreamMux {
           id = TEXT_DECODER.decode(header.subarray(1, need));
           bytes = header.subarray(need);
           header = null;
+          const claimed = this.#claim(id);
+          if (typeof claimed === 'string') {
+            refused = claimed;
+            break;
+          }
+          entry = claimed;
+          entry.cancel = () => reader.cancel().catch(() => {});
           if (bytes.length === 0) continue;
         }
-        this.#inbound(id, bytes);
+        this.#inbound(id, entry, bytes);
       }
-      if (id !== null) this.#ended(id, 'end');
+      if (refused !== null) {
+        await reader.cancel().catch(() => {});
+        this.#onRefused?.(refused, id);
+        return;
+      }
+      if (id !== null && !entry.refused) this.#ended(id, 'end');
     } catch {
-      // A RESET from the peer: the stream was terminated.
-      if (id !== null) this.#ended(id, 'terminate');
+      // A RESET from the peer: the stream was terminated. (A hold that
+      // expired cancelled the reader itself and has said so already.)
+      if (id !== null && entry !== null && !entry.refused) this.#ended(id, 'terminate');
     }
   }
 
-  #inbound(id, bytes) {
-    let entry = this.#in.get(id);
-    if (!entry) {
-      entry = { opened: false, queue: [], ended: null };
-      this.#in.set(id, entry);
+  // The record for a unidirectional stream naming `id`, or why it is
+  // refused: an empty id, a second stream for an id (the first is the
+  // stream), more streams held for their open packet than the cap.
+  #claim(id) {
+    if (id.length === 0) return 'id';
+    const existing = this.#in.get(id);
+    if (existing) {
+      if (existing.stream) return 'duplicate';
+      // The open packet came first: nothing to hold.
+      existing.stream = true;
+      return existing;
     }
+    if (this.#held >= this.#maxHeld) return 'held';
+    const entry = this.#entry(false);
+    entry.stream = true;
+    entry.released = new Promise((resolve) => {
+      entry.release = resolve;
+    });
+    this.#held++;
+    entry.timer = setTimeout(() => this.#expire(id, entry), this.#holdTimeout);
+    entry.timer.unref?.();
+    this.#in.set(id, entry);
+    return entry;
+  }
+
+  #unhold(entry) {
+    if (entry.timer !== null) {
+      clearTimeout(entry.timer);
+      entry.timer = null;
+    }
+    if (entry.release !== null) {
+      this.#held--;
+      const release = entry.release;
+      entry.release = null;
+      release();
+    }
+  }
+
+  // Its open packet never came: the stream is cancelled unread — what was
+  // held is dropped, and the peer sees STOP_SENDING.
+  #expire(id, entry) {
+    if (this.#in.get(id) !== entry || entry.opened) return;
+    this.#in.delete(id);
+    entry.refused = true;
+    entry.queue.length = 0;
+    this.#unhold(entry);
+    entry.cancel?.();
+    this.#onRefused?.('timeout', id);
+  }
+
+  #inbound(id, entry, bytes) {
     if (entry.opened) return void this.#emitChunk(chunkEncode(id, bytes));
     entry.queue.push(bytes);
   }
@@ -309,6 +453,7 @@ class StreamMux {
       entry.pending = null;
     }
     this.#out.clear();
+    for (const entry of this.#in.values()) this.#unhold(entry);
     this.#in.clear();
   }
 }
@@ -320,4 +465,12 @@ const concat = (a, b) => {
   return out;
 };
 
-module.exports = { StreamMux, STREAM_PREFIX, CAPS_STREAMS, idHeader, readId };
+module.exports = {
+  StreamMux,
+  STREAM_PREFIX,
+  CAPS_STREAMS,
+  DEFAULT_MAX_HELD_STREAMS,
+  DEFAULT_HOLD_TIMEOUT,
+  idHeader,
+  readId,
+};

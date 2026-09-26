@@ -90,7 +90,13 @@ const ENTRIES = [
   // option — +0.6 KB, measured 24.2 against 23.6. Noise, the AEADs and the
   // rest live in @alexify/wrpc/encryption, and only a page that injects
   // them pays for them.
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 25 },
+  // 25 -> 26 for the 2.0 security review's fixes on the client half: the
+  // attachments walk's toJSON and cycle guards, the SSE channel secret, the
+  // worker proxy routing frames, `cancel()` on the Noise handshake, and the
+  // WebTransport mux holding an inbound stream no further than its first
+  // read until its open packet passes (capped, timed) — +1.0 KB, measured
+  // 25.2 against 24.2.
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 26 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },

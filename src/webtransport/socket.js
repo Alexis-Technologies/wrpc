@@ -105,7 +105,16 @@ class WtSocket extends EventEmitter {
   constructor(
     session,
     stream,
-    { remoteAddress = '', highWaterMark, lowWaterMark, maxMessage, idleTimeout = 0, compression = null } = {},
+    {
+      remoteAddress = '',
+      highWaterMark,
+      lowWaterMark,
+      maxMessage,
+      idleTimeout = 0,
+      compression = null,
+      maxHeldStreams,
+      holdTimeout,
+    } = {},
   ) {
     super();
     this.#session = session;
@@ -140,6 +149,11 @@ class WtSocket extends EventEmitter {
       // No codec where the mux is on (the peer announced streams only
       // without one), so a packet is its JSON.
       sendControl: (packet) => this.#enqueue(frameText(JSON.stringify(packet))),
+      // An inbound stream cancelled unread (streams.js): announced for the
+      // host to log — a peer opening streams it never names is a signal.
+      onRefused: (reason, id) => void this.emit('stream-refused', { reason, id }),
+      ...(maxHeldStreams === undefined ? {} : { maxHeldStreams }),
+      ...(holdTimeout === undefined ? {} : { holdTimeout }),
     });
     this.#mux = mux;
     this.#parser = new StreamParser({

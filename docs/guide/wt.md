@@ -246,6 +246,8 @@ attachSession(server, session, {
   lowWaterMark: 256 * 1024, // 'drain' fires under this
   maxMessage: 16 * 1024 * 1024, // the largest inbound message; past it the peer is hung up (1002)
   idleTimeout: 0, // ms without inbound data before the session is terminated (0 = off)
+  maxHeldStreams: 32, // inbound streams held for their open packet at once; a further one is cancelled unread
+  holdTimeout: 10_000, // ms a held stream waits for its open packet before it is cancelled (logged wt.mux.refused)
   kind: 'wt', // what Client.transportKind reports
   compression: false, // per-message deflate on the control stream — see below
 });

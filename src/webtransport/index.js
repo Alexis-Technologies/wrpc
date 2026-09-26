@@ -90,6 +90,8 @@ const attachSession = async (server, session, options = {}) => {
     maxMessage,
     idleTimeout,
     compression,
+    maxHeldStreams,
+    holdTimeout,
   } = options;
   if (verify && (await verify({ headers, url, remoteAddress, session })) === false) {
     closeQuietly(session, { closeCode: 403, reason: 'Forbidden' });
@@ -108,6 +110,14 @@ const attachSession = async (server, session, options = {}) => {
     maxMessage,
     idleTimeout,
     compression,
+    maxHeldStreams,
+    holdTimeout,
+  });
+  // A stream the peer opened for an id it never named, past the cap or
+  // without announcing streams at all: cancelled unread, and a line here —
+  // the socket itself has no logger.
+  socket.on('stream-refused', ({ reason, id }) => {
+    rpc.log.warn({ event: 'wt.mux.refused', reason, id, remoteAddress });
   });
   return rpc.attachSocket(socket, { headers, url, remoteAddress, kind });
 };
