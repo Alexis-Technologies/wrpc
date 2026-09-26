@@ -24,6 +24,8 @@ export interface RedisBrokerClient {
   zadd(key: string, score: string | number, member: string): Promise<unknown>;
   zrangebyscore(key: string, min: string, max: string, ...args: Array<string | number>): Promise<Array<string>>;
   zrem(key: string, member: string): Promise<number>;
+  /** Prunes a service group's expired members; without it they expire with the key. */
+  zremrangebyscore?(key: string, min: string, max: string): Promise<number>;
   publish(channel: string, message: string): Promise<number> | number;
   subscribe(channel: string): unknown;
   unsubscribe?(channel: string): unknown;

@@ -581,11 +581,13 @@ const createRedisBroker = (options = {}) => {
     const stop = async () => {
       if (!state.running) return;
       state.running = false;
+      stops.delete(stop);
       clearInterval(state.timer);
       if (owned.delete(connection)) await quit(connection, { force: true });
       // What this consumer still holds stays in the group's pending list;
       // another consumer claims it through XAUTOCLAIM.
     };
+    stops.add(stop);
     if (signal) signal.addEventListener('abort', () => void stop(), { once: true });
     return {
       stop,
@@ -611,7 +613,16 @@ const createRedisBroker = (options = {}) => {
 
   const inboxKey = (address) => key('inbox', address);
   const listKey = (address) => `${inboxKey(address)}:list`;
-  const groupKey = (address) => `${inboxKey(address)}:group`;
+  // A group's live members: one sorted-set entry per listener, scored with
+  // the expiry of its lease. It used to be ONE presence string for the
+  // whole group, refreshed by every member and DELETED by whichever member
+  // stopped first — so the moment one instance of a service went away, a
+  // sender found "nobody there" (503) while the others were still taking
+  // work off the list.
+  const membersKey = (address) => `${inboxKey(address)}:members`;
+  // Everything close() has to stop: group listeners (a heartbeat, a lease)
+  // and queue consumers (a sweep timer). They used to outlive close().
+  const stops = new Set();
 
   const encodeMessage = (body, { headers, correlationId, replyTo }) => {
     const binary = typeof body !== 'string';
@@ -686,13 +697,24 @@ const createRedisBroker = (options = {}) => {
   // would grow for nobody.
   const listenGroup = async (address, onMessage) => {
     const list = listKey(address);
-    const presence = groupKey(address);
+    const members = membersKey(address);
+    const member = nextId();
     const connection = spawn();
     let running = true;
-    await client.set(presence, '1', 'PX', String(inboxTtl));
+    // The lease: this member's score is when its presence expires, by this
+    // process's clock — the instances' clocks must agree within inboxTtl.
+    // The key itself expires when nobody refreshes it, and members whose
+    // lease ran out (a crashed listener) are pruned by whoever refreshes.
+    const lease = async () => {
+      const at = Date.now();
+      await client.zadd(members, String(at + inboxTtl), member);
+      await client.pexpire(members, String(inboxTtl * 2));
+      if (isFunction(client.zremrangebyscore)) await client.zremrangebyscore(members, '-inf', String(at - inboxTtl));
+    };
+    await lease();
     const beat = setInterval(
       () => {
-        client.set(presence, '1', 'PX', String(inboxTtl)).catch((error) => report('broker.redis.presence', error));
+        lease().catch((error) => report('broker.redis.presence', error, { address }));
       },
       Math.max(1000, inboxTtl / 3),
     );
@@ -720,12 +742,16 @@ const createRedisBroker = (options = {}) => {
       }
     };
     void loop();
-    return async () => {
+    const stop = async () => {
+      if (!running) return;
       running = false;
+      stops.delete(stop);
       clearInterval(beat);
-      await client.del(presence).catch(() => {});
+      await client.zrem(members, member).catch(() => {});
       if (owned.delete(connection)) await quit(connection, { force: true });
     };
+    stops.add(stop);
+    return stop;
   };
 
   const listen = async (address, onMessage, { group = null } = {}) => {
@@ -741,11 +767,11 @@ const createRedisBroker = (options = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
     const payload = encodeMessage(body, options);
     const channel = inboxKey(address);
-    const [subscribers, grouped] = await Promise.all([
+    const [subscribers, alive] = await Promise.all([
       client.publish(channel, payload),
-      client.exists(groupKey(address)),
+      client.zrangebyscore(membersKey(address), String(Date.now()), '+inf', 'LIMIT', 0, 1),
     ]);
-    if (grouped > 0) {
+    if (alive.length > 0) {
       // A TTL so a group that died does not leave work piling up forever;
       // the timeout hint (an RPC deadline) shortens it further.
       const ttl = Math.max(1, Math.min(options.timeout ?? inboxTtl, inboxTtl));
@@ -780,6 +806,9 @@ const createRedisBroker = (options = {}) => {
     tail.handlers.clear();
     backplane.close();
     plain.clear();
+    // Heartbeats, leases and sweep timers go with the broker: they used to
+    // keep firing against the injected client after close().
+    for (const stop of Array.from(stops)) await stop();
     for (const connection of Array.from(owned)) {
       owned.delete(connection);
       await quit(connection, { force: connection === tail.connection });

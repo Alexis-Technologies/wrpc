@@ -1352,6 +1352,17 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **Redis RPC groups: one instance stopping no longer takes the group
+  offline, and `close()` stops its timers.** A service group's presence was
+  one key, refreshed by every member and deleted by whichever member
+  stopped first — from that moment a sender found "nobody there" (`503`)
+  while the other instances were still taking work off the list. Each
+  listener now holds its own lease in a members set (`…:members`, a
+  sorted set scored with the lease's expiry), and the group is present
+  while any lease is live; a crashed member's lease runs out on its own.
+  `close()` releases the leases and clears the heartbeat and sweep timers,
+  which used to keep firing against the injected client after the broker
+  was closed.
 - **Redis queues: a delayed retry can no longer overwrite another, and its
   promotion is atomic.** A delayed retry was a sorted-set member made of
   the message's body and headers, so two retries of one payload were ONE

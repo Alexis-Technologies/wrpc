@@ -97,8 +97,11 @@ first, at most 200 characters.
   binding uses one group per service, which is exactly the supported shape.
 - **A message for a group nobody serves waits on the list** until its TTL
   (`inboxTtl`, shortened by an RPC request's own timeout) expires. With no
-  listener at all, `send` refuses with `503` instead — the presence key is how
-  the sender can tell.
+  listener at all, `send` refuses with `503` instead — the group's members set
+  is how the sender can tell: each listener holds a lease there (renewed every
+  `inboxTtl / 3`), and the group is present while any lease is live. Leases
+  are timestamps by the listener's clock, so the instances' clocks must agree
+  within `inboxTtl`.
 - **Pub/sub is at-most-once**, which is what the backplane's
   [loss detection](../scaling#loss-detection) exists for. Feeds and queues are
   Streams and do not share that property.

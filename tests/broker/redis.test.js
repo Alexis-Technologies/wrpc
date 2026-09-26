@@ -327,9 +327,53 @@ test('redis broker: sending to nobody is a fast 503; a group queues, a plain inb
   await broker.direct.send(address, 'queued');
   await waitFor(() => received.length === 1, { timeout: 2000 });
   await stop();
-  // With the group gone the presence key is gone: back to 503.
+  // With the group gone its last member is gone: back to 503.
   await assert.rejects(broker.direct.send(address, 'x'), (error) => error.code === 503);
-  assert.strictEqual(client.server.live(`wrpc:inbox:${address}:group`), null);
+  assert.strictEqual(client.server.zsets.get(`wrpc:inbox:${address}:members`).size, 0);
+});
+
+test('redis broker: a group is present while ANY member is — one stopping does not take it offline', async (t) => {
+  const { client, broker, close } = open();
+  t.after(close);
+  const address = unique('svc');
+  const first = [];
+  const second = [];
+  const stopFirst = await broker.direct.listen(address, (message) => first.push(message.body), { group: 'svc' });
+  const stopSecond = await broker.direct.listen(address, (message) => second.push(message.body), { group: 'svc' });
+  t.after(() => stopSecond());
+  assert.strictEqual(client.server.zsets.get(`wrpc:inbox:${address}:members`).size, 2);
+  // The first member leaves: the presence used to be one key for the whole
+  // group, deleted by whichever member stopped first — a 503 for senders
+  // while the second was still taking work.
+  await stopFirst();
+  assert.strictEqual(client.server.zsets.get(`wrpc:inbox:${address}:members`).size, 1);
+  await broker.direct.send(address, 'still served');
+  await waitFor(() => second.length === 1, { timeout: 2000 });
+  assert.deepStrictEqual(first, []);
+});
+
+test('redis broker: close() stops the heartbeats and the sweep timers', async (t) => {
+  const client = createFakeRedis();
+  const broker = createRedisBroker({ client, logger: quiet, blockMs: 20, claimIdleMs: 50 });
+  const address = unique('svc');
+  await broker.direct.listen(address, () => {}, { group: 'svc' });
+  await broker.queue.consume(unique('jobs'), (delivery) => delivery.ack());
+  await timers.setTimeout(120);
+  await broker.close();
+  // The member's lease is released, and no sweep runs afterwards: a
+  // consumer's XAUTOCLAIM/ZRANGEBYSCORE used to keep firing against the
+  // injected client after close().
+  assert.strictEqual(client.server.zsets.get(`wrpc:inbox:${address}:members`).size, 0);
+  const commands = [];
+  client.server.fail = (command) => {
+    commands.push(command);
+    return null;
+  };
+  await timers.setTimeout(200);
+  assert.deepStrictEqual(commands, [], `commands after close(): ${commands.join(', ')}`);
+  t.after(() => {
+    client.server.fail = null;
+  });
 });
 
 test('redis broker: closing refuses further work', async (t) => {

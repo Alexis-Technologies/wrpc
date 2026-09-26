@@ -213,6 +213,21 @@ class FakeRedis extends EventEmitter {
     return set && set.delete(member) ? 1 : 0;
   }
 
+  async zremrangebyscore(key, min, max) {
+    this.#check('zremrangebyscore', [key]);
+    const set = this.server.zsets.get(key);
+    if (!set) return 0;
+    const low = min === '-inf' ? -Infinity : Number(min);
+    const high = max === '+inf' ? Infinity : Number(max);
+    let removed = 0;
+    for (const [member, score] of Array.from(set)) {
+      if (score < low || score > high) continue;
+      set.delete(member);
+      removed++;
+    }
+    return removed;
+  }
+
   // ---- pub/sub
 
   async publish(channel, message) {
