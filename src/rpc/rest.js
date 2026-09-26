@@ -21,6 +21,25 @@ const RESERVED_HEADERS = new Set(['content-length', 'set-cookie', 'wrpc-version'
 
 // The static response headers of a declared route: string -> string, with
 // the transport-owned names refused up front.
+// RFC 7230: a field name is a token, a field value holds no CR, LF or NUL —
+// node's own rule for a value (`ERR_INVALID_CHAR`), mirrored at the seams a
+// handler reaches (`http.headers`, `context.http.setHeader`, the fastify
+// adapter's reply) so that an engine which does NOT check — uWebSockets.js
+// writes what it is given — never sees a value that splits the response,
+// and node's refusal is a TypeError where the value was set rather than a
+// request left hanging by a response that was never written.
+const HEADER_NAME = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
+const HEADER_VALUE = /^[\t\x20-\x7e\x80-\xff]*$/;
+
+const checkHeader = (name, value, label) => {
+  if (typeof name !== 'string' || !HEADER_NAME.test(name)) {
+    throw new TypeError(`${label}: '${String(name)}' is not a header name`);
+  }
+  if (typeof value !== 'string' || !HEADER_VALUE.test(value)) {
+    throw new TypeError(`${label}: the value of '${name}' holds a character a header cannot carry`);
+  }
+};
+
 const normalizeHeaders = (headers) => {
   if (headers === undefined || headers === null) return null;
   if (typeof headers !== 'object' || Array.isArray(headers)) {
@@ -33,6 +52,7 @@ const normalizeHeaders = (headers) => {
     if (RESERVED_HEADERS.has(name.toLowerCase())) {
       throw new TypeError(`procedure() http.headers may not set '${name}': the transport owns it`);
     }
+    checkHeader(name, value, 'procedure() http.headers');
     result[name] = value;
   }
   return Object.keys(result).length > 0 ? result : null;
@@ -269,6 +289,7 @@ module.exports = {
   publicHttp,
   cacheHeadersFor,
   RESERVED_HEADERS,
+  checkHeader,
   normalizeRestOptions,
   effectiveHttp,
   buildRestTrees,

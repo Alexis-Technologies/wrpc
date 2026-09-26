@@ -85,6 +85,26 @@ const router = defineRouter({
       http: { method: 'POST', path: '/things/:thingId', status: 201 },
       handler: async (_context, { params, query, body }) => ({ thingId: params.thingId, q: query, name: body?.name }),
     }),
+    // A handler that tries to write a header value with a line break in it:
+    // on node a refusal, on uws a split response — unless the seam refuses.
+    split: procedure({
+      access: 'public',
+      http: { method: 'GET', path: '/split' },
+      handler: async (context) => {
+        context.http.setHeader('X-Note', `ok\r\nX-Injected: yes\r\n\r\n<script>`);
+        return { split: true };
+      },
+    }),
+    // And one that sets the same header twice under two spellings.
+    spelled: procedure({
+      access: 'public',
+      http: { method: 'GET', path: '/spelled' },
+      handler: async (context) => {
+        context.http.setHeader('x-note', 'first');
+        context.http.setHeader('X-Note', 'second');
+        return { spelled: true };
+      },
+    }),
     readUpload: procedure({
       access: 'public',
       handler: async (context, { id }) => {
@@ -306,6 +326,20 @@ const runAdapterSpec = async (entry, t) => {
     });
     assert.strictEqual(res.status, 201);
     assert.deepStrictEqual(await res.json(), { thingId: '42', q: { x: '1' }, name: 'Alpha' });
+  });
+
+  await t.test('a header value that would split the response is refused, never written', async () => {
+    const res = await fetch(`${base}/split`);
+    assert.strictEqual(res.status, 500, 'the handler threw at the seam');
+    assert.strictEqual(res.headers.get('x-injected'), null, 'nothing of the value reached the wire');
+    assert.strictEqual(res.headers.get('x-note'), null);
+    await res.text();
+    // The same header under two spellings is one header, the last one.
+    const spelled = await fetch(`${base}/spelled`);
+    assert.strictEqual(spelled.status, 200);
+    assert.deepStrictEqual(spelled.headers.getSetCookie?.() ?? [], []);
+    assert.strictEqual(spelled.headers.get('x-note'), 'second');
+    await spelled.text();
   });
 
   await t.test('an unknown method is a 404 error packet', async () => {

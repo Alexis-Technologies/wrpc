@@ -3,7 +3,7 @@
 const crypto = require('node:crypto');
 
 const { toKebab } = require('./utils.js');
-const { cacheHeadersFor, RESERVED_HEADERS } = require('./rpc/rest.js');
+const { cacheHeadersFor, RESERVED_HEADERS, checkHeader } = require('./rpc/rest.js');
 const { STATUS_CODES } = require('./status.js');
 const { publicErrorMessage, publicErrorDetails, wireError } = require('./rpc/errors.js');
 const { ServerTransport } = require('./rpc/serverTransport.js');
@@ -166,7 +166,15 @@ class ServerHttpTransport extends ServerTransport {
     if (typeof name !== 'string' || name.length === 0) throw new TypeError('setHeader: name must be a string');
     if (RESERVED_HEADERS.has(name.toLowerCase())) throw new TypeError(`setHeader: '${name}' is owned by the transport`);
     if (this.#responded) throw new Error('setHeader: the response was already sent');
-    this.headers[name] = String(value);
+    const text = String(value);
+    checkHeader(name, text, 'setHeader');
+    // One header per name, whatever the spelling: a second call under
+    // another case replaces the first rather than sending both.
+    const lower = name.toLowerCase();
+    for (const key in this.headers) {
+      if (key !== name && key.toLowerCase() === lower) delete this.headers[key];
+    }
+    this.headers[name] = text;
   }
 
   // The `context.http.status` seam: the success status of THIS response
@@ -367,7 +375,21 @@ class ServerHttpTransport extends ServerTransport {
 
   #answer(headers, body, httpCode) {
     headers['Content-Length'] = body.length;
-    this.#respond({ status: httpCode, headers, body });
+    try {
+      this.#respond({ status: httpCode, headers, body });
+    } catch (error) {
+      // The host refused to write the response (node: a header value it
+      // will not send — checked at every seam a handler reaches, but a
+      // `headers` option built by hand is not). Without this the request
+      // hung until the peer gave up and the client evicted nothing: a bare
+      // 500 in its place, and the close every answer promises.
+      try {
+        this.#respond({ status: 500, headers: { ...SECURITY_HEADERS, 'Content-Length': 0 }, body: Buffer.alloc(0) });
+      } catch {
+        // The peer is gone, or the host is: nothing more to say.
+      }
+      if (this.listenerCount('error') > 0) this.emit('error', error);
+    }
     this.emit('close');
     return true;
   }

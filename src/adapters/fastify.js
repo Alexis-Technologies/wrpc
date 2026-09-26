@@ -10,7 +10,7 @@ const { publicErrorMessage, publicErrorDetails } = require('../transport.js');
 const { createNodeEngine, isEngine } = require('../engine/index.js');
 const { createUwsEngine } = require('./uws.js');
 const { normalizeBody, eachHeader, nodeStream, createUpgradeGate } = require('./common.js');
-const { cacheHeadersFor, RESERVED_HEADERS } = require('../rpc/rest.js');
+const { cacheHeadersFor, RESERVED_HEADERS, checkHeader } = require('../rpc/rest.js');
 const { setupMirror } = require('./mirror.js');
 
 // Fastify plugin. One plugin, two backends, picked by looking at what
@@ -193,7 +193,11 @@ const registerRestRoutes = (fastify, rpc, options) => {
           if (RESERVED_HEADERS.has(String(name).toLowerCase())) {
             throw new TypeError(`setHeader: '${name}' is owned by the transport`);
           }
-          reply.header(name, value);
+          // The same rule the core's seam applies: fastify over uws writes
+          // what it is given.
+          const text = String(value);
+          checkHeader(name, text, 'setHeader');
+          reply.header(name, text);
         },
         status: (code) => void reply.code(code),
       };

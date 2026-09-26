@@ -1489,6 +1489,18 @@ narrower promise — see
   change of the SSE binding**: a pre-2.0 client presenting the id alone is
   refused and starts a fresh channel on every reconnect. `protocol.md`'s
   SSE section says so.
+- **A response header could split the response.** `context.http.setHeader`,
+  a procedure's static `http.headers` and the fastify adapter's reply seam
+  wrote whatever value they were handed: on node the engine refused a
+  value with a line break and the request hung, unanswered, until the peer
+  gave up; on uWebSockets.js — which writes what it is given — the value
+  reached the wire, `\r\n` and all, as a second header or a second
+  response. Every seam now checks the name (an RFC 7230 token) and the
+  value (node's own rule: no CR, LF or NUL) and throws where the value was
+  set, a handler error the caller sees as `500`; a second `setHeader` under
+  another spelling of the same name replaces the first instead of sending
+  both; and a host that still refuses a response answers a bare `500` and
+  closes the request rather than leaving it hanging.
 
 ## [1.0.0] - 2026-08-23
 

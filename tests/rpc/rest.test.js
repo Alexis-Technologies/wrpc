@@ -776,6 +776,16 @@ const cacheApi = () =>
           return 1;
         },
       }),
+      // A value that would split the response, and a name that is no token.
+      split: procedure({
+        access: 'public',
+        http: { method: 'GET', path: '/pages/split' },
+        handler: async (ctx, { query }) => {
+          if (query.name === 'bad') ctx.http.setHeader('X Bad', 'x');
+          else ctx.http.setHeader('X-Note', 'a\r\nX-Injected: 1');
+          return 1;
+        },
+      }),
       // Cacheable public read.
       catalog: procedure({
         access: 'public',
@@ -854,6 +864,22 @@ test('REST response seam: static headers, context.http, status(), and null off H
 
   const reserved = await fetch(`${base}/pages/reserved`);
   assert.strictEqual(reserved.status, 500, 'a reserved header name is a handler error');
+  // A value with a line break would split the response on an engine that
+  // writes what it is given, and hang the request on node, which refuses
+  // to write it: refused at the seam instead, as a handler error.
+  const split = await fetch(`${base}/pages/split`);
+  assert.strictEqual(split.status, 500, 'a header value with CR/LF is a handler error');
+  assert.strictEqual(split.headers.get('x-injected'), null);
+  assert.strictEqual(split.headers.get('x-note'), null);
+  const badName = await fetch(`${base}/pages/split?name=bad`);
+  assert.strictEqual(badName.status, 500, 'a header name that is no token is a handler error');
+  // And at definition time, for a static header.
+  const declared = (headers) =>
+    defineRouter({
+      p: { x: procedure({ access: 'public', http: { method: 'GET', path: '/x', headers }, handler: async () => 1 }) },
+    });
+  assert.throws(() => declared({ 'X-A': 'a\nb' }), /holds a character a header cannot carry/);
+  assert.throws(() => declared({ 'X A': 'a' }), /is not a header name/);
 
   const client = await connectClient(t, url);
   await client.load('pages');
