@@ -139,6 +139,11 @@ queue's progress.
 - **Concurrency comes from partitions.** Within one partition Kafka is
   strictly sequential; `prefetch` becomes `partitionsConsumedConcurrently`,
   so a queue that wants 16 concurrent handlers needs at least 16 partitions.
+  The confluent client spins its workers up once the group has assigned it
+  partitions and fetches one message at a time until it has measured the
+  handler, so the first messages after a slow join (the broker's default
+  3 s rebalance delay) run with less concurrency than asked for; it settles
+  within a second.
 - **`redelivered` is best-effort.** A rebalance simply rewinds an uncommitted
   offset, and Kafka carries no delivery counter — the flag is true only for
   messages the adapter itself re-published.

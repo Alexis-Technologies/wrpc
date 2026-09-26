@@ -93,7 +93,14 @@ const runQueueContract = async (t, name, harness) => {
       async (delivery) => {
         inFlight++;
         peak = Math.max(peak, inFlight);
-        await timers.setTimeout(30);
+        // Held until a second delivery is in flight: a concurrent consumer
+        // brings one within the window, a sequential one holds this for
+        // the whole of it. A fixed 30 ms sleep stood in for this and could
+        // not tell the two apart on a consumer whose workers spin up after
+        // a slow join and fetch one message at a time until they have
+        // measured the handler (the confluent client, 3 s into a join
+        // under the broker's default rebalance delay).
+        await waitFor(() => inFlight >= 2 || done >= 8, { timeout: 500 }).catch(() => {});
         inFlight--;
         done++;
         await delivery.ack();
