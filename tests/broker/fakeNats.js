@@ -150,6 +150,8 @@ class FakeStream {
 // A durable pull consumer: explicit acks, ack_wait redelivery, nak delays.
 class FakeConsumer {
   #waiters = new Set();
+  /** How many times a delivery's working() was called — the lease keepalives. */
+  workingCalls = 0;
 
   constructor(stream, config) {
     this.stream = stream;
@@ -237,6 +239,7 @@ class FakeConsumer {
         this.stream.remove(seq);
       },
       working: () => {
+        this.workingCalls++;
         const held = this.pending.get(seq);
         if (!held) return;
         clearTimeout(held.timer);

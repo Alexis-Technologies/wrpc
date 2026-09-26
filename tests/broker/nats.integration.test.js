@@ -9,13 +9,14 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const timers = require('node:timers/promises');
 
 const { createNatsBroker } = require('../../broker/nats.js');
 const { runBackplaneContract } = require('./backplaneContract.js');
 const { runLogContract } = require('./logContract.js');
 const { runQueueContract } = require('./queueContract.js');
 const { runDirectContract } = require('./directContract.js');
-const { quiet, unique, collect } = require('./support.js');
+const { quiet, unique, collect, waitFor } = require('./support.js');
 
 const url = process.env.NATS_URL;
 const options = { skip: url ? false : 'set NATS_URL to run the NATS integration suite' };
@@ -128,3 +129,25 @@ test.after(async () => {
   for (const broker of brokers) await broker.close().catch(() => {});
   for (const nc of connections) await nc.drain().catch(() => {});
 });
+
+test(
+  'nats (real): a handler slower than ack_wait keeps its lease — working() reaches the server',
+  options,
+  async (t) => {
+    // ack_wait 1.5 s (the harness default), a handler that holds the message
+    // for 2.2 s: without a keepalive JetStream redelivers at 1.5 s.
+    const broker = await open();
+    const name = unique('slow');
+    const seen = [];
+    const consumer = await broker.queue.consume(name, async (delivery) => {
+      seen.push(delivery.attempt);
+      await timers.setTimeout(2200);
+      await delivery.ack();
+    });
+    t.after(() => consumer.stop());
+    await broker.queue.produce(name, 'work');
+    await waitFor(() => seen.length === 1, { timeout: 4000 });
+    await timers.setTimeout(3000);
+    assert.deepStrictEqual(seen, [1], 'never redelivered under a live handler');
+  },
+);

@@ -5,6 +5,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const timers = require('node:timers/promises');
 
 const { createNatsBroker } = require('../../broker/nats.js');
 const { isBroker } = require('../../broker.js');
@@ -145,20 +146,37 @@ test('nats broker: names become one subject token', async (t) => {
 });
 
 test('nats broker: a message slower than ack_wait keeps its lease through working()', async (t) => {
-  const { broker, close } = open({ ackWait: 2000 });
+  // Only setInterval is mocked — the keepalive's clock. setTimeout stays
+  // real: the fake's ack_wait timer (300 ms) is what working() must keep
+  // resetting, and timers/promises would never resolve under a mock.
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const { world, broker, close } = open({ ackWait: 300 });
   t.after(close);
   const name = unique('slow');
   const seen = [];
+  let release;
   const consumer = await broker.queue.consume(name, async (delivery) => {
     seen.push(delivery.attempt);
-    await new Promise((resolve) => setTimeout(resolve, 900));
+    await new Promise((resolve) => (release = resolve));
     await delivery.ack();
   });
   t.after(() => consumer.stop());
   await broker.queue.produce(name, 'work');
   await waitFor(() => seen.length === 1, { timeout: 3000 });
-  await new Promise((resolve) => setTimeout(resolve, 1500));
-  assert.deepStrictEqual(seen, [1], 'the message was redelivered under a live handler');
+  const [fake] = world.server.streams.get(`wrpc_q_${name}`).consumers.values();
+  assert.strictEqual(fake.workingCalls, 0);
+  // Seven keepalive ticks (a third of ack_wait each) while the handler
+  // holds the message: every one is a working() to the server. The test
+  // used to run 900 ms of real time against a 2 s window, which could not
+  // tell a keepalive from a window that had not expired yet.
+  for (let i = 0; i < 7; i++) {
+    t.mock.timers.tick(100);
+    await timers.setTimeout(10);
+  }
+  assert.ok(fake.workingCalls >= 2, `working() was called ${fake.workingCalls} times`);
+  assert.deepStrictEqual(seen, [1], 'never redelivered under a live handler');
+  release();
+  await waitFor(() => fake.pending.size === 0, { timeout: 2000 });
 });
 
 test('nats broker: a released message keeps its attempt across the republish', async (t) => {
@@ -197,17 +215,15 @@ test('nats broker: closing stops the tails and refuses new work', async (t) => {
     (error) => error.code === 503,
   );
   await assert.rejects(broker.direct.send('a', 'x'), (error) => error.code === 503);
-  await waitFor(() => true);
 });
 
-test('nats broker: JetStream-only operations refuse without JetStream', async () => {
+test('nats broker: without JetStream there is no log and no queue — nothing to refuse', async () => {
   const world = createFakeNats();
   const broker = createNatsBroker({ nc: world.nc, headers: world.headers, logger: quiet });
-  // The capability is absent, so the scenario entry points refuse; the raw
-  // functions answer 501 for anyone reaching past them.
-  const { createNatsBroker: factory } = require('../../broker/nats.js');
-  void factory;
   assert.strictEqual(broker.log, undefined);
+  assert.strictEqual(broker.queue, undefined);
+  assert.strictEqual(typeof broker.backplane.publish, 'function');
+  assert.strictEqual(typeof broker.direct.send, 'function');
   await broker.close();
 });
 

@@ -160,12 +160,6 @@ const createNatsBroker = (options = {}) => {
   // ---------------------------------------------------------------------
   // JetStream plumbing (log + queue)
 
-  const requireJetStream = (what) => {
-    if (jetstream === null) {
-      throw codedError(`nats ${what}: this broker was built without JetStream (pass jetstream/jetstreamManager)`, 501);
-    }
-  };
-
   let js = null;
   let jsm = null;
   const managers = async () => {
@@ -334,7 +328,6 @@ const createNatsBroker = (options = {}) => {
     if (from !== 'latest' && from !== 'earliest') {
       throw new TypeError("nats log.read: from must be 'latest' or 'earliest'");
     }
-    requireJetStream('log.read');
     if (after === null || after === undefined) {
       if (from === 'latest') return wrapRead(tails.read(topic, { from, signal }), Promise.resolve());
       // 'earliest': every retained message, then the live tail.
@@ -363,7 +356,6 @@ const createNatsBroker = (options = {}) => {
 
   const append = async (topic, value, { headers = null } = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    requireJetStream('log.append');
     const { js: stream } = await managers();
     const { name, subject, config } = logStream(topic);
     await ensureStream(name, subject, config);
@@ -376,7 +368,6 @@ const createNatsBroker = (options = {}) => {
 
   const produce = async (name, body, { headers = null } = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    requireJetStream('queue.produce');
     const { js: stream } = await managers();
     const { name: streamId, subject, config } = queueStream(name);
     await ensureStream(streamId, subject, config);
@@ -385,7 +376,6 @@ const createNatsBroker = (options = {}) => {
 
   const consume = async (name, onDelivery, options = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    requireJetStream('queue.consume');
     if (!isFunction(onDelivery)) throw new TypeError('nats queue.consume: onDelivery must be a function');
     const { group = name, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = options;
     if (!Number.isInteger(prefetch) || prefetch <= 0) {
@@ -426,6 +416,9 @@ const createNatsBroker = (options = {}) => {
       let settled = false;
       // A handler slower than ack_wait would see its message redelivered
       // underneath it; `working()` is JetStream's "still on it".
+      // A third of the window, never a fixed floor: the floor of one second
+      // it used to have let a lease shorter than two seconds expire before
+      // the first keepalive — the redelivery it was there to prevent.
       const keepalive = setInterval(
         () => {
           try {
@@ -434,7 +427,7 @@ const createNatsBroker = (options = {}) => {
             // The message is settled or the consumer is gone.
           }
         },
-        Math.max(1000, ackWait / 2),
+        Math.max(100, Math.floor(ackWait / 3)),
       );
       if (isFunction(keepalive.unref)) keepalive.unref();
       state.keepalives.set(message.seq, keepalive);

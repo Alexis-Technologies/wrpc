@@ -27,7 +27,6 @@ const { handleRpc } = require('../../src/rpc/dispatcher.js');
 const { createServerTelemetry, SCOPE_NAME } = require('../../src/telemetry/index.js');
 const { DISABLED, SPAN_KIND_PRODUCER, SPAN_KIND_CONSUMER } = require('../../src/telemetry/shared.js');
 const { bearerTransport } = require('../../auth.js');
-const { waitFor } = require('../helpers/server.js');
 
 const quiet = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
 
@@ -242,5 +241,4 @@ test('telemetry: the disabled writer answers the broker members', async () => {
     },
   });
   assert.doesNotThrow(() => broken.recordBrokerDelivery('x', 'ack'));
-  await waitFor(() => true);
 });

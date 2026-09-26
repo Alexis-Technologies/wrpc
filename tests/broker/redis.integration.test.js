@@ -17,7 +17,7 @@ const { runBackplaneContract } = require('./backplaneContract.js');
 const { runLogContract } = require('./logContract.js');
 const { runQueueContract } = require('./queueContract.js');
 const { runDirectContract } = require('./directContract.js');
-const { quiet, unique, waitFor, collect } = require('./support.js');
+const { quiet, unique, collect } = require('./support.js');
 
 const url = process.env.REDIS_URL;
 const options = { skip: url ? false : 'set REDIS_URL to run the Redis integration suite' };
@@ -171,5 +171,4 @@ test('redis (real): the injected client is never quit by close()', options, asyn
   await broker.log.append(unique('t'), 'x');
   await broker.close();
   assert.strictEqual(await injected.ping(), 'PONG');
-  await waitFor(() => true);
 });

@@ -1352,6 +1352,18 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **NATS queues: a short `ackWait` no longer expires under a live
+  handler.** The keepalive (`working()`) ran every `ackWait / 2` but never
+  more often than once a second, so a window shorter than two seconds
+  expired before the first keepalive — the redelivery it existed to
+  prevent. It runs every third of the window now (100 ms at the least).
+  The unit test that was meant to prove the keepalive could not: it waited
+  900 ms of real time against a 2-second window, which passes with no
+  keepalive at all; it now ticks a mocked interval and counts the
+  `working()` calls the fake receives, and the integration suite holds a
+  message for longer than `ackWait` against a real server. A broker built
+  without JetStream simply has no `log` and no `queue` — the `501` guards
+  behind those two are gone with the test that reached past them.
 - **Redis RPC groups: one instance stopping no longer takes the group
   offline, and `close()` stops its timers.** A service group's presence was
   one key, refreshed by every member and deleted by whichever member
