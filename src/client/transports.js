@@ -73,6 +73,9 @@ class ClientWsTransport extends ClientTransport {
         // replacement a reconnect has already installed.
         if (this.#socket !== socket) return;
         this.#socket = null;
+        // A handshake still running is over with the socket: its ready()
+        // rejects now, not at the handshake timeout.
+        this.#secure?.cancel(error);
         this.#secure = null;
         this.encryption = null;
         if (this.#opening) {
@@ -148,6 +151,9 @@ class ClientWsTransport extends ClientTransport {
     const socket = this.#socket;
     this.active = false;
     this.#socket = null;
+    this.#secure?.cancel();
+    this.#secure = null;
+    this.encryption = null;
     this.emit('close');
     socket?.close();
   }

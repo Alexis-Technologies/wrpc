@@ -516,6 +516,9 @@ class ClientWtTransport extends ClientTransport {
     this.#session = null;
     this.#writer = null;
     this.#datagrams = null;
+    // A handshake still running is over with the session: open() rejects
+    // now, not at the handshake timeout.
+    this.#secure?.cancel(error);
     this.#secure = null;
     this.encryption = null;
     this.#mux?.close();

@@ -110,7 +110,11 @@ const rekeyNonce = (cipher) => {
  * answer bytes when the cipher does and a promise when it does (or while a
  * rekey over crypto.subtle is still resolving); the COUNTER is taken
  * synchronously either way, so calls made in order are sealed in order and
- * a Sequencer only has to keep the results so.
+ * a Sequencer only has to keep the results so. Which is also why it
+ * advances on a decrypt that FAILS — Noise §5.1 leaves n unchanged there
+ * — a deliberate departure: an asynchronous cipher answers after the next
+ * call took its nonce, and a failed open ends the session in every
+ * caller (client.js, server.js), so no later frame is opened under it.
  */
 class CipherState {
   #cipher;

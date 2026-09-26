@@ -117,6 +117,19 @@ test('wt encryption: compression is left off — what would be compressed is cip
   );
 });
 
+test('wt encryption: a server that refuses the handshake is a failed open at once, not at the timeout', async (t) => {
+  const { connect, serverKey } = await boot(t);
+  // A pin under a kid the server's ring does not hold: refused at the
+  // hello, and the session hung up — which is when open() must reject,
+  // not when the handshake timeout runs out.
+  const pinned = serverKey.replace(/^[^:]+:/, 'retired:');
+  const started = Date.now();
+  await assert.rejects(
+    connect({ reconnect: false, encryption: createEncryption({ serverKey: pinned, handshakeTimeout: 5_000 }) }),
+  );
+  assert.ok(Date.now() - started < 2_000, 'rejected when the session closed');
+});
+
 test('wt encryption: required — a plaintext WebTransport session is hung up on', async (t) => {
   const { connect, serverKey } = await boot(t, { encryption: { keys: generateKey(), required: true } });
   // An upgrade is not a session: connect() may resolve before the hang-up lands

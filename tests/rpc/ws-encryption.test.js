@@ -8,6 +8,7 @@ const { createEncryption, generateKey } = require('../../encryption.js');
 const { createUwsEngine } = require('../../uws.js');
 const { FRAME_MARK, FRAME_HANDSHAKE, FRAME_SEALED } = require('../../src/wire.js');
 const { MAX_QUEUED } = require('../../src/encryption/server.js');
+const { aead: browserAead } = require('../../src/encryption/aead.browser.js');
 const { ProtocolClient } = require('../websocket/protocolClient.js');
 const { requireUws } = require('../adapters/boots.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
@@ -52,6 +53,13 @@ const routerWith = (hooks = {}) =>
           handler: async (ctx, { text }) => {
             ctx.server.broadcast('data/shouted', { text });
             return true;
+          },
+        }),
+        burst: procedure({
+          access: 'public',
+          handler: async (ctx, { count }) => {
+            for (let i = 0; i < count; i++) ctx.client.sendEvent('data/burst', { i });
+            return count;
           },
         }),
       },
@@ -455,6 +463,44 @@ test('ws encryption: a sealed frame altered in flight, or sent twice, ends the s
     for (const listener of listeners) listener(frame, true);
     await closed;
     assert.strictEqual(client.active, false, tamper);
+  }
+});
+
+test('ws encryption: after a frame that does not open, nothing behind it reaches the application', async (t) => {
+  const { server, connect } = await secure(t);
+  // The wire, from the server's side: the first sealed frame after `arm()`
+  // is altered, the frames right behind it are left alone.
+  const armed = { flip: false };
+  const attachSocket = server.rpc.attachSocket.bind(server.rpc);
+  server.rpc.attachSocket = (socket, meta) => {
+    const send = socket.send.bind(socket);
+    socket.send = (data, options) => {
+      if (armed.flip && typeof data !== 'string' && data[0] === FRAME_MARK && data[1] === FRAME_SEALED) {
+        armed.flip = false;
+        const frame = Buffer.from(data);
+        frame[frame.length - 1] ^= 1;
+        return send(frame, options);
+      }
+      return send(data, options);
+    };
+    return attachSocket(socket, meta);
+  };
+  // With a cipher over crypto.subtle the frames behind the altered one are
+  // already queued, and resolve after it failed: the case the gate exists for.
+  for (const [label, cipher] of [
+    ['sync', undefined],
+    ['async', browserAead()],
+  ]) {
+    const client = await connect({}, cipher === undefined ? {} : { cipher });
+    await client.load('data');
+    const events = [];
+    client.api.data.on('burst', (data) => events.push(data.i));
+    const closed = new Promise((resolve) => client.once('close', resolve));
+    armed.flip = true;
+    client.api.data.burst({ count: 3 }).catch(() => {});
+    await closed;
+    await waitFor(() => !client.active, `${label}: the client closed`);
+    assert.deepStrictEqual(events, [], `${label}: nothing behind the altered frame was delivered`);
   }
 });
 

@@ -112,6 +112,7 @@ const createEncryption = (options = {}) => {
       link.fail(error);
     };
     const timer = setTimeout(() => abort(new Error('encryption: handshake timed out')), handshakeTimeout);
+    timer.unref?.();
     const outbound = new Sequencer(fail);
     const inbound = new Sequencer(fail);
     let resolveReady;
@@ -166,9 +167,18 @@ const createEncryption = (options = {}) => {
       link.write(frame(FRAME_HANDSHAKE, header, await handshake.write()));
     };
 
+    // Nothing reaches the application after a frame that did not open. The
+    // frames behind it are already in the inbound queue when the cipher is
+    // asynchronous — subtle resolves them after the one that failed — and
+    // the queue delivers in order: without this gate they would land on
+    // the application AFTER the session was declared over.
+    const deliver = (message) => {
+      if (!failed) link.deliver(message);
+    };
+
     const open = (bytes) => {
       try {
-        inbound.push(channel.open(bytes), link.deliver, fail);
+        inbound.push(channel.open(bytes), deliver, fail);
       } catch (error) {
         fail(error);
       }
@@ -180,6 +190,7 @@ const createEncryption = (options = {}) => {
     // arrive while this side is still finishing — so frames are taken in
     // order through `chain` until it has drained, and only then directly.
     const step = async (bytes) => {
+      if (failed) return;
       if (channel !== null) return void open(bytes);
       if (!isFrame(bytes, FRAME_HANDSHAKE)) throw new Error('encryption: unexpected message during the handshake');
       await handshake.read(bytes.subarray(2));
@@ -195,8 +206,21 @@ const createEncryption = (options = {}) => {
     return {
       ready,
       send(data) {
+        if (failed) return;
         if (channel === null) throw new Error('encryption: not established');
         outbound.push(channel.seal(data), link.write, fail);
+      },
+      /**
+       * The transport is gone — a close, a terminate: nothing more is
+       * written or delivered, and a pending `ready` rejects NOW rather
+       * than at the handshake timeout. Without `link.fail`: what is closed
+       * is not closed again.
+       */
+      cancel(error) {
+        if (failed) return;
+        failed = true;
+        clearTimeout(timer);
+        rejectReady(error ?? new Error('Connection closed'));
       },
       receive(data) {
         if (failed) return;

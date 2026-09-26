@@ -225,6 +225,12 @@ export interface EncryptedConnection {
   readonly ready: Promise<EncryptionInfo>;
   send(data: string | Bytes | ArrayBuffer): void;
   receive(data: string | Bytes | ArrayBuffer): void;
+  /**
+   * The transport is gone (a close, a terminate): nothing more is written
+   * or delivered, and a pending `ready` rejects now rather than at the
+   * handshake timeout. Does not call `link.fail`.
+   */
+  cancel(error?: Error): void;
 }
 
 /**

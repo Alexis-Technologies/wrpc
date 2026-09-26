@@ -1316,6 +1316,14 @@ narrower promise — see
   `event` field** — the one writer in the package breaking the convention
   its own guide documents, so those lines could not be alerted on alongside
   the rest. A test now asserts the rule on every entry a server writes.
+- **A refused WebTransport handshake waited out the handshake timeout.**
+  The server hung up on a hello it refused (a pin under a kid it no longer
+  holds, say), the session closed, and the client's `open()` stayed
+  pending until `handshakeTimeout` — ten seconds by default — because
+  nothing told the handshake its transport was gone. `secure()` gained
+  `cancel(error)`: the ws transport calls it from its close and terminate
+  paths, the WebTransport client from its teardown, and a pending `ready`
+  rejects the moment the connection does. The handshake timer is `unref`ed.
 
 ### Security
 - **WebRTC: roster data could impersonate another peer.** `PeerHost.attach`
@@ -1397,6 +1405,14 @@ narrower promise — see
   cannot open its own seal is refused where it is configured — and the
   guide no longer suggests an injected cipher for a Noise session, whose
   server half takes the two built-in names only.
+- **A Noise client delivered frames behind one that did not open.** With
+  a cipher over `crypto.subtle` the sealed frames arriving right behind a
+  tampered one were already in the inbound queue, resolved after it had
+  failed, and were handed to the application in order — after the session
+  had been declared over and the socket told to close. Nothing is
+  delivered, stepped or sealed once the connection failed; the counter
+  advancing on a failed decrypt (a departure from Noise §5.1) is documented
+  as the deliberate choice it is.
 
 ## [1.0.0] - 2026-08-23
 
