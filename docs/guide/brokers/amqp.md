@@ -33,7 +33,14 @@ channels it opened but never your connection.
 | `backplane` | a direct exchange; every instance binds its **own** exclusive auto-delete queue per channel, so a room event fans out without a shared queue |
 | `log` | a **stream queue** (`x-queue-type: stream`); the delivery's `x-stream-offset` is the feed's resume token |
 | `queue` | a quorum queue, prefetch per consumer channel, a TTL retry queue that dead-letters back into the main one, and a dead-letter queue for what is exhausted |
-| `direct` | a fanout exchange per address: an inbox binds an exclusive queue, a service group binds one durable queue its members compete over |
+| `direct` | **one** direct exchange (`<prefix>.direct`), the address as the routing key: an inbox binds an exclusive queue, a service group binds one durable queue its members compete over |
+
+The adapter declares exactly two exchanges, `<prefix>.bp` and
+`<prefix>.direct`, however many rooms, addresses and inboxes it serves — the
+permissions a RabbitMQ user needs are those two names plus the queues under
+`<prefix>.`. An address is whatever a peer puts in `replyTo`, one per client
+inbox, so anything declared *per address* would grow with every client for as
+long as the broker lived.
 
 ## What RabbitMQ 4 changed, and how the adapter answers
 

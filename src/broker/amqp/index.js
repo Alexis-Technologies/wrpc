@@ -15,7 +15,8 @@
 //   queue      a quorum queue per name, prefetch per consumer channel, a TTL
 //              retry queue that dead-letters back for delays, a dead-letter
 //              queue for what is exhausted
-//   direct     an exclusive queue per inbox, a durable shared queue per
+//   direct     ONE direct exchange, the address as the routing key; an
+//              exclusive queue per inbox, a durable shared queue per
 //              service group, `mandatory` + basic.return for "nobody there"
 //
 // Two RabbitMQ 4 behaviours shape this adapter (both measured in the
@@ -152,20 +153,24 @@ const createAmqpBroker = (options = {}) => {
   // ---------------------------------------------------------------------
   // backplane
 
-  const exchange = `${prefix}.bp`;
-  let exchangeReady = null;
-  const ensureExchange = async () => {
-    if (!exchangeReady) {
-      exchangeReady = (async () => {
-        const channel = await topology();
-        await channel.assertExchange(exchange, 'direct', { durable: true });
-      })();
-      exchangeReady.catch(() => {
-        exchangeReady = null;
-      });
-    }
-    return exchangeReady;
+  // The two exchanges this adapter declares — the backplane's and the
+  // direct one — memoized as promises; a failed declaration is forgotten,
+  // so the next caller tries again. Nothing is declared per address.
+  const exchanges = new Map();
+  const ensureExchange = (exchangeName, type) => {
+    let pending = exchanges.get(exchangeName);
+    if (pending) return pending;
+    pending = (async () => {
+      const channel = await topology();
+      await channel.assertExchange(exchangeName, type, { durable: true });
+      return exchangeName;
+    })();
+    exchanges.set(exchangeName, pending);
+    pending.catch(() => exchanges.delete(exchangeName));
+    return pending;
   };
+
+  const exchange = `${prefix}.bp`;
 
   const backplane = {
     name: 'amqp',
@@ -173,7 +178,7 @@ const createAmqpBroker = (options = {}) => {
       if (closed) return;
       void (async () => {
         try {
-          await ensureExchange();
+          await ensureExchange(exchange, 'direct');
           await confirmPublish(exchange, encodeToken(channel, { maxLength: 180 }), message, {
             contentType: 'application/json',
           });
@@ -186,7 +191,7 @@ const createAmqpBroker = (options = {}) => {
       if (!isFunction(handler)) throw new TypeError('amqp backplane.subscribe: handler must be a function');
       const routingKey = encodeToken(channel, { maxLength: 180 });
       const ready = (async () => {
-        await ensureExchange();
+        await ensureExchange(exchange, 'direct');
         const consumerChannel = await openChannel();
         // Exclusive and auto-delete: this instance's own copy of the
         // channel's traffic, gone the moment it disconnects.
@@ -615,12 +620,23 @@ const createAmqpBroker = (options = {}) => {
   // ---------------------------------------------------------------------
   // direct
 
-  // One fanout exchange per address: plain listeners each bind their own
-  // exclusive queue (everyone receives), a group binds ONE durable queue
-  // (its members compete). `mandatory` then reports "nobody bound" as a
-  // basic.return, which is the 503 an RPC caller wants.
-  const addressExchange = (address) => name(prefix, 'direct', address);
-  const groupQueue = (address, group) => `${addressExchange(address)}.${encodeToken(group, { maxLength: 60 })}`;
+  // ONE direct exchange for every address, the address as the routing key:
+  // plain listeners each bind their own exclusive queue (everyone
+  // receives), a group binds ONE durable queue (its members compete), and
+  // `mandatory` reports "nobody bound to that key" as a basic.return — the
+  // 503 an RPC caller wants. It used to be a durable fanout exchange PER
+  // address, and an address is whatever a peer puts in `replyTo` — one per
+  // client inbox — so a service's topology grew by one exchange per client
+  // for as long as the broker lived (a durable exchange is never deleted
+  // by itself). Two other shapes were weighed and refused: the default
+  // exchange `''` routes by queue NAME, so several ungrouped listeners on
+  // one address, each on its own exclusive queue, could not all receive
+  // (the direct contract); and an `autoDelete` exchange per address goes
+  // away with its last binding, after which a publish to it is a
+  // channel-level 404 on the shared confirm channel, not a basic.return.
+  const directExchange = `${prefix}.direct`;
+  const routingKeyOf = (address) => encodeToken(address, { maxLength: 180 });
+  const groupQueue = (address, group) => `${name(prefix, 'direct', address)}.${encodeToken(group, { maxLength: 60 })}`;
 
   const returned = new Set();
   let directChannel = null;
@@ -647,20 +663,7 @@ const createAmqpBroker = (options = {}) => {
 
   // The exchange must exist before a mandatory publish: publishing to a
   // missing one is a channel-level 404, not a basic.return.
-  const declaredAddresses = new Map();
-  const ensureAddress = (address) => {
-    const exchangeName = addressExchange(address);
-    let pending = declaredAddresses.get(exchangeName);
-    if (pending) return pending;
-    pending = (async () => {
-      const channel = await topology();
-      await channel.assertExchange(exchangeName, 'fanout', { durable: true });
-      return exchangeName;
-    })();
-    declaredAddresses.set(exchangeName, pending);
-    pending.catch(() => declaredAddresses.delete(exchangeName));
-    return pending;
-  };
+  const ensureDirect = () => ensureExchange(directExchange, 'direct');
 
   const listen = async (address, onMessage, { group = null } = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
@@ -669,7 +672,7 @@ const createAmqpBroker = (options = {}) => {
       throw new TypeError('amqp direct.listen: address must be a non-empty string');
     }
     const channel = await openChannel();
-    const exchangeName = await ensureAddress(address);
+    const exchangeName = await ensureDirect();
     // RabbitMQ 4 refuses a transient non-exclusive queue, so a group's
     // shared queue is durable and expires when nobody consumes it.
     const queue =
@@ -681,7 +684,7 @@ const createAmqpBroker = (options = {}) => {
               arguments: { 'x-expires': inboxTtl, 'x-queue-type': 'classic' },
             })
           ).queue;
-    await channel.bindQueue(queue, exchangeName, '');
+    await channel.bindQueue(queue, exchangeName, routingKeyOf(address));
     const { consumerTag } = await channel.consume(
       queue,
       (message) => {
@@ -715,7 +718,7 @@ const createAmqpBroker = (options = {}) => {
 
   const send = async (address, body, { headers = null, correlationId = null, replyTo = null, timeout } = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    const [channel, exchangeName] = await Promise.all([directing(), ensureAddress(address)]);
+    const [channel, exchangeName] = await Promise.all([directing(), ensureDirect()]);
     const text = typeof body === 'string';
     const messageId = nextId();
     const properties = {
@@ -730,7 +733,7 @@ const createAmqpBroker = (options = {}) => {
     // answered late.
     if (timeout > 0) properties.expiration = String(Math.round(timeout));
     await new Promise((resolve, reject) => {
-      channel.publish(exchangeName, '', Buffer.from(toBytes(body)), properties, (error) => {
+      channel.publish(exchangeName, routingKeyOf(address), Buffer.from(toBytes(body)), properties, (error) => {
         if (error) return void reject(error);
         if (returned.delete(messageId)) return void reject(codedError(`No listener at ${address}`, 503));
         resolve();
@@ -746,7 +749,7 @@ const createAmqpBroker = (options = {}) => {
     tails.close();
     ensuredLogs.clear();
     ensuredQueues.clear();
-    declaredAddresses.clear();
+    exchanges.clear();
     for (const channel of Array.from(channels)) await closeChannel(channel);
     topologyChannel = null;
     publishChannel = null;

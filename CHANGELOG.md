@@ -1352,6 +1352,16 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **RabbitMQ `direct`: one exchange, not one per address.** Every address
+  — and an address is whatever a peer puts in `replyTo`, one per client
+  inbox — got its own durable fanout exchange, which RabbitMQ never
+  deletes by itself: a service's topology grew by one exchange per client
+  for as long as the broker lived. Every address now binds to the one
+  `<prefix>.direct` exchange under its own routing key; `mandatory` still
+  reports "nobody there" as the `503`. The adapter declares exactly two
+  exchanges, `<prefix>.bp` and `<prefix>.direct`. (A dev RabbitMQ that ran
+  the unreleased per-address code keeps its `wrpc.direct.<address>`
+  exchanges; delete them by hand — nothing migrates them.)
 - **Broker adapters: a bad numeric option is a `TypeError` at construction,
   not a silent misbehaviour later.** Redis `blockMs` (`0` was `XREAD BLOCK
   0`, forever, and no pause after a failed read), `claimIdleMs` (`0` stole

@@ -249,3 +249,35 @@ test('amqp broker: queue arguments are refused at construction, deadLetter at co
   );
   await broker.close();
 });
+
+test('amqp broker: direct addresses share one exchange — a client inbox declares nothing that outlives it', async (t) => {
+  const connection = createFakeAmqp();
+  const broker = open(connection);
+  t.after(() => broker.close());
+  const address = 'wrpc.svc';
+  const seen = [];
+  const stopService = await broker.direct.listen(address, (message) => void seen.push(message.correlationId), {
+    group: address,
+  });
+  t.after(() => stopService());
+  const before = connection.server.exchanges.size;
+  // 200 clients, each with its own inbox, each sending one request and going
+  // away: this used to leave 200 durable `wrpc.direct.<inbox>` exchanges.
+  for (let i = 0; i < 200; i++) {
+    const inbox = broker.direct.inbox();
+    const replies = [];
+    const stop = await broker.direct.listen(inbox, (message) => void replies.push(message.body));
+    await broker.direct.send(address, 'hello', { correlationId: String(i), replyTo: inbox });
+    await broker.direct.send(inbox, 'reply');
+    await waitFor(() => replies.length === 1);
+    await stop();
+  }
+  assert.strictEqual(seen.length, 200);
+  assert.strictEqual(connection.server.exchanges.size, before, 'no exchange per address');
+  assert.deepStrictEqual(
+    Array.from(connection.server.exchanges.keys()).filter((exchange) => exchange.startsWith('wrpc.direct')),
+    ['wrpc.direct'],
+  );
+  // Nobody bound under that routing key any more: the 503 still comes back.
+  await assert.rejects(broker.direct.send('wrpc.nobody', 'x'), (error) => error.code === 503);
+});
