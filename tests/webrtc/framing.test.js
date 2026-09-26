@@ -63,6 +63,13 @@ test('framing: negotiateMessageSize', () => {
   assert.strictEqual(negotiateMessageSize({ maxMessageSize: 1 }), MIN_MESSAGE_SIZE, 'no room for a payload byte');
   assert.strictEqual(negotiateMessageSize({ maxMessageSize: 65536 }), 65536);
   assert.strictEqual(negotiateMessageSize({ maxMessageSize: 1024 }), 1024, 'under the floor is honoured, not raised');
+  assert.strictEqual(negotiateMessageSize({ maxMessageSize: 1024.9 }), 1024, 'floored to a whole byte');
+  // ... down to 1 KiB: a peer demanding smaller fragments is refused.
+  const refused = (error) => error instanceof FramingError && error.code === 'message-size';
+  assert.throws(() => negotiateMessageSize({ maxMessageSize: 1023 }), refused);
+  assert.throws(() => negotiateMessageSize({ maxMessageSize: 1023.99 }), refused);
+  assert.throws(() => negotiateMessageSize({ maxMessageSize: 64 }), refused);
+  assert.throws(() => negotiateMessageSize({ maxMessageSize: 2 }), refused);
   assert.strictEqual(negotiateMessageSize({ maxMessageSize: 1024 * 1024 * 1024 }), MAX_MESSAGE_SIZE, 'capped');
   assert.strictEqual(negotiateMessageSize({ maxMessageSize: 1024 * 1024 }, 64 * 1024), 64 * 1024, 'custom ceiling');
   assert.strictEqual(negotiateMessageSize(null, 8 * 1024), 8 * 1024, 'the floor never exceeds the ceiling');

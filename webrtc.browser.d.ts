@@ -91,7 +91,7 @@ export declare const KIND_BINARY: 1;
 
 export declare class FramingError extends Error {
   name: 'FramingError';
-  /** 'empty' | 'reserved' | 'kind' | 'too-large' | 'fragments' | 'utf8' */
+  /** 'empty' | 'reserved' | 'kind' | 'too-large' | 'fragments' | 'utf8' | 'message-size' */
   code: string;
   constructor(message: string, code: string);
 }

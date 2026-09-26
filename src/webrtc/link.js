@@ -505,9 +505,17 @@ class RtcLink extends Emitter {
 
   #onOpen(pc) {
     if (this.#state === 'connected') return;
+    // A peer demanding fragments under 1 KiB is refused here, before the
+    // link is 'connected': the failure runs the ordinary redial cycle.
+    let maxMessageSize;
+    try {
+      maxMessageSize = negotiateMessageSize(pc.sctp ?? null);
+    } catch (error) {
+      return void this.#fail(error);
+    }
     this.#clearTimers();
     this.#restarting = false;
-    this.#maxMessageSize = negotiateMessageSize(pc.sctp ?? null);
+    this.#maxMessageSize = maxMessageSize;
     this.#setState('connected');
     const opened = this.#opened;
     if (opened) opened.resolve();

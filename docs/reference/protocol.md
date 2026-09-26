@@ -817,6 +817,8 @@ bit 3–7        reserved, MUST be 0
   and whether the bit is in use at all is the application's agreement.
 - Fragment size is the negotiated `sctp.maxMessageSize` capped at 256 KiB,
   and 16 KiB when nothing is reported. A peer MAY send smaller fragments.
+  A peer whose `a=max-message-size` is under 1 KiB is refused: the link
+  fails rather than fragment every packet into a thousand pieces.
 
 Everything above the header is exactly the WebSocket wire: the ordering rule
 "a `stream` packet precedes the first chunk with its id" holds per channel,

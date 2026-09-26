@@ -1335,7 +1335,10 @@ narrower promise — see
   must now carry a byte (`FramingError` code `'empty'`), and the fragment
   count of one message is capped as well: `framing.maxFragments`, code
   `'fragments'`, default `maxReassembly` in 1 KiB pieces and never under
-  1024. `protocol.md#webrtc-framing` says so.
+  1024. And a peer whose `a=max-message-size` is under 1 KiB — a demand for
+  a send and a view per few bytes, on both sides, for every packet — is
+  refused: the link fails (`'message-size'`) instead of connecting.
+  `protocol.md#webrtc-framing` says so.
 
 ## [1.0.0] - 2026-08-23
 

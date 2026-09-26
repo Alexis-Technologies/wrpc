@@ -89,7 +89,7 @@ test('webrtc transport: open() waits for the link, announces open before resolvi
 });
 
 test('webrtc transport: text and binary cross to the peer host transport, in order, fragmented', async (t) => {
-  const { a, b } = await linkPair(t, { fake: { maxMessageSize: 32 } });
+  const { a, b } = await linkPair(t, { fake: { maxMessageSize: 1024 } });
   const client = new ClientRtcTransport('webrtc:b', { link: a });
   const host = new RtcPeerTransport(b, { peer: 'a' });
   const packets = [];
@@ -98,7 +98,7 @@ test('webrtc transport: text and binary cross to the peer host transport, in ord
   host.on('chunk', (bytes) => chunks.push(bytes));
   await client.open();
   assert.strictEqual(client.write('{"type":"ping"}'), true);
-  const big = new Uint8Array(200).map((_, i) => i);
+  const big = new Uint8Array(5000).map((_, i) => i & 0xff);
   client.write(chunkEncode('s1', big));
   client.write('{"type":"pong"}');
   await within(

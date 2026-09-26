@@ -42,6 +42,11 @@ const HEADER_BYTES = 1;
 // one message would hold too much memory on the receiving side at once.
 const MIN_MESSAGE_SIZE = 16 * 1024;
 const MAX_MESSAGE_SIZE = 256 * 1024;
+// Under this a peer's `a=max-message-size` is not a limit anyone needs
+// (SCTP's own default is 64 KiB, the interop floor 16 KiB) but a demand
+// for a fragment per few bytes — a send and a view per fragment, on both
+// sides, for every packet: refused, and the link fails.
+const MIN_NEGOTIABLE_SIZE = 1024;
 // A peer that never sends FIN would otherwise grow the reassembly buffer
 // without bound — and one sending a byte per fragment would cost a view
 // object per byte long before the byte cap is near, so the fragment count
@@ -63,14 +68,20 @@ class FramingError extends Error {
  * The message size to fragment at. `sctp.maxMessageSize` already reflects
  * the REMOTE side's `a=max-message-size` (W3C §5.5), so it is the
  * agreed-upon limit — capped at `ceiling`, and the interop floor when
- * nothing usable is reported (no sctp, 0, Infinity). A reported size UNDER
- * the floor is honoured as-is: the floor is a fallback, never an override.
+ * nothing usable is reported (no sctp, 0, 1, Infinity). A reported size
+ * UNDER the floor is honoured as-is: the floor is a fallback, never an
+ * override — down to MIN_NEGOTIABLE_SIZE, under which the peer's demand is
+ * refused with a FramingError ('message-size') for the link to fail on.
  */
 const negotiateMessageSize = (sctp, ceiling = MAX_MESSAGE_SIZE) => {
   const advertised = sctp !== null && sctp !== undefined ? sctp.maxMessageSize : 0;
   const usable = typeof advertised === 'number' && Number.isFinite(advertised) && advertised > HEADER_BYTES;
   if (!usable) return Math.min(MIN_MESSAGE_SIZE, ceiling);
-  return Math.min(advertised, ceiling);
+  const size = Math.floor(advertised);
+  if (size < MIN_NEGOTIABLE_SIZE) {
+    throw new FramingError(`peer max-message-size ${size} is under ${MIN_NEGOTIABLE_SIZE}`, 'message-size');
+  }
+  return Math.min(size, ceiling);
 };
 
 const TEXT_ENCODER = new TextEncoder();
@@ -277,6 +288,7 @@ module.exports = {
   HEADER_BYTES,
   MIN_MESSAGE_SIZE,
   MAX_MESSAGE_SIZE,
+  MIN_NEGOTIABLE_SIZE,
   DEFAULT_MAX_REASSEMBLY,
   FramingError,
   negotiateMessageSize,

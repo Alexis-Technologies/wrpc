@@ -574,16 +574,34 @@ test('rtc link: implementation errors surface as error events with their origin'
   assert.ok(errors.includes('data channel error'));
 });
 
-test('rtc link: an oversize send kills the channel and the link fails', async (t) => {
+test('rtc link: a peer demanding fragments under 1 KiB is refused — the link fails, never connects', async (t) => {
   const fake = createFakeRtc({ maxMessageSize: 64 });
+  const { a, b } = wire(t, fake);
+  const opened = [];
+  a.on('open', () => opened.push('a'));
+  b.on('open', () => opened.push('b'));
+  a.start();
+  b.start();
+  const failed = Promise.all([
+    assert.rejects(a.waitOpen(), (error) => error.code === 'message-size'),
+    assert.rejects(b.waitOpen(), (error) => error.code === 'message-size'),
+  ]);
+  await within(failed, 'both refused');
+  assert.strictEqual(a.state, 'failed');
+  assert.strictEqual(b.state, 'failed');
+  assert.deepStrictEqual(opened, [], 'no open was announced');
+});
+
+test('rtc link: an oversize send kills the channel and the link fails', async (t) => {
+  const fake = createFakeRtc({ maxMessageSize: 1024 });
   const { a, b } = wire(t, fake);
   const errors = [];
   a.on('error', (e) => errors.push(e.message));
   a.start();
   b.start();
   await bothOpen(a, b);
-  assert.strictEqual(a.maxMessageSize, 64);
-  a.clientChannel.send(new Uint8Array(65));
+  assert.strictEqual(a.maxMessageSize, 1024);
+  a.clientChannel.send(new Uint8Array(1025));
   await within(
     waitFor(() => a.state === 'failed', 'failed'),
     'failed',
