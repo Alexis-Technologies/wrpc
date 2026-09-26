@@ -17,6 +17,7 @@ const {
 } = require('../../src/webtransport/framing.js');
 const { isWtSession, isWtStream, isWtDatagrams } = require('../../src/webtransport/port.js');
 const { idHeader } = require('../../src/webtransport/streams.js');
+const { chunkDecode } = require('../../src/chunks.js');
 const { createFakeWt } = require('./fakeWebTransport.js');
 const { runChannelContract, peerEnd } = require('./channelContract.js');
 const { waitFor } = require('../helpers/server.js');
@@ -270,4 +271,64 @@ test('wt socket: datagrams — sendUnreliable is one datagram, an inbound one is
   assert.strictEqual(socket.sendUnreliable('{}'), false);
   assert.strictEqual(socket.maxDatagramSize, 0);
   assert.ok(await session.closed);
+});
+
+// A client end that announces streams and uploads on a unidirectional
+// stream of its own: the open packet on the control stream, the chunk
+// header then raw payload on the side stream (src/webtransport/streams.js).
+const sideStream = async ({ client, writer }, id, size) => {
+  await writer.write(frameCaps('{"streams":true}'));
+  await writer.write(frameText(JSON.stringify({ type: 'stream', id, name: 'blob', size })));
+  const uni = (await client.createUnidirectionalStream()).getWriter();
+  await uni.write(idHeader(id));
+  return uni;
+};
+
+test('wt socket: pause() stops the side streams too; resume() takes them up; a close under pause lets the reads go', async (t) => {
+  const end = await pair(t);
+  const chunks = [];
+  end.socket.on('message', (data, isBinary) => {
+    if (isBinary) chunks.push(chunkDecode(data).payload[0]);
+  });
+  const uni = await sideStream(end, 'up', 6);
+  await uni.write(new Uint8Array([1]));
+  await waitFor(() => chunks.length === 1, 'flowing');
+  end.socket.pause();
+  for (let i = 2; i <= 5; i++) await uni.write(new Uint8Array([i]));
+  await timers.setTimeout(30);
+  // At most the read already in flight: the pause used to stop the
+  // control stream only, and an upload kept flowing around it.
+  assert.ok(chunks.length <= 2, `paused: ${chunks.length} chunks arrived`);
+  end.socket.resume();
+  await waitFor(() => chunks.length === 5, 'resumed');
+  assert.deepStrictEqual(chunks, [1, 2, 3, 4, 5]);
+  // A close under a pause releases the gated reads, and nothing arrives
+  // after it: the read in flight may still deliver one chunk (6), the
+  // next one (7) finds the gate and then the close.
+  end.socket.pause();
+  await uni.write(new Uint8Array([6]));
+  await timers.setTimeout(20);
+  await uni.write(new Uint8Array([7]));
+  end.socket.terminate();
+  await timers.setTimeout(20);
+  assert.ok(chunks.length <= 6, `${chunks.length} chunks`);
+  assert.ok(!chunks.includes(7), 'nothing after the close');
+  assert.ok(await end.client.closed);
+});
+
+test('wt socket: bytes on a side stream re-arm idleTimeout like bytes on the control stream', async (t) => {
+  const end = await pair(t, { idleTimeout: 80 });
+  const closes = [];
+  end.socket.on('close', (code) => closes.push(code));
+  const uni = await sideStream(end, 'live', 100);
+  // Nothing on the control stream for 300 ms, a chunk on the side stream
+  // every 20: a session busy with an upload used to idle out.
+  const started = Date.now();
+  while (Date.now() - started < 300) {
+    await uni.write(new Uint8Array([7]));
+    await timers.setTimeout(20);
+  }
+  assert.deepStrictEqual(closes, [], 'an upload in progress is not idle');
+  await waitFor(() => closes.length === 1, 'idle once the upload stopped');
+  assert.deepStrictEqual(closes, [1006]);
 });

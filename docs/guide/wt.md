@@ -90,7 +90,9 @@ backpressure counts the bytes the session has not taken yet — on the control
 stream, on a binary stream's own WebTransport stream, and what waits for one
 of those to open — so a `false` from `send()`/`write()` is always followed
 by `'drain'`, whichever path answered it. Inbound, pausing simply stops
-reading, and QUIC's own flow control carries the pressure to the peer.
+reading — the control stream and every binary stream's own WebTransport
+stream alike — and QUIC's own flow control carries the pressure to the peer;
+bytes arriving on any of them count as liveness for `idleTimeout`.
 
 Close codes carry over: the server's 1001 on shutdown and 1002 on a framing
 violation arrive at the client as the session's `closeCode`, and a client

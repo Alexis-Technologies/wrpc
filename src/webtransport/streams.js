@@ -78,6 +78,8 @@ class StreamMux {
   #writeControl;
   #sendControl;
   #onRefused;
+  #gate;
+  #onActivity;
   #maxHeld;
   #holdTimeout;
   #openTimeout;
@@ -109,7 +111,10 @@ class StreamMux {
    * announced no streams), `'id'` (an empty one), `'duplicate'` (a second
    * stream for an id), `'held'` (past maxHeldStreams), `'timeout'` (its
    * open packet never came within holdTimeout). `openTimeout` bounds a
-   * createUnidirectionalStream() that never settles.
+   * createUnidirectionalStream() that never settles. `gate()` answers a
+   * promise while inbound streams must not be read (the transport is
+   * paused — the peer's chunks used to keep arriving around the pause),
+   * null otherwise; `onActivity()` hears of every read that carried bytes.
    */
   constructor(
     session,
@@ -121,6 +126,8 @@ class StreamMux {
       writeControl = null,
       sendControl = null,
       onRefused = null,
+      gate = null,
+      onActivity = null,
       maxHeldStreams = DEFAULT_MAX_HELD_STREAMS,
       holdTimeout = DEFAULT_HOLD_TIMEOUT,
       openTimeout = DEFAULT_OPEN_TIMEOUT,
@@ -143,6 +150,8 @@ class StreamMux {
     this.#writeControl = writeControl;
     this.#sendControl = sendControl;
     this.#onRefused = onRefused;
+    this.#gate = gate;
+    this.#onActivity = onActivity;
     this.#maxHeld = maxHeldStreams;
     this.#holdTimeout = holdTimeout;
     this.#openTimeout = openTimeout;
@@ -384,9 +393,15 @@ class StreamMux {
         // under QUIC's own per-stream flow control, never in this process.
         if (entry !== null && !entry.opened) await entry.released;
         if (entry !== null && entry.refused) return;
+        // Paused: no read until the transport resumes — the bytes wait in
+        // the peer's stream, under QUIC's flow control, like the control
+        // stream's do.
+        const wait = this.#gate === null ? null : this.#gate();
+        if (wait !== null) await wait;
         const { value, done } = await reader.read();
         if (done) break;
         if (this.#closed) return;
+        if (this.#onActivity !== null) this.#onActivity();
         let bytes = value;
         if (id === null) {
           header = header === null ? bytes : concat(header, bytes);

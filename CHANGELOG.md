@@ -1352,6 +1352,17 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **WebTransport: `pause()` stops the side streams too, and their bytes
+  keep the session alive.** The server socket's `pause()` — what the core
+  calls while a binary stream's readable is over its high-water mark —
+  stopped the control stream only, so an upload on its own WebTransport
+  stream kept flowing around it and the readable's mark had to grow to
+  hold what arrived (an overflow in the making on a large upload into a
+  slow handler). Every inbound read now waits on one gate the pause holds
+  and `resume()` (or the close) releases. Bytes on a side stream also
+  re-arm `idleTimeout`: a session busy with nothing but an upload used to
+  idle out. `bench/wt-framing.js` is unchanged by it — the gate is one
+  call per read on the mux path, which the bench does not cover.
 - **WebTransport: every `false` from `send()`/`write()` is followed by a
   `'drain'`; chunks waiting for a side stream are counted; an open the
   host never answers falls back.** A `false` answered from the side-stream

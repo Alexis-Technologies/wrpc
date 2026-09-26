@@ -388,3 +388,68 @@ test('wt streams: a host that grants no unidirectional streams gets the chunks o
   for await (const chunk of client.getStream(id)) received += chunk.length;
   assert.strictEqual(received, 20_000);
 });
+
+test('wt streams: gate() holds every inbound read while it answers a promise; onActivity hears each read', async () => {
+  const world = createFakeWt();
+  const a = new world.WebTransport('https://h/api');
+  await a.ready;
+  const b = await world.next();
+  // The sender's mux is the plain one; only the receiver is gated.
+  const sender = new StreamMux(a, { emitPacket() {}, emitChunk() {}, onQueued() {}, onSent() {} });
+  sender.peerCaps('{"streams":true}');
+  let held = null;
+  let activity = 0;
+  const out = [];
+  const receiver = new StreamMux(b, {
+    emitPacket: (text) => out.push(JSON.parse(text)),
+    emitChunk: (frame) => out.push(Array.from(chunkDecode(frame).payload)),
+    onQueued() {},
+    onSent() {},
+    gate: () => held,
+    onActivity: () => activity++,
+  });
+  receiver.peerCaps('{"streams":true}');
+  void (async () => {
+    const reader = b.incomingUnidirectionalStreams.getReader();
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      receiver.accept(value);
+    }
+  })();
+  const open = { type: 'stream', id: 'g', name: 'blob', size: 5 };
+  assert.strictEqual(receiver.packet(JSON.stringify(open)), false, 'the open packet came first');
+  sender.control(open);
+  sender.chunk(chunkEncode('g', new Uint8Array([1])));
+  sender.chunk(chunkEncode('g', new Uint8Array([2])));
+  await waitFor(() => out.length === 2, 'flowing');
+  assert.ok(activity >= 2, `every read with bytes is activity (${activity})`);
+  let release;
+  held = new Promise((resolve) => {
+    release = resolve;
+  });
+  sender.chunk(chunkEncode('g', new Uint8Array([3])));
+  sender.chunk(chunkEncode('g', new Uint8Array([4])));
+  await timers.setTimeout(20);
+  assert.ok(out.length <= 3, 'gated: at most the read in flight');
+  held = null;
+  release();
+  await waitFor(() => out.length === 4, 'released');
+  assert.deepStrictEqual(out, [[1], [2], [3], [4]]);
+  // Closed while gated: the read is let go, and delivers nothing. The
+  // read in flight may still deliver one chunk (5); the next (6) finds
+  // the gate, then the close.
+  held = new Promise((resolve) => {
+    release = resolve;
+  });
+  sender.chunk(chunkEncode('g', new Uint8Array([5])));
+  await timers.setTimeout(10);
+  sender.chunk(chunkEncode('g', new Uint8Array([6])));
+  await timers.setTimeout(10);
+  receiver.close();
+  release();
+  await timers.setTimeout(10);
+  assert.ok(out.length <= 5, `${out.length} delivered`);
+  assert.ok(!out.some((chunk) => chunk[0] === 6), 'nothing after the close');
+  a.close();
+});

@@ -77,7 +77,10 @@ class WtSocket extends EventEmitter {
   #pressured = false;
   #closed = false;
   #paused = false;
-  #resume = null;
+  // While paused: the promise every read — the control stream's and the
+  // mux's side streams' — waits on, and what resume() settles it with.
+  #gate = null;
+  #release = null;
   #highWater;
   #lowWater;
   #maxMessage;
@@ -152,6 +155,11 @@ class WtSocket extends EventEmitter {
       // An inbound stream cancelled unread (streams.js): announced for the
       // host to log — a peer opening streams it never names is a signal.
       onRefused: (reason, id) => void this.emit('stream-refused', { reason, id }),
+      // pause() stops the side streams too, and their bytes are liveness
+      // as much as the control stream's — an upload used to keep flowing
+      // around a pause, and a session busy with one used to idle out.
+      gate: () => this.#gate,
+      onActivity: () => this.#touch(),
       ...(maxHeldStreams === undefined ? {} : { maxHeldStreams }),
       ...(holdTimeout === undefined ? {} : { holdTimeout }),
     });
@@ -275,11 +283,7 @@ class WtSocket extends EventEmitter {
     const reader = this.#stream.readable.getReader();
     try {
       for (;;) {
-        if (this.#paused) {
-          await new Promise((resolve) => {
-            this.#resume = resolve;
-          });
-        }
+        if (this.#paused) await this.#gate;
         const { value, done } = await reader.read();
         if (done || this.#closed) break;
         this.#touch();
@@ -450,17 +454,22 @@ class WtSocket extends EventEmitter {
     this.emit('drain');
   }
 
-  /** Stops pulling the control stream; QUIC flow control does the rest. */
+  /** Stops pulling the control stream and the side streams; QUIC flow control does the rest. */
   pause() {
+    if (this.#paused || this.#closed) return;
     this.#paused = true;
+    this.#gate = new Promise((resolve) => {
+      this.#release = resolve;
+    });
   }
 
   resume() {
     if (!this.#paused) return;
     this.#paused = false;
-    const resume = this.#resume;
-    this.#resume = null;
-    if (resume) resume();
+    const release = this.#release;
+    this.#gate = null;
+    this.#release = null;
+    if (release) release();
   }
 
   /** Graceful: the peer's `closed` carries the code and reason. */

@@ -401,3 +401,50 @@ test('wt attach: unreliable events ride datagrams on wt, the control stream when
   const [attached] = server.rpc.clients;
   assert.throws(() => attached.ask('chat/x', {}, { unreliable: true }), TypeError);
 });
+
+test('wt attach: an upload into a slow handler is paced by the readable — the pause reaches the side stream', async (t) => {
+  // 64 chunks of 64 KiB on a stream of their own, into a handler that
+  // takes its time: the core pauses the socket while the readable is over
+  // its high-water mark, and the side stream must stop too. It used to
+  // keep flowing around the pause, and the readable's mark had to grow
+  // (checkStreamLimits) to hold what arrived — an overflow in the making.
+  let watched = null;
+  const initial = { mark: 0, peak: 0 };
+  const slow = defineRouter({
+    files: {
+      sink: procedure({
+        access: 'public',
+        handler: async (ctx, { stream }) => {
+          const readable = ctx.client.getStream(stream);
+          watched = readable;
+          initial.mark = readable.highWaterMark;
+          let bytes = 0;
+          for await (const chunk of readable) {
+            initial.peak = Math.max(initial.peak, readable.queue.length);
+            await timers.setTimeout(2);
+            bytes += chunk.length;
+          }
+          return bytes;
+        },
+      }),
+    },
+  });
+  const { server, url } = await bootServer(t, { router: slow });
+  const world = attachAll(t, server);
+  const client = await wtClient(t, world, url);
+  await client.load('files');
+  const chunk = 64 * 1024;
+  const count = 64;
+  const upload = client.createStream('data', chunk * count);
+  const result = client.api.files.sink({ stream: upload.id });
+  for (let i = 0; i < count; i++) {
+    if (!upload.write(new Uint8Array(chunk).fill(i)) && !upload.closed) {
+      await new Promise((resolve) => upload.once('drain', resolve));
+    }
+  }
+  upload.end();
+  assert.strictEqual(await result, chunk * count);
+  assert.ok(watched !== null);
+  assert.strictEqual(watched.highWaterMark, initial.mark, 'the mark never had to grow');
+  assert.ok(initial.peak <= initial.mark + 2, `the queue peaked at ${initial.peak} against a mark of ${initial.mark}`);
+});
