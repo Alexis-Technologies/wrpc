@@ -145,6 +145,9 @@ test('signaling: join returns the roster and announces to the members already th
   // Data is per room: joining a second room with none leaves the first as is.
   assert.deepStrictEqual(await b.signaler.join('other'), []);
   assert.deepStrictEqual(await a.signaler.members('lobby'), [asMember(b, { name: 'bobby' })]);
+  // A roster is for the room's members: a is not in 'other' until it joins.
+  await assert.rejects(a.signaler.members('other'), (error) => error.code === 403 && /not a member/.test(error.message));
+  assert.deepStrictEqual(await a.signaler.join('other'), [asMember(b)]);
   assert.deepStrictEqual(await a.signaler.members('other'), [asMember(b)]);
   // A member the application put into the room itself, without join, has
   // no data of its own and is still listed — under its client id, since it
@@ -270,8 +273,14 @@ test('signaling: input validation answers 400', async (t) => {
   for (const args of [{ id: '' }, { id: 'x'.repeat(257) }, { instance: 7 }, 'me']) {
     await assert.rejects(client.call('signaling/whoami', args), (error) => error.code === 400);
   }
+  // What a peer says about itself may not name who it is or what the server signed.
+  for (const data of [{ peer: 'x' }, { room: 'x' }, { claims: {} }, { name: 'ok', peer: 'x' }]) {
+    await assert.rejects(client.call('signaling/join', { room: 'lobby', data }), (error) => error.code === 400);
+  }
+  assert.deepStrictEqual(signaler.rooms, new Set(), 'nothing was joined');
   // The client half refuses locally, before any packet.
   assert.throws(() => signaler.send('', description), /to must be a peer id/);
+  assert.throws(() => signaler.send('x'.repeat(257), description), /to must be a peer id/);
   assert.throws(() => signaler.send('x', { type: 'nope' }), /message.type/);
   assert.throws(() => signaler.send('x', description, { room: '' }), /room must be/);
   await assert.rejects(signaler.join(''), /room must be/);

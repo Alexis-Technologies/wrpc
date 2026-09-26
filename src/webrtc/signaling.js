@@ -5,9 +5,9 @@
 // candidates through it. One unit, four methods and one inbound event:
 //
 //   whoami({ id?, instance? })  -> { id }                      identify: the caller's peer id
-//   join({ room, data })        -> { id, room, members }       join a roster room
+//   join({ room, data })        -> { id, room, members }       join a roster room (data.peer/room/claims reserved)
 //   leave({ room })             -> { room, left }
-//   members({ room })           -> [{ id, instance, address, data }]   the roster, caller excluded
+//   members({ room })           -> [{ id, instance, address, data }]   the roster, caller excluded — members only
 //   on.signal { to, address?, room, message }    relayed to `to` as `<unit>/signal`
 //   emits: signal { from, instance, address, to, toInstance, room, message }
 //          join   { room, id, instance, address, data }
@@ -45,11 +45,11 @@ const { procedure } = require('../rpc/router.js');
 const { isSignalMessage, SIGNAL_MESSAGE_TYPES } = require('./signaler.js');
 const { normalizeFingerprint } = require('./assertions.js');
 const { createAssertionIssuer } = require('./assertionIssuer.js');
+const { MAX_ID_LENGTH, isPeerId } = require('./ids.js');
 
 const DEFAULT_NAME = 'signaling';
 const DEFAULT_PREFIX = 'rtc:';
 const MAX_ROOM_LENGTH = 256;
-const MAX_ID_LENGTH = 256;
 const DUPLICATE = ['replace', 'refuse'];
 
 const refusal = (message, code) => Object.assign(new Error(message), { code });
@@ -64,8 +64,8 @@ const checkRoom = (room) => {
 };
 
 // Ids and instances become Map keys, session tokens, log fields and URLs
-// on every peer: bounded the same way.
-const isId = (value) => typeof value === 'string' && value.length > 0 && value.length <= MAX_ID_LENGTH;
+// on every peer: bounded the same way (ids.js — one number for both halves).
+const isId = isPeerId;
 
 const checkId = (value, what) => {
   if (!isId(value)) throw new TypeError(`${what} must be a non-empty string of at most ${MAX_ID_LENGTH} characters`);
@@ -95,9 +95,19 @@ const inputRoom = (args) => {
   return { room: checkRoom(args.room) };
 };
 
+// What a peer says about itself at join lands beside `peer`, `room` and
+// `claims` in every other peer's session data (PeerHost.attach writes those
+// over it): the three names are not a peer's to say.
+const RESERVED_JOIN_DATA = ['peer', 'room', 'claims'];
+
 const inputJoin = (args) => {
   const { room } = inputRoom(args);
-  return { room, data: args.data === undefined ? null : args.data };
+  const data = args.data === undefined ? null : args.data;
+  if (data !== null && typeof data === 'object') {
+    const taken = RESERVED_JOIN_DATA.find((key) => Object.hasOwn(data, key));
+    if (taken !== undefined) throw new TypeError(`data.${taken} is reserved`);
+  }
+  return { room, data };
 };
 
 const inputWhoami = (args) => {
@@ -380,6 +390,10 @@ const createSignalingUnit = (options = {}) => {
       signature: { args: { room: 'string' }, returns: 'object[]' },
       handler: async (context, { room }) => {
         const { client } = context;
+        // A roster is for the room's members — the bound every relayed
+        // signal already has, and what keeps a room from being enumerated
+        // (one cluster-wide fetch a call) by anyone who knows its name.
+        if (!client.in(roomOf(room))) throw refusal(`members: not a member of '${room}'`, 403);
         const rtc = rtcOf(client);
         return roster(context.server, room, { id: client.id, peer: rtc ? rtc.id : client.id });
       },

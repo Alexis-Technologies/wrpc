@@ -310,7 +310,8 @@ export interface PeerHostOptions {
   metaMaxBytes?: number;
   /**
    * 'link' (default): every attached Client gets a frozen pseudo-session
-   * `{ token: peerId, data: { peer, room, ...data, claims? } }`, so
+   * `{ token: peerId, data: { ...data, peer, room, claims? } }` — the
+   * roster data never shadows the rest — so
    * procedures with the default `access: 'session'` run — the link only
    * exists because the signaling server admitted the peer. 'assertion':
    * the same session, but `attach()` requires the peer's verified
@@ -533,8 +534,10 @@ export declare class WrpcSignaler extends Emitter implements RosterSignaler {
   addressOf(id: string): string | null;
   ready(): Promise<string>;
   send(to: string, message: SignalMessage, options?: { room?: string; address?: string }): void;
+  /** `data` may not name `peer`, `room` or `claims` — the built-in unit refuses it (400). */
   join(room: string, data?: unknown): Promise<Array<RosterMember>>;
   leave(room: string): Promise<void>;
+  /** The roster of a room this peer is in (403 otherwise). */
   members(room: string): Promise<Array<RosterMember>>;
   /** `<unit>/assert`: a trust assertion for one of this peer's certificates (the unit must issue them). */
   assert(claims: { fingerprint: string }): Promise<AssertionIssued>;

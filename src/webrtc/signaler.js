@@ -45,6 +45,7 @@
 // a peer id on the hot path.
 
 const { Emitter, resolveGenerateId } = require('../utils.js');
+const { isPeerId: isId } = require('./ids.js');
 
 const SIGNAL_MESSAGE_TYPES = Object.freeze(['description', 'candidate', 'close', 'connect']);
 
@@ -79,8 +80,6 @@ const checkRoom = (room) => {
   if (typeof room !== 'string' || room.length === 0) throw new TypeError('room must be a non-empty string');
   return room;
 };
-
-const isId = (value) => typeof value === 'string' && value.length > 0;
 
 const optionalId = (value) => (isId(value) ? value : null);
 
@@ -144,7 +143,14 @@ class WrpcSignaler extends Emitter {
       },
       leave: (payload) => {
         if (typeof payload !== 'object' || payload === null) return;
-        if (isId(payload.id)) this.#addresses.delete(payload.id);
+        if (isId(payload.id)) {
+          // A leave naming another address than the one this id is known
+          // at — an older incarnation's goodbye, landing after the newer
+          // one joined — is not about the member known here.
+          const known = this.#addresses.get(payload.id);
+          if (known !== undefined && isId(payload.address) && payload.address !== known) return;
+          this.#addresses.delete(payload.id);
+        }
         return this.emit('leave', payload);
       },
       replaced: (payload) => {

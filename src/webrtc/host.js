@@ -146,8 +146,9 @@ class PeerHost extends Emitter {
    * RtcPeerTransport, or anything shaped like it. `peer` is the remote id;
    * `room` and `data` are what the peer said about itself at signaling
    * time, `claims` what its verified assertion says — all frozen into the
-   * client's meta (and, under trust 'link'/'assertion', its session data;
-   * `claims` last, so roster data cannot shadow it).
+   * client's meta (and, under trust 'link'/'assertion', its session data).
+   * `peer`, `room` and `claims` are written OVER the roster data: nothing
+   * a peer said about itself can shadow who it is or what the server signed.
    */
   attach(transport, { peer, room = null, data = null, claims = null } = {}) {
     if (!isInboundTransport(transport)) {
@@ -164,13 +165,14 @@ class PeerHost extends Emitter {
     }
     if (this.#codec) transport.codec = this.#codec;
     if (!this.#attachments) transport.attachments = false;
-    const about = Object.freeze({
-      __proto__: null,
-      peer,
-      room,
-      ...(data && typeof data === 'object' ? data : {}),
-      ...(claims === null ? {} : { claims: Object.freeze({ ...claims }) }),
-    });
+    // The roster data first — it is the peer's word — and the facts over it.
+    // `delete`, not `claims: undefined`: the key must be absent when there
+    // are none, whatever the roster data tried to put there.
+    const plain = data !== null && typeof data === 'object' && !Array.isArray(data);
+    const about = { __proto__: null, ...(plain ? data : {}), peer, room };
+    if (claims === null) delete about.claims;
+    else about.claims = Object.freeze({ ...claims });
+    Object.freeze(about);
     const client = new Client(transport, {
       codec: this.#codec,
       sessions: null,

@@ -170,6 +170,26 @@ test('peer host: a call, introspection, meta and the link pseudo-session', async
   assert.strictEqual(byId['3'].result.math.add.access, 'session');
 });
 
+test('peer host: roster data cannot shadow peer, room or claims', async () => {
+  const host = new PeerHost({ router: routerOf([]), logger: quiet, instanceId: 'me' });
+  const data = { peer: 'alice', room: 'vip', claims: { role: 'admin' }, name: 'M' };
+  const client = host.attach(new FakePeerTransport('mallory'), { peer: 'mallory', room: 'lobby', data });
+  assert.deepStrictEqual({ ...client.session.data }, { peer: 'mallory', room: 'lobby', name: 'M' });
+  assert.deepStrictEqual({ ...client.meta.data }, { peer: 'mallory', room: 'lobby', name: 'M' });
+  assert.strictEqual('claims' in client.session.data, false, "trust 'link' without a token carries no claims");
+  assert.ok(Object.isFrozen(client.session.data));
+  // Under trust 'assertion' the verified claims win over what the roster said.
+  const trusted = new PeerHost({ router: routerOf([]), logger: quiet, trust: 'assertion' });
+  const claims = { sub: 'mallory', role: 'guest' };
+  const verified = trusted.attach(new FakePeerTransport('mallory'), { peer: 'mallory', data, claims });
+  assert.deepStrictEqual({ ...verified.session.data }, { peer: 'mallory', room: null, name: 'M', claims });
+  // An array or a scalar is no roster data at all.
+  const bare = host.attach(new FakePeerTransport('x'), { peer: 'x', data: ['peer'] });
+  assert.deepStrictEqual({ ...bare.session.data }, { peer: 'x', room: null });
+  const scalar = host.attach(new FakePeerTransport('y'), { peer: 'y', data: 'peer' });
+  assert.deepStrictEqual({ ...scalar.session.data }, { peer: 'y', room: null });
+});
+
 test("peer host: trust 'assertion' requires verified claims and exposes them in the session", async () => {
   const seen = [];
   const host = new PeerHost({ router: routerOf(seen), logger: quiet, trust: 'assertion' });

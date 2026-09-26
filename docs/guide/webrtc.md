@@ -165,9 +165,13 @@ manager in a browser. Under the default `trust: 'link'`, every attached
 `Client` gets a frozen pseudo-session:
 
 ```js
-context.session;              // { token: '<peer id>', data: { peer, room, ...rosterData } }
-context.session.data.peer;    // who is calling
+context.session;              // { token: '<peer id>', data: { ...rosterData, peer, room } }
+context.session.data.peer;    // who is calling — the link's id, never what the roster data said
 ```
+
+`peer`, `room` (and `claims`, below) are written over the roster data, and
+a `join` whose `data` names one of them is refused (400): what a peer says
+about itself at `join` cannot shadow who it is.
 
 The reasoning: a link only exists because the signaling server admitted
 both peers (its unit is `access: 'session'` by default, and it runs your
@@ -195,7 +199,10 @@ page: [WebRTC: identity and trust](./webrtc-trust).
 Every roster member, `join` and signal carries the peer's `id`, its
 `instance` and its routable `address` (the signaling client id), so a relay
 never resolves a peer id on the hot path; `leave` carries a `reason`
-(`'left'`, `'disconnect'` or `'replaced'`).
+(`'left'`, `'disconnect'` or `'replaced'`). `members` answers only a
+member of the room (403 otherwise), and a `join` whose `data` carries
+`peer`, `room` or `claims` is refused (400) — those names are written by
+the host half, not by the peer.
 
 | Option | Default | Meaning |
 | --- | --- | --- |

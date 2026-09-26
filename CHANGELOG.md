@@ -1317,6 +1317,17 @@ narrower promise — see
   its own guide documents, so those lines could not be alerted on alongside
   the rest. A test now asserts the rule on every entry a server writes.
 
+### Security
+- **WebRTC: roster data could impersonate another peer.** `PeerHost.attach`
+  spread what a peer said about itself at `join` OVER `peer` and `room`, so
+  a member joining with `data: { peer: 'alice' }` ran every handler on the
+  other peers as `context.session.data.peer === 'alice'` (and could plant
+  `claims` where no assertion was verified). `peer`, `room` and `claims`
+  are now written over the roster data, the built-in signaling unit refuses
+  a `join` whose `data` names one of them (400), and `members` answers a
+  member of the room only (403) — the roster of a room could be read, and a
+  cluster-wide fetch triggered, by anyone who knew its name.
+
 ## [1.0.0] - 2026-08-23
 
 ### Added

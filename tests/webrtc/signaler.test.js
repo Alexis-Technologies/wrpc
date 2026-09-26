@@ -145,8 +145,19 @@ test('signaler: send() writes the signal event; join/leave/members are calls', a
     { name: 'signaling/signal', data: { to: 'i.2', room: 'r', message: { type: 'connect' }, address: 'n.2' } },
     { name: 'signaling/signal', data: { to: 'i.2', room: 'r', message: { type: 'connect' }, address: 'n.9' } },
   ]);
+  // A leave naming another address than the one i.2 is known at — an older
+  // incarnation's goodbye — is not about this member: neither forgotten
+  // nor re-emitted. One naming no address, or the known one, is.
+  const leaves = [];
+  signaler.on('leave', (payload) => leaves.push(payload.address ?? null));
+  await client.api.signaling.emit('leave', { room: 'r', id: 'i.2', address: 'n.OLD', reason: 'left' });
+  assert.strictEqual(signaler.addressOf('i.2'), 'n.2');
+  assert.deepStrictEqual(leaves, []);
   await client.api.signaling.emit('leave', { room: 'r', id: 'i.2', reason: 'left' });
   assert.strictEqual(signaler.addressOf('i.2'), null);
+  assert.deepStrictEqual(leaves, [null]);
+  await client.api.signaling.emit('leave', { room: 'r', id: 'i.2', address: 'n.OLD', reason: 'left' });
+  assert.deepStrictEqual(leaves, [null, 'n.OLD'], 'with no address known, any leave is passed on');
   assert.deepStrictEqual(await signaler.members('r'), [{ id: 'i.2', data: 'x' }]);
   await signaler.leave('r');
   assert.deepStrictEqual(signaler.rooms, new Set());

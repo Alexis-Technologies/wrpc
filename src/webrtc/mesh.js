@@ -17,6 +17,7 @@
 
 const { Emitter } = require('../utils.js');
 const { hasRoster } = require('./signaler.js');
+const { isPeerId } = require('./ids.js');
 
 class Mesh extends Emitter {
   #peer;
@@ -46,7 +47,15 @@ class Mesh extends Emitter {
     });
     on(this.#signaler, 'leave', (event) => {
       if (event.room !== room) return;
-      if (event.reason === 'disconnect' && this.#members.get(event.id)?.open) this.#away.add(event.id);
+      const link = this.#members.get(event.id);
+      // A leave about another incarnation of the member than the one
+      // linked — the old tab's goodbye, landing after the new tab was
+      // linked — is not about this link; acting on it would drop the fresh one.
+      if (link && isPeerId(event.instance) && link.instance !== null && event.instance !== link.instance) {
+        peer.log.debug({ event: 'mesh.leave.stale', room, peer: event.id, instance: event.instance });
+        return;
+      }
+      if (event.reason === 'disconnect' && link?.open) this.#away.add(event.id);
       // A replaced member's link is abandoned, not closed: a goodbye sent
       // to its id now would reach the NEW incarnation — and land on the
       // fresh link this mesh is about to make with it.

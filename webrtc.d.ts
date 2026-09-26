@@ -106,6 +106,8 @@ export declare function generateAssertionKeys(options?: {
  * inbound `signal` event relayed through `RpcServer.sendTo`. A peer's id is
  * what `identity` says — the connection's client id by default; rosters
  * and signals carry each peer's routable `address` and `instance`.
+ * `members` answers a member of the room only (403 otherwise); a `join`
+ * whose `data` names `peer`, `room` or `claims` is refused (400).
  */
 export declare function createSignalingUnit(options?: SignalingUnitOptions): RouterDefinition;
 

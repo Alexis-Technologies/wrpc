@@ -331,6 +331,53 @@ test('mesh: a member replaced by another incarnation of its id relinks', async (
   assert.strictEqual(await link.api.chat.hello(), 'a greets b');
 });
 
+test('mesh: what a member says about itself at join cannot shadow who it is', async (t) => {
+  const { peer } = world(t);
+  const a = peer('a');
+  const b = peer('b');
+  // The hub relays roster data as given; a real signaling unit refuses
+  // these names at join, and the host half stands on its own regardless.
+  const ma = a.join('room', { data: { peer: 'zed', room: 'elsewhere', claims: { role: 'admin' }, name: 'A' } });
+  const mb = b.join('room');
+  await within(settled(ma, 1), 'linked');
+  await within(settled(mb, 1), 'linked');
+  const ab = ma.link('b');
+  await ab.load('chat');
+  assert.strictEqual(await ab.api.chat.hello(), 'b greets a');
+  const session = mb.link('a').client.session;
+  assert.deepStrictEqual({ ...session.data }, { peer: 'a', room: 'room', name: 'A' });
+});
+
+test('mesh: a leave naming another incarnation of a member is ignored', async (t) => {
+  const { peer } = world(t);
+  const a = peer('a');
+  const b = peer('b');
+  const ma = a.join('room');
+  const mb = b.join('room');
+  await within(settled(ma, 1), 'linked');
+  await within(settled(mb, 1), 'linked');
+  const link = mb.link('a');
+  const events = [];
+  mb.on('leave', (event) => events.push(event.id));
+  // The goodbye of a's OLD tab, delivered after the tab b is linked with
+  // joined: b's link is with the newer incarnation and stays, whatever the
+  // reason the stale leave carries.
+  const stale = { room: 'room', id: 'a', instance: 'a-before', address: 'a', reason: 'left' };
+  await b.signaler.emit('leave', stale);
+  await b.signaler.emit('leave', { ...stale, reason: 'disconnect' });
+  await b.signaler.emit('leave', { ...stale, reason: 'replaced' });
+  await timers.setTimeout(20);
+  assert.strictEqual(mb.link('a'), link, 'the fresh link is kept');
+  assert.strictEqual(link.open, true);
+  assert.deepStrictEqual(events, []);
+  assert.deepStrictEqual(mb.away, new Set(), 'nor is the member marked away');
+  // A leave naming the incarnation b is linked with is a real leave.
+  await b.signaler.emit('leave', { ...stale, instance: a.signaler.instance });
+  await waitFor(() => events.length === 1, 'the real leave lands');
+  assert.deepStrictEqual(events, ['a']);
+  assert.strictEqual(mb.link('a'), undefined);
+});
+
 test('mesh: a peer without a router cannot fan out, and a signaler without a roster cannot mesh', async (t) => {
   const { peer, hub } = world(t);
   const a = peer('a', { router: false });

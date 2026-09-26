@@ -123,14 +123,15 @@ with the answer — before the host half attaches), and, with
 **`host: { trust: 'assertion' }`**, the session your handlers run with:
 
 ```js
-context.session;                // { token: '<peer id>', data: { peer, room, ...rosterData, claims } }
+context.session;                // { token: '<peer id>', data: { ...rosterData, peer, room, claims } }
 context.session.data.claims;    // { sub: 'alice', role: 'host', exp, fp, iss }
 ```
 
 Under `trust: 'assertion'` a `PeerHost` refuses to attach a peer without
-verified claims, and the claims come **after** the roster data in
-`session.data`, so nothing a peer said about itself at `join` can shadow
-what the server signed. `trust: 'link'` with `assertions` on is allowed
+verified claims, and `peer`, `room` and the claims are written **over** the
+roster data in `session.data` (a `join` naming one of them in its `data` is
+refused), so nothing a peer said about itself can shadow who it is or what
+the server signed. `trust: 'link'` with `assertions` on is allowed
 too — verification still runs, the claims are simply optional in the
 session — and a peer **without** `assertions` ignores the tokens attached
 to what it receives. Turn it on for everyone in a room or for nobody: a
