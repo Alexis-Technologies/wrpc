@@ -1345,6 +1345,16 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **`attachConsumers`: evicting a token client no longer releases the
+  deliveries it holds.** Under `identity.trust: 'token'` the per-token
+  client cache (`tokenClients`, LRU) closed the evicted client on the spot,
+  which settled its in-flight calls as released — the broker redelivered
+  them, the handler ran twice, and with `prefetch` above `tokenClients` a
+  busy queue could livelock, every delivery evicting the next before it
+  finished. An evicted client now finishes what it holds and closes after
+  its last settlement (never inside it, where the close would destroy the
+  `Client` under the dispatcher). `tokenClients` must be a positive
+  integer (`0` used to evict everything at once, a string never evicted).
 - **WebRTC: a `leave` naming another incarnation of a member no longer
   tears down the live one.** A signaling `leave` that reached `Mesh` or
   `wrpcSignaler` late — a peer that had crashed and rejoined under the same

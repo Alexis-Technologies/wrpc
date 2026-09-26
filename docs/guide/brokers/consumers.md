@@ -122,8 +122,12 @@ idempotent — `ctx.callMeta.messageId` is a stable key to deduplicate on.
 | `'token'` | the session a bearer token in `identity.header` (default `authorization`) restores through the configured [token carrier](../auth) |
 
 Token mode keeps one client per distinct token (`tokenClients`, LRU, default
-128). A message without a token runs anonymous, so a session procedure refuses
-it with `403` — which dead-letters.
+128, a positive integer). A client evicted from that cache finishes the
+deliveries it still holds and closes after the last one — an eviction never
+releases work back to the broker; the cost of a cache too small for the
+distinct tokens in flight is a session restore per message, logged
+`broker.evict`. A message without a token runs anonymous, so a session
+procedure refuses it with `403` — which dead-letters.
 
 ## Draining and shutdown
 

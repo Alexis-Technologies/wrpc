@@ -118,7 +118,7 @@ want an alert for.
 | `cluster.unsigned`, `cluster.badsig`, `cluster.verify` | warn/error | The three ways envelope authentication fails |
 | `encryption.replay`, `encryption.unwrap` | error | The shared replay store could not be asked (the request was refused `503`); a primitive threw while unwrapping a sealed request (`500`) |
 | `broker.dead` | warn | A message exhausted its retries |
-| `broker.evict` | warn | The per-token client cache is thrashing; in-flight calls were released |
+| `broker.evict` | warn | The per-token client cache is thrashing: more distinct tokens in flight than `tokenClients`, a session restore per message. The evicted client finishes what it holds, then closes |
 | `broker.feed.resume` | warn/debug | A resume token was refused. `reason: 'signature'` means it was **tampered with** |
 | `broker.feed.gap` | info | A subscriber fell behind retention; the snapshot hook ran |
 | `wt.attach`, `wt.source` | error | A WebTransport session could not be attached |

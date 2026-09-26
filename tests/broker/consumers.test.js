@@ -542,3 +542,59 @@ test('attachConsumers: a settlement the broker refuses is logged, never thrown',
   await broker.queue.produce('x', '{}');
   await waitFor(() => errors.some((entry) => entry.event === 'broker.settle'));
 });
+
+test('attachConsumers: tokenClients is validated', async (t) => {
+  const { broker, rpc } = boot(t, {
+    jobs: { consumes: { x: procedure({ access: 'public', handler: async () => {} }) } },
+  });
+  for (const tokenClients of [0, -1, 1.5, '16', null]) {
+    await assert.rejects(attachConsumers(rpc, broker, {}, { tokenClients }), /tokenClients must be a positive integer/);
+  }
+});
+
+test('attachConsumers: an evicted token client finishes its in-flight delivery, then closes', async (t) => {
+  const seen = [];
+  let hold;
+  const rpc = new RpcServer({
+    router: defineRouter({
+      acct: {
+        consumes: {
+          work: procedure({
+            consume: { identity: { trust: 'token' }, retry: false, deadLetter: 'work.dead' },
+            handler: async (ctx) => {
+              seen.push(ctx.session.state.user);
+              if (ctx.session.state.user === 'ada') await new Promise((resolve) => (hold = resolve));
+            },
+          }),
+        },
+      },
+    }),
+    logger: quiet,
+    sse: false,
+    sessions: { transport: bearerTransport() },
+  });
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(async () => {
+    await rpc.close();
+    broker.close();
+  });
+  const dead = await drain(t, broker, 'work.dead');
+  const ada = rpc.sessions.create(undefined, { user: 'ada' });
+  const bob = rpc.sessions.create(undefined, { user: 'bob' });
+  await timers.setTimeout(5);
+  const consumers = await attachConsumers(rpc, broker, {}, { tokenClients: 1 });
+  t.after(() => consumers.stop());
+  await broker.queue.produce('work', '{}', { headers: { authorization: `Bearer ${ada.token}` } });
+  await waitFor(() => seen.length === 1);
+  // Bob's token evicts Ada's client while her delivery is still in flight.
+  // It used to be closed on the spot, which released her delivery: the
+  // broker redelivered it, and the handler ran twice.
+  await broker.queue.produce('work', '{}', { headers: { authorization: `Bearer ${bob.token}` } });
+  await waitFor(() => seen.length === 2);
+  assert.strictEqual(rpc.clients.size, 2, 'the evicted client is still attached while its call runs');
+  hold();
+  await waitFor(() => rpc.clients.size === 1, { message: 'the evicted client closes after its last call' });
+  await timers.setTimeout(20);
+  assert.deepStrictEqual(seen, ['ada', 'bob'], 'the delivery was acked once, never redelivered');
+  assert.deepStrictEqual(dead, []);
+});

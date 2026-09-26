@@ -279,7 +279,11 @@ export interface AttachConsumersOptions {
   /** Called before a message is dead-lettered — for alerting. */
   onDeadLetter?: (info: DeadLetterInfo) => unknown;
   logger?: WrpcLogger | boolean | null;
-  /** Clients kept per `identity.trust: 'token'` binding (LRU). Default 128. */
+  /**
+   * Clients kept per `identity.trust: 'token'` binding (LRU; a positive
+   * integer, default 128). An evicted client finishes the deliveries it
+   * holds and closes after the last one — nothing is released.
+   */
   tokenClients?: number;
   /**
    * Opens what a publisher's `encryption` sealed, before anything reads the

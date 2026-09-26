@@ -65,6 +65,11 @@ class ConsumerTransport extends Emitter {
     resolve(outcome);
   }
 
+  /** Deliveries whose call has not answered yet. */
+  get pending() {
+    return this.#pending.size;
+  }
+
   send(packet) {
     if (packet?.type === 'callback' && !packet.error) this.settle(packet.id, { code: null, error: null });
     return true;
@@ -180,6 +185,11 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
   });
   if (onDeadLetter !== null && typeof onDeadLetter !== 'function') {
     throw new TypeError('attachConsumers: onDeadLetter must be a function');
+  }
+  // `tokenClients: 0` used to evict every client the moment a second token
+  // arrived, and a string compared as a number never evicted at all.
+  if (!Number.isInteger(tokenClients) || tokenClients <= 0) {
+    throw new TypeError('attachConsumers: tokenClients must be a positive integer');
   }
   // A server that serves sealed transports only: a binding that does not
   // seal would attach clients it refuses every delivery on — and used to
@@ -313,7 +323,18 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
   };
 
   let shared = null; // the 'none' / 'service' client
-  const tokens = new Map(); // token -> { client, transport }, LRU by insertion
+  const tokens = new Map(); // token -> { client, transport, retired }, LRU by insertion
+  // A client dropped from the cache outlives its last delivery, not longer.
+  // Closing it at once settled every call it still held as released — the
+  // broker redelivered them, so a cache merely wrapping around under more
+  // distinct tokens than `tokenClients` turned into duplicated work, and
+  // under prefetch > tokenClients into a livelock where no delivery ever
+  // finished. Retired instead: the delivery that finds it so closes it after
+  // its own settlement (see onDelivery).
+  const retire = (attached) => {
+    if (attached.transport.pending === 0) attached.transport.close();
+    else attached.retired = true;
+  };
   const clientFor = (headers) => {
     if (policy.identity.trust !== 'token') {
       if (!shared) {
@@ -332,17 +353,16 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
       tokens.set(token, cached);
       return cached;
     }
-    const attached = attachClient({ request: { headers: { authorization: token } } });
+    const attached = { ...attachClient({ request: { headers: { authorization: token } } }), retired: false };
     tokens.set(token, attached);
     if (tokens.size > tokenClients) {
       const [oldest, evicted] = tokens.entries().next().value;
       tokens.delete(oldest);
-      // Its in-flight calls settle as released: the broker redelivers them.
-      // Correct, but not free — redelivery is duplicated work and a visible
-      // latency bump — and a cache thrashing at its ceiling did it silently.
-      // The token is NOT logged: it is a credential.
+      // Not free even so — the next message with that token attaches and
+      // restores its session again — and a cache thrashing at its ceiling
+      // did it silently. The token is NOT logged: it is a credential.
       log.warn({ event: 'broker.evict', queue: policy.queue, cached: tokens.size, max: tokenClients });
-      evicted.transport.close();
+      retire(evicted);
     }
     return attached;
   };
@@ -449,9 +469,18 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
       transport.settle(id, { code: 500, error });
     });
     const { code, error, closed } = await outcome;
-    if (closed) return void (await settle(delivery, { action: 'release', delay: 0 }));
-    const decision = decide({ code, attempt: delivery.attempt, retry: policy.retry, draining: rpc.draining });
-    await settle(delivery, decision, code, error);
+    try {
+      const decision = closed
+        ? { action: 'release', delay: 0 }
+        : decide({ code, attempt: delivery.attempt, retry: policy.retry, draining: rpc.draining });
+      await settle(delivery, decision, code, error);
+    } finally {
+      // Retired while this delivery was in flight (evicted from the cache):
+      // closed once its last call has settled — here, after settle(), never
+      // inside send()/settle(), where close() would destroy the Client
+      // re-entrantly under the dispatcher that is still answering.
+      if (attached.retired && transport.pending === 0) transport.close();
+    }
   };
 
   const start = async () => {
