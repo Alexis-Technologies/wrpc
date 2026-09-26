@@ -32,6 +32,13 @@ class Queue {
   }
 }
 
+const sameArguments = (a, b) => {
+  const left = Object.keys(a).sort();
+  const right = Object.keys(b).sort();
+  if (left.length !== right.length) return false;
+  return left.every((key, i) => key === right[i] && String(a[key]) === String(b[key]));
+};
+
 class FakeAmqpServer {
   queues = new Map();
   exchanges = new Map(); // name -> Map(routingKey -> Set(queueName))
@@ -40,6 +47,11 @@ class FakeAmqpServer {
 
   nextTag(prefix) {
     return `${prefix}-${++this.#tag}`;
+  }
+
+  /** The server closes a channel with a code, as a node going away (320) or an operator would. */
+  killChannel(channel, code = 320) {
+    channel.fail(Object.assign(new Error(`CONNECTION_FORCED - channel closed by the server (${code})`), { code }));
   }
 
   nextDelivery() {
@@ -148,33 +160,66 @@ class FakeChannel extends EventEmitter {
     this.confirm = confirm;
   }
 
+  // amqplib refuses every operation on a closed channel; a channel-level
+  // error is emitted, then the channel closes — the real order.
+  #open() {
+    if (this.closed) throw Object.assign(new Error('Channel closed'), { code: 504 });
+  }
+
+  fail(error) {
+    if (this.closed) return;
+    this.emit('error', error);
+    void this.close();
+  }
+
   async assertExchange(name, type, options) {
+    this.#open();
     if (!this.server.exchanges.has(name)) this.server.exchanges.set(name, new Map());
     return { exchange: name, type, options };
   }
 
   async assertQueue(name, options = {}) {
+    this.#open();
     const queueName = name === '' ? this.server.nextTag('amq.gen') : name;
     let queue = this.server.queues.get(queueName);
     if (!queue) {
       queue = new Queue(queueName, options);
       this.server.queues.set(queueName, queue);
+    } else if (!sameArguments(queue.arguments, options.arguments ?? {})) {
+      // A redeclaration with different arguments is a 406 that closes the
+      // channel — the way RabbitMQ answers a changed `streamMaxBytes`.
+      const error = Object.assign(new Error(`PRECONDITION_FAILED - inequivalent arg for queue '${queueName}'`), {
+        code: 406,
+      });
+      this.fail(error);
+      throw error;
     }
     return { queue: queueName, messageCount: queue.messages.length, consumerCount: queue.consumers.size };
   }
 
   async checkQueue(name) {
+    this.#open();
     const queue = this.server.queues.get(name);
-    if (!queue) throw new Error(`NOT_FOUND - no queue '${name}'`);
+    if (!queue) {
+      const error = Object.assign(new Error(`NOT_FOUND - no queue '${name}'`), { code: 404 });
+      this.fail(error);
+      throw error;
+    }
     return { queue: name, messageCount: queue.messages.length, consumerCount: queue.consumers.size };
   }
 
   async deleteQueue(name) {
+    this.#open();
+    const queue = this.server.queues.get(name);
     this.server.queues.delete(name);
+    // The server cancels every consumer of a deleted queue — basic.cancel
+    // from its side, which amqplib hands the consumer as a null delivery.
+    for (const consumer of queue?.consumers.values() ?? []) queueMicrotask(() => consumer.handler(null));
     return { messageCount: 0 };
   }
 
   async bindQueue(queue, exchange, routingKey) {
+    this.#open();
     const bindings = this.server.exchanges.get(exchange) ?? new Map();
     this.server.exchanges.set(exchange, bindings);
     const set = bindings.get(routingKey) ?? new Set();
@@ -183,12 +228,18 @@ class FakeChannel extends EventEmitter {
   }
 
   async prefetch(count) {
+    this.#open();
     this.prefetchLimit = count;
   }
 
   async consume(name, handler, options = {}) {
+    this.#open();
     const queue = this.server.queues.get(name);
-    if (!queue) throw new Error(`NOT_FOUND - no queue '${name}'`);
+    if (!queue) {
+      const error = Object.assign(new Error(`NOT_FOUND - no queue '${name}'`), { code: 404 });
+      this.fail(error);
+      throw error;
+    }
     const tag = this.server.nextTag('ctag');
     const consumer = { tag, channel: this, handler, noAck: options.noAck === true };
     const from = options.arguments?.['x-stream-offset'];
@@ -244,6 +295,7 @@ class FakeChannel extends EventEmitter {
   async recover() {}
 
   publish(exchange, routingKey, content, properties = {}, callback) {
+    this.#open();
     const routed = this.server.publish(exchange, routingKey, content, properties);
     if (!routed && properties.mandatory) {
       queueMicrotask(() => this.emit('return', { content, properties, fields: { replyText: 'NO_ROUTE' } }));
@@ -278,6 +330,8 @@ class FakeChannel extends EventEmitter {
 }
 
 class FakeAmqpConnection extends EventEmitter {
+  closed = false;
+
   constructor(server = new FakeAmqpServer()) {
     super();
     this.server = server;
@@ -285,19 +339,29 @@ class FakeAmqpConnection extends EventEmitter {
   }
 
   async createChannel() {
+    if (this.closed) throw new Error('Connection closed');
     const channel = new FakeChannel(this.server);
     this.channels.push(channel);
     return channel;
   }
 
   async createConfirmChannel() {
+    if (this.closed) throw new Error('Connection closed');
     const channel = new FakeChannel(this.server, { confirm: true });
     this.channels.push(channel);
     return channel;
   }
 
   async close() {
+    if (this.closed) return;
+    this.closed = true;
     for (const channel of this.channels) await channel.close();
+    this.emit('close');
+  }
+
+  /** The connection drops out from under the client: every channel goes, then the connection says so. */
+  kill() {
+    return this.close();
   }
 }
 

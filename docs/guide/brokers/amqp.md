@@ -61,6 +61,15 @@ against a real 4.x server:
 
 ## Sharp edges
 
+- **A channel-level error closes that channel, not the broker.** A
+  declaration that does not match what the server holds (`406`, a changed
+  `streamMaxBytes`), a queue deleted under a reader (`404`), a node going
+  away: the adapter forgets the closed channel and opens another on the next
+  call, and a queue consumer re-consumes with a backoff (`healthy` is `false`
+  meanwhile, logged `broker.amqp.consumer.closed`). A closed **connection**
+  is different — nothing can be re-opened on it: every binding turns
+  unhealthy for good (`broker.amqp.connection`, once), and the fix is a new
+  connection with a new broker on it.
 - **`log.append` costs an extra round trip.** AMQP 0-9-1 never reports the
   offset a publish landed on (only the stream protocol does), so the append
   reads the tip back to answer with a real id. A high-rate producer should

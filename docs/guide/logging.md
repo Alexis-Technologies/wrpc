@@ -119,6 +119,8 @@ want an alert for.
 | `encryption.replay`, `encryption.unwrap` | error | The shared replay store could not be asked (the request was refused `503`); a primitive threw while unwrapping a sealed request (`500`) |
 | `broker.dead` | warn | A message exhausted its retries |
 | `broker.evict` | warn | The per-token client cache is thrashing: more distinct tokens in flight than `tokenClients`, a session restore per message. The evicted client finishes what it holds, then closes |
+| `broker.amqp.consumer.closed`, `broker.amqp.cancelled`, `broker.amqp.consumer.reopen` | error | RabbitMQ closed a consumer's channel, or cancelled the consumer (its queue deleted, its node gone); the consumer re-opens with a backoff, each failed attempt logged `reopen` with its `attempt` |
+| `broker.amqp.connection` | error | The injected RabbitMQ connection closed: every binding on this broker is unhealthy and stays so — open a new connection and a new broker on it |
 | `broker.rpc.refused` | warn | A sealed RPC frame that did not open (`reason`: `unsealed`, `kid`, `open`, `format`, `replay`), one older than `maxSkew` (`stale`), or a plaintext frame on a session a sealed hello opened (`downgrade`) — dropped, never answered |
 | `broker.rpc.replay` | error | The shared replay memory could not be asked; the frame was not served |
 | `broker.rpc.capacity` | warn | Hellos refused at `maxSessions` since the last sweep (`refused`, `sessions`, `max`) — one line per sweep, not per hello |

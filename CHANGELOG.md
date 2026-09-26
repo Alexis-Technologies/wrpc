@@ -1352,6 +1352,23 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **RabbitMQ: a channel the server closed is not used again, and a
+  consumer comes back.** A channel-level error — a declaration that did
+  not match what the server held (`406`), a queue deleted under a reader
+  (`404`), a node going away — closes that channel, and the adapter kept
+  handing out the closed one: every later declaration, publish and send on
+  the broker failed with "channel closed" until the broker itself was
+  closed, and a queue consumer sat on its closed channel forever,
+  `healthy` still `true`, taking nothing. The memoized channels are
+  forgotten the moment they close; a consumer re-opens its channel with a
+  backoff (200 ms doubling to 5 s, `broker.amqp.consumer.closed` /
+  `.reopen`), declares a deleted queue again, and settles every delivery
+  on the channel it arrived on. A closed **connection** is reported once
+  (`broker.amqp.connection`), marks every binding unhealthy for good and
+  stops the re-open loops — nothing can be re-opened on it. The in-repo
+  fake answers a mismatched redeclaration with `406`, cancels the
+  consumers of a deleted queue, and refuses work on a closed channel, as
+  RabbitMQ does.
 - **RabbitMQ `direct`: one exchange, not one per address.** Every address
   — and an address is whatever a peer puts in `replyTo`, one per client
   inbox — got its own durable fanout exchange, which RabbitMQ never

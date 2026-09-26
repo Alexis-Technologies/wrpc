@@ -281,3 +281,95 @@ test('amqp broker: direct addresses share one exchange — a client inbox declar
   // Nobody bound under that routing key any more: the 503 still comes back.
   await assert.rejects(broker.direct.send('wrpc.nobody', 'x'), (error) => error.code === 503);
 });
+
+// Every line the adapter logs, for the recovery asserts.
+const recording = () => {
+  const entries = [];
+  const logger = {
+    log() {},
+    info: (entry) => entries.push({ level: 'info', ...entry }),
+    debug() {},
+    warn: (entry) => entries.push({ level: 'warn', ...entry }),
+    error: (entry) => entries.push({ level: 'error', ...entry }),
+    child: () => logger,
+  };
+  return { logger, entries };
+};
+
+test('amqp broker: a channel the server closed is not handed out again', async (t) => {
+  const connection = createFakeAmqp();
+  const broker = open(connection);
+  t.after(() => broker.close());
+  const other = open(connection, { streamMaxBytes: 4096 });
+  t.after(() => other.close());
+  const topic = unique('stream');
+  assert.strictEqual(typeof (await broker.log.append(topic, 'one')), 'string');
+  // The same stream declared with other arguments: RabbitMQ answers 406 and
+  // closes the channel that asked — the memoized topology channel of `other`.
+  await assert.rejects(other.log.append(topic, 'two'), /PRECONDITION_FAILED/);
+  // That corpse used to stay memoized, and every later declaration on the
+  // broker failed with "channel closed" until it was closed itself.
+  assert.strictEqual(typeof (await other.log.append(unique('fresh'), 'three')), 'string');
+  await other.queue.produce(unique('jobs'), 'work');
+});
+
+test('amqp broker: a consumer whose channel the server closed re-consumes with a backoff', async (t) => {
+  const connection = createFakeAmqp();
+  const { logger, entries } = recording();
+  const broker = open(connection, { logger });
+  t.after(() => broker.close());
+  const name = unique('jobs');
+  const seen = [];
+  const consumer = await broker.queue.consume(name, (delivery) => {
+    seen.push(delivery.body);
+    return delivery.ack();
+  });
+  t.after(() => consumer.stop());
+  await broker.queue.produce(name, 'a');
+  await waitFor(() => seen.length === 1);
+  // The node the channel lived on goes away: the consumer used to sit on
+  // the closed channel forever, `healthy` still true, taking nothing.
+  const [held] = connection.server.queue(`wrpc.q.${name}`).consumers.values();
+  connection.server.killChannel(held.channel, 320);
+  await waitFor(() => consumer.healthy === false);
+  await broker.queue.produce(name, 'b');
+  await waitFor(() => seen.length === 2, { timeout: 3000 });
+  assert.strictEqual(consumer.healthy, true);
+  assert.deepStrictEqual(
+    entries.filter((entry) => entry.event === 'broker.amqp.consumer.closed').map((entry) => entry.queue),
+    [name],
+  );
+  // The queue deleted under the consumer (the server cancels it): declared
+  // again on the way back, on a fresh channel.
+  const admin = await connection.createChannel();
+  await admin.deleteQueue(`wrpc.q.${name}`);
+  await waitFor(() => consumer.healthy === false);
+  await waitFor(() => consumer.healthy === true, { timeout: 3000 });
+  assert.ok(connection.server.queue(`wrpc.q.${name}`), 'the queue was declared again');
+  await broker.queue.produce(name, 'c');
+  await waitFor(() => seen.length === 3, { timeout: 3000 });
+  assert.deepStrictEqual(
+    entries.filter((entry) => entry.event === 'broker.amqp.cancelled').map((entry) => entry.queue),
+    [name],
+  );
+});
+
+test('amqp broker: a lost connection is reported once, marks everything unhealthy and stops the re-open loops', async (t) => {
+  const connection = createFakeAmqp();
+  const { logger, entries } = recording();
+  const broker = open(connection, { logger });
+  t.after(() => broker.close());
+  const name = unique('jobs');
+  const consumer = await broker.queue.consume(name, (delivery) => delivery.ack());
+  const stopListening = await broker.direct.listen(broker.direct.inbox(), () => {});
+  await broker.queue.produce(name, 'a');
+  await connection.kill();
+  await waitFor(() => consumer.healthy === false);
+  await timers.setTimeout(400);
+  assert.strictEqual(entries.filter((entry) => entry.event === 'broker.amqp.connection').length, 1);
+  assert.strictEqual(entries.filter((entry) => entry.event === 'broker.amqp.consumer.reopen').length, 0);
+  await assert.rejects(broker.queue.produce(name, 'b'), (error) => error.code === 503);
+  await assert.rejects(broker.direct.send('wrpc.x', 'b'), (error) => error.code === 503);
+  await stopListening();
+  await consumer.stop();
+});

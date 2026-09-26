@@ -28,7 +28,7 @@
 
 const { createLoggerWriter } = require('../../logging.js');
 const { generateUUID } = require('../../runtime/node.js');
-const { resolveGenerateId } = require('../../utils.js');
+const { resolveGenerateId, backoffDelay } = require('../../utils.js');
 
 // An injected `generateId` is used VERBATIM for every id this adapter mints
 // — never truncated. Trimming a user's id would quietly weaken the
@@ -53,6 +53,14 @@ const STREAM_OFFSET = 'x-stream-offset';
 
 const isFunction = (value) => typeof value === 'function';
 const name = (prefix, kind, value) => `${prefix}.${kind}.${encodeToken(value, { maxLength: 180 })}`;
+const sleep = (ms) =>
+  new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    if (isFunction(timer.unref)) timer.unref();
+  });
+// A consumer's channel is re-opened on this schedule after the server
+// closed it; a lost CONNECTION stops the loop (nothing to re-open on).
+const REOPEN_BACKOFF = Object.freeze({ minDelay: 200, maxDelay: 5000, factor: 2, jitter: true });
 
 const createAmqpBroker = (options = {}) => {
   const {
@@ -86,14 +94,28 @@ const createAmqpBroker = (options = {}) => {
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'amqp' });
   const report = (event, error, extra = {}) => log.error({ err: error, event, ...extra });
   let closed = false;
+  // The injected connection went away: every channel with it, and nothing
+  // here can open another — the connection is the caller's to reopen, with
+  // a new broker on it. Set once, reported once, and what every retry loop
+  // and health getter reads.
+  let lost = false;
   const channels = new Set();
 
-  const openChannel = async (confirm = false) => {
+  // `onClose` hears the channel close, with the error that closed it when
+  // the server did (a channel-level error arrives first, the close after).
+  const openChannel = async (confirm = false, onClose = null) => {
     const channel = confirm ? await connection.createConfirmChannel() : await connection.createChannel();
-    // A channel-level error (a mismatched queue declaration) closes the
-    // channel, not the process.
-    channel.on?.('error', (error) => report('broker.amqp.channel', error));
-    channel.on?.('close', () => channels.delete(channel));
+    // A channel-level error (a mismatched queue declaration, a missing
+    // queue) closes the channel, not the process.
+    let failure = null;
+    channel.on?.('error', (error) => {
+      failure = error;
+      report('broker.amqp.channel', error);
+    });
+    channel.on?.('close', () => {
+      channels.delete(channel);
+      if (onClose !== null) onClose(failure);
+    });
     channels.add(channel);
     return channel;
   };
@@ -107,31 +129,39 @@ const createAmqpBroker = (options = {}) => {
     }
   };
 
-  // Both memoized as PROMISES, not as resolved channels: two concurrent
-  // callers awaiting a lazily created channel would otherwise each create
-  // one — and a publisher spread over two channels loses AMQP's ordering
-  // guarantee, which is per channel.
-  let topologyChannel = null;
-  const topology = () => {
-    if (!topologyChannel) {
-      topologyChannel = openChannel();
-      topologyChannel.catch(() => {
-        topologyChannel = null;
+  // A lazily opened channel memoized as a PROMISE, not as a resolved
+  // channel — two concurrent callers must share it, since a publisher
+  // spread over two channels loses AMQP's ordering guarantee, which is
+  // per channel — and FORGOTTEN the moment the channel closes. It used to
+  // be kept: a channel-level error (a mismatched declaration, a missing
+  // queue) closed the channel, the memo went on handing out the corpse,
+  // and every later declaration, publish and send failed with "channel
+  // closed" until the broker itself was closed.
+  const memoChannel = (confirm, { setup = null, onClose = null } = {}) => {
+    let memo = null;
+    const get = () => {
+      if (memo !== null) return memo;
+      const pending = openChannel(confirm, (error) => {
+        if (memo === pending) memo = null;
+        if (onClose !== null) onClose(error);
+      }).then(async (channel) => {
+        if (setup !== null) await setup(channel);
+        return channel;
       });
-    }
-    return topologyChannel;
+      memo = pending;
+      pending.catch(() => {
+        if (memo === pending) memo = null;
+      });
+      return pending;
+    };
+    get.reset = () => {
+      memo = null;
+    };
+    return get;
   };
 
-  let publishChannel = null;
-  const publisher = () => {
-    if (!publishChannel) {
-      publishChannel = openChannel(true);
-      publishChannel.catch(() => {
-        publishChannel = null;
-      });
-    }
-    return publishChannel;
-  };
+  const topology = memoChannel(false);
+  const publisher = memoChannel(true);
 
   // Publishes and waits for the broker's confirm: what makes an append or a
   // produce a promise the caller can trust.
@@ -293,7 +323,15 @@ const createAmqpBroker = (options = {}) => {
       // that one is dropped.)
       const queue = await ensureLog(topic);
       const channel = await topology();
-      const { messageCount } = await channel.checkQueue(queue);
+      let messageCount;
+      try {
+        ({ messageCount } = await channel.checkQueue(queue));
+      } catch (error) {
+        // The stream is gone under the memo (deleted by hand): forgotten,
+        // so the next read declares it again instead of failing forever.
+        ensuredLogs.delete(queue);
+        throw error;
+      }
       const stop = await openStreamReader(topic, 'next', (message) => onEntry(entryOf(message)));
       signal.addEventListener('abort', () => void stop(), { once: true });
       return messageCount > 0 ? messageCount - 1 : null;
@@ -439,7 +477,7 @@ const createAmqpBroker = (options = {}) => {
   };
 
   const append = async (topic, value, { headers = null } = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
     const queue = await ensureLog(topic);
     await confirmPublish('', queue, value, { persistent: true, headers: toHeaders(headers) });
     const offset = await tipOffset(topic);
@@ -486,13 +524,13 @@ const createAmqpBroker = (options = {}) => {
   };
 
   const produce = async (queue, body, { headers = null } = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
     const main = await ensureQueue(queue);
     await confirmPublish('', main, body, { persistent: true, headers: toHeaders(headers) });
   };
 
   const consume = async (queue, onDelivery, options = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
     if (!isFunction(onDelivery)) throw new TypeError('amqp queue.consume: onDelivery must be a function');
     const { prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = options;
     if (!Number.isInteger(prefetch) || prefetch <= 0) {
@@ -502,16 +540,37 @@ const createAmqpBroker = (options = {}) => {
       throw new TypeError('amqp queue.consume: deadLetter must be a queue name or null');
     }
     const main = await ensureQueue(queue, deadLetter);
-    const channel = await openChannel();
-    await channel.prefetch(prefetch);
-    const state = { running: true, healthy: true, tag: null };
+    const key = `${queue}|${deadLetter ?? ''}`;
+    // The consumer's channel is not for life: a channel-level error — the
+    // queue deleted under it, a declaration mismatch, the node it lived on
+    // going away — closes the channel, and the consumer used to sit on the
+    // corpse forever, `healthy` still true, taking nothing. It re-opens
+    // with a backoff instead; every delivery settles on the channel it
+    // arrived on, whichever that was.
+    const state = { running: true, healthy: true, tag: null, channel: null, reopening: false };
+    const attach = async () => {
+      let opened = null;
+      opened = await openChannel(false, (error) => void onChannelClosed(opened, error));
+      await opened.prefetch(prefetch);
+      state.channel = opened;
+      return opened;
+    };
 
-    const dispatch = (message) => {
+    const dispatch = (channel, message) => {
       if (message === null) {
-        // The broker cancelled this consumer (the queue was deleted, or the
-        // node it lived on went away).
+        // The server cancelled this consumer: the queue was deleted, or the
+        // node it lived on went away. The channel is still open and useless
+        // — it goes, and the consumer comes back on a fresh one with the
+        // queue declared again.
+        if (state.channel !== channel) return;
         state.healthy = false;
-        return void report('broker.amqp.cancelled', new Error('consumer cancelled'), { queue });
+        state.tag = null;
+        state.channel = null;
+        report('broker.amqp.cancelled', new Error('consumer cancelled'), { queue });
+        ensuredQueues.delete(key);
+        void closeChannel(channel);
+        if (state.running && !closed && !lost) void reopen();
+        return;
       }
       const headers = headersOf(message);
       const attempt = Number(headers[ATTEMPT_HEADER] ?? '1') || 1;
@@ -577,19 +636,51 @@ const createAmqpBroker = (options = {}) => {
         });
     };
 
-    const start = async () => {
-      const { consumerTag } = await channel.consume(main, dispatch, { noAck: false });
+    const start = async (channel) => {
+      const { consumerTag } = await channel.consume(main, (message) => dispatch(channel, message), { noAck: false });
       state.tag = consumerTag;
       state.healthy = true;
     };
-    await start();
+    const reopen = async () => {
+      if (state.reopening) return;
+      state.reopening = true;
+      try {
+        // `closed` and `lost` flip from outside this loop, between its awaits.
+        for (let attempt = 0; ; attempt++) {
+          if (!state.running || closed || lost) return;
+          await sleep(backoffDelay({ ...REOPEN_BACKOFF, attempt }));
+          if (!state.running || closed || lost) return;
+          try {
+            await ensureQueue(queue, deadLetter);
+            await start(await attach());
+            return;
+          } catch (error) {
+            report('broker.amqp.consumer.reopen', error, { queue, attempt: attempt + 1 });
+          }
+        }
+      } finally {
+        state.reopening = false;
+      }
+    };
+    const onChannelClosed = (channel, error) => {
+      if (state.channel !== channel) return;
+      state.channel = null;
+      state.tag = null;
+      if (!state.running || closed || lost) return;
+      state.healthy = false;
+      report('broker.amqp.consumer.closed', error ?? new Error('channel closed'), { queue });
+      // A queue that is gone is declared again on the way back.
+      if (error?.code === 404) ensuredQueues.delete(key);
+      void reopen();
+    };
+    await start(await attach());
 
     const cancel = async () => {
-      if (state.tag === null) return;
+      if (state.tag === null || state.channel === null) return;
       const tag = state.tag;
       state.tag = null;
       try {
-        await channel.cancel(tag);
+        await state.channel.cancel(tag);
       } catch {
         // The channel is gone; its unacked messages are already back.
       }
@@ -599,7 +690,7 @@ const createAmqpBroker = (options = {}) => {
       state.running = false;
       await cancel();
       // Closing the channel returns whatever was unacked to the queue.
-      await closeChannel(channel);
+      if (state.channel !== null) await closeChannel(state.channel);
     };
     if (signal) signal.addEventListener('abort', () => void stop(), { once: true });
     return {
@@ -608,11 +699,11 @@ const createAmqpBroker = (options = {}) => {
       // stay ackable — which is what a draining node needs.
       pause: cancel,
       resume: async () => {
-        if (!state.running || state.tag !== null) return;
-        await start();
+        if (!state.running || state.tag !== null || state.channel === null) return;
+        await start(state.channel);
       },
       get healthy() {
-        return state.running && state.healthy && !closed;
+        return state.running && state.healthy && !closed && !lost;
       },
     };
   };
@@ -639,34 +730,31 @@ const createAmqpBroker = (options = {}) => {
   const groupQueue = (address, group) => `${name(prefix, 'direct', address)}.${encodeToken(group, { maxLength: 60 })}`;
 
   const returned = new Set();
-  let directChannel = null;
-  // Memoized as a PROMISE: two concurrent sends must share one channel, or
-  // their publishes could interleave across two — and a channel is what
-  // AMQP orders messages on.
-  const directing = () => {
-    if (directChannel) return directChannel;
-    directChannel = (async () => {
-      const channel = await openChannel(true);
-      // `mandatory` + basic.return is how a sender learns that nobody is
-      // there — an unroutable message comes back before its confirm.
+  // One memoized confirm channel for every send: two concurrent sends must
+  // share it, or their publishes could interleave across two — and a
+  // channel is what AMQP orders messages on.
+  const directing = memoChannel(true, {
+    // `mandatory` + basic.return is how a sender learns that nobody is
+    // there — an unroutable message comes back before its confirm.
+    setup: (channel) => {
       channel.on?.('return', (message) => {
         const id = message.properties?.messageId;
         if (id) returned.add(id);
       });
-      return channel;
-    })();
-    directChannel.catch(() => {
-      directChannel = null;
-    });
-    return directChannel;
-  };
+    },
+    // Publishing to an exchange somebody deleted closes the channel with a
+    // 404: declared again on the next send.
+    onClose: (error) => {
+      if (error?.code === 404) exchanges.delete(directExchange);
+    },
+  });
 
   // The exchange must exist before a mandatory publish: publishing to a
   // missing one is a channel-level 404, not a basic.return.
   const ensureDirect = () => ensureExchange(directExchange, 'direct');
 
   const listen = async (address, onMessage, { group = null } = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
     if (!isFunction(onMessage)) throw new TypeError('amqp direct.listen: onMessage must be a function');
     if (typeof address !== 'string' || address.length === 0) {
       throw new TypeError('amqp direct.listen: address must be a non-empty string');
@@ -717,7 +805,7 @@ const createAmqpBroker = (options = {}) => {
   };
 
   const send = async (address, body, { headers = null, correlationId = null, replyTo = null, timeout } = {}) => {
-    if (closed) throw codedError('Broker is closed', 503);
+    if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
     const [channel, exchangeName] = await Promise.all([directing(), ensureDirect()]);
     const text = typeof body === 'string';
     const messageId = nextId();
@@ -751,11 +839,22 @@ const createAmqpBroker = (options = {}) => {
     ensuredQueues.clear();
     exchanges.clear();
     for (const channel of Array.from(channels)) await closeChannel(channel);
-    topologyChannel = null;
-    publishChannel = null;
-    directChannel = null;
+    topology.reset();
+    publisher.reset();
+    directing.reset();
     // The CONNECTION is injected: closing it is the caller's business.
   };
+
+  connection.on?.('close', () => {
+    if (closed || lost) return;
+    lost = true;
+    report('broker.amqp.connection', new Error('connection closed'));
+    // Every memo is a corpse now, and every consumer's re-open loop reads
+    // `lost` and stops: there is nothing to re-open on.
+    exchanges.clear();
+    ensuredLogs.clear();
+    ensuredQueues.clear();
+  });
 
   return {
     name: 'amqp',
