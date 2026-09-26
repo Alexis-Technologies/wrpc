@@ -260,6 +260,8 @@ export declare const KIND_BINARY_COMPRESSED: 4;
 export declare const DEFAULT_MAX_MESSAGE: number;
 export declare const INLINE_TEXT: number;
 export declare const DEFAULT_ACCEPT_TIMEOUT: number;
+/** The default `maxPending` of `acceptSessions` (256): sessions attaching at once before the next is refused 503. */
+export declare const DEFAULT_MAX_PENDING: number;
 export declare const DEFAULT_HIGH_WATER_MARK: number;
 export declare const DEFAULT_LOW_WATER_MARK: number;
 
