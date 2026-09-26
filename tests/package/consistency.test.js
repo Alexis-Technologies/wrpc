@@ -192,3 +192,43 @@ test('every ./x.js reference inside a shipped root d.ts resolves to a shipped x.
     }
   }
 });
+
+// The `[Unreleased]` section of the CHANGELOG, split by its `### ` headings:
+// a map of heading -> the lines under it. The release checklist reads the
+// breaking section to decide the bump, so an entry marked **Breaking that
+// sits under `### Changed` or `### Added` is a semver lie waiting to ship.
+const unreleasedSections = () => {
+  const changelog = read('CHANGELOG.md');
+  const start = changelog.indexOf('\n## [Unreleased]');
+  assert.ok(start >= 0, 'CHANGELOG.md must keep an [Unreleased] section');
+  const next = changelog.indexOf('\n## [', start + 1);
+  const lines = changelog.slice(start, next < 0 ? undefined : next).split('\n');
+  const sections = new Map();
+  let heading = '';
+  for (const line of lines) {
+    if (line.startsWith('### ')) heading = line.slice(4).trim();
+    else if (heading) sections.get(heading)?.push(line) ?? sections.set(heading, [line]);
+  }
+  return sections;
+};
+
+test('every **Breaking entry of [Unreleased] sits under ### Changed (breaking)', () => {
+  const sections = unreleasedSections();
+  const breaking = sections.get('Changed (breaking)');
+  assert.ok(breaking, '[Unreleased] must keep a "### Changed (breaking)" section (empty is fine)');
+  for (const [heading, lines] of sections) {
+    if (heading === 'Changed (breaking)') continue;
+    const marked = lines.filter((line) => line.includes('**Breaking'));
+    assert.deepStrictEqual(
+      marked,
+      [],
+      `"### ${heading}" holds a **Breaking entry; move it to "### Changed (breaking)"`,
+    );
+  }
+  // The migration block belongs to the breaking section: a reader who lands
+  // on "what broke" finds "what to do" right under it.
+  assert.ok(
+    breaking.some((line) => line.startsWith('#### Migrating from ')),
+    'the breaking section must carry a "#### Migrating from <version>" block',
+  );
+});

@@ -145,10 +145,14 @@ publishes.
    `docs/.vitepress/config.mts`'s keywords or nav version label drift from
    `package.json` — there is no separate manual sync step for either.
 2. **Move `[Unreleased]` to the new version** in `CHANGELOG.md`, with the date,
-   and open a fresh empty `[Unreleased]` above it. Before the first publish,
-   `[Unreleased]` carries a "not published to npm yet" note right under its
-   heading — delete that note as part of this move; it does not apply again
-   after v1.0.0 ships.
+   and open a fresh empty `[Unreleased]` above it — with an empty
+   `### Changed (breaking)` section, which `tests/package/consistency.test.js`
+   requires to exist. **Read that section before choosing the bump**: a
+   non-empty one is a major, whatever the other sections say, and the same
+   test fails the build if an entry marked `**Breaking` sits anywhere else
+   (an "Added" feature that a 1.x peer cannot ignore is breaking too). A
+   non-empty breaking section also carries a `#### Migrating from <version>`
+   block — the order of upgrade and the flags that keep an old peer working.
 3. **Bump `version` in `package.json`, and confirm it differs from what npm
    already has.** Semver against the **JavaScript API**; the wire protocol has
    [its own promise](./docs/reference/protocol.md#stability). Before the first

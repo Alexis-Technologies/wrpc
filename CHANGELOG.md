@@ -1219,8 +1219,26 @@ narrower promise — see
   peer types, and `ClientHost` — the host contract `context.server` is now
   typed as (see Changed).
 
-### Changed
+### Changed (breaking)
 
+- **Breaking — binary attachments are on by default and are not
+  negotiated.** A `Buffer`, typed array, `ArrayBuffer` or `DataView` anywhere
+  in a call's arguments, result, event data or error details now leaves as
+  the binary attachments frame (`0x00 01`, the Added entry above) and
+  arrives as a `Uint8Array` — not as `{ type: 'Buffer', data: [...] }` or
+  `{ "0": 137, ... }`, which is what `JSON.stringify` made of it in 1.0.
+  What that changes: (1) a handler or listener that read `.data` or
+  `Object.values()` off such a value reads a `Uint8Array` now; (2) a REST
+  result with bytes answers `501` unless `codec.rest` is set, and SSE
+  refuses bytes outright (`501`/`415`/`sse.bytes`); (3) nothing on the wire
+  announces the frame, so a **1.0 client** given a result with bytes throws
+  on the binary frame (a chunk for an unknown, empty stream id), the
+  callback never arrives and the call rejects `408` after `callTimeout`
+  (7 s); (4) a **1.0 server** sent bytes in a call answers `400` with
+  `id: ''` for the same reason. `attachments: false` on the
+  server restores the 1.0 JSON for every peer, `attachments: false` on the
+  client the same for what it sends; a packet `codec` turns them off by
+  itself. See [Migrating from 1.0](#migrating-from-10).
 - **Breaking — the ws client no longer puts `headers`/`meta` in the connect
   URL.** From Node they are real request headers on the upgrade (the built-in
   `WebSocket` takes `{ protocols, headers }`); from a browser — where no API
@@ -1245,6 +1263,41 @@ narrower promise — see
   `context.meta.headers` whenever no proxy had set one. `declaredHeaders` and
   `RESERVED_DECLARED` moved from `src/rpc/meta.js` to the Node-only
   `src/rpc/handshake.js` (neither was exported from the package).
+- `Context.server` and `Client.server` are typed as `ClientHost | null`
+  instead of `RpcServer | null`: the contract both an `RpcServer` and a
+  WebRTC `PeerHost` satisfy (`router`, `rooms`, `getClient`, `to`, `except`,
+  `broadcast`). Narrow with `instanceof RpcServer` to reach sessions, the
+  cluster or `sendTo`. Runtime behaviour is unchanged; TypeScript code that
+  reached `context.server.sessions` without a check stops compiling.
+- `ServerEventTransport` (the `attachPort` transport) now exposes
+  `connection`, so a MessagePort client is `persistent`: events,
+  subscriptions and streams work over it as over a socket. A server that
+  relied on a port client being request-scoped — one `Client` per call, no
+  `onConnect` — sees one long-lived `Client` per port instead.
+
+#### Migrating from 1.0
+
+Upgrade the **server first**, then the clients — a 2.0 client against a 1.0
+server loses its ws labels (see the carriers entry) and gets `400` for any
+bytes it sends. In that order:
+
+1. **Server**: deploy 2.0 with `attachments: false` while any 1.0 client can
+   still connect; its results with bytes then stay JSON, as in 1.0. Reading
+   the labels of a 2.0 client needs nothing — the server reads every
+   carrier.
+2. **Clients**: upgrade; a browser client behind a proxy that mangles
+   `Sec-WebSocket-Protocol` sets `carrier: 'query'`. A client that must talk
+   to a 1.0 server for a while sets `attachments: false` too.
+3. **Drop the flags** once no 1.0 peer is left — bytes travel as bytes.
+4. **TypeScript**: `context.server.sessions`, `.cluster` and `.sendTo` need
+   `if (context.server instanceof RpcServer)` (or a cast) — the type is the
+   `ClientHost` contract now.
+5. **`@alexify/wrpc/ws` directly**: `WebsocketServer` logs through
+   `globalThis.console` by default (it had no logger); `logger: false`
+   restores the silence, `logger: pino` routes it.
+
+### Changed
+
 - `http.compression` / `sse.compression`: `level` and `memLevel` moved into
   the coding they tune — `encodings: [{ encoding: 'gzip', level, memLevel }]`
   — and are a `TypeError` at the top level (nothing of this was released).
@@ -1268,14 +1321,6 @@ narrower promise — see
   class-level singleton it always did, but `connect({ worker })` no longer
   uses it — construct one with `new WrpcClient.transport.event(url)`.
   `WrpcClient.transport.event` is now typed as that constructor.
-- `Context.server` and `Client.server` are typed as `ClientHost | null`
-  instead of `RpcServer | null`: the contract both an `RpcServer` and a
-  WebRTC `PeerHost` satisfy (`router`, `rooms`, `getClient`, `to`, `except`,
-  `broadcast`). Narrow with `instanceof RpcServer` to reach sessions, the
-  cluster or `sendTo`. Runtime behaviour is unchanged.
-- `ServerEventTransport` (the `attachPort` transport) now exposes
-  `connection`, so a MessagePort client is `persistent`: events,
-  subscriptions and streams work over it as over a socket.
 - **Deprecated behaviour.** `generateId` on `RpcServer`/`Server`, on
   `WrpcClient` and on `PeerHost` used to ignore a bad value silently. It is
   now reported through the logger as `event: 'options.generateId'` and
