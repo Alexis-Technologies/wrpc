@@ -79,6 +79,38 @@ const benchDeflate = () => {
     performance.now() - started,
     payload.length * iterations,
   );
+
+  // The `level` knob on the one-shot path (PERF-2): what each level costs
+  // and buys on a 2 KB event and a 24 KB callback, beside the per-algorithm
+  // rows of bench/algorithms.js. The default stays zlib's 6.
+  const rows = JSON.stringify({
+    type: 'callback',
+    id: 'c1',
+    result: Array.from({ length: 300 }, (_, i) => ({
+      id: i,
+      name: `row-${i}`,
+      email: `user${i}@example.com`,
+      createdAt: '2026-09-19T10:00:00.000Z',
+      tags: ['alpha', 'beta'],
+    })),
+  });
+  for (const [label, bytes, count] of [
+    ['2 KB', payload, 20_000],
+    ['24 KB', Buffer.from(rows), 2_000],
+  ]) {
+    for (const level of [1, 3, 6]) {
+      const options = { level };
+      const size = compress(bytes, 15, options).length;
+      started = performance.now();
+      for (let i = 0; i < count; i++) compress(bytes, 15, options);
+      report(
+        `permessage-deflate compress ${label}, level ${level} (${(bytes.length / size).toFixed(1)}x)`,
+        count,
+        performance.now() - started,
+        bytes.length * count,
+      );
+    }
+  }
 };
 
 // Room fan-out over sink sockets: the JSON is serialized once per emit and

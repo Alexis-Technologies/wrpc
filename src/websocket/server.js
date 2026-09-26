@@ -70,6 +70,7 @@ class WebsocketServer extends EventEmitter {
     if (server !== undefined && (!server || typeof server.on !== 'function')) {
       throw new TypeError('WebsocketServer: options.server must be an http.Server');
     }
+    permessageDeflate.assertDeflateOptions(opts.perMessageDeflate);
     // Normalized once here, childed per connection below. The `Server` shell
     // passes its own writer down, and re-wrapping a writer is free, so the
     // common path allocates nothing extra.

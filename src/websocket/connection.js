@@ -541,7 +541,7 @@ class Connection extends EventEmitter {
       if (async !== null && frames.length >= async.threshold) {
         return this.#enqueueCompress(frames.opcode, frames.payload, frames);
       }
-      return this.#write(frames.deflated(deflate.windowBits));
+      return this.#write(frames.deflated(deflate.windowBits, deflate.zlibOptions ?? null));
     }
     return this.#write(frames.plain());
   }
@@ -594,7 +594,7 @@ class Connection extends EventEmitter {
       if (takeover || (async !== null && payload.length >= async.threshold)) {
         return this.#enqueueCompress(opcode, payload, null);
       }
-      payload = permessageDeflate.compress(payload, deflate.windowBits);
+      payload = permessageDeflate.compress(payload, deflate.windowBits, deflate.zlibOptions ?? null);
       rsv = RSV1;
     }
     return this.#emitFrames(opcode, payload, rsv);
@@ -660,13 +660,18 @@ class Connection extends EventEmitter {
       this.#draining = false;
       this.#pump();
     };
+    const deflate = this.#deflate;
+    const zlibOptions = deflate.zlibOptions ?? null;
     if (job.shared !== null) {
-      job.shared.deflatedAsync(this.#deflate.windowBits, (error, frame) => finish(error, null, frame));
-    } else if (this.#context !== null && this.#deflate.serverTakeover === true) {
+      job.shared.deflatedAsync(deflate.windowBits, zlibOptions, (error, frame) => finish(error, null, frame));
+    } else if (this.#context !== null && deflate.serverTakeover === true) {
       this.#context.compress(job.payload, (error, compressed) => finish(error, compressed, null));
     } else {
-      permessageDeflate.compressAsync(job.payload, this.#deflate.windowBits, (error, compressed) =>
-        finish(error, compressed, null),
+      permessageDeflate.compressAsync(
+        job.payload,
+        deflate.windowBits,
+        (error, compressed) => finish(error, compressed, null),
+        zlibOptions,
       );
     }
   }

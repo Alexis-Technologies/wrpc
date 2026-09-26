@@ -112,6 +112,15 @@ const acceptOffer = (offer, options) => {
   if (offer.params.has('server_max_window_bits')) {
     response.push(`server_max_window_bits=${windowBits}`);
   }
+  // The zlib knobs of every one-shot deflate this connection makes —
+  // unicast, fan-out and threadpool alike; null when neither is set, so
+  // the common path builds no extra object. They used to reach the live
+  // context only: a `level` on a no-takeover connection was ignored. Their
+  // cost is bench/send-path.js (levels 1/3/6 on 2 KB and 24 KB) beside
+  // bench/algorithms.js.
+  const zlibOptions = options.level === undefined && options.memLevel === undefined ? null : {};
+  if (options.level !== undefined) zlibOptions.level = options.level;
+  if (options.memLevel !== undefined) zlibOptions.memLevel = options.memLevel;
   return {
     response: response.join('; '),
     threshold: options.threshold ?? DEFAULT_THRESHOLD,
@@ -120,8 +129,23 @@ const acceptOffer = (offer, options) => {
     clientTakeover,
     level: options.level,
     memLevel: options.memLevel,
+    zlibOptions,
     async: asyncOf(options),
   };
+};
+
+// Refused at construction, not by zlib at the first message: level −1..9
+// (−1 is zlib's default, 6) and memLevel 1..9.
+const assertDeflateOptions = (options) => {
+  if (options === true || options === undefined || options === null) return;
+  if (typeof options !== 'object') throw new TypeError('perMessageDeflate: expected true or an options object');
+  const { level, memLevel } = options;
+  if (level !== undefined && !(Number.isInteger(level) && level >= -1 && level <= 9)) {
+    throw new TypeError('perMessageDeflate: level must be an integer from -1 to 9');
+  }
+  if (memLevel !== undefined && !(Number.isInteger(memLevel) && memLevel >= 1 && memLevel <= 9)) {
+    throw new TypeError('perMessageDeflate: memLevel must be an integer from 1 to 9');
+  }
 };
 
 // Server-side negotiation: accepts the first honorable permessage-deflate
@@ -146,11 +170,13 @@ const negotiate = (header, options = {}) => {
   return null;
 };
 
-const compress = (payload, windowBits = MAX_WINDOW_BITS) => {
-  const compressed = zlib.deflateRawSync(payload, {
-    windowBits,
-    finishFlush: zlib.constants.Z_SYNC_FLUSH,
-  });
+const compress = (payload, windowBits = MAX_WINDOW_BITS, options = null) => {
+  const compressed = zlib.deflateRawSync(
+    payload,
+    options === null
+      ? { windowBits, finishFlush: zlib.constants.Z_SYNC_FLUSH }
+      : { ...options, windowBits, finishFlush: zlib.constants.Z_SYNC_FLUSH },
+  );
   // RFC 7692 7.2.1: strip the trailing empty block (00 00 ff ff)
   return compressed.subarray(0, compressed.length - TRAILER.length);
 };
@@ -166,11 +192,17 @@ const decompress = (payload, maxLength) =>
 
 // The same two, off the event loop: zlib's callback API runs in libuv's
 // threadpool. Same bytes as the sync pair for the same input.
-const compressAsync = (payload, windowBits, cb) => {
-  zlib.deflateRaw(payload, { windowBits, finishFlush: zlib.constants.Z_SYNC_FLUSH }, (error, compressed) => {
-    if (error) return void cb(error);
-    cb(null, compressed.subarray(0, compressed.length - TRAILER.length));
-  });
+const compressAsync = (payload, windowBits, cb, options = null) => {
+  zlib.deflateRaw(
+    payload,
+    options === null
+      ? { windowBits, finishFlush: zlib.constants.Z_SYNC_FLUSH }
+      : { ...options, windowBits, finishFlush: zlib.constants.Z_SYNC_FLUSH },
+    (error, compressed) => {
+      if (error) return void cb(error);
+      cb(null, compressed.subarray(0, compressed.length - TRAILER.length));
+    },
+  );
 };
 
 const decompressAsync = (payload, maxLength, cb) => {
@@ -190,6 +222,7 @@ module.exports = {
   TRAILER,
   parseExtensions,
   negotiate,
+  assertDeflateOptions,
   compress,
   decompress,
   compressAsync,

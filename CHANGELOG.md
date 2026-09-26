@@ -1352,6 +1352,25 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **permessage-deflate: `level` and `memLevel` apply on every deflate
+  path, and are validated at construction.** The two knobs, introduced on
+  this branch with context takeover, reached the live context only: a
+  `level` on the default no-takeover connection was silently ignored on
+  the one-shot, fan-out and threadpool paths, which compressed at zlib's
+  6 whatever was asked. The negotiated params now carry the zlib options
+  once (`zlibOptions`, null when neither is set, so the common path builds
+  nothing), and every path takes them; the fan-out cache stays keyed by
+  window (two engines on different levels in one process would share the
+  first recipient's bytes — correct for all, and one `PreparedFrames` is
+  one broadcast). `level` outside −1..9 or `memLevel` outside 1..9 is a
+  TypeError from `WebsocketServer`, not a zlib error at the first
+  message. `bench/send-path.js` measures levels 1, 3 and 6 on 2 KB and
+  24 KB, and `bench/deflate-context.js` the same under a live context. The
+  default stays 6: one-shot it has the knee `bench/algorithms.js` found
+  (level 3 at 3.2× the throughput for the same ratio on 24 KB), but under
+  context takeover — the mode where the level matters most — level 6 buys
+  a 19% better ratio (10.6× vs 8.9×) for 6% more CPU, because the stream's
+  own overhead dominates there.
 - **Trust assertions: one failure of `keys()` no longer poisons the
   verifier, a broken JWK is no unhandled rejection, and a refresh for an
   unknown kid is bounded.** The verifier kept a failed first load as "the"

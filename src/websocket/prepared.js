@@ -55,7 +55,13 @@ class PreparedFrames {
     return frames;
   }
 
-  deflated(windowBits) {
+  // `options` are the recipient engine's zlib knobs (level, memLevel). The
+  // slot is keyed by windowBits alone: two engines on different levels in
+  // one process would give the slot the first recipient's bytes — correct
+  // for every recipient (any level inflates the same), just not their
+  // own level — and one PreparedFrames belongs to one broadcast, so the
+  // common case of one engine never sees it.
+  deflated(windowBits, options = null) {
     const frames = this.#slots();
     const slot = windowBits - MIN_WINDOW_BITS;
     let frame = frames[slot];
@@ -63,7 +69,7 @@ class PreparedFrames {
     // a synchronous caller then computes the same bytes itself rather than
     // block on the threadpool.
     if (frame === null || !Buffer.isBuffer(frame)) {
-      frame = encodeFrame(this.opcode, RSV1, compress(this.payload, windowBits));
+      frame = encodeFrame(this.opcode, RSV1, compress(this.payload, windowBits, options));
       if (frames[slot] === null) frames[slot] = frame;
     }
     return frame;
@@ -73,7 +79,7 @@ class PreparedFrames {
   // to need a window's frame starts ONE zlib.deflateRaw, and every later
   // recipient of the same emit waits on that same result — still one
   // deflate per window per fan-out, just not on the event loop.
-  deflatedAsync(windowBits, cb) {
+  deflatedAsync(windowBits, options, cb) {
     const frames = this.#slots();
     const slot = windowBits - MIN_WINDOW_BITS;
     const current = frames[slot];
@@ -83,11 +89,16 @@ class PreparedFrames {
     }
     const waiters = [cb];
     frames[slot] = waiters;
-    compressAsync(this.payload, windowBits, (error, compressed) => {
-      const frame = error ? null : encodeFrame(this.opcode, RSV1, compressed);
-      frames[slot] = frame;
-      for (let i = 0; i < waiters.length; i++) waiters[i](error, frame);
-    });
+    compressAsync(
+      this.payload,
+      windowBits,
+      (error, compressed) => {
+        const frame = error ? null : encodeFrame(this.opcode, RSV1, compressed);
+        frames[slot] = frame;
+        for (let i = 0; i < waiters.length; i++) waiters[i](error, frame);
+      },
+      options,
+    );
   }
 }
 

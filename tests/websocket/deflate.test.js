@@ -666,3 +666,65 @@ test("async inflate: the threadpool path holds at four in flight; the applicatio
   again.conn.terminate();
   conn.terminate();
 });
+
+test('level and memLevel apply on the one-shot, fan-out and async paths, and are validated at construction', async () => {
+  const { WebsocketServer } = require('#ws');
+  const text = JSON.stringify({
+    rows: Array.from({ length: 400 }, (_, i) => ({ i, name: `row-${i}`, tags: ['a', 'b'] })),
+  });
+  const sent = (params) => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: params });
+    conn.sendText(text);
+    conn.terminate();
+    return socket.writtenData[0];
+  };
+  // The level reaches the one-shot path: level 1 and level 9 give different
+  // bytes for the same message, and 9 the fewer. A `level` used to reach
+  // the live context only, and a no-takeover connection ignored it.
+  const fast = negotiate('permessage-deflate', { threshold: 1, level: 1 });
+  const small = negotiate('permessage-deflate', { threshold: 1, level: 9 });
+  assert.deepStrictEqual(fast.zlibOptions, { level: 1 });
+  assert.strictEqual(negotiate('permessage-deflate', { threshold: 1 }).zlibOptions, null, 'nothing set: nothing built');
+  const frameFast = sent(fast);
+  const frameSmall = sent(small);
+  // Different bytes is the proof the level reached zlib; which is smaller
+  // is the data's to decide, not a property a level guarantees.
+  assert.notDeepStrictEqual(frameFast, frameSmall);
+  // Fan-out: the prepared frame takes the recipient's level.
+  const viaFanout = sharedMessage(text);
+  const socketFast = new MockSocket();
+  const connFast = new Connection(socketFast, Buffer.alloc(0), { deflate: fast });
+  connFast.sendPrepared(viaFanout);
+  connFast.terminate();
+  assert.deepStrictEqual(socketFast.writtenData[0], frameFast, 'the fan-out frame is the unicast frame at that level');
+  const other = sharedMessage(text);
+  const socketSmall = new MockSocket();
+  const connSmall = new Connection(socketSmall, Buffer.alloc(0), { deflate: small });
+  connSmall.sendPrepared(other);
+  connSmall.terminate();
+  assert.deepStrictEqual(socketSmall.writtenData[0], frameSmall);
+  // The threadpool path too: the same bytes as the synchronous one at that level.
+  const asyncSmall = negotiate('permessage-deflate', { threshold: 1, level: 9, async: { threshold: 64 } });
+  const socketAsync = new MockSocket();
+  const connAsync = new Connection(socketAsync, Buffer.alloc(0), { deflate: asyncSmall });
+  connAsync.sendText(text);
+  await tickUntil(() => socketAsync.writtenData.length === 1);
+  assert.deepStrictEqual(socketAsync.writtenData[0], frameSmall);
+  connAsync.terminate();
+  const sharedAsync = sharedMessage(text);
+  const socketShared = new MockSocket();
+  const connShared = new Connection(socketShared, Buffer.alloc(0), { deflate: asyncSmall });
+  connShared.sendPrepared(sharedAsync);
+  await tickUntil(() => socketShared.writtenData.length === 1);
+  assert.deepStrictEqual(socketShared.writtenData[0], frameSmall);
+  connShared.terminate();
+  // Validated where the option is given, not by zlib at the first message.
+  for (const perMessageDeflate of [{ level: 10 }, { level: -2 }, { level: 1.5 }, { memLevel: 0 }, { memLevel: 10 }]) {
+    assert.throws(() => new WebsocketServer({ perMessageDeflate }), TypeError);
+  }
+  for (const perMessageDeflate of [true, { level: -1 }, { level: 9, memLevel: 9 }, { threshold: 4096 }]) {
+    const server = new WebsocketServer({ perMessageDeflate, logger: false });
+    server.close();
+  }
+});

@@ -50,6 +50,8 @@ export interface DeflateParams {
   clientTakeover?: boolean;
   level?: number;
   memLevel?: number;
+  /** The zlib knobs of every one-shot deflate — `{ level?, memLevel? }` — or null when neither is set. */
+  zlibOptions?: { level?: number; memLevel?: number } | null;
   /** Messages at or over `threshold` bytes deflate/inflate off the event loop; null keeps everything synchronous. */
   async?: { threshold: number } | null;
 }
@@ -74,9 +76,13 @@ export interface PerMessageDeflateOptions {
    * share one deflated frame.
    */
   contextTakeover?: boolean | 'server' | 'client';
-  /** zlib compression level for the server's deflate (context takeover only). */
+  /**
+   * zlib's level for every deflate this side makes — one-shot, fan-out,
+   * threadpool and context alike; −1..9, −1 (the default) being zlib's 6.
+   * A TypeError at construction otherwise.
+   */
   level?: number;
-  /** zlib memLevel for the server's deflate (context takeover only). */
+  /** zlib's memLevel, 1..9; a TypeError at construction otherwise. */
   memLevel?: number;
   /**
    * Deflate and inflate messages at or over `threshold` bytes off the
@@ -156,10 +162,7 @@ export declare class WebsocketServer extends EventEmitter {
 
   close(options?: { code?: number; reason?: string }): void;
 
-  on(
-    event: 'connection',
-    listener: (ws: Connection, req: IncomingMessage) => void,
-  ): this;
+  on(event: 'connection', listener: (ws: Connection, req: IncomingMessage) => void): this;
 
   on(event: 'error', listener: (error: Error) => void): this;
   on(event: 'close', listener: () => void): this;
@@ -221,10 +224,7 @@ export declare class Connection extends EventEmitter {
    * Received payloads may share memory with the socket receive buffer;
    * copy them when retaining beyond the listener call.
    */
-  on(
-    event: 'message',
-    listener: (data: Buffer, isBinary: boolean) => void,
-  ): this;
+  on(event: 'message', listener: (data: Buffer, isBinary: boolean) => void): this;
   on(event: 'error', listener: (error: Error) => void): this;
   on(event: 'close', listener: (code: number, reason: string) => void): this;
   on(event: 'ping', listener: (payload: Buffer) => void): this;
@@ -239,14 +239,7 @@ export declare class Frame {
   masked: boolean;
   payload: Buffer;
   mask: Buffer | null;
-  constructor(
-    fin: boolean,
-    opcode: number,
-    masked: boolean,
-    payload: Buffer,
-    mask: Buffer | null,
-    rsv?: number,
-  );
+  constructor(fin: boolean, opcode: number, masked: boolean, payload: Buffer, mask: Buffer | null, rsv?: number);
   static text(message: string, fin?: boolean, masked?: boolean): Frame;
   static binary(buffer: Buffer, fin?: boolean, masked?: boolean): Frame;
   static ping(payload?: Buffer | string): Frame;

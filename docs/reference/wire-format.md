@@ -277,7 +277,11 @@ identifiable at the handshake, which is what `filter(req)` is for — see
 
 The algorithm is not a choice here. RFC 7692 is the only WebSocket extension
 a browser implements, so this wire is DEFLATE whatever else is available;
-the knobs are `level`, `contextTakeover` and `async`. Every other wire takes
+the knobs are `level`, `contextTakeover` and `async` (`level` −1..9 and
+`memLevel` 1..9 apply to every deflate the server makes — unicast, fan-out,
+threadpool and context alike — and are refused at construction otherwise;
+the default stays zlib's 6, measured in `bench/send-path.js` at levels 1, 3
+and 6 beside `bench/algorithms.js`). Every other wire takes
 a codec by name or by injection — Brotli, zstd, your own — and
 [the compression guide](../guide/compression#algorithm) has the numbers that
 decide between them. A Node client's own frames are such a wire: its

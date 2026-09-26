@@ -33,8 +33,8 @@ const oneShot = (payloads) => {
   return { elapsed: performance.now() - started, bytes };
 };
 
-const takeover = async (payloads) => {
-  const context = new DeflateContext({ windowBits: 15 });
+const takeover = async (payloads, level) => {
+  const context = new DeflateContext(level === undefined ? { windowBits: 15 } : { windowBits: 15, level });
   let bytes = 0;
   const started = performance.now();
   for (let i = 0; i < payloads.length; i++) {
@@ -70,6 +70,13 @@ const main = async () => {
   report('repeated JSON event, one-shot (default)', events.length, r.elapsed, ratio(events, r.bytes));
   r = await takeover(events);
   report('repeated JSON event, context takeover', events.length, r.elapsed, ratio(events, r.bytes));
+  // The level under a live context (PERF-2): whether the knee of the
+  // one-shot rows in bench/send-path.js and bench/algorithms.js holds
+  // when a message references the ones before it.
+  for (const level of [1, 3, 6]) {
+    r = await takeover(events, level);
+    report(`repeated JSON event, context takeover, level ${level}`, events.length, r.elapsed, ratio(events, r.bytes));
+  }
   r = await async(events);
   report('repeated JSON event, async threadpool', events.length, r.elapsed, ratio(events, r.bytes));
 
