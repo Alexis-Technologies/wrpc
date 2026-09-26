@@ -541,10 +541,12 @@ test('webrtc transport: raw channel — a factory is asked on every open(), and 
   client.terminate();
   let release;
   const gate = new Promise((resolve) => (release = resolve));
+  let late = null;
   const slow = new ClientRtcTransport('webrtc:host', {
     channel: async () => {
       await gate;
       const pair = await rawChannelPair(t, { world });
+      late = pair.a;
       return pair.a;
     },
   });
@@ -556,6 +558,11 @@ test('webrtc transport: raw channel — a factory is asked on every open(), and 
   await assert.rejects(pending, /terminated/);
   assert.strictEqual(opened, 0);
   assert.strictEqual(slow.active, false);
+  // The channel the factory made for nobody is closed, not leaked open.
+  await within(
+    waitFor(() => late !== null && late.readyState !== 'open', 'late channel closed'),
+    'late channel closed',
+  );
 });
 
 test('webrtc transport: raw channel — a framing error closes the channel on both halves', async (t) => {
@@ -693,4 +700,79 @@ test('webrtc transport: over a link the backpressure fault closes the channel, a
   // The LINK is not closed for it: what closed is the channel.
   assert.notStrictEqual(a.state, 'closed');
   assert.notStrictEqual(b.state, 'closed');
+});
+
+test('webrtc transport: raw channel — a send() that throws mid-message closes the channel; one that throws first loses that message only', async (t) => {
+  // Mid-message: the peer holds a message with no end, and nothing sent
+  // after it would parse — the channel is closed, locally, and the write
+  // answers false rather than throwing into the core.
+  const desync = await rawChannelPair(t, { fake: { maxMessageSize: 4096 } });
+  const errors = [];
+  const client = new ClientRtcTransport('webrtc:host', { channel: desync.a, maxMessageSize: 4096 });
+  client.on('error', (error) => errors.push(error));
+  const host = new RtcPeerTransport(desync.b, { onError: (error) => errors.push(error), maxMessageSize: 4096 });
+  t.after(() => client.close());
+  await client.open();
+  const closes = [];
+  client.on('close', () => closes.push('client'));
+  host.on('close', () => closes.push('host'));
+  const send = desync.a.send.bind(desync.a);
+  let fragments = 0;
+  desync.a.send = (frame) => {
+    if (++fragments === 2) throw new Error('boom');
+    return send(frame);
+  };
+  assert.strictEqual(client.write(new Uint8Array(10_000)), false, 'lost, said with a false');
+  assert.strictEqual(errors.length, 1);
+  assert.strictEqual(errors[0].code, 'desync');
+  assert.match(errors[0].message, /mid-message/);
+  assert.strictEqual(fragments, 2, 'the encoder did not go on after the fragment it lost');
+  await within(
+    waitFor(() => closes.length === 2, 'both halves down'),
+    'both halves down',
+  );
+  assert.strictEqual(client.write?.call ? client.active : false, false);
+
+  // Before the first fragment: the wire is intact, this message is lost,
+  // the next one goes.
+  const once = await rawChannelPair(t);
+  const faults = [];
+  const again = new ClientRtcTransport('webrtc:host', { channel: once.a });
+  again.on('error', (error) => faults.push(error));
+  const peer = new RtcPeerTransport(once.b);
+  t.after(() => again.close());
+  await again.open();
+  const packets = [];
+  peer.on('packet', (text) => packets.push(text));
+  const sendOnce = once.a.send.bind(once.a);
+  let refused = false;
+  once.a.send = (frame) => {
+    if (!refused) {
+      refused = true;
+      throw new TypeError('message too large');
+    }
+    return sendOnce(frame);
+  };
+  assert.strictEqual(again.write('lost'), false);
+  assert.strictEqual(faults.length, 1);
+  assert.strictEqual(faults[0].code, 'send');
+  assert.strictEqual(again.active, true, 'the channel stays');
+  assert.strictEqual(again.write('kept'), true);
+  await within(
+    waitFor(() => packets.includes('kept'), 'delivery'),
+    'delivery',
+  );
+  assert.deepStrictEqual(packets, ['kept']);
+});
+
+test('webrtc transport: raw channel — a closed channel is refused by the host half at construction', async (t) => {
+  const { a, b } = await rawChannelPair(t);
+  b.close();
+  await within(
+    waitFor(() => b.readyState === 'closed', 'closed'),
+    'closed',
+  );
+  assert.throws(() => new RtcPeerTransport(b), /the data channel is closed/);
+  assert.throws(() => new RtcPeerTransport(b), TypeError);
+  void a;
 });

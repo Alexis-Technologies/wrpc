@@ -1352,6 +1352,22 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **WebRTC: a `send()` the channel throws from cannot desynchronise the
+  wire, and never reaches the core.** `RTCDataChannel.send()` throws when
+  the channel closed under the transport or refuses a message, and the
+  frame encoder used to go on with the next fragment — the peer was left a
+  message with no end, after which nothing parsed — while the exception
+  came out of `write()` into the dispatcher. The codec now owns the one
+  call to `send()`: thrown mid-message, the encoder stops, the fault is
+  reported (code `desync`) and the CHANNEL is closed, locally, so over a
+  link the link redials rather than ending; thrown before the first
+  fragment, that message alone is lost and reported (code `send`); on a
+  channel that is no longer open the close event says it all. `write()`
+  answers `false` for a lost message. Also: an `RtcPeerTransport` over a
+  channel that is closing or closed is a `TypeError` at construction, not
+  a surprise at the first write; a channel a factory produced after
+  `terminate()` won is closed, not left open for nobody; an inflate
+  settling on a channel a redial replaced no longer hangs up the new one.
 - **WebRTC: a `false` from `write()` under an asynchronous codec is
   followed by `'drain'`; the water marks are validated.** The transports
   counted the bytes a codec was still compressing towards the high-water

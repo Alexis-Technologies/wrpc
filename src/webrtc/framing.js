@@ -113,6 +113,10 @@ class FrameEncoder {
   // allocation, not the copy, is the cost. The price is a contract — see
   // encode().
   #scratch;
+  // Between the first fragment of a message and its last: a sink that
+  // threw while this is true left the peer a message with no end, and
+  // nothing sent after it would parse — the channel is done for.
+  partial = false;
 
   constructor(maxMessageSize) {
     if (!Number.isInteger(maxMessageSize) || maxMessageSize <= HEADER_BYTES) {
@@ -145,6 +149,7 @@ class FrameEncoder {
     }
     let offset = 0;
     let count = 0;
+    this.partial = true;
     while (offset < total) {
       const size = total - offset < room ? total - offset : room;
       scratch[0] = offset + size === total ? kind | FLAG_FIN : kind;
@@ -153,6 +158,7 @@ class FrameEncoder {
       offset += size;
       count++;
     }
+    this.partial = false;
     return count;
   }
 

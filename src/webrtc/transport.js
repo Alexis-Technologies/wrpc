@@ -94,6 +94,14 @@ const toBytes = (data) => {
 
 const CLOSED_CHANNEL = 'The data channel is closed; pass a factory as `channel` to reconnect';
 
+const closeChannelQuietly = (channel) => {
+  try {
+    channel.close();
+  } catch {
+    // Already closed.
+  }
+};
+
 // A raw channel may still be connecting when it is handed over (created
 // before the peer connection came up); an already closed one is refused,
 // not waited on — nothing would ever open it again.
@@ -163,6 +171,8 @@ class ChannelCodec {
   #maxBackpressure;
   #onFault;
   #faulted = false;
+  // A send() that failed during the current send(): its answer is false.
+  #lost = false;
 
   constructor(
     channel,
@@ -174,7 +184,17 @@ class ChannelCodec {
     this.#encoder = new FrameEncoder(maxMessageSize);
     this.#decoder = new FrameDecoder(framing);
     this.#decoder.compressed = compression !== null;
-    this.#sink = (frame) => channel.send(frame);
+    // The one place channel.send() runs: what it throws — closed under us,
+    // a message the implementation refuses — is caught here, never into
+    // the core, and never lets the encoder go on after a fragment it lost.
+    this.#sink = (frame) => {
+      if (this.#faulted) return;
+      try {
+        channel.send(frame);
+      } catch (error) {
+        this.#sendFailed(error);
+      }
+    };
     this.#compression = compression;
     this.#maxInflate = framing?.maxReassembly ?? DEFAULT_MAX_REASSEMBLY;
     this.#onMessage = onMessage;
@@ -221,9 +241,31 @@ class ChannelCodec {
       else this.#compress(KIND_TEXT, TEXT_ENCODER.encode(data));
     } else if (plain || size < compression.encode.threshold) this.#enqueue(KIND_BINARY, bytes);
     else this.#compress(KIND_BINARY, bytes);
+    if (this.#lost) {
+      this.#lost = false;
+      return false;
+    }
     if (this.#channel.bufferedAmount + this.#pending <= this.#highWater) return true;
     this.#blocked = true;
     return false;
+  }
+
+  // channel.send() threw. Mid-message the peer holds a message with no end
+  // and nothing sent after it would parse: the channel is closed — locally,
+  // so over a link that is a redial. Before the first fragment the wire is
+  // intact and only this message is lost, which the fault says. A channel
+  // that is no longer open says so through its own close event instead.
+  #sendFailed(error) {
+    this.#lost = true;
+    const partial = this.#encoder.partial;
+    const closed = this.#channel.readyState !== 'open';
+    if (partial || closed) this.#faulted = true;
+    if (closed && !partial) return;
+    const wrapped = new Error(`data channel send failed${partial ? ' mid-message' : ''}: ${error?.message ?? error}`);
+    wrapped.code = partial ? 'desync' : 'send';
+    wrapped.cause = error;
+    if (this.#onFault !== null) this.#onFault(wrapped);
+    if (partial) this.#channel.close();
   }
 
   /**
@@ -442,7 +484,12 @@ class ClientRtcTransport extends ClientTransport {
   async #openChannel(source) {
     const attempt = ++this.#attempt;
     const channel = typeof source === 'function' ? await source() : source;
-    if (attempt !== this.#attempt) throw new Error('Connection terminated');
+    if (attempt !== this.#attempt) {
+      // terminate() won while the factory was working: what it made is
+      // closed, not left open for nobody.
+      if (isRtcDataChannel(channel)) closeChannelQuietly(channel);
+      throw new Error('Connection terminated');
+    }
     if (!isRtcDataChannel(channel)) {
       throw new TypeError('WebRTC transport: channel must be a data channel, or a factory returning one');
     }
@@ -459,7 +506,11 @@ class ClientRtcTransport extends ClientTransport {
     const codec = new ChannelCodec(channel, maxMessageSize, this.#framing, {
       compression,
       onMessage: (_kind, data) => void this.emit('message', data),
-      onError: (error) => this.#violation(error),
+      // Scoped to THIS codec: a stale channel's inflate settling after a
+      // redial must not hang up the channel that replaced it.
+      onError: (error) => {
+        if (this.#codec === codec) this.#violation(error);
+      },
       highWater: this.#highWater,
       lowWater: this.#lowWater,
       onDrain: () => void this.emit('drain').catch((error) => this.#escalate(error)),
@@ -610,6 +661,11 @@ class RtcPeerTransport extends ServerTransport {
     const raw = isRtcDataChannel(source);
     const channel = raw ? source : (source?.hostChannel ?? null);
     if (!channel) throw new Error('RtcPeerTransport: no host channel — pass a data channel or a link that has one');
+    // A channel that is closing or closed never opens again: refused here,
+    // not discovered at the first write.
+    if (raw && (channel.readyState === 'closing' || channel.readyState === 'closed')) {
+      throw new TypeError(`RtcPeerTransport: the data channel is ${channel.readyState}`);
+    }
     super(raw ? (peer ?? (channel.label || 'data channel')) : peer);
     const link = raw ? null : source;
     this.#link = link;

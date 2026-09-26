@@ -455,7 +455,11 @@ marks sits `maxBackpressure` (64 MiB, `0` to switch it off): a write that
 would put the channel past it — its buffer, the codec's pending bytes and
 the message together — is refused and the channel closed, locally, so a
 peer that never drains cannot hold the process's memory. Over a link that
-is a redial; over a raw channel it is the end of the channel.
+is a redial; over a raw channel it is the end of the channel. A `send()` the
+channel itself refuses is never thrown into your code: refused mid-message
+it closes the channel too (the peer holds a message with no end, and nothing
+after it would parse — code `desync` on the error), refused before the
+first fragment it loses that one message and says so (code `send`).
 
 ### Compression {#compression}
 
