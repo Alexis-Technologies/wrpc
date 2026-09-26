@@ -119,6 +119,7 @@ want an alert for.
 | `encryption.replay`, `encryption.unwrap` | error | The shared replay store could not be asked (the request was refused `503`); a primitive threw while unwrapping a sealed request (`500`) |
 | `broker.dead` | warn | A message exhausted its retries |
 | `broker.evict` | warn | The per-token client cache is thrashing: more distinct tokens in flight than `tokenClients`, a session restore per message. The evicted client finishes what it holds, then closes |
+| `broker.rpc.capacity` | warn | Hellos refused at `maxSessions` since the last sweep (`refused`, `sessions`, `max`) — one line per sweep, not per hello |
 | `broker.refused` | warn | A sealed delivery a consumer could not open (`reason`: `unsealed`, `kid`, `open`, `format`); `kid` is retried, the rest dead-letter |
 | `feed.refused` | warn/debug/info | A sealed entry a feed could not open: `warn` once per reason per ten seconds with the running `count`, `debug` in between, an `info` summary when the feed ends |
 | `broker.feed.resume` | warn/debug | A resume token was refused. `reason: 'signature'` means it was **tampered with** |

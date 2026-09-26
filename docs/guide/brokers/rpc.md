@@ -78,6 +78,20 @@ Stateless requests have none of this: a request nobody took fails its calls
 with `503` when the broker can tell (NATS, the in-process broker), or with
 the call timeout otherwise.
 
+## What the broker's ACL is the boundary for
+
+The binding trusts the broker to deliver a message to the address it names
+and nobody else. A stateless `response` is matched to its `request` by the
+correlation id on the client's **own inbox**: whoever can publish to that
+inbox can answer a request, and whoever can publish to the service address
+can make one — the same trust a socket places in the network. A session id is
+chosen by the client (`generateId`), names the session in every frame, and is
+never handed to a second sender: a `hello` naming a session that has seen a
+frame, or coming from another inbox, is ignored. Where the broker's ACL is
+not enough — a shared cluster, a topic others can read or write —
+[`encryption`](../encryption#brokers) binds every frame to its address, kind,
+correlation id and sequence number, so a frame does not open anywhere else.
+
 ## Draining
 
 A server that starts [draining](../production#graceful-shutdown) stops
@@ -93,6 +107,7 @@ close.
 | `address` | — | The service address outright, instead of `service` |
 | `idleTimeout` | `90000` | A session silent this long is ended |
 | `highWaterMark` | `1024` | Unconfirmed frames per session before `write()` reports backpressure |
+| `maxSessions` | `10000` | Sessions one instance holds at once; a `hello` past it gets `bye` (`too many sessions`), reported as `broker.rpc.capacity`. `0` lifts the cap |
 | `sessions` | `true` | `false` serves stateless requests only |
 | `compression` | off | Per-message deflate on the binding — see [Compression](#compression) |
 | `maxMessage` | 16 MiB | The largest inflated frame accepted; past it the session ends |

@@ -1345,6 +1345,19 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **`attachBrokerRpc`: a cap on sessions, and a live session cannot be
+  taken over by a second `hello`.** Every `hello` that reached the service
+  address opened a session — a Client, a transport, a table entry until
+  `idleTimeout` — with no ceiling, so one sender could grow an instance
+  without bound; and a `hello` naming an existing session id replaced that
+  session outright, ending it for the client that held it and handing the
+  id to whoever sent the hello. `maxSessions` (default 10 000, `0` for no
+  limit) answers a hello past it with `bye` and reports the refusals as one
+  `broker.rpc.capacity` line per sweep; a hello for a session that has seen
+  a frame, or from another inbox, is ignored — only a client re-saying
+  hello for a session that never got going is given a fresh one. The
+  [trust model](./docs/guide/brokers/rpc.md#what-the-brokers-acl-is-the-boundary-for)
+  of the stateless mode is written down.
 - **Sealed broker messages: a key the service does not hold yet is a
   retry, refusals are counted, and a feed's are not a log flood.** A
   consumer dead-lettered every delivery it could not open with `400`,

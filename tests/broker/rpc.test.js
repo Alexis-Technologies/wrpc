@@ -471,3 +471,115 @@ test('broker rpc: backpressure on a slow broker, both halves', async (t) => {
   await clientDrained;
   assert.ok(client.active);
 });
+
+// Every warn and debug line the binding writes, for the capacity asserts.
+const recording = () => {
+  const entries = [];
+  const logger = {
+    log() {},
+    info() {},
+    error() {},
+    debug: (entry) => entries.push({ level: 'debug', ...entry }),
+    warn: (entry) => entries.push({ level: 'warn', ...entry }),
+    child: () => logger,
+  };
+  return { logger, entries };
+};
+
+test('broker rpc: maxSessions caps the sessions one instance holds, and reports the refusals once per sweep', async (t) => {
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(() => broker.close());
+  const app = createApp();
+  const { logger, entries } = recording();
+  const a = await instance(t, broker, app, { attach: { maxSessions: 1, idleTimeout: 150, logger } });
+  const held = await connect(t, broker, { mode: 'session' });
+  assert.strictEqual(await held.api.calc.add({ a: 1, b: 1 }), 2);
+  for (let i = 0; i < 3; i++) {
+    await assert.rejects(
+      WrpcClient.connect('broker://calc', {
+        transport: 'broker',
+        broker,
+        mode: 'session',
+        reconnect: false,
+        heartbeat: false,
+        connectTimeout: 500,
+      }),
+      /Session ended: too many sessions/,
+    );
+  }
+  assert.strictEqual(a.handle.sessions, 1, 'the held session is untouched');
+  await waitFor(() => entries.some((entry) => entry.event === 'broker.rpc.capacity'));
+  const capacity = entries.filter((entry) => entry.event === 'broker.rpc.capacity');
+  assert.deepStrictEqual(
+    capacity.map((entry) => [entry.level, entry.refused, entry.sessions, entry.max]),
+    [['warn', 3, 1, 1]],
+    'one line for the three refusals',
+  );
+  // Stateless requests are not sessions: the cap does not touch them.
+  const stateless = await connect(t, broker);
+  assert.strictEqual(await stateless.api.calc.add({ a: 2, b: 2 }), 4);
+  // 0 lifts the cap; a bad value is refused.
+  const rpc = new RpcServer({ router: app.router, logger: quiet, sse: false });
+  t.after(() => rpc.close());
+  await assert.rejects(attachBrokerRpc(rpc, broker, { service: 'x', maxSessions: -1 }), /maxSessions/);
+  await assert.rejects(attachBrokerRpc(rpc, broker, { service: 'x', maxSessions: 1.5 }), /maxSessions/);
+  const unlimited = await attachBrokerRpc(rpc, broker, { service: 'x', maxSessions: 0, logger: quiet });
+  await unlimited.stop();
+});
+
+test('broker rpc: a hello naming a live session, or coming from another inbox, does not take it over', async (t) => {
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(() => broker.close());
+  const app = createApp();
+  const { logger, entries } = recording();
+  const a = await instance(t, broker, app, { attach: { logger } });
+  const mine = broker.direct.inbox();
+  const replies = [];
+  await broker.direct.listen(mine, (message) => replies.push(message));
+  const theirs = broker.direct.inbox();
+  const stolen = [];
+  await broker.direct.listen(theirs, (message) => stolen.push(message));
+  const hello = { headers: { 'wrpc-kind': 'hello' }, correlationId: 'live', replyTo: mine };
+  await broker.direct.send(a.handle.address, '', hello);
+  await waitFor(() => replies.length === 1);
+  const instanceInbox = replies[0].headers['wrpc-inbox'];
+  // The session gets going: one frame, answered.
+  const call = JSON.stringify({ type: 'call', id: 'c1', method: 'calc/add', args: { a: 2, b: 3 } });
+  await broker.direct.send(instanceInbox, call, {
+    headers: { 'wrpc-kind': 'packet', 'wrpc-seq': '1' },
+    correlationId: 'live',
+    replyTo: mine,
+  });
+  await waitFor(() => replies.length === 2);
+  assert.match(String(replies[1].body), /"result":5/);
+  // A stray hello from the session's own client, and one from a sender who
+  // guessed the id: neither is answered, and the session stays as it was —
+  // the next frame in sequence is still served.
+  await broker.direct.send(a.handle.address, '', hello);
+  await broker.direct.send(a.handle.address, '', { ...hello, replyTo: theirs });
+  await timers.setTimeout(30);
+  assert.strictEqual(replies.length, 2, 'no second welcome');
+  assert.deepStrictEqual(stolen, [], 'the guesser hears nothing');
+  assert.strictEqual(a.handle.sessions, 1);
+  await broker.direct.send(instanceInbox, call.replace('c1', 'c2'), {
+    headers: { 'wrpc-kind': 'packet', 'wrpc-seq': '2' },
+    correlationId: 'live',
+    replyTo: mine,
+  });
+  await waitFor(() => replies.length === 3);
+  assert.match(String(replies[2].body), /"result":5/);
+  assert.deepStrictEqual(
+    entries.filter((entry) => entry.event === 'broker.rpc.hello.duplicate').map((entry) => [entry.level, entry.live]),
+    [
+      ['debug', true],
+      ['debug', true],
+    ],
+  );
+  // A session that never got going (no frame yet), from another inbox: ignored too.
+  await broker.direct.send(a.handle.address, '', { ...hello, correlationId: 'fresh' });
+  await waitFor(() => replies.length === 4);
+  await broker.direct.send(a.handle.address, '', { ...hello, correlationId: 'fresh', replyTo: theirs });
+  await timers.setTimeout(30);
+  assert.deepStrictEqual(stolen, []);
+  assert.strictEqual(a.handle.sessions, 2);
+});

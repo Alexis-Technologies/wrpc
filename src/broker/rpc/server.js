@@ -60,6 +60,12 @@ const frameBody = (message, local, maxMessage) => {
 
 const DEFAULT_IDLE_TIMEOUT = 90_000; // 3x the client's 30 s heartbeat
 const DEFAULT_HIGH_WATER_MARK = 1024;
+// Sessions one instance holds at once: every `hello` that reaches the
+// service address costs a Client, a transport and a table entry until
+// `idleTimeout`, so without a ceiling one sender could grow an instance
+// without bound. Past it a hello is answered `bye` — the sender may try
+// another instance, the group spreads them. 0 lifts the cap.
+const DEFAULT_MAX_SESSIONS = 10_000;
 
 // The server half of one session: what the core's Client writes to. The
 // base supplies send()/error() over write().
@@ -177,6 +183,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     address: addressOption,
     idleTimeout = DEFAULT_IDLE_TIMEOUT,
     highWaterMark = DEFAULT_HIGH_WATER_MARK,
+    maxSessions = DEFAULT_MAX_SESSIONS,
     sessions: allowSessions = true,
     logger = null,
     compression = null,
@@ -204,10 +211,16 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
   if (!Number.isInteger(highWaterMark) || highWaterMark <= 0) {
     throw new TypeError('attachBrokerRpc: highWaterMark must be a positive integer');
   }
+  if (!Number.isInteger(maxSessions) || maxSessions < 0) {
+    throw new TypeError('attachBrokerRpc: maxSessions must be a non-negative integer (0 for no limit)');
+  }
   const system = brokerName(broker) === 'custom' ? brokerName(direct) : brokerName(broker);
   const log = createLoggerWriter(logger ?? globalThis.console).child({ component: 'broker.rpc', broker: system });
   const inbox = direct.inbox();
-  const sessions = new Map(); // session id -> { transport, client, expectSeq, lastSeen }
+  const sessions = new Map(); // session id -> { transport, client, expectSeq, lastSeen, peer, compression }
+  // Hellos refused at the cap since the last sweep: one line per sweep for
+  // however many, not one per hello — a sender at the cap is a flood.
+  let refused = 0;
   const basePath = rpc.basePath || '/';
 
   const reply = (message, headers, body) => {
@@ -267,9 +280,23 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     if (!allowSessions) {
       return void reply(message, { [HEADER_KIND]: KIND.BYE, [HEADER_REASON]: 'sessions disabled' }, '');
     }
+    const existing = sessions.get(id);
+    if (existing === undefined && maxSessions > 0 && sessions.size >= maxSessions) {
+      refused++;
+      return void reply(message, { [HEADER_KIND]: KIND.BYE, [HEADER_REASON]: 'too many sessions' }, '');
+    }
     // A client re-saying hello with the same id (its welcome was lost) gets
-    // a fresh session: the old one could not have seen a frame yet.
-    if (sessions.has(id)) endSession(id, 'replaced', { notify: false });
+    // a fresh session — provided the old one has seen no frame yet and the
+    // hello comes from the same inbox. A LIVE session is never replaced by
+    // a hello: neither by its own client's stray one, nor by a sender who
+    // guessed its id, which used to end the session for the client that
+    // held it and hand its id to the guesser.
+    if (existing !== undefined) {
+      if (existing.expectSeq !== 1 || existing.peer !== message.replyTo) {
+        return void log.debug({ event: 'broker.rpc.hello.duplicate', session: id, live: existing.expectSeq !== 1 });
+      }
+      endSession(id, 'replaced', { notify: false });
+    }
     const active = agree(message.headers?.[HEADER_ENC]);
     const transport = new BrokerSessionTransport({
       direct,
@@ -283,7 +310,14 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
         endSession(id, 'send failed', { notify: false });
       },
     });
-    const session = { transport, client: null, expectSeq: 1, lastSeen: Date.now(), compression: active };
+    const session = {
+      transport,
+      client: null,
+      expectSeq: 1,
+      lastSeen: Date.now(),
+      compression: active,
+      peer: message.replyTo,
+    };
     sessions.set(id, session);
     // The core's own close path (RpcServer.close, client.close()) removes it.
     transport.once('close', () => {
@@ -356,6 +390,10 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     () => {
       const cutoff = Date.now() - idleTimeout;
       for (const [id, session] of sessions) if (session.lastSeen < cutoff) endSession(id, 'idle');
+      if (refused > 0) {
+        log.warn({ event: 'broker.rpc.capacity', refused, sessions: sessions.size, max: maxSessions });
+        refused = 0;
+      }
     },
     Math.max(50, Math.min(idleTimeout / 3, 10_000)),
   );

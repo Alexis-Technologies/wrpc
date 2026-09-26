@@ -401,6 +401,12 @@ export interface BrokerRpcOptions {
   idleTimeout?: number;
   /** Unconfirmed frames per session before write() reports backpressure. Default 1024. */
   highWaterMark?: number;
+  /**
+   * Sessions this instance holds at once (default 10 000; `0` for no
+   * limit). A `hello` past it is answered `bye` ("too many sessions") and
+   * counted into one `broker.rpc.capacity` line per sweep.
+   */
+  maxSessions?: number;
   /** false serves stateless requests only. Default true. */
   sessions?: boolean;
   logger?: WrpcLogger | boolean | null;
