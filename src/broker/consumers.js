@@ -30,7 +30,7 @@ const { createLoggerWriter } = require('../logging.js');
 const { capabilityOf, brokerName } = require('./port.js');
 const { normalizeRetry, decide } = require('./retry.js');
 const { rpcOf } = require('./host.js');
-const { toText } = require('./ids.js');
+const { toText, reasonText } = require('./ids.js');
 const { createBrokerSealing } = require('./sealing.js');
 
 const DEFAULT_PREFETCH = 16;
@@ -429,7 +429,10 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     if (action === 'ack') return delivery.ack();
     if (action === 'retry') return delivery.retry({ delay });
     if (action === 'release') return delivery.release();
-    const reason = `${code}${error?.message ? ` ${error.message}` : ''}`;
+    // One line, bounded: a header value on every broker (a validator's
+    // multi-line message used to make NATS refuse the dead-letter publish,
+    // and the message came back forever).
+    const reason = reasonText(`${code}${error?.message ? ` ${error.message}` : ''}`);
     // `err` alongside the code: the code says a message was dead-lettered,
     // the error says why, and only the code was ever recorded.
     log.warn({

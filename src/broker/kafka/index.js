@@ -30,7 +30,7 @@ const { resolveGenerateId } = require('../../utils.js');
 // characters a broker refuses in a consumer name, subject or queue name
 // fails at the driver, not here.
 const { TopicTails } = require('../tail.js');
-const { codedError, toText, toHeaders, encodeToken } = require('../ids.js');
+const { codedError, toText, toHeaders, reasonText, encodeToken } = require('../ids.js');
 const {
   detectFlavor,
   consumerConfig,
@@ -623,7 +623,7 @@ const createKafkaBroker = (options = {}) => {
               await send(queueTopic(deadLetter), body, {
                 headers: {
                   ...headers,
-                  [DEAD_REASON_HEADER]: String(reason),
+                  [DEAD_REASON_HEADER]: reasonText(reason),
                   [ATTEMPT_HEADER]: String(attempt),
                 },
               });

@@ -61,7 +61,11 @@ export interface LogRead extends AsyncIterable<LogEntry> {
 /** An ordered, replayable journal — what a durable feed reads from. */
 export interface BrokerLog {
   name?: string;
-  append(topic: string, value: string | Uint8Array, options?: { headers?: MessageHeaders; key?: string }): Promise<string>;
+  append(
+    topic: string,
+    value: string | Uint8Array,
+    options?: { headers?: MessageHeaders; key?: string },
+  ): Promise<string>;
   read(topic: string, options?: LogReadOptions): LogRead;
   /** Syntax only: the id when well-formed, null otherwise. */
   parseId(text: unknown): string | null;
@@ -82,7 +86,11 @@ export interface Delivery {
   retry(options?: { delay?: number }): Promise<void>;
   /** Back to the queue, attempt unchanged. */
   release(): Promise<void>;
-  /** To the consumer's dead-letter queue, or dropped when it has none. */
+  /**
+   * To the consumer's dead-letter queue, or dropped when it has none. The
+   * reason is folded to one line of at most 512 characters (control
+   * characters become spaces): a header value on every broker.
+   */
   deadLetter(reason?: string): Promise<void>;
 }
 
@@ -107,12 +115,12 @@ export interface QueueConsumer {
 /** At-least-once work distribution between competing consumers. */
 export interface BrokerQueue {
   name?: string;
-  produce(queue: string, body: string | Uint8Array, options?: { headers?: MessageHeaders; key?: string }): Promise<void>;
-  consume(
+  produce(
     queue: string,
-    onDelivery: (delivery: Delivery) => unknown,
-    options?: ConsumeOptions,
-  ): Promise<QueueConsumer>;
+    body: string | Uint8Array,
+    options?: { headers?: MessageHeaders; key?: string },
+  ): Promise<void>;
+  consume(queue: string, onDelivery: (delivery: Delivery) => unknown, options?: ConsumeOptions): Promise<QueueConsumer>;
 }
 
 // ---------------------------------------------------------------------------
@@ -351,7 +359,11 @@ export interface PublishedEvent {
 
 export interface Publisher {
   /** Resolves with the log id for a log target, undefined for a queue. */
-  publish(name: string, data: unknown, options?: { headers?: MessageHeaders; key?: string }): Promise<string | undefined>;
+  publish(
+    name: string,
+    data: unknown,
+    options?: { headers?: MessageHeaders; key?: string },
+  ): Promise<string | undefined>;
   readonly events: Array<string>;
 }
 

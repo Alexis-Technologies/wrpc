@@ -1345,6 +1345,17 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **A dead-letter reason spanning lines no longer keeps the message
+  alive.** `x-wrpc-dead-reason` is a broker header, and a header is a
+  line: NATS refuses a value holding CR or LF, so a handler error whose
+  message listed its failures one per line (a validator's) made the
+  dead-letter publish reject, the settlement never landed, and the message
+  was redelivered forever. Every adapter — memory, Redis, NATS, RabbitMQ,
+  Kafka — now folds the reason to one line of at most 512 characters
+  (runs of control characters become one space), and `attachConsumers`
+  folds its `"<code> <message>"` the same way; `onDeadLetter` still
+  receives the whole `error`. The in-repo NATS fake refuses CR/LF like the
+  real client, so the contract suite proves it.
 - **`attachConsumers`: evicting a token client no longer releases the
   deliveries it holds.** Under `identity.trust: 'token'` the per-token
   client cache (`tokenClients`, LRU) closed the evicted client on the spot,

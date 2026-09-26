@@ -25,7 +25,7 @@ const { resolveGenerateId } = require('../utils.js');
 // The cost is that a generator answering characters a broker refuses in a
 // consumer name, subject or queue name fails at the driver, not here.
 const shortId = () => generateUUID().replace(/-/g, '').slice(0, 12);
-const { codedError, toText, toHeaders } = require('./ids.js');
+const { codedError, toText, toHeaders, reasonText } = require('./ids.js');
 
 const DEFAULT_LOG_ENTRIES = 10_000;
 const DEFAULT_PREFETCH = 16;
@@ -367,7 +367,7 @@ class MemoryBroker {
           if (consumer.deadLetter === null) return;
           broker.#enqueue(consumer.deadLetter, message.body, {
             ...message.headers,
-            'x-wrpc-dead-reason': String(reason),
+            'x-wrpc-dead-reason': reasonText(reason),
             'x-wrpc-attempt': String(message.attempt),
           });
         }),

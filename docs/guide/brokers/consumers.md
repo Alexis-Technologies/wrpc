@@ -104,8 +104,10 @@ that fell over, and at-least-once delivery already demands an idempotent
 handler. Narrow `retryOn` where that is not true.
 
 A dead letter lands on the `deadLetter` queue with `x-wrpc-dead-reason`
-(`"<code> <message>"`) and `x-wrpc-attempt` headers, and `onDeadLetter`
-(an `attachConsumers` option) runs first — the place for an alert.
+(`"<code> <message>"`, folded to one line of at most 512 characters — a
+header value on every broker) and `x-wrpc-attempt` headers, and
+`onDeadLetter` (an `attachConsumers` option) runs first — the place for an
+alert, and where the whole `error` is still available.
 
 ::: warning At least once means duplicates
 A consumer can see a message twice: a crash between the handler's side effect

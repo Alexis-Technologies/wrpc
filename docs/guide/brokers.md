@@ -135,7 +135,7 @@ const consumer = await queue.consume('invoices', async (delivery) => {
 | `ack()` | done | — |
 | `retry({ delay })` | redelivered after `delay` ms | + 1 |
 | `release()` | back to the queue now (a draining node handing work over) | unchanged |
-| `deadLetter(reason)` | moved to the `deadLetter` queue with `x-wrpc-dead-reason` and `x-wrpc-attempt` headers | — |
+| `deadLetter(reason)` | moved to the `deadLetter` queue with `x-wrpc-dead-reason` (one line, at most 512 characters) and `x-wrpc-attempt` headers | — |
 
 - The attempt counter belongs to the adapter, not the broker: RabbitMQ 4 does
   not count a requeue, so the adapters carry it in an `x-wrpc-attempt` header

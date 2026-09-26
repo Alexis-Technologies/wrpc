@@ -37,7 +37,7 @@ const { resolveGenerateId } = require('../../utils.js');
 // characters a broker refuses in a consumer name, subject or queue name
 // fails at the driver, not here.
 const { TopicTails } = require('../tail.js');
-const { codedError, toText, toBytes, toHeaders, encodeToken } = require('../ids.js');
+const { codedError, toText, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_BLOCK_MS = 1000;
@@ -418,7 +418,7 @@ const createRedisBroker = (options = {}) => {
             if (deadLetter) {
               const headers = {
                 ...entry.headers,
-                [DEAD_REASON_HEADER]: String(reason),
+                [DEAD_REASON_HEADER]: reasonText(reason),
                 [ATTEMPT_HEADER]: String(attempt),
               };
               await client.xadd(queueKey(deadLetter), '*', ...encodeFields(message.body, headers));

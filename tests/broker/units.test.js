@@ -11,7 +11,16 @@ const {
   capabilityOf,
   brokerName,
 } = require('../../src/broker/port.js');
-const { codedError, toText, toBytes, toHeaders, encodeToken, signId, openId } = require('../../src/broker/ids.js');
+const {
+  codedError,
+  toText,
+  toBytes,
+  toHeaders,
+  reasonText,
+  encodeToken,
+  signId,
+  openId,
+} = require('../../src/broker/ids.js');
 const { DEFAULT_RETRY, normalizeRetry, decide } = require('../../src/broker/retry.js');
 
 const noop = () => {};
@@ -43,6 +52,16 @@ test('port: capabilityOf accepts a broker or the bare capability', () => {
   assert.strictEqual(brokerName({ name: 'redis' }), 'redis');
   assert.strictEqual(brokerName({ name: '' }), 'custom');
   assert.strictEqual(brokerName(null), 'custom');
+});
+
+test('ids: a dead-letter reason is one bounded line', () => {
+  assert.strictEqual(reasonText('500 a\nb\r\nc'), '500 a b c');
+  assert.strictEqual(reasonText('  x\u2028y\u2029z\0w\t '), 'x y z w');
+  assert.strictEqual(reasonText(undefined), '');
+  assert.strictEqual(reasonText(null), '');
+  assert.strictEqual(reasonText(42), '42');
+  assert.strictEqual(reasonText('a'.repeat(600)).length, 512);
+  assert.strictEqual(reasonText('abcdef', 3), 'abc');
 });
 
 test('ids: coded errors are exposed', () => {

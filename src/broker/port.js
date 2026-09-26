@@ -60,7 +60,10 @@
 //     - release: back to the queue, attempt unchanged (a draining node
 //       handing work to a healthy one).
 //     - deadLetter: to the `deadLetter` queue with `x-wrpc-dead-reason` and
-//       `x-wrpc-attempt` headers, or dropped when none is configured.
+//       `x-wrpc-attempt` headers, or dropped when none is configured. The
+//       reason is folded to ONE line of at most 512 characters (control
+//       characters become spaces) — a header value on every broker; the
+//       adapter folds it, whoever called it.
 //     - stop(): no new deliveries; the unsettled ones are redelivered later.
 //
 // direct — addressable inboxes, the substrate of RPC over a broker:

@@ -56,6 +56,20 @@ const toHeaders = (value) => {
   return headers;
 };
 
+// A dead-letter reason is written into a broker header, and a header is a
+// line: NATS refuses a value holding CR or LF outright (nats-core's
+// validHeaderValue), so a handler error whose message spanned two lines — a
+// validator listing its failures — made deadLetter() reject, the settlement
+// never landed, and the message came back forever. One bounded line
+// whatever came in: every run of control characters (CR/LF, the separators
+// JSON does not escape, NUL) becomes a space.
+// eslint-disable-next-line no-control-regex
+const CONTROL = /[\x00-\x1f\x7f\u2028\u2029]+/g;
+const reasonText = (value, max = 512) => {
+  const text = (value === undefined || value === null ? '' : String(value)).replace(CONTROL, ' ').trim();
+  return text.length > max ? text.slice(0, max) : text;
+};
+
 const HEX = '0123456789ABCDEF';
 
 /**
@@ -113,4 +127,4 @@ const openId = (secret, signed, scope = '') => {
   return id;
 };
 
-module.exports = { codedError, toText, toBytes, toHeaders, encodeToken, signId, openId };
+module.exports = { codedError, toText, toBytes, toHeaders, reasonText, encodeToken, signId, openId };

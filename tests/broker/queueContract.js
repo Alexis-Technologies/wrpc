@@ -174,6 +174,26 @@ const runQueueContract = async (t, name, harness) => {
     assert.deepStrictEqual(seen, ['poison pill'], 'a dead-lettered message came back');
   });
 
+  await t.test(`${name}: a dead-letter reason spanning lines is folded to one header line`, async (sub) => {
+    const { queue } = await open(sub);
+    const name = await queueFor('q-dead-lines');
+    const dlq = await queueFor('q-dead-lines-dlq');
+    // A validator's message lists its failures one per line; a broker header
+    // is a line (NATS refuses CR/LF outright). The adapter folds it, so the
+    // settlement lands and the message does not come back forever.
+    await consume(sub, queue, name, (delivery) => delivery.deadLetter('500 first\nsecond\r\nthird'), {
+      deadLetter: dlq,
+    });
+    const dead = [];
+    await consume(sub, queue, dlq, (delivery) => {
+      dead.push(delivery);
+      return delivery.ack();
+    });
+    await queue.produce(name, 'multi');
+    await waitFor(() => dead.length === 1, { timeout });
+    assert.strictEqual(dead[0].headers['x-wrpc-dead-reason'], '500 first second third');
+  });
+
   await t.test(`${name}: the first settlement wins`, async (sub) => {
     const { queue } = await open(sub);
     const name = await queueFor('q-settle');

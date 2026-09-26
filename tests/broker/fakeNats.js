@@ -12,6 +12,9 @@
 class FakeHeaders {
   #map = new Map();
   set(name, value) {
+    // nats-core's validHeaderValue: a header is a line, and the real client
+    // throws on a value that would end it early.
+    if (/[\r\n]/.test(String(value))) throw new Error('invalid header value - \\r and \\n are not allowed.');
     this.#map.set(name, String(value));
   }
   get(name) {
