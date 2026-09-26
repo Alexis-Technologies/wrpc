@@ -53,6 +53,11 @@ test('amqp broker (fake): log contract', async (t) => {
           const queue = connection.server.queues.get(`wrpc.log.${topic}`);
           if (queue) queue.messages.splice(0, Math.max(0, queue.messages.length - keep));
         },
+        // The node the live reader's channel lives on goes away.
+        endLiveRead: async (topic) => {
+          const queue = connection.server.queues.get(`wrpc.log.${topic}`);
+          for (const consumer of queue?.consumers.values() ?? []) connection.server.killChannel(consumer.channel, 320);
+        },
       };
     },
     timeout: 4000,

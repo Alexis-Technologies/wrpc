@@ -382,10 +382,25 @@ const createKafkaBroker = (options = {}) => {
   };
 
   const tails = new TopicTails({
-    live: async (topic, { signal, onEntry }) => {
+    live: async (topic, { signal, onEntry, onEnd }) => {
       const name = await ensureTopic(logTopic(topic), logPartitions);
       const { high } = await watermarks(topic);
       const consumer = await openConsumer(readerGroup(), { fromBeginning: false }, { ephemeral: true });
+      // A crash of the tail's consumer is the end of the tail, whether or
+      // not kafkajs restarts it: its group is ephemeral and commits
+      // nothing, so a restarted consumer resolves `latest` afresh and
+      // whatever was appended meanwhile is gone from it. The readers move
+      // to a fresh tail and catch up from their own cursors instead.
+      let unwatch = () => {};
+      unwatch = healthWatcher(flavor, consumer, {
+        onDown: (error) => {
+          unwatch();
+          report('broker.kafka.tail', error ?? new Error('consumer crashed'), { topic });
+          void closeConsumer(consumer);
+          onEnd(error ?? new Error('consumer crashed'));
+        },
+        onUp: () => {},
+      });
       // Everything after the open under one catch: a subscribe or run that
       // fails used to leave the consumer connected and its group behind —
       // one per failed read, for the life of the broker.
@@ -414,10 +429,18 @@ const createKafkaBroker = (options = {}) => {
         // captured above instead of left to that race.
         await seekAll(consumer, name, high);
       } catch (error) {
+        unwatch();
         await closeConsumer(consumer);
         throw error;
       }
-      signal.addEventListener('abort', () => void closeConsumer(consumer), { once: true });
+      signal.addEventListener(
+        'abort',
+        () => {
+          unwatch();
+          void closeConsumer(consumer);
+        },
+        { once: true },
+      );
       // The tip as a vector: every partition's next offset minus one.
       const cursor = {};
       let any = false;

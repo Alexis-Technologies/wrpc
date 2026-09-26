@@ -1352,6 +1352,18 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **A feed's live read that the broker ends is replaced; the subscribers
+  miss nothing.** `TopicTails` shares one live read of a topic among every
+  local subscriber, and that read had no way to say it had died: a
+  RabbitMQ channel the server closed, a NATS pull that ended, a kafkajs
+  consumer that crashed left every subscription of the topic frozen for
+  good, silently. The adapters' `live()` now reports its end (`onEnd`,
+  additive — `broker.<name>.tail` in the log); the readers move to a fresh
+  tail, positioned before each catches up from its own cursor, so nothing
+  appended meanwhile is lost. A broker that cannot start the fresh tail is
+  asked again five times with a backoff, then the subscriptions end with
+  `503` and clients resubscribe with `lastEventId`. `TopicTails.close()`
+  fails a parked reader with `503` instead of leaving it waiting.
 - **A feed's catch-up no longer mistakes a slow page for the tip.** A
   reader resuming from a position, or reading from `'earliest'`, catches
   up through range reads until a page comes back short — which is the end

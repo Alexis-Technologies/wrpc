@@ -139,6 +139,26 @@ const runLogContract = async (t, name, harness) => {
     );
   });
 
+  await t.test(`${name}: a live tail the broker ended is replaced, and the reader misses nothing`, async (sub) => {
+    const env = await open(sub);
+    if (typeof env.endLiveRead !== 'function') return sub.skip('harness has no endLiveRead');
+    const topic = await topicFor('ended');
+    const read = env.log.read(topic, { from: 'latest' });
+    await read.ready;
+    const iterator = read[Symbol.asyncIterator]();
+    await env.log.append(topic, 'before');
+    assert.strictEqual((await iterator.next()).value.value, 'before');
+    // The broker ends the tail on its own — a node gone, a consumer
+    // cancelled: every subscription of the topic used to freeze for good.
+    await env.endLiveRead(topic);
+    await env.log.append(topic, 'during');
+    await timers.setTimeout(50);
+    await env.log.append(topic, 'after');
+    assert.strictEqual((await iterator.next()).value.value, 'during');
+    assert.strictEqual((await iterator.next()).value.value, 'after');
+    await iterator.return();
+  });
+
   await t.test(`${name}: a yielded id resumes exactly after its entry`, async (sub) => {
     const { log } = await open(sub);
     const topic = await topicFor('log-resume');

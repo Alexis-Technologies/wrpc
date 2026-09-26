@@ -230,7 +230,7 @@ const createNatsBroker = (options = {}) => {
   });
 
   const tails = new TopicTails({
-    live: async (topic, { signal, onEntry }) => {
+    live: async (topic, { signal, onEntry, onEnd }) => {
       const { js: stream } = await managers();
       const { name } = await streamState(topic);
       const state = await streamState(topic);
@@ -241,6 +241,7 @@ const createNatsBroker = (options = {}) => {
       const messages = await consumer.consume({ max_messages: 256 });
       signal.addEventListener('abort', () => void messages.close().catch(() => {}), { once: true });
       void (async () => {
+        let failure = null;
         try {
           for await (const message of messages) {
             message.ack();
@@ -248,8 +249,13 @@ const createNatsBroker = (options = {}) => {
             onEntry(entryOf(message));
           }
         } catch (error) {
+          failure = error;
           if (!signal.aborted && !closed) report('broker.nats.tail', error, { topic });
         }
+        // The pull ended without being asked to — the server's doing (the
+        // consumer deleted, the stream gone, the connection dropped): the
+        // readers move to a fresh tail instead of waiting on this one.
+        if (!signal.aborted && !closed) onEnd(failure ?? new Error('consume ended'));
       })();
       return state.last > 0 ? state.last : null;
     },

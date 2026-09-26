@@ -401,20 +401,30 @@ const createAmqpBroker = (options = {}) => {
   // One stream consumer, reading from `from` and handing every message to
   // `onMessage` until `stop()`. Streams need a prefetch, so each reader gets
   // its own channel.
-  const openStreamReader = async (topic, from, onMessage) => {
+  // `onEnd(error)` hears the reader die on its own — the server cancelled
+  // the consumer (the stream deleted, its node gone) or closed the channel
+  // — once, and never after the returned stop().
+  const openStreamReader = async (topic, from, onMessage, onEnd = null) => {
     const queue = await ensureLog(topic);
-    const channel = await openChannel();
+    let stopped = false;
+    const ended = (error) => {
+      if (stopped || onEnd === null) return;
+      stopped = true;
+      onEnd(error);
+    };
+    const channel = await openChannel(false, (error) => ended(error ?? new Error('channel closed')));
     await channel.prefetch(64);
     const { consumerTag } = await channel.consume(
       queue,
       (message) => {
-        if (message === null) return;
+        if (message === null) return void ended(new Error('consumer cancelled'));
         channel.ack(message);
         onMessage(message);
       },
       { noAck: false, arguments: { 'x-stream-offset': from } },
     );
     return async () => {
+      stopped = true;
       try {
         await channel.cancel(consumerTag);
       } catch {
@@ -432,7 +442,7 @@ const createAmqpBroker = (options = {}) => {
   };
 
   const tails = new TopicTails({
-    live: async (topic, { signal, onEntry }) => {
+    live: async (topic, { signal, onEntry, onEnd }) => {
       // The tip BEFORE the reader starts: `next` then guarantees the reader
       // sees everything appended from here on and nothing before it. (The
       // count is exact until something truncates the stream, and an
@@ -449,7 +459,18 @@ const createAmqpBroker = (options = {}) => {
         ensuredLogs.delete(queue);
         throw error;
       }
-      const stop = await openStreamReader(topic, 'next', (message) => onEntry(entryOf(message)));
+      // A tail that died on its own (the node it lived on went away, the
+      // stream was deleted) used to leave every subscription of the topic
+      // frozen for good; now the readers move to a fresh tail.
+      const stop = await openStreamReader(
+        topic,
+        'next',
+        (message) => onEntry(entryOf(message)),
+        (error) => {
+          report('broker.amqp.tail', error, { topic });
+          onEnd(error);
+        },
+      );
       signal.addEventListener('abort', () => void stop(), { once: true });
       return messageCount > 0 ? messageCount - 1 : null;
     },

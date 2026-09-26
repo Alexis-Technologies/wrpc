@@ -48,6 +48,12 @@ test('nats broker (fake): log contract', async (t) => {
           const info = await jsm.streams.info(name);
           await jsm.streams.purge(name, { seq: Number(info.state.last_seq) - keep + 1 });
         },
+        // The server ends every open pull on the topic's stream.
+        endLiveRead: async (topic) => {
+          const name = `wrpc_log_${topic.replace(/[^A-Za-z0-9_-]/g, '_')}`;
+          const stream = world.server.streams.get(name);
+          for (const live of Array.from(stream?.live ?? [])) await live.close();
+        },
         // No foreignId: a JetStream sequence carries no epoch, so an id
         // from another stream is indistinguishable from a future one (the
         // feed's signed ids are the mitigation — see the NATS guide).

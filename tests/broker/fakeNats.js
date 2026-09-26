@@ -117,6 +117,9 @@ const nextSeq = (stream) => ++stream.lastSeq;
 class FakeStream {
   messages = new Map(); // seq -> { seq, subject, data, headers }
   consumers = new Map();
+  // The consume() iterables open on this stream: what a test closes to
+  // end a live tail the way the server would.
+  live = new Set();
   lastSeq = 0;
 
   constructor(config) {
@@ -254,6 +257,7 @@ class FakeConsumer {
     const iterable = {
       close: async () => {
         closed = true;
+        consumer.stream.live.delete(iterable);
         consumer.wake();
       },
       [Symbol.asyncIterator]: async function* () {
@@ -268,6 +272,7 @@ class FakeConsumer {
         }
       },
     };
+    this.stream.live.add(iterable);
     return Promise.resolve(iterable);
   }
 

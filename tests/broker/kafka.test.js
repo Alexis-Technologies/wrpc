@@ -62,6 +62,17 @@ for (const flavor of FLAVORS) {
           },
           // Joined consumers on the fake: what an abandoned read leaks as.
           liveReads: () => kafka.server.members,
+          // Every reader-group consumer crashes for good (kafkajs shape only:
+          // the confluent facade has no events, so its tail cannot know).
+          endLiveRead:
+            flavor === 'kafkajs'
+              ? async () => {
+                  for (const [groupId, group] of kafka.server.groups) {
+                    if (!groupId.startsWith('wrpc-read-')) continue;
+                    for (const member of Array.from(group.members)) member.crash(new Error('lost'), false);
+                  }
+                }
+              : undefined,
           beyondTip: (_topic, id) => {
             const cursor = decodeVector(id);
             for (const partition of Object.keys(cursor)) cursor[partition] += 1000;

@@ -135,3 +135,11 @@ which fans one tail out to every local reader and catches a resuming reader up
 through a range read. A subscriber that stops reading does not grow memory
 without bound — past a high-water mark it drops its buffer and catches up from
 the log when it reads again.
+
+A live read the broker ends on its own — a consumer it cancelled, a channel
+it closed, a consumer that crashed — is replaced by a fresh one, and every
+subscriber catches up from its own position, so a dead tail loses nothing
+(`broker.<name>.tail` in the log). Only a broker that cannot start the fresh
+read either, after five tries with a backoff, ends the subscriptions with a
+`503`; a client then resubscribes with its `lastEventId` as after any
+reconnect.

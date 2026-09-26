@@ -407,3 +407,73 @@ test('TopicTails: a range that pages by time says whether it reached the tip', a
     assert.throws(() => tails({ contiguous: 'yes' }), /contiguous must be a function or null/);
   });
 });
+
+test('TopicTails: a live tail that ends under its readers is replaced, and the readers miss nothing', async (t) => {
+  // The toy log, with the tail's onEnd captured so the test can end it.
+  const ending = (options = {}) => {
+    const { append, tails, stats, listeners } = createLog();
+    const ends = [];
+    let lives = 0;
+    const built = tails({
+      live: async (topic, { signal, onEntry, onEnd }) => {
+        stats.live++;
+        if (options.failAfter !== undefined && ++lives > options.failAfter) {
+          throw Object.assign(new Error('broker down'), { code: 503 });
+        }
+        const set = listeners.get(topic) ?? new Set();
+        listeners.set(topic, set);
+        set.add(onEntry);
+        signal.addEventListener('abort', () => set.delete(onEntry), { once: true });
+        ends.push(onEnd);
+        return null;
+      },
+    });
+    return { append, tails: built, stats, ends };
+  };
+
+  await t.test('the readers re-join a fresh tail and catch up from their cursors', async () => {
+    const world = ending();
+    const read = world.tails.read('t', { from: 'latest' });
+    await read.ready;
+    const iterator = read[Symbol.asyncIterator]();
+    world.append('t', 'before');
+    assert.strictEqual((await iterator.next()).value.value, 'before');
+    // The tail dies: what is appended between its death and the fresh tail
+    // is not seen live by anyone — the reader gets it through range().
+    world.ends[0](new Error('lost'));
+    world.append('t', 'during');
+    await timers.setTimeout(5);
+    world.append('t', 'after');
+    assert.strictEqual((await iterator.next()).value.value, 'during');
+    assert.strictEqual((await iterator.next()).value.value, 'after');
+    assert.strictEqual(world.stats.live, 2, 'one fresh tail');
+    assert.strictEqual(world.tails.size, 1);
+    await iterator.return();
+    assert.strictEqual(world.tails.size, 0);
+  });
+
+  await t.test('a fresh tail the broker cannot start fails the readers 503, after retries', async () => {
+    const world = ending({ failAfter: 1 });
+    const read = world.tails.read('t', { from: 'latest' });
+    await read.ready;
+    const iterator = read[Symbol.asyncIterator]();
+    world.append('t', 'x');
+    await iterator.next();
+    const started = Date.now();
+    world.ends[0](new Error('lost'));
+    await assert.rejects(iterator.next(), (error) => error.code === 503 && /tail ended/.test(error.message));
+    assert.ok(world.stats.live >= 3, `retried: ${world.stats.live} live() calls`);
+    assert.ok(Date.now() - started >= 300, 'with a backoff between them');
+  });
+
+  await t.test('close() fails a reader parked on a tail with 503', async () => {
+    const world = ending();
+    const read = world.tails.read('t', { from: 'latest' });
+    await read.ready;
+    const iterator = read[Symbol.asyncIterator]();
+    const next = iterator.next();
+    await timers.setTimeout(1);
+    world.tails.close();
+    await assert.rejects(next, (error) => error.code === 503 && /closed/.test(error.message));
+  });
+});

@@ -8,10 +8,15 @@
 // each). So an adapter provides two primitives and this module does the
 // rest:
 //
-//   live(topic, { signal, onEntry })  -> Promise<cursor>
+//   live(topic, { signal, onEntry, onEnd })  -> Promise<cursor>
 //     Starts ONE tail. Resolves once positioned, with the cursor of the
 //     tip at that moment; afterwards calls onEntry(entry) for every entry
-//     appended past it, in order, until the signal aborts.
+//     appended past it, in order, until the signal aborts — or calls
+//     onEnd(error) once, when the tail died on its own (the broker
+//     cancelled the consumer, the channel closed, the consumer crashed):
+//     the readers then move to a fresh tail and catch up from their own
+//     cursors, so a dead tail loses nothing. A tail that ends without
+//     saying so used to freeze every subscription of the topic for good.
 //   range(topic, { after, limit })    -> Promise<entry[] | { entries, done }>
 //     Entries strictly after the cursor `after` (null: the oldest
 //     retained), at most `limit`, in order. Throws coded 410/400 for an
@@ -42,10 +47,18 @@
 // Kafka it is a vector of partition offsets, which is why the resume token
 // yielded to the feed is the ADVANCED CURSOR, not the entry's own position.
 
+const { backoffDelay } = require('../utils.js');
 const { codedError } = require('./ids.js');
 
 const DEFAULT_HIGH_WATER_MARK = 1024;
 const DEFAULT_PAGE = 256;
+// A tail that ENDED under its readers — the broker cancelled the consumer,
+// its channel closed, the consumer crashed — is replaced by a fresh one,
+// and each reader catches up from its own cursor through range() so the
+// gap is closed. A broker that cannot start the fresh tail is asked again
+// on this backoff, this many times, before the readers fail 503.
+const MAX_REJOINS = 5;
+const REJOIN_BACKOFF = Object.freeze({ minDelay: 200, maxDelay: 5000, factor: 2, jitter: true });
 // A catch-up that makes no progress — a page answered `done: false` with
 // nothing in it, or one whose head does not follow the cursor — is asked
 // again after this pause, this many times, before the read fails 503.
@@ -106,8 +119,19 @@ class TopicTails {
         tail.current = this.#advance(tail.current, entry);
         for (const member of tail.readers) member.push(entry);
       };
+      // The tail died under its readers: forgotten, stopped, and every
+      // reader told to re-join (see read()). Before it was positioned, a
+      // failure is live()'s rejection, not an end.
+      const onEnd = () => {
+        if (!tail.positioned || this.#tails.get(topic) !== tail) return;
+        this.#tails.delete(topic);
+        tail.controller.abort();
+        const members = Array.from(tail.readers);
+        tail.readers.clear();
+        for (const member of members) member.rejoin();
+      };
       tail.ready = Promise.resolve()
-        .then(() => this.#live(topic, { signal: controller.signal, onEntry }))
+        .then(() => this.#live(topic, { signal: controller.signal, onEntry, onEnd }))
         .then(
           (cursor) => {
             tail.current = cursor ?? null;
@@ -168,8 +192,16 @@ class TopicTails {
         reader.failure = error;
         wake?.();
       },
+      // The tail ended: joined afresh at the next turn of the loop, and
+      // caught up from the cursor — `lagging` is exactly that path.
+      moved: false,
+      rejoin() {
+        reader.moved = true;
+        reader.lagging = true;
+        wake?.();
+      },
     };
-    const tail = this.#join(topic, reader);
+    let tail = this.#join(topic, reader);
     const catchUp = (after !== null && after !== undefined) || from === 'earliest';
 
     // `entered`: the generator's body ran — and with it the `finally` that
@@ -191,6 +223,21 @@ class TopicTails {
           if (pending || reader.lagging) {
             reader.lagging = false;
             pending = false;
+            if (reader.moved) {
+              reader.moved = false;
+              // A fresh tail, joined BEFORE the catch-up below so the two
+              // overlap the way a resume does. A broker that cannot start
+              // one is asked again on a backoff; then the read fails.
+              for (let attempt = 0; ; attempt++) {
+                tail = tails.#join(topic, reader);
+                await tail.ready.catch(() => {});
+                if (tail.failure === null) break;
+                if (reader.failure === tail.failure) reader.failure = null;
+                if (signal?.aborted) return;
+                if (attempt >= MAX_REJOINS - 1) throw codedError('Log tail ended', 503);
+                await sleep(backoffDelay({ ...REJOIN_BACKOFF, attempt }));
+              }
+            }
             // Page until the tip: that is "caught up as of now"; whatever
             // arrived meanwhile is in the live queue. The tip is a short
             // page for a store read directly, and what `done` says for a
@@ -290,7 +337,11 @@ class TopicTails {
   }
 
   close() {
-    for (const tail of this.#tails.values()) this.#stop(tail);
+    for (const tail of this.#tails.values()) {
+      this.#stop(tail);
+      // A reader parked on a closed broker used to wait forever.
+      for (const member of tail.readers) member.fail(codedError('Log closed', 503));
+    }
     this.#tails.clear();
   }
 }
