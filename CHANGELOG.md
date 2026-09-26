@@ -1913,6 +1913,18 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **A refusal is one log line, at the level the refusal deserves, with the
+  peer's strings clipped.** Every error answer the server sent also wrote
+  `rpc.error` at `error`, so the 429 and oversize-batch refusals the
+  dispatcher deliberately logs at `debug` — reachable by any peer in a loop —
+  came with an error-level twin, and a frame that would not parse was
+  reported three times (`packet.malformed`, then `packet.unknown` for the
+  empty packet it fell through as, then the answer). `Client.error()` takes
+  a `level` now: `debug` from every site that already wrote its own line,
+  `error` where nothing else said why (a handler that threw). A malformed
+  frame is one `warn` and the same id-less 500. The method, id and packet
+  type in those lines are clipped to 128 characters (`clip` in
+  `src/rpc/errors.js`) — a log line is no longer as long as `maxPayload`.
 - **Declared ws headers: an exact deny list for identity-aware proxies, an
   opt-in allowlist, and `meta.declared` naming what came from the
   declaration.** A hostile page could declare the headers an OAuth2 proxy,

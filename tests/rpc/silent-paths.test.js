@@ -39,7 +39,9 @@ const recorder = () => {
     },
   };
   const find = (event) => entries.find((entry) => entry.event === event);
-  return { entries, writer, find };
+  /** The lines an operator would be paged for. */
+  const loud = () => entries.filter((entry) => entry.level === 'warn' || entry.level === 'error');
+  return { entries, writer, find, loud };
 };
 
 const router = defineRouter({
@@ -69,7 +71,7 @@ test('dispatcher: the capacity refusal is debug, not warn', async (t) => {
       }),
     },
   });
-  const { writer, find } = recorder();
+  const { writer, find, loud } = recorder();
   const { url } = await bootServer(t, { router: slow, logger: writer, maxCalls: 2 });
   const client = await connectClient(t, url);
   const calls = [client.call('unit/wait', {}), client.call('unit/wait', {}), client.call('unit/wait', {})];
@@ -80,6 +82,10 @@ test('dispatcher: the capacity refusal is debug, not warn', async (t) => {
   // it would turn a refused flood into a log flood.
   assert.strictEqual(entry.level, 'debug');
   assert.strictEqual(entry.code, 429);
+  // The answer going out is a debug trace too — not an error-level twin
+  // that would have made the choice above moot.
+  assert.strictEqual(find('rpc.error').level, 'debug');
+  assert.deepStrictEqual(loud(), []);
 });
 
 test('dispatcher: a packet of an unknown type is reported, like a malformed one', async (t) => {
@@ -101,7 +107,7 @@ test('dispatcher: a packet of an unknown type is reported, like a malformed one'
 });
 
 test('dispatcher: an oversize batch is reported at debug', async (t) => {
-  const { writer, find } = recorder();
+  const { writer, find, loud } = recorder();
   const { server, origin } = await bootServer(t, { router, logger: writer, maxBatch: 2 });
   const batch = [1, 2, 3].map((n) => ({ type: 'call', id: `c${n}`, method: 'unit/ping', args: {} }));
   await fetch(`${origin}${server.rpc.basePath}`, {
@@ -114,6 +120,44 @@ test('dispatcher: an oversize batch is reported at debug', async (t) => {
   assert.strictEqual(entry.level, 'debug');
   assert.strictEqual(entry.size, 3);
   assert.strictEqual(entry.max, 2);
+  assert.strictEqual(find('rpc.error').level, 'debug');
+  assert.deepStrictEqual(loud(), []);
+});
+
+test('dispatcher: a malformed frame is one warn, not three lines', async (t) => {
+  const { writer, find, loud, entries } = recorder();
+  const { server, origin } = await bootServer(t, { router, logger: writer });
+  const res = await fetch(`${origin}${server.rpc.basePath}`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json' },
+    body: '{"type":"call",',
+  });
+  const answer = await res.json();
+  assert.strictEqual(answer.type, 'callback');
+  assert.strictEqual(answer.error.code, 500);
+  // The funnel line, and only it: the empty packet it fell through as used
+  // to be reported again as `packet.unknown`, and the answer at error.
+  assert.strictEqual(find('packet.malformed').level, 'warn');
+  assert.strictEqual(find('packet.unknown'), undefined);
+  assert.strictEqual(find('rpc.error').level, 'debug');
+  assert.strictEqual(loud().length, 1, JSON.stringify(entries));
+});
+
+test('dispatcher: the peer strings in a refusal are clipped before they become a line', async (t) => {
+  const { writer, find } = recorder();
+  const { url } = await bootServer(t, { router, logger: writer });
+  const client = await connectClient(t, url);
+  const method = `unit/${'m'.repeat(4000)}`;
+  await assert.rejects(() => client.call(method, {}));
+  await waitFor(() => find('call.unknown'), 'the 404 never reached the log');
+  const entry = find('call.unknown');
+  assert.strictEqual(entry.method.length, 129);
+  assert.ok(entry.method.endsWith('…'));
+  assert.strictEqual(entry.method.slice(0, 128), method.slice(0, 128));
+  // The answer's line is a debug trace of the same refusal, id intact.
+  const trace = find('rpc.error');
+  assert.strictEqual(trace.level, 'debug');
+  assert.strictEqual(trace.id, entry.id);
 });
 
 test('sessions: a store that cannot delete does not take the process down', async () => {

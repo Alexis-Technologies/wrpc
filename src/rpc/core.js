@@ -909,13 +909,13 @@ class RpcServer extends Emitter {
     const active = client.compression;
     if (active === null || (kind !== FRAME_PACKET_COMPRESSED && kind !== FRAME_CHUNK_COMPRESSED)) {
       client.log.warn({ event: 'frame.refused', kind, negotiated: active !== null });
-      client.error(400, { error: new Error('Unexpected framed message') });
+      client.error(400, { error: new Error('Unexpected framed message'), level: 'debug' });
       return null;
     }
     const out = decodeOrNull(active, bytes.subarray(2), this.#maxMessage);
     if (out === null) {
       client.log.warn({ event: 'frame.refused', kind, reason: 'inflate' });
-      client.error(400, { error: new Error('Framed message does not inflate') });
+      client.error(400, { error: new Error('Framed message does not inflate'), level: 'debug' });
       return null;
     }
     if (kind === FRAME_CHUNK_COMPRESSED) return new Uint8Array(out.buffer, out.byteOffset, out.byteLength);

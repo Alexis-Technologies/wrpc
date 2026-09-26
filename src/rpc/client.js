@@ -12,6 +12,7 @@ const { WrpcWritable } = require('../streams.js');
 const { RoomRegistry } = require('./rooms.js');
 const { DEFAULT_META_MAX } = require('./meta.js');
 const { createLoggerWriter } = require('../logging.js');
+const { clip } = require('./errors.js');
 // The disabled shape only: a Client without an injected writer (a peer
 // host, a standalone Client) must not pull the whole server facade into a
 // browser bundle for it.
@@ -210,12 +211,18 @@ class Client extends Emitter {
     this.data = {};
   }
 
-  error(code, { id = '', error = null } = {}) {
+  // `level` is the line's: `error` by default — a handler that threw, a
+  // refusal nothing else reported — and `debug` from a site that already
+  // wrote its own event, so one refusal is ONE alert at the level that site
+  // chose (a 429 the dispatcher logs at debug used to come with an
+  // error-level twin here, which made the choice moot). The id is the
+  // peer's text, clipped for the line; the answer carries it whole.
+  error(code, { id = '', error = null, level = 'error' } = {}) {
     const httpCode = code <= 599 ? code : 500;
     const status = STATUS_CODES[httpCode];
     const info = error ? error.stack : status || 'Unknown error';
     this.#transport.error(code, { id, error });
-    this.#log.error({ event: 'rpc.error', code, id, err: error }, `${this.source}\t${code}\t${info}`);
+    this.#log[level]({ event: 'rpc.error', code, id: clip(id), err: error }, `${this.source}\t${code}\t${info}`);
   }
 
   // What dispatch actually gates on: the session restore PLUS the settled

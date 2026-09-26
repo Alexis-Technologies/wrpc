@@ -10,7 +10,7 @@ const { FRAME_MARK } = require('../wire.js');
 const EMPTY_OPTIONS = Object.freeze({});
 const { runSubscription } = require('./subscriptions.js');
 const { runHooks, runHooksSafe } = require('./router.js');
-const { publicErrorMessage, publicErrorDetails, wireError } = require('./errors.js');
+const { publicErrorMessage, publicErrorDetails, wireError, clip } = require('./errors.js');
 const { SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
 
 const DEFAULT_VERSION = '*';
@@ -110,11 +110,17 @@ const parseTarget = (target) => {
 // Console writer, left to its own level by a structured one. `503` is the
 // operator's own doing (a draining server), so it is `info`. The codes that
 // mean something is actually wrong stay at `warn`.
+//
+// Every refusal below is the ONE line for it: the `rpc.error` that follows
+// (the answer going out) is written at debug, never a second alert at a
+// level the site did not choose. The method and the id are the peer's text,
+// clipped before they become a record.
 const refuseCall = (client, id, code, method, event) => {
   const level = code === 429 ? 'debug' : code === 503 ? 'info' : 'warn';
-  client.log[level]({ event, code, id, method }, `${client.source}\tCALL\t${method}\t${code}`);
+  const shown = clip(method);
+  client.log[level]({ event, code, id: clip(id), method: shown }, `${client.source}\tCALL\t${shown}\t${code}`);
   client.otel.recordCall(method, 'error', code);
-  client.error(code, { id });
+  client.error(code, { id, level: 'debug' });
 };
 
 const handleRpc = async (client, packet, router) => {
@@ -125,17 +131,21 @@ const handleRpc = async (client, packet, router) => {
     // The target is UNKNOWN on the metric (an unbounded method string would
     // be a cardinality bomb) but present in the log, where it is the whole
     // point: this is what a stale client or a typo looks like.
-    client.log.warn({ event: 'call.unknown', code: 404, id, method }, `${client.source}\tCALL\t${method}\t404`);
+    const shown = clip(method);
+    client.log.warn(
+      { event: 'call.unknown', code: 404, id: clip(id), method: shown },
+      `${client.source}\tCALL\t${shown}\t404`,
+    );
     client.otel.recordCall(UNKNOWN_TARGET, 'error', 404);
-    return void client.error(404, { id });
+    return void client.error(404, { id, level: 'debug' });
   }
   if (client.calls.has(id)) {
     // Two calls with one id: a generateId that repeats, or a client that
     // retried without minting a fresh one. Either is a bug worth seeing.
     const error = new Error(`Call ${id} is already in flight`);
-    client.log.warn({ event: 'call.duplicate', code: 400, id, method, err: error });
+    client.log.warn({ event: 'call.duplicate', code: 400, id: clip(id), method: clip(method), err: error });
     client.otel.recordCall(method, 'error', 400);
-    return void client.error(400, { id, error });
+    return void client.error(400, { id, error, level: 'debug' });
   }
   // Subscriptions are capped, and calls have to be too: each in-flight call
   // holds a controller, a context and (with a queue) a semaphore slot, so an
@@ -406,7 +416,7 @@ const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS
   if (data.length > 1 && data[0] === FRAME_MARK) {
     if (router !== null && isAttachmentsFrame(data)) return void handleMessage(client, data, router, options);
     client.log.warn({ event: 'frame.refused', kind: data[1] });
-    return void client.error(400, { error: new Error('Unexpected framed message') });
+    return void client.error(400, { error: new Error('Unexpected framed message'), level: 'debug' });
   }
   const { id, payload } = chunkDecode(data);
   try {
@@ -550,8 +560,7 @@ const handlePacket = (client, packet, router, options = EMPTY_OPTIONS) => {
     // The id is peer-controlled text: bounded and escaped before it becomes
     // a log line.
     if (!client.settleAnswer(packet)) {
-      const shown = id.length > 128 ? `${id.slice(0, 128)}…` : id;
-      client.warn(`ANSWER\t${JSON.stringify(shown)}\tno pending ask`);
+      client.warn(`ANSWER\t${JSON.stringify(clip(id))}\tno pending ask`);
     }
     return;
   } else if (type === 'ping') {
@@ -570,8 +579,8 @@ const handlePacket = (client, packet, router, options = EMPTY_OPTIONS) => {
   // pointed at this port. `handleMessage` already logs frames that do not
   // parse; this is the other half of the same funnel, and was silent.
   const error = new Error('Packet structure error');
-  client.log.warn({ event: 'packet.unknown', code: 500, type: typeof type === 'string' ? type : null });
-  client.error(500, { id: typeof id === 'string' ? id : '', error });
+  client.log.warn({ event: 'packet.unknown', code: 500, type: typeof type === 'string' ? clip(type) : null });
+  client.error(500, { id: typeof id === 'string' ? id : '', error, level: 'debug' });
 };
 
 // A JSON array is a batch frame: several packets in one message, each
@@ -599,8 +608,14 @@ const handleMessage = (client, data, router, options = {}) => {
         : jsonParse(data);
   // jsonParse answers null for both "malformed" and "the literal null", and
   // the `|| {}` below hides the difference. This is the single funnel every
-  // unparseable packet in the system passes through, so it is worth a line.
-  if (parsed === null) client.log.warn({ event: 'packet.malformed', bytes: data?.length ?? 0 });
+  // unparseable packet in the system passes through, so it is worth a line
+  // — ONE line: the empty packet it used to fall through as would have been
+  // reported again as `packet.unknown`, and then a third time as the
+  // error-level answer. The answer is the same id-less 500.
+  if (parsed === null) {
+    client.log.warn({ event: 'packet.malformed', bytes: data?.length ?? 0 });
+    return void client.error(500, { error: new Error('Packet structure error'), level: 'debug' });
+  }
   const packet = parsed || {};
   if (!Array.isArray(packet)) return void handlePacket(client, packet, router, options);
   const { maxBatch = DEFAULT_MAX_BATCH } = options;
@@ -610,7 +625,7 @@ const handleMessage = (client, data, router, options = {}) => {
     // oversize batch in a loop, and a warn per attempt would make the log
     // the thing that falls over.
     client.log.debug({ event: 'batch.refused', code: 400, size: packet.length, max: maxBatch });
-    return void client.error(400, { error });
+    return void client.error(400, { error, level: 'debug' });
   }
   for (const item of packet) {
     handlePacket(client, item && typeof item === 'object' ? item : {}, router, options);

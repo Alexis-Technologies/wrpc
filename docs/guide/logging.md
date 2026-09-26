@@ -98,11 +98,12 @@ want an alert for.
 
 | `event` | Level | Means |
 | ------- | ----- | ----- |
+| `rpc.error` | error/debug | An error answer went out. `error` when nothing else said why — a handler that threw (`err` carries the stack), a stream or chunk that could not be taken; `debug` under every refusal that has its own line above, so one refusal is one alert |
 | `call.unknown` | warn | A call for a method this router does not have — a stale client, or a typo |
 | `call.duplicate` | warn | Two in-flight calls with one id: a `generateId` that repeats, or a retry that reused one |
 | `call.capacity` | debug | `maxCalls` reached on one connection |
 | `call.draining` | info | Refused because the server is shutting down |
-| `packet.malformed` | warn | A frame that would not parse |
+| `packet.malformed` | warn | A frame that would not parse — one line per frame, whatever it was |
 | `packet.unknown` | warn | Valid JSON that is not a packet — version skew, or somebody else's client |
 | `batch.refused` | debug | A batch outside `1..maxBatch` |
 | `subscribe.refused` | warn | A subscription refused before it started |
@@ -149,6 +150,13 @@ log-pipeline flood — a worse outage than the one being prevented. They go to
 `debug`, which a Console writer drops outright and a structured logger's own
 level decides. The codes that mean something is genuinely wrong stay at
 `warn`.
+
+The `rpc.error` line that follows a refusal — the answer going out — is
+`debug` for the same reason: the refusal's own line is the alert, at the
+level chosen for it, and a second one at `error` would have put every 429
+back on the pager. And the strings a peer chose — a method, a packet id, a
+packet type — are clipped to 128 characters before they become a field, so
+a log line is never as long as `maxPayload` allows a packet to be.
 
 ## What is deliberately not logged
 

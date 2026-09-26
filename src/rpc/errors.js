@@ -43,4 +43,10 @@ const wireError = (code, error) => {
   return wire;
 };
 
-module.exports = { publicErrorMessage, publicErrorDetails, wireError };
+// A peer-controlled string on its way into a log line — a method, an id,
+// a packet type: bounded before it becomes a record, because the line is
+// the one place where "as long as maxPayload allows" is too long. Anything
+// that is not a string passes through as it is.
+const clip = (text, max = 128) => (typeof text === 'string' && text.length > max ? `${text.slice(0, max)}…` : text);
+
+module.exports = { publicErrorMessage, publicErrorDetails, wireError, clip };
