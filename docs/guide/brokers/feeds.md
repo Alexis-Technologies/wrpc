@@ -119,7 +119,9 @@ handler: brokerFeed(broker, 'orders', { secret: process.env.FEED_SECRET }),
 ```
 
 Every instance serving the feed needs the same secret. Rotating it invalidates
-the ids clients hold: pair a rotation with `onGap`.
+the ids clients hold: pair a rotation with `onGap`. An id is bound to the
+topic it was issued for, so one secret may serve every feed of a deployment
+— a token from `orders` positions nobody on `invoices`.
 
 ## One broker read per topic, not per subscriber
 

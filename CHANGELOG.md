@@ -1554,6 +1554,14 @@ narrower promise — see
   another spelling of the same name replaces the first instead of sending
   both; and a host that still refuses a response answers a bare `500` and
   closes the request rather than leaving it hanging.
+- **A signed feed id positioned a reader on any feed sharing the secret.**
+  `brokerFeed`'s `secret` signed the bare id, so a token issued by the
+  `orders` feed verified on `invoices` when both used one `FEED_SECRET` —
+  the documented setup — and a subscriber of one could resume from a
+  position on the other. The MAC binds the id to its topic now, under a
+  versioned, length-prefixed layout; a token from one feed is a `400` on
+  another. A MAC change: ids clients hold from before are refused once,
+  and `onGap` answers as for any rotation.
 
 ## [1.0.0] - 2026-08-23
 

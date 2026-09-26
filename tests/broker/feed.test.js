@@ -201,6 +201,16 @@ test('brokerFeed: signed ids refuse a position the feed never issued', async (t)
   await append(broker, { n: 2 });
   await waitFor(() => honest.values.length === 1);
   assert.deepStrictEqual(honest.values, [{ n: 2 }]);
+
+  // Bound to the topic: a feed on ANOTHER topic under the same secret
+  // refuses the token — it used to accept it, and a reader could position
+  // itself on any feed of the deployment with an id issued by one.
+  const { a: elsewhere } = await bootPair(t, broker, { secret: 'feed-secret' }, 'invoices');
+  const third = await connectClient(t, elsewhere.url);
+  await third.load('orders');
+  const crossed = subscribe(third, { lastEventId: signed });
+  await waitFor(() => crossed.errors.length === 1);
+  assert.strictEqual(crossed.errors[0].code, 400);
 });
 
 test('brokerFeed: map filters and reshapes; decode, dynamic topics, undecodable entries', async (t) => {

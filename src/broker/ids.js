@@ -90,18 +90,25 @@ const encodeToken = (name, { safe = /[A-Za-z0-9_-]/, escape = '~', maxLength = 2
 // the LAST `!` is unambiguous whatever the id itself contains.
 const SIGN_SEPARATOR = '!';
 
-const mac = (secret, id) => createHmac('sha256', secret).update(id).digest('base64url').slice(0, 32);
+// The MAC binds the id to its SCOPE — the topic the feed issued it for —
+// under a versioned, length-prefixed layout (injective: no scope/id pair
+// can spell another): one secret may serve every feed of a deployment
+// without a token issued by one feed positioning a reader on another.
+const MAC_PREFIX = 'wrpc feed v1\0';
 
-const signId = (secret, id) => `${id}${SIGN_SEPARATOR}${mac(secret, id)}`;
+const mac = (secret, id, scope) =>
+  createHmac('sha256', secret).update(`${MAC_PREFIX}${scope.length}:${scope}\0${id}`).digest('base64url').slice(0, 32);
 
-/** The id inside a signed one, or null when the signature does not verify. */
-const openId = (secret, signed) => {
+const signId = (secret, id, scope = '') => `${id}${SIGN_SEPARATOR}${mac(secret, id, scope)}`;
+
+/** The id inside a signed one, or null when the signature does not verify for `scope`. */
+const openId = (secret, signed, scope = '') => {
   if (typeof signed !== 'string') return null;
   const at = signed.lastIndexOf(SIGN_SEPARATOR);
   if (at <= 0) return null;
   const id = signed.slice(0, at);
   const given = Buffer.from(signed.slice(at + 1));
-  const expected = Buffer.from(mac(secret, id));
+  const expected = Buffer.from(mac(secret, id, scope));
   if (given.length !== expected.length || !timingSafeEqual(given, expected)) return null;
   return id;
 };

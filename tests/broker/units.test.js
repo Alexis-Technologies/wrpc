@@ -110,6 +110,16 @@ test('ids: signed ids verify, and a tampered one does not', () => {
   assert.strictEqual(openId('secret', 'no-signature'), null);
   assert.strictEqual(openId('secret', '!sig'), null);
   assert.strictEqual(openId('secret', 42), null);
+  // Bound to the scope — the topic — it was issued for, so one secret may
+  // serve every feed of a deployment: a token from one positions nobody on
+  // another. The layout is length-prefixed, so no scope/id pair can spell
+  // another's bytes.
+  const scoped = signId('secret', '1726000000000-0', 'orders');
+  assert.strictEqual(openId('secret', scoped, 'orders'), '1726000000000-0');
+  assert.strictEqual(openId('secret', scoped, 'invoices'), null);
+  assert.strictEqual(openId('secret', scoped), null, 'nor without the scope');
+  assert.strictEqual(openId('secret', signed, 'orders'), null, 'nor an unscoped token on a scoped feed');
+  assert.notStrictEqual(signId('secret', 'b1-0', 'a'), signId('secret', '1-0', 'ab'));
 });
 
 test('retry: normalization', () => {

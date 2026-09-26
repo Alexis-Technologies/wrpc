@@ -77,12 +77,14 @@ const brokerFeed = (broker, topic, options = {}) => {
   // or garbled client, while `signature` is a token that was TAMPERED with
   // — someone trying to read a topic from an offset they made up. That last
   // one was indistinguishable from the other two, and silent.
-  const position = (lastEventId) => {
+  // A signed id is bound to the topic it was issued for: a token from one
+  // feed does not position a reader on another that shares the secret.
+  const position = (lastEventId, name) => {
     if (lastEventId === undefined || lastEventId === null) return { after: null, code: null, reason: null };
     if (typeof lastEventId !== 'string' || lastEventId.length > maxIdLength) {
       return { after: null, code: 400, reason: 'length' };
     }
-    const id = secret === null ? lastEventId : openId(secret, lastEventId);
+    const id = secret === null ? lastEventId : openId(secret, lastEventId, name);
     if (id === null) return { after: null, code: 400, reason: 'signature' };
     if (log.parseId(id) === null) return { after: null, code: 400, reason: 'syntax' };
     return { after: id, code: null, reason: null };
@@ -93,7 +95,7 @@ const brokerFeed = (broker, topic, options = {}) => {
     if (typeof name !== 'string' || name.length === 0) {
       throw codedError('brokerFeed: the topic resolver must answer a non-empty string', 500);
     }
-    let { after, code, reason } = position(lastEventId);
+    let { after, code, reason } = position(lastEventId, name);
     let resumedFrom = lastEventId;
     if (reason !== null) {
       // The id itself is peer-controlled text and is NOT logged; its length
@@ -160,7 +162,7 @@ const brokerFeed = (broker, topic, options = {}) => {
               value = await map(value, entry, context);
               if (value === undefined) continue;
             }
-            yield tracked(secret === null ? entry.id : signId(secret, entry.id), value);
+            yield tracked(secret === null ? entry.id : signId(secret, entry.id, name), value);
           }
           return;
         } catch (error) {
@@ -172,7 +174,7 @@ const brokerFeed = (broker, topic, options = {}) => {
           code = error.code;
           // What the client itself holds: its own id at the start, the last
           // token this feed handed it mid-stream.
-          resumedFrom = after === null ? lastEventId : secret === null ? after : signId(secret, after);
+          resumedFrom = after === null ? lastEventId : secret === null ? after : signId(secret, after, name);
           after = null;
         }
       }
