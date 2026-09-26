@@ -166,7 +166,10 @@ Four places write no lines on purpose, and should stay that way:
 Credentials never appear in an entry. A session token, a bearer token and a
 resume token are all refused-by-name in the code: `session.corrupt` logs that
 a row failed to parse, `broker.feed.resume` logs the *reason* and the length,
-and neither carries the value.
+and neither carries the value. A broker RPC session id — a credential too —
+appears only as a 12-character fingerprint (`broker.rpc.session.*`, and the
+transport's `source`), and the client's `handshake.fallback` carries the
+error's name, not the error: undici repeats a header's value in its message.
 
 ## Turning it off
 

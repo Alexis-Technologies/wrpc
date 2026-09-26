@@ -38,7 +38,9 @@ cookie is the byte-identical default. Two ready-made strategies ship in
 - **`bearerTransport()`** — `Authorization: Bearer <token>` on http/sse and
   on ws from Node; on browser ws the token rides a `wrpc.bearer.<token>` **subprotocol offer**,
   a real upgrade header, so it never lands in the connect URL or the access
-  logs that keep URLs.
+  logs that keep URLs. Where the query IS the carrier — `carrier: 'query'`,
+  or WebTransport — a declared `authorization` header is sent as asked and
+  the client logs `declared.exposed` once, because that URL will be kept.
 - **`payloadTransport({ field })`** — a field of the declared
   [`meta`](./metadata) bag, either `x-wrpc-meta` spelling.
 

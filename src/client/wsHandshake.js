@@ -37,7 +37,9 @@ const openSocket = (WebSocket, url, protocols, options, log) => {
     // A runtime whose WebSocket has no init bag reads it as a subprotocol and
     // throws (Deno), and undici throws on a name or value it will not send:
     // either way the carriers still work, and a second throw is the caller's.
-    log?.warn({ event: 'handshake.fallback', err: error });
+    // The error's name only: undici repeats the offending header's VALUE
+    // in its message, and a bearer token is not for the log.
+    log?.warn({ event: 'handshake.fallback', reason: error?.name ?? 'Error' });
     return carriers.openSocket(WebSocket, url, protocols, options, log);
   }
 };

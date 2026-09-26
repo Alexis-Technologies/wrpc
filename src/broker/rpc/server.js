@@ -20,7 +20,7 @@
 const { ServerTransport } = require('../../rpc/serverTransport.js');
 const { createLoggerWriter } = require('../../logging.js');
 const { capabilityOf, brokerName } = require('../port.js');
-const { toBytes } = require('../ids.js');
+const { toBytes, fingerprint } = require('../ids.js');
 const { rpcOf } = require('../host.js');
 const {
   HEADER_KIND,
@@ -89,7 +89,7 @@ class BrokerSessionTransport extends ServerTransport {
   #sealing;
 
   constructor({ direct, peer, session, highWaterMark, onFailure, compression = null, sealing = null }) {
-    super(`broker:${session}`);
+    super(`broker:${fingerprint(session)}`);
     this.#direct = direct;
     this.#peer = peer;
     this.#session = session;
@@ -288,7 +288,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     sessions.delete(id);
     if (notify) session.transport.bye(reason);
     session.transport.drop();
-    log.debug({ event: 'broker.rpc.session.end', session: id, reason });
+    log.debug({ event: 'broker.rpc.session.end', session: fingerprint(id), reason });
   };
 
   const onHello = (message) => {
@@ -310,7 +310,11 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     // held it and hand its id to the guesser.
     if (existing !== undefined) {
       if (existing.expectSeq !== 1 || existing.peer !== message.replyTo) {
-        return void log.debug({ event: 'broker.rpc.hello.duplicate', session: id, live: existing.expectSeq !== 1 });
+        return void log.debug({
+          event: 'broker.rpc.hello.duplicate',
+          session: fingerprint(id),
+          live: existing.expectSeq !== 1,
+        });
       }
       endSession(id, 'replaced', { notify: false });
     }
@@ -323,7 +327,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
       compression: active,
       sealing,
       onFailure: (error) => {
-        log.warn({ event: 'broker.rpc.send', err: error, session: id });
+        log.warn({ event: 'broker.rpc.send', err: error, session: fingerprint(id) });
         endSession(id, 'send failed', { notify: false });
       },
     });

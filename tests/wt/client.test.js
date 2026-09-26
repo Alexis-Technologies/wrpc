@@ -113,6 +113,49 @@ test('wt transport: declared headers and meta ride the connect URL, as on ws', a
   assert.strictEqual(session.header.origin, 'https://app.example');
 });
 
+test('wt transport: the two bags share ONE query budget, headers first, as the server measures it', async (t) => {
+  const world = createFakeWt();
+  const warnings = [];
+  const log = {
+    level: 'debug',
+    warn: (entry) => warnings.push(entry),
+    info() {},
+    debug() {},
+    error() {},
+    child() {
+      return log;
+    },
+  };
+  const transport = new ClientWtTransport(`${ENDPOINT}?v=2`, { WebTransport: world.WebTransport });
+  transport.log = log;
+  t.after(() => transport.close());
+  // Each bag fits the cap on its own; together, with the query the url
+  // already carries, they do not — and the server drops the WHOLE query
+  // past its limit, so both used to be lost on the side that cannot see it.
+  const headers = { 'x-blob': 'h'.repeat(1100) };
+  const meta = { blob: 'm'.repeat(1100) };
+  await transport.open({ headers, meta });
+  const session = await world.next();
+  const path = session.header[':path'];
+  const query = path.slice(path.indexOf('?') + 1);
+  assert.ok(query.length <= 2048, `the query is ${query.length} bytes`);
+  const params = new URLSearchParams(query);
+  assert.strictEqual(params.get('v'), '2', 'what the url carried stays');
+  assert.deepStrictEqual(JSON.parse(params.get('wrpc_h')), headers, 'headers first');
+  assert.strictEqual(params.get('wrpc_meta'), null, 'meta did not fit');
+  const oversize = warnings.filter((w) => w.event === 'meta.oversize');
+  assert.strictEqual(oversize.length, 1);
+  assert.strictEqual(oversize[0].param, 'wrpc_meta');
+  assert.strictEqual(oversize[0].carrier, 'query');
+  // A credential in the query is said, loudly.
+  const bearer = new ClientWtTransport(ENDPOINT, { WebTransport: world.WebTransport });
+  bearer.log = log;
+  t.after(() => bearer.close());
+  await bearer.open({ headers: { Authorization: 'Bearer secret' } });
+  await world.next();
+  assert.ok(warnings.some((w) => w.event === 'declared.exposed' && w.key === 'authorization' && w.carrier === 'query'));
+});
+
 test('wt transport: packets and chunks cross the control stream in order, both ways', async (t) => {
   const world = createFakeWt();
   const { transport, session } = await opened(t, world);

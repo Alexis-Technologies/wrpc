@@ -583,3 +583,41 @@ test('broker rpc: a hello naming a live session, or coming from another inbox, d
   assert.deepStrictEqual(stolen, []);
   assert.strictEqual(a.handle.sessions, 2);
 });
+
+test('broker rpc: a session id is a credential — logs and the transport source carry a fingerprint of it', async (t) => {
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(() => broker.close());
+  const entries = [];
+  const logger = {
+    level: 'debug',
+    info: (e) => entries.push(e),
+    warn: (e) => entries.push(e),
+    error: (e) => entries.push(e),
+    debug: (e) => entries.push(e),
+    child: () => logger,
+  };
+  await instance(t, broker, createApp(), { rpc: { logger }, attach: { logger } });
+  const client = await connect(t, broker, { mode: 'session' });
+  assert.strictEqual(await client.api.calc.add({ a: 1, b: 2 }), 3);
+  // The transport's source — every log line and span of that client — is
+  // the fingerprint, never the id.
+  const { BrokerSessionTransport } = require('../../src/broker/rpc/server.js');
+  const { fingerprint } = require('../../src/broker/ids.js');
+  const transport = new BrokerSessionTransport({
+    direct: broker.direct,
+    peer: 'inbox',
+    session: 'session-secret',
+    highWaterMark: 1 << 20,
+    onFailure() {},
+  });
+  assert.strictEqual(transport.source, `broker:${fingerprint('session-secret')}`);
+  assert.match(fingerprint('session-secret'), /^[0-9a-f]{12}$/);
+  assert.ok(!transport.source.includes('session-secret'));
+  await client.close();
+  await waitFor(() => entries.some((e) => e.event === 'broker.rpc.session.end'));
+  for (const entry of entries) {
+    if (entry.session !== undefined) {
+      assert.match(entry.session, /^[0-9a-f]{12}$/, `${entry.event} carries a fingerprint`);
+    }
+  }
+});

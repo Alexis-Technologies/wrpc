@@ -249,20 +249,36 @@ const META_MAX = 2048;
 // first and these parameters only for names they do not carry. Loud caveat: the connect URL lands in proxy access logs — a
 // device id belongs here, a secret does not.
 const connectUrl = (url, headers, meta, log) => {
+  const at = url.indexOf('?');
+  // ONE budget for the whole query, as the server measures it (the length
+  // of everything after '?', against metaMaxBytes — past it the server
+  // drops the ENTIRE bag): what the url already carries counts, and so does
+  // every separator. Two bags each within the cap used to be sent and
+  // dropped together on the side that could not see it. Headers first,
+  // meta after; what does not fit is refused loudly, and the connection
+  // works un-labelled.
+  let spent = at < 0 ? 0 : url.length - at - 1;
   const params = [];
-  // Capped like the http leg: past metaMaxBytes the server drops the ENTIRE
-  // bag (measured over the whole query), so sending it anyway would be a
-  // silent loss on the side that cannot see it. The refusal keeps the
-  // connection working, un-labelled, and says so.
   const declare = (param, bag) => {
     const value = encodeURIComponent(JSON.stringify(bag));
-    const bytes = param.length + 1 + value.length;
-    if (bytes > META_MAX) return void log?.warn({ event: 'meta.oversize', param, bytes });
+    const bytes = (spent > 0 ? 1 : 0) + param.length + 1 + value.length;
+    if (spent + bytes > META_MAX) {
+      return void log?.warn({ event: 'meta.oversize', carrier: 'query', param, bytes: spent + bytes });
+    }
+    spent += bytes;
     params.push(`${param}=${value}`);
   };
-  if (headers) declare(HEADERS_PARAM, headers);
+  if (headers) {
+    declare(HEADERS_PARAM, headers);
+    // Loud on purpose: the connect URL is what access logs keep.
+    for (const key in headers) {
+      if (key.toLowerCase() !== 'authorization') continue;
+      log?.warn({ event: 'declared.exposed', key: 'authorization', carrier: 'query' });
+      break;
+    }
+  }
   if (meta) declare(META_PARAM, meta);
-  return params.length > 0 ? `${url}${url.includes('?') ? '&' : '?'}${params.join('&')}` : url;
+  return params.length > 0 ? `${url}${at < 0 ? '?' : '&'}${params.join('&')}` : url;
 };
 
 // ws and http spell the same endpoint with different schemes; a fallback

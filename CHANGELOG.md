@@ -1352,6 +1352,15 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **The connect URL's two declared bags share ONE query budget, as the
+  server measures it.** Each bag was capped on its own, so two that fit
+  separately — with whatever query the url already carried — were sent
+  together past the server's limit, where the WHOLE query is dropped
+  silently on the side that cannot see it. Headers are declared first,
+  then meta, against one 2048-byte budget over everything after `?`
+  (the encryption marker of a WebTransport session included); what does
+  not fit is refused with `meta.oversize { carrier: 'query', param, bytes }`
+  and the connection works un-labelled.
 - **`sealedStore`: a key provider must answer `kids()`, and `seal: false`
   is the first of three deploys.** A provider without `kids()` was
   accepted and every session under an older kid became unreadable the
@@ -1892,6 +1901,16 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **Secrets stay out of logs and transport labels.** A broker RPC session
+  id — what its client speaks under, a credential — was the transport's
+  `source` (every log line and span of that client) and the `session`
+  field of `broker.rpc.session.*`; both carry a 12-character SHA-256
+  fingerprint of it now. The client's `handshake.fallback` warning carried
+  the error undici raised, whose message repeats the offending header's
+  VALUE (a bearer token, say); it carries the error's name only. A
+  declared `authorization` header about to ride the connect URL — the
+  query carrier, or WebTransport, which has no other — is said once as
+  `declared.exposed` on every path, not only the browser ws one.
 - **A session finalized on one connection or instance is not resurrected
   by a write on another.** A handler still holding the session — on the
   connection that was not the one signing out, or on another instance —

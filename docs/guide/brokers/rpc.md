@@ -173,6 +173,10 @@ fewer bytes through the broker. On a real broker the bytes are the part
 that costs; the [WebTransport page](../wt#compression) has the codec's own
 numbers, since the seam is shared.
 
+A session's id is what its client speaks under, so it is a credential: log
+lines and the transport's `source` carry a 12-character fingerprint of it,
+enough to correlate a session across lines and never enough to speak on it.
+
 ## Tracing across the broker
 
 Both halves are instrumented by the ordinary paths, not by anything special

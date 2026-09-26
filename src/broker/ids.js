@@ -127,4 +127,9 @@ const openId = (secret, signed, scope = '') => {
   return id;
 };
 
-module.exports = { codedError, toText, toBytes, toHeaders, reasonText, encodeToken, signId, openId };
+// A session id is a credential (whoever knows it may speak on the
+// session): what a log line or a transport's `source` carries is this
+// fingerprint of it — enough to correlate, useless to replay.
+const fingerprint = (id) => createHash('sha256').update(String(id)).digest('hex').slice(0, 12);
+
+module.exports = { codedError, toText, toBytes, toHeaders, reasonText, encodeToken, signId, openId, fingerprint };

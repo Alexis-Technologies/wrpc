@@ -90,7 +90,9 @@ test('node: a constructor without an init bag falls back to the carrier tokens',
   const { records, log } = recorder();
   node.openSocket(FakeWebSocket, URL, ['wrpc.v1'], { headers: { 'x-tenant': 'acme' }, meta: { n: 1 } }, log);
   assert.strictEqual(records[0].event, 'handshake.fallback');
-  assert.ok(records[0].err instanceof SyntaxError);
+  // The error's name only: undici repeats a header's VALUE in its message.
+  assert.strictEqual(records[0].reason, 'SyntaxError');
+  assert.strictEqual(records[0].err, undefined);
   assert.strictEqual(calls.length, 1);
   assert.strictEqual(calls[0][0], URL, 'the url stays clean');
   const { headers, meta } = received(calls[0]);

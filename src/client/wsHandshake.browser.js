@@ -70,8 +70,7 @@ const openSocket = (WebSocket, url, protocols, options, log) => {
       headers = meta = null;
     }
   }
-  // Loud on purpose: the connect URL is what access logs keep.
-  if (headers?.authorization) log?.warn({ event: 'declared.exposed', key: 'authorization', carrier: 'query' });
+  // connectUrl says so when a credential is about to ride the query.
   const target = connectUrl(url, headers, meta, log);
   return offer.length > 0 ? new WebSocket(target, offer) : new WebSocket(target);
 };

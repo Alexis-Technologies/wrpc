@@ -181,9 +181,11 @@ class ClientWtTransport extends ClientTransport {
       const key = INIT_KEYS[i];
       if (wt[key] !== undefined) init[key] = wt[key];
     }
-    let target = connectUrl(this.url, options.headers, options.meta, this.log);
     // Announced in the URL, as on ws: the server may be the first to send.
+    // Before the declared bags, so it is counted in the one query budget.
+    let target = this.url;
     if (this.#encryption !== null) target += `${target.includes('?') ? '&' : '?'}${this.#encryption.param}=1`;
+    target = connectUrl(target, options.headers, options.meta, this.log);
     const session = new WebTransport(target, init);
     this.#session = session;
     // The session's own end — a peer close, a transport failure, our own
