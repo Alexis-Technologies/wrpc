@@ -121,6 +121,8 @@ want an alert for.
 | `broker.evict` | warn | The per-token client cache is thrashing: more distinct tokens in flight than `tokenClients`, a session restore per message. The evicted client finishes what it holds, then closes |
 | `broker.amqp.consumer.closed`, `broker.amqp.cancelled`, `broker.amqp.consumer.reopen` | error | RabbitMQ closed a consumer's channel, or cancelled the consumer (its queue deleted, its node gone); the consumer re-opens with a backoff, each failed attempt logged `reopen` with its `attempt` |
 | `broker.amqp.backplane.rebind` | warn/error | The backplane's consumer channel closed under live rooms: `warn` once it is back with every room bound again (`channels`, `attempt`), `error` per failed attempt. Events published meanwhile were lost — the rooms layer sees a gap |
+| `broker.kafka.crash` | error | A kafkajs consumer's fetch loop died (`restart` says whether it rejoins by itself); the binding is unhealthy until it rejoins |
+| `broker.kafka.join-timeout` | info | A queue consumer got no partition within the join window — more instances than partitions, most likely; it stays healthy |
 | `broker.amqp.connection` | error | The injected RabbitMQ connection closed: every binding on this broker is unhealthy and stays so — open a new connection and a new broker on it |
 | `broker.rpc.refused` | warn | A sealed RPC frame that did not open (`reason`: `unsealed`, `kid`, `open`, `format`, `replay`), one older than `maxSkew` (`stale`), or a plaintext frame on a session a sealed hello opened (`downgrade`) — dropped, never answered |
 | `broker.rpc.replay` | error | The shared replay memory could not be asked; the frame was not served |

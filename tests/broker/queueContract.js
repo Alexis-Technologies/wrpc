@@ -279,6 +279,26 @@ const runQueueContract = async (t, name, harness) => {
     ]);
   });
 
+  // Only where the harness can break a live consumer from the outside (a
+  // channel the server closes, a consumer that crashes): `healthy` follows.
+  if (harness.breakConsumer) {
+    await t.test(`${name}: healthy flips to false when the consumer breaks, and back when it recovers`, async (sub) => {
+      const { queue } = await open(sub);
+      const name = await queueFor('q-health');
+      const seen = [];
+      const consumer = await consume(sub, queue, name, (delivery) => {
+        seen.push(delivery.body);
+        return delivery.ack();
+      });
+      assert.strictEqual(consumer.healthy, true);
+      await harness.breakConsumer(name);
+      await waitFor(() => consumer.healthy === false, { timeout, message: 'healthy never flipped' });
+      await waitFor(() => consumer.healthy === true, { timeout, message: 'the consumer never recovered' });
+      await queue.produce(name, 'after');
+      await waitFor(() => seen.includes('after'), { timeout });
+    });
+  }
+
   await t.test(`${name}: queues are isolated`, async (sub) => {
     const { queue } = await open(sub);
     const left = await queueFor('q-left');

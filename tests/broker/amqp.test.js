@@ -56,9 +56,10 @@ test('amqp broker (fake): log contract', async (t) => {
 });
 
 test('amqp broker (fake): queue contract', async (t) => {
+  let connection = null;
   await runQueueContract(t, 'amqp', {
     open: async () => {
-      const connection = createFakeAmqp();
+      connection = createFakeAmqp();
       const broker = open(connection);
       const peer = open(connection);
       return {
@@ -69,6 +70,11 @@ test('amqp broker (fake): queue contract', async (t) => {
           await peer.close();
         },
       };
+    },
+    // The node the consumer's channel lives on goes away.
+    breakConsumer: (name) => {
+      const [held] = connection.server.queue(`wrpc.q.${name}`).consumers.values();
+      connection.server.killChannel(held.channel, 320);
     },
     timeout: 4000,
     redelivery: 1000,

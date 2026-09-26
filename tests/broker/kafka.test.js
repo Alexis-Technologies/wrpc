@@ -74,9 +74,11 @@ for (const flavor of FLAVORS) {
   });
 
   test(`kafka broker (fake, ${flavor}): queue contract`, async (t) => {
+    let world = null;
     await runQueueContract(t, `kafka/${flavor}`, {
       open: async () => {
-        const { kafka, broker } = open(flavor);
+        world = open(flavor);
+        const { kafka, broker } = world;
         const peer = createKafkaBroker({ kafka, logger: quiet, partitions: 2 });
         return {
           queue: broker.queue,
@@ -87,6 +89,15 @@ for (const flavor of FLAVORS) {
           },
         };
       },
+      // kafkajs announces a crash and the rejoin; the confluent facade has
+      // no events at all, so `healthy` cannot follow a crash there.
+      breakConsumer:
+        flavor === 'kafkajs'
+          ? (name) => {
+              const [member] = world.kafka.server.group(name).members;
+              member.crash(new Error('fetch loop died'), true);
+            }
+          : undefined,
       timeout: 6000,
       redelivery: 1500,
     });

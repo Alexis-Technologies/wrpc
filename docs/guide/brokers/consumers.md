@@ -182,7 +182,19 @@ consumers.healthy;          // false once a consumer stopped or failed
 consumers.bindings;         // [{ key, queue, group, method, healthy }]
 ```
 
-Wire `healthy` into readiness next to `server.rpc.healthy`.
+Wire `healthy` into readiness next to `server.rpc.healthy` — knowing what it
+covers, which is the adapter's consumer and no more:
+
+| Broker | `healthy` is `false` when |
+| --- | --- |
+| in-process, Redis | the binding stopped, or the read loop is retrying after a failed read |
+| NATS | the binding stopped, the pull loop is retrying, or the connection closed |
+| RabbitMQ | the consumer's channel closed (`false` while it re-opens with a backoff), and for good once the connection closed |
+| Kafka, `kafkajs` | the consumer crashed (`broker.kafka.crash`), until it rejoins its group; a join that times out (more instances than partitions) stays healthy |
+| Kafka, `@confluentinc/kafka-javascript` | the binding stopped — the facade reports no crash events, so a crashed consumer looks healthy |
+
+A message the broker holds but nobody consumes — a queue nobody bound — is
+not what `healthy` sees; that is the broker's own lag metric.
 
 ## Publishing
 

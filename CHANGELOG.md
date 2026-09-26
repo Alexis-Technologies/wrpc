@@ -1352,6 +1352,19 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **`consumers.healthy` on RabbitMQ and Kafka now turns `false`.** The
+  guide says to wire it into readiness, and on those two brokers it never
+  moved: a RabbitMQ consumer whose channel the server closed, and a
+  kafkajs consumer whose fetch loop crashed, both reported a binding that
+  consumed nothing as healthy. RabbitMQ flips while the channel is
+  re-opened; kafkajs flips on `CRASH` (`broker.kafka.crash`) and back on
+  the rejoin. A join that times out (more instances than partitions) is
+  logged `broker.kafka.join-timeout` once and stays healthy — an empty
+  assignment is a legitimate state, and a readiness that flipped there
+  would crash-loop the fourth instance of a three-partition queue. The
+  confluent facade reports no consumer events, which the guide now says.
+  The queue contract exercises the flip on every fake that can break a
+  consumer from the outside.
 - **RabbitMQ backplane: one channel and one queue for every room, not
   one of each per room.** Every `subscribe` opened its own channel and
   declared its own exclusive queue — a room is a subscription, so a

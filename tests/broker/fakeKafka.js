@@ -123,7 +123,22 @@ class FakeConsumer extends EventEmitter {
   #joined = false;
   #concurrency = 1;
 
-  static events = { GROUP_JOIN: 'consumer.group_join' };
+  static events = { GROUP_JOIN: 'consumer.group_join', CRASH: 'consumer.crash' };
+
+  /**
+   * What kafkajs does when its fetch loop dies: a CRASH event with the
+   * error and whether it restarts by itself — and a GROUP_JOIN once it has.
+   */
+  crash(error, restart = true) {
+    this.#joined = false;
+    this.emit(FakeConsumer.events.CRASH, { payload: { error, restart, groupId: this.groupId } });
+    if (!restart) return;
+    setTimeout(() => {
+      if (!this.#running) return;
+      this.#joined = true;
+      this.emit(FakeConsumer.events.GROUP_JOIN, { memberId: 'fake' });
+    }, 10);
+  }
 
   constructor(server, flavor, options) {
     super();

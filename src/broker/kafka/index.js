@@ -40,6 +40,7 @@ const {
   runArgs,
   metadataTopics,
   joinWatcher,
+  healthWatcher,
 } = require('./shape.js');
 
 const DEFAULT_PREFIX = 'wrpc';
@@ -587,6 +588,21 @@ const createKafkaBroker = (options = {}) => {
     const consumer = await openConsumer(groupId, { fromBeginning: true });
     await consumer.subscribe(subscribeArgs(flavor, [topic], true));
     const state = { running: true, paused: false, healthy: true };
+    // `healthy` used to be true from the first run() to stop(), whatever the
+    // consumer went through: a crashed kafkajs consumer (a broker gone, a
+    // rebalance that failed) reported a binding that consumed nothing as
+    // fine, and readiness kept the instance in rotation. The watcher is
+    // registered BEFORE run(), like the join watcher — kafkajs' events are
+    // missed by a listener that comes after.
+    const unwatch = healthWatcher(flavor, consumer, {
+      onDown: (error, restart) => {
+        state.healthy = false;
+        report('broker.kafka.crash', error ?? new Error('consumer crashed'), { queue, restart: restart === true });
+      },
+      onUp: () => {
+        if (state.running) state.healthy = true;
+      },
+    });
 
     const commit = (partition, offset) =>
       consumer.commitOffsets([{ topic, partition, offset: String(Number(offset) + 1) }]);
@@ -660,11 +676,17 @@ const createKafkaBroker = (options = {}) => {
 
     const ready = joinWatcher(flavor, consumer);
     await consumer.run(runArgs(flavor, { concurrency: prefetch, eachMessage: handle }));
-    await ready;
+    // A join that never came within the window is NOT a failure: a group
+    // with more members than partitions leaves some with nothing, and this
+    // consumer is one of them until a rebalance says otherwise. Said once,
+    // and the binding stays healthy — a readiness that flipped here would
+    // crash-loop the fourth instance of a three-partition queue.
+    if (!(await ready)) log.info({ event: 'broker.kafka.join-timeout', queue, group: groupId });
 
     const stop = async () => {
       if (!state.running) return;
       state.running = false;
+      unwatch();
       await closeConsumer(consumer);
     };
     if (signal) signal.addEventListener('abort', () => void stop(), { once: true });

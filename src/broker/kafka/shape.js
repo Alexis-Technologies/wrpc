@@ -47,37 +47,89 @@ const metadataTopics = (result) => (Array.isArray(result) ? result : (result?.to
  * join, which is what makes the Kafka backplane's caveat real (see the
  * guide).
  */
+const eventsOf = (flavor, consumer) => {
+  if (flavor === 'confluent') return null;
+  try {
+    return consumer.events ?? null;
+  } catch {
+    return null; // the confluent facade throws from this getter
+  }
+};
+
+// kafkajs' `consumer.on` answers a remover; an EventEmitter-shaped client
+// answers itself and has `off`.
+const listen = (consumer, event, handler) => {
+  const remove = consumer.on(event, handler);
+  return () => {
+    if (isFunction(remove)) remove();
+    else if (isFunction(consumer.off)) consumer.off(event, handler);
+  };
+};
+
+/**
+ * Resolves `true` once the consumer JOINED its group, `false` when the
+ * timeout passed first — an empty assignment is a legitimate state (more
+ * instances than partitions), which the caller decides how to read.
+ */
 const joinWatcher = (flavor, consumer, { timeout = 30_000, step = 20 } = {}) => {
-  if (flavor !== 'confluent') {
-    let events = null;
-    try {
-      events = consumer.events;
-    } catch {
-      events = null; // the confluent facade throws from this getter
-    }
-    if (events?.GROUP_JOIN && isFunction(consumer.on)) {
-      return new Promise((resolve) => {
-        const remove = consumer.on(events.GROUP_JOIN, () => {
-          if (isFunction(remove)) remove();
-          resolve();
-        });
-        const timer = setTimeout(resolve, timeout);
-        if (isFunction(timer.unref)) timer.unref();
+  const events = eventsOf(flavor, consumer);
+  if (events?.GROUP_JOIN && isFunction(consumer.on)) {
+    return new Promise((resolve) => {
+      const stop = listen(consumer, events.GROUP_JOIN, () => {
+        stop();
+        clearTimeout(timer);
+        resolve(true);
       });
-    }
+      const timer = setTimeout(() => {
+        stop();
+        resolve(false);
+      }, timeout);
+      if (isFunction(timer.unref)) timer.unref();
+    });
   }
   // The confluent facade has no join event: its assignment is the signal.
   return (async () => {
     const deadline = Date.now() + timeout;
     while (Date.now() < deadline) {
       try {
-        if (isFunction(consumer.assignment) && consumer.assignment().length > 0) return;
+        if (isFunction(consumer.assignment) && consumer.assignment().length > 0) return true;
       } catch {
         // Not implemented on this client.
       }
       await new Promise((resolve) => setTimeout(resolve, step));
     }
+    return false;
   })();
 };
 
-module.exports = { detectFlavor, consumerConfig, producerConfig, subscribeArgs, runArgs, metadataTopics, joinWatcher };
+/**
+ * Watches a consumer's health after run(): kafkajs announces a CRASH (with
+ * `restart` when it will rejoin by itself) and a GROUP_JOIN when it is
+ * back. The confluent facade has neither — `consumer.events` throws — so
+ * there `healthy` cannot follow a crash, which the guide says. Answers a
+ * `stop()`.
+ */
+const healthWatcher = (flavor, consumer, { onDown, onUp }) => {
+  const events = eventsOf(flavor, consumer);
+  if (!events?.CRASH || !isFunction(consumer.on)) return () => {};
+  const stops = [
+    listen(consumer, events.CRASH, (event) =>
+      onDown(event?.payload?.error ?? event?.error, event?.payload?.restart ?? event?.restart),
+    ),
+  ];
+  if (events.GROUP_JOIN) stops.push(listen(consumer, events.GROUP_JOIN, () => onUp()));
+  return () => {
+    for (const stop of stops) stop();
+  };
+};
+
+module.exports = {
+  detectFlavor,
+  consumerConfig,
+  producerConfig,
+  subscribeArgs,
+  runArgs,
+  metadataTopics,
+  joinWatcher,
+  healthWatcher,
+};
