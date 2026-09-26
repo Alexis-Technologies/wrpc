@@ -73,6 +73,7 @@ class PeerLink extends Emitter {
   #redial;
   #redialAttempt = 0;
   #redialTimer = null;
+  #connectTimeout;
   #opened;
   #log;
   #otel;
@@ -83,6 +84,7 @@ class PeerLink extends Emitter {
     super();
     const { id, instance, room, data, link, host, hostOptions, client, framing, redial, log, otel } = options;
     const { compression } = hostOptions;
+    this.#connectTimeout = options.connectTimeout ?? 0;
     this.#peer = peer;
     this.#id = id;
     this.#instance = instance;
@@ -257,9 +259,19 @@ class PeerLink extends Emitter {
     );
   }
 
-  /** @internal A knock from the responder: dial again if this side is the initiator and the link failed. */
+  /**
+   * @internal A knock from the responder: it wants the link and has none.
+   * The initiator dials again when its own link failed — and when its link
+   * looks CONNECTED but once opened: the responder's half is gone and this
+   * side's pc never noticed (an asymmetric failure), so the link is failed
+   * here for the redial cycle to rebuild. A dial under way is left to
+   * finish; a responder never dials.
+   */
   knocked() {
-    if (this.initiator && this.#link.state === 'failed') this.#redialNow();
+    if (!this.initiator) return;
+    const state = this.#link.state;
+    if (state === 'failed') return void this.#redialNow();
+    if (state === 'connected' && this.#everOpen) this.#link.fail(new Error('the peer knocked on a link it lost'));
   }
 
   /**
@@ -376,6 +388,9 @@ class PeerLink extends Emitter {
   #onUp() {
     if (this.#state === 'closed') return;
     this.#redialAttempt = 0;
+    // A redial or knock still scheduled is for a failure that is over.
+    clearTimeout(this.#redialTimer);
+    this.#redialTimer = null;
     const first = !this.#everOpen;
     this.#everOpen = true;
     this.#setState('open');
@@ -394,7 +409,11 @@ class PeerLink extends Emitter {
     this.#count(-1);
     if (this.#redialAttempt >= this.#redial.retries) {
       this.#log.warn({ event: 'rtc.peer.gave-up', attempts: this.#redialAttempt });
-      return void this.close();
+      // The initiator's goodbye ends a link nobody else can rebuild. A
+      // responder gives up quietly: the initiator may still be redialling
+      // on a longer backoff, and a 'close' from here used to end the link
+      // it was about to rebuild.
+      return void (this.initiator ? this.close() : this.abandon());
     }
     const delay = backoffDelay({ ...this.#redial, attempt: this.#redialAttempt });
     this.#redialAttempt++;
@@ -403,22 +422,34 @@ class PeerLink extends Emitter {
     this.#redialTimer = setTimeout(() => {
       this.#redialTimer = null;
       if (this.#state === 'closed') return;
+      // Counted where the action happened, not where it was scheduled.
+      if (this.initiator) {
+        if (this.#redialNow()) this.#otel.recordRtcRedial(this.#role);
+        return;
+      }
+      if (this.#link.state !== 'failed') return;
+      this.#knock();
       this.#otel.recordRtcRedial(this.#role);
-      if (this.initiator) this.#redialNow();
-      else if (this.#link.state === 'failed') this.#knock();
       // A responder whose initiator never answers fails again on the
-      // connect timeout of nothing — so it re-arms itself here.
-      if (!this.initiator && this.#link.state === 'failed') this.#onFailed();
+      // connect timeout of nothing: re-armed once that window has passed,
+      // not at once — each knock used to count an attempt within one
+      // backoff step, the whole budget gone in milliseconds while the
+      // initiator's dial had not even timed out.
+      this.#redialTimer = setTimeout(() => {
+        this.#redialTimer = null;
+        if (this.#state !== 'closed' && this.#link.state === 'failed') this.#onFailed();
+      }, this.#connectTimeout);
+      this.#redialTimer.unref?.();
     }, delay);
   }
 
   #redialNow() {
-    if (this.#link.redial()) {
-      void this.#link.waitOpen().then(
-        () => this.#openClient(),
-        () => {},
-      );
-    }
+    if (!this.#link.redial()) return false;
+    void this.#link.waitOpen().then(
+      () => this.#openClient(),
+      () => {},
+    );
+    return true;
   }
 
   #knock() {
@@ -859,6 +890,7 @@ class WrpcPeer extends Emitter {
       client: this.#clientOptions,
       framing: this.#framing,
       redial: this.#redial,
+      connectTimeout: this.#connectTimeout,
       log: this.#log.child({ peer: remoteId }),
       otel: this.#otel,
     });

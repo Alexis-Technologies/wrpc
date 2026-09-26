@@ -1352,6 +1352,31 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **WebRTC redial: a responder no longer burns its budget in milliseconds
+  or kills the link its initiator is rebuilding; a knock on a link the
+  initiator thinks is up rebuilds it.** A responder whose link failed
+  knocked, re-armed itself at once and counted each knock as an attempt —
+  the whole `retries` budget gone within one backoff step, before the
+  initiator's dial had even timed out — and then gave up with a goodbye
+  that ended the link the initiator was still redialling. It now re-arms
+  once the connect window has passed, and gives up quietly (`abandon`,
+  no goodbye); the initiator's goodbye still ends a link nobody else can
+  rebuild. A knock arriving at an initiator whose link looks connected
+  but once opened is the responder saying its half is gone — an
+  asymmetric failure the initiator's pc never noticed — so the link is
+  failed (`RtcLink.fail()`) for the redial cycle to rebuild; a knock
+  during a dial is ignored. The mirror case is covered too: an offer under
+  a NEW certificate arriving at a responder whose link still looks
+  connected — the initiator redialled after a failure only it noticed —
+  makes the responder dial a fresh pc rather than renegotiate the old one,
+  which was never the new pc's to renegotiate. The fake's channels now
+  carry a close to the peer only over a live path (a dead one carries no
+  SCTP reset), which is what surfaced this. `wrpc.rtc.redials` is counted where a redial
+  or knock actually happened, not where one was scheduled, and a
+  scheduled one is cancelled when the link comes up on the peer's offer.
+  The relay's `signaling.undeliverable` — a trickle candidate that
+  crossed the peer's leave, mostly — is `debug`, not a warning per
+  candidate.
 - **WebRTC peers: one link per peer under a racing `connect()`, and no
   unhandled rejection from a signal, a join or a dial.** A `connect()`
   made while an inbound open for the same peer was still in its

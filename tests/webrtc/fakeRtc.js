@@ -120,12 +120,15 @@ class FakeDataChannel extends EventTarget {
     if (this.readyState === 'closed' || this.readyState === 'closing') return;
     this.readyState = 'closing';
     const peer = this.#peer;
+    const linked = this.#pc.linkedTo(peer?.pcOf());
     this.#world.later(() => {
       this.readyState = 'closed';
       this.dispatchEvent(new Event('close'));
-      if (peer && !abrupt) peer.remoteClosed();
-      if (peer && abrupt) peer.remoteClosed();
+      // The SCTP reset reaches the peer over a live path only: a channel
+      // closing on a pc whose ICE failed tells the other end nothing.
+      if (peer && linked) peer.remoteClosed();
     });
+    void abrupt;
   }
 
   remoteClosed() {
@@ -324,10 +327,12 @@ class FakePeerConnection extends EventTarget {
   // Test hook: the ICE link dies on both ends, the way a NAT rebinding
   // looks — channels stay 'open' but nothing gets through until a
   // renegotiation (an ICE restart) reconnects.
-  failIce() {
+  failIce({ both = true } = {}) {
     const peer = this.#peer;
     this.#fail();
-    if (peer && peer.#peer === this) peer.#fail();
+    // both: false — only THIS side notices (its ICE fails, the peer's pc
+    // still looks connected), the asymmetric failure a knock recovers.
+    if (both && peer && peer.#peer === this) peer.#fail();
   }
 
   close() {
@@ -337,8 +342,11 @@ class FakePeerConnection extends EventTarget {
     this.signalingState = 'closed';
     this.connectionState = 'closed';
     this.iceConnectionState = 'closed';
-    this.#linked = false;
+    // The channels close while the path is still live: their resets reach
+    // the peer, as a pc closed over a working association's do. Only a
+    // path that ICE already lost carries nothing (see FakeDataChannel).
     for (const channel of this.#channels.values()) channel.close();
+    this.#linked = false;
     const peer = this.#peer;
     if (peer && peer.#peer === this) {
       peer.#linked = false;

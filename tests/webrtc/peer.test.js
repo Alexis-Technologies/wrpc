@@ -250,11 +250,15 @@ test('peer: connect() from the higher id knocks, and simultaneous connects make 
   assert.strictEqual(d.links.size, 1);
   assert.strictEqual(cd, c.link('d'));
   assert.strictEqual(dc, d.link('c'));
-  // A knock for a link that already exists and is fine is ignored.
+  // A knock on a link the initiator sees as open means the responder lost
+  // its half: the initiator redials, and the link comes back.
+  const before = cd.link.pc;
   hub.relay('d', 'c', null, { type: 'connect' });
-  await hub.tick();
-  await hub.tick();
-  assert.strictEqual(cd.state, 'open');
+  await within(
+    waitFor(() => cd.state === 'open' && cd.link.pc !== before, 'redialled on the knock'),
+    'redialled on the knock',
+  );
+  assert.strictEqual(dc.state, 'open');
   await assert.rejects(c.connect(''), /remoteId must be/);
   await assert.rejects(
     c.connect('x'.repeat(257)),
@@ -427,6 +431,9 @@ test('peer: a responder whose initiator vanished knocks, then gives up', async (
   await within(closed, 'b gave up');
   assert.strictEqual(ba.state, 'closed');
   assert.strictEqual(hub.sent.filter((e) => e.from === 'b' && e.type === 'connect').length, 2);
+  // Quietly: a goodbye from a responder giving up would end the link an
+  // initiator on a longer backoff was about to rebuild.
+  assert.strictEqual(hub.sent.filter((e) => e.from === 'b' && e.type === 'close').length, 0, 'no goodbye');
   assert.strictEqual(b.links.size, 0);
   assert.strictEqual(ab.state, 'closed');
   assert.strictEqual(await ba.ready(), ba, 'ready() stays settled: the link did open once');
@@ -879,4 +886,70 @@ test('peer: a signal whose handling rejects reaches the error listener, never an
   await timers.setTimeout(10);
   assert.deepStrictEqual(unhandled, []);
   assert.ok(a.errors?.some((error) => /refused by the link/.test(error.message)));
+});
+
+test('peer: asymmetric silent failure — the responder loses its half, knocks, the initiator redials, the link recovers', async (t) => {
+  const { peer, hub } = world(t);
+  const a = peer('a');
+  const b = peer('b', { redial: { retries: 5, minDelay: 5, maxDelay: 10, jitter: false }, connectTimeout: 60 });
+  const ab = await within(a.connect('b'), 'open');
+  const ba = b.link('a');
+  await within(ba.ready(), 'open');
+  const before = ab.link.pc;
+  // Only b's ICE fails: a's pc still looks connected and gets no reset.
+  ba.link.pc.failIce({ both: false });
+  await within(
+    waitFor(() => ba.state === 'reconnecting', 'b noticed'),
+    'b noticed',
+  );
+  assert.strictEqual(ab.state, 'open', "a's side never noticed");
+  // b knocks; a, connected as far as it knows, takes the knock as the
+  // failure it is and redials. It used to ignore the knock, and b gave
+  // up — with a goodbye that ended a's link for good.
+  await within(
+    waitFor(() => ab.state === 'open' && ba.state === 'open' && ab.link.pc !== before, 'recovered'),
+    'recovered',
+  );
+  assert.strictEqual(hub.sent.filter((e) => e.from === 'b' && e.type === 'close').length, 0);
+  await ab.load('calc');
+  assert.strictEqual(await ab.api.calc.add({ a: 1, b: 1 }), 2);
+  await ba.load('calc');
+  assert.strictEqual(await ba.api.calc.add({ a: 2, b: 2 }), 4);
+});
+
+test('peer: a knock on a connected initiator forces a redial; a knock during a dial is ignored', async (t) => {
+  const { peer, hub } = world(t);
+  const a = peer('a');
+  const b = peer('b');
+  const ab = await within(a.connect('b'), 'open');
+  const ba = b.link('a');
+  await within(ba.ready(), 'open');
+  const first = ab.link.pc;
+  const states = [];
+  ab.on('state', (state) => states.push(state));
+  hub.relay('b', 'a', null, { type: 'connect' });
+  await within(
+    waitFor(() => ab.state === 'open' && ab.link.pc !== first, 'redialled'),
+    'redialled',
+  );
+  assert.deepStrictEqual(states, ['reconnecting', 'open']);
+  // During a dial: the knock changes nothing — the pc under way stays.
+  // The dial is held open by a deaf peer: a's offer never arrives.
+  hub.mute('b');
+  ab.link.pc.failIce();
+  await within(
+    waitFor(() => ab.link.state === 'reconnecting', 'dialling again'),
+    'dialling again',
+  );
+  const dialling = ab.link.pc;
+  hub.relay('b', 'a', null, { type: 'connect' });
+  await hub.tick();
+  await hub.tick();
+  assert.strictEqual(ab.link.pc, dialling, 'a knock during a dial is ignored');
+  assert.strictEqual(ab.link.state, 'reconnecting');
+  hub.unmute('b');
+  await within(
+    waitFor(() => ab.state === 'open' && ba.state === 'open', 'open again'),
+    'open again',
+  );
 });

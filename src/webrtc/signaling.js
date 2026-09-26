@@ -426,7 +426,9 @@ const createSignalingUnit = (options = {}) => {
             message,
           };
           const delivered = target !== null && server.sendTo(target.address, event('signal'), payload, bounded);
-          if (!delivered) client.log.warn({ event: 'signaling.undeliverable', to, room, type: message.type });
+          // A trickle candidate that crossed the peer's leave, mostly — a
+          // routine race, not a warning per candidate.
+          if (!delivered) client.log.debug({ event: 'signaling.undeliverable', to, room, type: message.type });
         },
       }),
     },

@@ -209,7 +209,12 @@ const ENTRIES = [
   // threshold), the water marks and maxBackpressure are validated, and a
   // consumer that never drains is disconnected at the cap — ~0.5 KB of
   // backpressure correctness the wt/ws carriers already had.
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 55 },
+  // 55 → 56 (2026-09-27): redial correctness — one link per peer under a
+  // racing connect(), a responder that gives up quietly and re-arms after
+  // the connect window, a knock or a new-certificate offer that rebuilds a
+  // link only one side saw fail, and no unhandled rejection from a signal,
+  // a join or a dial (measured 55.1).
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 56 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

@@ -31,6 +31,7 @@ const { Emitter } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
 const { isRtcAdapter, isRtcPeerConnection } = require('./port.js');
 const { negotiateMessageSize, MIN_MESSAGE_SIZE } = require('./framing.js');
+const { sdpFingerprint } = require('./assertions.js');
 
 // Negotiated data channels are not described in the SDP: both peers MUST
 // be configured identically, or a channel never opens (it surfaces as the
@@ -115,6 +116,9 @@ class RtcLink extends Emitter {
   // channels have no handshake of their own for (per-message compression).
   #caps;
   #peerCaps = null;
+  // The certificate the peer's last description declared: a new one is a
+  // new pc on the other side, whatever this side's pc thinks.
+  #remoteFingerprint = null;
 
   constructor({
     localId,
@@ -279,6 +283,17 @@ class RtcLink extends Emitter {
     this.#finish(true);
   }
 
+  /**
+   * Fails a CONNECTED link from outside — the peer knocked on a link it
+   * lost while this side's pc never noticed — so the owner's redial cycle
+   * rebuilds it. A no-op, false, while dialling, failed or closed.
+   */
+  fail(error) {
+    if (this.#state !== 'connected') return false;
+    this.#fail(error);
+    return true;
+  }
+
   // ---- dialling
 
   #dial(state) {
@@ -325,6 +340,9 @@ class RtcLink extends Emitter {
     this.#restarting = false;
     this.#pendingCandidates = [];
     this.#maxMessageSize = MIN_MESSAGE_SIZE;
+    // A fresh pc has seen no remote yet: the first description on it sets
+    // the certificate, whatever the pc before it had seen.
+    this.#remoteFingerprint = null;
     this.#opened = this.#deferred();
     clientChannel.binaryType = 'arraybuffer';
     hostChannel.binaryType = 'arraybuffer';
@@ -439,12 +457,22 @@ class RtcLink extends Emitter {
     if (typeof description !== 'object' || description === null || typeof description.type !== 'string') {
       return void this.#log.warn({ event: 'rtc.signal.malformed', what: 'description' });
     }
-    // An offer for a link that failed (or never dialled on this side) is the
-    // initiator's redial arriving first: follow it onto a fresh pc.
-    if (description.type === 'offer' && (this.#state === 'failed' || this.#pc === null)) {
-      if (this.#state === 'new' || this.#state === 'closed') return;
-      this.#dial('reconnecting');
+    const fingerprint = sdpFingerprint(description.sdp);
+    if (description.type === 'offer') {
+      // An offer for a link that failed (or never dialled on this side) is
+      // the initiator's redial arriving first: follow it onto a fresh pc.
+      // So is an offer under a NEW certificate on a link this side still
+      // sees as connected — the initiator redialled after a failure only
+      // it noticed, and a fresh pc cannot renegotiate the old one: it was
+      // never its own. (An ICE restart keeps the certificate.)
+      const changed =
+        fingerprint !== null && this.#remoteFingerprint !== null && fingerprint !== this.#remoteFingerprint;
+      if (this.#state === 'failed' || this.#pc === null || changed) {
+        if (this.#state === 'new' || this.#state === 'closed') return;
+        this.#dial('reconnecting');
+      }
     }
+    if (fingerprint !== null) this.#remoteFingerprint = fingerprint;
     const pc = this.#pc;
     if (!pc) return;
     const offerCollision = description.type === 'offer' && (this.#makingOffer || pc.signalingState !== 'stable');

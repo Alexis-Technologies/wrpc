@@ -408,8 +408,15 @@ Three layers, each owning one kind of failure:
   initiator does, so the two sides never race) and the channels survive it.
   A restart that does not reconnect within `restartTimeout` fails the link.
 - **The link**: on `failed` the initiator redials with backoff and the
-  responder knocks with backoff, up to `redial.retries` (5), then the
-  `PeerLink` closes. A redial is a fresh `RTCPeerConnection`: the host-side
+  responder knocks with backoff — re-arming only once the initiator's
+  connect window has passed, so its `redial.retries` (5) are spent on real
+  attempts — after which the initiator's `PeerLink` closes with a goodbye
+  and a responder's gives up quietly (a goodbye from it would end the link
+  an initiator on a longer backoff was about to rebuild). A knock arriving
+  at an initiator whose link looks connected is the responder saying its
+  half is gone — a failure only one side saw — and rebuilds the link; so
+  does an offer under a new certificate arriving at a responder that never
+  noticed: a fresh `RTCPeerConnection` on one side is a fresh one on both. A redial is a fresh `RTCPeerConnection`: the host-side
   `Client` is recreated, and the client-side `WrpcClient` runs its ordinary
   reconnect cycle, whose `open()` simply waits for the link — so it
   re-`load()`s its units and re-subscribes with `lastEventId` exactly as it

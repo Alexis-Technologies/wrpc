@@ -191,7 +191,12 @@ test('peer telemetry: spans on both ends of a link, joined by the traceparent', 
     exported = await metrics.collect();
     assert.strictEqual(point(exported, 'wrpc.rtc.links', (attrs) => attrs['wrpc.rtc.role'] === 'initiator').value, 1);
     assert.ok(point(exported, 'wrpc.rtc.redials', (attrs) => attrs['wrpc.rtc.role'] === 'initiator').value >= 1);
-    assert.ok(point(exported, 'wrpc.rtc.redials', (attrs) => attrs['wrpc.rtc.role'] === 'responder').value >= 1);
+    // Counted where a knock actually went out — a responder rebuilt by the
+    // initiator's offer before its own timer fired knocked never, and used
+    // to be counted anyway.
+    const knocks = hub.sent.filter((entry) => entry.from === 'b' && entry.type === 'connect').length;
+    const responder = point(exported, 'wrpc.rtc.redials', (attrs) => attrs['wrpc.rtc.role'] === 'responder');
+    assert.strictEqual(responder?.value ?? 0, knocks);
     assert.strictEqual(
       point(exported, 'wrpc.server.connections', (attrs) => attrs['wrpc.transport'] === 'webrtc').value,
       2,
