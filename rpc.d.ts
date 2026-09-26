@@ -842,6 +842,7 @@ export class Client extends Emitter {
   /** The per-message compression the peer negotiated for its own frames (a Node ws client's `compression`), or null. */
   readonly compression: { readonly id: string; readonly threshold: number } | null;
   /**
+   * @experimental (`@alexify/wrpc/encryption`, whole — may change in a minor.)
    * The facts of a session-encrypted connection once its handshake is done,
    * null on one that is not. An `onConnect` hook that awaits
    * `client.sessionReady` reads it: `remoteStatic` is the client's

@@ -360,7 +360,7 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
    */
   api: TypedApi<Api>;
   readonly active: boolean;
-  /** The facts of this connection's encrypted session, or null when it is not one. */
+  /** @experimental The facts of this connection's encrypted session, or null when it is not one. */
   readonly encryption: EncryptionInfo | null;
 
   constructor(

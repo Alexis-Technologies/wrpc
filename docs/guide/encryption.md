@@ -8,6 +8,13 @@ cannot even open a `ws://` socket.
 
 This page is for where TLS **ends before the data does**.
 
+::: warning Experimental
+The whole of `@alexify/wrpc/encryption` — the subpath, every `encryption`
+option it feeds and the wire formats — is `@experimental`: it may change in a
+minor release until the formats have been reviewed against real deployments.
+See [Stability](../reference/stability#experimental-carve-outs).
+:::
+
 ## Do you need it?
 
 | Where the data goes | What TLS leaves readable | The knob |

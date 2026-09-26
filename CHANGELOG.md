@@ -1309,6 +1309,17 @@ bytes it sends. In that order:
 
 ### Changed
 
+- `@alexify/wrpc/encryption` is `@experimental` **whole**: the subpath's
+  types, every `encryption` option it feeds (the server's and the client's,
+  `rooms`/`cluster`, the broker bindings, `sealedStore`),
+  `Client.encryption`, `encryptionKey()`/`encryptionRequired`,
+  `attach({ encrypted })`, and the session-encryption, sealed-request and
+  broker-sealing wire formats — the fifth carve-out next to telemetry, the
+  engine port, WebTransport and the brokers
+  ([Stability](./docs/reference/stability.md#experimental-carve-outs)). The
+  formats may change in a minor until they have been reviewed against real
+  deployments; `consistency.test.js` keeps the stability page, CONTRIBUTING
+  and `llms.txt` in step with `exports`.
 - `http.compression` / `sse.compression`: `level` and `memLevel` moved into
   the coding they tune — `encodings: [{ encoding: 'gzip', level, memLevel }]`
   — and are a `TypeError` at the top level (nothing of this was released).

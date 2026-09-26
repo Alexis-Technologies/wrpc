@@ -8,8 +8,11 @@ holds for contributors.
 
 **The `exports` subpaths are the public API.** Everything reachable through
 `@alexify/wrpc` and its subpaths (`/ws`, `/engine`, `/uws`, `/fastify`,
-`/express`, `/scaling`, `/sse`, `/query`, `/auth`, `/webrtc`, `/wt`, `/broker`), as typed by the
-hand-maintained root `.d.ts` files, is stable under semver. Deep imports
+`/express`, `/scaling`, `/sse`, `/query`, `/auth`, `/deflate`, `/webrtc`,
+`/wt`, `/encryption`, `/broker`, `/broker/redis`, `/broker/nats`,
+`/broker/amqp`, `/broker/kafka`), as typed by the hand-maintained root
+`.d.ts` files, is stable under semver — except where a subpath is listed
+under the carve-outs below. Deep imports
 into `src/` are **not** addressable and not supported: the module layout
 may change in any release (and has — `rpc/core.js` split twice already).
 
@@ -24,7 +27,7 @@ may change in any release (and has — `rpc/core.js` split twice already).
 
 ## `@experimental` carve-outs
 
-Four areas are marked `@experimental` in the `.d.ts` files and may change in
+Five areas are marked `@experimental` in the `.d.ts` files and may change in
 a **minor** (described in the CHANGELOG):
 
 - the **telemetry** writer shapes and metric set (the `telemetry` option,
@@ -41,6 +44,17 @@ a **minor** (described in the CHANGELOG):
   broker metrics, the `broker` client transport and its
   [broker binding](./protocol#broker-binding) — until every adapter has shipped
   ([Message brokers](../guide/brokers)).
+- **application-level encryption**, whole: the `@alexify/wrpc/encryption`
+  subpath and every `encryption` option it feeds — the server's and the
+  client's session encryption, `rooms.encryption`/`cluster.encryption`, the
+  broker bindings', `sealedStore` — with `Client.encryption`,
+  `RpcServer.encryptionKey()`/`encryptionRequired` and `attach({ encrypted })`,
+  and the [session encryption](./protocol#session-encryption),
+  [sealed requests](./protocol#sealed-requests) and
+  [broker sealing](./protocol#broker-sealing) wire formats — until the
+  formats have been reviewed against real deployments
+  ([Encryption](../guide/encryption)). TLS is not in this list: it is the
+  platform's.
 
 ## The wire protocol's own, stronger promise
 

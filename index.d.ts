@@ -170,6 +170,7 @@ export interface ClusterOptions {
   /** The largest inflated envelope accepted (default 16 MiB). */
   maxMessage?: number;
   /**
+   * @experimental (`@alexify/wrpc/encryption`, whole — may change in a minor.)
    * Seals the cluster envelopes — presence, commands, `sendTo` payloads,
    * asks, `fetchClients` replies — under a shared keyring, after signing
    * and compression (`@alexify/wrpc/encryption`). `secret` authenticates a
@@ -206,6 +207,7 @@ export interface RoomsOptions {
   /** The largest inflated envelope accepted (default 16 MiB). */
   maxMessage?: number;
   /**
+   * @experimental (`@alexify/wrpc/encryption`, whole — may change in a minor.)
    * Seals every room envelope this instance publishes under a shared
    * keyring (`@alexify/wrpc/encryption`), after compression: the backplane
    * carries `wrpc-sealed:<kid>:<base64>` and its operator reads nothing —
@@ -540,9 +542,9 @@ export declare class RpcServer extends Emitter {
    */
   attach(transport: InboundTransport, options?: AttachOptions): Client;
   /**
-   * The public key bundle of the current `encryption` key — what a client
-   * pins as `createEncryption({ serverKey })`. Safe to publish; resolves
-   * null when encryption is off.
+   * @experimental The public key bundle of the current `encryption` key —
+   * what a client pins as `createEncryption({ serverKey })`. Safe to
+   * publish; resolves null when encryption is off.
    */
   encryptionKey(): Promise<string | null>;
   handleHttpCall(call: HttpCall): Promise<void>;
@@ -550,9 +552,9 @@ export declare class RpcServer extends Emitter {
   /** The per-connection caps every attached client gets. */
   readonly limits: Readonly<{ maxBatch: number; maxSubscriptions: number; maxCalls: number }>;
   /**
-   * Whether `encryption.required` is on: what a binding built on `attach`
-   * (the broker consumers, a raw data channel) reads to vouch for its
-   * transport, or refuse to attach, before a delivery arrives.
+   * @experimental Whether `encryption.required` is on: what a binding built
+   * on `attach` (the broker consumers, a raw data channel) reads to vouch
+   * for its transport, or refuse to attach, before a delivery arrives.
    */
   readonly encryptionRequired: boolean;
   /**
@@ -724,7 +726,7 @@ export type AttachOptions = {
    */
   persistent?: boolean;
   /**
-   * Vouches for a wire the core cannot see into: under
+   * @experimental Vouches for a wire the core cannot see into: under
    * `encryption.required`, `attach()` throws without it. A WebRTC data
    * channel is (DTLS, end to end); a broker binding is when it seals its
    * own frames.

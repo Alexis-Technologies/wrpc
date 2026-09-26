@@ -10,7 +10,7 @@ Key facts:
 - Transports: WebSocket, plain HTTP, Server-Sent Events, a worker `MessagePort` (Service Worker or SharedWorker).
 - Hosts: batteries-included `Server`, or fastify / express / bare `node:http` / uWebSockets.js — every host injected, never depended on.
 - Public API: `Server`, `RpcServer`, `defineRouter`, `procedure`, `WrpcClient`, `connect<Api>()`, `tracked`, `createEventLog`, `RoomRegistry`, `Broadcast`, `Cluster`, `WrpcReadable`, `WrpcWritable`.
-- Subpaths: `@alexify/wrpc`, `/ws`, `/engine`, `/uws`, `/fastify`, `/express`, `/scaling`, `/sse`, `/query`, plus a `wrpc types` codegen CLI.
+- Subpaths: `@alexify/wrpc`, `/ws`, `/engine`, `/uws`, `/fastify`, `/express`, `/scaling`, `/sse`, `/query`, `/auth`, `/deflate`, `/webrtc`, `/wt`, `/encryption`, `/broker` and `/broker/redis`, `/broker/nats`, `/broker/amqp`, `/broker/kafka` (the WebTransport, broker and encryption ones `@experimental`), plus a `wrpc types` codegen CLI.
 - The wire protocol is frozen at 1.0: JSON packets (`call`, `callback`, `event`, `subscribe`, `data`, `end`, `unsubscribe`, `cancel`, `stream`, `ping`, `pong`) plus a binary chunk framing.
 - Source: https://github.com/Alexis-Technologies/wrpc
 

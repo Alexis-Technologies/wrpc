@@ -2,6 +2,16 @@
 // of the browser half (the AEADs synchronous over node:crypto here), plus
 // what only a Node process does as it lands.
 
+/**
+ * `@alexify/wrpc/encryption` — application-level encryption, opt-in and
+ * never in place of TLS.
+ *
+ * @experimental The whole subpath may change in a minor (see
+ * docs/reference/stability.md): these types, the `encryption` options they
+ * feed on the server, the client, rooms, the cluster, the broker bindings
+ * and the session store, and the wire formats of docs/reference/protocol.md
+ * `#session-encryption`, `#sealed-requests` and `#broker-sealing`.
+ */
 export * from './encryption.browser.js';
 
 import type { Cipher, CipherAlgorithm, EncryptionInfo, KeysOption, NoisePattern } from './encryption.browser.js';

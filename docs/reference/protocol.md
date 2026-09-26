@@ -1141,6 +1141,13 @@ negotiated.
 
 ## Session encryption {#session-encryption}
 
+**This section is experimental** — this one, [Sealed requests](#sealed-requests)
+under it and [Broker sealing](#broker-sealing): they describe revision 1 of
+each format, may change in a minor release, and sit outside this page's
+interoperability promise until they stabilize, the way an injected wire codec
+does. The subpath is marked `@experimental` whole
+([Stability](./stability#experimental-carve-outs)).
+
 Opt-in (`@alexify/wrpc/encryption`), on the persistent transports, and never
 in place of TLS. A client announces it with `wrpc_e=1` in the connect URL —
 the server may be the first to send, so it has to know the mode before any

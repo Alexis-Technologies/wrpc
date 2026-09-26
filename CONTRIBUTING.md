@@ -112,8 +112,10 @@ Four checks are deliberately **not** in CI — run them by hand:
 
 ## Stability and deprecation
 
-The published surface is stable under semver, with three carve-outs marked
-`@experimental` in the `.d.ts` files:
+The published surface is stable under semver, with five carve-outs marked
+`@experimental` in the `.d.ts` files (the consumer-facing list is
+[docs/reference/stability.md](./docs/reference/stability.md#experimental-carve-outs);
+`tests/package/consistency.test.js` keeps the two counts equal):
 
 - the **telemetry** writer shapes and metric set (`telemetry` option) — the
   signals will keep improving in minors;
@@ -121,7 +123,16 @@ The published surface is stable under semver, with three carve-outs marked
   (`capabilities` in particular);
 - **WebTransport**, whole — the `wt` client transport, the `@alexify/wrpc/wt`
   subpath and the control-stream framing — until Node has a WebTransport of
-  its own to settle the carrier against.
+  its own to settle the carrier against;
+- the **message-broker family**, whole — `@alexify/wrpc/broker` and the
+  `@alexify/wrpc/broker/*` adapters, their capability contracts, the broker
+  metrics, the `broker` client transport and the broker binding — until every
+  adapter has shipped;
+- **application-level encryption**, whole — `@alexify/wrpc/encryption` and
+  every `encryption` option it feeds, `Client.encryption`,
+  `encryptionKey()`/`encryptionRequired`, `attach({ encrypted })`, and the
+  session-encryption, sealed-request and broker-sealing wire formats — until
+  the formats have been reviewed against real deployments.
 
 An `@experimental` API may change in a minor release, with the change
 described in the CHANGELOG. Everything else follows the usual rule: removal

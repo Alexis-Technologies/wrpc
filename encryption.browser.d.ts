@@ -3,6 +3,9 @@
 // keyring — and the structural contracts an application injects its own
 // through. Everything here runs on both platforms; encryption.d.ts
 // re-exports this file and adds what only a Node process does.
+//
+// @experimental The whole subpath may change in a minor (see
+// docs/reference/stability.md) — every declaration below included.
 
 /** Any byte view `crypto.subtle` and `node:crypto` both take. */
 export type Bytes = Uint8Array;

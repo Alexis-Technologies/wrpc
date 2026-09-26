@@ -253,3 +253,42 @@ test('no text still promises what 2.0 already did', () => {
   const stale = files.filter((file) => STALE.test(readFileSync(path.join(ROOT, file), 'utf8')));
   assert.deepStrictEqual(stale, [], 'these files still promise what 2.0 already did');
 });
+
+const NUMBER_WORDS = ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine'];
+const subpaths = Object.keys(pkg.exports)
+  .filter((key) => key !== '.' && key !== './package.json')
+  .map((key) => key.slice(1));
+
+// The stability page is where a consumer learns what the semver promise
+// covers, llms.txt where a model does; a subpath missing from either is a
+// public API nobody was told about.
+test('docs/reference/stability.md and llms.txt name every exports subpath', () => {
+  const stability = read('docs/reference/stability.md');
+  const llms = read('docs/public/llms.txt');
+  for (const subpath of subpaths) {
+    assert.ok(stability.includes(`\`${subpath}\``), `stability.md must list ${subpath}`);
+    assert.ok(llms.includes(`\`${subpath}\``), `llms.txt must list ${subpath}`);
+  }
+});
+
+// "Four areas are marked @experimental" went stale twice — the brokers and
+// then encryption were added under it. The count is derived from the list.
+test('the @experimental carve-out counts match their lists', () => {
+  const bullets = (text, from, to, label) => {
+    const start = text.indexOf(from);
+    assert.ok(start >= 0, `${label} must keep its "${from}" section`);
+    const end = text.indexOf(to, start + from.length);
+    const block = text.slice(start, end < 0 ? undefined : end);
+    return block.split('\n').filter((line) => line.startsWith('- ')).length;
+  };
+  const stability = read('docs/reference/stability.md');
+  const count = bullets(stability, '## `@experimental` carve-outs', '\n## ', 'stability.md');
+  assert.ok(count > 0 && count < NUMBER_WORDS.length, `an unexpected carve-out count: ${count}`);
+  const word = NUMBER_WORDS[count];
+  const capitalized = word[0].toUpperCase() + word.slice(1);
+  assert.ok(stability.includes(`${capitalized} areas are marked`), `stability.md must say "${capitalized} areas"`);
+  const contributing = read('CONTRIBUTING.md');
+  const mirrored = bullets(contributing, '## Stability and deprecation', '\nAn `@experimental` API', 'CONTRIBUTING.md');
+  assert.strictEqual(mirrored, count, 'CONTRIBUTING.md must list the same carve-outs as stability.md');
+  assert.ok(contributing.includes(`with ${word} carve-outs`), `CONTRIBUTING.md must say "${word} carve-outs"`);
+});
