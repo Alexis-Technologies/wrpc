@@ -288,6 +288,18 @@ test('attachChannel: a framing error from the client is logged and closes the ch
   assert.strictEqual(pair.b.readyState, 'closed');
 });
 
+test('attachChannel: an empty continuation fragment is a framing error too', async (t) => {
+  const warnings = [];
+  const logger = { ...quiet, warn: (entry) => warnings.push(entry), child: () => logger };
+  const { rpc, pair, attached } = await boot(t, { logger, attach: { peer: 'bad' } });
+  // KIND_BINARY without FIN and without a payload byte.
+  pair.a.send(new Uint8Array([0b01]));
+  await waitFor(() => !rpc.clients.has(attached), 'detached');
+  const warned = warnings.find((entry) => entry.event === 'channel.error');
+  assert.strictEqual(warned?.err.code, 'empty', `expected the empty-fragment refusal: ${JSON.stringify(warnings)}`);
+  assert.strictEqual(pair.b.readyState, 'closed');
+});
+
 test('attach: any persistent transport announcing packet/chunk is a client; a non-persistent one is refused', async (t) => {
   const served = routerOf();
   const rpc = new RpcServer({ router: served.router, logger: quiet });

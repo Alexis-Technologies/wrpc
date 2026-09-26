@@ -1327,6 +1327,15 @@ narrower promise — see
   a `join` whose `data` names one of them (400), and `members` answers a
   member of the room only (403) — the roster of a room could be read, and a
   cluster-wide fetch triggered, by anyone who knew its name.
+- **WebRTC framing: empty fragments slipped under the reassembly cap.** A
+  peer could send non-final fragments with no payload for as long as it
+  liked — each one a buffered view, none of them counted by
+  `maxReassembly` — and with one-byte fragments the cap was met only after
+  16 million views (~200× the bytes sent). A fragment that is not the last
+  must now carry a byte (`FramingError` code `'empty'`), and the fragment
+  count of one message is capped as well: `framing.maxFragments`, code
+  `'fragments'`, default `maxReassembly` in 1 KiB pieces and never under
+  1024. `protocol.md#webrtc-framing` says so.
 
 ## [1.0.0] - 2026-08-23
 

@@ -792,6 +792,12 @@ bit 3–7        reserved, MUST be 0
 - Fragments of one message are sent back to back on one ordered, reliable
   channel, so there is no message id and no sequence number: a receiver
   concatenates fragments until FIN.
+- A fragment that is not the last MUST carry at least one payload byte, and
+  a receiver bounds how many fragments one message may arrive in (16 384
+  by default — its reassembly cap in 1 KiB pieces, never fewer than 1024):
+  the byte cap alone would let a peer cost the receiver a buffered view per
+  byte, or per empty fragment. An empty continuation, or a fragment past
+  the count, is a protocol error like the ones below.
 - The KIND and COMPRESSED bits of a continuation MUST equal those of the
   message it continues; a set reserved bit, a COMPRESSED bit before the two
   peers' lists shared a codec, a mismatched continuation, a text message that is

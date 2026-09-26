@@ -91,7 +91,7 @@ export declare const KIND_BINARY: 1;
 
 export declare class FramingError extends Error {
   name: 'FramingError';
-  /** 'empty' | 'reserved' | 'kind' | 'too-large' | 'utf8' */
+  /** 'empty' | 'reserved' | 'kind' | 'too-large' | 'fragments' | 'utf8' */
   code: string;
   constructor(message: string, code: string);
 }
@@ -108,6 +108,13 @@ export declare class FrameEncoder {
 export interface FramingOptions {
   /** Bytes a single message may reassemble to before the peer is cut off. Default 16 MiB. */
   maxReassembly?: number;
+  /**
+   * Fragments a single message may arrive in before the peer is cut off.
+   * Default: `maxReassembly` in 1 KiB pieces, never under 1024 (16 384 for
+   * the default byte cap). A fragment that is not the last must carry a
+   * byte, so the byte cap bounds the count too — at a view per byte.
+   */
+  maxFragments?: number;
 }
 
 export declare class FrameDecoder {

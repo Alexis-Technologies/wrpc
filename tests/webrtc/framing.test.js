@@ -72,6 +72,8 @@ test('framing: constructors validate', () => {
   assert.throws(() => new FrameEncoder(1), TypeError);
   assert.throws(() => new FrameEncoder(16.5), TypeError);
   assert.throws(() => new FrameDecoder({ maxReassembly: 0 }), TypeError);
+  assert.throws(() => new FrameDecoder({ maxFragments: 0 }), TypeError);
+  assert.throws(() => new FrameDecoder({ maxFragments: 1.5 }), TypeError);
   assert.strictEqual(new FrameEncoder(2).maxMessageSize, 2);
   assert.strictEqual(DEFAULT_MAX_REASSEMBLY, 16 * 1024 * 1024);
 });
@@ -140,6 +142,15 @@ test('framing: malformed frames throw a coded FramingError and reset the decoder
     assert.strictEqual(decoder.pending, 0, 'reset after an error');
   };
   expectError(new Uint8Array(0), 'empty');
+  // A fragment that is not the last must carry a byte — as the first
+  // fragment and as a continuation. An empty LAST one is fine: the empty
+  // message, or a message whose bytes ended on the previous fragment.
+  expectError(new Uint8Array([KIND_BINARY]), 'empty');
+  assert.strictEqual(decoder.push(new Uint8Array([KIND_BINARY, 1])), null);
+  expectError(new Uint8Array([KIND_BINARY]), 'empty');
+  assert.deepStrictEqual(Array.from(decoder.push(new Uint8Array([KIND_BINARY | FLAG_FIN])).data), []);
+  assert.strictEqual(decoder.push(new Uint8Array([KIND_BINARY, 5])), null);
+  assert.deepStrictEqual(Array.from(decoder.push(new Uint8Array([KIND_BINARY | FLAG_FIN])).data), [5]);
   expectError(new Uint8Array([0b100 | FLAG_FIN, 1]), 'reserved');
   expectError(new Uint8Array([0b10000000, 1]), 'reserved');
   // A continuation whose KIND differs from the open message.
@@ -164,6 +175,29 @@ test('framing: malformed frames throw a coded FramingError and reset the decoder
   decoder.push(new Uint8Array([KIND_BINARY, 1]));
   decoder.reset();
   assert.strictEqual(decoder.pending, 0);
+});
+
+test('framing: the fragment count of one message is capped — by default the byte cap in 1 KiB pieces', () => {
+  const decoder = new FrameDecoder({ maxReassembly: 64, maxFragments: 3 });
+  const fragments = (error) => error instanceof FramingError && error.code === 'fragments';
+  assert.strictEqual(decoder.push(new Uint8Array([KIND_BINARY, 1])), null);
+  assert.strictEqual(decoder.push(new Uint8Array([KIND_BINARY, 2])), null);
+  assert.strictEqual(decoder.push(new Uint8Array([KIND_BINARY, 3])), null);
+  assert.throws(() => decoder.push(new Uint8Array([KIND_BINARY, 4])), fragments);
+  assert.strictEqual(decoder.pending, 0, 'reset after an error');
+  // Three fragments with the third FIN is a message.
+  decoder.push(new Uint8Array([KIND_BINARY, 1]));
+  decoder.push(new Uint8Array([KIND_BINARY, 2]));
+  assert.deepStrictEqual(Array.from(decoder.push(new Uint8Array([KIND_BINARY | FLAG_FIN, 3])).data), [1, 2, 3]);
+  // The default under the default byte cap: 16 384 one-byte fragments, not 16 million.
+  const wide = new FrameDecoder();
+  const one = new Uint8Array([KIND_BINARY, 0]);
+  for (let i = 0; i < 16384; i++) assert.strictEqual(wide.push(one), null);
+  assert.throws(() => wide.push(one), fragments);
+  // And never under 1024, however small the byte cap.
+  const tiny = new FrameDecoder({ maxReassembly: 2048 });
+  for (let i = 0; i < 1024; i++) tiny.push(one);
+  assert.throws(() => tiny.push(one), fragments);
 });
 
 test('framing: a multi-byte character split across fragments reassembles', () => {

@@ -19,9 +19,10 @@
 //   bit 3-7 reserved, MUST be 0 — a set bit is a protocol error
 //
 // No message id, no sequence number: the channel is ordered and reliable,
-// all fragments of one message are sent back to back, and the KIND of a
-// continuation must match the message it continues. The format is
-// documented in docs/reference/protocol.md (WebRTC) and wire-format.md.
+// all fragments of one message are sent back to back, the KIND of a
+// continuation must match the message it continues, and a fragment that
+// is not the last carries at least one byte. The format is documented in
+// docs/reference/protocol.md (WebRTC) and wire-format.md.
 //
 // This file is on the hot path (once per packet, once per chunk) and
 // browser-budgeted: manual loops, no generators, no spread.
@@ -42,8 +43,13 @@ const HEADER_BYTES = 1;
 const MIN_MESSAGE_SIZE = 16 * 1024;
 const MAX_MESSAGE_SIZE = 256 * 1024;
 // A peer that never sends FIN would otherwise grow the reassembly buffer
-// without bound.
+// without bound — and one sending a byte per fragment would cost a view
+// object per byte long before the byte cap is near, so the fragment count
+// is capped too: the byte cap in 1 KiB pieces (16 384 by default), never
+// under 1024.
 const DEFAULT_MAX_REASSEMBLY = 16 * 1024 * 1024;
+const MIN_MAX_FRAGMENTS = 1024;
+const defaultMaxFragments = (maxReassembly) => Math.max(MIN_MAX_FRAGMENTS, Math.ceil(maxReassembly / 1024));
 
 class FramingError extends Error {
   constructor(message, code) {
@@ -165,16 +171,21 @@ class FrameDecoder {
   compressed = false;
 
   #maxReassembly;
+  #maxFragments;
   #parts = null;
   // The kind and flags of the message being reassembled (MESSAGE_MASK).
   #kind = -1;
   #size = 0;
 
-  constructor({ maxReassembly = DEFAULT_MAX_REASSEMBLY } = {}) {
+  constructor({ maxReassembly = DEFAULT_MAX_REASSEMBLY, maxFragments = undefined } = {}) {
     if (!Number.isInteger(maxReassembly) || maxReassembly <= 0) {
       throw new TypeError('framing: maxReassembly must be a positive integer');
     }
+    if (maxFragments !== undefined && (!Number.isInteger(maxFragments) || maxFragments <= 0)) {
+      throw new TypeError('framing: maxFragments must be a positive integer');
+    }
     this.#maxReassembly = maxReassembly;
+    this.#maxFragments = maxFragments ?? defaultMaxFragments(maxReassembly);
   }
 
   /** Bytes of the message being reassembled; 0 between messages. */
@@ -203,6 +214,9 @@ class FrameDecoder {
     const kind = header & MESSAGE_MASK;
     const fin = (header & FLAG_FIN) !== 0;
     const payload = frame.subarray(HEADER_BYTES);
+    // A fragment that continues carries something: an empty one costs the
+    // receiver a view and moves the byte cap not at all.
+    if (!fin && payload.length === 0) throw this.#fail('empty fragment', 'empty');
     if (this.#parts === null) {
       if (fin) return this.#finish(kind, payload);
       this.#parts = [payload];
@@ -235,6 +249,7 @@ class FrameDecoder {
 
   #guard() {
     if (this.#size > this.#maxReassembly) throw this.#fail('message exceeds maxReassembly', 'too-large');
+    if (this.#parts.length > this.#maxFragments) throw this.#fail('message exceeds maxFragments', 'fragments');
   }
 
   #fail(message, code) {

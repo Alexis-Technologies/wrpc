@@ -432,7 +432,7 @@ new WrpcPeer({
   channels: { initiator: 0, responder: 1, label: 'wrpc' },  // the same on both peers
   client: { heartbeat: { interval: 30_000, timeout: 10_000 }, codec },   // every link's WrpcClient
   host: { trust: 'link', maxCalls: 64, highWaterMark: 1 << 20 },       // the PeerHost, plus water marks
-  framing: { maxReassembly: 16 << 20 },
+  framing: { maxReassembly: 16 << 20, maxFragments: 16384 },   // per message: bytes, and fragments
   compression: false,        // per-message deflate on every link — see below
   connectTimeout: 30_000,
   restartTimeout: 15_000,

@@ -405,6 +405,24 @@ test('webrtc transport: raw channel — both sides fragment at their own maxMess
   assert.ok(b.sent >= 2, `the host fragmented at 4 KiB: ${b.sent} frames`);
 });
 
+test('webrtc transport: raw channel — an empty continuation fragment is a framing error', async (t) => {
+  const { a, b } = await rawChannelPair(t);
+  const client = new ClientRtcTransport('webrtc:host', { channel: a });
+  const errors = [];
+  client.on('error', (error) => errors.push(error));
+  await client.open();
+  // KIND_BINARY, no FIN, no payload: a fragment that promises more and
+  // carries nothing — the shape that used to slip under maxReassembly.
+  b.send(new Uint8Array([KIND_BINARY]));
+  await within(
+    waitFor(() => errors.length === 1 && !client.active, 'refused'),
+    'refused',
+  );
+  assert.strictEqual(errors[0].name, 'FramingError');
+  assert.strictEqual(errors[0].code, 'empty');
+  assert.strictEqual(a.readyState, 'closed', 'a raw channel is closed by the half that refused');
+});
+
 test('webrtc transport: raw channel — open() waits for a connecting channel', async (t) => {
   const { a, b, connect } = await rawChannelPair(t, { deferred: true });
   assert.strictEqual(a.readyState, 'connecting');
