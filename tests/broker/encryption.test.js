@@ -10,6 +10,7 @@ const { MemoryBroker, attachBrokerRpc } = require('../../broker.js');
 const { bearerTransport } = require('../../auth.js');
 const { generateKey } = require('../../encryption.js');
 const { createBrokerSealing, HEADER_SEALED } = require('../../src/broker/sealing.js');
+const { KIND, HEADER_KIND } = require('../../src/broker/rpc/frames.js');
 const { quiet, waitFor } = require('./support.js');
 
 const SECRET = 'not for whoever can read the topic: 4111 1111 1111 1111';
@@ -141,6 +142,27 @@ for (const mode of ['stateless', 'session']) {
     }
   });
 }
+
+test('broker encryption: the goodbye is sealed like every other frame — a sealed client hears the close', async (t) => {
+  const keys = generateKey();
+  const { carried, broker } = spied(new MemoryBroker({ logger: quiet }));
+  const { connect, handle } = await boot(t, { broker, attach: { encryption: { keys } } });
+  const client = await connect({ mode: 'session', encryption: { keys } });
+  await client.load('calc');
+  assert.deepStrictEqual(await client.api.calc.echo({ n: 1 }), { n: 1 });
+  // The binding stops: its goodbye used to go past the sealer, and a sealed
+  // client dropped it as `unsealed` — waiting on a session that was over.
+  const closed = new Promise((resolve) => client.once('close', resolve));
+  await handle.stop();
+  await closed;
+  assert.strictEqual(client.active, false);
+  const byes = carried.filter(({ headers }) => headers[HEADER_KIND] === KIND.BYE);
+  assert.ok(byes.length >= 1, 'a goodbye was carried');
+  for (const { headers, text } of carried) {
+    assert.strictEqual(typeof headers[HEADER_SEALED], 'string', `sealed: ${headers[HEADER_KIND]}`);
+    assert.ok(!text.includes('closing') && !text.includes('closed'), 'the reason rides inside');
+  }
+});
 
 test('broker encryption: compression still applies — compress, then seal, the codec id inside', async (t) => {
   const keys = generateKey();
@@ -279,11 +301,12 @@ test('broker sealing: an injected cipher keeps the key it was handed — another
   const sealed = a.seal('orders', { n: 1 }, 'body', {});
   assert.strictEqual(Buffer.from(b.open('orders', sealed).body).toString(), 'body');
   assert.deepStrictEqual(other.open('orders', sealed), { refused: 'open' });
-  for (const raw of handed)
+  for (const raw of handed) {
     assert.ok(
       raw.some((byte) => byte !== 0),
       'the cipher saw the derived key, not zeros',
     );
+  }
 });
 
 test('broker sealing: headers go inside as a null-prototype string map; off is null', () => {

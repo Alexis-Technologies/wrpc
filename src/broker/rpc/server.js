@@ -142,8 +142,12 @@ class BrokerSessionTransport extends ServerTransport {
 
   bye(reason) {
     if (this.#closed) return;
+    // Through the sealer like every other frame: a sealed client drops a
+    // plaintext goodbye as `unsealed` and would go on waiting for a session
+    // that is over.
     const headers = { [HEADER_KIND]: KIND.BYE, [HEADER_REASON]: reason };
-    this.#direct.send(this.#peer, '', { headers, correlationId: this.#session }).catch(() => {});
+    const frame = sealFrame(this.#sealing, this.#peer, this.#session, headers, '');
+    this.#direct.send(this.#peer, frame.body, { headers: frame.headers, correlationId: this.#session }).catch(() => {});
   }
 
   get closed() {
