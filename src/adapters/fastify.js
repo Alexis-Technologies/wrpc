@@ -138,12 +138,19 @@ const registerRestRoutes = (fastify, rpc, options) => {
     // Arity matters to fastify: an async hook with a third parameter is
     // read as callback-style and refused — so the payload-less phases get
     // two-parameter wrappers, and only the payload phases take three.
+    // A request the core refused a context to (426 under
+    // encryption.required, thrown from `init`) still runs fastify's
+    // onSend/onError/onResponse phases for the refusal itself: those see
+    // no context and leave the payload as it is, rather than throwing the
+    // same refusal a second time into the error reply.
+    const settled = (request, target) => contextOf(request, target).catch(() => null);
     const wrap = (list, payloadOf) => {
       const wrapped = [];
       for (const hook of list) {
         wrapped.push(async (request, reply) => {
-          const { context } = await contextOf(request, rpcTarget);
-          return void (await hook(context, payloadOf(request)));
+          const resolved = await settled(request, rpcTarget);
+          if (resolved === null) return;
+          return void (await hook(resolved.context, payloadOf(request)));
         });
       }
       return wrapped;
@@ -152,8 +159,9 @@ const registerRestRoutes = (fastify, rpc, options) => {
       const wrapped = [];
       for (const hook of list) {
         wrapped.push(async (request, reply, payload) => {
-          const { context } = await contextOf(request, rpcTarget);
-          return void (await hook(context, payload));
+          const resolved = await settled(request, rpcTarget);
+          if (resolved === null) return;
+          return void (await hook(resolved.context, payload));
         });
       }
       return wrapped;
@@ -165,8 +173,9 @@ const registerRestRoutes = (fastify, rpc, options) => {
       const wrapped = [];
       for (const hook of list) {
         wrapped.push(async (request, reply, payload) => {
-          const { context } = await contextOf(request, rpcTarget);
-          const replaced = await hook(context, payload);
+          const resolved = await settled(request, rpcTarget);
+          if (resolved === null) return payload;
+          const replaced = await hook(resolved.context, payload);
           return replaced === undefined ? payload : replaced;
         });
       }

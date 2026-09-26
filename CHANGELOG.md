@@ -1442,6 +1442,16 @@ narrower promise — see
   set) wins over an inner one; and the inner header is refused above 16 KiB
   before it is parsed. The list lives in `src/rpc/reserved.js`, beside the
   ws handshake's, and the core hands it to the sealing layer.
+- **`encryption.required` did not reach the fastify adapter's REST routes.**
+  The adapter mounts the router's REST routes natively and runs them
+  through `delegatedContext`, outside `handleHttpCall` — where the `426`
+  gate lives — so a server that answered every packet, socket and
+  core-served route with "encryption required" served those routes in the
+  clear, and added a client for each. `delegatedContext` refuses under
+  `required` now, before a client exists, with the same `426` and the same
+  `encryption.refused` line; the adapter's onSend/onError/onResponse
+  wrappers leave a refused request's payload alone instead of throwing
+  the refusal a second time into the error reply.
 
 ## [1.0.0] - 2026-08-23
 

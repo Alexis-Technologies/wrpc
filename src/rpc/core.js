@@ -608,6 +608,18 @@ class RpcServer extends Emitter {
    * #handleRest applies.
    */
   async delegatedContext({ method = 'GET', headers = {}, remoteAddress = '', url = '' } = {}, target = null) {
+    // A host-delegated route is a plaintext request by construction — a
+    // sealed one is unwrapped by handleHttpCall and answered by the core's
+    // own REST — so under `required` it is refused here, BEFORE a client is
+    // added, the same 426 the core answers on its own surface.
+    if (this.#encryption?.required) {
+      this.#refusePlaintext('http');
+      const error = new Error('Upgrade Required: this server answers sealed requests only');
+      error.code = 426;
+      error.statusCode = 426;
+      error.expose = true;
+      throw error;
+    }
     const transport = new ServerHttpTransport({ headers, remoteAddress, respond: () => {} }, { headers: {} });
     const verb = String(method).toUpperCase();
     const safeMethod = verb === 'GET' || verb === 'HEAD';
@@ -625,6 +637,13 @@ class RpcServer extends Emitter {
     await client.ready;
     const context = client.createContext(null, target);
     return { client, context, transport, release: () => transport.emit('close') };
+  }
+
+  // One line and one metric for every plaintext request refused under
+  // `encryption.required`, whichever surface it arrived on.
+  #refusePlaintext(kind) {
+    this.#log.warn({ event: 'encryption.refused', reason: 'plaintext', kind });
+    this.#otel.recordCall(UNKNOWN_TARGET, 'error', 426);
   }
 
   #target() {
@@ -1121,8 +1140,7 @@ class RpcServer extends Emitter {
     }
     // Under `encryption.required` nothing plaintext is answered.
     if (this.#encryption?.required && call.encrypted !== true) {
-      this.#log.warn({ event: 'encryption.refused', reason: 'plaintext', kind: 'http' });
-      this.#otel.recordCall(UNKNOWN_TARGET, 'error', 426);
+      this.#refusePlaintext('http');
       return void new ServerHttpTransport(call, { headers }).error(426);
     }
     // No Content-Type override here: which codec's type applies depends on

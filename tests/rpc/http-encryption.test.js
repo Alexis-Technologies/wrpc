@@ -370,5 +370,16 @@ for (const entry of buildBoots()) {
     t.after(() => void client.close());
     await client.load('data');
     assert.deepStrictEqual((await client.api.data.echo({ note: SECRET })).args, { note: SECRET });
+    // `required` on every surface the host serves: the fastify boots mount
+    // the REST routes natively, outside handleHttpCall, and used to answer
+    // them in the clear — with a client added for each.
+    const plain = await fetch(`${endpoint}/projects/1`);
+    assert.strictEqual(plain.status, 426, `${entry.name}: a plaintext REST route`);
+    assert.ok(!(await plain.text()).includes(SECRET));
+    const posted = await fetch(endpoint, { method: 'POST', body: '{"type":"ping"}' });
+    assert.strictEqual(posted.status, 426, `${entry.name}: a plaintext packet`);
+    assert.strictEqual(instance.rpc.clients.size, 0, `${entry.name}: no client was added for the refused request`);
+    // The sealed client still works after the refusals.
+    assert.deepStrictEqual((await client.api.data.echo({ n: 2 })).args, { n: 2 });
   });
 }

@@ -200,8 +200,10 @@ encryption: { keys, required: true }
 Without it, encryption is optional per client: a plaintext client still
 connects, and `context.client.encryption` tells the two apart. With it
 nothing plaintext is served on any transport — sockets close `1008`, HTTP
-answers `426`, and a transport the core cannot see into
-(`attach`, the broker binding) must be one that seals.
+answers `426` (the fastify adapter's native REST routes included: a
+plaintext request there is refused before a client is added), and a
+transport the core cannot see into (`attach`, the broker binding) must be
+one that seals.
 
 ### Bind your credentials to the channel
 
