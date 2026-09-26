@@ -141,6 +141,12 @@ const consumer = await queue.consume('invoices', async (delivery) => {
   **retries** the delivery after a backoff (50 ms doubling to 1 s), attempt
   + 1, and logs it — never a release, which would put the message back at the
   head of the queue and spin it. `release()` is for draining and stopping.
+- A settlement the **broker** refuses — a retry's copy it would not take, a
+  commit it would not accept — leaves the message available: the adapter
+  tries the settlement again, then hands the message back (a requeue on
+  RabbitMQ, a seek to its offset on Kafka) rather than moving past it. Logged
+  `broker.<name>.settle`; `healthy` is `false` on Kafka until a settlement
+  lands again.
 - The attempt counter belongs to the adapter, not the broker: RabbitMQ 4 does
   not count a requeue, so the adapters carry it in an `x-wrpc-attempt` header
   where the broker has none.

@@ -37,14 +37,20 @@ class FakeKafkaServer {
   groups = new Map(); // groupId -> { offsets: Map(`${topic}:${partition}` -> next), members: Set }
   #waiters = new Set();
   // Fault injection: `failures.subscribe = new Error(…)` makes the NEXT
-  // consumer.subscribe() throw it (once); same for `run`.
-  failures = { subscribe: null, run: null };
+  // consumer.subscribe() throw it (once); same for `run` and the
+  // producer's `send`. `{ error, times }` throws it that many times.
+  failures = { subscribe: null, run: null, send: null };
 
   failNext(step) {
-    const error = this.failures[step];
-    if (error === null || error === undefined) return;
-    this.failures[step] = null;
-    throw error;
+    const failure = this.failures[step];
+    if (failure === null || failure === undefined) return;
+    if (failure instanceof Error) {
+      this.failures[step] = null;
+      throw failure;
+    }
+    if (failure.times > 1) failure.times--;
+    else this.failures[step] = null;
+    throw failure.error;
   }
 
   /** Consumers currently joined to any group: what a leak shows up as. */
@@ -102,6 +108,7 @@ class FakeProducer {
   async disconnect() {}
 
   async send({ topic, messages }) {
+    this.server.failNext('send');
     const target = this.server.topic(topic);
     const results = [];
     for (const message of messages) {
@@ -125,12 +132,18 @@ class FakeConsumer extends EventEmitter {
 
   static events = { GROUP_JOIN: 'consumer.group_join', CRASH: 'consumer.crash' };
 
+  /** How many heartbeats eachMessage handlers sent; `rebalancing` makes the next ones fail. */
+  heartbeats = 0;
+  rebalancing = false;
+
   /**
    * What kafkajs does when its fetch loop dies: a CRASH event with the
    * error and whether it restarts by itself — and a GROUP_JOIN once it has.
    */
   crash(error, restart = true) {
     this.#joined = false;
+    // A rejoin fetches every partition from its committed offset again.
+    this.#seeks.clear();
     this.emit(FakeConsumer.events.CRASH, { payload: { error, restart, groupId: this.groupId } });
     if (!restart) return;
     setTimeout(() => {
@@ -263,9 +276,15 @@ class FakeConsumer extends EventEmitter {
             timestamp: String(Date.now()),
           };
           busy.add(key);
+          // kafkajs hands eachMessage a heartbeat(); one that rejects is a
+          // rebalance in progress (`rebalancing` flips it).
+          const heartbeat = async () => {
+            this.heartbeats++;
+            if (this.rebalancing) throw new Error('The group is rebalancing, so a heartbeat cannot be sent');
+          };
           work.push(
             Promise.resolve()
-              .then(() => this.#handler({ topic: name, partition, message }))
+              .then(() => this.#handler({ topic: name, partition, message, heartbeat }))
               .catch(() => {
                 // eachMessage threw: a real consumer would retry the batch.
               })

@@ -61,6 +61,13 @@ const sleep = (ms) =>
 // A consumer's channel is re-opened on this schedule after the server
 // closed it; a lost CONNECTION stops the loop (nothing to re-open on).
 const REOPEN_BACKOFF = Object.freeze({ minDelay: 200, maxDelay: 5000, factor: 2, jitter: true });
+// A settlement that has to PUBLISH (a retry's copy, a dead letter) and was
+// refused is tried again on this schedule; when it still fails, the
+// message goes back to the queue with a requeue — at least once, attempt
+// untouched — rather than being acked away or left unacked on a channel
+// that may close later.
+const SETTLE_ATTEMPTS = 3;
+const SETTLE_BACKOFF = Object.freeze({ minDelay: 100, maxDelay: 1000, factor: 2, jitter: false });
 
 const createAmqpBroker = (options = {}) => {
   const {
@@ -675,13 +682,34 @@ const createAmqpBroker = (options = {}) => {
       const headers = headersOf(message);
       const attempt = Number(headers[ATTEMPT_HEADER] ?? '1') || 1;
       let settled = false;
-      const finish = async (work) => {
+      // `publishes`: the settlement writes a copy somewhere before it acks
+      // (a retry, a dead letter). A refused publish used to be swallowed
+      // after one log line with the original still unacked — which the
+      // channel's eventual close handed back, or a channel that lived on
+      // never did. Tried again, then handed back on purpose.
+      const finish = async (work, publishes = false) => {
         if (settled) return;
         settled = true;
-        try {
-          await work();
-        } catch (error) {
-          report('broker.amqp.settle', error, { queue });
+        for (let round = 0; ; round++) {
+          try {
+            await work();
+            return;
+          } catch (error) {
+            if (publishes && round < SETTLE_ATTEMPTS - 1 && !channel.closed) {
+              await sleep(backoffDelay({ ...SETTLE_BACKOFF, attempt: round }));
+              continue;
+            }
+            report('broker.amqp.settle', error, { queue, attempt, round: round + 1 });
+            if (!publishes) return;
+            try {
+              // Back in line for another consumer, attempt untouched (a
+              // requeue does not count one on RabbitMQ 4): at least once.
+              channel.nack(message, false, true);
+            } catch {
+              // The channel is gone; its unacked messages are already back.
+            }
+            return;
+          }
         }
       };
       const carry = (extra) => ({ ...headers, [REDELIVERED_HEADER]: '1', ...extra });
@@ -707,7 +735,7 @@ const createAmqpBroker = (options = {}) => {
               await confirmPublish('', main, message.content, { persistent: true, headers: headersOut });
             }
             channel.ack(message);
-          }),
+          }, true),
         // Exactly what a requeue means on RabbitMQ 4: back in line, attempt
         // untouched.
         release: () => finish(() => channel.nack(message, false, true)),
@@ -724,7 +752,7 @@ const createAmqpBroker = (options = {}) => {
               });
             }
             channel.ack(message);
-          }),
+          }, true),
       });
       Promise.resolve()
         .then(() => onDelivery(delivery))

@@ -99,9 +99,18 @@ queue's progress.
 ## Queues
 
 - **No nack.** A `retry()` is a republish carrying `x-wrpc-attempt`, and the
-  delay waits in-process (capped by `maxRetryDelay`). The original message
-  stays **uncommitted** until the copy is written, so a crash mid-wait
-  redelivers rather than loses — at-least-once holds.
+  delay waits in-process (capped by `maxRetryDelay`), in steps of three
+  seconds that each end in a heartbeat, so a long wait does not look like a
+  dead member to the group coordinator. The original message stays
+  **uncommitted** until the copy is written, so a crash mid-wait redelivers
+  rather than loses — at-least-once holds. A heartbeat that fails mid-wait is
+  a rebalance: the message is left to the partition's new owner
+  (`broker.kafka.rebalanced`), neither republished nor committed here.
+- **A refused settlement seeks back.** A copy the producer cannot write or a
+  commit the group will not take is tried three times; then the consumer
+  seeks the partition back to that offset and reports `broker.kafka.settle`
+  — `healthy` is `false` until a settlement lands again, and nothing is ever
+  committed past the message.
 - **Ordering is lost on retry.** The republished copy goes to the end of a
   partition. Where per-key order matters, produce with a key and accept that
   a retried message trails its siblings.

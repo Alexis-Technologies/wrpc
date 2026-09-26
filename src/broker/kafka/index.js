@@ -21,7 +21,7 @@
 
 const { createLoggerWriter } = require('../../logging.js');
 const { generateUUID } = require('../../runtime/node.js');
-const { resolveGenerateId } = require('../../utils.js');
+const { resolveGenerateId, backoffDelay } = require('../../utils.js');
 
 // An injected `generateId` is used VERBATIM for every id this adapter mints
 // — never truncated. Trimming a user's id would quietly weaken the
@@ -47,6 +47,14 @@ const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_PREFETCH = 16;
 const DEFAULT_PARTITIONS = 3;
 const DEFAULT_MAX_RETRY_DELAY = 60_000;
+// A settlement the broker refused (a leader election, a producer that
+// cannot reach it) is tried again on this schedule before the consumer
+// gives the message back; and a retry's in-process delay is cut into
+// steps of this length, each ending in a heartbeat, so a long wait does
+// not look like a dead member to the group coordinator.
+const SETTLE_ATTEMPTS = 3;
+const SETTLE_BACKOFF = Object.freeze({ minDelay: 100, maxDelay: 1000, factor: 2, jitter: false });
+const HEARTBEAT_STEP = 3000;
 const CHANNEL_HEADER = 'wrpc-channel';
 const ATTEMPT_HEADER = 'x-wrpc-attempt';
 const REDELIVERED_HEADER = 'x-wrpc-redelivered';
@@ -607,48 +615,93 @@ const createKafkaBroker = (options = {}) => {
     const commit = (partition, offset) =>
       consumer.commitOffsets([{ topic, partition, offset: String(Number(offset) + 1) }]);
 
-    const handle = async ({ partition, message }) => {
+    const handle = async ({ partition, message, heartbeat }) => {
       if (!state.running) return;
       const headers = headersOf(message);
       const attempt = Number(headers[ATTEMPT_HEADER] ?? '1') || 1;
       const body = message.value === null ? '' : message.value.toString();
+      const id = `${partition}:${message.offset}`;
       let settled = false;
-      const finish = async (work) => {
+      // A settlement the broker refused used to be swallowed after one log
+      // line, and the loop went on: the next message's commit moved the
+      // group's offset past this one, and it was gone. Now the settlement
+      // is tried again (SETTLE_ATTEMPTS), and when it still fails the
+      // consumer seeks BACK to this offset — the message is fetched and
+      // handed over again, attempt unchanged, and nothing commits past it.
+      // A heartbeat that failed mid-wait means the group is rebalancing:
+      // this member no longer owns the partition, the message will be
+      // fetched by whoever does, and neither a republish nor a commit is
+      // this member's to make.
+      const finish = async (action, work) => {
         if (settled) return;
         settled = true;
+        for (let round = 0; ; round++) {
+          try {
+            await work();
+            state.healthy = true;
+            return;
+          } catch (error) {
+            if (error?.rebalanced === true) {
+              log.info({ event: 'broker.kafka.rebalanced', queue, id, action });
+              return;
+            }
+            if (round < SETTLE_ATTEMPTS - 1 && state.running) {
+              await new Promise((resolve) => setTimeout(resolve, backoffDelay({ ...SETTLE_BACKOFF, attempt: round })));
+              continue;
+            }
+            state.healthy = false;
+            report('broker.kafka.settle', error, { queue, id, action, attempt, partition });
+            try {
+              consumer.seek({ topic, partition, offset: String(message.offset) });
+            } catch (seekError) {
+              report('broker.kafka.seek', seekError, { queue, id });
+            }
+            return;
+          }
+        }
+      };
+      const beat = async () => {
+        if (!isFunction(heartbeat)) return;
         try {
-          await work();
+          await heartbeat();
         } catch (error) {
-          report('broker.kafka.settle', error, { queue });
+          throw Object.assign(error, { rebalanced: true });
         }
       };
       const republish = async (extra, delay = 0) => {
         // Kafka has no nack and no server-side delay: a retry is a new
         // message, and the wait happens here. The ORIGINAL stays uncommitted
         // until the copy is written, so a crash mid-wait redelivers rather
-        // than loses.
-        if (delay > 0) await new Promise((resolve) => setTimeout(resolve, Math.min(delay, maxRetryDelay)));
+        // than loses. The wait is cut into heartbeat-sized steps: a member
+        // silent for the whole delay looks dead to the coordinator.
+        let remaining = Math.min(delay, maxRetryDelay);
+        while (remaining > 0) {
+          const step = Math.min(remaining, HEARTBEAT_STEP);
+          await new Promise((resolve) => setTimeout(resolve, step));
+          remaining -= step;
+          await beat();
+        }
         await send(topic, body, { headers: { ...headers, ...extra, [REDELIVERED_HEADER]: '1' } });
       };
       const delivery = Object.freeze({
-        id: `${partition}:${message.offset}`,
+        id,
         body,
         headers,
         attempt,
         redelivered: headers[REDELIVERED_HEADER] === '1',
-        ack: () => finish(() => commit(partition, message.offset)),
+        ack: () => finish('ack', () => commit(partition, message.offset)),
         retry: ({ delay = 0 } = {}) =>
-          finish(async () => {
+          finish('retry', async () => {
             await republish({ [ATTEMPT_HEADER]: String(attempt + 1) }, delay);
             await commit(partition, message.offset);
           }),
         release: () =>
-          finish(async () => {
+          finish('release', async () => {
             await republish({ [ATTEMPT_HEADER]: String(attempt) });
             await commit(partition, message.offset);
           }),
         deadLetter: (reason = '') =>
-          finish(async () => {
+          finish('dead', async () => {
             if (deadLetter) {
               await send(queueTopic(deadLetter), body, {
                 headers: {

@@ -63,6 +63,11 @@
 //       RETRIES the delivery after a backoff (attempt + 1, `crashDelay` in
 //       retry.js) — never a release, which would put it back at the head
 //       and spin a queue whose handler always throws.
+//     - a settlement the BROKER refuses (a retry's copy or a dead letter it
+//       would not take, a commit it would not accept) leaves the message
+//       available: the adapter tries the settlement again, then hands the
+//       message back (a requeue, a seek to its offset) — it never moves
+//       past it, and never acks it away. Logged `broker.<name>.settle`.
 //     - deadLetter: to the `deadLetter` queue with `x-wrpc-dead-reason` and
 //       `x-wrpc-attempt` headers, or dropped when none is configured. The
 //       reason is folded to ONE line of at most 512 characters (control

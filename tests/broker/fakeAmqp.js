@@ -42,6 +42,9 @@ const sameArguments = (a, b) => {
 class FakeAmqpServer {
   queues = new Map();
   exchanges = new Map(); // name -> Map(routingKey -> Set(queueName))
+  // `failures.publish = { error, times }` makes the next confirm publishes
+  // fail with that error, that many times.
+  failures = { publish: null };
   #tag = 0;
   #delivery = 0;
 
@@ -310,6 +313,15 @@ class FakeChannel extends EventEmitter {
 
   publish(exchange, routingKey, content, properties = {}, callback) {
     this.#open();
+    // Fault injection: the broker refuses the publish (a nack on the
+    // confirm channel), `times` in a row.
+    const refusal = this.server.failures.publish;
+    if (refusal !== null && this.confirm) {
+      if (refusal.times > 1) refusal.times--;
+      else this.server.failures.publish = null;
+      if (typeof callback === 'function') queueMicrotask(() => callback(refusal.error));
+      return true;
+    }
     const routed = this.server.publish(exchange, routingKey, content, properties);
     if (!routed && properties.mandatory) {
       queueMicrotask(() => this.emit('return', { content, properties, fields: { replyText: 'NO_ROUTE' } }));

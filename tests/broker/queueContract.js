@@ -279,6 +279,34 @@ const runQueueContract = async (t, name, harness) => {
     ]);
   });
 
+  // Only where the harness can make the broker refuse a publish: a
+  // settlement that has to write a copy (a retry, a dead letter) and is
+  // refused once still lands — the adapter tries the settlement again.
+  if (harness.failNextPublish) {
+    await t.test(
+      `${name}: a settlement the broker refuses once is tried again, the message is not lost`,
+      async (sub) => {
+        const { queue } = await open(sub);
+        const name = await queueFor('q-refused');
+        const seen = [];
+        await consume(sub, queue, name, async (delivery) => {
+          seen.push([delivery.attempt, delivery.redelivered]);
+          if (delivery.attempt === 1) {
+            harness.failNextPublish(1);
+            return delivery.retry({ delay: 0 });
+          }
+          await delivery.ack();
+        });
+        await queue.produce(name, 'once');
+        await waitFor(() => seen.length === 2, { timeout: redelivery + timeout });
+        assert.deepStrictEqual(seen, [
+          [1, false],
+          [2, true],
+        ]);
+      },
+    );
+  }
+
   // Only where the harness can break a live consumer from the outside (a
   // channel the server closes, a consumer that crashes): `healthy` follows.
   if (harness.breakConsumer) {

@@ -89,6 +89,9 @@ for (const flavor of FLAVORS) {
           },
         };
       },
+      failNextPublish: (times) => {
+        world.kafka.server.failures.send = { error: new Error('LEADER_NOT_AVAILABLE'), times };
+      },
       // kafkajs announces a crash and the rejoin; the confluent facade has
       // no events at all, so `healthy` cannot follow a crash there.
       breakConsumer:
@@ -294,3 +297,98 @@ test('kafka broker: replicationFactor and maxRetryDelay are refused at construct
   );
   await broker.close();
 });
+
+// Every line the adapter logs, for the settlement asserts.
+const recording = () => {
+  const entries = [];
+  const logger = {
+    log() {},
+    info: (entry) => entries.push({ level: 'info', ...entry }),
+    debug() {},
+    warn: (entry) => entries.push({ level: 'warn', ...entry }),
+    error: (entry) => entries.push({ level: 'error', ...entry }),
+    child: () => logger,
+  };
+  return { logger, entries };
+};
+
+for (const flavor of FLAVORS) {
+  test(`kafka broker (fake, ${flavor}): a settlement the broker keeps refusing is handed back, never committed past`, async (t) => {
+    const kafka = createFakeKafka({ flavor });
+    const { logger, entries } = recording();
+    const broker = createKafkaBroker({ kafka, logger, partitions: 1 });
+    t.after(() => broker.close());
+    const name = unique('refused');
+    const seen = [];
+    // Both produced before the consumer starts: the refusal armed by the
+    // handler must hit the retry's copy, not a produce.
+    await broker.queue.produce(name, 'a');
+    await broker.queue.produce(name, 'b');
+    const consumer = await broker.queue.consume(
+      name,
+      async (delivery) => {
+        seen.push([delivery.body, delivery.attempt]);
+        // The first time 'a' comes, a retry — whose copy the broker refuses
+        // every time. The settlement used to be swallowed after one log
+        // line, and 'b' committed past 'a'; now it gives up and seeks back.
+        if (delivery.body === 'a' && seen.filter(([body]) => body === 'a').length === 1) {
+          kafka.server.failures.send = { error: new Error('NOT_LEADER_FOR_PARTITION'), times: 3 };
+          return delivery.retry({ delay: 0 });
+        }
+        await delivery.ack();
+      },
+      { prefetch: 1 },
+    );
+    t.after(() => consumer.stop());
+    await waitFor(() => seen.length === 3, { timeout: 5000 });
+    assert.deepStrictEqual(seen, [
+      ['a', 1],
+      ['a', 1],
+      ['b', 1],
+    ]);
+    const settle = entries.find((entry) => entry.event === 'broker.kafka.settle');
+    assert.deepStrictEqual([settle?.action, settle?.id, settle?.partition], ['retry', '0:0', 0]);
+    assert.strictEqual(consumer.healthy, true, 'back to healthy after a settlement landed');
+  });
+
+  test(`kafka broker (fake, ${flavor}): a retry's in-process delay heartbeats, and a rebalance mid-wait leaves the message to the group`, async (t) => {
+    const kafka = createFakeKafka({ flavor });
+    const { logger, entries } = recording();
+    const broker = createKafkaBroker({ kafka, logger, partitions: 1 });
+    t.after(() => broker.close());
+    const name = unique('beat');
+    const seen = [];
+    let waited = false;
+    const consumer = await broker.queue.consume(name, async (delivery) => {
+      seen.push([delivery.body, delivery.attempt]);
+      if (!waited) {
+        waited = true;
+        return delivery.retry({ delay: 150 });
+      }
+      await delivery.ack();
+    });
+    t.after(() => consumer.stop());
+    await broker.queue.produce(name, 'x');
+    await waitFor(() => seen.length === 2, { timeout: 4000 });
+    assert.deepStrictEqual(seen, [
+      ['x', 1],
+      ['x', 2],
+    ]);
+    const [member] = kafka.server.group(name).members;
+    assert.ok(member.heartbeats >= 1, 'a wait of 150 ms sent at least one heartbeat');
+    // A rebalance during the wait: the heartbeat fails, and neither the
+    // copy nor the commit is this member's to make — the partition's new
+    // owner fetches the message from the last committed offset.
+    waited = false;
+    await broker.queue.produce(name, 'y');
+    await waitFor(() => seen.length === 3);
+    member.rebalancing = true;
+    await waitFor(() => entries.some((entry) => entry.event === 'broker.kafka.rebalanced'), { timeout: 4000 });
+    await timers.setTimeout(50);
+    assert.strictEqual(seen.length, 3, 'no copy was published, nothing committed');
+    member.rebalancing = false;
+    member.crash(new Error('rebalance'), true);
+    await waitFor(() => seen.length === 4, { timeout: 4000 });
+    assert.deepStrictEqual(seen[3], ['y', 1], 'fetched again from the committed offset, attempt untouched');
+  });
+}

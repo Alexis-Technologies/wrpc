@@ -71,6 +71,9 @@ test('amqp broker (fake): queue contract', async (t) => {
         },
       };
     },
+    failNextPublish: (times) => {
+      connection.server.failures.publish = { error: new Error('channel closed by server'), times };
+    },
     // The node the consumer's channel lives on goes away.
     breakConsumer: (name) => {
       const [held] = connection.server.queue(`wrpc.q.${name}`).consumers.values();
@@ -438,4 +441,39 @@ test('amqp broker: the backplane multiplexes every room over one channel and one
   broker.backplane.publish('room-200', 'after');
   await waitFor(() => seen.get('room-200').length === 1);
   assert.ok(connection.openChannels <= 16);
+});
+
+test('amqp broker: a settlement the broker keeps refusing hands the message back with a requeue', async (t) => {
+  const connection = createFakeAmqp();
+  const { logger, entries } = recording();
+  const broker = open(connection, { logger });
+  t.after(() => broker.close());
+  const name = unique('refused');
+  const seen = [];
+  const consumer = await broker.queue.consume(name, async (delivery) => {
+    seen.push([delivery.attempt, delivery.redelivered]);
+    if (seen.length === 1) {
+      // Every confirm publish is refused from here: the retry's copy cannot
+      // be written. It used to be logged once with the original left
+      // unacked; now the settlement is tried again, then the message goes
+      // back to the queue.
+      connection.server.failures.publish = { error: new Error('channel closed by server'), times: 10 };
+      return delivery.retry({ delay: 0 });
+    }
+    connection.server.failures.publish = null;
+    await delivery.ack();
+  });
+  t.after(() => consumer.stop());
+  await broker.queue.produce(name, 'x');
+  await waitFor(() => seen.length === 2, { timeout: 4000 });
+  assert.deepStrictEqual(
+    seen,
+    [
+      [1, false],
+      [1, true],
+    ],
+    'requeued: the same attempt, redelivered',
+  );
+  const settle = entries.find((entry) => entry.event === 'broker.amqp.settle');
+  assert.deepStrictEqual([settle?.queue, settle?.round], [name, 3]);
 });

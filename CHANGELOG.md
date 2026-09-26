@@ -1352,6 +1352,23 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **Kafka and RabbitMQ: a settlement the broker refuses no longer loses
+  the message.** On Kafka a refused settlement — a retry's copy the
+  producer could not write, a commit the group would not take — was
+  swallowed after one log line, and the next message's commit moved the
+  group's offset past it; on RabbitMQ the retry's or dead letter's publish
+  failed once and the original sat unacked on a channel that might never
+  close. Both now try the settlement again (100 ms doubling to 1 s, three
+  times), then hand the message back on purpose: Kafka seeks the partition
+  back to that offset (`broker.kafka.settle`, `healthy` false until a
+  settlement lands), RabbitMQ requeues it (`broker.amqp.settle`, attempt
+  untouched). A Kafka retry's in-process delay is cut into heartbeat-sized
+  steps (3 s), so a long wait no longer looks like a dead member to the
+  coordinator; a heartbeat that fails mid-wait is a rebalance, and the
+  message is left to the partition's new owner (`broker.kafka.rebalanced`)
+  — neither republished nor committed by a member that no longer owns it.
+  The queue contract exercises a refused settlement on every fake that can
+  refuse a publish.
 - **`consumers.healthy` on RabbitMQ and Kafka now turns `false`.** The
   guide says to wire it into readiness, and on those two brokers it never
   moved: a RabbitMQ consumer whose channel the server closed, and a
