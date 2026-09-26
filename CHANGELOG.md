@@ -1345,6 +1345,17 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **WebRTC: a `leave` naming another incarnation of a member no longer
+  tears down the live one.** A signaling `leave` that reached `Mesh` or
+  `wrpcSignaler` late — a peer that had crashed and rejoined under the same
+  id, or a relay replaying the old instance's departure — was applied to
+  whichever link now carried that id. `Mesh` ignores a leave whose
+  `instance` is not the member's (`mesh.leave.stale`, debug) and
+  `wrpcSignaler` one whose `address` is not the one it knows for that id.
+  Peer ids have one bound — `MAX_ID_LENGTH` (256) in `src/webrtc/ids.js`,
+  what the signaling unit, the signaler and the mesh validate against — so
+  `connect('x'.repeat(257))` is a `TypeError` at once rather than an id the
+  relay refuses later.
 - **`protocols: []` with a Bearer credential could not connect.** The client
   lifted the token into a lone `wrpc.bearer.<token>` offer, which no server
   echoes — and a client fails a handshake whose offers all went unanswered

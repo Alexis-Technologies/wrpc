@@ -33,6 +33,7 @@ const { RtcLink, DEFAULT_CHANNELS, normalizeChannels } = require('./link.js');
 const { ClientRtcTransport, RtcPeerTransport } = require('./transport.js');
 const { PeerHost } = require('./host.js');
 const { isSignaler, isSignalMessage } = require('./signaler.js');
+const { isPeerId } = require('./ids.js');
 const { createAssertionVerifier, sdpFingerprint, isAssertion, AssertionError } = require('./assertions.js');
 const { normalizeCompression } = require('../compression/index.js');
 
@@ -50,8 +51,6 @@ const normalizeRedial = (redial) => {
   if (!(merged.maxDelay >= merged.minDelay)) merged.maxDelay = merged.minDelay;
   return merged;
 };
-
-const isPeerId = (value) => typeof value === 'string' && value.length > 0;
 
 /** One peer, both directions. Constructed by WrpcPeer; never directly. */
 class PeerLink extends Emitter {
@@ -648,7 +647,9 @@ class WrpcPeer extends Emitter {
    * endpoint. Resolves with the PeerLink once both directions are up.
    */
   async connect(remoteId, options = {}) {
-    if (!isPeerId(remoteId)) throw new TypeError('WrpcPeer.connect: remoteId must be a non-empty string');
+    if (!isPeerId(remoteId)) {
+      throw new TypeError('WrpcPeer.connect: remoteId must be a non-empty string of at most 256 characters');
+    }
     await this.start();
     if (remoteId === this.id) throw new Error('WrpcPeer.connect: cannot connect to self');
     const instance = isPeerId(options.instance) ? options.instance : null;

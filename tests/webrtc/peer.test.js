@@ -250,6 +250,11 @@ test('peer: connect() from the higher id knocks, and simultaneous connects make 
   await hub.tick();
   assert.strictEqual(cd.state, 'open');
   await assert.rejects(c.connect(''), /remoteId must be/);
+  await assert.rejects(
+    c.connect('x'.repeat(257)),
+    /at most 256 characters/,
+    'one bound, shared with the signaling unit',
+  );
   await assert.rejects(c.connect('c'), /cannot connect to self/);
 });
 
