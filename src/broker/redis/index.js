@@ -331,8 +331,18 @@ const createRedisBroker = (options = {}) => {
   // ---------------------------------------------------------------------
   // queue
 
-  const queueKey = (name) => key('q', name);
+  // A queue's stream and its delayed set live under ONE hash tag — the
+  // braces are what Redis Cluster hashes on — so the promotion of a delayed
+  // retry (a Lua script over both keys) runs on a cluster too.
+  const queueKey = (name) => `${prefix}:q:{${encodeToken(name, { maxLength: 200 })}}`;
   const delayedKey = (name) => `${queueKey(name)}:delayed`;
+  // ZREM then XADD in one step: a delayed retry either leaves the set and
+  // lands on the stream, or does neither. Without EVAL (an injected client
+  // that lacks it, a proxy that refuses scripts) the two steps run apart,
+  // with the set entry put back when the second fails.
+  const PROMOTE =
+    "if redis.call('ZREM', KEYS[1], ARGV[1]) == 1 then return redis.call('XADD', KEYS[2], '*', unpack(ARGV, 2)) end return false";
+  const canEval = isFunction(client.eval);
 
   const ensureGroup = async (name, group) => {
     try {
@@ -421,10 +431,13 @@ const createRedisBroker = (options = {}) => {
           finish(async () => {
             const headers = copyHeaders({ [ATTEMPT_HEADER]: String(attempt + 1) });
             if (delay > 0) {
+              // The member carries the message id: two retries of one
+              // body and one header bag used to be ONE member of the set,
+              // and the second overwrote the first — a message gone.
               await client.zadd(
                 delayedKey(name),
                 String(Date.now() + delay),
-                JSON.stringify({ body: message.body, headers }),
+                JSON.stringify({ id, body: message.body, headers }),
               );
             } else await requeue(message, headers);
             await drop();
@@ -459,17 +472,52 @@ const createRedisBroker = (options = {}) => {
         });
     };
 
+    // A delayed retry that left the set but never reached the stream, and
+    // could not be put back: held here for the next sweep, never dropped.
+    const stranded = [];
+    const promote = async (item, score) => {
+      const { body, headers } = JSON.parse(item);
+      const fields = encodeFields(body, headers);
+      if (canEval) {
+        try {
+          await client.eval(PROMOTE, 2, delayedKey(name), stream, item, ...fields);
+          return;
+        } catch (error) {
+          // CROSSSLOT (keys the tag did not keep together on an older
+          // layout) or NOSCRIPT policy: the two-step path below.
+          if (!/CROSSSLOT|NOSCRIPT|unknown command/i.test(String(error?.message))) throw error;
+        }
+      }
+      if (score === null) {
+        const removed = await client.zrem(delayedKey(name), item);
+        if (removed === 0) return; // another instance took it
+      }
+      try {
+        await client.xadd(stream, '*', ...fields);
+      } catch (error) {
+        // The claim is ours and the stream refused: back on the set, at its
+        // original time, so another sweep — anyone's — takes it; and if
+        // even that fails, kept in memory until the next sweep here.
+        const at = score ?? Date.now();
+        try {
+          await client.zadd(delayedKey(name), String(at), item);
+        } catch {
+          stranded.push({ item, score: at });
+        }
+        throw error;
+      }
+    };
+
     // Delayed retries and whatever a dead consumer still holds.
     const sweep = async () => {
       if (!state.running || state.paused || closed) return;
       try {
+        // What an earlier sweep took off the set but could not put on the
+        // stream, and could not put back either: tried again before
+        // anything new.
+        for (const { item, score } of stranded.splice(0)) await promote(item, score);
         const due = await client.zrangebyscore(delayedKey(name), '-inf', String(Date.now()), 'LIMIT', 0, 64);
-        for (const item of due) {
-          const removed = await client.zrem(delayedKey(name), item);
-          if (removed === 0) continue; // another instance took it
-          const { body, headers } = JSON.parse(item);
-          await client.xadd(stream, '*', ...encodeFields(body, headers));
-        }
+        for (const item of due) await promote(item, null);
         const [, claimed] = await client.xautoclaim(stream, group, consumerName, String(claimIdleMs), '0', 'COUNT', 16);
         for (const row of claimed ?? []) {
           if (!row || !row[1] || held.has(row[0])) continue;

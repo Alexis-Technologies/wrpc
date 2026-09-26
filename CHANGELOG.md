@@ -1352,6 +1352,21 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **Redis queues: a delayed retry can no longer overwrite another, and its
+  promotion is atomic.** A delayed retry was a sorted-set member made of
+  the message's body and headers, so two retries of one payload were ONE
+  member and the second overwrote the first — a message gone; and the
+  promotion was `ZREM` then `XADD` as two commands, so an instance that
+  fell between them (a crash, a refused `XADD`) took the entry off the set
+  and never put it on the stream. The member now carries the message id,
+  and the promotion is one `EVAL` (`ZREM` then `XADD`) — a client without
+  `eval` gets the two steps apart, with the entry put back at its original
+  time when the stream refuses it, and kept in memory for the next sweep
+  if even that fails. A queue's keys are `<prefix>:q:{<queue>}` and
+  `…:delayed` — braces being the Cluster hash tag that keeps both in one
+  slot, so the script runs on a cluster too. (The key layout changed from
+  the unreleased `<prefix>:q:<queue>`; nothing migrates a queue left
+  there.)
 - **A feed's live read that the broker ends is replaced; the subscribers
   miss nothing.** `TopicTails` shares one live read of a topic among every
   local subscriber, and that read had no way to say it had died: a

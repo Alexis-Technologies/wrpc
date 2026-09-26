@@ -66,7 +66,26 @@ an id the trim has passed.
 A queue's stream, by contrast, trims itself: an acked, retried or
 dead-lettered message is `XDEL`ed, so a queue that keeps up stays small. A
 delayed retry rides a sorted set until it is due, which any instance may
-promote.
+promote — `ZREM` then `XADD` as one `EVAL`, so an entry either leaves the set
+and lands on the stream or does neither. A client without `eval`, or a proxy
+that refuses scripts, gets the two steps apart, with the entry put back on
+the set when the stream refuses it.
+
+## Keys
+
+| Key | Holds |
+| --- | --- |
+| `<prefix>:log:<topic>` | a log topic's stream |
+| `<prefix>:q:{<queue>}` | a queue's stream (consumer groups on it) |
+| `<prefix>:q:{<queue>}:delayed` | the queue's delayed retries (a sorted set, score = due time) |
+| `<prefix>:inbox:<address>` | an RPC inbox's pub/sub channel |
+| `<prefix>:inbox:<address>:list` | a service group's delivery list |
+| `<prefix>:inbox:<address>:members` | the group's live members (a sorted set, score = lease expiry) |
+
+The braces are a Redis Cluster **hash tag**: a queue's stream and its delayed
+set hash to one slot, which is what lets the promotion script touch both.
+Names are [encoded](../brokers#writing-an-adapter) into Redis' alphabet
+first, at most 200 characters.
 
 ## Sharp edges
 

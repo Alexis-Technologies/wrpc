@@ -133,9 +133,24 @@ class FakeRedis extends EventEmitter {
   }
 
   async pexpire(key, ms) {
+    this.#check('pexpire', [key]);
     const list = this.server.lists.get(key);
     if (list) list.expires = now() + Number(ms);
-    return 1;
+    const zset = this.server.zsets.get(key);
+    if (zset) zset.expires = now() + Number(ms);
+    return list || zset ? 1 : 0;
+  }
+
+  // The one script the adapter runs: ZREM a member off KEYS[1], and when
+  // that took it, XADD ARGV[2..] to KEYS[2] — atomically, as EVAL is. A
+  // client injected without `eval` takes the adapter's two-step path.
+  async eval(script, numKeys, ...args) {
+    this.#check('eval', args.slice(0, numKeys));
+    if (!/ZREM/.test(script) || !/XADD/.test(script)) throw new Error('unknown script');
+    const [zset, stream] = args;
+    const [member, ...fields] = args.slice(numKeys);
+    if ((await this.zrem(zset, member)) !== 1) return null;
+    return this.xadd(stream, '*', ...fields);
   }
 
   // ---- lists

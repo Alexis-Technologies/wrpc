@@ -199,10 +199,81 @@ test('redis broker: a delayed retry rides a sorted set until it is due', async (
   t.after(() => consumer.stop());
   await broker.queue.produce(name, 'work');
   await waitFor(() => seen.length === 1, { timeout: 2000 });
-  assert.strictEqual(client.server.zsets.get(`wrpc:q:${name}:delayed`)?.size, 1);
+  // The stream and its delayed set share one hash tag: a cluster keeps
+  // them in one slot, so the promotion script may touch both.
+  assert.strictEqual(client.server.zsets.get(`wrpc:q:{${name}}:delayed`)?.size, 1);
   await waitFor(() => seen.length === 2, { timeout: 3000 });
   assert.ok(seen[1].at - seen[0].at >= 100, `redelivered after ${seen[1].at - seen[0].at} ms`);
-  assert.strictEqual(client.server.zsets.get(`wrpc:q:${name}:delayed`).size, 0);
+  assert.strictEqual(client.server.zsets.get(`wrpc:q:{${name}}:delayed`).size, 0);
+});
+
+test('redis broker: two delayed retries of one body are two entries; promotion is atomic, or two steps that put back', async (t) => {
+  const { client, broker, close } = open();
+  t.after(close);
+  const name = unique('twins');
+  const seen = [];
+  const consumer = await broker.queue.consume(name, (delivery) => {
+    seen.push([delivery.id, delivery.attempt]);
+    return delivery.attempt === 1 ? delivery.retry({ delay: 60 }) : delivery.ack();
+  });
+  t.after(() => consumer.stop());
+  // Same body, same headers: one sorted-set member before, so the second
+  // overwrote the first and a message was gone.
+  await broker.queue.produce(name, 'same');
+  await broker.queue.produce(name, 'same');
+  await waitFor(() => seen.length === 2, { timeout: 2000 });
+  assert.strictEqual(client.server.zsets.get(`wrpc:q:{${name}}:delayed`).size, 2);
+  await waitFor(() => seen.length === 4, { timeout: 3000 });
+  assert.deepStrictEqual(
+    seen.map(([, attempt]) => attempt),
+    [1, 1, 2, 2],
+  );
+  assert.strictEqual(client.server.zsets.get(`wrpc:q:{${name}}:delayed`).size, 0);
+});
+
+test('redis broker: a client without eval promotes in two steps, and a refused XADD puts the entry back', async (t) => {
+  const inner = createFakeRedis();
+  // ioredis has eval; an injected client may not, and a proxy may refuse
+  // scripts. The same fake, every method bound, minus that one.
+  const client = {};
+  for (
+    let proto = Object.getPrototypeOf(inner);
+    proto && proto !== Object.prototype;
+    proto = Object.getPrototypeOf(proto)
+  ) {
+    for (const name of Object.getOwnPropertyNames(proto)) {
+      if (name === 'constructor' || name === 'eval' || name in client) continue;
+      if (typeof inner[name] === 'function') client[name] = inner[name].bind(inner);
+    }
+  }
+  const errors = [];
+  const logger = {
+    ...quiet,
+    error: (entry) => errors.push(entry),
+    child() {
+      return this;
+    },
+  };
+  const broker = createRedisBroker({ client, logger, blockMs: 20, claimIdleMs: 50 });
+  t.after(() => broker.close());
+  const name = unique('twostep');
+  const seen = [];
+  const consumer = await broker.queue.consume(name, (delivery) => {
+    seen.push(delivery.attempt);
+    return delivery.attempt === 1 ? delivery.retry({ delay: 30 }) : delivery.ack();
+  });
+  t.after(() => consumer.stop());
+  await broker.queue.produce(name, 'work');
+  await waitFor(() => seen.length === 1, { timeout: 2000 });
+  // The stream refuses the copy for a while: the entry goes back on the set
+  // at its original time, and a later sweep promotes it.
+  inner.server.fail = (command, [key]) => (command === 'xadd' && key === `wrpc:q:{${name}}` ? new Error('OOM') : null);
+  await waitFor(() => errors.some((entry) => entry.event === 'broker.redis.sweep'), { timeout: 3000 });
+  assert.strictEqual(inner.server.zsets.get(`wrpc:q:{${name}}:delayed`).size, 1, 'put back on the set');
+  inner.server.fail = null;
+  await waitFor(() => seen.length === 2, { timeout: 3000 });
+  assert.deepStrictEqual(seen, [1, 2]);
+  assert.strictEqual(inner.server.zsets.get(`wrpc:q:{${name}}:delayed`).size, 0);
 });
 
 test('redis broker: what a stopped consumer held is claimed by another', async (t) => {

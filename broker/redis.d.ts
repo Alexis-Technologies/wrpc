@@ -34,6 +34,13 @@ export interface RedisBrokerClient {
   rpush(key: string, value: string): Promise<number>;
   blpop(key: string, seconds: number): Promise<[string, string] | null>;
   pexpire(key: string, ms: string | number): Promise<unknown>;
+  /**
+   * Runs a delayed retry's promotion (ZREM, then XADD) as one step. ioredis
+   * has it; a client without it — or a proxy that refuses scripts — takes
+   * the adapter's two-step path, which puts the entry back when the second
+   * step fails.
+   */
+  eval?(script: string, numKeys: number, ...args: Array<string | number>): Promise<unknown>;
   duplicate?(): RedisBrokerClient;
   quit?(): Promise<unknown>;
   disconnect?(): void;
