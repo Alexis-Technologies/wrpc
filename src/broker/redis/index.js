@@ -38,6 +38,7 @@ const { resolveGenerateId } = require('../../utils.js');
 // fails at the driver, not here.
 const { TopicTails } = require('../tail.js');
 const { codedError, toText, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
+const { crashDelay } = require('../retry.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_BLOCK_MS = 1000;
@@ -431,8 +432,10 @@ const createRedisBroker = (options = {}) => {
       Promise.resolve()
         .then(() => onDelivery(delivery))
         .catch((error) => {
+          // Settled nothing: retried after a backoff, attempt + 1 — the
+          // delivery contract (port.js), not a release to the head.
           report('broker.redis.delivery', error, { queue: name });
-          void delivery.release();
+          void delivery.retry({ delay: crashDelay(attempt) });
         });
     };
 

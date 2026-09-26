@@ -1350,8 +1350,10 @@ bytes it sends. In that order:
   released — back at the head of the queue and re-dispatched on the next
   microtask — so a handler that always threw spun the queue without ever
   yielding to a timer. It is retried after a backoff now (50 ms doubling
-  to 1 s, attempt + 1), which is what the delivery contract says of every
-  adapter. `trim()` moved the head index but never compacted the array, so
+  to 1 s, attempt + 1) — the delivery contract, and what the Redis, NATS,
+  RabbitMQ and Kafka adapters do too (each released as well; the queue
+  contract now pins attempt + 1). `trim()` moved the head index but never
+  compacted the array, so
   a topic trimmed by hand kept every trimmed entry alive; it compacts like
   the retention cap does.
 - **A dead-letter reason spanning lines no longer keeps the message

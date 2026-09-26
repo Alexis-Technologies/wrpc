@@ -31,6 +31,7 @@ const { resolveGenerateId } = require('../../utils.js');
 // fails at the driver, not here.
 const { TopicTails } = require('../tail.js');
 const { codedError, toText, toHeaders, reasonText, encodeToken } = require('../ids.js');
+const { crashDelay } = require('../retry.js');
 const {
   detectFlavor,
   consumerConfig,
@@ -637,8 +638,10 @@ const createKafkaBroker = (options = {}) => {
       try {
         await onDelivery(delivery);
       } catch (error) {
+        // Settled nothing: retried after a backoff, attempt + 1 — the
+        // delivery contract (port.js), not a release to the head.
         report('broker.kafka.delivery', error, { queue });
-        await delivery.release();
+        await delivery.retry({ delay: crashDelay(attempt) });
       }
     };
 

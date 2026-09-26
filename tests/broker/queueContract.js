@@ -262,13 +262,21 @@ const runQueueContract = async (t, name, harness) => {
     const { queue } = await open(sub);
     const name = await queueFor('q-throw');
     let calls = 0;
+    const seen = [];
     await consume(sub, queue, name, async (delivery) => {
       calls++;
+      seen.push([delivery.attempt, delivery.redelivered]);
       if (calls === 1) throw new Error('handler bug');
       await delivery.ack();
     });
     await queue.produce(name, 'survivor');
     await waitFor(() => calls === 2, { timeout: redelivery + timeout });
+    // A retry, not a release: attempt + 1, so a handler that always throws
+    // exhausts its attempts instead of spinning the queue at its head.
+    assert.deepStrictEqual(seen, [
+      [1, false],
+      [2, true],
+    ]);
   });
 
   await t.test(`${name}: queues are isolated`, async (sub) => {
