@@ -64,7 +64,11 @@ test("hasBytes/encode: a circular packet is JSON's own TypeError, not an exponen
   for (let i = 0; i < 12; i++) parent.children.push({ name: `c${i}`, parent, tags: ['x', 'y'] });
   const started = performance.now();
   assert.strictEqual(hasBytes(parent), false);
-  assert.strictEqual(hasBytes({ type: 'event', data: parent, body: new Uint8Array(1) }), false, 'a cycle: JSON decides');
+  assert.strictEqual(
+    hasBytes({ type: 'event', data: parent, body: new Uint8Array(1) }),
+    false,
+    'a cycle: JSON decides',
+  );
   assert.ok(performance.now() - started < 200, `linear, not exponential: ${performance.now() - started} ms`);
   assert.throws(() => JSON.stringify(parent), /circular/i);
   assert.throws(() => encodeAttachments({ type: 'event', data: parent, body: new Uint8Array(1) }), /circular/i);

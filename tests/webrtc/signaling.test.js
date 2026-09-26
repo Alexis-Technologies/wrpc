@@ -146,7 +146,10 @@ test('signaling: join returns the roster and announces to the members already th
   assert.deepStrictEqual(await b.signaler.join('other'), []);
   assert.deepStrictEqual(await a.signaler.members('lobby'), [asMember(b, { name: 'bobby' })]);
   // A roster is for the room's members: a is not in 'other' until it joins.
-  await assert.rejects(a.signaler.members('other'), (error) => error.code === 403 && /not a member/.test(error.message));
+  await assert.rejects(
+    a.signaler.members('other'),
+    (error) => error.code === 403 && /not a member/.test(error.message),
+  );
   assert.deepStrictEqual(await a.signaler.join('other'), [asMember(b)]);
   assert.deepStrictEqual(await a.signaler.members('other'), [asMember(b)]);
   // A member the application put into the room itself, without join, has
