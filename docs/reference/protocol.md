@@ -1099,6 +1099,10 @@ keep a string — and has no replay window: a log is read again and a delivery
 redelivered, by design. The partition `key` stays readable; the broker
 routes by it. A message that does not open is dropped (RPC), skipped (a
 feed) or dead-lettered with `400` (a consumer), logged, and never answered.
+A session opened by a sealed `hello` — welcomed by a sealed `welcome` — takes
+sealed frames only from then on, whatever `acceptPlaintext` says: a
+plaintext `packet`, `chunk` or `bye` naming it is a downgrade, dropped on
+either end without consuming a sequence number.
 
 ## Compression
 

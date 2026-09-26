@@ -317,6 +317,8 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
       lastSeen: Date.now(),
       compression: active,
       peer: message.replyTo,
+      // Opened by a sealed hello: sealed frames only from here on.
+      sealed: message.sealed === true,
     };
     sessions.set(id, session);
     // The core's own close path (RpcServer.close, client.close()) removes it.
@@ -353,6 +355,14 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
       return;
     }
     const kind = message.headers?.[HEADER_KIND];
+    // Under `acceptPlaintext` — the rollout — a plaintext frame with the
+    // right session id and sequence number used to walk into a session the
+    // sealed hello had opened: a downgrade, and a bye that way ended it.
+    // Dropped and named; the sequence is not consumed, so the real frame
+    // is still served.
+    if (session.sealed && message.sealed !== true) {
+      return void log.warn({ event: 'broker.rpc.refused', reason: 'downgrade', kind });
+    }
     if (kind === KIND.BYE) return void endSession(id, 'bye', { notify: false });
     const seq = seqOf(message.headers);
     if (seq !== session.expectSeq) {

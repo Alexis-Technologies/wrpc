@@ -91,6 +91,10 @@ class ClientBrokerTransport extends ClientTransport {
   #compression = null;
   // The binding's sealing under a shared keyring (../sealing.js), or null.
   #sealing = null;
+  // Welcomed by a sealed frame: the session takes sealed frames only, so a
+  // plaintext bye or packet naming it (acceptPlaintext lets one through the
+  // opener) is a downgrade, dropped.
+  #sealedSession = false;
   #active = null;
   #maxMessage;
   // Correlation ids AND the session id. The session id is the key the server
@@ -152,6 +156,7 @@ class ClientBrokerTransport extends ClientTransport {
     this.#seq = 0;
     this.#expectSeq = 1;
     this.#unconfirmed = 0;
+    this.#sealedSession = false;
     const welcomed = new Promise((resolve, reject) => {
       this.#welcome = { resolve, reject };
     });
@@ -198,8 +203,12 @@ class ClientBrokerTransport extends ClientTransport {
       const pending = this.#welcome;
       this.#welcome = null;
       this.#active = headerNegotiator(this.#compression)(message.headers?.[HEADER_ENC]);
+      this.#sealedSession = message.sealed === true;
       if (pending && typeof remote === 'string' && remote.length > 0) pending.resolve(remote);
       return;
+    }
+    if (this.#sealedSession && message.sealed !== true) {
+      return void this.log?.warn({ event: 'broker.rpc.refused', reason: 'downgrade', kind });
     }
     if (kind === KIND.BYE) {
       return void this.#lost(new Error(`Session ended: ${message.headers?.['wrpc-reason'] ?? 'bye'}`));

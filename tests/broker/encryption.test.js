@@ -56,7 +56,13 @@ const spied = (broker) => {
     listen: (...args) => broker.direct.listen(...args),
     send: (address, body, message) => {
       const text = body instanceof Uint8Array ? Buffer.from(body).toString('latin1') : String(body);
-      carried.push({ address, text, headers: { ...message?.headers } });
+      carried.push({
+        address,
+        text,
+        headers: { ...message?.headers },
+        correlationId: message?.correlationId,
+        replyTo: message?.replyTo,
+      });
       return broker.direct.send(address, body, message);
     },
   };
@@ -327,4 +333,51 @@ test('broker sealing: headers go inside as a null-prototype string map; off is n
   assert.strictEqual(b.open('orders', sealed).sealed, true);
   assert.deepStrictEqual(b.open('invoices', sealed), { refused: 'open' });
   assert.deepStrictEqual(b.open('orders', { headers: {}, body: 'plain' }), { refused: 'unsealed' });
+});
+
+test('broker encryption: a sealed session takes no plaintext frame — acceptPlaintext does not reopen it', async (t) => {
+  const keys = generateKey();
+  const { carried, broker } = spied(new MemoryBroker({ logger: quiet }));
+  const { logger, warnings } = logs();
+  const { handle, connect } = await boot(t, {
+    broker,
+    attach: { encryption: { keys, acceptPlaintext: true }, logger },
+  });
+  const client = await connect({ mode: 'session', encryption: { keys, acceptPlaintext: true }, logger });
+  await client.load('calc');
+  assert.deepStrictEqual(await client.api.calc.echo({ n: 1 }), { n: 1 });
+  const hello = carried.find((f) => f.address === handle.address && f.headers[HEADER_KIND] === KIND.HELLO);
+  const session = hello.correlationId;
+  const clientInbox = hello.replyTo;
+  const downgrades = () => warnings.filter((w) => w.event === 'broker.rpc.refused' && w.reason === 'downgrade');
+  // The client's numbered frames so far, so the plaintext packet carries the
+  // very next sequence number — the one that used to walk in.
+  const sent = carried.filter((f) => f.address === handle.inbox && f.correlationId === session).length;
+  const call = JSON.stringify({ type: 'call', id: 'x1', method: 'calc/echo', args: { plain: true } });
+  await broker.direct.send(handle.inbox, call, {
+    headers: { [HEADER_KIND]: KIND.PACKET, 'wrpc-seq': String(sent + 1) },
+    correlationId: session,
+    replyTo: clientInbox,
+  });
+  await broker.direct.send(handle.inbox, '', { headers: { [HEADER_KIND]: KIND.BYE }, correlationId: session });
+  await waitFor(() => downgrades().length === 2);
+  assert.strictEqual(handle.sessions, 1, 'a plaintext bye does not end a sealed session');
+  // The sequence was not consumed: the real next frame is served.
+  assert.deepStrictEqual(await client.api.calc.echo({ n: 2 }), { n: 2 });
+  // The client's side of the same rule.
+  await broker.direct.send(clientInbox, '', {
+    headers: { [HEADER_KIND]: KIND.BYE, 'wrpc-reason': 'forged' },
+    correlationId: session,
+  });
+  await broker.direct.send(clientInbox, JSON.stringify({ type: 'event', name: 'calc/nudged', data: {} }), {
+    headers: { [HEADER_KIND]: KIND.PACKET, 'wrpc-seq': '99' },
+    correlationId: session,
+  });
+  await waitFor(() => downgrades().length === 4);
+  assert.strictEqual(client.active, true, 'a plaintext bye does not close a sealed client');
+  assert.deepStrictEqual(await client.api.calc.echo({ n: 3 }), { n: 3 });
+  assert.deepStrictEqual(
+    downgrades().map((w) => w.kind),
+    [KIND.PACKET, KIND.BYE, KIND.BYE, KIND.PACKET],
+  );
 });

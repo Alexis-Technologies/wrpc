@@ -1527,6 +1527,14 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **Broker RPC: a sealed session takes no plaintext frame.** Under
+  `encryption: { keys, acceptPlaintext: true }` — the rollout's second
+  deploy — a plaintext frame carrying the right session id and the next
+  sequence number walked into a session a sealed `hello` had opened, on
+  both ends: a `packet` was dispatched as the client's, a `bye` ended the
+  session. A session welcomed sealed now takes sealed frames only; a
+  plaintext one naming it is logged `broker.rpc.refused` with
+  `reason: 'downgrade'` and dropped without consuming its sequence number.
 - **`attachConsumers` under `identity.trust: 'token'`: a logout takes
   effect, and a failed restore is not remembered.** The per-token client
   cache kept a client, and with it the session it had restored, for the
