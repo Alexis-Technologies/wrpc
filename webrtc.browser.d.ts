@@ -304,6 +304,10 @@ export declare class RtcPeerTransport extends Emitter {
   readonly channel: RtcDataChannelLike;
   connection: unknown;
   write(data: string | Uint8Array): boolean;
+  /** A packet to the peer: the backpressure boolean (`ServerTransport.send`). */
+  send(obj: object, code?: number): boolean;
+  /** An error packet to the peer (`ServerTransport.error`). */
+  error(code?: number, options?: { id?: string; error?: Error | null; expose?: boolean }): boolean;
   close(): void;
 }
 

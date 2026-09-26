@@ -214,7 +214,7 @@ test('ws encryption: required — plaintext is refused on the socket, over http,
   assert.strictEqual(response.status, 426);
   assert.ok(!(await response.text()).includes('4111'));
   // A wire the core cannot see into has to be vouched for by whoever attaches it
-  const transport = { write() {}, close() {}, on() {}, once() {} };
+  const transport = { write() {}, send() {}, error() {}, close() {}, on() {}, once() {}, off() {} };
   assert.throws(() => server.rpc.attach(transport, { persistent: false }), /encryption is required/);
   server.rpc.attach(transport, { persistent: false, encrypted: true });
   const client = await connect();

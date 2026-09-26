@@ -2,7 +2,7 @@
 
 const { Emitter, jsonParse, isCodec, resolveGenerateId } = require('../utils.js');
 const { ServerTransport, buildHeaders, isOriginAllowed } = require('../transport.js');
-const { isInboundTransport } = require('./serverTransport.js');
+const { hasTransportShape, isInboundTransport } = require('./serverTransport.js');
 const { SessionManager } = require('./sessions.js');
 const { defineRouter, procedure, runHooksSafe } = require('./router.js');
 const { RoomRegistry, Broadcast, RoomsBackplane } = require('./rooms.js');
@@ -22,6 +22,8 @@ const { isBackplane } = require('../scaling/index.js');
 const {
   handleMessage,
   handleBinary,
+  dispatchMessage,
+  dispatchBinary,
   handleRpc,
   split,
   parseParams,
@@ -71,14 +73,6 @@ const copyTraceHeaders = (headers, packet) => {
 // the peer reads the actual reason instead of a masked 500.
 
 const DEFAULT_BASE_PATH = '/api';
-
-const hasTransportMethods = (transport) =>
-  typeof transport === 'object' &&
-  transport !== null &&
-  typeof transport.write === 'function' &&
-  typeof transport.close === 'function' &&
-  typeof transport.on === 'function' &&
-  typeof transport.once === 'function';
 
 // The options the core owns. Every shell and adapter funnels its own option
 // bag through here, so adding a core option cannot be silently dropped by
@@ -946,12 +940,14 @@ class RpcServer extends Emitter {
       throw new Error('RpcServer.attach: encryption is required, and this transport was not declared encrypted');
     }
     if (persistent === false) {
-      if (!hasTransportMethods(transport)) {
-        throw new TypeError('RpcServer.attach: a transport with write/close/on/once is required');
+      if (!hasTransportShape(transport)) {
+        throw new TypeError('RpcServer.attach: a transport with write/send/error/close/on/once/off is required');
       }
       transport.connection = null;
     } else if (!isInboundTransport(transport)) {
-      throw new TypeError('RpcServer.attach: a persistent transport with write/close/on/once is required');
+      throw new TypeError(
+        'RpcServer.attach: a persistent transport (connection set) with write/send/error/close/on/once/off is required',
+      );
     }
     if (session !== null && (typeof session !== 'object' || Array.isArray(session))) {
       throw new TypeError('RpcServer.attach: options.session must be an object');
@@ -974,8 +970,10 @@ class RpcServer extends Emitter {
       meta ??= buildMeta({ headers, data, url, remoteAddress: request.remoteAddress });
     }
     const client = this.#addClient(transport, restore, meta);
-    transport.on('packet', (text) => handleMessage(client, text, this.#router, this.#limits));
-    transport.on('chunk', (bytes) => handleBinary(client, bytes, this.#router, this.#limits));
+    // Contained: a listener that threw would reject the transport's emit()
+    // — an unhandled rejection for whoever announced the packet.
+    transport.on('packet', (text) => dispatchMessage(client, text, this.#router, this.#limits));
+    transport.on('chunk', (bytes) => dispatchBinary(client, bytes, this.#router, this.#limits));
     return client;
   }
 
@@ -991,9 +989,14 @@ class RpcServer extends Emitter {
       // used to hand a binary chunk to the JSON parser. Anything else
       // (a structured-clone of an object) is not on the wire and is dropped.
       if (typeof data === 'string') {
-        handleMessage(client, data, this.#router, this.#limits);
+        dispatchMessage(client, data, this.#router, this.#limits);
       } else if (ArrayBuffer.isView(data)) {
-        handleBinary(client, new Uint8Array(data.buffer, data.byteOffset, data.byteLength), this.#router, this.#limits);
+        dispatchBinary(
+          client,
+          new Uint8Array(data.buffer, data.byteOffset, data.byteLength),
+          this.#router,
+          this.#limits,
+        );
       }
     });
     return client;

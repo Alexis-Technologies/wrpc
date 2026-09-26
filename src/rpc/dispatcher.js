@@ -617,12 +617,30 @@ const handleMessage = (client, data, router, options = {}) => {
   }
 };
 
+// The two entry points for a transport that announces its traffic as
+// 'packet'/'chunk' events (RpcServer.attach, PeerHost.attach, attachPort):
+// what the handlers throw or reject with stays here — a listener that threw
+// would reject the transport's emit(), which nobody awaits, and a rejected
+// handleBinary used to be an unhandled rejection outright.
+const dispatchMessage = (client, text, router, options) => {
+  try {
+    handleMessage(client, text, router, options);
+  } catch (error) {
+    contain(client, 'PACKET')(error);
+  }
+};
+
+const dispatchBinary = (client, bytes, router, options) =>
+  void handleBinary(client, bytes, router, options).catch(contain(client, 'CHUNK'));
+
 module.exports = {
   sanitizeMeta,
   UNKNOWN_TARGET,
   handleRpc,
   handleStream,
   handleBinary,
+  dispatchMessage,
+  dispatchBinary,
   handleEvent,
   handleSubscribe,
   handleUnsubscribe,

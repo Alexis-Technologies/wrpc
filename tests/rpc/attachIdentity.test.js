@@ -242,3 +242,51 @@ test('telemetry: the disabled writer answers the broker members', async () => {
   });
   assert.doesNotThrow(() => broken.recordBrokerDelivery('x', 'ack'));
 });
+
+test('attach: the transport contract is checked whole — write, send, error, close, on, once, off', () => {
+  const rpc = new RpcServer({ router: routerOf([]), logger: quiet, sse: false });
+  // What the dispatcher calls on the first packet that needs it: refused
+  // here instead, and named.
+  const bare = { write() {}, close() {}, on() {}, once() {}, off() {}, connection: true };
+  assert.throws(() => rpc.attach(bare), /write\/send\/error\/close\/on\/once\/off/);
+  assert.throws(() => rpc.attach(bare, { persistent: false }), /write\/send\/error\/close\/on\/once\/off/);
+  const noOff = { ...bare, send() {}, error() {}, off: undefined };
+  assert.throws(() => rpc.attach(noOff), TypeError);
+  // Persistent needs `connection`; a request carrier does not.
+  const whole = { ...bare, send() {}, error() {}, connection: null };
+  assert.throws(() => rpc.attach(whole), /connection set/);
+  const attached = rpc.attach({ ...whole }, { persistent: false });
+  assert.strictEqual(attached.persistent, false);
+  void rpc.close();
+});
+
+test('attach: what a packet or chunk handler throws is contained, never an unhandled rejection', async (t) => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  const warned = [];
+  const logger = { ...quiet, warn: (entry) => warned.push(entry), child: () => logger };
+  const rpc = new RpcServer({ router: routerOf([]), logger, sse: false });
+  t.after(() => rpc.close());
+  // A transport whose error() and send() throw: the 400 for a chunk of a
+  // stream the client never opened used to reject handleBinary with
+  // nobody to catch it; a pong that could not be sent used to reject the
+  // transport's emit().
+  class Throwing extends CaptureTransport {
+    error() {
+      throw new Error('error() broke');
+    }
+    send() {
+      throw new Error('send() broke');
+    }
+  }
+  const transport = new Throwing();
+  rpc.attach(transport);
+  const { chunkEncode } = require('../../src/chunks.js');
+  await transport.emit('chunk', chunkEncode('never-opened', new Uint8Array([1])));
+  await transport.emit('packet', '{"type":"ping"}');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.deepStrictEqual(unhandled, []);
+  assert.ok(warned.length >= 2, `contained and logged: ${warned.length}`);
+});

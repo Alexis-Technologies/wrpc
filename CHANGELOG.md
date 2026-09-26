@@ -1352,6 +1352,18 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **`RpcServer.attach` and `PeerHost.attach`: the transport contract is
+  checked whole, and nothing a packet handler throws escapes as an
+  unhandled rejection.** The structural check accepted a transport with
+  `write`/`close`/`on`/`once` and no `send`/`error`/`off`, which the
+  dispatcher then called on the first packet — a TypeError at attach now,
+  named in the message; `InboundTransport` in the types says so. A 'chunk'
+  whose handling rejected (a stream the client never opened, on a transport
+  whose `error()` throws) was an unhandled rejection, and a 'packet'
+  listener that threw rejected the transport's `emit()`, which nobody
+  awaited: both are contained and logged through the client, as every
+  other handler failure is (`dispatchMessage`/`dispatchBinary` in the
+  dispatcher, used by `attach`, `attachPort` and `PeerHost.attach`).
 - **WebRTC: a `send()` the channel throws from cannot desynchronise the
   wire, and never reaches the core.** `RTCDataChannel.send()` throws when
   the channel closed under the transport or refuses a message, and the

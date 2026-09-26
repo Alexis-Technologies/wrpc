@@ -31,7 +31,7 @@ const { createServerTelemetry } = require('../telemetry/server.js');
 const { defineRouter, procedure, runHooksSafe } = require('../rpc/router.js');
 const { RoomRegistry, Broadcast } = require('../rpc/rooms.js');
 const { Client, DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_CALLS, buildMeta } = require('../rpc/client.js');
-const { handleMessage, handleBinary } = require('../rpc/dispatcher.js');
+const { dispatchMessage, dispatchBinary } = require('../rpc/dispatcher.js');
 const { DEFAULT_META_MAX } = require('../rpc/meta.js');
 const { isInboundTransport } = require('../rpc/serverTransport.js');
 
@@ -152,7 +152,9 @@ class PeerHost extends Emitter {
    */
   attach(transport, { peer, room = null, data = null, claims = null } = {}) {
     if (!isInboundTransport(transport)) {
-      throw new TypeError('PeerHost.attach: a persistent transport with write/close/on/once is required');
+      throw new TypeError(
+        'PeerHost.attach: a persistent transport (connection set) with write/send/error/close/on/once/off is required',
+      );
     }
     if (typeof peer !== 'string' || peer.length === 0) {
       throw new TypeError('PeerHost.attach: peer must be a non-empty string');
@@ -202,8 +204,8 @@ class PeerHost extends Emitter {
       if (typeof stall.unref === 'function') stall.unref();
       void client.ready.then(() => clearTimeout(stall));
     }
-    transport.on('packet', (text) => handleMessage(client, text, this.#router, this.#limits));
-    transport.on('chunk', (bytes) => handleBinary(client, bytes, this.#router, this.#limits));
+    transport.on('packet', (text) => dispatchMessage(client, text, this.#router, this.#limits));
+    transport.on('chunk', (bytes) => dispatchBinary(client, bytes, this.#router, this.#limits));
     transport.once('close', () => {
       const payload = onDisconnect.length > 0 ? { rooms: client.rooms } : null;
       client.destroy();

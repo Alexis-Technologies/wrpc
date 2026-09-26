@@ -1,8 +1,4 @@
-import {
-  IncomingMessage,
-  Server as HttpServer,
-  ServerResponse,
-} from 'node:http';
+import { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
 import type { Connection } from './ws.js';
 import type { Engine, EngineConnectionSource, WrpcSocket, EngineAttachOptions } from './engine.js';
 import type { Backplane } from './scaling.js';
@@ -325,7 +321,6 @@ export interface CorsOptions {
   methods?: string;
 }
 
-
 /** Abstract HTTP call description consumed by RpcServer.handleHttpCall. */
 export interface HttpCall {
   method: string;
@@ -333,11 +328,7 @@ export interface HttpCall {
   headers: Record<string, string | undefined>;
   body?: string | Buffer | null;
   remoteAddress?: string;
-  respond(response: {
-    status: number;
-    headers: Record<string, string | number | Array<string>>;
-    body?: Buffer;
-  }): void;
+  respond(response: { status: number; headers: Record<string, string | number | Array<string>>; body?: Buffer }): void;
   /**
    * Registers a listener for a request that ends without a response, so
    * the core can evict its client. Adapters should wire it to their
@@ -399,10 +390,7 @@ export interface RpcServerOptions {
    * `'session'` gates it behind a session, `false` leaves the API surface
    * unadvertised. A router defining its own introspect always wins.
    */
-  introspection?:
-    | boolean
-    | 'session'
-    | { access?: boolean | 'session'; schemas?: boolean };
+  introspection?: boolean | 'session' | { access?: boolean | 'session'; schemas?: boolean };
   /** Packets accepted in one batch frame; default 128. */
   maxBatch?: number;
   /** Concurrent subscriptions per client; default 256. */
@@ -748,6 +736,10 @@ export interface InboundTransport extends Emitter {
   /** Truthy for a persistent transport; ignored (and cleared) with `persistent: false`. */
   connection?: unknown;
   write(data: string | Uint8Array): boolean;
+  /** A packet to the peer (`ServerTransport.send`): the backpressure boolean. */
+  send(obj: object, code?: number): boolean;
+  /** An error packet to the peer (`ServerTransport.error`). */
+  error(code?: number, options?: ErrorOptions): boolean;
   close(): void;
 }
 
@@ -791,10 +783,7 @@ export type { ServerHttpTransport };
 
 declare class ServerWsTransport extends ServerTransport {
   connection: WrpcSocket | Connection;
-  constructor(
-    connection: WrpcSocket | Connection,
-    meta?: { remoteAddress?: string },
-  );
+  constructor(connection: WrpcSocket | Connection, meta?: { remoteAddress?: string });
   write(data: string | Buffer): boolean;
   close(): void;
 }
@@ -811,8 +800,4 @@ declare class ServerEventTransport extends ServerTransport {
 export type { ServerEventTransport };
 
 /** Per-request response headers: security defaults + CORS for `origin`. */
-export function buildHeaders(
-  cors?: CorsOptions | null,
-  origin?: string,
-): Record<string, string>;
-
+export function buildHeaders(cors?: CorsOptions | null, origin?: string): Record<string, string>;
