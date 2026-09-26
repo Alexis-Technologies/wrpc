@@ -27,6 +27,13 @@ const HEADER_REASON = 'wrpc-reason';
 // order of preference; on a `response`, `packet` or `chunk`, the ONE codec
 // its body IS compressed with.
 const HEADER_ENC = 'wrpc-enc';
+// The sender's clock, in milliseconds since the epoch, INSIDE the seal of a
+// `request` and a `hello` — the two frames that reach the group address.
+// The envelope's replay window is per sender and per PROCESS, and the group
+// is consumed by many: a captured frame replayed later reaches an instance
+// whose window never saw it. The clock bounds how long that stays possible
+// (the receiver's `maxSkew`); a shared replay memory closes the rest.
+const HEADER_TIME = 'wrpc-t';
 const RESERVED_PREFIX = 'wrpc-';
 
 const KIND = Object.freeze({
@@ -87,13 +94,14 @@ const seqOf = (headers) => {
 const contextOf = (address, kind, correlationId, seq) =>
   `${address}\0${kind ?? ''}\0${correlationId ?? ''}\0${seq ?? ''}`;
 
-const sealFrame = (sealing, address, correlationId, headers, body) => {
+const sealFrame = (sealing, address, correlationId, headers, body, now = Date.now) => {
   if (sealing === null) return { headers, body };
   const inner = { ...headers };
   const kind = inner[HEADER_KIND];
   const seq = inner[HEADER_SEQ];
   delete inner[HEADER_KIND];
   delete inner[HEADER_SEQ];
+  if (kind === KIND.REQUEST || kind === KIND.HELLO) inner[HEADER_TIME] = String(now());
   const outer = seq === undefined ? { [HEADER_KIND]: kind } : { [HEADER_KIND]: kind, [HEADER_SEQ]: seq };
   return sealing.seal(contextOf(address, kind, correlationId, seq), inner, body, outer);
 };
@@ -120,6 +128,7 @@ module.exports = {
   HEADER_INBOX,
   HEADER_REASON,
   HEADER_ENC,
+  HEADER_TIME,
   KIND,
   serviceAddress,
   peerHeaders,

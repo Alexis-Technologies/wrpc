@@ -28,6 +28,7 @@ const {
   HEADER_INBOX,
   HEADER_REASON,
   HEADER_ENC,
+  HEADER_TIME,
   KIND,
   serviceAddress,
   peerHeaders,
@@ -36,7 +37,9 @@ const {
   sealFrame,
   openFrame,
 } = require('./frames.js');
-const { createBrokerSealing } = require('../sealing.js');
+const { createBrokerSealing, HEADER_SEALED } = require('../sealing.js');
+const { HEADER_LENGTH } = require('../../encryption/envelope.js');
+const { DEFAULT_MAX_SKEW } = require('../../encryption/httpServer.js');
 const {
   normalizeSyncCompression,
   codecById,
@@ -205,6 +208,20 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
   // for the rollout). A sealed frame is also what `encryption.required` on
   // the server accepts from this binding.
   const sealing = createBrokerSealing(encryption, 'attachBrokerRpc: options', { layer: 'broker-rpc', replay: true });
+  // The group address is consumed by many instances, and the envelope's
+  // replay window lives in one process: a sealed `request` or `hello`
+  // carries the sender's clock inside the seal, refused past `maxSkew`, and
+  // `replay` — a shared "seen once" memory, `seen(id, ttl)` like the HTTP
+  // one — closes the window that leaves open. Both belong to the RPC
+  // binding only; the log and queue layers are re-read by design.
+  const maxSkew = encryption?.maxSkew ?? DEFAULT_MAX_SKEW;
+  const replay = encryption?.replay ?? null;
+  if (sealing !== null && !(Number.isFinite(maxSkew) && maxSkew > 0)) {
+    throw new TypeError('attachBrokerRpc: encryption.maxSkew must be a positive number of milliseconds');
+  }
+  if (replay !== null && typeof replay?.seen !== 'function') {
+    throw new TypeError('attachBrokerRpc: encryption.replay must be { seen(id, ttl) } or null');
+  }
   if (!(Number.isFinite(idleTimeout) && idleTimeout > 0)) {
     throw new TypeError('attachBrokerRpc: idleTimeout must be a positive number of milliseconds');
   }
@@ -379,12 +396,43 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     else session.transport.emit('packet', packetBody(body));
   };
 
-  const onService = (raw) => {
-    const message = opened(address, raw);
-    if (message === null) return;
+  const dispatch = (message) => {
     const kind = message.headers?.[HEADER_KIND];
     if (kind === KIND.REQUEST) return void onRequest(message);
     if (kind === KIND.HELLO) return void onHello(message);
+  };
+
+  // The envelope's own header — kid, sender salt, counter — names a sealed
+  // frame uniquely across the fleet: what the shared replay memory is keyed
+  // by, for 2·maxSkew (past that the clock refuses the frame anyway).
+  const replayId = (raw) => {
+    const bytes = toBytes(raw.body);
+    return `${raw.headers?.[HEADER_SEALED]}:${Buffer.from(bytes.subarray(2, HEADER_LENGTH)).toString('base64url')}`;
+  };
+
+  const onService = (raw) => {
+    const message = opened(address, raw);
+    if (message === null) return;
+    if (message.sealed !== true) return void dispatch(message);
+    const kind = message.headers?.[HEADER_KIND];
+    const sent = Number(message.headers?.[HEADER_TIME]);
+    if (!(Number.isFinite(sent) && Math.abs(Date.now() - sent) <= maxSkew)) {
+      return void log.warn({ event: 'broker.rpc.refused', reason: 'stale', kind });
+    }
+    if (replay === null) return void dispatch(message);
+    Promise.resolve()
+      .then(() => replay.seen(replayId(raw), 2 * maxSkew))
+      .then(
+        (seen) => {
+          if (seen) log.warn({ event: 'broker.rpc.refused', reason: 'replay', kind });
+          else dispatch(message);
+        },
+        (error) => {
+          // Fail closed, like the HTTP replay store: a memory that cannot be
+          // asked serves nothing — never "probably not a replay".
+          log.error({ event: 'broker.rpc.replay', err: error, kind });
+        },
+      );
   };
 
   let stopService = await direct.listen(address, onService, { group: address });

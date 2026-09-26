@@ -1104,6 +1104,16 @@ sealed frames only from then on, whatever `acceptPlaintext` says: a
 plaintext `packet`, `chunk` or `bye` naming it is a downgrade, dropped on
 either end without consuming a sequence number.
 
+A sealed `request` and a sealed `hello` — the frames that reach the
+competing group — carry `wrpc-t`, the sender's clock in milliseconds since
+the epoch, **inside** the seal. A receiver MUST refuse one whose clock is
+further than its skew allowance (five minutes by default) from its own: the
+envelope's per-sender replay window lives in one process, and a captured
+frame replayed to another instance would otherwise be new to it. A receiver
+MAY consult a memory shared by the instances (keyed by the envelope's own
+header — key id, sender salt, counter) to refuse the replay within that
+allowance too.
+
 ## Compression
 
 Every transport carries plain bytes unless the application turns compression

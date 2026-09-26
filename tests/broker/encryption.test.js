@@ -202,12 +202,14 @@ test('broker encryption: a plaintext, foreign-key, moved or replayed frame is dr
     broker.direct.send(handle.address, body, { headers, correlationId, replyTo: inbox });
 
   await send(packet, { 'wrpc-kind': 'request' });
+  // The sender's clock rides inside every sealed request (a clockless one is stale)
+  const stamped = () => ({ 'wrpc-t': String(Date.now()) });
   const stranger = createBrokerSealing({ keys: generateKey() }, 'x', { layer: 'broker-rpc', replay: true });
-  const forged = stranger.seal(`${handle.address}\0request\0c1\0`, {}, packet, { 'wrpc-kind': 'request' });
+  const forged = stranger.seal(`${handle.address}\0request\0c1\0`, stamped(), packet, { 'wrpc-kind': 'request' });
   await send(forged.body, forged.headers);
   // The right key, sealed for ANOTHER conversation or another kind: the binding is part of the seal
   const insider = createBrokerSealing({ keys }, 'x', { layer: 'broker-rpc', replay: true });
-  const moved = insider.seal(`${handle.address}\0request\0c1\0`, {}, packet, { 'wrpc-kind': 'request' });
+  const moved = insider.seal(`${handle.address}\0request\0c1\0`, stamped(), packet, { 'wrpc-kind': 'request' });
   await send(moved.body, moved.headers, 'c2');
   await send(moved.body, { ...moved.headers, 'wrpc-kind': 'hello' });
   await send(moved.body, moved.headers);
@@ -380,4 +382,123 @@ test('broker encryption: a sealed session takes no plaintext frame — acceptPla
     downgrades().map((w) => w.kind),
     [KIND.PACKET, KIND.BYE, KIND.BYE, KIND.PACKET],
   );
+});
+
+test('broker encryption: a sealed request older than maxSkew, or without a clock, is refused as stale', async (t) => {
+  const keys = generateKey();
+  const { logger, warnings } = logs();
+  const { broker, handle, connect } = await boot(t, { attach: { encryption: { keys, maxSkew: 200 }, logger } });
+  const replies = [];
+  const inbox = broker.direct.inbox();
+  await broker.direct.listen(inbox, (message) => replies.push(message));
+  const packet = JSON.stringify({ type: 'call', id: '1', method: 'calc/echo', args: {} });
+  const sealer = createBrokerSealing({ keys }, 'x', { layer: 'broker-rpc', replay: true });
+  const send = (inner, correlationId) => {
+    const frame = sealer.seal(`${handle.address}\0request\0${correlationId}\0`, inner, packet, {
+      [HEADER_KIND]: KIND.REQUEST,
+    });
+    return broker.direct.send(handle.address, frame.body, { headers: frame.headers, correlationId, replyTo: inbox });
+  };
+  await send({ 'wrpc-t': String(Date.now() - 1000) }, 'old');
+  await send({ 'wrpc-t': String(Date.now() + 1000) }, 'future');
+  await send({}, 'clockless'); // a 1.x client
+  await send({ 'wrpc-t': String(Date.now()) }, 'fresh');
+  await waitFor(() => replies.length === 1);
+  await timers.setTimeout(30);
+  assert.deepStrictEqual(
+    replies.map((reply) => reply.correlationId),
+    ['fresh'],
+  );
+  assert.deepStrictEqual(
+    warnings.filter((w) => w.event === 'broker.rpc.refused').map((w) => w.reason),
+    ['stale', 'stale', 'stale'],
+  );
+  // The real client stamps every request and hello.
+  const client = await connect({ encryption: { keys } });
+  await client.load('calc');
+  assert.deepStrictEqual(await client.api.calc.echo({ ok: 1 }), { ok: 1 });
+  const session = await connect({ mode: 'session', encryption: { keys } });
+  await session.load('calc');
+  assert.deepStrictEqual(await session.api.calc.echo({ ok: 2 }), { ok: 2 });
+  await assert.rejects(
+    attachBrokerRpc(new RpcServer({ router, logger: quiet, sse: false }), broker, {
+      service: 'x',
+      encryption: { keys, maxSkew: 0 },
+    }),
+    /maxSkew/,
+  );
+  await assert.rejects(
+    attachBrokerRpc(new RpcServer({ router, logger: quiet, sse: false }), broker, {
+      service: 'x',
+      encryption: { keys, replay: {} },
+    }),
+    /replay must be/,
+  );
+});
+
+test('broker encryption: a shared replay memory refuses a request replayed to another instance', async (t) => {
+  const { createReplayCache } = require('../../encryption.js');
+  const keys = generateKey();
+  const broker = new MemoryBroker({ logger: quiet });
+  const replay = createReplayCache();
+  const { logger, warnings } = logs();
+  // Three instances of one service, each with its own envelope window, one
+  // shared memory between them.
+  const instances = [];
+  for (let i = 0; i < 3; i++) {
+    instances.push(await boot(t, { broker, attach: { encryption: { keys, replay }, logger } }));
+  }
+  const { handle } = instances[0];
+  const replies = [];
+  const inbox = broker.direct.inbox();
+  await broker.direct.listen(inbox, (message) => replies.push(message));
+  const packet = JSON.stringify({ type: 'call', id: '1', method: 'calc/echo', args: {} });
+  const sealer = createBrokerSealing({ keys }, 'x', { layer: 'broker-rpc', replay: true });
+  const frame = sealer.seal(`${handle.address}\0request\0c1\0`, { 'wrpc-t': String(Date.now()) }, packet, {
+    [HEADER_KIND]: KIND.REQUEST,
+  });
+  // Six copies of one captured frame spread over the group: without the
+  // shared memory each instance would answer the first it saw.
+  for (let i = 0; i < 6; i++) {
+    await broker.direct.send(handle.address, frame.body, {
+      headers: frame.headers,
+      correlationId: 'c1',
+      replyTo: inbox,
+    });
+  }
+  await waitFor(() => warnings.filter((w) => w.event === 'broker.rpc.refused').length === 5);
+  await timers.setTimeout(30);
+  assert.strictEqual(replies.length, 1, 'answered once across the fleet');
+  assert.ok(
+    warnings.filter((w) => w.event === 'broker.rpc.refused').every((w) => w.reason === 'replay'),
+    'every copy after the first is a replay',
+  );
+  // A memory that cannot be asked serves nothing.
+  const errors = [];
+  // Its own child(): the spread would hand back the parent, whose error() is a no-op.
+  const failing = {
+    ...logger,
+    error: (entry) => errors.push(entry),
+    child: () => failing,
+  };
+  const { handle: closed } = await boot(t, {
+    broker,
+    attach: {
+      service: 'other',
+      encryption: {
+        keys,
+        replay: {
+          seen: () => Promise.reject(new Error('memory down')),
+        },
+      },
+      logger: failing,
+    },
+  });
+  const other = sealer.seal(`${closed.address}\0request\0c2\0`, { 'wrpc-t': String(Date.now()) }, packet, {
+    [HEADER_KIND]: KIND.REQUEST,
+  });
+  await broker.direct.send(closed.address, other.body, { headers: other.headers, correlationId: 'c2', replyTo: inbox });
+  await waitFor(() => errors.some((entry) => entry.event === 'broker.rpc.replay'));
+  await timers.setTimeout(30);
+  assert.strictEqual(replies.length, 1, 'not served on a memory that failed');
 });

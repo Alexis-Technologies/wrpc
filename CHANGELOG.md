@@ -1535,6 +1535,18 @@ bytes it sends. In that order:
   session. A session welcomed sealed now takes sealed frames only; a
   plaintext one naming it is logged `broker.rpc.refused` with
   `reason: 'downgrade'` and dropped without consuming its sequence number.
+- **Broker RPC: a captured `request` cannot be replayed to another
+  instance.** The envelope's replay window is per sender and per process,
+  and the service address is consumed by every instance, so a sealed
+  frame replayed later reached an instance whose window had never seen it
+  — and was served again. A sealed `request` or `hello` now carries the
+  sender's clock inside the seal (`wrpc-t`), refused past
+  `encryption.maxSkew` (five minutes) as `stale`; behind more than one
+  instance, `encryption.replay` takes a shared "seen once" memory —
+  `seen(id, ttl)`, as `createReplayCache()` answers it — keyed by the
+  envelope's own header, and one that cannot be asked serves nothing
+  (`broker.rpc.replay`). A 1.x sealed client sends no clock and is refused
+  by a 2.0 service: upgrade the clients with the service.
 - **`attachConsumers` under `identity.trust: 'token'`: a logout takes
   effect, and a failed restore is not remembered.** The per-token client
   cache kept a client, and with it the session it had restored, for the

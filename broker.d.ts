@@ -426,10 +426,24 @@ export interface BrokerRpcOptions {
    * into the seal with the address and the correlation id. A frame that does
    * not open is dropped and logged `broker.rpc.refused`, never answered. A
    * sealed binding is also what `encryption.required` on the server accepts.
+   *
+   * A sealed `request` or `hello` carries the sender's clock inside the
+   * seal: one older than `maxSkew` (default 5 minutes) is refused as
+   * `stale`. The envelope's replay window is per sender and per process,
+   * and the service address is consumed by every instance, so behind more
+   * than one inject `replay` — a shared "seen once" memory, `seen(id, ttl)`
+   * as `createReplayCache()` of `@alexify/wrpc/encryption` answers it
+   * (`SET id 1 NX PX ttl` in Redis) — which refuses a frame another
+   * instance already took; one that cannot be asked serves nothing.
    */
-  encryption?: EnvelopeEncryptionOptions | false | null;
+  encryption?: (EnvelopeEncryptionOptions & { maxSkew?: number; replay?: BrokerReplayMemory | null }) | false | null;
   /** The largest inflated frame accepted (default 16 MiB); past it the session ends. */
   maxMessage?: number;
+}
+
+/** A shared "seen once" memory: true for an id it was shown within `ttl` ms. */
+export interface BrokerReplayMemory {
+  seen(id: string, ttl: number): boolean | Promise<boolean>;
 }
 
 export interface BrokerRpcHandle {

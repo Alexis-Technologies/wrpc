@@ -152,6 +152,16 @@ drained, which a backplane never made you wait for.
 
 This is a shared key: every service that holds it reads every message.
 
+The RPC binding has one more concern the log and queue layers do not: the
+service address is consumed by every instance, and the envelope's replay
+window lives in one process, so a captured `request` replayed later reaches
+an instance that never saw it. A sealed `request` or `hello` therefore
+carries the sender's clock inside the seal — refused past
+`encryption.maxSkew` (five minutes) as `stale` — and behind more than one
+instance you inject `encryption.replay`, a shared "seen once" memory with the
+same `seen(id, ttl)` method `createReplayCache()` has (`SET id 1 NX PX ttl`
+in Redis). A memory that cannot be asked serves nothing.
+
 ## Sessions at rest {#sessions}
 
 ```js
