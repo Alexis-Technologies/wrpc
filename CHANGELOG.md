@@ -1339,6 +1339,18 @@ narrower promise — see
   a send and a view per few bytes, on both sides, for every packet — is
   refused: the link fails (`'message-size'`) instead of connecting.
   `protocol.md#webrtc-framing` says so.
+- **WebRTC trust assertions bound to the FIRST `a=fingerprint:` line.** DTLS
+  binds to the media-level line (RFC 8122 §5), so a relay in the signaling
+  path could keep the honest session-level line — the one the token names
+  — and append its own certificate where DTLS looks: the assertion
+  verified, the DTLS handshake was with the relay. `sdpFingerprint` now
+  answers a fingerprint only when every `a=fingerprint:` line of the
+  description, at either level and of any algorithm, is that one; a
+  description naming two is refused (`'fingerprint'`), on a dial and on an
+  ICE restart alike (the pinned shortcut needs a single fingerprint to
+  compare), and `stamp()` refuses to sign an ambiguous local description.
+  The `algorithm` parameter of `sdpFingerprint` (unreleased) is gone with
+  it. `protocol.md#webrtc-assertions` says every line MUST equal `fp`.
 
 ## [1.0.0] - 2026-08-23
 

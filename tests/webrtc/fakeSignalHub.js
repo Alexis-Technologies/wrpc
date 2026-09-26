@@ -9,9 +9,10 @@
 // signaling connection dying (leaves announced as 'disconnect'),
 // reconnect(id) is its wrpcSignaler coming back under the SAME id (rooms
 // re-joined, 'reset' with id === previous), reset(id, newId) the same under
-// a new server-issued id, and replace(id, instance) a newer connection
+// a new server-issued id, replace(id, instance) a newer connection
 // taking the id over ('replaced' to the old signaler, 'replaced' leaves to
-// the rooms unless the incarnation is the same). Not a *.test.js.
+// the rooms unless the incarnation is the same), and tamper(from, to, fn)
+// a relay that edits what it carries. Not a *.test.js.
 
 const { Emitter } = require('../../src/utils.js');
 
@@ -113,6 +114,7 @@ class FakeSignalHub {
   #peers = new Map(); // id -> HubSignaler
   #rooms = new Map(); // room -> Map<id, data>
   #muted = new Set();
+  #tampers = new Map(); // 'from\0to' -> (message) => message
   sent = [];
   /** The assertion issuer every signaler asks, when the test configures one. */
   issuer = null;
@@ -147,6 +149,7 @@ class FakeSignalHub {
     this.sent.push({ from: fromId, to, room, type: message.type });
     if (this.#muted.has(to) || !this.#peers.has(to)) return;
     const target = this.#peers.get(to);
+    const edit = this.#tampers.get(`${fromId}\0${to}`);
     this.#deliver(to, 'signal', {
       from: fromId,
       instance,
@@ -154,8 +157,14 @@ class FakeSignalHub {
       to,
       toInstance: target.instance,
       room,
-      message,
+      message: edit ? edit(message) : message,
     });
+  }
+
+  /** A relay that lies: every signal from `from` to `to` goes through `fn(message) -> message`; null stops it. */
+  tamper(from, to, fn) {
+    if (fn === null) this.#tampers.delete(`${from}\0${to}`);
+    else this.#tampers.set(`${from}\0${to}`, fn);
   }
 
   join(signaler, room, data) {

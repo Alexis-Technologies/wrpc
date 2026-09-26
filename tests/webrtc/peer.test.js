@@ -742,6 +742,36 @@ test('peer: a redial re-verifies the new certificate; an ICE restart on the same
   assert.strictEqual(await ab.api.calc.add({ a: 1, b: 2 }), 3);
 });
 
+test('peer: a description naming a second certificate — a relay-edited SDP — is refused on a dial and on an ICE restart', async (t) => {
+  const { peer, hub } = await trusted(t);
+  const a = peer('a');
+  const b = peer('b');
+  const media = `m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:sha-256 ${'BB:'.repeat(31)}BB`;
+  // The relay keeps a's honest fingerprint — the line the token names —
+  // and appends its own certificate at the media level, where DTLS looks.
+  const lie = (message) =>
+    message.type === 'description'
+      ? { ...message, description: { ...message.description, sdp: `${message.description.sdp}\r\n${media}` } }
+      : message;
+  const closes = () => hub.sent.filter((e) => e.from === 'b' && e.to === 'a' && e.type === 'close').length;
+  hub.tamper('a', 'b', lie);
+  await assert.rejects(within(a.connect('b'), 'a refused'), /closed/);
+  assert.strictEqual(b.link('a'), undefined);
+  assert.strictEqual(closes(), 1, 'b said goodbye');
+  hub.tamper('a', 'b', null);
+  // Honest again, the link forms — then the relay edits the ICE-restart
+  // offer. The pinned shortcut is no help to it: a description with two
+  // fingerprints has no single one to compare with the pin.
+  const ab = await within(a.connect('b'), 'open');
+  const ba = b.link('a');
+  hub.tamper('a', 'b', lie);
+  const closed = onceEvent(ba, 'close');
+  ab.link.restart();
+  await within(closed, 'b refused the restart');
+  // The goodbye rides the stamping chain, a tick behind the close event.
+  await waitFor(() => closes() === 2, 'with a goodbye');
+});
+
 test('peer: candidates never overtake a description that is waiting for its assertion', async (t) => {
   const { peer, hub, issuer } = await trusted(t);
   // A slow issuer: the offer waits ~30ms for its token while ICE gathers.

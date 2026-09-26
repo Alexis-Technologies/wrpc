@@ -501,8 +501,12 @@ export interface AssertionVerifier {
 }
 
 export declare function createAssertionVerifier(options: AssertionVerifierOptions): AssertionVerifier;
-/** The `a=fingerprint:` an SDP declares for `algorithm` (default sha-256), normalized, or null. */
-export declare function sdpFingerprint(sdp: string, algorithm?: string): string | null;
+/**
+ * The one certificate fingerprint an SDP declares, normalized — or null when
+ * it declares none or more than one: every `a=fingerprint:` line, at either
+ * level and of any algorithm, must agree (DTLS binds to the media-level one).
+ */
+export declare function sdpFingerprint(sdp: string): string | null;
 /** `'sha-256 ab:cd'` -> `'sha-256 AB:CD'`; null when the value is not a fingerprint. */
 export declare function normalizeFingerprint(value: unknown): string | null;
 /** True for anything shaped like a compact JWS of a sane size. */

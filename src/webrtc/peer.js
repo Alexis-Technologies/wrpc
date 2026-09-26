@@ -711,7 +711,9 @@ class WrpcPeer extends Emitter {
   async stamp(message) {
     if (message.type !== 'description') return message;
     const fingerprint = sdpFingerprint(message.description?.sdp);
-    if (fingerprint === null) throw new Error('WrpcPeer: the local description declares no certificate fingerprint');
+    if (fingerprint === null) {
+      throw new Error('WrpcPeer: the local description declares no single certificate fingerprint');
+    }
     const result = await this.#signaler.assert({ fingerprint });
     if (!isAssertion(result?.assertion)) throw new TypeError('signaler.assert() answered without an assertion');
     if (typeof result.iat === 'number') this.#clock = result.iat * 1000 - Date.now();

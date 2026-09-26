@@ -110,19 +110,25 @@ const normalizeFingerprint = (value) => {
 const FINGERPRINT_LINE = /^a=fingerprint:([A-Za-z0-9-]+)[ \t]+((?:[0-9A-Fa-f]{2}:)+[0-9A-Fa-f]{2})[ \t]*$/gm;
 
 /**
- * The certificate fingerprint an SDP declares — session- or media-level,
- * the first line for `algorithm` (default sha-256, what every browser
- * emits), normalized like normalizeFingerprint — or null.
+ * The ONE certificate fingerprint an SDP declares, normalized like
+ * normalizeFingerprint — or null when it declares none, or more than one.
+ * Every `a=fingerprint:` line counts, session- or media-level, whatever
+ * its algorithm: DTLS binds to the media-level line (RFC 8122 §5), so a
+ * description that names two certificates is one an on-path relay could
+ * have edited — the honest line first, its own where DTLS looks — and an
+ * assertion is for one certificate.
  */
-const sdpFingerprint = (sdp, algorithm = 'sha-256') => {
+const sdpFingerprint = (sdp) => {
   if (typeof sdp !== 'string') return null;
-  const wanted = algorithm.toLowerCase();
   FINGERPRINT_LINE.lastIndex = 0;
+  let found = null;
   let match;
   while ((match = FINGERPRINT_LINE.exec(sdp)) !== null) {
-    if (match[1].toLowerCase() === wanted) return `${wanted} ${match[2].toUpperCase()}`;
+    const fingerprint = `${match[1].toLowerCase()} ${match[2].toUpperCase()}`;
+    if (found === null) found = fingerprint;
+    else if (fingerprint !== found) return null;
   }
-  return null;
+  return found;
 };
 
 const isJwk = (value) => isObject(value) && value.kty === 'EC' && value.crv === 'P-256';
@@ -214,7 +220,8 @@ const createAssertionVerifier = ({ keys, issuer = null, subtle = globalThis.cryp
     if (typeof payload.sub !== 'string' || payload.sub !== from) refuse('assertion: not about this peer', 'subject');
     const fingerprint = normalizeFingerprint(payload.fp);
     if (fingerprint === null) refuse('assertion: no fingerprint', 'fingerprint');
-    const declared = sdpFingerprint(sdp, fingerprint.slice(0, fingerprint.indexOf(' ')));
+    const declared = sdpFingerprint(sdp);
+    if (declared === null) refuse('assertion: the description declares no single fingerprint', 'fingerprint');
     if (declared !== fingerprint) refuse('assertion: fingerprint does not match the description', 'fingerprint');
     if (typeof payload.exp !== 'number' || !(payload.exp * 1000 + SKEW_MS > now)) {
       refuse('assertion: expired', 'expired');

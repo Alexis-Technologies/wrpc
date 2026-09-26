@@ -852,11 +852,15 @@ payload  { "sub": string,      the peer id, as the signaling layer names it
 - **Binding.** An assertion travels inside a `description` signal, as its
   `assertion` field, and is valid for that description only: `sub` MUST be
   the peer id the signaling layer reports as the sender, and `fp` MUST be
-  the fingerprint the description's SDP declares (an `a=fingerprint:`
-  line — algorithm, a space, colon-separated hex — compared after
-  normalization: algorithm in lower case, hex in upper case). The DTLS handshake then
-  proves the sender holds that certificate. A verifier MUST apply the
-  description only after the assertion verified.
+  the fingerprint the description's SDP declares — **every**
+  `a=fingerprint:` line of it, session- or media-level, of any algorithm,
+  MUST equal `fp` (algorithm, a space, colon-separated hex — compared after
+  normalization: algorithm in lower case, hex in upper case). DTLS binds to
+  the media-level line (RFC 8122 §5), so a description naming a second
+  certificate anywhere is one the relay may have edited, and a verifier
+  MUST refuse it. The DTLS handshake then proves the sender holds that
+  certificate. A verifier MUST apply the description only after the
+  assertion verified.
 - `exp` MUST be in the future by the issuer's clock (a verifier SHOULD
   allow a small skew and MAY learn the issuer's clock from tokens issued to
   itself). `iss`, when the deployment sets one, MUST match.

@@ -19,6 +19,7 @@ const {
 const { createAssertionIssuer, generateAssertionKeys } = require('../../src/webrtc/assertionIssuer.js');
 
 const FP = 'sha-256 4A:AD:B9:B1:3F:82:18:3B:54:02:12:DF:3E:5D:49:6B:19:E5:7C:AB:3E:4B:65:2E:7D:46:3F:54:42:CD:54:F1';
+const OTHER = 'sha-256 ' + 'BB:'.repeat(31) + 'BB';
 const sdpWith = (fingerprint, extra = '') =>
   `v=0\r\no=- 1 2 IN IP4 127.0.0.1\r\ns=-\r\n${extra}a=fingerprint:${fingerprint}\r\nm=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\n`;
 
@@ -73,14 +74,16 @@ test('assertions: fingerprints are normalized and read from an SDP at either lev
   assert.strictEqual(normalizeFingerprint('x'.repeat(600)), null);
   assert.strictEqual(sdpFingerprint(CHROME_SDP), FP);
   assert.strictEqual(sdpFingerprint(sdpWith(FP.toLowerCase())), FP);
-  // Several algorithms: the one asked for is picked, whatever the order.
-  const multi = sdpWith(FP, 'a=fingerprint:sha-1 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD\r\n');
-  assert.strictEqual(sdpFingerprint(multi), FP);
-  assert.strictEqual(
-    sdpFingerprint(multi, 'SHA-1'),
-    'sha-1 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD',
-  );
-  assert.strictEqual(sdpFingerprint(multi, 'sha-512'), null);
+  // Every a=fingerprint line must agree — DTLS binds to the media-level
+  // one (RFC 8122 §5), so a description naming two certificates, or two
+  // algorithms, is one a relay could have edited: no single fingerprint.
+  const sha1 = 'a=fingerprint:sha-1 AA:BB:CC:DD:EE:FF:00:11:22:33:44:55:66:77:88:99:AA:BB:CC:DD\r\n';
+  assert.strictEqual(sdpFingerprint(sdpWith(FP, sha1)), null, 'two algorithms are two lines that differ');
+  assert.strictEqual(sdpFingerprint(sdpWith(FP, `a=fingerprint:${OTHER}\r\n`)), null, 'session-level B, then A');
+  assert.strictEqual(sdpFingerprint(`${CHROME_SDP}a=fingerprint:${OTHER}\r\n`), null, 'two media-level lines');
+  assert.strictEqual(sdpFingerprint(sdpWith(FP, `a=fingerprint:${FP.toLowerCase()}\r\n`)), FP, 'the same one twice');
+  const bundle = `${CHROME_SDP}m=application 9 UDP/DTLS/SCTP webrtc-datachannel\r\na=fingerprint:${FP}\r\n`;
+  assert.strictEqual(sdpFingerprint(bundle), FP, 'a BUNDLE repeats one certificate per m= section');
   assert.strictEqual(sdpFingerprint('v=0\r\n'), null);
   assert.strictEqual(sdpFingerprint(null), null);
   assert.strictEqual(sdpFingerprint('a=fingerprint:sha-256 not:hex\r\n'), null);
@@ -119,6 +122,11 @@ test('assertions: an issuer signs what a verifier accepts, and binds it', async 
     refused('fingerprint'),
   );
   await assert.rejects(verifier.verify(assertion, { from: 'alice', sdp: 'v=0\r\n' }), refused('fingerprint'));
+  // The right fingerprint first and another one after it: no single one.
+  await assert.rejects(
+    verifier.verify(assertion, { from: 'alice', sdp: sdpWith(FP, `a=fingerprint:${OTHER}\r\n`) }),
+    refused('fingerprint'),
+  );
   await assert.rejects(
     verifier.verify(assertion, { from: 'alice', sdp: CHROME_SDP, now: (exp + 61) * 1000 }),
     refused('expired'),

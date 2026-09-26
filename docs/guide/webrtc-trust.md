@@ -41,7 +41,9 @@ payload binds a **peer id** (`sub`) to the **fingerprint of the DTLS
 certificate** (`fp`) of the peer connection it was issued for, with an
 expiry and whatever claims the server adds. The binding is what makes it
 more than a signed name: the fingerprint travels in the SDP the peer sends
-(`a=fingerprint:`), the verifier checks the token names *that* fingerprint,
+(`a=fingerprint:`), the verifier checks the token names *that* fingerprint
+— every `a=fingerprint:` line of the description, since DTLS binds to the
+media-level one and a relay could append its own under the honest line —
 and the DTLS handshake proves the far end holds the certificate. A token
 copied from one peer cannot be replayed from another connection — the
 identity binding of RFC 8827, without the identity provider.
