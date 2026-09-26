@@ -27,8 +27,8 @@ const PROTOCOL_HEADER = 'sec-websocket-protocol';
 // offers while the victim's cookie rides along by itself: hence the ambient
 // credentials, the fetch-metadata and wrpc namespaces, and every name a
 // deployment reads the caller's address from when no proxy has set it.
-const RESERVED_DECLARED =
-  /^(?:cookie|host|origin|forwarded|via|x-real-ip|x-client-ip|true-client-ip|cf-connecting-ip)$|^(?:sec-|content-|proxy-|x-wrpc-|x-forwarded-)/;
+// The deny list lives in reserved.js, beside the sealed request's.
+const { RESERVED_DECLARED } = require('./reserved.js');
 
 const NO_LOG = { warn() {} };
 

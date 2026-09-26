@@ -144,7 +144,7 @@ const normalizeServerEncryption = (value, name) => {
     statics,
     discovery,
     /** The per-request (HPKE) half, built by the core with its logger and its way of refusing. */
-    http: ({ log, refuse }) =>
+    http: ({ log, refuse, reserved = null }) =>
       createHttpSealing({
         suites,
         statics,
@@ -154,6 +154,7 @@ const normalizeServerEncryption = (value, name) => {
         random: randomSource(),
         log,
         refuse,
+        reserved,
       }),
     /** The public bundle of the current key — what a client pins, safe to publish. */
     bundle: async () => formatBundle(keys.current, await statics(keys.current)),

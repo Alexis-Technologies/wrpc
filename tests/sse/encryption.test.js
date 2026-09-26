@@ -27,6 +27,13 @@ const SECRET = 'not for the proxy that holds this stream open: 4111 1111 1111 11
 const router = defineRouter({
   data: {
     echo: procedure({ access: 'public', handler: async (ctx, args) => ({ args, kind: ctx.client.transportKind }) }),
+    who: procedure({
+      access: 'public',
+      handler: async (ctx) => ({
+        xff: ctx.meta.headers['x-forwarded-for'] ?? null,
+        app: ctx.meta.headers['x-app'] ?? null,
+      }),
+    }),
     shout: procedure({
       access: 'public',
       handler: async (ctx, { text }) => {
@@ -209,6 +216,19 @@ test('sealed stream: the key is salted with the server nonce, which the Content-
   ]) {
     assert.strictEqual(streamNonce(type), null, type);
   }
+});
+
+test('sse encryption: a declared x-forwarded-for does not stand in for the peer address', async (t) => {
+  // maxChannelsPerAddress keyed on the proxy's x-forwarded-for — which the
+  // proxy sets on the OUTER request. An inner one used to reach
+  // clientAddress, so every channel could name a fresh "address".
+  const clientAddress = (call) => call.headers['x-forwarded-for'] ?? call.remoteAddress ?? '';
+  const { connect } = await secure(t, { sse: { clientAddress, maxChannelsPerAddress: 1 } });
+  const first = await connect({ headers: { 'x-forwarded-for': '10.0.0.1', 'x-app': 'v1' } });
+  await first.load('data');
+  assert.deepStrictEqual(await first.api.data.who(), { xff: null, app: 'v1' });
+  await assert.rejects(connect({ headers: { 'x-forwarded-for': '10.0.0.2' } }), 'the same TCP peer: one channel');
+  assert.deepStrictEqual((await first.api.data.echo({ still: 1 })).args, { still: 1 });
 });
 
 test('sse encryption: a sealed stream without its nonce is refused by the client', async (t) => {

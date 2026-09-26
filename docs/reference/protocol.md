@@ -1207,7 +1207,15 @@ response   nonce (32) ‖ AEAD( u32 headerLength ‖ JSON { s, h } ‖ body )
 
 The real request is inside — method `m`, path and query `u`, headers `h`, the
 sender's clock `t` in ms — so an observer sees one endpoint being POSTed to,
-and a `GET` REST route travels as that POST too. HPKE `info` is
+and a `GET` REST route travels as that POST too. The inner headers are laid
+over the outer request's, with three exceptions a server MUST keep: what
+the connection or a proxy in front of it says about the sender (`host`,
+`origin`, `forwarded`, `via`, `x-forwarded-*`, `x-real-ip`, the CDNs'
+client-ip spellings, `sec-*`) is never taken from inside — its absence is a
+fact too, so an inner one is dropped whether or not the outer request
+carried it; the framing names (`content-length`, `transfer-encoding`,
+`connection`) are the outer request's; and an outer `cookie` wins over an
+inner one. `headerLength` above 16 KiB is refused. HPKE `info` is
 `"wrpc http v1" ‖ 0 ‖` the request prefix (version, AEAD id, kid). The answer
 is sealed under a key both ends export from the same context:
 `secret = Export("wrpc http response", Nk)`,

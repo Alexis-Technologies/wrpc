@@ -28,6 +28,12 @@ const {
 
 const DEFAULT_MAX_SKEW = 5 * 60 * 1000;
 const DEFAULT_REPLAY_ENTRIES = 100000;
+// The inner header (u32 length, JSON { m, u, h, t }) is bounded before it
+// is parsed: 16 KiB holds any real request's headers, and whoever holds a
+// key could otherwise hand JSON.parse a header of any size.
+const MAX_INNER_HEADER = 16 * 1024;
+// Hop-by-hop and framing names: the outer request's, never the inner's.
+const FRAMING = /^(?:content-length|transfer-encoding|connection)$/;
 
 /**
  * A bounded "seen once" memory: `seen(id, ttl)` answers true for an id it
@@ -59,7 +65,8 @@ const createReplayCache = ({ max = DEFAULT_REPLAY_ENTRIES, now = Date.now } = {}
  * real request, marked `encrypted`, whose `respond` seals — or null when it
  * answered the outer one itself (an error: never sealed, never detailed).
  * `refuse(call, outerHeaders, status, reason)` is how: one log line with the
- * reason, a bare status on the wire.
+ * reason, a bare status on the wire. `reserved` is the core's list of the
+ * header names a sealed request may not declare for itself (rpc/reserved.js).
  */
 const createHttpSealing = ({
   suites,
@@ -70,6 +77,7 @@ const createHttpSealing = ({
   random,
   log,
   refuse,
+  reserved = null,
   now = Date.now,
 }) => {
   const cache = replay ?? createReplayCache({ now });
@@ -98,12 +106,22 @@ const createHttpSealing = ({
     const prefix = raw.subarray(0, kidEnd);
     const enc = Uint8Array.from(raw.subarray(kidEnd, kidEnd + suite.hpke.encLength));
     let context;
-    let request;
+    let plain;
     try {
       context = await suite.hpke.setupRecipient(enc, recipient, { info: concat(INFO, prefix) });
-      request = unpack(await context.open(null, raw.subarray(kidEnd + suite.hpke.encLength)));
+      plain = await context.open(null, raw.subarray(kidEnd + suite.hpke.encLength));
     } catch {
       return void refuse(call, outerHeaders, 400, 'open');
+    }
+    // Bounded before it is parsed (MAX_INNER_HEADER), then parsed.
+    if (plain.length < 4 || new DataView(plain.buffer, plain.byteOffset, 4).getUint32(0) > MAX_INNER_HEADER) {
+      return void refuse(call, outerHeaders, 400, 'format');
+    }
+    let request;
+    try {
+      request = unpack(plain);
+    } catch {
+      return void refuse(call, outerHeaders, 400, 'format');
     }
     const { m: method, u: url, h: declared, t: sent } = request.header;
     if (typeof method !== 'string' || typeof url !== 'string' || !url.startsWith('/') || !Number.isFinite(sent)) {
@@ -114,8 +132,14 @@ const createHttpSealing = ({
     const replayed = await cache.seen(toBase64Url(enc), 2 * maxSkew);
     if (replayed === true) return void refuse(call, outerHeaders, 409, 'replay');
 
-    // The outer request's own headers stay underneath — a cookie, the
-    // origin, what a proxy added — and what the client declared inside wins.
+    // The outer request's own headers stay underneath, and what the client
+    // declared inside wins — except for what the connection, or a proxy in
+    // front of it, says ABOUT the sender (`reserved`: the forwarded chain,
+    // the client-ip spellings, sec-*, host, origin): that is not the
+    // sender's to say, and its absence is a fact too, so a declared one is
+    // dropped whether or not the outer request carried it. A cookie is the
+    // outer request's when it has one — script cannot set an HttpOnly one,
+    // and a declared one must not stand in for it.
     const headers = { ...call.headers };
     delete headers['content-type'];
     delete headers['content-length'];
@@ -125,7 +149,11 @@ const createHttpSealing = ({
     delete headers['accept-encoding'];
     if (typeof declared === 'object' && declared !== null) {
       for (const name of Object.keys(declared)) {
-        if (typeof declared[name] === 'string') headers[name.toLowerCase()] = declared[name];
+        if (typeof declared[name] !== 'string') continue;
+        const lower = name.toLowerCase();
+        if (FRAMING.test(lower) || (reserved !== null && reserved.test(lower))) continue;
+        if (lower === 'cookie' && headers.cookie !== undefined) continue;
+        headers[lower] = declared[name];
       }
     }
 
@@ -203,4 +231,4 @@ const createHttpSealing = ({
   return { unwrap, isSealed: (call) => isSealedType(call.headers?.['content-type']) };
 };
 
-module.exports = { createHttpSealing, createReplayCache, DEFAULT_MAX_SKEW };
+module.exports = { createHttpSealing, createReplayCache, DEFAULT_MAX_SKEW, MAX_INNER_HEADER };

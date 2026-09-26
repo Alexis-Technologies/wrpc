@@ -41,6 +41,24 @@ const router = defineRouter({
       http: { method: 'GET', path: '/projects/:id' },
       handler: async (_ctx, { params }) => ({ id: params.id, note: SECRET }),
     }),
+    // What the handler is told about the sender, header by header.
+    facts: procedure({
+      access: 'public',
+      handler: async (ctx) => {
+        const h = ctx.meta.headers;
+        return {
+          xff: h['x-forwarded-for'] ?? null,
+          realIp: h['x-real-ip'] ?? null,
+          cfIp: h['cf-connecting-ip'] ?? null,
+          site: h['sec-fetch-site'] ?? null,
+          host: h.host ?? null,
+          origin: h.origin ?? null,
+          via: h.via ?? null,
+          app: h['x-app'] ?? null,
+          cookie: h.cookie ?? null,
+        };
+      },
+    }),
   },
 });
 
@@ -181,6 +199,67 @@ test('http encryption: replayed, stale, altered or sealed to an unknown key — 
   assert.deepStrictEqual(
     warnings.filter((w) => w.event === 'encryption.refused').map((w) => w.reason),
     ['stale', 'open', 'format', 'kid', 'format', 'format'],
+  );
+});
+
+test("http encryption: what the connection says about the sender is not the sender's to declare inside", async (t) => {
+  const { connect, port } = await secure(t);
+  // A page behind a proxy that reads x-forwarded-for, or a rate limit keyed
+  // on cf-connecting-ip: the proxy sets those on the OUTER request, which it
+  // can see; the inner one it cannot, and used to win.
+  const lies = {
+    'x-forwarded-for': '10.0.0.1',
+    'x-real-ip': '10.0.0.2',
+    'cf-connecting-ip': '10.0.0.3',
+    'sec-fetch-site': 'same-origin',
+    host: 'admin.internal',
+    origin: 'https://admin.internal',
+    via: '1.1 nobody',
+    'x-app': 'v1',
+    cookie: 'sid=declared',
+  };
+  const client = await connect({ headers: lies });
+  await client.load('data');
+  const { host, origin, ...facts } = await client.api.data.facts();
+  assert.deepStrictEqual(
+    facts,
+    { xff: null, realIp: null, cfIp: null, site: null, via: null, app: 'v1', cookie: 'sid=declared' },
+    "the ambient names are dropped whether or not the outer request carried them; the rest is the sender's",
+  );
+  assert.strictEqual(host, `127.0.0.1:${port}`, "the host is the outer request's");
+  assert.notStrictEqual(origin, 'https://admin.internal');
+  // A cookie the OUTER request carries — the HttpOnly one script cannot
+  // set, sent by the browser — is not overridden from inside.
+  const jar = (url, init) => fetch(url, { ...init, headers: { ...init.headers, cookie: 'sid=outer' } });
+  const cookied = await connect({ headers: { cookie: 'sid=declared' }, fetch: jar });
+  await cookied.load('data');
+  assert.strictEqual((await cookied.api.data.facts()).cookie, 'sid=outer');
+});
+
+test('http encryption: the inner header is bounded before it is parsed', async (t) => {
+  const warnings = [];
+  const logger = {
+    log() {},
+    info() {},
+    debug() {},
+    error() {},
+    warn: (entry) => warnings.push(entry),
+    child: () => logger,
+  };
+  const booted = await bootServer(t, { router, logger, encryption: { keys: generateKey() } });
+  const endpoint = `${booted.origin}${booted.server.rpc.basePath}`;
+  const serverKey = await booted.server.rpc.encryptionKey();
+  const client = await WrpcClient.connect(endpoint, {
+    transport: 'http',
+    encryption: createEncryption({ serverKey }),
+    logger: false,
+    headers: { 'x-app': 'x'.repeat(17 * 1024) },
+  });
+  t.after(() => void client.close());
+  await assert.rejects(client.load('data'));
+  assert.deepStrictEqual(
+    warnings.filter((w) => w.event === 'encryption.refused').map((w) => w.reason),
+    ['format'],
   );
 });
 

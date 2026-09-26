@@ -33,6 +33,7 @@ const { TRACEPARENT, TRACESTATE } = require('../telemetry/shared.js');
 const { Context, Client, DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_CALLS, buildMeta } = require('./client.js');
 const { DEFAULT_META_MAX, declaredData } = require('./meta.js');
 const { readDeclared } = require('./handshake.js');
+const { AMBIENT_HEADERS } = require('./reserved.js');
 
 // After this long an unsettled onConnect chain logs a warning: a hook that
 // never resolves holds the client's dispatch (see #addClient), and the warn
@@ -218,6 +219,10 @@ class RpcServer extends Emitter {
       const log = this.#log.child({ component: 'encryption' });
       this.#sealing = this.#encryption.http({
         log,
+        // What the connection says about the sender is not the sender's to
+        // declare inside a sealed request (reserved.js; handed over because
+        // src/encryption/ never requires src/rpc/).
+        reserved: AMBIENT_HEADERS,
         // One bare status for every refusal; WHICH check it was is for the log.
         refuse: (call, headers, status, reason) => {
           log.warn({ event: 'encryption.refused', reason, kind: 'http' });

@@ -1428,6 +1428,20 @@ narrower promise — see
   `Expand(Extract(enc ‖ n, Export(…)), "key")`, and a client refuses a
   sealed stream without a 32-byte `n`. A wire change, before the format is
   frozen. `protocol.md#sealed-requests` says so.
+- **A sealed request could declare what the proxy knew about it.** The
+  headers inside a sealed request were laid over the outer request's, any
+  name, no cap — so a page behind a proxy that sets `x-forwarded-for`,
+  `cf-connecting-ip` or `x-real-ip` on the outer request (which the proxy
+  can see) could name any address inside (which it cannot), and a rate
+  limit, an allowlist or an audit log keyed on those, or `sse.clientAddress`
+  counting channels per address, saw the sender's word. What the connection
+  or a proxy says about the sender — the forwarded chain, the client-ip
+  spellings, `host`, `origin`, `via`, `sec-*` — is never taken from inside
+  now, whether or not the outer request carried it; the framing names are
+  the outer request's; an outer `cookie` (the HttpOnly one script cannot
+  set) wins over an inner one; and the inner header is refused above 16 KiB
+  before it is parsed. The list lives in `src/rpc/reserved.js`, beside the
+  ws handshake's, and the core hands it to the sealing layer.
 
 ## [1.0.0] - 2026-08-23
 
