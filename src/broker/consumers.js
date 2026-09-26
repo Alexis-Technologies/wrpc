@@ -460,9 +460,30 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     if (sealing !== null) {
       const opened = sealing.open(policy.queue, delivery);
       if (opened.refused !== undefined) {
-        // Not a message this service can read, and retrying will not change
-        // that: dead-lettered, with the reason in the log only.
-        log.warn({ event: 'broker.refused', queue: policy.queue, reason: opened.refused });
+        rpc.otel.recordBrokerRefusal(system, opened.refused);
+        log.warn({
+          event: 'broker.refused',
+          queue: policy.queue,
+          reason: opened.refused,
+          id: delivery.id,
+          attempt: delivery.attempt,
+        });
+        // A key id this service does not hold is what a rotation in progress
+        // looks like — a fleet where this instance has not received the new
+        // key yet, or dropped the old one a moment early — so it is retried
+        // like a 503, to the binding's attempts, before it dead-letters.
+        // Everything else (plaintext where none is accepted, a body that
+        // does not open, a malformed one) will not change on a retry: dead
+        // at once, with the reason in the log only.
+        if (opened.refused === 'kid') {
+          const decision = decide({
+            code: 503,
+            attempt: delivery.attempt,
+            retry: policy.retry,
+            draining: rpc.draining,
+          });
+          return void (await settle(delivery, decision, 503, new Error('Sealed delivery refused: unknown key id')));
+        }
         return void (await settle(delivery, { action: 'dead', delay: 0 }, 400, new Error('Sealed delivery refused')));
       }
       if (opened.sealed) {

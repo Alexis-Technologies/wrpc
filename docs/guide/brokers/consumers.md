@@ -97,6 +97,8 @@ The outcome decides the settlement:
 | `400`, `403`, `404`, `422`, `501`, anything else | **dead letter** at once |
 | `503` while the server drains | **release**, attempt not counted |
 | body `args` cannot parse | **dead letter** (`400`) |
+| a [sealed](../encryption#brokers) delivery under a key id this service does not hold (`kid`) | **retry** like a `503` — a rotation in progress — then **dead letter** |
+| a sealed delivery that does not open, or plaintext where none is accepted | **dead letter** (`400`), logged `broker.refused` |
 
 `500` is retried here although [Errors](../../reference/errors#which-codes-are-worth-retrying)
 says not to retry one from a client: a queue's `500` is usually a dependency

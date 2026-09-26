@@ -318,7 +318,9 @@ test('broker sealing: headers go inside as a null-prototype string map; off is n
   assert.deepStrictEqual(Object.keys(sealed.headers).sort(), ['key', 'wrpc-sealed']);
   const opened = b.open('orders', sealed);
   assert.strictEqual(Object.getPrototypeOf(opened.headers), null);
-  assert.deepStrictEqual({ ...opened.headers }, { tp: '00-abc' }, 'strings only');
+  // Strings only, the way every broker hands headers back — a number goes
+  // in as its text, the same map a plaintext message would carry.
+  assert.deepStrictEqual({ ...opened.headers }, { tp: '00-abc', n: '7' });
   assert.strictEqual(Buffer.from(opened.body).toString(), 'body');
   assert.strictEqual(opened.sealed, true);
   // A log is read again and again: no replay window on that layer

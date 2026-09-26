@@ -209,6 +209,7 @@ const DISABLED = Object.freeze({
   recordClusterVerification: noop,
   recordRtcAssertion: noop,
   recordBrokerPublish: noop,
+  recordBrokerRefusal: noop,
   // Client-side members: one disabled writer serves both halves, so it has
   // to answer to everything either of them exposes.
   recordHeartbeat: noop,

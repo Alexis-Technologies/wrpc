@@ -139,7 +139,12 @@ presents, which used to ride as a plaintext broker header on every request,
 no longer rests in the topic. What stays readable is what the broker routes
 by (`wrpc-kind`, `wrpc-seq`, a partition `key`), and the first two are bound
 into the seal. A message that does not open is dropped (RPC), skipped (a
-feed) or dead-lettered with `400` (a consumer) — logged, never answered.
+feed — `feed.refused`, one warning per reason per ten seconds with the
+count) or dead-lettered with `400` (a consumer) — logged, never answered,
+and counted in `wrpc.broker.refused` by reason. One reason is transient: a
+message under a key id this service does not hold (`kid`) is what a
+rotation in progress looks like, so a consumer retries it like a `503`, to
+the binding's `attempts`, before dead-lettering.
 Rolled out like the backplane: `{ keys, seal: false, acceptPlaintext: true }`,
 then `{ keys, acceptPlaintext: true }`, then `{ keys }` — and a key is
 [dropped from the ring](#keys) only once the backlog sealed under it has

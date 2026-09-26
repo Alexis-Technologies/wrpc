@@ -78,7 +78,11 @@ handler: brokerFeed(broker, (ctx, { tenant }) => {
 ```
 
 An entry that does not decode is logged as `feed.decode` and skipped; one bad
-entry does not end every subscriber's feed.
+entry does not end every subscriber's feed. Under
+[`encryption`](../encryption#brokers) an entry that does not open is skipped
+the same way, logged `feed.refused` — at `warn` once per reason per ten
+seconds with the running `count`, at `debug` in between, and summarized when
+the feed ends — and counted in `wrpc.broker.refused`.
 
 ## Gaps and snapshots
 

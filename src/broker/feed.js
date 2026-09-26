@@ -17,11 +17,16 @@
 // procedure's `access` (and the topic resolver's) business.
 
 const { tracked } = require('../rpc/subscriptions.js');
-const { capabilityOf } = require('./port.js');
+const { capabilityOf, brokerName } = require('./port.js');
 const { codedError, signId, openId, toText } = require('./ids.js');
 const { createBrokerSealing } = require('./sealing.js');
 
 const DEFAULT_MAX_ID_LENGTH = 512;
+// A sealed entry the feed cannot open is logged at warn once per reason per
+// this interval, with the running count, and at debug in between: a topic
+// holding a thousand entries under a key this service dropped is one line
+// per subscriber, not a thousand.
+const REFUSAL_INTERVAL = 10_000;
 
 const DECODERS = Object.freeze({
   json: (text) => JSON.parse(text),
@@ -35,6 +40,7 @@ const isIterable = (value) =>
 
 const brokerFeed = (broker, topic, options = {}) => {
   const log = capabilityOf(broker, 'log', 'brokerFeed');
+  const system = brokerName(log) === 'custom' ? brokerName(broker) : brokerName(log);
   if (typeof topic !== 'function' && (typeof topic !== 'string' || topic.length === 0)) {
     throw new TypeError('brokerFeed: topic must be a non-empty string or a (context, args) => topic function');
   }
@@ -112,6 +118,25 @@ const brokerFeed = (broker, topic, options = {}) => {
     const onAbort = () => scope.abort();
     outer?.addEventListener('abort', onAbort, { once: true });
     if (outer?.aborted) scope.abort();
+    // Refusals of this subscriber's read, counted per reason (see
+    // REFUSAL_INTERVAL); the metric counts every one.
+    const refusals = new Map();
+    const refuse = (id, reason) => {
+      context?.otel?.recordBrokerRefusal(system, reason);
+      const now = Date.now();
+      let tally = refusals.get(reason);
+      if (tally === undefined) {
+        tally = { count: 0, since: now, logged: 0 };
+        refusals.set(reason, tally);
+      }
+      tally.count++;
+      const level = tally.count === 1 || now - tally.since >= REFUSAL_INTERVAL ? 'warn' : 'debug';
+      if (level === 'warn') {
+        tally.since = now;
+        tally.logged = tally.count;
+      }
+      context?.log?.[level]({ event: 'feed.refused', topic: name, id, reason, count: tally.count });
+    };
     try {
       for (;;) {
         if (signal.aborted) return;
@@ -145,7 +170,7 @@ const brokerFeed = (broker, topic, options = {}) => {
               const opened = sealing.open(name, { headers: raw.headers, body: raw.value });
               if (opened.refused !== undefined) {
                 // Skipped like an undecodable entry — and never yielded as it is.
-                context?.log?.warn({ event: 'feed.refused', topic: name, id: raw.id, reason: opened.refused });
+                refuse(raw.id, opened.refused);
                 continue;
               }
               if (opened.sealed) entry = { ...raw, headers: opened.headers, value: toText(opened.body) };
@@ -181,6 +206,13 @@ const brokerFeed = (broker, topic, options = {}) => {
     } finally {
       outer?.removeEventListener('abort', onAbort);
       scope.abort();
+      // What the debug lines held since the last warn, so a feed that ended
+      // between two intervals still accounts for every refusal.
+      for (const [reason, tally] of refusals) {
+        if (tally.count > tally.logged) {
+          context?.log?.info({ event: 'feed.refused', topic: name, reason, count: tally.count, summary: true });
+        }
+      }
     }
   };
 };

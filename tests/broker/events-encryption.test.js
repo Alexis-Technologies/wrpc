@@ -205,3 +205,128 @@ test('events encryption: the rollout and the validation', async (t) => {
     /attachConsumers: options: encryption must be/,
   );
 });
+
+// Every level, for the aggregation asserts.
+const allLogs = () => {
+  const entries = [];
+  const at = (level) => (entry) => entries.push({ level, ...entry });
+  const logger = {
+    log() {},
+    info: at('info'),
+    debug: at('debug'),
+    error: at('error'),
+    warn: at('warn'),
+    child: () => logger,
+  };
+  return { logger, entries };
+};
+
+test('events encryption: a consumer retries a delivery under a key id it does not hold, then dead-letters it', async (t) => {
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(() => broker.close());
+  // The publisher already rotated to k2; this consumer's ring has no k2.
+  const k1 = generateKey();
+  const k2 = generateKey();
+  const publisher = publisherOf(t, broker, { encryption: { keys: { current: 'k2', ring: { k1, k2 } } } });
+  const calls = [];
+  const router = defineRouter({
+    billing: {
+      consumes: {
+        charges: procedure({
+          access: 'public',
+          consume: { retry: { attempts: 3, backoff: { base: 5, max: 10, jitter: false } }, deadLetter: 'charges.dead' },
+          handler: async (_ctx, args) => void calls.push(args),
+        }),
+      },
+    },
+  });
+  const rpc = new RpcServer({ router, logger: quiet, sse: false });
+  t.after(() => rpc.close());
+  const dead = [];
+  const graveyard = await broker.queue.consume('charges.dead', (delivery) => {
+    dead.push(delivery);
+    return delivery.ack();
+  });
+  t.after(() => graveyard.stop());
+  const { logger, entries } = allLogs();
+  const consumers = await attachConsumers(
+    rpc,
+    broker,
+    {},
+    { encryption: { keys: { current: 'k1', ring: { k1 } } }, logger },
+  );
+  t.after(() => consumers.stop());
+  await publisher.publish('orders.v1/charged', { id: 'o-1' });
+  await waitFor(() => dead.length === 1);
+  assert.deepStrictEqual(calls, []);
+  const refused = entries.filter((entry) => entry.event === 'broker.refused');
+  assert.deepStrictEqual(
+    refused.map((entry) => [entry.reason, entry.attempt]),
+    [
+      ['kid', 1],
+      ['kid', 2],
+      ['kid', 3],
+    ],
+    'retried to the binding attempts as a 503, not dead on the first refusal',
+  );
+  assert.match(dead[0].headers['x-wrpc-dead-reason'], /^503 Sealed delivery refused: unknown key id/);
+  assert.strictEqual(dead[0].headers['x-wrpc-attempt'], '3');
+});
+
+test('events encryption: a feed logs a burst of refusals once per reason, with the count, and summarizes at the end', async (t) => {
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(() => broker.close());
+  const keys = generateKey();
+  // Five plaintext entries where none is accepted, then one the feed opens.
+  for (let i = 0; i < 5; i++) await broker.log.append('orders', JSON.stringify({ forged: i }), { headers: {} });
+  const publisher = publisherOf(t, broker, { encryption: { keys } });
+  await publisher.publish('orders.v1/created', { id: 'o-1' });
+  const { logger, entries } = allLogs();
+  const router = defineRouter({
+    orders: {
+      feed: procedure.subscription({
+        access: 'public',
+        handler: brokerFeed(broker, 'orders', { from: 'earliest', encryption: { keys } }),
+      }),
+    },
+  });
+  const { url } = await bootServer(t, { router, logger });
+  const client = await connectClient(t, url);
+  await client.load('orders');
+  const orders = [];
+  const subscription = client.api.orders.feed.subscribe({}, { onData: (value) => orders.push(value) });
+  await waitFor(() => orders.length === 1);
+  assert.deepStrictEqual(orders, [{ id: 'o-1' }]);
+  const refused = () => entries.filter((entry) => entry.event === 'feed.refused');
+  await waitFor(() => refused().length === 5);
+  assert.deepStrictEqual(
+    refused().map((entry) => [entry.level, entry.reason, entry.count]),
+    [
+      ['warn', 'unsealed', 1],
+      ['debug', 'unsealed', 2],
+      ['debug', 'unsealed', 3],
+      ['debug', 'unsealed', 4],
+      ['debug', 'unsealed', 5],
+    ],
+    'one warning for the burst, the rest at debug with the running count',
+  );
+  await subscription.unsubscribe();
+  await waitFor(() => refused().some((entry) => entry.summary === true));
+  const summary = refused().find((entry) => entry.summary === true);
+  assert.deepStrictEqual([summary.level, summary.reason, summary.count], ['info', 'unsealed', 5]);
+});
+
+test('events encryption: headers are strings whether the message was sealed or not', () => {
+  const { createBrokerSealing } = require('../../src/broker/sealing.js');
+  const keys = generateKey();
+  const sealing = createBrokerSealing({ keys }, 'test', { layer: 'broker-log', replay: false, text: true });
+  const sealed = sealing.seal('t', { n: 7, flag: true }, 'body');
+  const opened = sealing.open('t', sealed);
+  assert.deepStrictEqual({ ...opened.headers }, { n: '7', flag: 'true' });
+  const plain = createBrokerSealing({ keys, seal: false, acceptPlaintext: true }, 'test', {
+    layer: 'broker-log',
+    replay: false,
+    text: true,
+  });
+  assert.deepStrictEqual({ ...plain.seal('t', { n: 7, flag: true }, 'body').headers }, { n: '7', flag: 'true' });
+});

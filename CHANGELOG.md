@@ -1345,6 +1345,21 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **Sealed broker messages: a key the service does not hold yet is a
+  retry, refusals are counted, and a feed's are not a log flood.** A
+  consumer dead-lettered every delivery it could not open with `400`,
+  including one sealed under a key id its ring lacked — which is what a
+  rotation in progress looks like across a fleet, and what a key dropped a
+  moment too early looks like. That case (`reason: 'kid'`) is retried like
+  a `503`, to the binding's `attempts`, before it dead-letters; the others
+  (`unsealed`, `open`, `format`) stay dead at once. A feed logged every
+  refused entry at `warn` — a topic holding a thousand entries under a
+  retired key was a thousand lines per subscriber — and now logs one
+  `feed.refused` per reason per ten seconds with the running `count`, the
+  rest at `debug`, and an `info` summary when the feed ends. Both count
+  `wrpc.broker.refused` by `messaging.system` and `wrpc.reason`. The
+  headers a sealed message carries inside are the same string map a
+  plaintext one has (`{ n: 7 }` arrives as `'7'` on both paths).
 - **`MemoryBroker`: a handler that throws is retried with a backoff, and
   `trim()` frees what it trims.** A delivery whose handler threw was
   released — back at the head of the queue and re-dispatched on the next

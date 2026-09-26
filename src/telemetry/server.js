@@ -85,6 +85,7 @@ const createServerTelemetry = (telemetry) => {
   let rtcRestarts = null;
   let brokerDeliveries = null;
   let brokerPublished = null;
+  let brokerRefused = null;
   let brokerAttempts = null;
   let queueWait = null;
   let clusterVerifications = null;
@@ -162,6 +163,12 @@ const createServerTelemetry = (telemetry) => {
         unit: '{message}',
         description: 'Messages published to a broker, by broker and outcome',
       });
+      // What a sealed topic refused, by reason: a rising `kid` series during
+      // a rotation is a fleet that dropped a key before its backlog drained.
+      brokerRefused = meter.createCounter('wrpc.broker.refused', {
+        unit: '{message}',
+        description: 'Sealed broker messages a feed or a consumer could not open, by broker and reason',
+      });
       // A histogram, never an attribute on the delivery counter: the attempt
       // number is unbounded, and a counter series per value is a cardinality
       // bomb. Redelivery depth was unmeasurable — the number was available
@@ -202,6 +209,7 @@ const createServerTelemetry = (telemetry) => {
       rtcRestarts = null;
       brokerDeliveries = null;
       brokerPublished = null;
+      brokerRefused = null;
       brokerAttempts = null;
       queueWait = null;
       clusterVerifications = null;
@@ -452,6 +460,14 @@ const createServerTelemetry = (telemetry) => {
     recordBrokerPublish(system, outcome) {
       try {
         brokerPublished?.add(1, { 'messaging.system': system, 'wrpc.broker.outcome': outcome });
+      } catch {}
+    },
+
+    // `reason` is the sealer's closed set (unsealed | kid | open | format |
+    // replay), never a topic or a message id.
+    recordBrokerRefusal(system, reason) {
+      try {
+        brokerRefused?.add(1, { 'messaging.system': system, 'wrpc.reason': reason });
       } catch {}
     },
 

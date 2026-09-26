@@ -111,6 +111,7 @@ credential, not an identity, and the two do not share a switch.
 | `wrpc.rtc.ice_restarts` | Counter | `{restart}` |
 | `wrpc.broker.deliveries` | Counter | `{message}` |
 | `wrpc.broker.published` | Counter | `{message}` |
+| `wrpc.broker.refused` | Counter | `{message}` |
 | `wrpc.client.reconnects` | Counter | `{attempt}` |
 | `wrpc.client.refreshes` | Counter | `{run}` |
 | `wrpc.client.connections` | UpDownCounter | `{connection}` |
@@ -133,7 +134,11 @@ ordinary server spans and `wrpc.server.connections` under
 The two `wrpc.broker.*` instruments come from the
 [message-broker](./brokers) bindings: messages consumed into procedures by
 `messaging.system` and `wrpc.broker.outcome` (`ack`, `retry`, `release`,
-`dead`), and messages published by outcome (`ok`, `error`). A consumed
+`dead`), and messages published by outcome (`ok`, `error`).
+`wrpc.broker.refused` counts what a [sealed](./encryption#brokers) feed or
+consumer could not open, by `messaging.system` and `wrpc.reason` (`unsealed`,
+`kid`, `open`, `format`, `replay`) — a rising `kid` series during a rotation
+is a fleet that dropped a key before the backlog under it drained. A consumed
 message's call span is a `CONSUMER` span carrying `messaging.*` attributes,
 parented on the trace context the message arrived with; a published one is a
 `PRODUCER` span whose context rides in the message headers.

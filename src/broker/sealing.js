@@ -20,12 +20,15 @@
 // of a session: every service holding the key reads every message.
 
 const { normalizeEnvelopeEncryption, createEnvelopeSealer } = require('../encryption/envelope.js');
-const { toBytes } = require('./ids.js');
+const { toBytes, toHeaders } = require('./ids.js');
 
 const HEADER_SEALED = 'wrpc-sealed';
 
+// Headers go in as the string map every broker hands back (`toHeaders`), so
+// what a consumer reads is the same whether the message was sealed or rode
+// in plaintext — `{ n: 7 }` is `'7'` either way, never a number on one path.
 const pack = (headers, body) => {
-  const json = Buffer.from(JSON.stringify(headers));
+  const json = Buffer.from(JSON.stringify(toHeaders(headers)));
   const bytes = toBytes(body);
   const out = Buffer.allocUnsafe(4 + json.length + bytes.length);
   out.writeUInt32BE(json.length, 0);
@@ -75,7 +78,7 @@ const createBrokerSealing = (option, name, { layer, replay, text = false }) => {
   return {
     sealing: encryption.seal,
     seal(context, headers, body, outer = null) {
-      if (!encryption.seal) return { headers: { ...headers, ...outer }, body };
+      if (!encryption.seal) return { headers: toHeaders({ ...headers, ...outer }), body };
       const { kid, sealed } = sealer.seal(pack(headers ?? {}, body), context);
       return { headers: { ...outer, [HEADER_SEALED]: kid }, body: text ? sealed.toString('base64') : sealed };
     },
