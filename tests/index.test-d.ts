@@ -169,6 +169,13 @@ expectType<number>(stream.dropped);
 
 // Sessions
 expectAssignable<SessionStore>(new wrpc.MemorySessionStore());
+// A store may answer false to a conditional update; one that ignores the option still fits.
+expectAssignable<SessionStore>({
+  get: async () => null,
+  set: async (_token: string, _data: object, options?: { create: boolean }) => options?.create !== false,
+  delete: async () => {},
+});
+expectAssignable<SessionStore>({ get: async () => null, set: async () => {}, delete: async () => {} });
 expectAssignable<wrpc.SessionsOptions>({
   store: new wrpc.MemorySessionStore(),
   cookie: { name: 'sid', secure: false, sameSite: 'Strict', maxAge: 3600 },

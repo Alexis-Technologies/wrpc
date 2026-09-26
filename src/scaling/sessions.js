@@ -17,9 +17,12 @@
 //   new Server({ router, sessions: { store: createRedisSessionStore({ client: new Redis(url) }) } });
 //
 // node-redis v4 spells the expiring set differently — `set(key, value,
-// { PX: ttl })` — so it needs a two-line wrapper:
+// { PX: ttl, XX: true })` — so it needs a small wrapper that carries the
+// conditions this store passes (PX, and XX for an update):
 //   const client = { get: (k) => redis.get(k), del: (k) => redis.del(k),
-//     set: (k, v, _px, ttl) => redis.set(k, v, { PX: ttl }), pexpire: (k, ttl) => redis.pExpire(k, ttl) };
+//     set: (k, v, ...args) => redis.set(k, v, {
+//       ...(args[0] === 'PX' ? { PX: args[1] } : {}), ...(args.includes('XX') ? { XX: true } : {}) }),
+//     pexpire: (k, ttl) => redis.pExpire(k, ttl) };
 //
 // State is stored as JSON: a session's state is the plain data the
 // application assigns, which is JSON by construction (it crosses the
@@ -73,10 +76,16 @@ const createRedisSessionStore = (options = {}) => {
         return null;
       }
     },
-    async set(token, data) {
+    // `create: false` (every write after the first) is SET … XX: a row that
+    // is gone — a logout on another instance — is not brought back, and
+    // Redis's null answer becomes the false the session manager reads.
+    async set(token, data, { create = true } = {}) {
       const value = JSON.stringify(data);
-      if (ttl > 0) await client.set(key(token), value, 'PX', ttl);
-      else await client.set(key(token), value);
+      const args = [];
+      if (ttl > 0) args.push('PX', ttl);
+      if (!create) args.push('XX');
+      const result = await client.set(key(token), value, ...args);
+      return create || (result !== null && result !== undefined);
     },
     async delete(token) {
       await client.del(key(token));

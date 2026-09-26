@@ -139,7 +139,6 @@ export interface SubscriptionOptions {
   signal: AbortSignal;
 }
 
-
 /**
  * A lifecycle hook: named phases, fastify-style, with no `next`. A hook
  * runs and either returns (the pipeline continues) or throws an error whose
@@ -449,17 +448,9 @@ export declare class Router {
   readonly hasSerializers: boolean;
   /** Router-level connection lifecycle hooks, consumed by RpcServer. */
   readonly connectionHooks: { onConnect: ReadonlyArray<ConnectionHook>; onDisconnect: ReadonlyArray<ConnectionHook> };
-  getProcedure(
-    unit: string,
-    version: string | undefined,
-    method: string,
-  ): Procedure | null;
+  getProcedure(unit: string, version: string | undefined, method: string): Procedure | null;
   /** Handler for an inbound `{ type: 'event' }` packet, if the unit declares one. */
-  getEventHandler(
-    unit: string,
-    version: string | undefined,
-    name: string,
-  ): Procedure | null;
+  getEventHandler(unit: string, version: string | undefined, name: string): Procedure | null;
   /** A unit's queue-consumer procedure, if it declares one. @experimental */
   getConsumer(unit: string, version: string | undefined, name: string): Procedure | null;
   /** Every declared queue consumer. @experimental */
@@ -508,7 +499,13 @@ export interface SessionStore {
    */
   touch?(token: string): Promise<void> | void;
   get(token: string): Promise<State | null>;
-  set(token: string, data: State): Promise<void>;
+  /**
+   * `create` is true for the write that makes the row and false for every
+   * write after it; a store MAY answer `false` to an update of a row that
+   * is gone, which ends the session instead of resurrecting it. A store
+   * that ignores the option writes as before.
+   */
+  set(token: string, data: State, options?: { create: boolean }): Promise<void | boolean>;
   delete(token: string): Promise<void>;
 }
 
@@ -602,10 +599,7 @@ declare class SessionManager {
 }
 export type { SessionManager };
 
-export function createProxy<T extends object>(
-  data: T,
-  save?: (data: T) => void,
-): T;
+export function createProxy<T extends object>(data: T, save?: (data: T) => void): T;
 
 // ---------------------------------------------------------------------------
 // Rooms
@@ -898,7 +892,11 @@ export class Client extends Emitter {
    */
   expectAnswer(id: string, timeout?: number): Promise<unknown>;
   /** Routes an inbound `callback` to its pending ask; false when none. */
-  settleAnswer(packet: { id: string; result?: unknown; error?: { message: string; code: number; details?: unknown } }): boolean;
+  settleAnswer(packet: {
+    id: string;
+    result?: unknown;
+    error?: { message: string; code: number; details?: unknown };
+  }): boolean;
   /** Diagnostics for inbound packets with no id to answer on. */
   warn(message: string): void;
   /** Joins a room; false when already a member. */
@@ -925,4 +923,7 @@ export class Client extends Emitter {
  * cut past it. Deterministic for a router definition, so a fleet agrees on
  * the id `dictionaryCompressor` derives. Browser-safe.
  */
-export declare function buildDictionary(router: { introspect(units?: unknown, options?: object): object }, options?: { limit?: number }): Uint8Array;
+export declare function buildDictionary(
+  router: { introspect(units?: unknown, options?: object): object },
+  options?: { limit?: number },
+): Uint8Array;

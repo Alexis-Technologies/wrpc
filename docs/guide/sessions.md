@@ -262,7 +262,14 @@ or protect a session from someone holding the key — every instance does.
 Writes to `session.state` are coalesced: the assignments of one turn become
 **one** `store.set` on a microtask (the initial state of `create()` is
 written immediately), and a session that was finalized in the meantime is
-not written back.
+not written back. Every write after the first is **conditional** —
+`set(token, state, { create: false })` — and a store answering `false` to it
+is saying the row is gone: a logout on another connection or instance landed
+first, and this write must not undo it. The session ends there
+(`session.save` with `reason: 'gone'`) instead of coming back, token and
+all. The memory store, the Redis store (`SET … XX`) and `sealedStore`
+refuse such a write; a custom store may ignore the option and write as
+before.
 
 ## Tokens
 

@@ -95,6 +95,11 @@ const DEFAULT_SESSION_TTL = 24 * 60 * 60 * 1000; // 24h
 // so this store is bounded on both axes: entries expire after `ttl` and
 // the least-recently-used one is evicted past `maxSessions`. Production
 // deployments should inject a real store instead.
+// The options a save passes to store.set(): the row's creation, then
+// updates that must find it there.
+const CREATE = Object.freeze({ create: true });
+const UPDATE = Object.freeze({ create: false });
+
 class MemorySessionStore {
   #sessions = new Map(); // token -> { data, expires }
   #maxSessions;
@@ -137,10 +142,20 @@ class MemorySessionStore {
     return entry.data;
   }
 
-  async set(token, data) {
+  // `create: false` (every write after the first): a row that is gone —
+  // deleted, or expired — is not brought back; false says so.
+  async set(token, data, { create = true } = {}) {
+    if (!create) {
+      const entry = this.#sessions.get(token);
+      if (!entry || this.#expired(entry)) {
+        if (entry) this.#sessions.delete(token);
+        return false;
+      }
+    }
     this.#sessions.delete(token);
     this.#sessions.set(token, { data, expires: this.now() + this.#ttl });
     this.#evict();
+    return true;
   }
 
   async delete(token) {
@@ -256,22 +271,40 @@ class SessionManager {
   // shared store. The first write schedules the save on a microtask, the
   // rest of the turn rides along, and a session ended meanwhile is not
   // written back — that would resurrect what finalizeSession just deleted.
-  #saver(token, lifecycle) {
+  //
+  // Every write but the one that creates the row is CONDITIONAL —
+  // `set(token, state, { create: false })` — and a store answering `false`
+  // to it is saying the row is gone: a logout on another connection or
+  // instance landed first, and this write must not undo it (an
+  // unconditional SET used to resurrect the session, token and all). The
+  // session ends here then. A store may ignore the option and answer as
+  // before; only the three built-in ones refuse.
+  #saver(token, lifecycle, create) {
     let pending = false;
+    let first = create;
     const flush = (state) => {
       pending = false;
       if (lifecycle.ended) return;
+      const options = first ? CREATE : UPDATE;
+      first = false;
       // A store whose set() throws instead of rejecting would otherwise
       // throw out of a microtask — the process, not the session.
       let saved;
       try {
-        saved = Promise.resolve(this.store.set(token, state));
+        saved = Promise.resolve(this.store.set(token, state, options));
       } catch (error) {
         saved = Promise.reject(error);
       }
-      saved.catch((error) => {
-        this.#log.error({ err: error, event: 'session.save' });
-      });
+      saved.then(
+        (result) => {
+          if (result !== false || lifecycle.ended) return;
+          lifecycle.ended = true;
+          this.#log.warn({ event: 'session.save', reason: 'gone' });
+        },
+        (error) => {
+          this.#log.error({ err: error, event: 'session.save' });
+        },
+      );
     };
     return (state, now = false) => {
       if (now) return void flush(state);
@@ -283,7 +316,7 @@ class SessionManager {
 
   create(token = this.generateToken(), data = {}) {
     const lifecycle = { ended: false };
-    const save = this.#saver(token, lifecycle);
+    const save = this.#saver(token, lifecycle, true);
     save(data, true); // persist the initial state NOW so restore works immediately
     this.#otel.recordSession('create', 'ok');
     return new Session(token, data, save, lifecycle);
@@ -306,7 +339,7 @@ class SessionManager {
       );
     }
     const lifecycle = { ended: false };
-    return new Session(token, data, this.#saver(token, lifecycle), lifecycle);
+    return new Session(token, data, this.#saver(token, lifecycle, false), lifecycle);
   }
 
   async destroy(token) {

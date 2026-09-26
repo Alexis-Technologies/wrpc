@@ -28,6 +28,8 @@ const { isKeyProvider } = require('./contracts.js');
 const { createLoggerWriter } = require('../logging.js');
 
 const isFunction = (value) => typeof value === 'function';
+const CREATE = Object.freeze({ create: true });
+const UPDATE = Object.freeze({ create: false });
 
 const isRecord = (value) =>
   typeof value === 'object' &&
@@ -91,13 +93,13 @@ const sealedStore = (store, options = {}) => {
   // other kid go too — one row per token, so a fleet mid-rotation (one
   // instance writing under k1, another under k2) converges on the latest
   // write instead of each reading its own kid's stale row.
-  const write = async (token, data, prune) => {
+  const write = async (token, data, prune, create = true) => {
     // seal: false — the first of the three deploys (sessions guide): every
     // instance reads sealed rows already, none writes them yet, so a
     // rollback finds every session where it always was. The token's sealed
     // slots go, best effort: one row per token.
     if (!seal) {
-      await store.set(token, data);
+      if ((await store.set(token, data, create ? CREATE : UPDATE)) === false) return false;
       const slots = sealedKeys(token);
       for (let i = 0; i < slots.length; i++) {
         if (slots[i][1] === null) continue;
@@ -113,8 +115,21 @@ const sealedStore = (store, options = {}) => {
     const key = slot(kid, token);
     if (key === null) throw new Error(`sealedStore: the keyring does not hold its current key ${JSON.stringify(kid)}`);
     const { sealed } = sealer.seal(Buffer.from(JSON.stringify(data)), key);
-    await store.set(key, { v: 1, kid, s: sealed.toString('base64') });
-    if (!prune) return;
+    let options = create ? CREATE : UPDATE;
+    if (!create) {
+      // An update that finds no row under the current kid: the row may
+      // still live under an older kid (or, adopting, in plaintext) — then
+      // this write is its move — or be gone, which is a false to answer.
+      const slots = sealedKeys(token);
+      let found = false;
+      for (let i = 1; i < slots.length && !found; i++) {
+        found = slots[i][1] !== null && (await store.get(slots[i][1])) != null;
+      }
+      if (!found && acceptPlaintext) found = (await store.get(token)) != null;
+      if (found) options = CREATE;
+    }
+    if ((await store.set(key, { v: 1, kid, s: sealed.toString('base64') }, options)) === false) return false;
+    if (!prune) return true;
     const kids = keys.kids;
     if (kids.length < 2) return;
     for (let i = 0; i < kids.length; i++) {
@@ -127,6 +142,8 @@ const sealedStore = (store, options = {}) => {
         log.warn({ err: error, event: 'session.migrate' });
       }
     }
+    if (acceptPlaintext) await store.delete(token);
+    return true;
   };
 
   // The state of one row, or null — a row that does not open is a missing
@@ -202,7 +219,7 @@ const sealedStore = (store, options = {}) => {
     // Async on purpose: a keyring without its current key throws in write()
     // before the store is reached, and a SessionStore's set() answers a
     // rejection, never a throw — the session manager's flush counts on it.
-    set: async (token, data) => write(token, data, true),
+    set: async (token, data, options) => write(token, data, true, options?.create !== false),
     async delete(token) {
       const slots = sealedKeys(token);
       for (let i = 0; i < slots.length; i++) if (slots[i][1] !== null) await store.delete(slots[i][1]);

@@ -452,3 +452,38 @@ test('SessionManager: state writes in one turn coalesce into one store.set, and 
   await settle();
   assert.strictEqual(store.sets.length, 2);
 });
+
+test('SessionManager: a write after a logout elsewhere does not resurrect the session — the memory store answers false', async () => {
+  const warned = [];
+  const logger = {
+    log() {},
+    info() {},
+    debug() {},
+    error() {},
+    warn: (entry) => warned.push(entry),
+    child: () => logger,
+  };
+  const store = new MemorySessionStore();
+  const first = new SessionManager({ store }, logger);
+  const second = new SessionManager({ store }, logger);
+  first.create('tok', { userId: 1 });
+  const restored = await second.restore('tok');
+  // A logout lands on the first connection; the second, still holding the
+  // session, writes to it afterwards. The write used to be an unconditional
+  // set that brought the row back, token and all.
+  await first.destroy('tok');
+  restored.state.role = 'admin';
+  await settle();
+  assert.strictEqual(await store.get('tok'), null, 'not resurrected');
+  assert.strictEqual(restored.ended, true, 'the session that lost its row ended');
+  assert.ok(warned.some((entry) => entry.event === 'session.save' && entry.reason === 'gone'));
+  // And nothing more is written for it.
+  restored.state.again = true;
+  await settle();
+  assert.strictEqual(await store.get('tok'), null);
+  // The store's own contract: an update of a missing or expired row is false.
+  assert.strictEqual(await store.set('fresh', { a: 1 }), true);
+  assert.strictEqual(await store.set('fresh', { a: 2 }, { create: false }), true);
+  assert.strictEqual(await store.set('gone', { a: 1 }, { create: false }), false);
+  assert.strictEqual(await store.get('gone'), null);
+});

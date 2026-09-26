@@ -1892,6 +1892,17 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **A session finalized on one connection or instance is not resurrected
+  by a write on another.** A handler still holding the session — on the
+  connection that was not the one signing out, or on another instance —
+  wrote its state with an unconditional `store.set`, which brought the
+  deleted row back, token and all. Every write after the one that creates
+  the row is now `set(token, state, { create: false })`; the memory store,
+  the Redis store (`SET … XX`) and `sealedStore` answer `false` for a row
+  that is gone, and the session ends there (`session.save`,
+  `reason: 'gone'`). `sealedStore` treats a row still under an older kid
+  — or, adopting, in plaintext — as the row to move. The `SessionStore`
+  contract gained the option; a store that ignores it writes as before.
 - **`sealedStore`: a sealed record under the raw token is refused, and a
   fleet mid-rotation keeps one row per token.** With `acceptPlaintext` on,
   the raw token is a row name the store still answers to, and a sealed

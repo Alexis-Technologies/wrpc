@@ -22,8 +22,10 @@ class FakeRedis {
     return this.entries.get(key) ?? null;
   }
 
-  async set(key, value) {
+  async set(key, value, ...args) {
     this.commands.push(['set', key]);
+    if (args.includes('XX') && !this.entries.has(key)) return null;
+    if (args.includes('NX') && this.entries.has(key)) return null;
     this.entries.set(key, value);
     return 'OK';
   }
@@ -449,4 +451,36 @@ test('sealedStore: seal: false is the first deploy — reads sealed rows where t
   assert.ok(redis.commands.slice(touched).some(([command, key]) => command === 'pexpire' && key !== undefined));
   await first.delete(TOKEN);
   assert.strictEqual(redis.entries.size, 0);
+});
+
+test('sealedStore: a write after a logout elsewhere does not resurrect the session; a row under an older kid is moved by it', async () => {
+  const redis = new FakeRedis();
+  const [k1, k2] = [generateKey(), generateKey()];
+  const keys = { current: 'k2', ring: { k1, k2 } };
+  const first = new SessionManager({ store: sealedStore(redisStore(redis), { keys, logger: false }) }, false);
+  const second = new SessionManager({ store: sealedStore(redisStore(redis), { keys, logger: false }) }, false);
+  first.create('tok', { userId: 7 });
+  const restored = await second.restore('tok');
+  await first.destroy('tok');
+  restored.state.role = 'admin';
+  await settle();
+  assert.strictEqual(await first.restore('tok'), null, 'not resurrected');
+  assert.strictEqual(restored.ended, true);
+  assert.strictEqual(redis.entries.size, 0);
+  // A row still under the older kid: an update finds it there and moves it.
+  const older = sealedStore(redisStore(redis), { keys: { current: 'k1', ring: { k1 } }, logger: false });
+  await older.set('rotating', STATE);
+  const current = sealedStore(redisStore(redis), { keys, logger: false });
+  assert.strictEqual(await current.set('rotating', { ...STATE, n: 2 }, { create: false }), true);
+  assert.strictEqual(redis.entries.size, 1, 'one row, under the current kid');
+  assert.deepStrictEqual(await current.get('rotating'), { ...STATE, n: 2 });
+  assert.strictEqual(await current.set('nobody', STATE, { create: false }), false);
+  assert.strictEqual(redis.entries.size, 1);
+  // Adopting: a plaintext row is what an update moves, too.
+  const plain = redisStore(redis);
+  await plain.set('legacy', STATE);
+  const adopting = sealedStore(redisStore(redis), { keys, acceptPlaintext: true, logger: false });
+  assert.strictEqual(await adopting.set('legacy', { ...STATE, n: 3 }, { create: false }), true);
+  assert.ok(!redis.dump().includes('legacy'), 'sealed and the plaintext gone');
+  assert.deepStrictEqual(await adopting.get('legacy'), { ...STATE, n: 3 });
 });

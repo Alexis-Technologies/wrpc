@@ -22,6 +22,9 @@ class FakeRedis {
 
   async set(key, value, ...args) {
     this.commands.push(['set', key, value, ...args]);
+    // SET's conditions, as Redis answers them: null when they do not hold.
+    if (args.includes('XX') && !this.entries.has(key)) return null;
+    if (args.includes('NX') && this.entries.has(key)) return null;
     const ttl = args[0] === 'PX' ? args[1] : null;
     this.entries.set(key, { value, ttl });
     return 'OK';
@@ -92,4 +95,25 @@ test('createRedisSessionStore: plugs into SessionManager and survives an "instan
   assert.deepStrictEqual({ ...restored.state }, { userId: 42, role: 'admin' });
   await second.destroy('tok');
   assert.strictEqual(await first.restore('tok'), null);
+});
+
+test('createRedisSessionStore: a write after a logout on another instance does not resurrect the session (SET … XX)', async () => {
+  const redis = new FakeRedis();
+  const first = new SessionManager({ store: createRedisSessionStore({ client: redis }) }, false);
+  const second = new SessionManager({ store: createRedisSessionStore({ client: redis }) }, false);
+  first.create('tok', { userId: 42 });
+  const restored = await second.restore('tok');
+  await first.destroy('tok');
+  restored.state.role = 'admin';
+  await settle();
+  assert.strictEqual(await first.restore('tok'), null, 'not resurrected');
+  assert.strictEqual(restored.ended, true);
+  // The update went out with XX; the creating write without it.
+  const sets = redis.commands.filter(([command]) => command === 'set');
+  assert.ok(!sets[0].includes('XX'), 'the creating write');
+  assert.ok(sets.at(-1).includes('XX'), 'the update');
+  const store = createRedisSessionStore({ client: redis });
+  assert.strictEqual(await store.set('gone', { a: 1 }, { create: false }), false);
+  assert.strictEqual(await store.set('new', { a: 1 }), true);
+  assert.strictEqual(await store.set('new', { a: 2 }, { create: false }), true);
 });
