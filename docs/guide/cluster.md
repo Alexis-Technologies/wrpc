@@ -109,6 +109,18 @@ message is dropped and logged (`cluster.unsigned` / `cluster.badsig`).
 Room *events* travel on separate channels and are not signed — the secret
 guards the command surface, the broker ACL guards the rest.
 
+Be precise about what the signature buys. It says a command **was written
+by a node holding the secret** — nothing more. A party that can read the
+backplane and write to it (a compromised broker, a client with a wider
+ACL than intended) can still **replay** a signed envelope later — a
+`disconnect` again, a `join` again — or **transplant** one from the
+channel it was published on to another; the MAC covers the envelope's
+bytes, not when or where they were seen. Where the backplane itself is in
+the threat model, `cluster: { encryption }` closes both: a sealed
+envelope carries a per-sender counter under a sliding replay window and is
+bound to its channel, so a copy does not open twice and does not open
+elsewhere — see [Encryption](./encryption#backplane).
+
 ### Health
 
 `cluster.healthy` (and the aggregate `server.rpc.healthy`) is `false` while

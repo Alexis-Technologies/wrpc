@@ -1913,6 +1913,14 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **Docs: what `cluster.secret` does and does not stop.** The cluster guide
+  said the HMAC guards the command surface; it guards the *authorship* of a
+  command. A signed envelope can be replayed, or moved from the channel it
+  was published on to another, by anything that can write to the backplane
+  — the MAC covers the bytes, not when or where they were seen. The guide
+  and the scaling page now say so, and name `cluster.encryption` as what
+  closes both (a per-sender counter under a replay window, and a
+  channel-bound AAD).
 - **A refusal is one log line, at the level the refusal deserves, with the
   peer's strings clipped.** Every error answer the server sent also wrote
   `rpc.error` at `error`, so the 429 and oversize-batch refusals the
