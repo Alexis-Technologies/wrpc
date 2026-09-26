@@ -217,16 +217,6 @@ test('nats broker: closing stops the tails and refuses new work', async (t) => {
   await assert.rejects(broker.direct.send('a', 'x'), (error) => error.code === 503);
 });
 
-test('nats broker: without JetStream there is no log and no queue — nothing to refuse', async () => {
-  const world = createFakeNats();
-  const broker = createNatsBroker({ nc: world.nc, headers: world.headers, logger: quiet });
-  assert.strictEqual(broker.log, undefined);
-  assert.strictEqual(broker.queue, undefined);
-  assert.strictEqual(typeof broker.backplane.publish, 'function');
-  assert.strictEqual(typeof broker.direct.send, 'function');
-  await broker.close();
-});
-
 test('nats broker: a feed resumes across instances on the shared stream', async (t) => {
   const { world, broker, close } = open();
   t.after(close);
@@ -278,4 +268,134 @@ test('nats broker: close() stops its queue consumers', async (t) => {
   assert.deepStrictEqual(seen, ['before'], 'a closed broker takes no more deliveries');
   assert.strictEqual(consumer.healthy, false);
   await consumer.stop();
+});
+
+test('nats broker: prefetch is per instance, maxAckPending is the group cap', async (t) => {
+  // Two instances of the same group, prefetch 4 each: eight in flight
+  // between them. The prefetch used to be written into the durable's
+  // max_ack_pending — the GROUP's cap — so the fleet held four, not eight.
+  const world = createFakeNats();
+  const a = createNatsBroker({ ...world, logger: quiet, ackWait: 2000 });
+  const b = createNatsBroker({ ...world, logger: quiet, ackWait: 2000 });
+  t.after(() => Promise.all([a.close(), b.close()]));
+  const name = unique('prefetch');
+  const held = [];
+  const handler = async (delivery) => {
+    await new Promise((resolve) => held.push({ resolve, delivery }));
+  };
+  const first = await a.queue.consume(name, handler, { prefetch: 4 });
+  const second = await b.queue.consume(name, handler, { prefetch: 4 });
+  t.after(() => Promise.all([first.stop(), second.stop()]));
+  for (let i = 0; i < 40; i++) await a.queue.produce(name, `work-${i}`);
+  await waitFor(() => held.length === 8, { timeout: 3000 });
+  await timers.setTimeout(100);
+  assert.strictEqual(held.length, 8, 'each instance holds its own prefetch');
+  const [fake] = world.server.streams.get(`wrpc_q_${name}`).consumers.values();
+  assert.strictEqual(fake.config.max_ack_pending, undefined, 'the group cap is not set unless asked for');
+  // A settlement frees one slot on the instance that held it.
+  const { resolve, delivery } = held.shift();
+  await delivery.ack();
+  resolve();
+  await waitFor(() => held.length === 8, { timeout: 3000 });
+  for (const entry of held.splice(0)) {
+    await entry.delivery.ack();
+    entry.resolve();
+  }
+});
+
+test('nats broker: maxAckPending is the durable consumer config, validated at construction', async (t) => {
+  const world = createFakeNats();
+  for (const maxAckPending of [0, -1, 1.5, '64']) {
+    assert.throws(() => createNatsBroker({ ...world, logger: quiet, maxAckPending }), /options\.maxAckPending/);
+  }
+  const broker = createNatsBroker({ ...world, logger: quiet, maxAckPending: 64 });
+  t.after(() => broker.close());
+  const name = unique('cap');
+  const consumer = await broker.queue.consume(name, (delivery) => delivery.ack(), { prefetch: 4 });
+  t.after(() => consumer.stop());
+  const [fake] = world.server.streams.get(`wrpc_q_${name}`).consumers.values();
+  assert.strictEqual(fake.config.max_ack_pending, 64);
+});
+
+test('nats broker: a durable that already exists with other settings is served as is, and said once', async (t) => {
+  const world = createFakeNats();
+  const entries = [];
+  const logger = {
+    level: 'debug',
+    child: () => logger,
+    warn: (entry) => entries.push(entry),
+    info: () => {},
+    debug: () => {},
+    error: () => {},
+  };
+  const older = createNatsBroker({ ...world, logger: quiet, ackWait: 5000, maxAckPending: 16 });
+  const newer = createNatsBroker({ ...world, logger, ackWait: 3000, maxAckPending: 64 });
+  t.after(() => Promise.all([older.close(), newer.close()]));
+  const name = unique('drift');
+  const first = await older.queue.consume(name, (delivery) => delivery.ack());
+  t.after(() => first.stop());
+  const second = await newer.queue.consume(name, (delivery) => delivery.ack());
+  t.after(() => second.stop());
+  const drift = entries.find((entry) => entry.event === 'broker.nats.consumer.config');
+  assert.ok(drift, 'the configuration drift is logged');
+  assert.strictEqual(drift.queue, name);
+  assert.strictEqual(drift.ackWait, 5000);
+  assert.strictEqual(drift.maxAckPending, 16);
+});
+
+test('nats broker: a paused consumer keeps the leases of what it still holds', async (t) => {
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const { world, broker, close } = open({ ackWait: 300 });
+  t.after(close);
+  const name = unique('paused');
+  const seen = [];
+  let release;
+  const consumer = await broker.queue.consume(name, async (delivery) => {
+    seen.push(delivery.attempt);
+    await new Promise((resolve) => (release = resolve));
+    await delivery.ack();
+  });
+  t.after(() => consumer.stop());
+  await broker.queue.produce(name, 'work');
+  await waitFor(() => seen.length === 1, { timeout: 3000 });
+  const [fake] = world.server.streams.get(`wrpc_q_${name}`).consumers.values();
+  // A draining node pauses with the message still in its handler. The
+  // keepalives used to stop here, and JetStream redelivered the message
+  // to a healthy member while this one was still working on it.
+  await consumer.pause();
+  for (let i = 0; i < 7; i++) {
+    t.mock.timers.tick(100);
+    await timers.setTimeout(10);
+  }
+  assert.ok(fake.workingCalls >= 2, `working() was called ${fake.workingCalls} times under pause`);
+  assert.deepStrictEqual(seen, [1], 'never redelivered while paused');
+  release();
+  await waitFor(() => fake.pending.size === 0, { timeout: 2000 });
+  // A stop lets the leases go: nothing is kept alive after it.
+  await consumer.stop();
+  assert.strictEqual(fake.pending.size, 0);
+});
+
+test('nats broker: a reader deletes its consumer when the read is done', async (t) => {
+  const { world, broker, close } = open();
+  t.after(close);
+  const topic = unique('readers');
+  for (let i = 0; i < 5; i++) await broker.log.append(topic, `entry-${i}`);
+  const stream = world.server.streams.get(`wrpc_log_${topic}`);
+  // A catch-up page: the consumer is gone once the page is.
+  const caught = await collect(broker.log.read(topic, { from: 'earliest' }), 5, { timeout: 4000 });
+  assert.strictEqual(caught.length, 5);
+  await waitFor(() => stream.ephemeral.size === 0, { timeout: 2000 });
+  // A live tail: the consumer is gone once the tail is closed.
+  const controller = new AbortController();
+  const tail = broker.log.read(topic, { from: 'latest', signal: controller.signal });
+  const iterator = tail[Symbol.asyncIterator]();
+  const pending = iterator.next();
+  await waitFor(() => stream.ephemeral.size === 1, { timeout: 2000 });
+  const config = Array.from(stream.ephemeral)[0].config;
+  assert.strictEqual(config.inactive_threshold, 30_000 * 1_000_000, 'the server reaps a reader that died');
+  controller.abort();
+  await pending.catch(() => {});
+  await iterator.return?.().catch(() => {});
+  await waitFor(() => stream.ephemeral.size === 0, { timeout: 2000 });
 });

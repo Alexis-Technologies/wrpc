@@ -43,6 +43,9 @@ const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_PREFETCH = 16;
 const DEFAULT_ACK_WAIT = 30_000;
 const DEFAULT_FETCH_EXPIRES = 2_000;
+// A reader's ephemeral consumer is reaped by the server this long after its
+// last activity — the backstop for a process that died mid-read.
+const EPHEMERAL_INACTIVE_MS = 30_000;
 const SEQUENCE = /^\d{1,19}$/;
 
 const ATTEMPT_HEADER = 'x-wrpc-attempt';
@@ -70,6 +73,7 @@ const createNatsBroker = (options = {}) => {
     prefix = DEFAULT_PREFIX,
     logger = globalThis.console,
     ackWait = DEFAULT_ACK_WAIT,
+    maxAckPending = null,
     stream: streamConfig = {},
     generateId = null,
   } = options;
@@ -93,6 +97,14 @@ const createNatsBroker = (options = {}) => {
   // consumer the server refuses at the first consume(), not here.
   if (!positiveInteger(ackWait)) {
     throw new TypeError('createNatsBroker: options.ackWait must be a positive integer of milliseconds');
+  }
+  // The GROUP's cap on unacked messages, set on the durable consumer every
+  // member of the group shares; null leaves JetStream's own default. It
+  // used to be each consume()'s prefetch — the last consumer to bind set
+  // it for the whole group, and a fleet of four with prefetch 16 held 16
+  // between them, not 64.
+  if (maxAckPending !== null && !positiveInteger(maxAckPending)) {
+    throw new TypeError('createNatsBroker: options.maxAckPending must be a positive integer or null');
   }
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'nats' });
   const report = (event, error, extra = {}) => log.error({ err: error, event, ...extra });
@@ -223,17 +235,41 @@ const createNatsBroker = (options = {}) => {
     headers: decodeHeaders(message.headers),
   });
 
+  // A reader's consumer is the reader's: deleted when the page or the tail
+  // is done, and — should the process die first — reaped by the server
+  // after `inactive_threshold`. They used to be left behind, one per page
+  // of catch-up and one per tail, until the server's own default reaping.
+  const ephemeral = (config) => ({
+    ...config,
+    deliver_policy: 'by_start_sequence',
+    inactive_threshold: EPHEMERAL_INACTIVE_MS * MILLIS,
+  });
+  const discard = async (consumer) => {
+    if (!isFunction(consumer?.delete)) return;
+    try {
+      await consumer.delete();
+    } catch {
+      // Already gone (the server reaped it), or the connection is closing.
+    }
+  };
+
   const tails = new TopicTails({
     live: async (topic, { signal, onEntry, onEnd }) => {
       const { js: stream } = await managers();
       const { name } = await streamState(topic);
       const state = await streamState(topic);
-      const consumer = await stream.consumers.get(name, {
-        opt_start_seq: state.last + 1,
-        deliver_policy: 'by_start_sequence',
-      });
+      const consumer = await stream.consumers.get(name, ephemeral({ opt_start_seq: state.last + 1 }));
       const messages = await consumer.consume({ max_messages: 256 });
-      signal.addEventListener('abort', () => void messages.close().catch(() => {}), { once: true });
+      signal.addEventListener(
+        'abort',
+        () => {
+          void messages
+            .close()
+            .catch(() => {})
+            .then(() => discard(consumer));
+        },
+        { once: true },
+      );
       void (async () => {
         let failure = null;
         try {
@@ -261,19 +297,20 @@ const createNatsBroker = (options = {}) => {
       const { name, last } = await streamState(topic);
       const start = (after ?? 0) + 1;
       if (start > last) return { entries: [], done: true };
-      const consumer = await stream.consumers.get(name, {
-        opt_start_seq: start,
-        deliver_policy: 'by_start_sequence',
-      });
-      const batch = await consumer.fetch({ max_messages: limit, expires: DEFAULT_FETCH_EXPIRES });
+      const consumer = await stream.consumers.get(name, ephemeral({ opt_start_seq: start }));
       const entries = [];
       let seq = start - 1;
-      for await (const message of batch) {
-        message.ack();
-        const entry = entryOf(message);
-        entries.push(entry);
-        seq = entry.seq;
-        if (entries.length >= limit || seq >= last) break;
+      try {
+        const batch = await consumer.fetch({ max_messages: limit, expires: DEFAULT_FETCH_EXPIRES });
+        for await (const message of batch) {
+          message.ack();
+          const entry = entryOf(message);
+          entries.push(entry);
+          seq = entry.seq;
+          if (entries.length >= limit || seq >= last) break;
+        }
+      } finally {
+        await discard(consumer);
       }
       return { entries, done: seq >= last };
     },
@@ -388,25 +425,53 @@ const createNatsBroker = (options = {}) => {
     const { name: streamId, subject, config } = queueStream(name);
     await ensureStream(streamId, subject, config);
     const durable = token(group);
+    const wanted = { durable_name: durable, ack_policy: 'explicit', ack_wait: ackWait * MILLIS };
+    if (maxAckPending !== null) wanted.max_ack_pending = maxAckPending;
     try {
-      await manager.consumers.add(streamId, {
-        durable_name: durable,
-        ack_policy: 'explicit',
-        ack_wait: ackWait * MILLIS,
-        // JetStream itself caps what this consumer holds unacked, which is
-        // exactly the prefetch the contract promises.
-        max_ack_pending: prefetch,
-      });
+      await manager.consumers.add(streamId, wanted);
     } catch (error) {
       if (!/already exists|in use/i.test(String(error?.message))) throw error;
+      // The durable was created earlier — by another instance, or by an
+      // older build that set max_ack_pending to its prefetch — and keeps
+      // that configuration until someone updates it: said once, since a
+      // group capped at 16 by a consumer long gone is a puzzle otherwise.
+      if (isFunction(manager.consumers?.info)) {
+        try {
+          const { config: actual = {} } = await manager.consumers.info(streamId, durable);
+          const drift = {};
+          if (actual.ack_wait !== undefined && actual.ack_wait !== wanted.ack_wait) {
+            drift.ackWait = actual.ack_wait / MILLIS;
+          }
+          if (wanted.max_ack_pending !== undefined && actual.max_ack_pending !== wanted.max_ack_pending) {
+            drift.maxAckPending = actual.max_ack_pending;
+          }
+          if (Object.keys(drift).length > 0) {
+            log.warn({ event: 'broker.nats.consumer.config', queue: name, durable, ...drift });
+          }
+        } catch (infoError) {
+          log.debug({ event: 'broker.nats.consumer.info', err: infoError, queue: name });
+        }
+      }
     }
     const consumer = await stream.consumers.get(streamId, durable);
-    // seq -> the `working()` keepalive of a delivery still in flight. A
-    // consumer that stops must let its leases expire, or the messages it
-    // held would never be redelivered to anyone.
-    const state = { running: true, paused: false, healthy: true, messages: null, keepalives: new Map() };
+    // `keepalives`: seq -> the `working()` keepalive of a delivery still in
+    // flight. A consumer that STOPS must let its leases expire, or the
+    // messages it held would never be redelivered to anyone; a PAUSED one
+    // keeps them (see `halt`).
+    // `inflight`/`wake`: the prefetch is THIS consumer's, counted here —
+    // the durable's max_ack_pending is the group's, shared by every member.
+    const state = {
+      running: true,
+      paused: false,
+      healthy: true,
+      messages: null,
+      keepalives: new Map(),
+      inflight: 0,
+      wake: null,
+    };
 
     const dispatch = (message) => {
+      state.inflight++;
       const headers = decodeHeaders(message.headers);
       const base = Number(headers[ATTEMPT_HEADER] ?? '0');
       const deliveries = Number(message.info?.deliveryCount ?? 1);
@@ -440,6 +505,11 @@ const createNatsBroker = (options = {}) => {
           await work();
         } catch (error) {
           report('broker.nats.settle', error, { queue: name });
+        } finally {
+          state.inflight--;
+          const wake = state.wake;
+          state.wake = null;
+          wake?.();
         }
       };
       const republish = async (extra) => {
@@ -502,6 +572,15 @@ const createNatsBroker = (options = {}) => {
           state.messages = messages;
           state.healthy = true;
           for await (const message of messages) {
+            // At capacity: the pull waits for a settlement before it takes
+            // the next message — the local prefetch, whatever the group's
+            // cap is (JetStream redelivers what waits past ack_wait, so a
+            // message held here unacked is not a message lost).
+            while (state.inflight >= prefetch && state.running && !state.paused) {
+              await new Promise((resolve) => {
+                state.wake = resolve;
+              });
+            }
             if (!state.running || state.paused) break;
             dispatch(message);
           }
@@ -515,18 +594,28 @@ const createNatsBroker = (options = {}) => {
     };
     void pump();
 
-    const halt = async () => {
+    // `leases`: whether the keepalives of in-flight deliveries stop too.
+    // A PAUSE keeps them — a draining node holds its messages until they
+    // settle, and used to let their leases lapse, so JetStream redelivered
+    // them to a healthy member while this one was still working on them.
+    // A STOP lets them go: the messages are meant to be handed back.
+    const halt = async ({ leases }) => {
       const messages = state.messages;
       state.messages = null;
-      for (const keepalive of state.keepalives.values()) clearInterval(keepalive);
-      state.keepalives.clear();
+      if (leases) {
+        for (const keepalive of state.keepalives.values()) clearInterval(keepalive);
+        state.keepalives.clear();
+      }
+      const wake = state.wake;
+      state.wake = null;
+      wake?.();
       if (messages) await messages.close().catch(() => {});
     };
     const stop = async () => {
       if (!state.running) return;
       state.running = false;
       consumers.delete(stop);
-      await halt();
+      await halt({ leases: true });
     };
     consumers.add(stop);
     if (signal) signal.addEventListener('abort', () => void stop(), { once: true });
@@ -534,7 +623,7 @@ const createNatsBroker = (options = {}) => {
       stop,
       pause: async () => {
         state.paused = true;
-        await halt();
+        await halt({ leases: false });
       },
       resume: async () => {
         if (!state.paused) return;

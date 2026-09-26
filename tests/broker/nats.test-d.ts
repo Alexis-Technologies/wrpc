@@ -16,3 +16,7 @@ expectAssignable<Broker>(nats.createNatsBroker({ nc, headers, logger: false }));
 expectAssignable<NatsBrokerOptions>({ nc, headers, stream: { queue: { storage: 'memory' } } });
 expectError(nats.createNatsBroker({ headers }));
 expectError(nats.createNatsBroker({ nc, headers, ackWait: 'soon' }));
+// The group's cap is a broker option; null leaves JetStream's default.
+expectAssignable<NatsBrokerOptions>({ nc, headers, maxAckPending: 64 });
+expectAssignable<NatsBrokerOptions>({ nc, headers, maxAckPending: null });
+expectError(nats.createNatsBroker({ nc, headers, maxAckPending: '64' }));

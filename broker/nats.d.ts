@@ -44,6 +44,14 @@ export interface NatsBrokerOptions {
   logger?: WrpcLogger | boolean;
   /** JetStream ack_wait for queue consumers, in ms. Default 30 000. */
   ackWait?: number;
+  /**
+   * `max_ack_pending` of a queue's durable consumer: the GROUP's cap on
+   * unacked messages, shared by every instance of the group. A consume
+   * binding's `prefetch` is each instance's own. Default: not set, so
+   * JetStream's own default applies. A durable that already exists keeps
+   * the value it was created with (logged `broker.nats.consumer.config`).
+   */
+  maxAckPending?: number | null;
   /** Extra stream configuration, merged into what the adapter creates. */
   stream?: { log?: Record<string, unknown>; queue?: Record<string, unknown> };
 }

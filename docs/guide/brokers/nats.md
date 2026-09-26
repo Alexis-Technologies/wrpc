@@ -28,6 +28,7 @@ else works unchanged.
 | `createInbox` | a uuid subject | The `createInbox()` export |
 | `prefix` | `'wrpc'` | Subject and stream-name namespace |
 | `ackWait` | `30000` | JetStream ack window for queue consumers (ms) |
+| `maxAckPending` | JetStream's default | `max_ack_pending` of a queue's durable consumer: the **group's** cap on unacked messages, shared by every instance. `prefetch` is each instance's own |
 | `stream` | `{}` | Extra stream config, e.g. `{ queue: { storage: 'memory' } }` |
 
 ## What maps to what
@@ -36,7 +37,7 @@ else works unchanged.
 | --- | --- |
 | `backplane` | core subjects: `PUB`/`SUB`, at-most-once, no persistence |
 | `log` | one JetStream stream per topic; the message **sequence** is the feed's resume token |
-| `queue` | a work-queue stream with one durable pull consumer per group; `max_ack_pending` is the prefetch |
+| `queue` | a work-queue stream with one durable pull consumer per group; `prefetch` is counted per instance, `maxAckPending` caps the group |
 | `direct` | core subjects: plain subscriptions for inboxes, **queue groups** for a service address, native reply subjects |
 
 ## Names become one subject token
@@ -68,9 +69,19 @@ illegal in one).
   with its attempt carried in a header and terminates the original. `retry()`
   is the cheap path — a plain `nak(delay)`.
 - **A slow handler keeps its lease.** While a delivery is in flight the
-  adapter calls `working()` every `ackWait / 2`, and it stops the moment the
-  consumer does — so a consumer that stops hands its messages back after
-  `ackWait` rather than holding them forever.
+  adapter calls `working()` every third of `ackWait`, and it stops the moment
+  the consumer **stops** — so a consumer that stops hands its messages back
+  after `ackWait` rather than holding them forever. A **paused** consumer (a
+  draining node) keeps the leases of what it still holds until those
+  settle.
+- **A durable consumer keeps the configuration it was created with.** The
+  group's `max_ack_pending` and `ack_wait` are set when the first instance
+  creates the durable; an instance that binds later with other values is
+  served with the old ones and logs `broker.nats.consumer.config` once —
+  update the consumer (`nats consumer edit`) to change them.
+- **A reader's consumer is deleted when the read is done** — a catch-up page's
+  after the page, a live tail's when the tail stops — and reaped by the server
+  30 seconds after a reader that died without saying so.
 - **Core NATS never queues.** A `direct.send` to an address nobody listens on
   is dropped by the server, as core NATS always does: the caller learns from
   its own timeout rather than a `503`.

@@ -120,6 +120,8 @@ class FakeStream {
   // The consume() iterables open on this stream: what a test closes to
   // end a live tail the way the server would.
   live = new Set();
+  // Ephemeral consumers alive on this stream: what a reader leaks as.
+  ephemeral = new Set();
   lastSeq = 0;
 
   constructor(config) {
@@ -169,6 +171,14 @@ class FakeConsumer {
     const waiters = Array.from(this.#waiters);
     this.#waiters.clear();
     for (const resolve of waiters) resolve();
+  }
+
+  /** The reader is done with this consumer, as `consumer.delete()` on the real client. */
+  async delete() {
+    this.stream.ephemeral.delete(this);
+    for (const held of this.pending.values()) clearTimeout(held.timer);
+    this.pending.clear();
+    return true;
   }
 
   wait(ms) {
@@ -334,8 +344,11 @@ const createFakeNats = () => {
           if (!consumer) throw new Error(`consumer not found: ${durableOrConfig}`);
           return consumer;
         }
-        // An ephemeral consumer, as the log tail and its catch-up use.
-        return new FakeConsumer(stream, durableOrConfig ?? {});
+        // An ephemeral consumer, as the log tail and its catch-up use —
+        // tracked, so a test can see what a read left behind.
+        const consumer = new FakeConsumer(stream, durableOrConfig ?? {});
+        stream.ephemeral.add(consumer);
+        return consumer;
       },
     },
   });
@@ -375,6 +388,12 @@ const createFakeNats = () => {
         if (stream.consumers.has(config.durable_name)) throw new Error('consumer already exists');
         stream.consumers.set(config.durable_name, new FakeConsumer(stream, config));
         return { config };
+      },
+      // What the durable was created with — it keeps that until updated.
+      info: async (name, durable) => {
+        const consumer = server.streams.get(name)?.consumers.get(durable);
+        if (!consumer) throw new Error(`consumer not found: ${durable}`);
+        return { config: { ...consumer.config } };
       },
     },
   });

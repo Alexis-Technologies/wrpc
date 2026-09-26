@@ -1352,6 +1352,23 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **NATS queues: `prefetch` is each instance's, the group's cap is
+  `maxAckPending`; a pause keeps its leases; readers delete their
+  consumers.** `prefetch` was written into the durable consumer's
+  `max_ack_pending` — the cap on unacked messages for the WHOLE group —
+  so a fleet of four with `prefetch: 16` held 16 between them, not 64, and
+  the last instance to bind set it for all. The prefetch is now counted
+  per instance (a pull waits for a settlement at capacity), and the new
+  broker option `maxAckPending` sets the group's cap (JetStream's default
+  otherwise); a durable that already exists with other values is served
+  with those and logged `broker.nats.consumer.config` once. `pause()`
+  used to clear the keepalives of the messages it still held, so
+  JetStream redelivered them to another member while a draining node was
+  still working on them — a pause keeps its leases now, a stop lets them
+  go. A feed's readers left their ephemeral consumers on the server (one
+  per catch-up page, one per tail) until its default reaping; they are
+  deleted when the read is done, with a 30-second `inactive_threshold` as
+  the backstop for a process that died mid-read.
 - **NATS queues: a short `ackWait` no longer expires under a live
   handler.** The keepalive (`working()`) ran every `ackWait / 2` but never
   more often than once a second, so a window shorter than two seconds
