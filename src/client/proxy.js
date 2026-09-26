@@ -26,6 +26,9 @@ const parsePacket = (data) => {
 class WrpcClientProxy extends Emitter {
   #ports = new Set();
   #pending = new Map();
+  // The ids of the pages' open subscriptions: what a port's release
+  // unsubscribes upstream, where a call is cancelled.
+  #feeds = new Set();
   #connection = null;
   #callTimeout = CALL_TIMEOUT;
   #reconnect = null;
@@ -89,6 +92,28 @@ class WrpcClientProxy extends Emitter {
       proxy: (data, packet) => this.#proxyPacket(data, packet),
     };
     this.#connection = await WrpcClient.connect(url, options);
+    // The ids in flight died with the connection (the client answered
+    // their callers first); a reconnect starts with none.
+    this.#connection.on('close', () => {
+      this.#pending.clear();
+      this.#feeds.clear();
+    });
+  }
+
+  // A page is gone: its port, and everything it was waiting for. What is
+  // still running upstream for it is stopped — its subscriptions
+  // unsubscribed, its calls cancelled — instead of running for the life of
+  // the connection with nobody to hear the answer.
+  #release(port) {
+    if (!this.#ports.delete(port)) return;
+    const connection = this.#connection;
+    const live = connection !== null && connection.active;
+    for (const [id, pending] of this.#pending) {
+      if (pending !== port) continue;
+      this.#pending.delete(id);
+      const feed = this.#feeds.delete(id);
+      if (live) connection.send(feed ? { type: 'unsubscribe', id } : { type: 'cancel', id });
+    }
   }
 
   close() {
@@ -104,6 +129,9 @@ class WrpcClientProxy extends Emitter {
       if (!port) throw new Error('MessagePort not provided');
       this.#ports.add(port);
       port.addEventListener('message', (messageEvent) => {
+        // The page's transport says goodbye before it closes its port: a
+        // MessagePort's own `close` is what older engines never fire.
+        if (messageEvent.data?.type === 'wrpc:close') return void this.#release(port);
         // A failure to forward — nothing to connect to, a packet that is
         // none — answers the caller when there is one, instead of leaving
         // it to its callTimeout, and is never an unhandled rejection.
@@ -112,12 +140,7 @@ class WrpcClientProxy extends Emitter {
       // Best effort: the page half closing fires `close` here in current
       // engines (and in Node), so a closed tab does not pin its port — or
       // the answers it was still waiting for — for the life of the worker.
-      port.addEventListener('close', () => {
-        this.#ports.delete(port);
-        for (const [id, pending] of this.#pending) {
-          if (pending === port) this.#pending.delete(id);
-        }
-      });
+      port.addEventListener('close', () => this.#release(port));
       port.start();
       return;
     }
@@ -141,6 +164,7 @@ class WrpcClientProxy extends Emitter {
       throw new Error('Not connected to server');
     }
     this.#pending.set(packet.id, port);
+    if (packet.type === 'subscribe') this.#feeds.add(packet.id);
     // What the page wrote goes upstream as it is: a frame stays a frame.
     this.#connection.write(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
   }
@@ -165,12 +189,23 @@ class WrpcClientProxy extends Emitter {
     const { type, id, status } = parsed;
     if (type === 'event') return void this.#broadcast(data);
     const port = this.#pending.get(id);
-    if (!port) return void this.#broadcast(data);
+    if (!port) {
+      // A server-opened stream's packets are for whichever page picks
+      // them up (its callback carried the id). Anything else with an id
+      // nobody waits for — the callback of a page that left, the data of
+      // a feed it unsubscribed — is nobody's, and used to go to every page.
+      if (type === 'stream') this.#broadcast(data);
+      return;
+    }
     port.postMessage(data);
     // `end` is a subscription's terminal packet, so it releases its slot the
     // same way a callback does — otherwise every subscription a page opens
     // pins a port reference in the worker for the life of the connection.
-    if (type === 'callback' || type === 'end') return void this.#pending.delete(id);
+    if (type === 'callback' || type === 'end') {
+      this.#pending.delete(id);
+      this.#feeds.delete(id);
+      return;
+    }
     if (type !== 'stream') return;
     const streamDone = status === 'end' || status === 'terminate';
     if (streamDone) this.#pending.delete(id);

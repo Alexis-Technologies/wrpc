@@ -152,9 +152,13 @@ SharedWorker reaches most of the mobile web now (Chrome and Firefox for
 Android, recent Safari on iOS), but Samsung Internet and Opera Mobile still
 don't ship it — feature-detect (`typeof SharedWorker !== 'undefined'`) and
 fall back to a direct connection rather than assuming it. The proxy releases
-a closed tab's port on the `MessagePort` `close` event, which older engines
-never fire — there the entry lives until the worker does, as it always has
-for a Service Worker.
+a closed tab's port on the page transport's goodbye (`close()` on the
+client) and on the `MessagePort` `close` event; a tab that vanishes without
+either, on an engine that never fires the event, keeps its entry until the
+worker goes — as it always has for a Service Worker. A release cancels what
+the tab was still waiting for upstream (its calls, its subscriptions), and
+an answer arriving for a tab that left is dropped, never handed to the
+others; events and server-opened streams still reach every tab.
 :::
 
 The client also listens to `online`/`offline`: going offline stops the

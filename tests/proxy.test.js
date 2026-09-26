@@ -372,19 +372,78 @@ test('WrpcClientProxy', async (t) => {
     ch1.port1.close();
     await closed;
 
+    // The call the closed page was waiting for is cancelled upstream: it
+    // used to run on with nobody to hear the answer.
+    assert.deepStrictEqual(JSON.parse(MockWebSocket.last.sentData.at(-1)), { type: 'cancel', id: 'gone' });
     MockWebSocket.last.dispatchMessage(JSON.stringify({ type: 'event', name: 'unit/name', data: 1 }));
-    // The pending slot is gone with the port, so the answer falls back to a
-    // broadcast — which no longer includes the closed port either.
+    // Its answer, arriving anyway, is nobody's: dropped, not broadcast to
+    // every other page as it used to be. An event still reaches everyone.
     MockWebSocket.last.dispatchMessage(JSON.stringify({ type: 'callback', id: 'gone', result: 0 }));
     await tick();
     assert.deepStrictEqual(
       received.map((r) => r.port),
-      [2, 2],
+      [2],
     );
 
     proxy.close();
     ch2.port1.close();
   });
+
+  await t.test(
+    "a page's subscriptions are unsubscribed on its goodbye; an upstream close forgets every id",
+    async () => {
+      savedSelf = globalThis.self;
+      globalThis.self = createSwEnv();
+      const proxy = new WrpcClientProxy();
+      const ch1 = new MessageChannel();
+      const ch2 = new MessageChannel();
+      globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [ch1.port2] });
+      globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [ch2.port2] });
+      await proxy.open();
+      const received = [];
+      ch1.port1.onmessage = (e) => received.push({ port: 1, data: e.data });
+      ch2.port1.onmessage = (e) => received.push({ port: 2, data: e.data });
+      ch1.port1.start();
+      ch2.port1.start();
+      ch1.port1.postMessage(JSON.stringify({ type: 'subscribe', id: 'feed', method: 'x/ticks', args: {} }));
+      ch1.port1.postMessage(JSON.stringify({ type: 'call', id: 'c1', method: 'x/y', args: {} }));
+      await tick();
+      // The page's transport says goodbye (`wrpc:close`) before closing its
+      // port — what an engine that never fires MessagePort close still hears.
+      ch1.port1.postMessage({ type: 'wrpc:close' });
+      await tick();
+      const sent = MockWebSocket.last.sentData.slice(-2).map((data) => JSON.parse(data));
+      assert.deepStrictEqual(
+        sent.sort((a, b) => a.type.localeCompare(b.type)),
+        [
+          { type: 'cancel', id: 'c1' },
+          { type: 'unsubscribe', id: 'feed' },
+        ],
+      );
+      // Data for the feed arriving late is nobody's.
+      MockWebSocket.last.dispatchMessage(JSON.stringify({ type: 'data', id: 'feed', data: 1 }));
+      await tick();
+      assert.deepStrictEqual(received, []);
+      // Page 2 subscribes; the upstream connection closes: nothing is
+      // remembered for it, and its answer after the reconnect is dropped.
+      ch2.port1.postMessage(JSON.stringify({ type: 'subscribe', id: 'feed2', method: 'x/ticks', args: {} }));
+      await tick();
+      MockWebSocket.last.close();
+      await tick();
+      await tick();
+      MockWebSocket.last.dispatchMessage(JSON.stringify({ type: 'data', id: 'feed2', data: 1 }));
+      await tick();
+      assert.deepStrictEqual(
+        received.filter((r) => r.port === 2 && JSON.parse(r.data).type === 'data'),
+        [],
+      );
+      proxy.close();
+      ch1.port1.close();
+      ch2.port1.close();
+      ch1.port2.close();
+      ch2.port2.close();
+    },
+  );
 
   await t.test('an attachments frame crosses the port both ways, routed by the packet it carries', async () => {
     savedSelf = globalThis.self;

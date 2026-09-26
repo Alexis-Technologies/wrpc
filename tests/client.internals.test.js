@@ -242,6 +242,8 @@ test('WrpcClient.connect with a Service Worker (event transport)', async (t) => 
       const port = transfer[0];
       worker.connects.push(port);
       port.addEventListener('message', ({ data }) => {
+        // The control goodbye (`{ type: 'wrpc:close' }`) is an object; packets are strings.
+        if (typeof data !== 'string') return;
         const packet = JSON.parse(data);
         if (packet.type !== 'call') return;
         port.postMessage(

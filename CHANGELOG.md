@@ -1352,6 +1352,18 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **Worker proxy: an answer for a tab that left is dropped, and a tab's
+  release cancels what it was waiting for upstream.** A `callback`, `data`
+  or `end` whose id no port waited for — the tab closed, or unsubscribed
+  — was broadcast to every other tab (a private answer handed around, and
+  a feed nobody read fanned out); it is dropped now, while events and
+  server-opened streams still reach every tab. A closed tab's calls ran on
+  and its subscriptions kept streaming for the life of the connection:
+  releasing a port sends `cancel` for its calls and `unsubscribe` for its
+  subscriptions. The page transport's `close()` posts a `wrpc:close`
+  goodbye before closing its port, so an engine that never fires the
+  `MessagePort` close event releases the tab too; an upstream close
+  forgets every id (the client answered their callers first).
 - **The connect URL's two declared bags share ONE query budget, as the
   server measures it.** Each bag was capped on its own, so two that fit
   separately — with whatever query the url already carried — were sent

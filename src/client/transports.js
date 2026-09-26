@@ -390,6 +390,13 @@ class ClientEventTransport extends ClientTransport {
     // and must not replace the original error with a TypeError.
     if (!this.active) return;
     this.active = false;
+    // A goodbye first: the worker releases what this page was waiting for
+    // on it, where a MessagePort's own close event may never fire.
+    try {
+      this.#port.postMessage({ type: 'wrpc:close' });
+    } catch {
+      // Already closed.
+    }
     this.#port.close();
     this.#port = null;
     this.emit('close');
