@@ -30,6 +30,12 @@ await uploader.upload();
 console.log(await receiving);
 ```
 
+`upload()` is paced by the transport — a chunk it did not accept waits for
+the stream's `'drain'` — and rejects with a `503` `WrpcError` when the
+connection closes before the last chunk went, instead of resolving with the
+rest gone nowhere; a source that fails mid-way terminates the stream on the
+server, which stops waiting for its end.
+
 ```js
 // server
 receive: procedure({

@@ -463,3 +463,70 @@ test('WrpcClient backpressure passthrough', async (t) => {
     assert.strictEqual(transport.sent.length - before, 2); // stream packet + chunk
   });
 });
+
+test('createBlobUploader: paced by the transport, a 503 on a close mid-way, a terminate on a failing source', async (t) => {
+  // A transport that answers false to every chunk: the uploader must wait
+  // for the stream's 'drain' between chunks — it used to write the whole
+  // blob whatever the answer.
+  class Slow extends FakeTransport {
+    chunks = 0;
+    write(data) {
+      this.sent.push(data);
+      if (typeof data === 'string') return true;
+      this.chunks++;
+      return false;
+    }
+  }
+  const transport = new Slow('fake://x');
+  const client = new WrpcClient('fake://x', transport);
+  await transport.open();
+  // Three chunks from the source, whatever a Blob's own chunking would be.
+  const blob = {
+    name: 'paced',
+    size: 3 * 65536,
+    stream: () =>
+      (async function* () {
+        for (let i = 0; i < 3; i++) yield new Uint8Array(65536).fill(i);
+      })(),
+  };
+  const uploader = client.createBlobUploader(blob);
+  const done = uploader.upload();
+  let settled = false;
+  done.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  await timers.setTimeout(10);
+  assert.strictEqual(transport.chunks, 1, 'one chunk, then a wait for drain');
+  // The writable listens for the TRANSPORT's drain after a false.
+  transport.emit('drain');
+  await timers.setTimeout(10);
+  assert.strictEqual(transport.chunks, 2, 'the next chunk after the drain');
+  assert.strictEqual(settled, false);
+  // The connection closes with a chunk still to go: the upload rejects
+  // 503 like a call would, instead of resolving.
+  transport.close();
+  await assert.rejects(done, (error) => error instanceof WrpcError && error.code === 503);
+  const last = JSON.parse(transport.sent.findLast((data) => typeof data === 'string'));
+  assert.notStrictEqual(last.status, 'end', 'no end packet for a stream that did not finish');
+
+  // A source that fails: the stream is terminated on the server, and the
+  // failure is the caller's.
+  const fresh = new FakeTransport('fake://y');
+  const other = new WrpcClient('fake://y', fresh);
+  await fresh.open();
+  const failing = {
+    name: 'broken',
+    size: 10,
+    stream: () =>
+      (async function* () {
+        yield new Uint8Array(5);
+        throw new Error('disk');
+      })(),
+  };
+  const broken = other.createBlobUploader(failing);
+  await assert.rejects(broken.upload(), /disk/);
+  const packets = fresh.sent.filter((data) => typeof data === 'string').map((data) => JSON.parse(data));
+  assert.deepStrictEqual(packets.at(-1), { type: 'stream', id: broken.id, status: 'terminate' });
+  t.diagnostic('uploader paced and failed as designed');
+});

@@ -1416,9 +1416,21 @@ class WrpcClient extends Emitter {
     const { name = 'blob', size } = blob;
     const consumer = this.createStream(name, size);
     const { id } = consumer;
+    // Paced by the transport — a chunk it did not accept waits for the
+    // stream's 'drain' — and a connection that closes mid-way is the 503 a
+    // call gets, not a resolve with the rest gone nowhere. A source that
+    // fails terminates the stream, so the server stops waiting for its end.
     const upload = async () => {
-      for await (const chunk of blob.stream()) {
-        consumer.write(chunk);
+      try {
+        for await (const chunk of blob.stream()) {
+          if (!consumer.write(chunk) && !consumer.closed) {
+            await new Promise((resolve) => consumer.once('drain', resolve));
+          }
+          if (consumer.closed) throw new WrpcError(CONNECTION_CLOSED_ERROR);
+        }
+      } catch (error) {
+        consumer.terminate();
+        throw error;
       }
       consumer.end();
     };

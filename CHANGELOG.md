@@ -1352,6 +1352,14 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **`createBlobUploader().upload()` honours backpressure, and a connection
+  closing mid-upload is a rejection.** It wrote every chunk of the blob
+  as fast as the source produced them — a 1 GiB file went into the
+  transport's buffer whole, whatever `write()` answered — and resolved
+  even when the connection had closed halfway. A chunk the transport did
+  not accept now waits for the stream's `'drain'`, a close before the last
+  chunk rejects with the `503` `WrpcError` a call gets, and a source that
+  throws terminates the stream so the server stops waiting for its end.
 - **Compression on WebTransport and WebRTC: an inflate is never an
   unhandled rejection, and no more than four run at once.** The
   `Sequencer` that keeps an asynchronous codec's output in order attached
