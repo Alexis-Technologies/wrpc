@@ -572,3 +572,25 @@ test("mesh: three peers with assertions link up and see each other's claims", as
   assert.strictEqual(await link.api.chat.hello(), 'c greets b');
   assert.strictEqual(mc.link('b').client.session.data.claims.seat, 'B');
 });
+
+test("mesh: a join nobody awaits whose roster fetch fails is the peer's error, and the mesh detaches", async (t) => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  const { peer, hub } = world(t);
+  const signaler = hub.signaler('a');
+  signaler.join = async () => {
+    throw new Error('roster down');
+  };
+  const a = peer('a', { signaler });
+  const mesh = a.join('lobby');
+  const left = new Promise((resolve) => mesh.once('left', resolve));
+  await within(left, 'the mesh detached');
+  await timers.setTimeout(10);
+  assert.deepStrictEqual(unhandled, [], 'fire-and-forget join() is not an unhandled rejection');
+  assert.ok(a.errors?.some((error) => /roster down/.test(error.message)));
+  assert.strictEqual(a.mesh('lobby'), undefined);
+  // Awaiting ready() still sees the failure.
+  await assert.rejects(mesh.ready(), /roster down/);
+});

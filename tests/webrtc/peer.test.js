@@ -830,3 +830,53 @@ test("peer: host trust 'assertion' requires assertions; assertions need a signal
   peer.close();
   assert.strictEqual(sdpFingerprint('v=0'), null);
 });
+
+test('peer: connect() while an inbound accept() for the same peer is pending makes one link; the accept opens nothing', async (t) => {
+  const { peer } = world(t);
+  let admit;
+  const gate = new Promise((resolve) => {
+    admit = resolve;
+  });
+  const a = peer('a', { accept: () => gate });
+  const b = peer('b');
+  const links = [];
+  a.on('link', (link) => links.push(link.id));
+  // b knocks a (the higher id knocks): a's accept() is asked, and waits.
+  const fromB = b.connect('a');
+  await timers.setTimeout(20);
+  assert.deepStrictEqual(links, [], 'nothing opened while accept() thinks');
+  // a's own application connects meanwhile: THIS is the link. The accept
+  // answering later used to make a second PeerLink over it.
+  const fromA = a.connect('b');
+  await timers.setTimeout(5);
+  admit(true);
+  const [ab, ba] = await within(Promise.all([fromA, fromB]), 'both connects');
+  assert.deepStrictEqual(links, ['b'], 'one link for b, not one per side of the race');
+  assert.strictEqual(a.links.size, 1);
+  assert.strictEqual(ab, a.link('b'));
+  await ab.load('calc');
+  assert.strictEqual(await ab.api.calc.add({ a: 2, b: 3 }), 5);
+  await ba.load('calc');
+  assert.strictEqual(await ba.api.calc.add({ a: 4, b: 5 }), 9);
+  assert.strictEqual(a.errors, undefined, 'no error escalated');
+});
+
+test('peer: a signal whose handling rejects reaches the error listener, never an unhandled rejection', async (t) => {
+  const unhandled = [];
+  const onUnhandled = (reason) => unhandled.push(reason);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  const { peer, hub } = world(t);
+  const a = peer('a');
+  const b = peer('b');
+  await within(b.connect('a'), 'open');
+  // A link whose receive() rejects: the peer's #receive awaits it.
+  const link = a.link('b');
+  link.receive = () => Promise.reject(new Error('refused by the link'));
+  hub.relay('b', 'a', null, { type: 'candidate', candidate: { candidate: 'x' } });
+  await hub.tick();
+  await hub.tick();
+  await timers.setTimeout(10);
+  assert.deepStrictEqual(unhandled, []);
+  assert.ok(a.errors?.some((error) => /refused by the link/.test(error.message)));
+});

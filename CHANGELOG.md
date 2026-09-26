@@ -1352,6 +1352,22 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **WebRTC peers: one link per peer under a racing `connect()`, and no
+  unhandled rejection from a signal, a join or a dial.** A `connect()`
+  made while an inbound open for the same peer was still in its
+  `accept()` hook got a second `PeerLink` over it when the hook answered
+  — the first leaked, with its client and its half of the signals: the
+  hook's queue is the connecting link's now, and an accept that finds its
+  queue taken opens nothing (`#create` also refuses to make a second link
+  over one that is not closed, logged `rtc.peer.duplicate`). A signal
+  whose handling rejected, a fire-and-forget `peer.join()` whose roster
+  fetch failed, and a redial whose `createPeerConnection()` threw (a
+  browser past its connection cap) were each an unhandled rejection or an
+  uncaught exception from a timer: the first two reach the peer's error
+  listener (the mesh detaches — it never joined), the dial failure is
+  reported and leaves the link failed for the next attempt, and a first
+  dial that cannot be made throws from `start()`/`connect()` with no link
+  kept.
 - **`createBlobUploader().upload()` honours backpressure, and a connection
   closing mid-upload is a rejection.** It wrote every chunk of the blob
   as fast as the source produced them — a 1 GiB file went into the

@@ -504,7 +504,9 @@ class WrpcPeer extends Emitter {
   #meshes = new Map();
   #started = null;
   #closed = false;
-  #onSignal = (event) => void this.#receive(event);
+  // Contained: a signal whose handling rejects (a link refusing a
+  // description) used to be an unhandled rejection.
+  #onSignal = (event) => void this.#receive(event).catch((error) => this.escalate(error));
   #onReset = (event) => void this.#reset(event);
   #onReplaced = (event) => void this.#replaced(event);
 
@@ -661,7 +663,30 @@ class WrpcPeer extends Emitter {
     const existing = this.#links.get(remoteId);
     if (existing && this.#current(existing, instance)) return existing.ready();
     const link = this.#create(remoteId, options.room ?? null, options.data ?? null, instance);
-    link.start({ knock: true });
+    if (link !== existing) {
+      try {
+        link.start({ knock: true });
+      } catch (error) {
+        // A dial that could not be made: no link to keep.
+        link.abandon();
+        throw error;
+      }
+      // An inbound open for the same peer still in its accept(): this link
+      // is the one. What it queued — the peer's knock, its offer, the
+      // candidates — is this link's now, and the accept, when it answers,
+      // finds nothing left to open. A second PeerLink used to be made for
+      // it, over this one, which leaked.
+      const pending = this.#pending.get(remoteId);
+      if (pending) {
+        this.#pending.delete(remoteId);
+        for (const queued of pending) {
+          if (queued.type === 'connect') link.knocked();
+          else if (queued.type === 'candidate' || queued.description?.type === 'offer') {
+            link.receive(queued).catch((error) => this.escalate(error, link));
+          }
+        }
+      }
+    }
     return link.ready();
   }
 
@@ -791,6 +816,13 @@ class WrpcPeer extends Emitter {
   }
 
   #create(remoteId, room, data, instance = null, verified = null) {
+    // A link that is not closed is THE link: a second one over it would
+    // leak the first, and take its peer's signals.
+    const current = this.#links.get(remoteId);
+    if (current !== undefined && current.state !== 'closed') {
+      this.#log.error({ event: 'rtc.peer.duplicate', peer: remoteId, state: current.state });
+      return current;
+    }
     const localId = this.id;
     const relay = (message) => this.signal(remoteId, message, room);
     // With assertions, a description waits for its token — one round trip
@@ -873,6 +905,7 @@ class WrpcPeer extends Emitter {
       try {
         verified = await this.verifyDescription(from, message);
       } catch (error) {
+        if (this.#pending.get(from) !== queue) return;
         this.#pending.delete(from);
         if (this.#closed) return;
         this.#log.warn({ event: 'rtc.peer.refused', peer: from, room, reason: error.code ?? 'assertion', err: error });
@@ -888,6 +921,9 @@ class WrpcPeer extends Emitter {
       accepted = false;
       this.escalate(error);
     }
+    // connect() took this queue over while accept() was pending, or close()
+    // cleared it: nothing is left here to open.
+    if (this.#pending.get(from) !== queue) return;
     this.#pending.delete(from);
     if (this.#closed) return;
     if (accepted !== true) {
@@ -896,7 +932,12 @@ class WrpcPeer extends Emitter {
       return;
     }
     const link = this.#create(from, room ?? null, null, incarnation, verified);
-    link.start();
+    try {
+      link.start();
+    } catch (error) {
+      link.abandon();
+      return void this.escalate(error, link);
+    }
     for (const queued of queue) {
       if (queued.type === 'connect') link.knocked();
       // A stale-incarnation answer or candidate belongs to the link that

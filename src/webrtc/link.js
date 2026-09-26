@@ -287,9 +287,37 @@ class RtcLink extends Emitter {
     this.#opened = null;
     this.#teardownPc();
     if (replaced) replaced.reject(new Error('RtcLink re-dialled'));
-    const pc = this.#adapter.createPeerConnection(this.#configuration);
-    if (!isRtcPeerConnection(pc)) {
-      throw new TypeError('adapter.createPeerConnection() did not return a peer connection');
+    const { initiator, responder, label } = this.#channels;
+    const mine = this.initiator ? initiator : responder;
+    const theirs = this.initiator ? responder : initiator;
+    let pc = null;
+    let clientChannel;
+    let hostChannel;
+    try {
+      pc = this.#adapter.createPeerConnection(this.#configuration);
+      if (!isRtcPeerConnection(pc)) {
+        throw new TypeError('adapter.createPeerConnection() did not return a peer connection');
+      }
+      // Both channels exist before the first offer: the SDP needs an
+      // m=application section, and a negotiated channel is never announced.
+      clientChannel = pc.createDataChannel(label, { negotiated: true, id: mine, ordered: true });
+      hostChannel = pc.createDataChannel(label, { negotiated: true, id: theirs, ordered: true });
+    } catch (error) {
+      // No connection to be had (an adapter out of resources, a browser
+      // past its peer-connection cap): a first dial is the caller's to
+      // hear — start() throws — and a redial, made from a timer or a
+      // peer's offer, is reported and leaves the link failed, never an
+      // uncaught exception.
+      if (pc !== null) {
+        try {
+          pc.close();
+        } catch {
+          // Already closed.
+        }
+      }
+      if (state === 'connecting') throw error;
+      this.#error(error, 'dial');
+      return;
     }
     this.#pc = pc;
     this.#makingOffer = false;
@@ -298,13 +326,6 @@ class RtcLink extends Emitter {
     this.#pendingCandidates = [];
     this.#maxMessageSize = MIN_MESSAGE_SIZE;
     this.#opened = this.#deferred();
-    const { initiator, responder, label } = this.#channels;
-    const mine = this.initiator ? initiator : responder;
-    const theirs = this.initiator ? responder : initiator;
-    // Both channels exist before the first offer: the SDP needs an
-    // m=application section, and a negotiated channel is never announced.
-    const clientChannel = pc.createDataChannel(label, { negotiated: true, id: mine, ordered: true });
-    const hostChannel = pc.createDataChannel(label, { negotiated: true, id: theirs, ordered: true });
     clientChannel.binaryType = 'arraybuffer';
     hostChannel.binaryType = 'arraybuffer';
     this.#clientChannel = clientChannel;

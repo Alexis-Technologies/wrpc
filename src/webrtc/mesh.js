@@ -68,6 +68,14 @@ class Mesh extends Emitter {
     });
     on(peer, 'link', (link) => this.#adopt(link));
     this.#joined = this.#join();
+    // A join nobody awaits (peer.join() fires and forgets) whose roster
+    // fetch fails used to be an unhandled rejection: it is the peer's
+    // error, and the mesh detaches — it never joined.
+    this.#joined.catch((error) => {
+      if (this.#left) return;
+      this.#peer.escalate(error, this);
+      this.detach();
+    });
   }
 
   get room() {

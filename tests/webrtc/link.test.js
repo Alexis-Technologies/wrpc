@@ -702,3 +702,44 @@ test('rtc link: a responder that never asked for a restart ignores negotiationne
     'initiator re-offers',
   );
 });
+
+test('rtc link: a dial the adapter cannot make throws from start(), and fails a redial without an uncaught exception', async (t) => {
+  const fake = createFakeRtc();
+  let refuse = false;
+  const flaky = {
+    createPeerConnection: (configuration) => {
+      if (refuse) throw new Error('no peer connection to be had');
+      return fake.adapter.createPeerConnection(configuration);
+    },
+  };
+  // A first dial that cannot be made: the caller hears it.
+  refuse = true;
+  const lone = new RtcLink({ localId: 'a', remoteId: 'b', adapter: flaky, signal() {}, log: quiet });
+  assert.throws(() => lone.start(), /no peer connection/);
+  assert.strictEqual(lone.state, 'new');
+  refuse = false;
+  // A redial that cannot be made — from a timer, from a peer's offer — is
+  // reported and leaves the link failed; it used to throw where nobody
+  // could catch it.
+  const { a, b, relay } = wire(t, { world: fake.world, adapter: flaky }, { restartTimeout: 40 });
+  a.start();
+  b.start();
+  await bothOpen(a, b);
+  relay.up = false;
+  const errors = [];
+  a.on('error', (error) => errors.push(error));
+  a.pc.failIce();
+  await within(
+    waitFor(() => a.state === 'failed', 'failed'),
+    'failed',
+  );
+  refuse = true;
+  assert.strictEqual(a.redial(), true, 'the redial was attempted');
+  assert.strictEqual(a.state, 'failed', 'and left the link failed');
+  assert.ok(errors.some((error) => /no peer connection/.test(error.message)));
+  refuse = false;
+  relay.up = true;
+  assert.strictEqual(a.redial(), true);
+  b.redial();
+  await bothOpen(a, b);
+});
