@@ -1862,6 +1862,21 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **The signaling relay has ceilings, one lookup per room, and bounded
+  queues on the peer.** One connection could join rooms without bound,
+  replicate any amount of join `data` to every instance, relay a signal
+  of any size the server's `maxMessage` let through, and make every
+  signal to a peer this instance did not hold a cluster-wide fetch of its
+  own — a burst of them to a peer that left was a burst of fetches on
+  every node. `createSignalingUnit({ limits })` — `maxRooms` 32 (429),
+  `maxDataBytes` 4096 and `maxSignalBytes` 65536 (413, the signal's size
+  bounded without serializing it first), `maxResolves` 4 (503) — is on by
+  default, each `false` to switch off; the room lookup behind `resolve()`
+  is single-flight per room, so every signal waiting on it shares one
+  fetch. On the peer, the signals held for a peer whose `accept()` is
+  still thinking are capped at 64 and the candidates held before a
+  description at 256, the rest dropped and said once
+  (`rtc.signal.overflow`).
 - **WebTransport and WebRTC: a consumer that never drains is disconnected
   at `maxBackpressure`.** Neither carrier had the cap the WebSocket engine
   has behind its high-water mark, so a peer that stopped reading could

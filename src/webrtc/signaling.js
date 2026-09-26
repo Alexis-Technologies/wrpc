@@ -123,6 +123,67 @@ const inputAssert = (args) => {
   return { fingerprint };
 };
 
+// Ceilings on what one connection can make the relay hold or do, on by
+// default (the unit is new): rooms joined at once, the bytes of a join's
+// `data` (replicated to every instance), the bytes of a relayed signal,
+// and the room lookups in flight for signals to peers this instance does
+// not hold. `false` switches one off.
+const DEFAULT_LIMITS = { maxRooms: 32, maxDataBytes: 4096, maxSignalBytes: 65536, maxResolves: 4 };
+
+const normalizeLimits = (limits) => {
+  if (limits === null || limits === undefined) return { ...DEFAULT_LIMITS };
+  if (typeof limits !== 'object' || Array.isArray(limits)) {
+    throw new TypeError('createSignalingUnit: limits must be an object');
+  }
+  const out = { ...DEFAULT_LIMITS };
+  for (const key of Object.keys(DEFAULT_LIMITS)) {
+    const value = limits[key];
+    if (value === undefined) continue;
+    if (value !== false && !(Number.isInteger(value) && value > 0)) {
+      throw new TypeError(`createSignalingUnit: limits.${key} must be a positive integer or false`);
+    }
+    out[key] = value;
+  }
+  return out;
+};
+
+// An upper bound on JSON.stringify(value).length without serializing, for
+// the shape a signal has — scalars, and one level of nested object (a
+// description's type and sdp, a candidate's fields); -1 for anything
+// deeper. The exact length is taken only when the bound is over the limit
+// (the model of sanitizeMeta in rpc/dispatcher.js).
+const scalarBound = (entry) => {
+  const type = typeof entry;
+  if (type === 'string') return entry.length * 6 + 2;
+  if (type === 'number' || type === 'boolean') return 24;
+  if (entry === null) return 4;
+  return -1;
+};
+const signalUpperBound = (message) => {
+  let bound = 2;
+  for (const key in message) {
+    bound += key.length * 6 + 6;
+    const entry = message[key];
+    let size = scalarBound(entry);
+    if (size < 0 && typeof entry === 'object' && !Array.isArray(entry)) {
+      size = 2;
+      for (const inner in entry) {
+        const innerSize = scalarBound(entry[inner]);
+        if (innerSize < 0) return -1;
+        size += inner.length * 6 + 6 + innerSize;
+      }
+    }
+    if (size < 0) return -1;
+    bound += size;
+  }
+  return bound;
+};
+const tooLarge = (value, limit) => {
+  if (limit === false) return false;
+  const bound = signalUpperBound(value);
+  return (bound < 0 || bound > limit) && JSON.stringify(value).length > limit;
+};
+
 const inputSignal = (args) => {
   if (typeof args !== 'object' || args === null) throw new TypeError('expected { to, room, message }');
   const { to, message } = args;
@@ -153,6 +214,8 @@ const inputSignal = (args) => {
  *             assertions (see assertions.js): `key` a private ES256 JWK or
  *             CryptoKey pair, `claims(context)` extra claims to sign in
  *             (roles, say). Adds `assert` and the public `keys` method.
+ *   limits    { maxRooms, maxDataBytes, maxSignalBytes, maxResolves } —
+ *             per-connection ceilings (32, 4096, 65536, 4); `false` off
  */
 const createSignalingUnit = (options = {}) => {
   const {
@@ -165,6 +228,7 @@ const createSignalingUnit = (options = {}) => {
     prefix = DEFAULT_PREFIX,
     assertions = null,
   } = options;
+  const limits = normalizeLimits(options.limits);
   if (typeof name !== 'string' || name.length === 0 || name.includes('/') || name.includes('.')) {
     throw new TypeError('createSignalingUnit: name must be a unit name without "/" or "."');
   }
@@ -308,12 +372,28 @@ const createSignalingUnit = (options = {}) => {
   // Where a signal to peer `to` goes: the local holder of the id, else the
   // `address` the sender learned from the roster (sendTo routes it by its
   // instance prefix), else — room relay only — the room's descriptors.
+  // The room lookups in flight, one per room: every signal to a peer this
+  // instance does not hold used to be a cluster-wide fetch of its own — a
+  // burst of them to a peer that left was a burst of fetches on every node.
+  const lookups = new Map();
+  const fetchRoom = (server, room) => {
+    const key = roomOf(room);
+    const shared = lookups.get(key);
+    if (shared) return shared;
+    if (limits.maxResolves !== false && lookups.size >= limits.maxResolves) {
+      throw refusal(`${name}: too many lookups in flight`, 503);
+    }
+    const pending = server.cluster.fetchClients({ room: key }).finally(() => lookups.delete(key));
+    lookups.set(key, pending);
+    return pending;
+  };
+
   const resolve = async (server, to, address, room) => {
     const local = registry.get(to);
     if (local) return { address: local.id, instance: rtcOf(local).instance };
     if (address !== null && !server.getClient(address)) return { address, instance: null };
     if (relay !== 'room') return null;
-    const descriptors = await server.cluster.fetchClients({ room: roomOf(room) });
+    const descriptors = await fetchRoom(server, room);
     let found = null;
     for (let i = 0; i < descriptors.length; i++) {
       const rtc = rtcOf(descriptors[i]);
@@ -345,7 +425,16 @@ const createSignalingUnit = (options = {}) => {
       },
       handler: async (context, { room, data }) => {
         const { client, server } = context;
+        if (limits.maxDataBytes !== false && data !== null && JSON.stringify(data).length > limits.maxDataBytes) {
+          throw refusal(`${name}: join data too large`, 413);
+        }
         const rtc = await identify(context);
+        // A room already joined is not another room.
+        if (limits.maxRooms !== false && rtc.rooms[room] === undefined) {
+          let count = 0;
+          for (const key in rtc.rooms) if (key) count++;
+          if (count >= limits.maxRooms) throw refusal(`${name}: too many rooms`, 429);
+        }
         await allow(context, { action: 'join', room, data });
         owns(client, rtc);
         rtc.rooms[room] = data;
@@ -406,6 +495,7 @@ const createSignalingUnit = (options = {}) => {
         signature: { args: { to: 'string', address: 'string', room: 'string', message: 'object' } },
         handler: async (context, { to, address, room, message }) => {
           const { client, server } = context;
+          if (tooLarge(message, limits.maxSignalBytes)) throw refusal(`${name}: signal too large`, 413);
           const rtc = await identify(context);
           if (relay === 'room') {
             if (room === null) throw refusal('signal: room is required', 400);

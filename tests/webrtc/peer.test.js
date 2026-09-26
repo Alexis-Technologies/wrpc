@@ -255,10 +255,9 @@ test('peer: connect() from the higher id knocks, and simultaneous connects make 
   const before = cd.link.pc;
   hub.relay('d', 'c', null, { type: 'connect' });
   await within(
-    waitFor(() => cd.state === 'open' && cd.link.pc !== before, 'redialled on the knock'),
+    waitFor(() => cd.state === 'open' && dc.state === 'open' && cd.link.pc !== before, 'redialled on the knock'),
     'redialled on the knock',
   );
-  assert.strictEqual(dc.state, 'open');
   await assert.rejects(c.connect(''), /remoteId must be/);
   await assert.rejects(
     c.connect('x'.repeat(257)),
@@ -952,4 +951,30 @@ test('peer: a knock on a connected initiator forces a redial; a knock during a d
     waitFor(() => ab.state === 'open' && ba.state === 'open', 'open again'),
     'open again',
   );
+});
+
+test('peer: signals held for a peer whose accept() is thinking are bounded, and the overflow is said once', async (t) => {
+  const { peer, hub } = world(t);
+  const warned = [];
+  const logger = { ...quiet, warn: (entry) => warned.push(entry), child: () => logger };
+  let admit;
+  const gate = new Promise((resolve) => {
+    admit = resolve;
+  });
+  const a = peer('a', { accept: () => gate, logger });
+  const b = peer('b');
+  const knock = b.connect('a');
+  await timers.setTimeout(10);
+  // b floods a with candidates while a's accept() thinks: 64 are held.
+  for (let i = 0; i < 100; i++) {
+    hub.relay('b', 'a', null, { type: 'candidate', candidate: { candidate: `c${i}`, sdpMid: '0' } });
+  }
+  await hub.tick();
+  await hub.tick();
+  const overflow = warned.filter((entry) => entry.event === 'rtc.signal.overflow');
+  assert.strictEqual(overflow.length, 1, 'said once');
+  assert.strictEqual(overflow[0].peer, 'b');
+  admit(true);
+  await within(knock, 'the link still forms');
+  assert.strictEqual(a.links.size, 1);
 });

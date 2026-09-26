@@ -138,6 +138,7 @@ want an alert for.
 | `broker.feed.gap` | info | A subscriber fell behind retention; the snapshot hook ran |
 | `wt.attach`, `wt.source` | error | A WebTransport session could not be attached |
 | `mesh.dial` | debug | A mesh edge never formed |
+| `rtc.signal.overflow` | warn | A peer sent more signals than are held for it — candidates before its description (256), or anything while `accept()` still thinks (64); the rest are dropped, said once |
 
 ### Why some refusals are `debug`
 

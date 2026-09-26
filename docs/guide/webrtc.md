@@ -211,6 +211,7 @@ the host half, not by the peer.
 | `identity` | the client id | `(context, { proposed }) => id`: the peer id of a connection — see [Identity](#identity). |
 | `duplicate` | `'replace'` | A second connection under a held id takes it over (the first hears `replaced`); `'refuse'` answers it `409`. |
 | `authorize` | — | `(context, { action: 'join' \| 'signal', room, ... })`: return `false` to refuse with `403`, or throw a coded error of your own. |
+| `limits` | `{ maxRooms: 32, maxDataBytes: 4096, maxSignalBytes: 65536, maxResolves: 4 }` | Per-connection ceilings: rooms joined at once (`429` past it), the JSON bytes of a join's `data` and of a relayed signal (`413`), and the room lookups in flight for signals to peers this instance does not hold (`503`; one lookup per room is shared by every signal waiting on it). `false` switches one off. |
 | `relay` | `'room'` | A signal reaches `to` only while both peers share the room; `'any'` relays to any connected id. |
 | `prefix` | `'rtc:'` | Signaling rooms live under it in the room registry, apart from your own rooms. |
 

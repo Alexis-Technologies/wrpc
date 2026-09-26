@@ -33,6 +33,11 @@ const { isRtcAdapter, isRtcPeerConnection } = require('./port.js');
 const { negotiateMessageSize, MIN_MESSAGE_SIZE } = require('./framing.js');
 const { sdpFingerprint } = require('./assertions.js');
 
+// Candidates held until the remote description arrives; past it they are
+// dropped, said once per dial — a peer used to be able to fill memory
+// with them before ever sending a description.
+const MAX_PENDING_CANDIDATES = 256;
+
 // Negotiated data channels are not described in the SDP: both peers MUST
 // be configured identically, or a channel never opens (it surfaces as the
 // connect timeout). Configurable for an application keeping its own
@@ -106,6 +111,7 @@ class RtcLink extends Emitter {
   #ignoreOffer = false;
   #restarting = false;
   #pendingCandidates = [];
+  #candidatesOverflowed = false;
 
   #opened = null; // { promise, resolve, reject } for the current dial
   #connectTimer = null;
@@ -339,6 +345,7 @@ class RtcLink extends Emitter {
     this.#ignoreOffer = false;
     this.#restarting = false;
     this.#pendingCandidates = [];
+    this.#candidatesOverflowed = false;
     this.#maxMessageSize = MIN_MESSAGE_SIZE;
     // A fresh pc has seen no remote yet: the first description on it sets
     // the certificate, whatever the pc before it had seen.
@@ -496,7 +503,11 @@ class RtcLink extends Emitter {
     const pc = this.#pc;
     if (!pc) return;
     if (!pc.remoteDescription) {
-      this.#pendingCandidates.push(candidate);
+      if (this.#pendingCandidates.length < MAX_PENDING_CANDIDATES) this.#pendingCandidates.push(candidate);
+      else if (!this.#candidatesOverflowed) {
+        this.#candidatesOverflowed = true;
+        this.#log.warn({ event: 'rtc.signal.overflow', what: 'candidates', max: MAX_PENDING_CANDIDATES });
+      }
       return;
     }
     await this.#addCandidate(pc, candidate);

@@ -743,3 +743,23 @@ test('rtc link: a dial the adapter cannot make throws from start(), and fails a 
   b.redial();
   await bothOpen(a, b);
 });
+
+test('rtc link: candidates ahead of the description are bounded, and the overflow is said once per dial', async (t) => {
+  const fake = createFakeRtc();
+  const warned = [];
+  const log = { ...quiet, warn: (entry) => warned.push(entry), child: () => log };
+  const { a, b } = wire(t, fake, { log });
+  b.start();
+  // 300 candidates before any description: 256 held, the rest dropped.
+  for (let i = 0; i < 300; i++) {
+    await b.receive({
+      type: 'candidate',
+      candidate: { candidate: `candidate:${i} 1 udp 1 192.0.2.1 ${5000 + i} typ host`, sdpMid: '0' },
+    });
+  }
+  const overflow = warned.filter((entry) => entry.event === 'rtc.signal.overflow');
+  assert.strictEqual(overflow.length, 1, 'said once');
+  assert.strictEqual(overflow[0].what, 'candidates');
+  a.start();
+  await bothOpen(a, b);
+});

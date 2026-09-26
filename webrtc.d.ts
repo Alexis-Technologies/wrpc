@@ -28,9 +28,23 @@ import type { RtcDataChannelLike, RtcPeerTransport, RtcTransportOptions } from '
 
 export * from './webrtc.browser.js';
 
+/** Per-connection ceilings of the signaling relay; `false` switches one off. */
+export interface SignalingLimits {
+  /** Rooms one connection may be in at once (default 32); the next join is 429. */
+  maxRooms?: number | false;
+  /** JSON bytes of a join's `data`, replicated to every instance (default 4096); over it is 413. */
+  maxDataBytes?: number | false;
+  /** JSON bytes of a relayed signal (default 65536); over it is 413, not relayed. */
+  maxSignalBytes?: number | false;
+  /** Room lookups in flight for signals to peers this instance does not hold (default 4); the next is 503. */
+  maxResolves?: number | false;
+}
+
 export interface SignalingUnitOptions {
   /** The unit name (default 'signaling'); the client helper must agree. */
   name?: string;
+  /** Per-connection ceilings, on by default. */
+  limits?: SignalingLimits | null;
   /** Applied to every method and the signal event. Default 'session'. */
   access?: 'session' | 'public';
   /**
@@ -87,7 +101,11 @@ export interface AssertionIssuerOptions {
 export interface AssertionIssuer {
   readonly kid: string | null;
   readonly ttl: number;
-  sign(claims: { sub: string; fp: string; [claim: string]: unknown }): Promise<{ assertion: string; iat: number; exp: number }>;
+  sign(claims: {
+    sub: string;
+    fp: string;
+    [claim: string]: unknown;
+  }): Promise<{ assertion: string; iat: number; exp: number }>;
   publicKeys(): Promise<Array<JsonWebKey>>;
 }
 
@@ -121,11 +139,10 @@ export declare function createSignalingHooks(options?: { name?: string; prefix?:
   onDisconnect: ConnectionHook;
 };
 
-export interface AttachChannelOptions
-  extends Pick<
-    RtcTransportOptions,
-    'maxMessageSize' | 'framing' | 'highWaterMark' | 'lowWaterMark' | 'maxBackpressure' | 'compression'
-  > {
+export interface AttachChannelOptions extends Pick<
+  RtcTransportOptions,
+  'maxMessageSize' | 'framing' | 'highWaterMark' | 'lowWaterMark' | 'maxBackpressure' | 'compression'
+> {
   /** The client's `source`; defaults to the channel's label. */
   peer?: string;
   /** Observed about the connection by the application; lands in `context.meta`. */

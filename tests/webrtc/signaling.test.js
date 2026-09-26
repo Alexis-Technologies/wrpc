@@ -819,3 +819,56 @@ test('signaling: the disconnect hook ignores foreign rooms and missing payloads'
   onDisconnect(client, { rooms: ['rtc:lobby'] });
   assert.deepStrictEqual(emitted, []);
 });
+
+test('signaling: limits — rooms, join data and signal size are ceilings; lookups are one per room', async (t) => {
+  const boot = await bootServer(t, {
+    router: signalingRouter({ limits: { maxRooms: 2, maxDataBytes: 64, maxSignalBytes: 256, maxResolves: 1 } }),
+  });
+  const a = await peer(t, boot);
+  const b = await peer(t, boot);
+  await a.signaler.join('r1');
+  await a.signaler.join('r2');
+  await assert.rejects(a.signaler.join('r3'), (error) => error.code === 429);
+  await a.signaler.join('r1', { again: true });
+  await assert.rejects(a.signaler.join('r4', { big: 'x'.repeat(100) }), (error) => error.code === 413);
+  await b.signaler.join('r1');
+  await waitFor(() => a.heard.some((h) => h.name === 'join' && h.id === b.id), 'b joined');
+  // A signal over the size ceiling is not relayed; the next one is.
+  a.signaler.send(
+    b.id,
+    { type: 'description', description: { type: 'offer', sdp: 'v=0'.repeat(200) } },
+    { room: 'r1' },
+  );
+  a.signaler.send(b.id, { type: 'description', description: { type: 'offer', sdp: 'v=0' } }, { room: 'r1' });
+  await waitFor(() => b.heard.some((h) => h.name === 'signal'), 'the small one arrived');
+  const signals = b.heard.filter((h) => h.name === 'signal');
+  assert.strictEqual(signals.length, 1);
+  assert.strictEqual(signals[0].message.description.sdp, 'v=0');
+  // Signals to a peer nobody holds: the room lookup is one per room,
+  // shared by every signal waiting on it — 500 used to be 500 fetches.
+  const cluster = boot.server.rpc.cluster;
+  const original = cluster.fetchClients.bind(cluster);
+  let fetches = 0;
+  cluster.fetchClients = async (query) => {
+    fetches++;
+    await timers.setTimeout(50);
+    return original(query);
+  };
+  t.after(() => {
+    cluster.fetchClients = original;
+  });
+  for (let i = 0; i < 500; i++) a.signaler.send('nobody', { type: 'connect' }, { room: 'r1' });
+  await timers.setTimeout(120);
+  assert.strictEqual(fetches, 1, 'one lookup for the room, shared');
+  // maxResolves 1: a second room's lookup while one is in flight is refused (503), not fetched.
+  await a.signaler.join('r2');
+  fetches = 0; // the join's own roster fetch is not a lookup
+  a.signaler.send('nobody', { type: 'connect' }, { room: 'r1' });
+  a.signaler.send('nobody', { type: 'connect' }, { room: 'r2' });
+  await timers.setTimeout(120);
+  assert.strictEqual(fetches, 1, 'the second room waited for nothing: refused');
+  assert.throws(() => createSignalingUnit({ limits: { maxRooms: 0 } }), /limits.maxRooms/);
+  assert.throws(() => createSignalingUnit({ limits: { maxSignalBytes: 1.5 } }), /limits.maxSignalBytes/);
+  assert.throws(() => createSignalingUnit({ limits: 'none' }), /limits must be an object/);
+  createSignalingUnit({ limits: { maxRooms: false, maxDataBytes: false, maxSignalBytes: false, maxResolves: false } });
+});

@@ -31,6 +31,10 @@ const { createServerTelemetry } = require('../telemetry/server.js');
 const { isRtcAdapter, createW3cAdapter } = require('./port.js');
 const { RtcLink, DEFAULT_CHANNELS, normalizeChannels } = require('./link.js');
 const { ClientRtcTransport, RtcPeerTransport, normalizeWaterMarks, normalizeBackpressure } = require('./transport.js');
+
+// Signals held for a peer whose accept() has not answered yet; past it
+// they are dropped, said once.
+const MAX_PENDING_SIGNALS = 64;
 const { PeerHost } = require('./host.js');
 const { isSignaler, isSignalMessage } = require('./signaler.js');
 const { isPeerId } = require('./ids.js');
@@ -924,7 +928,16 @@ class WrpcPeer extends Emitter {
     // incarnation and this is that side's answer, so the initiator (lower
     // id) dials afresh on anything the newcomer says.
     const pending = this.#pending.get(from);
-    if (pending) return void pending.push(message);
+    if (pending) {
+      // Bounded: a peer whose accept() is thinking is not a peer who may
+      // fill memory with candidates meanwhile. Said once per queue.
+      if (pending.length < MAX_PENDING_SIGNALS) pending.push(message);
+      else if (!pending.overflowed) {
+        pending.overflowed = true;
+        this.#log.warn({ event: 'rtc.signal.overflow', peer: from, what: 'signals', max: MAX_PENDING_SIGNALS });
+      }
+      return;
+    }
     const opening =
       message.type === 'connect' ||
       (message.type === 'description' && message.description?.type === 'offer') ||

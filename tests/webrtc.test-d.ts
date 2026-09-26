@@ -234,3 +234,8 @@ expectAssignable<ConstructorParameters<typeof WrpcPeer>[0]>({
   compression: { codec: ['zstd', 'brotli', 'deflate-raw'] },
 });
 expectError<ConstructorParameters<typeof WrpcPeer>[0]>({ signaler: {} as Signaler, compression: 'lz4' });
+
+// The relay's ceilings: each a positive integer or false.
+webrtc.createSignalingUnit({ limits: { maxRooms: 8, maxSignalBytes: false } });
+webrtc.createSignalingUnit({ limits: null });
+expectError(webrtc.createSignalingUnit({ limits: { maxRooms: 'many' } }));
