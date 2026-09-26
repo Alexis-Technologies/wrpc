@@ -1363,6 +1363,17 @@ narrower promise — see
   then dead; `attachChannel` vouches for the channel by default
   (`encrypted: true`, `false` for one relayed in the clear).
   `RpcServer.encryptionRequired` is the flag a binding of your own reads.
+- **Kafka: `close()` deleted the queue's durable consumer group.** The
+  adapter deleted every group it had opened — to keep a backplane
+  instance's or a reader's empty group from lingering until
+  `offsets.retention` — and a queue's group was among them, committed
+  offsets included: the last instance's clean restart redelivered the
+  queue's whole retention. Only the groups the broker made for itself are
+  deleted now, and each with its consumer rather than at `close()`: a
+  catch-up page's group goes with the page, a tail's with the tail, and a
+  reader whose subscribe or run fails leaves neither a joined consumer nor
+  a group behind (it used to leave both, one per failed read). A group the
+  broker refuses to delete yet (`NON_EMPTY_GROUP`) is a debug line.
 
 ### Security
 - **WebRTC: roster data could impersonate another peer.** `PeerHost.attach`

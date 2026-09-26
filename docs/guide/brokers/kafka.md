@@ -86,6 +86,16 @@ join**: a fresh group resolves `latest` at its first fetch, which can land
 after the next append. Without the seek, the first entries of a live feed
 would vanish now and then — a race the phase-0 spike caught.
 
+Every reader is its own consumer group — a live tail's for as long as it
+runs, a catch-up page's for the page — deleted the moment the reader is
+done (a page's group used to wait for `close()`; a failed read used to leave
+its consumer joined). The price of a resume is therefore a **group join per
+page** of catch-up, which on a broker with the default
+`group.initial.rebalance.delay.ms` (3 s) is three seconds per 256 entries:
+set it to `0` on a broker that serves feeds, or size the page. A queue's
+group is durable and is never deleted by wrpc: its committed offsets are the
+queue's progress.
+
 ## Queues
 
 - **No nack.** A `retry()` is a republish carrying `x-wrpc-attempt`, and the

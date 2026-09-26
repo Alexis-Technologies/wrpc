@@ -125,7 +125,14 @@ const createKafkaBroker = (options = {}) => {
   const report = (event, error, extra = {}) => log.error({ err: error, event, ...extra });
   let closed = false;
   const consumers = new Set();
-  const groups = new Set(); // groups this broker created, deleted on close
+  // The groups this broker made for ITSELF — a backplane instance's, a
+  // reader's — by the consumer that holds them: deleted the moment that
+  // consumer is closed (an empty group otherwise lingers until
+  // offsets.retention), and swept in one call on close(). A queue's durable
+  // group is never among them: its committed offsets ARE the queue's
+  // progress, and deleting it on the last instance's clean restart used to
+  // redeliver the whole retention.
+  const groups = new Map(); // consumer -> groupId, ephemeral groups only
 
   let adminClient = null;
   const admin = () => {
@@ -198,14 +205,28 @@ const createKafkaBroker = (options = {}) => {
     return result;
   };
 
-  // A consumer that this broker owns: tracked so close() disconnects it and
-  // removes the group it created.
-  const openConsumer = async (groupId, config = {}) => {
+  // A consumer that this broker owns: tracked so close() disconnects it.
+  // `ephemeral` says the group is this broker's own (deleted with the
+  // consumer); a queue's durable group is opened without it.
+  const openConsumer = async (groupId, config = {}, { ephemeral = false } = {}) => {
     const consumer = kafka.consumer(consumerConfig(flavor, { groupId, ...config }));
     await consumer.connect();
     consumers.add(consumer);
-    groups.add(groupId);
+    if (ephemeral) groups.set(consumer, groupId);
     return consumer;
+  };
+
+  // A group the broker cannot delete yet (a member still joined — the
+  // broker's NON_EMPTY_GROUP — or an admin that cannot be asked) lingers
+  // until offsets.retention, as every group used to: a debug line, no more.
+  const dropGroups = async (ids) => {
+    if (ids.length === 0) return;
+    try {
+      const client = await admin();
+      await client.deleteGroups(ids);
+    } catch (error) {
+      log.debug({ err: error, event: 'broker.kafka.groups', groups: ids });
+    }
   };
 
   const closeConsumer = async (consumer) => {
@@ -214,6 +235,14 @@ const createKafkaBroker = (options = {}) => {
       await consumer.disconnect();
     } catch (error) {
       report('broker.kafka.disconnect', error);
+    }
+    // Its group goes with it, right away — a reader's is done the moment
+    // its page or tail is, and used to wait for close(). During close()
+    // itself the sweep below deletes what is left in ONE call.
+    const groupId = groups.get(consumer);
+    if (groupId !== undefined && !closed) {
+      groups.delete(consumer);
+      void dropGroups([groupId]);
     }
   };
 
@@ -235,7 +264,7 @@ const createKafkaBroker = (options = {}) => {
       await ensureTopic(backplaneTopic, backplanePartitions);
       // A group per INSTANCE: every instance must see every envelope, which
       // is exactly what a shared group would prevent.
-      const consumer = await openConsumer(`${prefix}-bp-${shortName()}`, { fromBeginning: false });
+      const consumer = await openConsumer(`${prefix}-bp-${shortName()}`, { fromBeginning: false }, { ephemeral: true });
       await consumer.subscribe(subscribeArgs(flavor, [backplaneTopic], false));
       // Registered BEFORE run(): kafkajs' join event fires once.
       const joined = joinWatcher(flavor, consumer);
@@ -336,30 +365,38 @@ const createKafkaBroker = (options = {}) => {
     live: async (topic, { signal, onEntry }) => {
       const name = await ensureTopic(logTopic(topic), logPartitions);
       const { high } = await watermarks(topic);
-      const consumer = await openConsumer(readerGroup(), { fromBeginning: false });
-      await consumer.subscribe(subscribeArgs(flavor, [name], false));
-      const joined = joinWatcher(flavor, consumer);
-      await consumer.run(
-        runArgs(flavor, {
-          concurrency: 1,
-          eachMessage: async ({ partition, message }) => {
-            // Defensive: a reader positioned by the group rather than by the
-            // seek above could see what the tip already covered.
-            if (Number(message.offset) < (high[partition] ?? 0)) return;
-            onEntry({
-              partition,
-              offset: Number(message.offset),
-              value: message.value === null ? '' : message.value.toString(),
-              headers: headersOf(message),
-            });
-          },
-        }),
-      );
-      await joined;
-      // A fresh group resolves `latest` at its FIRST FETCH, which can be
-      // after the next append — so the position is pinned to the watermark
-      // captured above instead of left to that race.
-      await seekAll(consumer, name, high);
+      const consumer = await openConsumer(readerGroup(), { fromBeginning: false }, { ephemeral: true });
+      // Everything after the open under one catch: a subscribe or run that
+      // fails used to leave the consumer connected and its group behind —
+      // one per failed read, for the life of the broker.
+      try {
+        await consumer.subscribe(subscribeArgs(flavor, [name], false));
+        const joined = joinWatcher(flavor, consumer);
+        await consumer.run(
+          runArgs(flavor, {
+            concurrency: 1,
+            eachMessage: async ({ partition, message }) => {
+              // Defensive: a reader positioned by the group rather than by the
+              // seek above could see what the tip already covered.
+              if (Number(message.offset) < (high[partition] ?? 0)) return;
+              onEntry({
+                partition,
+                offset: Number(message.offset),
+                value: message.value === null ? '' : message.value.toString(),
+                headers: headersOf(message),
+              });
+            },
+          }),
+        );
+        await joined;
+        // A fresh group resolves `latest` at its FIRST FETCH, which can be
+        // after the next append — so the position is pinned to the watermark
+        // captured above instead of left to that race.
+        await seekAll(consumer, name, high);
+      } catch (error) {
+        await closeConsumer(consumer);
+        throw error;
+      }
       signal.addEventListener('abort', () => void closeConsumer(consumer), { once: true });
       // The tip as a vector: every partition's next offset minus one.
       const cursor = {};
@@ -384,46 +421,51 @@ const createKafkaBroker = (options = {}) => {
       }
       if (pending === 0) return [];
       const entries = [];
-      const consumer = await openConsumer(readerGroup(), { fromBeginning: true });
-      await consumer.subscribe(subscribeArgs(flavor, [name], true));
-      const joined = joinWatcher(flavor, consumer);
-      await new Promise((resolve, reject) => {
-        let done = false;
-        const finish = () => {
-          if (done) return;
-          done = true;
-          resolve();
-        };
-        const timer = setTimeout(finish, 10_000);
-        if (isFunction(timer.unref)) timer.unref();
-        consumer
-          .run(
-            runArgs(flavor, {
-              concurrency: 1,
-              eachMessage: async ({ partition, message }) => {
-                const offset = Number(message.offset);
-                const from = wanted[partition];
-                if (from === undefined || offset < from) return;
-                entries.push({
-                  partition,
-                  offset,
-                  value: message.value === null ? '' : message.value.toString(),
-                  headers: headersOf(message),
-                });
-                if (entries.length >= limit || entries.length >= pending) {
-                  clearTimeout(timer);
-                  finish();
-                }
-              },
-            }),
-          )
-          .then(async () => {
-            await joined;
-            await seekAll(consumer, name, wanted);
-          })
-          .catch(reject);
-      });
-      await closeConsumer(consumer);
+      const consumer = await openConsumer(readerGroup(), { fromBeginning: true }, { ephemeral: true });
+      let timer = null;
+      // Closed whatever happens — a subscribe that fails, a run that
+      // rejects, the page that completes: a page's consumer and group are
+      // done with the page, and used to outlive a failure.
+      try {
+        await consumer.subscribe(subscribeArgs(flavor, [name], true));
+        const joined = joinWatcher(flavor, consumer);
+        await new Promise((resolve, reject) => {
+          let done = false;
+          const finish = () => {
+            if (done) return;
+            done = true;
+            resolve();
+          };
+          timer = setTimeout(finish, 10_000);
+          if (isFunction(timer.unref)) timer.unref();
+          consumer
+            .run(
+              runArgs(flavor, {
+                concurrency: 1,
+                eachMessage: async ({ partition, message }) => {
+                  const offset = Number(message.offset);
+                  const from = wanted[partition];
+                  if (from === undefined || offset < from) return;
+                  entries.push({
+                    partition,
+                    offset,
+                    value: message.value === null ? '' : message.value.toString(),
+                    headers: headersOf(message),
+                  });
+                  if (entries.length >= limit || entries.length >= pending) finish();
+                },
+              }),
+            )
+            .then(async () => {
+              await joined;
+              await seekAll(consumer, name, wanted);
+            })
+            .catch(reject);
+        });
+      } finally {
+        clearTimeout(timer);
+        await closeConsumer(consumer);
+      }
       entries.sort((a, b) => (a.partition === b.partition ? a.offset - b.offset : a.partition - b.partition));
       return entries.slice(0, limit);
     },
@@ -643,6 +685,11 @@ const createKafkaBroker = (options = {}) => {
     handlers.clear();
     ensured.clear();
     for (const consumer of Array.from(consumers)) await closeConsumer(consumer);
+    // The ephemeral groups still held — the backplane instance's, a tail's
+    // — in one call, once every member left; a queue's durable group is not
+    // this broker's to delete.
+    const lingering = Array.from(groups.values());
+    groups.clear();
     if (producerClient) {
       const client = await producerClient.catch(() => null);
       producerClient = null;
@@ -652,13 +699,14 @@ const createKafkaBroker = (options = {}) => {
       const client = await adminClient.catch(() => null);
       adminClient = null;
       if (client) {
-        // An empty group lingers until offsets.retention otherwise — every
-        // reader and every backplane instance would leave one behind.
-        await client.deleteGroups(Array.from(groups)).catch(() => {});
+        if (lingering.length > 0) {
+          await client
+            .deleteGroups(lingering)
+            .catch((error) => log.debug({ err: error, event: 'broker.kafka.groups', groups: lingering }));
+        }
         await client.disconnect().catch((error) => report('broker.kafka.disconnect', error));
       }
     }
-    groups.clear();
   };
 
   return {

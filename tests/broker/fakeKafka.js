@@ -36,6 +36,23 @@ class FakeKafkaServer {
   topics = new Map();
   groups = new Map(); // groupId -> { offsets: Map(`${topic}:${partition}` -> next), members: Set }
   #waiters = new Set();
+  // Fault injection: `failures.subscribe = new Error(…)` makes the NEXT
+  // consumer.subscribe() throw it (once); same for `run`.
+  failures = { subscribe: null, run: null };
+
+  failNext(step) {
+    const error = this.failures[step];
+    if (error === null || error === undefined) return;
+    this.failures[step] = null;
+    throw error;
+  }
+
+  /** Consumers currently joined to any group: what a leak shows up as. */
+  get members() {
+    let count = 0;
+    for (const group of this.groups.values()) count += group.members.size;
+    return count;
+  }
 
   topic(name, partitions = 3) {
     let topic = this.topics.get(name);
@@ -152,6 +169,7 @@ class FakeConsumer extends EventEmitter {
   // `fromBeginning` here (the confluent facade takes it in the consumer
   // config, which the constructor already read).
   async subscribe(options = {}) {
+    this.server.failNext('subscribe');
     this.#subscribed = options.topics ?? (options.topic ? [options.topic] : []);
     if (options.fromBeginning !== undefined) this.#fromBeginning = options.fromBeginning === true;
     for (const name of this.#subscribed) this.server.topic(name);
@@ -177,6 +195,7 @@ class FakeConsumer extends EventEmitter {
   }
 
   async run(options = {}) {
+    this.server.failNext('run');
     this.#handler = options.eachMessage;
     // kafkajs takes autoCommit here, the confluent facade in the consumer
     // config (which the constructor already read).
@@ -292,8 +311,22 @@ class FakeAdmin {
     }));
   }
 
+  // As the broker answers: a group with a member still joined is not
+  // deleted (NON_EMPTY_GROUP, errorCode 68) — kafkajs throws a
+  // KafkaJSDeleteGroupsError naming it.
   async deleteGroups(ids) {
-    for (const id of ids) this.server.groups.delete(id);
+    const refused = [];
+    for (const id of ids) {
+      const group = this.server.groups.get(id);
+      if (group && group.members.size > 0) refused.push(id);
+      else this.server.groups.delete(id);
+    }
+    if (refused.length > 0) {
+      const error = new Error('Error in DeleteGroups');
+      error.name = 'KafkaJSDeleteGroupsError';
+      error.groups = refused.map((groupId) => ({ groupId, errorCode: 68, error: new Error('The group is not empty') }));
+      throw error;
+    }
     return ids.map((groupId) => ({ groupId, errorCode: 0 }));
   }
 

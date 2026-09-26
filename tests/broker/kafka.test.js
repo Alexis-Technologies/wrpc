@@ -164,17 +164,21 @@ test('kafka broker: the backplane loses what was published before the group join
   assert.deepStrictEqual(seen, ['after'], 'a fresh group reads from `latest`');
 });
 
-test('kafka broker: closing disconnects every consumer and deletes the groups it made', async () => {
+test("kafka broker: closing disconnects every consumer and deletes its OWN groups — never a queue's durable one", async () => {
   const { kafka, broker } = open('kafkajs');
   const seen = [];
   await broker.backplane.subscribe('room', (message) => seen.push(message));
-  const consumer = await broker.queue.consume(unique('q'), (delivery) => delivery.ack());
+  const queue = unique('q');
+  const consumer = await broker.queue.consume(queue, (delivery) => delivery.ack());
   assert.strictEqual(consumer.healthy, true);
   assert.ok(kafka.server.groups.size >= 2);
   await broker.close();
   await broker.close();
   assert.strictEqual(consumer.healthy, false);
-  assert.strictEqual(kafka.server.groups.size, 0, 'the groups it created are gone');
+  assert.strictEqual(kafka.server.members, 0, 'every consumer left');
+  // The backplane instance's group is gone; the queue's — whose committed
+  // offsets are the queue's progress — is exactly what stays.
+  assert.deepStrictEqual(Array.from(kafka.server.groups.keys()), [queue]);
   await assert.rejects(broker.log.append('t', 'x'), (error) => error.code === 503);
   await assert.rejects(broker.queue.produce('q', 'x'), (error) => error.code === 503);
   await assert.rejects(
@@ -182,6 +186,62 @@ test('kafka broker: closing disconnects every consumer and deletes the groups it
     (error) => error.code === 503,
   );
 });
+
+for (const flavor of FLAVORS) {
+  test(`kafka broker (${flavor}): a clean restart of the last instance does not redeliver the queue`, async (t) => {
+    // The bug: close() deleted every group it had opened, the durable
+    // queue group included — with its committed offsets — so the next
+    // instance, joining a fresh group from the beginning, redelivered the
+    // whole retention on every deploy.
+    const { kafka, broker } = open(flavor);
+    const queue = unique('orders');
+    const first = [];
+    const consumer = await broker.queue.consume(queue, (delivery) => {
+      first.push(delivery.body);
+      return delivery.ack();
+    });
+    for (const body of ['a', 'b', 'c']) await broker.queue.produce(queue, body);
+    await waitFor(() => first.length === 3);
+    await timers.setTimeout(20);
+    await consumer.stop();
+    await broker.close();
+    assert.ok(kafka.server.groups.has(queue), 'the durable group survived the close');
+
+    const next = createKafkaBroker({ kafka, logger: quiet, partitions: 2 });
+    t.after(() => next.close());
+    const again = [];
+    const resumed = await next.queue.consume(queue, (delivery) => {
+      again.push(delivery.body);
+      return delivery.ack();
+    });
+    t.after(() => resumed.stop());
+    await next.queue.produce(queue, 'd');
+    await waitFor(() => again.length === 1);
+    await timers.setTimeout(50);
+    assert.deepStrictEqual(again, ['d'], 'only what was produced after the restart');
+  });
+
+  test(`kafka broker (${flavor}): a reader whose subscribe or run fails leaves no consumer and no group behind`, async (t) => {
+    const { kafka, broker } = open(flavor);
+    t.after(() => broker.close());
+    const topic = unique('feed');
+    await broker.log.append(topic, 'one');
+    const readerGroups = () => Array.from(kafka.server.groups.keys()).filter((id) => id.includes('-read-'));
+    for (const step of ['subscribe', 'run']) {
+      // A catch-up page (range) and a live tail: both open a reader.
+      kafka.server.failures[step] = new Error(`${step} refused`);
+      await assert.rejects(collect(broker.log.read(topic, { from: 'earliest' }), 1), new RegExp(`${step} refused`));
+      kafka.server.failures[step] = new Error(`${step} refused`);
+      await assert.rejects(collect(broker.log.read(topic), 1, { timeout: 500 }), /refused|timeout/);
+      await waitFor(() => kafka.server.members === 0 && readerGroups().length === 0, {
+        message: `after a failed ${step}: ${kafka.server.members} members, groups ${readerGroups()}`,
+      });
+    }
+    // And a page that completes drops its group at once, not at close().
+    assert.deepStrictEqual(await collect(broker.log.read(topic, { from: 'earliest' }), 1).then((e) => e.length), 1);
+    await waitFor(() => readerGroups().length <= 1, { message: `lingering reader groups: ${readerGroups()}` });
+  });
+}
 
 test('kafka broker: pause and resume ride the consumer, not the group', async (t) => {
   const { broker } = open('kafkajs');
