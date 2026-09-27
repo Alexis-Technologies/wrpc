@@ -117,9 +117,11 @@ An honest list is more useful than a feature grid.
 - **One protocol implementation, both sides.** The browser build contains zero
   Node builtins, so the client talking to your server is the same code, not a
   reimplementation.
-- **The wire protocol is frozen at 1.0.** An independent implementation written
-  against [the reference](../reference/protocol) keeps working for the life of
-  the major version.
+- **The wire protocol is a versioned reference, not an implementation detail.**
+  An independent implementation written against
+  [the reference](../reference/protocol) keeps working for the life of the
+  major version — 2.0 changed no packet, and what it added carries a
+  `since 2.0` badge and a compatibility row.
 
 Convinced enough to try it? [Getting Started](./getting-started) is a working
 server and client in about thirty lines.

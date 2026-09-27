@@ -410,3 +410,50 @@ test('the @experimental carve-out counts match their lists', () => {
   assert.strictEqual(mirrored, count, 'CONTRIBUTING.md must list the same carve-outs as stability.md');
   assert.ok(contributing.includes(`with ${word} carve-outs`), `CONTRIBUTING.md must say "${word} carve-outs"`);
 });
+
+// protocol.md is the wire reference: every `## ` section 1.0 did not have
+// carries a "since" badge, so a reader knows what an older peer never saw,
+// and the experimental carriers say so in their first paragraph. The list of
+// 1.0 sections is closed — a section added without a badge fails here, and
+// so does a badge on one 1.0 had.
+test('protocol.md badges every section that is new since 1.0 and marks the experimental ones', () => {
+  const text = read('docs/reference/protocol.md');
+  const ORIGINAL = new Set([
+    'Stability',
+    'Versioning',
+    'Changes since 1.0',
+    'Framing',
+    'Packets',
+    'Introspection',
+    'Sessions',
+    'Rooms',
+    'Server-Sent Events',
+    'Reconnect',
+  ]);
+  const EXPERIMENTAL = new Set(['WebTransport', 'Broker binding', 'Session encryption']);
+  const headings = [...text.matchAll(/^## (.+)$/gm)].map((match) => match[1]);
+  assert.ok(headings.length >= ORIGINAL.size + EXPERIMENTAL.size, 'protocol.md lost sections');
+  for (const heading of headings) {
+    const title = heading
+      .replace(/\s*<Badge[^>]*\/>/, '')
+      .replace(/\s*\{#[^}]+\}\s*$/, '')
+      .trim();
+    const badge = /<Badge type="info" text="since \d+\.\d+" \/>/.test(heading);
+    if (ORIGINAL.has(title)) assert.ok(!badge, `${title} was in 1.0: no since-badge`);
+    else assert.ok(badge, `${title} is new since 1.0: its heading needs <Badge type="info" text="since N.0" />`);
+    if (EXPERIMENTAL.has(title)) {
+      const start = text.indexOf(`## ${heading}`);
+      const next = text.indexOf('\n## ', start + 1);
+      const section = text.slice(start, next < 0 ? undefined : next);
+      assert.ok(
+        section.replace(/\s+/g, ' ').includes('**This section is experimental**'),
+        `${title} must say it is experimental at its top`,
+      );
+    }
+  }
+  assert.ok(text.includes('## Changes since 1.0 {#changes-since-1-0}'), 'the migration table keeps its anchor');
+  assert.ok(
+    !/frozen 1\.0|frozen at 1\.0|what 1\.x speaks/i.test(text),
+    'the page describes revision 2.0, not a frozen 1.0',
+  );
+});

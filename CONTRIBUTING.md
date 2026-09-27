@@ -50,9 +50,13 @@ entry and a `tests/<name>.test-d.ts`.
 both.
 
 **Wire-protocol changes are documented in
-[`docs/reference/protocol.md`](./docs/reference/protocol.md)**, which is frozen
-at 1.0: additive, optional fields within a major version; anything else is a
-major.
+[`docs/reference/protocol.md`](./docs/reference/protocol.md)**, which names
+its revision and what each of its tiers promises: additive, optional fields
+within a major version; anything else is a major, with a row in the page's
+"Changes since" table saying what an older peer does with it and what to set
+until every peer is upgraded. A `##` section the previous major did not have
+carries a `since N.0` badge (`tests/package/consistency.test.js` holds the
+list of the sections that need none).
 
 **Style** is enforced by oxlint/oxfmt: 2-space indent, single quotes,
 semicolons, 120-column lines. The `correctness` category is intentionally off,
@@ -147,7 +151,7 @@ CHANGELOG and the docs for at least one minor release, and (2) a major
 version to actually remove it. The wire protocol has its own, stronger
 promise — see [protocol.md](./docs/reference/protocol.md#stability): packet
 shapes never break inside a major, and the `wrpc.v1` subprotocol names the
-revision on the wire.
+core's revision on the wire (2.0 changed no packet, so it still reads v1).
 
 ## Release checklist
 

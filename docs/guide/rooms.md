@@ -272,7 +272,7 @@ if (incomplete || answers.length < expected) escalate(expected - answers.length)
 
 What wrpc deliberately does not have is a per-room replay buffer with a
 client that "rejoins from an id": it would duplicate subscriptions, and it
-would need a new concept inside the [frozen 1.0 protocol](../reference/protocol#stability).
+would need a new concept inside the [protocol's core](../reference/protocol#stability).
 If you need a queue's guarantees, you need a queue — and a subscription is
 how its offsets reach the browser.
 

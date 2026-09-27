@@ -95,7 +95,7 @@ follow:
   the mappings under the plugin. `codec.rest` without mappings registers
   normally.
 - Like the packet codec, `codec.rest` is an opt-in framing **outside** the
-  frozen 1.0 interop promise.
+  protocol's interop promise.
 
 ## The rules that follow
 

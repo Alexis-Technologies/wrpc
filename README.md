@@ -332,7 +332,8 @@ Every subpath ships hand-maintained TypeScript declarations — no generation, n
   [logging](https://wrpc.vercel.app/guide/logging),
   [OpenTelemetry](https://wrpc.vercel.app/guide/telemetry).
 - **Reference** — [wire protocol](https://wrpc.vercel.app/reference/protocol)
-  (frozen at 1.0), [wire format](https://wrpc.vercel.app/reference/wire-format),
+  (revision 2.0, with a changes-since-1.0 table),
+  [wire format](https://wrpc.vercel.app/reference/wire-format),
   [engine port](https://wrpc.vercel.app/reference/engine),
   [errors & close codes](https://wrpc.vercel.app/reference/errors).
 - **Types** — [`index.d.ts`](./index.d.ts) is the full public surface, plus one

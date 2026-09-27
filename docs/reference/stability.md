@@ -1,6 +1,6 @@
 # Stability & deprecation
 
-What "1.x" promises, in one place — the consumer-facing copy of the policy
+What 2.x promises, in one place — the consumer-facing copy of the policy
 [CONTRIBUTING.md](https://github.com/Alexis-Technologies/wrpc/blob/main/CONTRIBUTING.md#stability-and-deprecation)
 holds for contributors.
 
@@ -58,9 +58,13 @@ a **minor** (described in the CHANGELOG):
 
 ## The wire protocol's own, stronger promise
 
-The [wire protocol](./protocol#stability) is **frozen at 1.0**: packet
-shapes never break inside a major, new fields are additive and ignorable,
-and the revision is named on the wire — the `wrpc.v1` subprotocol on
-WebSocket, the reserved `wrpc-version` response header on HTTP. An
-independent implementation written against the reference keeps working for
-the life of the major version.
+The [wire protocol](./protocol#stability) is documented at **revision 2.0**,
+in three tiers: the packet core, which never breaks inside a major — 2.0
+changed no packet, so the revision named on the wire is still the `wrpc.v1`
+subprotocol on WebSocket and `wrpc-version: 1` on HTTP; the carrier
+conventions, additive under the same rule, of which the ones a 1.0 peer
+never saw are badged `since 2.0` and listed with what happens when the
+versions meet under [Changes since 1.0](./protocol#changes-since-1-0); and
+the experimental sections, which follow the carve-outs above. An independent
+implementation written against the reference keeps working for the life of
+the major version.

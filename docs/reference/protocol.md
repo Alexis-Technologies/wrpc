@@ -8,24 +8,44 @@ which is what lets the same client code work behind a worker.
 
 ## Stability
 
-**This page is the frozen 1.0 protocol.** Everything below is what
-`@alexify/wrpc@1.x` speaks, and an independent implementation written against
-it will keep working for the life of the major version.
+**This page is the wire protocol at revision 2.0** — what `@alexify/wrpc@2.x`
+speaks. An independent implementation written against it keeps working for
+the life of the major version. It has three tiers, and the promise differs
+by tier:
 
-What that promise covers, and what it does not:
+- **The core** — the [packets](#packets), their fields and their meanings,
+  the error codes, batch frames, binary chunks,
+  [introspection](#introspection), [sessions](#sessions) and
+  [reconnect](#reconnect) — **does not change** inside 2.x. A new optional
+  field may be added; an existing one will not change shape or disappear.
+  Unknown packet types are answered with a `callback` carrying code 500 and
+  unknown fields are ignored, which is what makes an additive change safe
+  for an older peer; error codes keep their meanings, and new codes may
+  appear for new failure modes. The core is unchanged since 1.0 — which is
+  why the revision marker on the wire still reads `wrpc.v1` and
+  `wrpc-version: 1` ([Versioning](#versioning)).
+- **The carrier conventions** — how a transport carries the core:
+  [connection metadata](#connection-metadata) and its carriers, the
+  [framed message kinds](#binary-chunks) of a binary frame and the `enc`
+  negotiation on `ping`/`pong`, the [SSE](#server-sent-events) channel
+  handshake, the [rooms](#rooms) envelope, the [WebRTC](#webrtc) framing and
+  signaling messages, the [compression](#compression) rule. Additive within
+  2.x under the same rule as the core. Most of them are new since 1.0 —
+  every `##` section 1.0 did not have carries a <Badge type="info" text="since 2.0" />
+  — and two of them are not additive for a 1.0 peer: the table under
+  [Changes since 1.0](#changes-since-1-0) says which, what happens when the
+  versions meet, and what to set until every peer is upgraded.
+- **The experimental sections** — [WebTransport](#webtransport), the
+  [broker binding](#broker-binding), [session encryption](#session-encryption)
+  with [sealed requests](#sealed-requests) and
+  [broker sealing](#broker-sealing) — describe revision 1 of a carrier or a
+  format that may change in a **minor**, with the change in the CHANGELOG;
+  each says so at its top, and its subpath is marked `@experimental`
+  ([stability](./stability#experimental-carve-outs)).
 
-- **Packet types, their fields and their meanings do not change** in 1.x. A
-  new optional field may be added; an existing one will not change shape or
-  disappear.
-- **Unknown packet types are answered with a `callback` carrying code 500**,
-  and unknown fields are ignored — which is what makes an additive change safe
-  for an older peer.
-- **Error codes keep their meanings.** New codes may appear for new failure
-  modes.
-- The **JavaScript API** on top of this is versioned by the package's own
-  semver and is a separate promise from the wire format.
-
-A change to any of the above is a major version, with the reasoning in the
+The **JavaScript API** on top of this is versioned by the package's own
+semver and is a separate promise from the wire format. A change to a stable
+tier of this page is a major version, with the reasoning in the
 [CHANGELOG](https://github.com/Alexis-Technologies/wrpc/blob/main/CHANGELOG.md).
 
 ## Versioning
@@ -42,6 +62,12 @@ app-configured `protocols`/`handleProtocols` **echoes** it back. Both sides
 therefore know, before the first packet, which revision the other speaks —
 and the selected name is on `connection.protocol` server-side.
 
+The marker names the revision of the **core** — the packets — not the
+package's major. 2.0 changed no packet, so a 2.x peer still offers and
+echoes `wrpc.v1` (and answers `wrpc-version: 1` on HTTP): a 1.0 peer and a
+2.0 peer agree on every packet, and where they can disagree is a carrier
+convention, each listed under [Changes since 1.0](#changes-since-1-0).
+
 The rules that keep this compatible in every direction:
 
 - A peer that offers **nothing** gets no subprotocol and both sides speak
@@ -49,10 +75,10 @@ The rules that keep this compatible in every direction:
 - A server whose app configures its own `protocols` list takes over
   negotiation entirely; offering `wrpc.v1` alongside app protocols is the
   app's decision.
-- A future `wrpc.v2` will be offered ALONGSIDE `wrpc.v1`
-  (`Sec-WebSocket-Protocol: wrpc.v2, wrpc.v1`), so an old server picks the
-  one it knows and nothing breaks. What `v2` may change is exactly what the
-  stability section above says `v1` never will.
+- A future `wrpc.v2` — a change to the core — will be offered ALONGSIDE
+  `wrpc.v1` (`Sec-WebSocket-Protocol: wrpc.v2, wrpc.v1`), so an old server
+  picks the one it knows and nothing breaks. What `v2` may change is exactly
+  what the core tier above says `v1` never will.
 - The name `wrpc.` is reserved as a prefix: applications must not mint their
   own subprotocols under it. Besides revisions it holds the **carrier
   tokens** of [connection metadata](#connection-metadata) — offers that are
@@ -65,6 +91,29 @@ what reserves the negotiation seam inside the freeze (a future revision can
 branch on it without breaking a v1 peer). Beyond that, the HTTP side stays
 versioned by this page (additive changes only), which is safe because every
 request/response pair is self-contained.
+
+## Changes since 1.0 {#changes-since-1-0}
+
+What a 2.0 peer speaks that a 1.0 peer does not, section by section, and
+what happens when the two meet. The core is not in this table: no packet
+changed. Two rows are **not additive** — a 1.0 peer does not simply ignore
+them — and each says what to set until every peer is upgraded; the
+[CHANGELOG](https://github.com/Alexis-Technologies/wrpc/blob/main/CHANGELOG.md#migrating-from-10)
+has the upgrade order.
+
+| Since 2.0 | Where | Meeting a 1.0 peer | Until every peer is 2.0 |
+| --- | --- | --- | --- |
+| The subprotocol **carrier tokens** `wrpc.h.`, `wrpc.m.` and `wrpc.bearer.` — a browser's declared headers, data and bearer on a WebSocket handshake — and a wider deny list of declared names | [Connection metadata](#connection-metadata) | A 1.0 server selects `wrpc.v1` from the offer and ignores the tokens: the connection lives, the browser's labels are lost. A 1.0 client never sends one. | `carrier: 'query'` on the client — the `wrpc_h`/`wrpc_meta` query 1.0 sent |
+| **Framed messages** of kind 3 and 4 — a packet or a chunk compressed by a Node client — and the `enc` field of `ping`/`pong` that negotiates them | [Binary chunks](#binary-chunks), [Compression](#compression) | Negotiated: a 1.0 server ignores `enc` on the `ping` and answers a plain `pong`, so a 2.0 client never sends one; a 1.0 client never sends one. | nothing |
+| **Framed messages of kind 1 — binary attachments**: a packet whose byte values travel as bytes, on WebSocket, a worker port and packet-mode HTTP | [Binary chunks](#binary-chunks) | **Not additive.** Sent whenever a packet holds bytes and negotiated by nothing: a 1.0 client throws on the frame and its callback is lost (the call times out), a 1.0 server answers it `400` with an empty id. | `attachments: false` on the 2.0 server while a 1.0 client can connect, and on a 2.0 client against a 1.0 server — bytes then travel as the `{ type: 'Buffer', data }` JSON of 1.0 |
+| The **SSE channel secret**: `secret` in the `ready` frame, presented as `x-wrpc-channel: <id>.<secret>` | [Server-Sent Events](#server-sent-events) | **Not additive.** A 1.0 client presents the id alone and is answered `409` on every POST and re-attach, so it opens a fresh channel each time and no call completes; a 2.0 client against a 1.0 server presents `<id>.<secret>`, which that server reads as an unknown id — `409` as well. | nothing — upgrade a server and its SSE clients together; the WebSocket and HTTP transports are unaffected |
+| `epoch` and `seq` on the **rooms envelope** — loss detection between instances | [Rooms](#rooms) | Additive: a 1.0 instance ignores them, a 2.0 instance delivers a 1.0 instance's envelopes untracked. | nothing |
+| The `wrpc-bin:` **rooms envelope** — an event whose data holds bytes, as an attachments frame | [Rooms](#rooms) | A 1.0 instance cannot parse it and drops the event (logged). | `attachments: false` on the publishing instance keeps the envelope JSON, as in 1.0 — the same flag as kind 1 |
+| The `wrpc-enc:` and `wrpc-sealed:` **rooms and cluster envelopes** — compressed, encrypted | [Rooms](#rooms) | Opt-in on the publisher; a 1.0 instance drops what it cannot read (logged). | turn `rooms.compression`, `cluster.compression` and the `encryption` options on only once every instance is 2.0 — the two-step rollout the section describes |
+| `headers` and `cache` on a procedure's `http` descriptor in **introspection** | [Introspection](#introspection) | Additive: unknown keys of a descriptor are ignored. | nothing |
+| **WebRTC**: the data-channel framing, the signaling messages, the trust assertions | [WebRTC](#webrtc) | A new carrier: a 1.0 peer has no WebRTC transport and never meets it. | nothing |
+| The **compression rule** — `enc` lists, a sender compresses with the first codec of its own list the peer announced | [Compression](#compression) | Governs only what two 2.0 ends negotiate. | nothing |
+| **WebTransport**, the **broker binding**, **session encryption** with **sealed requests** and **broker sealing** — experimental | [WebTransport](#webtransport), [Broker binding](#broker-binding), [Session encryption](#session-encryption) | New carriers and formats, opt-in on both ends; a 1.0 peer never meets them. | nothing |
 
 ## Framing
 
@@ -109,7 +158,7 @@ but its streams carry bytes with no message boundary, so packets and chunks
 travel length-prefixed on one stream — see [WebTransport](#webtransport)
 below.
 
-### Connection metadata
+### Connection metadata {#connection-metadata}
 
 A client may declare connection-phase metadata at connect time: a bag of
 **declared headers** and a bag of **declared data**. This is a
@@ -754,7 +803,7 @@ response body, nothing but HTTP in either direction. What it cannot carry is
 binary — SSE frames are text, so wrpc's binary streams are refused on this
 transport rather than silently corrupted.
 
-## WebRTC
+## WebRTC <Badge type="info" text="since 2.0" /> {#webrtc}
 
 Two peers speak wrpc to each other over one `RTCPeerConnection` carrying
 **two negotiated data channels**, one per direction of the protocol's
@@ -887,7 +936,7 @@ payload  { "sub": string,      the peer id, as the signaling layer names it
 - A token is at most 4 KiB. Anything else is a refusal; the reason is the
   verifier's business, not the wire's — the link is simply closed.
 
-## WebTransport
+## WebTransport <Badge type="info" text="since 2.0" /> {#webtransport}
 
 A client speaks wrpc to a server over a WebTransport session (HTTP/3) the
 way it does over a WebSocket: the packets are the same and travel in the
@@ -1011,7 +1060,7 @@ bytes 1…        the packet
   UTF-8, an empty one) — a lost datagram is the norm, and an unreadable
   one is not worth a hangup.
 
-## Broker binding
+## Broker binding <Badge type="info" text="since 2.0" /> {#broker-binding}
 
 A client speaks wrpc to a server **through a message broker** — RabbitMQ,
 NATS, Redis — instead of over a socket: the packets are unmodified wrpc
@@ -1128,7 +1177,7 @@ MAY consult a memory shared by the instances (keyed by the envelope's own
 header — key id, sender salt, counter) to refuse the replay within that
 allowance too.
 
-## Compression
+## Compression <Badge type="info" text="since 2.0" /> {#compression}
 
 Every transport carries plain bytes unless the application turns compression
 on; nothing negotiates it by default. Where it exists it is the carrier's own
@@ -1167,7 +1216,7 @@ event stream the encoding is a property of one response: a re-attach
 negotiates it again, and a replay goes out in whatever the new response
 negotiated.
 
-## Session encryption {#session-encryption}
+## Session encryption <Badge type="info" text="since 2.0" /> {#session-encryption}
 
 **This section is experimental** — this one, [Sealed requests](#sealed-requests)
 under it and [Broker sealing](#broker-sealing): they describe revision 1 of
