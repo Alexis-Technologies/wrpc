@@ -1315,6 +1315,13 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **Trace context on a broker message rides as `traceparent`/`tracestate`.**
+  The publisher wrote the packet's field names (`tp`/`ts`) into the message
+  headers, which no consumer that is not wrpc reads; it writes the W3C
+  header names now, and the consumer reads them first (`tp`/`ts` still
+  read, for a message an earlier publisher left in a topic). The packet
+  fields on the wire are unchanged. The telemetry guide also stops promising
+  B3 or Jaeger propagators: the fields carry the W3C keys only.
 - **`wrpc.server.backplane.gaps` is labelled by `wrpc.channel.kind`, not
   by the room's name.** The counter carried `wrpc.channel` — a room name, a
   peer-chosen and unbounded value, which is a cardinality bomb in any

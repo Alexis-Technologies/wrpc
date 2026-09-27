@@ -14,7 +14,7 @@
 // its CONSUMER span on it.
 
 const { runValidator } = require('../rpc/router.js');
-const { SPAN_KIND_PRODUCER } = require('../telemetry/shared.js');
+const { SPAN_KIND_PRODUCER, TRACEPARENT, TRACESTATE } = require('../telemetry/shared.js');
 const { capabilityOf, brokerName, isBrokerLog, isBrokerQueue } = require('./port.js');
 const { codedError } = require('./ids.js');
 const { createBrokerSealing } = require('./sealing.js');
@@ -99,7 +99,15 @@ const createPublisher = (server, broker, table = {}, options = {}) => {
             }
           }
           const carried = headers ? { ...headers } : {};
-          otel.inject(carried);
+          // The trace context rides under the W3C header names — a message
+          // header is a header, and a consumer that is not wrpc reads
+          // `traceparent`, not the packet field's `tp`. The injector writes
+          // the packet names; renamed here, at the one place a message is
+          // built.
+          const context = {};
+          otel.inject(context);
+          if (context[TRACEPARENT] !== undefined) carried.traceparent = context[TRACEPARENT];
+          if (context[TRACESTATE] !== undefined) carried.tracestate = context[TRACESTATE];
           const key = keyOverride ?? (typeof event.key === 'function' ? event.key(value) : event.key);
           const plain = JSON.stringify(value);
           const out = sealing === null ? { headers: carried, body: plain } : sealing.seal(topic, carried, plain);

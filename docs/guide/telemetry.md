@@ -243,8 +243,11 @@ them like any other unknown field. The context is per **packet**, so each call
 in a [batch](./client#batching) keeps its own parent.
 
 wrpc does not parse or serialize the W3C format — it hands the field to your
-propagator, so whichever one you configured globally (W3C, B3, Jaeger) is what
-runs. The full wire description is in the
+propagator. The two fields carry exactly the `traceparent` and `tracestate`
+keys, so the propagator has to be the W3C one: a B3 or Jaeger propagator's
+headers have other names and are not carried. On a broker message the same
+context rides under the W3C header names themselves. The full wire
+description is in the
 [protocol reference](../reference/protocol#trace-context).
 
 ### Untrusted peers

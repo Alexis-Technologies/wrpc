@@ -213,12 +213,30 @@ test('publish -> queue -> consumer: one trace, PRODUCER then CONSUMER, and a del
     await rpc.close();
     broker.close();
   });
+  // What the message carries: the W3C header names, never the packet's.
+  // The broker's capabilities are frozen, so the publisher gets a view of
+  // the broker whose queue records what it produces.
+  const messages = [];
+  const spied = Object.create(broker, {
+    queue: {
+      value: {
+        ...broker.queue,
+        produce: (topic, body, message) => {
+          messages.push(message);
+          return broker.queue.produce(topic, body, message);
+        },
+      },
+    },
+  });
   const consumers = await attachConsumers(rpc, broker, { 'orders.v1/created': { queue: 'orders' } });
-  const publisher = createPublisher(rpc, broker, { 'orders.v1/created': { to: 'queue', topic: 'orders' } });
+  const publisher = createPublisher(rpc, spied, { 'orders.v1/created': { to: 'queue', topic: 'orders' } });
   await publisher.publish('orders.v1/created', { id: 'o-1' });
   await waitFor(() => handled.length === 1);
   await waitFor(() => spans.getFinishedSpans().length === 2);
   const [produced, consumed] = spans.getFinishedSpans();
+  assert.strictEqual(messages.length, 1);
+  assert.match(messages[0].headers.traceparent, /^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+  assert.strictEqual(messages[0].headers.tp, undefined, 'the packet field name is not a message header');
   assert.strictEqual(produced.name, 'orders publish');
   assert.strictEqual(produced.kind, otelApi.SpanKind.PRODUCER);
   assert.strictEqual(produced.attributes['messaging.destination.name'], 'orders');
@@ -235,6 +253,14 @@ test('publish -> queue -> consumer: one trace, PRODUCER then CONSUMER, and a del
     'messaging.system': 'memory',
     'wrpc.broker.outcome': 'ack',
   });
+  // A producer that is not wrpc writes traceparent: the consumer continues it.
+  const foreign = '00-4bf92f3577b34da6a3ce929d0e0e4736-00f067aa0ba902b7-01';
+  await broker.queue.produce('orders', JSON.stringify({ id: 'o-2' }), { headers: { traceparent: foreign } });
+  await waitFor(() => handled.length === 2);
+  await waitFor(() => spans.getFinishedSpans().length === 3);
+  const continued = spans.getFinishedSpans()[2];
+  assert.strictEqual(continued.spanContext().traceId, '4bf92f3577b34da6a3ce929d0e0e4736');
+  assert.strictEqual(continued.parentSpanContext?.spanId ?? continued.parentSpanId, '00f067aa0ba902b7');
   await consumers.stop();
 });
 

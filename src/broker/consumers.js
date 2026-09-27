@@ -540,8 +540,14 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
       if (value !== undefined) meta[name] = value;
     }
     const packet = { type: 'call', id, method, args, meta };
-    if (typeof headers.tp === 'string') packet[TRACEPARENT] = headers.tp;
-    if (typeof headers.ts === 'string') packet[TRACESTATE] = headers.ts;
+    // The W3C header names first — what a producer that is not wrpc, and
+    // wrpc's publisher, write — then the packet field names a message from
+    // an earlier publisher carried. `trustRemoteContext: false` still cuts
+    // either off at the span.
+    const traceparent = headers.traceparent ?? headers.tp;
+    const tracestate = headers.tracestate ?? headers.ts;
+    if (typeof traceparent === 'string') packet[TRACEPARENT] = traceparent;
+    if (typeof tracestate === 'string') packet[TRACESTATE] = tracestate;
     const outcome = transport.expect(id);
     handleRpc(client, packet, view).catch((error) => {
       // The dispatcher itself threw, not the handler: settled as a 500 so

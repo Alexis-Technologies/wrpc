@@ -82,8 +82,12 @@ Every delivery is an ordinary call packet dispatched by the core:
 
 - `ctx.callMeta` carries `messageId`, `attempt` (1-based) and `queue`, plus the
   headers `meta` allows.
-- A `tp`/`ts` header continues the producer's trace: the call span is a
+- A `traceparent`/`tracestate` message header — the W3C names, what any
+  producer writes — continues the producer's trace: the call span is a
   `CONSUMER` span with `messaging.*` attributes (see [Publishing](#publishing)).
+  Under [encryption](../encryption#brokers) the headers travel inside the
+  sealed message, so a party without the keys — a tracing sidecar reading
+  the topic — sees no trace context.
 - The consumer's client reports `ctx.client.transportKind === 'broker'`. It is
   a request/response carrier: it runs calls, is not counted among connected
   clients, and receives no broadcasts.
@@ -235,7 +239,7 @@ created (`strict: false` lifts that). `publish` resolves with the log id for a
 log target.
 
 Each publish is a `PRODUCER` span, and the active trace context rides in the
-message headers — so a trace starts at the WebSocket call that placed the
+message headers as `traceparent`/`tracestate` — so a trace starts at the WebSocket call that placed the
 order, continues through the publish, and ends in the consumer that charged it.
 `wrpc.broker.published` counts publishes by outcome, `wrpc.broker.deliveries`
 consumed messages by settlement.
