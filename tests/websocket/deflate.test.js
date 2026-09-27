@@ -388,6 +388,16 @@ const tickUntil = async (check, tries = 200) => {
   }
   throw new Error('condition never met');
 };
+// For a condition the clock bounds — an inflate on a zlib stream or the
+// threadpool — a deadline in milliseconds; a tick budget runs out under
+// load with nothing wrong.
+const waitUntil = async (check, ms) => {
+  const deadline = Date.now() + ms;
+  while (!check()) {
+    if (Date.now() > deadline) throw new Error(`condition never met within ${ms} ms`);
+    await new Promise((resolve) => setTimeout(resolve, 2));
+  }
+};
 
 test('Connection: a deflate that fails on the way out is a ws.deflate line, then a terminate', async (t) => {
   const permessageDeflate = require('../../src/websocket/permessageDeflate.js');
@@ -655,7 +665,7 @@ test('takeover: a burst of compressed frames pauses the socket at the inflate ma
   // start every inflate of the segment at once.
   assert.strictEqual(socket.paused, true, 'paused for the inflate queue');
   assert.strictEqual(conn.isPaused, true, 'the heartbeat must not take a held connection for dead');
-  await tickUntil(() => messages.length === texts.length, 5000);
+  await waitUntil(() => messages.length === texts.length, 5000);
   assert.deepStrictEqual(messages, texts);
   assert.strictEqual(socket.paused, false, 'taken up again once it drained');
   assert.strictEqual(conn.isPaused, false);
@@ -669,8 +679,8 @@ test("async inflate: the threadpool path holds at four in flight; the applicatio
   // The application pauses while the queue is held: once the queue drains
   // the socket stays paused — that pause is the application's to lift.
   conn.pause();
-  await tickUntil(() => messages.length >= 4, 1000);
-  await tickUntil(() => messages.length === texts.length, 5000);
+  await waitUntil(() => messages.length >= 4, 1000);
+  await waitUntil(() => messages.length === texts.length, 5000);
   assert.deepStrictEqual(messages, texts);
   assert.strictEqual(socket.paused, true, "the application's pause holds");
   assert.strictEqual(conn.isPaused, true);
@@ -684,7 +694,7 @@ test("async inflate: the threadpool path holds at four in flight; the applicatio
   again.conn.pause();
   again.conn.resume();
   assert.strictEqual(again.socket.paused, true, 'held for the queue, not for the application');
-  await tickUntil(() => again.messages.length === again.texts.length, 5000);
+  await waitUntil(() => again.messages.length === again.texts.length, 5000);
   assert.strictEqual(again.socket.paused, false);
   again.conn.terminate();
   conn.terminate();
