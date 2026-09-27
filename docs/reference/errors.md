@@ -85,6 +85,7 @@ A code above `599` is reported as `500`.
 | `500` | Handler threw without a code; a subscription handler returned a non-iterable; an `output` validator rejected the result | router |
 | `501` | No responder registered for an [ask](../guide/rooms#asking-a-room); a binary stream attempted over [SSE](../guide/sse#what-it-cannot-do) | client, SSE |
 | `503` | Queue full, server [draining](../guide/production#graceful-shutdown), transport closed under an in-flight call, `maxChannels` reached | router, core, SSE |
+| `400`, `409`, `426` (sealed) | A [sealed request](../guide/encryption#session) refused before it was read: not accepted (the pinned key may be retired), stale or replayed (a clock), or plaintext where encryption is `required`. Bare statuses, no body — the calls the request carried fail with the same code on the client, and the client emits `EncryptionRefusedError` (`code: 'ENCRYPTION_REFUSED'`, `status`); any other plaintext answer to a sealed request is a `503` | encryption |
 
 ::: tip 499 is not a failure
 It acknowledges a cancel the caller asked for. The client resolves the
@@ -123,9 +124,10 @@ the *connection*, not one call. Exported as `CLOSE_CODES` from
 | --- | --- | --- |
 | `1000` | Normal closure | `client.close()`, a clean goodbye. |
 | `1001` | Going away | The server is [shutting down](../guide/production#graceful-shutdown). Reconnect elsewhere. |
-| `1002` | Protocol error | A frame violated RFC 6455 — bad opcode, bad continuation, reserved bit set. |
+| `1002` | Protocol error | A frame violated RFC 6455 — bad opcode, bad continuation, reserved bit set. With reason `encryption`: a [session handshake](../guide/encryption#session) frame that did not verify or parse, or a sealed frame that did not open. |
 | `1006` | Abnormal closure | No close frame arrived. Never sent — it is what a local socket reports. |
 | `1007` | Invalid payload | A text frame that was not valid UTF-8. |
+| `1008` | Policy violation | With reason `encryption`: the session handshake was refused by policy — plaintext where encryption is required, an unlisted protocol or key id, `authorize` said no, the handshake timed out, or the server had too much to say before it finished. |
 | `1009` | Message too big | Over `maxPayload`. |
 | `1011` | Internal error | The engine could not continue. |
 

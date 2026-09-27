@@ -11,6 +11,7 @@
 // it relays. See docs/guide/encryption.md.
 
 const { aead, ALGORITHMS } = require('./aead.js');
+const { EncryptionRefusedError } = require('./http.js');
 const { x25519 } = require('./dh.js');
 const { createKdf } = require('./hkdf.js');
 const { normalizeKeys, generateKey, isKid } = require('./keyring.js');
@@ -43,6 +44,7 @@ module.exports = {
   generateKey,
   isKid,
   OpenError,
+  EncryptionRefusedError,
   isCipher,
   isCipherKey,
   isDh,

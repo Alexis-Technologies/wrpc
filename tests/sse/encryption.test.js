@@ -252,6 +252,24 @@ test('sse encryption: the http content coding is not applied to a sealed stream 
   assert.ok(spy.seen.length > 2);
 });
 
+test('sse encryption: a stale open is a typed refusal, not a reconnect loop', async (t) => {
+  const { EncryptionRefusedError } = require('../../encryption.js');
+  const booted = await bootServer(t, { router, encryption: { keys: generateKey(), required: true, maxSkew: 1 } });
+  const serverKey = await booted.server.rpc.encryptionKey();
+  // Stamped, then held for 5 ms before it leaves: stale on arrival.
+  const late = (url, init) => new Promise((resolve) => setTimeout(() => resolve(fetch(url, init)), 5));
+  await assert.rejects(
+    WrpcClient.connect(`${booted.origin}${booted.server.rpc.basePath}`, {
+      transport: 'sse',
+      encryption: createEncryption({ serverKey }),
+      reconnect: false,
+      logger: false,
+      fetch: late,
+    }),
+    (error) => error instanceof EncryptionRefusedError && error.status === 409,
+  );
+});
+
 test('sse encryption: no serverKey, nothing to seal a request to', async (t) => {
   const { endpoint } = await secure(t);
   await assert.rejects(

@@ -1320,6 +1320,18 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **A sealed request the server refused is a typed client error, with the
+  status the calls can act on.** The sealed `fetch` threw "answered in
+  plaintext (N)" and every call in the request failed `503`, so a device
+  with a wrong clock (`409`), a retired pinned key (`400`) and a server that
+  now requires encryption (`426`) all looked like an outage. The client
+  emits `EncryptionRefusedError` (`code: 'ENCRYPTION_REFUSED'`, `status`, a
+  message that says what to check) and the calls fail with that status —
+  for that closed set only, since the outer status is unauthenticated;
+  anything else stays `503`. On SSE a sealed-layer `409` never closes the
+  channel (that is the plain transport's "channel gone"), and a stale open
+  rejects with the typed error instead of reconnecting forever. The errors
+  reference lists the sealed statuses and the `encryption` close reasons.
 - **A refused session handshake says who, why, and at the level it
   deserves — and is counted.** `encryption.refused` on a socket carries the
   `peer` (a child binding), a `kid` or `protocol` only when it is shaped

@@ -154,6 +154,25 @@ test('http encryption: required refuses plaintext; without it both are served', 
   assert.strictEqual((await client.api.data.echo({})).kind, 'http');
 });
 
+test('http encryption: a refusal the client can act on is typed, and its status reaches the call', async (t) => {
+  const { EncryptionRefusedError } = require('../../encryption.js');
+  // A skew window of one millisecond: every request is stale by the time
+  // the server reads its timestamp.
+  const { connect } = await secure(t, { maxSkew: 1 });
+  // Stamped, then held for 5 ms before it leaves: stale on arrival.
+  const late = (url, init) => new Promise((resolve) => setTimeout(() => resolve(fetch(url, init)), 5));
+  const client = await connect({ reconnect: false, fetch: late });
+  const errors = [];
+  client.on('error', (error) => errors.push(error));
+  // Every request is sealed — load() would be refused the same way — so
+  // the unscaffolded call is what shows the status reaching the caller.
+  await assert.rejects(client.call('data/echo', { n: 1 }), (error) => error.code === 409);
+  assert.strictEqual(errors.length, 1);
+  assert.ok(errors[0] instanceof EncryptionRefusedError);
+  assert.deepStrictEqual([errors[0].code, errors[0].status], ['ENCRYPTION_REFUSED', 409]);
+  assert.match(errors[0].message, /clock/);
+});
+
 test("http encryption: a session cookie still works — Set-Cookie is the outer response's", async (t) => {
   const { endpoint, connect } = await secure(t, { required: true });
   const jar = [];
@@ -206,7 +225,10 @@ test('http encryption: replayed, stale, altered or sealed to an unknown key — 
     serverKey: parseBundle(staleKey),
     now: () => Date.now() - 5 * 60_000,
   })(fetch, staleEndpoint);
-  await assert.rejects(late(staleEndpoint, { method: 'POST', body: '{}' }), /answered in plaintext \(409\)/);
+  await assert.rejects(
+    late(staleEndpoint, { method: 'POST', body: '{}' }),
+    (error) => error.code === 'ENCRYPTION_REFUSED' && error.status === 409,
+  );
 
   // Altered in flight, truncated, sealed to a kid nobody holds, not the format at all
   const bodies = [

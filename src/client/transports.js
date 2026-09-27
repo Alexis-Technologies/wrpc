@@ -4,7 +4,7 @@
 // exactly the way the SSE subpath registers its own — the registry is the
 // one seam every transport, built-in or not, goes through.
 
-const { WrpcClient, ClientTransport, WRPC_PROTOCOL, META_MAX, metaHeaders } = require('./core.js');
+const { WrpcClient, ClientTransport, WRPC_PROTOCOL, META_MAX, metaHeaders, refusedStatus } = require('./core.js');
 const { jsonParse } = require('../utils.js');
 const { createWsCompression } = require('./wsCompression.js');
 const { openSocket } = require('./wsHandshake.js');
@@ -331,7 +331,11 @@ class ClientHttpTransport extends ClientTransport {
         this.failPackets(data, res.status);
       } catch (error) {
         this.emit('error', error);
-        this.failPackets(data, 503);
+        // A sealed request the server refused in plaintext names its status
+        // only for the closed set the sealing layer vouches for (400, 409,
+        // 426 — a retired key, a clock, a required mode); the outer status
+        // of anything else is unauthenticated and stays a 503.
+        this.failPackets(data, refusedStatus(error));
       }
     };
     send();

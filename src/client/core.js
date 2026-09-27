@@ -2336,7 +2336,18 @@ class WrpcClient extends Emitter {
   }
 }
 
+// The status a transport hands the calls a refused SEALED request carried
+// (src/encryption/http.js throws EncryptionRefusedError): only the closed
+// set the sealing layer vouches for — a retired key, a clock, a required
+// mode — because the outer status of anything else is unauthenticated.
+// Here and not in encryption/http.js: the transports must not load HPKE.
+const refusedStatus = (error) =>
+  error?.code === 'ENCRYPTION_REFUSED' && (error.status === 400 || error.status === 409 || error.status === 426)
+    ? error.status
+    : 503;
+
 module.exports = {
+  refusedStatus,
   WrpcClient,
   WrpcError,
   ClientTransport,

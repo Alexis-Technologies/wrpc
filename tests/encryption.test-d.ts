@@ -72,6 +72,9 @@ expectType<boolean>(encryption.isKeyProvider(provider));
 
 // The failure and the helpers
 declare const failure: encryption.OpenError;
+declare const refusal: encryption.EncryptionRefusedError;
+expectType<'ENCRYPTION_REFUSED'>(refusal.code);
+expectType<number>(refusal.status);
 expectType<'open'>(failure.code);
 expectType<string>(encryption.toBase64Url(new Uint8Array(4)));
 expectType<Uint8Array | null>(encryption.fromBase64('AAAA'));

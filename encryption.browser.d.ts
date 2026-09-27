@@ -18,6 +18,19 @@ export declare class OpenError extends Error {
   readonly code: 'open';
 }
 
+/**
+ * A sealed request (http, sse) the server answered in plaintext — a client
+ * that encrypts reads none. `status` is the outer, unauthenticated status;
+ * the calls the request carried fail with it only for the closed set the
+ * sealing layer vouches for (400: the pinned key may be retired; 409: stale
+ * or replayed — check the device's clock; 426: encryption required), and
+ * with 503 otherwise. Emitted as `'error'` on the client.
+ */
+export declare class EncryptionRefusedError extends Error {
+  readonly code: 'ENCRYPTION_REFUSED';
+  readonly status: number;
+}
+
 /** One key of a `Cipher`, ready to use. Either method may answer a promise. */
 export interface CipherKey {
   /** → ciphertext ‖ tag. A `(key, nonce)` pair must never seal two messages. */

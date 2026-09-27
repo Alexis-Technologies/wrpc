@@ -1,6 +1,7 @@
 'use strict';
 
 const { WrpcClient, ClientTransport, metaHeaders } = require('../client.js');
+const { refusedStatus } = require('../client/core.js');
 const { CHANNEL_HEADER, joinChannelRef } = require('./constants.js');
 
 // The client half of the SSE transport. Browser-safe: `fetch`, streams and
@@ -295,7 +296,11 @@ class ClientSseTransport extends ClientTransport {
     };
     post().catch((error) => {
       this.emit('error', error);
-      this.failPackets(data, 503);
+      // A sealed POST refused in plaintext: the sealing layer's closed set
+      // of statuses (400, 409, 426) reaches the calls, a 409 from it never
+      // closes the channel (that branch above is the plain transport's
+      // "channel gone"), anything else is a 503.
+      this.failPackets(data, refusedStatus(error));
     });
     return true;
   }

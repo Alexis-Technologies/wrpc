@@ -151,6 +151,27 @@ const openSealedStream = (body, key) => {
   });
 };
 
+// The one way a sealed request fails that the application can act on: the
+// server answered in plaintext, which a client that encrypts does not
+// read. The outer status is unauthenticated (anything on the path could
+// have written it), so only a closed set is named — and a transport maps
+// only that set onto the calls it carried; anything else is a 503.
+const REFUSAL_MESSAGES = {
+  __proto__: null,
+  400: 'the sealed request was not accepted — the pinned server key may be retired',
+  409: "the sealed request was refused as stale or replayed — check this device's clock",
+  426: 'the server requires encryption and this request did not carry it',
+};
+
+class EncryptionRefusedError extends Error {
+  constructor(status) {
+    super(`encryption: ${REFUSAL_MESSAGES[status] ?? `the server answered in plaintext (${status})`}`);
+    this.name = 'EncryptionRefusedError';
+    this.code = 'ENCRYPTION_REFUSED';
+    this.status = status;
+  }
+}
+
 /**
  * The client half: `sealedFetch({ hpke, kdf, cipher, serverKey })`
  * answers `(fetch, endpoint) => fetch-shaped function`. The wrapper answers
@@ -189,9 +210,7 @@ const sealedFetch = ({ hpke, kdf, cipher, serverKey, now = Date.now }) => {
         const stream = openSealedStream(response.body, await streamKey({ kdf, cipher }, context, enc, nonce));
         return new Response(stream, { status: 200, headers: { 'Content-Type': STREAM_TYPE } });
       }
-      if (!isSealedType(type)) {
-        throw new Error(`encryption: the server answered in plaintext (${response.status})`);
-      }
+      if (!isSealedType(type)) throw new EncryptionRefusedError(response.status);
       const bytes = new Uint8Array(await response.arrayBuffer());
       if (bytes.length < RESPONSE_NONCE) throw new OpenError();
       const nonce = bytes.subarray(0, RESPONSE_NONCE);
@@ -207,6 +226,7 @@ const sealedFetch = ({ hpke, kdf, cipher, serverKey, now = Date.now }) => {
 };
 
 module.exports = {
+  EncryptionRefusedError,
   sealedFetch,
   responseKey,
   streamKey,
