@@ -1360,6 +1360,14 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **The rooms backplane's per-channel publish counters no longer grow with
+  every room name an instance ever published to.** The `seq` table of loss
+  detection kept one entry per channel forever (300k unique rooms held ~38
+  MiB). It is two generations of `rooms.maxTracked` channels now (16384 by
+  default; the hot path is still one get and one increment); a channel
+  evicted and published to again starts a new count under a suffixed epoch,
+  `<epoch>.<n>`, which a receiver already reads as a restart — never a
+  false gap. `maxTracked` must be a positive integer.
 - **`sendTo` with bytes for a client on another instance is refused, not
   delivered mangled.** A cluster command envelope is JSON, so a
   `Uint8Array` in the event's data arrived on the other node as the

@@ -354,6 +354,46 @@ test('RoomsBackplane: the linger window absorbs a reconnect bounce', async () =>
   assert.strictEqual(unsubscribed.length, 1);
 });
 
+test('RoomsBackplane: the publish counters are bounded by maxTracked, and an evicted channel restarts under a suffixed epoch', async (t) => {
+  const backplane = createBackplane();
+  const binder = new RoomsBackplane({
+    backplane,
+    instance: 'node-1',
+    epoch: 'e1',
+    linger: 0,
+    maxTracked: 2,
+    deliver: noop,
+    log: { log: noop, error: noop, warn: noop },
+  });
+  t.after(() => binder.close());
+  const publish = (room) => {
+    binder.publish({ rooms: [room], name: 'ev', data: null });
+    const [, message] = backplane.state.published.at(-1);
+    const { epoch, seq } = JSON.parse(message);
+    return `${epoch}#${seq}`;
+  };
+  // maxTracked 2. Two channels fill the young generation; the third
+  // rotates it (young → old) and starts under the rotation's epoch.
+  assert.deepStrictEqual([publish('a'), publish('a'), publish('b')], ['e1#1', 'e1#2', 'e1#1']);
+  assert.strictEqual(publish('c'), 'e1.1#1'); // old = {a, b}, young = {c}
+  // a and b come back from the old generation with their counts intact;
+  // b's return finds young full and rotates again.
+  assert.strictEqual(publish('a'), 'e1#3'); // old = {b}, young = {c, a}
+  assert.strictEqual(publish('b'), 'e1#2'); // old = {c, a}, young = {b}
+  assert.strictEqual(publish('d'), 'e1.2#1'); // young = {b, d}
+  assert.strictEqual(publish('c'), 'e1.1#2'); // taken over, then rotated: old = {b, d}, young = {c}
+  // a was dropped with the generation before: a new count, a new epoch.
+  assert.strictEqual(publish('a'), 'e1.3#1'); // young = {c, a}
+  assert.strictEqual(publish('e'), 'e1.4#1'); // old = {c, a}, young = {e}
+  assert.strictEqual(publish('b'), 'e1.4#1'); // dropped with {b, d}: new
+  // Whatever the churn, the table never exceeds two generations, and a
+  // channel that fell out starts over under the current rotation.
+  for (let i = 0; i < 1000; i++) publish(`room-${i}`);
+  assert.match(publish('a'), /^e1\.(50\d|5[1-9]\d)#1$/);
+  assert.throws(() => new RoomsBackplane({ backplane, instance: 'x', deliver: noop, maxTracked: 0 }), /maxTracked/);
+  assert.throws(() => new RoomsBackplane({ backplane, instance: 'x', deliver: noop, maxTracked: 1.5 }), /maxTracked/);
+});
+
 test('RoomsBackplane: loss detection through epoch and seq', async (t) => {
   const backplane = createBackplane();
   const gaps = [];
@@ -418,6 +458,11 @@ test('RoomsBackplane: loss detection through epoch and seq', async (t) => {
   await t.test('a new epoch (the publisher restarted) resets rather than reports', () => {
     send('node-2', 'y', 1);
     send('node-2', 'y', 2);
+    // A rotation suffix is just another epoch to a receiver: a restart of
+    // that channel's count, no gap.
+    send('node-2', 'y.1', 1);
+    send('node-2', 'y.1', 2);
+    assert.strictEqual(gaps.length, 1);
     assert.strictEqual(gaps.length, 1);
   });
 

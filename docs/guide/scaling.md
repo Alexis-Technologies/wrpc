@@ -219,6 +219,15 @@ received. It detects, it does not recover — at-most-once is still the
 contract, below. A new epoch (the publisher restarted) resets the count; an
 envelope from an instance that predates the fields is delivered untracked.
 
+The publisher's side of this is bounded: an instance keeps the counters of
+at most `2 × rooms.maxTracked` channels (16384 by default, in two
+generations), not of every room name it ever published to. A channel
+evicted from the table and published to again starts a new count under a
+suffixed epoch — `<epoch>.<n>` — which a receiver reads as a restart of
+that channel, never as a gap. Raise `maxTracked` if an instance genuinely
+publishes to more rooms than that at once and you want gaps on every one
+of them detected.
+
 ## At-most-once, and what to do about it
 
 Delivery is **at-most-once**, deliberately. A message published while an

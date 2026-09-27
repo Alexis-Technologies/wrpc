@@ -389,6 +389,7 @@ class RpcServer extends Emitter {
       instance: this.#instance,
       log: this.#roomsLog,
       linger: roomsOptions?.linger,
+      maxTracked: roomsOptions?.maxTracked,
       envelope: createEnvelope({
         compression: roomsOptions?.compression,
         encryption: roomsOptions?.encryption,

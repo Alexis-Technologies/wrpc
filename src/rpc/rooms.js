@@ -412,6 +412,8 @@ class Broadcast {
 // How long an emptied room's channel stays subscribed (ms): the grace
 // window that absorbs reconnect churn. 0 disables (`rooms: { linger: 0 }`).
 const DEFAULT_LINGER = 5_000;
+// Channels whose publish counters are kept per generation (see #seq).
+const DEFAULT_MAX_TRACKED = 16384;
 
 class RoomsBackplane {
   #backplane;
@@ -427,7 +429,21 @@ class RoomsBackplane {
   // dropped something, or this instance was between subscriptions. At-most-
   // once stays the contract; the loss just stops being silent.
   #epoch;
-  #seq = new Map(); // channel -> last published seq
+  // The per-channel counters, in two generations: a channel published to
+  // is looked up in `young` (one get, one increment — the hot path), then
+  // in `old` and moved; when `young` reaches `maxTracked` it becomes
+  // `old` and the previous `old` is dropped — so the table holds at most
+  // 2 × maxTracked channels, not every room name this instance ever
+  // published to (300k unique rooms held ~38 MiB). A channel published to
+  // again after eviction starts a new count under `<epoch>.<rotation>`:
+  // a receiver compares epochs for equality only, so it sees a restart
+  // (its cursor resets), never a false gap. Channels of the first
+  // generation carry the bare epoch — the wire is unchanged until a
+  // rotation ever happens.
+  #seq = new Map(); // channel -> { seq, epoch }
+  #seqOld = new Map();
+  #rotation = 0;
+  #maxTracked;
   #peers = new Map(); // channel -> Map<instance, { epoch, seq }>
   #onGap;
   // Channels whose subscribe FAILED and is being retried: while any are
@@ -449,12 +465,17 @@ class RoomsBackplane {
     epoch = Math.random().toString(36).slice(2, 10),
     onGap = null,
     envelope = null,
+    maxTracked = DEFAULT_MAX_TRACKED,
   }) {
+    if (!Number.isInteger(maxTracked) || maxTracked < 1) {
+      throw new TypeError('RoomsBackplane: maxTracked must be a positive integer');
+    }
     this.#backplane = backplane;
     this.#instance = instance;
     this.#deliver = deliver;
     this.#log = createLoggerWriter(log);
     this.#linger = linger > 0 ? linger : 0;
+    this.#maxTracked = maxTracked;
     this.#epoch = String(epoch);
     this.#onGap = typeof onGap === 'function' ? onGap : null;
     this.#envelope = envelope;
@@ -590,12 +611,12 @@ class RoomsBackplane {
     if (this.#closed) return;
     const single = rooms && rooms.length === 1;
     const channel = single ? roomChannel(rooms[0]) : BROADCAST_CHANNEL;
-    const seq = (this.#seq.get(channel) ?? 0) + 1;
-    this.#seq.set(channel, seq);
+    const counter = this.#seq.get(channel) ?? this.#counter(channel);
+    const seq = ++counter.seq;
     const envelope = {
       v: ENVELOPE_VERSION,
       instance: this.#instance,
-      epoch: this.#epoch,
+      epoch: counter.epoch,
       seq,
       rooms: rooms ?? null,
       name,
@@ -683,6 +704,28 @@ class RoomsBackplane {
   // its whole history as lost; an envelope without the fields (an older
   // instance) is delivered untracked. Out-of-order arrival never regresses
   // the cursor, so a late envelope is not reported as a second gap.
+  // The cold half of the counter lookup: a channel not in the young
+  // generation is taken over from the old one, or started — under the
+  // rotation's epoch when the table has ever rotated — and the young
+  // generation rotates first when it is full.
+  #counter(channel) {
+    let counter = this.#seqOld.get(channel);
+    if (counter !== undefined) this.#seqOld.delete(channel);
+    if (this.#seq.size >= this.#maxTracked) {
+      this.#seqOld = this.#seq;
+      this.#seq = new Map();
+      this.#rotation++;
+    }
+    // Started AFTER the rotation, so a channel begun in generation n
+    // carries n: a count that restarts under the bare epoch would look
+    // late to a receiver holding the evicted count's cursor.
+    if (counter === undefined) {
+      counter = { seq: 0, epoch: this.#rotation === 0 ? this.#epoch : `${this.#epoch}.${this.#rotation}` };
+    }
+    this.#seq.set(channel, counter);
+    return counter;
+  }
+
   #track(channel, envelope) {
     const { instance, epoch, seq } = envelope;
     if (typeof seq !== 'number' || typeof epoch !== 'string') return;
@@ -715,6 +758,8 @@ class RoomsBackplane {
   close() {
     if (this.#closed) return;
     this.#closed = true;
+    this.#seq.clear();
+    this.#seqOld.clear();
     for (const [channel, record] of Array.from(this.#channels)) {
       if (!record.off) {
         record.stale = true;

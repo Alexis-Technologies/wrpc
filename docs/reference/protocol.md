@@ -629,6 +629,9 @@ non-local emit is published as an envelope:
   the broker lost between them and reports the gap (`backplane.gap`, the
   `wrpc.server.backplane.gaps` metric). Additive: an envelope without them
   is delivered untracked. Detection only — the contract stays at-most-once.
+  A receiver compares epochs for equality only: a publisher whose counter
+  table rotated restarts an evicted channel's count under `<epoch>.<n>`,
+  and the receiver's cursor resets exactly as on a restart.
 - `rooms` is `null` for a broadcast to everyone.
 - An emit targeting **exactly one** room is published on that room's channel
   (`room:<name>`), which only instances holding members subscribe to;

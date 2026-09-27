@@ -198,6 +198,14 @@ export interface RoomsOptions {
    */
   linger?: number;
   /**
+   * How many channels' publish counters (the `seq` of loss detection) this
+   * instance keeps, in two generations — at most twice this many, not every
+   * room name it ever published to. A channel evicted and published to
+   * again starts a new count under a suffixed epoch (`<epoch>.<n>`), which
+   * a receiver reads as a restart, never as a gap. Default 16384.
+   */
+  maxTracked?: number;
+  /**
    * Compresses every room envelope this instance publishes past the
    * threshold (src/compression), off by default. A string carrier, so a
    * compressed envelope rides as base64 under a `wrpc-enc:<id>:` marker —
