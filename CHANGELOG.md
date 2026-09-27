@@ -1320,6 +1320,14 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **A broker RPC session's end is logged at the level its reason
+  deserves, and a frame for a lost session leaves a debug line.** Every
+  `broker.rpc.session.end` was debug, so a broker losing frames (a sequence
+  gap, an undecodable frame) was as quiet as a goodbye; those are warn now,
+  an idle client info, the routine ends stay debug. A frame for a session
+  this instance does not hold answers the same bye it always did and says so
+  as `broker.rpc.session.unknown` — at debug, because any participant can
+  send those in a loop.
 - **A key provider that throws is an error line with the error, under
   its own event — not a refusal without a reason.** On the rooms backplane,
   the cluster channel, a broker feed or consumer and the sealed session

@@ -10,6 +10,7 @@ const { MemoryBroker, attachBrokerRpc, ClientBrokerTransport } = require('../../
 const { bearerTransport } = require('../../auth.js');
 const { runTransportContract } = require('../client/transportContract.js');
 const { quiet, waitFor } = require('./support.js');
+const { recorder } = require('../helpers/recorder.js');
 
 const onceEvent = (emitter, name) => new Promise((resolve) => emitter.once(name, resolve));
 
@@ -256,7 +257,8 @@ test('session: a frame gap on either side ends the session', async (t) => {
       },
     },
   };
-  const a = await instance(t, lossy, app);
+  const log = recorder();
+  const a = await instance(t, lossy, app, { rpc: { logger: log.writer }, attach: { logger: log.writer } });
   const client = await connect(t, lossy, { mode: 'session' });
   // Server -> client: the dropped answer is noticed at the next frame.
   dropServerFrame = true;
@@ -276,18 +278,37 @@ test('session: a frame gap on either side ends the session', async (t) => {
   void again.call('calc/add', { a: 1, b: 1 }).catch(() => {});
   await byeClose;
   await waitFor(() => a.handle.sessions === 0);
+  // The broker lost a frame: the server's end of the session is a WARN
+  // that names the gap; the client's own goodbye earlier was a routine
+  // debug end.
+  const ends = log.all('broker.rpc.session.end');
+  assert.deepStrictEqual(
+    ends.map((e) => [e.level, e.reason.split(':')[0]]),
+    [
+      ['debug', 'bye'],
+      ['warn', 'sequence gap'],
+    ],
+  );
 });
 
 test('session: a silent client is ended after idleTimeout; a frame for a lost session gets a bye', async (t) => {
   const broker = new MemoryBroker({ logger: quiet });
   t.after(() => broker.close());
   const app = createApp();
-  const a = await instance(t, broker, app, { attach: { idleTimeout: 150 } });
+  const log = recorder();
+  const a = await instance(t, broker, app, {
+    rpc: { logger: log.writer },
+    attach: { idleTimeout: 150, logger: log.writer },
+  });
   const client = await connect(t, broker, { mode: 'session' });
   assert.strictEqual(a.handle.sessions, 1);
   const closed = onceEvent(client, 'close');
   await closed;
   assert.strictEqual(a.handle.sessions, 0);
+  // A client that went quiet: info, with the reason and a fingerprint.
+  const idled = log.find('broker.rpc.session.end');
+  assert.deepStrictEqual([idled.level, idled.reason], ['info', 'idle']);
+  assert.match(idled.session, /^[0-9a-f]{12}$/);
 
   // A frame for a session the instance does not hold is answered with a bye.
   const inbox = broker.direct.inbox();
@@ -314,6 +335,13 @@ test('session: a silent client is ended after idleTimeout; a frame for a lost se
     [replies[0].headers['wrpc-kind'], replies[0].headers['wrpc-reason'], replies[0].correlationId],
     ['bye', 'unknown session', 'ghost'],
   );
+  // The unknown session is a debug line — any participant can send those in
+  // a loop — carrying a fingerprint, never the id.
+  const unknown = log.all('broker.rpc.session.unknown');
+  assert.strictEqual(unknown.length, 1);
+  assert.strictEqual(unknown[0].level, 'debug');
+  assert.match(unknown[0].session, /^[0-9a-f]{12}$/);
+  assert.ok(!JSON.stringify(unknown).includes('ghost'));
 });
 
 test('session: a repeated hello replaces the session; the server stopping says goodbye', async (t) => {

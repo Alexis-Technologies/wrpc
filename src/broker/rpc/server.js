@@ -282,13 +282,17 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     });
   };
 
-  const endSession = (id, reason, { notify = true } = {}) => {
+  // `level` is the reason's: the broker lost or mangled a frame (a
+  // sequence gap, an undecodable frame) is warn — something on the path is
+  // wrong; a client that went quiet is info; a goodbye, a replacement and
+  // this server's own closing are debug — the routine ends of a session.
+  const endSession = (id, reason, { notify = true, level = 'debug' } = {}) => {
     const session = sessions.get(id);
     if (!session) return;
     sessions.delete(id);
     if (notify) session.transport.bye(reason);
     session.transport.drop();
-    log.debug({ event: 'broker.rpc.session.end', session: fingerprint(id), reason });
+    log[level]({ event: 'broker.rpc.session.end', session: fingerprint(id), reason });
   };
 
   const onHello = (message) => {
@@ -371,6 +375,9 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
       // A frame for a session this instance does not hold (it restarted, or
       // the session idled out): tell the client, which reconnects.
       if (typeof id === 'string' && message.headers?.[HEADER_KIND] !== KIND.BYE && message.replyTo) {
+        // Debug, deliberately: any participant of the broker can send these
+        // in a loop, and the client's own reconnect is the recovery.
+        log.debug({ event: 'broker.rpc.session.unknown', session: fingerprint(id) });
         void reply(message, { [HEADER_KIND]: KIND.BYE, [HEADER_REASON]: 'unknown session' }, '');
       }
       return;
@@ -387,7 +394,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     if (kind === KIND.BYE) return void endSession(id, 'bye', { notify: false });
     const seq = seqOf(message.headers);
     if (seq !== session.expectSeq) {
-      return void endSession(id, `sequence gap: expected ${session.expectSeq}, got ${seq}`);
+      return void endSession(id, `sequence gap: expected ${session.expectSeq}, got ${seq}`, { level: 'warn' });
     }
     session.expectSeq++;
     session.lastSeen = Date.now();
@@ -395,7 +402,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     // another codec, or that does not inflate under the cap: the peer's
     // protocol violation, and the session ends as on a sequence gap.
     const body = frameBody(message, session.compression === null ? null : codec, cap);
-    if (body === null) return void endSession(id, 'undecodable frame');
+    if (body === null) return void endSession(id, 'undecodable frame', { level: 'warn' });
     if (kind === KIND.CHUNK) session.transport.emit('chunk', toBytes(body));
     else session.transport.emit('packet', packetBody(body));
   };
@@ -451,7 +458,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
   const sweep = setInterval(
     () => {
       const cutoff = Date.now() - idleTimeout;
-      for (const [id, session] of sessions) if (session.lastSeen < cutoff) endSession(id, 'idle');
+      for (const [id, session] of sessions) if (session.lastSeen < cutoff) endSession(id, 'idle', { level: 'info' });
       if (refused > 0) {
         log.warn({ event: 'broker.rpc.capacity', refused, sessions: sessions.size, max: maxSessions });
         refused = 0;
