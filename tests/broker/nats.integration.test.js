@@ -27,7 +27,11 @@ if (url) {
   try {
     transport = require('@nats-io/transport-node');
     js = require('@nats-io/jetstream');
-  } catch {
+  } catch (error) {
+    // Not installed here: a skip — unless CI says the package is expected.
+    if (process.env.WRPC_INTEGRATION_STRICT) {
+      throw new Error('the NATS client packages are not installed (WRPC_INTEGRATION_STRICT is set)', { cause: error });
+    }
     options.skip = 'the NATS client packages are not installed';
   }
 }

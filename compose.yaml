@@ -17,13 +17,13 @@
 # No volumes: nothing here is worth keeping between runs.
 services:
   redis:
-    image: redis:7-alpine
+    image: redis:7.4-alpine
     ports:
       - '127.0.0.1:6379:6379'
     command: ['redis-server', '--save', '', '--appendonly', 'no']
 
   rabbitmq:
-    image: rabbitmq:4-management-alpine
+    image: rabbitmq:4.1-management-alpine
     ports:
       - '127.0.0.1:5672:5672'
       - '127.0.0.1:15672:15672'
@@ -52,8 +52,17 @@ services:
       KAFKA_NUM_PARTITIONS: 3
 
   nats:
-    image: nats:2-alpine
+    image: nats:2.11-alpine
     ports:
       - '127.0.0.1:4222:4222'
       - '127.0.0.1:8222:8222'
+    # JetStream on, monitoring on 8222 — the one place this is said: CI's
+    # nats job runs THIS service (GitHub's `services:` cannot pass a command,
+    # so a service container there would run without JetStream and the
+    # log/queue suites would skip green).
     command: ['-js', '-m', '8222']
+    healthcheck:
+      test: ['CMD', 'wget', '-q', '-O', '-', 'http://127.0.0.1:8222/healthz']
+      interval: 5s
+      timeout: 3s
+      retries: 10

@@ -26,7 +26,10 @@ let Redis = null;
 if (REDIS_URL) {
   try {
     Redis = require('ioredis');
-  } catch {
+  } catch (error) {
+    if (process.env.WRPC_INTEGRATION_STRICT) {
+      throw new Error('ioredis is not installed (WRPC_INTEGRATION_STRICT is set)', { cause: error });
+    }
     Redis = null;
   }
 }

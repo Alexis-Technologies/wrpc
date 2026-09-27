@@ -38,6 +38,9 @@ const options =
     : clients.length === 0
       ? { skip: 'no KafkaJS-shaped client is installed' }
       : { skip: false };
+if (options.skip && brokers.length > 0 && process.env.WRPC_INTEGRATION_STRICT) {
+  throw new Error(`${options.skip} (WRPC_INTEGRATION_STRICT is set)`);
+}
 
 const made = [];
 const create = ({ flavor, lib }, extra = {}) => {

@@ -5,9 +5,15 @@ on:
     branches: [main]
   pull_request:
 
+# Nothing here writes to the repository: a read token is all a leaked action
+# could use.
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -50,7 +56,7 @@ jobs:
     timeout-minutes: 10
     services:
       redis:
-        image: redis:7-alpine
+        image: redis:7.4-alpine
         ports: ['6379:6379']
         options: >-
           --health-cmd "redis-cli ping"
@@ -68,20 +74,20 @@ jobs:
       - run: node --test tests/scaling/redis.integration.test.js tests/broker/redis.integration.test.js
         env:
           REDIS_URL: redis://127.0.0.1:6379
+          # The client IS installed here: a skip would be a broken environment passing.
+          WRPC_INTEGRATION_STRICT: 1
 
-  # The NATS leg of the broker suites against a real server (with
-  # JetStream); the in-repo fake in tests/broker/fakeNats.js is what
-  # `pnpm test` runs.
+  # The NATS leg of the broker suites against a real server WITH JetStream;
+  # the in-repo fake in tests/broker/fakeNats.js is what `pnpm test` runs.
+  # Not a `services:` container: GitHub cannot pass a command to one, and a
+  # nats without `-js` makes the log, queue and feed suites skip — green
+  # and untested. compose.yaml is the one place the flags live.
   nats:
     runs-on: ubuntu-latest
     timeout-minutes: 10
-    services:
-      nats:
-        image: nats:2-alpine
-        ports: ['4222:4222']
-        options: --health-cmd "wget -q -O - http://127.0.0.1:8222/healthz || exit 1" --health-interval 5s --health-timeout 3s --health-retries 10
     steps:
       - uses: actions/checkout@v4
+      - run: docker compose up -d --wait nats
       - uses: pnpm/action-setup@v4
       - uses: actions/setup-node@v4
         with:
@@ -91,6 +97,9 @@ jobs:
       - run: node --test tests/broker/nats.integration.test.js
         env:
           NATS_URL: nats://127.0.0.1:4222
+          WRPC_INTEGRATION_STRICT: 1
+      - run: docker compose down
+        if: always()
 
   # The RabbitMQ leg of the broker suites against a real server; the in-repo
   # fake in tests/broker/fakeAmqp.js is what `pnpm test` runs.
@@ -99,7 +108,7 @@ jobs:
     timeout-minutes: 15
     services:
       rabbitmq:
-        image: rabbitmq:4-alpine
+        image: rabbitmq:4.1-alpine
         ports: ['5672:5672']
         options: >-
           --health-cmd "rabbitmq-diagnostics -q ping"
@@ -117,6 +126,7 @@ jobs:
       - run: node --test tests/broker/amqp.integration.test.js
         env:
           AMQP_URL: amqp://127.0.0.1:5672
+          WRPC_INTEGRATION_STRICT: 1
 
   # The Kafka leg of the broker suites against a real broker (KRaft), on
   # whichever KafkaJS-shaped clients are installed; the in-repo fake in
@@ -151,6 +161,7 @@ jobs:
       - run: node --test tests/broker/kafka.integration.test.js
         env:
           KAFKA_BROKERS: 127.0.0.1:9092
+          WRPC_INTEGRATION_STRICT: 1
 
   # Node 22 only: the docs build exercises VitePress, not the package runtime,
   # so repeating it across the test matrix would just repeat the same work.

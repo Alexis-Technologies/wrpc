@@ -1320,6 +1320,16 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **CI's NATS job runs JetStream, a missing client fails a service job
+  instead of skipping it, and the images are pinned.** A GitHub service
+  container cannot be given a command, so CI's NATS ran without `-js` and
+  the log, queue and feed suites skipped — green and untested; the job
+  starts `compose.yaml`'s service now, the one place the flags live.
+  `WRPC_INTEGRATION_STRICT=1` (set in the four service jobs) turns "client
+  not installed" from a skip into a failure. Images are pinned to a minor
+  in CI and compose alike (Redis 7.4, NATS 2.11, RabbitMQ 4.1, Kafka 3.9.1),
+  the workflow declares `permissions: contents: read`, and the lint job
+  has a timeout.
 - **SECURITY.md knows about the cryptography and the new parsers, and
   says which line is supported.** The scope names `src/encryption/` (nonce
   reuse, cross-layer opening, distinguishable `OpenError`s, downgrade,

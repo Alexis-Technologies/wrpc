@@ -23,7 +23,11 @@ let amqp = null;
 if (url) {
   try {
     amqp = require('amqplib');
-  } catch {
+  } catch (error) {
+    // Not installed here: a skip — unless CI says the package is expected.
+    if (process.env.WRPC_INTEGRATION_STRICT) {
+      throw new Error('amqplib is not installed (WRPC_INTEGRATION_STRICT is set)', { cause: error });
+    }
     options.skip = 'amqplib is not installed';
   }
 }

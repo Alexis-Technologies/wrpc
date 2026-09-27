@@ -55,4 +55,22 @@ const firstError = async (iterable, { timeout = 2000 } = {}) => {
   }
 };
 
-module.exports = { quiet, waitFor, unique, collect, firstError };
+// A client package an integration suite needs, loaded under the rule the
+// suite's skip guard follows: not installed -> skip, so a machine without
+// it still runs `pnpm test`. In CI the env var IS set and the package IS
+// expected — a skip there is a broken environment passing green — so
+// WRPC_INTEGRATION_STRICT=1 turns the missing package into a failure.
+const loadClient = (load, missing) => {
+  try {
+    return load();
+  } catch (error) {
+    if (process.env.WRPC_INTEGRATION_STRICT) {
+      throw new Error(`${missing} (WRPC_INTEGRATION_STRICT is set: a skip would hide a broken environment)`, {
+        cause: error,
+      });
+    }
+    return null;
+  }
+};
+
+module.exports = { quiet, waitFor, unique, collect, firstError, loadClient };

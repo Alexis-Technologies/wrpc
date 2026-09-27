@@ -80,27 +80,33 @@ all.
 
 ## CI
 
-Three jobs (`.github/workflows/ci.yml`):
+Three always-on jobs and four service jobs (`.github/workflows/ci.yml`):
 
 - **lint** (Node 22) — `lint`, `format:check`, `size`
 - **test** (Node 22 and 24) — `test:coverage`, `test:types`
 - **docs** (Node 22) — `docs:build`, which fails on dead links
+- **redis**, **nats**, **rabbitmq**, **kafka** — the integration suites
+  against a real server each (Redis 7.4, NATS 2.11 with JetStream — started
+  through `compose.yaml`, since a GitHub service container cannot be given
+  the `-js` flag — RabbitMQ 4.1, Kafka 3.9.1), under
+  `WRPC_INTEGRATION_STRICT=1`: there a missing client package fails the job
+  instead of skipping it green. Locally, `pnpm brokers:up` starts the same
+  four and each suite skips itself without its env var.
 
 Lint and format deliberately target `src tests scripts bench bin` only, so
 `docs/` is not covered by them.
 
-Four checks are deliberately **not** in CI — run them by hand:
+Checks deliberately **not** in CI — run them by hand:
 
 - `node scripts/autobahn/run.js` — the RFC 6455/7692 conformance suite against
   the engine in `src/websocket/`. Needs docker; several minutes for 500+
   cases. `FAILED` and `WRONG CODE` fail the run, `NON-STRICT` and
   `INFORMATIONAL` do not.
 - `pnpm test:perf` — the 1 GiB stream memory guard.
-- `REDIS_URL=redis://127.0.0.1:6379 node --test tests/scaling/redis.integration.test.js`
-  — the scaling backplane against a real Redis. `pnpm test` already covers the
-  adapter's contract through an in-repo ioredis-shaped fake
-  (`tests/scaling/redis.test.js`); this is only useful when you want to check
-  a live server, and the file skips itself without `REDIS_URL`.
+- `WRPC_RTC=node-datachannel node --test tests/webrtc/node-datachannel.integration.test.js`
+  — the WebRTC port contract against a real implementation (the fake in
+  `tests/webrtc/fakeRtc.js` is what `pnpm test` runs); needs the native
+  `node-datachannel` build.
 - `WRPC_WT=fails node --test tests/wt/fails.integration.test.js` and
   `WRPC_WT=quico node --test tests/wt/quico.integration.test.js` — the
   WebTransport server half against a real HTTP/3 stack
