@@ -1,6 +1,9 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
 import { trace as otelTrace } from '@opentelemetry/api';
 import * as wrpc from '../index.js';
+
+// A type only: the wt transport is reached through WrpcClient.transport.wt.
+expectError(wrpc.ClientWtTransport);
 import type {
   Emitter,
   WrpcClient,

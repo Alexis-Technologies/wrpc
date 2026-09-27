@@ -302,7 +302,7 @@ export interface WtTransportOptions {
  * do not travel at all — a WebTransport CONNECT sends no credentials, so
  * sessions need a bearer or payload token transport.
  */
-export declare class ClientWtTransport extends ClientTransport {
+declare class ClientWtTransport extends ClientTransport {
   constructor(url: string, options?: WtTransportOptions);
   /** The WebTransport session spoken on; null before open() and after close. */
   readonly session: unknown;
@@ -316,6 +316,9 @@ export declare class ClientWtTransport extends ClientTransport {
   readonly bufferedAmount: number;
   writeUnreliable(data: string): boolean;
 }
+// A type, not a value: the class is reached through `WrpcClient.transport.wt`
+// and connect({ transport: 'wt' }), never imported (the barrels export none).
+export type { ClientWtTransport };
 
 export class WrpcClient<Api = UntypedApi> extends Emitter {
   static connections: Set<WrpcClient>;

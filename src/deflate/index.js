@@ -24,7 +24,7 @@
 
 const { inflateRaw, DeflateError } = require('./inflate.js');
 const { deflateRaw } = require('./deflate.js');
-const { dictionaryId, DICTIONARY_ID_PREFIX, isPromise } = require('../compression/ids.js');
+const { dictionaryId, DICTIONARY_ID_PREFIX } = require('../compression/ids.js');
 
 const NATIVE_ID = 'deflate-raw';
 const DEFAULT_NATIVE_ABOVE = 4096;
@@ -109,4 +109,4 @@ const createDeflateCodec = ({
   };
 };
 
-module.exports = { createDeflateCodec, inflateRaw, deflateRaw, DeflateError, isPromise };
+module.exports = { createDeflateCodec, inflateRaw, deflateRaw, DeflateError };

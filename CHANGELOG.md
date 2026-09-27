@@ -1320,6 +1320,14 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **The types and the runtime are checked against each other both ways, on
+  every subpath.** The package test compared six barrels one way (a runtime
+  export the types never declared); it derives every subpath under both
+  conditions from `package.json#exports` now and checks both directions —
+  and found two: `ClientWtTransport` was declared as an exported class the
+  barrels never export (it is a type now, reached through
+  `WrpcClient.transport.wt`), and `@alexify/wrpc/deflate` exported an
+  `isPromise` helper its types never named (gone).
 - **The server half of WebTransport logs a session's death.** After
   `attachSession` nothing was written: a refused handshake, a frame that
   would not read, a silent peer, a session the host failed — none of them a

@@ -150,29 +150,68 @@ test('every exports subpath has a bundle-size row in scripts/size.js', () => {
   }
 });
 
-test('runtime barrel exports are all declared in the hand-written types', () => {
-  const declared = (files) => {
-    const names = new Set();
-    for (const file of files) {
-      const text = read(file);
-      for (const match of text.matchAll(/^export (?:declare )?(?:abstract )?(?:class|function|const|let)\s+(\w+)/gm)) {
-        names.add(match[1]);
-      }
+// The value declarations of a root d.ts — class, function, const, let —
+// with its re-exports followed (`export * from './x.js'` brings x's values;
+// `export { a, b } from './x.js'` the named ones x declares as values).
+// Interfaces and `export type` are not values and are not counted.
+const declaredValues = (file, seen = new Set()) => {
+  const names = new Set();
+  if (seen.has(file) || !existsSync(path.join(ROOT, file))) return names;
+  seen.add(file);
+  const text = read(file);
+  for (const match of text.matchAll(/^export (?:declare )?(?:abstract )?(?:class|function|const|let)\s+(\w+)/gm)) {
+    names.add(match[1]);
+  }
+  for (const match of text.matchAll(/^export \* from '\.\/([\w./-]+)\.js';/gm)) {
+    for (const name of declaredValues(`${match[1]}.d.ts`, seen)) names.add(name);
+  }
+  for (const match of text.matchAll(/^export \{([^}]*)\} from '\.\/([\w./-]+)\.js';/gm)) {
+    const target = declaredValues(`${match[2]}.d.ts`, seen);
+    for (const entry of match[1].split(',')) {
+      const name = entry
+        .trim()
+        .split(/\s+as\s+/)
+        .at(-1);
+      if (name && target.has(name)) names.add(name);
     }
-    return names;
-  };
-  const cases = [
-    ['index.js', declared(['index.d.ts', 'rpc.d.ts', 'client.d.ts'])],
-    ['browser.js', declared(['browser.d.ts', 'client.d.ts'])],
-    ['webrtc.js', declared(['webrtc.d.ts', 'webrtc.browser.d.ts', 'rpc.d.ts'])],
-    ['webrtc.browser.js', declared(['webrtc.browser.d.ts', 'rpc.d.ts'])],
-    ['wt.js', declared(['wt.d.ts', 'rpc.d.ts'])],
-    ['broker.js', declared(['broker.d.ts'])],
-  ];
-  for (const [barrel, names] of cases) {
-    const runtime = Object.keys(require(path.join(ROOT, barrel)));
+  }
+  return names;
+};
+
+// Every barrel of every subpath, under both conditions, against the d.ts its
+// `types` condition names — in BOTH directions: a runtime export the types
+// never declare is an untyped API, and a value the types declare that the
+// barrel never exports is a lie a user only discovers at runtime. One-way,
+// over six barrels, this test missed both for a release.
+test('runtime barrel exports and the hand-written types agree, both ways, on every subpath', () => {
+  const cases = [];
+  for (const [key, value] of Object.entries(pkg.exports)) {
+    if (key === './package.json') continue;
+    const conditions = [value];
+    if (value.browser) conditions.push(value.browser);
+    for (const condition of conditions) {
+      if (typeof condition !== 'object' || !condition.default || !condition.types) continue;
+      cases.push([condition.default.replace(/^\.\//, ''), condition.types.replace(/^\.\//, '')]);
+    }
+  }
+  assert.ok(cases.length >= 22, `every subpath, both conditions: ${cases.length}`);
+  for (const [barrel, dts] of cases) {
+    let runtime;
+    try {
+      runtime = Object.keys(require(path.join(ROOT, barrel)));
+    } catch (error) {
+      // An adapter barrel whose framework is not installed here: nothing to
+      // compare, and not this machine's failure (optional(), as the
+      // adapter tests do).
+      if (error.code === 'MODULE_NOT_FOUND') continue;
+      throw error;
+    }
+    const declared = declaredValues(dts);
     for (const name of runtime) {
-      assert.ok(names.has(name), `${barrel} exports '${name}' but the d.ts pair never declares it`);
+      assert.ok(declared.has(name), `${barrel} exports '${name}' but ${dts} never declares it`);
+    }
+    for (const name of declared) {
+      assert.ok(runtime.includes(name), `${dts} declares '${name}' as a value but ${barrel} does not export it`);
     }
   }
 });

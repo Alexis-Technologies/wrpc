@@ -42,6 +42,7 @@ import {
 } from '${ROOT}/browser.js';
 import { ClientSseTransport, SseParser, CHANNEL_HEADER } from '${ROOT}/sse.browser.js';
 import { WrpcPeer, wrpcSignaler, createW3cAdapter, defineRouter, procedure } from '${ROOT}/webrtc.browser.js';
+import { createSealer, createOpener, createIdentity, aead } from '${ROOT}/encryption.browser.js';
 
 interface Api {
   chat: { send: (args: { text: string }) => Promise<{ ok: boolean }> };
@@ -56,6 +57,10 @@ async function main() {
   answer.ok satisfies boolean;
   void WrpcClient;
   void WrpcClientProxy;
+  void createSealer;
+  void createOpener;
+  void createIdentity;
+  void aead;
   void WrpcError;
   void WrpcReadable;
   void WrpcWritable;
