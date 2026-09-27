@@ -1138,6 +1138,17 @@ narrower promise — see
   closes it (the `MessagePort` `close` event; best effort in older engines).
 
 **WebRTC: peer-to-peer wrpc (`@alexify/wrpc/webrtc`)**
+- WebRTC ships stable, signaling included: the whole surface — `WrpcPeer`,
+  `PeerLink`, `Mesh`, the link and the transports, the trust assertions and
+  the signaling unit — is under the ordinary semver promise, none of it
+  `@experimental`. The release gate the review set for it closed in this
+  release, each item with its normative line in the protocol reference:
+  reserved `peer`/`room`/`claims` in session data, a `members` roster for
+  members only, no empty fragments and a `maxFragments` cap, a minimum
+  negotiable message size, every `a=fingerprint` line bound by an
+  assertion, a responder that gives up without ending the link, the
+  goodbye's reason on the wire, the relay's limits, TypeErrors on water
+  marks and on a closing channel, `maxBackpressure`.
 - `WrpcPeer` — a router others call, a signaler to find them through, an
   RTC adapter to reach them with. Two browsers (or a browser and a Node
   process with an injected implementation) each serve a router and call the
