@@ -202,8 +202,12 @@ local short-cut). `room` bounds the delivery to a client still in that room —
 a relay tied to a membership must not outlive it. It returns `true` when the
 event was delivered locally or handed to the backplane and `false` when it is
 known undeliverable (no such local client, a per-request HTTP client, not in
-`room`, or a foreign id with no backplane). The remote leg is at-most-once,
-like every command.
+`room`, a foreign id with no backplane — or **bytes in `data` for a foreign
+id**: a command envelope is JSON, so a `Uint8Array` would arrive on the
+other node as the object JSON makes of it; the call answers `false` and
+logs `cluster.bytes` instead, while `to(room).emit` carries bytes across
+the backplane as bytes). The remote leg is at-most-once, like every
+command.
 
 ## Node-to-node messaging
 

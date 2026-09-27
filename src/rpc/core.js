@@ -535,7 +535,9 @@ class RpcServer extends Emitter {
    * narrows delivery to a client still in that room. Returns true when
    * the event was delivered locally or handed to the backplane, false when
    * it is known not to be deliverable (unknown local id, non-persistent
-   * client, not in `room`, or a foreign id with no backplane).
+   * client, not in `room`, a foreign id with no backplane, or bytes in
+   * `data` for a foreign id — the cluster's envelopes are JSON, and the
+   * refusal is logged as `cluster.bytes`).
    */
   sendTo(clientId, name, data, options = {}) {
     if (typeof clientId !== 'string' || clientId.length === 0) {
@@ -553,8 +555,7 @@ class RpcServer extends Emitter {
     }
     const instance = instanceOfClientId(clientId);
     if (instance === null || instance === this.#instance || !this.#backplane) return false;
-    this.#cluster.send(clientId, name, data, { room });
-    return true;
+    return this.#cluster.send(clientId, name, data, { room });
   }
 
   get router() {

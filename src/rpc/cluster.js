@@ -6,6 +6,7 @@ const { Emitter, jsonParse } = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { createLoggerWriter } = require('../logging.js');
 const { DISABLED, SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
+const { hasBytes } = require('../attachments.js');
 
 // Cluster: presence, introspection and node-to-node messaging across every
 // wrpc instance sharing a backplane. Built ON TOP of the pub/sub contract
@@ -626,7 +627,7 @@ class Cluster extends Emitter {
       throw new TypeError('Event name must be a non-empty string');
     }
     const room = typeof options.room === 'string' ? options.room : undefined;
-    this.#command('event', clientId, { name, data }, room);
+    return this.#command('event', clientId, { name, data }, room);
   }
 
   // The command ops, in one place. Both call sites below used to spell this
@@ -656,17 +657,31 @@ class Cluster extends Emitter {
     };
     // An addressed command rides the target instance's own channel — one
     // publish, one receiver — instead of asking every node to filter.
+    // Answers whether the command was applied here or handed to the
+    // backplane: false is "known not to be delivered".
     if (typeof target === 'string') {
       const sel = room === undefined ? { id: target } : { id: target, room };
       const instance = instanceOfClientId(target);
-      if (instance === this.#instance || instance === null) return void apply(sel);
-      if (!this.#backplane || this.#closed) return;
-      return void this.#post(instanceChannel(instance), { t: 'cmd', op, sel, ...args });
+      if (instance === this.#instance || instance === null) {
+        apply(sel);
+        return true;
+      }
+      if (!this.#backplane || this.#closed) return false;
+      // A command envelope is JSON: bytes in an event's data would arrive
+      // on the other node as the {"0":…} object JSON makes of them — a
+      // silently wrong delivery. Refused as undeliverable, and said, until
+      // the cluster carries binary envelopes as the rooms layer does.
+      if (op === 'event' && hasBytes(args.data)) {
+        this.#log.warn({ event: 'cluster.bytes', name: args.name, instance });
+        return false;
+      }
+      return this.#post(instanceChannel(instance), { t: 'cmd', op, sel, ...args });
     }
     const sel = target && typeof target === 'object' ? target : {};
     apply(sel);
-    if (!this.#backplane || this.#closed) return;
+    if (!this.#backplane || this.#closed) return true;
     this.#post(CLUSTER_CHANNEL, { t: 'cmd', op, sel, ...args });
+    return true;
   }
 
   /**

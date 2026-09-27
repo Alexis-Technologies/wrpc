@@ -513,6 +513,8 @@ export declare class RpcServer extends Emitter {
    * (via the cluster). `room` narrows delivery to a client still in that
    * room. True when delivered locally or handed to the backplane; false
    * when known undeliverable.
+      * Bytes in `data` for a foreign id are refused (`false`, logged as
+   * `cluster.bytes`): the cluster's envelopes are JSON.
    */
   sendTo(clientId: string, name: string, data?: unknown, options?: { room?: string }): boolean;
   /** Everyone in any of `rooms`, each client once; with no rooms, nobody. */
@@ -630,7 +632,9 @@ export class Server extends Emitter {
   readonly cluster: Cluster;
   /** The local client with this id; undefined when not on this instance. */
   getClient(id: string): Client | undefined;
-  /** One event to one client by id, here or on another instance — forwarded to the core. */
+  /** One event to one client by id, here or on another instance — forwarded to the core.    * Bytes in `data` for a foreign id are refused (`false`, logged as
+   * `cluster.bytes`): the cluster's envelopes are JSON.
+   */
   sendTo(clientId: string, name: string, data?: unknown, options?: { room?: string }): boolean;
   listen(): Promise<Server>;
   /**

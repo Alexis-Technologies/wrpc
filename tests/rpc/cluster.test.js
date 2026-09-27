@@ -47,8 +47,10 @@ const fakeSocket = () => {
       listeners.set(name, fn);
     },
     off() {},
+    // A binary frame (an event whose data holds bytes) is noted by size:
+    // what matters here is which leg it took, not its encoding.
     send(text) {
-      this.events.push(JSON.parse(text));
+      this.events.push(typeof text === 'string' ? JSON.parse(text) : { binary: text.byteLength });
     },
     close() {},
     terminate() {},
@@ -769,6 +771,48 @@ test('rpc: sendTo() picks the local or the cluster leg and reports deliverabilit
   // Without a backplane a foreign id is known undeliverable.
   const solo = boot(t, null, { instanceId: 'solo' });
   assert.strictEqual(solo.sendTo('b.someone', 'x/y', 7), false);
+});
+
+test('rpc: sendTo() with bytes in the data is refused for a foreign id, delivered for a local one', async (t) => {
+  const entries = [];
+  const writer = { level: 'debug', child: () => writer };
+  for (const level of ['debug', 'info', 'warn', 'error']) {
+    writer[level] = (entry) => entries.push({ level, ...entry });
+  }
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const channels = [];
+  const publish = backplane.publish.bind(backplane);
+  backplane.publish = (channel, message) => {
+    channels.push(channel);
+    return publish(channel, message);
+  };
+  const a = boot(t, backplane, { instanceId: 'a', logger: writer });
+  const b = boot(t, backplane, { instanceId: 'b' });
+  await settle();
+  const local = attach(a);
+  const remote = attach(b);
+  await settle();
+  channels.length = 0;
+  const data = { file: Uint8Array.of(1, 2, 3), nested: [{ bytes: new Uint8Array(4) }] };
+  // A command envelope is JSON: the bytes would land on b as {"0":1,…}.
+  assert.strictEqual(a.sendTo(remote.client.id, 'x/y', data), false);
+  assert.strictEqual(a.cluster.send(remote.client.id, 'x/y', data), false);
+  await settle();
+  assert.deepStrictEqual(channels, [], 'nothing published');
+  assert.deepStrictEqual(remote.socket.events, []);
+  const warned = entries.filter((e) => e.event === 'cluster.bytes');
+  assert.strictEqual(warned.length, 2);
+  assert.deepStrictEqual(warned[0], { level: 'warn', event: 'cluster.bytes', name: 'x/y', instance: 'b' });
+  // A local id takes the direct leg, where bytes travel as an attachments frame.
+  assert.strictEqual(a.sendTo(local.client.id, 'x/y', data), true);
+  assert.ok(local.socket.events.at(-1).binary > 0, 'delivered locally as a binary frame');
+  assert.strictEqual(a.sendTo(remote.client.id, 'x/y', { plain: true }), true);
+  await settle();
+  assert.deepStrictEqual(
+    remote.socket.events.map((e) => e.data),
+    [{ plain: true }],
+  );
 });
 
 test('cluster: a malformed or unsigned event command never runs', async (t) => {

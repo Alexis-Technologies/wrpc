@@ -117,6 +117,7 @@ want an alert for.
 | `backplane.gap`, `backplane.redis` | warn/error | Envelopes lost between instances; a backplane client failed |
 | `backplane.seal`, `cluster.seal` | error | A sealing envelope could not seal (a keyring without its current key); the event stayed local, nothing left in the clear |
 | `cluster.unsigned`, `cluster.badsig`, `cluster.verify` | warn/error | The three ways envelope authentication fails |
+| `cluster.bytes` | warn | `sendTo` (or `cluster.send`) to a client on another instance with bytes in the event's data: a command envelope is JSON, so it was refused (`false`), not delivered mangled |
 | `encryption.replay`, `encryption.unwrap` | error | The shared replay store could not be asked (the request was refused `503`); a primitive threw while unwrapping a sealed request (`500`) |
 | `encryption.ambient-session` | warn | The server has `encryption` and the cookie session transport: a cookie stays on the outer request, readable by the terminator the encryption keeps out — use `bearerTransport()`/`payloadTransport()`. Once, at construction |
 | `encryption.replay.overflow` | warn | The built-in replay memory is full of live entries: sealed requests are refused `409` until some expire (`refused` since the last line, one line per ten seconds) — size `replay.max` for the traffic, or share the memory |

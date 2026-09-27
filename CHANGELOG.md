@@ -1360,6 +1360,15 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **`sendTo` with bytes for a client on another instance is refused, not
+  delivered mangled.** A cluster command envelope is JSON, so a
+  `Uint8Array` in the event's data arrived on the other node as the
+  `{"0":…}` object JSON makes of it, and `sendTo` still answered `true`.
+  `Cluster.send` answers `false` and logs `cluster.bytes` for a foreign id
+  whose data holds bytes (a local id delivers them as an attachments frame,
+  as before), and `RpcServer.sendTo` returns that answer. Binary command
+  envelopes are a later change; `to(room).emit` already carries bytes across
+  the backplane.
 - **Worker proxy: an answer for a tab that left is dropped, and a tab's
   release cancels what it was waiting for upstream.** A `callback`, `data`
   or `end` whose id no port waited for — the tab closed, or unsubscribed
