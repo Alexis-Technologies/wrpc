@@ -146,7 +146,7 @@ class FakeSignalHub {
   relay(from, to, room, message) {
     const fromId = typeof from === 'string' ? from : from.id;
     const instance = typeof from === 'string' ? null : from.instance;
-    this.sent.push({ from: fromId, to, room, type: message.type });
+    this.sent.push({ from: fromId, to, room, type: message.type, reason: message.reason });
     if (this.#muted.has(to) || !this.#peers.has(to)) return;
     const target = this.#peers.get(to);
     const edit = this.#tampers.get(`${fromId}\0${to}`);

@@ -6,6 +6,8 @@ import type {
   ChannelsOptions,
   ClientRtcTransport,
   LeaveReason,
+  LinkCloseReason,
+  LinkClosure,
   RtcDataChannelLike,
   Mesh,
   PeerHost,
@@ -86,6 +88,8 @@ signaler.on('leave', (event) => {
 });
 signaler.on('replaced', (event) => expectType<string>(event.id));
 expectAssignable<SignalMessage>({ type: 'connect' });
+expectAssignable<SignalMessage>({ type: 'close', reason: 'gave-up' });
+expectError<SignalMessage>({ type: 'close', reason: 'bye' });
 expectAssignable<SignalMessage>({ type: 'description', description: { type: 'offer', sdp: 'v=0' } });
 // A hand-rolled signaler needs only the shape.
 expectAssignable<Signaler>({
@@ -227,6 +231,14 @@ expectAssignable<ConstructorParameters<typeof ClientRtcTransport>[1]>({ compress
 expectAssignable<Parameters<typeof webrtc.attachChannel>[2]>({ peer: 'p', compression: { threshold: 512 } });
 declare const link: RtcLink;
 expectType<Record<string, unknown> | null>(link.peerCaps);
+expectType<LinkClosure | null>(link.closure);
+link.close('refused');
+link.abandon('gave-up');
+link.abandon();
+expectError(link.close('bye'));
+expectAssignable<LinkCloseReason>('goodbye');
+declare const peerLink: PeerLink;
+peerLink.on('close', (closure: LinkClosure) => expectType<boolean>(closure.remote));
 declare const rtcTransport: ClientRtcTransport;
 expectType<{ readonly encode: string; readonly decode: string } | null>(rtcTransport.compression);
 expectAssignable<ConstructorParameters<typeof WrpcPeer>[0]>({

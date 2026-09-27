@@ -79,7 +79,7 @@ the run — it is a ratchet, and it runs in CI's lint job.
 | `@alexify/wrpc/auth` | 3.8 KB | **1.8 KB** | 2.0 KB |
 | `@alexify/wrpc/deflate` | 9.9 KB | **4.1 KB** | 5.0 KB |
 | `@alexify/wrpc/encryption` — browser | 31.4 KB | **11.4 KB** | 12.0 KB |
-| `@alexify/wrpc/webrtc` — browser | 171.9 KB | **55.9 KB** | 56.0 KB |
+| `@alexify/wrpc/webrtc` — browser | 172.8 KB | **56.2 KB** | 57.0 KB |
 | `@alexify/wrpc` — node | 286.3 KB | 95.9 KB | — |
 
 The Node-only entries carry no budget because their gzip size is not a shipping

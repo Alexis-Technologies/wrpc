@@ -781,6 +781,17 @@ application-level and reaches the peers through any channel the
 application chooses — `@alexify/wrpc/webrtc` ships one over an ordinary
 wrpc connection — and is not part of the wire either.
 
+What signaling carries is nonetheless fixed, so that peers behind different
+signalers agree: `{ type: 'description', description, caps? }`,
+`{ type: 'candidate', candidate }`, `{ type: 'connect' }` (a knock — the
+non-initiator asking to be dialled) and `{ type: 'close', reason? }`, the
+goodbye. Its `reason` is one of `goodbye` (the application ended the
+link), `refused` (the sender would not have the peer: a failed
+[trust assertion](#webrtc-assertions) or its `accept()` hook) and
+`gave-up` (its redial budget ran out). A receiver MUST end the link on any
+`close`, MUST read one without a `reason` as `goodbye`, and MUST report
+one it does not know as `unknown` rather than refuse it — the set may grow.
+
 ### Data-channel framing {#webrtc-framing}
 
 A data channel message has a size limit (16 KiB is the only size every

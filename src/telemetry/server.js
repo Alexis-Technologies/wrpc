@@ -83,6 +83,7 @@ const createServerTelemetry = (telemetry) => {
   let rtcLinks = null;
   let rtcRedials = null;
   let rtcRestarts = null;
+  let rtcCloses = null;
   let brokerDeliveries = null;
   let brokerPublished = null;
   let brokerRefused = null;
@@ -151,6 +152,10 @@ const createServerTelemetry = (telemetry) => {
       rtcRestarts = meter.createCounter('wrpc.rtc.ice_restarts', {
         unit: '{restart}',
         description: 'ICE restarts on peer links, by outcome',
+      });
+      rtcCloses = meter.createCounter('wrpc.rtc.closes', {
+        unit: '{link}',
+        description: 'Peer links closed, by reason and by which side closed',
       });
       sseEvents = meter.createCounter('wrpc.server.sse.events', {
         unit: '{event}',
@@ -422,6 +427,15 @@ const createServerTelemetry = (telemetry) => {
     recordRtcRestart(outcome) {
       try {
         rtcRestarts?.add(1, { 'wrpc.rtc.outcome': outcome });
+      } catch {}
+    },
+
+    // A link's end. `reason` is what a goodbye may name (goodbye, refused,
+    // gave-up), 'abandoned' for a close this side never sent, or 'unknown'
+    // for one a newer peer named — a closed set; `remote` says whose.
+    recordRtcClose(reason, remote) {
+      try {
+        rtcCloses?.add(1, { 'wrpc.rtc.reason': reason, 'wrpc.rtc.side': remote ? 'remote' : 'local' });
       } catch {}
     },
 

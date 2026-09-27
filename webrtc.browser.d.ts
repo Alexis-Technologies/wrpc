@@ -150,10 +150,29 @@ export declare const DEFAULT_CHANNELS: Readonly<Required<ChannelsOptions>>;
 export declare const MAX_CHANNEL_ID: number;
 export declare function normalizeChannels(channels?: ChannelsOptions): Required<ChannelsOptions>;
 
+/**
+ * Why a link closed, as a goodbye names it on the wire: the application
+ * ended it, the sender would not have the peer (a failed trust assertion,
+ * its `accept()` hook), or its redial budget ran out.
+ */
+export type LinkCloseReason = 'goodbye' | 'refused' | 'gave-up';
+
+/**
+ * What a 'close' event carries and `RtcLink.closure` keeps: the reason — a
+ * goodbye's, 'abandoned' for a close this side never sent (a stale
+ * incarnation, a responder giving up), 'unknown' for one a newer peer named
+ * — and whether the peer closed (`remote`) or this side did.
+ */
+export interface LinkClosure {
+  readonly reason: LinkCloseReason | 'abandoned' | 'unknown';
+  readonly remote: boolean;
+}
+
 export type SignalMessage =
   | { type: 'description'; description: RtcDescriptionLike }
   | { type: 'candidate'; candidate: unknown }
-  | { type: 'close' }
+  /** The goodbye; one naming no reason is read as 'goodbye'. */
+  | { type: 'close'; reason?: LinkCloseReason }
   /** A knock from the non-initiator: "dial me". */
   | { type: 'connect' };
 
@@ -183,8 +202,8 @@ export interface RtcLinkOptions {
 }
 
 /**
- * Events: 'state' (RtcLinkState), 'open' (both channels open), 'close',
- * 'error', 'channel-close' ({ which: 'client' | 'host' }), 'restart'
+ * Events: 'state' (RtcLinkState), 'open' (both channels open), 'close'
+ * (LinkClosure), 'error', 'channel-close' ({ which: 'client' | 'host' }), 'restart'
  * ({ outcome: 'requested' | 'recovered' | 'failed' }).
  */
 export declare class RtcLink extends Emitter {
@@ -207,6 +226,8 @@ export declare class RtcLink extends Emitter {
   /** What the peer's last description announced, or null. */
   readonly peerCaps: Record<string, unknown> | null;
   readonly open: boolean;
+  /** Why and by whom the link closed, or null while it has not. */
+  readonly closure: LinkClosure | null;
   start(): void;
   /** A fresh connection after 'failed'; false when the link is in any other state. */
   redial(): boolean;
@@ -215,8 +236,10 @@ export declare class RtcLink extends Emitter {
   /** An ICE restart on the live connection. */
   restart(): void;
   receive(message: SignalMessage): Promise<void>;
-  /** Tells the peer, closes the connection; idempotent. */
-  close(): void;
+  /** Tells the peer why (a goodbye by default), closes the connection; idempotent. */
+  close(reason?: LinkCloseReason): void;
+  /** Closes without telling the peer: a goodbye would reach a stranger, or end a link the initiator may still rebuild. */
+  abandon(reason?: LinkCloseReason | 'abandoned'): void;
 }
 
 // ---------------------------------------------------------------------------
@@ -675,8 +698,8 @@ export type PeerLinkState = 'connecting' | 'open' | 'reconnecting' | 'closed';
 
 /**
  * One connected peer, both directions. Events: 'open' (both directions
- * up, once), 'reconnect', 'close', 'state', 'attach' (the host-side Client
- * was (re)created), 'error'.
+ * up, once), 'reconnect', 'close' (LinkClosure — why, and whether the peer
+ * closed), 'state', 'attach' (the host-side Client was (re)created), 'error'.
  */
 export declare class PeerLink<Api = Record<string, Record<string, any>>> extends Emitter {
   readonly id: string;

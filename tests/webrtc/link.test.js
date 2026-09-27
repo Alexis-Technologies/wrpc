@@ -37,7 +37,9 @@ const wire = (t, { world, adapter }, options = {}) => {
       log: quiet,
       ...options,
       signal: async (message) => {
-        relay.log.push([localId, message.type]);
+        relay.log.push(
+          message.reason === undefined ? [localId, message.type] : [localId, message.type, message.reason],
+        );
         if (!relay.up) throw new Error('relay is down');
         await timers.setImmediate();
         const target = links[remoteId];
@@ -361,8 +363,15 @@ test('rtc link: close() tells the peer, closes the pc, emits close once; the pee
   b.start();
   await bothOpen(a, b);
   const closes = { a: 0, b: 0 };
-  a.on('close', () => closes.a++);
-  b.on('close', () => closes.b++);
+  const closures = {};
+  a.on('close', (closure) => {
+    closes.a++;
+    closures.a = closure;
+  });
+  b.on('close', (closure) => {
+    closes.b++;
+    closures.b = closure;
+  });
   const pc = a.pc;
   a.close();
   assert.strictEqual(a.state, 'closed');
@@ -376,7 +385,12 @@ test('rtc link: close() tells the peer, closes the pc, emits close once; the pee
   assert.strictEqual(closes.a, 1);
   assert.strictEqual(closes.b, 1);
   const goodbyes = relay.log.filter(([, type]) => type === 'close');
-  assert.deepStrictEqual(goodbyes, [['a', 'close']], 'the peer does not answer a goodbye with a goodbye');
+  assert.deepStrictEqual(goodbyes, [['a', 'close', 'goodbye']], 'the peer does not answer a goodbye with a goodbye');
+  assert.deepStrictEqual(closures, {
+    a: { reason: 'goodbye', remote: false },
+    b: { reason: 'goodbye', remote: true },
+  });
+  assert.deepStrictEqual([a.closure, b.closure], [closures.a, closures.b], 'kept on the link');
   a.close(); // idempotent
   assert.strictEqual(closes.a, 1);
   await assert.rejects(a.waitOpen(), /closed/);
@@ -762,4 +776,46 @@ test('rtc link: candidates ahead of the description are bounded, and the overflo
   assert.strictEqual(overflow[0].what, 'candidates');
   a.start();
   await bothOpen(a, b);
+});
+
+test('rtc link: a close names its reason on the wire and in the closure; an unknown one is reported as such; abandon() tells nobody', async (t) => {
+  const fake = createFakeRtc();
+  const { a, b, relay } = wire(t, fake);
+  a.start();
+  b.start();
+  await bothOpen(a, b);
+  const closed = new Promise((resolve) => b.once('close', resolve));
+  assert.throws(() => a.close('bye'), { name: 'TypeError', message: /goodbye, refused, gave-up/ });
+  assert.strictEqual(a.state, 'connected', 'a refused reason closes nothing');
+  assert.strictEqual(a.closure, null);
+  a.close('refused');
+  assert.deepStrictEqual(a.closure, { reason: 'refused', remote: false });
+  assert.deepStrictEqual(await within(closed, 'b told'), { reason: 'refused', remote: true });
+  assert.deepStrictEqual(b.closure, { reason: 'refused', remote: true });
+  assert.deepStrictEqual(
+    relay.log.filter(([, type]) => type === 'close'),
+    [['a', 'close', 'refused']],
+  );
+
+  // A goodbye that names nothing, and one that names something newer.
+  const silent = new RtcLink({ localId: 'a', remoteId: 'b', adapter: fake.adapter, signal() {}, log: quiet });
+  await silent.receive({ type: 'close' });
+  assert.deepStrictEqual(silent.closure, { reason: 'goodbye', remote: true });
+  const newer = new RtcLink({ localId: 'a', remoteId: 'b', adapter: fake.adapter, signal() {}, log: quiet });
+  await newer.receive({ type: 'close', reason: 'rebooting' });
+  assert.deepStrictEqual(newer.closure, { reason: 'unknown', remote: true });
+
+  // abandon(): closed here, nothing on the wire.
+  const pair = wire(t, createFakeRtc());
+  pair.a.start();
+  pair.b.start();
+  await bothOpen(pair.a, pair.b);
+  const before = pair.relay.log.length;
+  pair.a.abandon();
+  assert.deepStrictEqual(pair.a.closure, { reason: 'abandoned', remote: false });
+  assert.throws(() => pair.b.abandon('bye'), { name: 'TypeError', message: /'abandoned' or one of/ });
+  pair.b.abandon('gave-up');
+  assert.deepStrictEqual(pair.b.closure, { reason: 'gave-up', remote: false });
+  await timers.setTimeout(5);
+  assert.strictEqual(pair.relay.log.length, before, 'no goodbye crossed');
 });

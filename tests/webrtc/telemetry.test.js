@@ -258,17 +258,29 @@ test('peer telemetry: spans on both ends of a link, joined by the traceparent', 
     );
   });
 
-  await t.test('a goodbye takes the link out of the gauge exactly once', async () => {
-    ab.close();
-    await waitFor(() => b.links.size === 0, 'b saw the goodbye');
-    const exported = await metrics.collect();
-    assert.strictEqual(point(exported, 'wrpc.rtc.links', (attrs) => attrs['wrpc.rtc.role'] === 'initiator').value, 0);
-    assert.strictEqual(point(exported, 'wrpc.rtc.links', (attrs) => attrs['wrpc.rtc.role'] === 'responder').value, 0);
-    assert.strictEqual(
-      point(exported, 'wrpc.server.connections', (attrs) => attrs['wrpc.transport'] === 'webrtc').value,
-      0,
-    );
-  });
+  await t.test(
+    'a goodbye takes the link out of the gauge exactly once, and is counted by reason on both ends',
+    async () => {
+      ab.close();
+      await waitFor(() => b.links.size === 0, 'b saw the goodbye');
+      const exported = await metrics.collect();
+      assert.strictEqual(point(exported, 'wrpc.rtc.links', (attrs) => attrs['wrpc.rtc.role'] === 'initiator').value, 0);
+      assert.strictEqual(point(exported, 'wrpc.rtc.links', (attrs) => attrs['wrpc.rtc.role'] === 'responder').value, 0);
+      const closes = (reason, side) =>
+        point(
+          exported,
+          'wrpc.rtc.closes',
+          (attrs) => attrs['wrpc.rtc.reason'] === reason && attrs['wrpc.rtc.side'] === side,
+        );
+      assert.strictEqual(closes('goodbye', 'local').value, 1, "a's own goodbye");
+      assert.strictEqual(closes('goodbye', 'remote').value, 1, 'b heard it');
+      assert.strictEqual(closes('gave-up', 'local'), undefined, 'the redial above recovered: nothing gave up');
+      assert.strictEqual(
+        point(exported, 'wrpc.server.connections', (attrs) => attrs['wrpc.transport'] === 'webrtc').value,
+        0,
+      );
+    },
+  );
 });
 
 test('peer telemetry: a client-only peer still counts its links; a bare PeerHost exposes its writer', async (t) => {

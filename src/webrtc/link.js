@@ -23,8 +23,8 @@
 //
 // Everything asynchronous surfaces through events, never a thrown promise
 // nobody awaits: 'state' on every transition, 'open' when both channels
-// are open, 'close' once when the link is finished for good, 'error' for
-// background failures. A missing 'error' listener downgrades to a log line
+// are open, 'close' ({ reason, remote }) once when the link is finished for
+// good, 'error' for background failures. A missing 'error' listener downgrades to a log line
 // (Emitter throws on an unheard 'error').
 
 const { Emitter } = require('../utils.js');
@@ -49,6 +49,16 @@ const DEFAULT_CONNECT_TIMEOUT = 30 * 1000;
 const DEFAULT_RESTART_TIMEOUT = 15 * 1000;
 
 const STATES = ['new', 'connecting', 'connected', 'reconnecting', 'failed', 'closed'];
+
+// What a goodbye says on the wire — `{ type: 'close', reason }` — and what
+// a closure reports: the application ended the link, the sender would not
+// have the peer (a failed assertion, its accept() hook), or its redial
+// budget ran out. A close naming none is a goodbye; one naming something
+// else is 'unknown' — a closed set is what keeps the metric's label
+// bounded. 'abandoned' never crosses the wire: it is this side closing
+// without a word (a stale incarnation, a responder giving up).
+const CLOSE_REASONS = Object.freeze(['goodbye', 'refused', 'gave-up']);
+const closeReason = (value) => (value === undefined ? 'goodbye' : CLOSE_REASONS.includes(value) ? value : 'unknown');
 
 const normalizeChannels = (channels = {}) => {
   if (typeof channels !== 'object' || channels === null) throw new TypeError('channels must be an object');
@@ -117,6 +127,7 @@ class RtcLink extends Emitter {
   #connectTimer = null;
   #restartTimer = null;
   #closeSent = false;
+  #closure = null; // { reason, remote } once closed
   // What this side announces in every description it sends (`caps`), and
   // what the peer's last description announced — the negotiation the
   // channels have no handshake of their own for (per-message compression).
@@ -267,12 +278,17 @@ class RtcLink extends Emitter {
     }
   }
 
+  /** Why and by whom the link closed — `{ reason, remote }` — or null while it has not. */
+  get closure() {
+    return this.#closure;
+  }
+
   /** From the signaler: a description, a candidate, or the peer's goodbye. */
   async receive(message) {
     if (this.#state === 'closed') return;
     if (typeof message !== 'object' || message === null) return void this.#log.warn({ event: 'rtc.signal.malformed' });
     const { type } = message;
-    if (type === 'close') return void this.#finish(false);
+    if (type === 'close') return void this.#finish(closeReason(message.reason), false, true);
     if (type === 'description') {
       // Read before the description is applied, so the caps are known by
       // the time the channels open and the transports attach.
@@ -284,9 +300,25 @@ class RtcLink extends Emitter {
     this.#log.warn({ event: 'rtc.signal.unknown', type });
   }
 
-  /** Tells the peer, closes the connection, emits 'close' once. */
-  close() {
-    this.#finish(true);
+  /** Tells the peer why (a goodbye by default), closes the connection, emits 'close' once. */
+  close(reason = 'goodbye') {
+    if (!CLOSE_REASONS.includes(reason)) {
+      throw new TypeError(`RtcLink.close: reason must be one of ${CLOSE_REASONS.join(', ')}`);
+    }
+    this.#finish(reason, true, false);
+  }
+
+  /**
+   * Closes without telling the peer: after a signaling reset or a change of
+   * incarnation a goodbye would reach a stranger, and a responder giving up
+   * must not end the link its initiator may still rebuild. The peer learns
+   * through the roster or through ICE.
+   */
+  abandon(reason = 'abandoned') {
+    if (reason !== 'abandoned' && !CLOSE_REASONS.includes(reason)) {
+      throw new TypeError(`RtcLink.abandon: reason must be 'abandoned' or one of ${CLOSE_REASONS.join(', ')}`);
+    }
+    this.#finish(reason, false, false);
   }
 
   /**
@@ -592,18 +624,20 @@ class RtcLink extends Emitter {
     if (opened) opened.reject(error);
   }
 
-  #finish(tellPeer) {
+  #finish(reason, tell, remote) {
     if (this.#state === 'closed') return;
-    if (tellPeer && !this.#closeSent) {
+    const closure = Object.freeze({ reason, remote });
+    this.#closure = closure;
+    if (tell && !this.#closeSent) {
       this.#closeSent = true;
-      this.#send({ type: 'close' });
+      this.#send({ type: 'close', reason });
     }
     const opened = this.#opened;
     this.#opened = null;
     this.#teardownPc();
-    this.#setState('closed');
+    this.#setState('closed', closure);
     if (opened) opened.reject(new Error('RtcLink is closed'));
-    void this.emit('close').catch((error) => this.#error(error, 'listener.close'));
+    void this.emit('close', closure).catch((error) => this.#error(error, 'listener.close'));
   }
 
   // ---- timers
@@ -657,11 +691,11 @@ class RtcLink extends Emitter {
     return message;
   }
 
-  #setState(state) {
+  #setState(state, extra = null) {
     const previous = this.#state;
     if (previous === state) return;
     this.#state = state;
-    this.#log.debug({ event: 'rtc.link.state', state, previous });
+    this.#log.debug({ event: 'rtc.link.state', state, previous, ...extra });
     void this.emit('state', state).catch((error) => this.#error(error, 'listener.state'));
   }
 
@@ -702,4 +736,4 @@ class RtcLink extends Emitter {
   }
 }
 
-module.exports = { RtcLink, normalizeChannels, DEFAULT_CHANNELS, MAX_CHANNEL_ID, STATES };
+module.exports = { RtcLink, normalizeChannels, DEFAULT_CHANNELS, MAX_CHANNEL_ID, STATES, CLOSE_REASONS };

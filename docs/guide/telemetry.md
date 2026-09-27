@@ -110,6 +110,7 @@ credential, not an identity, and the two do not share a switch.
 | `wrpc.rtc.links` | UpDownCounter | `{link}` |
 | `wrpc.rtc.redials` | Counter | `{attempt}` |
 | `wrpc.rtc.ice_restarts` | Counter | `{restart}` |
+| `wrpc.rtc.closes` | Counter | `{link}` — peer links closed, by `wrpc.rtc.reason` (`goodbye`, `refused`, `gave-up`, `abandoned`, `unknown`) and `wrpc.rtc.side` (`local` / `remote`) |
 | `wrpc.broker.deliveries` | Counter | `{message}` |
 | `wrpc.broker.published` | Counter | `{message}` |
 | `wrpc.broker.refused` | Counter | `{message}` |
@@ -125,10 +126,12 @@ credential, not an identity, and the two do not share a switch.
 | `wrpc.rtc.assertions` | Counter | `{assertion}` — trust assertions verified, by `wrpc.rtc.outcome`: `ok`; `missing`, `signature`, `fingerprint`, `subject` are **substitution signals** (a peer presenting no token, another key's, a replayed one, or someone else's); `expired`, `kid`, `issuer`, `malformed` are operational (clock, rotation, configuration) |
 | `wrpc.broker.delivery.attempts` | Histogram | `{attempt}` |
 
-The three `wrpc.rtc.*` instruments come from a [WebRTC peer](./webrtc): open
+The four `wrpc.rtc.*` instruments come from a [WebRTC peer](./webrtc): open
 links by `wrpc.rtc.role` (`initiator` / `responder`), redials and knocks
-after a link failed by role, and ICE restarts by `wrpc.rtc.outcome`
-(`requested`, `recovered`, `failed`). A peer's host half also records the
+after a link failed by role, ICE restarts by `wrpc.rtc.outcome`
+(`requested`, `recovered`, `failed`), and closed links by reason and side —
+a `refused` close is a peer a trust policy turned away, a `gave-up` one a
+path that never came back. A peer's host half also records the
 ordinary server spans and `wrpc.server.connections` under
 `wrpc.transport: 'webrtc'`.
 

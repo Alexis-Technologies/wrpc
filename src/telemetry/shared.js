@@ -199,6 +199,7 @@ const DISABLED = Object.freeze({
   recordRtcLink: noop,
   recordRtcRedial: noop,
   recordRtcRestart: noop,
+  recordRtcClose: noop,
   withMessagingSpan(_options, fn) {
     return fn(null);
   },

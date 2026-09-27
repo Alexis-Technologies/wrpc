@@ -282,7 +282,12 @@ test('peer: accept() gates incoming links; a refusal closes the caller', async (
   assert.strictEqual(a.link('z'), undefined);
   assert.strictEqual(z.link('a'), undefined, 'the refused side dropped its link too');
   assert.deepStrictEqual(asked, [['z', 'lobby']]);
-  assert.ok(hub.sent.some((entry) => entry.from === 'a' && entry.to === 'z' && entry.type === 'close'));
+  assert.ok(
+    hub.sent.some(
+      (entry) => entry.from === 'a' && entry.to === 'z' && entry.type === 'close' && entry.reason === 'refused',
+    ),
+    'the goodbye says it is a refusal',
+  );
 
   const x = peer('x');
   await assert.rejects(within(x.connect('a'), 'x refused'), /closed/);
@@ -427,7 +432,7 @@ test('peer: a responder whose initiator vanished knocks, then gives up', async (
   a.close();
   const closed = onceEvent(ba, 'close');
   ba.link.pc.failIce();
-  await within(closed, 'b gave up');
+  assert.deepStrictEqual(await within(closed, 'b gave up'), { reason: 'gave-up', remote: false });
   assert.strictEqual(ba.state, 'closed');
   assert.strictEqual(hub.sent.filter((e) => e.from === 'b' && e.type === 'connect').length, 2);
   // Quietly: a goodbye from a responder giving up would end the link an
@@ -456,9 +461,13 @@ test('peer: an initiator that cannot reach its peer redials with backoff and giv
   const redials = [];
   ab.link.on('state', (state) => void (state === 'reconnecting' && redials.push(state)));
   ab.link.pc.failIce();
-  await within(closed, 'a gave up');
+  assert.deepStrictEqual(await within(closed, 'a gave up'), { reason: 'gave-up', remote: false });
   assert.strictEqual(ab.state, 'closed');
   assert.deepStrictEqual(states, ['reconnecting', 'closed']);
+  assert.ok(
+    hub.sent.some((e) => e.from === 'a' && e.to === 'b' && e.type === 'close' && e.reason === 'gave-up'),
+    'the goodbye says why',
+  );
   assert.strictEqual(redials.length, 2, 'two redials, then it gave up');
   assert.strictEqual(a.links.size, 0);
   assert.ok(!ab.remote.active);
@@ -474,13 +483,20 @@ test("peer: close() says goodbye on every link; the signaler's reset closes them
   const c = peer('c');
   await within(Promise.all([a.connect('b'), a.connect('c')]), 'open');
   const closes = [];
-  b.link('a').on('close', () => closes.push('b'));
-  c.link('a').on('close', () => closes.push('c'));
+  b.link('a').on('close', (closure) => closes.push(['b', closure]));
+  c.link('a').on('close', (closure) => closes.push(['c', closure]));
   const closedA = onceEvent(a, 'close');
   a.close();
   await within(closedA, 'a closed');
   a.close(); // idempotent
   await waitFor(() => closes.length === 2, 'both peers told');
+  assert.deepStrictEqual(
+    closes.map(([, closure]) => closure),
+    [
+      { reason: 'goodbye', remote: true },
+      { reason: 'goodbye', remote: true },
+    ],
+  );
   assert.strictEqual(a.links.size, 0);
   assert.strictEqual(b.links.size, 0);
   assert.strictEqual(c.links.size, 0);
@@ -693,9 +709,16 @@ test('peer: a description without a valid assertion is refused before it reaches
   const a = peer('a');
   // c has no assertions configured: its offer carries no token.
   const c = plain('c');
+  const closures = [];
+  c.on('link', (link) => link.once('close', (closure) => closures.push(closure)));
   await assert.rejects(within(c.connect('a'), 'c refused'), /closed/);
   assert.strictEqual(a.link('c'), undefined);
-  assert.ok(hub.sent.some((entry) => entry.from === 'a' && entry.to === 'c' && entry.type === 'close'));
+  assert.ok(
+    hub.sent.some(
+      (entry) => entry.from === 'a' && entry.to === 'c' && entry.type === 'close' && entry.reason === 'refused',
+    ),
+  );
+  assert.deepStrictEqual(closures, [{ reason: 'refused', remote: true }], 'c is told it was refused');
 
   // d signs with a key of its own: the signature does not verify.
   const rogue = await generateAssertionKeys({ kid: 'hub' });

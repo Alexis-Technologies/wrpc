@@ -294,7 +294,7 @@ none of them still works, and a peer then never mistakes a reconnect for a
 new incarnation (or a dropped connection for a departure).
 
 A `message` is `{ type: 'description', description }`, `{ type: 'candidate',
-candidate }`, `{ type: 'close' }` or `{ type: 'connect' }` — opaque to the
+candidate }`, `{ type: 'close', reason? }` or `{ type: 'connect' }` — opaque to the
 signaler, which only moves it. `isSignaler` / `hasRoster` check the shape.
 A hand-rolled one over socket.io, a hosted signaling service, or a
 `MessagePort` between two tabs of one browser all qualify.
@@ -428,7 +428,14 @@ Three layers, each owning one kind of failure:
   the link for an ICE restart, and from there the layers above take over.
 
 `link.close()` (or `peer.close()`) is a goodbye: the other side is told, both
-directions end, nobody redials.
+directions end, nobody redials. A goodbye says why — `{ type: 'close',
+reason }` on the wire: `goodbye`, `refused` (a failed assertion, a `false`
+from `accept()`) or `gave-up` — and both `PeerLink`s emit `'close'` with a
+`{ reason, remote }` closure, kept on `link.closure`: `remote` says whether
+the peer closed or this side did, and `reason` is the goodbye's, `abandoned`
+for a close this side never sent (a stale incarnation, a responder giving
+up), or `unknown` for one a newer peer named. `wrpc.rtc.closes` counts them
+by the same two labels.
 
 ## Options
 
@@ -525,11 +532,15 @@ new WrpcPeer({
 });
 ```
 
-Three instruments are the peer layer's own: `wrpc.rtc.links` (open links,
+Four instruments are the peer layer's own: `wrpc.rtc.links` (open links,
 by `wrpc.rtc.role`), `wrpc.rtc.redials` (redials and knocks after a failure,
-by role) and `wrpc.rtc.ice_restarts` (by `wrpc.rtc.outcome`: `requested`,
-`recovered`, `failed`) — the rate of the last two is what an operator alerts
-on. A client-only peer (no router) still counts its links.
+by role), `wrpc.rtc.ice_restarts` (by `wrpc.rtc.outcome`: `requested`,
+`recovered`, `failed`) and `wrpc.rtc.closes` (by `wrpc.rtc.reason` —
+`goodbye`, `refused`, `gave-up`, `abandoned`, `unknown` — and
+`wrpc.rtc.side`: `local` / `remote`). The rate of redials and restarts is
+what an operator alerts on; `refused` closes are the peers a trust policy
+turned away, `gave-up` ones the paths that never came back. A client-only
+peer (no router) still counts its links.
 
 ## What it cannot do
 

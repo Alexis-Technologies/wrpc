@@ -1211,9 +1211,19 @@ narrower promise — see
 - Peer telemetry: `WrpcPeer({ telemetry })` / `PeerHost({ telemetry })` take
   the server's injection — SERVER spans for what a peer answers, joined to
   the calling peer's CLIENT spans through the packet's traceparent,
-  `wrpc.server.connections` under `wrpc.transport: 'webrtc'` — plus three
+  `wrpc.server.connections` under `wrpc.transport: 'webrtc'` — plus four
   instruments of the peer layer's own: `wrpc.rtc.links`, `wrpc.rtc.redials`,
-  `wrpc.rtc.ice_restarts`. `RtcLink` emits `'restart'` with the outcome.
+  `wrpc.rtc.ice_restarts`, `wrpc.rtc.closes`. `RtcLink` emits `'restart'`
+  with the outcome.
+- A link's goodbye says why: `{ type: 'close', reason }` on the wire —
+  `goodbye`, `refused` (a failed trust assertion, a `false` from `accept()`)
+  or `gave-up` (the redial budget) — and both `PeerLink`s (and the `RtcLink`
+  under them) emit `'close'` with a `{ reason, remote }` closure, kept on
+  `link.closure`; `abandoned` is a close this side never sent, `unknown` a
+  reason a newer peer named. `RtcLink.close(reason)` and `abandon(reason)`
+  take it, and `wrpc.rtc.closes` counts by `wrpc.rtc.reason` and
+  `wrpc.rtc.side` — a refusal, a give-up and a goodbye used to look the same
+  from the other end.
 - The webrtc browser entry also exports `defineRouter`, `procedure`,
   `tracked` and `createEventLog` — a browser peer defines its router with
   them, and the main browser entry leaves them out for its byte budget.

@@ -52,7 +52,8 @@ Verification happens in `WrpcPeer`, **before** a description reaches the
 `RtcLink` and before your `accept` hook runs. A description with no token,
 a bad signature, another peer's `sub`, a fingerprint that is not the
 description's, an expired `exp` or an unexpected `iss` ends the link with a
-goodbye and a `rtc.peer.refused` log line naming the reason.
+goodbye naming `refused` as its reason and a `rtc.peer.refused` log line
+naming which.
 
 ## Server side
 

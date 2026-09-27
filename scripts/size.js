@@ -222,7 +222,11 @@ const ENTRIES = [
   // the connect window, a knock or a new-certificate offer that rebuilds a
   // link only one side saw fail, and no unhandled rejection from a signal,
   // a join or a dial (measured 55.1).
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 56 },
+  // 56 -> 57 for the goodbye's reason: the closed set on the wire, the
+  // { reason, remote } closure RtcLink keeps and both 'close' events carry,
+  // abandon() as a real method, and the wrpc.rtc.closes counter in the
+  // telemetry writer (+0.3 KB, measured 56.2 against 55.9).
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 57 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

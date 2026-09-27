@@ -300,7 +300,7 @@ class PeerLink extends Emitter {
         // Not who the signaling said, or not provably so: the link ends
         // here with a goodbye, before the description touches the pc.
         this.#log.warn({ event: 'rtc.peer.refused', peer: this.#id, reason: error.code ?? 'assertion', err: error });
-        this.#link.close();
+        this.#link.close('refused');
         return;
       }
     }
@@ -320,7 +320,7 @@ class PeerLink extends Emitter {
    * roster (leave/join) or through ICE.
    */
   abandon() {
-    void this.#link.receive({ type: 'close' });
+    this.#link.abandon();
   }
 
   #hostClient(what) {
@@ -343,7 +343,7 @@ class PeerLink extends Emitter {
     on(link, 'error', (error) => this.#error(error));
     on(link, 'restart', ({ outcome }) => this.#otel.recordRtcRestart(outcome));
     on(remote, 'open', () => this.#onUp());
-    on(remote, 'reconnect-failed', () => this.close());
+    on(remote, 'reconnect-failed', () => this.#link.close('gave-up'));
     // Bound for the client's whole life, not unbound on close: an open()
     // still in flight when the link closes settles afterwards, and an
     // unheard client error goes to the console.
@@ -417,7 +417,7 @@ class PeerLink extends Emitter {
       // responder gives up quietly: the initiator may still be redialling
       // on a longer backoff, and a 'close' from here used to end the link
       // it was about to rebuild.
-      return void (this.initiator ? this.close() : this.abandon());
+      return void (this.initiator ? this.#link.close('gave-up') : this.#link.abandon('gave-up'));
     }
     const delay = backoffDelay({ ...this.#redial, attempt: this.#redialAttempt });
     this.#redialAttempt++;
@@ -473,7 +473,11 @@ class PeerLink extends Emitter {
     this.#remote.close();
     this.#opened.reject(new Error(`PeerLink to '${this.#id}' closed`));
     this.#peer.released(this);
-    void this.emit('close').catch((error) => this.#error(error));
+    // Why the link ended — the goodbye's reason, or this side's own — is
+    // what tells a refusal from a give-up from a goodbye on a dashboard.
+    const closure = this.#link.closure;
+    this.#otel.recordRtcClose(closure.reason, closure.remote);
+    void this.emit('close', closure).catch((error) => this.#error(error));
   }
 
   get #role() {
@@ -962,7 +966,7 @@ class WrpcPeer extends Emitter {
         this.#pending.delete(from);
         if (this.#closed) return;
         this.#log.warn({ event: 'rtc.peer.refused', peer: from, room, reason: error.code ?? 'assertion', err: error });
-        this.signal(from, { type: 'close' }, room ?? null);
+        this.signal(from, { type: 'close', reason: 'refused' }, room ?? null);
         return;
       }
     }
@@ -981,7 +985,7 @@ class WrpcPeer extends Emitter {
     if (this.#closed) return;
     if (accepted !== true) {
       this.#log.info({ event: 'rtc.peer.refused', peer: from, room, reason: 'accept' });
-      if (message.type !== 'close') this.signal(from, { type: 'close' }, room ?? null);
+      if (message.type !== 'close') this.signal(from, { type: 'close', reason: 'refused' }, room ?? null);
       return;
     }
     const link = this.#create(from, room ?? null, null, incarnation, verified);
