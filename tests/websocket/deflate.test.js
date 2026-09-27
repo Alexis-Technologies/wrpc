@@ -389,6 +389,29 @@ const tickUntil = async (check, tries = 200) => {
   throw new Error('condition never met');
 };
 
+test('Connection: a deflate that fails on the way out is a ws.deflate line, then a terminate', async (t) => {
+  const permessageDeflate = require('../../src/websocket/permessageDeflate.js');
+  const { recorder } = require('../helpers/recorder.js');
+  const real = permessageDeflate.compressAsync;
+  permessageDeflate.compressAsync = (_payload, _windowBits, cb) => void setImmediate(() => cb(new Error('zlib boom')));
+  t.after(() => {
+    permessageDeflate.compressAsync = real;
+  });
+  const log = recorder();
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC, logger: log.writer });
+  const errors = [];
+  conn.on('error', (error) => errors.push(error));
+  conn.sendText('x'.repeat(200));
+  await tickUntil(() => errors.length === 1);
+  assert.strictEqual(errors[0].message, 'zlib boom');
+  const line = log.find('ws.deflate');
+  assert.ok(line, 'the failure is a line');
+  assert.strictEqual(line.level, 'warn');
+  assert.strictEqual(line.err.message, 'zlib boom');
+  assert.strictEqual(socket.destroyed, true);
+});
+
 // A peer-side inflater with its own live window: what a takeover client does.
 const liveInflater = () => {
   const stream = zlib.createInflateRaw({ windowBits: 15 });

@@ -85,6 +85,7 @@ is `null` and `server.address()` is the only way to read the bound address.
 | `pingInterval` | Protocol-ping interval for engines that own liveness. |
 | `maxBuffer` / `maxBackpressure` / `fragmentThreshold` / `closeTimeout` | Engine limits. |
 | `onHttpCall(call)` | Standalone engines only: the core's HTTP entry point. |
+| `logger` | The structured logger the engine and its connections report through — the `Server` shell and the adapters pass their own. An engine built with its own `logger` keeps it. |
 
 It returns an `EngineConnectionSource` — an `EventEmitter` that emits
 `'connection'(socket, req)`.

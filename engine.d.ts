@@ -3,7 +3,7 @@ import { IncomingMessage, Server as HttpServer } from 'node:http';
 import { Server as HttpsServer } from 'node:https';
 import type { Duplex } from 'node:stream';
 import type { PerMessageDeflateOptions } from './ws.js';
-import type { HttpCall, SharedMessage } from './index.js';
+import type { HttpCall, SharedMessage, WrpcLogger } from './index.js';
 
 /**
  * The upgrade request an engine hands to `verifyClient`, `handleProtocols`
@@ -93,6 +93,12 @@ export interface EngineAttachOptions {
   closeTimeout?: number;
   /** Coalesce every write of one event-loop turn into one flush (built-in engine). Default true. */
   coalesce?: boolean;
+  /**
+   * The structured logger the engine and its connections report through
+   * (framing faults, dropped frames) — what the `Server` shell and the
+   * adapters pass. An engine built with its own `logger` keeps it.
+   */
+  logger?: WrpcLogger | boolean;
   /**
    * Standalone engines only: the core's HTTP entry point, invoked with the
    * same abstract call description RpcServer.handleHttpCall consumes.

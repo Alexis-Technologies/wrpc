@@ -175,12 +175,14 @@ const createUwsEngine = (engineOptions = {}) => {
     compression = null,
     sendPingsAutomatically = true,
     maxBodySize = MAX_BODY_SIZE,
-    // `false` by default and not `globalThis.console`: an engine is usually
-    // built by the `Server` shell, which hands its own writer down, and a
-    // standalone one printing uninvited would be a surprise.
-    logger = false,
+    // Silent by default and not `globalThis.console`: an engine is usually
+    // built by the `Server` shell, which hands its own writer to attach()
+    // (below), and a standalone one printing uninvited would be a surprise.
+    // Left undefined here so attach() can tell "not configured" from
+    // `logger: false`.
+    logger,
   } = engineOptions;
-  const log = createLoggerWriter(logger).child({ component: 'uws' });
+  let log = createLoggerWriter(logger ?? false).child({ component: 'uws' });
 
   if (!providedApp && (typeof uws !== 'object' || uws === null || typeof uws.App !== 'function')) {
     throw new TypeError(
@@ -383,6 +385,13 @@ const createUwsEngine = (engineOptions = {}) => {
       if (attached) throw new Error('createUwsEngine: this engine is already attached');
       attached = true;
       const { path = '/*', onHttpCall } = attachOptions;
+      // The writer the Server shell (or an adapter) hands down, as the
+      // node engine takes it: an engine built without a logger reports
+      // through it — a dropped frame used to go nowhere, whatever the
+      // shell was told. `logger: false` on the engine stays silent.
+      if (logger === undefined && attachOptions.logger !== undefined) {
+        log = createLoggerWriter(attachOptions.logger).child({ component: 'uws' });
+      }
       app.ws(path, behavior(attachOptions));
       // Without onHttpCall the host framework (fastify) owns HTTP routing
       // and we only take over the upgrade path.

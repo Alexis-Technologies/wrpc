@@ -109,7 +109,8 @@ want an alert for.
 | `subscribe.refused` | warn | A subscription refused before it started |
 | `ws.frame`, `ws.protocol`, `ws.invalid-utf8` | warn | A peer's frame violated the protocol; the connection was closed |
 | `ws.too-big`, `ws.overflow`, `ws.backpressure` | warn | A configured limit closed the connection — the entry names the limit |
-| `ws.inflate` | warn | permessage-deflate failed, or the inflated message was too big |
+| `ws.inflate`, `ws.deflate` | warn | permessage-deflate failed on the way in (or the inflated message was too big), or on the way out; the connection was closed |
+| `socket.error` | debug | The engine socket under a client raised `error`; the connection is closed. The engine's own line (`ws.*`, `uws.dropped`) already said what happened |
 | `uws.dropped` | error | uWebSockets.js discarded an outbound frame: a hole in the stream |
 | `session.destroy`, `session.save`, `session.touch` | error | The session store rejected an operation |
 | `session.evict` | warn | Live sessions dropped for capacity — signed-in users signed out |

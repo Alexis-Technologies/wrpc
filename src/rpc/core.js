@@ -910,7 +910,12 @@ class RpcServer extends Emitter {
       if (inflight === 1 && typeof socket.pause === 'function') socket.pause();
       handleBinary(client, bytes, this.#router, this.#limits).then(done, done);
     });
-    socket.on('error', () => transport.emit('close'));
+    // Debug, not warn: the built-in Connection already wrote its own line
+    // for what it saw; this is the client's side of the same event.
+    socket.on('error', (error) => {
+      client.log.debug({ event: 'socket.error', err: error });
+      transport.emit('close');
+    });
     return client;
   }
 

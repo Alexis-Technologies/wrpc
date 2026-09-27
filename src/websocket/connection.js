@@ -649,7 +649,9 @@ class Connection extends EventEmitter {
       // The connection went away meanwhile: the queue was dropped with it.
       if (this.#outbox[0] !== job) return;
       if (error) {
-        this.emit('error', error);
+        // The mirror of ws.inflate: a deflate that failed on the way out is
+        // a line, not only an 'error' nobody may be listening to.
+        this.#fault('ws.deflate', error);
         return void this.terminate();
       }
       this.#outbox.shift();

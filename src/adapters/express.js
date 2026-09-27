@@ -40,7 +40,7 @@ const createWrpc = (options = {}) => {
 
   // No `server`: this engine is driven by hand from the app's own 'upgrade'
   // listener (see `upgrade` below).
-  const source = engine.attach({ ...ws, verifyClient: createUpgradeGate({ rpc, cors, ws }) });
+  const source = engine.attach({ logger: rpc.log, ...ws, verifyClient: createUpgradeGate({ rpc, cors, ws }) });
   source.on('connection', (socket, req) => {
     rpc.attachSocket(socket, {
       headers: req.headers,

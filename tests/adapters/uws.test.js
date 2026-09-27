@@ -74,6 +74,36 @@ test('UwsSocket: a poisoned uws handle never escapes as a throw', () => {
   assert.doesNotThrow(() => socket.terminate());
 });
 
+test(
+  'createUwsEngine: an engine built without a logger reports through the one attach() hands it; logger: false stays silent',
+  { skip: !uws && 'uWebSockets.js unavailable' },
+  async (t) => {
+    const { recorder } = require('../helpers/recorder.js');
+    const { WrpcClient } = require('../../index.js');
+    const router = defineRouter({ unit: { noop: procedure({ access: 'public', handler: async () => null }) } });
+    const probe = async (engine, expected) => {
+      const log = recorder();
+      const server = new Server({ router, host: '127.0.0.1', port: 0, logger: log.writer, engine });
+      t.after(() => server.close());
+      const sockets = [];
+      server.wsServer.on('connection', (socket) => sockets.push(socket));
+      await server.listen();
+      const { port } = server.address();
+      const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, { heartbeat: false, reconnect: false });
+      t.after(() => client.close());
+      assert.strictEqual(sockets.length, 1);
+      // What a dropped frame would write, through the socket's own writer.
+      sockets[0].log.error({ event: 'uws.probe' });
+      assert.deepStrictEqual(
+        log.all('uws.probe').map((e) => e.component),
+        expected,
+      );
+    };
+    await probe(createUwsEngine({ uws }), ['uws']);
+    await probe(createUwsEngine({ uws, logger: false }), []);
+  },
+);
+
 test('UwsSocket: a dropped message fails loudly instead of silently', () => {
   // A hole in the frame stream would corrupt the RPC protocol, so a uws
   // DROPPED status has to surface as an error plus a terminate.

@@ -414,6 +414,9 @@ const wrpcFastify = async (fastify, options = {}) => {
   // ---- WebSocket: engine attach ------------------------------------------
 
   const source = engine.attach({
+    // The engine reports through the server's writer, as the Server shell
+    // arranges; `ws.logger` overrides.
+    logger: rpc.log,
     ...(engine.standalone ? {} : { server: fastify.server }),
     ...ws,
     verifyClient: createUpgradeGate({ rpc, cors, ws }),

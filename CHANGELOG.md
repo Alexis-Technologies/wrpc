@@ -1411,6 +1411,14 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **A connection that dies on an engine leaves a line.** The uWebSockets.js
+  engine ignored the logger the `Server` shell handed to `attach()` (its own
+  default was `false`), so `uws.dropped` went nowhere whatever the shell was
+  told; it takes the attached writer now unless built with its own, and the
+  fastify and express adapters pass the server's. A permessage-deflate
+  failure on the way OUT was an `'error'` nobody may be listening to; it is
+  `ws.deflate`, the mirror of `ws.inflate`. And a socket's `error` under a
+  client is a debug `socket.error` line beside the engine's own.
 - **A broadcast flood during a client's Noise handshake no longer costs
   it the connection.** A sealed socket held everything sent before the
   handshake in one queue of 256 and closed the connection past it — so a
