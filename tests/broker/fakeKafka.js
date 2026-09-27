@@ -288,7 +288,13 @@ class FakeConsumer extends EventEmitter {
             Promise.resolve()
               .then(() => this.#handler({ topic: name, partition, message, heartbeat }))
               .catch(() => {
-                // eachMessage threw: a real consumer would retry the batch.
+                // eachMessage threw. kafkajs would retry the SAME offset with
+                // its backoff and eventually crash the consumer; the confluent
+                // facade logs and moves on. This fake moves on and commits,
+                // which is a guard, not a model: the adapter never lets its
+                // eachMessage throw — every delivery is settled by it
+                // (ack/retry/dead-letter), and a throw here would be a bug in
+                // the adapter, which the contract would show as a lost message.
               })
               .then(() => {
                 busy.delete(key);

@@ -66,11 +66,18 @@ test('nats broker (fake): log contract', async (t) => {
 });
 
 test('nats broker (fake): queue contract', async (t) => {
+  let world = null;
   await runQueueContract(t, 'nats', {
     open: async () => {
-      const { world, broker, close } = open();
+      const opened = open();
+      world = opened.world;
       const peer = createNatsBroker({ ...world, logger: quiet, ackWait: 300 });
-      return { queue: broker.queue, peer: peer.queue, close };
+      return { queue: opened.broker.queue, peer: peer.queue, close: opened.close };
+    },
+    // The JetStream connection drops under a live consume(): every live
+    // iterable ends with the error; the next consume() is unaffected.
+    breakConsumer: () => {
+      for (const stream of world.server.streams.values()) stream.failLive(new Error('jetstream connection dropped'));
     },
     timeout: 4000,
     redelivery: 600,

@@ -1320,6 +1320,14 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **Tests: the broker adapters' recovery branches run against faults the
+  fakes now inject.** A JetStream consume that rejects (`failConsume` on the
+  NATS fake), a Redis server refusing `XREADGROUP` and `BLPOP` for a moment
+  (the fake's `fail` hook), a RabbitMQ `basic.cancel` (`cancelConsumer` on
+  the AMQP fake) — the branches where `healthy` goes false and comes back,
+  and the lines that say so, are covered where they used to be reachable
+  only against a live broker. The Kafka fake's comment on a handler that
+  throws says what the real clients do and what the fake does.
 - **Broker bindings log through the server's writer, and three events are
   named by their family.** `attachConsumers` and `attachBrokerRpc` defaulted
   their logger to the console, so a pino-configured server saw a dead

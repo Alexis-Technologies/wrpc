@@ -57,6 +57,20 @@ class FakeAmqpServer {
   }
 
   /** The server closes a channel with a code, as a node going away (320) or an operator would. */
+  // basic.cancel: the server cancels a consumer (its queue was deleted, or
+  // the node it lived on went away) — the consumer's handler receives null,
+  // as amqplib delivers it, and the channel stays open.
+  cancelConsumer(tag) {
+    for (const queue of this.queues.values()) {
+      const consumer = queue.consumers.get(tag);
+      if (!consumer) continue;
+      queue.consumers.delete(tag);
+      queueMicrotask(() => consumer.handler(null));
+      return true;
+    }
+    return false;
+  }
+
   killChannel(channel, code = 320) {
     channel.fail(Object.assign(new Error(`CONNECTION_FORCED - channel closed by the server (${code})`), { code }));
   }

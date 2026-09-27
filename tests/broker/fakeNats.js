@@ -129,6 +129,12 @@ class FakeStream {
     this.workqueue = config.retention === 'workqueue';
   }
 
+  /** Ends every live consume() iterable on this stream with `error`, as a dropped connection would. */
+  failLive(error) {
+    for (const iterable of this.live) iterable.fault = error;
+    for (const consumer of this.consumers.values()) consumer.wake?.();
+  }
+
   get first() {
     let first = 0;
     for (const seq of this.messages.keys()) {
@@ -268,6 +274,7 @@ class FakeConsumer {
     let closed = false;
     const consumer = this;
     const iterable = {
+      fault: null,
       close: async () => {
         closed = true;
         consumer.stream.live.delete(iterable);
@@ -276,6 +283,16 @@ class FakeConsumer {
       [Symbol.asyncIterator]: async function* () {
         for (;;) {
           if (closed) return;
+          // A fault a test injected through the stream's failLive(): this
+          // iterable ends with the error — what a JetStream connection that
+          // dropped looks like — and a fresh consume() is unaffected.
+          if (iterable.fault !== null) {
+            const fault = iterable.fault instanceof Error ? iterable.fault : new Error(String(iterable.fault));
+            iterable.fault = null;
+            closed = true;
+            consumer.stream.live.delete(iterable);
+            throw fault;
+          }
           const seq = consumer.#next();
           if (seq === null) {
             await consumer.wait(20);

@@ -83,9 +83,12 @@ test('redis broker (fake): the feed spec — brokerFeed over Redis Streams', asy
 });
 
 test('redis broker (fake): queue contract', async (t) => {
+  let client = null;
   await runQueueContract(t, 'redis', {
     open: async () => {
-      const { client, broker, close } = open();
+      const opened = open();
+      client = opened.client;
+      const { broker, close } = opened;
       const peerBroker = createRedisBroker({
         client: client.duplicate(),
         logger: quiet,
@@ -101,9 +104,46 @@ test('redis broker (fake): queue contract', async (t) => {
         },
       };
     },
+    // The server refuses reads for a moment: every XREADGROUP fails, then
+    // works again — what a failover looks like from a client.
+    breakConsumer: () => {
+      client.server.fail = (command) => (command === 'xreadgroup' ? new Error('LOADING Redis is loading') : null);
+      setTimeout(() => {
+        client.server.fail = null;
+      }, 80);
+    },
     timeout: 3000,
     redelivery: 500,
   });
+});
+
+test('redis broker (fake): a direct listener survives a failing BLPOP and a handler that throws — each a line', async (t) => {
+  const { recorder } = require('../helpers/recorder.js');
+  const log = recorder();
+  const client = createFakeRedis();
+  const broker = createRedisBroker({ client, logger: log.writer, blockMs: 20 });
+  t.after(() => broker.close());
+  // A service address (a group) is served through a list and BLPOP; an
+  // inbox is pub/sub. The pop fails from the first call: reported, retried
+  // after a backoff (a BLPOP already blocking would fail a second later).
+  const address = 'svc-blpop';
+  const seen = [];
+  client.server.fail = (command) => (command === 'blpop' ? new Error('READONLY') : null);
+  const handler = (message) => {
+    seen.push(message.body);
+    if (message.body === 'boom') throw new Error('handler boom');
+  };
+  await broker.direct.listen(address, handler, { group: address });
+  await waitFor(() => log.all('broker.redis.blpop').length >= 1);
+  client.server.fail = null;
+  await broker.direct.send(address, 'boom');
+  await broker.direct.send(address, 'fine');
+  await waitFor(() => seen.length === 2);
+  assert.deepStrictEqual(seen, ['boom', 'fine']);
+  const thrown = log.all('broker.redis.listener');
+  assert.strictEqual(thrown.length, 1);
+  assert.strictEqual(thrown[0].err.message, 'handler boom');
+  assert.strictEqual(log.find('broker.redis.blpop').err.message, 'READONLY');
 });
 
 test('redis broker (fake): direct contract', async (t) => {

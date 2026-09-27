@@ -93,6 +93,33 @@ test('amqp broker (fake): queue contract', async (t) => {
   });
 });
 
+test('amqp broker (fake): a consumer the server cancels is reported, unhealthy, and comes back on a fresh channel', async (t) => {
+  const { recorder } = require('../helpers/recorder.js');
+  const log = recorder();
+  const connection = createFakeAmqp();
+  const broker = createAmqpBroker({ connection, logger: log.writer });
+  t.after(() => broker.close());
+  const got = [];
+  const consumer = await broker.queue.consume('cancelled', (delivery) => {
+    got.push(delivery.body);
+    delivery.ack();
+  });
+  t.after(() => consumer.stop());
+  await broker.queue.produce('cancelled', 'one');
+  await waitFor(() => got.length === 1);
+  assert.strictEqual(consumer.healthy, true);
+  const [tag] = connection.server.queue('wrpc.q.cancelled').consumers.keys();
+  assert.strictEqual(connection.server.cancelConsumer(tag), true);
+  await waitFor(() => consumer.healthy === false, 'unhealthy on cancel');
+  await waitFor(() => consumer.healthy === true, 'back on a fresh channel');
+  await broker.queue.produce('cancelled', 'two');
+  await waitFor(() => got.length === 2);
+  assert.deepStrictEqual(got, ['one', 'two']);
+  const line = log.find('broker.amqp.cancelled');
+  assert.strictEqual(line.level, 'error');
+  assert.strictEqual(line.queue, 'cancelled');
+});
+
 test('amqp broker (fake): direct contract', async (t) => {
   await runDirectContract(t, 'amqp', {
     open: async () => {
