@@ -442,6 +442,69 @@ test('ws encryption: a forged, plaintext or never-finished handshake is closed, 
   );
 });
 
+test("ws encryption: a refusal names the peer; a hook or a key provider that throws is this side's error, counted by outcome", async (t) => {
+  const { recorder } = require('../helpers/recorder.js');
+  const { createMetrics, point } = require('../helpers/metrics.js');
+  const metrics = createMetrics();
+  t.after(() => metrics.provider.shutdown());
+  const log = recorder();
+  let mode = 'ok';
+  const keys = generateKey();
+  const booted = await bootServer(t, {
+    router,
+    logger: log.writer,
+    telemetry: { meter: metrics.meter },
+    encryption: {
+      keys,
+      authorize: () => {
+        if (mode === 'throw') throw new Error('directory down');
+        return mode !== 'deny';
+      },
+    },
+  });
+  const serverKey = await booted.server.rpc.encryptionKey();
+  const options = (encryption = {}) => ({ encryption: createEncryption({ serverKey, ...encryption }) });
+  // A good one, then a denied one, then a hook that throws (an NK handshake
+  // completes on the client before the server's authorize runs: refused()
+  // waits for the close either way).
+  const good = await connectClient(t, booted.url, options());
+  assert.strictEqual(good.active, true);
+  mode = 'deny';
+  assert.ok(await refused(booted.url, options()), 'denied');
+  mode = 'throw';
+  assert.ok(await refused(booted.url, options()), 'the hook threw');
+  mode = 'ok';
+  // A plaintext client under a refusing server, and a key id nobody has.
+  await rawClose(`${booted.url}?wrpc_e=1`, (raw) => raw.sendText('{"type":"ping"}'));
+  const [, noise, hpke] = serverKey.split(':');
+  assert.ok(
+    await refused(booted.url, { encryption: createEncryption({ serverKey: `nope:${noise}:${hpke}` }) }),
+    'unknown kid',
+  );
+  const lines = log.all('encryption.refused');
+  assert.deepStrictEqual(
+    lines.map((e) => [e.reason, e.level, e.kind, typeof e.peer]),
+    [
+      ['authorize', 'warn', 'ws', 'string'],
+      ['hook', 'error', 'ws', 'string'],
+      ['plaintext', 'warn', 'ws', 'string'],
+      ['kid', 'warn', 'ws', 'string'],
+    ],
+  );
+  assert.strictEqual(lines[1].err.message, 'directory down');
+  assert.strictEqual(lines[3].kid, 'nope');
+  assert.strictEqual(log.find('encryption.established').component, 'encryption');
+  assert.strictEqual(typeof log.find('encryption.established').peer, 'string');
+  const exported = await metrics.collect();
+  const count = (outcome) =>
+    point(exported, 'wrpc.server.encryption', (a) => a['wrpc.outcome'] === outcome && a['wrpc.kind'] === 'ws')?.value ??
+    0;
+  assert.deepStrictEqual(
+    [count('established'), count('authorize'), count('hook'), count('plaintext'), count('kid')],
+    [1, 1, 1, 1, 1],
+  );
+});
+
 test('ws encryption: a sealed frame altered in flight, or sent twice, ends the session', async (t) => {
   const { server, connect } = await secure(t);
   const sockets = [];

@@ -1320,6 +1320,15 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **A refused session handshake says who, why, and at the level it
+  deserves — and is counted.** `encryption.refused` on a socket carries the
+  `peer` (a child binding), a `kid` or `protocol` only when it is shaped
+  like one (else its length — peer text stays out of the line), and a
+  failure on the server's side — a key provider or the `authorize` hook
+  that threw — is an error line with `err` under its own reason (`keys`,
+  `hook`) rather than a peer's `handshake` at debug. A new counter,
+  `wrpc.server.encryption`, counts handshakes established and refusals by
+  `wrpc.kind` (`ws`, `wt`, `http`) and `wrpc.outcome`.
 - **Trace context on a broker message rides as `traceparent`/`tracestate`.**
   The publisher wrote the packet's field names (`tp`/`ts`) into the message
   headers, which no consumer that is not wrpc reads; it writes the W3C

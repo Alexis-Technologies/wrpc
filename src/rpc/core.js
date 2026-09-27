@@ -231,6 +231,7 @@ class RpcServer extends Emitter {
         // the flood's second victim).
         refuse: (call, headers, status, reason, quiet = false) => {
           if (!quiet) log.warn({ event: 'encryption.refused', reason, kind: 'http' });
+          this.#otel.recordEncryption(reason, 'http');
           this.#otel.recordCall(UNKNOWN_TARGET, 'error', status);
           new ServerHttpTransport(call, { headers }).error(status);
         },
@@ -826,10 +827,20 @@ class RpcServer extends Emitter {
   #sealSocket(socket, meta) {
     const encryption = this.#encryption;
     if (encryption === null) return null;
-    const log = this.#log.child({ component: 'encryption' });
+    // The peer rides the child bindings: a refused handshake names WHO, on
+    // a socket transport (an http refusal has the proxy's address instead,
+    // and carries none). The counter is the core's, handed in as a callback
+    // so src/encryption/ imports no telemetry.
     const kind = typeof meta.kind === 'string' && meta.kind ? meta.kind : 'ws';
-    if (wantsEncryption(meta.url)) return new SealedSocket(socket, { encryption, kind, log });
-    return encryption.required ? new SealedSocket(socket, { encryption, kind, log, refuse: 'plaintext' }) : null;
+    const peer = meta.remoteAddress ?? socket.remoteAddress;
+    const log = this.#log.child(
+      typeof peer === 'string' && peer ? { component: 'encryption', peer } : { component: 'encryption' },
+    );
+    const record = (outcome) => this.#otel.recordEncryption(outcome, kind);
+    if (wantsEncryption(meta.url)) return new SealedSocket(socket, { encryption, kind, log, record });
+    return encryption.required
+      ? new SealedSocket(socket, { encryption, kind, log, record, refuse: 'plaintext' })
+      : null;
   }
 
   /**

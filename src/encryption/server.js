@@ -19,7 +19,7 @@ const { EventEmitter } = require('node:events');
 const { aead, ALGORITHMS } = require('./aead.js');
 const { x25519 } = require('./dh.js');
 const { createKdf } = require('./hkdf.js');
-const { normalizeKeys, parseKey } = require('./keyring.js');
+const { normalizeKeys, parseKey, isKid } = require('./keyring.js');
 const { createNoise, PATTERN_NAMES } = require('./noise.js');
 const { deriveStatics, formatBundle } = require('./statics.js');
 const { createHpke, dhKem, AEAD_IDS } = require('./hpke.js');
@@ -42,6 +42,8 @@ const DEFAULT_PATTERNS = Object.freeze(['NK', 'XX']);
 // What may pile up behind an unfinished handshake: an onConnect hook or a
 // broadcast can send before the peer has said anything.
 const MAX_QUEUED = 256;
+// What a Noise protocol name looks like — the shape a log line may carry.
+const PROTOCOL_NAME = /^Noise_[A-Za-z0-9]+_[A-Za-z0-9]+_[A-Za-z0-9-]+_[A-Za-z0-9]+$/;
 const NO_COMPRESS = Object.freeze({ compress: false });
 const CLOSE_POLICY = 1008;
 const CLOSE_PROTOCOL = 1002;
@@ -218,15 +220,17 @@ class SealedSocket extends EventEmitter {
   #pending = 0;
   #chain = Promise.resolve();
   #dead = false;
+  #record;
   #timer;
   #resolve;
 
-  constructor(socket, { encryption, kind = 'ws', log, refuse = null }) {
+  constructor(socket, { encryption, kind = 'ws', log, refuse = null, record = null }) {
     super();
     this.#socket = socket;
     this.#encryption = encryption;
     this.#kind = kind;
     this.#log = log;
+    this.#record = record;
     this.ready = new Promise((resolve) => {
       this.#resolve = resolve;
     });
@@ -262,14 +266,20 @@ class SealedSocket extends EventEmitter {
   // One reason on the wire for every failure — which check it was is for
   // this log only. 1008 is policy (refused, timed out, not allowed), 1002
   // anything that did not verify, open or parse.
-  #end(code, reason) {
+  // ONE line per refusal, `encryption.refused`, at the level the reason
+  // deserves: a peer's doing is warn; a failure on this side — a key
+  // provider that threw, an authorize hook that threw — is error, with the
+  // err. `extra` carries what is safe to say (a kid that IS a kid, a
+  // protocol name that IS one; else their lengths — peer text stays out).
+  #end(code, reason, extra = null, level = 'warn') {
     if (this.#dead) return;
     this.#dead = true;
     clearTimeout(this.#timer);
     this.#queue.length = 0;
     this.#queuedShared = 0;
     this.#droppedShared = 0;
-    this.#log.warn({ event: 'encryption.refused', reason, kind: this.#kind });
+    this.#log[level]({ ...extra, event: 'encryption.refused', reason, kind: this.#kind });
+    this.#record?.(reason);
     this.#resolve(null);
     if (typeof this.#socket.close === 'function') this.#socket.close(code, 'encryption');
     else this.#socket.terminate();
@@ -324,13 +334,31 @@ class SealedSocket extends EventEmitter {
     const encryption = this.#encryption;
     const noise = encryption.protocols.get(hello.name);
     // Refused, never negotiated: answering with what WOULD be accepted is
-    // the downgrade this design does not have.
-    if (noise === undefined) return void this.#end(CLOSE_POLICY, 'protocol');
+    // the downgrade this design does not have. The name goes in the line
+    // only when it is shaped like one; anything else is its length.
+    if (noise === undefined) {
+      const named = PROTOCOL_NAME.test(hello.name) && hello.name.length <= 64;
+      return void this.#end(
+        CLOSE_POLICY,
+        'protocol',
+        named ? { protocol: hello.name } : { nameLength: hello.name.length },
+      );
+    }
     // NN and NNpsk0 name no server key; the others name the one they pinned.
     const usesStatic = noise.pattern === 'NK' || noise.pattern === 'XX';
     const kid = usesStatic && hello.kid === '' ? encryption.keys.current : hello.kid;
-    const statics = usesStatic ? await encryption.statics(kid) : null;
-    if (usesStatic && statics === null) return void this.#end(CLOSE_POLICY, 'kid');
+    let statics = null;
+    if (usesStatic) {
+      // A key provider that throws is this side's failure, not the peer's.
+      try {
+        statics = await encryption.statics(kid);
+      } catch (error) {
+        return void this.#end(CLOSE_POLICY, 'keys', { err: error, ...(isKid(kid) ? { kid } : {}) }, 'error');
+      }
+      if (statics === null) {
+        return void this.#end(CLOSE_POLICY, 'kid', isKid(kid) ? { kid } : { kidLength: kid.length });
+      }
+    }
     this.#noise = noise;
     this.#kid = usesStatic ? kid : '';
     this.#handshake = await noise.responder({
@@ -356,12 +384,23 @@ class SealedSocket extends EventEmitter {
       handshakeHash: done.handshakeHash,
     });
     const { authorize } = this.#encryption;
-    if (authorize !== null && (await authorize(info)) === false) return void this.#end(CLOSE_POLICY, 'authorize');
+    if (authorize !== null) {
+      let allowed;
+      try {
+        allowed = await authorize(info);
+      } catch (error) {
+        // The hook threw: this side's failure, said as one — not a peer's
+        // 'handshake' at debug, which is where it used to land.
+        return void this.#end(CLOSE_POLICY, 'hook', { err: error }, 'error');
+      }
+      if (allowed === false) return void this.#end(CLOSE_POLICY, 'authorize');
+    }
     if (this.#dead) return;
     clearTimeout(this.#timer);
     this.#channel = new SecureChannel(done);
     this.#handshake = null;
     this.#log.debug?.({ event: 'encryption.established', protocol: noise.name, kind: this.#kind });
+    this.#record?.('established');
     const queue = this.#queue;
     this.#queue = [];
     this.#queuedShared = 0;

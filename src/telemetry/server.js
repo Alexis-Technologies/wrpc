@@ -90,6 +90,7 @@ const createServerTelemetry = (telemetry) => {
   let queueWait = null;
   let clusterVerifications = null;
   let rtcAssertions = null;
+  let encryption = null;
   let rooms = null;
   let queueDepth = null;
 
@@ -192,6 +193,10 @@ const createServerTelemetry = (telemetry) => {
         unit: '{assertion}',
         description: 'Peer trust assertion verification outcomes',
       });
+      encryption = meter.createCounter('wrpc.server.encryption', {
+        unit: '{handshake}',
+        description: 'Session handshakes established and sealed requests refused, by kind and outcome',
+      });
     } catch {
       duration = null;
       calls = null;
@@ -214,6 +219,7 @@ const createServerTelemetry = (telemetry) => {
       queueWait = null;
       clusterVerifications = null;
       rtcAssertions = null;
+      encryption = null;
     }
   }
   if (canGauge) {
@@ -456,6 +462,16 @@ const createServerTelemetry = (telemetry) => {
     recordRtcAssertion(outcome) {
       try {
         rtcAssertions?.add(1, { 'wrpc.rtc.outcome': outcome });
+      } catch {}
+    },
+
+    // `outcome` is 'established' or a refusal reason — a closed set the
+    // sealing layers spell (plaintext, handshake, protocol, kid, keys,
+    // hook, authorize, timeout, queue, crypto; format, open, stale,
+    // replay, replay-store on http); `kind` is ws, wt or http.
+    recordEncryption(outcome, kind) {
+      try {
+        encryption?.add(1, { 'wrpc.kind': kind, 'wrpc.outcome': outcome });
       } catch {}
     },
 
