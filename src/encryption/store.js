@@ -24,7 +24,7 @@
 
 const crypto = require('node:crypto');
 const { normalizeEnvelopeEncryption, createEnvelopeSealer } = require('./envelope.js');
-const { isKeyProvider } = require('./contracts.js');
+const { isKeyProvider, OpenError } = require('./contracts.js');
 const { createLoggerWriter } = require('../logging.js');
 
 const isFunction = (value) => typeof value === 'function';
@@ -155,7 +155,13 @@ const sealedStore = (store, options = {}) => {
       const data = JSON.parse(sealer.open(kid, Buffer.from(row.s, 'base64'), key).toString());
       if (typeof data === 'object' && data !== null && !Array.isArray(data)) return data;
     } catch (error) {
-      return void log.warn({ event: 'session.open', kid, reason: error.reason ?? 'format' });
+      // A refusal (OpenError) or a row that is not JSON is a missing
+      // session at warn; a key provider that threw is this side's failure,
+      // at error with the err. The token is never on either line.
+      if (error instanceof OpenError || error instanceof SyntaxError) {
+        return void log.warn({ event: 'session.open', kid, reason: error.reason ?? 'format' });
+      }
+      return void log.error({ err: error, event: 'session.keys', kid });
     }
     return void log.warn({ event: 'session.open', kid, reason: 'format' });
   };
@@ -213,7 +219,12 @@ const sealedStore = (store, options = {}) => {
         log.warn({ event: 'session.unsealed', kid: null });
         return null;
       }
-      if (seal) await migrate(token, plain, token, null, null);
+      if (seal) {
+        await migrate(token, plain, token, null, null);
+        // Said, once per row: what acceptPlaintext is for, and what an
+        // operator counts down to zero before turning it off.
+        log.info({ event: 'session.adopt' });
+      }
       return plain;
     },
     // Async on purpose: a keyring without its current key throws in write()

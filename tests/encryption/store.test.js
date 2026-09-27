@@ -289,6 +289,45 @@ test('sealedStore: touch is forwarded to the current slot, and only when the sto
   assert.strictEqual(bare.name, 'sealed(store)');
 });
 
+test('sealedStore: a provider that throws on a read is an error line under session.keys; an adopted plaintext row is an info line', async () => {
+  const { recorder } = require('../helpers/recorder.js');
+  const master = generateKey();
+  let down = false;
+  const keys = {
+    current: () => 'a',
+    get: (kid) => {
+      if (down) throw new Error('vault unreachable');
+      return kid === 'a' ? master : null;
+    },
+    kids: () => ['a'],
+  };
+  const log = recorder();
+  const store = sealedStore(mapStore(), { keys, logger: log.writer });
+  await store.set(TOKEN, STATE);
+  down = true;
+  assert.strictEqual(await store.get(TOKEN), null);
+  const line = log.find('session.keys');
+  assert.deepStrictEqual([line.level, line.err.message, line.kid], ['error', 'vault unreachable', 'a']);
+  assert.ok(!JSON.stringify(log.entries).includes(TOKEN), 'the token is a credential: never logged');
+  down = false;
+  assert.deepStrictEqual(await store.get(TOKEN), STATE);
+  // Adoption under acceptPlaintext is said, once per row.
+  const redis = new FakeRedis();
+  await redisStore(redis).set(TOKEN, STATE);
+  const adopting = recorder();
+  const lenient = sealedStore(redisStore(redis), {
+    keys: generateKey(),
+    acceptPlaintext: true,
+    logger: adopting.writer,
+  });
+  assert.deepStrictEqual(await lenient.get(TOKEN), STATE);
+  assert.deepStrictEqual(await lenient.get(TOKEN), STATE);
+  assert.deepStrictEqual(
+    adopting.all('session.adopt').map((e) => e.level),
+    ['info'],
+  );
+});
+
 test('sealedStore: a provider that lost its current key fails the write loudly and the read quietly', async () => {
   let current = 'a';
   const held = { a: generateKey() };

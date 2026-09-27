@@ -1320,6 +1320,16 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **A key provider that throws is an error line with the error, under
+  its own event — not a refusal without a reason.** On the rooms backplane,
+  the cluster channel, a broker feed or consumer and the sealed session
+  store, a provider that threw while a message was being opened used to
+  produce a warn without `reason` or `err` (a "vault unreachable" looked
+  like a peer's bad envelope). It is `backplane.keys`, `cluster.keys`,
+  `session.keys`, and `broker.refused`/`feed.refused` with reason `keys`,
+  at error with `err`; a refusal's `*.open` line carries the `kid` when it
+  is one; and a plaintext session row adopted under `acceptPlaintext` is a
+  `session.adopt` info line — what to count down before turning it off.
 - **A sealed request the server refused is a typed client error, with the
   status the calls can act on.** The sealed `fetch` threw "answered in
   plaintext (N)" and every call in the request failed `503`, so a device

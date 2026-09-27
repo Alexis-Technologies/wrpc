@@ -473,7 +473,10 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
       const opened = sealing.open(policy.sealedFor ?? policy.queue, delivery);
       if (opened.refused !== undefined) {
         rpc.otel.recordBrokerRefusal(system, opened.refused);
-        log.warn({
+        // `keys`: a provider that threw — this side's failure, at error
+        // with the err; the rest is a refusal of the message, at warn.
+        log[opened.error === undefined ? 'warn' : 'error']({
+          ...(opened.error === undefined ? {} : { err: opened.error }),
           event: 'broker.refused',
           queue: policy.queue,
           reason: opened.refused,

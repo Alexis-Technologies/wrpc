@@ -179,7 +179,7 @@ test('rooms backplane: an envelope does not open under another key, on another c
   assert.strictEqual(c.socket.events.length, 0);
   assert.deepStrictEqual(
     stranger.warnings.find((w) => w.event === 'backplane.open'),
-    { event: 'backplane.open', channel: 'room:lobby', reason: 'open' },
+    { event: 'backplane.open', channel: 'room:lobby', reason: 'open', kid: '0' },
   );
 
   // What an attacker with the Redis can do: replay it, move it, flip it
@@ -217,6 +217,39 @@ test('rooms backplane: plaintext is refused where encryption is on, and named wh
   await waitFor(() => packedLog.warnings.some((w) => w.event === 'backplane.sealed'));
   assert.strictEqual(plain.socket.events.length, 1, 'only its own emit');
   assert.strictEqual(packed.socket.events.length, 1, "only the plain instance's emit");
+});
+
+test("rooms backplane: a key provider that throws while opening is this side's error line, with the err and the kid", async (t) => {
+  const { recorder } = require('../helpers/recorder.js');
+  const backplane = new MemoryBackplane({ logger: false });
+  const master = generateKey();
+  const a = instance(t, backplane, { rooms: { encryption: { keys: { current: 'a', ring: { a: master } } } } });
+  const log = recorder();
+  let down = false;
+  const flaky = {
+    current: () => 'a',
+    get: (kid) => {
+      if (down) throw new Error('vault unreachable');
+      return kid === 'a' ? master : null;
+    },
+  };
+  const b = instance(t, backplane, { rooms: { encryption: { keys: flaky } } }, log.writer);
+  await timers.setTimeout(10);
+  // Down before the first envelope: a key a receiver already derived for a
+  // sender's salt is cached, and the provider is not asked again for it.
+  down = true;
+  a.rpc.to('lobby').emit('payment', { n: 1 });
+  await waitFor(() => log.all('backplane.keys').length === 1);
+  const line = log.find('backplane.keys');
+  assert.deepStrictEqual(
+    [line.level, line.err.message, line.kid, line.channel],
+    ['error', 'vault unreachable', 'a', 'room:lobby'],
+  );
+  assert.strictEqual(log.all('backplane.open').length, 0, 'not a refusal without a reason');
+  assert.strictEqual(b.socket.events.length, 0);
+  down = false;
+  a.rpc.to('lobby').emit('payment', { n: 2 });
+  await waitFor(() => b.socket.events.length === 1, 'the provider recovered');
 });
 
 test('rooms backplane: a sealer that cannot seal keeps the event local and names it — never plaintext', async (t) => {
@@ -302,7 +335,7 @@ test('rooms backplane: a key rotation — add, make current, drop', async (t) =>
     published.filter((m) => m.channel.includes('lobby')).map((m) => m.message.split(':')[1]),
     ['k1', 'k2'],
   );
-  assert.deepStrictEqual(warnings[0], { event: 'backplane.open', channel: 'room:lobby', reason: 'kid' });
+  assert.deepStrictEqual(warnings[0], { event: 'backplane.open', channel: 'room:lobby', reason: 'kid', kid: 'k1' });
   assert.deepStrictEqual(
     dropped.socket.events.map((e) => e.name),
     ['under-k2'],

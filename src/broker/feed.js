@@ -121,7 +121,7 @@ const brokerFeed = (broker, topic, options = {}) => {
     // Refusals of this subscriber's read, counted per reason (see
     // REFUSAL_INTERVAL); the metric counts every one.
     const refusals = new Map();
-    const refuse = (id, reason) => {
+    const refuse = (id, reason, error = undefined) => {
       context?.otel?.recordBrokerRefusal(system, reason);
       const now = Date.now();
       let tally = refusals.get(reason);
@@ -130,12 +130,22 @@ const brokerFeed = (broker, topic, options = {}) => {
         refusals.set(reason, tally);
       }
       tally.count++;
-      const level = tally.count === 1 || now - tally.since >= REFUSAL_INTERVAL ? 'warn' : 'debug';
-      if (level === 'warn') {
+      const loud = tally.count === 1 || now - tally.since >= REFUSAL_INTERVAL;
+      if (loud) {
         tally.since = now;
         tally.logged = tally.count;
       }
-      context?.log?.[level]({ event: 'feed.refused', topic: name, id, reason, count: tally.count });
+      // A provider that threw (`keys`, with the err) is this side's failure
+      // and an error line where a refusal of the entry would be a warn.
+      const level = !loud ? 'debug' : error === undefined ? 'warn' : 'error';
+      context?.log?.[level]({
+        ...(error === undefined ? {} : { err: error }),
+        event: 'feed.refused',
+        topic: name,
+        id,
+        reason,
+        count: tally.count,
+      });
     };
     try {
       for (;;) {
@@ -170,7 +180,7 @@ const brokerFeed = (broker, topic, options = {}) => {
               const opened = sealing.open(name, { headers: raw.headers, body: raw.value });
               if (opened.refused !== undefined) {
                 // Skipped like an undecodable entry — and never yielded as it is.
-                refuse(raw.id, opened.refused);
+                refuse(raw.id, opened.refused, opened.error);
                 continue;
               }
               if (opened.sealed) entry = { ...raw, headers: opened.headers, value: toText(opened.body) };

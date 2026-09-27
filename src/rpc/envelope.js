@@ -36,6 +36,7 @@ const {
   isEncodedEnvelope,
 } = require('../compression/sync.js');
 const { normalizeEnvelopeEncryption, createEnvelopeSealer } = require('../encryption/envelope.js');
+const { isKid } = require('../encryption/keyring.js');
 const { encodeAttachments, decodeAttachments } = require('../attachments.js');
 
 const SEALED_PREFIX = 'wrpc-sealed:';
@@ -149,18 +150,22 @@ const createEnvelope = ({ compression, encryption, maxMessage, name, layer, even
         return void log.warn({ event: `${event}.unsealed`, channel });
       }
       const colon = message.indexOf(':', SEALED_PREFIX.length);
+      const kid = colon === -1 ? '' : message.slice(SEALED_PREFIX.length, colon);
       let body = null;
       let reason = 'format';
       if (colon !== -1) {
         try {
-          body = sealer.open(
-            message.slice(SEALED_PREFIX.length, colon),
-            Buffer.from(message.slice(colon + 1), 'base64'),
-            channel,
-          );
+          body = sealer.open(kid, Buffer.from(message.slice(colon + 1), 'base64'), channel);
           // Our own publish, echoed back: nothing to read, nothing to report.
           if (body === null) return undefined;
         } catch (error) {
+          // A refusal has a reason (OpenError, or the sealer's); anything
+          // else is THIS side's failure — a key provider that threw — and
+          // is an error line with the err, not a refusal without a reason.
+          if (typeof error?.reason !== 'string') {
+            log.error({ err: error, event: `${event}.keys`, channel, ...(isKid(kid) ? { kid } : {}) });
+            return undefined;
+          }
           reason = error.reason;
         }
       }
@@ -168,7 +173,8 @@ const createEnvelope = ({ compression, encryption, maxMessage, name, layer, even
       if (text !== null) return text;
       // A frame that opened but names a codec this instance does not hold.
       if (body !== null) reason = 'codec';
-      return void log.warn({ event: `${event}.open`, channel, reason });
+      // The kid goes on the line only when it is one (peer text stays out).
+      return void log.warn({ event: `${event}.open`, channel, reason, ...(isKid(kid) ? { kid } : {}) });
     },
   };
 };

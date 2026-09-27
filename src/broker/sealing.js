@@ -96,7 +96,11 @@ const createBrokerSealing = (option, name, { layer, replay, text = false }) => {
         const view = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
         opened = unpack(sealer.open(String(kid), view, context));
       } catch (error) {
-        return { refused: error.reason ?? 'open' };
+        // A refusal has a reason; anything else — a key provider that threw
+        // — is this side's failure, handed to the caller with the error so
+        // it can say so at error level.
+        if (typeof error?.reason !== 'string') return { refused: 'keys', error };
+        return { refused: error.reason };
       }
       if (opened === null) return { refused: 'format' };
       return { headers: opened.headers, body: opened.body, sealed: true };

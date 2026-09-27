@@ -116,6 +116,9 @@ want an alert for.
 | `session.evict` | warn | Live sessions dropped for capacity — signed-in users signed out |
 | `session.corrupt` | warn | A stored session would not parse. **Never carries the token** |
 | `backplane.gap`, `backplane.redis` | warn/error | Envelopes lost between instances; a backplane client failed |
+| `backplane.keys`, `cluster.keys`, `session.keys` | error | The key provider threw while a sealed envelope, command or session row was being opened (`err`, and the `kid` when it is one) — this side's failure, not a refusal of the message |
+| `backplane.open`, `cluster.open`, `session.open` | warn | A sealed envelope, command or row did not open (`reason`: `kid`, `open`, `replay`, `format`, `codec`, plus the `kid` when it is one) |
+| `session.adopt` | info | A plaintext session row was read under `acceptPlaintext` and re-written sealed — count these down before turning the option off |
 | `backplane.seal`, `cluster.seal` | error | A sealing envelope could not seal (a keyring without its current key); the event stayed local, nothing left in the clear |
 | `cluster.unsigned`, `cluster.badsig`, `cluster.verify` | warn/error | The three ways envelope authentication fails |
 | `cluster.bytes` | warn | `sendTo` (or `cluster.send`) to a client on another instance with bytes in the event's data: a command envelope is JSON, so it was refused (`false`), not delivered mangled |
@@ -140,8 +143,8 @@ want an alert for.
 | `broker.rpc.refused` | warn | A sealed RPC frame that did not open (`reason`: `unsealed`, `kid`, `open`, `format`, `replay`), one older than `maxSkew` (`stale`), or a plaintext frame on a session a sealed hello opened (`downgrade`) — dropped, never answered |
 | `broker.rpc.replay` | error | The shared replay memory could not be asked; the frame was not served |
 | `broker.rpc.capacity` | warn | Hellos refused at `maxSessions` since the last sweep (`refused`, `sessions`, `max`) — one line per sweep, not per hello |
-| `broker.refused` | warn | A sealed delivery a consumer could not open (`reason`: `unsealed`, `kid`, `open`, `format`); `kid` is retried, the rest dead-letter |
-| `feed.refused` | warn/debug/info | A sealed entry a feed could not open: `warn` once per reason per ten seconds with the running `count`, `debug` in between, an `info` summary when the feed ends |
+| `broker.refused` | warn/error | A sealed delivery a consumer could not open (`reason`: `unsealed`, `kid`, `open`, `format`); `kid` is retried, the rest dead-letter. `keys` — the key provider threw — is an error line with `err` |
+| `feed.refused` | warn/error/debug/info | A sealed entry a feed could not open: `warn` once per reason per ten seconds with the running `count` (`error` with `err` when the reason is `keys`), `debug` in between, an `info` summary when the feed ends |
 | `broker.feed.resume` | warn/debug | A resume token was refused. `reason: 'signature'` means it was **tampered with** |
 | `broker.feed.gap` | info | A subscriber fell behind retention; the snapshot hook ran |
 | `wt.attach`, `wt.source` | error | A WebTransport session could not be attached |

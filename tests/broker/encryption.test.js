@@ -110,6 +110,26 @@ const boot = async (t, { rpc = {}, attach = {}, broker = new MemoryBroker({ logg
 };
 
 for (const mode of ['stateless', 'session']) {
+  test('broker sealing: a key provider that throws while opening answers { refused: "keys", error }', () => {
+    const master = generateKey();
+    let down = false;
+    const flaky = {
+      current: () => 'a',
+      get: (kid) => {
+        if (down) throw new Error('vault unreachable');
+        return kid === 'a' ? master : null;
+      },
+    };
+    const sealing = createBrokerSealing({ keys: flaky }, 'x', { layer: 'broker-log', replay: false, text: true });
+    const sealed = sealing.seal('orders', { n: '1' }, 'body');
+    down = true;
+    const refused = sealing.open('orders', sealed);
+    assert.strictEqual(refused.refused, 'keys');
+    assert.strictEqual(refused.error.message, 'vault unreachable');
+    down = false;
+    assert.strictEqual(sealing.open('orders', sealed).sealed, true);
+  });
+
   test(`broker encryption (${mode}): the broker carries neither the packets nor the bearer token`, async (t) => {
     const keys = generateKey();
     const { carried, broker } = spied(new MemoryBroker({ logger: quiet }));
