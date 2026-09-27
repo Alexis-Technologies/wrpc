@@ -210,6 +210,11 @@ class SealedSocket extends EventEmitter {
   #outbound;
   #inbound;
   #queue = [];
+  // The queue holds direct sends and shared (broadcast) messages in one
+  // order, counted apart: a direct flood before the handshake closes the
+  // connection, a broadcast flood drops for THIS client and is said once.
+  #queuedShared = 0;
+  #droppedShared = 0;
   #pending = 0;
   #chain = Promise.resolve();
   #dead = false;
@@ -262,6 +267,8 @@ class SealedSocket extends EventEmitter {
     this.#dead = true;
     clearTimeout(this.#timer);
     this.#queue.length = 0;
+    this.#queuedShared = 0;
+    this.#droppedShared = 0;
     this.#log.warn({ event: 'encryption.refused', reason, kind: this.#kind });
     this.#resolve(null);
     if (typeof this.#socket.close === 'function') this.#socket.close(code, 'encryption');
@@ -357,17 +364,43 @@ class SealedSocket extends EventEmitter {
     this.#log.debug?.({ event: 'encryption.established', protocol: noise.name, kind: this.#kind });
     const queue = this.#queue;
     this.#queue = [];
+    this.#queuedShared = 0;
     for (let i = 0; i < queue.length; i++) this.send(queue[i]);
+    if (this.#droppedShared > 0) {
+      this.#log.warn({ event: 'encryption.queue.dropped', count: this.#droppedShared, kind: this.#kind });
+      this.#droppedShared = 0;
+    }
     this.#resolve(info);
+  }
+
+  // A message prepared once for a fan-out (Broadcast.emit): the engine's
+  // sendPrepared would write its frames as they are, which a sealed
+  // connection cannot — every recipient seals its own copy. Before the
+  // handshake it is held like a direct send, but under its own bound: a
+  // busy room must not cost a connecting client its connection, so past
+  // the bound the rest is dropped for this client, counted, and said once
+  // when the handshake completes. A client is a member of nothing before
+  // open() resolves; a broadcast during its handshake is best effort.
+  sendPrepared(message) {
+    if (this.#dead) return false;
+    if (this.#channel !== null) return this.send(message.text);
+    if (this.#queuedShared >= MAX_QUEUED) {
+      this.#droppedShared++;
+      return false;
+    }
+    this.#queuedShared++;
+    this.#queue.push(message.text);
+    return true;
   }
 
   send(data) {
     if (this.#dead) return false;
     if (this.#channel === null) {
-      // Sent before the peer finished the handshake — an onConnect hook, a
-      // broadcast: held, in order, up to a bound; past it the connection is
-      // not worth the memory.
-      if (this.#queue.length >= MAX_QUEUED) {
+      // Sent before the peer finished the handshake — an onConnect hook's
+      // event, an answer: held, in order, up to a bound; past it the
+      // connection is not worth the memory. Shared messages are counted
+      // apart (sendPrepared).
+      if (this.#queue.length - this.#queuedShared >= MAX_QUEUED) {
         this.#end(CLOSE_POLICY, 'queue');
         return false;
       }

@@ -248,6 +248,19 @@ unless they deploy together; a client can read its own `rekeyAfter` to
 compare with what the server was built with. A server's value applies to
 every client it serves.
 
+### Before the handshake
+
+What the server sends to a client whose handshake has not finished is held,
+in order, and sealed once it has. Direct sends — an `onConnect` hook's
+events, an answer — are held up to 256, past which the connection is closed
+(`1008`, reason `queue`): a server that says that much to a client that
+cannot hear yet is not worth the memory. Room and broadcast events are held
+up to 256 as well, but past that they are **dropped for that client only**,
+counted, and said once when its handshake completes
+(`encryption.queue.dropped`): a busy room must not cost every connecting
+client its connection. A client is a member of nothing before `open()`
+resolves anyway — a broadcast during its handshake is best effort.
+
 ### `required`
 
 ```js

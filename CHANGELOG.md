@@ -1360,6 +1360,15 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **A broadcast flood during a client's Noise handshake no longer costs
+  it the connection.** A sealed socket held everything sent before the
+  handshake in one queue of 256 and closed the connection past it — so a
+  busy room closed every client that was still connecting. It offers
+  `sendPrepared` now: a shared (broadcast) message before the handshake is
+  held under its own bound of 256, past which the rest is dropped for that
+  client, counted, and said once as `encryption.queue.dropped` when the
+  handshake completes; a direct send flood still closes (`1008`, `queue`).
+  After the handshake every recipient seals its own copy, as before.
 - **The rooms backplane's per-channel publish counters no longer grow with
   every room name an instance ever published to.** The `seq` table of loss
   detection kept one entry per channel forever (300k unique rooms held ~38

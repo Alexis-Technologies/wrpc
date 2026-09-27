@@ -506,6 +506,56 @@ test('ws encryption: after a frame that does not open, nothing behind it reaches
   }
 });
 
+test("ws encryption: a broadcast flood during a client's handshake does not cost it the connection", async (t) => {
+  const entries = [];
+  const writer = { level: 'debug', child: () => writer };
+  for (const level of ['debug', 'info', 'warn', 'error']) {
+    writer[level] = (entry) => entries.push({ level, ...entry });
+  }
+  const booted = await bootServer(t, { router, encryption: { keys: generateKey() }, logger: writer });
+  const serverKey = await booted.server.rpc.encryptionKey();
+  // The client's first handshake message leaves 300 ms late: the server's
+  // side is attached and unsealed for that long, and everything the room
+  // says meanwhile has to be held for it. What the channel delivers is
+  // recorded here, below any unit: the held events land before load().
+  const received = [];
+  const encryption = createEncryption({ serverKey });
+  const delayed = Object.freeze({
+    ...encryption,
+    secure: (link) =>
+      encryption.secure({
+        ...link,
+        write: (bytes) => void setTimeout(() => link.write(bytes), 300),
+        deliver: (message) => {
+          if (typeof message === 'string') {
+            const packet = JSON.parse(message);
+            if (packet.type === 'event' && packet.name === 'data/flood') received.push(packet.data.i);
+          }
+          link.deliver(message);
+        },
+      }),
+  });
+  const connecting = connectClient(t, booted.url, { encryption: delayed });
+  await waitFor(() => booted.server.rpc.clients.size === 1, 'the socket was attached');
+  const flood = 2 * MAX_QUEUED;
+  for (let i = 0; i < flood; i++) booted.server.rpc.broadcast('data/flood', { i });
+  const client = await connecting;
+  await client.load('data');
+  // The connection lives, and works.
+  assert.deepStrictEqual(await client.api.data.echo({ ok: true }), { ok: true });
+  // The first MAX_QUEUED were held in order and delivered; the rest were
+  // dropped for this client and said once.
+  await waitFor(() => received.length >= MAX_QUEUED, 'the held broadcasts arrived');
+  assert.deepStrictEqual(
+    received,
+    Array.from({ length: MAX_QUEUED }, (_, i) => i),
+  );
+  const dropped = entries.filter((e) => e.event === 'encryption.queue.dropped');
+  assert.deepStrictEqual(dropped, [
+    { level: 'warn', event: 'encryption.queue.dropped', count: flood - MAX_QUEUED, kind: 'ws' },
+  ]);
+});
+
 test('ws encryption: a server that sends without bound before the handshake is cut off', async (t) => {
   const hooks = {
     onConnect: (client) => {

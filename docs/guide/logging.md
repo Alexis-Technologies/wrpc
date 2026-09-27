@@ -120,6 +120,7 @@ want an alert for.
 | `cluster.bytes` | warn | `sendTo` (or `cluster.send`) to a client on another instance with bytes in the event's data: a command envelope is JSON, so it was refused (`false`), not delivered mangled |
 | `encryption.replay`, `encryption.unwrap` | error | The shared replay store could not be asked (the request was refused `503`); a primitive threw while unwrapping a sealed request (`500`) |
 | `encryption.ambient-session` | warn | The server has `encryption` and the cookie session transport: a cookie stays on the outer request, readable by the terminator the encryption keeps out — use `bearerTransport()`/`payloadTransport()`. Once, at construction |
+| `encryption.queue.dropped` | warn | Room/broadcast events dropped for one client while its handshake was still running (`count`), past the 256 held for it — said once when the handshake completes; the connection lived |
 | `encryption.replay.overflow` | warn | The built-in replay memory is full of live entries: sealed requests are refused `409` until some expire (`refused` since the last line, one line per ten seconds) — size `replay.max` for the traffic, or share the memory |
 | `broker.dead` | warn | A message exhausted its retries |
 | `broker.evict` | warn | The per-token client cache is thrashing: more distinct tokens in flight than `tokenClients`, a session restore per message. The evicted client finishes what it holds, then closes |
