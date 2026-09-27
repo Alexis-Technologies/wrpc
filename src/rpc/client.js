@@ -360,6 +360,15 @@ class Client extends Emitter {
    * supersedes — and reliably everywhere else; the application code is the
    * same either way.
    */
+  /**
+   * Whether bytes in a packet leave this connection as an attachments frame
+   * (the server's `attachments` option, off under a packet codec): what
+   * decides if a result is worth walking for bytes at all.
+   */
+  get attachments() {
+    return this.#transport.attachments !== false;
+  }
+
   sendEvent(name, data, options = null) {
     const packet = { type: 'event', name, data };
     if (!this.#transport.connection) {

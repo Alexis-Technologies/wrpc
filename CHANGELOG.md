@@ -1315,6 +1315,13 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **The compiled-serializer fast path does not walk a result for bytes
+  where no attachments frame could leave.** Under `attachments: false` (or
+  a packet codec) the dispatcher used to run `hasBytes` over every result
+  before its compiled serializer — a walk that costs about what the
+  envelope surgery saves on a large result (`bench/serialize-callback.js`
+  gained the row). `Client.attachments` says whether bytes would leave as a
+  frame on that connection; the walk runs only when they would.
 - **`rekeyAfter` is a per-deployment constant, and said to be one.** The
   rekey interval of a Noise session travels in no handshake message, so a
   client and a server that disagree fail at the first rekey — exactly that

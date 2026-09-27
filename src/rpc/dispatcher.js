@@ -222,9 +222,12 @@ const handleRpc = async (client, packet, router) => {
       // gates: an onSend hook may have mutated the packet after the shape
       // the serializer was compiled for, so hooks win over the fast path.
       // A result holding bytes leaves as an attachments frame, which the
-      // serializer's JSON cannot be: the walk runs only under a serializer.
+      // serializer's JSON cannot be: the walk runs only under a serializer,
+      // and only where a frame could leave at all (`attachments: false`, a
+      // packet codec) — the walk on a 400-row result costs about what the
+      // envelope surgery saves (bench/serialize-callback.js).
       const text =
-        compiled?.serialize && hooks.onSend.length === 0 && !hasBytes(result)
+        compiled?.serialize && hooks.onSend.length === 0 && (!client.attachments || !hasBytes(result))
           ? `{"type":"callback","id":${JSON.stringify(id)},"result":${compiled.serialize(result)}}`
           : undefined;
       client.send(callback, { method, text });

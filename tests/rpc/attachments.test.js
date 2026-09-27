@@ -11,6 +11,47 @@ const { FRAME_MARK, FRAME_ATTACHMENTS } = require('../../src/wire.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 
 const bytes = (n, fill) => new Uint8Array(n).fill(fill);
+
+test('attachments: false — a compiled serializer takes the fast path without walking the result for bytes', async (t) => {
+  let serialized = 0;
+  const ajv = { compile: () => () => true };
+  const serializer = {
+    compile: () => (value) => {
+      serialized++;
+      return JSON.stringify({ ...value, serialized: true });
+    },
+  };
+  const units = {
+    p: {
+      make: procedure({
+        access: 'public',
+        schema: { response: { 200: { type: 'object' } } },
+        handler: async () => ({ blob: bytes(4, 7) }),
+      }),
+    },
+  };
+  // With attachments on, bytes in the result rule the serializer out: the
+  // callback leaves as an attachments frame, the bytes intact.
+  const on = await bootServer(t, { router: defineRouter(units, { validation: { ajv, serializer } }) });
+  const a = await connectClient(t, on.url);
+  await a.load('p');
+  const framed = await a.api.p.make();
+  assert.ok(framed.blob instanceof Uint8Array);
+  assert.strictEqual(serialized, 0);
+  // With attachments off there is no frame to leave as, so the result is
+  // not walked: the serializer runs, and the bytes are whatever its JSON
+  // makes of a Uint8Array.
+  const off = await bootServer(t, {
+    router: defineRouter(units, { validation: { ajv, serializer } }),
+    attachments: false,
+  });
+  const b = await connectClient(t, off.url);
+  await b.load('p');
+  const plain = await b.api.p.make();
+  assert.strictEqual(serialized, 1);
+  assert.strictEqual(plain.serialized, true);
+  assert.deepStrictEqual(plain.blob, { 0: 7, 1: 7, 2: 7, 3: 7 });
+});
 const same = (a, b) => Buffer.compare(Buffer.from(a), Buffer.from(b)) === 0;
 
 // ---- the frame itself ------------------------------------------------
