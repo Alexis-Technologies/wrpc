@@ -42,6 +42,86 @@ const createTracing = () => {
 
 const onceEvent = (emitter, name) => new Promise((resolve) => emitter.once(name, resolve));
 
+test('telemetry: wrpc.rtc.assertions counts the verifier\'s outcome — each refusal by its reason, never all as "invalid"', async (t) => {
+  const { createAssertionIssuer, generateAssertionKeys } = require('../../src/webrtc/assertionIssuer.js');
+  const metrics = createMetrics();
+  t.after(() => metrics.provider.shutdown());
+  const telemetry = { meter: metrics.meter };
+  const keys = await generateAssertionKeys({ kid: 'hub' });
+  const issuer = createAssertionIssuer({ key: keys.privateKey, ttl: 60, issuer: 'hub.test' });
+  const fake = createFakeRtc();
+  const hub = new FakeSignalHub({ issuer });
+  const peers = [];
+  t.after(() => {
+    for (const peer of peers) peer.close();
+    fake.world.close();
+  });
+  const peer = (id, { signaler = hub.signaler(id), trusted = true } = {}) => {
+    const instance = new WrpcPeer({
+      router: routerOf(),
+      signaler,
+      rtc: fake.adapter,
+      logger: quiet,
+      telemetry,
+      ...(trusted ? { assertions: { issuer: 'hub.test' }, host: { trust: 'assertion' } } : {}),
+      client: { heartbeat: false, telemetry, reconnect: { minDelay: 5, maxDelay: 20, jitter: false } },
+      connectTimeout: 500,
+      restartTimeout: 30,
+      redial: { minDelay: 5, maxDelay: 20, jitter: false, retries: 1 },
+    });
+    instance.on('error', () => {});
+    peers.push(instance);
+    return instance;
+  };
+  const a = peer('a');
+  const refused = async (dialler, label) => {
+    await assert.rejects(within(dialler.connect('a'), label), /closed/);
+    assert.strictEqual(a.link(dialler.id ?? label), undefined);
+  };
+  // No token at all.
+  await refused(peer('plain', { trusted: false }), 'plain');
+  // A key of its own: the signature does not verify.
+  const rogue = await generateAssertionKeys({ kid: 'hub' });
+  await refused(
+    peer('rogue', { signaler: hub.signaler('rogue', { issuer: createAssertionIssuer({ key: rogue.privateKey }) }) }),
+    'rogue',
+  );
+  // A replayed token names another certificate.
+  const replay = {
+    sign: (claims) => issuer.sign({ ...claims, fp: 'sha-256 ' + 'AA:'.repeat(31) + 'AA' }),
+    publicKeys: () => issuer.publicKeys(),
+  };
+  await refused(peer('replay', { signaler: hub.signaler('replay', { issuer: replay }) }), 'replay');
+  // A good one.
+  const b = peer('b');
+  await within(a.connect('b'), 'b accepted');
+  // A token that was valid once. A peer measures the hub's clock from its
+  // OWN assertions' iat, set when it first signs — so it has to be the
+  // dialler (the lower id), stamping its offer before it verifies the
+  // answer: a peer whose issuer reports an iat ten minutes ahead then reads
+  // b's fresh answer (ttl 60 s) as expired.
+  const ahead = {
+    sign: async (claims) => {
+      const signed = await issuer.sign(claims);
+      return { ...signed, iat: signed.iat + 600 };
+    },
+    publicKeys: () => issuer.publicKeys(),
+  };
+  const aa = peer('aa', { signaler: hub.signaler('aa', { issuer: ahead }) });
+  await assert.rejects(within(aa.connect('b'), 'aa refuses the answer'), /closed/);
+  assert.strictEqual(aa.link('b'), undefined);
+  assert.ok(b.link('a'), 'b still has a');
+  const exported = await metrics.collect();
+  const outcome = (name) =>
+    point(exported, 'wrpc.rtc.assertions', (attrs) => attrs['wrpc.rtc.outcome'] === name)?.value ?? 0;
+  assert.ok(outcome('missing') >= 1, 'missing');
+  assert.ok(outcome('signature') >= 1, 'signature');
+  assert.ok(outcome('fingerprint') >= 1, 'fingerprint');
+  assert.ok(outcome('expired') >= 1, 'expired');
+  assert.ok(outcome('ok') >= 2, 'ok, both ways');
+  assert.strictEqual(outcome('invalid'), 0, 'nothing hides behind "invalid"');
+});
+
 // What real propagation needs and wrpc deliberately does not supply: an
 // active context manager and a W3C propagator, both from the injected api.
 const withOtelGlobals = (t) => {

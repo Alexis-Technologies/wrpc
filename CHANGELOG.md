@@ -1416,6 +1416,14 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **`wrpc.rtc.assertions` says why a trust assertion was refused.** The
+  counter read a `reason` no `AssertionError` ever had, so every refusal
+  was `invalid` and a substitution (`signature`, `fingerprint`, `subject`)
+  could not be told from a clock or a rotation (`expired`, `kid`). It
+  carries the verifier's code now; the telemetry guide says which outcomes
+  are security signals. Redials are counted where they happen, and a
+  `signaling.undeliverable` is a debug line (a trickled candidate that
+  crossed a `leave` is a routine race).
 - **A connection that dies on an engine leaves a line.** The uWebSockets.js
   engine ignored the logger the `Server` shell handed to `attach()` (its own
   default was `false`), so `uws.dropped` went nowhere whatever the shell was

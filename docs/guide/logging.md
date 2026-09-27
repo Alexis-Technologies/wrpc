@@ -144,6 +144,7 @@ want an alert for.
 | `broker.feed.gap` | info | A subscriber fell behind retention; the snapshot hook ran |
 | `wt.attach`, `wt.source` | error | A WebTransport session could not be attached |
 | `mesh.dial` | debug | A mesh edge never formed |
+| `signaling.undeliverable` | debug | A signal for a peer the relay no longer has (`to`, `room`, `type`) — a trickled candidate that crossed its `leave`, a routine race |
 | `rtc.signal.overflow` | warn | A peer sent more signals than are held for it — candidates before its description (256), or anything while `accept()` still thinks (64); the rest are dropped, said once |
 
 ### Client events

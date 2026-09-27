@@ -813,7 +813,11 @@ class WrpcPeer extends Emitter {
     try {
       verified = await this.#verifier.verify(message.assertion, { from, sdp, now: Date.now() + this.#clock });
     } catch (error) {
-      this.#otel.recordRtcAssertion(error?.reason ?? 'invalid');
+      // The verifier's refusal code is the outcome — signature, fingerprint,
+      // subject (a substitution), expired, kid, issuer, malformed (an
+      // operational fault). It used to read a `reason` no AssertionError
+      // ever had, so every refusal counted as 'invalid'.
+      this.#otel.recordRtcAssertion(error instanceof AssertionError ? error.code : 'invalid');
       throw error;
     }
     this.#otel.recordRtcAssertion('ok');
