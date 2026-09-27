@@ -234,6 +234,20 @@ A client names its protocol and the server holds it or closes the
 connection. **Nothing is negotiated down** — a reply of "try this instead"
 would be the downgrade.
 
+### Rekeying
+
+Every 2²⁰ messages in a direction, both ends replace that direction's key
+(Noise `REKEY`): a key that leaks later opens less. The interval is
+`rekeyAfter`, on `createEncryption()` and on the server's `encryption`,
+and it is a **per-deployment constant, not a negotiated one** — it travels
+in no handshake message, so a client and a server that disagree find out at
+the first rekey: exactly that many messages in, one end rekeys and the
+other does not, and the next frame is a plain decrypt failure
+(`encryption.refused`, close `1002`). Leave the default on both ends
+unless they deploy together; a client can read its own `rekeyAfter` to
+compare with what the server was built with. A server's value applies to
+every client it serves.
+
 ### `required`
 
 ```js

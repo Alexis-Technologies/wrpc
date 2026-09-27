@@ -1315,6 +1315,14 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **`rekeyAfter` is a per-deployment constant, and said to be one.** The
+  rekey interval of a Noise session travels in no handshake message, so a
+  client and a server that disagree fail at the first rekey — exactly that
+  many messages in, as a plain decrypt error. Both ends default to the same
+  2^20 out of one module (asserted), the option's JSDoc on both ends, the
+  guide and the protocol reference say it is not negotiated, and the
+  client's `encryption` object exposes its `rekeyAfter` read-only so a
+  deployment can compare the two.
 
 - `@alexify/wrpc/encryption` is `@experimental` **whole**: the subpath's
   types, every `encryption` option it feeds (the server's and the client's,

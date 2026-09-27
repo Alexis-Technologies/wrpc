@@ -5,6 +5,8 @@ const assert = require('node:assert');
 
 const { defineRouter, procedure, WrpcClient } = require('../../index.js');
 const { createEncryption, generateKey } = require('../../encryption.js');
+const { DEFAULT_REKEY_AFTER } = require('../../src/encryption/session.js');
+const { normalizeServerEncryption } = require('../../src/encryption/server.js');
 const { createUwsEngine } = require('../../uws.js');
 const { FRAME_MARK, FRAME_HANDSHAKE, FRAME_SEALED } = require('../../src/wire.js');
 const { MAX_QUEUED } = require('../../src/encryption/server.js');
@@ -548,6 +550,13 @@ test('createEncryption: the options are validated where the object is built', ()
   );
   assert.throws(() => createEncryption({ pattern: 'NNpsk0' }), /psk \(NNpsk0\) must be 32 bytes/);
   assert.throws(() => createEncryption({ serverKey, rekeyAfter: -1 }), /rekeyAfter/);
+  // The rekey interval is not negotiated, so both ends must default to the
+  // SAME constant, out of the one module — and a client can read its own
+  // to compare with what a server was built with.
+  assert.strictEqual(DEFAULT_REKEY_AFTER, 1 << 20);
+  assert.strictEqual(createEncryption({ serverKey }).rekeyAfter, DEFAULT_REKEY_AFTER);
+  assert.strictEqual(normalizeServerEncryption({ keys: generateKey() }, 'test').rekeyAfter, DEFAULT_REKEY_AFTER);
+  assert.strictEqual(createEncryption({ serverKey, rekeyAfter: 8 }).rekeyAfter, 8);
   assert.throws(() => createEncryption({ serverKey, cipher: { id: 'x' } }), /cipher must be a cipher name or a Cipher/);
   assert.throws(() => createEncryption({ serverKey, dh: {} }), /dh must be a Dh/);
   const encryption = createEncryption({ serverKey: { kid: 'k1', noise: 'A'.repeat(43), hpke: new Uint8Array(32) } });

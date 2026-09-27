@@ -236,7 +236,10 @@ const createEncryption = (options = {}) => {
     };
   };
 
-  return Object.freeze({ param: ENCRYPTION_PARAM, protocol: noise.name, pattern, secure, fetch });
+  // `rekeyAfter` is readable so a deployment can check it against the
+  // server's: the interval is not negotiated, and a mismatch is a decrypt
+  // failure at the first rekey, exactly that many messages in.
+  return Object.freeze({ param: ENCRYPTION_PARAM, protocol: noise.name, pattern, rekeyAfter, secure, fetch });
 };
 
 /**

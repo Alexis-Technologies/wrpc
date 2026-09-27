@@ -115,6 +115,7 @@ expectError(encryption.sealedStore(new MemorySessionStore(), { keys: 'k', seal: 
 
 // Session encryption: the client object, the server option, the facts both ends read
 const session = encryption.createEncryption({ serverKey: 'k1:a:b' });
+expectType<number>(session.rekeyAfter);
 expectType<Encryption>(session);
 expectType<'NN' | 'NK' | 'XX' | 'NNpsk0'>(session.pattern);
 expectAssignable<WrpcClientOptions>({ encryption: session });

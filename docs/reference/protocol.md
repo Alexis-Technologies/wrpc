@@ -1193,7 +1193,10 @@ handshake.
 After it, each direction is a Noise CipherState: the nonce is the message
 counter (four zero bytes, then 64 bits — big-endian for AESGCM, little-endian
 for ChaChaPoly), the additional data is empty, and both ends rekey
-(`REKEY`, Noise §11.3) every 2^20 messages. Text packets, stream chunks and
+(`REKEY`, Noise §11.3) every 2^20 messages. The interval is a
+per-deployment constant (`rekeyAfter`, 2^20 by default), not negotiated —
+no handshake message carries it — and two ends that disagree fail at the
+first rekey, as a frame that does not open. Text packets, stream chunks and
 the other framed kinds all travel as the payload of a sealed frame, so
 compression happens inside it. A frame that does not open — altered,
 replayed, out of order — closes the connection: `1002` for anything that did

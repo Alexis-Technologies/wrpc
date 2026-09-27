@@ -129,7 +129,14 @@ export interface ServerEncryptionOptions {
   authorize?: ((peer: EncryptionInfo) => boolean | void | Promise<boolean | void>) | null;
   /** Default 10000 ms. */
   handshakeTimeout?: number;
-  /** Default 2^20; both ends must agree. */
+  /**
+   * Messages per direction between deterministic rekeys (Noise `REKEY`,
+   * §11.3). Default 2^20 — the same constant on both ends. It is NOT
+   * negotiated and not in the handshake: a client and a server that
+   * disagree fail at the first rekey, as a plain decrypt error after exactly
+   * that many messages (`encryption.refused`, close 1002). Leave the
+   * default unless both ends deploy together.
+   */
   rekeyAfter?: number;
   /**
    * The per-request binding (http, sse): how far a sender's clock may be

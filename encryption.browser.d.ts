@@ -209,7 +209,14 @@ export interface CreateEncryptionOptions {
   /** Default `'aes-256-gcm'` — the one cipher a browser has. */
   cipher?: CipherAlgorithm | Cipher;
   dh?: Dh;
-  /** Messages per direction between deterministic rekeys. Default 2^20; both ends must agree; 0 disables. */
+  /**
+   * Messages per direction between deterministic rekeys (Noise `REKEY`,
+   * §11.3). Default 2^20 — the same constant on both ends. It is NOT
+   * negotiated and not in the handshake: a client and a server that
+   * disagree fail at the first rekey, as a plain decrypt error after exactly
+   * that many messages (`encryption.refused`, close 1002). Leave the
+   * default unless both ends deploy together.
+   */
   rekeyAfter?: number;
   /** Default 10000 ms. */
   handshakeTimeout?: number;
@@ -247,6 +254,8 @@ export interface Encryption {
   readonly param: string;
   readonly protocol: string;
   readonly pattern: NoisePattern;
+  /** The rekey interval this end will use — check it against the server's, it is not negotiated. */
+  readonly rekeyAfter: number;
   secure(link: EncryptionLink): EncryptedConnection;
   /**
    * The per-request half, for a transport with no connection to hold a
@@ -330,6 +339,7 @@ export interface NoiseHandshakeOptions {
   staticKey?: KeyPair;
   remoteStatic?: Bytes;
   psk?: Bytes;
+  /** Messages between deterministic rekeys; 0 never. Both ends of a handshake must use the same value — see `createEncryption`. */
   rekeyAfter?: number;
 }
 
