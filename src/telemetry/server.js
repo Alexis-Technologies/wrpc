@@ -356,9 +356,11 @@ const createServerTelemetry = (telemetry) => {
       } catch {}
     },
 
-    recordBackplaneGap(channel, missed) {
+    // `kind` is 'room' or 'broadcast' — a closed set; the channel NAME is a
+    // room name, which only the log line carries (cardinality).
+    recordBackplaneGap(kind, missed) {
       try {
-        backplaneGaps?.add(missed, { 'wrpc.channel': channel });
+        backplaneGaps?.add(missed, { 'wrpc.channel.kind': kind });
       } catch {}
     },
 

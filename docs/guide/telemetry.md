@@ -99,7 +99,7 @@ credential, not an identity, and the two do not share a switch.
 | `wrpc.server.broadcast.recipients` | Histogram | `{client}` |
 | `wrpc.server.stream.bytes` | Counter | `By` |
 | `wrpc.server.backpressure` | Counter | `{event}` |
-| `wrpc.server.backplane.gaps` | Counter | `{envelope}` — envelopes a publisher sent that this instance never received, by `wrpc.channel`; see [scaling](./scaling#loss-detection) |
+| `wrpc.server.backplane.gaps` | Counter | `{envelope}` — envelopes a publisher sent that this instance never received, by `wrpc.channel.kind` (`room` or `broadcast`; the room's name is on the `backplane.gap` log line, never a label — a room name is unbounded); see [scaling](./scaling#loss-detection) |
 | `wrpc.server.sessions` | Counter | `{operation}` |
 | `wrpc.server.sse.channels` | UpDownCounter | `{channel}` |
 | `wrpc.server.sse.events` | Counter | `{event}` |

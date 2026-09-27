@@ -394,6 +394,59 @@ test('RoomsBackplane: the publish counters are bounded by maxTracked, and an evi
   assert.throws(() => new RoomsBackplane({ backplane, instance: 'x', deliver: noop, maxTracked: 1.5 }), /maxTracked/);
 });
 
+test('RpcServer: a backplane gap is counted by the channel KIND, never by the room name', async (t) => {
+  const { RpcServer, defineRouter, procedure } = require('../../index.js');
+  const { createMetrics, point } = require('../helpers/metrics.js');
+  const { recorder } = require('../helpers/recorder.js');
+  const metrics = createMetrics();
+  t.after(() => metrics.provider.shutdown());
+  const backplane = createBackplane();
+  const log = recorder();
+  const rpc = new RpcServer({
+    router: defineRouter({ x: { ping: procedure({ access: 'public', handler: async () => 1 }) } }),
+    backplane,
+    instanceId: 'node-1',
+    logger: log.writer,
+    telemetry: { meter: metrics.meter },
+  });
+  t.after(() => rpc.close());
+  await settle();
+  // A member on this instance retains the room's channel.
+  const socket = { events: [], on: noop, once: noop, off: noop, send: noop, close: noop, terminate: noop, emit: noop };
+  const client = rpc.attachSocket(socket, { headers: {} });
+  client.join('secret-project-x');
+  await settle();
+  const envelope = (channel, seq, rooms) =>
+    backplane.state.handlers.get(channel)(
+      JSON.stringify({ v: 1, instance: 'node-2', epoch: 'e', seq, rooms, name: 'ev', data: null }),
+    );
+  const channel = roomChannel('secret-project-x');
+  envelope(channel, 1, ['secret-project-x']);
+  envelope(channel, 4, ['secret-project-x']); // two missed
+  envelope(BROADCAST_CHANNEL, 1, null);
+  envelope(BROADCAST_CHANNEL, 2, null);
+  envelope(BROADCAST_CHANNEL, 7, null); // four missed
+  const exported = await metrics.collect();
+  const gaps = exported.find((metric) => metric.descriptor.name === 'wrpc.server.backplane.gaps');
+  assert.ok(gaps, 'the counter was exported');
+  assert.strictEqual(point(exported, 'wrpc.server.backplane.gaps', (a) => a['wrpc.channel.kind'] === 'room').value, 2);
+  assert.strictEqual(
+    point(exported, 'wrpc.server.backplane.gaps', (a) => a['wrpc.channel.kind'] === 'broadcast').value,
+    4,
+  );
+  for (const dataPoint of gaps.dataPoints) {
+    assert.deepStrictEqual(Object.keys(dataPoint.attributes), ['wrpc.channel.kind'], 'no room name on the metric');
+  }
+  // The exact channel and count are the log line's.
+  assert.deepStrictEqual(
+    log.all('backplane.gap').map((e) => [e.channel, e.missed]),
+    [
+      [channel, 2],
+      [BROADCAST_CHANNEL, 4],
+    ],
+  );
+});
+
 test('RoomsBackplane: loss detection through epoch and seq', async (t) => {
   const backplane = createBackplane();
   const gaps = [];

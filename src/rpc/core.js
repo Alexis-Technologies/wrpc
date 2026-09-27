@@ -5,7 +5,7 @@ const { ServerTransport, buildHeaders, isOriginAllowed } = require('../transport
 const { hasTransportShape, isInboundTransport } = require('./serverTransport.js');
 const { SessionManager } = require('./sessions.js');
 const { defineRouter, procedure, runHooksSafe } = require('./router.js');
-const { RoomRegistry, Broadcast, RoomsBackplane } = require('./rooms.js');
+const { RoomRegistry, Broadcast, RoomsBackplane, BROADCAST_CHANNEL } = require('./rooms.js');
 const { Cluster, instanceOfClientId } = require('./cluster.js');
 const { SseChannels } = require('../sse/server.js');
 const { normalizeCompression } = require('../contentEncoding.js');
@@ -406,9 +406,14 @@ class RpcServer extends Emitter {
       // Loss made visible: a jump in a publisher's sequence is logged and
       // counted, so a broker that drops envelopes shows up in dashboards
       // instead of in a bug report about a message nobody received.
+      // The log line names the channel; the metric carries only its KIND
+      // — a room name is peer-chosen and unbounded, and a label with an
+      // unbounded set of values is a cardinality bomb in any metrics
+      // backend. Computed here, in the Node-only core: the writer is
+      // bundled into the webrtc browser entry.
       onGap: ({ channel, instance, missed }) => {
         this.#roomsLog.warn({ event: 'backplane.gap', channel, instance, missed });
-        this.#otel.recordBackplaneGap(channel, missed);
+        this.#otel.recordBackplaneGap(channel === BROADCAST_CHANNEL ? 'broadcast' : 'room', missed);
       },
       // A replayed event is delivered LOCALLY: publishing it again would
       // bounce it between instances forever.

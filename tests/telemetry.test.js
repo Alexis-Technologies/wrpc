@@ -282,7 +282,7 @@ test('metrics', async (t) => {
     otel.recordBroadcast('msg', 3, true);
     otel.recordStreamBytes('receive', 2048);
     otel.recordBackpressure('ws');
-    otel.recordBackplaneGap('room:chat', 2);
+    otel.recordBackplaneGap('room', 2);
     otel.recordSession('restore', 'hit');
     otel.recordSubscription(1, 'feed/live');
     otel.recordSubscriptionValues(7, 'feed/live');

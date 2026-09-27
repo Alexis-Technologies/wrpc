@@ -1315,6 +1315,12 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **`wrpc.server.backplane.gaps` is labelled by `wrpc.channel.kind`, not
+  by the room's name.** The counter carried `wrpc.channel` — a room name, a
+  peer-chosen and unbounded value, which is a cardinality bomb in any
+  metrics backend. It carries `wrpc.channel.kind` (`room` or `broadcast`)
+  now; the exact channel and the count stay on the `backplane.gap` log line.
+  (The counter is new in this release, so no dashboard breaks.)
 - **Tests: one log recorder that keeps a child's bindings, one metrics rig.**
   `tests/helpers/recorder.js` answers `child()` with a writer over the same
   entries with the bindings merged in — the copies it replaces answered
