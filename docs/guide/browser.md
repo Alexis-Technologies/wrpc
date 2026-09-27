@@ -73,7 +73,7 @@ the run — it is a ratchet, and it runs in CI's lint job.
 
 | Entry | min | min+gzip | budget |
 | --- | ---: | ---: | ---: |
-| `@alexify/wrpc` — browser | 77.0 KB | **26.0 KB** | 26.0 KB |
+| `@alexify/wrpc` — browser | 77.0 KB | **26.0 KB** | 27.0 KB |
 | `@alexify/wrpc/sse` — browser | 80.4 KB | **27.0 KB** | 27.0 KB |
 | `@alexify/wrpc/query` | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` | 3.8 KB | **1.8 KB** | 2.0 KB |

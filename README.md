@@ -14,7 +14,7 @@
 A fast, **zero-dependency** WebSocket-based RPC protocol for Node.js and
 browsers. Router and procedures, subscriptions that resume, rooms
 that scale across processes, and binary streams with backpressure that reaches
-all the way into TCP — [under 26 KB min+gzip](#bundle-size) in a browser bundle, a budget CI enforces, and
+all the way into TCP — [under 27 KB min+gzip](#bundle-size) in a browser bundle, a budget CI enforces, and
 nothing at all in your lockfile.
 
 ```javascript
@@ -117,7 +117,7 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 77.0 KB | **26.0 KB** | 26.0 KB |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 77.0 KB | **26.0 KB** | 27.0 KB |
 | `@alexify/wrpc` — node (client + server) | 286.3 KB | 95.9 KB | — |
 | `@alexify/wrpc/ws` (WebSocket engine) | 32.1 KB | 11.4 KB | — |
 | `@alexify/wrpc/engine` (engine port) | 32.7 KB | 11.6 KB | — |

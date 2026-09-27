@@ -5,7 +5,7 @@
 Key facts:
 
 - npm: `@alexify/wrpc` — zero runtime dependencies (no `dependencies`, `peerDependencies` or `optionalDependencies` field), CommonJS, ships `src/` as-is with no build step.
-- Size: the browser entry is under 26 KB min+gzip (a budget CI enforces; 27 KB with the SSE transport, 2 KB for the TanStack Query bindings) — the measured table is at https://wrpc.vercel.app/guide/browser#bundle-size.
+- Size: the browser entry is under 27 KB min+gzip (a budget CI enforces; 27 KB with the SSE transport, 2 KB for the TanStack Query bindings) — the measured table is at https://wrpc.vercel.app/guide/browser#bundle-size.
 - Runtimes: Node.js >= 22 on the server, any modern browser through a bundler on the client. The browser build contains zero Node builtins.
 - Transports: WebSocket, plain HTTP, Server-Sent Events, a worker `MessagePort` (Service Worker or SharedWorker).
 - Hosts: batteries-included `Server`, or fastify / express / bare `node:http` / uWebSockets.js — every host injected, never depended on.

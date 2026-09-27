@@ -96,7 +96,12 @@ const ENTRIES = [
   // WebTransport mux holding an inbound stream no further than its first
   // read until its open packet passes (capped, timed) — +1.0 KB, measured
   // 25.2 against 24.2.
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 26 },
+  // 26 -> 27 for the observability pass on the client half: the typed
+  // ENCRYPTION_REFUSED error (its status predicate in the client core) and
+  // the WebTransport mux's fallback callback, which the wt client bundles
+  // (+0.1 KB — measured 26,638 B against a 26,624 B budget: over by 14,
+  // found by the size run, not shaved away to fit).
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 27 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
