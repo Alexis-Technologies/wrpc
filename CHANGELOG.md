@@ -1499,6 +1499,16 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **`createRedisBroker({ client: new Redis() })` type-checks again — and
+  every injected client type is held against the real package.** The
+  Redis client interface spelled each stream, sorted-set and `set` command
+  with exact arguments; ioredis declares them as stacks of overloads, which
+  no single signature is assignable from, so the documented use was a
+  TypeScript error (ten of twenty-six members). Those commands are
+  `(...args) => Promise<any>` now, in `RedisBrokerClient` and the session
+  store's client alike, and the tsd suites hold the real `Redis`, kafkajs
+  `Kafka`, Confluent `KafkaJS.Kafka`, NATS connection and amqplib
+  `ChannelModel` types against the interfaces they are meant to satisfy.
 - **`wrpc.rtc.assertions` says why a trust assertion was refused.** The
   counter read a `reason` no `AssertionError` ever had, so every refusal
   was `invalid` and a substitution (`signature`, `fingerprint`, `subject`)

@@ -117,9 +117,10 @@ export declare const DEFAULT_PREFIX: string;
  */
 export interface RedisSessionClient {
   get(key: string): Promise<string | null>;
-  set(key: string, value: string, ...args: Array<string | number>): Promise<unknown>;
-  del(key: string): Promise<unknown>;
-  pexpire?(key: string, ttl: number): Promise<unknown>;
+  /** `(...args)` on purpose: ioredis declares `set` as a stack of overloads, which no single signature is assignable from. */
+  set(...args: Array<any>): Promise<any>;
+  del(...args: Array<any>): Promise<any>;
+  pexpire?(...args: Array<any>): Promise<any>;
 }
 
 export interface RedisSessionStoreOptions {

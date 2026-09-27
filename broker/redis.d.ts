@@ -9,40 +9,49 @@
 import type { Broker } from '../broker.js';
 import type { WrpcLogger } from '../index.js';
 
-/** The command surface the adapter uses; ioredis satisfies it as it is. */
+/**
+ * The command surface the adapter uses; ioredis satisfies it as it is.
+ *
+ * The stream, sorted-set and `set` commands are typed as `(...args) => Promise<any>`
+ * on purpose: ioredis declares each of them as a stack of overloads (one per
+ * argument spelling), and an overloaded method is not assignable to a single
+ * signature — the exact-argument spellings this interface used to carry made
+ * `createRedisBroker({ client: new Redis() })` a type error while it was the
+ * documented use. A tsd test holds the real `Redis` type against this one.
+ */
 export interface RedisBrokerClient {
-  xadd(key: string, ...args: Array<string>): Promise<string>;
-  xrange(key: string, start: string, end: string, ...args: Array<string | number>): Promise<Array<any>>;
-  xrevrange(key: string, end: string, start: string, ...args: Array<string | number>): Promise<Array<any>>;
-  xread(...args: Array<string | number>): Promise<Array<any> | null>;
-  xreadgroup(...args: Array<string | number>): Promise<Array<any> | null>;
-  xgroup(...args: Array<string | number>): Promise<unknown>;
-  xack(key: string, group: string, id: string): Promise<number>;
-  xdel(key: string, id: string): Promise<number>;
-  xautoclaim(...args: Array<string | number>): Promise<Array<any>>;
-  xinfo(...args: Array<string>): Promise<any>;
-  zadd(key: string, score: string | number, member: string): Promise<unknown>;
-  zrangebyscore(key: string, min: string, max: string, ...args: Array<string | number>): Promise<Array<string>>;
-  zrem(key: string, member: string): Promise<number>;
+  xadd(...args: Array<any>): Promise<any>;
+  xrange(...args: Array<any>): Promise<any>;
+  xrevrange(...args: Array<any>): Promise<any>;
+  xread(...args: Array<any>): Promise<any>;
+  xreadgroup(...args: Array<any>): Promise<any>;
+  xgroup(...args: Array<any>): Promise<any>;
+  xack(...args: Array<any>): Promise<any>;
+  xdel(...args: Array<any>): Promise<any>;
+  xautoclaim(...args: Array<any>): Promise<any>;
+  xinfo(...args: Array<any>): Promise<any>;
+  zadd(...args: Array<any>): Promise<any>;
+  zrangebyscore(...args: Array<any>): Promise<any>;
+  zrem(...args: Array<any>): Promise<any>;
   /** Prunes a service group's expired members; without it they expire with the key. */
-  zremrangebyscore?(key: string, min: string, max: string): Promise<number>;
-  publish(channel: string, message: string): Promise<number> | number;
-  subscribe(channel: string): unknown;
-  unsubscribe?(channel: string): unknown;
+  zremrangebyscore?(...args: Array<any>): Promise<any>;
+  publish(...args: Array<any>): Promise<any> | number;
+  subscribe(...args: Array<any>): unknown;
+  unsubscribe?(...args: Array<any>): unknown;
   on(event: string, listener: (...args: Array<any>) => void): unknown;
-  set(key: string, value: string, ...args: Array<string | number>): Promise<unknown>;
-  exists(key: string): Promise<number>;
-  del(key: string): Promise<number>;
-  rpush(key: string, value: string): Promise<number>;
-  blpop(key: string, seconds: number): Promise<[string, string] | null>;
-  pexpire(key: string, ms: string | number): Promise<unknown>;
+  set(...args: Array<any>): Promise<any>;
+  exists(...args: Array<any>): Promise<any>;
+  del(...args: Array<any>): Promise<any>;
+  rpush(...args: Array<any>): Promise<any>;
+  blpop(...args: Array<any>): Promise<any>;
+  pexpire(...args: Array<any>): Promise<any>;
   /**
    * Runs a delayed retry's promotion (ZREM, then XADD) as one step. ioredis
    * has it; a client without it — or a proxy that refuses scripts — takes
    * the adapter's two-step path, which puts the entry back when the second
    * step fails.
    */
-  eval?(script: string, numKeys: number, ...args: Array<string | number>): Promise<unknown>;
+  eval?(...args: Array<any>): Promise<any>;
   duplicate?(): RedisBrokerClient;
   quit?(): Promise<unknown>;
   disconnect?(): void;

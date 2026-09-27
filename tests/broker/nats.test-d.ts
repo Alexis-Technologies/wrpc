@@ -3,6 +3,12 @@ import * as nats from '../../broker/nats.js';
 import type { Broker } from '../../broker.js';
 import type { NatsBrokerOptions, NatsConnection } from '../../broker/nats.js';
 
+// The real connection type — what the transport's connect() resolves to —
+// a devDependency used only here.
+import type { connect as natsConnect } from '@nats-io/transport-node';
+declare const realNc: Awaited<ReturnType<typeof natsConnect>>;
+expectAssignable<NatsConnection>(realNc);
+
 declare const nc: NatsConnection;
 declare const headers: () => any;
 declare const jetstream: (connection: NatsConnection) => any;
