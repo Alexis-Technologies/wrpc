@@ -1315,6 +1315,13 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **A raw channel's `maxMessageSize` is validated where it is given.**
+  `ClientRtcTransport`, `RtcPeerTransport` and `attachChannel` refuse a
+  value that is not an integer between 1024 and 262144 — negotiation's own
+  floor and ceiling — with a TypeError at construction (and at `open()`),
+  rather than a framing error at the first write or a scratch buffer of
+  whatever size was typed. (SEC-3; WebRTC ships stable, so the TypeError
+  lands before the release.)
 - **The compiled-serializer fast path does not walk a result for bytes
   where no attachments frame could leave.** Under `attachments: false` (or
   a packet codec) the dispatcher used to run `hasBytes` over every result

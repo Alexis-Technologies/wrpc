@@ -405,6 +405,21 @@ test('webrtc transport: raw channel — both sides fragment at their own maxMess
   assert.ok(b.sent >= 2, `the host fragmented at 4 KiB: ${b.sent} frames`);
 });
 
+test('webrtc transport: raw channel — maxMessageSize is validated where it is given', async (t) => {
+  const { a, b } = await rawChannelPair(t);
+  const bad = [0, 1, 1023, 1024.5, 'big', -1, 256 * 1024 + 1, Infinity, NaN];
+  for (const value of bad) {
+    assert.throws(() => new ClientRtcTransport('webrtc:host', { channel: a, maxMessageSize: value }), /maxMessageSize/);
+    assert.throws(() => new RtcPeerTransport(b, { peer: 'x', maxMessageSize: value }), /maxMessageSize/);
+  }
+  // The floor and the ceiling are negotiation's own.
+  const client = new ClientRtcTransport('webrtc:host', { channel: a, maxMessageSize: 1024 });
+  t.after(() => client.terminate());
+  await assert.rejects(client.open({ maxMessageSize: 512 }), /maxMessageSize/);
+  const host = new RtcPeerTransport(b, { peer: 'x', maxMessageSize: 256 * 1024 });
+  t.after(() => host.close());
+});
+
 test('webrtc transport: raw channel — an empty continuation fragment is a framing error', async (t) => {
   const { a, b } = await rawChannelPair(t);
   const client = new ClientRtcTransport('webrtc:host', { channel: a });
@@ -590,18 +605,18 @@ test('webrtc transport: raw channel — channel and maxMessageSize arrive throug
   const client = await WrpcClient.connect('webrtc:host', {
     transport: 'webrtc',
     channel: a,
-    maxMessageSize: 64,
+    maxMessageSize: 1024,
     heartbeat: false,
     reconnect: false,
   });
   t.after(() => client.close());
   assert.strictEqual(client.active, true);
-  client.write(`{"type":"event","name":"x","data":"${'y'.repeat(200)}"}`);
+  client.write(`{"type":"event","name":"x","data":"${'y'.repeat(4000)}"}`);
   await within(
     waitFor(() => packets.length === 1, 'delivery'),
     'delivery',
   );
-  assert.ok(a.sent >= 4, `fragmented at 64 bytes: ${a.sent} frames`);
+  assert.ok(a.sent >= 4, `fragmented at 1 KiB: ${a.sent} frames`);
 });
 
 test('webrtc transport: the water marks are validated at construction, and a low high mark pulls the low one down', async (t) => {

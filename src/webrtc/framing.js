@@ -84,6 +84,20 @@ const negotiateMessageSize = (sctp, ceiling = MAX_MESSAGE_SIZE) => {
   return Math.min(size, ceiling);
 };
 
+// The `maxMessageSize` an application hands a raw-channel transport: the
+// same floor and ceiling negotiation applies to a peer's advertisement,
+// refused as a TypeError where the option is given rather than as a
+// framing error at the first write (or a 256 KiB scratch buffer nobody
+// asked for). Undefined is the default.
+const checkMessageSize = (value, label) => {
+  if (value === undefined) return;
+  if (!Number.isInteger(value) || value < MIN_NEGOTIABLE_SIZE || value > MAX_MESSAGE_SIZE) {
+    throw new TypeError(
+      `${label}: maxMessageSize must be an integer between ${MIN_NEGOTIABLE_SIZE} and ${MAX_MESSAGE_SIZE}`,
+    );
+  }
+};
+
 const TEXT_ENCODER = new TextEncoder();
 // fatal: an invalid byte sequence in a text frame is a protocol error, not
 // a U+FFFD the JSON parser then trips over one layer up.
@@ -295,6 +309,7 @@ module.exports = {
   MIN_MESSAGE_SIZE,
   MAX_MESSAGE_SIZE,
   MIN_NEGOTIABLE_SIZE,
+  checkMessageSize,
   DEFAULT_MAX_REASSEMBLY,
   FramingError,
   negotiateMessageSize,

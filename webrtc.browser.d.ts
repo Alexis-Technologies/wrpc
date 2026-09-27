@@ -256,7 +256,8 @@ export interface RtcTransportOptions {
   /**
    * Raw-channel mode only (a link negotiates its own): the message size to
    * fragment at. Default 16 KiB, the interop floor; `negotiateMessageSize(pc.sctp)`
-   * for what the connection actually allows.
+   * for what the connection actually allows. An integer from 1024 to 262144 —
+   * negotiation's own floor and ceiling — or a TypeError where it is given.
    */
   maxMessageSize?: number;
 }

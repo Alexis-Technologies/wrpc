@@ -40,6 +40,7 @@ const {
   MIN_MESSAGE_SIZE,
   DEFAULT_MAX_REASSEMBLY,
   decodeText,
+  checkMessageSize,
 } = require('./framing.js');
 const { normalizeCompression, negotiate, Sequencer, INFLIGHT_LIMIT } = require('../compression/index.js');
 
@@ -414,6 +415,7 @@ class ClientRtcTransport extends ClientTransport {
   ) {
     super(url);
     if (link && channel) throw new TypeError('ClientRtcTransport: link and channel are mutually exclusive');
+    checkMessageSize(maxMessageSize, 'ClientRtcTransport: options');
     this.#maxBackpressure = normalizeBackpressure(maxBackpressure, 'ClientRtcTransport: options');
     this.#link = link;
     this.#source = channel;
@@ -462,7 +464,10 @@ class ClientRtcTransport extends ClientTransport {
     }
     if (source) {
       this.#source = source;
-      if (options.maxMessageSize !== undefined) this.#maxMessageSize = options.maxMessageSize;
+      if (options.maxMessageSize !== undefined) {
+        checkMessageSize(options.maxMessageSize, 'webrtc transport: options');
+        this.#maxMessageSize = options.maxMessageSize;
+      }
     }
     // connect()'s own `compression` — the option a Node ws client and a
     // WebTransport client share — resolved per open like link/channel.
@@ -674,6 +679,9 @@ class RtcPeerTransport extends ServerTransport {
       throw new TypeError(`RtcPeerTransport: the data channel is ${channel.readyState}`);
     }
     super(raw ? (peer ?? (channel.label || 'data channel')) : peer);
+    // Over a link the size is the link's (negotiated); the option is a raw
+    // channel's, and checked as one.
+    if (raw) checkMessageSize(maxMessageSize, 'RtcPeerTransport: options');
     const link = raw ? null : source;
     this.#link = link;
     this.#channel = channel;
