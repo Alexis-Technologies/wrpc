@@ -1516,6 +1516,18 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **`rooms.compression` and `rooms.encryption` are validated on an instance
+  without a backplane, `rooms.backplane` is refused, an unknown `rooms` key
+  warns.** The rooms envelope was only built once a backplane existed, so a
+  single-instance server accepted a codec name the platform lacks or a
+  keyring that is not one and found out on the day a backplane was added;
+  and `rooms: { backplane }` — the compression guide's own snippet — was a
+  silent no-op (the backplane is a top-level option): a TypeError now, and
+  any other unknown key a `rooms.option` warning. The guide's snippets and
+  the wire-format reference are brought to the code (the data-channel
+  header's COMPRESSED bit, the five WebTransport frame kinds, the PeerHost's
+  real `maxCalls` default, the WebTransport example's manual fallback, the
+  `auth` import the WebTransport guide's snippet needed).
 - **`createRedisBroker({ client: new Redis() })` type-checks again — and
   every injected client type is held against the real package.** The
   Redis client interface spelled each stream, sorted-set and `set` command

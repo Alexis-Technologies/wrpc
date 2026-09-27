@@ -77,6 +77,8 @@ const DEFAULT_BASE_PATH = '/api';
 // The options the core owns. Every shell and adapter funnels its own option
 // bag through here, so adding a core option cannot be silently dropped by
 // one of the four places that construct an RpcServer.
+// The keys `options.rooms` knows; anything else is a warning (see #initRooms).
+const ROOMS_OPTION_KEYS = ['epoch', 'linger', 'maxTracked', 'compression', 'encryption', 'maxMessage'];
 const RPC_OPTION_KEYS = [
   'router',
   'sessions',
@@ -378,6 +380,33 @@ class RpcServer extends Emitter {
     // instrument rides the callbacks that already exist rather than costing
     // the hot join/leave path anything.
     const countRoom = (delta) => this.#otel.recordRooms(delta);
+    // `rooms` is a 1.0 option, so an unknown key is a warning, not a
+    // TypeError — except `rooms.backplane`, the one spelling that reads as
+    // if it worked (the backplane is a top-level option) and did nothing.
+    if (roomsOptions !== null && typeof roomsOptions === 'object') {
+      if (roomsOptions.backplane !== undefined) {
+        throw new TypeError(
+          'RpcServer: options.rooms.backplane is not an option — pass the backplane as options.backplane',
+        );
+      }
+      for (const key in roomsOptions) {
+        if (!ROOMS_OPTION_KEYS.includes(key)) this.#roomsLog.warn({ event: 'rooms.option', key });
+      }
+    }
+    // Built before the no-backplane return, so `rooms.compression` and
+    // `rooms.encryption` are validated where they are written even on an
+    // instance that has no backplane to use them on (a codec name the
+    // platform lacks, a keyring that is not one) — the cluster options were
+    // already checked that way.
+    const envelope = createEnvelope({
+      compression: roomsOptions?.compression,
+      encryption: roomsOptions?.encryption,
+      maxMessage: maxMessageOf(roomsOptions?.maxMessage, 'RpcServer: options.rooms'),
+      name: 'RpcServer: options.rooms',
+      layer: 'rooms',
+      event: 'backplane',
+      log: this.#roomsLog,
+    });
     if (!backplane) {
       this.#rooms = new RoomRegistry({
         onSubscribe: () => countRoom(1),
@@ -391,15 +420,7 @@ class RpcServer extends Emitter {
       log: this.#roomsLog,
       linger: roomsOptions?.linger,
       maxTracked: roomsOptions?.maxTracked,
-      envelope: createEnvelope({
-        compression: roomsOptions?.compression,
-        encryption: roomsOptions?.encryption,
-        maxMessage: maxMessageOf(roomsOptions?.maxMessage, 'RpcServer: options.rooms'),
-        name: 'RpcServer: options.rooms',
-        layer: 'rooms',
-        event: 'backplane',
-        log: this.#roomsLog,
-      }),
+      envelope,
       // The producer-restart marker a resume cursor is validated against.
       // Accepted by RoomsBackplane all along; forwarded (and declared) only
       // now, so a deployment that pins it across restarts finally can.

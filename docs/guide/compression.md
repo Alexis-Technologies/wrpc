@@ -319,7 +319,7 @@ names, so a Node peer and a browser peer negotiate the same one:
 const { zstdCompressor, brotliCompressor } = require('@alexify/wrpc');
 
 attachBrokerRpc(server, broker, { compression: { codec: 'zstd' } });
-new RpcServer({ router, rooms: { backplane, compression: { codec: zstdCompressor({ level: 3 }) } } });
+new RpcServer({ router, backplane, rooms: { compression: { codec: zstdCompressor({ level: 3 }) } } });
 ```
 
 The factories (`deflateCompressor({ level })`, `brotliCompressor({ quality })`,

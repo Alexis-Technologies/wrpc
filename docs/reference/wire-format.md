@@ -59,7 +59,8 @@ fragment, prefixed by a single header byte:
 │  1 byte    │              fragment payload           │
 │  KIND|FIN  │  UTF-8 JSON (KIND 0) or chunk (KIND 1)  │
 └────────────┴────────────────────────────────────────┘
-bit 0 KIND, bit 1 FIN (last fragment), bits 2–7 reserved (0)
+bit 0 KIND, bit 1 FIN (last fragment), bit 2 COMPRESSED (the message body is
+under the codec the two descriptions' `caps` agreed on), bits 3–7 reserved (0)
 ```
 
 A packet under the limit is one message: header `0b11`, then the JSON. A
@@ -94,6 +95,8 @@ length-prefixed:
 ┌──────────────────┬────────┬────────────────────────────────────────┐
 │     4 bytes      │ 1 byte │              payload                    │
 │ LENGTH (BE u32)  │  KIND  │  UTF-8 JSON (KIND 0) or chunk (KIND 1)  │
+KIND: 0 text packet · 1 chunk · 2 capabilities (the first frame each way) ·
+3 compressed text · 4 compressed chunk (under the negotiated codec)
 └──────────────────┴────────┴────────────────────────────────────────┘
 ```
 

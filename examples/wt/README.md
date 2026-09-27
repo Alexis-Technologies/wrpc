@@ -1,9 +1,10 @@
 # wrpc over WebTransport
 
-One `Server`, two doors: the WebSocket on TCP and an HTTP/3 host on UDP, with
-`transport: ['wt', 'ws']` in the page picking WebTransport where the browser
-has it and falling back to the WebSocket otherwise. A tab on each ends up in
-the same room.
+One `Server`, two doors: the WebSocket on TCP and an HTTP/3 host on UDP. The
+page tries WebTransport first and falls back to the WebSocket by hand — a
+`try`/`catch` around two `connect()` calls — because a transport list can
+only re-spell the scheme of ONE url, and here the two doors are two ports.
+A tab on each ends up in the same room.
 
 ```bash
 node scripts/wt-cert.js certs   # a 13-day ECDSA P-256 certificate + its hash (browsers require both)

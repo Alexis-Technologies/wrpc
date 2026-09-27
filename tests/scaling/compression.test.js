@@ -190,6 +190,36 @@ test('rooms backplane: a change of codec is a rollout without a lost message', a
   assert.strictEqual(warnings.filter((w) => w.event === 'backplane.encoded').length, 0, 'nothing was dropped');
 });
 
+test('rooms: compression and encryption are validated without a backplane; rooms.backplane is refused; an unknown key warns', () => {
+  const { recorder } = require('../helpers/recorder.js');
+  const { generateKey } = require('../../encryption.js');
+  const { MemoryBackplane } = require('../../scaling.js');
+  assert.throws(
+    () => new RpcServer({ router, logger: false, sse: false, rooms: { compression: { codec: 'nope' } } }),
+    /unknown algorithm/,
+  );
+  assert.throws(
+    () => new RpcServer({ router, logger: false, sse: false, rooms: { encryption: { keys: 42 } } }),
+    /keys/,
+  );
+  assert.throws(
+    () => new RpcServer({ router, logger: false, sse: false, rooms: { backplane: new MemoryBackplane() } }),
+    /rooms\.backplane is not an option/,
+  );
+  const log = recorder();
+  const rpc = new RpcServer({
+    router,
+    logger: log.writer,
+    sse: false,
+    rooms: { linger: 10, bogus: true, encryption: { keys: generateKey() } },
+  });
+  rpc.close();
+  assert.deepStrictEqual(
+    log.all('rooms.option').map((e) => [e.level, e.key]),
+    [['warn', 'bogus']],
+  );
+});
+
 test('rooms backplane: an instance without the option drops an encoded envelope loudly, not silently', async (t) => {
   const backplane = new MemoryBackplane({ logger: false });
   const a = instance(t, backplane, { rooms: { compression: true } });

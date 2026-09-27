@@ -52,6 +52,7 @@ it accepts:
 
 ```js
 const { Server } = require('@alexify/wrpc');
+const { bearerTransport } = require('@alexify/wrpc/auth');
 const { acceptSessions, failsRequestCallback } = require('@alexify/wrpc/wt');
 const { Http3Server } = await import('@fails-components/webtransport');
 
