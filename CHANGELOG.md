@@ -1320,6 +1320,15 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **README's Exports table is whole again, the size tables are current, and
+  the headlines quote the budget.** Two Exports rows (`wrpcFastify`/
+  `findUwsApp`, `createWrpc`) had been overwritten with size numbers; the
+  size tables in README and the browser guide are regenerated from
+  `pnpm size` with the `deflate`, `encryption` and broker rows added; the
+  headline sizes (README, the docs home, `llms.txt`, the performance and
+  WebTransport guides) quote the budget CI enforces rather than a number
+  that drifts, and the guides link the measured table. A package test holds
+  the tables' budget column to `scripts/size.js`.
 - **`http.compression.async` is validated by the one normalizer every
   `async` knob shares.** `{ threshold: '64kb' }`, `{ threshold: 0 }` and
   `async: []` landed silently on the 256 KiB default; they are TypeErrors

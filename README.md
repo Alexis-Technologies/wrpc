@@ -14,7 +14,7 @@
 A fast, **zero-dependency** WebSocket-based RPC protocol for Node.js and
 browsers. Router and procedures, subscriptions that resume, rooms
 that scale across processes, and binary streams with backpressure that reaches
-all the way into TCP — [~18 KB min+gzip](#bundle-size) in a browser bundle, and
+all the way into TCP — [under 26 KB min+gzip](#bundle-size) in a browser bundle, a budget CI enforces, and
 nothing at all in your lockfile.
 
 ```javascript
@@ -117,26 +117,29 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 56.6 KB | **19.1 KB** | 20.0 KB |
-| `@alexify/wrpc` — node (client + server) | 192.9 KB | 63.6 KB | — |
-| `@alexify/wrpc/ws` (WebSocket engine) | 28.2 KB | 10.0 KB | — |
-| `@alexify/wrpc/engine` (engine port) | 28.8 KB | 10.2 KB | — |
-| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 24.6 KB | 9.6 KB | — |
-| `@alexify/wrpc/fastify` | 158.3 KB | 53.6 KB | — |
-| `@alexify/wrpc/express` | 145.4 KB | 48.6 KB | — |
-| `@alexify/wrpc/scaling` (rooms backplane) | 5.2 KB | 2.1 KB | — |
-| `@alexify/wrpc/broker` (broker core, memory broker) | 113.0 KB | 37.9 KB | — |
-| `@alexify/wrpc/broker/redis` | 17.9 KB | 7.2 KB | — |
-| `@alexify/wrpc/broker/nats` | 14.3 KB | 5.7 KB | — |
-| `@alexify/wrpc/broker/amqp` | 14.9 KB | 5.8 KB | — |
-| `@alexify/wrpc/broker/kafka` | 16.0 KB | 6.3 KB | — |
-| `@alexify/wrpc/sse` — browser (client transport) | 59.6 KB | **20.0 KB** | 21.0 KB |
-| `@alexify/wrpc/sse` — node | 105.2 KB | 34.9 KB | — |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 77.0 KB | **26.0 KB** | 26.0 KB |
+| `@alexify/wrpc` — node (client + server) | 286.3 KB | 95.9 KB | — |
+| `@alexify/wrpc/ws` (WebSocket engine) | 32.1 KB | 11.4 KB | — |
+| `@alexify/wrpc/engine` (engine port) | 32.7 KB | 11.6 KB | — |
+| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 43.3 KB | 16.0 KB | — |
+| `@alexify/wrpc/fastify` | 235.9 KB | 80.5 KB | — |
+| `@alexify/wrpc/express` | 222.4 KB | 75.2 KB | — |
+| `@alexify/wrpc/scaling` (rooms backplane) | 5.5 KB | 2.2 KB | — |
+| `@alexify/wrpc/broker` (broker core, memory broker) | 161.6 KB | 55.7 KB | — |
+| `@alexify/wrpc/broker/redis` | 27.8 KB | 10.5 KB | — |
+| `@alexify/wrpc/broker/nats` | 23.9 KB | 9.0 KB | — |
+| `@alexify/wrpc/broker/amqp` | 27.0 KB | 9.9 KB | — |
+| `@alexify/wrpc/broker/kafka` | 26.9 KB | 10.0 KB | — |
+| `@alexify/wrpc/sse` — browser (client transport) | 80.4 KB | **27.0 KB** | 27.0 KB |
+| `@alexify/wrpc/sse` — node | 139.8 KB | 46.9 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 2.7 KB | **1.1 KB** | 2.0 KB |
-| `@alexify/wrpc/auth` (token strategies) | 3.3 KB | **1.5 KB** | 2.0 KB |
-| `@alexify/wrpc/webrtc` — browser (peer, link, mesh, assertions) | 144.2 KB | **46.5 KB** | 47.0 KB |
-| `@alexify/wrpc/webrtc` — node | 155.5 KB | 50.0 KB | — |
-| `@alexify/wrpc/wt` (WebTransport server half) | 34.1 KB | 12.3 KB | — |
+| `@alexify/wrpc/auth` (token strategies) | 3.8 KB | **1.8 KB** | 2.0 KB |
+| `@alexify/wrpc/deflate` (pure-JS DEFLATE codec) | 9.9 KB | **4.1 KB** | 5.0 KB |
+| `@alexify/wrpc/encryption` — browser (primitives, sessions, HPKE, E2EE) | 31.4 KB | **11.4 KB** | 12.0 KB |
+| `@alexify/wrpc/encryption` — node | 44.7 KB | 16.3 KB | — |
+| `@alexify/wrpc/webrtc` — browser (peer, link, mesh, assertions) | 171.9 KB | **55.9 KB** | 56.0 KB |
+| `@alexify/wrpc/webrtc` — node | 185.8 KB | 60.5 KB | — |
+| `@alexify/wrpc/wt` (WebTransport server half) | 59.2 KB | 21.0 KB | — |
 
 The Node-only rows are reported for visibility into what each subpath pulls in
 — they never ship to a browser, and the adapter rows include the whole core
@@ -277,8 +280,8 @@ See [Logging](https://wrpc.vercel.app/guide/logging) and
 | `@alexify/wrpc/ws` | `WebsocketServer`, `Connection`, `Frame`, `FrameParser`, `OPCODES`, `CLOSE_CODES` | [Wire format](https://wrpc.vercel.app/reference/wire-format) |
 | `@alexify/wrpc/engine` | `createNodeEngine`, `isEngine`, the `Engine`/`WrpcSocket` contracts | [Engine port](https://wrpc.vercel.app/reference/engine) |
 | `@alexify/wrpc/uws` | `createUwsEngine`, `UwsSocket` | [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws) |
-| `@alexify/wrpc/fastify` | 158.3 KB | 53.6 KB | — |
-| `@alexify/wrpc/express` | 145.4 KB | 48.6 KB | — |
+| `@alexify/wrpc/fastify` | `wrpcFastify`, `findUwsApp` | [Fastify](https://wrpc.vercel.app/guide/adapters/fastify) |
+| `@alexify/wrpc/express` | `createWrpc` | [Express](https://wrpc.vercel.app/guide/adapters/express) |
 | `@alexify/wrpc/scaling` | `MemoryBackplane`, `createRedisAdapter`, `isBackplane` | [Scaling](https://wrpc.vercel.app/guide/scaling) |
 | `@alexify/wrpc/broker` | `MemoryBroker`, `brokerFeed`, `attachConsumers`, `createPublisher`, `attachBrokerRpc`, `isBroker`, `TopicTails`, `encodeToken` (experimental) | [Message brokers](https://wrpc.vercel.app/guide/brokers) |
 | `@alexify/wrpc/broker/{redis,nats,amqp,kafka}` | `createRedisBroker`, `createNatsBroker`, `createAmqpBroker`, `createKafkaBroker` — every client injected (experimental) | [Redis](https://wrpc.vercel.app/guide/brokers/redis) · [NATS](https://wrpc.vercel.app/guide/brokers/nats) · [RabbitMQ](https://wrpc.vercel.app/guide/brokers/amqp) · [Kafka](https://wrpc.vercel.app/guide/brokers/kafka) |

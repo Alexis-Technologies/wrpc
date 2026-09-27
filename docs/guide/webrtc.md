@@ -52,7 +52,7 @@ mesh.on('join', async ({ id, data }) => {
 
 The webrtc browser entry exports `defineRouter`, `procedure`, `tracked` and
 `createEventLog` — a browser peer defines its router with them; the main
-browser entry leaves them out to stay under its [16 KB budget](./browser#bundle-size).
+browser entry leaves them out to stay under [its budget](./browser#bundle-size).
 
 ### Node as a peer
 
@@ -550,5 +550,5 @@ A peer is a client **and** a server, so the webrtc browser entry is heavier
 than the main one: the client core plus the router, dispatcher, per-peer
 `Client`, rooms and `Broadcast`, the link, framing, peer, mesh and signaler
 halves, the server telemetry writer, and the assertion verifier over
-WebCrypto — about 44 KB min+gzip against a 45 KB budget in `pnpm size`. You
+WebCrypto — see [the measured table](./browser#bundle-size) for what that costs against its budget in `pnpm size`. You
 pay it only when you import the subpath; the main entry is untouched.

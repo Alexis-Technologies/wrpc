@@ -73,19 +73,23 @@ the run — it is a ratchet, and it runs in CI's lint job.
 
 | Entry | min | min+gzip | budget |
 | --- | ---: | ---: | ---: |
-| `@alexify/wrpc` — browser | 56.4 KB | **19.0 KB** | 20.0 KB |
-| `@alexify/wrpc/sse` — browser | 59.3 KB | **19.9 KB** | 21.0 KB |
+| `@alexify/wrpc` — browser | 77.0 KB | **26.0 KB** | 26.0 KB |
+| `@alexify/wrpc/sse` — browser | 80.4 KB | **27.0 KB** | 27.0 KB |
 | `@alexify/wrpc/query` | 2.7 KB | **1.1 KB** | 2.0 KB |
-| `@alexify/wrpc/auth` | 3.3 KB | **1.5 KB** | 2.0 KB |
-| `@alexify/wrpc/webrtc` — browser | 139.2 KB | **45.0 KB** | 46.0 KB |
-| `@alexify/wrpc` — node | 177.1 KB | 58.7 KB | — |
+| `@alexify/wrpc/auth` | 3.8 KB | **1.8 KB** | 2.0 KB |
+| `@alexify/wrpc/deflate` | 9.9 KB | **4.1 KB** | 5.0 KB |
+| `@alexify/wrpc/encryption` — browser | 31.4 KB | **11.4 KB** | 12.0 KB |
+| `@alexify/wrpc/webrtc` — browser | 171.9 KB | **55.9 KB** | 56.0 KB |
+| `@alexify/wrpc` — node | 286.3 KB | 95.9 KB | — |
 
 The Node-only entries carry no budget because their gzip size is not a shipping
 cost; they are measured so a regression is *visible*, not gated.
 
 The SSE entry is the browser entry **plus** the SSE transport — you pay the
-extra ~1 KB only if you import it. The [WebRTC](./webrtc) entry is a client
-**and** a server (a peer serves a router), which is what its 40 KB buys.
+extra kilobyte only if you import it. [`@alexify/wrpc/deflate`](./compression#deflate)
+and [`@alexify/wrpc/encryption`](./encryption) sit outside every other entry:
+only a page that imports them pays for them. The [WebRTC](./webrtc) entry is a client
+**and** a server (a peer serves a router), which is what its budget buys.
 [`@alexify/wrpc/query`](./query) requires nothing at all (that is what keeps it
 at 1 KB); it takes the client and your `QueryClient` by injection.
 

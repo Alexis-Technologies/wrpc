@@ -216,6 +216,56 @@ test('runtime barrel exports and the hand-written types agree, both ways, on eve
   }
 });
 
+// The size tables in README.md and docs/guide/browser.md are hand-pasted
+// from `pnpm size`; the numbers go stale by design (the release checklist
+// refreshes them), but a BUDGET that differs from scripts/size.js is a lie
+// about what CI enforces — so every budget the tables show must be the
+// script's, and every budgeted entry of the script must be in README's.
+test('the budget column of the size tables in README and the browser guide matches scripts/size.js', () => {
+  // scripts/size.js: every budgeted entry, as (subpath, half) -> budget,
+  // from the entry FILE (browser.js is the main entry's browser half,
+  // sse.browser.js the sse subpath's, query.js the query subpath's, ...).
+  const script = read('scripts/size.js');
+  const budgets = new Map();
+  for (const match of script.matchAll(/entry: '([\w.]+)\.js',\s*platform: 'browser',\s*budget: (\d+)/g)) {
+    // A budgeted entry IS a browser half (only browser-reachable entries carry
+    // a budget), whatever the file is called: query.js, auth.js and
+    // deflate.js are one file for both platforms.
+    const [name] = match[1].split('.');
+    const subpath = name === 'browser' ? '' : `/${name}`;
+    budgets.set(`${subpath}|browser`, Number(match[2]));
+  }
+  assert.ok(budgets.size >= 7, `budgeted entries in scripts/size.js: ${budgets.size}`);
+  // A table row that shows a budget: its subpath is the first backticked
+  // token, its half is "browser" unless the row says "node".
+  const shown = (text) => {
+    const rows = new Map();
+    const line = /^\| (\S[^|]*?) \| [\d.]+ KB \| \*\*[\d.]+ KB\*\* \| ([\d.]+) KB \|$/gm;
+    for (const match of text.matchAll(line)) {
+      const token = match[1].match(/@alexify\/wrpc(\/[\w/]+)?/);
+      if (!token) continue;
+      const half = / — node/.test(match[1]) ? 'node' : 'browser';
+      rows.set(`${token[1] ?? ''}|${half}`, Number(match[2]));
+    }
+    return rows;
+  };
+  for (const file of ['README.md', 'docs/guide/browser.md']) {
+    const rows = shown(read(file));
+    assert.ok(rows.size >= 7, `${file}: budgeted rows found: ${rows.size}`);
+    for (const [key, budget] of rows) {
+      assert.ok(budgets.has(key), `${file}: ${key} shows a budget but scripts/size.js has none for it`);
+      assert.strictEqual(
+        budget,
+        budgets.get(key),
+        `${file}: ${key} shows ${budget} KB; scripts/size.js says ${budgets.get(key)}`,
+      );
+    }
+    if (file === 'README.md') {
+      for (const key of budgets.keys()) assert.ok(rows.has(key), `README.md has no row for the budgeted entry ${key}`);
+    }
+  }
+});
+
 // SECURITY.md is a release-checklist item: its version table must name the
 // current major line (never a "pre-first-publish" that shipped), and its
 // scope must name every directory that parses hostile bytes or holds keys.

@@ -353,6 +353,7 @@ messages that large to the threadpool instead, in order; the
 ## Bundle size
 
 The client transport, its framing, the datagram path and the stream mux
-add about 3.3 KB min+gzip to the main browser entry (about 18.4 KB against a
-19 KB budget in `pnpm size`) — the price of a fallback list that needs no
-import. The server half never ships to a browser.
+are part of the main browser entry — a few kilobytes of its budget, the
+price of a fallback list that needs no import; [the measured
+table](./browser#bundle-size) has the number. The server half never ships
+to a browser.
