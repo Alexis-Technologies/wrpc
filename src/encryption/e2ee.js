@@ -46,8 +46,11 @@ const checkKey = (value, name) => {
 /**
  * An identity: `{ seed, publicKey, keyPair }`. The SEED is the secret — 32
  * bytes to keep wherever this client keeps secrets (and the same identity
- * again from the same seed); the public key is what others seal to and
- * verify against; `keyPair` is what `createSealer`/`createOpener` take.
+ * again from the same seed: it exists for that portability; a browser that
+ * never needs it keeps a non-extractable `x25519().generateKeyPair()` in
+ * IndexedDB and hands the pair over directly); the public key is what
+ * others seal to and verify against; `keyPair` is what
+ * `createSealer`/`createOpener` take.
  */
 const createIdentity = async (seed = null, options = {}) => {
   const secret = seed === null ? randomSource(options.crypto)(KEY_LENGTH) : Uint8Array.from(checkKey(seed, 'seed'));

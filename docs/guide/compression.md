@@ -122,16 +122,27 @@ but [the seam](#codec) takes them: wrap the package you chose in `id`,
 `encode`, `decode` and put it first in the list.
 
 ```js
-const lz4 = require('lz4-napi'); // your dependency, not wrpc's
+const lz4 = require('lz4'); // your dependency, not wrpc's
 
 const lz4Codec = {
   id: 'lz4',
   threshold: 512,
-  encode: (bytes) => lz4.compressSync(bytes),
-  // `decode` MUST stop at maxOutput — the cap is what bounds a compression bomb.
+  // The inflated size goes in front: LZ4's block format does not carry it.
+  encode: (bytes) => {
+    const out = Buffer.allocUnsafe(4 + lz4.encodeBound(bytes.length));
+    out.writeUInt32LE(bytes.length, 0);
+    return out.subarray(0, 4 + lz4.encodeBlock(bytes, out, 4));
+  },
+  // `decode` MUST refuse BEFORE it inflates — the cap is what bounds a
+  // compression bomb, and checking `out.length` afterwards is too late, the
+  // allocation has happened. The size read from the peer's bytes is only a
+  // claim: what bounds the work is the buffer the decoder is handed.
   decode: (bytes, maxOutput) => {
-    const out = lz4.uncompressSync(bytes);
-    if (out.length > maxOutput) throw new RangeError('inflated message exceeds the cap');
+    const view = Buffer.from(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    const size = view.readUInt32LE(0);
+    if (size > maxOutput) throw new RangeError('inflated message exceeds the cap');
+    const out = Buffer.allocUnsafe(size);
+    if (lz4.decodeBlock(view.subarray(4), out) !== size) throw new RangeError('lz4: bad block');
     return out;
   },
 };

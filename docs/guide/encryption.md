@@ -211,7 +211,7 @@ stream chunks, attachments, compressed frames alike.
 | Transport | How |
 | --- | --- |
 | WebSocket, WebTransport | a Noise handshake inside `open()` (one round trip, ~0.3 ms of CPU), then a key per direction, counted nonces, a rekey every 2²⁰ messages, a new handshake on every reconnect |
-| HTTP, SSE | no connection to hold a session, so **each request** is sealed to the server key with HPKE, and the answer under a key exported from the same context (~0.2 ms). The real method, path, headers and status are inside; an observer sees `POST <endpoint>` and `200`. An SSE stream comes back sealed frame by frame, the channel id included. |
+| HTTP, SSE | no connection to hold a session, so **each request** is sealed to the server key with HPKE, and the answer under a key exported from the same context (~0.2 ms). The real method, path, headers and status are inside — except `Cookie` and `Set-Cookie`, which stay on the outer request and response (script cannot set an HttpOnly cookie, so the browser has to see it) — and an observer sees `POST <endpoint>` and `200`. An SSE stream comes back sealed frame by frame, the channel id included. |
 | WebRTC | nothing to add — a data channel is already DTLS end to end, and [assertions](./webrtc-trust) bind identity to it |
 | worker (`event`) | nothing to add — the port never leaves the process; give `encryption` to the `WrpcClientProxy` in the worker |
 
@@ -269,6 +269,17 @@ authenticate: async (client) => {
 And move credentials *into* the channel: whatever the upgrade request
 carried — the URL, headers, a `wrpc.bearer.` subprotocol token, a cookie —
 was sent before any handshake and is as readable as ever.
+
+Under a terminator you do not trust, that rules the **cookie** out as the
+session credential: it stays on the outer request by construction, on
+every transport — a sealed HTTP request carries it outside the seal too,
+because script cannot set an HttpOnly cookie — so the party the
+encryption exists to keep out reads it on every call. Use
+[`bearerAuth()` with `bearerTransport()`](./auth) (or
+`payloadTransport()`): the token is sent through `authenticate`, after
+the handshake, on a WebSocket, and inside the sealed request on HTTP. A
+server built with `encryption` and the cookie transport says so once, at
+construction (`encryption.ambient-session`).
 
 ### Discovering the key
 
@@ -330,11 +341,23 @@ from anybody else does not open.
 
 ::: warning What this is not
 Not a messaging protocol: no forward secrecy for the recipient (a stolen seed
-opens everything ever sealed to it), no group key, no replay memory. For
-those, run Double Ratchet or MLS and hand wrpc their bytes. And **in a browser
-it protects against a server that reads, not one that serves the page a
-different script** — the origin that ships your code can ship other code.
+opens everything ever sealed to it — and, with `senderKey`, lets its holder
+**forge** messages to that recipient from anyone, since the recipient's key
+is on both sides of the authentication), no group key, no replay memory. For
+those, run Double Ratchet or MLS and hand wrpc their bytes. **Whoever hands
+out the public keys is in the middle**: a server that answers "Bob's key"
+can answer with its own and read everything — pin keys, show a fingerprint
+users compare, or exchange them out of band; TOFU is the least you do. And
+**in a browser it protects against a server that reads, not one that serves
+the page a different script** — the origin that ships your code can ship
+other code.
 :::
+
+The seed exists for portability — the same identity again, on another
+device, from 32 bytes. A browser that never needs that keeps no seed at
+all: `x25519().generateKeyPair()` answers a pair whose private half is a
+non-extractable `CryptoKey`, storable in IndexedDB as it is, and
+`createOpener({ keyPair })` / `senderKey: keyPair` take it directly.
 
 ## Bring your own {#contracts}
 

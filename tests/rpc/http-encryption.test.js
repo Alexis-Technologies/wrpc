@@ -14,6 +14,7 @@ const { parseBundle } = require('../../src/encryption/statics.js');
 const { OpenError } = require('../../src/encryption/contracts.js');
 const { buildBoots } = require('../adapters/boots.js');
 const { bootServer } = require('../helpers/server.js');
+const { bearerTransport } = require('../../auth.js');
 
 const SECRET = 'a card number nobody on the path should read: 4111 1111 1111 1111';
 
@@ -90,6 +91,32 @@ const secure = async (t, encryption = {}) => {
   };
   return { ...booted, endpoint, serverKey, connect };
 };
+
+test('encryption with the cookie session transport is said once at construction; a bearer transport is not', async (t) => {
+  const recorder = () => {
+    const entries = [];
+    const writer = { level: 'debug', child: () => writer };
+    for (const level of ['debug', 'info', 'warn', 'error']) {
+      writer[level] = (entry) => entries.push({ level, ...entry });
+    }
+    return { entries, writer };
+  };
+  const events = (entries) => entries.filter((e) => e.event === 'encryption.ambient-session');
+  const ambient = recorder();
+  await bootServer(t, { router, encryption: { keys: generateKey() }, logger: ambient.writer });
+  assert.deepStrictEqual(events(ambient.entries), [{ level: 'warn', event: 'encryption.ambient-session' }]);
+  const bearer = recorder();
+  await bootServer(t, {
+    router,
+    encryption: { keys: generateKey() },
+    sessions: { transport: bearerTransport() },
+    logger: bearer.writer,
+  });
+  assert.deepStrictEqual(events(bearer.entries), []);
+  const plain = recorder();
+  await bootServer(t, { router, logger: plain.writer });
+  assert.deepStrictEqual(events(plain.entries), []);
+});
 
 test('http encryption: calls, errors and REST routes — one opaque POST each, nothing readable either way', async (t) => {
   const { endpoint, connect } = await secure(t, { required: true });

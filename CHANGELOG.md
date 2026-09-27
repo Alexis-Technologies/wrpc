@@ -1913,6 +1913,22 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **Docs without dangerous promises, and one warning.** The encryption
+  guide's table said a sealed HTTP request hides "the headers"; `Cookie`
+  and `Set-Cookie` stay on the outer request and response by construction
+  (script cannot set HttpOnly), and the guide now says so — and says that
+  under a terminator you do not trust the cookie is therefore the wrong
+  session credential (`bearerTransport()`/`payloadTransport()` carry it
+  inside). A server built with `encryption` and the cookie transport warns
+  once at construction (`encryption.ambient-session`). The end-to-end
+  section names what it left out: whoever hands out public keys is in the
+  middle (pin, compare, or exchange out of band), and a stolen recipient
+  seed forges as well as reads under `senderKey`. The seed exists for
+  portability; a browser that never needs it keeps a non-extractable
+  `x25519().generateKeyPair()` in IndexedDB and hands the pair over (JSDoc
+  and typings say so). The compression guide's custom-codec example checked
+  the inflated size after inflating — too late for a bomb — and now refuses
+  before, with the output buffer as the bound.
 - **The pure-JS inflater's cost per dynamic block is bounded by its
   header, not by the codes it declares.** `inflateRaw` built a decoding
   table of `1 << maxLen` entries for every dynamic block — 128 KB, and as

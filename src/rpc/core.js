@@ -241,6 +241,15 @@ class RpcServer extends Emitter {
     this.#roomsLog = this.#log.child({ component: 'rooms' });
     this.#sseLog = this.#log.child({ component: 'sse' });
     this.#sessions = new SessionManager(sessions, this.#log.child({ component: 'sessions' }), this.#otel);
+    // Session encryption is for where TLS ends before the data does — and
+    // there a cookie is the wrong credential: it stays on the OUTER request
+    // by construction (script cannot set HttpOnly), on every transport, read
+    // by the very terminator the encryption exists to keep out. Said once,
+    // at construction; bearerTransport()/payloadTransport() carry the
+    // credential inside the channel.
+    if (this.#encryption !== null && this.#sessions.transport.ambient === true) {
+      this.#log.warn({ event: 'encryption.ambient-session' });
+    }
     this.#cors = cors;
     this.#basePath = normalizeBasePath(basePath);
     // Resolved before #instance, because an omitted instanceId is minted BY

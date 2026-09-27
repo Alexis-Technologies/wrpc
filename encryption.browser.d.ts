@@ -344,8 +344,13 @@ export declare function createNoise(options: { pattern: NoisePattern; dh: Dh; ci
 
 /**
  * An end-to-end identity. The SEED is the secret — 32 bytes to keep wherever
- * this client keeps secrets, and the same identity again from the same seed;
- * `publicKey` is what others seal to and verify against.
+ * this client keeps secrets, and the same identity again from the same seed
+ * (that portability is what it is for; a browser that never needs it keeps
+ * a non-extractable `x25519().generateKeyPair()` in IndexedDB instead and
+ * hands that `KeyPair` to `createOpener`/`senderKey` directly);
+ * `publicKey` is what others seal to and verify against — and whoever
+ * distributes it is in a position to substitute it: pin, compare, or
+ * exchange out of band.
  */
 export interface Identity {
   readonly seed: Bytes;
@@ -383,6 +388,7 @@ export declare function createSealer(
 
 export declare function createOpener(
   options: E2eePrimitives & {
+    /** This client's identity `keyPair`, or a pair from `x25519().generateKeyPair()`. A stolen one opens everything ever sealed to it, and can forge what `senderPublicKey` would have vouched for. */
     keyPair: KeyPair;
     /** A message this identity did not seal does not open. Without it, anyone who knows the public key could have sent it. */
     senderPublicKey?: Bytes | null;
