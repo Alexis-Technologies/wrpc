@@ -183,26 +183,46 @@ const normalizeCompression = (value, name, { streaming = false, zlib: lib = zlib
 // accepts, and which acceptable coding costs this server least is not the
 // client's to know. A hand-rolled scan rather than a regex: this runs per
 // HTTP response once the option is on, and the header is peer-controlled,
-// so no split-per-token allocation on a value an attacker can make long
-// (bench/http-compression.js). The encoders are a handful, so a bit each.
+// so no split-per-token array or Map on a value an attacker can make long
+// (the per-token slice/trim/lowercase stays). Two bounds keep it honest:
+// a header longer than MAX_ACCEPT_ENCODING is treated as absent — a real
+// one is 20–100 bytes, and identity is always a correct answer (RFC 9110
+// §12.5.3) — and the search for the next ';' is remembered, so a header
+// with no ';' at all is one pass, not a pass per token: before that,
+// 8000 one-letter tokens cost 1.9 ms of CPU per request and 16 KB of
+// commas 3.8 ms, unauthenticated (bench/http-compression.js "adversarial";
+// after: refused at the cap in under 0.1 µs, and 4.4 µs for the 256 B
+// the cap lets through, 6.8 before).
+// The encoders are a handful, so a bit each.
+const MAX_ACCEPT_ENCODING = 256;
+
 const pickEncoding = (header, encoders) => {
-  if (typeof header !== 'string' || header.length === 0) return null;
+  if (typeof header !== 'string' || header.length === 0 || header.length > MAX_ACCEPT_ENCODING) return null;
   const length = header.length;
   const count = encoders.length;
   let accepted = 0;
   let refused = 0;
   let wildcard = false;
+  let wildcardRefused = false;
   let start = 0;
+  let semi = -1;
   while (start <= length) {
     let end = header.indexOf(',', start);
     if (end < 0) end = length;
-    let tokenEnd = header.indexOf(';', start);
-    if (tokenEnd < 0 || tokenEnd > end) tokenEnd = end;
+    if (semi < start) {
+      semi = header.indexOf(';', start);
+      if (semi < 0) semi = length;
+    }
+    const tokenEnd = semi < end ? semi : end;
     let token = header.slice(start, tokenEnd).trim().toLowerCase();
     const params = tokenEnd < end ? header.slice(tokenEnd + 1, end) : '';
     const zero = params.length > 0 && /^\s*q\s*=\s*0(?:\.0{0,3})?\s*$/i.test(params);
-    if (token === '*') wildcard = !zero;
-    else {
+    // A coding — the wildcard too — refused anywhere in the header stays
+    // refused, whatever names it again.
+    if (token === '*') {
+      if (zero) wildcardRefused = true;
+      else wildcard = true;
+    } else {
       if (token === 'x-gzip') token = 'gzip';
       for (let i = 0; i < count; i++) {
         if (encoders[i].token !== token) continue;
@@ -216,7 +236,7 @@ const pickEncoding = (header, encoders) => {
   for (let i = 0; i < count; i++) {
     const bit = 1 << i;
     if ((accepted & bit) !== 0 && (refused & bit) === 0) return encoders[i];
-    if (wildcard && ((accepted | refused) & bit) === 0) return encoders[i];
+    if (wildcard && !wildcardRefused && ((accepted | refused) & bit) === 0) return encoders[i];
   }
   return null;
 };
@@ -295,6 +315,7 @@ const encodedWriter = (writer, encoder) => {
 };
 
 module.exports = {
+  MAX_ACCEPT_ENCODING,
   DEFAULT_THRESHOLD,
   DEFAULT_ASYNC_THRESHOLD,
   normalizeCompression,

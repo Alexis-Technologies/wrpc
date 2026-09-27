@@ -6,7 +6,7 @@ const zlib = require('node:zlib');
 
 const { defineRouter, procedure, RpcServer } = require('../../index.js');
 const { bootServer } = require('../helpers/server.js');
-const { normalizeCompression, pickEncoding } = require('../../src/contentEncoding.js');
+const { normalizeCompression, pickEncoding, MAX_ACCEPT_ENCODING } = require('../../src/contentEncoding.js');
 const { hasZstd } = require('../../src/compression/native.js');
 
 // A result comfortably past the 1 KiB default threshold, and one under it.
@@ -311,6 +311,8 @@ test('pickEncoding: the Accept-Encoding grammar', () => {
   assert.strictEqual(acceptsGzip('gzip;q=0.000'), false);
   assert.strictEqual(acceptsGzip('gzip;q=0, *'), false, 'an explicit zero beats the wildcard');
   assert.strictEqual(acceptsGzip('*;q=0'), false);
+  assert.strictEqual(acceptsGzip('*;q=0, *'), false, 'a refused wildcard stays refused, like a refused coding');
+  assert.strictEqual(acceptsGzip('gzip;q=0, x-gzip'), false, 'x-gzip is gzip, and the refusal is final');
   assert.strictEqual(acceptsGzip(''), false);
   assert.strictEqual(acceptsGzip(undefined), false);
   assert.strictEqual(acceptsGzip('gzipped'), false);
@@ -331,7 +333,67 @@ test('pickEncoding: the first coding of the SERVER’s list the request accepts'
   assert.strictEqual(pick('br;q=0, *'), 'x-mine', 'the wildcard covers what was not named');
   assert.strictEqual(pick('br;q=0, x-mine;q=0, gzip;q=0, *'), null, 'and nothing that was refused');
   assert.strictEqual(pick('zstd, deflate'), null);
-  assert.strictEqual(pick(`${'x,'.repeat(10_000)}br`), 'br', 'a long header is one scan');
+  // The header is the peer's: past the cap it is treated as absent —
+  // identity is always a correct answer — and at the cap it is one scan.
+  assert.strictEqual(MAX_ACCEPT_ENCODING, 256);
+  assert.strictEqual(pick(`${'x,'.repeat(10_000)}br`), null, 'a header past the cap is as if absent');
+  const atCap = `${'x,'.repeat(127)}br`;
+  assert.strictEqual(atCap.length, MAX_ACCEPT_ENCODING);
+  assert.strictEqual(pick(atCap), 'br', 'exactly the cap is read');
+  assert.strictEqual(pick(`${atCap},`), null, 'one more byte is not');
+  assert.strictEqual(pick(','.repeat(200)), null);
+  assert.strictEqual(pick(`${';'.repeat(100)}gzip`), null, 'semicolons are parameters, not tokens');
+  assert.strictEqual(pick(`gzip${';'.repeat(100)}`), 'gzip');
+});
+
+// The idiomatic spelling of the same choice — the reference a fuzz corpus
+// is checked against (bench/http-compression.js has the same one).
+const pickBySplit = (header, encoders) => {
+  const accepted = new Map();
+  for (const part of header.split(',')) {
+    const [token, ...params] = part.split(';');
+    const zero = params.some((param) => /^\s*q\s*=\s*0(?:\.0{0,3})?\s*$/i.test(param));
+    // RFC 9110 §18.6: x-gzip is gzip. A coding refused anywhere is refused.
+    const raw = token.trim().toLowerCase();
+    const name = raw === 'x-gzip' ? 'gzip' : raw;
+    accepted.set(name, (accepted.get(name) ?? true) && !zero);
+  }
+  return encoders.find((encoder) => accepted.get(encoder.token) ?? accepted.get('*') ?? false) ?? null;
+};
+
+test('pickEncoding: a seeded fuzz corpus agrees with the split-and-map spelling', () => {
+  const { encoders } = normalizeCompression({ encodings: ['br', 'zstd', 'gzip'] }, 'x');
+  const atoms = ['gzip', 'br', 'zstd', 'deflate', '*', 'identity', 'x-gzip', 'GZIP', ' ', '', 'a'];
+  const params = ['', ';q=0', ';q=1', ';q=0.5', ';q=0.000', '; q = 0 ', ';level=3', ';q=0;x=1'];
+  let x = 12345;
+  const next = (n) => {
+    x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+    return x % n;
+  };
+  let checked = 0;
+  for (let i = 0; i < 20_000; i++) {
+    const parts = [];
+    const n = next(6);
+    for (let j = 0; j < n; j++) parts.push(atoms[next(atoms.length)] + params[next(params.length)]);
+    const header = parts.join(next(3) === 0 ? ' , ' : ',');
+    if (header.length > MAX_ACCEPT_ENCODING) continue;
+    const expected = header.length === 0 ? null : (pickBySplit(header, encoders)?.token ?? null);
+    assert.strictEqual(pickEncoding(header, encoders)?.token ?? null, expected, JSON.stringify(header));
+    checked++;
+  }
+  assert.ok(checked > 19_000);
+});
+
+test('http compression: a request whose Accept-Encoding is longer than the cap gets plain bytes, 200', async (t) => {
+  const { port } = await bootServer(t, { router, http: { compression: { threshold: 0 } } });
+  const res = await fetch(`http://127.0.0.1:${port}/api`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', 'accept-encoding': `${'x,'.repeat(4_000)}gzip` },
+    body: JSON.stringify({ type: 'call', id: 'c1', method: 'data/small', args: [] }),
+  });
+  assert.strictEqual(res.status, 200);
+  assert.strictEqual(res.headers.get('content-encoding'), null);
+  assert.strictEqual((await res.json()).type, 'callback');
 });
 
 const decoders = { gzip: zlib.gunzipSync, br: zlib.brotliDecompressSync, zstd: zlib.zstdDecompressSync };

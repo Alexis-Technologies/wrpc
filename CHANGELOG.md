@@ -1947,6 +1947,13 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **`Accept-Encoding` is read in one pass and capped at 256 bytes.** The
+  coding scan searched for the next `;` from every token, so a header of
+  8000 one-letter tokens cost 1.9 ms of CPU per request and 16 KB of commas
+  3.8 ms — unauthenticated, once `http.compression` was on. The next `;` is
+  remembered now (one pass), and a header longer than 256 bytes is treated
+  as absent: identity is always a correct answer, and a real header is 20–100
+  bytes. `bench/http-compression.js` carries the adversarial rows.
 - **Docs without dangerous promises, and one warning.** The encryption
   guide's table said a sealed HTTP request hides "the headers"; `Cookie`
   and `Set-Cookie` stay on the outer request and response by construction

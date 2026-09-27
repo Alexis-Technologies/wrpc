@@ -81,13 +81,15 @@ const sseStream = (count) =>
 
 // The idiomatic spelling of the same choice: split, map, find.
 const pickBySplit = (header, encoders) => {
-  const accepted = new Map(
-    header.split(',').map((part) => {
-      const [token, ...params] = part.split(';');
-      const zero = params.some((param) => /^\s*q\s*=\s*0(?:\.0{0,3})?\s*$/i.test(param));
-      return [token.trim().toLowerCase(), !zero];
-    }),
-  );
+  const accepted = new Map();
+  for (const part of header.split(',')) {
+    const [token, ...params] = part.split(';');
+    const zero = params.some((param) => /^\s*q\s*=\s*0(?:\.0{0,3})?\s*$/i.test(param));
+    // RFC 9110 §18.6: x-gzip is gzip. A coding refused anywhere is refused.
+    const raw = token.trim().toLowerCase();
+    const name = raw === 'x-gzip' ? 'gzip' : raw;
+    accepted.set(name, (accepted.get(name) ?? true) && !zero);
+  }
   return encoders.find((encoder) => accepted.get(encoder.token) ?? accepted.get('*') ?? false) ?? null;
 };
 
@@ -103,6 +105,20 @@ const negotiation = () => {
     const started = performance.now();
     for (let i = 0; i < iterations; i++) if (pick(headers[i % 3], encoders) !== null) hits++;
     report(name, iterations, performance.now() - started, hits === iterations ? '' : '   MISMATCH');
+  }
+  // The header is the peer's: what one request costs when it is as long as
+  // a request line allows. Commas alone, and a token per two bytes — the
+  // shapes that make a per-token search walk the rest of the string.
+  for (const [name, header] of [
+    ['16 KB of commas', ','.repeat(16_000)],
+    ['8000 one-letter tokens', 'a,'.repeat(8_000)],
+    ['256 B of one-letter tokens (the cap)', `${'a,'.repeat(126)}br`],
+  ]) {
+    const iterations = 2_000;
+    const started = performance.now();
+    for (let i = 0; i < iterations; i++) pickEncoding(header, encoders);
+    const elapsed = performance.now() - started;
+    report(`adversarial: ${name}`, iterations, elapsed, `   ${((elapsed / iterations) * 1000).toFixed(1)} µs/request`);
   }
 };
 
