@@ -1315,6 +1315,18 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **The bench rows and the guide's numbers price what actually runs.** The
+  sealed fan-out row measured the bare AEAD per recipient (`bench/encryption.js`)
+  and the guide quoted it: 10 000 × 1 KB "≈ 25 ms". A recipient's
+  `SecureChannel.seal(text)` — the inner frame, the counter nonce, the
+  header — is 36 ms; the bench has that row now, a 64 KB binary chunk (27
+  µs) and the NK handshake (0.4 ms, the default pattern — the guide said
+  NN's 0.3), and the guide says so. A mesh broadcast is "serialized once",
+  not "single-encode": utf8, compression and fragmentation run per link
+  (`mesh.js`, the WebRTC guide, `scripts/size.js`). The pure-JS deflate
+  encoder re-hashes its dictionary on every call, and its comment and
+  `bench/deflate-js.js` (4 KB and 32 KiB dictionary rows: 34 and 138 µs on
+  a 2 KB callback) say so.
 - **The broker feed's resume, gap and snapshot scenarios run on the Redis
   adapter, not only on the reference broker.** They live in one spec now
   (`tests/broker/feedSpec.js`, the shape of the adapter spec), replayed over

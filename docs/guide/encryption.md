@@ -210,7 +210,7 @@ stream chunks, attachments, compressed frames alike.
 
 | Transport | How |
 | --- | --- |
-| WebSocket, WebTransport | a Noise handshake inside `open()` (one round trip, ~0.3 ms of CPU), then a key per direction, counted nonces, a rekey every 2²⁰ messages, a new handshake on every reconnect |
+| WebSocket, WebTransport | a Noise handshake inside `open()` (one round trip, ~0.4 ms of CPU under NK, the default; ~0.3 under NN), then a key per direction, counted nonces, a rekey every 2²⁰ messages, a new handshake on every reconnect |
 | HTTP, SSE | no connection to hold a session, so **each request** is sealed to the server key with HPKE, and the answer under a key exported from the same context (~0.2 ms). The real method, path, headers and status are inside — except `Cookie` and `Set-Cookie`, which stay on the outer request and response (script cannot set an HttpOnly cookie, so the browser has to see it) — and an observer sees `POST <endpoint>` and `200`. An SSE stream comes back sealed frame by frame, the channel id included. |
 | WebRTC | nothing to add — a data channel is already DTLS end to end, and [assertions](./webrtc-trust) bind identity to it |
 | worker (`event`) | nothing to add — the port never leaves the process; give `encryption` to the `WrpcClientProxy` in the worker |
@@ -324,9 +324,10 @@ Measured by `bench/encryption.js` on one core:
 | --- | --- |
 | Seal or open a 1 KB packet, Node | ~3.6 µs (the AEAD itself is 2.4 µs) |
 | The same through WebCrypto | ~14 µs — asynchronous, which is why the Node half uses `node:crypto` |
-| A Noise handshake, both ends | ~0.3 ms |
+| A Noise handshake, both ends | ~0.4 ms under NK (the default, one more DH each side), ~0.3 ms under NN |
+| A 64 KB stream chunk sealed | ~27 µs — the inner frame is a copy of the bytes, then the seal |
 | A sealed HTTP request, both ends | ~0.2 ms |
-| **A broadcast to N sealed clients** | **N seals.** Plain wrpc builds one frame for the whole fan-out; under session encryption every recipient has its own key. 10 000 recipients × 1 KB ≈ 25 ms per emit. |
+| **A broadcast to N sealed clients** | **N seals.** Plain wrpc builds one frame for the whole fan-out; under session encryption every recipient has its own key. 10 000 recipients × 1 KB ≈ 36 ms per emit — the AEAD alone is 26 ms, the inner frame, the counter nonce and the header the rest (`bench/encryption.js`, the per-recipient row; the shared frame is 6 µs). |
 
 On a WebSocket it also ends `permessage-deflate` for that connection —
 ciphertext does not compress — so server→client compression is gone;

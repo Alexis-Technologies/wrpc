@@ -126,6 +126,30 @@ const through = async (stream, bytes) => {
 const main = async () => {
   console.log(`dictionary: ${dictionary.length} B from the router`);
   {
+    // The encoder re-hashes the dictionary on every call, so a message's
+    // cost grows with the dictionary it is compressed against — a 4 KB
+    // one (a large router) and the 32 KiB zlib looks at, on the same
+    // 2 KB callback; zlib beside it, which does the same work.
+    const sample = Buffer.concat(Array.from({ length: 64 }, (_, i) => orders(20 + (i % 7))));
+    const bytes = orders(20);
+    console.log('\ndictionary size: 2 KB callback against a 4 KB and a 32 KiB dictionary');
+    for (const size of [4096, 32768]) {
+      const dict = sample.subarray(0, size);
+      timeSync(
+        `own deflate, ${size >> 10} KB dictionary`,
+        () => deflateRaw(bytes, { dictionary: dict }),
+        5_000,
+        bytes.length,
+      );
+      timeSync(
+        `zlib, ${size >> 10} KB dictionary (dynamic)`,
+        () => zlib.deflateRawSync(bytes, { dictionary: dict }),
+        5_000,
+        bytes.length,
+      );
+    }
+  }
+  {
     const { encoded, plain } = manyBlocks(200, 4096);
     console.log(`\nmany dynamic blocks: 200 × 4 KB skewed, ${encoded.length} B encoded, ${plain.length} B plain`);
     timeSync('own inflate', () => inflateRaw(encoded), 50);

@@ -212,6 +212,13 @@ async function main() {
   console.log('inner frame  Buffer.write'.padEnd(34) + inners.buffer.map(cell).join(''));
   console.log('seal a text packet'.padEnd(34) + sessionSeals.map(cell).join(''));
   console.log('open a text packet (incl. sealing)'.padEnd(34) + sessionOpens.map(cell).join(''));
+  // A binary frame the size of a stream chunk: the inner frame is a copy of
+  // the bytes, then the seal — the row a file upload under a session pays.
+  {
+    const chunk = crypto.randomBytes(64 * 1024);
+    const [sealing] = await channels();
+    console.log(`seal a 64 KB binary chunk           ${cell(micros(() => sealing.seal(chunk)))}`);
+  }
   const started = performance.now();
   for (let i = 0; i < 200; i++) {
     const [a, b] = [await noise.initiator(), await noise.responder()];
@@ -220,6 +227,21 @@ async function main() {
     await Promise.all([a.finish(), b.finish()]);
   }
   console.log(`a whole NN handshake, both ends     ${cell(((performance.now() - started) * 1000) / 200)}`);
+  // NK is the default pattern a client runs (it pins the server's key):
+  // one more DH than NN on each side.
+  {
+    const nk = createNoise({ pattern: 'NK', dh: x25519(), cipher: node.aead(), kdf: createKdf() });
+    const staticKey = await x25519().generateKeyPair();
+    const nkStarted = performance.now();
+    for (let i = 0; i < 200; i++) {
+      const a = await nk.initiator({ remoteStatic: staticKey.publicKey });
+      const b = await nk.responder({ staticKey });
+      await b.read(await a.write());
+      await a.read(await b.write());
+      await Promise.all([a.finish(), b.finish()]);
+    }
+    console.log(`a whole NK handshake, both ends     ${cell(((performance.now() - nkStarted) * 1000) / 200)}`);
+  }
 
   // One sealed HTTP request, both ends (src/encryption/http.js over hpke.js):
   // an X25519 each way, the key schedule, the request and its answer.
@@ -268,7 +290,26 @@ async function main() {
     );
   }
   console.log('one shared frame (today)'.padEnd(34) + shared.map(cell).join(''));
-  console.log('one seal per recipient'.padEnd(34) + sealedEach.map(cell).join(''));
+  console.log('one seal per recipient (bare AEAD)'.padEnd(34) + sealedEach.map(cell).join(''));
+  // What a sealed fan-out ACTUALLY costs: SecureChannel.seal(text) per
+  // recipient — the inner frame built from the text, the counter nonce,
+  // the seal, the header — not the bare AEAD above. 2000 established
+  // channels, reused round-robin for the larger counts (a seal's cost does
+  // not depend on which channel it is).
+  const text = payload(1024).toString();
+  const pool = [];
+  for (let i = 0; i < 2000; i++) pool.push((await channels())[0]);
+  const perRecipient = [];
+  for (const count of [10, 1000, 10000]) {
+    perRecipient.push(
+      micros(() => {
+        let sent = 0;
+        for (let r = 0; r < count; r++) sent += pool[r % pool.length].seal(text).length;
+        return sent;
+      }),
+    );
+  }
+  console.log('one SecureChannel.seal(text) each'.padEnd(34) + perRecipient.map(cell).join(''));
 }
 
 main().catch((error) => {

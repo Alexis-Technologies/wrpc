@@ -14,8 +14,12 @@
 // input, as zlib does.
 //
 // Browser-budgeted and per-message: the hash chains are allocated per call,
-// sized to the dictionary plus the input, which for a small message is a
-// few kilobytes of typed arrays.
+// sized to the dictionary plus the input — and the DICTIONARY IS HASHED
+// AGAIN ON EVERY CALL, so a call's cost grows with the dictionary, not only
+// with the message (bench/deflate-js.js, "dictionary size": a 2 KB callback
+// costs 34 µs against a 4 KB dictionary and 138 µs against 32 KiB; zlib,
+// which does the same work in C, 15 and 48). A prepared dictionary state is
+// a later change; the router dictionary this exists for is small.
 
 const { WINDOW, LENGTH_BASE, LENGTH_EXTRA, DIST_BASE, DIST_EXTRA } = require('./inflate.js');
 

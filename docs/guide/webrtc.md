@@ -396,7 +396,8 @@ await mesh.leave();
 
 Every member link's host-side `Client` is kept in the room `mesh:<room>`
 on this peer's `PeerHost`, which is what makes `broadcast()` and `ask()` one
-`Broadcast` fan-out — the payload is encoded once, `ask` aggregates
+`Broadcast` fan-out — the payload is serialized once (JSON; the utf8
+encoding, compression and fragmentation still run per link), `ask` aggregates
 `{ answers, errors, expected, incomplete }` — rather than a loop over links.
 A link shared by two meshes (the same two peers in two rooms) survives
 leaving one of them.

@@ -163,7 +163,8 @@ const ENTRIES = [
   { label: 'encryption — node (@alexify/wrpc/encryption)', entry: 'encryption.js', platform: 'node' },
   // A peer is a client AND a server: the webrtc browser entry bundles the
   // client core plus the router, dispatcher, per-peer Client, rooms and
-  // Broadcast (what makes a mesh broadcast/ask a single-encode fan-out),
+  // Broadcast (what makes a mesh broadcast/ask one fan-out: serialized once,
+  // then utf8, compression and fragmentation per link),
   // plus the link, framing, peer, mesh and signaler halves — measured at
   // 38.3 KB when the row landed. 40 -> 41 for the server telemetry writer:
   // a peer answers calls, so it emits the server spans and gauges a server

@@ -5,8 +5,10 @@
 // since connect() knocks when this side is not the initiator — and a
 // member arriving later is linked as it joins. Each open link's host-side
 // Client is kept in the room `mesh:<room>` on this peer's PeerHost, which
-// is what makes broadcast() and ask() a single-encode Broadcast fan-out
-// rather than a loop over links.
+// is what makes broadcast() and ask() one Broadcast fan-out rather than a
+// loop over links: the payload is serialized once (JSON); the utf8
+// encoding, compression and fragmentation still run per link, in the
+// channel codec.
 //
 // A member whose signaling connection dropped (`leave` with reason
 // 'disconnect') is only `away`: its link never needed signaling to keep
