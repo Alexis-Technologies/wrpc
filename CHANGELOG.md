@@ -1315,6 +1315,11 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **The broker feed's resume, gap and snapshot scenarios run on the Redis
+  adapter, not only on the reference broker.** They live in one spec now
+  (`tests/broker/feedSpec.js`, the shape of the adapter spec), replayed over
+  the `MemoryBroker` and the fake Redis server — the reference and an
+  adapter can no longer drift apart unnoticed on what a feed promises.
 - **A raw channel's `maxMessageSize` is validated where it is given.**
   `ClientRtcTransport`, `RtcPeerTransport` and `attachChannel` refuse a
   value that is not an integer between 1024 and 262144 — negotiation's own

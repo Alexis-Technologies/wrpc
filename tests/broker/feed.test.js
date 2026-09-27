@@ -8,6 +8,7 @@ const { defineRouter, procedure } = require('../../index.js');
 const { MemoryBroker, brokerFeed } = require('../../broker.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 const { quiet } = require('./support.js');
+const { runFeedSpec } = require('./feedSpec.js');
 
 // Two instances on one broker — two processes behind a balancer, in
 // production. Each serves the same feed procedure.
@@ -39,139 +40,17 @@ const subscribe = (client, options = {}) => {
 const append = (broker, ...values) =>
   Promise.all(values.map((value) => broker.log.append('orders', JSON.stringify(value))));
 
-test('brokerFeed: a client resumes on ANOTHER instance without a gap or a duplicate', async (t) => {
-  const broker = new MemoryBroker({ logger: quiet });
-  t.after(() => broker.close());
-  const { a, b } = await bootPair(t, broker);
-
-  const first = await connectClient(t, a.url);
-  await first.load('orders');
-  const one = subscribe(first);
-  await timers.setTimeout(20);
-  await append(broker, { n: 1 }, { n: 2 });
-  await waitFor(() => one.values.length === 2);
-  const resumeFrom = one.handle.lastEventId;
-  assert.strictEqual(typeof resumeFrom, 'string');
-  one.handle.unsubscribe();
-  await first.close();
-
-  // Published while nobody was connected.
-  await append(broker, { n: 3 }, { n: 4 });
-
-  const second = await connectClient(t, b.url);
-  await second.load('orders');
-  const two = subscribe(second, { lastEventId: resumeFrom });
-  await waitFor(() => two.values.length === 2);
-  await append(broker, { n: 5 });
-  await waitFor(() => two.values.length === 3);
-  assert.deepStrictEqual(
-    [...one.values, ...two.values].map((value) => value.n),
-    [1, 2, 3, 4, 5],
-  );
-  assert.deepStrictEqual(two.errors, []);
-});
-
-test('brokerFeed: a fresh subscription reads latest by default, or earliest', async (t) => {
-  const broker = new MemoryBroker({ logger: quiet });
-  t.after(() => broker.close());
-  await append(broker, { n: 'old' });
-  const router = defineRouter({
-    orders: {
-      feed: procedure.subscription({ access: 'public', handler: brokerFeed(broker, 'orders') }),
-      all: procedure.subscription({
-        access: 'public',
-        handler: brokerFeed(broker.log, 'orders', { from: 'earliest' }),
-      }),
+test('brokerFeed: the feed spec over the MemoryBroker', async (t) => {
+  await runFeedSpec(t, 'memory', {
+    open: () => {
+      const broker = new MemoryBroker({ logger: quiet });
+      return {
+        broker,
+        close: () => broker.close(),
+        trim: (topic, keep) => broker.trim(topic, keep),
+        foreignId: () => 'another-epoch.1',
+      };
     },
-  });
-  const { url } = await bootServer(t, { router });
-  const client = await connectClient(t, url);
-  await client.load('orders');
-  const latest = [];
-  const all = [];
-  client.api.orders.feed.subscribe({}, { onData: (value) => latest.push(value.n) });
-  client.api.orders.all.subscribe({}, { onData: (value) => all.push(value.n) });
-  await waitFor(() => all.length === 1);
-  await append(broker, { n: 'new' });
-  await waitFor(() => latest.length === 1 && all.length === 2);
-  assert.deepStrictEqual(latest, ['new']);
-  assert.deepStrictEqual(all, ['old', 'new']);
-});
-
-test('brokerFeed: an unusable lastEventId ends the feed with a coded error, or snapshots through onGap', async (t) => {
-  await t.test('without onGap: 400 for garbage, 410 for trimmed history', async (sub) => {
-    const broker = new MemoryBroker({ logger: quiet, retention: { maxEntries: 2 } });
-    sub.after(() => broker.close());
-    const { a } = await bootPair(sub, broker);
-    const client = await connectClient(sub, a.url);
-    await client.load('orders');
-    const ids = await append(broker, { n: 1 }, { n: 2 }, { n: 3 }, { n: 4 });
-
-    const garbage = subscribe(client, { lastEventId: '{"$gt":0}' });
-    const tooLong = subscribe(client, { lastEventId: `${broker.epoch}.${'1'.repeat(600)}` });
-    const trimmed = subscribe(client, { lastEventId: ids[0] });
-    const foreign = subscribe(client, { lastEventId: 'another-epoch.1' });
-    await waitFor(() => [garbage, tooLong, trimmed, foreign].every((s) => s.errors.length === 1));
-    assert.deepStrictEqual(
-      [garbage, tooLong, trimmed, foreign].map((s) => s.errors[0].code),
-      [400, 400, 410, 410],
-    );
-  });
-
-  await t.test('with onGap: the snapshot, then everything appended from the moment of the gap', async (sub) => {
-    const broker = new MemoryBroker({ logger: quiet, retention: { maxEntries: 2 } });
-    sub.after(() => broker.close());
-    const gaps = [];
-    const { a } = await bootPair(sub, broker, {
-      onGap: async (_ctx, _args, info) => {
-        gaps.push(info);
-        // Appended while the snapshot is being assembled: must not be lost.
-        await append(broker, { n: 'during-snapshot' });
-        return [{ snapshot: true }];
-      },
-    });
-    const client = await connectClient(sub, a.url);
-    await client.load('orders');
-    // Retention 2 over four appends: the first two ids are gone.
-    const ids = await append(broker, { n: 1 }, { n: 2 }, { n: 3 }, { n: 4 });
-    const feed = subscribe(client, { lastEventId: ids[0] });
-    await waitFor(() => feed.values.length === 2);
-    await append(broker, { n: 'after' });
-    await waitFor(() => feed.values.length === 3);
-    assert.deepStrictEqual(feed.values, [{ snapshot: true }, { n: 'during-snapshot' }, { n: 'after' }]);
-    assert.deepStrictEqual(gaps, [{ lastEventId: ids[0], code: 410 }]);
-    assert.deepStrictEqual(feed.errors, []);
-  });
-
-  await t.test('onGap may answer a single value, an async iterable, or nothing', async (sub) => {
-    const broker = new MemoryBroker({ logger: quiet });
-    sub.after(() => broker.close());
-    const answers = [
-      () => ({ single: true }),
-      () =>
-        (async function* () {
-          yield { streamed: 1 };
-          yield { streamed: 2 };
-        })(),
-      () => undefined,
-    ];
-    let call = 0;
-    const { a } = await bootPair(sub, broker, { onGap: () => answers[call++]() });
-    const client = await connectClient(sub, a.url);
-    await client.load('orders');
-    const single = subscribe(client, { lastEventId: 'nope' });
-    await waitFor(() => single.values.length === 1);
-    const streamed = subscribe(client, { lastEventId: 'nope' });
-    await waitFor(() => streamed.values.length === 2);
-    const nothing = subscribe(client, { lastEventId: 'nope' });
-    await timers.setTimeout(20);
-    await append(broker, { n: 1 });
-    await waitFor(() => nothing.values.length === 1);
-    // All three stay live after their snapshot, so the append reaches each.
-    await waitFor(() => single.values.length === 2 && streamed.values.length === 3);
-    assert.deepStrictEqual(single.values, [{ single: true }, { n: 1 }]);
-    assert.deepStrictEqual(streamed.values, [{ streamed: 1 }, { streamed: 2 }, { n: 1 }]);
-    assert.deepStrictEqual(nothing.values, [{ n: 1 }]);
   });
 });
 
@@ -313,7 +192,9 @@ test('brokerFeed: unsubscribing releases the broker read', async (t) => {
 });
 
 test('brokerFeed: a feed a slow reader outgrew resumes through onGap mid-stream', async () => {
-  // Driven directly: the retention overtakes a reader that stopped pulling.
+  // Driven directly against the reference broker's retention: it overtakes
+  // a reader that stopped pulling (a broker with a live tail buffers what
+  // the reader has not pulled — see the note in feedSpec.js).
   const broker = new MemoryBroker({ logger: quiet, retention: { maxEntries: 2 } });
   const gaps = [];
   const handler = brokerFeed(broker, 'orders', {

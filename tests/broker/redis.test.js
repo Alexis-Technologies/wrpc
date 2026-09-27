@@ -13,6 +13,7 @@ const { isBroker } = require('../../broker.js');
 const { createFakeRedis } = require('./fakeRedisServer.js');
 const { runBackplaneContract } = require('./backplaneContract.js');
 const { runLogContract } = require('./logContract.js');
+const { runFeedSpec } = require('./feedSpec.js');
 const { runQueueContract } = require('./queueContract.js');
 const { runDirectContract } = require('./directContract.js');
 const { quiet, unique, waitFor, collect } = require('./support.js');
@@ -61,6 +62,23 @@ test('redis broker (fake): log contract', async (t) => {
       };
     },
     timeout: 3000,
+  });
+});
+
+test('redis broker (fake): the feed spec — brokerFeed over Redis Streams', async (t) => {
+  await runFeedSpec(t, 'redis', {
+    open: () => {
+      const { client, broker, close } = open();
+      return {
+        broker,
+        close,
+        trim: async (topic, keep) => {
+          const stream = client.server.stream(`wrpc:log:${topic}`, false);
+          if (stream) stream.entries.splice(0, Math.max(0, stream.entries.length - keep));
+        },
+        foreignId: () => '1-0',
+      };
+    },
   });
 });
 
