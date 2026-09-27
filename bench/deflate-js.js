@@ -79,6 +79,36 @@ const timeAsync = async (label, fn, iterations, size) => {
   report(label, iterations, elapsed, size === undefined ? '' : `   ${size} -> ${Math.round(out / iterations)} B`);
 };
 
+// A skewed byte distribution — one value nearly always, the rest spread
+// thin — is what gives a dynamic Huffman tree its longest codes (zlib caps
+// them at 15 bits): the shape that costs a table-driven inflater the most.
+// Deterministic (an LCG), so every run measures the same bytes.
+const skewed = (size, seed = 7) => {
+  const out = new Uint8Array(size);
+  let x = seed >>> 0;
+  for (let i = 0; i < size; i++) {
+    x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+    out[i] = x % 100 < 92 ? 0x20 : 1 + ((x >>> 8) % 255);
+  }
+  return out;
+};
+
+// One raw stream of many dynamic blocks: zlib fragments that end in a sync
+// flush (no final bit) concatenated, the last one finished. Every block
+// carries its own tree, so the per-block cost of the inflater is what this
+// input measures.
+const manyBlocks = (count, chunk) => {
+  const parts = [];
+  const plain = [];
+  for (let i = 0; i < count; i++) {
+    const bytes = skewed(chunk, i + 1);
+    plain.push(bytes);
+    const last = i === count - 1;
+    parts.push(zlib.deflateRawSync(bytes, last ? {} : { finishFlush: zlib.constants.Z_SYNC_FLUSH }));
+  }
+  return { encoded: Buffer.concat(parts), plain: Buffer.concat(plain) };
+};
+
 const through = async (stream, bytes) => {
   const writer = stream.writable.getWriter();
   const reader = stream.readable.getReader();
@@ -95,6 +125,25 @@ const through = async (stream, bytes) => {
 
 const main = async () => {
   console.log(`dictionary: ${dictionary.length} B from the router`);
+  {
+    const { encoded, plain } = manyBlocks(200, 4096);
+    console.log(`\nmany dynamic blocks: 200 × 4 KB skewed, ${encoded.length} B encoded, ${plain.length} B plain`);
+    timeSync('own inflate', () => inflateRaw(encoded), 50);
+    timeSync('zlib inflate', () => zlib.inflateRawSync(encoded), 50);
+  }
+  {
+    // Huffman-only over the skewed alphabet: the common byte gets a one-bit
+    // code, every rare byte one of zlib's longest — the input on which the
+    // inflater's sub-table path (codes past the root table) runs for every
+    // rare symbol, so this row prices that path.
+    const plain = skewed(65536);
+    const encoded = zlib.deflateRawSync(plain, { strategy: zlib.constants.Z_HUFFMAN_ONLY });
+    let rare = 0;
+    for (const byte of plain) if (byte !== 0x20) rare++;
+    console.log(`\nhuffman-only 64 KB skewed: ${rare} rare symbols on long codes, ${encoded.length} B encoded`);
+    timeSync('own inflate', () => inflateRaw(encoded), 500);
+    timeSync('zlib inflate', () => zlib.inflateRawSync(encoded), 500);
+  }
   const cases = [
     ['event 108 B', tick(), 20_000],
     ['callback 2 KB', orders(20), 5_000],

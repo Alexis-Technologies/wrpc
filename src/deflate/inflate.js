@@ -45,16 +45,45 @@ const DIST_EXTRA = new Uint8Array([
 // The order code-length code lengths are transmitted in.
 const CODE_LENGTH_ORDER = new Uint8Array([16, 17, 18, 0, 8, 7, 9, 6, 10, 5, 11, 4, 12, 3, 13, 2, 14, 1, 15]);
 
+// The root table is ROOT bits wide whatever lengths a block declares; a
+// code longer than that is decoded through a sub-table its root slot
+// points at, sized for the longest code under that slot (zlib's two-level
+// scheme). Without the cap a dynamic block cost a 1 << maxLen table — 128
+// KB, and as many writes, at 15 bits — and a stream of blocks that declare
+// 15-bit codes and emit nothing is outside `maxOutput`'s reach; now a
+// block costs its header (hlit + hdist) plus 2^ROOT root entries plus
+// sub-tables that a prefix-free code bounds by itself (zlib's ENOUGH: 852
+// entries for the literal alphabet at a 9-bit root, fewer at a wider one).
+// Twelve bits, not zlib's nine, BY MEASUREMENT (bench/deflate-js.js,
+// medians of three): the sub-table path is a call out of the block loop,
+// ~9 ns a symbol — "huffman-only 64 KB skewed", every rare symbol on it,
+// 2,013 vs 1,847/sec before, the smaller root paying for the calls — and a
+// real tree reaches 10–12 bits on a 28 KB JSON callback ("callback 28 KB"
+// own inflate, dictionary: 13,980 vs 14,087/sec; "many dynamic blocks":
+// 191 vs 188/sec). A 16 KB table per block is an eighth of what a 15-bit
+// tree cost, and the flood shape costs that whatever it declares.
+const ROOT = 12;
+// The length field of a pointer entry. The bit buffer never holds 32 bits
+// (a fill tops it up past what was asked, by less than a byte), so a
+// pointer fails the hot path's one existing check — "the code fits in the
+// buffer" — and the fast path is exactly what it was. It is that sensitive
+// to #symbol's size: the sub-table lookup written inline in it measured
+// −12% on the 28 KB callback and −5% on the 2 KB one, no sub-table hit.
+const POINTER = 32;
+
 /**
  * A decoding table over canonical code lengths: entry = (length << 16) |
  * symbol at every index whose low `length` bits are the bit-reversed code,
- * or 0 where no code lands. Over-subscribed lengths are refused;
- * incomplete sets are allowed (a single-code distance tree is legal).
+ * or 0 where no code lands. A root slot under which codes run longer than
+ * ROOT holds (POINTER + width) << 16 | offset instead: a sub-table of
+ * `width` more bits at `offset` in the same array, whose entries carry the
+ * REMAINING length. Over-subscribed lengths are refused; incomplete sets
+ * are allowed (a single-code distance tree is legal).
  */
 const buildTable = (lengths, count) => {
   let maxLen = 0;
   for (let i = 0; i < count; i++) if (lengths[i] > maxLen) maxLen = lengths[i];
-  if (maxLen === 0) return { table: null, maxLen: 0 };
+  if (maxLen === 0) return { table: null, bits: 0 };
   const blCount = new Uint16Array(MAX_BITS + 1);
   for (let i = 0; i < count; i++) blCount[lengths[i]]++;
   blCount[0] = 0;
@@ -69,8 +98,50 @@ const buildTable = (lengths, count) => {
     code = (code + blCount[len - 1]) << 1;
     nextCode[len] = code;
   }
-  const size = 1 << maxLen;
-  const table = new Uint32Array(size);
+  const bits = maxLen < ROOT ? maxLen : ROOT;
+  const size = 1 << bits;
+  const mask = size - 1;
+  // Only a code longer than the root needs a first pass: the longest code
+  // under each root slot sizes that slot's sub-table, and the sub-tables
+  // are laid out after the root. One Uint16 holds both facts per slot —
+  // (start << 2) | width — because a typed array is not free to allocate
+  // and this runs three times per dynamic block: a width is at most
+  // MAX_BITS - ROOT = 3 (two bits), a start at most 4096 + 286 × 8 (the
+  // root, then a sub-table of at most eight entries per long code —
+  // fourteen). A block whose codes all fit the root — most messages —
+  // takes exactly the one pass it always did.
+  let total = 0;
+  let slots = null;
+  if (maxLen > bits) {
+    slots = new Uint16Array(size);
+    for (let sym = 0; sym < count; sym++) {
+      const len = lengths[sym];
+      if (len === 0) continue;
+      const c = nextCode[len]++;
+      if (len <= bits) continue;
+      // The root slot is the code's first `bits` bits, reversed.
+      let t = c >> (len - bits);
+      let slot = 0;
+      for (let i = 0; i < bits; i++) {
+        slot = (slot << 1) | (t & 1);
+        t >>= 1;
+      }
+      const width = len - bits;
+      if (slots[slot] < width) slots[slot] = width;
+    }
+    for (let slot = 0; slot < size; slot++) {
+      const width = slots[slot];
+      if (width === 0) continue;
+      slots[slot] = ((size + total) << 2) | width;
+      total += 1 << width;
+    }
+    code = 0;
+    for (let len = 1; len <= MAX_BITS; len++) {
+      code = (code + blCount[len - 1]) << 1;
+      nextCode[len] = code;
+    }
+  }
+  const table = new Uint32Array(size + total);
   for (let sym = 0; sym < count; sym++) {
     const len = lengths[sym];
     if (len === 0) continue;
@@ -80,11 +151,25 @@ const buildTable = (lengths, count) => {
       reversed = (reversed << 1) | (c & 1);
       c >>= 1;
     }
-    const entry = (len << 16) | sym;
-    const step = 1 << len;
-    for (let j = reversed; j < size; j += step) table[j] = entry;
+    if (len <= bits) {
+      const entry = (len << 16) | sym;
+      const step = 1 << len;
+      for (let j = reversed; j < size; j += step) table[j] = entry;
+      continue;
+    }
+    // A prefix-free code puts no short code's fill on a long code's slot,
+    // so the pointer written here is never overwritten.
+    const packed = slots[reversed & mask];
+    const width = packed & 3;
+    const start = packed >>> 2;
+    table[reversed & mask] = ((POINTER + width) << 16) | start;
+    const rest = len - bits;
+    const entry = (rest << 16) | sym;
+    const step = 1 << rest;
+    const end = 1 << width;
+    for (let j = reversed >>> bits; j < end; j += step) table[start + j] = entry;
   }
-  return { table, maxLen };
+  return { table, bits };
 };
 
 // The fixed trees (RFC 1951 3.2.6), built once.
@@ -147,16 +232,35 @@ class Inflater {
     return value;
   }
 
-  // One symbol from a table: peek the longest code's worth of bits (zero
-  // padded at the very end of the input), read the entry, consume its
-  // length — which has to fit in what was actually there.
+  // One symbol from a table: peek the root's worth of bits (zero padded at
+  // the very end of the input), read the entry, consume the code's length
+  // — which has to fit in what was actually there. What does not fit is a
+  // pointer to a sub-table, or the end of the input: #slow tells them
+  // apart, off the path V8 inlines into the block loop.
   #symbol(tree) {
-    const { table, maxLen } = tree;
+    const { table, bits } = tree;
     if (table === null) throw new DeflateError('symbol from an empty code', 'huffman');
-    if (this.#bitCnt < maxLen) this.#fill(maxLen);
-    const entry = table[this.#bitBuf & ((1 << maxLen) - 1)];
+    if (this.#bitCnt < bits) this.#fill(bits);
+    const entry = table[this.#bitBuf & ((1 << bits) - 1)];
     if (entry === 0) throw new DeflateError('invalid Huffman code', 'huffman');
     const len = entry >>> 16;
+    if (len > this.#bitCnt) return this.#slow(table, entry, bits);
+    this.#bitBuf >>>= len;
+    this.#bitCnt -= len;
+    return entry & 0xffff;
+  }
+
+  // A pointer: the long codes under one root slot take `width` more bits,
+  // read after the root's from the same buffer, into the sub-table the slot
+  // points at; its entry carries the length past the root's bits. Anything
+  // else that did not fit is the input ending inside a code.
+  #slow(table, pointer, bits) {
+    const width = (pointer >>> 16) - POINTER;
+    if (width < 0) throw new DeflateError('unexpected end of data', 'truncated');
+    if (this.#bitCnt < bits + width) this.#fill(bits + width);
+    const entry = table[(pointer & 0xffff) + ((this.#bitBuf >>> bits) & ((1 << width) - 1))];
+    if (entry === 0) throw new DeflateError('invalid Huffman code', 'huffman');
+    const len = bits + (entry >>> 16);
     if (len > this.#bitCnt) throw new DeflateError('unexpected end of data', 'truncated');
     this.#bitBuf >>>= len;
     this.#bitCnt -= len;

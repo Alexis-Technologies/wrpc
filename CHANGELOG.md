@@ -1913,6 +1913,18 @@ bytes it sends. In that order:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **The pure-JS inflater's cost per dynamic block is bounded by its
+  header, not by the codes it declares.** `inflateRaw` built a decoding
+  table of `1 << maxLen` entries for every dynamic block — 128 KB, and as
+  many writes, when a block declared a 15-bit code — and a block that emits
+  nothing is outside `maxOutput`'s reach, so a stream of such headers cost
+  seconds of CPU per megabyte. The table is two-level now (zlib's scheme):
+  a 12-bit root plus sub-tables a prefix-free code bounds by itself, an
+  eighth of the old worst case per block and the same whatever the block
+  claims. Decoding is at parity or better on every row of
+  `bench/deflate-js.js`, which gained a many-blocks row and a Huffman-only
+  row that runs every rare symbol through the sub-table path. The
+  `./deflate` budget is 5 KB (was 4; the entry is 4.1).
 - **Docs: what `cluster.secret` does and does not stop.** The cluster guide
   said the HMAC guards the command surface; it guards the *authorship* of a
   command. A signed envelope can be replayed, or moved from the channel it

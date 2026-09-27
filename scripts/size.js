@@ -142,7 +142,9 @@ const ENTRIES = [
   // that injects it pays for it. 5 -> 4: it takes the dictionary id from
   // the src/compression/ids.js leaf instead of the whole negotiation
   // (measured 3.8 against 4.5) — the ratchet, turned the other way.
-  { label: 'deflate codec (@alexify/wrpc/deflate)', entry: 'deflate.js', platform: 'browser', budget: 4 },
+  // deflate: 4 → 5 for the two-level decoding table (the root's width no
+  // longer follows the longest code a block declares) — ~100 B of bound.
+  { label: 'deflate codec (@alexify/wrpc/deflate)', entry: 'deflate.js', platform: 'browser', budget: 5 },
   // Encryption: the AEAD, X25519, HKDF and keyring primitives over
   // crypto.subtle — browser-reachable, and OUTSIDE every other entry like the
   // deflate codec: the base entry carries an injection seam, the page that

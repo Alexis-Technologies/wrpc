@@ -12,6 +12,7 @@ const zlib = require('node:zlib');
 const crypto = require('node:crypto');
 
 const { createDeflateCodec, inflateRaw, deflateRaw, DeflateError } = require('../../deflate.js');
+const { buildTable } = require('../../src/deflate/inflate.js');
 const { buildDictionary, dictionaryCompressor, defineRouter, procedure, isCompressor } = require('../../index.js');
 const { nativeCompressor } = require('../../src/compression/index.js');
 
@@ -88,6 +89,72 @@ test('inflate: every block type zlib produces, with and without a dictionary, at
       }
     }
   }
+});
+
+// A skewed byte distribution: one value nearly always, the rest spread
+// thin, so the dynamic tree's rare symbols get zlib's longest codes — the
+// ones past the inflater's root table. Deterministic (an LCG).
+const skewed = (size, seed) => {
+  const out = new Uint8Array(size);
+  let x = seed >>> 0;
+  for (let i = 0; i < size; i++) {
+    x = (Math.imul(x, 1664525) + 1013904223) >>> 0;
+    out[i] = x % 100 < 92 ? 0x20 : 1 + ((x >>> 8) % 255);
+  }
+  return out;
+};
+
+test('inflate: codes longer than the root table, at every level, Huffman-only, and across a stream of many dynamic blocks', () => {
+  const input = skewed(60_000, 3);
+  for (const level of [1, 2, 3, 4, 5, 6, 7, 8, 9]) {
+    for (const dict of [null, dictionary]) {
+      const compressed = zlib.deflateRawSync(input, { level, ...(dict ? { dictionary: dict } : {}) });
+      assert.ok(same(inflateRaw(compressed, { dictionary: dict }), input), `level ${level} dict=${Boolean(dict)}`);
+    }
+  }
+  // Huffman-only leaves the code lengths to the distribution alone: the
+  // surest 15-bit codes zlib will write.
+  const huffman = zlib.deflateRawSync(input, { strategy: zlib.constants.Z_HUFFMAN_ONLY });
+  assert.ok(same(inflateRaw(huffman), input));
+  // One stream of many dynamic blocks — sync-flushed fragments, the last
+  // finished — so every block builds its own tables; zlib reads it too.
+  const parts = [];
+  const plain = [];
+  for (let i = 0; i < 300; i++) {
+    const bytes = skewed(2048, i + 1);
+    plain.push(bytes);
+    parts.push(zlib.deflateRawSync(bytes, i === 299 ? {} : { finishFlush: zlib.constants.Z_SYNC_FLUSH }));
+  }
+  const stream = Buffer.concat(parts);
+  const expected = Buffer.concat(plain);
+  assert.ok(same(inflateRaw(stream), expected));
+  assert.ok(same(zlib.inflateRawSync(stream), expected), 'zlib reads the same stream');
+  assert.throws(
+    () => inflateRaw(stream, { maxOutput: 1000 }),
+    (error) => error instanceof DeflateError && error.code === 'too-large',
+  );
+});
+
+test('buildTable: what a block pays for its table follows the root width, not the longest code it declares', () => {
+  // A complete code over sixteen symbols with lengths 1..14, 15, 15: the
+  // four codes past twelve bits share one root slot, so the table is the
+  // 4096-entry root plus one 8-entry sub-table — not the 32768 entries a
+  // 15-bit code used to cost (the flood shape declares exactly this).
+  const lengths = new Uint8Array(16);
+  for (let i = 0; i < 14; i++) lengths[i] = i + 1;
+  lengths[14] = 15;
+  lengths[15] = 15;
+  const { table, bits } = buildTable(lengths, 16);
+  assert.strictEqual(bits, 12);
+  assert.strictEqual(table.length, 4096 + 8);
+  // A code that fits the root is the one-level table it always was.
+  const short = new Uint8Array([2, 2, 2, 2]);
+  assert.strictEqual(buildTable(short, 4).table.length, 4);
+  assert.deepStrictEqual(buildTable(new Uint8Array(4), 4), { table: null, bits: 0 });
+  assert.throws(
+    () => buildTable(new Uint8Array([1, 1, 1]), 3),
+    (error) => error.code === 'huffman',
+  );
 });
 
 test('deflate: what the own encoder produces, zlib and the own inflater both read back', () => {

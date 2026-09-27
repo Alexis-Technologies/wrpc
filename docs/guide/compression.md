@@ -257,7 +257,12 @@ peer on this codec and a Node peer on `node:zlib` negotiate with each
 other; without a dictionary it is the platform id, and the platform codecs
 read it. The inflater is complete — stored, fixed and dynamic blocks,
 whatever zlib or a `CompressionStream` on the other end chose — takes the
-dictionary, and is capped like every decoder here. The encoder is
+dictionary, and is capped like every decoder here. A dynamic block costs
+what its header says — the code lengths it declares — plus a root
+decoding table of fixed width and the sub-tables a prefix-free code
+bounds by itself, never a table sized by the longest code a block claims:
+a stream of blocks that declare 15-bit codes and emit nothing buys no
+128 KB table per block, so `maxOutput` is not the only cap. The encoder is
 deliberately simple: LZ77 against the dictionary, written as one
 **fixed-Huffman** block, because on the messages this exists for a dynamic
 tree costs more than it saves. `bench/deflate-js.js`:
