@@ -384,11 +384,13 @@ class Inflater {
   }
 }
 
-const toBytes = (input) => {
+// Bytes in any of the three spellings, or a TypeError naming the caller —
+// the one copy the directory shares.
+const toBytes = (input, label = 'inflate') => {
   if (input instanceof Uint8Array) return input;
   if (input instanceof ArrayBuffer) return new Uint8Array(input);
   if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-  throw new TypeError('inflate: expected bytes');
+  throw new TypeError(`${label}: expected bytes`);
 };
 
 /**
@@ -400,4 +402,14 @@ const toBytes = (input) => {
 const inflateRaw = (input, { dictionary = null, maxOutput = Infinity } = {}) =>
   new Inflater(toBytes(input), dictionary === null ? null : toBytes(dictionary), maxOutput).run();
 
-module.exports = { inflateRaw, DeflateError, buildTable, LENGTH_BASE, LENGTH_EXTRA, DIST_BASE, DIST_EXTRA, WINDOW };
+module.exports = {
+  inflateRaw,
+  DeflateError,
+  buildTable,
+  toBytes,
+  LENGTH_BASE,
+  LENGTH_EXTRA,
+  DIST_BASE,
+  DIST_EXTRA,
+  WINDOW,
+};

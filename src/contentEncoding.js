@@ -27,6 +27,7 @@
 const zlib = require('node:zlib');
 
 const { hasZstd } = require('./compression/native.js');
+const { normalizeAsync } = require('./compression/index.js');
 
 const DEFAULT_THRESHOLD = 1024;
 // The threadpool hand-off costs a fixed amount per call: the same shape as
@@ -35,7 +36,6 @@ const DEFAULT_ASYNC_THRESHOLD = 256 * 1024;
 const DEFAULT_BROTLI_QUALITY = 4;
 const DEFAULT_ZSTD_LEVEL = 1;
 
-const isPositiveInteger = (value) => Number.isInteger(value) && value > 0;
 const integerIn = (value, low, high) => Number.isInteger(value) && value >= low && value <= high;
 // RFC 9110 §5.6.2 `token` — what a content-coding is.
 const TOKEN = /^[!#$%&'*+\-.^_`|~0-9A-Za-z]+$/;
@@ -166,12 +166,11 @@ const normalizeCompression = (value, name, { streaming = false, zlib: lib = zlib
       throw new TypeError(`${name}: the ${token} encoding has no createStream() — an SSE response needs one`);
     }
   }
-  let async = null;
-  if (asyncOption !== null && asyncOption !== false) {
-    const raw = asyncOption === true ? {} : asyncOption;
-    if (typeof raw !== 'object') throw new TypeError(`${name}: compression.async must be an object`);
-    async = { threshold: isPositiveInteger(raw.threshold) ? raw.threshold : DEFAULT_ASYNC_THRESHOLD };
-  }
+  // The one strict normalizer every `async` knob shares (src/compression):
+  // `{ threshold: '64kb' }`, `{ threshold: 0 }` and `async: []` used to
+  // land silently on the 256 KiB default here.
+  const asyncThreshold = normalizeAsync(asyncOption, `${name}: compression`);
+  const async = asyncThreshold === null ? null : { threshold: asyncThreshold };
   return Object.freeze({ threshold, filter, async, encoders: Object.freeze(encoders) });
 };
 

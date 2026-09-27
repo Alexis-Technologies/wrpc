@@ -1320,6 +1320,13 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **`http.compression.async` is validated by the one normalizer every
+  `async` knob shares.** `{ threshold: '64kb' }`, `{ threshold: 0 }` and
+  `async: []` landed silently on the 256 KiB default; they are TypeErrors
+  now, as on the socket codecs. The permessage-deflate `async` stays
+  lenient on purpose (the `./ws` engine must not import the negotiation
+  module) and the compression guide says so. The pure-JS deflate directory
+  keeps one `toBytes`.
 - **CI's NATS job runs JetStream, a missing client fails a service job
   instead of skipping it, and the images are pinned.** A GitHub service
   container cannot be given a command, so CI's NATS ran without `-js` and

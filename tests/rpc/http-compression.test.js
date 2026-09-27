@@ -244,7 +244,18 @@ test('http compression: the option is validated at construction', () => {
   assert.throws(() => new RpcServer({ router, http: { compression: 'yes' } }), /must be true, false or an options/);
   assert.throws(() => new RpcServer({ router, http: { compression: { threshold: -1 } } }), /threshold/);
   assert.throws(() => new RpcServer({ router, http: { compression: { filter: 'no' } } }), /filter must be a function/);
-  assert.throws(() => new RpcServer({ router, http: { compression: { async: 'later' } } }), /async must be an object/);
+  assert.throws(() => new RpcServer({ router, http: { compression: { async: 'later' } } }), /async must be/);
+  // The strict normalizer src/compression shares: what used to land on the
+  // 256 KiB default silently is refused where the option is given.
+  assert.throws(
+    () => normalizeCompression({ async: { threshold: '64kb' } }, 'x'),
+    /async\.threshold must be a positive integer/,
+  );
+  assert.throws(
+    () => normalizeCompression({ async: { threshold: 0 } }, 'x'),
+    /async\.threshold must be a positive integer/,
+  );
+  assert.throws(() => normalizeCompression({ async: [] }, 'x'), /async must be true, false or \{ threshold \}/);
   // Off in every spelling of off.
   for (const off of [undefined, null, false]) assert.strictEqual(normalizeCompression(off, 'x'), null);
   const on = normalizeCompression(true, 'x');

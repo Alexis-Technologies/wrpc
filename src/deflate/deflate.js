@@ -21,7 +21,7 @@
 // which does the same work in C, 15 and 48). A prepared dictionary state is
 // a later change; the router dictionary this exists for is small.
 
-const { WINDOW, LENGTH_BASE, LENGTH_EXTRA, DIST_BASE, DIST_EXTRA } = require('./inflate.js');
+const { WINDOW, LENGTH_BASE, LENGTH_EXTRA, DIST_BASE, DIST_EXTRA, toBytes } = require('./inflate.js');
 
 const MIN_MATCH = 3;
 const MAX_MATCH = 258;
@@ -153,13 +153,6 @@ const stored = (input) => {
 
 const hashAt = (win, i) => ((win[i] << 10) ^ (win[i + 1] << 5) ^ win[i + 2]) & HASH_MASK;
 
-const toBytes = (input) => {
-  if (input instanceof Uint8Array) return input;
-  if (input instanceof ArrayBuffer) return new Uint8Array(input);
-  if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-  throw new TypeError('deflate: expected bytes');
-};
-
 /**
  * Bytes → raw DEFLATE, synchronously, as one fixed-Huffman block (or
  * stored blocks when that is smaller). `dictionary` preloads the window
@@ -168,8 +161,8 @@ const toBytes = (input) => {
  * hash-chain depth.
  */
 const deflateRaw = (input, { dictionary = null, level = 6 } = {}) => {
-  const data = toBytes(input);
-  const dict = dictionary === null ? null : toBytes(dictionary);
+  const data = toBytes(input, 'deflate');
+  const dict = dictionary === null ? null : toBytes(dictionary, 'deflate');
   const dictLen = dict === null ? 0 : Math.min(dict.length, WINDOW);
   const total = dictLen + data.length;
   const win = new Uint8Array(total);

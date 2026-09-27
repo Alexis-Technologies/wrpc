@@ -22,20 +22,22 @@
 // on this codec negotiate with each other; without a dictionary it is the
 // platform id, and the platform codecs read it.
 
-const { inflateRaw, DeflateError } = require('./inflate.js');
+const { inflateRaw, DeflateError, toBytes } = require('./inflate.js');
+
+// A dictionary may be given as text (a router's, printed) as well as bytes.
+const dictionaryBytes = (value) => {
+  if (typeof value === 'string') return new TextEncoder().encode(value);
+  try {
+    return toBytes(value, 'createDeflateCodec');
+  } catch {
+    throw new TypeError('createDeflateCodec: dictionary must be bytes or a string');
+  }
+};
 const { deflateRaw } = require('./deflate.js');
 const { dictionaryId, DICTIONARY_ID_PREFIX } = require('../compression/ids.js');
 
 const NATIVE_ID = 'deflate-raw';
 const DEFAULT_NATIVE_ABOVE = 4096;
-
-const toBytes = (input) => {
-  if (input instanceof Uint8Array) return input;
-  if (typeof input === 'string') return new TextEncoder().encode(input);
-  if (input instanceof ArrayBuffer) return new Uint8Array(input);
-  if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
-  throw new TypeError('createDeflateCodec: dictionary must be bytes or a string');
-};
 
 // The platform's CompressionStream, for the large messages — asynchronous.
 const nativeEncode = async (bytes) => {
@@ -85,7 +87,7 @@ const createDeflateCodec = ({
   nativeAbove = DEFAULT_NATIVE_ABOVE,
   level = 6,
 } = {}) => {
-  const dict = dictionary === null || dictionary === undefined ? null : toBytes(dictionary);
+  const dict = dictionary === null || dictionary === undefined ? null : dictionaryBytes(dictionary);
   if (dict !== null && dict.length === 0) throw new TypeError('createDeflateCodec: dictionary must not be empty');
   if (threshold !== undefined && !(Number.isInteger(threshold) && threshold >= 0)) {
     throw new TypeError('createDeflateCodec: threshold must be a non-negative integer');

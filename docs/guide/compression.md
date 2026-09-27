@@ -179,7 +179,7 @@ for the encode side only:
 
 | Wire | The knob | Default threshold |
 | --- | --- | --- |
-| WebSocket, permessage-deflate | `perMessageDeflate: { async: { threshold } }` — [performance](./performance#compression-modes) | 256 KiB |
+| WebSocket, permessage-deflate | `perMessageDeflate: { async: { threshold } }` — [performance](./performance#compression-modes). Lenient by design: an unusable `threshold` falls back to the default without a TypeError, because the `./ws` engine's option predates the strict normalizer and must not import it | 256 KiB |
 | HTTP | `http: { compression: { async } }` | 256 KiB |
 | Server-Sent Events | none — a gzip stream already runs its writes off the loop | — |
 | WebTransport, WebRTC | `compression: { async }` on the platform codec, `dictionaryCompressor(dict, { async })` on the dictionary one | 256 KiB |
