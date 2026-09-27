@@ -216,6 +216,35 @@ test('runtime barrel exports and the hand-written types agree, both ways, on eve
   }
 });
 
+// SECURITY.md is a release-checklist item: its version table must name the
+// current major line (never a "pre-first-publish" that shipped), and its
+// scope must name every directory that parses hostile bytes or holds keys.
+test('SECURITY.md names the supported major, no pre-publish placeholder, and every hostile-input surface', () => {
+  const text = read('SECURITY.md');
+  const major = Math.max(2, Number(pkg.version.split('.')[0]));
+  assert.ok(text.includes(`| \`${major}.x\``), `the supported row names ${major}.x`);
+  assert.ok(!text.includes('pre-first-publish'), 'the pre-publish placeholder shipped once; never again');
+  for (const surface of [
+    'src/websocket/',
+    'src/rpc/',
+    'src/transport.js',
+    'src/adapters/',
+    'src/sse/',
+    'src/auth/',
+    'src/rpc/cluster.js',
+    'src/cli/',
+    'src/encryption/',
+    'src/webtransport/',
+    'src/deflate/inflate.js',
+    'src/attachments.js',
+    'src/webrtc/assertions.js',
+    'src/broker/sealing.js',
+  ]) {
+    assert.ok(text.includes(surface), `SECURITY.md scope names ${surface}`);
+  }
+  assert.ok(text.includes('what-it-does-not-protect'), 'the documented limits are linked');
+});
+
 test('every ./x.js reference inside a shipped root d.ts resolves to a shipped x.d.ts', () => {
   const roots = pkg.files.filter((entry) => entry.endsWith('.d.ts'));
   for (const file of roots) {

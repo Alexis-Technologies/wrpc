@@ -1320,6 +1320,16 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **SECURITY.md knows about the cryptography and the new parsers, and
+  says which line is supported.** The scope names `src/encryption/` (nonce
+  reuse, cross-layer opening, distinguishable `OpenError`s, downgrade,
+  replay), the parsers of hostile bytes beyond the WebSocket engine
+  (WebTransport framing, the pure-JS inflater, attachments frames, WebRTC
+  framing and trust assertions, broker resume tokens and sealed messages),
+  and says `@experimental` subpaths are in scope; a "documented limits"
+  paragraph points at what the encryption does not protect. The version
+  table says `2.x` is supported and `1.x` is not (no maintenance branch),
+  and a package test guards the table and the scope list.
 - **The types and the runtime are checked against each other both ways, on
   every subpath.** The package test compared six barrels one way (a runtime
   export the types never declared); it derives every subpath under both

@@ -39,17 +39,49 @@ areas where a report matters most:
   shape validation exist to be unbreakable too.
 - **The codegen CLI** (`src/cli/`): everything read from a remote server's
   introspection is untrusted input to a file generator.
+- **Encryption** (`src/encryption/`, and the sealed layers built on it in
+  `src/rpc/envelope.js`, `src/broker/sealing.js`, `src/webtransport/`):
+  a counter nonce that repeats (including across a reseed), a message that
+  opens under another layer, channel, key id or AAD than it was sealed for,
+  an `OpenError` that is distinguishable by cause, a downgrade to plaintext
+  where a peer or a mode forbids it, a replay the window or the request
+  memory should have refused, a static key derived for one protocol usable
+  under another.
+- **Parsers of hostile bytes** beyond the WebSocket engine:
+  `src/webtransport/` (the control-stream framing and the stream mux),
+  `src/deflate/inflate.js` (a complete DEFLATE decoder — a block that
+  costs more than its header says is in scope), `src/attachments.js`
+  (the binary attachments frame), `src/webrtc/framing.js` and
+  `src/webrtc/assertions.js` (data-channel framing, the JWS trust
+  assertions and the SDP fingerprint they bind to), `src/broker/ids.js`
+  and `src/broker/sealing.js` (resume tokens, sealed broker messages).
 
 Denial-of-service through resource exhaustion on any of these surfaces is
-in scope; the limits exist to be unbreakable.
+in scope; the limits exist to be unbreakable. Subpaths marked
+`@experimental` (`./wt`, `./encryption`, `./broker/*`) are in scope too:
+experimental describes the API's stability, not how seriously a hole in it
+is taken.
+
+### Documented limits — not vulnerabilities
+
+Some things the encryption does not protect are stated up front, in
+[what it does not protect](./docs/guide/encryption.md#what-it-does-not-protect):
+metadata (sizes, timing, channel and room names, key ids), a compromised
+end, replay on a log that is meant to be re-read, and a browser against the
+origin that ships its script. A report that one of these holds is
+confirming the documentation; a report that the documentation is wrong
+about where a limit lies is very much wanted.
 
 ## Supported versions
 
 | Version | Supported |
 | --- | --- |
-| Unreleased (`main` at HEAD, pre-first-publish) | ✔ fixes land on `main` |
-| Latest published minor (once 1.0.0 ships) | ✔ security fixes |
+| `2.x` (the latest published minor) | ✔ security fixes |
+| `1.x` | ✖ not supported — upgrade to `2.x` (the [migration notes](./CHANGELOG.md) list every breaking change) |
 | Older releases | ✖ upgrade to the latest |
+
+There is no maintenance branch for `1.x`: 1.0.0 shipped five weeks before
+2.0, and the 2.0 line is where every fix lands.
 
 The wire protocol carries its own compatibility promise
 ([protocol.md](./docs/reference/protocol.md#stability)) — a security fix
