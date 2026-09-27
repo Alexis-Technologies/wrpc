@@ -1315,6 +1315,13 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **Tests: one log recorder that keeps a child's bindings, one metrics rig.**
+  `tests/helpers/recorder.js` answers `child()` with a writer over the same
+  entries with the bindings merged in — the copies it replaces answered
+  `this`, so a line's `component` or `peer` never reached an assertion;
+  `tests/helpers/metrics.js` is the in-memory OpenTelemetry rig the WebRTC
+  telemetry test carried. The suites the observability work touches next use
+  them; the rest migrate as they are touched.
 - **The bench rows and the guide's numbers price what actually runs.** The
   sealed fan-out row measured the bare AEAD per recipient (`bench/encryption.js`)
   and the guide quoted it: 10 000 × 1 KB "≈ 25 ms". A recipient's

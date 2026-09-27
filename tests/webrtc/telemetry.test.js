@@ -14,12 +14,6 @@ const otelApi = require('@opentelemetry/api');
 const { W3CTraceContextPropagator } = require('@opentelemetry/core');
 const { AsyncLocalStorageContextManager } = require('@opentelemetry/context-async-hooks');
 const { BasicTracerProvider, InMemorySpanExporter, SimpleSpanProcessor } = require('@opentelemetry/sdk-trace-base');
-const {
-  AggregationTemporality,
-  InMemoryMetricExporter,
-  MeterProvider,
-  PeriodicExportingMetricReader,
-} = require('@opentelemetry/sdk-metrics');
 
 const { defineRouter, procedure } = require('../../index.js');
 const { SCOPE_NAME } = require('../../src/telemetry/index.js');
@@ -27,6 +21,7 @@ const { WrpcPeer, PeerHost } = require('../../src/webrtc/index.js');
 const { createFakeRtc } = require('./fakeRtc.js');
 const { FakeSignalHub } = require('./fakeSignalHub.js');
 const { within, waitFor } = require('./portContract.js');
+const { createMetrics, point } = require('../helpers/metrics.js');
 
 const quiet = {
   log() {},
@@ -44,26 +39,6 @@ const createTracing = () => {
   const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
   return { provider, tracer: provider.getTracer(SCOPE_NAME), spans: () => exporter.getFinishedSpans() };
 };
-
-const createMetrics = () => {
-  const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
-  const reader = new PeriodicExportingMetricReader({ exporter, exportIntervalMillis: 3_600_000 });
-  const provider = new MeterProvider({ readers: [reader] });
-  // The exporter keeps every flush; the LAST batch is the current cumulative
-  // snapshot, and asserting on the first would read the values as they
-  // were at the first collect.
-  const collect = async () => {
-    await reader.forceFlush();
-    const metrics = [];
-    const batch = exporter.getMetrics().at(-1);
-    for (const scope of batch?.scopeMetrics ?? []) metrics.push(...scope.metrics);
-    return metrics;
-  };
-  return { provider, meter: provider.getMeter(SCOPE_NAME), collect };
-};
-
-const point = (metrics, name, match = () => true) =>
-  metrics.find((metric) => metric.descriptor.name === name)?.dataPoints.find((entry) => match(entry.attributes));
 
 const onceEvent = (emitter, name) => new Promise((resolve) => emitter.once(name, resolve));
 

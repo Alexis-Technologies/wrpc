@@ -13,36 +13,7 @@ const assert = require('node:assert');
 
 const { defineRouter, procedure } = require('../../index.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
-
-/** A structured writer: `debug` survives here, where a Console drops it. */
-const recorder = () => {
-  const entries = [];
-  const writer = {
-    level: 'debug',
-    child() {
-      return this;
-    },
-    log(entry) {
-      entries.push({ level: 'log', ...entry });
-    },
-    info(entry) {
-      entries.push({ level: 'info', ...entry });
-    },
-    debug(entry) {
-      entries.push({ level: 'debug', ...entry });
-    },
-    warn(entry) {
-      entries.push({ level: 'warn', ...entry });
-    },
-    error(entry) {
-      entries.push({ level: 'error', ...entry });
-    },
-  };
-  const find = (event) => entries.find((entry) => entry.event === event);
-  /** The lines an operator would be paged for. */
-  const loud = () => entries.filter((entry) => entry.level === 'warn' || entry.level === 'error');
-  return { entries, writer, find, loud };
-};
+const { recorder } = require('../helpers/recorder.js');
 
 const router = defineRouter({
   unit: {

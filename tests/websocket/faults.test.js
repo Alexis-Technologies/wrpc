@@ -12,23 +12,7 @@ const net = require('node:net');
 const crypto = require('node:crypto');
 
 const { Server, defineRouter, procedure } = require('../../index.js');
-
-const recorder = () => {
-  const entries = [];
-  const push = (entry) => entries.push(entry);
-  const writer = {
-    level: 'debug',
-    child() {
-      return this;
-    },
-    log: push,
-    info: push,
-    debug: push,
-    warn: push,
-    error: push,
-  };
-  return { entries, writer, find: (event) => entries.find((entry) => entry.event === event) };
-};
+const { recorder } = require('../helpers/recorder.js');
 
 const router = defineRouter({ unit: { ping: procedure({ access: 'public', handler: async () => 'pong' }) } });
 
