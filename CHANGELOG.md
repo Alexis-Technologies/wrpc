@@ -1250,7 +1250,12 @@ narrower promise — see
   URL.** From Node they are real request headers on the upgrade (the built-in
   `WebSocket` takes `{ protocols, headers }`); from a browser — where no API
   can set a handshake header — they are `wrpc.h.` / `wrpc.m.` subprotocol
-  carrier tokens. The new `carrier` option (`'auto'` | `'protocol'` |
+  carrier tokens (the budget is measured on that base64url text, a third
+  longer than the JSON — about 1.5 KB of JSON for both bags; a JWT belongs
+  in `bearerAuth`, outside it). What the client could not send it says
+  only through its `logger`, off by default: `meta.oversize`,
+  `declared.unsendable`, `declared.exposed`, `handshake.fallback`.
+  The new `carrier` option (`'auto'` | `'protocol'` |
   `'query'`) brings the query back for an intermediary that mangles
   `Sec-WebSocket-Protocol`; `protocols: []` implies it. What changes for an
   application: a **new client against an older server loses its ws labels**

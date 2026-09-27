@@ -146,6 +146,25 @@ want an alert for.
 | `mesh.dial` | debug | A mesh edge never formed |
 | `rtc.signal.overflow` | warn | A peer sent more signals than are held for it — candidates before its description (256), or anything while `accept()` still thinks (64); the rest are dropped, said once |
 
+### Client events
+
+The client writes through its own `logger` — **off by default**, so none of
+these appear until you pass one (see [below](#errors-are-observed-not-swallowed)).
+They are what a "connection that works but is missing something" looks like:
+
+| `event` | Level | Means |
+| ------- | ----- | ----- |
+| `meta.oversize` | warn | A declared bag (headers, meta, or the per-call aggregate under batching) did not fit `metaMaxBytes` on its carrier (`carrier`, `bytes`) and was **not sent** — the server would have dropped it whole |
+| `declared.unsendable` | warn | A declared header could not travel on this carrier at all (a value the carrier's grammar refuses) |
+| `declared.exposed` | warn | A credential (`authorization`) was put in the connect URL's query because `carrier: 'query'` (or WebTransport) left no other carrier — it will show in access logs |
+| `handshake.fallback` | warn | The Node WebSocket constructor refused the headers init bag (`reason` is the error's name, never the message: undici repeats a header value in it); the browser carriers were used instead |
+| `transport.fallback` | warn | A transport of the list could not connect; the next one was tried |
+| `authenticate.failed`, `refresh.failed`, `restore.failed` | warn | The `authenticate` hook, the `refresh` hook, or the re-`load()`/re-subscribe after a reconnect failed |
+| `reconnecting`, `reconnect.failed` | info/warn | A reconnect attempt (`attempt`, `delay`), and the one that gave up |
+| `heartbeat.timeout` | warn | No `pong` within the heartbeat window; the connection is terminated and reconnects |
+| `subscription.refresh` | warn | The credential `refresh` run for a subscription's retry failed (`id`, `err`): the subscription ends with the refusal the feed earned — the twin of `refresh.failed` on the call side |
+| `encryption.failed` | warn | The session handshake did not complete, or a frame did not open; the connection is closed — never a fallback to plaintext |
+
 ### Why some refusals are `debug`
 
 `call.capacity` and `batch.refused` are reachable by any peer, in a loop,

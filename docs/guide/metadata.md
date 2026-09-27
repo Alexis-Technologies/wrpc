@@ -128,8 +128,15 @@ label, not without a connection:
 - capped on the **encoded** length (`metaMaxBytes`, default 2048). The two
   subprotocol tokens (`headers` + `meta`) share **one** budget, headers
   first; the query is measured whole, so application query parameters share
-  it. The client applies the same cap and refuses an oversize bag with a
-  `meta.oversize` warning instead of sending what the server would drop.
+  it. Encoded means **after base64url**: a token is a third longer than the
+  JSON it carries, so the default holds about 1.5 KB of JSON for headers and
+  meta together — a large value (a JWT) belongs in [`bearerAuth`](./auth),
+  whose Bearer rides outside the budget. The client applies the same cap and
+  refuses an oversize bag with a `meta.oversize` warning instead of sending
+  what the server would drop — **visible only with a `logger`**, which is off
+  by default on the client: a bag that never arrives is a silent client until
+  you turn it on (`meta.oversize`, `declared.unsendable`, `declared.exposed`,
+  `handshake.fallback` are the lines to look for).
   Mind the host too: a handshake is an HTTP request, and uWebSockets.js
   allows **4096 bytes for all request headers** (`UWS_HTTP_MAX_HEADERS_SIZE`)
   where node allows 16 KB — a Bearer token rides outside the budget, so a
@@ -340,9 +347,10 @@ a handler; read `context.meta.data` when you want what the request as a
 whole was labelled with.
 
 If the aggregate would exceed `metaMaxBytes`, the client drops it with a
-`meta.oversize` warning and sends the connection bag alone. That refusal is
-deliberate: the server's own cap discards the *entire* bag, which would look
-like metadata that silently stopped arriving.
+`meta.oversize` warning — through its `logger`, off by default — and sends
+the connection bag alone. That refusal is deliberate: the server's own cap
+discards the *entire* bag, which would look like metadata that silently
+stopped arriving.
 
 Sanitizing is shared with the connection phase: a plain object or nothing,
 capped by `metaMaxBytes` on the serialized size, own `__proto__` dropped
