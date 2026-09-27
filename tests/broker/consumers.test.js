@@ -107,6 +107,40 @@ test('attachConsumers: a consumer procedure is unreachable by a call packet', as
   assert.deepStrictEqual(Object.keys(introspected.billing), ['charge']);
 });
 
+test("attachConsumers: without a logger of its own, the binding reports through the server's writer", async (t) => {
+  const { recorder } = require('../helpers/recorder.js');
+  const log = recorder();
+  const { broker, rpc } = boot(
+    t,
+    {
+      jobs: {
+        consumes: {
+          refused: procedure({
+            access: 'public',
+            handler: async () => {
+              throw coded('bad order', 422);
+            },
+          }),
+        },
+      },
+    },
+    { rpc: { logger: log.writer } },
+  );
+  const dead = await drain(t, broker, 'refused.dlq');
+  const consumers = await attachConsumers(rpc, broker, {});
+  t.after(() => consumers.stop());
+  await broker.queue.produce('refused', '{}');
+  await waitFor(() => dead.length === 1);
+  // A structured server log sees the dead letter as its own line, with the
+  // binding's bindings — not on the raw console, without event or queue.
+  await waitFor(() => log.find('broker.dead') !== undefined);
+  const line = log.find('broker.dead');
+  assert.strictEqual(line.level, 'warn');
+  assert.strictEqual(line.component, 'broker');
+  assert.strictEqual(line.queue, 'refused');
+  assert.strictEqual(typeof line.id, 'string');
+});
+
 test('attachConsumers: failures retry with backoff, then dead-letter with a reason', async (t) => {
   let calls = 0;
   const deadLetters = [];

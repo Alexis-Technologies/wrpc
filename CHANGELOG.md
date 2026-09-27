@@ -1320,6 +1320,14 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **Broker bindings log through the server's writer, and three events are
+  named by their family.** `attachConsumers` and `attachBrokerRpc` defaulted
+  their logger to the console, so a pino-configured server saw a dead
+  letter on the raw console without `event`, `queue` or `id`; they use
+  `rpc.log` now (`logger: false` still silences them). `feed.decode`,
+  `feed.refused` and `channel.error` are `broker.feed.decode`,
+  `broker.feed.refused` and `rtc.channel.error` — the prefix every other
+  line of their family carries — before any of them is released.
 - **README's Exports table is whole again, the size tables are current, and
   the headlines quote the budget.** Two Exports rows (`wrpcFastify`/
   `findUwsApp`, `createWrpc`) had been overwritten with size numbers; the

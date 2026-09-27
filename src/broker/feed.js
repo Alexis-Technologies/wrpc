@@ -140,7 +140,7 @@ const brokerFeed = (broker, topic, options = {}) => {
       const level = !loud ? 'debug' : error === undefined ? 'warn' : 'error';
       context?.log?.[level]({
         ...(error === undefined ? {} : { err: error }),
-        event: 'feed.refused',
+        event: 'broker.feed.refused',
         topic: name,
         id,
         reason,
@@ -190,7 +190,7 @@ const brokerFeed = (broker, topic, options = {}) => {
               value = decodeValue(entry.value);
             } catch (error) {
               // One undecodable entry must not end every subscriber's feed.
-              context?.log?.warn({ event: 'feed.decode', topic: name, id: entry.id, err: error });
+              context?.log?.warn({ event: 'broker.feed.decode', topic: name, id: entry.id, err: error });
               continue;
             }
             if (map !== null) {
@@ -220,7 +220,7 @@ const brokerFeed = (broker, topic, options = {}) => {
       // between two intervals still accounts for every refusal.
       for (const [reason, tally] of refusals) {
         if (tally.count > tally.logged) {
-          context?.log?.info({ event: 'feed.refused', topic: name, reason, count: tally.count, summary: true });
+          context?.log?.info({ event: 'broker.feed.refused', topic: name, reason, count: tally.count, summary: true });
         }
       }
     }

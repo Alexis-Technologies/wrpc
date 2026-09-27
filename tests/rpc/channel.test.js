@@ -307,8 +307,8 @@ test('attachChannel: a framing error from the client is logged and closes the ch
   const { rpc, pair, attached } = await boot(t, { logger, attach: { peer: 'bad' } });
   pair.a.send(new Uint8Array([0b11111111, 1]));
   await waitFor(() => !rpc.clients.has(attached), 'detached');
-  const warned = warnings.find((entry) => entry.event === 'channel.error');
-  assert.ok(warned, `expected a channel.error warning: ${JSON.stringify(warnings)}`);
+  const warned = warnings.find((entry) => entry.event === 'rtc.channel.error');
+  assert.ok(warned, `expected an rtc.channel.error warning: ${JSON.stringify(warnings)}`);
   assert.strictEqual(warned.peer, 'bad');
   assert.strictEqual(warned.err.name, 'FramingError');
   assert.strictEqual(pair.b.readyState, 'closed');
@@ -321,7 +321,7 @@ test('attachChannel: an empty continuation fragment is a framing error too', asy
   // KIND_BINARY without FIN and without a payload byte.
   pair.a.send(new Uint8Array([0b01]));
   await waitFor(() => !rpc.clients.has(attached), 'detached');
-  const warned = warnings.find((entry) => entry.event === 'channel.error');
+  const warned = warnings.find((entry) => entry.event === 'rtc.channel.error');
   assert.strictEqual(warned?.err.code, 'empty', `expected the empty-fragment refusal: ${JSON.stringify(warnings)}`);
   assert.strictEqual(pair.b.readyState, 'closed');
 });

@@ -147,7 +147,7 @@ want an alert for.
 | `broker.rpc.send`, `broker.rpc.reply` | warn | The broker refused to carry a frame to a session's inbox, or a reply to a stateless request |
 | `broker.rpc.capacity` | warn | Hellos refused at `maxSessions` since the last sweep (`refused`, `sessions`, `max`) — one line per sweep, not per hello |
 | `broker.refused` | warn/error | A sealed delivery a consumer could not open (`reason`: `unsealed`, `kid`, `open`, `format`); `kid` is retried, the rest dead-letter. `keys` — the key provider threw — is an error line with `err` |
-| `feed.refused` | warn/error/debug/info | A sealed entry a feed could not open: `warn` once per reason per ten seconds with the running `count` (`error` with `err` when the reason is `keys`), `debug` in between, an `info` summary when the feed ends |
+| `broker.feed.refused` | warn/error/debug/info | A sealed entry a feed could not open: `warn` once per reason per ten seconds with the running `count` (`error` with `err` when the reason is `keys`), `debug` in between, an `info` summary when the feed ends |
 | `broker.feed.resume` | warn/debug | A resume token was refused. `reason: 'signature'` means it was **tampered with** |
 | `broker.feed.gap` | info | A subscriber fell behind retention; the snapshot hook ran |
 | `wt.attach`, `wt.source` | error | A WebTransport session could not be attached (`verify` threw, the source died) |
@@ -156,6 +156,7 @@ want an alert for.
 | `wt.violation`, `wt.idle`, `wt.session.error` | warn | A peer's frame that could not be read (`code`; closed 1002), a peer silent past `idleTimeout` (terminated), the session's own failure reported by the host |
 | `wt.mux.refused`, `wt.mux.fallback` | warn / info | A side stream the peer opened for an id it never named, past the cap or unannounced (cancelled unread); the host granted no side stream, so every chunk of this session rides the control stream — once per session |
 | `wt.close` | debug | The session ended (`code`, the peer's `reason` clipped) — the line to grep for a code |
+| `rtc.channel.error` | warn | A framing error from the peer on a raw data channel attached with `attachChannel` (`peer`, `err`); the channel was closed |
 | `mesh.dial` | debug | A mesh edge never formed |
 | `signaling.undeliverable` | debug | A signal for a peer the relay no longer has (`to`, `room`, `type`) — a trickled candidate that crossed its `leave`, a routine race |
 | `rtc.signal.overflow` | warn | A peer sent more signals than are held for it — candidates before its description (256), or anything while `accept()` still thinks (64); the rest are dropped, said once |

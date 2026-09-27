@@ -119,10 +119,10 @@ test('events encryption: a feed opens what the publisher sealed, headers include
     { id: 'o-1', note: SECRET, tenant: 'acme' },
     { id: 'o-2', tenant: null },
   ]);
-  await waitFor(() => warnings.filter((w) => w.event === 'feed.refused').length === 3);
+  await waitFor(() => warnings.filter((w) => w.event === 'broker.feed.refused').length === 3);
   assert.deepStrictEqual(
     warnings
-      .filter((w) => w.event === 'feed.refused')
+      .filter((w) => w.event === 'broker.feed.refused')
       .map((w) => [w.topic, w.reason])
       .sort(),
     [
@@ -297,7 +297,7 @@ test('events encryption: a feed logs a burst of refusals once per reason, with t
   const subscription = client.api.orders.feed.subscribe({}, { onData: (value) => orders.push(value) });
   await waitFor(() => orders.length === 1);
   assert.deepStrictEqual(orders, [{ id: 'o-1' }]);
-  const refused = () => entries.filter((entry) => entry.event === 'feed.refused');
+  const refused = () => entries.filter((entry) => entry.event === 'broker.feed.refused');
   await waitFor(() => refused().length === 5);
   assert.deepStrictEqual(
     refused().map((entry) => [entry.level, entry.reason, entry.count]),

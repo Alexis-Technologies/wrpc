@@ -216,7 +216,10 @@ const attachConsumers = async (server, broker, table = {}, options = {}) => {
     );
   }
   const router = rpc.router;
-  const log = createLoggerWriter(logger ?? globalThis.console).child({ component: 'broker', broker: system });
+  // The server's writer, not the console: a pino-configured server used to
+  // see a dead letter on the raw console, without `event`, `queue` or `id`.
+  // `logger: false` still silences it.
+  const log = createLoggerWriter(logger ?? rpc.log).child({ component: 'broker', broker: system });
   const { maxCalls } = rpc.limits;
 
   // Resolve every binding BEFORE starting any: a typo in the table must

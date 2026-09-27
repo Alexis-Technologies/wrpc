@@ -139,7 +139,7 @@ presents, which used to ride as a plaintext broker header on every request,
 no longer rests in the topic. What stays readable is what the broker routes
 by (`wrpc-kind`, `wrpc-seq`, a partition `key`), and the first two are bound
 into the seal. A message that does not open is dropped (RPC), skipped (a
-feed — `feed.refused`, one warning per reason per ten seconds with the
+feed — `broker.feed.refused`, one warning per reason per ten seconds with the
 count) or dead-lettered with `400` (a consumer) — logged, never answered,
 and counted in `wrpc.broker.refused` by reason. One reason is transient: a
 message under a key id this service does not hold (`kid`) is what a

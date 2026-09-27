@@ -232,7 +232,10 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     throw new TypeError('attachBrokerRpc: maxSessions must be a non-negative integer (0 for no limit)');
   }
   const system = brokerName(broker) === 'custom' ? brokerName(direct) : brokerName(broker);
-  const log = createLoggerWriter(logger ?? globalThis.console).child({ component: 'broker.rpc', broker: system });
+  // The server's writer, not the console: a pino-configured server used to
+  // see this binding's lines on the raw console, without `event` or
+  // `session`. `logger: false` still silences it.
+  const log = createLoggerWriter(logger ?? rpc.log).child({ component: 'broker.rpc', broker: system });
   const inbox = direct.inbox();
   const sessions = new Map(); // session id -> { transport, client, expectSeq, lastSeen, peer, compression }
   // Hellos refused at the cap since the last sweep: one line per sweep for

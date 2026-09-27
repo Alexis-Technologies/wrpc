@@ -20,7 +20,7 @@ const { RtcPeerTransport } = require('./transport.js');
  * application's). `peer` is the client's source; `maxMessageSize` is what
  * the far side's channel accepts (the 16 KiB interop floor by default —
  * negotiateMessageSize(pc.sctp) for more). A framing error from the peer
- * is warned on the client's log as 'channel.error' and closes the channel.
+ * is warned on the client's log as 'rtc.channel.error' and closes the channel.
  */
 const attachChannel = (server, channel, options = {}) => {
   if (typeof server?.attach !== 'function') throw new TypeError('attachChannel: a server with attach() is required');
@@ -49,7 +49,7 @@ const attachChannel = (server, channel, options = {}) => {
     lowWaterMark,
     maxBackpressure,
     compression,
-    onError: (error) => client?.log.warn({ event: 'channel.error', peer: transport.source, err: error }),
+    onError: (error) => client?.log.warn({ event: 'rtc.channel.error', peer: transport.source, err: error }),
   });
   const observed = headers || data || remoteAddress ? buildMeta({ headers, data, remoteAddress }) : null;
   client = server.attach(transport, { meta: observed, encrypted: encrypted === true });

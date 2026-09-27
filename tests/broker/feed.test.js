@@ -141,7 +141,7 @@ test('brokerFeed: map filters and reshapes; decode, dynamic topics, undecodable 
   assert.deepStrictEqual(text, ['just text']);
   assert.deepStrictEqual(custom, [['a', 'b']]);
   assert.strictEqual(brokenErrors[0].code, 500);
-  await waitFor(() => warnings.some((entry) => entry.event === 'feed.decode'));
+  await waitFor(() => warnings.some((entry) => entry.event === 'broker.feed.decode'));
 });
 
 test('brokerFeed: unsubscribing releases the broker read', async (t) => {

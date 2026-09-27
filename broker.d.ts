@@ -241,7 +241,7 @@ export interface BrokerFeedOptions<Value = unknown, Mapped = Value> {
   maxIdLength?: number;
   /**
    * Opens what a publisher's `encryption` sealed; an entry that does not
-   * open is skipped and logged `feed.refused`.
+   * open is skipped and logged `broker.feed.refused`.
    *
    * The publisher, the feeds and the consumers of a topic take the same
    * option (`@alexify/wrpc/encryption`): the value AND its headers are
