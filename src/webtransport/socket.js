@@ -27,6 +27,7 @@
 // 'message' carries two arguments (data, isBinary), which wrpc's own
 // single-value Emitter cannot.
 const { EventEmitter } = require('node:events');
+const { clip } = require('../rpc/errors.js');
 const {
   StreamParser,
   frame,
@@ -98,6 +99,7 @@ class WtSocket extends EventEmitter {
   #lowWater;
   #maxBackpressure;
   #maxMessage;
+  #log;
   #idle = 0;
   #idleTimer = null;
   // Per-message compression (src/compression): the normalized option, and
@@ -132,11 +134,16 @@ class WtSocket extends EventEmitter {
       compression = null,
       maxHeldStreams,
       holdTimeout,
+      // The host's writer, already bound to the peer (attachSession): what
+      // a violation, an idle, a failed session and a close write to. Null
+      // for a socket used bare.
+      log = null,
     } = {},
   ) {
     super();
     this.#session = session;
     this.#stream = stream;
+    this.#log = log;
     this.remoteAddress = remoteAddress;
     this.#highWater = highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
     this.#lowWater = lowWaterMark ?? DEFAULT_LOW_WATER_MARK;
@@ -175,6 +182,7 @@ class WtSocket extends EventEmitter {
       // An inbound stream cancelled unread (streams.js): announced for the
       // host to log — a peer opening streams it never names is a signal.
       onRefused: (reason, id) => void this.emit('stream-refused', { reason, id }),
+      onFallback: () => void this.#log?.info({ event: 'wt.mux.fallback' }),
       // pause() stops the side streams too, and their bytes are liveness
       // as much as the control stream's — an upload used to keep flowing
       // around a pause, and a session busy with one used to idle out.
@@ -203,7 +211,7 @@ class WtSocket extends EventEmitter {
     session.closed.then(
       (info) => this.#down(info?.closeCode ?? 1006, info?.reason ?? ''),
       (error) => {
-        this.#error(error);
+        this.#fault('wt.session.error', error);
         this.#down(1006, '');
       },
     );
@@ -301,8 +309,15 @@ class WtSocket extends EventEmitter {
   // the 1002 a malformed frame gets.
   #violation(error) {
     if (this.#closed) return;
-    this.#error(error);
+    this.#fault('wt.violation', error, { code: typeof error?.code === 'string' ? error.code : null });
     this.close(1002, 'Protocol error');
+  }
+
+  // The mirror of Connection.#fault: one line, then the 'error' event a
+  // bound socket has a listener for.
+  #fault(event, error, extra = null) {
+    this.#log?.warn({ ...extra, err: error, event });
+    this.#error(error);
   }
 
   async #read() {
@@ -321,9 +336,9 @@ class WtSocket extends EventEmitter {
     } catch (error) {
       if (this.#closed) return;
       // A read error is the session's to report through `closed`; a
-      // FramingError is the peer's protocol violation — the 1002 of it.
-      this.#error(error);
-      this.close(1002, 'Protocol error');
+      // FramingError is the peer's protocol violation — the 1002 of it,
+      // and its line.
+      this.#violation(error);
       return;
     }
     if (this.#closed) return;
@@ -535,7 +550,7 @@ class WtSocket extends EventEmitter {
     clearTimeout(this.#idleTimer);
     this.#idleTimer = setTimeout(() => {
       this.#idleTimer = null;
-      this.#error(new Error(`No data for ${this.#idle} ms`));
+      this.#fault('wt.idle', new Error(`No data for ${this.#idle} ms`), { idle: this.#idle });
       this.terminate();
     }, this.#idle);
     this.#idleTimer.unref?.();
@@ -544,6 +559,9 @@ class WtSocket extends EventEmitter {
   #down(code, reason) {
     if (this.#closed) return;
     this.#closed = true;
+    // The peer's reason is its text: clipped, as a field, at debug — a
+    // routine end is not an alert, but a code an operator can grep for.
+    this.#log?.debug({ event: 'wt.close', code, reason: clip(reason) });
     clearTimeout(this.#idleTimer);
     this.#idleTimer = null;
     this.#mux.close();

@@ -126,6 +126,8 @@ export interface AttachSessionOptions extends SessionMeta, WtSocketOptions {
    * first stream — may take (default 10 s; closed 408 past it).
    */
   acceptTimeout?: number;
+  /** The structured logger the session reports through — a child bound to the peer; the server's by default, acceptSessions hands its own down. */
+  logger?: unknown;
   /** Aborting it ends an accept still in its handshake (closed 1001); what acceptSessions' stop() does. */
   signal?: AbortSignal;
   /** What `Client.transportKind` reports (default 'wt'). */

@@ -166,16 +166,31 @@ test('wt attach: attachSession refuses on verify and on a silent client, and val
   await client.ready;
   const session = await world.next();
   assert.strictEqual(isWtSession(session), true);
-  const refused = await attachSession(server, session, { ...fromFails(session), verify: () => false });
+  const { recorder } = require('../helpers/recorder.js');
+  const log = recorder();
+  const refused = await attachSession(server, session, {
+    ...fromFails(session),
+    remoteAddress: '203.0.113.9',
+    verify: () => false,
+    logger: log.writer,
+  });
   assert.strictEqual(refused, null);
   assert.deepStrictEqual(await client.closed, { closeCode: 403, reason: 'Forbidden' });
 
   const silent = new world.WebTransport(url);
   await silent.ready;
   const late = await world.next();
-  const timedOut = await attachSession(server.rpc, late, { acceptTimeout: 20 });
+  const timedOut = await attachSession(server.rpc, late, { acceptTimeout: 20, logger: log.writer });
   assert.strictEqual(timedOut, null);
   assert.deepStrictEqual(await silent.closed, { closeCode: 408, reason: 'No control stream' });
+  // Both refusals are lines, on a child bound to the peer where one is known.
+  assert.deepStrictEqual(
+    log.all('wt.refused').map((e) => [e.level, e.component, e.peer, e.status, e.reason]),
+    [
+      ['warn', 'wt', '203.0.113.9', 403, 'verify'],
+      ['warn', 'wt', undefined, 408, 'timeout'],
+    ],
+  );
 
   // ONE deadline for the whole path: a session whose `ready` never settles,
   // or a verify that never answers, is a 408 too — it used to hold

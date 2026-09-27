@@ -129,14 +129,22 @@ const attachSession = async (server, session, options = {}) => {
     maxHeldStreams,
     holdTimeout,
     signal = null,
+    logger = null,
   } = options;
   if (!Number.isInteger(acceptTimeout) || acceptTimeout <= 0) {
     throw new TypeError('attachSession: acceptTimeout must be a positive integer (ms)');
   }
   // Checked before the handshake, not after it by the socket.
   normalizeBackpressure(maxBackpressure, 'attachSession');
+  // One child per session, the peer bound: what a refusal here, and the
+  // socket's own lines after attach, write to. The server's writer unless
+  // the caller (acceptSessions, an application) hands one down.
+  const log = createLoggerWriter(logger ?? rpc.log).child(
+    typeof remoteAddress === 'string' && remoteAddress ? { component: 'wt', peer: remoteAddress } : { component: 'wt' },
+  );
   const { race, clear } = interruptible(acceptTimeout, signal);
   const refuse = (why) => {
+    log.warn({ event: 'wt.refused', status: refusals[why].closeCode, reason: why });
     closeQuietly(session, refusals[why]);
     return null;
   };
@@ -146,6 +154,7 @@ const attachSession = async (server, session, options = {}) => {
       const { value, why } = await race(verify({ headers, url, remoteAddress, session }));
       if (why) return refuse(why);
       if (value === false) {
+        log.warn({ event: 'wt.refused', status: 403, reason: 'verify' });
         closeQuietly(session, { closeCode: 403, reason: 'Forbidden' });
         return null;
       }
@@ -170,12 +179,12 @@ const attachSession = async (server, session, options = {}) => {
     compression,
     maxHeldStreams,
     holdTimeout,
+    log,
   });
   // A stream the peer opened for an id it never named, past the cap or
-  // without announcing streams at all: cancelled unread, and a line here —
-  // the socket itself has no logger.
+  // without announcing streams at all: cancelled unread, and a line here.
   socket.on('stream-refused', ({ reason, id }) => {
-    rpc.log.warn({ event: 'wt.mux.refused', reason, id, remoteAddress });
+    log.warn({ event: 'wt.mux.refused', reason, id });
   });
   const client = rpc.attachSocket(socket, { headers, url, remoteAddress, kind });
   // Stopped while the handshake was finishing: the client is not kept.
@@ -260,7 +269,12 @@ const acceptSessions = (server, sessions, options = {}) => {
   const attachOne = async (session) => {
     try {
       const observed = await meta(session);
-      const client = await attachSession(rpc, session, { ...rest, ...observed, signal: controller.signal });
+      const client = await attachSession(rpc, session, {
+        logger: log,
+        ...rest,
+        ...observed,
+        signal: controller.signal,
+      });
       if (client && onClient) onClient(client, session);
     } catch (error) {
       closeQuietly(session, { closeCode: 500, reason: 'Internal error' });

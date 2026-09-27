@@ -1320,6 +1320,15 @@ bytes it sends. In that order:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **The server half of WebTransport logs a session's death.** After
+  `attachSession` nothing was written: a refused handshake, a frame that
+  would not read, a silent peer, a session the host failed — none of them a
+  line. Every session has a `wt` child logger bound to its peer now
+  (`attachSession`'s `logger`, the server's by default, what
+  `acceptSessions` hands down): `wt.refused` (403/408), `wt.violation`
+  (`code`), `wt.idle`, `wt.session.error`, `wt.mux.refused`, a
+  once-per-session `wt.mux.fallback`, and a debug `wt.close` with the code
+  and the peer's reason clipped.
 - **A broker RPC session's end is logged at the level its reason
   deserves, and a frame for a lost session leaves a debug line.** Every
   `broker.rpc.session.end` was debug, so a broker losing frames (a sequence

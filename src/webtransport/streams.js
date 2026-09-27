@@ -78,6 +78,7 @@ class StreamMux {
   #writeControl;
   #sendControl;
   #onRefused;
+  #onFallback;
   #gate;
   #onActivity;
   #maxHeld;
@@ -128,6 +129,9 @@ class StreamMux {
       onRefused = null,
       gate = null,
       onActivity = null,
+      // Called once, when the first side stream could not be had and every
+      // chunk from then on rides the control stream — the host's to log.
+      onFallback = null,
       maxHeldStreams = DEFAULT_MAX_HELD_STREAMS,
       holdTimeout = DEFAULT_HOLD_TIMEOUT,
       openTimeout = DEFAULT_OPEN_TIMEOUT,
@@ -150,6 +154,7 @@ class StreamMux {
     this.#writeControl = writeControl;
     this.#sendControl = sendControl;
     this.#onRefused = onRefused;
+    this.#onFallback = onFallback;
     this.#gate = gate;
     this.#onActivity = onActivity;
     this.#maxHeld = maxHeldStreams;
@@ -258,6 +263,7 @@ class StreamMux {
   // was held for it is replayed there in order, its end packet last.
   #fallback(id, entry) {
     if (this.#closed || this.#out.get(id) !== entry) return;
+    if (this.#enabled && this.#onFallback !== null) this.#onFallback();
     this.#enabled = false;
     this.#out.delete(id);
     const pending = entry.pending;

@@ -120,12 +120,16 @@ test('wt socket: the engine-port shape — text and binary both ways, boolean se
 });
 
 test('wt socket: a peer close, a terminate and a peer framing violation', async (t) => {
-  const first = await pair(t);
+  const { recorder } = require('../helpers/recorder.js');
+  const log = recorder();
+  const first = await pair(t, { log: log.writer });
   const closes = [];
   first.socket.on('close', (code, reason) => closes.push([code, reason]));
   first.client.close({ closeCode: 4000, reason: 'bye' });
   await waitFor(() => closes.length === 1, 'close');
   assert.deepStrictEqual(closes, [[4000, 'bye']]);
+  // A routine end is a debug line with the code and the peer's reason.
+  assert.deepStrictEqual(log.all('wt.close'), [{ level: 'debug', event: 'wt.close', code: 4000, reason: 'bye' }]);
 
   const second = await pair(t);
   const events = [];
@@ -134,7 +138,8 @@ test('wt socket: a peer close, a terminate and a peer framing violation', async 
   assert.deepStrictEqual(events, [1006]);
   assert.ok(await second.client.closed);
 
-  const third = await pair(t);
+  const violations = recorder();
+  const third = await pair(t, { log: violations.writer });
   const errors = [];
   const ends = [];
   third.socket.on('error', (error) => errors.push(error));
@@ -142,6 +147,8 @@ test('wt socket: a peer close, a terminate and a peer framing violation', async 
   await third.writer.write(frame(5, new Uint8Array(1)));
   await waitFor(() => ends.length === 1, 'close');
   assert.strictEqual(errors[0].name, 'FramingError');
+  const line = violations.find('wt.violation');
+  assert.deepStrictEqual([line.level, line.code, line.err.name], ['warn', errors[0].code, 'FramingError']);
   assert.deepStrictEqual(ends, [[1002, 'Protocol error']]);
   assert.deepStrictEqual(await third.client.closed, { closeCode: 1002, reason: 'Protocol error' });
 

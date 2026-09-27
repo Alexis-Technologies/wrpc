@@ -150,7 +150,12 @@ want an alert for.
 | `feed.refused` | warn/error/debug/info | A sealed entry a feed could not open: `warn` once per reason per ten seconds with the running `count` (`error` with `err` when the reason is `keys`), `debug` in between, an `info` summary when the feed ends |
 | `broker.feed.resume` | warn/debug | A resume token was refused. `reason: 'signature'` means it was **tampered with** |
 | `broker.feed.gap` | info | A subscriber fell behind retention; the snapshot hook ran |
-| `wt.attach`, `wt.source` | error | A WebTransport session could not be attached |
+| `wt.attach`, `wt.source` | error | A WebTransport session could not be attached (`verify` threw, the source died) |
+| `wt.refused` | warn | A session refused before attach: `status` 403 (`verify` said no) or 408 (no control stream, or `ready`/`verify` not settled, within `acceptTimeout`) |
+| `wt.accept.saturated` | warn | `maxPending` sessions were still in their handshake; the next was refused 503 — said once per episode |
+| `wt.violation`, `wt.idle`, `wt.session.error` | warn | A peer's frame that could not be read (`code`; closed 1002), a peer silent past `idleTimeout` (terminated), the session's own failure reported by the host |
+| `wt.mux.refused`, `wt.mux.fallback` | warn / info | A side stream the peer opened for an id it never named, past the cap or unannounced (cancelled unread); the host granted no side stream, so every chunk of this session rides the control stream — once per session |
+| `wt.close` | debug | The session ended (`code`, the peer's `reason` clipped) — the line to grep for a code |
 | `mesh.dial` | debug | A mesh edge never formed |
 | `signaling.undeliverable` | debug | A signal for a peer the relay no longer has (`to`, `room`, `type`) — a trickled candidate that crossed its `leave`, a routine race |
 | `rtc.signal.overflow` | warn | A peer sent more signals than are held for it — candidates before its description (256), or anything while `accept()` still thinks (64); the rest are dropped, said once |
