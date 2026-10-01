@@ -147,6 +147,11 @@ expectAssignable<BrokerRpcOptions>({ service: 'x', compression: true, maxMessage
 expectAssignable<BrokerRpcOptions>({ service: 'x', compression: { threshold: 512 } });
 expectError<BrokerRpcOptions>({ service: 'x', compression: 'lz4' });
 declare const brokerTransport: ClientBrokerTransport;
+// write() takes the per-frame options the runtime honours.
+expectType<boolean | void>(brokerTransport.write('packet'));
+expectType<boolean | void>(brokerTransport.write(new Uint8Array(4), { compress: false }));
+expectType<boolean | void>(brokerTransport.write('packet', null));
+expectError(brokerTransport.write('packet', { compress: 'no' }));
 expectType<{ readonly encode: string; readonly decode: string } | null>(brokerTransport.compression);
 expectAssignable<BrokerRpcOptions>({ service: 'x', compression: { codec: ['zstd', 'deflate-raw'] } });
 

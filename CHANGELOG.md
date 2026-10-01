@@ -1369,7 +1369,12 @@ bytes it sends. In that order:
   delivery whose handler threw. The delivery object itself stays per
   adapter — how a message is settled is where the brokers really differ.
   No behaviour change: the four contract suites and the live brokers run
-  the same before and after; about 220 lines fewer.
+  the same before and after; about 220 lines fewer. The RPC binding's two
+  ends likewise read and build a session frame through one `frameBody` and
+  one `sessionFrame` in `src/broker/rpc/frames.js`, where each had its own
+  (`bench/broker.js`, the rpc session rows, level before and after). And a
+  type caught up with its runtime: `ClientBrokerTransport.write(data,
+  options?)` takes the `{ compress: false }` it always honoured.
 - **WebRTC: `PeerLink` has a file of its own, and `WrpcPeer`'s internal
   methods are private (internal).** `src/webrtc/peer.js` held three state
   machines; `PeerLink` — the link's life, the redial and knock cycle — is

@@ -24,7 +24,6 @@ const { toBytes, fingerprint } = require('../ids.js');
 const { rpcOf } = require('../host.js');
 const {
   HEADER_KIND,
-  HEADER_SEQ,
   HEADER_INBOX,
   HEADER_REASON,
   HEADER_ENC,
@@ -34,6 +33,8 @@ const {
   peerHeaders,
   seqOf,
   packetBody,
+  frameBody,
+  sessionFrame,
   sealFrame,
   openFrame,
 } = require('./frames.js');
@@ -42,24 +43,10 @@ const { HEADER_LENGTH } = require('../../encryption/envelope.js');
 const { DEFAULT_MAX_SKEW } = require('../../encryption/httpServer.js');
 const {
   normalizeSyncCompression,
-  codecById,
   headerNegotiator,
   maxMessageOf,
   encodeIfSmaller,
-  decodeOrNull,
 } = require('../../compression/sync.js');
-
-// A frame's body as sent, inflated when its `wrpc-enc` header names the
-// codec it was compressed with — any codec of `local`, the list this end
-// holds, passed only once the session agreed on something — or null:
-// marked but nothing agreed, a codec not held, a body that does not
-// inflate under the cap.
-const frameBody = (message, local, maxMessage, failed = null) => {
-  const encoding = message.headers?.[HEADER_ENC];
-  if (encoding === undefined || encoding === null || encoding === '') return message.body;
-  const entry = local === null || typeof encoding !== 'string' ? null : codecById(local, encoding);
-  return entry === null ? null : decodeOrNull(entry, toBytes(message.body), maxMessage, failed);
-};
 
 const DEFAULT_IDLE_TIMEOUT = 90_000; // 3x the client's 30 s heartbeat
 const DEFAULT_HIGH_WATER_MARK = 1024;
@@ -123,19 +110,18 @@ class BrokerSessionTransport extends ServerTransport {
 
   #send(data, options) {
     if (this.#closed) return false;
-    const binary = typeof data !== 'string';
-    const headers = { [HEADER_KIND]: binary ? KIND.CHUNK : KIND.PACKET, [HEADER_SEQ]: String(++this.#seq) };
-    let body = binary ? toBytes(data) : data;
-    const active = this.#compression;
-    if (active !== null && (options === null || options.compress !== false)) {
-      const encoded = encodeIfSmaller(active.encode, body, this.#failed);
-      if (encoded !== null) {
-        body = encoded;
-        headers[HEADER_ENC] = active.encode.id;
-      }
-    }
+    const seq = ++this.#seq;
     this.#unconfirmed++;
-    const frame = sealFrame(this.#sealing, this.#peer, this.#session, headers, body);
+    const frame = sessionFrame(
+      this.#sealing,
+      this.#peer,
+      this.#session,
+      seq,
+      data,
+      this.#compression,
+      options,
+      this.#failed,
+    );
     this.#direct.send(this.#peer, frame.body, { headers: frame.headers, correlationId: this.#session }).then(
       () => this.#confirmed(),
       (error) => {

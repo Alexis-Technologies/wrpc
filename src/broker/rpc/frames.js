@@ -16,7 +16,8 @@
 // capability is at-most-once, and a gap is a lost connection, not a
 // silently missing packet.
 
-const { toText } = require('../ids.js');
+const { toText, toBytes } = require('../ids.js');
+const { codecById, encodeIfSmaller, decodeOrNull } = require('../../compression/sync.js');
 
 const HEADER_KIND = 'wrpc-kind';
 const HEADER_SEQ = 'wrpc-seq';
@@ -122,6 +123,41 @@ const openFrame = (sealing, address, message) => {
 // neither side trusts the broker to have preserved the JS type.
 const packetBody = (body) => toText(body);
 
+// A frame's body as sent, inflated when its `wrpc-enc` header names the
+// codec it was compressed with — any codec of `local`, the list this end
+// holds, passed only once the session agreed on something — or null:
+// marked but nothing agreed, a codec not held, a body that does not
+// inflate under the cap. `failed` hears of a codec that threw. ONE copy for
+// both ends: the server's and the client's used to be two, and a rule
+// changed in one of them is a session that ends as `undecodable frame`.
+const frameBody = (message, local, maxMessage, failed = null) => {
+  const encoding = message.headers?.[HEADER_ENC];
+  if (encoding === undefined || encoding === null || encoding === '') return message.body;
+  const entry = local === null || typeof encoding !== 'string' ? null : codecById(local, encoding);
+  return entry === null ? null : decodeOrNull(entry, toBytes(message.body), maxMessage, failed);
+};
+
+// A session frame as either end sends it: `packet` for text and `chunk` for
+// bytes, numbered `seq`, the body compressed with what the session agreed
+// on (`active`, or null) when that made it smaller — the codec then named
+// in `wrpc-enc` — and sealed. `options.compress === false` sends this one
+// plain. Per frame: nothing is allocated here that the two call sites did
+// not allocate themselves (bench/broker.js, the rpc session rows, level
+// before and after).
+const sessionFrame = (sealing, address, session, seq, data, active, options, failed = null) => {
+  const binary = typeof data !== 'string';
+  const headers = { [HEADER_KIND]: binary ? KIND.CHUNK : KIND.PACKET, [HEADER_SEQ]: String(seq) };
+  let body = binary ? toBytes(data) : data;
+  if (active !== null && (options === null || options.compress !== false)) {
+    const encoded = encodeIfSmaller(active.encode, body, failed);
+    if (encoded !== null) {
+      body = encoded;
+      headers[HEADER_ENC] = active.encode.id;
+    }
+  }
+  return sealFrame(sealing, address, session, headers, body);
+};
+
 module.exports = {
   HEADER_KIND,
   HEADER_SEQ,
@@ -134,6 +170,8 @@ module.exports = {
   peerHeaders,
   seqOf,
   packetBody,
+  frameBody,
+  sessionFrame,
   sealFrame,
   openFrame,
 };

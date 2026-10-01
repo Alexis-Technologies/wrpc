@@ -22,7 +22,6 @@ const { capabilityOf } = require('../port.js');
 const { toBytes } = require('../ids.js');
 const {
   HEADER_KIND,
-  HEADER_SEQ,
   HEADER_INBOX,
   HEADER_ENC,
   KIND,
@@ -31,27 +30,13 @@ const {
   peerHeaders,
   seqOf,
   packetBody,
+  frameBody,
+  sessionFrame,
   sealFrame,
   openFrame,
 } = require('./frames.js');
 const { createBrokerSealing } = require('../sealing.js');
-const {
-  normalizeSyncCompression,
-  codecById,
-  headerNegotiator,
-  maxMessageOf,
-  encodeIfSmaller,
-  decodeOrNull,
-} = require('../../compression/sync.js');
-
-// A frame's body, inflated when marked, with whichever codec of `local`
-// the frame names — see the server's frameBody.
-const frameBody = (message, local, maxMessage) => {
-  const encoding = message.headers?.[HEADER_ENC];
-  if (encoding === undefined || encoding === null || encoding === '') return message.body;
-  const entry = local === null || typeof encoding !== 'string' ? null : codecById(local, encoding);
-  return entry === null ? null : decodeOrNull(entry, toBytes(message.body), maxMessage);
-};
+const { normalizeSyncCompression, headerNegotiator, maxMessageOf } = require('../../compression/sync.js');
 
 const DEFAULT_REQUEST_TIMEOUT = 30_000;
 const DEFAULT_HIGH_WATER_MARK = 1024;
@@ -273,20 +258,10 @@ class ClientBrokerTransport extends ClientTransport {
   write(data, options = null) {
     if (!this.active) throw new Error('Not connected');
     if (this.mode === 'stateless') return this.#request(data);
-    const binary = typeof data !== 'string';
-    const headers = { [HEADER_KIND]: binary ? KIND.CHUNK : KIND.PACKET, [HEADER_SEQ]: String(++this.#seq) };
-    let body = binary ? toBytes(data) : data;
-    const active = this.#active;
-    if (active !== null && (options === null || options.compress !== false)) {
-      const encoded = encodeIfSmaller(active.encode, body);
-      if (encoded !== null) {
-        body = encoded;
-        headers[HEADER_ENC] = active.encode.id;
-      }
-    }
+    const seq = ++this.#seq;
     this.#unconfirmed++;
     const generation = this.#generation;
-    const frame = sealFrame(this.#sealing, this.#remote, this.#session, headers, body);
+    const frame = sessionFrame(this.#sealing, this.#remote, this.#session, seq, data, this.#active, options);
     this.#direct
       .send(this.#remote, frame.body, {
         headers: frame.headers,

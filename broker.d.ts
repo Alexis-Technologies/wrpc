@@ -546,7 +546,12 @@ export declare class ClientBrokerTransport {
   }): Promise<void>;
   /** The codecs in effect — null until the two lists share one. */
   readonly compression: import('./client.js').NegotiatedCompression | null;
-  write(data: string | Uint8Array): boolean | void;
+  /**
+   * `false` is backpressure: `highWaterMark` frames are unconfirmed by the
+   * broker. `compress: false` sends this frame plain on a session that
+   * agreed on a codec.
+   */
+  write(data: string | Uint8Array, options?: { compress?: boolean } | null): boolean | void;
   close(): void;
   terminate(): void;
   on(event: string, listener: (...args: Array<any>) => void): unknown;
