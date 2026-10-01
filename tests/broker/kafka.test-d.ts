@@ -19,5 +19,8 @@ expectAssignable<Broker>(broker);
 expectType<string>(kafka.encodeVector({ 0: 12, 1: 3 }));
 expectType<Record<number, number> | null>(kafka.decodeVector('k1:0=12'));
 expectAssignable<KafkaBrokerOptions>({ kafka: client, flavor: 'confluent', backplane: { partitions: 1 } });
+// Catch-up pages read at once.
+expectAssignable<KafkaBrokerOptions>({ kafka: client, maxCatchUp: 8 });
+expectError<KafkaBrokerOptions>({ kafka: client, maxCatchUp: 'four' });
 expectError(kafka.createKafkaBroker({}));
 expectError(kafka.createKafkaBroker({ kafka: client, flavor: 'librdkafka' }));

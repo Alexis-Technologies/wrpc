@@ -34,6 +34,7 @@ supports both and CI exercises both.
 | `replicationFactor` | `-1` | Replication factor of the topics the adapter creates; `-1` is the broker's `default.replication.factor` (Kafka 2.4+) |
 | `backplane.topic` / `.partitions` | `<prefix>.backplane` / `1` | The backplane topic |
 | `maxRetryDelay` | `60000` | Cap on how long a retry's delay waits in-process |
+| `maxCatchUp` | `4` | Catch-up pages of a feed read at once — each is a consumer group of its own; the rest wait their turn |
 
 ## What maps to what
 
@@ -117,6 +118,16 @@ page** of catch-up, which on a broker with the default
 set it to `0` on a broker that serves feeds, or size the page. A queue's
 group is durable and is never deleted by wrpc: its committed offsets are the
 queue's progress.
+
+A resume **storm** — a deploy, and every client of the instance that went
+resumes at once — is bounded two ways. Readers asking for the same page
+(the same topic, the same resume token, the same page size: a room that
+lost one instance) share **one** read. And no more than `maxCatchUp` pages
+(4) are read at the same time; the rest wait, first come first served,
+so the coordinator sees four group joins at a time rather than a thousand.
+The price is latency under the storm — a queue instead of a stampede —
+which is the trade to make: raise `maxCatchUp` on a cluster that takes
+more.
 
 ## Queues
 

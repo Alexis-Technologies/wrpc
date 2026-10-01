@@ -1703,6 +1703,16 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **Kafka feeds: a resume storm is queued, and identical pages are one
+  read.** A catch-up page is a consumer group of its own (the KafkaJS shape
+  has no manual assignment) — a connection, a JoinGroup, seconds of a
+  coordinator's time — and after a deploy every resuming client opened one
+  at once: hundreds of groups joining together. `createKafkaBroker` takes
+  `maxCatchUp` (4): that many pages are read at a time, the rest wait first
+  come first served, and a page that fails hands its turn on. Pages asked
+  for with the same topic, resume token and size — a room that lost one
+  instance — share a single read. Latency under a storm is the trade; the
+  option is validated (a positive integer).
 - **Docs: what a retry delay means on RabbitMQ, and how to drain a
   dead-letter queue.** The AMQP adapter republishes every retry to one
   `<queue>.retry` queue with a per-message expiration, and RabbitMQ expires

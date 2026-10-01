@@ -47,6 +47,14 @@ export interface KafkaBrokerOptions {
   backplane?: { topic?: string; partitions?: number };
   /** Cap on how long a retry's delay may wait in-process. Default 60 000. */
   maxRetryDelay?: number;
+  /**
+   * Catch-up pages of the log read at once (default 4). Each page is a
+   * consumer group of its own — a connection and a JoinGroup — so a resume
+   * storm queues here instead of opening hundreds together; identical
+   * pages (same topic, cursor and limit) are one read, shared. A positive
+   * integer.
+   */
+  maxCatchUp?: number;
 }
 
 /** The returned broker has `backplane`, `log` and `queue` — never `direct`. */

@@ -47,6 +47,7 @@ const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_PREFETCH = 16;
 const DEFAULT_PARTITIONS = 3;
 const DEFAULT_MAX_RETRY_DELAY = 60_000;
+const DEFAULT_MAX_CATCH_UP = 4;
 // A settlement the broker refused (a leader election, a producer that
 // cannot reach it) is tried again on this schedule before the consumer
 // gives the message back; and a retry's in-process delay is cut into
@@ -112,6 +113,11 @@ const createKafkaBroker = (options = {}) => {
     replicationFactor = -1,
     backplane: backplaneOptions = {},
     maxRetryDelay = DEFAULT_MAX_RETRY_DELAY,
+    // Catch-up pages read at once. Each is a consumer group of its own (the
+    // KafkaJS shape has no manual assignment): a connection, a JoinGroup, a
+    // rebalance of nobody — seconds of a coordinator's time. A resume storm
+    // after a deploy used to open hundreds of them together.
+    maxCatchUp = DEFAULT_MAX_CATCH_UP,
     generateId = null,
   } = options;
   // Strict: a new option, so a bad generator is refused at construction
@@ -139,6 +145,9 @@ const createKafkaBroker = (options = {}) => {
     throw new TypeError(
       'createKafkaBroker: options.replicationFactor must be a positive integer, or -1 for the broker default',
     );
+  }
+  if (!Number.isInteger(maxCatchUp) || maxCatchUp <= 0) {
+    throw new TypeError('createKafkaBroker: options.maxCatchUp must be a positive integer');
   }
   if (!Number.isInteger(maxRetryDelay) || maxRetryDelay < 0) {
     throw new TypeError('createKafkaBroker: options.maxRetryDelay must be a non-negative integer of milliseconds');
@@ -462,88 +471,124 @@ const createKafkaBroker = (options = {}) => {
       }
       return any ? cursor : null;
     },
-    range: async (topic, { after, limit }) => {
-      const name = await ensureTopic(logTopic(topic), logPartitions);
-      const { low, high } = await watermarks(topic);
-      // Per partition: where the page starts (never below the low
-      // watermark — what retention took cannot be waited for) and the
-      // offset it must reach to be complete.
-      const wanted = {};
-      const target = {};
-      let pending = 0;
-      for (const [key, tip] of Object.entries(high)) {
-        const partition = Number(key);
-        const asked = after === null || after === undefined ? 0 : (after[partition] ?? -1) + 1;
-        const from = Math.max(asked, low[partition] ?? 0);
-        if (from < tip) {
-          wanted[partition] = from;
-          target[partition] = tip - 1;
-          pending += tip - from;
-        }
+    // Two bounds on what a resume storm asks of the cluster. Identical pages
+    // — the same topic, cursor and limit, which is what a room of clients
+    // that all lost the same instance ask for — are ONE read, shared (the
+    // tail only reads a page, so nobody needs a copy). And no more than
+    // `maxCatchUp` pages are read at once; the rest wait their turn, first
+    // come first served.
+    range: (topic, { after, limit }) => {
+      const key = `${topic}\0${after === null || after === undefined ? '' : encodeVector(after)}\0${limit}`;
+      let page = pages.get(key);
+      if (page === undefined) {
+        page = catchUp(() => readPage(topic, after, limit)).finally(() => pages.delete(key));
+        pages.set(key, page);
       }
-      if (pending === 0) return { entries: [], done: true };
-      const entries = [];
-      const consumer = await openConsumer(readerGroup(), { fromBeginning: true }, { ephemeral: true });
-      let timer = null;
-      // Closed whatever happens — a subscribe that fails, a run that
-      // rejects, the page that completes: a page's consumer and group are
-      // done with the page, and used to outlive a failure.
-      try {
-        await consumer.subscribe(subscribeArgs(flavor, [name], true));
-        const joined = joinWatcher(flavor, consumer);
-        await new Promise((resolve, reject) => {
-          let done = false;
-          const finish = () => {
-            if (done) return;
-            done = true;
-            resolve();
-          };
-          consumer
-            .run(
-              runArgs(flavor, {
-                concurrency: 1,
-                eachMessage: async ({ partition, message }) => {
-                  const offset = Number(message.offset);
-                  const from = wanted[partition];
-                  if (from === undefined || offset < from) return;
-                  entries.push({
-                    partition,
-                    offset,
-                    value: message.value === null ? '' : message.value.toString(),
-                    headers: headersOf(message),
-                  });
-                  if (entries.length >= limit || entries.length >= pending) finish();
-                },
-              }),
-            )
-            .then(async () => {
-              // The page's window opens once the group is joined and the
-              // seek landed: a window that opened before the join — a slow
-              // rebalance eats seconds — closed on a page that had not
-              // started, and the short page was taken for the tip.
-              await joined;
-              await seekAll(consumer, name, wanted);
-              timer = setTimeout(finish, 10_000);
-              if (isFunction(timer.unref)) timer.unref();
-            })
-            .catch(reject);
-        });
-      } finally {
-        clearTimeout(timer);
-        await closeConsumer(consumer);
-      }
-      entries.sort((a, b) => (a.partition === b.partition ? a.offset - b.offset : a.partition - b.partition));
-      const page = entries.slice(0, limit);
-      // Complete when every wanted partition reached its tip WITHIN the
-      // page — what was fetched beyond `limit` is not handed over.
-      const reached = {};
-      for (const entry of page) reached[entry.partition] = entry.offset;
-      const done = Object.keys(target).every((partition) => (reached[partition] ?? -1) >= target[partition]);
-      return { entries: page, done };
+      return page;
     },
     covered: (cursor, entry) => entry.offset <= (cursor?.[entry.partition] ?? -1),
     advance: (cursor, entry) => ({ ...(cursor ?? {}), [entry.partition]: entry.offset }),
   });
+
+  // Pages in flight, by what they read; and the turnstile in front of them.
+  const pages = new Map();
+  let catching = 0;
+  const waiting = [];
+  const catchUp = async (read) => {
+    if (catching < maxCatchUp) catching++;
+    else await new Promise((resolve) => waiting.push(resolve));
+    try {
+      // Woken by close(): nothing is opened on a broker that is gone.
+      if (closed) throw codedError('Broker is closed', 503);
+      return await read();
+    } finally {
+      // The slot goes straight to the next in line, whatever this page did
+      // — a page that failed must not strand the ones behind it.
+      const next = waiting.shift();
+      if (next === undefined) catching--;
+      else next();
+    }
+  };
+
+  const readPage = async (topic, after, limit) => {
+    const name = await ensureTopic(logTopic(topic), logPartitions);
+    const { low, high } = await watermarks(topic);
+    // Per partition: where the page starts (never below the low
+    // watermark — what retention took cannot be waited for) and the
+    // offset it must reach to be complete.
+    const wanted = {};
+    const target = {};
+    let pending = 0;
+    for (const [key, tip] of Object.entries(high)) {
+      const partition = Number(key);
+      const asked = after === null || after === undefined ? 0 : (after[partition] ?? -1) + 1;
+      const from = Math.max(asked, low[partition] ?? 0);
+      if (from < tip) {
+        wanted[partition] = from;
+        target[partition] = tip - 1;
+        pending += tip - from;
+      }
+    }
+    if (pending === 0) return { entries: [], done: true };
+    const entries = [];
+    const consumer = await openConsumer(readerGroup(), { fromBeginning: true }, { ephemeral: true });
+    let timer = null;
+    // Closed whatever happens — a subscribe that fails, a run that
+    // rejects, the page that completes: a page's consumer and group are
+    // done with the page, and used to outlive a failure.
+    try {
+      await consumer.subscribe(subscribeArgs(flavor, [name], true));
+      const joined = joinWatcher(flavor, consumer);
+      await new Promise((resolve, reject) => {
+        let done = false;
+        const finish = () => {
+          if (done) return;
+          done = true;
+          resolve();
+        };
+        consumer
+          .run(
+            runArgs(flavor, {
+              concurrency: 1,
+              eachMessage: async ({ partition, message }) => {
+                const offset = Number(message.offset);
+                const from = wanted[partition];
+                if (from === undefined || offset < from) return;
+                entries.push({
+                  partition,
+                  offset,
+                  value: message.value === null ? '' : message.value.toString(),
+                  headers: headersOf(message),
+                });
+                if (entries.length >= limit || entries.length >= pending) finish();
+              },
+            }),
+          )
+          .then(async () => {
+            // The page's window opens once the group is joined and the
+            // seek landed: a window that opened before the join — a slow
+            // rebalance eats seconds — closed on a page that had not
+            // started, and the short page was taken for the tip.
+            await joined;
+            await seekAll(consumer, name, wanted);
+            timer = setTimeout(finish, 10_000);
+            if (isFunction(timer.unref)) timer.unref();
+          })
+          .catch(reject);
+      });
+    } finally {
+      clearTimeout(timer);
+      await closeConsumer(consumer);
+    }
+    entries.sort((a, b) => (a.partition === b.partition ? a.offset - b.offset : a.partition - b.partition));
+    const page = entries.slice(0, limit);
+    // Complete when every wanted partition reached its tip WITHIN the
+    // page — what was fetched beyond `limit` is not handed over.
+    const reached = {};
+    for (const entry of page) reached[entry.partition] = entry.offset;
+    const done = Object.keys(target).every((partition) => (reached[partition] ?? -1) >= target[partition]);
+    return { entries: page, done };
+  };
 
   const parseId = (text) => (decodeVector(text) === null ? null : text);
 
@@ -825,6 +870,8 @@ const createKafkaBroker = (options = {}) => {
     if (closed) return;
     closed = true;
     tails.close();
+    // Pages waiting for their turn are let through, to fail as closed.
+    for (const next of waiting.splice(0)) next();
     handlers.clear();
     ensured.clear();
     for (const consumer of Array.from(consumers)) await closeConsumer(consumer);

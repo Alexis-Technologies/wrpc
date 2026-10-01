@@ -175,6 +175,111 @@ test('kafka broker: a feed resumes exactly, across partitions', async (t) => {
   assert.match(rest[1].id, /^k1:0=\d+,1=\d+$/);
 });
 
+// A catch-up page is a consumer group of its own — a connection, a JoinGroup,
+// a rebalance of nobody — and a resume storm after a deploy used to open one
+// per reader, all at once.
+test('kafka broker: catch-up pages are read maxCatchUp at a time, and identical pages are one read', async (t) => {
+  const kafka = createFakeKafka({ flavor: 'kafkajs' });
+  const broker = createKafkaBroker({ kafka, logger: quiet, partitions: 1, maxCatchUp: 3 });
+  t.after(() => broker.close());
+  const topic = unique('storm');
+  const ids = [];
+  for (let n = 0; n < 40; n++) ids.push(await broker.log.append(topic, String(n)));
+  // Reader consumers connected at once (a tail's live reader is one too),
+  // counted where they connect and disconnect.
+  let live = 0;
+  let peak = 0;
+  const opened = [];
+  const consumer = kafka.consumer.bind(kafka);
+  kafka.consumer = (config) => {
+    const made = consumer(config);
+    if (!String(config.groupId).startsWith('wrpc-read-')) return made;
+    opened.push(config.groupId);
+    const connect = made.connect.bind(made);
+    const disconnect = made.disconnect.bind(made);
+    made.connect = async () => {
+      peak = Math.max(peak, ++live);
+      return connect();
+    };
+    made.disconnect = async () => {
+      live--;
+      return disconnect();
+    };
+    return made;
+  };
+  // Thirty readers, each resuming from a different entry: thirty different pages.
+  const controllers = [];
+  const resumed = await Promise.all(
+    ids.slice(0, 30).map((after) => {
+      const controller = new AbortController();
+      controllers.push(controller);
+      return collect(broker.log.read(topic, { after, signal: controller.signal }), 2, { timeout: 20_000 });
+    }),
+  );
+  for (let n = 0; n < 30; n++) {
+    assert.deepStrictEqual(
+      resumed[n].map((entry) => entry.value),
+      [String(n + 1), String(n + 2)],
+      `reader ${n} resumed exactly`,
+    );
+  }
+  assert.ok(peak <= 3 + 1, `at most maxCatchUp pages at once, beside the one live tail — saw ${peak} reader groups`);
+  assert.ok(peak >= 2, 'and they did run side by side');
+  for (const controller of controllers) controller.abort();
+
+  // The same cursor from twenty readers — a room that lost one instance —
+  // is ONE page: one consumer opened for it, not twenty.
+  opened.length = 0;
+  const again = await Promise.all(
+    Array.from({ length: 20 }, () => {
+      const controller = new AbortController();
+      controllers.push(controller);
+      return collect(broker.log.read(topic, { after: ids[9], signal: controller.signal }), 3, { timeout: 20_000 });
+    }),
+  );
+  for (const entries of again) {
+    assert.deepStrictEqual(
+      entries.map((entry) => entry.value),
+      ['10', '11', '12'],
+    );
+  }
+  assert.ok(opened.length <= 2, `one page (and at most a live tail), not twenty — opened ${opened.length}`);
+  for (const controller of controllers) controller.abort();
+});
+
+test('kafka broker: a catch-up page that fails gives its turn to the next; maxCatchUp is validated', async (t) => {
+  const kafka = createFakeKafka({ flavor: 'kafkajs' });
+  const broker = createKafkaBroker({ kafka, logger: quiet, partitions: 1, maxCatchUp: 1 });
+  t.after(() => broker.close());
+  const topic = unique('turns');
+  const ids = [];
+  for (let n = 0; n < 6; n++) ids.push(await broker.log.append(topic, String(n)));
+  // The topic's live tail first — every resume below joins it — so that the
+  // failure injected next lands on a PAGE.
+  const tail = new AbortController();
+  t.after(() => tail.abort());
+  await broker.log.read(topic, { signal: tail.signal }).ready;
+  // One page at a time, and the first one's subscribe fails.
+  kafka.server.failures.subscribe = new Error('coordinator not available');
+  const reads = [0, 1, 2].map((n) => {
+    const controller = new AbortController();
+    t.after(() => controller.abort());
+    return collect(broker.log.read(topic, { after: ids[n], signal: controller.signal }), 1, { timeout: 20_000 }).then(
+      (entries) => entries[0].value,
+      (error) => error.message,
+    );
+  });
+  const outcomes = await Promise.all(reads);
+  assert.strictEqual(outcomes.filter((value) => /coordinator not available/.test(value)).length, 1, 'one page failed');
+  assert.strictEqual(outcomes.filter((value) => /^\d$/.test(value)).length, 2, 'the two behind it were still read');
+  for (const maxCatchUp of [0, -1, 1.5, '4']) {
+    assert.throws(
+      () => createKafkaBroker({ kafka, logger: quiet, maxCatchUp }),
+      /options\.maxCatchUp must be a positive integer/,
+    );
+  }
+});
+
 test('kafka broker: the backplane loses what was published before the group joined', async (t) => {
   const { kafka, broker } = open('kafkajs', { partitions: 1 });
   t.after(() => broker.close());
