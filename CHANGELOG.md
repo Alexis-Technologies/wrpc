@@ -1360,6 +1360,18 @@ bytes it sends. In that order:
    last 1.x node is gone. Nothing to do without `secret`.
 
 ### Changed
+- **WebRTC: `PeerLink` has a file of its own, and `WrpcPeer`'s internal
+  methods are private (internal).** `src/webrtc/peer.js` held three state
+  machines; `PeerLink` — the link's life, the redial and knock cycle — is
+  `src/webrtc/peerLink.js` now, re-exported from where it was. It and
+  `Mesh` used to be handed the whole peer and call public methods marked
+  `@internal` — `signal`, `stamp`, `verifyDescription`, `released`, `held`
+  — which were never in the types and could be called all the same, to
+  desynchronize it. They are `#private`, and what a link or a mesh needs
+  is a narrow port the peer builds over them. `escalate` stays public. One
+  `deferred()` (`src/webrtc/ids.js`) instead of two. No change of
+  behaviour: the WebRTC suites pass with one test rewritten, the one that
+  called `peer.signal()` directly.
 - **WebRTC fan-out: the message is prepared once for every link.**
   `Mesh.broadcast` — `PeerHost.to(room).emit` — serialized its payload once
   and then did everything else per link: an emit to 32 peers was 32 UTF-8

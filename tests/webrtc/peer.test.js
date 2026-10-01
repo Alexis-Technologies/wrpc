@@ -602,18 +602,8 @@ test('peer: signaler send failures and link errors reach the peer error listener
   const { peer } = world(t);
   const a = peer('a');
   peer('b');
+  peer('c');
   const ab = await within(a.connect('b'), 'open');
-  const original = a.signaler.send;
-  a.signaler.send = () => {
-    throw new Error('signaling down');
-  };
-  t.after(() => void (a.signaler.send = original));
-  a.signal('b', { type: 'close' }, null);
-  assert.strictEqual(a.errors.at(-1).message, 'signaling down');
-  a.signaler.send = () => Promise.reject(new Error('async down'));
-  a.signal('b', { type: 'close' }, null);
-  await timers.setTimeout(5);
-  assert.strictEqual(a.errors.at(-1).message, 'async down');
   // A link error goes to the peer's listener; a link with its own error
   // listener keeps errors to itself.
   ab.link.emit('error', new Error('link first'));
@@ -626,6 +616,22 @@ test('peer: signaler send failures and link errors reach the peer error listener
   await timers.setTimeout(5);
   assert.deepStrictEqual(mine, ['link says']);
   assert.strictEqual(a.errors.length, count);
+  // A signaler that fails while the peer signals — the goodbye of a close,
+  // the offer of a dial — is the peer's error, whether it throws or rejects;
+  // never the caller's, and never an unhandled rejection.
+  const original = a.signaler.send;
+  t.after(() => void (a.signaler.send = original));
+  a.signaler.send = () => {
+    throw new Error('signaling down');
+  };
+  ab.close();
+  assert.strictEqual(a.errors.at(-1).message, 'signaling down');
+  a.signaler.send = () => Promise.reject(new Error('async down'));
+  a.connect('c').catch(() => {});
+  await within(
+    waitFor(() => a.errors.at(-1).message === 'async down', 'the rejected send is escalated'),
+    'escalation',
+  );
 });
 
 test('peer: a signaler that cannot identify fails start() and connect(), and start() retries', async (t) => {

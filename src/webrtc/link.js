@@ -32,6 +32,7 @@ const { createLoggerWriter } = require('../logging.js');
 const { isRtcAdapter, isRtcPeerConnection } = require('./port.js');
 const { negotiateMessageSize, MIN_MESSAGE_SIZE } = require('./framing.js');
 const { sdpFingerprint } = require('./assertions.js');
+const { deferred } = require('./ids.js');
 
 // Candidates held until the remote description arrives; past it they are
 // dropped, said once per dial — a peer used to be able to fill memory
@@ -382,7 +383,7 @@ class RtcLink extends Emitter {
     // A fresh pc has seen no remote yet: the first description on it sets
     // the certificate, whatever the pc before it had seen.
     this.#remoteFingerprint = null;
-    this.#opened = this.#deferred();
+    this.#opened = deferred();
     clientChannel.binaryType = 'arraybuffer';
     hostChannel.binaryType = 'arraybuffer';
     this.#clientChannel = clientChannel;
@@ -720,19 +721,6 @@ class RtcLink extends Emitter {
     this.#log.error({ event: 'rtc.link.error', origin, err: error });
     if (this.listenerCount('error') === 0) return;
     void this.emit('error', error).catch(() => {});
-  }
-
-  #deferred() {
-    let resolve = null;
-    let reject = null;
-    const promise = new Promise((_resolve, _reject) => {
-      resolve = _resolve;
-      reject = _reject;
-    });
-    // A dial that fails with nobody waiting must not be an unhandled
-    // rejection; waitOpen() callers attach their own handlers.
-    promise.catch(() => {});
-    return { promise, resolve, reject };
   }
 }
 
