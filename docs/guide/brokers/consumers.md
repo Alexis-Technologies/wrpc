@@ -70,7 +70,7 @@ missing target, a subscription target or a `prefetch` above the server's
 | `queue` | the `consumes` key (or table key) | The broker-side queue or topic |
 | `group` | the queue | The consumer group, where the broker needs one |
 | `prefetch` | `16` | Messages held at once, processed concurrently; at most `maxCalls` |
-| `retry` | 5 attempts, 1 s → 60 s full-jitter backoff | `{ attempts, backoff: { base, max, factor, jitter }, retryOn }`, or `false` |
+| `retry` | 5 attempts, 1 s → 60 s full-jitter backoff | `{ attempts, backoff: { base, max, factor, jitter }, retryOn }`, or `false`. On RabbitMQ the delays are a lower bound — see [its sharp edges](./amqp#sharp-edges) |
 | `deadLetter` | `'<queue>.dlq'` | Where exhausted and refused messages go; `false` drops them |
 | `identity` | `{ trust: 'none' }` | Who the procedure runs as — see below |
 | `meta` | `[]` | Message headers copied into `ctx.callMeta` |
@@ -120,6 +120,33 @@ A consumer can see a message twice: a crash between the handler's side effect
 and the ack, a redelivery after `release`, a broker failover. Make handlers
 idempotent — `ctx.callMeta.messageId` is a stable key to deduplicate on.
 :::
+
+## Draining a dead-letter queue
+
+A dead letter is the message as it was, plus two headers: `x-wrpc-dead-reason`
+(why — `"<code> <message>"`) and `x-wrpc-attempt` (how many attempts it had).
+Nothing consumes the dead-letter queue by itself; what you do with it is one
+of three things.
+
+- **Know it happened.** `onDeadLetter(info)` runs before the message is
+  moved and has the whole `error`; the binding logs `broker.dead` (`queue`,
+  `id`, `code`, `attempt`) and counts the delivery in
+  `wrpc.broker.deliveries` with `wrpc.broker.outcome: dead`. Alert on either — an empty dead-letter queue
+  nobody watches is indistinguishable from a full one.
+- **Look at it.** A binding on the dead-letter queue is an ordinary
+  consumer: `'orders.dlq': { target: 'ops.v1/review', retry: false,
+  deadLetter: false }` hands each one to a procedure that files it. Give it
+  `deadLetter: false` (or another queue) — its default would be
+  `orders.dlq.dlq`.
+- **Send it round again** once the cause is fixed. Do it by **publishing a
+  new message** — from that review procedure, through
+  [`createPublisher`](#publishing) — and the attempts start from one. Do
+  *not* move the stored message back as it is (a shovel, `rabbitmqadmin`,
+  `XADD` of the same fields): it still carries `x-wrpc-attempt`, the adapter
+  reads the attempt from that header, and the first failure sends it
+  straight back to the dead-letter queue. A tool that must move messages
+  verbatim has to drop `x-wrpc-attempt`, `x-wrpc-redelivered` and
+  `x-wrpc-dead-reason` on the way.
 
 ## Dead letters under encryption
 

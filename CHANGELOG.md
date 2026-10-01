@@ -1703,6 +1703,19 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **Docs: what a retry delay means on RabbitMQ, and how to drain a
+  dead-letter queue.** The AMQP adapter republishes every retry to one
+  `<queue>.retry` queue with a per-message expiration, and RabbitMQ expires
+  only the head of a queue — so under the *default* policy (exponential,
+  full jitter) a retry due in 300 ms can wait behind one due in 8 s. The
+  guide advised a "uniform" schedule without saying the default was not
+  one; it now says the delays are a lower bound there, gives the policy
+  that makes them exact (`backoff: { base, max: base, factor: 1, jitter:
+  false }`), and that the retry queue is classic — durable, not replicated.
+  The consumers guide gained "Draining a dead-letter queue": the two
+  headers a dead letter carries, where to alert, and why a message moved
+  back verbatim goes straight to the dead-letter queue again (it still
+  carries `x-wrpc-attempt`) — re-drive by publishing a new one.
 - **A mesh makes a lost edge again.** `Mesh` linked a member when it
   joined and never looked back: once a link gave up — its redial budget
   spent, a goodbye to the link that was not a leave of the room, an

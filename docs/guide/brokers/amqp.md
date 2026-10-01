@@ -89,9 +89,27 @@ against a real 4.x server:
 - **One group per address.** Members of a group share one queue; two
   different groups on one address would compete rather than each receive.
   The RPC binding uses one group per service, which is the supported shape.
-- **Mixed retry delays share one TTL queue.** A message with a long delay at
-  the head blocks shorter ones behind it (RabbitMQ expires from the head).
-  Keep the backoff schedule uniform, or give slow retries their own queue.
+- **Retry delays share one TTL queue, and RabbitMQ expires only its head.**
+  Every `retry()` republishes to `<queue>.retry` with a per-message
+  `expiration`, and a message behind one with a longer delay waits for that
+  one to expire first. The **default** policy is exactly that mix — an
+  exponential backoff with full jitter, 1 s → 60 s — so on RabbitMQ a retry
+  due in 300 ms can sit behind one due in 8 s (the largest delay five
+  attempts produce), and behind one of up to `max` with more attempts. The
+  delays are a lower bound here, not a schedule. Where the timing matters,
+  make them equal, so that nothing can be behind anything later than
+  itself:
+
+  ```js
+  await attachConsumers(server, broker, {
+    orders: { target: 'orders.v1/process', retry: { backoff: { base: 5000, max: 5000, factor: 1, jitter: false } } },
+  });
+  ```
+
+  The retry queue is a **classic** queue: durable, but not replicated — a
+  retry waiting there is lost with the node that holds it, where the work
+  queue and the dead-letter queue, both quorum, survive. The other adapters
+  delay a retry per message and have neither edge.
 
 ## Running the tests
 
