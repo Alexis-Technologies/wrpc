@@ -1394,6 +1394,18 @@ bytes it sends. In that order:
   through, `WtSocket` takes `onCodecError`. A WebRTC data channel stays
   silent on purpose (per-frame, and in a browser bundle); nothing is added
   per message — the counter is touched on the failure path alone.
+- **WebTransport: an unreliable datagram the session has not kept up with
+  is dropped, not queued.** `WtSocket.sendUnreliable` wrote to the
+  session's datagram sink without counting what it had not taken yet. On
+  the two hosts wrpc runs against that sink is synchronous and nothing
+  accumulates; on a W3C-shaped host whose sink holds its promise under
+  congestion, a room emitting positions `{ unreliable: true }` would have
+  queued stale ones without bound — the opposite of the option's promise.
+  Past 64 datagrams in flight a further one is dropped and still answered
+  `true` (false would re-send it on the control stream, behind the same
+  congestion), `wt.datagram.dropped` is logged once per session and the
+  total rides the session's `wt.close` line; `droppedDatagrams` reads it.
+  The protocol reference says a sender SHOULD drop rather than queue.
 - **WebTransport: `close()` delivers what was sent before it.** A session
   close resets every stream, and both ends closed the session at once: the
   last callback after `drain()`, the event sent before a kick and a

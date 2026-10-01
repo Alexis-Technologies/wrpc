@@ -1084,6 +1084,10 @@ bytes 1…        the packet
 - A receiver ignores a datagram it cannot read (a reserved KIND, invalid
   UTF-8, an empty one) — a lost datagram is the norm, and an unreadable
   one is not worth a hangup.
+- A sender SHOULD drop, not queue, a datagram its session is not ready
+  for: a datagram that waits is a stale one. A dropped datagram is
+  reported to the application as sent — it is not retried on the control
+  stream, where it would wait behind the same congestion.
 
 ## Broker binding <Badge type="info" text="since 2.0" /> {#broker-binding}
 

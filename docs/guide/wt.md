@@ -160,6 +160,14 @@ cluster the flag crosses the backplane, so an instance delivering a remote
 room's event does the same. The wire is documented
 [here](../reference/protocol#webtransport-datagrams).
 
+A server never queues them: when a session has not taken the datagrams
+already handed to it (64 of them — a congested path, on a host whose
+datagram sink waits), a further one is **dropped**, and the send still
+answers true. That is the contract of the option — the next position
+supersedes this one — and the alternative, falling back to the control
+stream, would park it behind the very congestion that caused the drop.
+`wt.datagram.dropped` says so once per session.
+
 ## Authentication without cookies
 
 A WebTransport `CONNECT` request is sent with credentials mode `omit`: **no

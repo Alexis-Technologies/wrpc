@@ -159,6 +159,7 @@ want an alert for.
 | `wt.accept.saturated` | warn | `maxPending` sessions were still in their handshake; the next was refused 503 — said once per episode |
 | `wt.violation`, `wt.idle`, `wt.session.error` | warn | A peer's frame that could not be read (`code`; closed 1002), a peer silent past `idleTimeout` (terminated), the session's own failure reported by the host |
 | `wt.mux.refused`, `wt.mux.fallback` | warn / info | A side stream the peer opened for an id it never named, past the cap or unannounced (cancelled unread); the host granted no side stream, so every chunk of this session rides the control stream — once per session |
+| `wt.datagram.dropped` | warn | The session had not taken the 64 datagrams before this one, so it was dropped rather than queued — **once** per session; the total is `dropped` on that session's `wt.close` line |
 | `wt.close` | debug | The session ended (`code`, the peer's `reason` clipped) — the line to grep for a code |
 | `rtc.channel.error` | warn | A framing error from the peer on a raw data channel attached with `attachChannel` (`peer`, `err`); the channel was closed |
 | `mesh.dial` | debug | A mesh edge never formed |

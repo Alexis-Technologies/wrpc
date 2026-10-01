@@ -64,6 +64,12 @@ const DEFAULT_MAX_BACKPRESSURE = 64 * 1024 * 1024;
 // peer's control stream is given to be followed by its session close.
 const DEFAULT_CLOSE_TIMEOUT = 1000;
 const CLOSE_GRACE = 200;
+// Datagrams handed to the session and not yet taken by it. On the hosts
+// wrpc is run against the sink is synchronous and this never passes one;
+// the cap is for a host whose sink holds its promise — a W3C-shaped one
+// under congestion — where an unbounded queue of positions nobody wants
+// any more is the opposite of what a datagram is for.
+const MAX_DATAGRAMS_IN_FLIGHT = 64;
 
 const normalizeBackpressure = (value, label) => {
   if (value === undefined) return DEFAULT_MAX_BACKPRESSURE;
@@ -91,6 +97,8 @@ class WtSocket extends EventEmitter {
   #stream;
   #writer;
   #datagrams = null;
+  #datagramsInFlight = 0;
+  #datagramsDropped = 0;
   #mux;
   #parser;
   #queued = 0;
@@ -418,8 +426,26 @@ class WtSocket extends EventEmitter {
     if (this.#closed || !this.#datagrams || typeof data !== 'string') return false;
     const bytes = datagramText(data);
     if (bytes.length > this.maxDatagramSize) return false;
-    this.#datagrams.write(bytes).catch(() => {});
+    // The sink has not taken the ones before it: this one is DROPPED, not
+    // queued behind them — and answered true. False would have the caller
+    // send it reliably on the control stream, which is head-of-line
+    // blocking exactly when the link is congested, for a value the next
+    // datagram supersedes anyway. (Not `desiredSize`: on a synchronous sink
+    // it reads 0 after the first write of a tick, and the second datagram
+    // of a healthy session would be dropped.)
+    if (this.#datagramsInFlight >= MAX_DATAGRAMS_IN_FLIGHT) {
+      if (this.#datagramsDropped++ === 0) this.#log?.warn({ event: 'wt.datagram.dropped' });
+      return true;
+    }
+    this.#datagramsInFlight++;
+    const settled = () => void this.#datagramsInFlight--;
+    this.#datagrams.write(bytes).then(settled, settled);
     return true;
+  }
+
+  /** Datagrams dropped because the session had not taken the ones before them. */
+  get droppedDatagrams() {
+    return this.#datagramsDropped;
   }
 
   /**
@@ -608,7 +634,8 @@ class WtSocket extends EventEmitter {
     this.#closed = true;
     // The peer's reason is its text: clipped, as a field, at debug — a
     // routine end is not an alert, but a code an operator can grep for.
-    this.#log?.debug({ event: 'wt.close', code, reason: clip(reason) });
+    const dropped = this.#datagramsDropped;
+    this.#log?.debug({ event: 'wt.close', code, reason: clip(reason), ...(dropped > 0 ? { dropped } : null) });
     clearTimeout(this.#idleTimer);
     this.#idleTimer = null;
     this.#mux.close();

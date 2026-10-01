@@ -350,6 +350,45 @@ const sideStream = async ({ client, writer }, id, size) => {
   return uni;
 };
 
+test('wt socket: a datagram the session has not kept up with is dropped, not queued — and answered true', async (t) => {
+  const { recorder } = require('../helpers/recorder.js');
+  const log = recorder();
+  const { world, client, socket } = await pair(t, { log: log.writer });
+  const got = [];
+  const reader = client.datagrams.readable.getReader();
+  void (async () => {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      got.push(Number(Buffer.from(value.subarray(1)).toString()));
+    }
+  })();
+  // A healthy session: three in one tick all go — a sink is asynchronous
+  // even when it is fast, and that alone must not cost the second one.
+  for (let n = 0; n < 3; n++) assert.strictEqual(socket.sendUnreliable(String(n)), true);
+  await waitFor(() => got.length === 3, 'three datagrams');
+  assert.strictEqual(socket.droppedDatagrams, 0);
+  // A sink that holds: positions pile up at the sender. The first 64 wait
+  // for it, the rest are gone — and every one is answered true, because
+  // false would send it reliably, behind the very queue that is stuck.
+  const release = world.hold();
+  for (let n = 100; n < 1100; n++) assert.strictEqual(socket.sendUnreliable(String(n)), true);
+  assert.strictEqual(socket.droppedDatagrams, 936);
+  release();
+  await waitFor(() => got.length === 67, 'the held datagrams');
+  await timers.setTimeout(20);
+  assert.strictEqual(got.length, 67, 'nothing past the cap was queued');
+  assert.deepStrictEqual(got.slice(3, 6), [100, 101, 102]);
+  // Said once for the session, not per datagram; the count goes on the close line.
+  assert.strictEqual(log.all('wt.datagram.dropped').length, 1);
+  assert.strictEqual(log.find('wt.datagram.dropped').level, 'warn');
+  // And it flows again once the sink caught up.
+  assert.strictEqual(socket.sendUnreliable('7'), true);
+  await waitFor(() => got.at(-1) === 7, 'a datagram after the congestion');
+  socket.close();
+  assert.strictEqual(log.find('wt.close').dropped, 936);
+});
+
 test('wt socket: pause() stops the side streams too; resume() takes them up; a close under pause lets the reads go', async (t) => {
   const end = await pair(t);
   const chunks = [];

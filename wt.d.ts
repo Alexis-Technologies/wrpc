@@ -163,8 +163,14 @@ export declare class WtSocket {
   readonly remoteAddress: string;
   readonly protocol: string;
   send(data: string | Uint8Array | ArrayBuffer): boolean;
-  /** A packet as one datagram; false when the session has none, the packet does not fit, or the socket is closed. */
+  /**
+   * A packet as one datagram; false when the session has none, the packet
+   * does not fit, or the socket is closed. True — and dropped — when the
+   * session has not taken the datagrams before it: never queued.
+   */
   sendUnreliable(data: string): boolean;
+  /** Datagrams dropped that way so far. */
+  readonly droppedDatagrams: number;
   /** The largest datagram the session carries; 0 when it carries none. */
   readonly maxDatagramSize: number;
   pause(): void;
