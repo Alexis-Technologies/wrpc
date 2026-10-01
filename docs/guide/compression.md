@@ -270,7 +270,7 @@ and `contextTakeover` is the tool instead.
 ## The dictionary in a browser: `@alexify/wrpc/deflate` {#deflate}
 
 A DEFLATE codec in plain JavaScript, on its own subpath so a page that
-does not inject it never loads a byte of it (3.8 KB min+gzip when it does):
+does not inject it never loads a byte of it (4.4 KB min+gzip when it does):
 
 ```js
 import { createDeflateCodec } from '@alexify/wrpc/deflate';
@@ -297,15 +297,21 @@ deliberately simple: LZ77 against the dictionary, written as one
 **fixed-Huffman** block, because on the messages this exists for a dynamic
 tree costs more than it saves. `bench/deflate-js.js`:
 
-| Message | own encoder, dictionary | zlib, dictionary | `CompressionStream` |
+| Message | the codec, dictionary | zlib, dictionary | `CompressionStream` |
 | --- | ---: | ---: | ---: |
-| 108 B event | **51 B**, 100K/sec | 51 B, 136K/sec | 97 B, 24K/sec |
-| 2 KB callback | 263 B, 43K/sec | 204 B, 72K/sec | 250 B, 19K/sec |
-| 28 KB callback | 2645 B, 4.5K/sec | 1824 B, 11.6K/sec | 1892 B, 8K/sec |
+| 108 B event | **51 B**, 700K/sec | 51 B, 128K/sec | 97 B, 22K/sec |
+| 2 KB callback | 263 B, 68K/sec | 204 B, 68K/sec | 250 B, 17K/sec |
+| 28 KB callback | 2645 B, 5.3K/sec | 1824 B, 11.5K/sec | 1892 B, 7.4K/sec |
 
 On the small message fixed codes produce *the same bytes* as zlib's dynamic
-ones at a similar rate — and inflating it back runs at a million a second,
-faster than zlib's own one-shot API. Past a couple of kilobytes fixed codes
+ones, five times faster than zlib's one-shot API — and inflating it back
+runs at a million a second. A codec keeps its window and the dictionary's
+hash chains between messages, so a message costs what the message costs:
+the same 2 KB callback is 13 µs against a 4 KB dictionary and against a
+32 KiB one (the one-shot `deflateRaw`, which hashes the dictionary on every
+call, takes 32 and 116). That state is about 0.2 MB plus five bytes per
+dictionary byte, built on the first message — make **one codec per page or
+process**, not one per connection. Past a couple of kilobytes fixed codes
 fall 30–45% behind, so the codec is a hybrid: from `nativeAbove` (4 KiB)
 up, a message goes to the platform's `CompressionStream` — dynamic
 Huffman, no dictionary, which a large payload does not need — and the

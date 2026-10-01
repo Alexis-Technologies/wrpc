@@ -33,7 +33,7 @@ const dictionaryBytes = (value) => {
     throw new TypeError('createDeflateCodec: dictionary must be bytes or a string');
   }
 };
-const { deflateRaw } = require('./deflate.js');
+const { deflateRaw, createDeflater } = require('./deflate.js');
 const { dictionaryId, DICTIONARY_ID_PREFIX } = require('../compression/ids.js');
 
 const NATIVE_ID = 'deflate-raw';
@@ -99,14 +99,13 @@ const createDeflateCodec = ({
     throw new TypeError('createDeflateCodec: level must be an integer from 1 to 9');
   }
   const useNative = (native ?? inBrowser()) && typeof CompressionStream === 'function';
+  const deflate = createDeflater(dict, level);
   return {
     id: dict === null ? NATIVE_ID : DICTIONARY_ID_PREFIX + dictionaryId(dict),
     threshold: threshold ?? (dict === null ? 1024 : 64),
     dictionary: dict,
-    encode: (bytes) => {
-      if (useNative && bytes.length >= nativeAbove) return nativeEncode(bytes);
-      return deflateRaw(bytes, { dictionary: dict, level });
-    },
+    // The dictionary's hash chains are this codec's, built once (deflate.js).
+    encode: (bytes) => (useNative && bytes.length >= nativeAbove ? nativeEncode(bytes) : deflate(bytes)),
     decode: (bytes, maxOutput) => inflateRaw(bytes, { dictionary: dict, maxOutput }),
   };
 };

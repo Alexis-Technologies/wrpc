@@ -1360,6 +1360,23 @@ bytes it sends. In that order:
    last 1.x node is gone. Nothing to do without `secret`.
 
 ### Changed
+- **`@alexify/wrpc/deflate`: a codec prepares its dictionary once.** The
+  pure-JS encoder allocated its window and 128 KB of hash heads on every
+  call and hashed the whole dictionary again each time, so a 108 B event
+  cost 11 µs — most of it the fill — and a 2 KB callback 32 µs against a
+  4 KB dictionary and 116 µs against a 32 KiB one: the codec that exists
+  for small frequent messages on a browser's main thread paid for the
+  dictionary per message. `createDeflateCodec` now keeps the window, the
+  dictionary's chains and a scratch region, built on its first message; a
+  call copies the message in, runs the same pass, and the next call first
+  puts back the hash slots the last one wrote. Same bytes — a thousand
+  messages through one codec are each compared with a fresh `deflateRaw`,
+  at three levels, with and without a dictionary. `bench/deflate-js.js`,
+  the new codec rows: the event 10.9 → 1.4 µs, the callback 32 → 13 and
+  116 → 13 µs; a message over 8 KiB takes the one-shot path as before.
+  The public `deflateRaw` is unchanged. One codec holds about 0.2 MB plus
+  five bytes per dictionary byte: one per page or process, not per
+  connection. The entry is 4.4 KB (budget 5).
 - **A compression codec that fails is said, and counted.** A message is
   never lost to compression — a codec that throws sends it plain, a frame
   that does not inflate is refused and answered — which is exactly why a

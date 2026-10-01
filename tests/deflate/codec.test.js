@@ -225,6 +225,70 @@ test('fuzz: 400 random and repetitive payloads round trip through every pair', (
   }
 });
 
+// A codec keeps its window, the dictionary's hash chains and a scratch
+// region between messages (createDeflater): what one message leaves behind
+// must be invisible to the next. The proof is byte equality with the
+// one-shot deflateRaw, which builds all of it from nothing every time.
+test('createDeflateCodec: a thousand messages through one codec are each the bytes a fresh deflateRaw produces', () => {
+  let x = 0x2545f491;
+  const next = () => {
+    x ^= x << 13;
+    x ^= x >>> 17;
+    x ^= x << 5;
+    return x >>> 0;
+  };
+  // A 32 KiB dictionary of router-like text, so matches reach far back.
+  const big = Buffer.from(JSON.stringify(rows(900))).subarray(0, 32768);
+  const message = (i) => {
+    const kind = next() % 5;
+    if (kind === 0) return Buffer.from(JSON.stringify(event(i)));
+    if (kind === 1) return Buffer.from(JSON.stringify(rows(1 + (next() % 12)))); // up to a few KB
+    if (kind === 2) return crypto.randomBytes(1 + (next() % 300)); // falls to stored
+    if (kind === 3) return Buffer.alloc(next() % 4, 0x41); // 0..3 bytes: under MIN_MATCH
+    return big.subarray(next() % 20000, (next() % 20000) + 20000).subarray(0, next() % 9000); // may pass the scratch
+  };
+  for (const [label, dict] of [
+    ['32 KiB dictionary', big],
+    ['router dictionary', dictionary],
+    ['no dictionary', null],
+  ]) {
+    for (const level of [1, 6, 9]) {
+      const codec = createDeflateCodec({ dictionary: dict, level, native: false });
+      let stored = 0;
+      let large = 0;
+      for (let i = 0; i < 1000; i++) {
+        const bytes = message(i);
+        const out = codec.encode(bytes);
+        const fresh = deflateRaw(bytes, { dictionary: dict, level });
+        if (!same(out, fresh)) assert.fail(`${label}, level ${level}: message ${i} (${bytes.length} B) differs`);
+        if (i % 50 === 0) {
+          const options = dict === null ? {} : { dictionary: dict };
+          assert.ok(same(zlib.inflateRawSync(out, options), bytes), `${label}: zlib reads message ${i}`);
+        }
+        // The answer is the codec's own buffer, never a view of its scratch.
+        if (i % 200 === 0) {
+          const kept = Buffer.from(out);
+          codec.encode(Buffer.from(JSON.stringify(event(i + 1))));
+          assert.ok(same(out, kept), 'an earlier answer is not overwritten by a later call');
+        }
+        if ((out[0] & 6) === 0) stored++;
+        if (bytes.length > 8192) large++;
+      }
+      assert.ok(stored > 50, `${label}: stored blocks were exercised (${stored})`);
+      assert.ok(large > 5, `${label}: messages past the scratch were exercised (${large})`);
+    }
+  }
+});
+
+test('createDeflateCodec: an encode that throws leaves the codec as it was', () => {
+  const codec = createDeflateCodec({ dictionary, native: false });
+  const first = Buffer.from(JSON.stringify(event(1)));
+  const expected = Buffer.from(codec.encode(first));
+  assert.throws(() => codec.encode('not bytes'), TypeError);
+  assert.ok(same(codec.encode(first), expected));
+  assert.ok(same(codec.encode(first), deflateRaw(first, { dictionary })));
+});
+
 test('inflate: malformed input is a coded DeflateError, never a wrong answer', () => {
   const good = zlib.deflateRawSync(rows(300));
   const code = (fn) => {

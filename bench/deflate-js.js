@@ -13,7 +13,7 @@ const { performance } = require('node:perf_hooks');
 
 const { defineRouter, procedure } = require('../src/rpc/router.js');
 const { buildDictionary } = require('../src/rpc/dictionary.js');
-const { inflateRaw, deflateRaw } = require('../src/deflate/index.js');
+const { inflateRaw, deflateRaw, createDeflateCodec } = require('../src/deflate/index.js');
 
 const router = defineRouter({
   market: {
@@ -141,6 +141,14 @@ const main = async () => {
         5_000,
         bytes.length,
       );
+      // What a codec pays: the dictionary's hash chains are built once.
+      const prepared = createDeflateCodec({ dictionary: dict, native: false });
+      timeSync(
+        `codec.encode, ${size >> 10} KB dictionary (prepared)`,
+        () => prepared.encode(bytes),
+        5_000,
+        bytes.length,
+      );
       timeSync(
         `zlib, ${size >> 10} KB dictionary (dynamic)`,
         () => zlib.deflateRawSync(bytes, { dictionary: dict }),
@@ -173,10 +181,15 @@ const main = async () => {
     ['callback 2 KB', orders(20), 5_000],
     ['callback 28 KB', orders(300), 300],
   ];
+  // The codec as a carrier holds it: one per process, its dictionary state
+  // prepared on the first message (`native: false` — the pure-JS half).
+  const codec = createDeflateCodec({ dictionary, native: false });
+  const bare = createDeflateCodec({ native: false });
   for (const [label, bytes, n] of cases) {
     console.log(`\n${label}`);
     const size = bytes.length;
     timeSync('own deflate, dictionary (fixed Huffman)', () => deflateRaw(bytes, { dictionary }), n, size);
+    timeSync('codec.encode, dictionary (prepared)', () => codec.encode(bytes), n, size);
     timeSync(
       'zlib, dictionary, Z_FIXED',
       () => zlib.deflateRawSync(bytes, { dictionary, strategy: zlib.constants.Z_FIXED }),
@@ -185,6 +198,7 @@ const main = async () => {
     );
     timeSync('zlib, dictionary (dynamic)', () => zlib.deflateRawSync(bytes, { dictionary }), n, size);
     timeSync('own deflate, no dictionary', () => deflateRaw(bytes), n, size);
+    timeSync('codec.encode, no dictionary (prepared)', () => bare.encode(bytes), n, size);
     timeSync('zlib, no dictionary (dynamic)', () => zlib.deflateRawSync(bytes), n, size);
     if (typeof CompressionStream === 'function') {
       await timeAsync(

@@ -13,13 +13,12 @@
 // lines. Falls back to stored blocks when fixed codes would not shrink the
 // input, as zlib does.
 //
-// Browser-budgeted and per-message: the hash chains are allocated per call,
-// sized to the dictionary plus the input — and the DICTIONARY IS HASHED
-// AGAIN ON EVERY CALL, so a call's cost grows with the dictionary, not only
-// with the message (bench/deflate-js.js, "dictionary size": a 2 KB callback
-// costs 34 µs against a 4 KB dictionary and 138 µs against 32 KiB; zlib,
-// which does the same work in C, 15 and 48). A prepared dictionary state is
-// a later change; the router dictionary this exists for is small.
+// Browser-budgeted. `deflateRaw` is the one-shot form: it allocates its
+// window and hash chains per call and hashes the dictionary again each
+// time, so its cost grows with the dictionary, not only with the message.
+// A codec does that work ONCE — `createDeflater` below keeps the window,
+// the dictionary's chains and a scratch region, and a message costs what
+// the message costs (bench/deflate-js.js, the "codec" rows).
 
 const { WINDOW, LENGTH_BASE, LENGTH_EXTRA, DIST_BASE, DIST_EXTRA, toBytes } = require('./inflate.js');
 
@@ -153,38 +152,39 @@ const stored = (input) => {
 
 const hashAt = (win, i) => ((win[i] << 10) ^ (win[i + 1] << 5) ^ win[i + 2]) & HASH_MASK;
 
-/**
- * Bytes → raw DEFLATE, synchronously, as one fixed-Huffman block (or
- * stored blocks when that is smaller). `dictionary` preloads the window
- * (its last 32 KiB) exactly as zlib's `dictionary` option does, so the
- * output inflates on any inflater given the same bytes; `level` 1–9 is the
- * hash-chain depth.
- */
-const deflateRaw = (input, { dictionary = null, level = 6 } = {}) => {
-  const data = toBytes(input, 'deflate');
-  const dict = dictionary === null ? null : toBytes(dictionary, 'deflate');
-  const dictLen = dict === null ? 0 : Math.min(dict.length, WINDOW);
-  const total = dictLen + data.length;
-  const win = new Uint8Array(total);
-  if (dictLen > 0) win.set(dict.subarray(dict.length - dictLen), 0);
-  win.set(data, dictLen);
-  const chain = CHAIN_BY_LEVEL[Math.max(1, Math.min(9, level | 0))];
-  const head = new Int32Array(HASH_SIZE).fill(-1);
-  const prev = new Int32Array(total);
-  const writer = new BitWriter(Math.max(32, data.length >>> 1));
-  // BFINAL = 1, BTYPE = 01 (fixed Huffman).
-  writer.write(1, 1);
-  writer.write(1, 2);
-  // The dictionary's positions go into the chains first, so a match may
-  // reach back into it from the first input byte.
-  const insert = (i) => {
+// The dictionary's positions into the chains, so a match may reach back
+// into it from the first input byte. The last two are left out — hashing
+// them needs the bytes that follow, which are the message's — and that is
+// what makes the result a property of the dictionary alone.
+const hashDictionary = (win, head, prev, dictLen) => {
+  for (let i = 0; i + MIN_MATCH <= dictLen; i++) {
     const h = hashAt(win, i);
     prev[i] = head[h];
     head[h] = i;
-  };
-  for (let i = 0; i + MIN_MATCH <= dictLen; i++) insert(i);
+  }
+};
+
+// The LZ77 pass and the fixed-Huffman emission over `win[dictLen, end)`,
+// with the dictionary's chains already in `head` and `prev`. ONE algorithm
+// for both ways of preparing that state: per call (deflateRaw) and once per
+// codec (createDeflater), which is why the two produce the same bytes.
+// `touched`, when given, takes every hash slot this pass writes, so the
+// caller can put `head` back; the number written is the pass's answer in
+// `state.dirty`.
+//
+// What a prepared state relies on: `prev[pos]` for a message position is
+// written before it is read (a position enters a chain only when it is
+// inserted), and `win` is never read at or past `end` (`pos + MIN_MATCH <=
+// end` guards the hash, `maxLen` the compare) — so nothing a previous
+// message left behind is ever seen.
+const pass = (state, dictLen, end, chain) => {
+  const { win, head, prev, touched } = state;
+  const writer = new BitWriter(Math.max(32, (end - dictLen) >>> 1));
+  // BFINAL = 1, BTYPE = 01 (fixed Huffman).
+  writer.write(1, 1);
+  writer.write(1, 2);
+  let dirty = 0;
   let pos = dictLen;
-  const end = total;
   while (pos < end) {
     let bestLen = 0;
     let bestDist = 0;
@@ -209,6 +209,7 @@ const deflateRaw = (input, { dictionary = null, level = 6 } = {}) => {
       }
       prev[pos] = head[h];
       head[h] = pos;
+      if (touched !== null) touched[dirty++] = h;
     }
     if (bestLen >= MIN_MATCH) {
       const li = LENGTH_CODE[bestLen];
@@ -221,7 +222,12 @@ const deflateRaw = (input, { dictionary = null, level = 6 } = {}) => {
       if (DIST_EXTRA[di] > 0) writer.write(bestDist - DIST_BASE[di], DIST_EXTRA[di]);
       // The bytes inside the match join the chains too, or a later match
       // could not start on them.
-      for (let i = 1; i < bestLen && pos + i + MIN_MATCH <= end; i++) insert(pos + i);
+      for (let i = pos + 1; i < pos + bestLen && i + MIN_MATCH <= end; i++) {
+        const h = hashAt(win, i);
+        prev[i] = head[h];
+        head[h] = i;
+        if (touched !== null) touched[dirty++] = h;
+      }
       pos += bestLen;
     } else {
       const lit = LIT_CODES[win[pos]];
@@ -229,12 +235,93 @@ const deflateRaw = (input, { dictionary = null, level = 6 } = {}) => {
       pos++;
     }
   }
+  state.dirty = dirty;
   const eob = LIT_CODES[256];
   writer.write(eob >>> 4, eob & 15);
-  const out = writer.finish();
-  // Fixed codes did not pay: stored blocks are exactly the input plus five
-  // bytes per 64 KiB.
-  return out.length >= data.length + 5 * Math.max(1, Math.ceil(data.length / STORED_MAX)) ? stored(data) : out;
+  return writer.finish();
 };
 
-module.exports = { deflateRaw };
+// Fixed codes did not pay: stored blocks are exactly the input plus five
+// bytes per 64 KiB.
+const orStored = (out, data) =>
+  out.length >= data.length + 5 * Math.max(1, Math.ceil(data.length / STORED_MAX)) ? stored(data) : out;
+
+const chainOf = (level) => CHAIN_BY_LEVEL[Math.max(1, Math.min(9, level | 0))];
+
+/**
+ * Bytes → raw DEFLATE, synchronously, as one fixed-Huffman block (or
+ * stored blocks when that is smaller). `dictionary` preloads the window
+ * (its last 32 KiB) exactly as zlib's `dictionary` option does, so the
+ * output inflates on any inflater given the same bytes; `level` 1–9 is the
+ * hash-chain depth.
+ */
+const deflateRaw = (input, { dictionary = null, level = 6 } = {}) => {
+  const data = toBytes(input, 'deflate');
+  const dict = dictionary === null ? null : toBytes(dictionary, 'deflate');
+  const dictLen = dict === null ? 0 : Math.min(dict.length, WINDOW);
+  const total = dictLen + data.length;
+  const win = new Uint8Array(total);
+  if (dictLen > 0) win.set(dict.subarray(dict.length - dictLen), 0);
+  win.set(data, dictLen);
+  const head = new Int32Array(HASH_SIZE).fill(-1);
+  const prev = new Int32Array(total);
+  hashDictionary(win, head, prev, dictLen);
+  return orStored(pass({ win, head, prev, touched: null, dirty: 0 }, dictLen, total, chainOf(level)), data);
+};
+
+// The largest message a prepared state takes; a larger one goes through
+// deflateRaw. A browser hands 4 KiB and more to CompressionStream anyway.
+const SCRATCH = 8192;
+
+/**
+ * `encode(bytes) -> raw DEFLATE`, the same bytes deflateRaw answers for the
+ * same dictionary and level, without redoing the dictionary's share of the
+ * work on every message: the window with the dictionary in it, the hash
+ * heads and the dictionary's chains are built once — on the first message,
+ * so a codec nobody uses holds nothing — and a call copies the message in
+ * behind the dictionary, runs the pass, and remembers which hash slots it
+ * wrote. The NEXT call puts those slots back first (at the start, not the
+ * end: an exception in between then costs nothing), which is `head` exactly
+ * as the dictionary left it.
+ *
+ * bench/deflate-js.js, the "codec" rows against the one-shot ones: a 108 B
+ * event 10.9 → 1.4 µs (8.9 → 1.6 with no dictionary at all: most of a
+ * small message's cost was filling 128 KB of hash heads), a 2 KB callback
+ * against a 4 KB dictionary 32 → 13, against 32 KiB 116 → 13 — the
+ * dictionary's size no longer shows.
+ *
+ * About 0.2 MB plus five bytes per dictionary byte, per codec: build one
+ * for a process or a page, not one per connection. Not reentrant, and
+ * synchronous by construction.
+ */
+const createDeflater = (dictionary = null, level = 6) => {
+  const dict = dictionary === null ? null : toBytes(dictionary, 'deflate');
+  const dictLen = dict === null ? 0 : Math.min(dict.length, WINDOW);
+  const chain = chainOf(level);
+  let state = null;
+  // What `head` holds for the dictionary alone; -1 everywhere without one.
+  let base = null;
+  const prepare = () => {
+    const win = new Uint8Array(dictLen + SCRATCH);
+    const head = new Int32Array(HASH_SIZE).fill(-1);
+    const prev = new Int32Array(dictLen + SCRATCH);
+    if (dictLen > 0) {
+      win.set(dict.subarray(dict.length - dictLen), 0);
+      hashDictionary(win, head, prev, dictLen);
+      base = head.slice();
+    }
+    return { win, head, prev, touched: new Int32Array(SCRATCH), dirty: 0 };
+  };
+  return (input) => {
+    const data = toBytes(input, 'deflate');
+    if (data.length > SCRATCH) return deflateRaw(data, { dictionary: dict, level });
+    state ??= prepare();
+    const { head, touched } = state;
+    for (let i = 0; i < state.dirty; i++) head[touched[i]] = base === null ? -1 : base[touched[i]];
+    state.dirty = 0;
+    state.win.set(data, dictLen);
+    return orStored(pass(state, dictLen, dictLen + data.length, chain), data);
+  };
+};
+
+module.exports = { deflateRaw, createDeflater };
