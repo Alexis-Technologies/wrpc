@@ -84,6 +84,17 @@ then seal, one base64. An envelope that does not open — another key, a
 flipped bit, one moved from another room's channel, a replay — is dropped
 and logged `backplane.open`; it is never delivered and never answered.
 
+The replay memory has edges, and they are worth knowing. A receiver keeps
+one sliding window (`replayWindow`, 1024 counters) per **sender** — a key
+id, a cipher and the salt a sealing process drew at boot — in memory: it is
+empty after a restart, and at most `maxSenders` (1024) senders are
+remembered, oldest out first, so an instance that has heard more sealing
+processes than that forgets the earliest and would open its envelopes
+again. Nothing in a sealed envelope says *when* it was sealed. Where a
+replayed **command** matters, `cluster: { secret }` adds what the frame
+lacks — a signed counter, channel and clock
+([Trusting the backplane](./cluster#trusting-the-backplane)).
+
 Two things it does not hide: the **channel name**, which names the room,
 and sizes and timing. And it is a fan-out under one shared key, not
 end-to-end: every instance holds the key, and so reads every room.

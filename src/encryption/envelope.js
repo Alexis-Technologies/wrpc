@@ -77,7 +77,7 @@ const resolveCipher = (value, name) => {
 
 /**
  * `encryption` of a Node↔Node carrier → frozen `{ keys, cipher, seal,
- * acceptPlaintext, replayWindow }`, or null for off. `seal` and
+ * acceptPlaintext, replayWindow, maxSenders }`, or null for off. `seal` and
  * `acceptPlaintext` are the rollout: a pub/sub backplane delivers at most
  * once, so switching every instance at the same instant is not an option —
  * first every instance learns to OPEN (`seal: false, acceptPlaintext:
@@ -87,15 +87,25 @@ const resolveCipher = (value, name) => {
 const normalizeEnvelopeEncryption = (value, name) => {
   if (value === undefined || value === null || value === false) return null;
   if (typeof value !== 'object' || Array.isArray(value) || value.keys === undefined) {
-    throw new TypeError(`${name}: encryption must be { keys, cipher?, seal?, acceptPlaintext?, replayWindow? }`);
+    throw new TypeError(
+      `${name}: encryption must be { keys, cipher?, seal?, acceptPlaintext?, replayWindow?, maxSenders? }`,
+    );
   }
-  const { seal = true, acceptPlaintext = false, replayWindow = DEFAULT_REPLAY_WINDOW } = value;
+  const {
+    seal = true,
+    acceptPlaintext = false,
+    replayWindow = DEFAULT_REPLAY_WINDOW,
+    maxSenders = MAX_SENDERS,
+  } = value;
   if (typeof seal !== 'boolean') throw new TypeError(`${name}: encryption.seal must be a boolean`);
   if (typeof acceptPlaintext !== 'boolean') {
     throw new TypeError(`${name}: encryption.acceptPlaintext must be a boolean`);
   }
   if (replayWindow !== false && !(Number.isInteger(replayWindow) && replayWindow > 0 && replayWindow <= 65536)) {
     throw new TypeError(`${name}: encryption.replayWindow must be false or an integer from 1 to 65536`);
+  }
+  if (!(Number.isInteger(maxSenders) && maxSenders > 0 && maxSenders <= 1048576)) {
+    throw new TypeError(`${name}: encryption.maxSenders must be an integer from 1 to 1048576`);
   }
   if (!seal && !acceptPlaintext) {
     throw new TypeError(`${name}: encryption with seal: false must accept plaintext — it sends nothing else`);
@@ -108,6 +118,7 @@ const normalizeEnvelopeEncryption = (value, name) => {
     seal,
     acceptPlaintext,
     replayWindow: replayWindow === false ? 0 : replayWindow,
+    maxSenders,
   });
 };
 
@@ -164,7 +175,7 @@ const readCounter = (buffer, offset) => buffer.readUInt32BE(offset) * 0x10000000
  * `echo: true` opens them like any other — a store reads back what it wrote.
  */
 const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = crypto.randomBytes }) => {
-  const { keys, cipher, injected = false, replayWindow } = encryption;
+  const { keys, cipher, injected = false, replayWindow, maxSenders = MAX_SENDERS } = encryption;
   const ciphers = new Map([[SUITES[cipher.id] ?? SUITE_INJECTED, cipher]]);
   // The ciphers built HERE — whose key() copies the bytes into a KeyObject
   // — are the ones whose subkey may be wiped after key(). An injected
@@ -217,7 +228,7 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
     header[0] = VERSION;
     header[1] = suite;
     salt.copy(header, 2);
-    mine.add(salt.toString('latin1'));
+    mine.add(header.latin1Slice(1, 2 + SALT_LENGTH));
     sender = { kid, key, header, counter: 0 };
     return sender;
   };
@@ -234,10 +245,16 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
     return { kid, sealed };
   };
 
-  // The receiving half: one entry per (kid, sender salt), oldest first.
-  // Senders are processes, so the map only turns over with restarts, and a
-  // forgotten sender is derived again at its next message — with a fresh
-  // replay window, which is why the cap is generous rather than tight.
+  // The receiving half: one entry per (kid, suite, sender salt), oldest
+  // first. The SUITE byte is part of the key because it is part of what the
+  // subkey was derived for: were a known salt looked up without it, a copy
+  // with the byte changed would be opened under the cached key by an
+  // instance that knows the sender and refused by one that does not.
+  // Senders are processes — and, on a broker's RPC address, every client
+  // process — so the map turns over with restarts and with them; a
+  // forgotten sender is derived again at its next message, with a FRESH
+  // replay window. That is what `maxSenders` bounds: memory on one side,
+  // how many live senders keep their window on the other.
   const senders = new Map();
 
   const refuse = (reason) => {
@@ -247,7 +264,7 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
   };
 
   const remember = (id, entry) => {
-    if (senders.size >= MAX_SENDERS) senders.delete(senders.keys().next().value);
+    if (senders.size >= maxSenders) senders.delete(senders.keys().next().value);
     senders.set(id, entry);
   };
 
@@ -255,7 +272,8 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
     if (sealed.length < HEADER_LENGTH || sealed[0] !== VERSION) refuse('format');
     const active = ciphers.get(sealed[1]);
     if (active === undefined || sealed.length < HEADER_LENGTH + active.tagLength) refuse('format');
-    const saltKey = sealed.latin1Slice(2, 2 + SALT_LENGTH);
+    // suite ‖ salt: one slice, 17 bytes where it was 16.
+    const saltKey = sealed.latin1Slice(1, 2 + SALT_LENGTH);
     if (!echo && mine.has(saltKey)) return null;
     const counter = readCounter(sealed, 2 + SALT_LENGTH);
     const id = `${kid}\0${saltKey}`;

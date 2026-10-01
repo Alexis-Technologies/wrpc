@@ -426,8 +426,11 @@ goes; a `Dh` is what Noise and DHKEM run over.
   room. A session key lives in the process that uses it.
 - **Replay, everywhere.** A session counts its messages and a sealed request
   is accepted once — per process, unless you inject a shared `replay` memory.
-  A backplane window starts empty with the process. A log is *meant* to be
-  re-read: make consumers idempotent.
+  A backplane window is per sender, in memory: empty after a restart, and
+  gone with a sender forgotten past `maxSenders` (1024) — a sealed envelope
+  carries no time, so that is the whole memory (a signed cluster adds a
+  clock, see [Trusting the backplane](./cluster#trusting-the-backplane)).
+  A log is *meant* to be re-read: make consumers idempotent.
 - **A browser from its own origin.** Said above; worth saying twice.
 
 The wire formats are in the [protocol reference](../reference/protocol#session-encryption).

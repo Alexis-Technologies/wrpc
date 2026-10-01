@@ -389,6 +389,29 @@ test('cluster: a plaintext command is refused by a sealing node — the HMAC-les
   assert.strictEqual(node.rpc.clients.size, 1, 'nobody was disconnected');
 });
 
+test('sealer: maxSenders bounds the senders remembered — the oldest goes, and its replay window with it', () => {
+  const encryption = normalizeEnvelopeEncryption({ keys: generateKey(), maxSenders: 2 }, 'x');
+  assert.strictEqual(encryption.maxSenders, 2);
+  assert.strictEqual(normalizeEnvelopeEncryption({ keys: generateKey() }, 'x').maxSenders, 1024);
+  const [first, second, third, receiver] = [0, 1, 2, 3].map(() => createEnvelopeSealer({ encryption, layer: 'rooms' }));
+  const open = (sealed) => receiver.open('0', sealed, 'ch').toString();
+  const kept = first.seal(Buffer.from('one'), 'ch').sealed;
+  assert.strictEqual(open(kept), 'one');
+  assert.throws(() => open(kept), { reason: 'replay' }, 'remembered: its window refuses the copy');
+  assert.strictEqual(open(second.seal(Buffer.from('two'), 'ch').sealed), 'two');
+  assert.throws(() => open(kept), { reason: 'replay' }, 'two senders fit');
+  // The third sender evicts the first, oldest in — and the copy opens again:
+  // what a deployment with more live senders than `maxSenders` gives up.
+  assert.strictEqual(open(third.seal(Buffer.from('three'), 'ch').sealed), 'three');
+  assert.strictEqual(open(kept), 'one');
+  for (const maxSenders of [0, -1, 1.5, '8', 1048577, false]) {
+    assert.throws(
+      () => normalizeEnvelopeEncryption({ keys: generateKey(), maxSenders }, 'x'),
+      /x: encryption\.maxSenders must be an integer from 1 to 1048576/,
+    );
+  }
+});
+
 test('sealer: the frame, the echo, the sender cache and the reasons', () => {
   const [a, b] = sealerPair();
   const { kid, sealed } = a.seal(Buffer.from('hello'), 'ch');
@@ -435,6 +458,22 @@ test('sealer: the frame, the echo, the sender cache and the reasons', () => {
   assert.strictEqual(
     reason(() => b.open('other', a.seal(Buffer.from('x'), 'ch').sealed, 'ch')),
     'kid',
+  );
+  // The suite byte is part of what a sender is known by: a copy of a KNOWN
+  // sender's envelope with the byte changed takes the path of a new one —
+  // another cipher id in the derivation, another key — and does not open.
+  const third = a.seal(Buffer.from('third'), 'ch').sealed;
+  const altered = Buffer.from(third);
+  altered[1] = 2;
+  assert.strictEqual(
+    reason(() => b.open(kid, altered, 'ch')),
+    'open',
+  );
+  assert.strictEqual(b.open(kid, third, 'ch').toString(), 'third', 'and the original still does');
+  assert.strictEqual(
+    reason(() => a.open(kid, altered, 'ch')),
+    'open',
+    'nor is it the echo of the sealer it was copied from',
   );
   // Another layer's sealer under the same keyring derives another key
   const [, , encryption] = sealerPair();

@@ -93,6 +93,8 @@ expectAssignable<EnvelopeEncryptionOptions>({
 expectAssignable<EnvelopeEncryptionOptions>({ keys: provider, cipher });
 expectError<EnvelopeEncryptionOptions>({ cipher: 'aes-256-gcm' });
 expectError<EnvelopeEncryptionOptions>({ keys: 'k', replayWindow: true });
+expectAssignable<EnvelopeEncryptionOptions>({ keys: 'k', maxSenders: 4096 });
+expectError<EnvelopeEncryptionOptions>({ keys: 'k', maxSenders: false });
 expectAssignable<RpcServerOptions>({
   router,
   rooms: { encryption: { keys: 'k' } },

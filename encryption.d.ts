@@ -52,9 +52,18 @@ export interface EnvelopeEncryptionOptions {
   /**
    * The anti-replay window kept per sender, in messages: a repeated or
    * too-old counter is dropped and logged. Default 1024; `false` disables
-   * it. Kept in memory, so it starts empty with the process.
+   * it. Kept in memory, per sender, so it starts empty with the process —
+   * and with the sender's entry, see `maxSenders`.
    */
   replayWindow?: number | false;
+  /**
+   * How many senders — a (key id, cipher, salt) each, one per sealing
+   * process — this instance remembers: the derived key and the replay
+   * window. Default 1024, oldest out first; a forgotten sender is derived
+   * again at its next message with an EMPTY window. Raise it where the
+   * senders are many (every client process of a broker RPC address).
+   */
+  maxSenders?: number;
 }
 
 /** A provider for the sealed store must answer `kids()`: a rotation is walked through it. */

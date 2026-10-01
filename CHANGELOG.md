@@ -2232,6 +2232,21 @@ bytes it sends. In that order:
   `bench/deflate-js.js`, which gained a many-blocks row and a Huffman-only
   row that runs every rare symbol through the sub-table path. The
   `./deflate` budget is 5 KB (was 4; the entry is 4.1).
+- **Sealed envelopes: `maxSenders`, and a sender is known by its cipher
+  too.** A receiver remembered senders under (key id, salt) and looked a
+  known one up without the frame's suite byte, so a copy of a known
+  sender's envelope with that byte changed was handled differently by an
+  instance that knew the sender and one that did not; the cache key is
+  (key id, suite, salt) now — such a copy derives another key and does not
+  open, on every instance. And the cap on remembered senders, a constant
+  1024, is the `maxSenders` option of an envelope `encryption` (rooms, cluster,
+  brokers): a forgotten sender comes back with an
+  empty replay window, which a broker RPC address with more client
+  processes than that reached by itself. The guides and the protocol
+  reference now state the edges of the replay memory — per sender, in
+  memory, empty after a restart, bounded by `maxSenders`, no time in the
+  frame — instead of "a replay is dropped". No change to the wire or the
+  additional data.
 - **`cluster.secret` refuses a replayed or transplanted envelope.** The
   HMAC covered an envelope's bytes — not when or where they were seen — so
   anything that could read the backplane and write to it (a compromised

@@ -729,7 +729,10 @@ so an envelope moved to another channel, another layer or another key id
 does not open. Compression happens INSIDE the frame (compress, then seal)
 and names its codec there; a `wrpc-enc:` marker never appears inside a
 sealed envelope. A receiver keeps a sliding window of each sender's
-counters and drops a repeat. An envelope that does not open is dropped and
+counters and drops a repeat — a sender being a (kid, suite, salt), the
+window in memory only: empty when the receiver starts, and dropped with
+the oldest sender once more than `maxSenders` (1024) are remembered. The
+frame carries no time. An envelope that does not open is dropped and
 logged, never answered. The cluster channels do the same under `cluster: {
 encryption }` with the label `"wrpc cluster v1"`, after signing and
 compression. What stays visible to the backplane: the channel name (and so

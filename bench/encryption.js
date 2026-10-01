@@ -133,8 +133,11 @@ async function main() {
   console.log(`cipher.key(raw) (a KeyObject)      ${cell(keyed)}`);
 
   // The whole backplane path (src/rpc/envelope.js): frame, seal, base64 —
-  // and back, through the sender cache and the replay window. What a room
-  // emit pays per publish, and every other instance per receive.
+  // and back, through the sender cache. What a room emit pays per publish,
+  // and every other instance per receive. The receiving side runs with
+  // `replayWindow: false` — the loop decodes ONE message again and again,
+  // which a window would refuse — so the decode row is without the window's
+  // check (one array read and one write).
   const { createEnvelope } = require('../src/rpc/envelope.js');
   const quiet = { warn() {} };
   const envelopeOptions = { maxMessage: 1 << 24, name: 'bench', layer: 'rooms', event: 'backplane', log: quiet };
