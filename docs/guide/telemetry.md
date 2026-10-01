@@ -67,7 +67,7 @@ span and a duration sample exactly as a slow handler does.
 | `wrpc.status` | `ok`, `error`, `cancelled`, `timeout` |
 | `error.type` | the error's constructor name |
 | `wrpc.packet.type`, `wrpc.packet.id` | every span |
-| `wrpc.transport` | `ws`, `http`, `sse`, `event`, `webrtc` |
+| `wrpc.transport` | `ws`, `http`, `sse`, `event`, `webrtc`, `wt`, `broker` |
 | `wrpc.persistent` | whether the connection stays open |
 | `wrpc.subscription.values` | values yielded |
 | `wrpc.subscription.terminal` | `complete`, `error`, `unsubscribed` |
@@ -163,10 +163,11 @@ does not need a call to produce it: the app-level ping/pong is an exact round
 trip, and it keeps reporting while the application is idle. A heartbeat that
 timed out records no sample — there is no round trip to measure, and a value
 invented from the timeout would say more about your configuration than about
-the network — it is counted instead, as `timeout` on the same instrument's
-`ok`/`timeout` outcome.
+the network. Nothing is recorded on this instrument for it: a timeout is the
+client's `heartbeat.timeout` log line and, because the connection is then
+terminated and dialled again, an `attempted` on `wrpc.client.reconnects`.
 
-`wrpc.server.sessions` labels five operations — `create`, `restore`,
+`wrpc.server.sessions` labels six operations — `create`, `restore`,
 `touch`, `destroy`, `evict`, `expire` — where it once only ever said
 `restore`. `evict` is the one to alert on: unlike `expire` it discards
 sessions that are still live, so it means signed-in users were signed out to
@@ -221,7 +222,7 @@ release.
 
 ## A note on the gauges
 
-The five UpDownCounter-backed gauges (`connections`, `subscriptions`,
+The seven UpDownCounter-backed gauges (`connections`, `subscriptions`,
 `sse.channels`, `rooms`, `rtc.links`, `cluster.instances`, `queue.depth`)
 are incremented and decremented at lifecycle edges rather than observed from
 a registry. A missed decrement therefore leaks for the life of the process.

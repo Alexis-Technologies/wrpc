@@ -91,10 +91,16 @@ greppable end to end without threading an id through your own code.
 
 ## Event catalogue
 
-`event` is the field to build alerts on, so here is what the server emits,
-by component. This is not every line — handlers add their own through
-`context.log` — but it is every line wrpc writes on a path an operator would
-want an alert for.
+`event` is the field to build alerts on, so here is what wrpc emits, by
+component: every `event` name in the source is in one of the tables below —
+a test keeps it so, and a new line without a row fails the build. Handlers
+add their own through `context.log`; those are yours to catalogue.
+
+The first table is the request path and the engines; the ones after it are
+[rooms, backplane and cluster](#rooms-backplane-and-cluster),
+[sessions and SSE](#sessions-and-sse), [brokers](#brokers),
+[WebRTC](#webrtc), [the server's own life](#lifecycle-and-hooks) and
+[the client](#client-events).
 
 | `event` | Level | Means |
 | ------- | ----- | ----- |
@@ -168,6 +174,116 @@ want an alert for.
 | `mesh.unreachable` | warn | A member still in the room could not be linked again and the mesh's re-dial has backed off to its slowest pace (`room`, `peer`, `attempts`) — once per outage; it keeps dialling |
 | `signaling.undeliverable` | debug | A signal for a peer the relay no longer has (`to`, `room`, `type`) — a trickled candidate that crossed its `leave`, a routine race |
 | `rtc.signal.overflow` | warn | A peer sent more signals than are held for it — candidates before its description (256), or anything while `accept()` still thinks (64); the rest are dropped, said once |
+| `http.refused` | warn | An HTTP request the core refused before any call existed (`code`, and the `path` or `method`): 404 for a path that is not the RPC's, 403 for a packet request that is not a POST |
+| `cors.refused` | warn | A request from an `origin` the `cors` option does not allow |
+| `subscribe.end` | warn/debug | A subscription ended (`id`, `method`): `warn` with the `code` when it died on the server's side, `debug` for a completion or an unsubscribe |
+| `subscription.return` | warn | A subscription handler's own cleanup (`finally`, `return()`) threw after the stream had ended |
+| `subscription.aborted` | debug | A subscription handler threw after the peer had already unsubscribed or gone; the error reaches nobody else |
+| `stream.terminate` | error | A stream's `terminate()` threw while a closing client's streams were being torn down |
+| `call.ok` | debug | A call answered without an error (`method`, `id`) — the narration line, built only when a logger takes debug |
+| `rpc.warn` | warn | A warning about one connection that has no name of its own — what `client.warn(message)` writes when it is given no `event` |
+| `encryption.handshake` | debug | A sealed socket's handshake step failed inside the library; the refusal that follows (`encryption.refused`) is the line to alert on |
+| `encryption.respond` | error | A sealed HTTP answer could not be sealed (`err`); the request got a bare `500` |
+
+### Rooms, backplane and cluster {#rooms-backplane-and-cluster}
+
+| `event` | Level | Means |
+| ------- | ----- | ----- |
+| `broadcast.serialize`, `broadcast.send` | error | A broadcast's data could not be serialized (nobody received it), or one recipient's socket threw while the fan-out went on to the others |
+| `backplane.serialize` | error | A room event could not be serialized for the backplane: delivered locally, lost for the other instances |
+| `backplane.publish`, `backplane.subscribe`, `backplane.unsubscribe` | error | The backplane rejected a publish, a channel subscribe (`attempt`; retried with a backoff, `healthy` is false meanwhile) or an unsubscribe |
+| `backplane.recovered`, `cluster.recovered` | warn | A subscribe that had been failing went through (`channel`, `attempt`). Whatever was published in between is lost — the gap is the news |
+| `backplane.deliver`, `backplane.handler` | error | An envelope from another instance could not be delivered to local sockets; a subscriber of the in-process `MemoryBackplane` threw |
+| `backplane.encoded`, `cluster.encoded` | warn | A compressed envelope (`wrpc-enc:`) reached an instance whose `compression` does not hold that codec — a rollout that changed the codec in one step |
+| `backplane.sealed`, `cluster.sealed` | warn | A sealed envelope reached an instance with no `encryption` keys: it reads none of the fleet's events until it is given them |
+| `backplane.unsealed`, `cluster.unsealed` | warn | A plaintext envelope reached an instance that seals and does not `acceptPlaintext` — an instance left behind by the rollout, or somebody publishing by hand |
+| `backplane.bytes` | warn | Bytes in an event that a rooms registry wired by hand — without the envelope an `RpcServer` injects — was asked to send across instances (`name`): delivered locally only |
+| `rooms.option` | warn | An unknown key under `rooms` (`key`) — a typo that would otherwise be a silently ignored option |
+| `cluster.join` | info | An instance joined the cluster (`instance`) |
+| `cluster.evict` | warn | An instance went silent past `presenceTimeout` and was dropped from presence (`instance`, `reason: 'timeout'`) — partitioned, or dead without a goodbye. A routine goodbye is not logged |
+| `cluster.fetch.incomplete`, `cluster.fetch.truncated` | warn | `fetchClients` returned less than the fleet has (`received`): an instance did not answer in time, or one answered only its first `maxFetch` clients |
+| `cluster.serialize`, `cluster.publish`, `cluster.subscribe`, `cluster.unsubscribe` | error | A cluster envelope could not be serialized (`type`), published, or its channel subscribed (`attempt`; retried) or unsubscribed |
+| `cluster.command`, `cluster.serve` | error | A command from another instance threw while it was applied here (`op`); a request from another instance — a `fetch`, an ask — threw while it was served |
+| `cluster.listener` | error | An application listener of a cluster event (`name`) threw |
+
+### Sessions and SSE {#sessions-and-sse}
+
+| `event` | Level | Means |
+| ------- | ----- | ----- |
+| `session.restore` | error | The session store threw while a connection's session was being restored (`err`); the client continues anonymous |
+| `session.unsealed` | warn | A row under a sealed store's key that is not a sealed row of that `kid` — written by something else. Read as a missing session; **never carries the token** |
+| `session.migrate` | warn | A stale copy of a session row — under an older key, or a sealed one while `seal: false` — could not be deleted (`err`); the session itself was written |
+| `sse.refused` | warn | A channel request refused (`code`, `reason`): an unknown or expired channel, a wrong channel secret, a cap (`maxChannels`, `maxChannelsPerAddress`) |
+| `sse.gap` | warn | A reconnecting stream asked for events the replay buffer no longer holds (`channel`, `requested`): event loss, told to the client — which logs the same name when it hears it |
+| `sse.bytes` | warn | A packet with bytes in it could not go out on a text-only SSE channel (`type`, `name`) |
+| `sse.expired` | debug | A channel nobody re-attached to within `retention` was dropped |
+| `sse.supersede`, `sse.close` | error | Ending a stream a newer one replaced, or closing a channel, threw |
+
+### Brokers {#brokers}
+
+The broker bindings and adapters are in the first table above where a line
+is one to alert on; these are the rest. Every adapter line carries `err` and,
+where it has one, the `queue`, `channel`, `topic` or `address`.
+
+| `event` | Level | Means |
+| ------- | ----- | ----- |
+| `broker.ack`, `broker.retry`, `broker.release` | debug | What a delivery's outcome became (`queue`, `method`, `code`, `attempt`, `delay`) — the narration next to `broker.dead`, built only when a logger takes debug |
+| `broker.dispatch` | error | A procedure threw outside the call pipeline while a delivery was dispatched (`queue`, `method`, `id`); the delivery is settled by its code all the same |
+| `broker.settle` | error | The broker refused the settlement of a delivery (`queue`); the message comes back by redelivery — a duplicate, not a loss |
+| `broker.attach` | error | A delivery's client could not be attached (`queue`) — a session store that threw; the delivery is retried, then dead-lettered |
+| `broker.onDeadLetter` | error | The `onDeadLetter` hook threw |
+| `broker.feed.decode` | warn | A log entry that did not decode (`topic`, `id`); skipped, the feed goes on |
+| `broker.rpc.hello.duplicate` | debug | A second `hello` for a session that is live, or from another inbox (`session` fingerprint, `live`); ignored — the session stays its owner's |
+| `broker.delivery`, `broker.listener` | error | `MemoryBroker`: a queue handler or a direct listener threw; the delivery is retried after the crash backoff |
+| `broker.redis.delivery`, `broker.nats.delivery`, `broker.amqp.delivery`, `broker.kafka.delivery` | error | A queue handler threw or rejected (`queue`): it settled nothing, so the delivery is retried after a backoff, attempt + 1 |
+| `broker.redis.listener`, `broker.nats.listener`, `broker.amqp.listener` | error | A direct listener's handler threw or rejected |
+| `broker.nats.handler`, `broker.amqp.handler`, `broker.kafka.handler` | error | A backplane subscriber threw (`channel`) |
+| `broker.redis.read`, `broker.nats.consume` | error | A queue consumer's read failed (`queue`): the consumer is **unhealthy** and retries with a backoff — the line that says a consumer is not consuming |
+| `broker.redis.settle`, `broker.nats.settle` | error | A settlement failed (`queue`); the message is redelivered by the broker |
+| `broker.redis.sweep` | error | Promoting delayed retries, or reclaiming entries a dead consumer held, failed (`queue`); tried again on the next sweep |
+| `broker.redis.blpop`, `broker.redis.presence` | error | A direct service listener's blocking read, or its presence lease, failed (`address`): the listener is **unhealthy** — `attachBrokerRpc().healthy` is false — until the next one works |
+| `broker.nats.subscription` | error | A NATS subscription reported an error (`channel` or `address`): it delivers nothing more, and a direct listener on it is unhealthy for good |
+| `broker.redis.tail` | error | The log's live read failed; retried, the subscribers catch up from their positions (the Redis twin of `broker.*.tail` above) |
+| `broker.redis.pubsub`, `broker.redis.decode` | error | The pub/sub connection raised an error; a direct message that could not be decoded (`channel`) was dropped |
+| `broker.redis.quit`, `broker.kafka.disconnect` | error | Closing a connection the adapter opened itself threw |
+| `broker.nats.publish`, `broker.amqp.publish`, `broker.kafka.publish` | error | A backplane publish failed (`channel`): that event is lost for the other instances |
+| `broker.amqp.channel` | error | A channel raised an error (the close that follows is what the consumers react to) |
+| `broker.amqp.unbind` | error | Unbinding a room nobody is in any more failed (`channel`) |
+| `broker.kafka.pause`, `broker.kafka.resume` | error | Pausing or resuming a queue consumer threw (`queue`) |
+| `broker.nats.consumer.info` | debug | A durable consumer's configuration could not be read back to compare it |
+| `broker.kafka.partitions`, `broker.kafka.metadata` | debug | A topic exists with another partition count than configured (`expected`, `actual`); its metadata could not be read |
+| `broker.kafka.seek`, `broker.kafka.groups` | debug | A reader's seek to its start position still failed on the last of five tries; a reader's throwaway consumer groups could not be deleted (`groups`) and are left for the broker to expire |
+
+### WebRTC {#webrtc}
+
+Written through the peer's own `logger` — in a browser, off unless you pass
+one — and bound to the remote `peer`.
+
+| `event` | Level | Means |
+| ------- | ----- | ----- |
+| `rtc.link.state` | debug | A link changed state (`state`, `previous`) — the narration to turn on when a connection misbehaves |
+| `rtc.ice.failed`, `rtc.ice.restarted` | warn / info | The connection failed and an ICE restart was started; the restart brought it back |
+| `rtc.link.failed` | warn | A link failed (`reason`) — a dial or an ICE restart that did not complete; the peer link above it decides whether to redial |
+| `rtc.link.error` | error | Something threw inside the link (`origin`: the dial, a negotiation step, a channel) |
+| `rtc.signal.malformed`, `rtc.signal.unknown` | warn | A signal that is not an object, or of a `type` this peer does not know — version skew, or a relay passing on something else |
+| `rtc.peer.redial`, `rtc.peer.gave-up` | info / warn | A dead link is being dialled again (`attempt`, `delay`); the redial budget ran out (`attempts`) and the link is closed |
+| `rtc.peer.refused` | warn | A peer was refused before its description was applied (`peer`, `reason`: the assertion's code — `signature`, `fingerprint`, `expired`, … — or `assertion`) |
+| `rtc.peer.incarnation` | info | A known peer id came back as another instance (`previous`, `instance`): the old link is dropped for the new one |
+| `rtc.peer.reset`, `rtc.peer.replaced` | warn | The signaling connection was re-established (`changed` says whether this peer's id did — if so every link is dropped); a newer connection took this peer's id, and this one closed |
+| `rtc.peer.duplicate` | error | A second link was about to be made to a peer that has a live one (`state`) — a bug guard: the existing link is kept |
+| `rtc.peer.error`, `rtc.peer.unhandled` | error | A link's client or host threw (`peer`); an error nobody listens for (`'error'` has no listener on the peer) |
+| `rtc.peer.client` | debug | The link's client reported an error while the link was down — its reconnect attempts fail by design then |
+| `mesh.leave.stale` | debug | A `leave` naming another incarnation of a member than the one linked; ignored |
+
+### Lifecycle and hooks {#lifecycle-and-hooks}
+
+| `event` | Level | Means |
+| ------- | ----- | ----- |
+| `listen`, `listen.retry` | info / warn | The server is listening (`port`); the address was in use and the bind is tried again |
+| `close` | error | The HTTP server's `close()` reported an error. (The client logs `close` at info: the connection ended) |
+| `hook.error` | warn | An observational router hook — `onResponse`, `onError`, `onDisconnect` and the like — threw (`phase`, `err`): reported and contained, what it observed is unaffected |
+| `onConnect.stalled` | warn | An `onConnect` hook has not settled within the stall window (`peer`, `ms`): the client's calls are waiting on it |
+| `listener.close`, `listener.attach`, `listener.detach` | error | An application listener of a client's `close`, or of a peer host's `attach`/`detach`, threw |
 
 ### Client events
 
@@ -184,9 +300,29 @@ They are what a "connection that works but is missing something" looks like:
 | `transport.fallback` | warn | A transport of the list could not connect; the next one was tried |
 | `authenticate.failed`, `refresh.failed`, `restore.failed` | warn | The `authenticate` hook, the `refresh` hook, or the re-`load()`/re-subscribe after a reconnect failed |
 | `reconnecting`, `reconnect.failed` | info/warn | A reconnect attempt (`attempt`, `delay`), and the one that gave up |
+| `open`, `reconnected` | info | The connection opened (`url`) — for the first time, or again after `attempts` reconnect attempts |
+| `close` | info | The connection ended (`url`); a reconnect, if any, follows as `reconnecting` |
+| `sse.gap` | warn | The server said this channel's replay buffer no longer holds what was missed: event loss, not a routine reconnection |
 | `heartbeat.timeout` | warn | No `pong` within the heartbeat window; the connection is terminated and reconnects |
 | `subscription.refresh` | warn | The credential `refresh` run for a subscription's retry failed (`id`, `err`): the subscription ends with the refusal the feed earned — the twin of `refresh.failed` on the call side |
 | `encryption.failed` | warn | The session handshake did not complete, or a frame did not open; the connection is closed — never a fallback to plaintext |
+
+An error the client has no caller to hand to is **escalated**: logged at
+`error` under an `event` that names where it came from, and emitted as
+`'error'` (or printed, when nobody listens). Those names:
+
+| `event` | Means |
+| ------- | ----- |
+| `transport.error` | The transport itself raised an error |
+| `message` | Handling an inbound message threw — a malformed frame, a handler of yours behind it |
+| `batch.flush`, `batch.dispatch` | Writing a batch of calls threw (its calls are failed, not left pending); handling one answer of a batch threw |
+| `heartbeat.ping`, `heartbeat.terminate` | Sending a ping, or terminating the connection after a missed pong, threw |
+| `reconnect.open`, `fallback.open`, `online.open` | An `open()` nobody awaits was rejected: a reconnect attempt, the next transport of the list, the re-open when the browser came back online |
+| `reconnect.restore`, `reconnect.afterOpen` | What runs after a reconnect — the re-`load()` and re-subscribe, the `authenticate` hook — failed |
+| `subscription.error` | A subscription ended with an error and had no `onError` to tell |
+| `subscription.listener` | A subscription's own `onEnd`/release callback threw |
+| `listener.open`, `listener.close`, `listener.drain`, `listener.reconnecting`, `listener.reconnect-failed`, `listener.heartbeat-timeout`, `listener.authenticate-failed`, `listener.refresh-failed`, `listener.restore-failed`, `listener.transport-fallback` | A listener of yours for that client event threw |
+| `client.error` | An escalated error with no more specific origin |
 
 ### Why some refusals are `debug`
 

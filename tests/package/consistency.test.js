@@ -457,3 +457,73 @@ test('protocol.md badges every section that is new since 1.0 and marks the exper
     'the page describes revision 2.0, not a frozen 1.0',
   );
 });
+
+// docs/guide/logging.md is the catalogue of `event` names — the field
+// alerts are built on. Every name the source can write has a row there, and
+// every row names something the source still writes: a log line added
+// without a row, or a row left behind by a rename, fails here. It is the
+// only way a catalogue of two hundred names stays one.
+test('the logging guide catalogues every log event the source writes, and nothing it does not', () => {
+  const { readdirSync, readFileSync } = require('node:fs');
+  const walk = (dir, out = []) => {
+    for (const entry of readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+      const relative = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) walk(relative, out);
+      else if (entry.name.endsWith('.js')) out.push(relative);
+    }
+    return out;
+  };
+  // How an event name reaches a logger in src/ — keep these SIMPLE, and add
+  // a sink here when a new helper takes the name as an argument:
+  const SINKS = [
+    /\bevent:\s*'([^'\n]+)'/g, // an entry's own field
+    /\breport\(\s*'([^'\n]+)'/g, // the broker adapters' report(event, error)
+    /\bfault\(\s*'([^'\n]+)'/g, // the ws / wt engines' #fault(event, error)
+    /\bescalate\(\s*\w+,\s*'([^'\n]+)'/g, // the client's #escalate(error, event)
+    /\bevent = '([^'\n]+)'/g, // …and its default
+    /\brunDelivery\([^)]*?'([^'\n]+)'/g, // the adapters' handler-crash tail
+    /\brefuseCall\([^)\n]*?'([^'\n]+)'\)/g, // the dispatcher's refusals
+    /\bevent: [^,'\n]+ \? '([^'\n]+)' : '[^'\n]+'/g, // a name chosen by a condition…
+    /\bevent: [^,'\n]+ \? '[^'\n]+' : '([^'\n]+)'/g, // …either branch
+  ];
+  // Names built at run time, spelled out: `broker.${action}` for the three
+  // outcomes that are not `dead` (which has a line of its own), and the
+  // envelope's `${event}.unsealed|keys|open` under its two prefixes.
+  const COMPUTED = [
+    'broker.ack',
+    'broker.retry',
+    'broker.release',
+    ...['backplane', 'cluster'].flatMap((prefix) => ['unsealed', 'keys', 'open'].map((kind) => `${prefix}.${kind}`)),
+  ];
+  // Matched by a sink, yet not a line: createEnvelope's `event` OPTION is
+  // the prefix of the three computed names above.
+  const NOT_EVENTS = new Set(['backplane']);
+
+  const written = new Map();
+  for (const file of walk('src')) {
+    const text = readFileSync(path.join(ROOT, file), 'utf8');
+    for (const sink of SINKS) {
+      for (const match of text.matchAll(sink)) {
+        if (!NOT_EVENTS.has(match[1]) && !written.has(match[1])) written.set(match[1], file);
+      }
+    }
+  }
+  for (const name of COMPUTED) written.set(name, '(computed)');
+  assert.ok(written.size > 200, `the sinks found only ${written.size} events — a pattern stopped matching`);
+
+  const guide = read('docs/guide/logging.md');
+  const mentioned = new Set(Array.from(guide.matchAll(/`([a-z][A-Za-z0-9.-]*)`/g), (match) => match[1]));
+  const undocumented = Array.from(written)
+    .filter(([name]) => !mentioned.has(name))
+    .map(([name, file]) => `${name} (${file})`);
+  assert.deepStrictEqual(undocumented, [], 'log events with no row in docs/guide/logging.md');
+
+  // The other direction: the first cell of every catalogue row.
+  const catalogue = guide.slice(guide.indexOf('## Event catalogue'), guide.indexOf('### Why some refusals are'));
+  const stale = [];
+  for (const row of catalogue.matchAll(/^\| (`[^|]+) \|/gm)) {
+    if (row[1] === '`event`') continue; // a table's header
+    for (const cell of row[1].matchAll(/`([^`]+)`/g)) if (!written.has(cell[1])) stale.push(cell[1]);
+  }
+  assert.deepStrictEqual(stale, [], 'catalogue rows for events the source no longer writes');
+});

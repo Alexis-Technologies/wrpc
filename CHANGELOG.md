@@ -1360,6 +1360,22 @@ bytes it sends. In that order:
    last 1.x node is gone. Nothing to do without `secret`.
 
 ### Changed
+- **The logging guide catalogues every `event` wrpc writes, and a test keeps
+  it so.** `docs/guide/logging.md` promised "every line an operator would
+  want an alert for" and listed about a hundred of some 240 names: none of
+  the broker adapters' lines (`broker.<adapter>.*` — the ones that say a
+  consumer stopped consuming), most of `rtc.*`, the rooms, backplane and
+  cluster failures, the SSE channel lines, the client's escalated errors.
+  They are all there now, by component, with their level and what they
+  mean. A guard in `tests/package/consistency.test.js` reads the event
+  names out of `src/` and fails on one with no row — and on a row whose
+  event is gone — so a log line cannot be added or renamed without its
+  documentation. `docs/guide/telemetry.md` lost four wrong statements with
+  it: a heartbeat timeout records **nothing** on `wrpc.client.heartbeat.rtt`
+  (it said "counted as `timeout`"; the signal is the `heartbeat.timeout`
+  line and an `attempted` reconnect), `wrpc.server.sessions` has six
+  operations and the gauges are seven (both said five), and
+  `wrpc.transport` also takes `wt` and `broker`.
 - **`RpcServer`: one `#identify` where five entry points each spelled out
   who a request is (internal).** An SSE channel's GET, a packet POST, a
   REST call, a host-delegated route and `attach({ request })` each built
