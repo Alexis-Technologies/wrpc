@@ -136,6 +136,16 @@ through a range read. A subscriber that stops reading does not grow memory
 without bound — past a high-water mark it drops its buffer and catches up from
 the log when it reads again.
 
+What the feed does with an entry is shared the same way where it does not
+depend on the subscriber: a sealed entry is opened once and its resume token
+signed once for every live subscriber of the topic on the instance, whatever
+their number (`bench/feed-fanout.js`: under a microsecond per subscriber with
+`secret` and `encryption` both on, against 0.7 µs with neither). What stays
+per subscriber is `decode` — each gets a value of its own, never one object
+shared between connections — your `map`, and the packet itself: its JSON and
+the write to the socket. A subscriber catching up reads its own pages and
+opens them itself; it joins the shared read at the tip.
+
 A live read the broker ends on its own — a consumer it cancelled, a channel
 it closed, a consumer that crashed — is replaced by a fresh one, and every
 subscriber catches up from its own position, so a dead tail loses nothing

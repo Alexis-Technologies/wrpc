@@ -151,7 +151,7 @@ want an alert for.
 | `broker.rpc.send`, `broker.rpc.reply` | warn | The broker refused to carry a frame to a session's inbox, or a reply to a stateless request |
 | `broker.rpc.capacity` | warn | Hellos refused at `maxSessions` since the last sweep (`refused`, `sessions`, `max`) — one line per sweep, not per hello |
 | `broker.refused` | warn/error | A sealed delivery a consumer could not open (`reason`: `unsealed`, `kid`, `open`, `format`); `kid` is retried, the rest dead-letter. `keys` — the key provider threw — is an error line with `err` |
-| `broker.feed.refused` | warn/error/debug/info | A sealed entry a feed could not open: `warn` once per reason per ten seconds with the running `count` (`error` with `err` when the reason is `keys`), `debug` in between, an `info` summary when the feed ends |
+| `broker.feed.refused` | warn/error/debug/info | A sealed entry a feed could not open: `warn` once per reason per ten seconds with the running `count` (`error` with `err` when the reason is `keys`), `debug` in between, an `info` summary when the feed ends. An entry the live subscribers of a topic share is reported by the one that opened it, not by each |
 | `broker.feed.resume` | warn/debug | A resume token was refused. `reason: 'signature'` means it was **tampered with** |
 | `broker.feed.gap` | info | A subscriber fell behind retention; the snapshot hook ran |
 | `broker.tail.lag` | info | Readers of a log topic (`topic`, `readers`) fell `highWaterMark` entries behind its live tail: their buffers were dropped and they catch up through the broker's range read — slow subscribers, and range load on the broker. Once per fall, not per entry |

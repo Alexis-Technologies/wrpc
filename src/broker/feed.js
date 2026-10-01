@@ -27,6 +27,9 @@ const DEFAULT_MAX_ID_LENGTH = 512;
 // holding a thousand entries under a key this service dropped is one line
 // per subscriber, not a thousand.
 const REFUSAL_INTERVAL = 10_000;
+// Resume tokens remembered per feed: a page of catch-up, which is as far
+// apart as the readers of one tail drift before they are lagging.
+const SIGNED_CAP = 256;
 
 const DECODERS = Object.freeze({
   json: (text) => JSON.parse(text),
@@ -94,6 +97,62 @@ const brokerFeed = (broker, topic, options = {}) => {
     if (id === null) return { after: null, code: 400, reason: 'signature' };
     if (log.parseId(id) === null) return { after: null, code: 400, reason: 'syntax' };
     return { after: id, code: null, reason: null };
+  };
+
+  // What does not depend on the subscriber is done once per ENTRY. A topic's
+  // local subscriptions all read one tail (TopicTails), which hands every
+  // reader the same entry — and each of them used to open it and sign its
+  // id again. bench/feed-fanout.js, 1000 subscribers, per reader-entry:
+  // secret 2.34 -> 0.84 µs, encryption 4.67 -> 0.71 µs (0.2 KB) and
+  // 5.71 -> 0.74 µs (2 KB), both 6.69 -> 0.91 µs and 7.94 -> 0.88 µs —
+  // against 0.7 µs for a feed with neither.
+
+  // The resume token: one HMAC per (topic, id), a bounded FIFO. The topic is
+  // in the key because it is in the MAC.
+  const signatures = new Map();
+  const signed = (name, id) => {
+    const key = `${name}\0${id}`;
+    let token = signatures.get(key);
+    if (token === undefined) {
+      token = signId(secret, id, name);
+      if (signatures.size >= SIGNED_CAP) signatures.delete(signatures.keys().next().value);
+      signatures.set(key, token);
+    }
+    return token;
+  };
+
+  // The opened entry, remembered by the entry's own `headers` object — the
+  // one thing a live tail shares between its readers, and gone with the
+  // entry (a WeakMap). A catch-up page, or a log that copies per reader
+  // (MemoryBroker), brings objects of its own: a miss, opened as before.
+  // `value` and `name` are compared because an adapter may hand one constant
+  // header bag to many entries. Opening is a pure function of (topic, kid,
+  // body) here — the feed's sealer has no replay window. A refusal is
+  // remembered too, and REPORTED by the reader that found it: one line and
+  // one count per entry, not one per subscriber. The opened headers are
+  // shared the way a plaintext entry's always were.
+  const openings = new WeakMap();
+  const open = (name, raw, refuse) => {
+    const headers = raw.headers;
+    const shared = headers !== null && typeof headers === 'object';
+    if (shared) {
+      const hit = openings.get(headers);
+      if (hit !== undefined && hit.value === raw.value && hit.name === name) return hit.entry;
+    }
+    const opened = sealing.open(name, { headers, body: raw.value });
+    let entry = raw;
+    if (opened.refused !== undefined) {
+      refuse(raw.id, opened.refused, opened.error);
+      // Skipped like an undecodable entry — and never yielded as it is.
+      entry = null;
+    } else if (opened.sealed) {
+      entry = { headers: opened.headers, value: toText(opened.body) };
+    } else {
+      // Plaintext, accepted: nothing was computed, nothing to remember.
+      return raw;
+    }
+    if (shared) openings.set(headers, { name, value: raw.value, entry });
+    return entry;
   };
 
   return async function* feed(context, args, { lastEventId = null, signal: outer = null } = {}) {
@@ -177,13 +236,9 @@ const brokerFeed = (broker, topic, options = {}) => {
             after = raw.id;
             let entry = raw;
             if (sealing !== null) {
-              const opened = sealing.open(name, { headers: raw.headers, body: raw.value });
-              if (opened.refused !== undefined) {
-                // Skipped like an undecodable entry — and never yielded as it is.
-                refuse(raw.id, opened.refused, opened.error);
-                continue;
-              }
-              if (opened.sealed) entry = { ...raw, headers: opened.headers, value: toText(opened.body) };
+              const opened = open(name, raw, refuse);
+              if (opened === null) continue;
+              if (opened !== raw) entry = { id: raw.id, headers: opened.headers, value: opened.value };
             }
             let value;
             try {
@@ -197,7 +252,7 @@ const brokerFeed = (broker, topic, options = {}) => {
               value = await map(value, entry, context);
               if (value === undefined) continue;
             }
-            yield tracked(secret === null ? entry.id : signId(secret, entry.id, name), value);
+            yield tracked(secret === null ? entry.id : signed(name, entry.id), value);
           }
           return;
         } catch (error) {
@@ -209,7 +264,7 @@ const brokerFeed = (broker, topic, options = {}) => {
           code = error.code;
           // What the client itself holds: its own id at the start, the last
           // token this feed handed it mid-stream.
-          resumedFrom = after === null ? lastEventId : secret === null ? after : signId(secret, after, name);
+          resumedFrom = after === null ? lastEventId : secret === null ? after : signed(name, after);
           after = null;
         }
       }

@@ -1444,6 +1444,20 @@ bytes it sends. In that order:
   to `range()` without a sign: `onLag(topic, readers)` hears of it — once
   per fall, nothing while everybody keeps up — and the four adapters log it
   as `broker.tail.lag` (info).
+- **A durable feed opens and signs an entry once, not once per
+  subscriber.** `TopicTails` made a topic one broker read for all its local
+  subscribers, and each of them then opened the sealed entry and signed its
+  resume token again — the same bytes, N times. `brokerFeed` now remembers
+  both per entry: the opening by the entry the live tail shares, the token
+  in a small FIFO per feed. `bench/feed-fanout.js` (new), 1000 subscribers,
+  per subscriber-entry: with `secret` 2.34 → 0.84 µs, with `encryption`
+  4.67 → 0.71 µs at 0.2 KB and 5.71 → 0.74 µs at 2 KB, with both 6.69 →
+  0.91 µs — against 0.7 µs for a feed with neither. `decode` is still each
+  subscriber's own (a decoded object is never shared between connections;
+  the bench's `json` rows are that cost), and so is a catch-up page. One
+  visible change: an entry that does not open is logged and counted
+  (`broker.feed.refused`, `wrpc.broker.refused`) once, by the subscriber
+  that opened it, where every subscriber of the topic used to report it.
 - **`attachBrokerRpc().healthy` knows when its listeners are deaf.** It was
   `true` until `stop()`, whatever happened to the broker — an instance whose
   service consumer had been cancelled stayed in rotation, answering nothing.
