@@ -1487,6 +1487,14 @@ bytes it sends. In that order:
   to `range()` without a sign: `onLag(topic, readers)` hears of it — once
   per fall, nothing while everybody keeps up — and the four adapters log it
   as `broker.tail.lag` (info).
+- **The examples are linted, formatted and checked against the package.**
+  `examples/` — what a reader copies first — was outside lint and format,
+  and nothing ran it, while the entries it requires (`webrtc.js`, `wt.js`,
+  `auth.js`) were reshaped on the way to 2.0. Its scripts are lint and
+  format targets now, and `tests/examples.test.js` compiles each one and
+  checks every name it takes from a root entry against what that entry
+  exports: a rename no longer leaves an example that throws on its first
+  line.
 - **The Redis session stores are tested against a real Redis.**
   `createRedisSessionStore` and `sealedStore` over it were only ever run on
   in-repo fakes, which accept an expiring `SET`, `PEXPIRE` and `SET … XX`

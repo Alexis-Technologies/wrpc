@@ -112,8 +112,11 @@ Three always-on jobs and four service jobs (`.github/workflows/ci.yml`):
   instead of skipping it green. Locally, `pnpm brokers:up` starts the same
   four and each suite skips itself without its env var.
 
-Lint and format deliberately target `src tests scripts bench bin` only, so
-`docs/` is not covered by them.
+Lint and format target `src tests scripts bench bin examples` — the examples'
+scripts, not their pages or READMEs — and deliberately not `docs/`. The
+examples are not run by the suite (they need servers and a browser);
+`tests/examples.test.js` checks that each compiles and that every name it
+takes from a root entry is one that entry exports.
 
 Checks deliberately **not** in CI — run them by hand:
 
