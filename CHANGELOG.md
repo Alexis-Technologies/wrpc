@@ -1360,6 +1360,17 @@ bytes it sends. In that order:
    last 1.x node is gone. Nothing to do without `secret`.
 
 ### Changed
+- **WebTransport stream mux: measured, and one decode removed.** The new
+  `bench/wt-streams.js` times the per-chunk paths `bench/wt-framing.js`
+  stops short of. An outbound chunk decoded its stream id twice — once to
+  find the stream, once more only for the payload offset, which is one
+  byte read: `StreamMux.chunk()` is 13 % faster (867K → 980K ops/sec at
+  1 KiB). Two further candidates were measured and left alone, with the
+  numbers in the bench file's header: re-framing an inbound read from a
+  header cached per stream (13 % of the re-frame at 1 KiB, 7 % at 16 KiB —
+  the payload copy is the cost) and an idle timer that keeps a timestamp
+  instead of re-arming (55 ns a read, behind an option that is off by
+  default).
 - **`@alexify/wrpc/deflate`: a codec prepares its dictionary once.** The
   pure-JS encoder allocated its window and 128 KB of hash heads on every
   call and hashed the whole dictionary again each time, so a 108 B event

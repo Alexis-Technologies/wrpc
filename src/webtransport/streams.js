@@ -271,15 +271,16 @@ class StreamMux {
     for (let i = 0; i < pending.length; i++) {
       const frame = pending[i];
       // Uncounted here; the control stream counts it as its own.
-      this.#onQueued(readId(frame).offset - frame.length);
+      this.#onQueued(1 + frame[0] - frame.length);
       if (this.#writeControl) this.#writeControl(frame);
     }
     if (entry.ended && this.#sendControl) this.#sendControl({ type: 'stream', id, status: entry.ended });
   }
 
   #route(entry, frame, counted) {
-    const { offset } = readId(frame);
-    const payload = frame.subarray(offset);
+    // The payload starts past the id: one byte read, not a second decode
+    // of the id chunk() already looked the entry up by (bench/wt-streams.js).
+    const payload = frame.subarray(1 + frame[0]);
     const size = payload.length;
     if (!counted) this.#onQueued(size);
     entry.chain = entry.chain
