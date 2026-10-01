@@ -117,7 +117,7 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 77.0 KB | **26.0 KB** | 27.0 KB |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 77.5 KB | **26.1 KB** | 27.0 KB |
 | `@alexify/wrpc` — node (client + server) | 286.3 KB | 95.9 KB | — |
 | `@alexify/wrpc/ws` (WebSocket engine) | 32.1 KB | 11.4 KB | — |
 | `@alexify/wrpc/engine` (engine port) | 32.7 KB | 11.6 KB | — |
@@ -130,7 +130,7 @@ then gzipped):
 | `@alexify/wrpc/broker/nats` | 23.9 KB | 9.0 KB | — |
 | `@alexify/wrpc/broker/amqp` | 27.0 KB | 9.9 KB | — |
 | `@alexify/wrpc/broker/kafka` | 26.9 KB | 10.0 KB | — |
-| `@alexify/wrpc/sse` — browser (client transport) | 80.4 KB | **27.0 KB** | 27.0 KB |
+| `@alexify/wrpc/sse` — browser (client transport) | 80.9 KB | **27.1 KB** | 28.0 KB |
 | `@alexify/wrpc/sse` — node | 139.8 KB | 46.9 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` (token strategies) | 3.8 KB | **1.8 KB** | 2.0 KB |

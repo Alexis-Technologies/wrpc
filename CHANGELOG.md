@@ -2232,6 +2232,22 @@ bytes it sends. In that order:
   `bench/deflate-js.js`, which gained a many-blocks row and a Huffman-only
   row that runs every rare symbol through the sub-table path. The
   `./deflate` budget is 5 KB (was 4; the entry is 4.1).
+- **Client: `static encrypts` is checked by deed, and a per-request
+  transport is checked for its key up front.** The client refused
+  `options.encryption` for a transport without the static, but a static is
+  inherited: a subclass of the ws transport with an `open()` of its own
+  passed the check and could open a session nobody sealed. A session
+  transport (`encrypts = true`) that says `'open'` with no `encryption` set
+  is now terminated before `'open'` is announced, the `authenticate` hook
+  runs or a packet leaves — `connect()` rejects with a `TypeError` (or moves
+  to the next fallback candidate), and nothing reconnects. The http and sse
+  transports declare `encrypts = 'request'`: an option with no `serverKey`
+  (the `NN`, `XX`, `NNpsk0` patterns) is refused for them when the list of
+  candidates is read, not on the day ws is unreachable and the fallback
+  nobody tested is taken. `ClientTransport` types the static and the
+  instance field; the transport contract suite checks both. The sse
+  browser entry's budget is 28 KB (was 27: it is the main entry plus the SSE
+  client, sat 11 bytes under, and the check is +0.1 KB in the shared core).
 - **Sealed envelopes: `maxSenders`, and a sender is known by its cipher
   too.** A receiver remembered senders under (key id, salt) and looked a
   known one up without the frame's suite byte, so a copy of a known

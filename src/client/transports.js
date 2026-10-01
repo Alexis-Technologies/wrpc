@@ -185,7 +185,9 @@ class ClientWsTransport extends ClientTransport {
 class ClientHttpTransport extends ClientTransport {
   // Carries `options.encryption`: no session here, so every request is
   // sealed to the pinned server key on its own (HPKE) — by wrapping fetch.
-  static encrypts = true;
+  // Per request, not per session: checked up front against the option's
+  // `fetch` (see WrpcClient's #checkEncryption).
+  static encrypts = 'request';
 
   // One request, one response: nothing to cancel or subscribe on.
   persistent = false;

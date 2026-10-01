@@ -276,6 +276,16 @@ test('sse encryption: no serverKey, nothing to seal a request to', async (t) => 
     WrpcClient.connect(endpoint, { transport: 'sse', encryption: createEncryption({ pattern: 'NN' }), logger: false }),
     /has no serverKey to seal a request to — the sse transport needs one/,
   );
+  // As a fallback candidate too — said before the first one is tried, not
+  // on the day it is unreachable.
+  await assert.rejects(
+    WrpcClient.connect(endpoint, {
+      transport: ['ws', 'sse'],
+      encryption: createEncryption({ pattern: 'NN' }),
+      logger: false,
+    }),
+    (error) => error instanceof TypeError && /the sse transport needs one/.test(error.message),
+  );
 });
 
 const sealedBody = (key, chunks, mangle = (lines) => lines) => {

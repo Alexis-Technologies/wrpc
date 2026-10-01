@@ -222,6 +222,19 @@ export interface WrpcMethodInfo {
 }
 
 declare class ClientTransport extends Emitter {
+  /**
+   * @experimental How this transport carries `options.encryption`, checked
+   * for every candidate before anything opens — plaintext is never a
+   * fallback. `true`: a session transport (ws, wt), which runs the
+   * handshake inside `open()` and MUST have `encryption` set by the time it
+   * emits `'open'` — the client closes one that has not. `'request'`: each
+   * request is sealed on its own (http, sse), which needs an option made
+   * with a `serverKey`. `'keys'`: a keyring over a shared carrier (the
+   * broker transport). Absent or `false`: the option is refused.
+   */
+  static encrypts?: boolean | 'request' | 'keys';
+  /** @experimental The facts of the encrypted session once established — a `static encrypts = true` transport sets it before `'open'`. */
+  encryption?: EncryptionInfo | null;
   url: string;
   active: boolean;
   /** Stays open (WebSocket, port, SSE, data channel): carries subscriptions, cancel and streams. */

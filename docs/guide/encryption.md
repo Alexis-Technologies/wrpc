@@ -413,6 +413,17 @@ the server's `encryption.ciphers` is a list of the two built-in names, so a
 `Cipher` handed to `createEncryption` meets nothing on the other side —
 name `'aes-256-gcm'` or `'chacha20-poly1305'` there.
 
+A **client transport** of your own says how it carries the option with a
+static: `static encrypts = true` for a session transport — it runs
+`options.encryption.secure(link)` inside `open()` and has
+`this.encryption` set before it emits `'open'`; the client closes one that
+says `'open'` without it, before a hook or a packet goes out — or
+`'request'` for one that seals each request through
+`options.encryption.fetch`, which exists only for an option made with a
+`serverKey` (checked for every fallback candidate before the first is
+tried). Without the static the option is refused for that transport:
+plaintext is never what a client that encrypts falls back to.
+
 `isCipher`, `isDh`, `isKem` and `isKeyProvider` are the checks the options
 run. A `Kem` (`createHpke({ kem, kdf, cipher })`) is where ML-KEM or a hybrid
 goes; a `Dh` is what Noise and DHKEM run over.

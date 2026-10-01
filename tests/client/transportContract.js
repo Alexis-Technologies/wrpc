@@ -31,6 +31,17 @@ const runTransportContract = async (t, name, Transport) => {
     assert.strictEqual(typeof instance.heartbeat, 'boolean');
     assert.strictEqual(instance.active, false, 'a fresh transport starts inactive');
   });
+
+  // What `options.encryption` is checked against before anything opens:
+  // true — a session transport, which sets `encryption` before it says
+  // 'open'; 'request' — sealed per request, needs the option's `fetch`;
+  // 'keys' — a keyring over a shared carrier; absent or false — refused.
+  await t.test(`${name}: declares how it carries encryption, or that it does not`, () => {
+    assert.ok([undefined, false, true, 'request', 'keys'].includes(Transport.encrypts), String(Transport.encrypts));
+    if (Transport.encrypts !== true) return;
+    const instance = new Transport(`x://host/${name}`);
+    assert.strictEqual(instance.encryption, null, 'a session transport exposes `encryption`, null until established');
+  });
 };
 
 module.exports = { runTransportContract };

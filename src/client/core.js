@@ -695,9 +695,42 @@ class WrpcClient extends Emitter {
     if (typeof encryption !== 'object' || typeof encryption.secure !== 'function') {
       throw new TypeError("options.encryption must come from createEncryption() ('@alexify/wrpc/encryption')");
     }
+    // A transport that seals each request (http, sse) needs the server's
+    // key before the first one, which only some patterns have: said here,
+    // for every fallback candidate, not on the day ws is unreachable.
+    if (Transport.encrypts === 'request') {
+      if (typeof encryption.fetch === 'function') return;
+      throw new TypeError(`options.encryption has no serverKey to seal a request to — the ${name} transport needs one`);
+    }
     if (Transport.encrypts !== true) {
       throw new TypeError(`Transport '${name}' cannot carry options.encryption — and plaintext is not a fallback`);
     }
+  }
+
+  // The other half of `static encrypts = true`, checked by deed: a session
+  // transport asked to encrypt has `encryption` set by the time it says
+  // 'open'. A static is inherited, so a subclass with an open() of its own
+  // passes the check above and may still open a session nobody sealed —
+  // refused here, before 'open' is announced, a hook presents a credential
+  // or a packet leaves. Terminal (out of the reconnect cycle before the
+  // terminate reports its close): the next attempt would be the same. The
+  // connection is counted in so the close handler's count out balances, and
+  // the rejection is what open() re-raises — it awaits #opened.
+  #refuseUnsealed() {
+    const transport = this.#transport;
+    if (typeof this.#options.encryption?.secure !== 'function') return false;
+    if (transport.constructor.encrypts !== true || transport.encryption) return false;
+    WrpcClient.connections.delete(this);
+    this.#otel.recordConnection(1);
+    try {
+      transport.terminate();
+    } catch {
+      // Already dead.
+    }
+    this.#resetSession();
+    this.#opened = Promise.reject(new TypeError('The transport opened a session it did not encrypt'));
+    this.#opened.catch(() => {});
+    return true;
   }
 
   static async connect(url, options = {}) {
@@ -835,6 +868,7 @@ class WrpcClient extends Emitter {
       this.#transport.on(event, handler);
     };
     bind('open', () => {
+      if (this.#refuseUnsealed()) return;
       clearTimeout(this.#reconnectTimer);
       this.#reconnectTimer = null;
       const attempts = this.#attempt;

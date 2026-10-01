@@ -134,7 +134,11 @@ const ENTRIES = [
   // 25 -> 26 with the main entry's session-encryption seam (measured 24.9 against 24.5).
   // 26 -> 27 with the main entry's 2.0 review raise, plus the SSE channel
   // secret the client carries after the id (measured 26.2 against 25.7).
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 27 },
+  // 27 -> 28: this entry is the main one plus the SSE client (~1 KB), and
+  // the main entry's own 26 -> 27 raise never reached it — it sat 11 bytes
+  // under. The client core checking by deed that a session transport sealed
+  // what it opened (+0.1 KB, measured 27,768 B against 27,648) is what crossed it.
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 28 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and

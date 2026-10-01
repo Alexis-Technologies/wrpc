@@ -2,6 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const timers = require('node:timers/promises');
 
 const { defineRouter, procedure, WrpcClient } = require('../../index.js');
 const { createEncryption, generateKey } = require('../../encryption.js');
@@ -250,6 +251,72 @@ test('ws encryption: a client that encrypts never settles for less', async (t) =
   );
   await assert.rejects(WrpcClient.connect(url, { encryption: { keys: 'x' } }), /must come from createEncryption/);
   await assert.rejects(WrpcClient.connect(url, { encryption, worker: {} }), /belongs to the WrpcClientProxy/);
+});
+
+test('ws encryption: `static encrypts` is checked by deed — a transport that opens without sealing is closed before anything is said', async (t) => {
+  // Not required on this server, so a plaintext socket is a session it accepts.
+  const { url, server, serverKey } = await secure(t);
+  const wire = spyWire(server);
+  // The static is inherited; the open() is its own, and drops the option.
+  class Lying extends WrpcClient.transport.ws {
+    open(options) {
+      return super.open({ ...options, encryption: undefined });
+    }
+  }
+  WrpcClient.transport.lying = Lying;
+  t.after(() => delete WrpcClient.transport.lying);
+  const before = new Set(WrpcClient.connections);
+  let presented = 0;
+  const announced = [];
+  const options = {
+    transport: 'lying',
+    encryption: createEncryption({ serverKey }),
+    heartbeat: false,
+    logger: false,
+    authenticate: async () => void presented++,
+  };
+  await assert.rejects(WrpcClient.connect(url, options), (error) => {
+    assert.ok(error instanceof TypeError);
+    assert.match(error.message, /opened a session it did not encrypt/);
+    return true;
+  });
+  assert.strictEqual(presented, 0, 'no credential was presented to a session nobody sealed');
+  await timers.setTimeout(60);
+  assert.deepStrictEqual(new Set(WrpcClient.connections), before, 'terminal: nothing is left reconnecting');
+  assert.deepStrictEqual(
+    wire.inbound.map((frame) => frame.bytes.toString()),
+    [],
+    'and not one packet left on it',
+  );
+  // In a fallback list the next candidate is tried — one that does seal.
+  const client = await WrpcClient.connect(url, { ...options, transport: ['lying', 'ws'], reconnect: false });
+  t.after(() => client.close());
+  client.on('transport-fallback', (event) => announced.push(event));
+  assert.strictEqual(presented, 1);
+  assert.strictEqual(client.encryption?.pattern, 'NK');
+});
+
+test('ws encryption: a per-request candidate with nothing to seal a request to is refused up front, not on the day ws is down', async (t) => {
+  const psk = generateKey();
+  const { url } = await secure(t, { encryption: { keys: generateKey(), patterns: ['NK', 'NNpsk0'], psk } });
+  // NNpsk0 has no server key: fine for a session, nothing for HPKE to seal to.
+  const encryption = createEncryption({ pattern: 'NNpsk0', psk });
+  await assert.rejects(
+    WrpcClient.connect(url, { encryption, transport: ['ws', 'http'], logger: false }),
+    (error) =>
+      error instanceof TypeError &&
+      /no serverKey to seal a request to — the http transport needs one/.test(error.message),
+  );
+  // By itself the session transport carries it.
+  const client = await connectClient(t, url, { encryption, transport: ['ws'] });
+  assert.strictEqual(client.encryption.pattern, 'NNpsk0');
+  // And with a server key every candidate can.
+  const pinned = await secure(t);
+  const all = await connectClient(t, pinned.url, {
+    encryption: createEncryption({ serverKey: pinned.serverKey }),
+    transport: ['ws', 'http'],
+  });
+  assert.strictEqual(all.encryption.pattern, 'NK');
 });
 
 test('ws encryption: a server that takes the connection for a plaintext one is refused at once, not at the timeout', async (t) => {

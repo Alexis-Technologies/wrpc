@@ -93,7 +93,8 @@ const joinUrl = (base, path) => (base.endsWith('/') ? base.slice(0, -1) : base) 
 
 class ClientSseTransport extends ClientTransport {
   // Carries `options.encryption`, per request like http — see open().
-  static encrypts = true;
+  // Sealed per request, like http: needs the option's `fetch`.
+  static encrypts = 'request';
 
   // The stream can die without a close frame just like a socket can.
   heartbeat = true;

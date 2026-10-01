@@ -902,3 +902,8 @@ expectType<wrpc.DeclaredHandshake>(wrpc.readHandshake(upgradeRequest));
 expectType<wrpc.DeclaredHandshake>(wrpc.readHandshake({ url: '/api', headers: {} }, { metaMaxBytes: 4096 }));
 expectType<string | Array<string> | undefined>(wrpc.readHandshake(upgradeRequest).headers['x-app-version']);
 expectError(wrpc.readHandshake(upgradeRequest, { metaMaxBytes: '4096' }));
+
+// How a client transport carries `options.encryption`: the static the client
+// checks before anything opens, and the field a session transport sets.
+expectType<boolean | 'request' | 'keys' | undefined>(wrpc.WrpcClient.transport.wt.encrypts);
+expectAssignable<object | null | undefined>(clientWs.encryption);
