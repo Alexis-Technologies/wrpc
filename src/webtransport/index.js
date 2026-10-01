@@ -12,6 +12,7 @@
 const { WtSocket, normalizeBackpressure, DEFAULT_HIGH_WATER_MARK, DEFAULT_LOW_WATER_MARK } = require('./socket.js');
 const { createLoggerWriter } = require('../logging.js');
 const { isWtSession, isWtStream, isWtDatagrams } = require('./port.js');
+const { closeQuietly } = require('./channel.js');
 const { fromQuico } = require('./quico.js');
 // Requiring it registers ServerTransport.transport.wt — what attachSocket
 // picks for `kind: 'wt'`.
@@ -24,14 +25,6 @@ const DEFAULT_ACCEPT_TIMEOUT = 10_000;
 // Sessions acceptSessions may hold in their handshake at once; the next one
 // is refused 503 rather than queued behind them.
 const DEFAULT_MAX_PENDING = 256;
-
-const closeQuietly = (session, info) => {
-  try {
-    session.close(info);
-  } catch {
-    // Already closed.
-  }
-};
 
 // The RpcServer behind whatever was handed over: a Server (its `rpc`), an
 // RpcServer, or anything else with attachSocket — a PeerHost does not

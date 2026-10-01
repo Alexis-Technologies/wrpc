@@ -18,6 +18,7 @@ const {
 } = require('../../src/webtransport/framing.js');
 const { chunkEncode } = require('../../src/chunks.js');
 const { createFakeWt } = require('./fakeWebTransport.js');
+const { acceptSessions } = require('../../wt.js');
 const { runChannelContract, peerEnd } = require('./channelContract.js');
 const { runTransportContract } = require('../client/transportContract.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
@@ -227,6 +228,31 @@ test('wt transport: a peer close is one close event; close() tells the peer; ter
   third.transport.terminate();
   assert.deepStrictEqual(events, ['close'], 'terminate reports synchronously');
   assert.ok(await third.session.closed);
+});
+
+test('wt transport: the flow-control options of the `wt` bag reach the session through connect(), not only a hand-built transport', async (t) => {
+  const { server, url } = await bootServer(t, { router: defineRouter({}) });
+  const world = createFakeWt();
+  const acceptor = acceptSessions(server, world.sessions);
+  t.after(() => acceptor.stop());
+  const connect = (wt) => connectClient(t, url, { transport: 'wt', wt: { WebTransport: world.WebTransport, ...wt } });
+  // connect() builds the transport itself, with no options: these used to
+  // be read from the constructor's alone, so the documented `wt` bag was
+  // ignored for all four.
+  const client = await connect({ highWaterMark: 64, lowWaterMark: 16 });
+  const release = world.hold();
+  const drained = new Promise((resolve) => client.once('drain', resolve));
+  const stream = client.createStream('blob', 4096);
+  assert.strictEqual(stream.write(new Uint8Array(4096)), false, 'past a 64-byte high-water mark');
+  release();
+  await drained;
+  stream.terminate();
+  // A bad value in the bag is said when the session is opened.
+  await assert.rejects(connect({ maxBackpressure: -1 }), /maxBackpressure must be a non-negative integer/);
+  assert.throws(
+    () => new ClientWtTransport(ENDPOINT, { maxBackpressure: 1.5 }),
+    /wt transport: options: maxBackpressure must be/,
+  );
 });
 
 test('wt transport: close() delivers what was written before it, then tells the peer', async (t) => {

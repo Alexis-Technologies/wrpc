@@ -26,66 +26,31 @@
 // A node EventEmitter, like Connection and UwsSocket: the engine port's
 // 'message' carries two arguments (data, isBinary), which wrpc's own
 // single-value Emitter cannot.
+//
+// The channel itself — framing, the capabilities exchange, compression, the
+// stream mux, the datagrams, the byte accounting — is src/webtransport/
+// channel.js, shared with the client transport. What is here is what makes
+// it a server socket: the events, pause(), the idle timer, the log, the
+// close codes.
 const { EventEmitter } = require('node:events');
 const { clip } = require('../rpc/errors.js');
+const { normalizeCompression } = require('../compression/index.js');
 const {
-  StreamParser,
-  frame,
-  frameText,
-  frameCaps,
-  datagramText,
-  parseDatagram,
-  datagramWriter,
-  toBytes,
-  decodeText,
-  parseCaps,
-  KIND_TEXT,
-  KIND_BINARY,
-  KIND_CAPS,
-  KIND_TEXT_COMPRESSED,
-  KIND_BINARY_COMPRESSED,
-  DEFAULT_MAX_MESSAGE,
-} = require('./framing.js');
-const { StreamMux } = require('./streams.js');
-const { normalizeCompression, negotiate, Sequencer, INFLIGHT_LIMIT } = require('../compression/index.js');
+  WtChannel,
+  closeQuietly,
+  normalizeBackpressure,
+  DEFAULT_HIGH_WATER_MARK,
+  DEFAULT_LOW_WATER_MARK,
+  DEFAULT_MAX_BACKPRESSURE,
+  DEFAULT_CLOSE_TIMEOUT,
+} = require('./channel.js');
 
-const TEXT_ENCODER = new TextEncoder();
-
-const DEFAULT_HIGH_WATER_MARK = 1024 * 1024;
-const DEFAULT_LOW_WATER_MARK = 256 * 1024;
-// The cap behind the high-water mark: a peer that never drains is
-// terminated once this much is queued for it, as the WebSocket engine's
-// maxBackpressure does — a slow consumer used to be able to hold as much
-// as the process had. 0 switches it off.
-const DEFAULT_MAX_BACKPRESSURE = 64 * 1024 * 1024;
-// A graceful close() ends the control stream first and the session after
-// it: how long the stream may take to hand over what was already written
-// (the WebSocket engine's CLOSE_TIMEOUT), and how long the END of the
-// peer's control stream is given to be followed by its session close.
-const DEFAULT_CLOSE_TIMEOUT = 1000;
-const CLOSE_GRACE = 200;
 // Datagrams handed to the session and not yet taken by it. On the hosts
 // wrpc is run against the sink is synchronous and this never passes one;
 // the cap is for a host whose sink holds its promise — a W3C-shaped one
 // under congestion — where an unbounded queue of positions nobody wants
 // any more is the opposite of what a datagram is for.
 const MAX_DATAGRAMS_IN_FLIGHT = 64;
-
-const normalizeBackpressure = (value, label) => {
-  if (value === undefined) return DEFAULT_MAX_BACKPRESSURE;
-  if (!Number.isInteger(value) || value < 0) {
-    throw new TypeError(`${label}: maxBackpressure must be a non-negative integer of bytes (0 = off)`);
-  }
-  return value;
-};
-
-const closeQuietly = (session, info) => {
-  try {
-    session.close(info);
-  } catch {
-    // Already closed.
-  }
-};
 
 class WtSocket extends EventEmitter {
   // What attachSocket reads into the client's meta; a WebTransport session
@@ -95,37 +60,16 @@ class WtSocket extends EventEmitter {
 
   #session;
   #stream;
-  #writer;
-  #datagrams = null;
-  #datagramsInFlight = 0;
-  #datagramsDropped = 0;
-  #mux;
-  #parser;
-  #queued = 0;
-  #pressured = false;
+  #channel;
   #closed = false;
   #paused = false;
   // While paused: the promise every read — the control stream's and the
   // mux's side streams' — waits on, and what resume() settles it with.
   #gate = null;
   #release = null;
-  #highWater;
-  #lowWater;
-  #maxBackpressure;
-  #maxMessage;
-  #closeTimeout;
   #log;
-  #onCodecError;
   #idle = 0;
   #idleTimer = null;
-  // Per-message compression (src/compression): the normalized option, and
-  // what is in effect once the peer named the same codec — null until then,
-  // and forever when the option is off.
-  #compression;
-  #active = null;
-  // Order around a codec that may answer asynchronously, one per direction.
-  #outbound = new Sequencer((error) => this.#error(error));
-  #inbound = new Sequencer((error) => this.#violation(error));
 
   /**
    * `stream` is the control stream — the first bidirectional stream the
@@ -164,73 +108,58 @@ class WtSocket extends EventEmitter {
     this.#session = session;
     this.#stream = stream;
     this.#log = log;
-    this.#onCodecError = onCodecError;
     this.remoteAddress = remoteAddress;
-    this.#highWater = highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
-    this.#lowWater = lowWaterMark ?? DEFAULT_LOW_WATER_MARK;
-    this.#maxBackpressure = normalizeBackpressure(maxBackpressure, 'WtSocket: options');
-    this.#maxMessage = maxMessage ?? DEFAULT_MAX_MESSAGE;
     if (!Number.isInteger(closeTimeout) || closeTimeout < 0) {
       throw new TypeError('WtSocket: options.closeTimeout must be a non-negative integer of milliseconds');
     }
-    this.#closeTimeout = closeTimeout;
-    this.#compression = normalizeCompression(compression, 'WtSocket: options');
     this.#idle = idleTimeout;
     this.#touch();
-    const datagrams = session.datagrams;
-    const writer = datagramWriter(datagrams);
-    if (writer && typeof datagrams.readable?.getReader === 'function') {
-      this.#datagrams = writer;
-      void this.#readDatagrams(datagrams.readable);
-    }
-    this.#writer = stream.writable.getWriter();
-    // Binary streams on their own WebTransport streams, negotiated through
-    // the capabilities message each end sends first (streams.js). A client
-    // under a wire codec announces none, which switches both directions off.
-    const mux = new StreamMux(session, {
-      emitPacket: (text) => this.emit('message', text, false),
-      emitChunk: (chunk) => this.emit('message', chunk, true),
-      onQueued: (size) => {
-        this.#queued += size;
+    this.#channel = new WtChannel(
+      session,
+      stream,
+      {
+        highWaterMark,
+        lowWaterMark,
+        maxBackpressure: normalizeBackpressure(maxBackpressure, 'WtSocket: options'),
+        maxMessage,
+        closeTimeout,
+        compression: normalizeCompression(compression, 'WtSocket: options'),
+        maxDatagramsInFlight: MAX_DATAGRAMS_IN_FLIGHT,
+        mux: {
+          // An inbound stream cancelled unread (streams.js): announced for
+          // the host to log — a peer opening streams it never names is a
+          // signal.
+          onRefused: (reason, id) => void this.emit('stream-refused', { reason, id }),
+          onFallback: () => void this.#log?.info({ event: 'wt.mux.fallback' }),
+          ...(maxHeldStreams === undefined ? null : { maxHeldStreams }),
+          ...(holdTimeout === undefined ? null : { holdTimeout }),
+        },
+        // pause() stops the side streams too, and their bytes are liveness
+        // as much as the control stream's — an upload used to keep flowing
+        // around a pause, and a session busy with one used to idle out.
+        gate: () => this.#gate,
+        onActivity: () => this.#touch(),
+        onCodecError,
+        onDatagramDrop: () => void this.#log?.warn({ event: 'wt.datagram.dropped' }),
       },
-      onSent: (size) => this.#sent(size),
-      // Through the outbound order, not straight to the writer: a stream
-      // packet must not overtake a message still being compressed.
-      writeControl: (chunk) => {
-        if (!this.#exceedsBackpressure()) this.#enqueue(frame(KIND_BINARY, chunk));
+      (data, isBinary) => this.emit('message', data, isBinary),
+      () => this.emit('drain'),
+      // A message the peer sent that cannot be read is its protocol
+      // violation: the 1002 a malformed frame gets, and its line.
+      (error) => {
+        this.#fault('wt.violation', error, { code: typeof error?.code === 'string' ? error.code : null });
+        this.close(1002, 'Protocol error');
       },
-      // No codec where the mux is on (the peer announced streams only
-      // without one), so a packet is its JSON.
-      sendControl: (packet) => {
-        if (!this.#exceedsBackpressure()) this.#enqueue(frameText(JSON.stringify(packet)));
+      // Past maxBackpressure: a peer that never drains.
+      (error) => {
+        this.#error(error);
+        this.terminate();
       },
-      // An inbound stream cancelled unread (streams.js): announced for the
-      // host to log — a peer opening streams it never names is a signal.
-      onRefused: (reason, id) => void this.emit('stream-refused', { reason, id }),
-      onFallback: () => void this.#log?.info({ event: 'wt.mux.fallback' }),
-      // pause() stops the side streams too, and their bytes are liveness
-      // as much as the control stream's — an upload used to keep flowing
-      // around a pause, and a session busy with one used to idle out.
-      gate: () => this.#gate,
-      onActivity: () => this.#touch(),
-      ...(maxHeldStreams === undefined ? {} : { maxHeldStreams }),
-      ...(holdTimeout === undefined ? {} : { holdTimeout }),
-    });
-    this.#mux = mux;
-    this.#parser = new StreamParser({
-      maxMessage: this.#maxMessage,
-      onMessage: (kind, data) => {
-        if (kind === KIND_CAPS) {
-          mux.peerCaps(data);
-          return void this.#negotiate(data);
-        }
-        this.#receive(kind, data);
-      },
-    });
-    this.#writer.write(frameCaps(this.#caps(session))).catch(() => {});
-    if (typeof session.incomingUnidirectionalStreams?.getReader === 'function') {
-      void this.#readUni(session.incomingUnidirectionalStreams);
-    }
+      (error) => this.#error(error),
+      // The peer ended the control stream: the connection is over. Its
+      // session close follows with its code; 1000 when it does not.
+      () => this.#channel.expectClose({ closeCode: 1000, reason: '' }),
+    );
     // The session's own end — the peer closed, the transport failed — is a
     // close here; our own close() settles it too, by then a no-op.
     session.closed.then(
@@ -240,7 +169,6 @@ class WtSocket extends EventEmitter {
         this.#down(1006, '');
       },
     );
-    void this.#read();
   }
 
   get session() {
@@ -253,15 +181,12 @@ class WtSocket extends EventEmitter {
 
   /** Bytes handed to the stream and not yet taken by it; 0 once closed. */
   get bufferedAmount() {
-    return this.#queued;
+    return this.#channel.bufferedAmount;
   }
 
   /** The largest datagram the session carries; 0 when it carries none. */
   get maxDatagramSize() {
-    const datagrams = this.#session.datagrams;
-    if (!datagrams || !this.#datagrams || this.#closed) return 0;
-    const size = datagrams.maxDatagramSize;
-    return typeof size === 'number' && size > 0 ? size : 1200;
+    return this.#channel.maxDatagramSize;
   }
 
   get isPaused() {
@@ -273,69 +198,12 @@ class WtSocket extends EventEmitter {
    * with and what the peer does — or null while the two lists share none.
    */
   get compression() {
-    const active = this.#active;
-    return active === null ? null : { encode: active.encode.id, decode: active.decode.id };
+    return this.#channel.compression;
   }
 
-  // What we announce: the mux's streams, plus the codecs we hold, in our
-  // order, when the option is on. The peer compresses only once it has read
-  // this, with the first of ITS list found here.
-  #caps(session) {
-    if (this.#compression === null) return StreamMux.caps(session);
-    const caps = parseCaps(StreamMux.caps(session)) ?? {};
-    caps.enc = this.#compression.ids;
-    return JSON.stringify(caps);
-  }
-
-  #negotiate(text) {
-    const active = negotiate(this.#compression, parseCaps(text)?.enc);
-    this.#active = active;
-    this.#parser.compressed = active !== null;
-  }
-
-  // An inbound message past the capabilities: plain kinds are delivered at
-  // once while nothing is being inflated ahead of them; a compressed kind
-  // is inflated — possibly asynchronously — and everything behind it waits
-  // its turn, which is what keeps the wire's order.
-  #receive(kind, data) {
-    const active = this.#active;
-    if (kind <= KIND_BINARY) {
-      if (active === null || this.#inbound.pending === 0) return void this.#deliver(kind, data);
-      return void this.#inbound.push(data, (bytes) => this.#deliver(kind, bytes));
-    }
-    const plainKind = kind === KIND_TEXT_COMPRESSED ? KIND_TEXT : KIND_BINARY;
-    const codec = active.decode.codec;
-    const decode = () => codec.decode(data, this.#maxMessage);
-    // Started now while few are in flight, in its slot past the limit: a
-    // burst of compressed frames is not a burst of parallel inflates.
-    let inflated = decode;
-    if (this.#inbound.pending < INFLIGHT_LIMIT) {
-      try {
-        inflated = decode();
-      } catch (error) {
-        return void this.#violation(error);
-      }
-    }
-    this.#inbound.push(
-      inflated,
-      (bytes) => this.#deliver(plainKind, plainKind === KIND_TEXT ? decodeText(bytes) : bytes),
-      (error) => this.#violation(error),
-    );
-  }
-
-  #deliver(kind, data) {
-    if (this.#closed) return;
-    if (kind === KIND_TEXT && this.#mux.packet(data)) return;
-    this.emit('message', data, kind === KIND_BINARY);
-  }
-
-  // A message the peer sent that cannot be read — an inflate that failed
-  // or blew the cap, invalid UTF-8 underneath — is its protocol violation,
-  // the 1002 a malformed frame gets.
-  #violation(error) {
-    if (this.#closed) return;
-    this.#fault('wt.violation', error, { code: typeof error?.code === 'string' ? error.code : null });
-    this.close(1002, 'Protocol error');
+  /** Datagrams dropped because the session had not taken the ones before them. */
+  get droppedDatagrams() {
+    return this.#channel.droppedDatagrams;
   }
 
   // The mirror of Connection.#fault: one line, then the 'error' event a
@@ -345,107 +213,24 @@ class WtSocket extends EventEmitter {
     this.#error(error);
   }
 
-  async #read() {
-    const reader = this.#stream.readable.getReader();
-    try {
-      for (;;) {
-        if (this.#paused) await this.#gate;
-        // Enough inflates in flight: the next read waits for them — the
-        // bytes wait in the stream, under QUIC's flow control.
-        if (this.#inbound.pending >= INFLIGHT_LIMIT) await this.#inbound.idle;
-        const { value, done } = await reader.read();
-        if (done || this.#closed) break;
-        this.#touch();
-        this.#parser.push(value);
-      }
-    } catch (error) {
-      if (this.#closed) return;
-      // A read error is the session's to report through `closed`; a
-      // FramingError is the peer's protocol violation — the 1002 of it,
-      // and its line.
-      this.#violation(error);
-      return;
-    }
-    if (this.#closed) return;
-    // The peer ended the control stream: the connection is over. A peer
-    // closing gracefully ends the STREAM first — so that what it wrote
-    // arrives — and the session a moment later, with its code; that moment
-    // is waited for, so its code is the one `closed` reports. Only when it
-    // does not come is the session ended from here, with 1000.
-    const session = this.#session;
-    const timer = setTimeout(() => closeQuietly(session, { closeCode: 1000, reason: '' }), CLOSE_GRACE);
-    timer.unref?.();
-    const settled = () => clearTimeout(timer);
-    session.closed.then(settled, settled);
-  }
-
-  async #readUni(streams) {
-    const reader = streams.getReader();
-    try {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done || this.#closed) break;
-        this.#mux.accept(value);
-      }
-    } catch {
-      // The session's end, reported through `closed`.
-    }
-  }
-
   /**
    * Told about an outbound stream packet before it is serialized (by
    * ServerWtTransport): true when the packet must not go on the control
    * stream — its stream's own FIN or RESET carries it.
    */
   streamControl(packet) {
-    return !this.#closed && this.#mux.control(packet);
-  }
-
-  async #readDatagrams(readable) {
-    const reader = readable.getReader();
-    try {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done || this.#closed) break;
-        this.#touch();
-        const text = parseDatagram(value);
-        if (text !== null) this.emit('message', text, false);
-      }
-    } catch {
-      // The session's end, reported through `closed`.
-    }
+    return this.#channel.control(packet);
   }
 
   /**
    * A packet as ONE datagram — unreliable, unordered, at most
    * maxDatagramSize bytes: true when it went out, false when the session
    * has no datagrams, the packet does not fit, or the socket is closed —
-   * the caller's cue to send() it on the control stream instead.
+   * the caller's cue to send() it on the control stream instead. A datagram
+   * the session has not kept up with is dropped, and answered true.
    */
   sendUnreliable(data) {
-    if (this.#closed || !this.#datagrams || typeof data !== 'string') return false;
-    const bytes = datagramText(data);
-    if (bytes.length > this.maxDatagramSize) return false;
-    // The sink has not taken the ones before it: this one is DROPPED, not
-    // queued behind them — and answered true. False would have the caller
-    // send it reliably on the control stream, which is head-of-line
-    // blocking exactly when the link is congested, for a value the next
-    // datagram supersedes anyway. (Not `desiredSize`: on a synchronous sink
-    // it reads 0 after the first write of a tick, and the second datagram
-    // of a healthy session would be dropped.)
-    if (this.#datagramsInFlight >= MAX_DATAGRAMS_IN_FLIGHT) {
-      if (this.#datagramsDropped++ === 0) this.#log?.warn({ event: 'wt.datagram.dropped' });
-      return true;
-    }
-    this.#datagramsInFlight++;
-    const settled = () => void this.#datagramsInFlight--;
-    this.#datagrams.write(bytes).then(settled, settled);
-    return true;
-  }
-
-  /** Datagrams dropped because the session had not taken the ones before them. */
-  get droppedDatagrams() {
-    return this.#datagramsDropped;
+    return this.#channel.sendUnreliable(data);
   }
 
   /**
@@ -455,114 +240,7 @@ class WtSocket extends EventEmitter {
    * passes through writeWith) sends this one plain whatever was negotiated.
    */
   send(data, options = null) {
-    if (this.#closed || this.#exceedsBackpressure()) return false;
-    const active = this.#active;
-    const plain = active === null || (options !== null && options.compress === false);
-    if (typeof data === 'string') {
-      if (plain || data.length < active.encode.threshold) return this.#enqueue(frameText(data));
-      return this.#compress(KIND_TEXT, TEXT_ENCODER.encode(data));
-    }
-    const chunk = toBytes(data);
-    if (this.#mux.chunk(chunk)) return this.#accepted();
-    if (plain || chunk.length < active.encode.threshold) return this.#enqueue(frame(KIND_BINARY, chunk));
-    return this.#compress(KIND_BINARY, chunk);
-  }
-
-  // What is queued already, against the cap — before this frame is added,
-  // as the WebSocket engine counts it: one frame past the cap on an empty
-  // queue is sent, a queue the peer never drains is not.
-  #exceedsBackpressure() {
-    const max = this.#maxBackpressure;
-    if (max === 0 || this.#queued <= max) return false;
-    const error = new Error(`Backpressure limit exceeded (${this.#queued} > ${max} bytes), terminating session`);
-    error.code = 'backpressure';
-    this.#error(error);
-    this.terminate();
-    return true;
-  }
-
-  // The answer to a send: true under the high-water mark, false past it —
-  // and with a false, the promise of a 'drain'. Every path answers through
-  // here: a false from the side-stream path, a compress in flight or a
-  // frame queued behind one used to set no mark, so a caller waiting for
-  // 'drain' after it waited forever.
-  #accepted() {
-    if (this.#queued <= this.#highWater) return true;
-    this.#pressured = true;
-    return false;
-  }
-
-  // A ready frame, in order: straight to the writer while nothing is being
-  // compressed ahead of it, behind the queue otherwise. `#queued` counts it
-  // from here on either way.
-  #enqueue(bytes) {
-    if (this.#outbound.pending === 0) return this.#writeFrame(bytes);
-    const size = bytes.length;
-    this.#queued += size;
-    this.#outbound.push(bytes, (ready) => {
-      this.#queued -= size;
-      this.#writeFrame(ready);
-    });
-    return this.#accepted();
-  }
-
-  // Compresses one message past the threshold. The codec may answer at
-  // once (zlib) or later (CompressionStream); either way the frame goes
-  // out under the compressed kind when it is smaller, plain when it is not
-  // or the codec failed — the message is never lost to compression.
-  #compress(kind, bytes) {
-    const size = bytes.length;
-    this.#queued += size;
-    const compressed = kind === KIND_TEXT ? KIND_TEXT_COMPRESSED : KIND_BINARY_COMPRESSED;
-    const plain = () => {
-      this.#queued -= size;
-      this.#writeFrame(frame(kind, bytes));
-    };
-    // A codec that failed — at once, or later — is said (the session's
-    // owner counts it and logs it once a codec); the frame leaves plain.
-    const failed = (error) => {
-      this.#onCodecError?.(this.#active.encode.id, error);
-      plain();
-    };
-    let encoded;
-    try {
-      encoded = this.#active.encode.codec.encode(bytes);
-    } catch (error) {
-      failed(error);
-      return this.#accepted();
-    }
-    this.#outbound.push(
-      encoded,
-      (out) => {
-        if (out.length >= size) return void plain();
-        this.#queued -= size;
-        this.#writeFrame(frame(compressed, out));
-      },
-      failed,
-    );
-    return this.#accepted();
-  }
-
-  #writeFrame(bytes) {
-    if (this.#closed) return false;
-    const size = bytes.length;
-    this.#queued += size;
-    // A rejected write is the session failing, which `closed` reports.
-    this.#writer.write(bytes).then(
-      () => this.#sent(size),
-      () => {},
-    );
-    return this.#accepted();
-  }
-
-  // A write the stream took. After the close nothing is counted: the
-  // count was zeroed, and a late settlement used to take it negative.
-  #sent(size) {
-    if (this.#closed) return;
-    this.#queued -= size;
-    if (!this.#pressured || this.#queued > this.#lowWater) return;
-    this.#pressured = false;
-    this.emit('drain');
+    return this.#channel.send(data, options);
   }
 
   /** Stops pulling the control stream and the side streams; QUIC flow control does the rest. */
@@ -585,28 +263,15 @@ class WtSocket extends EventEmitter {
 
   /**
    * Graceful: what send() already handed to the control stream reaches the
-   * peer, and the peer's `closed` carries the code and reason. Closing a
-   * SESSION resets its streams and drops whatever they still hold — the
-   * answer of the call that ends a session, the event that says why a
-   * client is being kicked — so the stream is closed first (its close
-   * resolves once the queued bytes were taken and the FIN sent) and the
-   * session after it, at most `closeTimeout` later. This side is closed
-   * synchronously either way: 'close' fires here, nothing more is accepted.
-   * A message still being compressed asynchronously is not waited for.
+   * peer, and the peer's `closed` carries the code and reason — the stream
+   * is closed first and the session after it, at most `closeTimeout` later
+   * (channel.js). This side is closed synchronously either way: 'close'
+   * fires here, nothing more is accepted.
    */
   close(code = 1000, reason = '') {
     if (this.#closed) return;
-    const session = this.#session;
-    const writer = this.#writer;
     this.#down(code, reason);
-    let timer = null;
-    const end = () => {
-      clearTimeout(timer);
-      closeQuietly(session, { closeCode: code, reason });
-    };
-    timer = setTimeout(end, this.#closeTimeout);
-    timer.unref?.();
-    writer.close().then(end, end);
+    this.#channel.finish({ closeCode: code, reason });
   }
 
   /** Hard: no reason travels; the peer sees 1006. */
@@ -634,13 +299,11 @@ class WtSocket extends EventEmitter {
     this.#closed = true;
     // The peer's reason is its text: clipped, as a field, at debug — a
     // routine end is not an alert, but a code an operator can grep for.
-    const dropped = this.#datagramsDropped;
+    const dropped = this.#channel.droppedDatagrams;
     this.#log?.debug({ event: 'wt.close', code, reason: clip(reason), ...(dropped > 0 ? { dropped } : null) });
     clearTimeout(this.#idleTimer);
     this.#idleTimer = null;
-    this.#mux.close();
-    this.#queued = 0;
-    this.#pressured = false;
+    this.#channel.shut();
     this.resume();
     this.emit('close', code, reason);
   }

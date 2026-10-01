@@ -1360,6 +1360,21 @@ bytes it sends. In that order:
    last 1.x node is gone. Nothing to do without `secret`.
 
 ### Changed
+- **WebTransport: one channel core for both ends (internal).** `WtSocket`
+  (the server's socket) and `ClientWtTransport` were mirror copies of the
+  same channel — the capabilities exchange, compression and its ordering,
+  the stream mux wiring, datagrams, the byte accounting, the graceful
+  close — and every change of it was two edits that could disagree. That
+  part is `src/webtransport/channel.js` now (browser-safe: callbacks, no
+  `node:events`); the two classes are adapters that keep what is theirs —
+  events, `pause()`, the idle timer, the log and the close codes on the
+  server; the open lifecycle, the wire codec and the encryption seam on the
+  client. No change of behaviour beyond the fix above: the suites of both
+  ends, the shared channel contract included, pass unchanged, and a
+  200-byte packet costs what it did through a socket (570 ns to send,
+  295 ns to receive, before and after). The main browser entry is 0.5 KB
+  larger for it (27,424 B of its 27 KB budget): the core carries what only
+  the server uses.
 - **WebTransport stream mux: measured, and one decode removed.** The new
   `bench/wt-streams.js` times the per-chunk paths `bench/wt-framing.js`
   stops short of. An outbound chunk decoded its stream id twice — once to
@@ -1660,6 +1675,14 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **WebTransport client: `highWaterMark`, `lowWaterMark`, `maxBackpressure`
+  and `maxMessage` in the `wt` bag of `connect()` take effect.** The
+  transport read those four from its constructor's options only, and
+  `connect()` builds the transport with none — so the documented
+  `connect(url, { wt: { highWaterMark } })` was ignored and the defaults
+  applied. They are read per open, from the same merged bag as
+  `compression` and `closeTimeout`; a bad `maxBackpressure` there rejects
+  `open()`.
 - **`@alexify/wrpc/wt`: the types caught up with the runtime, and a
   throwing `onError` no longer rejects `done`.** `acceptSessions` calls
   `onError(error, null)` when the session SOURCE fails, which the type did

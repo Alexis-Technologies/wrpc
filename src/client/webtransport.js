@@ -22,43 +22,8 @@
 // fallback list at once — that is the whole reason the list exists.
 
 const { WrpcClient, ClientTransport, connectUrl } = require('./core.js');
-const {
-  StreamParser,
-  frame,
-  frameText,
-  frameCaps,
-  datagramText,
-  parseDatagram,
-  datagramWriter,
-  toBytes,
-  decodeText,
-  parseCaps,
-  KIND_TEXT,
-  KIND_BINARY,
-  KIND_CAPS,
-  KIND_TEXT_COMPRESSED,
-  KIND_BINARY_COMPRESSED,
-  DEFAULT_MAX_MESSAGE,
-} = require('../webtransport/framing.js');
-const { StreamMux } = require('../webtransport/streams.js');
-const { normalizeCompression, negotiate, Sequencer, INFLIGHT_LIMIT } = require('../compression/index.js');
-
-const TEXT_ENCODER = new TextEncoder();
-
-// Outbound flow control, in bytes handed to the writer and not yet taken
-// by it: write() answers false above the high-water mark, and 'drain'
-// fires once the queue is back under the low-water mark.
-const DEFAULT_HIGH_WATER_MARK = 1024 * 1024;
-const DEFAULT_LOW_WATER_MARK = 256 * 1024;
-// The cap behind the high-water mark: past it the session is terminated
-// rather than buffering without bound for a server that never drains;
-// 0 switches it off.
-const DEFAULT_MAX_BACKPRESSURE = 64 * 1024 * 1024;
-// A graceful close() ends the control stream, then the session: how long
-// the stream may take to hand over what was written, and how long the end
-// of the server's control stream waits for its session close.
-const DEFAULT_CLOSE_TIMEOUT = 1000;
-const CLOSE_GRACE = 200;
+const { normalizeCompression } = require('../compression/index.js');
+const { WtChannel, closeQuietly, normalizeBackpressure } = require('../webtransport/channel.js');
 
 // The `WebTransportOptions` handed to the constructor as-is.
 const INIT_KEYS = ['serverCertificateHashes', 'congestionControl', 'allowPooling', 'requireUnreliable', 'protocols'];
@@ -67,16 +32,11 @@ const UNAVAILABLE =
   'WebTransport is not available here: pass options.wt.WebTransport (an implementation), ' +
   "or name a fallback — transport: ['wt', 'ws']";
 
-// close() on a closed session is a no-op by spec; an implementation that
-// throws instead must not turn a teardown into an error.
-const closeQuietly = (session, info) => {
-  try {
-    session.close(info);
-  } catch {
-    // Already closed.
-  }
-};
-
+// The channel itself — framing, the capabilities exchange, compression, the
+// stream mux, the datagrams, flow control — is src/webtransport/channel.js,
+// shared with the server's socket. What is here is what makes it a client
+// transport: the open lifecycle, one channel per session, the wire codec
+// and the session-encryption seam.
 class ClientWtTransport extends ClientTransport {
   // Carries `options.encryption`: the handshake runs over the control
   // stream inside open(), and every message after it is sealed.
@@ -90,38 +50,20 @@ class ClientWtTransport extends ClientTransport {
 
   #options;
   #session = null;
-  #writer = null;
-  #datagrams = null;
-  #mux = null;
+  #channel = null;
   // Session encryption (`options.encryption`): `{ ready, send, receive }`
   // for this session, null otherwise. Under it everything rides the control
   // stream sealed — no per-stream transport, no datagrams, no compression
   // of what is already ciphertext: each would be a way around the channel.
   #secure = null;
-  #encryption = null;
 
   /** The session's facts once established (see WrpcClient#encryption), or null. */
   encryption = null;
 
-  #parser = null;
   #opening = null;
   // Bumped by terminate(): an open() that was waiting on the handshake when
   // the core gave up must not come back to life on top of a later attempt.
   #attempt = 0;
-  #queued = 0;
-  #pressured = false;
-  #highWater;
-  #lowWater;
-  #maxBackpressure;
-  #maxMessage;
-  #closeTimeout = DEFAULT_CLOSE_TIMEOUT;
-  // Per-message compression (src/compression): the option resolved per
-  // open — connect()'s `compression`, else the `wt` bag's — and what is in
-  // effect once the server's list and ours share a codec.
-  #compression = null;
-  #active = null;
-  #outbound = null;
-  #inbound = null;
 
   /**
    * `options` are the same `wt` options connect() takes, for a transport
@@ -130,14 +72,9 @@ class ClientWtTransport extends ClientTransport {
   constructor(url, options = {}) {
     super(url);
     this.#options = options;
-    this.#highWater = options.highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
-    this.#lowWater = options.lowWaterMark ?? DEFAULT_LOW_WATER_MARK;
-    const max = options.maxBackpressure;
-    if (max !== undefined && (!Number.isInteger(max) || max < 0)) {
-      throw new TypeError('wt transport: options.maxBackpressure must be a non-negative integer of bytes (0 = off)');
-    }
-    this.#maxBackpressure = max ?? DEFAULT_MAX_BACKPRESSURE;
-    this.#maxMessage = options.maxMessage ?? DEFAULT_MAX_MESSAGE;
+    // Said where the transport is built; the `wt` bag of a later open() is
+    // checked by the channel it opens.
+    normalizeBackpressure(options.maxBackpressure, 'wt transport: options');
   }
 
   /** The WebTransport session spoken on; null before open() and after close. */
@@ -147,7 +84,7 @@ class ClientWtTransport extends ClientTransport {
 
   /** Bytes handed to the session and not yet taken by it; 0 between sessions. */
   get bufferedAmount() {
-    return this.#queued;
+    return this.#channel === null ? 0 : this.#channel.bufferedAmount;
   }
 
   /**
@@ -155,10 +92,7 @@ class ClientWtTransport extends ClientTransport {
    * what the core checks before sending an event unreliably.
    */
   get maxDatagramSize() {
-    const datagrams = this.#session?.datagrams;
-    if (!datagrams || !this.#datagrams) return 0;
-    const size = datagrams.maxDatagramSize;
-    return typeof size === 'number' && size > 0 ? size : 1200;
+    return this.#channel === null ? 0 : this.#channel.maxDatagramSize;
   }
 
   async open(options = {}) {
@@ -176,12 +110,11 @@ class ClientWtTransport extends ClientTransport {
     const wt = options.wt ? { ...this.#options, ...options.wt } : this.#options;
     const WebTransport = wt.WebTransport ?? globalThis.WebTransport;
     if (typeof WebTransport !== 'function') throw new Error(UNAVAILABLE);
-    this.#encryption = options.encryption ?? null;
-    this.#closeTimeout = wt.closeTimeout ?? DEFAULT_CLOSE_TIMEOUT;
-    this.#compression =
-      this.#encryption === null
-        ? normalizeCompression(options.compression ?? wt.compression, 'wt transport: options')
-        : null;
+    const encryption = options.encryption ?? null;
+    // Per-message compression (src/compression): connect()'s `compression`,
+    // else the `wt` bag's — and none under encryption.
+    const compression =
+      encryption === null ? normalizeCompression(options.compression ?? wt.compression, 'wt transport: options') : null;
     const attempt = ++this.#attempt;
     const init = {};
     for (let i = 0; i < INIT_KEYS.length; i++) {
@@ -191,7 +124,7 @@ class ClientWtTransport extends ClientTransport {
     // Announced in the URL, as on ws: the server may be the first to send.
     // Before the declared bags, so it is counted in the one query budget.
     let target = this.url;
-    if (this.#encryption !== null) target += `${target.includes('?') ? '&' : '?'}${this.#encryption.param}=1`;
+    if (encryption !== null) target += `${target.includes('?') ? '&' : '?'}${encryption.param}=1`;
     target = connectUrl(target, options.headers, options.meta, this.log);
     const session = new WebTransport(target, init);
     this.#session = session;
@@ -207,7 +140,7 @@ class ClientWtTransport extends ClientTransport {
       if (attempt !== this.#attempt) throw new Error('Connection terminated');
       const stream = await session.createBidirectionalStream();
       if (attempt !== this.#attempt) throw new Error('Connection terminated');
-      await this.#attach(session, stream);
+      await this.#attach(session, stream, wt, compression, encryption);
       if (attempt !== this.#attempt) throw new Error('Connection terminated');
     } catch (error) {
       if (this.#session === session) {
@@ -218,72 +151,66 @@ class ClientWtTransport extends ClientTransport {
     }
   }
 
-  #attach(session, stream) {
-    this.#writer = stream.writable.getWriter();
-    this.#queued = 0;
-    this.#pressured = false;
-    // Binary streams on their own WebTransport streams, negotiated through
-    // the capabilities message each end sends first. Not under a codec: the
-    // mux reads stream packets off the wire, which only JSON allows.
-    const encryption = this.#encryption;
-    const mux =
-      this.codec || encryption !== null
-        ? null
-        : new StreamMux(session, {
-            emitPacket: (text) => void this.emit('message', text),
-            emitChunk: (chunk) => void this.emit('message', chunk),
-            onQueued: (size) => {
-              this.#queued += size;
-            },
-            onSent: (size) => this.#sent(session, size),
-            // Through the outbound order: a stream packet must not overtake
-            // a message still being compressed.
-            writeControl: (chunk) => {
-              if (!this.#exceedsBackpressure()) this.#enqueue(frame(KIND_BINARY, chunk));
-            },
-            sendControl: (packet) => super.send(packet),
-          });
-    this.#mux = mux;
-    this.#active = null;
-    this.#outbound = new Sequencer((error) => this.#escalate(error));
-    this.#inbound = new Sequencer((error) => this.#violation(session, error));
-    const parser = new StreamParser({
-      maxMessage: this.#maxMessage,
-      onMessage: (kind, data) => {
-        if (kind === KIND_CAPS) {
-          mux?.peerCaps(data);
-          return void this.#negotiate(parser, data);
-        }
-        this.#receive(session, kind, data);
+  #attach(session, stream, wt, compression, encryption) {
+    // Binary streams on their own WebTransport streams, and datagrams: not
+    // under a wire codec (the mux reads stream packets off the wire, which
+    // only JSON allows), and neither under encryption.
+    const plain = encryption === null;
+    const channel = new WtChannel(
+      session,
+      stream,
+      {
+        mux: plain && !this.codec,
+        datagrams: plain,
+        highWaterMark: wt.highWaterMark,
+        lowWaterMark: wt.lowWaterMark,
+        maxBackpressure: wt.maxBackpressure,
+        maxMessage: wt.maxMessage,
+        closeTimeout: wt.closeTimeout,
+        compression,
       },
-    });
-    this.#parser = parser;
-    this.#writer.write(frameCaps(this.#caps(session, mux))).catch(() => {});
-    void this.#read(session, stream.readable);
-    if (mux && typeof session.incomingUnidirectionalStreams?.getReader === 'function') {
-      void this.#readUni(session, session.incomingUnidirectionalStreams, mux);
-    }
-    // Datagrams, where the session has them: a writer to send unreliable
-    // events on, a reader loop that hands the packets they carry to the
-    // same 'message' path a stream packet takes.
-    const datagrams = session.datagrams;
-    const writer = encryption === null ? datagramWriter(datagrams) : null;
-    if (writer && typeof datagrams.readable?.getReader === 'function') {
-      this.#datagrams = writer;
-      void this.#readDatagrams(session, datagrams.readable);
-    }
+      (data) => {
+        // Sealed: every message is the channel's to open, from the first
+        // byte — the handshake answer arrives before this transport is
+        // active.
+        if (this.#secure !== null) return void this.#secure.receive(data);
+        if (this.active && this.#channel === channel) this.emit('message', data);
+      },
+      () => void this.emit('drain').catch((error) => this.#escalate(error)),
+      // A message the server sent that cannot be read is its protocol
+      // violation: reported, and the session hung up.
+      (error) => {
+        this.#escalate(error);
+        this.#down(session);
+        closeQuietly(session);
+      },
+      // Past maxBackpressure: a server that never drains.
+      (error) => {
+        this.#escalate(error);
+        this.terminate();
+      },
+      (error) => this.#escalate(error),
+      // The server ended the control stream — its graceful close: the
+      // session close follows, and is given a moment before this end hangs
+      // up itself.
+      () => {
+        this.#down(session);
+        channel.expectClose();
+      },
+    );
+    this.#channel = channel;
     const established = () => {
       this.active = true;
       // Announced before open() resolves — the core's 'open' handler runs
       // synchronously here, which is the invariant every transport keeps.
       this.emit('open');
     };
-    if (encryption === null) return void established();
+    if (plain) return void established();
     // The handshake, over the control stream, before anything else of this
     // session: a failure hangs the session up, which is open()'s rejection.
     const secure = encryption.secure({
       kind: 'wt',
-      write: (bytes) => void this.#enqueue(frame(KIND_BINARY, bytes)),
+      write: (bytes) => void channel.send(bytes),
       deliver: (data) => {
         if (this.#session === session) this.emit('message', data);
       },
@@ -300,133 +227,15 @@ class ClientWtTransport extends ClientTransport {
     });
   }
 
-  async #read(session, readable) {
-    const reader = readable.getReader();
-    try {
-      for (;;) {
-        // Enough inflates in flight: the next read waits for them.
-        if (this.#inbound.pending >= INFLIGHT_LIMIT) await this.#inbound.idle;
-        const { value, done } = await reader.read();
-        if (done || this.#session !== session) break;
-        this.#parser.push(value);
-      }
-    } catch (error) {
-      // A read error is the session's to report through `closed`; a
-      // FramingError is the peer's protocol violation — the WebTransport
-      // analogue of a 1002, and the session is hung up below.
-      if (this.#session !== session) return;
-      this.#escalate(error);
-    }
-    if (this.#session !== session) return;
-    // The server ended the control stream — its graceful close: the session
-    // close follows with its code, and is given a moment to arrive before
-    // this end hangs up itself.
-    this.#down(session);
-    const timer = setTimeout(() => closeQuietly(session), CLOSE_GRACE);
-    timer.unref?.();
-    const settled = () => clearTimeout(timer);
-    session.closed.then(settled, settled);
-  }
-
-  async #readUni(session, streams, mux) {
-    const reader = streams.getReader();
-    try {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done || this.#session !== session) break;
-        mux.accept(value);
-      }
-    } catch {
-      // The session's end, reported through `closed`.
-    }
-  }
-
   /** A stream packet is seen before serialization: the mux may take it. */
   send(obj) {
-    if (this.#mux !== null && this.#mux.control(obj)) return;
+    if (this.#channel !== null && this.#channel.control(obj)) return;
     super.send(obj);
   }
 
   /** The codec ids in effect — `{ encode, decode }` — or null while the two lists share none. */
   get compression() {
-    const active = this.#active;
-    return active === null ? null : { encode: active.encode.id, decode: active.decode.id };
-  }
-
-  // What we announce: the mux's streams (none under a codec), plus the
-  // compression codecs we hold, in our order, when the option is on.
-  #caps(session, mux) {
-    const text = mux ? StreamMux.caps(session) : '{}';
-    if (this.#compression === null) return text;
-    const caps = parseCaps(text) ?? {};
-    caps.enc = this.#compression.ids;
-    return JSON.stringify(caps);
-  }
-
-  #negotiate(parser, text) {
-    const active = negotiate(this.#compression, parseCaps(text)?.enc);
-    this.#active = active;
-    parser.compressed = active !== null;
-  }
-
-  // Plain kinds are delivered at once while nothing is being inflated
-  // ahead of them; a compressed kind is inflated — possibly asynchronously
-  // — and everything behind it waits its turn.
-  #receive(session, kind, data) {
-    const active = this.#active;
-    if (kind <= KIND_BINARY) {
-      if (active === null || this.#inbound.pending === 0) return void this.#deliver(kind, data);
-      return void this.#inbound.push(data, (bytes) => this.#deliver(kind, bytes));
-    }
-    const plainKind = kind === KIND_TEXT_COMPRESSED ? KIND_TEXT : KIND_BINARY;
-    const codec = active.decode.codec;
-    const decode = () => codec.decode(data, this.#maxMessage);
-    // Started now while few are in flight, in its slot past the limit.
-    let inflated = decode;
-    if (this.#inbound.pending < INFLIGHT_LIMIT) {
-      try {
-        inflated = decode();
-      } catch (error) {
-        return void this.#violation(session, error);
-      }
-    }
-    this.#inbound.push(
-      inflated,
-      (bytes) => this.#deliver(plainKind, plainKind === KIND_TEXT ? decodeText(bytes) : bytes),
-      (error) => this.#violation(session, error),
-    );
-  }
-
-  #deliver(kind, data) {
-    // Sealed: every message is the channel's to open, from the first byte —
-    // the handshake answer arrives before this transport is active.
-    if (this.#secure !== null) return void this.#secure.receive(data);
-    if (!this.active) return;
-    if (kind === KIND_TEXT && this.#mux !== null && this.#mux.packet(data)) return;
-    this.emit('message', data);
-  }
-
-  // A message the server sent that cannot be read is its protocol
-  // violation: reported, and the session hung up like a framing error.
-  #violation(session, error) {
-    if (this.#session !== session) return;
-    this.#escalate(error);
-    this.#down(session);
-    closeQuietly(session);
-  }
-
-  async #readDatagrams(session, readable) {
-    const reader = readable.getReader();
-    try {
-      for (;;) {
-        const { value, done } = await reader.read();
-        if (done || this.#session !== session) break;
-        const text = parseDatagram(value);
-        if (text !== null) this.emit('message', text);
-      }
-    } catch {
-      // The session's end, reported through `closed`.
-    }
+    return this.#channel === null ? null : this.#channel.compression;
   }
 
   /**
@@ -437,11 +246,7 @@ class ClientWtTransport extends ClientTransport {
    * for a lost datagram: losing one is the point.
    */
   writeUnreliable(data) {
-    if (!this.active || !this.#datagrams || typeof data !== 'string') return false;
-    const bytes = datagramText(data);
-    if (bytes.length > this.maxDatagramSize) return false;
-    this.#datagrams.write(bytes).catch(() => {});
-    return true;
+    return this.active && this.#channel.sendUnreliable(data);
   }
 
   /**
@@ -451,132 +256,27 @@ class ClientWtTransport extends ClientTransport {
    */
   write(data, options = null) {
     if (!this.active) throw new Error('Not connected');
-    if (this.#exceedsBackpressure()) return false;
-    if (this.#secure !== null) {
-      this.#secure.send(data);
-      return this.#accepted();
-    }
-    const active = this.#active;
-    const plain = active === null || (options !== null && options.compress === false);
-    if (typeof data === 'string') {
-      if (plain || data.length < active.encode.threshold) return this.#enqueue(frameText(data));
-      return this.#compress(KIND_TEXT, TEXT_ENCODER.encode(data));
-    }
-    const chunk = toBytes(data);
-    // A chunk of a stream that has its own WebTransport stream goes there.
-    if (this.#mux !== null && this.#mux.chunk(chunk)) return this.#accepted();
-    if (plain || chunk.length < active.encode.threshold) return this.#enqueue(frame(KIND_BINARY, chunk));
-    return this.#compress(KIND_BINARY, chunk);
-  }
-
-  // What is queued already, against the cap — before this frame is added:
-  // one frame past the cap on an empty queue goes, a queue the server never
-  // drains does not.
-  #exceedsBackpressure() {
-    const max = this.#maxBackpressure;
-    if (max === 0 || this.#queued <= max) return false;
-    const error = new Error(`Backpressure limit exceeded (${this.#queued} > ${max} bytes), terminating session`);
-    error.code = 'backpressure';
-    this.#escalate(error);
-    this.terminate();
-    return true;
-  }
-
-  // The answer to a write: true under the high-water mark, false past it —
-  // and with a false, the promise of a 'drain', whichever path answered
-  // (the sealed, side-stream and compress paths used to set no mark).
-  #accepted() {
-    if (this.#queued <= this.#highWater) return true;
-    this.#pressured = true;
-    return false;
-  }
-
-  // A ready frame, in order: straight to the writer while nothing is being
-  // compressed ahead of it, behind the queue otherwise.
-  #enqueue(bytes) {
-    if (this.#outbound.pending === 0) return this.#writeFrame(bytes);
-    const size = bytes.length;
-    this.#queued += size;
-    this.#outbound.push(bytes, (ready) => {
-      this.#queued -= size;
-      if (this.active) this.#writeFrame(ready);
-    });
-    return this.#accepted();
-  }
-
-  // Compresses one message past the threshold — at once or later, as the
-  // codec answers — and sends it under the compressed kind when smaller,
-  // plain when not or when the codec failed.
-  #compress(kind, bytes) {
-    const size = bytes.length;
-    this.#queued += size;
-    const compressed = kind === KIND_TEXT ? KIND_TEXT_COMPRESSED : KIND_BINARY_COMPRESSED;
-    const plain = () => {
-      this.#queued -= size;
-      if (this.active) this.#writeFrame(frame(kind, bytes));
-    };
-    let encoded;
-    try {
-      encoded = this.#active.encode.codec.encode(bytes);
-    } catch {
-      plain();
-      return this.#accepted();
-    }
-    this.#outbound.push(
-      encoded,
-      (out) => {
-        if (out.length >= size) return void plain();
-        this.#queued -= size;
-        if (this.active) this.#writeFrame(frame(compressed, out));
-      },
-      plain,
-    );
-    return this.#accepted();
-  }
-
-  #writeFrame(bytes) {
-    const session = this.#session;
-    const size = bytes.length;
-    this.#queued += size;
-    // A rejected write is the session failing, which `closed` reports.
-    this.#writer.write(bytes).then(
-      () => this.#sent(session, size),
-      () => {},
-    );
-    return this.#accepted();
-  }
-
-  // A write the stream took — of THIS session: one that settles after the
-  // session is gone counts against nothing (the next session starts at 0).
-  #sent(session, size) {
-    if (this.#session !== session) return;
-    this.#queued -= size;
-    if (!this.#pressured || this.#queued > this.#lowWater) return;
-    this.#pressured = false;
-    void this.emit('drain').catch((error) => this.#escalate(error));
+    const channel = this.#channel;
+    if (this.#secure === null) return channel.send(data, options);
+    if (channel.exceedsBackpressure()) return false;
+    this.#secure.send(data);
+    return channel.accepted();
   }
 
   /**
    * A graceful goodbye: what was written reaches the server, then its
-   * `closed` settles with the close info. Closing the session resets its
-   * streams, so the control stream is closed first (resolved once its
-   * queue was taken) and the session after it, `closeTimeout` at most.
+   * `closed` settles with the close info — the control stream is closed
+   * first and the session after it, `closeTimeout` at most (channel.js).
    */
   close() {
     const session = this.#session;
     if (!session) return;
-    const writer = this.#writer;
+    const channel = this.#channel;
     this.#down(session);
-    let timer = null;
-    const end = () => {
-      clearTimeout(timer);
-      closeQuietly(session, { closeCode: 0, reason: '' });
-    };
+    const info = { closeCode: 0, reason: '' };
     // Still opening: there is no stream to drain.
-    if (writer === null) return void end();
-    timer = setTimeout(end, this.#closeTimeout);
-    timer.unref?.();
-    writer.close().then(end, end);
+    if (channel === null) closeQuietly(session, info);
+    else channel.finish(info);
   }
 
   /** Reports the close now and drops the session; a handshake in flight is abandoned. */
@@ -591,18 +291,13 @@ class ClientWtTransport extends ClientTransport {
   #down(session, error) {
     if (this.#session !== session) return;
     this.#session = null;
-    this.#writer = null;
-    this.#queued = 0;
-    this.#pressured = false;
-    this.#datagrams = null;
+    this.#channel?.shut();
+    this.#channel = null;
     // A handshake still running is over with the session: open() rejects
     // now, not at the handshake timeout.
     this.#secure?.cancel(error);
     this.#secure = null;
     this.encryption = null;
-    this.#mux?.close();
-    this.#mux = null;
-    this.#parser = null;
     if (error) this.#escalate(error);
     if (!this.active) return;
     this.active = false;
@@ -620,10 +315,4 @@ class ClientWtTransport extends ClientTransport {
 
 WrpcClient.transport.wt = ClientWtTransport;
 
-module.exports = {
-  ClientWtTransport,
-  DEFAULT_HIGH_WATER_MARK,
-  DEFAULT_LOW_WATER_MARK,
-  DEFAULT_MAX_BACKPRESSURE,
-  UNAVAILABLE,
-};
+module.exports = { ClientWtTransport, UNAVAILABLE };
