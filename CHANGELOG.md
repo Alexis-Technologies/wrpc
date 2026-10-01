@@ -1360,6 +1360,21 @@ bytes it sends. In that order:
    last 1.x node is gone. Nothing to do without `secret`.
 
 ### Changed
+- **ws engine: `close()` delivers what `send()` accepted, with or without
+  context takeover.** A message whose deflate runs off the loop (context
+  takeover, or `async` past its threshold) waits in an outbound queue with
+  everything sent behind it, and `close()` dropped that queue before
+  writing its Close frame — so `send(x); close()` delivered `x` on a plain
+  connection and silently lost it on one with takeover: the answer of the
+  call that ends a session, the event that says why a client is being
+  kicked. The Close frame now takes the queue's tail; nothing new is
+  accepted meanwhile, and `closeTimeout` bounds the whole close — a queue
+  that has not drained by then is dropped with one `ws.close.dropped` line
+  (`frames`, `bytes`) and the Close goes out. `terminate()`, a close for a
+  protocol violation or a limit, and a Close the peer sent first drop the
+  queue at once, as before. A behaviour of the stable `./ws` engine, hence
+  under Changed: code that relied on `close()` discarding queued writes
+  wants `terminate()`.
 - **A sealed fan-out builds its plaintext once.** Under session encryption
   every recipient of a broadcast has its own key, so the frame cannot be
   shared — but the plaintext inner frame can: the kind byte and the text's

@@ -92,6 +92,10 @@ class Connection extends EventEmitter {
   #outbox = [];
   #outboxBytes = 0;
   #draining = false;
+  // The Close frame of a graceful close() that found writes still waiting
+  // behind a compress: it is the outbox's tail, and the pump sends it when
+  // it gets there (see sendClose).
+  #pendingClose = null;
   #inbox = [];
   #coalesce;
   #corked = false;
@@ -627,6 +631,9 @@ class Connection extends EventEmitter {
       if (head.buffer !== null) {
         outbox.shift();
         this.#outboxBytes -= head.buffer.length;
+        // The Close a graceful close() queued behind what it had accepted:
+        // everything ahead of it is on the socket now.
+        if (head.buffer === this.#pendingClose) return void this.#flushClose();
         this.#draining = true;
         this.#write(head.buffer);
         this.#draining = false;
@@ -678,12 +685,19 @@ class Connection extends EventEmitter {
     }
   }
 
-  #dropQueues() {
-    this.#outbox.length = 0;
-    this.#outboxBytes = 0;
+  #dropInbound() {
     this.#inbox.length = 0;
     this.#inboxBytes = 0;
     this.#inboxHeld = false;
+  }
+
+  // Both directions, and the takeover context with them: every way out but
+  // a graceful close whose accepted writes are still on their way.
+  #dropQueues() {
+    this.#outbox.length = 0;
+    this.#outboxBytes = 0;
+    this.#pendingClose = null;
+    this.#dropInbound();
     if (this.#context !== null) this.#context.close();
   }
 
@@ -763,6 +777,8 @@ class Connection extends EventEmitter {
   // compliance is not a suicide pact — past the cap the connection is
   // terminated like any other non-reading peer.
   sendPong(payload) {
+    // Behind a queued Close it would leave AFTER the Close frame.
+    if (this.#pendingClose !== null) return false;
     if (this.#exceedsBackpressure()) return false;
     if (payload) return this.#writeFrame(Frame.pong(payload));
     return this.#fastPong();
@@ -805,6 +821,16 @@ class Connection extends EventEmitter {
     }, this.#closeTimeout);
   }
 
+  // The queued Close of a graceful close(), at the moment it leaves: by the
+  // pump once the outbox ahead of it is written, or by the close timer when
+  // that took longer than `closeTimeout`.
+  #flushClose() {
+    const frame = this.#pendingClose;
+    this.#dropQueues();
+    this.#closeSent = true;
+    this.#socket.write(frame);
+  }
+
   // Answers a peer-initiated Close and hangs up.
   //
   // RFC 6455 5.5.1: the side ANSWERING a Close closes the TCP connection
@@ -816,7 +842,10 @@ class Connection extends EventEmitter {
   // end() rather than destroy(): the echo has to flush before the FIN, and
   // the short grace timer only covers a peer that never answers the FIN.
   #answerClose(code = 1000, reason = '') {
-    if (this.#closing) return;
+    // Our own Close may still be queued behind accepted writes (closing,
+    // not yet sent): the peer closing first ends that — it reads nothing
+    // more — so the queue is dropped and the peer's Close answered.
+    if (this.#closing && this.#pendingClose === null) return;
     this.#closing = true;
     this.#closeSent = true;
     this.#fragments = null;
@@ -831,10 +860,38 @@ class Connection extends EventEmitter {
     }, CLOSE_GRACE);
   }
 
+  // A graceful close delivers what send() already accepted. With a compress
+  // in flight (context takeover, or `async` past its threshold) accepted
+  // writes wait in the outbox, and closing used to drop them — so whether
+  // `send(x); close()` delivered x depended on a performance option. The
+  // Close frame now takes its place at the outbox's TAIL; nothing new is
+  // accepted meanwhile, and `closeTimeout` stays the upper bound on the
+  // whole close: when it expires with the queue still waiting, the queue is
+  // dropped — and said (`ws.close.dropped`) — and the Close goes out.
   sendClose(code = 1000, reason = '') {
     const frame = Frame.close(code, reason);
     if (this.#isClient) frame.maskPayload();
-    this.#close(frame.toBuffer());
+    const buffer = frame.toBuffer();
+    if (this.#closing || this.#outbox.length === 0) return void this.#close(buffer);
+    this.#closing = true;
+    this.#fragments = null;
+    this.#dropInbound();
+    this.#pendingClose = buffer;
+    this.#enqueue({ buffer, payload: null, shared: null, opcode: 0, started: false });
+    this.#closeTimer = setTimeout(() => {
+      if (this.#pendingClose !== null) {
+        // A line, not an 'error': nothing is wrong with the connection but
+        // the time its last writes took.
+        const frames = this.#outbox.length - 1;
+        const bytes = this.#outboxBytes - this.#pendingClose.length;
+        this.#log.warn({ event: 'ws.close.dropped', frames, bytes });
+        this.#flushClose();
+      }
+      this.#socket.end();
+      setTimeout(() => {
+        this.#socket.destroy();
+      }, 200);
+    }, this.#closeTimeout);
   }
 
   // WrpcSocket engine-contract alias for sendClose

@@ -343,8 +343,16 @@ and every later one waits on the same frame.
 On both paths `bufferedAmount` counts the bytes waiting in the queue, so
 `send()` returns `false` and `'drain'` follows exactly as for a socket above
 its high-water mark — the backpressure contract holds, it just has one more
-place to hold bytes. A `close()` or `terminate()` drops what is still
-queued.
+place to hold bytes.
+
+Closing while messages wait there: `close()` **delivers** what `send()`
+already accepted — the Close frame takes the queue's tail, nothing new is
+accepted meanwhile, and `closeTimeout` bounds the whole close; if the
+queue has not drained by then it is dropped, said once as
+`ws.close.dropped` (`frames`, `bytes`), and the Close goes out. So
+`send(x); close()` delivers `x` with or without takeover. `terminate()`
+drops the queue at once, as does a close the connection makes on its own
+(a protocol violation, a limit) and a Close the peer sent first.
 
 `server_max_window_bits` is honoured when the client asks for it (8–15).
 

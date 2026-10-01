@@ -577,6 +577,126 @@ test('takeover: terminate with a deflate in flight neither throws nor writes aft
   assert.strictEqual(socket.destroyed, true);
 });
 
+// --- a graceful close() and the outbound queue --------------------------------
+//
+// `send(x); close()` delivered x without takeover and silently dropped it
+// with — the Close frame overtook whatever waited behind a compress in
+// flight. It now takes the queue's tail.
+
+// Every frame written so far, however the writes were cut: a frame queued
+// behind a compress leaves as its header and its payload, two writes.
+const parsed = (socket) => {
+  const frames = [];
+  let rest = Buffer.concat(socket.writtenData);
+  while (rest.length > 0) {
+    const { value } = FrameParser.parse(rest, { allowedRsv: RSV1 });
+    if (!value) break;
+    frames.push(value.frame);
+    rest = rest.subarray(value.bytesUsed);
+  }
+  return frames;
+};
+const closed = (socket) => parsed(socket).some((frame) => frame.opcode === OPCODES.CLOSE);
+const closeCode = (frame) => frame.payload.readUInt16BE(0);
+
+test('takeover: close() after send() delivers the message, then the Close frame', async () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { deflate: TAKEOVER });
+  const text = 'bye '.repeat(512);
+  assert.strictEqual(conn.sendText(text), true);
+  conn.close(1001, 'going away');
+  // Accepted, and nothing new is: the connection is closing.
+  assert.strictEqual(conn.sendText('too late'), false);
+  assert.strictEqual(socket.writtenData.length, 0, 'the Close did not overtake the message');
+  await tickUntil(() => closed(socket));
+  const written = socket.writtenData.length;
+  const [data, close] = parsed(socket);
+  assert.strictEqual(data.opcode, OPCODES.TEXT);
+  assert.strictEqual((await liveInflater()(data.payload)).toString(), text);
+  assert.strictEqual(close.opcode, OPCODES.CLOSE);
+  assert.strictEqual(closeCode(close), 1001);
+  // The peer's Close in answer finishes it — nothing is written after ours.
+  const answer = Frame.close(1001, '');
+  answer.maskPayload();
+  socket.emit('data', answer.toBuffer());
+  await once(socket, 'close');
+  assert.strictEqual(socket.writtenData.length, written);
+  assert.strictEqual(socket.destroyed, true);
+});
+
+test('async: everything accepted before close() leaves in send order, the Close last', async () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC });
+  conn.sendText('a'.repeat(4096)); // deflates off the loop
+  conn.sendText('b'); // a ready frame, queued behind it
+  conn.sendPing(Buffer.from('p')); // a control frame, queued too
+  conn.close(1000, '');
+  // A pong asked for now would leave after the Close: it is not sent.
+  assert.strictEqual(conn.sendPong(Buffer.from('late')), false);
+  await tickUntil(() => closed(socket));
+  const frames = parsed(socket);
+  assert.deepStrictEqual(
+    frames.map((frame) => frame.opcode),
+    [OPCODES.TEXT, OPCODES.TEXT, OPCODES.PING, OPCODES.CLOSE],
+  );
+  assert.strictEqual(decompress(frames[0].payload, 1 << 20).toString(), 'a'.repeat(4096));
+  assert.strictEqual(decompress(frames[1].payload, 1 << 20).toString(), 'b');
+  assert.strictEqual(closeCode(frames[3]), 1000);
+  conn.terminate();
+});
+
+test('a close() whose queue does not drain within closeTimeout drops it, says so, and closes', async (t) => {
+  const permessageDeflate = require('../../src/websocket/permessageDeflate.js');
+  const { recorder } = require('../helpers/recorder.js');
+  const real = permessageDeflate.compressAsync;
+  permessageDeflate.compressAsync = () => {}; // a deflate that never lands
+  t.after(() => {
+    permessageDeflate.compressAsync = real;
+  });
+  const log = recorder();
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC, closeTimeout: 30, logger: log.writer });
+  conn.sendText('x'.repeat(300));
+  conn.sendText('y');
+  conn.close(1001, '');
+  await once(socket, 'close');
+  // Only the Close reached the wire; the two messages are counted in the line.
+  const frames = parsed(socket);
+  assert.deepStrictEqual(
+    frames.map((frame) => frame.opcode),
+    [OPCODES.CLOSE],
+  );
+  assert.strictEqual(closeCode(frames[0]), 1001);
+  assert.strictEqual(socket.ended, true);
+  const line = log.find('ws.close.dropped');
+  assert.deepStrictEqual([line.level, line.frames], ['warn', 2]);
+  assert.ok(line.bytes >= 300, `the bytes that never left: ${line.bytes}`);
+});
+
+test('a peer that closes while our Close is still queued is answered at once; the queue is dropped', async (t) => {
+  const permessageDeflate = require('../../src/websocket/permessageDeflate.js');
+  const real = permessageDeflate.compressAsync;
+  permessageDeflate.compressAsync = () => {};
+  t.after(() => {
+    permessageDeflate.compressAsync = real;
+  });
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC, closeTimeout: 5_000 });
+  conn.sendText('x'.repeat(300));
+  conn.close(1001, '');
+  const theirs = Frame.close(1000, 'done');
+  theirs.maskPayload();
+  socket.emit('data', theirs.toBuffer());
+  await once(socket, 'close');
+  const frames = parsed(socket);
+  assert.deepStrictEqual(
+    frames.map((frame) => [frame.opcode, closeCode(frame)]),
+    [[OPCODES.CLOSE, 1000]],
+    "the peer's Close is echoed; what was queued is not written after it",
+  );
+  assert.strictEqual(socket.ended, true);
+});
+
 test('async: a message over the threshold deflates off the loop, smaller ones stay in order behind it', async () => {
   const socket = new MockSocket();
   const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC });
