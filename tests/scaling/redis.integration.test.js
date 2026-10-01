@@ -1,21 +1,24 @@
 'use strict';
 
-// The Redis backplane against a REAL Redis, not the in-repo fake of
-// redis.test.js. The fake encodes the contract the adapter depends on; this
-// file checks that ioredis actually honours that contract. Manual/local only
-// — not wired into CI, since it needs a live server. Set REDIS_URL to run it:
+// The Redis backplane and the Redis session stores against a REAL Redis, not
+// the in-repo fakes of redis.test.js and sessions.test.js. A fake encodes the
+// contract an adapter depends on; this file checks that ioredis and the
+// server actually honour it — an expiring SET, PEXPIRE, SET … XX are exactly
+// what a fake accepts whatever it is handed. CI's `redis` job runs it against
+// a service container; locally, set REDIS_URL:
 //
 //   REDIS_URL=redis://127.0.0.1:6379 node --test tests/scaling/redis.integration.test.js
 //
 // Without REDIS_URL every test skips, so `pnpm test` stays self-contained on
 // a machine with no Redis. `ioredis` is a devDependency used only here: the
-// adapter itself requires nothing and duck-types whatever it is handed.
+// adapters themselves require nothing and duck-type whatever they are handed.
 
 const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { RpcServer, defineRouter, procedure } = require('../../index.js');
-const { createRedisAdapter } = require('../../scaling.js');
+const { createRedisAdapter, createRedisSessionStore } = require('../../scaling.js');
+const { sealedStore, generateKey } = require('../../encryption.js');
 const { decodeAttachments } = require('../../src/attachments.js');
 const { waitFor: sharedWaitFor } = require('../helpers/wait.js');
 
@@ -200,3 +203,117 @@ test('redis backplane: a signed cluster converges, and a copied command does not
   // And the cluster is still whole after a few presence ticks of real traffic.
   assert.deepStrictEqual(second.cluster.instances().sort(), ['node-1', 'node-2']);
 });
+
+// ---------------------------------------------------------------------------
+// Session stores
+
+const TOKEN = '0f1e2d3c-4b5a-4978-8695-a4b3c2d1e0f9';
+const STATE = { userId: 42, email: 'ada@example.com', roles: ['admin'] };
+
+// One connection per test, and ONE teardown: whatever the test left under
+// its prefix is deleted before the connection is quit (two hooks would run
+// in the order they were registered — the quit first).
+const connect = (t, keyPrefix) => {
+  const client = new Redis(REDIS_URL, { lazyConnect: false, maxRetriesPerRequest: 1 });
+  t.after(async () => {
+    const left = await client.keys(`${keyPrefix}*`);
+    if (left.length > 0) await client.del(...left);
+    await client.quit();
+  });
+  return client;
+};
+
+test(
+  'redis session store: a row expires, slides on touch, is not brought back by an update, and is deleted',
+  { skip },
+  async (t) => {
+    const keyPrefix = `${prefix()}:session:`;
+    const client = connect(t, keyPrefix);
+    const store = createRedisSessionStore({ client, prefix: keyPrefix, ttl: 60_000, logger: false });
+    const key = keyPrefix + TOKEN;
+
+    assert.strictEqual(await store.get(TOKEN), null);
+    assert.strictEqual(await store.set(TOKEN, STATE), true);
+    assert.deepStrictEqual(await store.get(TOKEN), STATE);
+    // SET … PX: the row carries the store's ttl, in milliseconds.
+    const ttl = await client.pttl(key);
+    assert.ok(ttl > 50_000 && ttl <= 60_000, `the row's ttl is ${ttl} ms`);
+
+    // Sliding expiry: a row about to expire is pushed back to the full ttl.
+    await client.pexpire(key, 1000);
+    assert.ok((await client.pttl(key)) <= 1000);
+    await store.touch(TOKEN);
+    assert.ok((await client.pttl(key)) > 50_000, 'touch restored the ttl');
+
+    // An update (`create: false`, SET … XX) writes a row that is there…
+    assert.strictEqual(await store.set(TOKEN, { ...STATE, roles: [] }, { create: false }), true);
+    assert.deepStrictEqual(await store.get(TOKEN), { ...STATE, roles: [] });
+    assert.ok((await client.pttl(key)) > 50_000, 'an update keeps the row expiring');
+
+    // …and does not bring back one that is gone — a logout on another instance.
+    await store.delete(TOKEN);
+    assert.strictEqual(await store.get(TOKEN), null);
+    assert.strictEqual(await store.set(TOKEN, STATE, { create: false }), false);
+    assert.strictEqual(await client.exists(key), 0, 'the deleted session stayed deleted');
+  },
+);
+
+test('sealed session store on redis: neither the token nor the state rests in Redis', { skip }, async (t) => {
+  const keyPrefix = `${prefix()}:sealed:`;
+  const client = connect(t, keyPrefix);
+  const inner = createRedisSessionStore({ client, prefix: keyPrefix, ttl: 60_000, logger: false });
+  const store = sealedStore(inner, { keys: generateKey(), logger: false });
+
+  await store.set(TOKEN, STATE);
+  assert.deepStrictEqual(await store.get(TOKEN), STATE);
+
+  const keys = await client.keys(`${keyPrefix}*`);
+  assert.strictEqual(keys.length, 1, 'one row per token');
+  assert.ok(!keys[0].includes(TOKEN), 'the bearer token is not the row key');
+  const raw = await client.get(keys[0]);
+  assert.ok(!raw.includes('ada@example.com') && !raw.includes(TOKEN), 'the state is not readable at rest');
+  const row = JSON.parse(raw);
+  assert.deepStrictEqual(Object.keys(row).sort(), ['kid', 's', 'v']);
+  assert.strictEqual(row.v, 1);
+  assert.ok((await client.pttl(keys[0])) > 50_000, 'the sealed row expires like any other');
+
+  // Sliding expiry reaches the sealed row through its derived key.
+  await client.pexpire(keys[0], 1000);
+  await store.touch(TOKEN);
+  assert.ok((await client.pttl(keys[0])) > 50_000);
+
+  await store.delete(TOKEN);
+  assert.strictEqual(await store.get(TOKEN), null);
+  assert.deepStrictEqual(await client.keys(`${keyPrefix}*`), []);
+});
+
+test(
+  'sealed session store on redis: a key rotation moves the row on its next read and signs nobody out',
+  { skip },
+  async (t) => {
+    const keyPrefix = `${prefix()}:rotate:`;
+    const client = connect(t, keyPrefix);
+    const inner = createRedisSessionStore({ client, prefix: keyPrefix, ttl: 60_000, logger: false });
+    const k1 = generateKey();
+    const k2 = generateKey();
+
+    const before = sealedStore(inner, { keys: { current: 'k1', ring: { k1 } }, logger: false });
+    await before.set(TOKEN, STATE);
+    const [old] = await client.keys(`${keyPrefix}*`);
+
+    // The fleet rotates: k2 is current, k1 stays on the ring for the read.
+    const after = sealedStore(inner, { keys: { current: 'k2', ring: { k1, k2 } }, logger: false });
+    assert.deepStrictEqual(await after.get(TOKEN), STATE, 'the session survived the rotation');
+    const moved = await client.keys(`${keyPrefix}*`);
+    assert.strictEqual(moved.length, 1, 'still one row per token');
+    assert.notStrictEqual(moved[0], old, 'under the new key the row has a new name — the index key rotates too');
+    assert.strictEqual(JSON.parse(await client.get(moved[0])).kid, 'k2');
+    assert.ok((await client.pttl(moved[0])) > 50_000, 'the migrated row expires');
+    assert.strictEqual(await client.exists(old), 0, 'the stale row is gone');
+
+    // A delete clears the slot of every kid, whichever the row sits under.
+    await before.set(TOKEN, STATE); // an instance still on the old ring writes
+    await after.delete(TOKEN);
+    assert.deepStrictEqual(await client.keys(`${keyPrefix}*`), []);
+  },
+);

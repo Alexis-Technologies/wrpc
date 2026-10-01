@@ -1487,6 +1487,15 @@ bytes it sends. In that order:
   to `range()` without a sign: `onLag(topic, readers)` hears of it — once
   per fall, nothing while everybody keeps up — and the four adapters log it
   as `broker.tail.lag` (info).
+- **The Redis session stores are tested against a real Redis.**
+  `createRedisSessionStore` and `sealedStore` over it were only ever run on
+  in-repo fakes, which accept an expiring `SET`, `PEXPIRE` and `SET … XX`
+  whatever they are handed. `tests/scaling/redis.integration.test.js` (CI's
+  `redis` job) now checks them on the server: the row's TTL and its slide
+  on `touch`, an update that does not bring back a deleted session, that
+  neither the token nor the state rests in Redis under `sealedStore`, and
+  that a key rotation moves the row — one per token, still expiring — and
+  signs nobody out.
 - **Coverage is held per file where the code is new.** The global
   thresholds are an average, and a new adapter at 80% branches hid behind
   three hundred well-covered files. `pnpm test:coverage:floors`
