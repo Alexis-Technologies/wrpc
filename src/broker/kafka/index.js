@@ -20,18 +20,20 @@
 //              nack), and an exhausted message goes to a dead-letter topic
 
 const { createLoggerWriter } = require('../../logging.js');
-const { generateUUID } = require('../../runtime/node.js');
-const { resolveGenerateId, backoffDelay } = require('../../utils.js');
-
-// An injected `generateId` is used VERBATIM for every id this adapter mints
-// — never truncated. Trimming a user's id would quietly weaken the
-// uniqueness they chose it for, and all wrpc knows about their generator is
-// that it answers a string. The cost is that a generator answering
-// characters a broker refuses in a consumer name, subject or queue name
-// fails at the driver, not here.
+const { backoffDelay } = require('../../utils.js');
 const { TopicTails } = require('../tail.js');
 const { codedError, toText, toHeaders, reasonText, encodeToken } = require('../ids.js');
 const { crashDelay } = require('../retry.js');
+const {
+  ATTEMPT_HEADER,
+  REDELIVERED_HEADER,
+  DEAD_REASON_HEADER,
+  DEFAULT_PREFETCH,
+  idFactory,
+  failedRead,
+  guardedRead,
+  checkConsume,
+} = require('../adapter.js');
 const {
   detectFlavor,
   consumerConfig,
@@ -44,7 +46,6 @@ const {
 } = require('./shape.js');
 
 const DEFAULT_PREFIX = 'wrpc';
-const DEFAULT_PREFETCH = 16;
 const DEFAULT_PARTITIONS = 3;
 const DEFAULT_MAX_RETRY_DELAY = 60_000;
 const DEFAULT_MAX_CATCH_UP = 4;
@@ -57,9 +58,6 @@ const SETTLE_ATTEMPTS = 3;
 const SETTLE_BACKOFF = Object.freeze({ minDelay: 100, maxDelay: 1000, factor: 2, jitter: false });
 const HEARTBEAT_STEP = 3000;
 const CHANNEL_HEADER = 'wrpc-channel';
-const ATTEMPT_HEADER = 'x-wrpc-attempt';
-const REDELIVERED_HEADER = 'x-wrpc-redelivered';
-const DEAD_REASON_HEADER = 'x-wrpc-dead-reason';
 const VECTOR = /^k1:(\d{1,5}=\d{1,19})(,\d{1,5}=\d{1,19})*$/;
 
 const isFunction = (value) => typeof value === 'function';
@@ -120,13 +118,8 @@ const createKafkaBroker = (options = {}) => {
     maxCatchUp = DEFAULT_MAX_CATCH_UP,
     generateId = null,
   } = options;
-  // Strict: a new option, so a bad generator is refused at construction
-  // rather than producing a name the broker rejects at connect time.
-  const nextId = generateId === null ? generateUUID : resolveGenerateId(generateId, 'createKafkaBroker').generate;
-  // Two names the broker itself repeats in every log line and metric label
-  // it emits, so the DEFAULT stays short; an injected generator is used
-  // whole, per nextId above.
-  const shortName = generateId === null ? () => generateUUID().slice(0, 8) : nextId;
+  // Ids: an injected generator is used verbatim — see idFactory.
+  const { shortName } = idFactory(generateId, 'createKafkaBroker');
   if (!kafka || !isFunction(kafka.producer) || !isFunction(kafka.consumer) || !isFunction(kafka.admin)) {
     throw new TypeError('createKafkaBroker: options.kafka must be a KafkaJS-shaped client (producer/consumer/admin)');
   }
@@ -595,47 +588,8 @@ const createKafkaBroker = (options = {}) => {
 
   const parseId = (text) => (decodeVector(text) === null ? null : text);
 
-  const failedRead = (error) => {
-    const rejected = Promise.reject(error);
-    rejected.catch(() => {});
-    return {
-      ready: rejected,
-      [Symbol.asyncIterator]: () => ({
-        next: () => Promise.reject(error),
-        return: () => Promise.resolve({ value: undefined, done: true }),
-      }),
-    };
-  };
-
-  const encodeIds = (inner, guard) => {
-    const ready = guard ? Promise.all([guard, inner.ready]).then(() => undefined) : inner.ready;
-    ready.catch(() => {});
-    return {
-      ready,
-      [Symbol.asyncIterator]: () => {
-        const iterator = inner[Symbol.asyncIterator]();
-        let verified = guard === null;
-        return {
-          next: async () => {
-            if (!verified) {
-              try {
-                await guard;
-              } catch (error) {
-                await iterator.return?.();
-                throw error;
-              }
-              verified = true;
-            }
-            const result = await iterator.next();
-            return result.done
-              ? result
-              : { done: false, value: { ...result.value, id: encodeVector(result.value.id) } };
-          },
-          return: (value) => iterator.return?.(value) ?? Promise.resolve({ value, done: true }),
-        };
-      },
-    };
-  };
+  // A cursor is a vector of partition offsets inside and its text outside.
+  const encodeIds = (inner, guard) => guardedRead(inner, { guard, mapId: encodeVector });
 
   const read = (topic, options = {}) => {
     const { after = null, from = 'latest', signal = null } = options;
@@ -682,14 +636,8 @@ const createKafkaBroker = (options = {}) => {
 
   const consume = async (queue, onDelivery, options = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    if (!isFunction(onDelivery)) throw new TypeError('kafka queue.consume: onDelivery must be a function');
     const { group = queue, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = options;
-    if (!Number.isInteger(prefetch) || prefetch <= 0) {
-      throw new TypeError('kafka queue.consume: prefetch must be a positive integer');
-    }
-    if (deadLetter !== null && (typeof deadLetter !== 'string' || deadLetter.length === 0)) {
-      throw new TypeError('kafka queue.consume: deadLetter must be a queue name or null');
-    }
+    checkConsume('kafka queue.consume', onDelivery, prefetch, deadLetter);
     const topic = await ensureTopic(queueTopic(queue));
     if (deadLetter) await ensureTopic(queueTopic(deadLetter));
     const groupId = encodeToken(group, { safe: /[A-Za-z0-9_-]/, escape: '_', maxLength: 120 });

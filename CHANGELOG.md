@@ -1360,6 +1360,16 @@ bytes it sends. In that order:
    last 1.x node is gone. Nothing to do without `secret`.
 
 ### Changed
+- **Broker adapters share one leaf instead of four copies (internal).**
+  `src/broker/adapter.js` now holds what Redis, NATS, RabbitMQ and Kafka
+  each spelled out themselves: the header names a redelivery carries, the
+  id factory, a refused `log.read` and a position-checked one (three
+  variants of the same wrapper, one of which differed only by accident),
+  the checks `consume` and `listen` open with, and what happens to a
+  delivery whose handler threw. The delivery object itself stays per
+  adapter — how a message is settled is where the brokers really differ.
+  No behaviour change: the four contract suites and the live brokers run
+  the same before and after; about 220 lines fewer.
 - **WebRTC: `PeerLink` has a file of its own, and `WrpcPeer`'s internal
   methods are private (internal).** `src/webrtc/peer.js` held three state
   machines; `PeerLink` — the link's life, the redial and knock cycle — is

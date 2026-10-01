@@ -27,30 +27,28 @@
 
 const { createRedisAdapter } = require('../../scaling/redis.js');
 const { createLoggerWriter } = require('../../logging.js');
-const { generateUUID } = require('../../runtime/node.js');
-const { resolveGenerateId } = require('../../utils.js');
-
-// An injected `generateId` is used VERBATIM for every id this adapter mints
-// — never truncated. Trimming a user's id would quietly weaken the
-// uniqueness they chose it for, and all wrpc knows about their generator is
-// that it answers a string. The cost is that a generator answering
-// characters a broker refuses in a consumer name, subject or queue name
-// fails at the driver, not here.
 const { TopicTails } = require('../tail.js');
 const { codedError, toText, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
-const { crashDelay, positiveInteger } = require('../retry.js');
+const { positiveInteger } = require('../retry.js');
 const { withHealth } = require('../port.js');
+const {
+  ATTEMPT_HEADER,
+  REDELIVERED_HEADER,
+  DEAD_REASON_HEADER,
+  DEFAULT_PREFETCH,
+  idFactory,
+  failedRead,
+  guardedRead,
+  checkConsume,
+  checkListen,
+  runDelivery,
+} = require('../adapter.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_BLOCK_MS = 1000;
 const DEFAULT_CLAIM_IDLE_MS = 60_000;
-const DEFAULT_PREFETCH = 16;
 const DEFAULT_INBOX_TTL_MS = 60_000;
 const STREAM_ID = /^\d{1,20}-\d{1,20}$/;
-
-const ATTEMPT_HEADER = 'x-wrpc-attempt';
-const REDELIVERED_HEADER = 'x-wrpc-redelivered';
-const DEAD_REASON_HEADER = 'x-wrpc-dead-reason';
 
 const isFunction = (value) => typeof value === 'function';
 
@@ -122,13 +120,8 @@ const createRedisBroker = (options = {}) => {
     inboxTtl = DEFAULT_INBOX_TTL_MS,
     generateId = null,
   } = options;
-  // Strict: a new option, so a bad generator is refused at construction
-  // rather than producing a name the broker rejects at connect time.
-  const nextId = generateId === null ? generateUUID : resolveGenerateId(generateId, 'createRedisBroker').generate;
-  // Two names the broker itself repeats in every log line and metric label
-  // it emits, so the DEFAULT stays short; an injected generator is used
-  // whole, per nextId above.
-  const shortName = generateId === null ? () => generateUUID().slice(0, 8) : nextId;
+  // Ids: an injected generator is used verbatim — see idFactory.
+  const { nextId, shortName } = idFactory(generateId, 'createRedisBroker');
   checkClient(client, 'createRedisBroker');
   // Strict numbers, refused here: `blockMs: 0` is `XREAD BLOCK 0` — forever —
   // and no pause after a failed read, a hot loop; `claimIdleMs: 0` steals
@@ -291,46 +284,7 @@ const createRedisBroker = (options = {}) => {
       }
     })();
     checked.catch(() => {});
-    const inner = tails.read(topic, { after, signal });
-    const ready = Promise.all([checked, inner.ready]).then(() => undefined);
-    ready.catch(() => {}); // surfaced through the iteration; never unhandled
-    return {
-      ready,
-      [Symbol.asyncIterator]: () => {
-        const iterator = inner[Symbol.asyncIterator]();
-        let verified = false;
-        return {
-          next: async () => {
-            if (!verified) {
-              try {
-                await checked;
-              } catch (error) {
-                // A refused position must not leave this reader on the
-                // shared tail: an iterator whose next() rejects is never
-                // closed by a for-await loop.
-                await iterator.return?.();
-                throw error;
-              }
-              verified = true;
-            }
-            return iterator.next();
-          },
-          return: (value) => iterator.return?.(value) ?? Promise.resolve({ value, done: true }),
-        };
-      },
-    };
-  };
-
-  const failedRead = (error) => {
-    const rejected = Promise.reject(error);
-    rejected.catch(() => {});
-    return {
-      ready: rejected,
-      [Symbol.asyncIterator]: () => ({
-        next: () => Promise.reject(error),
-        return: () => Promise.resolve({ value: undefined, done: true }),
-      }),
-    };
+    return guardedRead(tails.read(topic, { after, signal }), { guard: checked });
   };
 
   const append = async (topic, value, { headers = null } = {}) => {
@@ -372,14 +326,8 @@ const createRedisBroker = (options = {}) => {
 
   const consume = async (name, onDelivery, options = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    if (!isFunction(onDelivery)) throw new TypeError('redis queue.consume: onDelivery must be a function');
     const { group = name, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = options;
-    if (!Number.isInteger(prefetch) || prefetch <= 0) {
-      throw new TypeError('redis queue.consume: prefetch must be a positive integer');
-    }
-    if (deadLetter !== null && (typeof deadLetter !== 'string' || deadLetter.length === 0)) {
-      throw new TypeError('redis queue.consume: deadLetter must be a queue name or null');
-    }
+    checkConsume('redis queue.consume', onDelivery, prefetch, deadLetter);
     const consumerName = `wrpc-${shortName()}`;
     const stream = queueKey(name);
     await ensureGroup(name, group);
@@ -474,14 +422,7 @@ const createRedisBroker = (options = {}) => {
       });
       state.inflight++;
       held.add(id);
-      Promise.resolve()
-        .then(() => onDelivery(delivery))
-        .catch((error) => {
-          // Settled nothing: retried after a backoff, attempt + 1 — the
-          // delivery contract (port.js), not a release to the head.
-          report('broker.redis.delivery', error, { queue: name });
-          void delivery.retry({ delay: crashDelay(attempt) });
-        });
+      runDelivery(onDelivery, delivery, report, 'broker.redis.delivery', name);
     };
 
     // A delayed retry that left the set but never reached the stream, and
@@ -785,10 +726,7 @@ const createRedisBroker = (options = {}) => {
 
   const listen = async (address, onMessage, { group = null } = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    if (!isFunction(onMessage)) throw new TypeError('redis direct.listen: onMessage must be a function');
-    if (typeof address !== 'string' || address.length === 0) {
-      throw new TypeError('redis direct.listen: address must be a non-empty string');
-    }
+    checkListen('redis direct.listen', address, onMessage);
     return group === null || group === undefined ? listenPlain(address, onMessage) : listenGroup(address, onMessage);
   };
 

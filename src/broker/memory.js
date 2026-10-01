@@ -27,9 +27,9 @@ const { resolveGenerateId } = require('../utils.js');
 const shortId = () => generateUUID().replace(/-/g, '').slice(0, 12);
 const { codedError, toText, toHeaders, reasonText } = require('./ids.js');
 const { crashDelay } = require('./retry.js');
+const { ATTEMPT_HEADER, DEAD_REASON_HEADER, DEFAULT_PREFETCH, checkConsume } = require('./adapter.js');
 
 const DEFAULT_LOG_ENTRIES = 10_000;
-const DEFAULT_PREFETCH = 16;
 const MAX_ID_LENGTH = 128;
 const LOG_ID = /^[A-Za-z0-9_-]{1,64}\.\d{1,16}$/;
 
@@ -259,15 +259,7 @@ class MemoryBroker {
 
   #consume(queue, onDelivery, { prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = {}) {
     requireName(queue, 'queue', 'MemoryBroker.queue.consume');
-    if (typeof onDelivery !== 'function') {
-      throw new TypeError('MemoryBroker.queue.consume: onDelivery must be a function');
-    }
-    if (!Number.isInteger(prefetch) || prefetch <= 0) {
-      throw new TypeError('MemoryBroker.queue.consume: prefetch must be a positive integer');
-    }
-    if (deadLetter !== null && (typeof deadLetter !== 'string' || deadLetter.length === 0)) {
-      throw new TypeError('MemoryBroker.queue.consume: deadLetter must be a queue name or null');
-    }
+    checkConsume('MemoryBroker.queue.consume', onDelivery, prefetch, deadLetter);
     if (this.#closed) return Promise.reject(codedError('Broker is closed', 503));
     const state = this.#queueState(queue);
     const consumer = { onDelivery, prefetch, deadLetter, inflight: new Set(), active: true, paused: false };
@@ -375,8 +367,8 @@ class MemoryBroker {
           if (consumer.deadLetter === null) return;
           broker.#enqueue(consumer.deadLetter, message.body, {
             ...message.headers,
-            'x-wrpc-dead-reason': reasonText(reason),
-            'x-wrpc-attempt': String(message.attempt),
+            [DEAD_REASON_HEADER]: reasonText(reason),
+            [ATTEMPT_HEADER]: String(message.attempt),
           });
         }),
     });

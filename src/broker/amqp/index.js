@@ -27,29 +27,30 @@
 //   so every shared queue here is durable.
 
 const { createLoggerWriter } = require('../../logging.js');
-const { generateUUID } = require('../../runtime/node.js');
-const { resolveGenerateId, backoffDelay } = require('../../utils.js');
-
-// An injected `generateId` is used VERBATIM for every id this adapter mints
-// — never truncated. Trimming a user's id would quietly weaken the
-// uniqueness they chose it for, and all wrpc knows about their generator is
-// that it answers a string. The cost is that a generator answering
-// characters a broker refuses in a consumer name, subject or queue name
-// fails at the driver, not here.
+const { backoffDelay } = require('../../utils.js');
 const { TopicTails } = require('../tail.js');
 const { codedError, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
-const { crashDelay, positiveInteger } = require('../retry.js');
+const { positiveInteger } = require('../retry.js');
 const { withHealth } = require('../port.js');
+const {
+  ATTEMPT_HEADER,
+  REDELIVERED_HEADER,
+  DEAD_REASON_HEADER,
+  TEXT_HEADER,
+  DEFAULT_PREFETCH,
+  idFactory,
+  failedRead,
+  guardedRead,
+  checkConsume,
+  checkListen,
+  runDelivery,
+} = require('../adapter.js');
 
 const DEFAULT_PREFIX = 'wrpc';
-const DEFAULT_PREFETCH = 16;
 const DEFAULT_INBOX_TTL = 60_000;
 const DEFAULT_QUEUE_TYPE = 'quorum';
 const OFFSET = /^\d{1,19}$/;
 
-const ATTEMPT_HEADER = 'x-wrpc-attempt';
-const REDELIVERED_HEADER = 'x-wrpc-redelivered';
-const DEAD_REASON_HEADER = 'x-wrpc-dead-reason';
 const STREAM_OFFSET = 'x-stream-offset';
 
 const isFunction = (value) => typeof value === 'function';
@@ -90,9 +91,8 @@ const createAmqpBroker = (options = {}) => {
     streamMaxBytes = 0,
     generateId = null,
   } = options;
-  // Strict: a new option, so a bad generator is refused at construction
-  // rather than producing a name the broker rejects at connect time.
-  const nextId = generateId === null ? generateUUID : resolveGenerateId(generateId, 'createAmqpBroker').generate;
+  // Ids: an injected generator is used verbatim — see idFactory.
+  const { nextId } = idFactory(generateId, 'createAmqpBroker');
   if (!connection || !isFunction(connection.createChannel) || !isFunction(connection.createConfirmChannel)) {
     throw new TypeError('createAmqpBroker: options.connection must be an amqplib connection');
   }
@@ -541,35 +541,8 @@ const createAmqpBroker = (options = {}) => {
 
   const parseId = (text) => (typeof text === 'string' && OFFSET.test(text) ? text : null);
 
-  const failedRead = (error) => {
-    const rejected = Promise.reject(error);
-    rejected.catch(() => {});
-    return {
-      ready: rejected,
-      [Symbol.asyncIterator]: () => ({
-        next: () => Promise.reject(error),
-        return: () => Promise.resolve({ value: undefined, done: true }),
-      }),
-    };
-  };
-
-  const stringifyIds = (inner, guard) => {
-    const ready = guard ? Promise.all([guard, inner.ready]).then(() => undefined) : inner.ready;
-    ready.catch(() => {});
-    return {
-      ready,
-      [Symbol.asyncIterator]: () => {
-        const iterator = inner[Symbol.asyncIterator]();
-        return {
-          next: async () => {
-            const result = await iterator.next();
-            return result.done ? result : { done: false, value: { ...result.value, id: String(result.value.id) } };
-          },
-          return: (value) => iterator.return?.(value) ?? Promise.resolve({ value, done: true }),
-        };
-      },
-    };
-  };
+  // An offset is a number inside and a string outside.
+  const stringifyIds = (inner) => guardedRead(inner, { mapId: String });
 
   const read = (topic, options = {}) => {
     const { after = null, from = 'latest', signal = null } = options;
@@ -577,7 +550,7 @@ const createAmqpBroker = (options = {}) => {
       throw new TypeError("amqp log.read: from must be 'latest' or 'earliest'");
     }
     if (after === null || after === undefined) {
-      return stringifyIds(tails.read(topic, from === 'earliest' ? { after: -1, signal } : { from, signal }), null);
+      return stringifyIds(tails.read(topic, from === 'earliest' ? { after: -1, signal } : { from, signal }));
     }
     if (parseId(after) === null) return failedRead(codedError('Malformed event id', 400));
     const position = Number(after);
@@ -607,7 +580,7 @@ const createAmqpBroker = (options = {}) => {
         };
       },
     };
-    return stringifyIds(wrapped, null);
+    return stringifyIds(wrapped);
   };
 
   // AMQP 0-9-1 does not report the offset a publish landed on — only the
@@ -698,14 +671,8 @@ const createAmqpBroker = (options = {}) => {
 
   const consume = async (queue, onDelivery, options = {}) => {
     if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
-    if (!isFunction(onDelivery)) throw new TypeError('amqp queue.consume: onDelivery must be a function');
     const { prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = options;
-    if (!Number.isInteger(prefetch) || prefetch <= 0) {
-      throw new TypeError('amqp queue.consume: prefetch must be a positive integer');
-    }
-    if (deadLetter !== null && (typeof deadLetter !== 'string' || deadLetter.length === 0)) {
-      throw new TypeError('amqp queue.consume: deadLetter must be a queue name or null');
-    }
+    checkConsume('amqp queue.consume', onDelivery, prefetch, deadLetter);
     const main = await ensureQueue(queue, deadLetter);
     const key = `${queue}|${deadLetter ?? ''}`;
     // The consumer's channel is not for life: a channel-level error — the
@@ -814,14 +781,7 @@ const createAmqpBroker = (options = {}) => {
             channel.ack(message);
           }, true),
       });
-      Promise.resolve()
-        .then(() => onDelivery(delivery))
-        .catch((error) => {
-          // Settled nothing: retried after a backoff, attempt + 1 — the
-          // delivery contract (port.js), not a release to the head.
-          report('broker.amqp.delivery', error, { queue });
-          void delivery.retry({ delay: crashDelay(attempt) });
-        });
+      runDelivery(onDelivery, delivery, report, 'broker.amqp.delivery', queue);
     };
 
     const start = async (channel) => {
@@ -943,10 +903,7 @@ const createAmqpBroker = (options = {}) => {
 
   const listen = async (address, onMessage, { group = null } = {}) => {
     if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
-    if (!isFunction(onMessage)) throw new TypeError('amqp direct.listen: onMessage must be a function');
-    if (typeof address !== 'string' || address.length === 0) {
-      throw new TypeError('amqp direct.listen: address must be a non-empty string');
-    }
+    checkListen('amqp direct.listen', address, onMessage);
     // What `stop.healthy` answers: the consumer was cancelled by the broker,
     // or its channel closed (with it an exclusive inbox queue is gone) —
     // either way nothing is delivered here any more.
@@ -975,8 +932,8 @@ const createAmqpBroker = (options = {}) => {
           return void report('broker.amqp.cancelled', new Error('consumer cancelled'), { address });
         }
         const headers = headersOf(message);
-        const text = headers['wrpc-text'] === '1';
-        delete headers['wrpc-text'];
+        const text = headers[TEXT_HEADER] === '1';
+        delete headers[TEXT_HEADER];
         try {
           const result = onMessage({
             body: text ? message.content.toString() : new Uint8Array(message.content),
@@ -1015,7 +972,7 @@ const createAmqpBroker = (options = {}) => {
     const text = typeof body === 'string';
     const messageId = nextId();
     const properties = {
-      headers: { ...toHeaders(headers), 'wrpc-text': text ? '1' : '0' },
+      headers: { ...toHeaders(headers), [TEXT_HEADER]: text ? '1' : '0' },
       messageId,
       persistent: false,
       mandatory: true,

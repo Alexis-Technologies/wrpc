@@ -26,22 +26,25 @@
 // wildcards — a room called `room:*` must never subscribe to every room.
 
 const { createLoggerWriter } = require('../../logging.js');
-const { generateUUID } = require('../../runtime/node.js');
-const { resolveGenerateId } = require('../../utils.js');
-
-// An injected `generateId` is used VERBATIM for every id this adapter mints
-// — never truncated. Trimming a user's id would quietly weaken the
-// uniqueness they chose it for, and all wrpc knows about their generator is
-// that it answers a string. The cost is that a generator answering
-// characters a broker refuses in a consumer name, subject or queue name
-// fails at the driver, not here.
 const { TopicTails } = require('../tail.js');
 const { codedError, toText, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
-const { crashDelay, positiveInteger } = require('../retry.js');
+const { positiveInteger } = require('../retry.js');
 const { withHealth } = require('../port.js');
+const {
+  ATTEMPT_HEADER,
+  REDELIVERED_HEADER,
+  DEAD_REASON_HEADER,
+  TEXT_HEADER,
+  DEFAULT_PREFETCH,
+  idFactory,
+  failedRead,
+  guardedRead,
+  checkConsume,
+  checkListen,
+  runDelivery,
+} = require('../adapter.js');
 
 const DEFAULT_PREFIX = 'wrpc';
-const DEFAULT_PREFETCH = 16;
 const DEFAULT_ACK_WAIT = 30_000;
 const DEFAULT_FETCH_EXPIRES = 2_000;
 // A reader's ephemeral consumer is reaped by the server this long after its
@@ -49,11 +52,7 @@ const DEFAULT_FETCH_EXPIRES = 2_000;
 const EPHEMERAL_INACTIVE_MS = 30_000;
 const SEQUENCE = /^\d{1,19}$/;
 
-const ATTEMPT_HEADER = 'x-wrpc-attempt';
-const REDELIVERED_HEADER = 'x-wrpc-redelivered';
-const DEAD_REASON_HEADER = 'x-wrpc-dead-reason';
 const CORRELATION_HEADER = 'wrpc-correlation';
-const TEXT_HEADER = 'wrpc-text';
 
 const MILLIS = 1_000_000; // JetStream durations are nanoseconds
 
@@ -78,9 +77,8 @@ const createNatsBroker = (options = {}) => {
     stream: streamConfig = {},
     generateId = null,
   } = options;
-  // Strict: a new option, so a bad generator is refused at construction
-  // rather than producing a name the broker rejects at connect time.
-  const nextId = generateId === null ? generateUUID : resolveGenerateId(generateId, 'createNatsBroker').generate;
+  // Ids: an injected generator is used verbatim — see idFactory.
+  const { nextId } = idFactory(generateId, 'createNatsBroker');
   if (!nc || !isFunction(nc.publish) || !isFunction(nc.subscribe)) {
     throw new TypeError('createNatsBroker: options.nc must be a NATS connection (publish/subscribe/...)');
   }
@@ -324,45 +322,8 @@ const createNatsBroker = (options = {}) => {
 
   const parseId = (text) => (typeof text === 'string' && SEQUENCE.test(text) ? text : null);
 
-  const failedRead = (error) => {
-    const rejected = Promise.reject(error);
-    rejected.catch(() => {});
-    return {
-      ready: rejected,
-      [Symbol.asyncIterator]: () => ({
-        next: () => Promise.reject(error),
-        return: () => Promise.resolve({ value: undefined, done: true }),
-      }),
-    };
-  };
-
-  const wrapRead = (inner, checked) => {
-    const ready = Promise.all([checked, inner.ready]).then(() => undefined);
-    ready.catch(() => {});
-    return {
-      ready,
-      [Symbol.asyncIterator]: () => {
-        const iterator = inner[Symbol.asyncIterator]();
-        let verified = false;
-        return {
-          next: async () => {
-            if (!verified) {
-              try {
-                await checked;
-              } catch (error) {
-                await iterator.return?.();
-                throw error;
-              }
-              verified = true;
-            }
-            const result = await iterator.next();
-            return result.done ? result : { done: false, value: { ...result.value, id: String(result.value.id) } };
-          },
-          return: (value) => iterator.return?.(value) ?? Promise.resolve({ value, done: true }),
-        };
-      },
-    };
-  };
+  // A sequence is a number inside and a string outside.
+  const wrapRead = (inner, checked) => guardedRead(inner, { guard: checked, mapId: String });
 
   const read = (topic, options = {}) => {
     const { after = null, from = 'latest', signal = null } = options;
@@ -417,14 +378,8 @@ const createNatsBroker = (options = {}) => {
 
   const consume = async (name, onDelivery, options = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    if (!isFunction(onDelivery)) throw new TypeError('nats queue.consume: onDelivery must be a function');
     const { group = name, prefetch = DEFAULT_PREFETCH, deadLetter = null, signal = null } = options;
-    if (!Number.isInteger(prefetch) || prefetch <= 0) {
-      throw new TypeError('nats queue.consume: prefetch must be a positive integer');
-    }
-    if (deadLetter !== null && (typeof deadLetter !== 'string' || deadLetter.length === 0)) {
-      throw new TypeError('nats queue.consume: deadLetter must be a queue name or null');
-    }
+    checkConsume('nats queue.consume', onDelivery, prefetch, deadLetter);
     const { js: stream, jsm: manager } = await managers();
     const { name: streamId, subject, config } = queueStream(name);
     await ensureStream(streamId, subject, config);
@@ -555,14 +510,7 @@ const createNatsBroker = (options = {}) => {
             message.term();
           }),
       });
-      Promise.resolve()
-        .then(() => onDelivery(delivery))
-        .catch((error) => {
-          // Settled nothing: retried after a backoff, attempt + 1 — the
-          // delivery contract (port.js), not a release to the head.
-          report('broker.nats.delivery', error, { queue: name });
-          void delivery.retry({ delay: crashDelay(attempt) });
-        });
+      runDelivery(onDelivery, delivery, report, 'broker.nats.delivery', name);
     };
 
     // The iterator is sequential, so the handler is never awaited here:
@@ -652,10 +600,7 @@ const createNatsBroker = (options = {}) => {
 
   const listen = async (address, onMessage, { group = null } = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    if (!isFunction(onMessage)) throw new TypeError('nats direct.listen: onMessage must be a function');
-    if (typeof address !== 'string' || address.length === 0) {
-      throw new TypeError('nats direct.listen: address must be a non-empty string');
-    }
+    checkListen('nats direct.listen', address, onMessage);
     // What `stop.healthy` answers: a subscription that reported an error
     // (a permissions violation, a slow-consumer drop) delivers nothing more.
     let listening = true;
