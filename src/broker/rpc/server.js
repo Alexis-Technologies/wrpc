@@ -298,13 +298,18 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
   // sequence gap, an undecodable frame) is warn — something on the path is
   // wrong; a client that went quiet is info; a goodbye, a replacement and
   // this server's own closing are debug — the routine ends of a session.
-  const endSession = (id, reason, { notify = true, level = 'debug' } = {}) => {
+  // `reason` is one of a closed set — it is the label of
+  // `wrpc.broker.rpc.session.ends`: gap | undecodable | idle | send_failed |
+  // replaced | bye | peer_gap | closing. `detail` is the text of it (the
+  // sequence numbers of a gap), for the log line and the peer's `wrpc-reason`.
+  const endSession = (id, reason, { notify = true, level = 'debug', detail = reason } = {}) => {
     const session = sessions.get(id);
     if (!session) return;
     sessions.delete(id);
-    if (notify) session.transport.bye(reason);
+    if (notify) session.transport.bye(detail);
     session.transport.drop();
-    log[level]({ event: 'broker.rpc.session.end', session: fingerprint(id), reason });
+    rpc.otel.recordBrokerSessionEnd(reason);
+    log[level]({ event: 'broker.rpc.session.end', session: fingerprint(id), reason: detail });
   };
 
   const onHello = (message) => {
@@ -345,7 +350,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
       failed: encodeFailed,
       onFailure: (error) => {
         log.warn({ event: 'broker.rpc.send', err: error, session: fingerprint(id) });
-        endSession(id, 'send failed', { notify: false });
+        endSession(id, 'send_failed', { notify: false, detail: 'send failed' });
       },
     });
     const session = {
@@ -404,10 +409,19 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     if (session.sealed && message.sealed !== true) {
       return void log.warn({ event: 'broker.rpc.refused', reason: 'downgrade', kind });
     }
-    if (kind === KIND.BYE) return void endSession(id, 'bye', { notify: false });
+    if (kind === KIND.BYE) {
+      // The client left because IT saw a gap in what this side sent — the
+      // broker lost a frame on the way out, which nothing here can see. Its
+      // text is reduced to that one word, never logged as it came.
+      if (message.headers?.[HEADER_REASON] === 'gap') {
+        return void endSession(id, 'peer_gap', { notify: false, level: 'warn', detail: 'the client saw a gap' });
+      }
+      return void endSession(id, 'bye', { notify: false });
+    }
     const seq = seqOf(message.headers);
     if (seq !== session.expectSeq) {
-      return void endSession(id, `sequence gap: expected ${session.expectSeq}, got ${seq}`, { level: 'warn' });
+      const detail = `sequence gap: expected ${session.expectSeq}, got ${seq}`;
+      return void endSession(id, 'gap', { level: 'warn', detail });
     }
     session.expectSeq++;
     session.lastSeen = Date.now();
@@ -415,7 +429,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     // another codec, or that does not inflate under the cap: the peer's
     // protocol violation, and the session ends as on a sequence gap.
     const body = frameBody(message, session.compression === null ? null : codec, cap, decodeFailed);
-    if (body === null) return void endSession(id, 'undecodable frame', { level: 'warn' });
+    if (body === null) return void endSession(id, 'undecodable', { level: 'warn', detail: 'undecodable frame' });
     if (kind === KIND.CHUNK) session.transport.emit('chunk', toBytes(body));
     else session.transport.emit('packet', packetBody(body));
   };
@@ -497,7 +511,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     clearInterval(sweep);
     if (stopService) await stopService();
     stopService = null;
-    for (const id of Array.from(sessions.keys())) endSession(id, 'server closing');
+    for (const id of Array.from(sessions.keys())) endSession(id, 'closing', { detail: 'server closing' });
     await stopInbox();
   };
   const onClose = () => void stop();

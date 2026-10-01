@@ -146,7 +146,7 @@ want an alert for.
 | `broker.amqp.connection` | error | The injected RabbitMQ connection closed: every binding on this broker is unhealthy and stays so — open a new connection and a new broker on it |
 | `broker.rpc.refused` | warn | A sealed RPC frame that did not open (`reason`: `unsealed`, `kid`, `open`, `format`, `replay`), one older than `maxSkew` (`stale`), or a plaintext frame on a session a sealed hello opened (`downgrade`) — dropped, never answered |
 | `broker.rpc.replay` | error | The shared replay memory could not be asked; the frame was not served |
-| `broker.rpc.session.end` | warn/info/debug | A broker RPC session ended (`session` is a fingerprint, `reason`): `warn` when the broker lost or mangled a frame (`sequence gap: …`, `undecodable frame`), `info` for a client that went quiet (`idle`), `debug` for the routine ends (`bye`, `replaced`, `server closing`, `send failed` — which had its own `broker.rpc.send` warn) |
+| `broker.rpc.session.end` | warn/info/debug | A broker RPC session ended (`session` is a fingerprint, `reason`): `warn` when the broker lost or mangled a frame — `sequence gap: expected N, got M` seen here, `the client saw a gap` when the frame was lost on this side's way out and the client's goodbye said so, `undecodable frame` — `info` for `idle`, `debug` for a routine `bye`, `replaced`, `send failed` or `server closing`. The same ends are counted, by a closed set of reasons, in `wrpc.broker.rpc.session.ends` |
 | `broker.rpc.session.unknown` | debug | A frame for a session this instance does not hold (it restarted, or the session idled out); the client was told to reconnect. Debug: any participant can send these in a loop |
 | `broker.rpc.send`, `broker.rpc.reply` | warn | The broker refused to carry a frame to a session's inbox, or a reply to a stateless request |
 | `broker.rpc.capacity` | warn | Hellos refused at `maxSessions` since the last sweep (`refused`, `sessions`, `max`) — one line per sweep, not per hello |
@@ -154,6 +154,7 @@ want an alert for.
 | `broker.feed.refused` | warn/error/debug/info | A sealed entry a feed could not open: `warn` once per reason per ten seconds with the running `count` (`error` with `err` when the reason is `keys`), `debug` in between, an `info` summary when the feed ends |
 | `broker.feed.resume` | warn/debug | A resume token was refused. `reason: 'signature'` means it was **tampered with** |
 | `broker.feed.gap` | info | A subscriber fell behind retention; the snapshot hook ran |
+| `broker.tail.lag` | info | Readers of a log topic (`topic`, `readers`) fell `highWaterMark` entries behind its live tail: their buffers were dropped and they catch up through the broker's range read — slow subscribers, and range load on the broker. Once per fall, not per entry |
 | `wt.attach`, `wt.source` | error | A WebTransport session could not be attached (`verify` threw, the source died) |
 | `wt.onError` | error | The `onError` handed to `acceptSessions` threw itself (`err`) — said here instead of rejecting `done` |
 | `wt.refused` | warn | A session refused before attach: `status` 403 (`verify` said no) or 408 (no control stream, or `ready`/`verify` not settled, within `acceptTimeout`) |

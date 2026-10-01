@@ -88,6 +88,7 @@ const createServerTelemetry = (telemetry) => {
   let brokerPublished = null;
   let brokerRefused = null;
   let brokerAttempts = null;
+  let brokerSessionEnds = null;
   let queueWait = null;
   let clusterVerifications = null;
   let rtcAssertions = null;
@@ -180,6 +181,10 @@ const createServerTelemetry = (telemetry) => {
       // number is unbounded, and a counter series per value is a cardinality
       // bomb. Redelivery depth was unmeasurable — the number was available
       // on every delivery and simply never recorded.
+      brokerSessionEnds = meter.createCounter('wrpc.broker.rpc.session.ends', {
+        unit: '{session}',
+        description: 'Broker RPC sessions ended, by reason',
+      });
       brokerAttempts = meter.createHistogram('wrpc.broker.delivery.attempts', {
         unit: '{attempt}',
         description: 'How many deliveries a message took to settle',
@@ -226,6 +231,7 @@ const createServerTelemetry = (telemetry) => {
       brokerPublished = null;
       brokerRefused = null;
       brokerAttempts = null;
+      brokerSessionEnds = null;
       queueWait = null;
       clusterVerifications = null;
       rtcAssertions = null;
@@ -459,6 +465,14 @@ const createServerTelemetry = (telemetry) => {
     recordBrokerDelivery(system, outcome) {
       try {
         brokerDeliveries?.add(1, { 'messaging.system': system, 'wrpc.broker.outcome': outcome });
+      } catch {}
+    },
+
+    // `reason` is a closed set (src/broker/rpc/server.js): the sequence
+    // numbers of a gap are the log line's, never a label.
+    recordBrokerSessionEnd(reason) {
+      try {
+        brokerSessionEnds?.add(1, { 'wrpc.broker.reason': reason });
       } catch {}
     },
 

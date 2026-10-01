@@ -26,6 +26,7 @@ const {
   HEADER_INBOX,
   HEADER_ENC,
   KIND,
+  HEADER_REASON,
   serviceAddress,
   peerHeaders,
   seqOf,
@@ -245,16 +246,20 @@ class ClientBrokerTransport extends ClientTransport {
       return void pending.reject(error);
     }
     if (!this.active) return;
-    if (notify) this.#bye();
+    // Told why: a gap seen HERE is a frame the broker lost on the server's
+    // way out, which the server cannot see for itself.
+    if (notify) this.#bye('gap');
     this.active = false;
     this.#generation++;
     void this.#release();
     this.emit('close', error);
   }
 
-  #bye() {
+  #bye(reason = null) {
     if (!this.#remote || !this.#session) return;
-    const bye = sealFrame(this.#sealing, this.#remote, this.#session, { [HEADER_KIND]: KIND.BYE }, '');
+    const headers =
+      reason === null ? { [HEADER_KIND]: KIND.BYE } : { [HEADER_KIND]: KIND.BYE, [HEADER_REASON]: reason };
+    const bye = sealFrame(this.#sealing, this.#remote, this.#session, headers, '');
     this.#direct.send(this.#remote, bye.body, { headers: bye.headers, correlationId: this.#session }).catch(() => {});
   }
 

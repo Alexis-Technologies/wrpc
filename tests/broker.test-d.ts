@@ -167,3 +167,15 @@ broker.attachConsumers(
   { 'orders.dlq': { target: 'ops.v1/review', sealedFor: 'orders' } },
   { encryption: { keys: 'k' }, onDeadLetter: ({ opened }) => void opened?.body },
 );
+
+// A tail says when readers fall behind it.
+new broker.TopicTails<number, { seq: number; value: string; headers: Record<string, string> }>({
+  live: async () => null,
+  range: async () => [],
+  covered: (cursor, entry) => entry.seq <= cursor,
+  advance: (_cursor, entry) => entry.seq,
+  onLag: (topic, readers) => {
+    expectType<string>(topic);
+    expectType<number>(readers);
+  },
+});

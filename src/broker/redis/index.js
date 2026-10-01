@@ -234,6 +234,9 @@ const createRedisBroker = (options = {}) => {
   };
 
   const tails = new TopicTails({
+    // Readers that fell behind the tail and are catching up through range():
+    // info, not a fault — but the first thing to look at when a feed is slow.
+    onLag: (topic, readers) => log.info({ event: 'broker.tail.lag', topic, readers }),
     live: async (topic, { signal, onEntry }) => {
       if (!tail.connection) tail.connection = spawn();
       const from = (await tip(topic)) ?? '0-0';

@@ -112,6 +112,7 @@ credential, not an identity, and the two do not share a switch.
 | `wrpc.rtc.ice_restarts` | Counter | `{restart}` |
 | `wrpc.rtc.closes` | Counter | `{link}` — peer links closed, by `wrpc.rtc.reason` (`goodbye`, `refused`, `gave-up`, `abandoned`, `unknown`) and `wrpc.rtc.side` (`local` / `remote`) |
 | `wrpc.broker.deliveries` | Counter | `{message}` |
+| `wrpc.broker.rpc.session.ends` | Counter | `{session}` — broker RPC sessions ended, by `wrpc.broker.reason`: `gap` and `peer_gap` (the broker lost a frame — seen by the server, or reported by the client), `undecodable`, `send_failed`, `idle`, `replaced`, `bye`, `closing`. Open sessions are `wrpc.server.connections` with `wrpc.transport: broker` |
 | `wrpc.broker.published` | Counter | `{message}` |
 | `wrpc.broker.refused` | Counter | `{message}` |
 | `wrpc.client.reconnects` | Counter | `{attempt}` |

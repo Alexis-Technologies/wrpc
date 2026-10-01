@@ -205,6 +205,7 @@ const DISABLED = Object.freeze({
     return fn(null);
   },
   recordBrokerDelivery: noop,
+  recordBrokerSessionEnd: noop,
   recordBrokerAttempts: noop,
   recordQueue: noop,
   recordRooms: noop,

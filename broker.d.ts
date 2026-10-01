@@ -549,6 +549,13 @@ export interface TopicTailsOptions<Cursor, Entry extends TailEntry> {
   advance(cursor: Cursor | null, entry: Entry): Cursor;
   highWaterMark?: number;
   page?: number;
+  /**
+   * Hears of readers of `topic` that just fell `highWaterMark` entries
+   * behind its tail: their buffers were dropped and they catch up through
+   * `range()`. Called once per entry that made any reader fall, with how
+   * many did; never while everybody keeps up. A throw from it is ignored.
+   */
+  onLag?: ((topic: string, readers: number) => void) | null;
 }
 
 /** One live reader per topic, shared by every local read; see src/broker/tail.js. */

@@ -79,6 +79,7 @@ class TopicTails {
   #contiguous;
   #highWaterMark;
   #page;
+  #onLag;
   #tails = new Map(); // topic -> { readers, ready, current, controller, failure }
 
   constructor({
@@ -89,6 +90,12 @@ class TopicTails {
     contiguous = null,
     highWaterMark = DEFAULT_HIGH_WATER_MARK,
     page = DEFAULT_PAGE,
+    // `onLag(topic, readers)`: readers of a topic that fell `highWaterMark`
+    // entries behind its tail just had their buffers dropped and will
+    // catch up through range() instead — the one sign of subscribers that
+    // cannot keep up, and of range load on the broker, which used to pass
+    // without a trace.
+    onLag = null,
   }) {
     for (const [name, fn] of Object.entries({ live, range, covered, advance })) {
       if (typeof fn !== 'function') throw new TypeError(`TopicTails: ${name} must be a function`);
@@ -96,6 +103,10 @@ class TopicTails {
     if (contiguous !== null && typeof contiguous !== 'function') {
       throw new TypeError('TopicTails: contiguous must be a function or null');
     }
+    if (onLag !== null && typeof onLag !== 'function') {
+      throw new TypeError('TopicTails: onLag must be a function or null');
+    }
+    this.#onLag = onLag;
     this.#live = live;
     this.#range = range;
     this.#covered = covered;
@@ -117,7 +128,17 @@ class TopicTails {
       tail = { readers: new Set(), ready: null, current: null, positioned: false, controller, failure: null };
       const onEntry = (entry) => {
         tail.current = this.#advance(tail.current, entry);
-        for (const member of tail.readers) member.push(entry);
+        // push() answers true for a reader that JUST fell behind: nothing
+        // is counted, and nothing called, while everybody keeps up.
+        let lagged = 0;
+        for (const member of tail.readers) if (member.push(entry)) lagged++;
+        if (lagged > 0 && this.#onLag !== null) {
+          try {
+            this.#onLag(topic, lagged);
+          } catch {
+            // An observer's throw is not the tail's failure.
+          }
+        }
       };
       // The tail died under its readers: forgotten, stopped, and every
       // reader told to re-join (see read()). Before it was positioned, a
@@ -181,12 +202,14 @@ class TopicTails {
       // Where a 'latest' read starts: the tail's cursor as of ready (#join).
       start: null,
       push(entry) {
-        if (reader.lagging) return;
-        if (reader.queue.length >= tails.#highWaterMark) {
+        if (reader.lagging) return false;
+        const lagged = reader.queue.length >= tails.#highWaterMark;
+        if (lagged) {
           reader.lagging = true;
           reader.queue.length = 0;
         } else reader.queue.push(entry);
         wake?.();
+        return lagged;
       },
       fail(error) {
         reader.failure = error;

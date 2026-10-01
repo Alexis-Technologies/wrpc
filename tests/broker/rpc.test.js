@@ -11,6 +11,7 @@ const { bearerTransport } = require('../../auth.js');
 const { runTransportContract } = require('../client/transportContract.js');
 const { quiet, waitFor } = require('./support.js');
 const { recorder } = require('../helpers/recorder.js');
+const { createMetrics, point } = require('../helpers/metrics.js');
 
 const onceEvent = (emitter, name) => new Promise((resolve) => emitter.once(name, resolve));
 
@@ -258,7 +259,11 @@ test('session: a frame gap on either side ends the session', async (t) => {
     },
   };
   const log = recorder();
-  const a = await instance(t, lossy, app, { rpc: { logger: log.writer }, attach: { logger: log.writer } });
+  const metrics = createMetrics();
+  const a = await instance(t, lossy, app, {
+    rpc: { logger: log.writer, telemetry: { meter: metrics.meter } },
+    attach: { logger: log.writer },
+  });
   const client = await connect(t, lossy, { mode: 'session' });
   // Server -> client: the dropped answer is noticed at the next frame.
   dropServerFrame = true;
@@ -278,17 +283,29 @@ test('session: a frame gap on either side ends the session', async (t) => {
   void again.call('calc/add', { a: 1, b: 1 }).catch(() => {});
   await byeClose;
   await waitFor(() => a.handle.sessions === 0);
-  // The broker lost a frame: the server's end of the session is a WARN
-  // that names the gap; the client's own goodbye earlier was a routine
-  // debug end.
+  // The broker lost a frame both times, and both are a WARN on the server.
+  // The first it could not see for itself — the frame was lost on ITS way
+  // out — and knows only because the client's goodbye said why; the second
+  // it saw in the sequence, and names the numbers.
   const ends = log.all('broker.rpc.session.end');
   assert.deepStrictEqual(
     ends.map((e) => [e.level, e.reason.split(':')[0]]),
     [
-      ['debug', 'bye'],
+      ['warn', 'the client saw a gap'],
       ['warn', 'sequence gap'],
     ],
   );
+  // And on a graph, by a closed set of reasons — never the numbers.
+  const collected = await metrics.collect();
+  const reason = (value) =>
+    point(collected, 'wrpc.broker.rpc.session.ends', (attributes) => attributes['wrpc.broker.reason'] === value)?.value;
+  assert.deepStrictEqual([reason('peer_gap'), reason('gap'), reason('bye')], [1, 1, undefined]);
+  // A client that simply leaves is a routine end.
+  const leaving = await connect(t, lossy, { mode: 'session' });
+  await waitFor(() => a.handle.sessions === 1);
+  leaving.close();
+  await waitFor(() => a.handle.sessions === 0);
+  assert.deepStrictEqual(log.all('broker.rpc.session.end').map((e) => [e.level, e.reason])[2], ['debug', 'bye']);
 });
 
 test('session: a silent client is ended after idleTimeout; a frame for a lost session gets a bye', async (t) => {

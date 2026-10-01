@@ -1431,6 +1431,19 @@ bytes it sends. In that order:
   The public `deflateRaw` is unchanged. One codec holds about 0.2 MB plus
   five bytes per dictionary byte: one per page or process, not per
   connection. The entry is 4.4 KB (budget 5).
+- **Broker RPC sessions and feed tails say when a broker loses frames or a
+  reader cannot keep up.** Why a session ended was in the log and nowhere
+  on a graph: `wrpc.broker.rpc.session.ends` counts every end by a closed
+  `wrpc.broker.reason` (`gap`, `peer_gap`, `undecodable`, `send_failed`,
+  `idle`, `replaced`, `bye`, `closing`) — the sequence numbers of a gap stay
+  in the log line and the peer's `wrpc-reason`. A frame lost on the
+  SERVER's way out is one only the client can see: its goodbye now carries
+  `wrpc-reason: gap`, and the server ends the session as `peer_gap`, at
+  warn, where it used to read as a routine `bye`. And a `TopicTails` reader
+  that falls `highWaterMark` entries behind had its buffer dropped and went
+  to `range()` without a sign: `onLag(topic, readers)` hears of it — once
+  per fall, nothing while everybody keeps up — and the four adapters log it
+  as `broker.tail.lag` (info).
 - **A compression codec that fails is said, and counted.** A message is
   never lost to compression — a codec that throws sends it plain, a frame
   that does not inflate is refused and answered — which is exactly why a

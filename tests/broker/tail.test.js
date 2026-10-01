@@ -157,6 +157,52 @@ test('TopicTails: a slow reader past the high-water mark catches up through rang
   await iterator.return();
 });
 
+test('TopicTails: onLag hears of readers that fell behind — once per fall, with the topic and how many', async () => {
+  const log = createLog();
+  const lags = [];
+  const tails = log.tails({
+    highWaterMark: 5,
+    page: 4,
+    onLag: (topic, readers) => {
+      lags.push([topic, readers]);
+      throw new Error("an observer that throws is not the tail's failure");
+    },
+  });
+  // Two readers that do not pull, and one that keeps up.
+  const slow = [tails.read('t'), tails.read('t')];
+  const iterators = slow.map((read) => read[Symbol.asyncIterator]());
+  const firsts = iterators.map((iterator) => iterator.next());
+  const quick = tails.read('t');
+  const pulled = [];
+  const pump = (async () => {
+    for await (const entry of quick) {
+      pulled.push(entry.id);
+      if (pulled.length === 21) break;
+    }
+  })();
+  await Promise.all([...slow.map((read) => read.ready), quick.ready]);
+  assert.deepStrictEqual(lags, [], 'nobody is behind, nothing is called');
+  log.append('t', 'v1');
+  await Promise.all(firsts);
+  for (let i = 2; i <= 21; i++) {
+    log.append('t', `v${i}`);
+    await timers.setImmediate();
+  }
+  await pump;
+  // Both slow readers passed the mark on the same entry: one call, for two.
+  assert.deepStrictEqual(lags, [['t', 2]]);
+  assert.strictEqual(pulled.length, 21, 'the reader that kept up was never dropped');
+  // They catch up through range() as before, whatever the observer threw.
+  const rest = [];
+  for (let i = 0; i < 20; i++) rest.push((await iterators[0].next()).value.id);
+  assert.deepStrictEqual(
+    rest,
+    Array.from({ length: 20 }, (_, i) => i + 2),
+  );
+  await Promise.all(iterators.map((iterator) => iterator.return()));
+  assert.throws(() => log.tails({ onLag: 'log it' }), /onLag must be a function or null/);
+});
+
 test('TopicTails: range errors and live failures reach the reader', async (t) => {
   await t.test('an unusable cursor fails the read with the range error', async () => {
     const log = createLog();
