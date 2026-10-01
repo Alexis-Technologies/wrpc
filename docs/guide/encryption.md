@@ -102,6 +102,12 @@ wait — so unwrap your data keys at boot and refresh them on your own clock:
 keys: { current: () => vault.currentKid, get: (kid) => vault.keys.get(kid) ?? null }
 ```
 
+A provider is asked every time — `get(kid)` once per backplane message,
+handshake or sealed request, ahead of anything derived from the key and
+remembered — so a kid it stops answering is refused **from that lookup on**,
+without a restart: the lever for a key that leaked. A kid names one key;
+putting other bytes under a kid already in use is not a rotation.
+
 ## The backplane {#backplane}
 
 ```js
@@ -307,6 +313,23 @@ encryption exists to keep out reads it on every call. Use
 the handshake, on a WebSocket, and inside the sealed request on HTTP. A
 server built with `encryption` and the cookie transport says so once, at
 construction (`encryption.ambient-session`).
+
+### Rotating the server key
+
+`Server.encryption.keys` is the same ring, with one difference in who holds
+the other half: a client **pinned** a key id. Make the new key `current` —
+`encryptionKey()` and the discovery endpoint publish it from then on — and
+keep the old one on the ring for as long as a client pinned to it is out
+there: a mobile app nobody updated, a bundle in a cache. Dropping it is not
+housekeeping, it is the moment those clients stop connecting (a session
+handshake is closed `1008`, a sealed request answered `400`; the client's
+error is `ENCRYPTION_REFUSED` and says the pinned key may be retired).
+
+A key that **leaked** is the opposite case: take it off the ring now — with
+a provider that takes effect at once, on the next handshake and the next
+request — and get the new bundle to the clients out of band, in a release.
+Sessions already established run on under their own keys; close them if
+the leak is recent enough to matter (`server.rpc.cluster.disconnect({})`).
 
 ### Discovering the key
 

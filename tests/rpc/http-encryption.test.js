@@ -251,6 +251,39 @@ test('http encryption: replayed, stale, altered or sealed to an unknown key — 
   );
 });
 
+test('http encryption: a kid withdrawn from a live provider stops opening requests at once — 400, reason kid', async (t) => {
+  const ring = new Map([['k1', generateKey()]]);
+  let current = 'k1';
+  const keys = { current: () => current, get: (kid) => ring.get(kid) ?? null, kids: () => Array.from(ring.keys()) };
+  const log = require('../helpers/recorder.js').recorder();
+  const booted = await bootServer(t, { router, logger: log.writer, encryption: { keys } });
+  const endpoint = `${booted.origin}${booted.server.rpc.basePath}`;
+  const pinned = await booted.server.rpc.encryptionKey();
+  const connect = async (serverKey) => {
+    const client = await WrpcClient.connect(endpoint, {
+      transport: 'http',
+      encryption: createEncryption({ serverKey }),
+      reconnect: false,
+      logger: false,
+    });
+    t.after(() => void client.close());
+    return client;
+  };
+  const client = await connect(pinned);
+  assert.deepStrictEqual((await client.call('data/echo', { n: 1 })).args, { n: 1 }, 'sealed to k1, opened');
+  ring.set('k2', generateKey());
+  current = 'k2';
+  ring.delete('k1');
+  const errors = [];
+  client.on('error', (error) => errors.push(error));
+  await assert.rejects(client.call('data/echo', { n: 2 }), (error) => error.code === 400);
+  assert.deepStrictEqual([errors[0].code, errors[0].status], ['ENCRYPTION_REFUSED', 400]);
+  const refusal = log.all('encryption.refused').at(-1);
+  assert.deepStrictEqual([refusal.reason, refusal.kind], ['kid', 'http']);
+  const repinned = await connect(await booted.server.rpc.encryptionKey());
+  assert.deepStrictEqual((await repinned.call('data/echo', { n: 3 })).args, { n: 3 });
+});
+
 test("http encryption: what the connection says about the sender is not the sender's to declare inside", async (t) => {
   const { connect, port } = await secure(t);
   // A page behind a proxy that reads x-forwarded-for, or a rate limit keyed

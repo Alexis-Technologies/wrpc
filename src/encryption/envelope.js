@@ -283,6 +283,16 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
       const key = derive(kid, sealed[1], sealed.subarray(2, 2 + SALT_LENGTH));
       if (key === null) refuse('kid');
       entry = { key, window: replayWindow === 0 ? null : new ReplayWindow(replayWindow) };
+    } else if (keys.get(kid) === null) {
+      // The ring is asked for a KNOWN sender too: its salt is on the wire,
+      // so whoever holds a withdrawn key can seal under a salt this instance
+      // remembers — and the cached subkey would open it until the restart.
+      // One lookup a message, inside the noise of the open itself: 2.6 µs
+      // at 64 B before and after on a ring, +0.04 µs through a provider
+      // (medians of separate processes, the sealed row of
+      // bench/encryption.js).
+      senders.delete(id);
+      refuse('kid');
     }
     let bytes;
     try {

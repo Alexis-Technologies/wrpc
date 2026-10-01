@@ -134,13 +134,21 @@ const normalizeServerEncryption = (value, name) => {
     const cipher = aead({ algorithm: id });
     suites.set(AEAD_IDS[id], { cipher, hpke: createHpke({ kem, kdf, cipher }) });
   }
-  // kid → promise of the derived static key pairs, derived once.
+  // kid → promise of the derived static key pairs, derived once — but the
+  // RING is asked first, every time: a kid a live provider no longer answers
+  // (a key withdrawn because it leaked) stops finishing handshakes and
+  // opening requests with that lookup, not at the next restart. One
+  // synchronous get per handshake or sealed request, never per packet. (A
+  // kid names ONE key: bytes replaced under the same kid are not seen.)
   const derived = new Map();
   const statics = (kid) => {
+    const secret = keys.get(kid);
+    if (secret === null) {
+      derived.delete(kid);
+      return null;
+    }
     let pending = derived.get(kid);
     if (pending === undefined) {
-      const secret = keys.get(kid);
-      if (secret === null) return null;
       pending = deriveStatics(secret, { dh, kdf });
       derived.set(kid, pending);
       // A derivation that failed is not the answer for this kid forever:

@@ -2232,6 +2232,20 @@ bytes it sends. In that order:
   `bench/deflate-js.js`, which gained a many-blocks row and a Huffman-only
   row that runs every rare symbol through the sub-table path. The
   `./deflate` budget is 5 KB (was 4; the entry is 4.1).
+- **A key id withdrawn from a live key provider stops working at once.**
+  The server derived its static key pairs once per kid and answered from
+  that cache before it asked the keyring, and the envelope sealer kept a
+  known sender's subkey the same way — so with a provider (`{ current(),
+  get(kid) }` over a KMS) a kid taken off the ring because its key leaked
+  went on finishing Noise handshakes, opening sealed requests and opening
+  envelopes sealed under a remembered salt (which is on the wire) until the
+  process restarted. The ring is asked first now, every time: one
+  synchronous lookup per handshake or sealed request, and one per envelope
+  from a known sender (2.6 µs an open before and after on a ring, +0.04 µs
+  through a provider). A session already established keeps its own keys.
+  The encryption guide gained "Rotating the server key": an old pin works
+  only while its key is on the ring, so dropping one is when its clients
+  stop connecting — and what to do when the reason is a leak.
 - **Client: `static encrypts` is checked by deed, and a per-request
   transport is checked for its key up front.** The client refused
   `options.encryption` for a transport without the static, but a static is

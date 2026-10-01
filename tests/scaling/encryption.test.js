@@ -412,6 +412,24 @@ test('sealer: maxSenders bounds the senders remembered — the oldest goes, and 
   }
 });
 
+test('sealer: a kid withdrawn from a live provider is refused for a sender already known, not only for a new one', () => {
+  const ring = new Map([['k1', generateKey()]]);
+  const keys = { current: () => 'k1', get: (kid) => ring.get(kid) ?? null };
+  const encryption = normalizeEnvelopeEncryption({ keys }, 'x');
+  const [a, b] = [0, 1].map(() => createEnvelopeSealer({ encryption, layer: 'rooms' }));
+  const first = a.seal(Buffer.from('one'), 'ch');
+  assert.strictEqual(b.open(first.kid, first.sealed, 'ch').toString(), 'one', 'the sender is known now');
+  // Sealed while the key was good, under a salt `b` remembers — which is on
+  // the wire, so whoever holds the withdrawn key can seal under it too.
+  const second = a.seal(Buffer.from('two'), 'ch');
+  const kept = ring.get('k1');
+  ring.delete('k1');
+  assert.throws(() => b.open(second.kid, second.sealed, 'ch'), { reason: 'kid' });
+  // Back on the ring (withdrawn by mistake): derived again, and it opens.
+  ring.set('k1', kept);
+  assert.strictEqual(b.open(second.kid, second.sealed, 'ch').toString(), 'two');
+});
+
 test('sealer: the frame, the echo, the sender cache and the reasons', () => {
   const [a, b] = sealerPair();
   const { kid, sealed } = a.seal(Buffer.from('hello'), 'ch');

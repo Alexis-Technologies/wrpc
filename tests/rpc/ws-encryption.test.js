@@ -420,6 +420,33 @@ test('ws encryption: an old pin keeps working while its key is on the ring, and 
   assert.ok(await refused(dropped.url, { encryption: createEncryption({ serverKey: pinned }) }));
 });
 
+test('ws encryption: a kid withdrawn from a live provider stops finishing handshakes at once — no restart', async (t) => {
+  const ring = new Map([['k1', generateKey()]]);
+  let current = 'k1';
+  // What a KMS-backed keyring looks like: both answers read at the moment they are asked for.
+  const keys = { current: () => current, get: (kid) => ring.get(kid) ?? null, kids: () => Array.from(ring.keys()) };
+  const { server, url } = await bootServer(t, { router, encryption: { keys } });
+  const pinned = await server.rpc.encryptionKey();
+  assert.ok(pinned.startsWith('k1:'));
+  const client = await connectClient(t, url, { encryption: createEncryption({ serverKey: pinned }) });
+  await client.load('data');
+  assert.strictEqual((await client.api.data.session()).kid, 'k1');
+  // The key leaked: a new one is current and the old one is off the ring —
+  // in the provider, in this same process.
+  ring.set('k2', generateKey());
+  current = 'k2';
+  ring.delete('k1');
+  assert.ok(await refused(url, { encryption: createEncryption({ serverKey: pinned }) }), 'the old pin is refused now');
+  const next = await server.rpc.encryptionKey();
+  assert.ok(next.startsWith('k2:'));
+  const repinned = await connectClient(t, url, { encryption: createEncryption({ serverKey: next }) });
+  await repinned.load('data');
+  assert.strictEqual((await repinned.api.data.session()).kid, 'k2');
+  // A session already established has its own keys and runs on: withdrawing
+  // the static stops new handshakes, it does not reach into a live one.
+  assert.deepStrictEqual(await client.api.data.echo({ still: 'here' }), { still: 'here' });
+});
+
 test('ws encryption: the server may speak first — what it sent before the handshake arrives after it, in order', async (t) => {
   const hooks = {
     onConnect: (client) => {
