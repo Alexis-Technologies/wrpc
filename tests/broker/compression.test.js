@@ -283,3 +283,53 @@ test('broker compression: the option is validated, and an asynchronous codec is 
   assert.strictEqual((await client.api.calc.big({ rows: 100 })).length, 100);
   assert.ok(sent.some((m) => m.headers[HEADER_ENC] === 'mine'));
 });
+
+test('broker compression: a codec that throws sends the frame plain and refuses the one it cannot read — said once each way', async (t) => {
+  const { recorder } = require('../helpers/recorder.js');
+  const log = recorder();
+  // The same id as the platform codec, so the two ends agree on it — and a
+  // server half that, once the binding is up (the option is probed when it
+  // is built), fails at both jobs.
+  let armed = false;
+  const zlib = require('node:zlib');
+  const broken = {
+    id: DEFLATE,
+    encode: (bytes) => {
+      if (armed) throw new Error('deflate broke');
+      return zlib.deflateRawSync(bytes);
+    },
+    decode: (bytes) => {
+      if (armed) throw Object.assign(new Error('inflate broke'), { code: 'Z_DATA_ERROR' });
+      return zlib.inflateRawSync(bytes);
+    },
+  };
+  const spy = spied(new MemoryBroker({ logger: quiet }));
+  const rpc = new RpcServer({ router, logger: log.writer, sse: false });
+  const handle = await attachBrokerRpc(rpc, spy.broker, {
+    service: 'calc',
+    logger: quiet,
+    compression: { codec: broken },
+  });
+  t.after(async () => {
+    await handle.stop();
+    await rpc.close();
+    spy.broker.close();
+  });
+  armed = true;
+  // Stateless: the answers leave plain, twice — one line.
+  const stateless = await connect(t, spy.broker, { compression: true });
+  await stateless.load('calc');
+  assert.strictEqual((await stateless.api.calc.big({ rows: 300 })).length, 300);
+  assert.strictEqual((await stateless.api.calc.big({ rows: 300 })).length, 300);
+  assert.ok(spy.sent.filter((m) => m.headers[HEADER_KIND] === KIND.RESPONSE).every((m) => !m.headers[HEADER_ENC]));
+  // A session: what the client compressed, this server cannot inflate.
+  const session = await connect(t, spy.broker, { mode: 'session', compression: true, callTimeout: 200 });
+  await assert.rejects(session.call('calc/echo', { text: 'y'.repeat(20_000) }));
+  const lines = log
+    .all('compression.failed')
+    .map(({ carrier, direction, codec, err }) => [carrier, direction, codec, err.message]);
+  assert.deepStrictEqual(lines, [
+    ['broker', 'encode', DEFLATE, 'deflate broke'],
+    ['broker', 'decode', DEFLATE, 'inflate broke'],
+  ]);
+});

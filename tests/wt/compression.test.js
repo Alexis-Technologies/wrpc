@@ -274,7 +274,11 @@ test('wt compression: a codec that fails or does not shrink the message sends it
     },
     decode: (bytes) => bytes,
   };
-  const pair = await serverPair(t, { compression: { codec } });
+  const failures = [];
+  const pair = await serverPair(t, {
+    compression: { codec },
+    onCodecError: (id, error) => failures.push([id, error.message]),
+  });
   await pair.writer.write(frameCaps(JSON.stringify({ enc: [DEFLATE] })));
   await waitFor(() => pair.socket.compression?.encode === DEFLATE);
   pair.socket.send(big);
@@ -286,6 +290,12 @@ test('wt compression: a codec that fails or does not shrink the message sends it
     [KIND_TEXT, KIND_TEXT, KIND_TEXT],
   );
   assert.strictEqual(calls, 3);
+  // The two failures are said — at once and later alike; a codec that
+  // merely did not shrink the message is a decision, not a failure.
+  assert.deepStrictEqual(failures, [
+    [DEFLATE, 'encoder broke'],
+    [DEFLATE, 'encoder broke later'],
+  ]);
 });
 
 test('wt compression: the option is validated at construction', async (t) => {
@@ -510,6 +520,37 @@ test('wt compression (e2e): one side on, the other off — plain, and nothing br
   const echoed = await client.api.data.echo({ text: 'y'.repeat(50_000) });
   assert.strictEqual(echoed.text.length, 50_000);
   assert.ok(!spy.kinds.includes(KIND_TEXT_COMPRESSED), 'the server named no codec, so nothing left compressed');
+});
+
+test('wt compression (e2e): a server codec that throws sends plain, and the server says so once', async (t) => {
+  const { recorder } = require('../helpers/recorder.js');
+  const log = recorder();
+  const broken = {
+    id: DEFLATE,
+    encode: () => {
+      throw new Error('deflate broke');
+    },
+    decode: (bytes, max) => require('node:zlib').inflateRawSync(bytes, { maxOutputLength: max }),
+  };
+  const { server, url } = await bootServer(t, { router: router(), logger: log.writer });
+  const world = createFakeWt();
+  const acceptor = acceptSessions(server, world.sessions, { compression: { codec: broken } });
+  t.after(() => acceptor.stop());
+  const spy = spied(world);
+  const client = await connectClient(t, url, {
+    transport: 'wt',
+    wt: { WebTransport: spy.WebTransport },
+    compression: true,
+  });
+  await client.load('data');
+  assert.strictEqual((await client.api.data.big({ rows: 300 })).length, 300);
+  assert.strictEqual((await client.api.data.big({ rows: 300 })).length, 300);
+  const lines = log.all('compression.failed');
+  assert.strictEqual(lines.length, 1);
+  assert.deepStrictEqual(
+    [lines[0].carrier, lines[0].direction, lines[0].codec, lines[0].err.message],
+    ['wt', 'encode', DEFLATE, 'deflate broke'],
+  );
 });
 
 test('wt compression (e2e): attachSession takes the option too', async (t) => {

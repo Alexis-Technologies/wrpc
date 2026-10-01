@@ -72,27 +72,52 @@ const asBuffer = (bytes) =>
  * `body` (text or bytes) compressed with `active` — one entry of the list,
  * `{ codec, id, threshold }` — or null when it is under the threshold, the
  * codec failed, or the output would not be smaller: the caller then sends
- * it plain, unmarked.
+ * it plain, unmarked. `onError(error, active)` hears the failure — the only
+ * one of the three that is not a decision (cold: called from the catch
+ * alone, so one receiver serves every codec of a list).
  */
-const encodeIfSmaller = (active, body) => {
+const encodeIfSmaller = (active, body, onError = null) => {
   const bytes = typeof body === 'string' ? Buffer.from(body) : body;
   if (bytes.length < active.threshold) return null;
   let out;
   try {
     out = active.codec.encode(bytes);
-  } catch {
+  } catch (error) {
+    if (onError !== null) onError(error, active);
     return null;
   }
   return out.length < bytes.length ? out : null;
 };
 
-/** The inflated bytes, or null when the codec refused them (the cap included). */
-const decodeOrNull = (active, bytes, maxMessage) => {
+/**
+ * The inflated bytes, or null when the codec refused them (the cap
+ * included); `onError(error, active)` hears why — `ERR_BUFFER_TOO_LARGE` is
+ * the cap, anything else the bytes.
+ */
+const decodeOrNull = (active, bytes, maxMessage, onError = null) => {
   try {
     return active.codec.decode(bytes, maxMessage);
-  } catch {
+  } catch (error) {
+    if (onError !== null) onError(error, active);
     return null;
   }
+};
+
+// A codec that fails loses nothing: the message leaves plain, or a frame is
+// refused and answered. Which is why nothing used to notice — a dictionary
+// that stopped matching, a codec out of memory, and the traffic is several
+// times what it was with not a line or a point to show for it. So every
+// failure is COUNTED, and said once per (carrier, direction, codec) for the
+// life of the reporter — one line a codec, not one a message.
+const createFailureReporter = (log, otel = null) => {
+  const said = new Set();
+  return (carrier, direction, codec, error) => {
+    otel?.recordCompressionFailure(carrier, direction);
+    const key = `${carrier}\0${direction}\0${codec}`;
+    if (said.has(key)) return;
+    said.add(key);
+    log.warn({ event: 'compression.failed', carrier, direction, codec, code: error?.code, err: error });
+  };
 };
 
 // A backplane message is a string. A compressed envelope is the JSON text
@@ -118,30 +143,34 @@ const isEncodedEnvelope = (message) => typeof message === 'string' && message.st
  * read (a codec not on the list, a body that does not inflate under
  * `maxMessage`).
  */
-const createEnvelopeCodec = (option, name, maxMessage = DEFAULT_MAX_MESSAGE) => {
+const createEnvelopeCodec = (option, name, maxMessage = DEFAULT_MAX_MESSAGE, failed = null) => {
   const local = normalizeSyncCompression(option, name);
   if (local === null) return null;
   const head = local.codecs[0];
+  // `failed(direction, codec id, error)`, when the caller wants to hear:
+  // one receiver per codec and direction, built here — never per message.
+  const hear = (direction, id) => (failed === null ? null : (error) => failed(direction, id, error));
+  const encodeFailed = hear('encode', head.id);
   // An id may hold a colon (`deflate-raw+dict:<hash>`), so a marker is
   // matched whole, never parsed — longest first, so one id that is a prefix
   // of another cannot claim its envelopes.
   const markers = local.codecs
-    .map((entry) => ({ entry, marker: `${ENVELOPE_PREFIX}${entry.id}:` }))
+    .map((entry) => ({ entry, marker: `${ENVELOPE_PREFIX}${entry.id}:`, failed: hear('decode', entry.id) }))
     .sort((a, b) => b.marker.length - a.marker.length);
   const headMarker = `${ENVELOPE_PREFIX}${head.id}:`;
   return {
     id: head.id,
     ids: local.ids,
     encode(text) {
-      const out = encodeIfSmaller(head, text);
+      const out = encodeIfSmaller(head, text, encodeFailed);
       return out === null ? text : headMarker + asBuffer(out).toString('base64');
     },
     decode(message) {
       if (!message.startsWith(ENVELOPE_PREFIX)) return message;
       for (let i = 0; i < markers.length; i++) {
-        const { entry, marker } = markers[i];
+        const { entry, marker, failed: decodeFailed } = markers[i];
         if (!message.startsWith(marker)) continue;
-        const out = decodeOrNull(entry, Buffer.from(message.slice(marker.length), 'base64'), maxMessage);
+        const out = decodeOrNull(entry, Buffer.from(message.slice(marker.length), 'base64'), maxMessage, decodeFailed);
         return out === null ? null : asBuffer(out).toString();
       }
       return null;
@@ -159,6 +188,7 @@ module.exports = {
   maxMessageOf,
   encodeIfSmaller,
   decodeOrNull,
+  createFailureReporter,
   isEncodedEnvelope,
   createEnvelopeCodec,
 };

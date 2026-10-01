@@ -144,6 +144,7 @@ class ServerHttpTransport extends ServerTransport {
   // The normalized `http.compression` option (contentEncoding.js), or null:
   // the core hands it to the transports it builds for real answers.
   #compression = null;
+  #failed = null;
 
   constructor(call, options = {}) {
     super(call.remoteAddress ?? '');
@@ -151,6 +152,8 @@ class ServerHttpTransport extends ServerTransport {
     this.headers = options.headers ?? { ...SECURITY_HEADERS };
     this.#respond = call.respond;
     if (options.compression) this.#compression = options.compression;
+    // `failed(coding, error)`: the core's reporter for an encoder that threw.
+    if (options.failed) this.#failed = options.failed;
     if (Array.isArray(options.batch)) this.#batch = options.batch;
     if (options.rest) {
       this.#rest = options.rest;
@@ -350,20 +353,25 @@ class ServerHttpTransport extends ServerTransport {
     if (encoder === null) return this.#answer(headers, body, httpCode);
     markEncoded(headers, encoder.token);
     // The encoder refused the body (out of memory is the realistic case):
-    // the plain bytes still answer, and honestly labelled.
-    const plain = () => {
+    // the plain bytes still answer, and honestly labelled — and the failure
+    // is said, since nothing else about the answer shows it.
+    const plain = (error) => {
+      this.#failed?.(encoder.token, error);
       delete headers['Content-Encoding'];
       return this.#answer(headers, body, httpCode);
     };
     if (encoder.encodeAsync !== null && compression.async !== null && body.length >= compression.async.threshold) {
-      encoder.encodeAsync(body, (error, encoded) => void (error ? plain() : this.#answer(headers, encoded, httpCode)));
+      encoder.encodeAsync(
+        body,
+        (error, encoded) => void (error ? plain(error) : this.#answer(headers, encoded, httpCode)),
+      );
       return true;
     }
     let encoded;
     try {
       encoded = encoder.encode(body);
-    } catch {
-      return plain();
+    } catch (error) {
+      return plain(error);
     }
     // An application's own coding may answer a promise.
     if (isPromise(encoded)) {

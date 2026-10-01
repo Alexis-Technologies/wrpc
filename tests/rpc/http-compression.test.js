@@ -6,6 +6,8 @@ const zlib = require('node:zlib');
 
 const { defineRouter, procedure, RpcServer } = require('../../index.js');
 const { bootServer } = require('../helpers/server.js');
+const { recorder } = require('../helpers/recorder.js');
+const { createMetrics, point } = require('../helpers/metrics.js');
 const { normalizeCompression, pickEncoding, MAX_ACCEPT_ENCODING } = require('../../src/contentEncoding.js');
 const { hasZstd } = require('../../src/compression/native.js');
 
@@ -454,19 +456,41 @@ test('http compression: an application’s own coding — synchronous, a promise
       return mode === 'async' ? Promise.resolve(reversed(body)) : reversed(body);
     },
   };
-  const { origin } = await bootServer(t, { router, http: { compression: { encodings: [mine, 'gzip'] } } });
+  const log = recorder();
+  const metrics = createMetrics();
+  const { origin } = await bootServer(t, {
+    router,
+    logger: log.writer,
+    telemetry: { meter: metrics.meter },
+    http: { compression: { encodings: [mine, 'gzip'] } },
+  });
   for (mode of ['sync', 'async']) {
     const { res, bytes } = await rawPost(origin, packet('data/big'), { 'Accept-Encoding': 'x-rev, gzip' });
     assert.strictEqual(res.headers['content-encoding'], 'x-rev', mode);
     assert.strictEqual(Number(res.headers['content-length']), bytes.length);
     assert.deepStrictEqual(JSON.parse(reversed(bytes).toString()).result, big);
   }
+  assert.strictEqual(log.find('compression.failed'), undefined);
   // A coding that fails answers the plain body, honestly labelled — never a broken one.
-  for (mode of ['throw', 'reject']) {
+  for (mode of ['throw', 'reject', 'throw', 'reject']) {
     const { res, bytes } = await rawPost(origin, packet('data/big'), { 'Accept-Encoding': 'x-rev' });
     assert.strictEqual(res.headers['content-encoding'], undefined, mode);
     assert.deepStrictEqual(JSON.parse(bytes.toString()).result, big);
   }
+  // Nothing about those four answers says the coding is broken — so the
+  // server does: counted every time, one line for the coding.
+  const lines = log.all('compression.failed');
+  assert.strictEqual(lines.length, 1);
+  assert.deepStrictEqual(
+    [lines[0].level, lines[0].component, lines[0].carrier, lines[0].direction, lines[0].codec, lines[0].err.message],
+    ['warn', 'compression', 'http', 'encode', 'x-rev', 'no'],
+  );
+  const counted = point(await metrics.collect(), 'wrpc.compression.failures');
+  assert.strictEqual(counted.value, 4);
+  assert.deepStrictEqual(counted.attributes, {
+    'wrpc.compression.carrier': 'http',
+    'wrpc.compression.direction': 'encode',
+  });
   mode = 'sync';
   const gz = await rawPost(origin, packet('data/big'), { 'Accept-Encoding': 'gzip' });
   assert.strictEqual(gz.res.headers['content-encoding'], 'gzip', 'a peer without it gets the next on the list');

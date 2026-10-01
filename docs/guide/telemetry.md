@@ -123,6 +123,7 @@ credential, not an identity, and the two do not share a switch.
 | `wrpc.server.queue.wait` | Histogram | `ms` |
 | `wrpc.server.rooms` | UpDownCounter | `{room}` |
 | `wrpc.cluster.verifications` | Counter | `{envelope}` — cluster envelopes refused under `cluster.secret`, by `wrpc.cluster.outcome`: `unsigned`, `badsig`, `error`, and `replay` (signed, but a repeat, on another channel, outside the clock window or uncounted) |
+| `wrpc.compression.failures` | Counter | `{message}` — messages a compression codec threw on, by `wrpc.compression.carrier` (`ws`, `http`, `sse`, `wt`, `rooms`, `cluster`, `broker`) and `wrpc.compression.direction` (`encode`: sent plain; `decode`: refused). Recorded on the failure path only |
 | `wrpc.rtc.assertions` | Counter | `{assertion}` — trust assertions verified, by `wrpc.rtc.outcome`: `ok`; `missing`, `signature`, `fingerprint`, `subject` are **substitution signals** (a peer presenting no token, another key's, a replayed one, or someone else's); `expired`, `kid`, `issuer`, `malformed` are operational (clock, rotation, configuration) |
 | `wrpc.broker.delivery.attempts` | Histogram | `{attempt}` |
 

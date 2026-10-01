@@ -116,9 +116,15 @@ export interface WtSocketOptions {
    * codec, so a client without it is served plain.
    */
   compression?: boolean | import('./client.js').CompressionOptions;
+  /**
+   * Hears a codec that failed on the way out — the frame left plain.
+   * `attachSession` hands it to the server (`compression.failed`, counted);
+   * a socket built by hand says nothing unless this is given.
+   */
+  onCodecError?: (codec: string, error: unknown) => void;
 }
 
-export interface AttachSessionOptions extends SessionMeta, WtSocketOptions {
+export interface AttachSessionOptions extends SessionMeta, Omit<WtSocketOptions, 'onCodecError'> {
   /** Refuses the session (closed 403) when it answers false. */
   verify?: (info: SessionMeta & { session: WtSession }) => boolean | Promise<boolean>;
   /**

@@ -6,6 +6,7 @@ const { resolveGenerateId } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
 const { UNKNOWN_TARGET } = require('../rpc/dispatcher.js');
 const { normalizeCompression, chooseEncoding, markEncoded, encodedWriter } = require('../contentEncoding.js');
+const { createFailureReporter } = require('../compression/sync.js');
 const { hasBytes } = require('../attachments.js');
 const { wireError } = require('../rpc/errors.js');
 
@@ -247,6 +248,8 @@ class SseChannels {
   // The normalized `sse.compression` option, or null (off, the default):
   // one gzip member per response, flushed after every event.
   #compression = null;
+  // An encoder stream that failed, counted and said once per coding.
+  #failed;
 
   constructor({
     addClient,
@@ -258,6 +261,7 @@ class SseChannels {
     ...options
   } = {}) {
     this.#compression = normalizeCompression(compression, 'SseChannels: options', { streaming: true });
+    this.#failed = createFailureReporter(createLoggerWriter(log), otel);
     this.#addClient = addClient;
     // Strict, unlike the 1.0 options: this one is new, so a bad generator
     // is a TypeError here rather than a channel id that fails later.
@@ -384,7 +388,9 @@ class SseChannels {
       if (!existing) channel.transport.close();
       return;
     }
-    if (encoder !== null) writer = encodedWriter(writer, encoder);
+    if (encoder !== null) {
+      writer = encodedWriter(writer, encoder, (error) => this.#failed('sse', 'encode', encoder.token, error));
+    }
     // Replacing a live writer: the superseded response is nobody's now, so
     // end it rather than leaking it open until a proxy times it out.
     const previous = channel.writer;

@@ -9,7 +9,12 @@ const { RoomRegistry, Broadcast, RoomsBackplane, BROADCAST_CHANNEL } = require('
 const { Cluster, instanceOfClientId } = require('./cluster.js');
 const { SseChannels } = require('../sse/server.js');
 const { normalizeCompression } = require('../contentEncoding.js');
-const { maxMessageOf, normalizeSyncCompression, decodeOrNull } = require('../compression/sync.js');
+const {
+  maxMessageOf,
+  normalizeSyncCompression,
+  decodeOrNull,
+  createFailureReporter,
+} = require('../compression/sync.js');
 const { createEnvelope } = require('./envelope.js');
 const { normalizeServerEncryption, wantsEncryption, SealedSocket } = require('../encryption/server.js');
 const { FRAME_MARK, FRAME_ATTACHMENTS, FRAME_PACKET_COMPRESSED, FRAME_CHUNK_COMPRESSED } = require('../wire.js');
@@ -144,6 +149,8 @@ class RpcServer extends Emitter {
   #sse = null;
   // The normalized `http.compression` option, or null (off, the default).
   #compression = null;
+  #compressionFailed;
+  #httpFailed;
   // The largest inflated client frame accepted on a socket (the Node ws
   // client's per-message compression, negotiated on ping/pong).
   #maxMessage;
@@ -243,6 +250,10 @@ class RpcServer extends Emitter {
     // constructed on every to()/except()/broadcast().
     this.#roomsLog = this.#log.child({ component: 'rooms' });
     this.#sseLog = this.#log.child({ component: 'sse' });
+    // One reporter for every carrier this core compresses on: a codec that
+    // threw is counted each time and said once (see createFailureReporter).
+    this.#compressionFailed = createFailureReporter(this.#log.child({ component: 'compression' }), this.#otel);
+    this.#httpFailed = (coding, error) => this.#compressionFailed('http', 'encode', coding, error);
     this.#sessions = new SessionManager(sessions, this.#log.child({ component: 'sessions' }), this.#otel);
     // Session encryption is for where TLS ends before the data does — and
     // there a cookie is the wrong credential: it stays on the OUTER request
@@ -363,6 +374,7 @@ class RpcServer extends Emitter {
           layer: 'cluster',
           event: 'cluster',
           log: clusterLog,
+          failed: (direction, codec, error) => this.#compressionFailed('cluster', direction, codec, error),
         })
       : null;
     const cluster = new Cluster({
@@ -406,6 +418,7 @@ class RpcServer extends Emitter {
       layer: 'rooms',
       event: 'backplane',
       log: this.#roomsLog,
+      failed: (direction, codec, error) => this.#compressionFailed('rooms', direction, codec, error),
     });
     if (!backplane) {
       this.#rooms = new RoomRegistry({
@@ -637,6 +650,14 @@ class RpcServer extends Emitter {
   // the telemetry option it reflects.
   get otel() {
     return this.#otel;
+  }
+
+  // The same seam for a codec that failed on a carrier attached from
+  // outside (a WebTransport session, a broker binding):
+  // `(carrier, direction, codec id, error)` — counted every time, said once
+  // per carrier, direction and codec.
+  get compressionFailed() {
+    return this.#compressionFailed;
   }
 
   // The logging half of the same seam, and for the same reason: a framework
@@ -965,9 +986,14 @@ class RpcServer extends Emitter {
       client.error(400, { error: new Error('Unexpected framed message'), level: 'debug' });
       return null;
     }
-    const out = decodeOrNull(active, bytes.subarray(2), this.#maxMessage);
+    // Why it did not inflate goes on the line: ERR_BUFFER_TOO_LARGE is the
+    // `maxMessage` cap, anything else the bytes — garbage, or a dictionary
+    // the two ends do not share.
+    let cause = null;
+    const out = decodeOrNull(active, bytes.subarray(2), this.#maxMessage, (error) => void (cause = error));
     if (out === null) {
-      client.log.warn({ event: 'frame.refused', kind, reason: 'inflate' });
+      this.#otel.recordCompressionFailure(client.transportKind, 'decode');
+      client.log.warn({ event: 'frame.refused', kind, reason: 'inflate', codec: active.id, code: cause?.code });
       client.error(400, { error: new Error('Framed message does not inflate'), level: 'debug' });
       return null;
     }
@@ -1282,7 +1308,12 @@ class RpcServer extends Emitter {
     // Mode-aware: only packet-mode responses carry the packet codec's type.
     if (this.#codec?.contentType) headers['Content-Type'] = this.#codec.contentType;
     const batch = call.method === 'POST' ? this.#batchIds(call.body) : null;
-    const transport = new ServerHttpTransport(call, { headers, batch, compression: this.#compression });
+    const transport = new ServerHttpTransport(call, {
+      headers,
+      batch,
+      compression: this.#compression,
+      failed: this.#httpFailed,
+    });
     if (call.method !== 'POST') {
       this.#log.warn({ event: 'http.refused', code: 403, method: call.method });
       this.#otel.recordCall(UNKNOWN_TARGET, 'error', 403);
@@ -1336,6 +1367,7 @@ class RpcServer extends Emitter {
     const transport = new ServerHttpTransport(call, {
       headers,
       compression: this.#compression,
+      failed: this.#httpFailed,
       rest: route
         ? {
             status: route.http.status,

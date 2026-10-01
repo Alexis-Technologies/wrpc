@@ -8,6 +8,8 @@ const { RpcServer, defineRouter, procedure, WrpcClient } = require('../../index.
 const { FRAME_MARK, FRAME_PACKET_COMPRESSED, FRAME_CHUNK_COMPRESSED } = require('../../src/wire.js');
 const { ProtocolClient } = require('../websocket/protocolClient.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
+const { recorder } = require('../helpers/recorder.js');
+const { createMetrics, point } = require('../helpers/metrics.js');
 
 const DEFLATE = 'deflate-raw';
 
@@ -139,7 +141,15 @@ const nextMessage = async (messages, after) => {
 };
 
 test('ws compression (wire): the pong carries enc only when the server agreed; frames before that are refused', async (t) => {
-  const { url } = await bootServer(t, { router, compression: true, maxMessage: 4096 });
+  const log = recorder();
+  const metrics = createMetrics();
+  const { url } = await bootServer(t, {
+    router,
+    compression: true,
+    maxMessage: 4096,
+    logger: log.writer,
+    telemetry: { meter: metrics.meter },
+  });
   const { socket, messages } = await rawClient(t, url);
   const call = Buffer.from(JSON.stringify({ type: 'call', id: 'c1', method: 'data/big', args: { rows: 3 } }));
   const frame = (kind, body) => Buffer.concat([Buffer.from([FRAME_MARK, kind]), body]);
@@ -172,10 +182,30 @@ test('ws compression (wire): the pong carries enc only when the server agreed; f
   socket.sendBinary(frame(FRAME_PACKET_COMPRESSED, zlib.deflateRawSync(Buffer.alloc(100_000, 0x20))));
   answer = await nextMessage(messages, 5);
   assert.strictEqual(answer.error.code, 400);
+  // And bytes that are not a deflate stream at all: 400 as well — but the
+  // two do not read the same in the log. One is the cap; the other is the
+  // bytes (garbage, or a dictionary the two ends do not share).
+  socket.sendBinary(frame(FRAME_PACKET_COMPRESSED, Buffer.from('this was never deflated')));
+  answer = await nextMessage(messages, 6);
+  assert.strictEqual(answer.error.code, 400);
+  const inflates = log.all('frame.refused').filter((line) => line.reason === 'inflate');
+  assert.deepStrictEqual(
+    inflates.map((line) => [line.codec, line.code]),
+    [
+      [DEFLATE, 'ERR_BUFFER_TOO_LARGE'],
+      [DEFLATE, 'Z_DATA_ERROR'],
+    ],
+  );
+  const counted = point(await metrics.collect(), 'wrpc.compression.failures');
+  assert.strictEqual(counted.value, 2);
+  assert.deepStrictEqual(counted.attributes, {
+    'wrpc.compression.carrier': 'ws',
+    'wrpc.compression.direction': 'decode',
+  });
 
   // A plain text packet still works on the same connection.
   socket.sendText(JSON.stringify({ type: 'call', id: 'c2', method: 'data/big', args: { rows: 2 } }));
-  answer = await nextMessage(messages, 6);
+  answer = await nextMessage(messages, 7);
   assert.strictEqual(answer.result.length, 2);
 });
 

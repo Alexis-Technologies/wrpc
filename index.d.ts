@@ -605,6 +605,13 @@ export declare class RpcServer extends Emitter {
    */
   readonly otel: unknown;
   /**
+   * @experimental The same seam for a compression codec that threw on a
+   * carrier attached from outside (a WebTransport session, a broker
+   * binding): counted every time (`wrpc.compression.failures`) and logged
+   * once per carrier, direction and codec as `compression.failed`.
+   */
+  readonly compressionFailed: (carrier: string, direction: 'encode' | 'decode', codec: string, error: unknown) => void;
+  /**
    * The normalized log writer — not the `logger` that was passed in. For
    * hosts and attachers that need somewhere to report a failure which never
    * reaches a `Client`: a framework adapter, a WebTransport session.

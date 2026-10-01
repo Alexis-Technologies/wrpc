@@ -2,6 +2,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const zlib = require('node:zlib');
 const timers = require('node:timers/promises');
 
 const { RpcServer, defineRouter, procedure } = require('../../index.js');
@@ -233,6 +234,28 @@ test('rooms backplane: an instance without the option drops an encoded envelope 
   // And the other way: a plain instance's envelope reaches a compressing one.
   plain.rpc.to('lobby').emit('hello', { x: 1 });
   await waitFor(() => a.socket.events.length === 1);
+});
+
+test('rooms backplane: an envelope that does not inflate is refused, and the codec failure is said once with its cause', async (t) => {
+  const { recorder } = require('../helpers/recorder.js');
+  const backplane = new MemoryBackplane({ logger: false });
+  const log = recorder();
+  const b = instance(t, backplane, { rooms: { compression: true, maxMessage: 2048 } }, log.writer);
+  await timers.setTimeout(10);
+  // Under our own marker, twice garbage and once a body past the cap.
+  const marker = 'wrpc-enc:deflate-raw:';
+  backplane.publish('room:lobby', `${marker}${Buffer.from('never deflated').toString('base64')}`);
+  backplane.publish('room:lobby', `${marker}${Buffer.from('nor was this').toString('base64')}`);
+  backplane.publish('room:lobby', `${marker}${zlib.deflateRawSync(Buffer.alloc(50_000, 0x20)).toString('base64')}`);
+  await waitFor(() => log.all('backplane.encoded').length === 3);
+  assert.strictEqual(b.socket.events.length, 0);
+  // Each refusal has its line; WHY the codec refused is said once for it.
+  const failed = log.all('compression.failed');
+  assert.strictEqual(failed.length, 1);
+  assert.deepStrictEqual(
+    [failed[0].level, failed[0].carrier, failed[0].direction, failed[0].codec, failed[0].code],
+    ['warn', 'rooms', 'decode', 'deflate-raw', 'Z_DATA_ERROR'],
+  );
 });
 
 test('cluster: envelopes signed, then compressed — verification still holds', async (t) => {

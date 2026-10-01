@@ -77,6 +77,25 @@ keeps a zlib window per connection (10.6× on a repeated shape, for ~160 KiB
 per direction per connection). Everywhere else — and with no state per
 connection — a **dictionary**.
 
+### When a codec fails
+
+A message is never lost to compression: a codec that throws on the way out
+sends the message plain, and one that cannot read what came in refuses that
+frame and answers it. Which also means nothing looks broken — the traffic
+is just several times what it was. So the server says it:
+
+- `compression.failed` — a warn, **once** per carrier, direction and codec
+  (`carrier`: `http`, `sse`, `wt`, `rooms`, `cluster`, `broker`; `direction`:
+  `encode` or `decode`; `codec`; `code` and `err`), from the first failure
+  on. A dictionary that stopped matching shows up here as `decode` failures
+  on one side.
+- `wrpc.compression.failures` — the counter, every time, by
+  `wrpc.compression.carrier` and `wrpc.compression.direction`; alert on its
+  rate rather than on the line.
+- On a WebSocket the refused frame has its own line, `frame.refused`, with
+  the `codec` and the `code`: `ERR_BUFFER_TOO_LARGE` is `maxMessage`,
+  anything else the bytes.
+
 ## Which algorithm {#algorithm}
 
 Deflate is what `true` means everywhere, and that is a measured choice, not

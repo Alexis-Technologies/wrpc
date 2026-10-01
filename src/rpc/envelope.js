@@ -90,19 +90,22 @@ const withBytes = (inner) => ({
  * ('rooms', 'cluster'); `event` prefixes the log events ('backplane',
  * 'cluster').
  */
-const createEnvelope = ({ compression, encryption, maxMessage, name, layer, event, log }) => {
+const createEnvelope = ({ compression, encryption, maxMessage, name, layer, event, log, failed = null }) => {
   const sealing = normalizeEnvelopeEncryption(encryption, name);
-  if (sealing === null) return withBytes(createEnvelopeCodec(compression, name, maxMessage));
+  if (sealing === null) return withBytes(createEnvelopeCodec(compression, name, maxMessage, failed));
   const codecs = normalizeSyncCompression(compression, name);
   const head = codecs === null ? null : codecs.codecs[0];
+  // `failed(direction, codec id, error)`: a codec that threw, said by the
+  // core's reporter. One receiver for the head, built once.
+  const encodeFailed = head === null || failed === null ? null : (error) => failed('encode', head.id, error);
   // What an instance still mid-rollout sends, and what `seal: false` sends.
-  const plain = withBytes(createEnvelopeCodec(compression, name, maxMessage));
+  const plain = withBytes(createEnvelopeCodec(compression, name, maxMessage, failed));
   const sealer = createEnvelopeSealer({ encryption: sealing, layer });
 
   // `text` is the JSON envelope, or — with `binary` — the attachments frame
   // of an envelope that holds bytes.
   const frame = (text, binary = 0) => {
-    const packed = head === null ? null : encodeIfSmaller(head, text);
+    const packed = head === null ? null : encodeIfSmaller(head, text, encodeFailed);
     if (packed === null) {
       const body = Buffer.allocUnsafe(1 + Buffer.byteLength(text));
       body[0] = binary;
@@ -128,7 +131,10 @@ const createEnvelope = ({ compression, encryption, maxMessage, name, layer, even
       if (codecs === null || body.length < 2) return null;
       const end = 2 + body[1];
       const entry = end > body.length ? null : codecById(codecs, body.toString('utf8', 2, end));
-      const out = entry === null ? null : decodeOrNull(entry, body.subarray(end), maxMessage);
+      // Cold: only a compressed frame inside a sealed one gets here, and
+      // the receiver is only called when it does not inflate.
+      const heard = entry === null || failed === null ? null : (error) => failed('decode', entry.id, error);
+      const out = entry === null ? null : decodeOrNull(entry, body.subarray(end), maxMessage, heard);
       if (out === null) return null;
       bytes = asBuffer(out);
     }

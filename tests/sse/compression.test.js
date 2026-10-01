@@ -249,6 +249,49 @@ test('sse compression: an application’s own streaming coding', async (t) => {
   await waitFor(() => stream.events.some((e) => e.data.includes('"id":"p1"')), 'callback never arrived');
 });
 
+test('sse compression: an encoder stream that fails ends the response, and the failure is said once for the coding', async (t) => {
+  const { recorder } = require('../helpers/recorder.js');
+  const log = recorder();
+  let streams = 0;
+  const failing = {
+    encoding: 'x-xor',
+    encode: (body) => Buffer.from(body),
+    // Passes everything up to the callback of the call below, and fails on it.
+    createStream: () => {
+      streams++;
+      return new Transform({
+        transform(chunk, _encoding, done) {
+          if (String(chunk).includes('"id":"p1"')) return void done(new Error('encoder stream broke'));
+          done(
+            null,
+            Buffer.from(chunk).map((byte) => byte ^ 0x5a),
+          );
+        },
+      });
+    },
+  };
+  const { origin } = await bootServer(t, {
+    router,
+    logger: log.writer,
+    sse: { compression: { encodings: [failing] } },
+  });
+  for (let round = 0; round < 2; round++) {
+    const stream = await openStream(origin, { 'Accept-Encoding': 'x-xor' });
+    t.after(stream.close);
+    await waitFor(() => stream.events.some((e) => e.event === 'ready'), 'ready never decoded');
+    const ended = new Promise((resolve) => stream.res.once('end', resolve));
+    await postPacket(origin, channelOf(stream.events), { type: 'call', id: 'p1', method: 'feed/ping', args: {} });
+    await ended;
+  }
+  assert.strictEqual(streams, 2);
+  const lines = log.all('compression.failed');
+  assert.strictEqual(lines.length, 1, 'two streams failed; the coding is named once');
+  assert.deepStrictEqual(
+    [lines[0].level, lines[0].component, lines[0].carrier, lines[0].direction, lines[0].codec, lines[0].err.message],
+    ['warn', 'sse', 'sse', 'encode', 'x-xor', 'encoder stream broke'],
+  );
+});
+
 test('sse compression: the option is validated', async () => {
   const { SseChannels } = require('../../sse.js');
   assert.throws(

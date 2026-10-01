@@ -111,6 +111,8 @@ want an alert for.
 | `ws.too-big`, `ws.overflow`, `ws.backpressure` | warn | A configured limit closed the connection — the entry names the limit |
 | `ws.inflate`, `ws.deflate` | warn | permessage-deflate failed on the way in (or the inflated message was too big), or on the way out; the connection was closed |
 | `ws.close.dropped` | warn | A graceful `close()` waited `closeTimeout` for messages still queued behind a compress in flight (context takeover, `async`) and gave up: `frames` and `bytes` never left, the Close frame did |
+| `compression.failed` | warn | A per-message or HTTP/SSE codec threw (`carrier`: `http`, `sse`, `wt`, `rooms`, `cluster`, `broker`; `direction`: `encode` — the message left plain — or `decode` — the frame was refused; `codec`, `code`, `err`). **Once** per carrier, direction and codec for the life of the server; every failure is counted in `wrpc.compression.failures` |
+| `frame.refused` | warn | A framed message from a socket peer that was not taken: a kind nobody negotiated (`kind`, `negotiated`), or one that did not inflate (`reason: 'inflate'`, the `codec`, and the `code` — `ERR_BUFFER_TOO_LARGE` is `maxMessage`, anything else the bytes). Answered with an id-less `400`; the connection lives |
 | `socket.error` | debug | The engine socket under a client raised `error`; the connection is closed. The engine's own line (`ws.*`, `uws.dropped`) already said what happened |
 | `uws.dropped` | error | uWebSockets.js discarded an outbound frame: a hole in the stream |
 | `session.destroy`, `session.save`, `session.touch` | error | The session store rejected an operation |

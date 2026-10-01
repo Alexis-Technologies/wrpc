@@ -100,6 +100,7 @@ class WtSocket extends EventEmitter {
   #maxBackpressure;
   #maxMessage;
   #log;
+  #onCodecError;
   #idle = 0;
   #idleTimer = null;
   // Per-message compression (src/compression): the normalized option, and
@@ -138,12 +139,16 @@ class WtSocket extends EventEmitter {
       // a violation, an idle, a failed session and a close write to. Null
       // for a socket used bare.
       log = null,
+      // `(codec id, error)`: a codec that failed on the way out — the frame
+      // left plain. attachSession hands it to the server's reporter.
+      onCodecError = null,
     } = {},
   ) {
     super();
     this.#session = session;
     this.#stream = stream;
     this.#log = log;
+    this.#onCodecError = onCodecError;
     this.remoteAddress = remoteAddress;
     this.#highWater = highWaterMark ?? DEFAULT_HIGH_WATER_MARK;
     this.#lowWater = lowWaterMark ?? DEFAULT_LOW_WATER_MARK;
@@ -470,11 +475,17 @@ class WtSocket extends EventEmitter {
       this.#queued -= size;
       this.#writeFrame(frame(kind, bytes));
     };
+    // A codec that failed — at once, or later — is said (the session's
+    // owner counts it and logs it once a codec); the frame leaves plain.
+    const failed = (error) => {
+      this.#onCodecError?.(this.#active.encode.id, error);
+      plain();
+    };
     let encoded;
     try {
       encoded = this.#active.encode.codec.encode(bytes);
-    } catch {
-      plain();
+    } catch (error) {
+      failed(error);
       return this.#accepted();
     }
     this.#outbound.push(
@@ -484,7 +495,7 @@ class WtSocket extends EventEmitter {
         this.#queued -= size;
         this.#writeFrame(frame(compressed, out));
       },
-      plain,
+      failed,
     );
     return this.#accepted();
   }

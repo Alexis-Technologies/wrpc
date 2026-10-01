@@ -54,11 +54,11 @@ const {
 // holds, passed only once the session agreed on something — or null:
 // marked but nothing agreed, a codec not held, a body that does not
 // inflate under the cap.
-const frameBody = (message, local, maxMessage) => {
+const frameBody = (message, local, maxMessage, failed = null) => {
   const encoding = message.headers?.[HEADER_ENC];
   if (encoding === undefined || encoding === null || encoding === '') return message.body;
   const entry = local === null || typeof encoding !== 'string' ? null : codecById(local, encoding);
-  return entry === null ? null : decodeOrNull(entry, toBytes(message.body), maxMessage);
+  return entry === null ? null : decodeOrNull(entry, toBytes(message.body), maxMessage, failed);
 };
 
 const DEFAULT_IDLE_TIMEOUT = 90_000; // 3x the client's 30 s heartbeat
@@ -87,8 +87,11 @@ class BrokerSessionTransport extends ServerTransport {
   #compression;
   // The binding's sealing (../sealing.js) or null: compress, then seal.
   #sealing;
+  // A codec that threw on the way out — the frame left plain; said by the
+  // server's reporter.
+  #failed;
 
-  constructor({ direct, peer, session, highWaterMark, onFailure, compression = null, sealing = null }) {
+  constructor({ direct, peer, session, highWaterMark, onFailure, compression = null, sealing = null, failed = null }) {
     super(`broker:${fingerprint(session)}`);
     this.#direct = direct;
     this.#peer = peer;
@@ -97,6 +100,7 @@ class BrokerSessionTransport extends ServerTransport {
     this.#onFailure = onFailure;
     this.#compression = compression;
     this.#sealing = sealing;
+    this.#failed = failed;
   }
 
   /** The codec ids in effect on this session — `{ encode, decode }` — or null. */
@@ -124,7 +128,7 @@ class BrokerSessionTransport extends ServerTransport {
     let body = binary ? toBytes(data) : data;
     const active = this.#compression;
     if (active !== null && (options === null || options.compress !== false)) {
-      const encoded = encodeIfSmaller(active.encode, body);
+      const encoded = encodeIfSmaller(active.encode, body, this.#failed);
       if (encoded !== null) {
         body = encoded;
         headers[HEADER_ENC] = active.encode.id;
@@ -236,6 +240,11 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
   // see this binding's lines on the raw console, without `event` or
   // `session`. `logger: false` still silences it.
   const log = createLoggerWriter(logger ?? rpc.log).child({ component: 'broker.rpc', broker: system });
+  // A codec that threw: the frame leaves plain, or one that came in is
+  // refused — counted and said once by the server's reporter. One receiver
+  // per direction for the binding; the codec is the entry it is handed.
+  const encodeFailed = (error, entry) => rpc.compressionFailed('broker', 'encode', entry.id, error);
+  const decodeFailed = (error, entry) => rpc.compressionFailed('broker', 'decode', entry.id, error);
   const inbox = direct.inbox();
   const sessions = new Map(); // session id -> { transport, client, expectSeq, lastSeen, peer, compression }
   // Hellos refused at the cap since the last sweep: one line per sweep for
@@ -278,7 +287,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
       encrypted: message.sealed === true,
       respond: ({ body }) => {
         const text = typeof body === 'string' ? body : packetBody(body);
-        const encoded = active === null ? null : encodeIfSmaller(active.encode, text);
+        const encoded = active === null ? null : encodeIfSmaller(active.encode, text, encodeFailed);
         if (encoded === null) return void reply(message, { [HEADER_KIND]: KIND.RESPONSE }, text);
         reply(message, { [HEADER_KIND]: KIND.RESPONSE, [HEADER_ENC]: active.encode.id }, encoded);
       },
@@ -333,6 +342,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
       highWaterMark,
       compression: active,
       sealing,
+      failed: encodeFailed,
       onFailure: (error) => {
         log.warn({ event: 'broker.rpc.send', err: error, session: fingerprint(id) });
         endSession(id, 'send failed', { notify: false });
@@ -404,7 +414,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     // A frame marked compressed on a session that agreed to nothing, with
     // another codec, or that does not inflate under the cap: the peer's
     // protocol violation, and the session ends as on a sequence gap.
-    const body = frameBody(message, session.compression === null ? null : codec, cap);
+    const body = frameBody(message, session.compression === null ? null : codec, cap, decodeFailed);
     if (body === null) return void endSession(id, 'undecodable frame', { level: 'warn' });
     if (kind === KIND.CHUNK) session.transport.emit('chunk', toBytes(body));
     else session.transport.emit('packet', packetBody(body));

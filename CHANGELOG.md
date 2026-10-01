@@ -1360,6 +1360,23 @@ bytes it sends. In that order:
    last 1.x node is gone. Nothing to do without `secret`.
 
 ### Changed
+- **A compression codec that fails is said, and counted.** A message is
+  never lost to compression — a codec that throws sends it plain, a frame
+  that does not inflate is refused and answered — which is exactly why a
+  dictionary that stopped matching, or a codec out of memory, showed up
+  nowhere but in the traffic. Every such failure is now counted
+  (`wrpc.compression.failures`, by `wrpc.compression.carrier` and
+  `wrpc.compression.direction`) and logged as `compression.failed` once per
+  carrier, direction and codec: the three encode paths of an HTTP answer,
+  an SSE encoder stream (which used to end the response without a word),
+  a WebTransport session, the rooms and cluster envelopes, the broker RPC
+  binding. A socket frame that does not inflate carries its `codec` and the
+  `code` in `frame.refused` — `ERR_BUFFER_TOO_LARGE` is `maxMessage`,
+  anything else the bytes. `encodeIfSmaller`/`decodeOrNull` take an error
+  receiver; `RpcServer#compressionFailed` is the seam the attachers report
+  through, `WtSocket` takes `onCodecError`. A WebRTC data channel stays
+  silent on purpose (per-frame, and in a browser bundle); nothing is added
+  per message — the counter is touched on the failure path alone.
 - **ws engine: `close()` delivers what `send()` accepted, with or without
   context takeover.** A message whose deflate runs off the loop (context
   takeover, or `async` past its threshold) waits in an outbound queue with

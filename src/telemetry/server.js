@@ -92,6 +92,7 @@ const createServerTelemetry = (telemetry) => {
   let clusterVerifications = null;
   let rtcAssertions = null;
   let encryption = null;
+  let compressionFailures = null;
   let rooms = null;
   let queueDepth = null;
 
@@ -198,6 +199,10 @@ const createServerTelemetry = (telemetry) => {
         unit: '{assertion}',
         description: 'Peer trust assertion verification outcomes',
       });
+      compressionFailures = meter.createCounter('wrpc.compression.failures', {
+        unit: '{message}',
+        description: 'Messages a compression codec failed on, by carrier and direction',
+      });
       encryption = meter.createCounter('wrpc.server.encryption', {
         unit: '{handshake}',
         description: 'Session handshakes established and sealed requests refused, by kind and outcome',
@@ -225,6 +230,7 @@ const createServerTelemetry = (telemetry) => {
       clusterVerifications = null;
       rtcAssertions = null;
       encryption = null;
+      compressionFailures = null;
     }
   }
   if (canGauge) {
@@ -378,6 +384,14 @@ const createServerTelemetry = (telemetry) => {
     recordBackpressure(transport) {
       try {
         backpressure?.add(1, { 'wrpc.transport': transport });
+      } catch {}
+    },
+
+    // A codec that threw — the message left plain, or the frame was refused.
+    // Called on the failure path only; nothing is counted per message.
+    recordCompressionFailure(carrier, direction) {
+      try {
+        compressionFailures?.add(1, { 'wrpc.compression.carrier': carrier, 'wrpc.compression.direction': direction });
       } catch {}
     },
 

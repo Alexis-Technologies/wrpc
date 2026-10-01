@@ -276,7 +276,7 @@ const markEncoded = (headers, token) => {
 // through — the signal moves one stage later, as it does for permessage-
 // deflate's async path, and the subscription pump waits on it exactly as
 // before. The encoder stream's own high-water mark counts too.
-const encodedWriter = (writer, encoder) => {
+const encodedWriter = (writer, encoder, failed = null) => {
   const stream = encoder.createStream();
   let writable = true;
   let ended = false;
@@ -297,7 +297,12 @@ const encodedWriter = (writer, encoder) => {
     }
   });
   stream.once('end', end);
-  stream.once('error', end);
+  // An encoder stream that failed ends the response — the client reconnects
+  // and resumes — and that is the one trace of it unless it is said.
+  stream.once('error', (error) => {
+    failed?.(error);
+    end();
+  });
   writer.onClose?.(() => stream.destroy());
   return {
     write: (text) => stream.write(text) && writable,
