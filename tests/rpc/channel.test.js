@@ -311,7 +311,8 @@ test('attachChannel: a framing error from the client is logged and closes the ch
   assert.ok(warned, `expected an rtc.channel.error warning: ${JSON.stringify(warnings)}`);
   assert.strictEqual(warned.peer, 'bad');
   assert.strictEqual(warned.err.name, 'FramingError');
-  assert.strictEqual(pair.b.readyState, 'closed');
+  // 'closing' first: the close completes a turn after the client is gone.
+  await waitFor(() => pair.b.readyState === 'closed', 'the channel closed');
 });
 
 test('attachChannel: an empty continuation fragment is a framing error too', async (t) => {
@@ -323,7 +324,7 @@ test('attachChannel: an empty continuation fragment is a framing error too', asy
   await waitFor(() => !rpc.clients.has(attached), 'detached');
   const warned = warnings.find((entry) => entry.event === 'rtc.channel.error');
   assert.strictEqual(warned?.err.code, 'empty', `expected the empty-fragment refusal: ${JSON.stringify(warnings)}`);
-  assert.strictEqual(pair.b.readyState, 'closed');
+  await waitFor(() => pair.b.readyState === 'closed', 'the channel closed');
 });
 
 test('attach: any persistent transport announcing packet/chunk is a client; a non-persistent one is refused', async (t) => {
