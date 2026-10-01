@@ -96,7 +96,7 @@ request/response pair is self-contained.
 
 What a 2.0 peer speaks that a 1.0 peer does not, section by section, and
 what happens when the two meet. The core is not in this table: no packet
-changed. Two rows are **not additive** — a 1.0 peer does not simply ignore
+changed. Three rows are **not additive** — a 1.0 peer does not simply ignore
 them — and each says what to set until every peer is upgraded; the
 [CHANGELOG](https://github.com/Alexis-Technologies/wrpc/blob/main/CHANGELOG.md#migrating-from-10)
 has the upgrade order.
@@ -110,6 +110,7 @@ has the upgrade order.
 | `epoch` and `seq` on the **rooms envelope** — loss detection between instances | [Rooms](#rooms) | Additive: a 1.0 instance ignores them, a 2.0 instance delivers a 1.0 instance's envelopes untracked. | nothing |
 | The `wrpc-bin:` **rooms envelope** — an event whose data holds bytes, as an attachments frame | [Rooms](#rooms) | A 1.0 instance cannot parse it and drops the event (logged). | `attachments: false` on the publishing instance keeps the envelope JSON, as in 1.0 — the same flag as kind 1 |
 | The `wrpc-enc:` and `wrpc-sealed:` **rooms and cluster envelopes** — compressed, encrypted | [Rooms](#rooms) | Opt-in on the publisher; a 1.0 instance drops what it cannot read (logged). | turn `rooms.compression`, `cluster.compression` and the `encryption` options on only once every instance is 2.0 — the two-step rollout the section describes |
+| `seq`, `ch` and `at` on a **signed cluster envelope** — the sender's counter, channel and clock, under `cluster.secret` | [Cluster channels](#cluster-channels) | **Not additive** one way. A 1.0 instance verifies a 2.0 envelope as before (the fields are inside the signed bytes) and applies it; a 2.0 instance refuses a 1.0 instance's envelope, which has no counter — the two halves of a mixed cluster stop seeing each other. Clusters without `secret` are unaffected. | `cluster: { replay: 'accept' }` on the 2.0 instances while a 1.0 instance is left |
 | `headers` and `cache` on a procedure's `http` descriptor in **introspection** | [Introspection](#introspection) | Additive: unknown keys of a descriptor are ignored. | nothing |
 | **WebRTC**: the data-channel framing, the signaling messages, the trust assertions | [WebRTC](#webrtc) | A new carrier: a 1.0 peer has no WebRTC transport and never meets it. | nothing |
 | The **compression rule** — `enc` lists, a sender compresses with the first codec of its own list the peer announced | [Compression](#compression) | Governs only what two 2.0 ends negotiate. | nothing |
@@ -747,6 +748,18 @@ message kind (presence hello/state/delta/bye, request `q`/answer `a`,
 command `cmd`, node event `e`). These envelopes are an implementation
 detail of `@alexify/wrpc`'s own cluster layer, not part of the frozen wire
 protocol clients speak — they never reach a client connection.
+
+Under `cluster: { secret }` an envelope ends with `sig`, the hex
+HMAC-SHA256 of the envelope's JSON text without it, and carries three
+fields inside what is signed: `seq`, the publisher's counter (one per
+process, across both channels, so a receiver sees gaps), `ch`, the channel
+it was published on, and `at`, the publisher's clock in milliseconds. A
+receiver verifies the signature, then refuses an envelope whose `ch` is not
+the channel it arrived on, whose `at` is further than its `maxSkew` (30 s)
+from its own clock, whose `seq` it already accepted from that `from` and
+`epoch` (a sliding window of 1024), or whose `epoch` is a life of `from`
+older than the one it follows. An envelope without `seq` is refused unless
+the receiver runs `replay: 'accept'`.
 
 ## Server-Sent Events
 

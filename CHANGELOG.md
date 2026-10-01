@@ -1307,6 +1307,19 @@ narrower promise — see
   subscriptions and streams work over it as over a socket. A server that
   relied on a port client being request-scoped — one `Client` per call, no
   `onConnect` — sees one long-lived `Client` per port instead.
+- **Breaking — under `cluster.secret`, a signed envelope must be counted,
+  and a 1.x node's is not.** Every envelope a node signs now carries, inside
+  the signed bytes, its counter (`seq`), the channel it is published on
+  (`ch`) and its clock (`at`), and a receiver refuses one that repeats, sits
+  on another channel, is further than `maxSkew` (30 s, new option) from its
+  own clock, or has no counter at all — the Security entry below has the
+  why. A 1.x node signs but does not count, so **a 2.0 node ignores a 1.x
+  node** and a rolling upgrade of a cluster that uses `secret` splits in two
+  until it completes: set `cluster: { secret, replay: 'accept' }` on the 2.0
+  nodes for its length. (The other direction is additive: a 1.x node
+  verifies the HMAC over the whole envelope, new fields included.) Clusters
+  without `secret` are unaffected, and so is `cluster.encryption`. The nodes
+  of a signed cluster now need clocks within `maxSkew` of each other.
 - **`generateId` on `RpcServer`/`Server`, `WrpcClient` and `PeerHost` is
   validated strictly.** A value that is not a function, or a function that
   answers something other than a non-empty string of at most 255
@@ -1339,6 +1352,11 @@ bytes it sends. In that order:
 6. **`generateId`**: a bad value is a `TypeError` at construction now (it
    was ignored in 1.0, logged in 1.x) — fix the option rather than catch
    the error; a valid generator behaves exactly as before.
+7. **`cluster.secret`**: deploy 2.0 with `cluster: { secret, replay:
+   'accept' }` while a 1.x node is still in the cluster — without it the
+   2.0 nodes refuse the 1.x nodes' envelopes (`cluster.replay`, reason
+   `unsequenced`) and each half sees only itself. Drop `replay` once the
+   last 1.x node is gone. Nothing to do without `secret`.
 
 ### Changed
 - **Tests: the broker adapters' recovery branches run against faults the
@@ -2205,14 +2223,24 @@ bytes it sends. In that order:
   `bench/deflate-js.js`, which gained a many-blocks row and a Huffman-only
   row that runs every rare symbol through the sub-table path. The
   `./deflate` budget is 5 KB (was 4; the entry is 4.1).
-- **Docs: what `cluster.secret` does and does not stop.** The cluster guide
-  said the HMAC guards the command surface; it guards the *authorship* of a
-  command. A signed envelope can be replayed, or moved from the channel it
-  was published on to another, by anything that can write to the backplane
-  — the MAC covers the bytes, not when or where they were seen. The guide
-  and the scaling page now say so, and name `cluster.encryption` as what
-  closes both (a per-sender counter under a replay window, and a
-  channel-bound AAD).
+- **`cluster.secret` refuses a replayed or transplanted envelope.** The
+  HMAC covered an envelope's bytes — not when or where they were seen — so
+  anything that could read the backplane and write to it (a compromised
+  broker, a client with too wide an ACL) could publish a signed
+  `disconnect` again, move an addressed `sendTo` or `join` to another
+  instance's inbox, or replay a dead process' `hello` to wipe the presence
+  of the one that replaced it. A signed envelope now carries the sender's
+  counter, channel and clock inside the signature, and a receiver keeps a
+  sliding window of 1024 counters per life of each sender: a repeat, an
+  envelope on a channel it was not signed for, one outside `maxSkew`
+  (30 s — also the bound on what a node that was not listening can be fed)
+  and one from a life older than the one being followed are refused,
+  counted (`wrpc.cluster.verifications`, outcome `replay`) and logged as
+  `cluster.replay` with the `reason` — one warn per sender and reason each
+  `presenceTimeout`, debug in between. `cluster: { replay: 'accept' }` is
+  the opt-out for a rolling upgrade from 1.x (see Changed (breaking)). The
+  cluster guide's "Trusting the backplane" and the protocol reference
+  describe the fields and the four reasons.
 - **A refusal is one log line, at the level the refusal deserves, with the
   peer's strings clipped.** Every error answer the server sent also wrote
   `rpc.error` at `error`, so the 429 and oversize-batch refusals the

@@ -78,7 +78,9 @@ from "same process, merge them".
 | `requestTimeout` | `2000` ms | Backstop for `fetchClients`/`ask`; resolves `incomplete`, never rejects. |
 | `rooms` | all | Which rooms replicate: an array, predicate or RegExp. See the cardinality note below. |
 | `maxFetch` | `1000` | Per-node ceiling on one `fetchClients` reply; a node over it answers its first `maxFetch` descriptors and the result carries `truncated: true` (never silent). `0` disables. |
-| `secret` | — | Opt-in HMAC-SHA256 envelope authentication — see [Trusting the backplane](#trusting-the-backplane). |
+| `secret` | — | Opt-in HMAC-SHA256 envelope authentication, with replay protection — see [Trusting the backplane](#trusting-the-backplane). |
+| `replay` | `'strict'` | Under `secret`: what to do with a signed envelope that carries no counter, which is what a 1.x node sends. `'strict'` refuses it; `'accept'` lets it through during a rolling upgrade from 1.x. |
+| `maxSkew` | `30000` ms | Under `secret`: how far an envelope's clock may sit from this node's, both ways. |
 | `compression` | off | Deflate the cluster envelopes this node publishes, after signing — the same marker and two-step rollout rule as [`rooms.compression`](./scaling#compression); an unreadable envelope logs `cluster.encoded`. |
 
 `cluster: false` opts out of the cluster layer entirely: presence, commands
@@ -109,17 +111,46 @@ message is dropped and logged (`cluster.unsigned` / `cluster.badsig`).
 Room *events* travel on separate channels and are not signed — the secret
 guards the command surface, the broker ACL guards the rest.
 
-Be precise about what the signature buys. It says a command **was written
-by a node holding the secret** — nothing more. A party that can read the
-backplane and write to it (a compromised broker, a client with a wider
-ACL than intended) can still **replay** a signed envelope later — a
-`disconnect` again, a `join` again — or **transplant** one from the
-channel it was published on to another; the MAC covers the envelope's
-bytes, not when or where they were seen. Where the backplane itself is in
-the threat model, `cluster: { encryption }` closes both: a sealed
-envelope carries a per-sender counter under a sliding replay window and is
-bound to its channel, so a copy does not open twice and does not open
-elsewhere — see [Encryption](./encryption#backplane).
+A signature alone says a command **was written by a node holding the
+secret** — not when, and not where. So under `secret` every envelope also
+carries, inside what is signed, the sender's **counter**, the **channel**
+it was published on and the sender's **clock**, and a receiver refuses
+(`cluster.replay`, with a `reason`):
+
+| `reason` | What arrived |
+| --- | --- |
+| `seq` | A counter this node already accepted from that sender, or one older than its window of 1024 — a copy of an earlier envelope |
+| `channel` | An envelope on a channel other than the one it was signed for — an addressed command moved to another instance's inbox, or onto `cluster` |
+| `stale` | A clock further than `maxSkew` from this node's, or an envelope of a **previous life** of a sender whose restarted process this node already follows |
+| `unsequenced` | A signed envelope with no counter at all — a 1.x node's |
+
+So a party that can read the backplane and write to it (a compromised
+broker, a client with a wider ACL than intended) cannot run a `disconnect`
+again, move a `join` to another node, or bring a dead process' presence
+back. Two things follow for operations:
+
+- **Clocks.** The nodes of a cluster keep their clocks within `maxSkew`
+  (30 s by default) — a node outside it is refused by the others as `stale`
+  and never joins. The window is also the one bound on what a node that
+  was *not listening* can be fed: a counter window only remembers what
+  this process heard, so a freshly booted node accepts an envelope up to
+  `maxSkew` old that it has not seen. Lower it where the clocks allow.
+- **Upgrading from 1.x.** A 1.x node signs but does not count, so a 2.0
+  node refuses it and the two halves of a mixed cluster do not see each
+  other. Deploy 2.0 with `cluster: { secret, replay: 'accept' }` while any
+  1.x node is left — that waives the counter of a node that has none, and
+  nothing else — then drop the option. (A 1.x node reads a 2.0 envelope as
+  it always did: the new fields are inside the bytes it verifies.)
+
+The refusal is logged once per sender and reason each `presenceTimeout`
+(`debug` in between — a copy can be published in a loop) and always
+counted, as `wrpc.cluster.verifications` with outcome `replay`.
+
+What `secret` does not do is hide anything: the envelope is still
+readable JSON on the broker. Where the backplane itself is in the threat
+model, add `cluster: { encryption }` — the sealed frame has its own
+counter window and is bound to its channel as well — see
+[Encryption](./encryption#backplane).
 
 ### Health
 

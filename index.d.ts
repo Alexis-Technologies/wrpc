@@ -160,9 +160,26 @@ export interface ClusterOptions {
    * Opt-in HMAC-SHA256 envelope authentication: with the same secret on
    * every node, an unsigned or mis-signed cluster message is dropped and
    * logged — "can publish on the broker" stops being "can command every
-   * node". Room events travel unsigned; ACL the broker for those.
+   * node". Room events travel unsigned; ACL the broker for those. A signed
+   * envelope also carries the sender's counter, channel and clock, so a
+   * copy replayed later or moved to another channel is refused too (see
+   * `replay`).
    */
   secret?: string;
+  /**
+   * What a node under `secret` does with a signed envelope that carries no
+   * counter — the one a 1.x node sends. `'strict'` (the default) refuses
+   * it, logged as `cluster.replay`; `'accept'` lets it through for the
+   * length of a rolling upgrade from 1.x and still checks every envelope
+   * that does carry one. Anything else is a `TypeError`.
+   */
+  replay?: 'strict' | 'accept';
+  /**
+   * How far a signed envelope's clock may sit from this node's, in ms, both
+   * ways — default 30000. It bounds what a node that was not listening can
+   * be replayed, so the nodes of a cluster keep their clocks within it.
+   */
+  maxSkew?: number;
   /**
    * Compresses the cluster envelopes this node publishes, after signing —
    * the same marker, rollout rule and synchronous-codec requirement as

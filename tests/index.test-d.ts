@@ -780,6 +780,9 @@ expectAssignable<wrpc.RpcServerOptions>({
   rooms: { linger: 2000 },
 });
 expectAssignable<wrpc.RpcServerOptions>({ router, cluster: false });
+// Replay protection under `secret`: the two modes, and the clock window.
+expectAssignable<wrpc.RpcServerOptions>({ router, cluster: { secret: 's', replay: 'accept', maxSkew: 5_000 } });
+expectError<wrpc.RpcServerOptions>({ router, cluster: { secret: 's', replay: 'lenient' } });
 expectAssignable<wrpc.ClusterOptions>({ rooms: /^topic:/ });
 expectAssignable<wrpc.ClusterOptions>({ rooms: (room: string) => room.startsWith('t:') });
 expectError<wrpc.ClusterOptions>({ rooms: 42 });

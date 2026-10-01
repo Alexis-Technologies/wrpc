@@ -105,12 +105,13 @@ synchronous — for keys that live in a KMS or Vault and are refreshed on
 your own schedule.
 
 The cluster layer takes the same option. `cluster.secret` says a command
-came from a node — and only that: a signed envelope can be replayed, or
-moved to another channel, by anyone who can write to the backplane.
+came from a node, once, on the channel it was published on — a signed
+envelope carries its sender's counter, channel and clock, so a copy
+replayed later or moved elsewhere is refused
+([Trusting the backplane](./cluster#trusting-the-backplane)).
 `cluster.encryption` hides what it says — presence, `sendTo` payloads,
-`fetchClients` replies with their `client.data` — refuses a plaintext
-command outright, and refuses a replayed or transplanted envelope too (the
-replay window and the channel-bound AAD of the sealed frame).
+`fetchClients` replies with their `client.data` — and refuses a plaintext
+command outright.
 
 ## Adapters
 

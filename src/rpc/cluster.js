@@ -7,6 +7,7 @@ const { generateUUID } = require('../runtime/node.js');
 const { createLoggerWriter } = require('../logging.js');
 const { DISABLED, SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
 const { hasBytes } = require('../attachments.js');
+const { ReplayWindow, DEFAULT_REPLAY_WINDOW } = require('../encryption/envelope.js');
 
 // Cluster: presence, introspection and node-to-node messaging across every
 // wrpc instance sharing a backplane. Built ON TOP of the pub/sub contract
@@ -43,6 +44,10 @@ const DEFAULT_REQUEST_TIMEOUT = 2_000;
 // fan-ins used to be able to kill the requester's broker connection
 // (redis's client-output-buffer-limit) and take every room channel with it.
 const DEFAULT_MAX_FETCH = 1_000;
+// How far a signed envelope's clock may sit from this node's — both ways. It
+// is the one bound on what a node that was NOT listening can be replayed: a
+// counter window only remembers what this process heard.
+const DEFAULT_MAX_SKEW = 30_000;
 
 // The rooms an app opts into replicating: an array, a predicate or a
 // RegExp. Null replicates everything — fine for topic rooms, expensive for
@@ -94,6 +99,15 @@ class Cluster extends Emitter {
   #maxFetch;
   #roomsFilter;
   #secret;
+  // Replay protection under `secret` (see #admit): this node's own counter,
+  // and per sender name the life it follows — { epoch, window, newest }.
+  #strict = true;
+  #maxSkew = DEFAULT_MAX_SKEW;
+  #seq = 0;
+  #guards = new Map();
+  // `${from}\0${reason}` -> when it was last warned about: a replayed or
+  // unsequenced envelope repeats, and one warn a presence timeout says it.
+  #refused = new Map();
   #envelope = null;
   #generateId;
   // instance -> { epoch, lastSeen, clients, rooms: Map<room, count> }
@@ -153,6 +167,18 @@ class Cluster extends Emitter {
     // AND holds the shared secret". Node-only by construction (node:crypto)
     // — this file never ships to a browser.
     this.#secret = typeof options.secret === 'string' && options.secret.length > 0 ? options.secret : null;
+    // What a signature alone does not say: WHEN and WHERE. `replay` is new
+    // in 2.0, so a value that is not one of its two is a TypeError rather
+    // than the lenient fallback the 1.0 options above keep.
+    const { replay = 'strict', maxSkew = DEFAULT_MAX_SKEW } = options;
+    if (replay !== 'strict' && replay !== 'accept') {
+      throw new TypeError("RpcServer: options.cluster.replay must be 'strict' or 'accept'");
+    }
+    if (!(Number.isFinite(maxSkew) && maxSkew > 0)) {
+      throw new TypeError('RpcServer: options.cluster.maxSkew must be a positive number of milliseconds');
+    }
+    this.#strict = replay === 'strict';
+    this.#maxSkew = maxSkew;
     // The envelope codec the core built from `cluster.compression`, or null —
     // applied AFTER signing, so the signature is over the JSON text as ever.
     this.#envelope = options.envelope ?? null;
@@ -217,6 +243,8 @@ class Cluster extends Emitter {
       request.settle(true);
     }
     this.#nodes.clear();
+    this.#guards.clear();
+    this.#refused.clear();
   }
 
   // Subscribes with capped-backoff RETRY on rejection: a rejected subscribe
@@ -301,9 +329,19 @@ class Cluster extends Emitter {
       count++;
     }
     this.#post(CLUSTER_CHANNEL, { t: 'digest', clients, n: count, h: hash });
-    const deadline = Date.now() - this.#presenceTimeout;
+    const now = Date.now();
+    const deadline = now - this.#presenceTimeout;
     for (const [instance, node] of this.#nodes) {
       if (node.lastSeen < deadline) this.#evict(instance, 'timeout');
+    }
+    // A sender's replay guard outlives its presence record on purpose — an
+    // evicted node's envelopes are exactly what a replay would bring back —
+    // and is dropped once the clock alone refuses everything it remembers.
+    for (const [instance, guard] of this.#guards) {
+      if (now - guard.newest > this.#maxSkew) this.#guards.delete(instance);
+    }
+    for (const [key, warned] of this.#refused) {
+      if (warned < deadline) this.#refused.delete(key);
     }
   }
 
@@ -314,6 +352,16 @@ class Cluster extends Emitter {
   // rejection still only logs — by then at-most-once already owns it.)
   #post(channel, body) {
     const envelope = { v: ENVELOPE_VERSION, from: this.#instance, epoch: this.#epoch, ...body };
+    if (this.#secret !== null) {
+      // What the signature is about to cover, set AFTER the body so nothing
+      // in it can spell them: this process' counter, the channel the
+      // envelope is published on, and the sender's clock. A 1.x node verifies
+      // the HMAC over the whole re-serialized envelope, so the three are
+      // transparent to it. (`ts` is the trace state below, hence `at`.)
+      envelope.seq = ++this.#seq;
+      envelope.ch = channel;
+      envelope.at = Date.now();
+    }
     // The active trace context rides the envelope as tp/ts (ignored by
     // receivers that predate it — the additive-fields rule): the cross-node
     // hop is where a trace is most valuable and used to be exactly where
@@ -428,6 +476,53 @@ class Cluster extends Emitter {
       return false;
     }
     return true;
+  }
+
+  // Replay protection, the receiving half. It runs AFTER #verify, so every
+  // field read here was written by a node holding the secret; what the
+  // signature cannot say is that the envelope is being heard where and when
+  // it was published, and for the first time:
+  //
+  //   ch     the channel it was published on — a copy moved to another
+  //          instance's inbox, or from an inbox to `cluster`, is refused;
+  //   at     the sender's clock, within `maxSkew` of this one — the bound on
+  //          what a node that was not listening (a fresh boot) can be fed;
+  //   seq    the sender's counter, under a sliding window per life of that
+  //          sender (a receiver hears two of its channels, so gaps are
+  //          normal) — a repeat, or one older than the window, is refused;
+  //   epoch  another life of the same name is followed only when it is
+  //          NEWER than everything accepted from the one it replaces, so an
+  //          envelope of a dead process cannot bring that process back.
+  //
+  // An envelope with no counter is what a 1.x node sends: refused, unless
+  // `replay: 'accept'` says a rolling upgrade is under way.
+  #admit(envelope, from, channel) {
+    const { seq, ch, at, epoch } = envelope;
+    if (seq === undefined) return this.#strict ? this.#replayed(from, channel, 'unsequenced') : true;
+    if (!Number.isSafeInteger(seq) || seq < 0 || typeof at !== 'number') return this.#replayed(from, channel, 'seq');
+    if (ch !== channel) return this.#replayed(from, channel, 'channel');
+    if (Math.abs(Date.now() - at) > this.#maxSkew) return this.#replayed(from, channel, 'stale');
+    let guard = this.#guards.get(from);
+    if (guard === undefined || guard.epoch !== epoch) {
+      if (guard !== undefined && at <= guard.newest) return this.#replayed(from, channel, 'stale');
+      guard = { epoch, window: new ReplayWindow(DEFAULT_REPLAY_WINDOW), newest: at };
+      this.#guards.set(from, guard);
+    }
+    if (!guard.window.accept(seq)) return this.#replayed(from, channel, 'seq');
+    if (at > guard.newest) guard.newest = at;
+    return true;
+  }
+
+  // Always counted; warned once per sender and reason a presence timeout,
+  // debug in between — whoever replays one envelope can replay it in a loop.
+  #replayed(from, channel, reason) {
+    this.#otel.recordClusterVerification('replay');
+    const key = `${from}\0${reason}`;
+    const now = Date.now();
+    const loud = now - (this.#refused.get(key) ?? 0) > this.#presenceTimeout;
+    if (loud) this.#refused.set(key, now);
+    this.#log[loud ? 'warn' : 'debug']({ event: 'cluster.replay', from, channel, reason });
+    return false;
   }
 
   #seen(from, epoch) {
@@ -851,7 +946,7 @@ class Cluster extends Emitter {
     if (!envelope || typeof envelope !== 'object') return;
     const { from, epoch, t } = envelope;
     if (from === this.#instance || typeof from !== 'string' || from.length === 0) return;
-    if (this.#secret && !this.#verify(envelope, from)) return;
+    if (this.#secret && !(this.#verify(envelope, from) && this.#admit(envelope, from, channel))) return;
     this.#otel.recordClusterMessage(typeof t === 'string' ? t : '<unknown>');
     if (t === 'bye') {
       // Only the life we actually track may say goodbye: a bye from a
