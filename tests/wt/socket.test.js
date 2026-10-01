@@ -152,13 +152,72 @@ test('wt socket: a peer close, a terminate and a peer framing violation', async 
   assert.deepStrictEqual(ends, [[1002, 'Protocol error']]);
   assert.deepStrictEqual(await third.client.closed, { closeCode: 1002, reason: 'Protocol error' });
 
-  // The peer ending the control stream ends the connection, with 1000.
+  // The peer ending the control stream ends the connection, with 1000 —
+  // after the moment its own session close is given to arrive with a code.
   const fourth = await pair(t);
   const done = [];
   fourth.socket.on('close', (code) => done.push(code));
   await fourth.writer.close();
+  await timers.setTimeout(50);
+  assert.deepStrictEqual(done, [], 'not yet: a graceful peer closes the session next, with its code');
   await waitFor(() => done.length === 1, 'close');
   assert.deepStrictEqual(done, [1000]);
+  // And when it does come, it is the peer's code that is reported.
+  const fifth = await pair(t);
+  const codes = [];
+  fifth.socket.on('close', (code, reason) => codes.push([code, reason]));
+  await fifth.writer.close();
+  fifth.client.close({ closeCode: 4001, reason: 'done here' });
+  await waitFor(() => codes.length === 1, 'close');
+  assert.deepStrictEqual(codes, [[4001, 'done here']]);
+});
+
+// Closing a session resets its streams and drops what they still hold. A
+// graceful close() therefore ends the control stream first — what send()
+// accepted arrives — and the session after it, with the code.
+test('wt socket: close() delivers what send() accepted, then the code; terminate() does not wait', async (t) => {
+  const { world, client, socket, received } = await pair(t);
+  await waitFor(() => socket.bufferedAmount === 0, 'the capabilities left');
+  // Every write is held: at close() time nothing below has reached the peer.
+  const release = world.hold();
+  const closes = [];
+  socket.on('close', (code, reason) => closes.push([code, reason]));
+  assert.strictEqual(socket.send('{"type":"event","name":"kicked","data":{"why":"policy"}}'), true);
+  assert.strictEqual(socket.send(Buffer.from([1, 2, 3])), true);
+  socket.close(1008, 'Policy');
+  assert.deepStrictEqual(closes, [[1008, 'Policy']], "'close' is reported synchronously");
+  assert.strictEqual(socket.send('late'), false, 'and nothing more is accepted');
+  assert.strictEqual(received.length, 0);
+  release();
+  assert.deepStrictEqual(await client.closed, { closeCode: 1008, reason: 'Policy' });
+  assert.deepStrictEqual(
+    received.map((m) => m.kind),
+    [KIND_TEXT, KIND_BINARY],
+    'both messages arrived before the session closed',
+  );
+  assert.ok(received[0].data.includes('"why":"policy"'));
+
+  // A stream that never takes its queue: closeTimeout is the bound.
+  const slow = await pair(t, { closeTimeout: 40 });
+  await waitFor(() => slow.socket.bufferedAmount === 0, 'the capabilities left');
+  slow.world.hold();
+  slow.socket.send('never delivered');
+  const started = Date.now();
+  slow.socket.close(1001, 'Server is closing');
+  assert.deepStrictEqual(await slow.client.closed, { closeCode: 1001, reason: 'Server is closing' });
+  assert.ok(Date.now() - started >= 30, 'the session was held open for the stream, up to closeTimeout');
+  assert.strictEqual(slow.received.length, 0);
+
+  // terminate(): at once, whatever is queued.
+  const hard = await pair(t);
+  await waitFor(() => hard.socket.bufferedAmount === 0, 'the capabilities left');
+  hard.world.hold();
+  hard.socket.send('dropped');
+  hard.socket.terminate();
+  assert.ok(await hard.client.closed);
+  assert.strictEqual(hard.received.length, 0);
+
+  assert.throws(() => new WtSocket(hard.session, hard.session, { closeTimeout: -1 }), /closeTimeout must be/);
 });
 
 // The channel contract shared with the client transport: send/drain on

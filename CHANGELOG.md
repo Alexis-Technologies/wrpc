@@ -1394,6 +1394,18 @@ bytes it sends. In that order:
   through, `WtSocket` takes `onCodecError`. A WebRTC data channel stays
   silent on purpose (per-frame, and in a browser bundle); nothing is added
   per message — the counter is touched on the failure path alone.
+- **WebTransport: `close()` delivers what was sent before it.** A session
+  close resets every stream, and both ends closed the session at once: the
+  last callback after `drain()`, the event sent before a kick and a
+  client's `flush()` were lost on `wt` and delivered on `ws`, so a
+  `['wt', 'ws']` fallback list was not invisible. A graceful `close()` on
+  either end now closes the control stream first — which resolves once its
+  queue was taken — and the session after it with the code, bounded by the
+  new `closeTimeout` (1000 ms; `attachSession`, `WtSocket`, the client's
+  `wt` options). `'close'` still fires synchronously on the closing end.
+  The end that reads the stream's end gives the session close 200 ms to
+  arrive, so the code it reports is the closer's rather than its own 1000.
+  `terminate()` is immediate, as before.
 - **ws engine: `close()` delivers what `send()` accepted, with or without
   context takeover.** A message whose deflate runs off the loop (context
   takeover, or `async` past its threshold) waits in an outbound queue with

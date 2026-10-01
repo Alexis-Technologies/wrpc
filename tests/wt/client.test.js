@@ -229,6 +229,34 @@ test('wt transport: a peer close is one close event; close() tells the peer; ter
   assert.ok(await third.session.closed);
 });
 
+test('wt transport: close() delivers what was written before it, then tells the peer', async (t) => {
+  const world = createFakeWt();
+  const { transport, session } = await opened(t, world);
+  const { received } = await controlStream(session);
+  await waitFor(() => transport.bufferedAmount === 0, 'the capabilities left');
+  const release = world.hold();
+  const events = [];
+  transport.on('close', () => events.push('close'));
+  assert.strictEqual(transport.write('{"type":"event","name":"bye","data":{}}'), true);
+  transport.close();
+  assert.deepStrictEqual(events, ['close'], 'closed here at once');
+  assert.strictEqual(received.length, 0);
+  release();
+  assert.deepStrictEqual(await session.closed, { closeCode: 0, reason: '' });
+  assert.deepStrictEqual(
+    received.map((m) => m.data),
+    ['{"type":"event","name":"bye","data":{}}'],
+    'the packet reached the server before the session closed',
+  );
+  // Bounded by closeTimeout when the stream never takes its queue.
+  const slow = await opened(t, world, { closeTimeout: 40 });
+  await waitFor(() => slow.transport.bufferedAmount === 0, 'the capabilities left');
+  world.hold();
+  slow.transport.write('never delivered');
+  slow.transport.close();
+  assert.deepStrictEqual(await slow.session.closed, { closeCode: 0, reason: '' });
+});
+
 // The channel contract shared with the server socket: write/drain on
 // every path, order under an async codec, the count after terminate().
 test('wt transport: the channel contract', async (t) => {

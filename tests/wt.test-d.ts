@@ -95,3 +95,7 @@ expectType<number>(server.to('r').emit('game/state', {}, { unreliable: true }));
 expectType<boolean>(socket.sendUnreliable('{}'));
 expectType<number>(socket.maxDatagramSize);
 expectType<string | null>(wt.parseDatagram(wt.datagramText('{}')));
+
+// A graceful close waits for the control stream, at most this long.
+expectAssignable<AttachSessionOptions>({ closeTimeout: 500 });
+expectAssignable<WrpcClientOptions>({ wt: { closeTimeout: 500 } });

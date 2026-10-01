@@ -99,6 +99,17 @@ Close codes carry over: the server's 1001 on shutdown and 1002 on a framing
 violation arrive at the client as the session's `closeCode`, and a client
 `close()` shows up on the server as the session ending.
 
+**A send before a `close()` is delivered**, as on a WebSocket — the callback
+that ends a session, the event that says why a client is being
+disconnected, a client's last `flush()`. Closing a WebTransport session
+resets its streams and drops whatever they still hold, so a graceful
+close ends the control stream first (which hands over what is queued) and
+the session after it, with the code — `closeTimeout` (1 s) at most. The end
+that receives the stream's end waits a moment for the session close that
+follows, so the code it reports is the closer's. `terminate()` drops
+everything at once, and a message still inside an asynchronous compressor
+when `close()` is called is not waited for.
+
 ## Streams without head-of-line blocking
 
 On a WebSocket, a 64 MiB upload's chunks queue in front of every callback
@@ -255,6 +266,7 @@ attachSession(server, session, {
   maxBackpressure: 64 * 1024 * 1024, // queued bytes past which a peer that never drains is terminated (0 = off)
   maxMessage: 16 * 1024 * 1024, // the largest inbound message; past it the peer is hung up (1002)
   idleTimeout: 0, // ms without inbound data before the session is terminated (0 = off)
+  closeTimeout: 1000, // ms a graceful close() waits for the control stream to take what was sent
   maxHeldStreams: 32, // inbound streams held for their open packet at once; a further one is cancelled unread
   holdTimeout: 10_000, // ms a held stream waits for its open packet before it is cancelled (logged wt.mux.refused)
   kind: 'wt', // what Client.transportKind reports
@@ -282,6 +294,7 @@ connect(url, {
     lowWaterMark,
     maxBackpressure, // the same cap, against a server that never drains
     maxMessage,
+    closeTimeout, // ms close() waits for what was written to leave (1000)
   },
   compression: false, // per-message deflate, both ends must turn it on — see below
 });

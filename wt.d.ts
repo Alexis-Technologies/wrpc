@@ -98,6 +98,13 @@ export interface WtSocketOptions {
    */
   idleTimeout?: number;
   /**
+   * How long a graceful `close()` waits for the control stream to take what
+   * `send()` already accepted before it closes the session (ms, default
+   * 1000) — closing a session resets its streams and drops what they still
+   * hold. `terminate()` never waits.
+   */
+  closeTimeout?: number;
+  /**
    * Inbound unidirectional streams held for their open packet at once —
    * read no further than their first read meanwhile — before a further
    * one is cancelled unread (default 32). A peer that opens streams for

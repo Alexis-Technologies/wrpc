@@ -54,6 +54,11 @@ const DEFAULT_LOW_WATER_MARK = 256 * 1024;
 // rather than buffering without bound for a server that never drains;
 // 0 switches it off.
 const DEFAULT_MAX_BACKPRESSURE = 64 * 1024 * 1024;
+// A graceful close() ends the control stream, then the session: how long
+// the stream may take to hand over what was written, and how long the end
+// of the server's control stream waits for its session close.
+const DEFAULT_CLOSE_TIMEOUT = 1000;
+const CLOSE_GRACE = 200;
 
 // The `WebTransportOptions` handed to the constructor as-is.
 const INIT_KEYS = ['serverCertificateHashes', 'congestionControl', 'allowPooling', 'requireUnreliable', 'protocols'];
@@ -109,6 +114,7 @@ class ClientWtTransport extends ClientTransport {
   #lowWater;
   #maxBackpressure;
   #maxMessage;
+  #closeTimeout = DEFAULT_CLOSE_TIMEOUT;
   // Per-message compression (src/compression): the option resolved per
   // open — connect()'s `compression`, else the `wt` bag's — and what is in
   // effect once the server's list and ours share a codec.
@@ -171,6 +177,7 @@ class ClientWtTransport extends ClientTransport {
     const WebTransport = wt.WebTransport ?? globalThis.WebTransport;
     if (typeof WebTransport !== 'function') throw new Error(UNAVAILABLE);
     this.#encryption = options.encryption ?? null;
+    this.#closeTimeout = wt.closeTimeout ?? DEFAULT_CLOSE_TIMEOUT;
     this.#compression =
       this.#encryption === null
         ? normalizeCompression(options.compression ?? wt.compression, 'wt transport: options')
@@ -311,8 +318,14 @@ class ClientWtTransport extends ClientTransport {
       this.#escalate(error);
     }
     if (this.#session !== session) return;
+    // The server ended the control stream — its graceful close: the session
+    // close follows with its code, and is given a moment to arrive before
+    // this end hangs up itself.
     this.#down(session);
-    closeQuietly(session);
+    const timer = setTimeout(() => closeQuietly(session), CLOSE_GRACE);
+    timer.unref?.();
+    const settled = () => clearTimeout(timer);
+    session.closed.then(settled, settled);
   }
 
   async #readUni(session, streams, mux) {
@@ -543,12 +556,27 @@ class ClientWtTransport extends ClientTransport {
     void this.emit('drain').catch((error) => this.#escalate(error));
   }
 
-  /** A graceful goodbye: the peer's `closed` settles with the close info. */
+  /**
+   * A graceful goodbye: what was written reaches the server, then its
+   * `closed` settles with the close info. Closing the session resets its
+   * streams, so the control stream is closed first (resolved once its
+   * queue was taken) and the session after it, `closeTimeout` at most.
+   */
   close() {
     const session = this.#session;
     if (!session) return;
+    const writer = this.#writer;
     this.#down(session);
-    closeQuietly(session, { closeCode: 0, reason: '' });
+    let timer = null;
+    const end = () => {
+      clearTimeout(timer);
+      closeQuietly(session, { closeCode: 0, reason: '' });
+    };
+    // Still opening: there is no stream to drain.
+    if (writer === null) return void end();
+    timer = setTimeout(end, this.#closeTimeout);
+    timer.unref?.();
+    writer.close().then(end, end);
   }
 
   /** Reports the close now and drops the session; a handshake in flight is abandoned. */

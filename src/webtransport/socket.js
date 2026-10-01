@@ -58,6 +58,12 @@ const DEFAULT_LOW_WATER_MARK = 256 * 1024;
 // maxBackpressure does — a slow consumer used to be able to hold as much
 // as the process had. 0 switches it off.
 const DEFAULT_MAX_BACKPRESSURE = 64 * 1024 * 1024;
+// A graceful close() ends the control stream first and the session after
+// it: how long the stream may take to hand over what was already written
+// (the WebSocket engine's CLOSE_TIMEOUT), and how long the END of the
+// peer's control stream is given to be followed by its session close.
+const DEFAULT_CLOSE_TIMEOUT = 1000;
+const CLOSE_GRACE = 200;
 
 const normalizeBackpressure = (value, label) => {
   if (value === undefined) return DEFAULT_MAX_BACKPRESSURE;
@@ -99,6 +105,7 @@ class WtSocket extends EventEmitter {
   #lowWater;
   #maxBackpressure;
   #maxMessage;
+  #closeTimeout;
   #log;
   #onCodecError;
   #idle = 0;
@@ -132,6 +139,7 @@ class WtSocket extends EventEmitter {
       maxBackpressure,
       maxMessage,
       idleTimeout = 0,
+      closeTimeout = DEFAULT_CLOSE_TIMEOUT,
       compression = null,
       maxHeldStreams,
       holdTimeout,
@@ -154,6 +162,10 @@ class WtSocket extends EventEmitter {
     this.#lowWater = lowWaterMark ?? DEFAULT_LOW_WATER_MARK;
     this.#maxBackpressure = normalizeBackpressure(maxBackpressure, 'WtSocket: options');
     this.#maxMessage = maxMessage ?? DEFAULT_MAX_MESSAGE;
+    if (!Number.isInteger(closeTimeout) || closeTimeout < 0) {
+      throw new TypeError('WtSocket: options.closeTimeout must be a non-negative integer of milliseconds');
+    }
+    this.#closeTimeout = closeTimeout;
     this.#compression = normalizeCompression(compression, 'WtSocket: options');
     this.#idle = idleTimeout;
     this.#touch();
@@ -347,11 +359,16 @@ class WtSocket extends EventEmitter {
       return;
     }
     if (this.#closed) return;
-    // The peer ended the control stream: the connection is over. The close
-    // is reported through `closed` — with the peer's code when the stream
-    // ended because the peer closed the session, with 1000 when only the
-    // stream ended and this close() is what ends the session.
-    closeQuietly(this.#session, { closeCode: 1000, reason: '' });
+    // The peer ended the control stream: the connection is over. A peer
+    // closing gracefully ends the STREAM first — so that what it wrote
+    // arrives — and the session a moment later, with its code; that moment
+    // is waited for, so its code is the one `closed` reports. Only when it
+    // does not come is the session ended from here, with 1000.
+    const session = this.#session;
+    const timer = setTimeout(() => closeQuietly(session, { closeCode: 1000, reason: '' }), CLOSE_GRACE);
+    timer.unref?.();
+    const settled = () => clearTimeout(timer);
+    session.closed.then(settled, settled);
   }
 
   async #readUni(streams) {
@@ -540,11 +557,30 @@ class WtSocket extends EventEmitter {
     if (release) release();
   }
 
-  /** Graceful: the peer's `closed` carries the code and reason. */
+  /**
+   * Graceful: what send() already handed to the control stream reaches the
+   * peer, and the peer's `closed` carries the code and reason. Closing a
+   * SESSION resets its streams and drops whatever they still hold — the
+   * answer of the call that ends a session, the event that says why a
+   * client is being kicked — so the stream is closed first (its close
+   * resolves once the queued bytes were taken and the FIN sent) and the
+   * session after it, at most `closeTimeout` later. This side is closed
+   * synchronously either way: 'close' fires here, nothing more is accepted.
+   * A message still being compressed asynchronously is not waited for.
+   */
   close(code = 1000, reason = '') {
     if (this.#closed) return;
+    const session = this.#session;
+    const writer = this.#writer;
     this.#down(code, reason);
-    closeQuietly(this.#session, { closeCode: code, reason });
+    let timer = null;
+    const end = () => {
+      clearTimeout(timer);
+      closeQuietly(session, { closeCode: code, reason });
+    };
+    timer = setTimeout(end, this.#closeTimeout);
+    timer.unref?.();
+    writer.close().then(end, end);
   }
 
   /** Hard: no reason travels; the peer sees 1006. */
@@ -596,4 +632,5 @@ module.exports = {
   DEFAULT_HIGH_WATER_MARK,
   DEFAULT_LOW_WATER_MARK,
   DEFAULT_MAX_BACKPRESSURE,
+  DEFAULT_CLOSE_TIMEOUT,
 };

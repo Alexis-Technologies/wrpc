@@ -297,6 +297,11 @@ export interface WtTransportOptions {
   /** The largest inbound message accepted (default 16 MiB); past it the session is hung up. */
   maxMessage?: number;
   /**
+   * How long `close()` waits for the control stream to take what was
+   * already written before it closes the session (ms, default 1000).
+   */
+  closeTimeout?: number;
+  /**
    * @experimental Per-message compression on the control stream, off by
    * default; connect()'s own `compression` wins over this one. Negotiated
    * through the capabilities message: on only once the server named the
