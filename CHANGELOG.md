@@ -1444,6 +1444,15 @@ bytes it sends. In that order:
   to `range()` without a sign: `onLag(topic, readers)` hears of it — once
   per fall, nothing while everybody keeps up — and the four adapters log it
   as `broker.tail.lag` (info).
+- **CI's test run cannot hang on a leak.** `pnpm test:ci` is
+  `test:coverage` with `--test-timeout=300000 --test-force-exit`, and it is
+  what the `test` job runs: a suite that leaves a listener or a timer behind
+  now fails in minutes with a summary, where it used to sit until the job's
+  own timeout. `pnpm test` and `test:coverage` are unchanged, so a leak stays
+  visible locally. The Kafka suite registers every broker's `close()` right
+  after it is opened, and the live Kafka suite warms the broker — one
+  throwaway group join and round trip, tried twice — before its first
+  contract case, so a broker that has just come up no longer fails the run.
 - **A durable feed opens and signs an entry once, not once per
   subscriber.** `TopicTails` made a topic one broker read for all its local
   subscribers, and each of them then opened the sealed entry and signed its

@@ -118,17 +118,21 @@ for (const flavor of FLAVORS) {
   });
 }
 
-test('kafka broker: no direct capability — and it says so', async () => {
+// Every test registers its broker's close() with t.after RIGHT after open():
+// the fake's wait() is deliberately not unref'd (a real consumer holds the
+// loop too), so an assertion that fails before a trailing close() would
+// leave the fake's loop alive and wedge `node --test` instead of failing it.
+test('kafka broker: no direct capability — and it says so', async (t) => {
   const { broker } = open('kafkajs');
+  t.after(() => broker.close());
   assert.strictEqual(isBroker(broker), true);
   assert.strictEqual(broker.direct, undefined);
   assert.strictEqual(isBrokerDirect(broker.direct), false);
   const { attachBrokerRpc } = require('../../broker.js');
   await assert.rejects(attachBrokerRpc({ rpc: null }, broker, { service: 'x' }), /Server or an RpcServer/);
-  await broker.close();
 });
 
-test('kafka broker: the flavor is detected, and can be forced', async () => {
+test('kafka broker: the flavor is detected, and can be forced', async (t) => {
   const kafkajs = createFakeKafka({ flavor: 'kafkajs' });
   const confluent = createFakeKafka({ flavor: 'confluent' });
   // kafkajs' client has logger(); the confluent facade does not.
@@ -137,8 +141,8 @@ test('kafka broker: the flavor is detected, and can be forced', async () => {
     createKafkaBroker({ kafka: confluent, logger: quiet }),
     createKafkaBroker({ kafka: confluent, flavor: 'confluent', logger: quiet }),
   ]) {
+    t.after(() => broker.close());
     assert.strictEqual(broker.name, 'kafka');
-    await broker.close();
   }
   assert.throws(() => createKafkaBroker({ kafka: kafkajs, flavor: 'librdkafka' }), /flavor must be/);
   assert.throws(() => createKafkaBroker({}), /KafkaJS-shaped client/);
@@ -146,8 +150,9 @@ test('kafka broker: the flavor is detected, and can be forced', async () => {
   assert.throws(() => createKafkaBroker({ kafka: kafkajs, partitions: 0 }), /partitions/);
 });
 
-test('kafka broker: the resume token is a vector of partition offsets', () => {
+test('kafka broker: the resume token is a vector of partition offsets', (t) => {
   const { broker } = open('kafkajs');
+  t.after(() => broker.close());
   assert.strictEqual(encodeVector({ 2: 5, 0: 1 }), 'k1:0=1,2=5');
   assert.deepStrictEqual(decodeVector('k1:0=1,2=5'), { 0: 1, 2: 5 });
   assert.strictEqual(decodeVector('k1:'), null);
@@ -157,7 +162,6 @@ test('kafka broker: the resume token is a vector of partition offsets', () => {
   assert.strictEqual(broker.log.parseId('k1:x=1'), null);
   assert.strictEqual(broker.log.parseId(''), null);
   assert.throws(() => broker.log.read('t', { from: 'middle' }), /from must be/);
-  return broker.close();
 });
 
 test('kafka broker: a feed resumes exactly, across partitions', async (t) => {
@@ -296,8 +300,10 @@ test('kafka broker: the backplane loses what was published before the group join
   assert.deepStrictEqual(seen, ['after'], 'a fresh group reads from `latest`');
 });
 
-test("kafka broker: closing disconnects every consumer and deletes its OWN groups — never a queue's durable one", async () => {
+test("kafka broker: closing disconnects every consumer and deletes its OWN groups — never a queue's durable one", async (t) => {
   const { kafka, broker } = open('kafkajs');
+  // close() is idempotent — the test itself calls it twice below.
+  t.after(() => broker.close());
   const seen = [];
   await broker.backplane.subscribe('room', (message) => seen.push(message));
   const queue = unique('q');
@@ -326,6 +332,7 @@ for (const flavor of FLAVORS) {
     // instance, joining a fresh group from the beginning, redelivered the
     // whole retention on every deploy.
     const { kafka, broker } = open(flavor);
+    t.after(() => broker.close());
     const queue = unique('orders');
     const first = [];
     const consumer = await broker.queue.consume(queue, (delivery) => {
@@ -395,7 +402,7 @@ test('kafka broker: pause and resume ride the consumer, not the group', async (t
   await waitFor(() => seen.length === 2, { timeout: 5000 });
 });
 
-test('kafka broker: replicationFactor and maxRetryDelay are refused at construction, deadLetter at consume', async () => {
+test('kafka broker: replicationFactor and maxRetryDelay are refused at construction, deadLetter at consume', async (t) => {
   const kafka = createFakeKafka({ flavor: 'kafkajs' });
   for (const replicationFactor of [0, -2, 1.5, '3']) {
     assert.throws(
@@ -407,11 +414,11 @@ test('kafka broker: replicationFactor and maxRetryDelay are refused at construct
     assert.throws(() => createKafkaBroker({ kafka, logger: quiet, maxRetryDelay }), /options\.maxRetryDelay/);
   }
   const broker = createKafkaBroker({ kafka, logger: quiet, replicationFactor: -1, maxRetryDelay: 0 });
+  t.after(() => broker.close());
   await assert.rejects(
     broker.queue.consume('q', () => {}, { deadLetter: '' }),
     /deadLetter must be a queue name or null/,
   );
-  await broker.close();
 });
 
 // Every line the adapter logs, for the settlement asserts.

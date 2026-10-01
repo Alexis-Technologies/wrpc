@@ -6,8 +6,9 @@
 //   docker compose up -d kafka
 //   KAFKA_BROKERS=127.0.0.1:9092 node --test tests/broker/kafka.integration.test.js
 
-const { test } = require('node:test');
+const { test, before } = require('node:test');
 const assert = require('node:assert');
+const timers = require('node:timers/promises');
 
 const { createKafkaBroker, decodeVector, encodeVector } = require('../../broker/kafka.js');
 const { runBackplaneContract } = require('./backplaneContract.js');
@@ -52,6 +53,40 @@ const create = ({ flavor, lib }, extra = {}) => {
   made.push(broker);
   return broker;
 };
+
+// A broker that has only just come up answers on its port before it can
+// serve a consumer group: the first group join of its life creates
+// `__consumer_offsets`, and until that is done a join is slow or refused —
+// `docker compose up --wait` returns well before it. So one throwaway round
+// trip through the backplane (a group join, a produce, a fetch) runs before
+// any contract case, and is tried a second time after a pause: the suites
+// then measure the adapter, not a cold broker. A broker that is really down
+// still fails here — once, by name, instead of in every case below.
+const WARM_TIMEOUT = 30_000;
+const WARM_PAUSE = 3000;
+const warmUp = async () => {
+  for (let attempt = 0; ; attempt++) {
+    const namespace = `wrpcwarm${Date.now().toString(36)}${attempt}`;
+    const broker = create(clients[0], { prefix: namespace, backplane: { partitions: 1 } });
+    try {
+      const heard = [];
+      await broker.backplane.subscribe('warm', (message) => heard.push(message));
+      const deadline = Date.now() + WARM_TIMEOUT;
+      while (heard.length === 0 && Date.now() < deadline) {
+        broker.backplane.publish('warm', 'ping');
+        await timers.setTimeout(500);
+      }
+      if (heard.length > 0) return;
+      throw new Error(`Kafka at ${brokers.join(',')} delivered nothing within ${WARM_TIMEOUT} ms of a group join`);
+    } catch (error) {
+      if (attempt >= 1) throw error;
+      await timers.setTimeout(WARM_PAUSE);
+    } finally {
+      await broker.close().catch(() => {});
+    }
+  }
+};
+if (!options.skip) before(warmUp, { timeout: 2 * WARM_TIMEOUT + 3 * WARM_PAUSE });
 
 for (const client of clients.length > 0 ? clients : [{ flavor: 'none', lib: null }]) {
   const prefix = () => `wrpc${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;

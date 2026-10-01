@@ -18,6 +18,7 @@ There is no build step: `src/` ships as-is.
 ```bash
 pnpm test              # node --test, recursive over tests/
 pnpm test:coverage     # c8 over src/ — thresholds 95 lines / 95 statements / 90 branches / 95 functions
+pnpm test:ci           # test:coverage as CI runs it: a 5 min per-test timeout and a forced exit, so a leak fails instead of hanging
 pnpm test:types        # tsd against the .d.ts files
 pnpm test:perf         # the 1 GiB stream memory guard
 pnpm lint              # oxlint
@@ -87,7 +88,9 @@ all.
 Three always-on jobs and four service jobs (`.github/workflows/ci.yml`):
 
 - **lint** (Node 22) — `lint`, `format:check`, `size`
-- **test** (Node 22 and 24) — `test:coverage`, `test:types`
+- **test** (Node 22 and 24) — `test:ci` (`test:coverage` with
+  `--test-timeout=300000 --test-force-exit`: a file that outlives its tests
+  fails in minutes instead of hanging to the job's timeout), `test:types`
 - **docs** (Node 22) — `docs:build`, which fails on dead links
 - **redis**, **nats**, **rabbitmq**, **kafka** — the integration suites
   against a real server each (Redis 7.4, NATS 2.11 with JetStream — started

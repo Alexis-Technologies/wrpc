@@ -44,7 +44,12 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test:coverage
+      # test:coverage with a guard: a file that outlives its tests (a leaked
+      # listen socket, a timer nobody cleared) is cut off and FAILS here in
+      # minutes, where it used to hang until the job's own timeout with no
+      # summary. `pnpm test` and `pnpm test:coverage` stay without it — a
+      # leak must stay visible locally.
+      - run: pnpm test:ci
       - run: pnpm test:types
 
   # The Redis leg of the scaling suites against a real server — the fake in
