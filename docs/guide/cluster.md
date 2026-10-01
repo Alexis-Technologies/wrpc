@@ -233,12 +233,19 @@ local short-cut). `room` bounds the delivery to a client still in that room —
 a relay tied to a membership must not outlive it. It returns `true` when the
 event was delivered locally or handed to the backplane and `false` when it is
 known undeliverable (no such local client, a per-request HTTP client, not in
-`room`, a foreign id with no backplane — or **bytes in `data` for a foreign
-id**: a command envelope is JSON, so a `Uint8Array` would arrive on the
-other node as the object JSON makes of it; the call answers `false` and
-logs `cluster.bytes` instead, while `to(room).emit` carries bytes across
-the backplane as bytes). The remote leg is at-most-once, like every
-command.
+`room`, a foreign id with no backplane). The remote leg is at-most-once,
+like every command.
+
+**Bytes cross as bytes.** A `Uint8Array` (or `Buffer`, typed array,
+`ArrayBuffer`) anywhere in `data` reaches the other instance as a
+`Uint8Array`, exactly as `to(room).emit` carries it: the command envelope
+leaves as a binary [attachments frame](../reference/protocol#cluster-channels)
+instead of JSON — signed, compressed and sealed like any other. That is
+what makes `sendTo` the 1:1 relay of an [end-to-end sealed
+payload](./encryption#end-to-end). The same holds for `cluster.sendEvent`,
+for the question and the answers of `cluster.ask`, and for the answers a
+broadcast `ask` collects from other instances. `attachments: false` keeps
+all of it the JSON of 1.0.
 
 ## Node-to-node messaging
 

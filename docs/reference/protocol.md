@@ -108,7 +108,7 @@ has the upgrade order.
 | **Framed messages of kind 1 — binary attachments**: a packet whose byte values travel as bytes, on WebSocket, a worker port and packet-mode HTTP | [Binary chunks](#binary-chunks) | **Not additive.** Sent whenever a packet holds bytes and negotiated by nothing: a 1.0 client throws on the frame and its callback is lost (the call times out), a 1.0 server answers it `400` with an empty id. | `attachments: false` on the 2.0 server while a 1.0 client can connect, and on a 2.0 client against a 1.0 server — bytes then travel as the `{ type: 'Buffer', data }` JSON of 1.0 |
 | The **SSE channel secret**: `secret` in the `ready` frame, presented as `x-wrpc-channel: <id>.<secret>` | [Server-Sent Events](#server-sent-events) | **Not additive.** A 1.0 client presents the id alone and is answered `409` on every POST and re-attach, so it opens a fresh channel each time and no call completes; a 2.0 client against a 1.0 server presents `<id>.<secret>`, which that server reads as an unknown id — `409` as well. | nothing — upgrade a server and its SSE clients together; the WebSocket and HTTP transports are unaffected |
 | `epoch` and `seq` on the **rooms envelope** — loss detection between instances | [Rooms](#rooms) | Additive: a 1.0 instance ignores them, a 2.0 instance delivers a 1.0 instance's envelopes untracked. | nothing |
-| The `wrpc-bin:` **rooms envelope** — an event whose data holds bytes, as an attachments frame | [Rooms](#rooms) | A 1.0 instance cannot parse it and drops the event (logged). | `attachments: false` on the publishing instance keeps the envelope JSON, as in 1.0 — the same flag as kind 1 |
+| The `wrpc-bin:` **rooms and cluster envelope** — an event (or a node-to-node question or answer) whose data holds bytes, as an attachments frame | [Rooms](#rooms), [Cluster channels](#cluster-channels) | A 1.0 instance cannot parse it and drops the event (logged). | `attachments: false` on the publishing instance keeps the envelope JSON, as in 1.0 — the same flag as kind 1 |
 | The `wrpc-enc:` and `wrpc-sealed:` **rooms and cluster envelopes** — compressed, encrypted | [Rooms](#rooms) | Opt-in on the publisher; a 1.0 instance drops what it cannot read (logged). | turn `rooms.compression`, `cluster.compression` and the `encryption` options on only once every instance is 2.0 — the two-step rollout the section describes |
 | `seq`, `ch` and `at` on a **signed cluster envelope** — the sender's counter, channel and clock, under `cluster.secret` | [Cluster channels](#cluster-channels) | **Not additive** one way. A 1.0 instance verifies a 2.0 envelope as before (the fields are inside the signed bytes) and applies it; a 2.0 instance refuses a 1.0 instance's envelope, which has no counter — the two halves of a mixed cluster stop seeing each other. Clusters without `secret` are unaffected. | `cluster: { replay: 'accept' }` on the 2.0 instances while a 1.0 instance is left |
 | `headers` and `cache` on a procedure's `http` descriptor in **introspection** | [Introspection](#introspection) | Additive: unknown keys of a descriptor are ignored. | nothing |
@@ -760,6 +760,15 @@ from its own clock, whose `seq` it already accepted from that `from` and
 `epoch` (a sliding window of 1024), or whose `epoch` is a life of `from`
 older than the one it follows. An envelope without `seq` is refused unless
 the receiver runs `replay: 'accept'`.
+
+An envelope whose application payload holds bytes — the `data` of an
+addressed event (`sendTo`) or a node event, of a question, or an answer's
+`payload` — is published as the binary envelope of [Across
+instances](#across-instances): `wrpc-bin:<base64 of the envelope as an
+attachments frame>`, or the same frame inside the sealed one. Its `sig` is
+the HMAC of the frame's bytes with `sig` absent — the receiver deletes
+`sig` from the decoded envelope and encodes it again — so a signature made
+over one form is not valid for the other.
 
 ## Server-Sent Events
 

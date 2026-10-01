@@ -190,7 +190,8 @@ export interface ClusterOptions {
   maxMessage?: number;
   /**
    * @experimental (`@alexify/wrpc/encryption`, whole — may change in a minor.)
-   * Seals the cluster envelopes — presence, commands, `sendTo` payloads,
+   * Seals the cluster envelopes — presence, commands, `sendTo` payloads
+   * (bytes included),
    * asks, `fetchClients` replies — under a shared keyring, after signing
    * and compression (`@alexify/wrpc/encryption`). `secret` authenticates a
    * node; this hides what it says, and refuses a plaintext command too.
@@ -537,9 +538,8 @@ export declare class RpcServer extends Emitter {
    * One event to one client by id, here or on the instance its id names
    * (via the cluster). `room` narrows delivery to a client still in that
    * room. True when delivered locally or handed to the backplane; false
-   * when known undeliverable.
-      * Bytes in `data` for a foreign id are refused (`false`, logged as
-   * `cluster.bytes`): the cluster's envelopes are JSON.
+   * when known undeliverable. Bytes in `data` reach a foreign id as bytes
+   * — a binary envelope, as a room event's do.
    */
   sendTo(clientId: string, name: string, data?: unknown, options?: { room?: string }): boolean;
   /** Everyone in any of `rooms`, each client once; with no rooms, nobody. */
@@ -657,9 +657,7 @@ export class Server extends Emitter {
   readonly cluster: Cluster;
   /** The local client with this id; undefined when not on this instance. */
   getClient(id: string): Client | undefined;
-  /** One event to one client by id, here or on another instance — forwarded to the core.    * Bytes in `data` for a foreign id are refused (`false`, logged as
-   * `cluster.bytes`): the cluster's envelopes are JSON.
-   */
+  /** One event to one client by id, here or on another instance — forwarded to the core. */
   sendTo(clientId: string, name: string, data?: unknown, options?: { room?: string }): boolean;
   listen(): Promise<Server>;
   /**

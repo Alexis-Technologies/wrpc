@@ -27,7 +27,8 @@ const { recorder } = require('../helpers/recorder.js');
 let loopHold = null;
 test.before(() => void (loopHold = setInterval(() => {}, 1000)));
 test.after(() => clearInterval(loopHold));
-const { instanceOfClientId } = require('../../src/rpc/cluster.js');
+const { Cluster, instanceOfClientId } = require('../../src/rpc/cluster.js');
+const { encodeAttachments, decodeAttachments } = require('../../src/attachments.js');
 
 const quiet = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
 
@@ -984,46 +985,132 @@ test('rpc: sendTo() picks the local or the cluster leg and reports deliverabilit
   assert.strictEqual(solo.sendTo('b.someone', 'x/y', 7), false);
 });
 
-test('rpc: sendTo() with bytes in the data is refused for a foreign id, delivered for a local one', async (t) => {
-  const entries = [];
-  const writer = { level: 'debug', child: () => writer };
-  for (const level of ['debug', 'info', 'warn', 'error']) {
-    writer[level] = (entry) => entries.push({ level, ...entry });
-  }
+test('rpc: sendTo() with bytes in the data reaches a foreign id as a binary envelope', async (t) => {
   const backplane = new MemoryBackplane();
   t.after(() => backplane.close());
-  const channels = [];
+  const published = [];
   const publish = backplane.publish.bind(backplane);
   backplane.publish = (channel, message) => {
-    channels.push(channel);
+    published.push({ channel, message });
     return publish(channel, message);
   };
-  const a = boot(t, backplane, { instanceId: 'a', logger: writer });
+  const a = boot(t, backplane, { instanceId: 'a' });
   const b = boot(t, backplane, { instanceId: 'b' });
   await settle();
   const local = attach(a);
   const remote = attach(b);
   await settle();
-  channels.length = 0;
+  published.length = 0;
   const data = { file: Uint8Array.of(1, 2, 3), nested: [{ bytes: new Uint8Array(4) }] };
-  // A command envelope is JSON: the bytes would land on b as {"0":1,…}.
-  assert.strictEqual(a.sendTo(remote.client.id, 'x/y', data), false);
-  assert.strictEqual(a.cluster.send(remote.client.id, 'x/y', data), false);
+  assert.strictEqual(a.sendTo(remote.client.id, 'x/y', data), true);
   await settle();
-  assert.deepStrictEqual(channels, [], 'nothing published');
-  assert.deepStrictEqual(remote.socket.events, []);
-  const warned = entries.filter((e) => e.event === 'cluster.bytes');
-  assert.strictEqual(warned.length, 2);
-  assert.deepStrictEqual(warned[0], { level: 'warn', event: 'cluster.bytes', name: 'x/y', instance: 'b' });
+  // One publish, on the target's inbox, as the attachments frame of the
+  // envelope — JSON would have landed on b as {"0":1,…}.
+  assert.deepStrictEqual(
+    published.map(({ channel, message }) => [channel, message.slice(0, 9)]),
+    [['inst:b', 'wrpc-bin:']],
+  );
+  assert.ok(remote.socket.events.at(-1).binary > 0, 'and b hands its client a binary frame');
   // A local id takes the direct leg, where bytes travel as an attachments frame.
   assert.strictEqual(a.sendTo(local.client.id, 'x/y', data), true);
   assert.ok(local.socket.events.at(-1).binary > 0, 'delivered locally as a binary frame');
   assert.strictEqual(a.sendTo(remote.client.id, 'x/y', { plain: true }), true);
   await settle();
-  assert.deepStrictEqual(
-    remote.socket.events.map((e) => e.data),
-    [{ plain: true }],
+  assert.deepStrictEqual(remote.socket.events.at(-1), { type: 'event', name: 'x/y', data: { plain: true } });
+  assert.ok(published.at(-1).message.startsWith('{'), 'an envelope without bytes stays JSON');
+});
+
+test('cluster: a binary envelope is signed over its frame — verified, replay-checked, and not interchangeable with JSON', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const log = recorder();
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { secret: 's3' } });
+  const b = boot(t, backplane, { instanceId: 'b', logger: log.writer, cluster: { secret: 's3' } });
+  const inbox = tap(backplane, 'inst:b');
+  await settle(20);
+  const remote = attach(b);
+  await settle(20);
+  assert.strictEqual(a.sendTo(remote.client.id, 'x/y', { file: Uint8Array.of(1, 2, 3) }), true);
+  await settle(20);
+  assert.strictEqual(remote.socket.events.filter((e) => e.binary > 0).length, 1, 'signed, and delivered');
+  const wire = inbox.find((message) => message.startsWith('wrpc-bin:'));
+  // The copy: same counter.
+  backplane.publish('inst:b', wire);
+  // One flipped byte of the payload, the signature left as it was.
+  const frame = Buffer.from(wire.slice(9), 'base64');
+  frame[frame.length - 1] ^= 1;
+  backplane.publish('inst:b', `wrpc-bin:${frame.toString('base64')}`);
+  // The signed envelope OBJECT presented as JSON text: another form, another MAC input.
+  const envelope = decodeAttachments(Buffer.from(wire.slice(9), 'base64'));
+  backplane.publish('inst:b', JSON.stringify({ ...envelope, data: { file: { 0: 1, 1: 2, 2: 3 } } }));
+  await settle(20);
+  assert.strictEqual(remote.socket.events.filter((e) => e.binary > 0 || e.name === 'x/y').length, 1);
+  assert.strictEqual(log.all('cluster.replay')[0].reason, 'seq');
+  assert.strictEqual(log.all('cluster.badsig').length, 2);
+  // An unsigned binary envelope is unsigned like any other.
+  backplane.publish(
+    'inst:b',
+    `wrpc-bin:${Buffer.from(encodeAttachments({ v: 1, from: 'x', epoch: 'e', t: 'cmd', op: 'event', sel: {}, name: 'x/y', data: { file: Uint8Array.of(9) } })).toString('base64')}`,
   );
+  await settle(20);
+  assert.ok(log.find('cluster.unsigned'));
+  assert.strictEqual(remote.socket.events.filter((e) => e.binary > 0).length, 1);
+});
+
+test('cluster: node events, asks and their answers carry bytes; `attachments: false` keeps every leg JSON', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const a = boot(t, backplane, { instanceId: 'a' });
+  const b = boot(t, backplane, { instanceId: 'b' });
+  await settle();
+  const events = [];
+  b.cluster.on('blob', (data) => events.push(data));
+  b.cluster.respond('double', (data) => ({ twice: Uint8Array.from([...data.bytes, ...data.bytes]) }));
+  a.cluster.sendEvent('blob', { bytes: Uint8Array.of(7, 8) });
+  const { answers, incomplete } = await a.cluster.ask('double', { bytes: Uint8Array.of(1, 2) });
+  assert.strictEqual(incomplete, false);
+  assert.ok(events[0].bytes instanceof Uint8Array);
+  assert.deepStrictEqual([...events[0].bytes], [7, 8]);
+  assert.ok(answers[0].twice instanceof Uint8Array, 'the question arrived as bytes, and so did the answer');
+  assert.deepStrictEqual([...answers[0].twice], [1, 2, 1, 2]);
+
+  // The 1.0 form on every leg: what JSON makes of a Buffer, published as JSON.
+  const plain = new MemoryBackplane();
+  t.after(() => plain.close());
+  const seen = tap(plain, 'inst:d');
+  const c = boot(t, plain, { instanceId: 'c', attachments: false });
+  const d = boot(t, plain, { instanceId: 'd', attachments: false });
+  await settle();
+  const remote = attach(d);
+  await settle();
+  assert.strictEqual(c.sendTo(remote.client.id, 'x/y', { file: Buffer.from([1, 2]) }), true);
+  await settle();
+  assert.ok(seen.at(-1).startsWith('{'));
+  assert.deepStrictEqual(remote.socket.events.at(-1).data, { file: { type: 'Buffer', data: [1, 2] } });
+});
+
+test('cluster: a Cluster wired by hand, without the envelope the core injects, names the bytes it cannot carry', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const log = recorder();
+  const published = tap(backplane, 'inst:b');
+  const local = { snapshot: () => ({ clients: 0, rooms: {} }), count: () => 0 };
+  const cluster = new Cluster({ backplane, instance: 'a', local, log: log.writer });
+  t.after(() => cluster.close());
+  cluster.start();
+  await settle();
+  assert.strictEqual(cluster.send('b.client', 'x/y', { file: Uint8Array.of(1) }), false);
+  cluster.sendEvent('blob', { file: Uint8Array.of(1) });
+  await settle();
+  assert.deepStrictEqual(published, [], 'nothing left as the {"0":…} object JSON would make of it');
+  assert.deepStrictEqual(
+    log.all('cluster.bytes').map(({ level, type, name }) => ({ level, type, name })),
+    [
+      { level: 'warn', type: 'cmd', name: 'x/y' },
+      { level: 'warn', type: 'e', name: 'blob' },
+    ],
+  );
+  assert.strictEqual(cluster.send('b.client', 'x/y', { plain: true }), true);
 });
 
 test('cluster: a malformed or unsigned event command never runs', async (t) => {

@@ -16,6 +16,7 @@ const assert = require('node:assert');
 
 const { RpcServer, defineRouter, procedure } = require('../../index.js');
 const { createRedisAdapter } = require('../../scaling.js');
+const { decodeAttachments } = require('../../src/attachments.js');
 
 const REDIS_URL = process.env.REDIS_URL;
 
@@ -61,7 +62,8 @@ class FakeSocket {
   }
 
   send(data) {
-    this.sent.push(JSON.parse(data));
+    // A binary frame is an event whose data holds bytes — an attachments frame.
+    this.sent.push(typeof data === 'string' ? JSON.parse(data) : decodeAttachments(data));
     return true;
   }
 
@@ -195,6 +197,12 @@ test('redis backplane: a signed cluster converges, and a copied command does not
   await raw.publish(`${keyPrefix}:cluster`, command);
   await new Promise((resolve) => setTimeout(resolve, 300));
   assert.strictEqual(there.socket.events.length, 1, 'the copy is refused on its own channel and on the shared one');
+  // Bytes take the same addressed channel, as a binary envelope signed over
+  // its frame — Redis carries the base64 text of it.
+  assert.strictEqual(first.sendTo(there.client.id, 'chat/file', { blob: Uint8Array.of(1, 2, 3) }), true);
+  await waitFor(() => there.socket.events.length === 2, 'the binary envelope to cross');
+  assert.deepStrictEqual([...there.socket.events[1].data.blob], [1, 2, 3]);
+  assert.ok(seen.some((message) => message.startsWith('wrpc-bin:')));
   // And the cluster is still whole after a few presence ticks of real traffic.
   assert.deepStrictEqual(second.cluster.instances().sort(), ['node-1', 'node-2']);
 });

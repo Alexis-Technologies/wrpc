@@ -120,6 +120,12 @@ test('e2ee: through a relaying server, room-wide and cluster-wide — the server
           return true;
         },
       }),
+      whoami: procedure({ access: 'public', handler: async (ctx) => ctx.client.id }),
+      // 1:1 — by id, wherever that client is connected.
+      direct: procedure({
+        access: 'public',
+        handler: async (ctx, { to, sealed }) => ctx.server.sendTo(to, 'chat/direct', { sealed }),
+      }),
     },
   });
   const backplane = new MemoryBackplane({ logger: false });
@@ -153,4 +159,21 @@ test('e2ee: through a relaying server, room-wide and cluster-wide — the server
     'and they crossed the backplane as bytes',
   );
   assert.ok(published.every((message) => !Buffer.from(message.slice(9), 'base64').includes('4111')));
+
+  // The same payload 1:1: `sendTo` an id that lives on the other instance.
+  const direct = [];
+  const pairwise = createOpener({ keyPair: bob.keyPair, senderPublicKey: alice.publicKey, info: 'dm' });
+  bobClient.api.chat.on('direct', async ({ sealed }) => direct.push(text(await pairwise.open(sealed))));
+  const toBob = createSealer({ recipientPublicKey: bob.publicKey, senderKey: alice.keyPair, info: 'dm' });
+  const before = published.length;
+  const handed = await aliceClient.api.chat.direct({
+    to: await bobClient.api.chat.whoami({}),
+    sealed: await toBob.seal(secret),
+  });
+  assert.strictEqual(handed, true, 'handed to the backplane');
+  await waitFor(() => direct.length === 1);
+  assert.deepStrictEqual(direct, [secret]);
+  const carried = published.slice(before).filter((message) => message.startsWith('wrpc-bin:'));
+  assert.strictEqual(carried.length, 1, 'one addressed binary envelope');
+  assert.ok(!Buffer.from(carried[0].slice(9), 'base64').includes('4111'));
 });

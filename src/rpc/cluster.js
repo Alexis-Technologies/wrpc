@@ -6,7 +6,7 @@ const { Emitter, jsonParse } = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { createLoggerWriter } = require('../logging.js');
 const { DISABLED, SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
-const { hasBytes } = require('../attachments.js');
+const { hasBytes, encodeAttachments } = require('../attachments.js');
 const { ReplayWindow, DEFAULT_REPLAY_WINDOW } = require('../encryption/envelope.js');
 
 // Cluster: presence, introspection and node-to-node messaging across every
@@ -109,6 +109,9 @@ class Cluster extends Emitter {
   // unsequenced envelope repeats, and one warn a presence timeout says it.
   #refused = new Map();
   #envelope = null;
+  // False under `attachments: false`: bytes then stay the JSON 1.0 made of
+  // them on every leg, this one included.
+  #bytes = true;
   #generateId;
   // instance -> { epoch, lastSeen, clients, rooms: Map<room, count> }
   #nodes = new Map();
@@ -182,6 +185,7 @@ class Cluster extends Emitter {
     // The envelope codec the core built from `cluster.compression`, or null —
     // applied AFTER signing, so the signature is over the JSON text as ever.
     this.#envelope = options.envelope ?? null;
+    this.#bytes = options.attachments !== false;
   }
 
   get instanceId() {
@@ -350,7 +354,12 @@ class Cluster extends Emitter {
   // it; #request settles immediately on false instead of waiting out a
   // timeout for a question that never went anywhere. (An async publish
   // rejection still only logs — by then at-most-once already owns it.)
-  #post(channel, body) {
+  //
+  // `payload` is the part of the body an APPLICATION wrote — an event's
+  // data, a question's, an answer — and so the only part that can hold
+  // bytes. Presence and commands never do and are never walked; with bytes
+  // in it the envelope leaves as a binary one (see #serialize).
+  #post(channel, body, payload = undefined) {
     const envelope = { v: ENVELOPE_VERSION, from: this.#instance, epoch: this.#epoch, ...body };
     if (this.#secret !== null) {
       // What the signature is about to cover, set AFTER the body so nothing
@@ -367,29 +376,29 @@ class Cluster extends Emitter {
     // hop is where a trace is most valuable and used to be exactly where
     // context was dropped.
     this.#otel.inject(envelope);
+    const binary = this.#bytes && payload !== undefined && hasBytes(payload);
+    if (binary && typeof this.#envelope?.encodeFrame !== 'function') {
+      // A Cluster wired by hand, without the core's envelope: JSON would
+      // deliver the {"0":…} object it makes of bytes — a silently wrong
+      // delivery. Refused as undeliverable, and said.
+      this.#log.warn({ event: 'cluster.bytes', type: body.t, name: body.name ?? body.args?.name });
+      return false;
+    }
     let message = null;
     try {
-      message = JSON.stringify(envelope);
-      if (this.#secret) {
-        // Signed over the serialized body, sig appended LAST: the receiver
-        // deletes `sig` from the parsed object and re-serializes — key
-        // order survives a JSON round trip, so the bytes match.
-        envelope.sig = crypto.createHmac('sha256', this.#secret).update(message).digest('hex');
-        message = JSON.stringify(envelope);
-      }
+      message = binary ? this.#frame(envelope) : this.#text(envelope);
     } catch (error) {
       this.#log.error({ err: error, event: 'cluster.serialize', type: body.t });
       return false;
     }
     // A sealer that cannot seal (a keyring without its current key) is
     // named as such, and nothing leaves: never plaintext across the wire.
-    if (this.#envelope !== null) {
-      try {
-        message = this.#envelope.encode(message, channel);
-      } catch (error) {
-        this.#log.error({ err: error, event: 'cluster.seal', type: body.t });
-        return false;
-      }
+    try {
+      if (binary) message = this.#envelope.encodeFrame(message, channel);
+      else if (this.#envelope !== null) message = this.#envelope.encode(message, channel);
+    } catch (error) {
+      this.#log.error({ err: error, event: 'cluster.seal', type: body.t });
+      return false;
     }
     try {
       const result = this.#backplane.publish(channel, message);
@@ -402,6 +411,30 @@ class Cluster extends Emitter {
       return false;
     }
     return true;
+  }
+
+  // The envelope as JSON text. Signed over the serialized body, sig appended
+  // LAST: the receiver deletes `sig` from the parsed object and re-serializes
+  // — key order survives a JSON round trip, so the bytes match.
+  #text(envelope) {
+    const message = JSON.stringify(envelope);
+    if (this.#secret === null) return message;
+    envelope.sig = crypto.createHmac('sha256', this.#secret).update(message).digest('hex');
+    return JSON.stringify(envelope);
+  }
+
+  // The envelope as a binary attachments frame — what an envelope holding
+  // bytes travels as, the frame a socket carries such a packet in. The
+  // signature is the same construction over the FRAME: the bytes of the
+  // envelope without `sig`, which the receiver gets back by deleting `sig`
+  // from what it decoded and encoding again (the encoder walks keys in
+  // order, as JSON does). A frame never equals a JSON text, so a signature
+  // made for one form cannot be presented under the other.
+  #frame(envelope) {
+    const frame = encodeAttachments(envelope);
+    if (this.#secret === null) return frame;
+    envelope.sig = crypto.createHmac('sha256', this.#secret).update(frame).digest('hex');
+    return encodeAttachments(envelope);
   }
 
   // -----------------------------------------------------------------------
@@ -447,7 +480,7 @@ class Cluster extends Emitter {
   // Envelope authentication, the receiving half: a message without a valid
   // signature is dropped and logged. Constant-time compare — the signature
   // is the credential here.
-  #verify(envelope, from) {
+  #verify(envelope, from, binary) {
     const sig = envelope.sig;
     if (typeof sig !== 'string' || sig.length === 0) {
       this.#log.warn({ event: 'cluster.unsigned', from });
@@ -457,10 +490,11 @@ class Cluster extends Emitter {
     delete envelope.sig;
     let expected = null;
     try {
-      expected = crypto.createHmac('sha256', this.#secret).update(JSON.stringify(envelope)).digest('hex');
+      const signed = binary ? encodeAttachments(envelope) : JSON.stringify(envelope);
+      expected = crypto.createHmac('sha256', this.#secret).update(signed).digest('hex');
     } catch (error) {
       // The third way verification fails, and the only one that was silent:
-      // an envelope whose JSON will not stringify (a cycle a replicated
+      // an envelope that will not serialize again (a cycle a replicated
       // payload picked up), or a secret the crypto layer refuses. Its
       // siblings above and below both log, so an operator watching
       // `cluster.*` saw two of three reasons a node went quiet.
@@ -609,7 +643,7 @@ class Cluster extends Emitter {
       throw new TypeError('Event name must be a non-empty string');
     }
     if (!this.#backplane || this.#closed) return;
-    this.#post(CLUSTER_CHANNEL, { t: 'e', name, data });
+    this.#post(CLUSTER_CHANNEL, { t: 'e', name, data }, data);
   }
 
   /**
@@ -762,15 +796,8 @@ class Cluster extends Emitter {
         return true;
       }
       if (!this.#backplane || this.#closed) return false;
-      // A command envelope is JSON: bytes in an event's data would arrive
-      // on the other node as the {"0":…} object JSON makes of them — a
-      // silently wrong delivery. Refused as undeliverable, and said, until
-      // the cluster carries binary envelopes as the rooms layer does.
-      if (op === 'event' && hasBytes(args.data)) {
-        this.#log.warn({ event: 'cluster.bytes', name: args.name, instance });
-        return false;
-      }
-      return this.#post(instanceChannel(instance), { t: 'cmd', op, sel, ...args });
+      // Only an event carries what an application wrote (`data`).
+      return this.#post(instanceChannel(instance), { t: 'cmd', op, sel, ...args }, args.data);
     }
     const sel = target && typeof target === 'object' ? target : {};
     apply(sel);
@@ -835,7 +862,7 @@ class Cluster extends Emitter {
       // A question that never left — unserializable args, a synchronously
       // broken backplane — settles NOW: nobody will ever answer it, and
       // waiting out the full timeout would just park the caller.
-      if (!this.#post(CLUSTER_CHANNEL, { t: 'q', q: requestId, op, args })) {
+      if (!this.#post(CLUSTER_CHANNEL, { t: 'q', q: requestId, op, args }, args.data)) {
         this.#requests.delete(requestId);
         clearTimeout(request.timer);
         request.settle(true);
@@ -873,7 +900,9 @@ class Cluster extends Emitter {
       // the requester to stop waiting, and a post-bye answer would arrive
       // from an instance the receiver just evicted.
       if (this.#closed) return;
-      this.#post(instanceChannel(from), { t: 'a', a: requestId, fin, payload });
+      // A fetch reply is descriptors — this node's own JSON, a thousand of
+      // them — and is not walked; an answer is the application's.
+      this.#post(instanceChannel(from), { t: 'a', a: requestId, fin, payload }, op === 'fetch' ? undefined : payload);
     };
     const run = () => {
       if (op === 'fetch') {
@@ -942,11 +971,14 @@ class Cluster extends Emitter {
         return void this.#log.warn({ event: 'cluster.sealed', channel });
       }
     }
+    // A binary envelope (bytes in an event's data, a question or an answer)
+    // was decoded to its object by the envelope seam already.
+    const binary = typeof message === 'string' && typeof text !== 'string';
     const envelope = typeof text === 'string' ? jsonParse(text) : text;
     if (!envelope || typeof envelope !== 'object') return;
     const { from, epoch, t } = envelope;
     if (from === this.#instance || typeof from !== 'string' || from.length === 0) return;
-    if (this.#secret && !(this.#verify(envelope, from) && this.#admit(envelope, from, channel))) return;
+    if (this.#secret && !(this.#verify(envelope, from, binary) && this.#admit(envelope, from, channel))) return;
     this.#otel.recordClusterMessage(typeof t === 'string' ? t : '<unknown>');
     if (t === 'bye') {
       // Only the life we actually track may say goodbye: a bye from a

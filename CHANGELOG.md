@@ -30,7 +30,8 @@ narrower promise — see
   `createSealer({ recipientPublicKey }).seal(data)` answers bytes (`enc ‖
   ciphertext`, HPKE with a fresh context per message) that wrpc carries as
   they are: in a call, an event, a room broadcast and — since the previous
-  change — across the backplane. `createOpener({ keyPair }).open(sealed)`.
+  change — across the backplane, to a room's members and to one client by
+  `sendTo`. `createOpener({ keyPair }).open(sealed)`.
 - With `senderKey` / `senderPublicKey` it is HPKE **auth mode**: the
   recipient learns which identity sealed the message, and one from anybody
   else does not open. `info` says what the messages are for (a room, a
@@ -1618,15 +1619,23 @@ bytes it sends. In that order:
   evicted and published to again starts a new count under a suffixed epoch,
   `<epoch>.<n>`, which a receiver already reads as a restart — never a
   false gap. `maxTracked` must be a positive integer.
-- **`sendTo` with bytes for a client on another instance is refused, not
-  delivered mangled.** A cluster command envelope is JSON, so a
-  `Uint8Array` in the event's data arrived on the other node as the
-  `{"0":…}` object JSON makes of it, and `sendTo` still answered `true`.
-  `Cluster.send` answers `false` and logs `cluster.bytes` for a foreign id
-  whose data holds bytes (a local id delivers them as an attachments frame,
-  as before), and `RpcServer.sendTo` returns that answer. Binary command
-  envelopes are a later change; `to(room).emit` already carries bytes across
-  the backplane.
+- **`sendTo` carries bytes to a client on another instance.** A cluster
+  command envelope was JSON, so a `Uint8Array` in the event's data arrived
+  on the other node as the `{"0":…}` object JSON makes of it, and `sendTo`
+  still answered `true` — the natural 1:1 relay of a `createSealer` payload
+  broke only in production, with two instances or more. An envelope whose
+  application payload holds bytes now leaves as the binary envelope the
+  rooms backplane already uses (`wrpc-bin:` + the attachments frame, or the
+  same frame inside a sealed one): `sendTo`/`cluster.send`,
+  `cluster.sendEvent`, the question and the answers of `cluster.ask`, and
+  the answers a broadcast `ask` collects from other instances. Under
+  `cluster.secret` it is signed over the frame's bytes — verified by
+  encoding the decoded envelope again — with the same counter, channel and
+  clock as a JSON one, and a signature made for one form does not verify
+  as the other. Presence and room commands are never walked for bytes;
+  `attachments: false` keeps every leg the JSON of 1.0. `cluster.bytes` is
+  now only what a `Cluster` constructed without the core's envelope logs
+  when it has to refuse (`false`) rather than mangle.
 - **Worker proxy: an answer for a tab that left is dropped, and a tab's
   release cancels what it was waiting for upstream.** A `callback`, `data`
   or `end` whose id no port waited for — the tab closed, or unsubscribed

@@ -364,7 +364,8 @@ client.api.chat.on('message', async ({ sealed }) => render(await opener.open(sea
 
 `sealed` is a `Uint8Array`, and wrpc carries bytes as they are — through the
 call, the room broadcast, and across the backplane to members on other
-instances. With `senderKey` the recipient learns *who* sealed it; a message
+instances; a 1:1 message relayed with `server.sendTo(id, …)` crosses to the
+instance that id lives on the same way. With `senderKey` the recipient learns *who* sealed it; a message
 from anybody else does not open.
 
 ::: warning What this is not

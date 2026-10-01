@@ -372,7 +372,7 @@ class RpcServer extends Emitter {
       log: clusterLog,
       otel: this.#otel,
       generateId: this.#generateId,
-      options: enabled ? { ...clusterOptions, envelope: clusterEnvelope } : {},
+      options: enabled ? { ...clusterOptions, envelope: clusterEnvelope, attachments: this.#attachments } : {},
     });
     this.#cluster = cluster;
     // `onSubscribe`/`onUnsubscribe` fire on a room's FIRST member and its
@@ -563,9 +563,9 @@ class RpcServer extends Emitter {
    * narrows delivery to a client still in that room. Returns true when
    * the event was delivered locally or handed to the backplane, false when
    * it is known not to be deliverable (unknown local id, non-persistent
-   * client, not in `room`, a foreign id with no backplane, or bytes in
-   * `data` for a foreign id — the cluster's envelopes are JSON, and the
-   * refusal is logged as `cluster.bytes`).
+   * client, not in `room`, or a foreign id with no backplane). Bytes in
+   * `data` cross to the other instance as bytes — a binary envelope, as a
+   * room event's do.
    */
   sendTo(clientId, name, data, options = {}) {
     if (typeof clientId !== 'string' || clientId.length === 0) {

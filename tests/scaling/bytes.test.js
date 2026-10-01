@@ -20,6 +20,7 @@ const router = defineRouter({
         return true;
       },
     }),
+    whoami: procedure({ access: 'public', handler: async (ctx) => ctx.client.id }),
   },
 });
 
@@ -36,11 +37,11 @@ const spied = (backplane) => {
 const blob = Uint8Array.from({ length: 2000 }, (_, i) => (i * 7) % 256);
 const event = { from: 'ada', blob, nested: { parts: [Uint8Array.of(1, 2, 3), 'text'] } };
 
-const pair = async (t, rooms = {}) => {
+const pair = async (t, rooms = {}, cluster = {}) => {
   const backplane = new MemoryBackplane({ logger: false });
   const published = spied(backplane);
-  const a = await bootServer(t, { router, backplane, rooms });
-  const b = await bootServer(t, { router, backplane, rooms });
+  const a = await bootServer(t, { router, backplane, rooms, cluster });
+  const b = await bootServer(t, { router, backplane, rooms, cluster });
   const client = await connectClient(t, b.url);
   await client.load('chat');
   await client.api.chat.join({});
@@ -106,4 +107,49 @@ test('backplane bytes: a malformed binary envelope is dropped; a registry wired 
   assert.deepStrictEqual(warnings, [{ event: 'backplane.bytes', name: 'chat/file' }]);
   assert.strictEqual(published.length, 0);
   await backplane.close();
+});
+
+// --- the cluster's own channels ---------------------------------------------
+//
+// `sendTo` is the id-addressed counterpart of a room emit — the natural relay
+// of a sealed 1:1 payload — and used to be the one leg bytes did not cross.
+
+const SECRET = 'a cluster secret';
+
+for (const [label, cluster, prefix] of [
+  ['plain', {}, 'wrpc-bin:'],
+  ['signed', { secret: SECRET }, 'wrpc-bin:'],
+  ['sealed', { encryption: { keys: generateKey() } }, 'wrpc-sealed:0:'],
+  [
+    'signed, compressed and sealed',
+    { secret: SECRET, compression: { threshold: 0 }, encryption: { keys: generateKey() } },
+    'wrpc-sealed:0:',
+  ],
+]) {
+  test(`cluster bytes (${label}): sendTo reaches a client on another instance as bytes`, async (t) => {
+    const { a, client, heard, published } = await pair(t, {}, cluster);
+    const id = await client.api.chat.whoami({});
+    published.length = 0;
+    assert.strictEqual(a.server.rpc.sendTo(id, 'chat/file', event), true);
+    assertBytes(await heard);
+    const wire = published.filter((m) => m.channel.startsWith('inst:'));
+    assert.strictEqual(wire.length, 1, 'one publish, on the instance the id names');
+    assert.ok(wire[0].message.startsWith(prefix), wire[0].message.slice(0, 16));
+    // Bounded by a room the client is in — and by one it is not.
+    const again = new Promise((resolve) => client.api.chat.on('file', resolve));
+    assert.strictEqual(a.server.rpc.sendTo(id, 'chat/file', { ...event, from: 'grace' }, { room: 'elsewhere' }), true);
+    assert.strictEqual(a.server.rpc.sendTo(id, 'chat/file', event, { room: 'lobby' }), true);
+    assertBytes(await again);
+  });
+}
+
+test('cluster bytes: the answers to a broadcast ask come back from another instance as bytes', async (t) => {
+  const { a, client } = await pair(t, {}, { secret: SECRET });
+  client.respond('chat/thumb', async ({ size }) => ({ thumb: new Uint8Array(size).fill(7) }));
+  const result = await a.server.rpc.to('lobby').ask('chat/thumb', { size: 3 }, { timeout: 2_000 });
+  assert.deepStrictEqual(result.errors, []);
+  assert.strictEqual(result.incomplete, false);
+  assert.strictEqual(result.answers.length, 1);
+  assert.ok(result.answers[0].thumb instanceof Uint8Array, 'not the {"0":7,…} object JSON would make of them');
+  assert.deepStrictEqual([...result.answers[0].thumb], [7, 7, 7]);
 });

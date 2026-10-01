@@ -68,6 +68,9 @@ const withBytes = (inner) => ({
   ...inner,
   encode: inner === null ? (text) => text : (text) => inner.encode(text),
   encodeBytes: (envelope) => BINARY_PREFIX + asBuffer(encodeAttachments(envelope)).toString('base64'),
+  // The same for a frame the caller already encoded — the cluster signs the
+  // frame's bytes, so it holds them before this is asked for anything.
+  encodeFrame: (frame) => BINARY_PREFIX + asBuffer(frame).toString('base64'),
   decode(message) {
     // JSON never starts with a `w`: one compare on the common path.
     if (message.charCodeAt(0) !== 119) return message;
@@ -140,8 +143,11 @@ const createEnvelope = ({ compression, encryption, maxMessage, name, layer, even
       return `${SEALED_PREFIX}${kid}:${sealed.toString('base64')}`;
     },
     encodeBytes(envelope, channel) {
-      if (!sealing.seal) return plain.encodeBytes(envelope);
-      const { kid, sealed } = sealer.seal(frame(asBuffer(encodeAttachments(envelope)), FLAG_BINARY), channel);
+      return this.encodeFrame(encodeAttachments(envelope), channel);
+    },
+    encodeFrame(bytes, channel) {
+      if (!sealing.seal) return plain.encodeFrame(bytes);
+      const { kid, sealed } = sealer.seal(frame(asBuffer(bytes), FLAG_BINARY), channel);
       return `${SEALED_PREFIX}${kid}:${sealed.toString('base64')}`;
     },
     decode(message, channel) {
