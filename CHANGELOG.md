@@ -1487,6 +1487,11 @@ bytes it sends. In that order:
   to `range()` without a sign: `onLag(topic, readers)` hears of it — once
   per fall, nothing while everybody keeps up — and the four adapters log it
   as `broker.tail.lag` (info).
+- **Docs: a heading with a badge is announced as its text.** A section
+  heading carrying a `since 2.0` badge and an explicit anchor had a
+  permalink whose `aria-label` was the heading's raw source — a screen
+  reader read out `<Badge type="info" …/> {#webrtc}`. The label is now
+  `Permalink to "WebRTC (since 2.0)"`.
 - **The examples are linted, formatted and checked against the package.**
   `examples/` — what a reader copies first — was outside lint and format,
   and nothing ran it, while the entries it requires (`webrtc.js`, `wt.js`,

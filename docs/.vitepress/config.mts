@@ -96,6 +96,37 @@ export default withMermaid({
     lastUpdated: true,
     sitemap: { hostname },
 
+    markdown: {
+      config: (md) => {
+        // VitePress builds a heading permalink's aria-label from the
+        // heading's RAW source, so a heading that carries a badge and an
+        // explicit id — `## WebRTC <Badge … text="since 2.0" /> {#webrtc}` —
+        // was announced by a screen reader as its markup, tags and all.
+        // Rewritten once the anchors exist: the badge's text in
+        // parentheses, the id dropped, any other tag removed.
+        md.core.ruler.push('wrpc-permalink-label', (state) => {
+          for (const token of state.tokens) {
+            if (token.type !== 'inline' || !token.children) continue;
+            for (const child of token.children) {
+              if (child.type !== 'link_open' || child.attrGet('class') !== 'header-anchor') continue;
+              const label = child.attrGet('aria-label');
+              if (label === null || !/[<{]/.test(label)) continue;
+              child.attrSet(
+                'aria-label',
+                label
+                  .replace(/\s*\{#[^}]*\}/g, '')
+                  .replace(/<Badge\b[^>]*\btext="([^"]*)"[^>]*>/g, '($1)')
+                  .replace(/<[^>]+>/g, '')
+                  .replace(/\s+/g, ' ')
+                  .replace(/\s+"$/, '"'),
+              );
+            }
+          }
+          return false;
+        });
+      },
+    },
+
     head: [
       ['link', { rel: 'icon', type: 'image/svg+xml', href: `${base}logo-mark.svg` }],
       ['link', { rel: 'icon', type: 'image/png', href: `${base}favicon.png` }],
