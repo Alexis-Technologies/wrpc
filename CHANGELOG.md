@@ -1487,6 +1487,13 @@ bytes it sends. In that order:
   to `range()` without a sign: `onLag(topic, readers)` hears of it — once
   per fall, nothing while everybody keeps up — and the four adapters log it
   as `broker.tail.lag` (info).
+- **Coverage is held per file where the code is new.** The global
+  thresholds are an average, and a new adapter at 80% branches hid behind
+  three hundred well-covered files. `pnpm test:coverage:floors`
+  (`scripts/coverage-floors.js`, a step of CI's `test` job) checks every
+  file of the six directories new in 2.0 against its directory's floor —
+  set just under today's weakest file, with one named exception — and a
+  floor only ever moves up.
 - **Tests wait for what they assert, and watch as long as a real broker
   needs.** The suites had seventeen copies of `waitFor` in three signatures,
   most of them a count of polls — which stretches under load and still fails

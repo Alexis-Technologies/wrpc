@@ -50,6 +50,10 @@ jobs:
       # summary. `pnpm test` and `pnpm test:coverage` stay without it — a
       # leak must stay visible locally.
       - run: pnpm test:ci
+      # The global thresholds are an average; the directories new in 2.0 are
+      # also held per file (scripts/coverage-floors.js). Reads the coverage
+      # the step above left behind — same job, same workspace.
+      - run: pnpm test:coverage:floors
       - run: pnpm test:types
 
   # The Redis leg of the scaling suites against a real server — the fake in

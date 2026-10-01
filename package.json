@@ -126,6 +126,7 @@
     "test": "node --test",
     "test:coverage": "c8 --all --include 'src/**' --check-coverage --lines 95 --statements 95 --branches 90 --functions 95 --reporter text --reporter lcov node --test",
     "test:ci": "c8 --all --include 'src/**' --check-coverage --lines 95 --statements 95 --branches 90 --functions 95 --reporter text --reporter lcov node --test --test-timeout=300000 --test-force-exit",
+    "test:coverage:floors": "node scripts/coverage-floors.js",
     "test:types": "tsd",
     "test:perf": "node tests/perf/stream-memory.perf.js",
     "bench": "node bench/run-all.js",
