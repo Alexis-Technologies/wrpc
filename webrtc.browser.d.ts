@@ -10,6 +10,7 @@ import {
   WrpcClientOptions,
   WrpcCodec,
   WrpcLogger,
+  WrpcLogWriter,
   WrpcTelemetryOptions,
   WrpcWritable,
 } from './client.js';
@@ -41,6 +42,13 @@ export interface RtcDataChannelLike {
   readonly bufferedAmount: number;
   bufferedAmountLowThreshold: number;
   binaryType: string;
+  /**
+   * MUST copy `data` before it returns, and exactly the view it was handed
+   * (its `byteOffset`/`byteLength`, not the `ArrayBuffer` under it): the
+   * framing layer reuses one buffer for every fragment of a message. A
+   * browser's and node-datachannel's do; a wrapper around another library
+   * has to — `Buffer.from(view)`, never `Buffer.from(view.buffer)`.
+   */
   send(data: string | ArrayBuffer | ArrayBufferView): void;
   close(): void;
   addEventListener(type: string, listener: (event: any) => void): void;
@@ -94,7 +102,7 @@ export declare const KIND_BINARY: 1;
 
 export declare class FramingError extends Error {
   name: 'FramingError';
-  /** 'empty' | 'reserved' | 'kind' | 'too-large' | 'fragments' | 'utf8' | 'message-size' */
+  /** 'empty' | 'reserved' | 'kind' | 'too-large' | 'fragments' | 'utf8' | 'message-size' | 'inflate' */
   code: string;
   constructor(message: string, code: string);
 }
@@ -104,8 +112,9 @@ export type FrameSink = (frame: Uint8Array) => void;
 
 export declare class FrameEncoder {
   constructor(maxMessageSize: number);
-  encode(kind: 0 | 1, bytes: Uint8Array, sink: FrameSink): void;
-  encodeText(text: string, sink: FrameSink): void;
+  /** Hands each fragment to `sink`, in order, synchronously; answers how many there were. */
+  encode(kind: 0 | 1, bytes: Uint8Array, sink: FrameSink): number;
+  encodeText(text: string, sink: FrameSink): number;
 }
 
 export interface FramingOptions {
@@ -124,8 +133,23 @@ export declare class FrameDecoder {
   constructor(options?: FramingOptions);
   /** Bytes of the message being reassembled, 0 between messages. */
   readonly pending: number;
-  /** One message per FIN fragment; null while a message is still incomplete. */
-  push(input: ArrayBuffer | ArrayBufferView): { kind: 0; data: string } | { kind: 1; data: Uint8Array } | null;
+  /**
+   * Whether a message flagged COMPRESSED is accepted — set by the transport
+   * once the two ends share a codec; false refuses the flag as a reserved bit.
+   */
+  compressed: boolean;
+  /**
+   * One message per FIN fragment; null while a message is still incomplete.
+   * A compressed message comes back as its bytes, still deflated, whatever
+   * its kind — the caller inflates it and decodes the text.
+   */
+  push(
+    input: ArrayBuffer | ArrayBufferView,
+  ):
+    | { kind: 0; data: string; compressed: false }
+    | { kind: 1; data: Uint8Array; compressed: false }
+    | { kind: 0 | 1; data: Uint8Array; compressed: true }
+    | null;
   reset(): void;
 }
 
@@ -313,7 +337,7 @@ export declare class ClientRtcTransport extends ClientTransport {
 
 /**
  * The host half over a link's hostChannel — what PeerHost.attach() takes —
- * or over a raw data channel — what RpcServer.attachChannel() builds.
+ * or over a raw data channel — what `attachChannel(server, channel)` builds.
  */
 export declare class RtcPeerTransport extends Emitter {
   /** The codecs in effect — null until the two lists share one. */
@@ -355,8 +379,13 @@ export interface PeerHostOptions {
    * reported it through the logger and fell back to uuid v4).
    */
   generateId?: (() => string) | null;
-  /** Merge `system/introspect` in (default true); false leaves the router as is. */
-  introspection?: boolean;
+  /**
+   * Merge `system/introspect` in (default true); false leaves the router as
+   * is. `{ access, schemas }` as on an `RpcServer`: who may call it, and
+   * whether the schemas travel. `'session'` is every peer here under `trust:
+   * 'link'` or `'assertion'` — a link is its session — so it reads as true.
+   */
+  introspection?: boolean | 'session' | { access?: boolean | 'session'; schemas?: boolean };
   maxBatch?: number;
   maxSubscriptions?: number;
   maxCalls?: number;
@@ -758,6 +787,8 @@ export declare class WrpcPeer extends Emitter {
   readonly channels: Required<ChannelsOptions>;
   /** True when this peer issues and verifies trust assertions. */
   readonly assertions: boolean;
+  /** The writer this peer logs through (`component: 'peer'`) — what a `Mesh` on top reports to. */
+  readonly log: WrpcLogWriter;
   /** Every link, keyed by remote id (a copy). */
   readonly links: Map<string, PeerLink>;
   link(id: string): PeerLink | undefined;

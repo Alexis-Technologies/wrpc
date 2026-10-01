@@ -22,7 +22,16 @@ import type {
   WrpcPeer,
   WrpcSignaler,
 } from '../webrtc.js';
-import type { AskResult, Client, ClientHost, Router, RouterDefinition, RpcServer, WrpcClient } from '../index.js';
+import type {
+  AskResult,
+  Client,
+  ClientHost,
+  Router,
+  RouterDefinition,
+  RpcServer,
+  WrpcClient,
+  WrpcLogWriter,
+} from '../index.js';
 import { connect, defineRouter, procedure } from '../index.js';
 
 // The barrel: peer surface plus the Node-only signaling unit.
@@ -251,3 +260,21 @@ expectError<ConstructorParameters<typeof WrpcPeer>[0]>({ signaler: {} as Signale
 webrtc.createSignalingUnit({ limits: { maxRooms: 8, maxSignalBytes: false } });
 webrtc.createSignalingUnit({ limits: null });
 expectError(webrtc.createSignalingUnit({ limits: { maxRooms: 'many' } }));
+
+// What the declarations used to leave out or get wrong against the runtime.
+// The host's introspection takes the same forms as an RpcServer's.
+new webrtc.WrpcPeer({ router, signaler, host: { introspection: { access: 'session', schemas: false } } });
+new webrtc.WrpcPeer({ router, signaler, host: { introspection: 'session' } });
+// The encoder answers how many fragments it handed over.
+const encoder = new webrtc.FrameEncoder(16384);
+expectType<number>(encoder.encodeText('{"type":"ping"}', () => {}));
+expectType<number>(encoder.encode(webrtc.KIND_BINARY, new Uint8Array(4), () => {}));
+// The decoder takes the compressed flag once a codec is agreed, and says
+// whether what it hands over still has to be inflated.
+const decoder = new webrtc.FrameDecoder();
+decoder.compressed = true;
+const message = decoder.push(new Uint8Array(2));
+if (message !== null && message.compressed) expectType<Uint8Array>(message.data);
+if (message !== null && !message.compressed && message.kind === 0) expectType<string>(message.data);
+// A peer's log writer is the seam a Mesh reports through.
+expectType<WrpcLogWriter>(peer.log);

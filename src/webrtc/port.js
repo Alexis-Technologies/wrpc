@@ -39,6 +39,15 @@
 //     close(): void
 //     addEventListener / removeEventListener: 'open' | 'message' | 'close' | 'error' | 'bufferedamountlow'
 //   }
+//
+// send() MUST copy `data` before it returns, and copy exactly the view it
+// was handed — its byteOffset and byteLength, not the ArrayBuffer under it.
+// The caller reuses the buffer the moment send() returns: framing.js'
+// FrameEncoder writes every fragment of a message into ONE scratch buffer
+// and hands over a view of it. A browser's and node-datachannel's send do
+// this; a wrapper that keeps the view, or sends `view.buffer` whole, turns
+// every multi-fragment message into the last fragment repeated. The shared
+// port contract (tests/webrtc/portContract.js) checks it.
 
 const PC_METHODS = [
   'createDataChannel',

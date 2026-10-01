@@ -1675,6 +1675,23 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **WebRTC port: `send()` must copy, and the contract says so; the
+  declarations match the runtime.** The framing layer writes every fragment
+  of a message into one reused buffer and hands `channel.send()` a view of
+  it — which relies on `send` copying synchronously, and copying the view's
+  own offset and length. A browser and node-datachannel do; neither the port
+  contract, its types nor the wrapper advice in the guide said so, and the
+  shared contract suite sent only whole-buffer views, so a wrapper doing
+  `Buffer.from(view.buffer)` passed it and corrupted every multi-fragment
+  message. The contract is stated (`src/webrtc/port.js`, the JSDoc of
+  `RtcDataChannelLike.send`, the guide) and tested
+  (`tests/webrtc/portContract.js`, against the fake and, by hand,
+  node-datachannel). Types: `PeerHostOptions.introspection` takes
+  `'session'` and `{ access, schemas }` as the runtime does;
+  `FrameEncoder.encode`/`encodeText` answer the fragment count;
+  `FrameDecoder` has `compressed` and `push()` says whether its result is
+  still deflated; `FramingError` codes include `'inflate'`; `WrpcPeer#log`
+  is declared.
 - **WebTransport client: `highWaterMark`, `lowWaterMark`, `maxBackpressure`
   and `maxMessage` in the `wt` bag of `connect()` take effect.** The
   transport read those four from its constructor's options only, and

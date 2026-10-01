@@ -73,7 +73,12 @@ const peer = new WrpcPeer({
 
 A library with its own event API (werift, say) needs a wrapper that presents
 the contract — `isRtcAdapter`, `isRtcPeerConnection` and `isRtcDataChannel`
-are exported so a wrapper can check itself. The repo runs the shared port
+are exported so a wrapper can check itself. One rule a wrapper has to keep
+that a structural check cannot see: `send(data)` **copies before it
+returns**, and copies the view it was given — `Buffer.from(view)`, never
+`Buffer.from(view.buffer)`. wrpc frames every fragment of a message into
+one reused buffer; a `send` that keeps the view, or takes the whole
+`ArrayBuffer` under it, delivers the last fragment in place of all of them. The repo runs the shared port
 contract against node-datachannel by hand
 (`WRPC_RTC=node-datachannel node --test tests/webrtc/node-datachannel.integration.test.js`);
 it is a devDependency there and nowhere else.

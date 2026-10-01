@@ -178,6 +178,29 @@ const runRtcPortContract = async (harness, t) => {
     assert.deepStrictEqual(new Uint8Array(received[2]), new Uint8Array([3, 3, 3]));
   });
 
+  // What the framing layer stands on (src/webrtc/framing.js): every fragment
+  // of a message is written into ONE scratch buffer and handed to send() as
+  // a view of it, overwritten by the next. An implementation — or a wrapper
+  // around one — that keeps the view, or sends the whole ArrayBuffer under
+  // it, delivers the last fragment over and over.
+  await t.test("send() copies before it returns and honours the view's offset and length", async (sub) => {
+    const { channels } = await connected(sub);
+    const received = [];
+    channels.b.client.addEventListener('message', ({ data }) => received.push(new Uint8Array(data)));
+    const scratch = new Uint8Array(64);
+    scratch.fill(1);
+    channels.a.client.send(scratch.subarray(8, 40));
+    scratch.fill(2);
+    channels.a.client.send(scratch.subarray(0, 16));
+    scratch.fill(0);
+    await within(
+      waitFor(() => received.length === 2, 'two messages'),
+      'messages',
+    );
+    assert.deepStrictEqual(received[0], new Uint8Array(32).fill(1), 'the view as it was when send() was called');
+    assert.deepStrictEqual(received[1], new Uint8Array(16).fill(2), 'its own length, not the buffer under it');
+  });
+
   await t.test('the other channel is independent: host traffic never crosses into client', async (sub) => {
     const { channels } = await connected(sub);
     const onClient = [];
