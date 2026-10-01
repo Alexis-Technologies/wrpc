@@ -578,8 +578,20 @@ export declare class RpcServer extends Emitter {
   encryptionKey(): Promise<string | null>;
   handleHttpCall(call: HttpCall): Promise<void>;
   matchPath(pathname: string): { mode: 'packet' | 'rest'; rest?: string } | null;
-  /** The per-connection caps every attached client gets. */
-  readonly limits: Readonly<{ maxBatch: number; maxSubscriptions: number; maxCalls: number }>;
+  /**
+   * The per-connection caps every attached client gets — a frozen copy.
+   * `compression` is the socket-side per-message compression as normalized
+   * (what a Node ws client may negotiate on ping/pong), or null when off;
+   * `attachments` is whether binary attachments are on (`false` under
+   * `attachments: false`, and under a packet `codec`, which owns the wire).
+   */
+  readonly limits: Readonly<{
+    maxBatch: number;
+    maxSubscriptions: number;
+    maxCalls: number;
+    compression: NormalizedCompression | null;
+    attachments: boolean;
+  }>;
   /**
    * @experimental Whether `encryption.required` is on: what a binding built
    * on `attach` (the broker consumers, a raw data channel) reads to vouch
@@ -754,8 +766,25 @@ export interface HttpCompressionOptions {
   async?: boolean | { threshold?: number };
 }
 
+/** A `compression` option after normalization: the list in order of preference, and its head. */
+export interface NormalizedCompression {
+  /** The head of the list — what a carrier with no negotiation encodes with. */
+  readonly codec: Compressor;
+  readonly id: string;
+  readonly threshold: number;
+  readonly codecs: ReadonlyArray<Readonly<{ codec: Compressor; id: string; threshold: number }>>;
+  readonly ids: ReadonlyArray<string>;
+}
+
 export type AttachOptions = {
-  meta?: ClientMeta | null;
+  /**
+   * What the application observed about the connection — a transport
+   * carries no request of its own. Any subset of a `ClientMeta`: it is
+   * normalized like every other entry point's (frozen, `headers` a
+   * null-prototype bag, the rest defaulted), so `{ headers }` written by
+   * hand and a full meta read the same on `client.meta`.
+   */
+  meta?: Partial<ClientMeta> | null;
   /**
    * false: a request/response carrier (a broker consumer binding) — calls
    * only, and not counted among connected clients. Default true.

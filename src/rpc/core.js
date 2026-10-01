@@ -323,13 +323,8 @@ class RpcServer extends Emitter {
     // does — otherwise a browser holding a valid cookie starts the channel
     // anonymous and every `access: 'session'` procedure on it answers 403.
     const addClient = (transport, call) => {
-      const data = declaredData(call.headers, split(call.url ?? '', '?')[1], this.#metaMax, this.#sseLog);
-      return this.#addClient(
-        transport,
-        (client) =>
-          this.#restoreToken(client, { headers: call.headers, url: call.url, declared: call.headers, meta: data }),
-        buildMeta({ headers: call.headers, data, url: call.url, remoteAddress: call.remoteAddress }),
-      );
+      const { restore, meta } = this.#identify(call, false, this.#sseLog);
+      return this.#addClient(transport, restore, meta);
     };
     // The identity a request presents, bound to a channel at creation and
     // required again on every re-attach and channel POST — the id alone
@@ -696,17 +691,8 @@ class RpcServer extends Emitter {
     const transport = new ServerHttpTransport({ headers, remoteAddress, respond: () => {} }, { headers: {} });
     const verb = String(method).toUpperCase();
     const safeMethod = verb === 'GET' || verb === 'HEAD';
-    // The safe-method CSRF rule guards AMBIENT authority (a browser cookie
-    // attached without script). A non-ambient carrier — a bearer header the
-    // page's own code must set — has nothing to guard, so it restores on
-    // safe methods too.
-    const ambient = this.#sessions.transport.ambient === true;
-    const data = declaredData(headers, split(url ?? '', '?')[1], this.#metaMax, this.#log);
-    const restore =
-      !safeMethod || !ambient || this.#isSameOriginFetch(headers)
-        ? (c) => this.#restoreToken(c, { headers, url, declared: headers, meta: data })
-        : null;
-    const client = this.#addClient(transport, restore, buildMeta({ headers, data, url, remoteAddress }));
+    const { restore, meta } = this.#identify({ headers, url, remoteAddress }, safeMethod);
+    const client = this.#addClient(transport, restore, meta);
     await client.ready;
     const context = client.createContext(null, target);
     return { client, context, transport, release: () => transport.emit('close') };
@@ -832,6 +818,31 @@ class RpcServer extends Emitter {
       if (onDisconnect.length > 0) void runHooksSafe(onDisconnect, client, payload, this.#log, 'onDisconnect');
     });
     return client;
+  }
+
+  // Who a request says it is — the three steps every request-shaped entry
+  // point takes (an SSE channel's GET, a packet POST, a REST call, a
+  // host-delegated route, `attach({ request })`), in ONE place: the declared
+  // connection data, the thunk that restores a session from the request's
+  // token, and the client's meta. They were five copies, and a field added
+  // to what a token carrier reads in four of them is a session restored
+  // differently on the fifth. (attachSocket is not one of them: a WebSocket
+  // handshake brings its declarations on other carriers — readDeclared.)
+  //
+  // `safeMethod`: the CSRF rule for a GET/HEAD. It guards AMBIENT authority
+  // (a browser cookie attached without script) and lives only here: such a
+  // request restores no session unless the browser says it is same-origin
+  // (#isSameOriginFetch). A non-ambient carrier — a bearer header the
+  // page's own code must set — has nothing to guard, so it restores on safe
+  // methods too.
+  #identify({ headers, url, remoteAddress }, safeMethod = false, log = this.#log) {
+    const data = declaredData(headers, split(url ?? '', '?')[1], this.#metaMax, log);
+    const guarded = safeMethod && this.#sessions.transport.ambient === true && !this.#isSameOriginFetch(headers);
+    return {
+      data,
+      restore: guarded ? null : (client) => this.#restoreToken(client, { headers, url, declared: headers, meta: data }),
+      meta: buildMeta({ headers, data, url, remoteAddress }),
+    };
   }
 
   // The injected token carrier decides what "this request presents a
@@ -1026,7 +1037,7 @@ class RpcServer extends Emitter {
    * broadcasts, presence and fetchClients count. Its transport's
    * `connection` is cleared, which is exactly what Client.persistent reads.
    */
-  attach(transport, { meta = null, session = null, request = null, persistent = true, encrypted = false } = {}) {
+  attach(transport, { meta: given = null, session = null, request = null, persistent = true, encrypted = false } = {}) {
     // Under `encryption.required` a wire this core cannot see into has to
     // be vouched for: a WebRTC data channel is (DTLS, end to end), a broker
     // binding is when it seals its own frames.
@@ -1049,6 +1060,13 @@ class RpcServer extends Emitter {
     if (session !== null && request !== null) {
       throw new TypeError('RpcServer.attach: options.session and options.request are mutually exclusive');
     }
+    if (given !== null && (typeof given !== 'object' || Array.isArray(given))) {
+      throw new TypeError('RpcServer.attach: options.meta must be an object');
+    }
+    // What the application observed is normalized like every other entry
+    // point's meta — frozen, its headers a null-prototype bag — whether it
+    // was built with buildMeta() or written by hand.
+    let meta = given === null ? null : buildMeta(given);
     let restore = null;
     if (session !== null) {
       restore = (client) => {
@@ -1057,11 +1075,13 @@ class RpcServer extends Emitter {
       };
     } else if (request !== null) {
       if (typeof request !== 'object') throw new TypeError('RpcServer.attach: options.request must be an object');
-      const headers = request.headers ?? {};
-      const url = request.url ?? '';
-      const data = declaredData(headers, split(url, '?')[1], this.#metaMax, this.#log);
-      restore = (client) => this.#restoreToken(client, { headers, url, declared: headers, meta: data });
-      meta ??= buildMeta({ headers, data, url, remoteAddress: request.remoteAddress });
+      const identity = this.#identify({
+        headers: request.headers ?? {},
+        url: request.url ?? '',
+        remoteAddress: request.remoteAddress,
+      });
+      restore = identity.restore;
+      meta ??= identity.meta;
     }
     const client = this.#addClient(transport, restore, meta);
     // Contained: a listener that threw would reject the transport's emit()
@@ -1283,7 +1303,7 @@ class RpcServer extends Emitter {
       this.#otel.recordCall(UNKNOWN_TARGET, 'error', 404);
       return void new ServerHttpTransport(call, { headers }).error(404);
     }
-    if (match.mode === 'packet') return this.#handlePacketPost(call, headers, params);
+    if (match.mode === 'packet') return this.#handlePacketPost(call, headers);
     return this.#handleRest(call, match.rest, params, headers);
   }
 
@@ -1304,7 +1324,7 @@ class RpcServer extends Emitter {
   }
 
   // POST {basePath} — a JSON call packet (or a batch array) in the body.
-  async #handlePacketPost(call, headers, params) {
+  async #handlePacketPost(call, headers) {
     // Mode-aware: only packet-mode responses carry the packet codec's type.
     if (this.#codec?.contentType) headers['Content-Type'] = this.#codec.contentType;
     const batch = call.method === 'POST' ? this.#batchIds(call.body) : null;
@@ -1319,12 +1339,8 @@ class RpcServer extends Emitter {
       this.#otel.recordCall(UNKNOWN_TARGET, 'error', 403);
       return void transport.error(403);
     }
-    const data = declaredData(call.headers, params, this.#metaMax, this.#log);
-    const client = this.#addClient(
-      transport,
-      (c) => this.#restoreToken(c, { headers: call.headers, url: call.url, declared: call.headers, meta: data }),
-      buildMeta({ headers: call.headers, data, url: call.url, remoteAddress: call.remoteAddress }),
-    );
+    const { restore, meta } = this.#identify(call);
+    const client = this.#addClient(transport, restore, meta);
     // An aborted or never-answered request must still evict the client:
     // the transport only self-closes when it writes a response.
     if (typeof call.onAbort === 'function') call.onAbort(() => transport.emit('close'));
@@ -1383,17 +1399,8 @@ class RpcServer extends Emitter {
     // For a per-request client the connection IS the call, so the declared
     // data doubles as this call's meta: a curl caller passes x-wrpc-meta and
     // a hook reads context.callMeta, same as on ws.
-    const data = declaredData(call.headers, params, this.#metaMax, this.#log);
-    // Same ambient-only CSRF reasoning as delegatedContext above.
-    const restore =
-      !safeMethod || this.#sessions.transport.ambient !== true || this.#isSameOriginFetch(call.headers)
-        ? (c) => this.#restoreToken(c, { headers: call.headers, url: call.url, declared: call.headers, meta: data })
-        : null;
-    const client = this.#addClient(
-      transport,
-      restore,
-      buildMeta({ headers: call.headers, data, url: call.url, remoteAddress: call.remoteAddress }),
-    );
+    const { data, restore, meta } = this.#identify(call, safeMethod);
+    const client = this.#addClient(transport, restore, meta);
     // #addClient assigned the packet codec; REST bodies are not packet
     // frames, so it comes back off. The conventional mode's callback
     // envelope IS the body value, so the rest codec (when configured)

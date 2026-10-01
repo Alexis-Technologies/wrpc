@@ -1360,6 +1360,18 @@ bytes it sends. In that order:
    last 1.x node is gone. Nothing to do without `secret`.
 
 ### Changed
+- **`RpcServer`: one `#identify` where five entry points each spelled out
+  who a request is (internal).** An SSE channel's GET, a packet POST, a
+  REST call, a host-delegated route and `attach({ request })` each built
+  the declared data, the session-restoring thunk and the client's meta by
+  hand, and two of them repeated the safe-method CSRF rule. They share one
+  private method now, and the rule lives only there. No behaviour change.
+  Two things caught up alongside: `RpcServer.attach({ meta })` normalizes
+  the meta it is given like every other entry point's — frozen, `headers` a
+  null-prototype copy, the rest defaulted — so `{ headers }` written by
+  hand is enough (typed `Partial<ClientMeta>`; a non-object is a
+  `TypeError`), and `RpcServer#limits` is typed with the `compression` and
+  `attachments` fields it always returned (`NormalizedCompression`).
 - **Broker adapters share one leaf instead of four copies (internal).**
   `src/broker/adapter.js` now holds what Redis, NATS, RabbitMQ and Kafka
   each spelled out themselves: the header names a redelivery carries, the

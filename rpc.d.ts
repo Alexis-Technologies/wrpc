@@ -874,6 +874,11 @@ export class Client extends Emitter {
    * it write the text. Returns the backpressure signal.
    */
   sendShared(message: SharedMessage, options?: ServerSendOptions | null): boolean;
+  /**
+   * The context a call runs under. The runtime also takes the call's target
+   * as a second argument and `send()` a pre-serialized text — both are the
+   * dispatcher's own (internal), deliberately left out of this signature.
+   */
   createContext(signal?: AbortSignal | null): Context;
   /** The LOCAL Emitter emit — nothing reaches the wire; that is sendEvent. */
   emit(name: EventName, data?: unknown): Promise<void>;

@@ -241,6 +241,18 @@ expectType<Promise<void>>(rpc.close());
 declare const inbound: wrpc.InboundTransport;
 expectType<Client>(rpc.attach(inbound));
 expectType<Client>(rpc.attach(inbound, { meta: null }));
+// A meta may be any subset of a ClientMeta: attach() normalizes it.
+expectType<Client>(rpc.attach(inbound, { meta: { headers: { 'x-tenant': 't1' } } }));
+expectType<Client>(rpc.attach(inbound, { meta: { url: '/x', remoteAddress: '10.0.0.7' } }));
+expectError(rpc.attach(inbound, { meta: 'x-tenant: t1' }));
+// limits is what the runtime hands out: the caps, the normalized socket
+// compression and whether attachments are on.
+expectType<number>(rpc.limits.maxBatch);
+expectType<number>(rpc.limits.maxCalls);
+expectType<boolean>(rpc.limits.attachments);
+expectType<import('../index.js').NormalizedCompression | null>(rpc.limits.compression);
+expectType<ReadonlyArray<string> | undefined>(rpc.limits.compression?.ids);
+expectError((rpc.limits.maxBatch = 1));
 expectError(rpc.attach({ write() {} }));
 
 // Rooms: chainable targets, a local recipient count

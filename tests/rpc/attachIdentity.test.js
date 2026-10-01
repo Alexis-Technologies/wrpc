@@ -129,7 +129,51 @@ test('attach: identity options are validated', () => {
   assert.throws(() => rpc.attach(transport, { session: [] }), /session must be an object/);
   assert.throws(() => rpc.attach(transport, { session: {}, request: {} }), /mutually exclusive/);
   assert.throws(() => rpc.attach(transport, { request: 'GET /' }), /request must be an object/);
+  assert.throws(() => rpc.attach(transport, { meta: 'x-tenant: t1' }), /meta must be an object/);
+  assert.throws(() => rpc.attach(transport, { meta: [] }), /meta must be an object/);
   void rpc.close();
+});
+
+test('attach: a meta written by hand is normalized like every other entry point’s', async (t) => {
+  const rpc = new RpcServer({ router: routerOf([]), logger: quiet, sse: false });
+  t.after(() => rpc.close());
+  // Only what the application observed: headers, as a plain object.
+  const headers = { 'x-tenant': 't1' };
+  const partial = rpc.attach(new CaptureTransport(), { meta: { headers } });
+  assert.ok(Object.isFrozen(partial.meta));
+  assert.ok(Object.isFrozen(partial.meta.headers));
+  assert.strictEqual(Object.getPrototypeOf(partial.meta.headers), null, 'a null-prototype bag, as on ws and http');
+  assert.notStrictEqual(partial.meta.headers, headers, 'a copy: the caller’s object is not what the client holds');
+  assert.deepStrictEqual({ ...partial.meta.headers }, { 'x-tenant': 't1' });
+  assert.deepStrictEqual(
+    [
+      { ...partial.meta.data },
+      partial.meta.declared,
+      partial.meta.url,
+      partial.meta.remoteAddress,
+      partial.meta.protocol,
+    ],
+    [{}, [], '', '', ''],
+  );
+  // A full meta — what attachChannel builds — reads the same after it.
+  const full = rpc.attach(new CaptureTransport(), {
+    meta: { headers, data: { device: 'tv' }, url: '/x?y=1', remoteAddress: '10.0.0.7', protocol: 'p', declared: [] },
+  });
+  assert.deepStrictEqual(
+    [{ ...full.meta.headers }, full.meta.data, full.meta.url, full.meta.remoteAddress, full.meta.protocol],
+    [{ 'x-tenant': 't1' }, { device: 'tv' }, '/x?y=1', '10.0.0.7', 'p'],
+  );
+  // An explicit meta wins over the one a request would give; the request
+  // still restores the session.
+  const both = rpc.attach(new CaptureTransport(), {
+    meta: { headers: { 'x-observed': '1' } },
+    request: { headers: { 'x-declared': '1' }, url: '/q' },
+  });
+  await both.ready;
+  assert.deepStrictEqual({ ...both.meta.headers }, { 'x-observed': '1' });
+  // No meta, no request: the empty meta.
+  const bare = rpc.attach(new CaptureTransport());
+  assert.deepStrictEqual([{ ...bare.meta.headers }, bare.meta.url], [{}, '']);
 });
 
 test("drain: 'draining' is announced once, only when draining actually starts", async () => {
