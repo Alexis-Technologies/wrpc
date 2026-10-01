@@ -164,6 +164,7 @@ want an alert for.
 | `wt.close` | debug | The session ended (`code`, the peer's `reason` clipped) — the line to grep for a code |
 | `rtc.channel.error` | warn | A framing error from the peer on a raw data channel attached with `attachChannel` (`peer`, `err`); the channel was closed |
 | `mesh.dial` | debug | A mesh edge never formed |
+| `mesh.unreachable` | warn | A member still in the room could not be linked again and the mesh's re-dial has backed off to its slowest pace (`room`, `peer`, `attempts`) — once per outage; it keeps dialling |
 | `signaling.undeliverable` | debug | A signal for a peer the relay no longer has (`to`, `room`, `type`) — a trickled candidate that crossed its `leave`, a routine race |
 | `rtc.signal.overflow` | warn | A peer sent more signals than are held for it — candidates before its description (256), or anything while `accept()` still thinks (64); the rest are dropped, said once |
 

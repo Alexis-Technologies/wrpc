@@ -278,3 +278,6 @@ if (message !== null && message.compressed) expectType<Uint8Array>(message.data)
 if (message !== null && !message.compressed && message.kind === 0) expectType<string>(message.data);
 // A peer's log writer is the seam a Mesh reports through.
 expectType<WrpcLogWriter>(peer.log);
+// A mesh dials a lost edge again; the pace is the application's to set.
+peer.join('lobby', { data: { name: 'ada' }, relink: { minDelay: 500, maxDelay: 10_000 } });
+peer.join('quiet', { relink: false });

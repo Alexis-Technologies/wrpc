@@ -1675,6 +1675,21 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **A mesh makes a lost edge again.** `Mesh` linked a member when it
+  joined and never looked back: once a link gave up — its redial budget
+  spent, a goodbye to the link that was not a leave of the room, an
+  `accept()` that refused — the two peers stayed in the room unlinked for
+  good, and `broadcast()`/`ask()` went around the member without a word.
+  The mesh keeps the roster now, and an edge to a member still on it is
+  dialled again: after `minDelay` (1 s), backing off with full jitter to
+  `maxDelay` (60 s), then every minute while the member stays — no attempt
+  count, since a refusal arrives as a close like any other. `'unreachable'`
+  (`{ id, attempts }`, and `mesh.unreachable` in the log) says once per
+  outage that the pace has reached that floor; `'join'` fires again when
+  the edge is back. `peer.join(room, { relink })` sets the pace or, with
+  `false`, restores the old behaviour. A member that left, a mesh that
+  left, and a member that was only `away` when its link went are not
+  dialled.
 - **WebRTC port: `send()` must copy, and the contract says so; the
   declarations match the runtime.** The framing layer writes every fragment
   of a message into one reused buffer and hands `channel.send()` a view of

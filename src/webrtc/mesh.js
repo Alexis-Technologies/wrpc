@@ -16,16 +16,46 @@
 // incarnation moments later. The link is kept until the member leaves for
 // real, comes back as another incarnation (the peer relinks), or the link
 // itself fails through the ordinary redial cycle.
+//
+// A link that gives up — its redial budget spent, a peer that said goodbye
+// to the link but not to the room, an accept() that refused — used to be
+// the end of that edge: #ensure only ran on a join, so two peers both still
+// in the room stayed unlinked for good, and broadcast()/ask() quietly went
+// around the member. The mesh keeps the ROSTER now, and an edge to a member
+// still on it is dialled again, at a pace that backs off to `maxDelay` and
+// stays there for as long as the member is in the room.
 
-const { Emitter } = require('../utils.js');
+const { Emitter, backoffDelay } = require('../utils.js');
 const { hasRoster } = require('./signaler.js');
 const { isPeerId } = require('./ids.js');
+
+// How an edge to a member still in the room is dialled again once its link
+// is gone: full-jitter backoff from a second to a minute, and then every
+// minute — a refusal comes back as a close like any other, so the pace has
+// a floor rather than a count. `false` never dials again.
+const RELINK = { minDelay: 1000, maxDelay: 60_000, jitter: true };
+
+const normalizeRelink = (value) => {
+  if (value === false) return null;
+  if (value === undefined || value === null || value === true) return RELINK;
+  const relink = { ...RELINK, ...value };
+  const { minDelay, maxDelay } = relink;
+  if (!(Number.isFinite(minDelay) && minDelay >= 0 && Number.isFinite(maxDelay) && maxDelay >= minDelay)) {
+    throw new TypeError('Mesh: relink must be false or { minDelay, maxDelay, jitter } with 0 <= minDelay <= maxDelay');
+  }
+  return relink;
+};
 
 class Mesh extends Emitter {
   #peer;
   #room;
   #data;
   #signaler;
+  // Who the room holds, as the signaler told it: id -> { data, instance }.
+  #roster = new Map();
+  #relink;
+  // id -> { timer, attempt, said }: an edge waiting to be dialled again.
+  #relinks = new Map();
   #members = new Map(); // id -> PeerLink
   #away = new Set(); // ids whose signaling dropped while their link stayed up
   #responders = new Map();
@@ -33,12 +63,13 @@ class Mesh extends Emitter {
   #left = false;
   #unbind = [];
 
-  constructor(peer, room, { data = null } = {}) {
+  constructor(peer, room, { data = null, relink } = {}) {
     super();
     if (!hasRoster(peer.signaler)) throw new TypeError('Mesh: the signaler must carry a roster (join/leave)');
     this.#peer = peer;
     this.#room = room;
     this.#data = data;
+    this.#relink = normalizeRelink(relink);
     this.#signaler = peer.signaler;
     const on = (emitter, name, fn) => {
       emitter.on(name, fn);
@@ -57,11 +88,25 @@ class Mesh extends Emitter {
         peer.log.debug({ event: 'mesh.leave.stale', room, peer: event.id, instance: event.instance });
         return;
       }
-      if (event.reason === 'disconnect' && link?.open) this.#away.add(event.id);
+      // The same guard for a member not linked right now: a stale goodbye
+      // must not take the incarnation the roster holds off it.
+      const listed = this.#roster.get(event.id);
+      if (
+        !link &&
+        listed &&
+        isPeerId(event.instance) &&
+        listed.instance !== null &&
+        event.instance !== listed.instance
+      ) {
+        return;
+      }
+      if (event.reason === 'disconnect' && link?.open) return void this.#away.add(event.id);
+      // Gone from the room: off the roster, and nothing left to dial again.
+      this.#forget(event.id);
       // A replaced member's link is abandoned, not closed: a goodbye sent
       // to its id now would reach the NEW incarnation — and land on the
       // fresh link this mesh is about to make with it.
-      else this.#dropId(event.id, true, event.reason === 'replaced');
+      this.#dropId(event.id, true, event.reason === 'replaced');
     });
     on(peer, 'reset', (event) => {
       const entry = Array.isArray(event?.rooms) ? event.rooms.find((item) => item.room === room) : null;
@@ -160,6 +205,7 @@ class Mesh extends Emitter {
     this.#left = true;
     for (const unbind of this.#unbind) unbind();
     this.#unbind = [];
+    for (const id of [...this.#roster.keys()]) this.#forget(id);
     for (const link of [...this.#members.values()]) this.#drop(link, false);
     void this.emit('left').catch((error) => this.#peer.escalate(error, this));
   }
@@ -184,6 +230,7 @@ class Mesh extends Emitter {
   #ensure(id, data, instance) {
     if (this.#left || id === this.#peer.id) return;
     this.#away.delete(id);
+    this.#roster.set(id, { data, instance });
     // connect() resolves on open and rejects on close; both are announced
     // through the link's events below, so the promise itself is only kept
     // from being an unhandled rejection. It is still worth a line: a mesh
@@ -209,15 +256,76 @@ class Mesh extends Emitter {
     this.#members.set(link.id, link);
     link.join(this.hostRoom);
     for (const [name, handler] of this.#responders) link.respond(name, handler);
-    const onOpen = () =>
+    const onOpen = () => {
+      // The edge is back: whatever was waiting to dial it again is over.
+      this.#settle(link.id);
       void this.emit('join', { id: link.id, data: data ?? link.data }).catch((e) => this.#peer.escalate(e, this));
+    };
     if (link.open) onOpen();
     else link.once('open', onOpen);
     link.once('close', () => {
       link.off('open', onOpen);
-      if (this.#members.get(link.id) === link) this.#drop(link, true);
+      // Dropped by this mesh (a leave, a detach): not its member any more.
+      if (this.#members.get(link.id) !== link) return;
+      // A member that was only `away` — its signaling gone, the link all
+      // that was left of it — is out of the room once the link is too.
+      if (this.#away.has(link.id)) this.#forget(link.id);
+      this.#drop(link, true);
+      // The link ended by itself and the member is still in the room: the
+      // edge is dialled again.
+      this.#again(link.id);
     });
     void this.emit('link', link).catch((error) => this.#peer.escalate(error, this));
+  }
+
+  // Off the roster: out of the room, so nothing is dialled for it again.
+  #forget(id) {
+    this.#roster.delete(id);
+    this.#settle(id);
+  }
+
+  #settle(id) {
+    const pending = this.#relinks.get(id);
+    if (pending === undefined) return;
+    clearTimeout(pending.timer);
+    this.#relinks.delete(id);
+  }
+
+  // The edge to a member still on the roster, dialled again after a pause
+  // that grows to `maxDelay` and stays there. No count: a member that
+  // refuses, or cannot be reached, is asked again once a minute for as long
+  // as it is in the room — and the application is told, once per outage,
+  // when the pace has reached that floor ('unreachable').
+  #again(id) {
+    if (this.#left || this.#relink === null || !this.#roster.has(id)) return;
+    const pending = this.#relinks.get(id) ?? { timer: null, attempt: 0, said: false };
+    const relink = this.#relink;
+    const delay = backoffDelay({ ...relink, attempt: pending.attempt });
+    if (!pending.said && relink.minDelay * 2 ** pending.attempt >= relink.maxDelay) {
+      pending.said = true;
+      this.#peer.log.warn({ event: 'mesh.unreachable', room: this.#room, peer: id, attempts: pending.attempt });
+      void this.emit('unreachable', { id, attempts: pending.attempt }).catch((e) => this.#peer.escalate(e, this));
+    }
+    pending.attempt++;
+    clearTimeout(pending.timer);
+    pending.timer = setTimeout(() => {
+      pending.timer = null;
+      const listed = this.#roster.get(id);
+      if (this.#left || listed === undefined) return void this.#relinks.delete(id);
+      this.#peer
+        .connect(id, { room: this.#room, data: listed.data, instance: listed.instance })
+        // Never linked: connect() rejected before there was a link to hear
+        // a close from (a link that was made says so through its 'close').
+        .catch((error) => {
+          this.#peer.log.debug({ err: error, event: 'mesh.dial', room: this.#room, peer: id });
+          const waiting = this.#relinks.get(id);
+          if (waiting !== undefined && waiting.timer === null && !this.#members.has(id)) this.#again(id);
+        });
+      const link = this.#peer.link(id);
+      if (link) this.#adopt(link, listed.data);
+    }, delay);
+    pending.timer.unref?.();
+    this.#relinks.set(id, pending);
   }
 
   #dropId(id, announce, abandon = false) {

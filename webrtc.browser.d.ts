@@ -804,16 +804,30 @@ export declare class WrpcPeer extends Emitter {
     options?: { room?: string | null; data?: unknown; instance?: string | null },
   ): Promise<PeerLink<Api>>;
   /** Joins a signaling room and links with everyone in it. Needs a RosterSignaler. */
-  join(room: string, options?: { data?: unknown }): Mesh;
+  join(room: string, options?: MeshOptions): Mesh;
   mesh(room: string): Mesh | undefined;
   /** Closes every link and mesh; the signaler is the owner's to close. */
   close(): void;
 }
 
+export interface MeshOptions {
+  /** What this peer says about itself to the room's other members. */
+  data?: unknown;
+  /**
+   * How an edge to a member still in the room is dialled again once its
+   * link ended by itself: full-jitter backoff from `minDelay` (1000 ms) to
+   * `maxDelay` (60 000), and then every `maxDelay` for as long as the member
+   * stays — no attempt count. `false` leaves a lost edge lost.
+   */
+  relink?: { minDelay?: number; maxDelay?: number; jitter?: boolean } | false;
+}
+
 /**
  * Everyone in a signaling room, linked to everyone. Events: 'join' ({ id,
- * data }, once the link is open), 'leave' ({ id }), 'link' (PeerLink),
- * 'left'.
+ * data }, once the link is open — and again when a lost edge is back),
+ * 'leave' ({ id }), 'link' (PeerLink), 'unreachable' ({ id, attempts }, once
+ * per outage, when re-dialling a member has backed off to its slowest
+ * pace), 'left'.
  */
 export declare class Mesh extends Emitter {
   readonly room: string;

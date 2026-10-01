@@ -407,6 +407,20 @@ encoding, compression and fragmentation still run per link), `ask` aggregates
 A link shared by two meshes (the same two peers in two rooms) survives
 leaving one of them.
 
+**An edge that is lost is made again.** A mesh remembers who the room holds,
+and a member's link that ends by itself — its redial budget spent, a path
+that never came back, a `link.close()` on the other side that was not a
+`mesh.leave()` — is dialled again while that member is still in the room:
+after a second, backing off to a minute, then once a minute for as long as
+it stays. There is no attempt count; a member that cannot be reached, or
+refuses, costs one dial a minute. When the pace reaches that floor the mesh
+says so once — `mesh.on('unreachable', ({ id, attempts }) => {})`, and
+`mesh.unreachable` in the log — and `'join'` fires again when the edge is
+back. `peer.join(room, { relink: { minDelay, maxDelay, jitter } })` sets the
+pace, `relink: false` leaves a lost edge lost. Nothing is dialled for a
+member that left the room, or one whose signaling had dropped (`away`) and
+whose link then went too.
+
 ## Failure and recovery
 
 Three layers, each owning one kind of failure:
@@ -431,6 +445,10 @@ Three layers, each owning one kind of failure:
 - **The heartbeat**: a path can die silently, with ICE none the wiser for a
   while. The app-level ping/pong is on by default; a heartbeat timeout asks
   the link for an ICE restart, and from there the layers above take over.
+
+A link that has given up is over — `connect()` makes a new one. In a
+[mesh](#mesh) that is done for you: an edge to a member still in the room
+is dialled again.
 
 `link.close()` (or `peer.close()`) is a goodbye: the other side is told, both
 directions end, nobody redials. A goodbye says why — `{ type: 'close',

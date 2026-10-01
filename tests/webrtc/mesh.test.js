@@ -294,6 +294,87 @@ test('mesh: a member that dropped and never came back leaves when its link dies'
   assert.strictEqual(mb.link('a'), undefined);
 });
 
+// A link that gives up used to be the end of that edge for good: #ensure
+// only ran on a join, so two peers both still in the room stayed unlinked
+// and broadcast()/ask() went around the member without a word.
+const fragile = { redial: { retries: 1, minDelay: 5, maxDelay: 5, jitter: false }, connectTimeout: 30 };
+const relink = { minDelay: 20, maxDelay: 40, jitter: false };
+
+test('mesh: a member still on the roster is linked again after its link gave up', async (t) => {
+  const { peer, hub } = world(t);
+  const a = peer('a', fragile);
+  const b = peer('b', fragile);
+  const ma = a.join('room', { relink });
+  const mb = b.join('room', { relink });
+  await within(settled(ma, 1), 'linked');
+  await within(settled(mb, 1), 'linked');
+  const left = [onceEvent(ma, 'leave'), onceEvent(mb, 'leave')];
+  // The path dies, and signaling with it: the link redials into the void and
+  // gives up on both sides — while both stay in the room.
+  hub.mute('a');
+  hub.mute('b');
+  const unreachable = onceEvent(ma, 'unreachable');
+  ma.link('b').link.pc.failIce();
+  assert.deepStrictEqual(await within(Promise.all(left), 'both edges gone'), [{ id: 'b' }, { id: 'a' }]);
+  assert.strictEqual(ma.broadcast('chat/note', {}), 0, 'nobody to reach for now');
+  // Dialled again and again, backing off to maxDelay — where it says so, once.
+  const told = await within(unreachable, 'unreachable');
+  assert.strictEqual(told.id, 'b');
+  assert.ok(told.attempts >= 1);
+  // Signaling is back: the next attempt makes the edge, from whichever side.
+  const joined = [onceEvent(ma, 'join'), onceEvent(mb, 'join')];
+  hub.unmute('a');
+  hub.unmute('b');
+  const [onA, onB] = await within(Promise.all(joined), 'linked again');
+  assert.deepStrictEqual([onA.id, onB.id], ['b', 'a']);
+  await within(settled(ma, 1), 'a sees b');
+  await within(settled(mb, 1), 'b sees a');
+  assert.strictEqual(ma.broadcast('chat/note', { n: 1 }), 1, 'and the fan-out reaches the member again');
+});
+
+test('mesh: nothing is dialled again for a member that left, a mesh that left, or with relink: false', async (t) => {
+  const { peer, hub } = world(t);
+  const a = peer('a', fragile);
+  const b = peer('b', fragile);
+  const c = peer('c', fragile);
+  const ma = a.join('room', { relink });
+  const mb = b.join('room', { relink });
+  const mc = c.join('room', { relink: false });
+  await within(settled(ma, 2), 'a linked');
+  await within(settled(mb, 2), 'b linked');
+  await within(settled(mc, 2), 'c linked');
+  const dials = (from, to) => hub.sent.filter((e) => e.from === from && e.to === to).length;
+  // a–b gives up with signaling dead; then b leaves the room for real.
+  hub.mute('a');
+  hub.mute('b');
+  const gone = onceEvent(ma, 'leave');
+  ma.link('b').link.pc.failIce();
+  await within(gone, 'the edge a–b gave up');
+  hub.unmute('a');
+  hub.unmute('b');
+  await mb.leave();
+  const afterLeave = dials('a', 'b');
+  await timers.setTimeout(120);
+  assert.strictEqual(dials('a', 'b'), afterLeave, 'a member that left the room is not dialled');
+  assert.strictEqual(ma.link('b'), undefined);
+  // c runs with relink off: its edge to a, once gone, stays gone.
+  hub.mute('a');
+  hub.mute('c');
+  const dropped = onceEvent(mc, 'leave');
+  mc.link('a').link.pc.failIce();
+  await within(dropped, 'the edge c–a gave up');
+  hub.unmute('a');
+  hub.unmute('c');
+  const fromC = dials('c', 'a');
+  // a, which does relink, is about to dial c — and detaches first.
+  ma.detach();
+  const fromA = dials('a', 'c');
+  await timers.setTimeout(120);
+  assert.strictEqual(dials('c', 'a'), fromC, 'relink: false never dials again');
+  assert.strictEqual(dials('a', 'c'), fromA, 'a detached mesh has no timer left');
+  assert.throws(() => peer('z').join('room', { relink: { minDelay: 50, maxDelay: 10 } }), /relink must be false or/);
+});
+
 test('mesh: a member replaced by another incarnation of its id relinks', async (t) => {
   const { peer, hub } = world(t);
   const a = peer('a');
