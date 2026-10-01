@@ -98,6 +98,30 @@ test('wt encryption: the same session over WebTransport — calls, both stream d
   }
 });
 
+test('wt encryption: a broadcast reaches sealed WebTransport sessions and a plain one alike — text and bytes, in order', async (t) => {
+  const { server, connect, serverKey } = await boot(t);
+  const clients = [
+    await connect({ encryption: createEncryption({ serverKey }) }),
+    await connect({ encryption: createEncryption({ serverKey }) }),
+    await connect(),
+  ];
+  for (const client of clients) await client.load('files');
+  const heard = clients.map(
+    (client) =>
+      new Promise((resolve) => {
+        const got = [];
+        client.api.files.on('news', (data) => void (got.push(data), got.length === 2 && resolve(got)));
+      }),
+  );
+  const blob = Uint8Array.from({ length: 400 }, (_, i) => i % 250);
+  server.rpc.broadcast('files/news', { n: 1, note: 'first' });
+  server.rpc.broadcast('files/news', { n: 2, blob });
+  for (const got of await Promise.all(heard)) {
+    assert.deepStrictEqual([got[0].n, got[0].note, got[1].n], [1, 'first', 2]);
+    assert.deepStrictEqual(Buffer.from(got[1].blob), Buffer.from(blob));
+  }
+});
+
 test('wt encryption: the handshake is bound to the transport kind — a ws handshake does not finish on wt', async (t) => {
   const { connect, serverKey } = await boot(t);
   // A link that claims to be a WebSocket while riding WebTransport: the

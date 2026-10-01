@@ -275,8 +275,11 @@ class Broadcast {
     // recipient's engine fills with the encoded (and, per negotiated
     // window, deflated) frame on first use and every later recipient
     // reuses — so the wire bytes, like the JSON, are built once per emit,
-    // not once per member. Engines without the seam read `text`.
-    const message = { text, frames: null, compress: options === null || options.compress !== false };
+    // not once per member. Engines without the seam read `text`. `inner`
+    // is the same idea for a SEALED recipient, which shares no wire bytes:
+    // the plaintext it seals, built once (src/encryption/server.js). Both
+    // slots exist from the start so the object keeps one shape.
+    const message = { text, frames: null, inner: null, compress: options === null || options.compress !== false };
     let sent = 0;
     for (const client of this.#recipients()) {
       if (this.#excluded?.has(client)) continue;

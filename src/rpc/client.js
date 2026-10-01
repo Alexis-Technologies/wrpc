@@ -410,12 +410,14 @@ class Client extends Emitter {
   }
 
   /**
-   * The fan-out seam. `message` is `{ text, frames, compress }` shared by
-   * every recipient of one broadcast: the text is serialized once, and a
-   * transport with the prepared-frame path (`writeShared`) encodes and
-   * deflates it once into `frames` for every recipient after the first,
-   * instead of paying utf8 + deflate + framing per member. Transports
-   * without it write the text. Returns the backpressure signal.
+   * The fan-out seam. `message` is `{ text, frames, inner, compress }`
+   * shared by every recipient of one broadcast: the text is serialized
+   * once, and a transport with the prepared-frame path (`writeShared`)
+   * encodes and deflates it once into `frames` for every recipient after
+   * the first, instead of paying utf8 + deflate + framing per member.
+   * `frames` belongs to the engine that filled it; `inner` is the
+   * plaintext a sealed socket seals per recipient, built once. Transports
+   * without the path write the text. Returns the backpressure signal.
    */
   sendShared(message, options = null) {
     const transport = this.#transport;

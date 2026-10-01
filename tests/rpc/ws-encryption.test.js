@@ -205,6 +205,47 @@ test('ws encryption: optional by default — a plaintext client still connects, 
   assert.deepStrictEqual(await Promise.all(heard), [{ text: 'to everyone' }, { text: 'to everyone' }]);
 });
 
+test('ws encryption: a fan-out shares its plaintext between sealed recipients and nothing else — each frame is its own', async (t) => {
+  const { server, url, connect } = await secure(t);
+  const wire = spyWire(server);
+  const plain = await connectClient(t, url);
+  const sealed = [await connect(), await connect()];
+  const clients = [plain, ...sealed];
+  for (const client of clients) await client.load('data');
+  const collect = (name, count) =>
+    clients.map(
+      (client) =>
+        new Promise((resolve) => {
+          const got = [];
+          client.api.data.on(name, (data) => void (got.push(data), got.length === count && resolve(got)));
+        }),
+    );
+  const heard = collect('shouted', 3);
+  wire.outbound.length = 0;
+  const blob = Uint8Array.from({ length: 600 }, (_, i) => i % 251);
+  // In order, text and bytes alike: one shared message per emit.
+  server.rpc.broadcast('data/shouted', { n: 1, text: 'to everyone' });
+  server.rpc.broadcast('data/shouted', { n: 2, blob });
+  server.rpc.broadcast('data/shouted', { n: 3 });
+  for (const got of await Promise.all(heard)) {
+    assert.deepStrictEqual(
+      got.map((data) => data.n),
+      [1, 2, 3],
+    );
+    assert.strictEqual(got[0].text, 'to everyone');
+    assert.deepStrictEqual(Buffer.from(got[1].blob), Buffer.from(blob));
+  }
+  // The sealed recipients' frames are of kind 6, and no two of them are the
+  // same bytes — one seal, one nonce, per recipient. (The plaintext client
+  // takes the engine's prepared frames, which this spy does not see.)
+  const sealedFrames = wire.outbound.filter(
+    (frame) => frame.isBinary && frame.bytes[0] === FRAME_MARK && frame.bytes[1] === FRAME_SEALED,
+  );
+  assert.strictEqual(sealedFrames.length, 6);
+  assert.strictEqual(new Set(sealedFrames.map((frame) => frame.bytes.toString('hex'))).size, 6);
+  assert.ok(sealedFrames.every((frame) => !frame.bytes.includes('to everyone')));
+});
+
 test('ws encryption: required — plaintext is refused on the socket, over http, and on an unvouched transport', async (t) => {
   const { server, url, origin, connect } = await secure(t, { encryption: { keys: generateKey(), required: true } });
   assert.ok(await refused(url), 'a plaintext client does not stay connected');

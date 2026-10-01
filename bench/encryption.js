@@ -313,6 +313,31 @@ async function main() {
     );
   }
   console.log('one SecureChannel.seal(text) each'.padEnd(34) + perRecipient.map(cell).join(''));
+  // What SealedSocket.sendPrepared does instead: the plaintext inner frame —
+  // the kind byte and the text's UTF-8 — built ONCE per emit and sealed per
+  // recipient. Still N seals; what goes is N byteLength + alloc + write of
+  // the same string, which grows with the message where the seal's fixed
+  // cost does not. Per recipient, over emits to 100 of them.
+  const { innerOf } = require('../src/encryption/session.js');
+  const perSeal = (message, shared) => {
+    const emit = shared
+      ? () => {
+          const inner = innerOf(message);
+          let sent = 0;
+          for (let r = 0; r < 100; r++) sent += pool[r].sealInner(inner).length;
+          return sent;
+        }
+      : () => {
+          let sent = 0;
+          for (let r = 0; r < 100; r++) sent += pool[r].seal(message).length;
+          return sent;
+        };
+    return micros(emit) / 100;
+  };
+  console.log('\nsealed fan-out, per recipient'.padEnd(35) + SIZES.map((size) => `${size} B`.padStart(12)).join(''));
+  const messages = SIZES.map((size) => payload(size).toString());
+  console.log('seal(text): the inner frame each'.padEnd(34) + messages.map((m) => cell(perSeal(m, false))).join(''));
+  console.log('sealInner(shared inner frame)'.padEnd(34) + messages.map((m) => cell(perSeal(m, true))).join(''));
 }
 
 main().catch((error) => {

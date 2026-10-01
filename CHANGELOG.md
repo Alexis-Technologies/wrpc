@@ -1360,6 +1360,18 @@ bytes it sends. In that order:
    last 1.x node is gone. Nothing to do without `secret`.
 
 ### Changed
+- **A sealed fan-out builds its plaintext once.** Under session encryption
+  every recipient of a broadcast has its own key, so the frame cannot be
+  shared — but the plaintext inner frame can: the kind byte and the text's
+  UTF-8 were rebuilt from the same string for every sealed recipient.
+  `SealedSocket.sendPrepared` now builds it once per emit, on the shared
+  message, and seals it per recipient (`SecureChannel.sealInner`); each
+  recipient still gets its own nonce and ciphertext. Per recipient, in
+  `bench/encryption.js`: 2.76 → 2.68 µs at 64 B, 3.61 → 3.22 at 1 KB
+  (−11 %), 14.5 → 9.9 at 16 KB (−32 %) — the saving is the copy, so it grows
+  with the message; 10 000 recipients × 16 KB is ≈ 99 ms an emit where it
+  was ≈ 145. A broadcast held for a client still in its handshake is sealed
+  from the text when the handshake completes, as before.
 - **Tests: the broker adapters' recovery branches run against faults the
   fakes now inject.** A JetStream consume that rejects (`failConsume` on the
   NATS fake), a Redis server refusing `XREADGROUP` and `BLPOP` for a moment

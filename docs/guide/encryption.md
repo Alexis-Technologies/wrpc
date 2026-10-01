@@ -350,7 +350,7 @@ Measured by `bench/encryption.js` on one core:
 | A Noise handshake, both ends | ~0.4 ms under NK (the default, one more DH each side), ~0.3 ms under NN |
 | A 64 KB stream chunk sealed | ~27 µs — the inner frame is a copy of the bytes, then the seal |
 | A sealed HTTP request, both ends | ~0.2 ms |
-| **A broadcast to N sealed clients** | **N seals.** Plain wrpc builds one frame for the whole fan-out; under session encryption every recipient has its own key. 10 000 recipients × 1 KB ≈ 36 ms per emit — the AEAD alone is 26 ms, the inner frame, the counter nonce and the header the rest (`bench/encryption.js`, the per-recipient row; the shared frame is 6 µs). |
+| **A broadcast to N sealed clients** | **N seals.** Plain wrpc builds one frame for the whole fan-out; under session encryption every recipient has its own key and its own nonce. What the recipients of one emit do share is the plaintext they seal, built once. 10 000 recipients × 1 KB ≈ 32 ms per emit, ≈ 99 ms at 16 KB — the AEAD alone is 26 ms at 1 KB; the counter nonce and the header are the rest (`bench/encryption.js`, the sealed fan-out rows; the shared frame of a plain fan-out is 6 µs). |
 
 On a WebSocket it also ends `permessage-deflate` for that connection —
 ciphertext does not compress — so server→client compression is gone;

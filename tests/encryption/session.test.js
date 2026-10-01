@@ -79,6 +79,33 @@ test('session: text comes back as text and bytes as bytes, in whatever view they
   assert.strictEqual(server.open(client.seal(new Uint8Array(0))).length, 0);
 });
 
+test('session: one inner frame sealed by two channels — each opens it, neither changes it, the ciphertexts differ', async () => {
+  const [first, firstPeer] = await channels();
+  const [second, secondPeer] = await channels(node.aead({ algorithm: 'chacha20-poly1305' }));
+  const text = JSON.stringify({ type: 'event', name: 'chat/message', data: { text: 'привіт 👋' } });
+  for (const message of [text, Uint8Array.from({ length: 300 }, (_, i) => i % 256)]) {
+    // What a fan-out shares between its sealed recipients: the plaintext.
+    const inner = session.innerOf(message);
+    const before = Buffer.from(inner);
+    const sealed = [first.sealInner(inner), second.sealInner(inner)];
+    assert.ok(sealed.every((bytes) => isFrame(bytes, FRAME_SEALED)));
+    assert.notDeepStrictEqual(Buffer.from(sealed[0]), Buffer.from(sealed[1]));
+    assert.deepStrictEqual(Buffer.from(inner), before, 'the shared plaintext is read, never written');
+    const opened = [firstPeer.open(sealed[0]), secondPeer.open(sealed[1])];
+    for (const value of opened) {
+      if (typeof message === 'string') assert.strictEqual(value, message);
+      else assert.deepStrictEqual(Buffer.from(value), Buffer.from(message));
+    }
+  }
+  // seal(data) is sealInner(innerOf(data)): one path, and the counters agree.
+  assert.strictEqual(firstPeer.open(first.seal('after')), 'after');
+  // Over crypto.subtle it answers a promise, like seal.
+  const [page, server] = await channels(browser.aead());
+  const pending = page.sealInner(session.innerOf('x'));
+  assert.ok(pending instanceof Promise);
+  assert.strictEqual(await server.open(await pending), 'x');
+});
+
 test('session: what is not a sealed frame, or not a message inside one, is refused', async () => {
   const [, server] = await channels();
   assert.throws(() => server.open(Uint8Array.of(0, 5, 1)), /not a sealed frame/);

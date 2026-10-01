@@ -11,9 +11,11 @@
 //
 // What it costs, and the bench that says so (bench/encryption.js): every
 // recipient of a broadcast has its own key, so the single prepared frame a
-// fan-out shares (`sendPrepared`) cannot be used — a sealed socket does not
-// offer it, and an emit to N clients is N seals. permessage-deflate is told
-// to leave the frames alone: ciphertext does not compress.
+// fan-out shares cannot be used — an emit to N clients is N seals, each
+// under its own nonce. What `sendPrepared` does share is the PLAINTEXT
+// inner frame, built once on the shared message instead of once per
+// recipient (the fan-out rows of the bench). permessage-deflate is told to
+// leave the frames alone: ciphertext does not compress.
 
 const { EventEmitter } = require('node:events');
 const { aead, ALGORITHMS } = require('./aead.js');
@@ -29,6 +31,7 @@ const { Sequencer } = require('../sequencer.js');
 const { ENCRYPTION_PARAM } = require('../wire.js');
 const {
   SecureChannel,
+  innerOf,
   parseHello,
   prologueOf,
   frame,
@@ -428,9 +431,21 @@ class SealedSocket extends EventEmitter {
   // the bound the rest is dropped for this client, counted, and said once
   // when the handshake completes. A client is a member of nothing before
   // open() resolves; a broadcast during its handshake is best effort.
+  //
+  // Established, what the recipients of one emit share is the plaintext
+  // INNER frame — the kind byte and the text's UTF-8, or the bytes — built
+  // by the first sealed recipient into the message's `inner` slot. The seal
+  // stays one per recipient, its own nonce and ciphertext; what is saved is
+  // the byteLength + alloc + write of the same string N times: 3.6 → 3.2 µs
+  // a recipient at 1 KB, 14.5 → 9.9 at 16 KB (bench/encryption.js, the
+  // sealed fan-out rows). The cipher does not write to its plaintext, and a server
+  // session takes built-in ciphers only.
   sendPrepared(message) {
     if (this.#dead) return false;
-    if (this.#channel !== null) return this.send(message.text);
+    if (this.#channel !== null) {
+      const inner = (message.inner ??= innerOf(message.text));
+      return this.#push(this.#channel.sealInner(inner));
+    }
     if (this.#queuedShared >= MAX_QUEUED) {
       this.#droppedShared++;
       return false;
@@ -454,11 +469,18 @@ class SealedSocket extends EventEmitter {
       this.#queue.push(data);
       return true;
     }
+    return this.#push(this.#channel.seal(data));
+  }
+
+  // One sealed frame — a value, or a promise of one — onto the wire in the
+  // order it was sealed in. Answers the backpressure signal when the cipher
+  // is synchronous (node:crypto is), true otherwise.
+  #push(sealed) {
     let sent = true;
     this.#outbound.push(
-      this.#channel.seal(data),
-      (sealed) => {
-        if (!this.#dead) sent = this.#socket.send(asBuffer(sealed), NO_COMPRESS);
+      sealed,
+      (frame) => {
+        if (!this.#dead) sent = this.#socket.send(asBuffer(frame), NO_COMPRESS);
       },
       () => this.#end(CLOSE_PROTOCOL, 'crypto'),
     );

@@ -134,7 +134,11 @@ class SecureChannel {
   }
 
   seal(data) {
-    const sealed = this.#send.encrypt(innerOf(data));
+    return this.sealInner(innerOf(data));
+  }
+
+  sealInner(inner) {
+    const sealed = this.#send.encrypt(inner);
     return isPromise(sealed) ? sealed.then(sealedFrame) : sealedFrame(sealed);
   }
 
