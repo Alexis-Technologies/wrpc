@@ -524,8 +524,12 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     get sessions() {
       return sessions.size;
     },
+    // Not stopped — and neither listener known to be deaf: a read loop
+    // retrying after an error, a channel or a connection that is gone. An
+    // adapter that cannot tell reads as healthy (`stop.healthy` is optional
+    // in the direct contract), as does the address once draining gave it up.
     get healthy() {
-      return !stopped;
+      return !stopped && stopService?.healthy !== false && stopInbox.healthy !== false;
     },
     stop,
   };

@@ -38,6 +38,7 @@ const { resolveGenerateId } = require('../../utils.js');
 const { TopicTails } = require('../tail.js');
 const { codedError, toText, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
 const { crashDelay, positiveInteger } = require('../retry.js');
+const { withHealth } = require('../port.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_PREFETCH = 16;
@@ -655,10 +656,16 @@ const createNatsBroker = (options = {}) => {
     if (typeof address !== 'string' || address.length === 0) {
       throw new TypeError('nats direct.listen: address must be a non-empty string');
     }
+    // What `stop.healthy` answers: a subscription that reported an error
+    // (a permissions violation, a slow-consumer drop) delivers nothing more.
+    let listening = true;
     const subscription = nc.subscribe(addressSubject(address), {
       queue: group === null || group === undefined ? undefined : token(group),
       callback: (error, message) => {
-        if (error) return void report('broker.nats.subscription', error, { address });
+        if (error) {
+          listening = false;
+          return void report('broker.nats.subscription', error, { address });
+        }
         const headers = decodeHeaders(message.headers);
         const text = headers[TEXT_HEADER] === '1';
         delete headers[TEXT_HEADER];
@@ -678,10 +685,12 @@ const createNatsBroker = (options = {}) => {
       },
     });
     await nc.flush();
-    return async () => {
+    const stop = async () => {
+      listening = false;
       subscription.unsubscribe();
       await nc.flush().catch(() => {});
     };
+    return withHealth(stop, () => listening && !closed && !nc.isClosed?.());
   };
 
   const send = async (address, body, { headers = null, correlationId = null, replyTo = null } = {}) => {

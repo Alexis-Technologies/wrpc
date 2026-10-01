@@ -39,6 +39,7 @@ const { resolveGenerateId, backoffDelay } = require('../../utils.js');
 const { TopicTails } = require('../tail.js');
 const { codedError, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
 const { crashDelay, positiveInteger } = require('../retry.js');
+const { withHealth } = require('../port.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_PREFETCH = 16;
@@ -946,7 +947,13 @@ const createAmqpBroker = (options = {}) => {
     if (typeof address !== 'string' || address.length === 0) {
       throw new TypeError('amqp direct.listen: address must be a non-empty string');
     }
-    const channel = await openChannel();
+    // What `stop.healthy` answers: the consumer was cancelled by the broker,
+    // or its channel closed (with it an exclusive inbox queue is gone) —
+    // either way nothing is delivered here any more.
+    let listening = true;
+    const channel = await openChannel(false, () => {
+      listening = false;
+    });
     const exchangeName = await ensureDirect();
     // RabbitMQ 4 refuses a transient non-exclusive queue, so a group's
     // shared queue is durable and expires when nobody consumes it.
@@ -963,7 +970,10 @@ const createAmqpBroker = (options = {}) => {
     const { consumerTag } = await channel.consume(
       queue,
       (message) => {
-        if (message === null) return void report('broker.amqp.cancelled', new Error('consumer cancelled'), { address });
+        if (message === null) {
+          listening = false;
+          return void report('broker.amqp.cancelled', new Error('consumer cancelled'), { address });
+        }
         const headers = headersOf(message);
         const text = headers['wrpc-text'] === '1';
         delete headers['wrpc-text'];
@@ -981,7 +991,8 @@ const createAmqpBroker = (options = {}) => {
       },
       { noAck: true },
     );
-    return async () => {
+    const stop = async () => {
+      listening = false;
       // An inbox's own queue is unbound FIRST, so a publish racing this stop
       // gets a basic.return (nobody there) rather than a nack from a queue
       // being deleted under it. A group's queue is shared and stays bound.
@@ -995,6 +1006,7 @@ const createAmqpBroker = (options = {}) => {
       }
       await closeChannel(channel);
     };
+    return withHealth(stop, () => listening && !closed && !lost);
   };
 
   const send = async (address, body, { headers = null, correlationId = null, replyTo = null, timeout } = {}) => {

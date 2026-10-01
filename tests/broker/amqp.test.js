@@ -120,6 +120,30 @@ test('amqp broker (fake): a consumer the server cancels is reported, unhealthy, 
   assert.strictEqual(line.queue, 'cancelled');
 });
 
+test('amqp broker (fake): a direct listener is unhealthy once cancelled, or once its channel is gone', async (t) => {
+  const { recorder } = require('../helpers/recorder.js');
+  const log = recorder();
+  const connection = createFakeAmqp();
+  const broker = createAmqpBroker({ connection, logger: log.writer });
+  t.after(() => broker.close());
+  const cancelled = await broker.direct.listen('svc-cancel', () => {}, { group: 'svc-cancel' });
+  const killed = await broker.direct.listen('svc-kill', () => {}, { group: 'svc-kill' });
+  const kept = await broker.direct.listen(broker.direct.inbox(), () => {});
+  assert.deepStrictEqual([cancelled.healthy, killed.healthy, kept.healthy], [true, true, true]);
+  const consumersOf = (address) =>
+    Array.from(connection.server.queues.entries()).find(([name]) => name.includes(address))[1].consumers;
+  const [tag] = consumersOf('svc-cancel').keys();
+  assert.strictEqual(connection.server.cancelConsumer(tag), true);
+  await waitFor(() => cancelled.healthy === false, 'unhealthy on cancel');
+  assert.strictEqual(log.all('broker.amqp.cancelled').length, 1);
+  const [held] = consumersOf('svc-kill').values();
+  connection.server.killChannel(held.channel, 320);
+  await waitFor(() => killed.healthy === false, 'unhealthy on a closed channel');
+  assert.strictEqual(kept.healthy, true, 'a listener on its own channel is untouched');
+  await kept();
+  assert.strictEqual(kept.healthy, false, 'stopped');
+});
+
 test('amqp broker (fake): direct contract', async (t) => {
   await runDirectContract(t, 'amqp', {
     open: async () => {

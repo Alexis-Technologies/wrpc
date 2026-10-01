@@ -141,6 +141,21 @@ export interface DirectSendOptions {
   timeout?: number;
 }
 
+/**
+ * What `direct.listen()` resolves with: the function that stops the listener.
+ * An adapter that knows may also say whether the listener is still
+ * receiving.
+ */
+export interface DirectStop {
+  (): Promise<void>;
+  /**
+   * `false` while the adapter KNOWS this listener is deaf — its read is
+   * failing, its consumer was cancelled, its channel or connection is gone.
+   * Optional: absent means the adapter cannot tell, and reads as healthy.
+   */
+  readonly healthy?: boolean;
+}
+
 /** Addressable inboxes — the substrate of RPC over a broker. At-most-once. */
 export interface BrokerDirect {
   name?: string;
@@ -149,7 +164,7 @@ export interface BrokerDirect {
     address: string,
     onMessage: (message: DirectMessage) => unknown,
     options?: { group?: string | null },
-  ): Promise<() => Promise<void>>;
+  ): Promise<DirectStop>;
   send(address: string, body: string | Uint8Array, options?: DirectSendOptions): Promise<void>;
 }
 
@@ -476,6 +491,12 @@ export interface BrokerRpcHandle {
   /** This instance's own inbox, where its sessions' frames arrive. */
   readonly inbox: string;
   readonly sessions: number;
+  /**
+   * `false` once stopped, and while either listener — the service address,
+   * this instance's inbox — says it is not receiving (`DirectStop.healthy`).
+   * A broker whose adapter reports nothing (memory, a custom one) is healthy
+   * until stopped.
+   */
   readonly healthy: boolean;
   /** Also triggered by the server's close(); draining stops taking new work. */
   stop(): Promise<void>;

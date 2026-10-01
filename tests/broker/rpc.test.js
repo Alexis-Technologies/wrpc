@@ -402,6 +402,39 @@ test('session: draining stops taking new sessions; close says goodbye to the one
   assert.strictEqual(await fresh.api.calc.add({ a: 1, b: 2 }), 3);
 });
 
+test('binding: healthy is the listeners’ own word, where an adapter gives one', async (t) => {
+  const memory = new MemoryBroker({ logger: quiet });
+  t.after(() => memory.close());
+  // A direct capability whose listeners report their health, as the Redis,
+  // NATS and AMQP adapters do (`stop.healthy`); the memory broker reports
+  // none, and none reads as healthy.
+  const state = new Map();
+  const direct = {
+    inbox: () => memory.direct.inbox(),
+    send: (...args) => memory.direct.send(...args),
+    listen: async (address, onMessage, options) => {
+      const stop = await memory.direct.listen(address, onMessage, options);
+      const kind = options?.group ? 'service' : 'inbox';
+      state.set(kind, true);
+      return Object.defineProperty(stop, 'healthy', { get: () => state.get(kind), enumerable: true });
+    },
+  };
+  const app = createApp();
+  const plain = await instance(t, memory, app);
+  assert.strictEqual(plain.handle.healthy, true, 'an adapter that cannot tell is healthy');
+  const { handle } = await instance(t, { name: 'reporting', direct, close: async () => {} }, app);
+  assert.strictEqual(handle.healthy, true);
+  state.set('service', false);
+  assert.strictEqual(handle.healthy, false, 'the service address is deaf: no request reaches this instance');
+  state.set('service', true);
+  state.set('inbox', false);
+  assert.strictEqual(handle.healthy, false, 'the inbox is deaf: no session frame does');
+  state.set('inbox', true);
+  assert.strictEqual(handle.healthy, true, 'and back, as the listener recovers');
+  await handle.stop();
+  assert.strictEqual(handle.healthy, false);
+});
+
 test('session: refused handshakes', async (t) => {
   const broker = new MemoryBroker({ logger: quiet });
   t.after(() => broker.close());

@@ -115,6 +115,24 @@ close.
 `attachBrokerRpc` resolves with `{ address, inbox, sessions, healthy, stop() }`
 and stops by itself when the server closes.
 
+Wire `healthy` into readiness next to `server.rpc.healthy`. It is `false` once
+the binding stopped, and while either of its two listeners — the shared
+service address, this instance's own inbox — says it is not receiving:
+
+| Broker | A listener is not receiving when |
+| --- | --- |
+| Redis | the service's `BLPOP` is failing (`broker.redis.blpop`) or its presence lease cannot be renewed (`broker.redis.presence`), until the next one works; the listener's connection reports itself down (`status` on ioredis, `isReady` on node-redis) |
+| NATS | the subscription reported an error (`broker.nats.subscription`); the connection is closed |
+| RabbitMQ | the server cancelled the consumer (`broker.amqp.cancelled`); its channel closed; the connection is lost |
+| memory, a custom broker | never — the adapter reports nothing, and that reads as healthy |
+
+A Redis listener recovers by itself and turns healthy again. A NATS
+subscription that erred and a RabbitMQ listener that lost its consumer or
+channel do **not** come back: `healthy` stays `false`, which is the signal to
+restart the instance — the binding does not re-listen on its own. What
+`healthy` cannot see is a broker that accepts the listener and delivers
+nothing: that is the client's timeout, and the broker's own metrics.
+
 ## Client options
 
 `connect('broker://<service>', { transport: 'broker', ... })` takes the usual

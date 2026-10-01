@@ -167,6 +167,10 @@ await direct.send('svc.billing', packet, { correlationId, replyTo: direct.inbox(
   and treats a gap as a lost connection. `send` may reject with **503** when the
   broker knows nobody listens, and may discard a message nobody took within
   `timeout`.
+- `stop.healthy` is optional: an adapter that knows a listener went deaf — a
+  failing read, a cancelled consumer, a closed channel — answers `false`
+  there, and the [RPC binding's `healthy`](./brokers/rpc#server-options) is
+  made of it. An adapter that cannot tell leaves it out.
 
 ### backplane
 

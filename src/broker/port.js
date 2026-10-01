@@ -79,6 +79,12 @@
 //   inbox()                                          -> address (sync)
 //   listen(address, onMessage, { group })           -> Promise<stop>
 //     - resolves once live: a message sent after it is received.
+//     - `stop.healthy` (optional, a getter on the returned function): false
+//       while the adapter KNOWS the listener is not receiving — its read
+//       loop is retrying after an error, its channel or the connection is
+//       gone. Absent means the adapter cannot tell, and reads as true. Not
+//       part of the structural check: what the RPC binding's `healthy`
+//       is made of, where an adapter has it to give.
 //     - listeners without a group each receive every message; listeners
 //       sharing a group compete, one of them per message.
 //     - messages from one sender to one address arrive in send order.
@@ -99,6 +105,9 @@ const hasFunctions = (value, names) => isObject(value) && names.every((name) => 
 const isBrokerLog = (value) => hasFunctions(value, ['append', 'read', 'parseId']);
 const isBrokerQueue = (value) => hasFunctions(value, ['produce', 'consume']);
 const isBrokerDirect = (value) => hasFunctions(value, ['inbox', 'listen', 'send']);
+
+// A listener's stop() that also answers `healthy` (see the direct contract).
+const withHealth = (stop, healthy) => Object.defineProperty(stop, 'healthy', { get: healthy, enumerable: true });
 
 const CAPABILITIES = Object.freeze({
   backplane: isBackplane,
@@ -136,4 +145,13 @@ const capabilityOf = (value, name, label) => {
 const brokerName = (value) =>
   isObject(value) && typeof value.name === 'string' && value.name.length > 0 ? value.name : 'custom';
 
-module.exports = { isBroker, isBrokerLog, isBrokerQueue, isBrokerDirect, isBackplane, capabilityOf, brokerName };
+module.exports = {
+  isBroker,
+  isBrokerLog,
+  isBrokerQueue,
+  isBrokerDirect,
+  isBackplane,
+  capabilityOf,
+  brokerName,
+  withHealth,
+};

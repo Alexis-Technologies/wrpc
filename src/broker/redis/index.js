@@ -39,6 +39,7 @@ const { resolveGenerateId } = require('../../utils.js');
 const { TopicTails } = require('../tail.js');
 const { codedError, toText, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
 const { crashDelay, positiveInteger } = require('../retry.js');
+const { withHealth } = require('../port.js');
 
 const DEFAULT_PREFIX = 'wrpc';
 const DEFAULT_BLOCK_MS = 1000;
@@ -52,6 +53,14 @@ const REDELIVERED_HEADER = 'x-wrpc-redelivered';
 const DEAD_REASON_HEADER = 'x-wrpc-dead-reason';
 
 const isFunction = (value) => typeof value === 'function';
+
+// Whether an injected connection says it is up, in the two shapes there
+// are: ioredis' `status` string and node-redis' `isReady`. One that says
+// nothing is taken to be.
+const connected = (connection) => {
+  if (typeof connection.status === 'string') return connection.status === 'ready' || connection.status === 'connect';
+  return connection.isReady !== false;
+};
 
 // A stream id is `<ms>-<seq>`: compared numerically, part by part, because
 // both halves outgrow Number's safe range in neither case but the STRING
@@ -686,12 +695,14 @@ const createRedisBroker = (options = {}) => {
       await connection.subscribe(channel);
     }
     handlers.add(onMessage);
-    return async () => {
+    const stop = async () => {
       const current = plain.get(channel);
       if (!current || !current.delete(onMessage) || current.size > 0) return;
       plain.delete(channel);
       if (isFunction(connection.unsubscribe)) await connection.unsubscribe(channel).catch(() => {});
     };
+    // An inbox is a subscription: as alive as the connection it is on.
+    return withHealth(stop, () => !closed && connected(connection));
   };
 
   // Competing listeners take from a list, which is what makes delivery
@@ -704,6 +715,11 @@ const createRedisBroker = (options = {}) => {
     const member = nextId();
     const connection = spawn();
     let running = true;
+    // What `stop.healthy` answers: false while the blocking read or the
+    // presence lease is failing — a member whose lease lapsed is sent
+    // nothing, and one whose read fails takes nothing.
+    let reading = true;
+    let leased = true;
     // The lease: this member's score is when its presence expires, by this
     // process's clock — the instances' clocks must agree within inboxTtl.
     // The key itself expires when nobody refreshes it, and members whose
@@ -717,7 +733,15 @@ const createRedisBroker = (options = {}) => {
     await lease();
     const beat = setInterval(
       () => {
-        lease().catch((error) => report('broker.redis.presence', error, { address }));
+        lease().then(
+          () => {
+            leased = true;
+          },
+          (error) => {
+            leased = false;
+            report('broker.redis.presence', error, { address });
+          },
+        );
       },
       Math.max(1000, inboxTtl / 3),
     );
@@ -728,8 +752,10 @@ const createRedisBroker = (options = {}) => {
         let popped;
         try {
           popped = await connection.blpop(list, Math.max(1, Math.round(blockMs / 1000)));
+          reading = true;
         } catch (error) {
           if (!running || closed) return;
+          reading = false;
           report('broker.redis.blpop', error, { address });
           await new Promise((resolve) => setTimeout(resolve, Math.min(blockMs, 1000)));
           continue;
@@ -754,7 +780,7 @@ const createRedisBroker = (options = {}) => {
       if (owned.delete(connection)) await quit(connection, { force: true });
     };
     stops.add(stop);
-    return stop;
+    return withHealth(stop, () => running && reading && leased && !closed && connected(connection));
   };
 
   const listen = async (address, onMessage, { group = null } = {}) => {

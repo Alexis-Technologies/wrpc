@@ -95,6 +95,26 @@ test('nats broker (fake): direct contract', async (t) => {
   });
 });
 
+test('nats broker (fake): a direct listener is unhealthy once its subscription errs or the connection closes', async (t) => {
+  const { recorder } = require('../helpers/recorder.js');
+  const log = recorder();
+  const world = createFakeNats();
+  const broker = createNatsBroker({ ...world, logger: log.writer });
+  t.after(() => broker.close());
+  const failing = await broker.direct.listen('svc-a', () => {}, { group: 'svc-a' });
+  const other = await broker.direct.listen('svc-b', () => {}, { group: 'svc-b' });
+  assert.deepStrictEqual([failing.healthy, other.healthy], [true, true]);
+  // A permissions violation, a slow-consumer drop: the subscription's
+  // callback is handed the error and delivers nothing afterwards.
+  const [subscription] = Array.from(world.server.subscriptions).filter((entry) => entry.queue !== undefined);
+  subscription.callback(new Error('permissions violation'), null);
+  assert.strictEqual(log.all('broker.nats.subscription').length, 1);
+  assert.strictEqual(failing.healthy, false);
+  assert.strictEqual(other.healthy, true, 'one subscription, not the broker');
+  await world.nc.drain();
+  assert.strictEqual(other.healthy, false, 'a closed connection hears nothing');
+});
+
 test('nats broker: injection is validated structurally', () => {
   const world = createFakeNats();
   assert.throws(() => createNatsBroker({}), /options.nc must be a NATS connection/);

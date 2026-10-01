@@ -133,17 +133,63 @@ test('redis broker (fake): a direct listener survives a failing BLPOP and a hand
     seen.push(message.body);
     if (message.body === 'boom') throw new Error('handler boom');
   };
-  await broker.direct.listen(address, handler, { group: address });
+  const stop = await broker.direct.listen(address, handler, { group: address });
   await waitFor(() => log.all('broker.redis.blpop').length >= 1);
+  // The listener says so itself: nothing is being taken off the list.
+  assert.strictEqual(stop.healthy, false);
   client.server.fail = null;
   await broker.direct.send(address, 'boom');
   await broker.direct.send(address, 'fine');
   await waitFor(() => seen.length === 2);
   assert.deepStrictEqual(seen, ['boom', 'fine']);
+  assert.strictEqual(stop.healthy, true, 'a read that works again is a healthy listener again');
   const thrown = log.all('broker.redis.listener');
   assert.strictEqual(thrown.length, 1);
   assert.strictEqual(thrown[0].err.message, 'handler boom');
   assert.strictEqual(log.find('broker.redis.blpop').err.message, 'READONLY');
+});
+
+test('redis broker (fake): a direct listener is as healthy as its lease and its connection', async (t) => {
+  const { recorder } = require('../helpers/recorder.js');
+  const log = recorder();
+  const client = createFakeRedis();
+  const spawned = [];
+  const connect = () => {
+    const connection = client.duplicate();
+    spawned.push(connection);
+    return connection;
+  };
+  t.mock.timers.enable({ apis: ['setInterval'] });
+  const broker = createRedisBroker({ client, connect, logger: log.writer, blockMs: 20, inboxTtl: 3000 });
+  t.after(() => broker.close());
+  const service = await broker.direct.listen('svc-health', () => {}, { group: 'svc-health' });
+  const inbox = await broker.direct.listen(broker.direct.inbox(), () => {});
+  assert.deepStrictEqual([service.healthy, inbox.healthy], [true, true]);
+  assert.ok(Object.keys(service).includes('healthy'), 'enumerable: a spread or a log line carries it');
+  // The presence lease cannot be renewed: senders stop seeing this member,
+  // so it is a listener nobody routes to.
+  client.server.fail = (command) => (command === 'zadd' ? new Error('READONLY') : null);
+  t.mock.timers.tick(1000);
+  await waitFor(() => log.all('broker.redis.presence').length === 1);
+  assert.strictEqual(service.healthy, false);
+  assert.strictEqual(inbox.healthy, true, 'an inbox has no lease');
+  client.server.fail = null;
+  t.mock.timers.tick(1000);
+  await waitFor(() => service.healthy === true);
+  // The connection itself, in the two shapes a client reports it.
+  const [blocking, subscriber] = spawned;
+  blocking.status = 'reconnecting';
+  assert.strictEqual(service.healthy, false);
+  blocking.status = 'ready';
+  assert.strictEqual(service.healthy, true);
+  subscriber.isReady = false;
+  assert.strictEqual(inbox.healthy, false);
+  subscriber.isReady = true;
+  assert.strictEqual(inbox.healthy, true);
+  await service();
+  assert.strictEqual(service.healthy, false, 'stopped');
+  await broker.close();
+  assert.strictEqual(inbox.healthy, false, 'closed');
 });
 
 test('redis broker (fake): direct contract', async (t) => {

@@ -1444,6 +1444,19 @@ bytes it sends. In that order:
   to `range()` without a sign: `onLag(topic, readers)` hears of it — once
   per fall, nothing while everybody keeps up — and the four adapters log it
   as `broker.tail.lag` (info).
+- **`attachBrokerRpc().healthy` knows when its listeners are deaf.** It was
+  `true` until `stop()`, whatever happened to the broker — an instance whose
+  service consumer had been cancelled stayed in rotation, answering nothing.
+  The function `direct.listen()` resolves with may now carry a `healthy`
+  getter (`DirectStop`, optional — the structural check is unchanged and a
+  custom broker without it reads as healthy), and the binding's `healthy` is
+  `false` while either of its listeners says so. Redis: the service's
+  `BLPOP` or its presence lease is failing, or the connection reports
+  itself down — and back to `true` when they work again. NATS: the
+  subscription reported an error, or the connection closed. RabbitMQ: the
+  consumer was cancelled, its channel closed, or the connection is lost.
+  The last two do not recover by themselves: an unhealthy binding there is
+  the signal to restart the instance.
 - **A compression codec that fails is said, and counted.** A message is
   never lost to compression — a codec that throws sends it plain, a frame
   that does not inflate is refused and answered — which is exactly why a

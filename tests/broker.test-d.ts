@@ -3,6 +3,7 @@ import * as broker from '../broker.js';
 import type {
   Broker,
   BrokerDirect,
+  DirectStop,
   BrokerRpcOptions,
   ClientBrokerTransport,
   BrokerLog,
@@ -51,6 +52,12 @@ expectType<Promise<QueueConsumer>>(consumer);
 declare const direct: BrokerDirect;
 expectType<string>(direct.inbox());
 direct.listen('svc', (message) => expectType<DirectMessage>(message), { group: 'svc' });
+expectType<Promise<DirectStop>>(direct.listen('svc', () => {}));
+declare const directStop: DirectStop;
+expectType<boolean | undefined>(directStop.healthy);
+expectType<Promise<void>>(directStop());
+// A plain stop function is still a direct listener's answer.
+expectAssignable<DirectStop>(async () => {});
 expectType<Promise<void>>(direct.send('svc', new Uint8Array(1), { correlationId: 'c', replyTo: direct.inbox() }));
 
 // Structural: anything with the shape is a broker.
