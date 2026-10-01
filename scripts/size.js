@@ -172,8 +172,8 @@ const ENTRIES = [
   { label: 'encryption — node (@alexify/wrpc/encryption)', entry: 'encryption.js', platform: 'node' },
   // A peer is a client AND a server: the webrtc browser entry bundles the
   // client core plus the router, dispatcher, per-peer Client, rooms and
-  // Broadcast (what makes a mesh broadcast/ask one fan-out: serialized once,
-  // then utf8, compression and fragmentation per link),
+  // Broadcast (what makes a mesh broadcast/ask one fan-out: serialized,
+  // utf8-encoded and compressed once, fragmented per link),
   // plus the link, framing, peer, mesh and signaler halves — measured at
   // 38.3 KB when the row landed. 40 -> 41 for the server telemetry writer:
   // a peer answers calls, so it emits the server spans and gauges a server
@@ -230,7 +230,13 @@ const ENTRIES = [
   // { reason, remote } closure RtcLink keeps and both 'close' events carry,
   // abandon() as a real method, and the wrpc.rtc.closes counter in the
   // telemetry writer (+0.3 KB, measured 56.2 against 55.9).
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 57 },
+  // 57 -> 58: a mesh that dials a lost edge again (the roster, the backoff,
+  // 'unreachable' — +0.5 KB) and a fan-out that prepares its message once
+  // for every link — the UTF-8 and the deflated body shared, only the
+  // fragments per link (+0.2 KB; bench/rtc-fanout.js: 37.7 -> 2.2 µs a
+  // recipient compressed, 10.3 -> 1.7 plain, at 16 KB over 32 links).
+  // Measured 58,498 B against 58,368.
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 58 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

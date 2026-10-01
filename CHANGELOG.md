@@ -1360,6 +1360,22 @@ bytes it sends. In that order:
    last 1.x node is gone. Nothing to do without `secret`.
 
 ### Changed
+- **WebRTC fan-out: the message is prepared once for every link.**
+  `Mesh.broadcast` — `PeerHost.to(room).emit` — serialized its payload once
+  and then did everything else per link: an emit to 32 peers was 32 UTF-8
+  encodes of the same string and, under compression, 32 deflates of the
+  same bytes. A data channel cannot share a frame (each link has its own
+  message size), but everything before the fragments is common:
+  `RtcPeerTransport.writeShared` + `ChannelCodec.sendShared` keep the UTF-8
+  and one compressed body per codec id in the shared message, and only
+  fragment per link. `bench/rtc-fanout.js` (new), per recipient over 32
+  links: 16 KB compressed 37.7 → 2.2 µs, 16 KB plain 10.3 → 1.7, 512 B
+  0.51 → 0.14 plain and 9.1 → 0.44 compressed; an emit to exactly one link
+  pays 0.2 µs for it. An asynchronous codec is awaited once and each link
+  keeps its own send order around it; a codec that throws is asked once per
+  emit and the message goes plain; a slot a WebSocket engine filled (a room
+  mixing both) is left alone. The webrtc browser entry's budget is 58 KB
+  (was 57), for this and for the mesh's re-linking.
 - **WebTransport: one channel core for both ends (internal).** `WtSocket`
   (the server's socket) and `ClientWtTransport` were mirror copies of the
   same channel — the capabilities exchange, compression and its ordering,

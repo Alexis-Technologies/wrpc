@@ -33,6 +33,7 @@ const { isRtcDataChannel } = require('./port.js');
 const {
   FrameEncoder,
   FrameDecoder,
+  SharedFrames,
   FramingError,
   KIND_TEXT,
   KIND_BINARY,
@@ -226,22 +227,62 @@ class ChannelCodec {
     const text = typeof data === 'string';
     const bytes = text ? null : toBytes(data);
     const size = text ? data.length : bytes.length;
-    const max = this.#maxBackpressure;
-    if (max !== 0 && this.#channel.bufferedAmount + this.#pending + size > max) {
-      this.#faulted = true;
-      const error = new Error(`Backpressure limit exceeded (${size} bytes over ${max}), closing the channel`);
-      error.code = 'backpressure';
-      if (this.#onFault !== null) this.#onFault(error);
-      this.#channel.close();
-      return false;
-    }
+    if (this.#overCap(size)) return false;
     const compression = this.#compression;
     const plain = compression === null || (options !== null && options.compress === false);
     if (text) {
       if (plain || size < compression.encode.threshold) this.#enqueueText(data);
-      else this.#compress(KIND_TEXT, TEXT_ENCODER.encode(data));
+      else this.#compress(KIND_TEXT, TEXT_ENCODER.encode(data), null);
     } else if (plain || size < compression.encode.threshold) this.#enqueue(KIND_BINARY, bytes);
-    else this.#compress(KIND_BINARY, bytes);
+    else this.#compress(KIND_BINARY, bytes, null);
+    return this.#answer();
+  }
+
+  /**
+   * A fan-out's shared message (`{ text, frames, compress }` — rpc/rooms.js):
+   * what every link of the emit has in common is done ONCE and kept in the
+   * message's `frames` slot — the UTF-8 of the text and, under compression,
+   * the deflated body per codec — and only the fragmenting is per link. It
+   * used to be all per link: an emit to 32 peers was 32 encodes of the same
+   * string and 32 deflates of the same bytes. bench/rtc-fanout.js, per
+   * recipient at 32 links: 10.3 → 1.7 µs for 16 KB plain, 37.7 → 2.2
+   * compressed; 0.51 → 0.14 and 9.1 → 0.44 at 512 B. The shared path wins
+   * from two recipients on, and costs 0.2 µs on an emit to exactly one.
+   *
+   * A slot another engine filled (a WebSocket's PreparedFrames, in a room
+   * mixing the two) is left alone, and the message goes as an ordinary send.
+   */
+  sendShared(message) {
+    let shared = message.frames;
+    if (shared === null) shared = message.frames = new SharedFrames(message.text);
+    else if (!(shared instanceof SharedFrames)) return this.send(message.text, message);
+    if (this.#faulted) return false;
+    const { kind, bytes } = shared;
+    if (this.#overCap(bytes.length)) return false;
+    const compression = this.#compression;
+    if (compression === null || message.compress === false || bytes.length < compression.encode.threshold) {
+      this.#enqueue(kind, bytes);
+    } else this.#compress(kind, bytes, (shared.bodies ??= new Map()));
+    return this.#answer();
+  }
+
+  // Past maxBackpressure: the channel is closed, and said — before the
+  // message is queued, so one message larger than the cap still goes on an
+  // empty buffer.
+  #overCap(size) {
+    const max = this.#maxBackpressure;
+    if (max === 0 || this.#channel.bufferedAmount + this.#pending + size <= max) return false;
+    this.#faulted = true;
+    const error = new Error(`Backpressure limit exceeded (${size} bytes over ${max}), closing the channel`);
+    error.code = 'backpressure';
+    if (this.#onFault !== null) this.#onFault(error);
+    this.#channel.close();
+    return true;
+  }
+
+  // What a send answers: false when the channel lost the message, or past
+  // the high-water mark — and then exactly one 'drain' follows.
+  #answer() {
     if (this.#lost) {
       this.#lost = false;
       return false;
@@ -300,8 +341,11 @@ class ChannelCodec {
   }
 
   // Compressed under the flag when the codec shrank it, plain when it did
-  // not or failed — a message is never lost to compression.
-  #compress(kind, bytes) {
+  // not or failed — a message is never lost to compression. `bodies` is a
+  // shared message's cache (codec id -> body): the codec runs for the first
+  // link of an emit, and every later one takes what it answered — a value,
+  // or the same promise, which any number of Sequencers may wait on.
+  #compress(kind, bytes, bodies) {
     const size = bytes.length;
     this.#pending += size;
     const plain = () => {
@@ -309,12 +353,18 @@ class ChannelCodec {
       this.#encoder.encode(kind, bytes, this.#sink);
       this.drained();
     };
-    let encoded;
-    try {
-      encoded = this.#compression.encode.codec.encode(bytes);
-    } catch {
-      return void plain();
+    const { codec, id } = this.#compression.encode;
+    let encoded = bodies === null ? undefined : bodies.get(id);
+    if (encoded === undefined) {
+      try {
+        encoded = codec.encode(bytes);
+      } catch {
+        encoded = null;
+      }
+      if (bodies !== null) bodies.set(id, encoded);
     }
+    // The codec threw: plain, in order behind whatever is in flight.
+    if (encoded === null) return void this.#outbound.push(bytes, plain);
     this.#outbound.push(
       encoded,
       (out) => {
@@ -748,6 +798,13 @@ class RtcPeerTransport extends ServerTransport {
   writeWith(text, options) {
     if (!this.#up) return false;
     return this.#codec.send(text, options);
+  }
+
+  // The fan-out seam (Client.sendShared): one message for every recipient
+  // of an emit, its UTF-8 and its compressed body made once for all of them.
+  writeShared(message) {
+    if (!this.#up) return false;
+    return this.#codec.sendShared(message);
   }
 
   /** Ends the link (or closes the raw channel) — the peer's client sees its transport close too. */

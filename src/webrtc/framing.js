@@ -196,6 +196,25 @@ class FrameEncoder {
   }
 }
 
+// A fan-out's message, prepared once for every link it goes to: what fills
+// the `frames` slot of the shared message (rpc/rooms.js) on a data channel,
+// as PreparedFrames does on a WebSocket. A channel cannot share a FRAME —
+// each link has its own message size, so its own fragments — but everything
+// before the fragments is the same for every recipient: the UTF-8 of the
+// text (or the attachments frame as it is), and under compression the body
+// a codec makes of it, kept per codec id (per-message compression has no
+// shared context, so one codec answers the same bytes for every link).
+class SharedFrames {
+  constructor(text) {
+    const packet = typeof text === 'string';
+    this.kind = packet ? KIND_TEXT : KIND_BINARY;
+    this.bytes = packet ? TEXT_ENCODER.encode(text) : text;
+    // Once a link compresses it: codec id -> the compressed body, a promise
+    // of it, or null — the codec threw, and the message goes plain.
+    this.bodies = null;
+  }
+}
+
 class FrameDecoder {
   // Whether the DEFLATE flag is accepted: set by the transport once both
   // ends named the same codec, a reserved bit — a protocol error — before.
@@ -316,4 +335,5 @@ module.exports = {
   decodeText,
   FrameEncoder,
   FrameDecoder,
+  SharedFrames,
 };

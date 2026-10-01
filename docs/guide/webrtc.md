@@ -401,8 +401,11 @@ await mesh.leave();
 
 Every member link's host-side `Client` is kept in the room `mesh:<room>`
 on this peer's `PeerHost`, which is what makes `broadcast()` and `ask()` one
-`Broadcast` fan-out — the payload is serialized once (JSON; the utf8
-encoding, compression and fragmentation still run per link), `ask` aggregates
+`Broadcast` fan-out — the payload is serialized, UTF-8-encoded and (under
+compression) deflated **once** for every member, and only fragmented per
+link, to that link's message size: 2 µs a recipient for a 16 KB compressed
+event to 32 peers, where a deflate per link was 38 (`bench/rtc-fanout.js`) —
+and `ask` aggregates
 `{ answers, errors, expected, incomplete }` — rather than a loop over links.
 A link shared by two meshes (the same two peers in two rooms) survives
 leaving one of them.
