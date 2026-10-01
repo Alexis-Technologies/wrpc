@@ -342,6 +342,30 @@ test('wt attach: acceptSessions over an iterable, meta hook, onClient, stop', as
   );
   await failing.done;
   assert.deepStrictEqual(thrown, ['source broke']);
+
+  // An onError that throws itself — closing the `null` a failed source is
+  // reported with is the easy way — is a line in the server's log, never a
+  // rejection of `done`: it is documented as always resolving, and nobody
+  // awaits it with a catch.
+  const { recorder } = require('../helpers/recorder.js');
+  const log = recorder();
+  const unhandled = [];
+  const onUnhandled = (error) => unhandled.push(error);
+  process.on('unhandledRejection', onUnhandled);
+  t.after(() => process.off('unhandledRejection', onUnhandled));
+  const careless = acceptSessions(
+    server,
+    (async function* () {
+      yield* [];
+      throw new Error('source broke again');
+    })(),
+    { logger: log.writer, onError: (_error, session) => session.close() },
+  );
+  await careless.done;
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepStrictEqual(unhandled, []);
+  const line = log.find('wt.onError');
+  assert.deepStrictEqual([line.level, line.component, line.err.name], ['error', 'wt', 'TypeError']);
 });
 
 test('wt attach: the server closing a client says goodbye with 1001, and the client reconnects over wt', async (t) => {

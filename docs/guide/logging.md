@@ -155,6 +155,7 @@ want an alert for.
 | `broker.feed.resume` | warn/debug | A resume token was refused. `reason: 'signature'` means it was **tampered with** |
 | `broker.feed.gap` | info | A subscriber fell behind retention; the snapshot hook ran |
 | `wt.attach`, `wt.source` | error | A WebTransport session could not be attached (`verify` threw, the source died) |
+| `wt.onError` | error | The `onError` handed to `acceptSessions` threw itself (`err`) — said here instead of rejecting `done` |
 | `wt.refused` | warn | A session refused before attach: `status` 403 (`verify` said no) or 408 (no control stream, or `ready`/`verify` not settled, within `acceptTimeout`) |
 | `wt.accept.saturated` | warn | `maxPending` sessions were still in their handshake; the next was refused 503 — said once per episode |
 | `wt.violation`, `wt.idle`, `wt.session.error` | warn | A peer's frame that could not be read (`code`; closed 1002), a peer silent past `idleTimeout` (terminated), the session's own failure reported by the host |

@@ -162,7 +162,14 @@ export declare class WtSocket {
   readonly isPaused: boolean;
   readonly remoteAddress: string;
   readonly protocol: string;
-  send(data: string | Uint8Array | ArrayBuffer): boolean;
+  /** `options.compress === false` sends this one message plain whatever was negotiated. */
+  send(data: string | Uint8Array | ArrayBuffer, options?: { compress?: boolean } | null): boolean;
+  /**
+   * Told about an outbound stream packet before it is serialized: true when
+   * the packet must not go on the control stream — its stream's own FIN or
+   * reset carries it.
+   */
+  streamControl(packet: { type: string; id?: string; status?: string }): boolean;
   /**
    * A packet as one datagram; false when the session has none, the packet
    * does not fit, or the socket is closed. True — and dropped — when the
@@ -215,7 +222,13 @@ export interface AcceptSessionsOptions extends Omit<AttachSessionOptions, keyof 
   meta?: (session: WtSession) => SessionMeta | Promise<SessionMeta>;
   /** Sessions are attached concurrently: this may be called out of arrival order. */
   onClient?: (client: Client, session: WtSession) => void;
-  onError?: (error: Error, session: WtSession) => void;
+  /**
+   * Hears a session that failed to attach, or — with `session` null — the
+   * source itself failing, which ends the loop. Defaults to the server's
+   * log (`wt.attach` / `wt.source`); one that throws is logged
+   * (`wt.onError`), never a rejection of `done`.
+   */
+  onError?: (error: Error, session: WtSession | null) => void;
   /** Sessions held in their handshake at once (default 256); the next one is refused 503, logged `wt.accept.saturated` once per episode. */
   maxPending?: number;
 }
@@ -300,7 +313,7 @@ export declare class FramingError extends Error {
 
 export declare function toBytes(input: ArrayBuffer | ArrayBufferView): Uint8Array;
 /** One message: a fresh frame, header included. */
-export declare function frame(kind: 0 | 1 | 2, bytes: Uint8Array): Uint8Array;
+export declare function frame(kind: 0 | 1 | 2 | 3 | 4, bytes: Uint8Array): Uint8Array;
 /** A capabilities message: UTF-8 JSON under a KIND 2 header. */
 export declare function frameCaps(text: string): Uint8Array;
 /** A packet's bytes as text — the parser's own decode, for a packet inflated after parsing; throws FramingError on invalid UTF-8. */

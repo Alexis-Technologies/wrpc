@@ -63,6 +63,20 @@ expectType<WtSession>(wt.fromQuico(req, res).session);
 // The socket is the engine-port shape
 const socket = new wt.WtSocket(session, stream, { remoteAddress: '::1' });
 expectType<boolean>(socket.send('{"type":"ping"}'));
+// What the runtime takes and the types used to leave out: the per-message
+// opt-out, the mux's say on a stream packet, the dropped-datagram count.
+expectType<boolean>(socket.send('x', { compress: false }));
+expectType<boolean>(socket.streamControl({ type: 'stream', id: 'a' }));
+expectType<number>(socket.droppedDatagrams);
+expectType<Uint8Array>(wt.frame(wt.KIND_BINARY_COMPRESSED, new Uint8Array(1)));
+wt.acceptSessions(server, sessions, {
+  logger: console,
+  // `session` is null when it is the source that failed.
+  onError: (error, failed) => {
+    expectType<Error>(error);
+    expectType<WtSession | null>(failed);
+  },
+});
 expectType<number>(socket.bufferedAmount);
 socket.on('message', (data, isBinary) => {
   expectType<string | Uint8Array>(data);
@@ -73,7 +87,7 @@ socket.on('message', (data, isBinary) => {
 const parser = new wt.StreamParser({ onMessage: (kind, data) => void [kind, data] });
 expectType<void>(parser.push(wt.frameText('{}')));
 expectType<Uint8Array>(wt.frame(wt.KIND_BINARY, new Uint8Array(2)));
-expectError(wt.frame(3, new Uint8Array(2)));
+expectError(wt.frame(5, new Uint8Array(2)));
 expectType<Uint8Array>(wt.frameCaps('{"streams":true}'));
 expectType<2>(wt.KIND_CAPS);
 

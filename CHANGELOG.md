@@ -1649,6 +1649,16 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **`@alexify/wrpc/wt`: the types caught up with the runtime, and a
+  throwing `onError` no longer rejects `done`.** `acceptSessions` calls
+  `onError(error, null)` when the session SOURCE fails, which the type did
+  not admit (`session: WtSession`) — so the natural handler,
+  `(error, session) => session.close()`, threw there, and that throw
+  rejected the `done` promise documented as always resolving: an unhandled
+  rejection. `onError` is typed `WtSession | null`, and one that throws is
+  logged as `wt.onError`. Also typed now: `WtSocket.send(data, { compress })`,
+  `WtSocket.streamControl(packet)`, and `frame()` with the compressed kinds
+  3 and 4 it has always written.
 - **`rooms.compression` and `rooms.encryption` are validated on an instance
   without a backplane, `rooms.backplane` is refused, an unknown `rooms` key
   warns.** The rooms envelope was only built once a backplane existed, so a

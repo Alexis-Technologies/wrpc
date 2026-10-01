@@ -259,11 +259,22 @@ const acceptSessions = (server, sessions, options = {}) => {
   // `rpc.log`, which exists for exactly this), and an explicit `onError`
   // still wins, since a caller that handles the error wants to decide.
   const log = createLoggerWriter(logger ?? rpc.log).child({ component: 'wt' });
-  const report =
+  const tell =
     onError ??
     ((error, session) => {
       log.error({ err: error, event: session === null ? 'wt.source' : 'wt.attach' });
     });
+  // The caller's `onError` may throw itself — `session.close()` on the null
+  // a failed source is reported with is the easy way. That is a line, not a
+  // rejection of `done` nobody awaited (it is documented as always
+  // resolving) and not the end of a session's own error path.
+  const report = (error, session) => {
+    try {
+      tell(error, session);
+    } catch (thrown) {
+      log.error({ err: thrown, event: 'wt.onError' });
+    }
+  };
   const source = iterate(sessions);
   const controller = new AbortController();
   const pending = new Set();
