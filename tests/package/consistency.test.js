@@ -527,3 +527,57 @@ test('the logging guide catalogues every log event the source writes, and nothin
   }
   assert.deepStrictEqual(stale, [], 'catalogue rows for events the source no longer writes');
 });
+
+// CLAUDE.md is loaded into every agent session as binding instructions, so a
+// reference in it that points nowhere is an instruction to look at the wrong
+// code. Three things are held: no line numbers (they drift within days —
+// eleven of twenty-two were wrong when they were removed), every path it
+// names exists, and every "`symbol` in `file`" is still true.
+test('CLAUDE.md names symbols, not line numbers; its paths exist; its symbols are where it says', () => {
+  const { readFileSync } = require('node:fs');
+  const guide = read('CLAUDE.md');
+
+  const numbered = Array.from(guide.matchAll(/`((?:src|bench|tests|scripts)\/[\w/.-]+:\d+)`/g), (match) => match[1]);
+  assert.deepStrictEqual(numbered, [], 'file:line references in CLAUDE.md — name the symbol instead');
+
+  // A backticked path: starts in a tracked directory, has an extension or a
+  // trailing slash, and is not a pattern ({a,b}, *, <placeholder>, …).
+  const missing = [];
+  for (const match of guide.matchAll(/`((?:src|bench|tests|scripts|docs|bin|examples)\/[^`\s]*)`/g)) {
+    const mentioned = match[1];
+    if (/[{}*<>$|]|\.\.\./.test(mentioned)) continue;
+    const clean = mentioned.replace(/[),.:;]+$/, '');
+    if (!existsSync(path.join(ROOT, clean))) missing.push(mentioned);
+  }
+  assert.deepStrictEqual(missing, [], 'paths CLAUDE.md names that do not exist');
+
+  // "`symbol` in `path`": the symbol's text occurs in that file.
+  const adrift = [];
+  let pairs = 0;
+  for (const match of guide.matchAll(/`([^`\n]+)` in `((?:src|bench|tests|scripts)\/[\w/.-]+\.js)`/g)) {
+    const [, symbol, file] = match;
+    if (!existsSync(path.join(ROOT, file))) continue; // reported above
+    pairs++;
+    // A function may be written as a call — `nodeStream()` — in prose.
+    const name = symbol.replace(/\(\)$/, '');
+    if (!readFileSync(path.join(ROOT, file), 'utf8').includes(name)) adrift.push(`${symbol} in ${file}`);
+  }
+  assert.deepStrictEqual(adrift, [], 'symbols CLAUDE.md places in a file that no longer has them');
+  assert.ok(pairs >= 15, `only ${pairs} symbol-in-file references were found — the pattern stopped matching`);
+});
+
+test('no CLAUDE.md ships in the tarball', () => {
+  assert.ok(!shipped('CLAUDE.md'), 'CLAUDE.md is in the files allowlist');
+  const { readdirSync } = require('node:fs');
+  const walk = (dir, out = []) => {
+    for (const entry of readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+      const relative = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) walk(relative, out);
+      else if (entry.name === 'CLAUDE.md') out.push(relative);
+    }
+    return out;
+  };
+  // `files` ships src/ and bin/ whole: agent instructions placed there
+  // would be published with the package.
+  assert.deepStrictEqual([...walk('src'), ...walk('bin')], []);
+});
