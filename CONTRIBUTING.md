@@ -121,9 +121,13 @@ takes from a root entry is one that entry exports.
 Checks deliberately **not** in CI — run them by hand:
 
 - `node scripts/autobahn/run.js` — the RFC 6455/7692 conformance suite against
-  the engine in `src/websocket/`. Needs docker; several minutes for 500+
-  cases. `FAILED` and `WRONG CODE` fail the run, `NON-STRICT` and
-  `INFORMATIONAL` do not.
+  the engine in `src/websocket/`, and again with `AUTOBAHN_DEFLATE=takeover`
+  for the queued, asynchronous compression paths. Needs docker; several
+  minutes for 517 cases. `FAILED` and `WRONG CODE` fail the run, `NON-STRICT`
+  and `INFORMATIONAL` do not — and so does a run the fuzzing client cut
+  short (it gives up on the suite when one connect times out). Run it on an
+  otherwise idle Docker: with the four broker containers up, the emulated
+  client image loses the server half-way.
 - `pnpm test:perf` — the 1 GiB stream memory guard.
 - `WRPC_RTC=node-datachannel node --test tests/webrtc/node-datachannel.integration.test.js`
   — the WebRTC port contract against a real implementation (the fake in

@@ -1836,6 +1836,15 @@ bytes it sends. In that order:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **The Autobahn runner no longer calls a truncated run a pass.**
+  `node scripts/autobahn/run.js` graded whatever cases the report held, and
+  the fuzzing client writes a report even when it gives up half-way — one
+  connect to the echo server that times out (an emulated image on a busy
+  Docker VM) ends the whole suite. Such a run printed "all cases passed" on
+  262 of 517 cases. The runner now reads the client's output as it goes: a
+  lost connection, or a report with fewer cases than were started, fails
+  the run, and a pass says how many cases it stands on ("all 517 cases
+  passed").
 - **Kafka feeds: a resume storm is queued, and identical pages are one
   read.** A catch-up page is a consumer group of its own (the KafkaJS shape
   has no manual assignment) — a connection, a JoinGroup, seconds of a
