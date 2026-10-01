@@ -16,6 +16,7 @@ const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
 const { isRtcAdapter, isRtcPeerConnection, isRtcDataChannel } = require('../../src/webrtc/port.js');
+const { waitFor } = require('../helpers/wait.js');
 
 const CLIENT_ID = 0;
 const HOST_ID = 1;
@@ -37,14 +38,6 @@ const once = (target, type, predicate = () => true) =>
     };
     target.addEventListener(type, listener);
   });
-
-const waitFor = async (predicate, label, ms = 5000) => {
-  const deadline = Date.now() + ms;
-  while (!predicate()) {
-    if (Date.now() > deadline) throw new Error(`timed out waiting for ${label}`);
-    await timers.setTimeout(5);
-  }
-};
 
 const opened = (channel) =>
   channel.readyState === 'open' ? Promise.resolve() : once(channel, 'open').then(() => undefined);

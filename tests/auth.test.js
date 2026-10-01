@@ -14,14 +14,7 @@ const {
   bearerTransport,
   payloadTransport,
 } = require('../auth.js');
-
-const waitFor = async (predicate, message = 'condition never held') => {
-  for (let i = 0; i < 200; i++) {
-    if (predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
-};
+const { waitFor } = require('./helpers/wait.js');
 
 // ---------------------------------------------------------------------------
 // The store contract, run against every implementation — the engineContract

@@ -1471,6 +1471,18 @@ bytes it sends. In that order:
   to `range()` without a sign: `onLag(topic, readers)` hears of it — once
   per fall, nothing while everybody keeps up — and the four adapters log it
   as `broker.tail.lag` (info).
+- **Tests wait for what they assert, and watch as long as a real broker
+  needs.** The suites had seventeen copies of `waitFor` in three signatures,
+  most of them a count of polls — which stretches under load and still fails
+  a slow machine; they are one deadline-based helper now
+  (`tests/helpers/wait.js`, 5 s or `WRPC_TEST_TIMEOUT`). Three positive
+  assertions that slept a fixed time first wait for their event instead.
+  And the queue contract's "nothing more arrives" windows scale with the
+  harness: against a real broker an acked message was checked for 50 ms —
+  shorter than any redelivery — and is now watched for the broker's own
+  redelivery time (`ackWindow`), so a lost acknowledgement fails the live
+  suite instead of passing it. (Negative control: with the ack dropped and a
+  400 ms redelivery, the 50 ms window passes and the scaled one fails.)
 - **CI's test run cannot hang on a leak.** `pnpm test:ci` is
   `test:coverage` with `--test-timeout=300000 --test-force-exit`, and it is
   what the `test` job runs: a suite that leaves a listener or a timer behind

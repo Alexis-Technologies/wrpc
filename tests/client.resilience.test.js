@@ -8,16 +8,9 @@ const assert = require('node:assert');
 const { WebsocketServer } = require('#ws');
 const { Server, WrpcClient, defineRouter, procedure } = require('../index.js');
 const { backoffDelay, jsonParse } = require('../src/utils.js');
+const { waitFor } = require('./helpers/wait.js');
 
 const noop = () => {};
-
-const waitFor = async (predicate, message = 'condition never held') => {
-  for (let i = 0; i < 100; i++) {
-    if (predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
-};
 
 const router = (extra = {}) =>
   defineRouter({

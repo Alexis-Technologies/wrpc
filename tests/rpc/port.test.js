@@ -9,22 +9,14 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
-const timers = require('node:timers/promises');
 const { MessageChannel } = require('node:worker_threads');
 
 const { RpcServer } = require('../../src/rpc/core.js');
 const { defineRouter, procedure } = require('../../src/rpc/router.js');
 const { chunkEncode } = require('../../src/chunks.js');
+const { waitFor } = require('../helpers/wait.js');
 
 const quiet = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
-
-const waitFor = async (predicate, message = 'condition never held') => {
-  for (let i = 0; i < 300; i++) {
-    if (predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
-};
 
 const boot = (t) => {
   const received = { events: [], uploads: [] };

@@ -15,14 +15,7 @@ const { defineRouter, procedure } = require('../../src/rpc/router.js');
 const { WrpcClient } = require('../../src/client/core.js');
 const { attachChannel } = require('../../src/webrtc/index.js');
 const { rawChannelPair } = require('./rawChannel.js');
-
-const waitFor = async (predicate, message = 'condition never held') => {
-  for (let i = 0; i < 300; i++) {
-    if (predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
-};
+const { waitFor } = require('../helpers/wait.js');
 
 const routerFor = (state) =>
   defineRouter({

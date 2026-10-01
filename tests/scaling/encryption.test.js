@@ -384,8 +384,7 @@ test('cluster: a plaintext command is refused by a sealing node — the HMAC-les
   const forged = { v: 1, from: 'evil', epoch: 'x', t: 'cmd', op: 'disconnect', sel: { all: true } };
   await backplane.publish('wrpc:cluster', JSON.stringify(forged));
   await backplane.publish('cluster', JSON.stringify(forged));
-  await timers.setTimeout(20);
-  assert.ok(warnings.some((w) => w.event === 'cluster.unsealed'));
+  await waitFor(() => warnings.some((w) => w.event === 'cluster.unsealed'), 'the refusal was logged');
   assert.strictEqual(node.rpc.clients.size, 1, 'nobody was disconnected');
 });
 

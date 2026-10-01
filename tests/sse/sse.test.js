@@ -6,14 +6,7 @@ const assert = require('node:assert');
 
 const { Server, WrpcClient, defineRouter, procedure, createEventStream, tracked } = require('../../index.js');
 const { SseParser, CHANNEL_HEADER } = require('../../sse.js');
-
-const waitFor = async (predicate, message = 'condition never held') => {
-  for (let i = 0; i < 300; i++) {
-    if (predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
-};
+const { waitFor } = require('../helpers/wait.js');
 
 // ---------------------------------------------------------------------------
 // The parser, on its own

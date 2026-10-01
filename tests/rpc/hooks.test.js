@@ -6,14 +6,7 @@ const assert = require('node:assert');
 
 const { WrpcClient, defineRouter, procedure } = require('../../index.js');
 const { bootServer } = require('../helpers/server.js');
-
-const waitFor = async (predicate, message = 'condition never held') => {
-  for (let i = 0; i < 200; i++) {
-    if (predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
-};
+const { waitFor } = require('../helpers/wait.js');
 
 const codedError = (message, code) => {
   const error = new Error(message);

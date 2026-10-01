@@ -8,6 +8,14 @@
 //   timeout?: number               ms a delivery may take
 //   redelivery?: number            ms before a stopped consumer's unsettled
 //                                  work reappears (JetStream: ack_wait)
+//   settle?: number                ms a real broker needs to route — and so
+//                                  how long a "nothing more arrives" check
+//                                  watches (at least 50; a fake needs none)
+//   ackWindow?: number             ms an "acked message does not come back"
+//                                  check watches. A real broker's harness
+//                                  sets it to redelivery + settle: a lost
+//                                  ack only shows once the broker
+//                                  redelivers, and 50 ms never saw one.
 // }
 
 const assert = require('node:assert');
@@ -19,6 +27,13 @@ const { unique, waitFor } = require('./support.js');
 const runQueueContract = async (t, name, harness) => {
   const timeout = harness.timeout ?? 2000;
   const redelivery = harness.redelivery ?? timeout;
+  // The quiet windows: how long a check that asserts ABSENCE watches. On a
+  // fake a delivery is a microtask away, so 50 ms is generous; against a
+  // real broker they scale with what the harness says a round trip takes —
+  // a fixed 50 ms there asserted nothing.
+  const quietWindow = Math.max(50, harness.settle ?? 0);
+  const settledWindow = Math.max(100, harness.settle ?? 0);
+  const ackWindow = harness.ackWindow ?? quietWindow;
 
   const open = async (sub) => {
     const env = await harness.open();
@@ -60,7 +75,7 @@ const runQueueContract = async (t, name, harness) => {
     assert.strictEqual(delivery.redelivered, false);
     assert.strictEqual(typeof delivery.id, 'string');
     assert.strictEqual(consumer.healthy, true);
-    await timers.setTimeout(50);
+    await timers.setTimeout(ackWindow);
     assert.strictEqual(seen.length, 1, 'an acked message came back');
   });
 
@@ -76,7 +91,7 @@ const runQueueContract = async (t, name, harness) => {
     await consume(sub, env.peer ?? env.queue, name, handler, { prefetch: 4 });
     for (let i = 0; i < 40; i++) await env.queue.produce(name, `m${i}`);
     await waitFor(() => counts.size === 40, { timeout, message: `received ${counts.size} of 40` });
-    await timers.setTimeout(50);
+    await timers.setTimeout(quietWindow);
     for (const [body, count] of counts) assert.strictEqual(count, 1, `${body} delivered ${count} times`);
   });
 
@@ -177,7 +192,7 @@ const runQueueContract = async (t, name, harness) => {
     assert.strictEqual(dead[0].headers['x-wrpc-dead-reason'], 'poison');
     assert.strictEqual(dead[0].headers['x-wrpc-attempt'], '1');
     assert.strictEqual(dead[0].headers['x-tenant'], 't1');
-    await timers.setTimeout(50);
+    await timers.setTimeout(quietWindow);
     assert.deepStrictEqual(seen, ['poison pill'], 'a dead-lettered message came back');
   });
 
@@ -213,7 +228,7 @@ const runQueueContract = async (t, name, harness) => {
     });
     await queue.produce(name, 'once');
     await waitFor(() => seen.length === 1, { timeout });
-    await timers.setTimeout(100);
+    await timers.setTimeout(settledWindow);
     assert.deepStrictEqual(seen, [1]);
   });
 
@@ -253,7 +268,7 @@ const runQueueContract = async (t, name, harness) => {
     await waitFor(() => seen.length === 1, { timeout });
     await consumer.pause();
     await queue.produce(name, 'waits');
-    await timers.setTimeout(Math.max(100, harness.settle ?? 0));
+    await timers.setTimeout(settledWindow);
     assert.strictEqual(seen.length, 1, 'a paused consumer took new work');
     // The held delivery is still ours to settle, and is not redelivered.
     await seen[0].ack();
@@ -261,7 +276,7 @@ const runQueueContract = async (t, name, harness) => {
     await waitFor(() => seen.length === 2, { timeout });
     assert.strictEqual(seen[1].body, 'waits');
     await seen[1].ack();
-    await timers.setTimeout(50);
+    await timers.setTimeout(ackWindow);
     assert.strictEqual(seen.length, 2, 'a message acked while paused came back');
   });
 
@@ -346,7 +361,7 @@ const runQueueContract = async (t, name, harness) => {
     await queue.produce(right, 'wrong');
     await queue.produce(left, 'right');
     await waitFor(() => seen.length === 1, { timeout });
-    await timers.setTimeout(50);
+    await timers.setTimeout(quietWindow);
     assert.deepStrictEqual(seen, ['right']);
   });
 };

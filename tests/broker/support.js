@@ -6,17 +6,12 @@
 const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
+const { waitForWithin } = require('../helpers/wait.js');
+
 const quiet = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
 
-/** Polls `predicate` every 5 ms; fails after `timeout` ms. */
-const waitFor = async (predicate, { timeout = 2000, message = 'condition never held' } = {}) => {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    if (await predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
-};
+/** The shared waitFor (tests/helpers/wait.js), failing after 2 s unless told otherwise. */
+const waitFor = waitForWithin(2000);
 
 let counter = 0;
 /** A name no other test (or earlier run against a real broker) used. */

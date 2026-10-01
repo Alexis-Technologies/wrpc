@@ -137,6 +137,7 @@ for (const client of clients.length > 0 ? clients : [{ flavor: 'none', lib: null
       timeout: 30_000,
       redelivery: 10_000,
       settle: 1000,
+      ackWindow: 11_000,
     });
   });
 }

@@ -23,6 +23,7 @@ const { randomUUID } = require('node:crypto');
 const { Blob } = require('node:buffer');
 
 const { WrpcClient, defineRouter, procedure, createEventStream, tracked } = require('../../index.js');
+const { waitFor } = require('../helpers/wait.js');
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -209,14 +210,6 @@ const callPacket = (method, args = {}) => ({ type: 'call', id: randomUUID(), met
 // Events travel one way, so there is no reply to await: give the fan-out a
 // round trip to land before asserting on it.
 const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
-
-const waitFor = async (predicate, message) => {
-  for (let i = 0; i < 100; i++) {
-    if (await predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.fail(message);
-};
 
 // A packet-mode POST: the wire form every transport shares.
 const rpcPost = async (url, method, args = {}, headers = {}) => {

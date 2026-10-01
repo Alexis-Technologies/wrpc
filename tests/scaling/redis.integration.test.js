@@ -17,6 +17,7 @@ const assert = require('node:assert');
 const { RpcServer, defineRouter, procedure } = require('../../index.js');
 const { createRedisAdapter } = require('../../scaling.js');
 const { decodeAttachments } = require('../../src/attachments.js');
+const { waitFor: sharedWaitFor } = require('../helpers/wait.js');
 
 const REDIS_URL = process.env.REDIS_URL;
 
@@ -82,14 +83,7 @@ class FakeSocket {
 
 // A real round trip through Redis is not a microtask, so waiting is polling
 // with a deadline rather than draining the job queue.
-const waitFor = async (predicate, message, timeout = 5000) => {
-  const deadline = Date.now() + timeout;
-  while (Date.now() < deadline) {
-    if (predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 20));
-  }
-  assert.fail(`timed out waiting for ${message}`);
-};
+const waitFor = (predicate, message) => sharedWaitFor(predicate, { message, timeout: 5000, interval: 20 });
 
 // Every run gets its own prefix so a shared Redis (a CI service container
 // reused across jobs, a developer's local instance) cannot cross-talk.

@@ -16,6 +16,7 @@ const {
 } = require('@opentelemetry/sdk-metrics');
 
 const { Server, defineRouter, procedure, WrpcClient } = require('../index.js');
+const { waitFor } = require('./helpers/wait.js');
 
 const createMetrics = () => {
   const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
@@ -117,11 +118,12 @@ test('streams: the send direction exists, so the attribute is no longer one-valu
   t.after(() => void client.close());
   await client.load('files');
   await client.api.files.download();
-  await new Promise((resolve) => setTimeout(resolve, 60));
-
-  const directions = points(await collect(), 'wrpc.server.stream.bytes').map(
-    (p) => p.attributes['wrpc.stream.direction'],
-  );
+  // The bytes are counted as the stream is written, after the call answered:
+  // waited for, not slept for.
+  const directionsOf = async () =>
+    points(await collect(), 'wrpc.server.stream.bytes').map((p) => p.attributes['wrpc.stream.direction']);
+  await waitFor(async () => (await directionsOf()).includes('send'), { timeout: 2000 }).catch(() => {});
+  const directions = await directionsOf();
   assert.ok(directions.includes('send'), `wrpc.stream.direction still has no 'send'; saw ${directions}`);
 });
 

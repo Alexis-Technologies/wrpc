@@ -112,6 +112,7 @@ test('redis (real): queue contract', options, async (t) => {
     timeout: 8000,
     redelivery: 2000,
     settle: 300,
+    ackWindow: 2300,
   });
 });
 

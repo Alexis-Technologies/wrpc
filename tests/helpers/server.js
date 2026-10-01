@@ -6,10 +6,9 @@
 // un-hooked close wedges the run, and with a uws engine it wedges it with a
 // native listen socket). Not a *.test.js: node --test must not run helpers.
 
-const timers = require('node:timers/promises');
-const assert = require('node:assert');
-
 const { Server, WrpcClient } = require('../../index.js');
+// Re-exported: a suite that boots a server waits with the same helper.
+const { waitFor } = require('./wait.js');
 
 /** Boots a Server on 127.0.0.1:0 and registers its teardown. */
 const bootServer = async (t, options = {}) => {
@@ -32,15 +31,6 @@ const connectClient = async (t, url, options = {}) => {
   const client = await WrpcClient.connect(url, { heartbeat: false, reconnect: false, ...options });
   t.after(() => void client.close());
   return client;
-};
-
-/** Polls `predicate` every 5ms; fails the test after ~1.5s. */
-const waitFor = async (predicate, message = 'condition never held') => {
-  for (let i = 0; i < 300; i++) {
-    if (await predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
 };
 
 module.exports = { bootServer, connectClient, waitFor };

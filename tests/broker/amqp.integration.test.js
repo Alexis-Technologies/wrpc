@@ -75,6 +75,7 @@ test('amqp (real): queue contract', options, async (t) => {
     timeout: 12_000,
     redelivery: 3000,
     settle: 200,
+    ackWindow: 3200,
   });
 });
 

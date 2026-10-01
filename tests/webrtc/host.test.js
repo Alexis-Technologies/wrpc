@@ -8,6 +8,7 @@ const { Emitter } = require('../../src/utils.js');
 const { defineRouter, procedure } = require('../../src/rpc/router.js');
 const { PeerHost, isInboundTransport } = require('../../src/webrtc/host.js');
 const { chunkEncode } = require('../../src/chunks.js');
+const { waitFor } = require('../helpers/wait.js');
 
 const quiet = {
   log() {},
@@ -56,14 +57,6 @@ class FakePeerTransport extends Emitter {
     void this.emit('chunk', bytes);
   }
 }
-
-const waitFor = async (predicate, message = 'condition never held') => {
-  for (let i = 0; i < 300; i++) {
-    if (predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
-};
 
 const routerOf = (seen) =>
   defineRouter({

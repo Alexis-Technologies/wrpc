@@ -13,11 +13,17 @@ const crypto = require('node:crypto');
 
 const { Server, defineRouter, procedure } = require('../../index.js');
 const { recorder } = require('../helpers/recorder.js');
+const { waitFor } = require('../helpers/wait.js');
 
 const router = defineRouter({ unit: { ping: procedure({ access: 'public', handler: async () => 'pong' }) } });
 
-/** Opens a raw socket, completes the handshake, then hands it to `drive`. */
-const rawUpgrade = async (t, serverOptions, drive) => {
+/**
+ * Opens a raw socket, completes the handshake, hands it to `drive`, and
+ * waits for one of `events` to reach the server log — the line the test is
+ * about. A line that never comes is the test's own assertion to make, with
+ * its own message, so the wait ends quietly.
+ */
+const rawUpgrade = async (t, serverOptions, drive, events) => {
   const { writer, find, entries } = recorder();
   const server = new Server({
     router,
@@ -44,8 +50,7 @@ const rawUpgrade = async (t, serverOptions, drive) => {
     });
   });
   drive(socket);
-  // Long enough for the frame to be parsed and the connection failed.
-  await new Promise((resolve) => setTimeout(resolve, 120));
+  await waitFor(() => events.some((event) => find(event)), { timeout: 2000 }).catch(() => {});
   return { find, entries };
 };
 
@@ -67,9 +72,14 @@ const maskedFrame = (opcode, payload) => {
 };
 
 test('websocket: invalid UTF-8 in a text frame reaches the server log', async (t) => {
-  const { find } = await rawUpgrade(t, {}, (socket) => {
-    socket.write(maskedFrame(0x1, Buffer.from([0xff, 0xfe, 0xfd])));
-  });
+  const { find } = await rawUpgrade(
+    t,
+    {},
+    (socket) => {
+      socket.write(maskedFrame(0x1, Buffer.from([0xff, 0xfe, 0xfd])));
+    },
+    ['ws.frame', 'ws.invalid-utf8'],
+  );
   const entry = find('ws.frame') ?? find('ws.invalid-utf8');
   assert.ok(entry, 'the connection died with no line in the log');
   assert.match(entry.err.message, /UTF-8/);
@@ -79,9 +89,14 @@ test('websocket: a message past maxBuffer names the limit that closed it', async
   // `maxBuffer` is the gate for an ordinary frame; `maxPayload` bounds a
   // COMPRESSED one after it inflates. The limit is the operator's to raise,
   // which is the whole reason the line has to say which one was hit.
-  const { find, entries } = await rawUpgrade(t, { ws: { maxBuffer: 16 } }, (socket) => {
-    socket.write(maskedFrame(0x1, Buffer.from('x'.repeat(600))));
-  });
+  const { find, entries } = await rawUpgrade(
+    t,
+    { ws: { maxBuffer: 16 } },
+    (socket) => {
+      socket.write(maskedFrame(0x1, Buffer.from('x'.repeat(600))));
+    },
+    ['ws.overflow', 'ws.too-big', 'ws.frame'],
+  );
   // `maxBuffer` bounds both the receive queue and the assembled message,
   // so either guard may be the one that trips first; both must say so.
   const entry = find('ws.overflow') ?? find('ws.too-big') ?? find('ws.frame');
