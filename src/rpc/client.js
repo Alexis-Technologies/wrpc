@@ -378,6 +378,17 @@ class Client extends Emitter {
     return this.#transport.revision ?? 2;
   }
 
+  /**
+   * A ping that names a revision (protocol.md#versioning) — how a transport
+   * with no handshake of its own, a worker port, negotiates one. Returns
+   * the revision to answer with, or 0 on a transport that settled it
+   * elsewhere (a WebSocket's subprotocol), where the field is ignored.
+   */
+  negotiateRevision(v) {
+    const transport = this.#transport;
+    return typeof transport.negotiate === 'function' ? transport.negotiate(v) : 0;
+  }
+
   sendEvent(name, data, options = null) {
     const packet = { type: 'event', name, data };
     if (!this.#transport.connection) {

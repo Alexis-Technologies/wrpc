@@ -25,6 +25,10 @@ const parsePacket = (data) => {
 
 class WrpcClientProxy extends Emitter {
   #ports = new Set();
+  // The ports whose page reads framed messages — it said revision 2 on its
+  // first ping (protocol.md#versioning). A page that did not is a 1.0 page,
+  // or one that opted out: a frame from upstream reaches it as JSON.
+  #modern = new WeakSet();
   #pending = new Map();
   // The ids of the pages' open subscriptions: what a port's release
   // unsubscribes upstream, where a call is cancelled.
@@ -155,8 +159,14 @@ class WrpcClientProxy extends Emitter {
     const packet = parsePacket(data);
     if (!packet) throw new Error('Invalid JSON packet');
     // The worker is the page's peer: it answers the page's heartbeat itself
-    // rather than paying for a round trip to the server for every port.
-    if (packet.type === 'ping') return void port.postMessage(JSON.stringify({ type: 'pong' }));
+    // rather than paying for a round trip to the server for every port. A
+    // ping that names a revision is the page's first, and is answered with
+    // this end's: the proxy reads frames, whatever is upstream of it.
+    if (packet.type === 'ping') {
+      if (packet.v === undefined) return void port.postMessage('{"type":"pong"}');
+      if (packet.v === 2) this.#modern.add(port);
+      return void port.postMessage('{"type":"pong","v":2}');
+    }
     if (packet.type === 'pong') return;
     if (!packet.id) throw new Error('Invalid JSON packet');
     await this.open();
@@ -165,7 +175,11 @@ class WrpcClientProxy extends Emitter {
     }
     this.#pending.set(packet.id, port);
     if (packet.type === 'subscribe') this.#feeds.add(packet.id);
-    // What the page wrote goes upstream as it is: a frame stays a frame.
+    // What the page wrote goes upstream as it is: a frame stays a frame —
+    // unless the server speaks revision 1 and reads none, where it leaves
+    // as the JSON of the packet it carries.
+    if (typeof data === 'string') return void this.#connection.write(data);
+    if (this.#connection.revision !== 2) return void this.#connection.write(JSON.stringify(packet));
     this.#connection.write(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
   }
 
@@ -185,19 +199,19 @@ class WrpcClientProxy extends Emitter {
   // was no packet at all, and a batch array is broadcast as it always was.
   #proxyPacket(data, packet) {
     const parsed = packet ?? (typeof data === 'string' ? jsonParse(data) : null);
-    if (!parsed || Array.isArray(parsed)) return void this.#broadcast(data);
+    if (!parsed || Array.isArray(parsed)) return void this.#broadcast(data, parsed);
     const { type, id, status } = parsed;
-    if (type === 'event') return void this.#broadcast(data);
+    if (type === 'event') return void this.#broadcast(data, parsed);
     const port = this.#pending.get(id);
     if (!port) {
       // A server-opened stream's packets are for whichever page picks
       // them up (its callback carried the id). Anything else with an id
       // nobody waits for — the callback of a page that left, the data of
       // a feed it unsubscribed — is nobody's, and used to go to every page.
-      if (type === 'stream') this.#broadcast(data);
+      if (type === 'stream') this.#broadcast(data, parsed);
       return;
     }
-    port.postMessage(data);
+    this.#post(port, data, parsed);
     // `end` is a subscription's terminal packet, so it releases its slot the
     // same way a callback does — otherwise every subscription a page opens
     // pins a port reference in the worker for the life of the connection.
@@ -211,11 +225,16 @@ class WrpcClientProxy extends Emitter {
     if (streamDone) this.#pending.delete(id);
   }
 
-  #broadcast(data, excludePort = null) {
-    for (const port of this.#ports) {
-      if (port === excludePort) continue;
-      port.postMessage(data);
-    }
+  // One message to one page. `parsed` is the packet `data` carries when it
+  // is a frame: a page that reads no frames is posted the packet's JSON —
+  // what a revision-1 server would have sent it.
+  #post(port, data, parsed) {
+    const framed = typeof data !== 'string' && parsed !== null && !this.#modern.has(port);
+    port.postMessage(framed ? JSON.stringify(parsed) : data);
+  }
+
+  #broadcast(data, parsed = null) {
+    for (const port of this.#ports) this.#post(port, data, parsed);
   }
 }
 

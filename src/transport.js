@@ -531,7 +531,24 @@ class ServerEventTransport extends ServerTransport {
     // and streams. Without it a port-attached client was silently
     // request/response only.
     this.connection = this;
+    // A port has no handshake: until its page said — on its first ping, or
+    // in the connect message handed to attachPort — that it reads framed
+    // messages, it is sent none (protocol.md#versioning). A 1.0 page never
+    // says so.
+    this.revision = 1;
+    this.attachments = false;
+    // The newest revision the server behind this port speaks; attachPort
+    // lowers it for a server that sends no frames.
+    this.max = 2;
     port.on('close', () => void this.emit('close'));
+  }
+
+  // The page named revision `v`: this connection speaks the older of the
+  // two, and the answer is this end's own — which is how the page learns it.
+  negotiate(v) {
+    this.revision = v === 2 && this.max === 2 ? 2 : 1;
+    this.attachments = this.revision === 2;
+    return this.max;
   }
 
   write(data) {

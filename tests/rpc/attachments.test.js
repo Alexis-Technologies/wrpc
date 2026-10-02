@@ -377,6 +377,11 @@ test('port: attachPort carries frames both ways over a MessageChannel', async (t
   rpc.attachPort(port1);
   const replies = [];
   port2.on('message', (data) => replies.push(data));
+  // A port has no handshake: the page names its revision on its first ping,
+  // and is answered with the server's — only then do frames travel.
+  port2.postMessage('{"type":"ping","v":2}');
+  await waitFor(() => replies.length === 1);
+  assert.deepStrictEqual(JSON.parse(replies.shift()), { type: 'pong', v: 2 });
   // Up: a call with bytes, posted as the frame a client would build.
   port2.postMessage(
     encodeAttachments({ type: 'call', id: 'p1', method: 'files/put', args: { name: 'p', body: bytes(6, 2) } }),

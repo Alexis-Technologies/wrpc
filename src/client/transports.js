@@ -397,8 +397,17 @@ class ClientHttpTransport extends ClientTransport {
 class ClientEventTransport extends ClientTransport {
   static instance = null;
 
+  // A port has no handshake, so the revision rides the first ping and its
+  // pong (protocol.md#versioning): until the other end — the worker proxy,
+  // or a server the port is attached to — said it reads framed messages,
+  // this side sends none. A 1.0 worker answers a plain pong.
+  revision = 1;
+
   #port = null;
   #worker = null;
+  // Set by a pong that names a revision at all: a 2.x end, which also
+  // understands the goodbye a 1.0 proxy would throw on.
+  #modern = false;
 
   // @deprecated Kept as the class-level singleton it always was, for code
   // that still calls it — but connect() no longer does: each connect({
@@ -423,8 +432,22 @@ class ClientEventTransport extends ClientTransport {
     this.#worker = worker.port ?? worker;
     const { port1, port2 } = new MessageChannel();
     this.#port = port1;
+    this.revision = 1;
+    this.#modern = false;
+    // What this side reads: 2, or 1 under `attachments: false` / a codec.
+    const mine = this.attachments !== false && !this.codec ? 2 : 1;
+    let negotiating = true;
     port1.addEventListener('message', ({ data }) => {
       if (data === undefined) return;
+      // Only until the first pong: it answers the ping below, and is the
+      // transport's — the core never asked for it.
+      if (negotiating && typeof data === 'string' && data.startsWith('{"type":"pong"')) {
+        negotiating = false;
+        const { v } = jsonParse(data) ?? {};
+        this.#modern = v !== undefined;
+        this.revision = v === 2 && mine === 2 ? 2 : 1;
+        return;
+      }
       this.emit('message', data);
     });
     port1.start();
@@ -436,6 +459,10 @@ class ClientEventTransport extends ClientTransport {
     if (options.headers) connect.headers = options.headers;
     if (options.meta) connect.meta = options.meta;
     this.#worker.postMessage(connect, [port2]);
+    // First on the port, before anything the core sends: by the time a
+    // `load()` is answered the revision is known. Not waited for — a call
+    // sent before the pong leaves as revision 1, which every end reads.
+    port1.postMessage(`{"type":"ping","v":${mine}}`);
     this.active = true;
     this.emit('open');
   }
@@ -447,9 +474,11 @@ class ClientEventTransport extends ClientTransport {
     if (!this.active) return;
     this.active = false;
     // A goodbye first: the worker releases what this page was waiting for
-    // on it, where a MessagePort's own close event may never fire.
+    // on it, where a MessagePort's own close event may never fire. Only to
+    // an end that named a revision: a 1.0 proxy reads every message as a
+    // packet and throws on this one.
     try {
-      this.#port.postMessage({ type: 'wrpc:close' });
+      if (this.#modern) this.#port.postMessage({ type: 'wrpc:close' });
     } catch {
       // Already closed.
     }

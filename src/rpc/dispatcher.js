@@ -570,6 +570,12 @@ const handlePacket = (client, packet, router, options = EMPTY_OPTIONS) => {
     // App-level heartbeat: a browser WebSocket cannot see protocol pings,
     // so liveness is measured with packets the client can observe.
     if (packet.enc !== undefined) return void negotiatePing(client, packet.enc, options);
+    // A port's first ping names the revision its page speaks; the answer
+    // names this end's. Anywhere else the field means nothing.
+    if (packet.v !== undefined) {
+      const v = client.negotiateRevision(packet.v);
+      if (v !== 0) return void client.send({ type: 'pong', v });
+    }
     return void client.send({ type: 'pong' });
   } else if (type === 'pong' && client.persistent) {
     return; // answer to a server-initiated ping; liveness is the transport's

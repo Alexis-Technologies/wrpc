@@ -6,10 +6,14 @@ const assert = require('node:assert');
 
 class MockWebSocket {
   static last = null;
+  // The subprotocol the mocked server selects: none unless a test says so —
+  // 'wrpc.v2' is a 2.x server, 'wrpc.v1' a 1.0 one.
+  static protocol = '';
 
   constructor(url) {
     MockWebSocket.last = this;
     this.url = url;
+    this.protocol = MockWebSocket.protocol;
     this._listeners = new Map();
     queueMicrotask(() => this._emit('open'));
   }
@@ -448,17 +452,30 @@ test('WrpcClientProxy', async (t) => {
   await t.test('an attachments frame crosses the port both ways, routed by the packet it carries', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
+    // Revision 2 end to end: the server selected `wrpc.v2`, and each page
+    // named revision 2 on its first ping (the proxy answers with its own).
+    MockWebSocket.protocol = 'wrpc.v2';
     const proxy = new WrpcClientProxy();
     const ch1 = new MessageChannel();
     const ch2 = new MessageChannel();
     globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [ch1.port2] });
     globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [ch2.port2] });
     await proxy.open();
+    MockWebSocket.protocol = '';
     const received = [];
-    ch1.port1.onmessage = (e) => received.push({ port: 1, data: e.data });
-    ch2.port1.onmessage = (e) => received.push({ port: 2, data: e.data });
+    const pongs = [];
+    const take = (port) => (e) =>
+      typeof e.data === 'string' && e.data.includes('"pong"')
+        ? pongs.push(e.data)
+        : received.push({ port, data: e.data });
+    ch1.port1.onmessage = take(1);
+    ch2.port1.onmessage = take(2);
     ch1.port1.start();
     ch2.port1.start();
+    ch1.port1.postMessage('{"type":"ping","v":2}');
+    ch2.port1.postMessage('{"type":"ping","v":2}');
+    await until(() => pongs.length === 2);
+    assert.deepStrictEqual(pongs, ['{"type":"pong","v":2}', '{"type":"pong","v":2}']);
 
     // Up: the page's client sent a call with bytes as a frame; it goes on
     // the wire as it is.
@@ -505,6 +522,76 @@ test('WrpcClientProxy', async (t) => {
     ch1.port2.close();
     ch2.port1.close();
     ch2.port2.close();
+  });
+
+  await t.test('a page that named no revision is a 1.0 page: a frame from upstream reaches it as JSON', async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    MockWebSocket.protocol = 'wrpc.v2';
+    const proxy = new WrpcClientProxy();
+    const old = new MessageChannel();
+    const modern = new MessageChannel();
+    globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [old.port2] });
+    globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [modern.port2] });
+    await proxy.open();
+    MockWebSocket.protocol = '';
+    const got = { old: [], modern: [] };
+    old.port1.onmessage = (e) => got.old.push(e.data);
+    modern.port1.onmessage = (e) => got.modern.push(e.data);
+    old.port1.start();
+    modern.port1.start();
+    // A 1.0 page's heartbeat names nothing, and is answered as 1.0 was.
+    old.port1.postMessage('{"type":"ping"}');
+    modern.port1.postMessage('{"type":"ping","v":2}');
+    await until(() => got.old.length === 1 && got.modern.length === 1);
+    assert.deepStrictEqual([got.old[0], got.modern[0]], ['{"type":"pong"}', '{"type":"pong","v":2}']);
+
+    // One event with bytes, for every page: each in the form it reads.
+    MockWebSocket.last.dispatchMessage(
+      encodeAttachments({ type: 'event', name: 'files/ready', data: { blob: new Uint8Array([7, 8]) } }).buffer,
+    );
+    await until(() => got.old.length === 2 && got.modern.length === 2);
+    assert.deepStrictEqual(JSON.parse(got.old[1]), {
+      type: 'event',
+      name: 'files/ready',
+      data: { blob: { 0: 7, 1: 8 } },
+    });
+    assert.deepStrictEqual(decodeAttachments(got.modern[1]).data.blob, new Uint8Array([7, 8]));
+
+    // A routed answer follows the same rule.
+    old.port1.postMessage(JSON.stringify({ type: 'call', id: 'o-1', method: 'files/get', args: {} }));
+    await until(() => MockWebSocket.last.sentData?.length === 1);
+    MockWebSocket.last.dispatchMessage(
+      encodeAttachments({ type: 'callback', id: 'o-1', result: { blob: new Uint8Array([1]) } }).buffer,
+    );
+    await until(() => got.old.length === 3);
+    assert.deepStrictEqual(JSON.parse(got.old[2]), { type: 'callback', id: 'o-1', result: { blob: { 0: 1 } } });
+    assert.strictEqual(got.modern.length, 2, 'the answer went to its caller only');
+
+    proxy.close();
+    for (const port of [old.port1, old.port2, modern.port1, modern.port2]) port.close();
+  });
+
+  await t.test('upstream of the proxy is a 1.0 server: a page’s frame leaves as the JSON of its packet', async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    MockWebSocket.protocol = 'wrpc.v1';
+    const proxy = new WrpcClientProxy();
+    const page = new MessageChannel();
+    globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [page.port2] });
+    await proxy.open();
+    MockWebSocket.protocol = '';
+    page.port1.start();
+    const call = { type: 'call', id: 'up-1', method: 'files/put', args: { body: new Uint8Array([1, 2, 3]) } };
+    page.port1.postMessage(encodeAttachments(call));
+    await until(() => MockWebSocket.last.sentData?.length > 0);
+    const sent = MockWebSocket.last.sentData.at(-1);
+    assert.strictEqual(typeof sent, 'string', 'no frame reaches a server that reads none');
+    assert.deepStrictEqual(JSON.parse(sent), { ...call, args: { body: { 0: 1, 1: 2, 2: 3 } } });
+
+    proxy.close();
+    page.port1.close();
+    page.port2.close();
   });
 
   await t.test(

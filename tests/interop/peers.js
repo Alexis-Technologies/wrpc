@@ -68,6 +68,10 @@ const boot = async (t, lib, options = {}) => {
 
 /** Connects `lib`'s client (no heartbeat, no reconnect) with `echo` loaded. */
 const connect = async (t, lib, url, options = {}) => {
+  // 1.0's worker transport is ONE instance per process (2.0 builds one per
+  // connect): without this an earlier test's closed client still hears a
+  // later one's answers, and says so on the console.
+  if (options.worker && lib === legacy) lib.WrpcClient.transport.event.instance = null;
   const client = await lib.WrpcClient.connect(url, { heartbeat: false, reconnect: false, ...options });
   t.after(() => void client.close());
   await client.load('echo');

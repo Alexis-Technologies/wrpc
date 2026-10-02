@@ -260,3 +260,108 @@ test(
     assert.strictEqual(server.rpc.sse.size, 1, 'the channel it opened is the channel it kept');
   },
 );
+
+// ---- a worker port --------------------------------------------------------
+//
+// A page and the worker it talks to are deployed apart: a tab loaded before
+// a release keeps its old bundle next to a new worker, and a Service Worker
+// outlives the pages that installed it. A port has no handshake, so the
+// revision rides the page's first ping — which a 1.0 end answers plainly.
+
+const workerOf = (rpc) => ({
+  attached: [],
+  postMessage(message, transfer) {
+    if (message.type === 'wrpc:connect') this.attached.push(rpc.attachPort(transfer[0]));
+  },
+});
+
+for (const pair of PAIRS) {
+  test(`interop port: bytes travel as 1.0 JSON, and the page closes cleanly — ${pair.name}`, { skip }, async (t) => {
+    const { server } = await boot(t, pair.server);
+    const unhandled = [];
+    const onUnhandled = (error) => unhandled.push(error);
+    process.on('unhandledRejection', onUnhandled);
+    t.after(() => process.off('unhandledRejection', onUnhandled));
+    const worker = workerOf(server.rpc);
+    const client = await connect(t, pair.client, 'ws://unused.invalid/api', { worker, callTimeout: 2000 });
+    assert.deepStrictEqual(await client.api.echo.say({ blob: BYTES }), { blob: JSON_BYTES });
+    // A 1.0 server holds a port client for one call only (it became
+    // persistent in 2.0), so an event down the port is this server's to send.
+    if (pair.server === next) {
+      const seen = [];
+      client.api.echo.on('poke', (data) => seen.push(data));
+      assert.strictEqual(await client.api.echo.nudge({ blob: BYTES }), true);
+      await waitFor(() => seen.length === 1, 'the event arrives');
+      assert.deepStrictEqual(seen, [{ blob: JSON_BYTES }]);
+    }
+    // This tree's page says goodbye on its port before closing it — to an
+    // end that named a revision; a 1.0 end reads every message as a packet.
+    // (A 1.0 client's own close is left to the teardown: it throws on a
+    // second one.)
+    if (pair.client === next) client.close();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepStrictEqual(unhandled, [], 'nothing was posted that the other end throws on');
+  });
+}
+
+// The worker PROXY — one socket for every tab — with a page of the other
+// package in front of it. `self` is what a worker's global scope gives the
+// proxy: a message bus, and the location its socket is opened against.
+const workerScope = (t, endpoint) => {
+  const listeners = [];
+  globalThis.self = {
+    addEventListener: (type, fn) => listeners.push({ type, fn }),
+    // `ws://` + host is all a 1.0 proxy builds its URL from.
+    location: { protocol: 'http:', host: endpoint.slice('ws://'.length) },
+  };
+  t.after(() => {
+    delete globalThis.self;
+  });
+  // What the page holds as its `worker`.
+  return {
+    postMessage(message, transfer = []) {
+      for (const { type, fn } of listeners) if (type === 'message') fn({ data: message, ports: transfer });
+    },
+  };
+};
+
+test(
+  'interop proxy: this page behind a 1.0 worker proxy — bytes as 1.0 JSON, and no goodbye it would throw on',
+  { skip },
+  async (t) => {
+    const { ws } = await boot(t, next);
+    const unhandled = [];
+    const onUnhandled = (error) => unhandled.push(error);
+    process.on('unhandledRejection', onUnhandled);
+    t.after(() => process.off('unhandledRejection', onUnhandled));
+    const worker = workerScope(t, ws);
+    const proxy = new legacy.WrpcClientProxy({ reconnect: false, heartbeat: false });
+    t.after(() => proxy.close());
+    const page = await connect(t, next, 'ws://unused.invalid/api', { worker, callTimeout: 2000 });
+    assert.strictEqual(page.revision, 1, 'a 1.0 proxy answers the first ping plainly');
+    assert.deepStrictEqual(await page.api.echo.say({ blob: BYTES }), { blob: JSON_BYTES });
+    page.close();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepStrictEqual(unhandled, []);
+  },
+);
+
+test(
+  'interop proxy: a 1.0 page behind this worker proxy — a frame from the server reaches it as JSON',
+  { skip },
+  async (t) => {
+    const { ws } = await boot(t, next);
+    const worker = workerScope(t, ws);
+    const proxy = new next.WrpcClientProxy({ url: ws, reconnect: false, heartbeat: false });
+    t.after(() => proxy.close());
+    const page = await connect(t, legacy, 'ws://unused.invalid/api', { worker, callTimeout: 2000 });
+    // Upstream is revision 2 (two 2.x ends): the server answers bytes as a
+    // frame, which a 1.0 page would throw on — the proxy posts it the JSON.
+    assert.deepStrictEqual(await page.api.echo.say({ blob: BYTES }), { blob: JSON_BYTES });
+    const seen = [];
+    page.api.echo.on('poke', (data) => seen.push(data));
+    assert.strictEqual(await page.api.echo.nudge({ blob: BYTES }), true);
+    await waitFor(() => seen.length === 1, 'the event arrives');
+    assert.deepStrictEqual(seen, [{ blob: JSON_BYTES }]);
+  },
+);

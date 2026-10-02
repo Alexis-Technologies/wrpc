@@ -9,6 +9,7 @@
 
 const { test } = require('node:test');
 const assert = require('node:assert');
+const { MessageChannel } = require('node:worker_threads');
 
 const { RpcServer, defineRouter, procedure } = require('../../index.js');
 const { WebsocketServer } = require('#ws');
@@ -256,4 +257,103 @@ test('revision http: `attachments: false` on the client asks for no frame', asyn
   const client = await connectClient(t, `${origin}/api`, { attachments: false });
   await client.load('files');
   assert.deepStrictEqual(await client.api.files.get(), { blob: JSON_BYTES });
+});
+
+// ---- a worker port: no handshake, the revision rides the first ping ------
+
+// What a worker does with a page's connect message: hands the port, and the
+// message, to a server it holds. `forward` decides how much of the message.
+const workerOf = (rpc, forward = () => null) => ({
+  attached: [],
+  postMessage(message, transfer) {
+    if (message.type === 'wrpc:connect') this.attached.push(rpc.attachPort(transfer[0], forward(message)));
+  },
+});
+
+const overPort = async (t, serverOptions = {}, clientOptions = {}) => {
+  const { server, seen } = await boot(t, serverOptions);
+  const worker = workerOf(server.rpc);
+  const client = await connectClient(t, 'ws://unused.invalid/api', { worker, ...clientOptions });
+  await client.load('files');
+  return { client, seen, peer: worker.attached[0] };
+};
+
+test('revision port: a 2.x page and a 2.x server agree on 2 by the first ping — bytes travel as bytes', async (t) => {
+  const { client, seen, peer } = await overPort(t);
+  assert.strictEqual(client.revision, 2);
+  assert.strictEqual(peer.revision, 2);
+  await client.api.files.put({ blob: BYTES });
+  assert.ok(seen.args[0].blob instanceof Uint8Array);
+  assert.deepStrictEqual(await client.api.files.get(), { blob: BYTES });
+});
+
+test('revision port: either end that reads no frames keeps the port at revision 1', async (t) => {
+  const server = await overPort(t, { attachments: false });
+  assert.strictEqual(server.client.revision, 1);
+  assert.strictEqual(server.peer.revision, 1);
+  await server.client.api.files.put({ blob: BYTES });
+  assert.deepStrictEqual(server.seen.args[0], { blob: JSON_BYTES });
+  assert.deepStrictEqual(await server.client.api.files.get(), { blob: JSON_BYTES });
+
+  const page = await overPort(t, {}, { attachments: false });
+  assert.strictEqual(page.client.revision, 1);
+  assert.strictEqual(page.peer.revision, 1);
+  assert.deepStrictEqual(await page.client.api.files.get(), { blob: JSON_BYTES });
+});
+
+test('revision port: a page that names nothing — a 1.0 page — is answered a plain pong and sent no frame', async (t) => {
+  const { server } = await boot(t);
+  const { port1, port2 } = new MessageChannel();
+  t.after(() => {
+    port1.close();
+    port2.close();
+  });
+  const peer = server.rpc.attachPort(port1);
+  const replies = [];
+  port2.on('message', (data) => replies.push(data));
+  port2.postMessage('{"type":"ping"}');
+  port2.postMessage(JSON.stringify({ type: 'call', id: 'c1', method: 'files/get', args: {} }));
+  await waitFor(() => replies.length === 2, 'the pong and the answer');
+  assert.strictEqual(replies[0], '{"type":"pong"}');
+  assert.deepStrictEqual(JSON.parse(replies[1]), { type: 'callback', id: 'c1', result: { blob: JSON_BYTES } });
+  assert.strictEqual(peer.revision, 1);
+});
+
+test('revision port: a consumer that hands the connect message over names the revision before any ping', async (t) => {
+  const { server } = await boot(t);
+  const { port1, port2 } = new MessageChannel();
+  t.after(() => {
+    port1.close();
+    port2.close();
+  });
+  const replies = [];
+  port2.on('message', (data) => replies.push(data));
+  const peer = server.rpc.attachPort(port1, { v: 2 });
+  assert.strictEqual(peer.revision, 2);
+  // The server is the first to send: a frame already.
+  peer.sendEvent('files/changed', { blob: BYTES });
+  await waitFor(() => replies.length === 1, 'the event arrives');
+  assert.ok(replies[0] instanceof Uint8Array, 'a framed message');
+  // And a server that sends none is not talked into it.
+  const off = await boot(t, { attachments: false });
+  const other = new MessageChannel();
+  t.after(() => {
+    other.port1.close();
+    other.port2.close();
+  });
+  assert.strictEqual(off.server.rpc.attachPort(other.port1, { v: 2 }).revision, 1);
+});
+
+test('revision: a ping that names a revision means nothing on a WebSocket — the subprotocol settled it', async (t) => {
+  const { url } = await boot(t);
+  const socket = new WebSocket(url, ['wrpc.v1']);
+  t.after(() => socket.close());
+  const frames = [];
+  socket.addEventListener('message', ({ data }) => frames.push(data));
+  await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
+  socket.send('{"type":"ping","v":2}');
+  socket.send(JSON.stringify({ type: 'call', id: 'w1', method: 'files/get', args: {} }));
+  await waitFor(() => frames.length === 2, 'the pong and the answer');
+  assert.strictEqual(frames[0], '{"type":"pong"}');
+  assert.deepStrictEqual(JSON.parse(frames[1]).result, { blob: JSON_BYTES });
 });

@@ -1136,6 +1136,12 @@ class RpcServer extends Emitter {
     // consumer that received declared headers in the 'wrpc:connect' message
     // may hand them over here.
     const client = this.#addClient(transport, null, meta?.headers ? buildMeta({ headers: meta.headers }) : null);
+    // The revision is the page's to name: on its first ping, or — for a
+    // consumer that hands the connect message over — in `meta.v`. Until
+    // then the port is sent no framed message, and a server that sends
+    // none itself never raises it.
+    if (!this.#attachments) transport.max = 1;
+    if (meta?.v !== undefined) transport.negotiate(meta.v);
     port.on('message', (data) => {
       // Same rule as the socket path: text is a packet, bytes are a stream
       // chunk. A Buffer IS a Uint8Array, and checking Buffer.isBuffer first
