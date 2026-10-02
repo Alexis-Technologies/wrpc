@@ -215,6 +215,12 @@ class ClientWsTransport extends ClientTransport {
   }
 }
 
+// What a client that reads framed messages asks an HTTP server for: a 2.x
+// server answers a result holding bytes as a frame only to a request that
+// names it, and a 1.0 server ignores the header. CORS-safelisted, so it adds
+// no preflight.
+const ACCEPT_FRAMES = 'application/octet-stream, application/json';
+
 class ClientHttpTransport extends ClientTransport {
   // Carries `options.encryption`: no session here, so every request is
   // sealed to the pinned server key on its own (HPKE) — by wrapping fetch.
@@ -224,6 +230,10 @@ class ClientHttpTransport extends ClientTransport {
 
   // One request, one response: nothing to cancel or subscribe on.
   persistent = false;
+  // No handshake to negotiate on: a server says the revision it speaks in
+  // the `wrpc-version` of every response, so this side sends a frame only
+  // after an answer said 2 — and a 1.0 server, which says 1, never gets one.
+  revision = 1;
   // Can carry procedure-mapped REST requests (client/core #restCall): a
   // call whose procedure declares `http` goes out as the same REST request
   // an external consumer would send, not as a packet POST.
@@ -344,11 +354,18 @@ class ClientHttpTransport extends ClientTransport {
     const contentType =
       typeof data === 'string' ? (this.codec?.contentType ?? 'application/json') : 'application/octet-stream';
     const headers = { ...this.headers, ...block, 'Content-Type': contentType };
+    // A client that reads frames says so; one that opted out, or speaks a
+    // packet codec, is answered in text as before.
+    if (this.attachments !== false && !this.codec) headers.Accept = ACCEPT_FRAMES;
     const options = { method: 'POST', headers, body: data };
     const doFetch = this.fetch;
     const send = async () => {
       try {
         const res = await doFetch(this.url, options);
+        // The server reads framed messages: from here on, bytes this side
+        // sends travel as bytes. Never lowered — a proxy's error page has
+        // no marker, and it says nothing about the server behind it.
+        if (res.headers.get('wrpc-version') === '2') this.revision = 2;
         // A frame answer (a result holding bytes) is read as bytes and
         // handed on as one; the core classifies it.
         if (res.ok && res.headers.get('content-type') === 'application/octet-stream') {

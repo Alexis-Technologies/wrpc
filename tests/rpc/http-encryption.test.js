@@ -581,3 +581,20 @@ for (const entry of buildBoots()) {
     assert.deepStrictEqual((await client.api.data.echo({ n: 2 })).args, { n: 2 });
   });
 }
+
+test('http encryption: the revision marker and the Accept that asks for a frame both travel sealed — bytes stay bytes', async (t) => {
+  // `wrpc-version` is an INNER response header and `Accept` an inner request
+  // header: a sealed client learns the server's revision exactly as a plain
+  // one does, and what a proxy in the middle sees says nothing of either.
+  const { connect } = await secure(t, { required: true });
+  const spy = spyingFetch();
+  const client = await connect({ fetch: spy.fetch });
+  await client.load('data');
+  assert.strictEqual(client.revision, 2);
+  const { args } = await client.api.data.echo({ blob: Uint8Array.of(1, 2, 3) });
+  assert.ok(args.blob instanceof Uint8Array, 'sent as a frame, answered as one');
+  assert.deepStrictEqual([...args.blob], [1, 2, 3]);
+  for (const { init } of spy.seen) {
+    assert.strictEqual(init.headers.Accept ?? init.headers.accept, undefined, 'the outer request names no Accept');
+  }
+});

@@ -1,7 +1,7 @@
 'use strict';
 
 const { Emitter, jsonParse, isCodec, resolveGenerateId } = require('../utils.js');
-const { ServerTransport, buildHeaders, isOriginAllowed } = require('../transport.js');
+const { ServerTransport, buildHeaders, isOriginAllowed, readsFrames } = require('../transport.js');
 const { hasTransportShape, isInboundTransport } = require('./serverTransport.js');
 const { SessionManager } = require('./sessions.js');
 const { defineRouter, procedure, runHooksSafe } = require('./router.js');
@@ -772,6 +772,15 @@ class RpcServer extends Emitter {
     return router.merge(system);
   }
 
+  // A connection or a request whose peer said nothing of revision 2: no
+  // framed message is sent to it. The per-transport flag is the one
+  // `attachments: false` sets server-wide, so the send paths check nothing
+  // new.
+  #speakRevision1(transport) {
+    transport.revision = 1;
+    transport.attachments = false;
+  }
+
   #addClient(transport, restore = null, meta = null) {
     // The transport encodes outbound packets; the Client decodes inbound
     // ones. One server-wide codec — which is what keeps the broadcast
@@ -939,8 +948,7 @@ class RpcServer extends Emitter {
     // flag `attachments: false` sets for everyone. WebTransport is a carrier
     // 1.0 never had and negotiates no subprotocol: always 2.
     if (meta.kind !== 'wt' && socket.protocol !== WRPC_V2) {
-      transport.revision = 1;
-      transport.attachments = false;
+      this.#speakRevision1(transport);
     } else if (!this.#attachments && meta.kind !== 'wt') {
       // An engine composed by hand selected `wrpc.v2` for a server that
       // sends no frames and reads none: the client will send one. The
@@ -1265,7 +1273,7 @@ class RpcServer extends Emitter {
   }
 
   async handleHttpCall(call) {
-    const headers = buildHeaders(this.#cors, call.headers?.origin);
+    const headers = buildHeaders(this.#cors, call.headers?.origin, this.revision);
     if (call.method === 'OPTIONS') {
       return void call.respond({ status: 200, headers });
     }
@@ -1372,6 +1380,9 @@ class RpcServer extends Emitter {
     }
     const { restore, meta } = this.#identify(call);
     const client = this.#addClient(transport, restore, meta);
+    // Revision 1 unless the caller asked for a framed answer: a 1.0 client
+    // reads the body as JSON whatever its type says (protocol.md#versioning).
+    if (!readsFrames(call.headers)) this.#speakRevision1(transport);
     // An aborted or never-answered request must still evict the client:
     // the transport only self-closes when it writes a response.
     if (typeof call.onAbort === 'function') call.onAbort(() => transport.emit('close'));
@@ -1437,6 +1448,11 @@ class RpcServer extends Emitter {
     // envelope IS the body value, so the rest codec (when configured)
     // takes the packet codec's slot on the transport.
     transport.codec = restCodec;
+    // The conventional mode answers a callback envelope, as packet mode
+    // does: a framed one only for a caller that asked for it — to curl, a
+    // 1.0 client or a browser's fetch it stays the JSON 1.0 answered. A
+    // declared route's body is a plain value and has no frame either way.
+    if (route === null && !readsFrames(call.headers)) this.#speakRevision1(transport);
     // The response seam a REST handler reaches as `context.http`: the
     // request line, and setHeader()/status() onto this very response.
     // Null on every other transport, and on packet-mode HTTP, where one

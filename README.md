@@ -14,7 +14,7 @@
 A fast, **zero-dependency** WebSocket-based RPC protocol for Node.js and
 browsers. Router and procedures, subscriptions that resume, rooms
 that scale across processes, and binary streams with backpressure that reaches
-all the way into TCP — [under 27 KB min+gzip](#bundle-size) in a browser bundle, a budget CI enforces, and
+all the way into TCP — [under 28 KB min+gzip](#bundle-size) in a browser bundle, a budget CI enforces, and
 nothing at all in your lockfile.
 
 ```javascript
@@ -117,7 +117,7 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 79.5 KB | **26.8 KB** | 27.0 KB |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 79.5 KB | **26.8 KB** | 28.0 KB |
 | `@alexify/wrpc` — node (client + server) | 293.4 KB | 98.6 KB | — |
 | `@alexify/wrpc/ws` (WebSocket engine) | 32.7 KB | 11.6 KB | — |
 | `@alexify/wrpc/engine` (engine port) | 33.2 KB | 11.8 KB | — |
@@ -130,7 +130,7 @@ then gzipped):
 | `@alexify/wrpc/broker/nats` | 30.2 KB | 11.2 KB | — |
 | `@alexify/wrpc/broker/amqp` | 33.4 KB | 12.1 KB | — |
 | `@alexify/wrpc/broker/kafka` | 28.6 KB | 10.6 KB | — |
-| `@alexify/wrpc/sse` — browser (client transport) | 82.9 KB | **27.8 KB** | 28.0 KB |
+| `@alexify/wrpc/sse` — browser (client transport) | 82.9 KB | **27.8 KB** | 29.0 KB |
 | `@alexify/wrpc/sse` — node | 142.9 KB | 48.0 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` (token strategies) | 3.8 KB | **1.8 KB** | 2.0 KB |

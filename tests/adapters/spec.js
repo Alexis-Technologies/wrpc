@@ -294,6 +294,26 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(body.result.test.whoami.access, 'session');
   });
 
+  await t.test(
+    'http: the revision is announced, and bytes travel as bytes once the client has seen it',
+    async (sub) => {
+      // Every host answers `wrpc-version: 2`, exposed to script on another
+      // origin; a client that read it sends a call holding bytes as a frame
+      // (`application/octet-stream` — the body a host must hand over raw), and
+      // asked with Accept, is answered with one.
+      const probe = await rpcPost(base, 'test/hello', { name: 'Ada' });
+      assert.strictEqual(probe.res.headers.get('wrpc-version'), '2');
+      assert.strictEqual(probe.res.headers.get('access-control-expose-headers'), 'wrpc-version');
+      const client = await WrpcClient.connect(base, { reconnect: false });
+      sub.after(() => void client.close());
+      await client.load('test');
+      assert.strictEqual(client.revision, 2);
+      const echoed = await client.api.test.echo({ blob: Uint8Array.of(1, 2, 3) });
+      assert.ok(echoed.blob instanceof Uint8Array, 'a frame went up, and a frame came back');
+      assert.deepStrictEqual([...echoed.blob], [1, 2, 3]);
+    },
+  );
+
   await t.test('REST mode: GET takes its args from the query as strings', async () => {
     const { res, body } = await rpcGet(`${base}/test/echo?a=1&b=two`);
     assert.strictEqual(res.status, 200);

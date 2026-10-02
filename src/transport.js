@@ -30,11 +30,23 @@ const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Strict-Transport-Security': 'max-age=31536000; includeSubdomains; preload',
   'Content-Type': 'application/json',
-  // The HTTP side's version marker, echoed on every response — the ws
-  // subprotocol ladder's counterpart (protocol.md#versioning). A request
-  // MAY send `wrpc-version`; revision 1 accepts and ignores it, which is
-  // exactly what reserves the negotiation seam inside the 1.0 freeze.
+  // The HTTP side's version marker, on every response — the ws subprotocol
+  // ladder's counterpart (protocol.md#versioning): the newest revision the
+  // server speaks. 1 here, which is what 1.0 answers; a server that reads
+  // framed messages answers 2 through buildHeaders, and that is how an HTTP
+  // client learns it may send one.
   'wrpc-version': '1',
+};
+
+// What an HTTP client that reads framed messages asks for, and what a
+// server looks for before it answers with one. `Accept` rather than a
+// header of wrpc's own: it is CORS-safelisted, so it costs no preflight a
+// 1.0 server — or an application's own `cors.headers` list, which REPLACES
+// the default — would refuse.
+const FRAME_TYPE = 'application/octet-stream';
+const readsFrames = (headers) => {
+  const accept = headers?.accept;
+  return typeof accept === 'string' && accept.includes(FRAME_TYPE);
 };
 
 const DEFAULT_CORS_METHODS = 'POST, GET, OPTIONS';
@@ -83,12 +95,18 @@ const allowedHeaders = (cors) => {
 // headers?, metaHeaders?, methods? }. Without a `cors` option every origin is allowed
 // (wildcard, credentials-less) — the pre-F2 behavior. With `origins`, the
 // request origin is echoed back only when allowed, plus `Vary: Origin`.
-const buildHeaders = (cors, origin) => {
+//
+// `revision` is the newest protocol revision the server speaks (RpcServer's
+// `revision`); the marker is exposed because script on another origin reads
+// only the response headers named so.
+const buildHeaders = (cors, origin, revision = 1) => {
   const headers = {
     ...SECURITY_HEADERS,
     'Access-Control-Allow-Methods': cors?.methods ?? DEFAULT_CORS_METHODS,
     'Access-Control-Allow-Headers': allowedHeaders(cors),
+    'Access-Control-Expose-Headers': 'wrpc-version',
   };
+  if (revision === 2) headers['wrpc-version'] = '2';
   if (!cors || !cors.origins) {
     headers['Access-Control-Allow-Origin'] = '*';
     return headers;
@@ -535,6 +553,7 @@ ServerTransport.transport = {
 module.exports = {
   ServerTransport,
   buildHeaders,
+  readsFrames,
   isOriginAllowed,
   parseCookies,
   publicErrorMessage,

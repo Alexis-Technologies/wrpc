@@ -166,3 +166,94 @@ test('revision: an engine composed by hand that selects wrpc.v2 for a frameless 
   assert.strictEqual(client.revision, 2, 'the bare engine selected the newest revision offered');
   await waitFor(() => lines.some((line) => line.event === 'revision.mismatch'), 'the mismatch is logged');
 });
+
+// ---- HTTP: no handshake, so the two directions say it in headers --------
+
+const post = (url, packet, headers = {}) =>
+  fetch(url, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', ...headers },
+    body: JSON.stringify(packet),
+  });
+
+const FRAMES = { Accept: 'application/octet-stream, application/json' };
+
+test('revision http: a server announces the revision it speaks, exposed to another origin', async (t) => {
+  const on = await boot(t);
+  const off = await boot(t, { attachments: false });
+  const call = { type: 'call', id: '1', method: 'files/put', args: {} };
+  const two = await post(`${on.origin}/api`, call);
+  assert.strictEqual(two.headers.get('wrpc-version'), '2');
+  assert.strictEqual(two.headers.get('access-control-expose-headers'), 'wrpc-version');
+  const one = await post(`${off.origin}/api`, call);
+  assert.strictEqual(one.headers.get('wrpc-version'), '1', '`attachments: false` speaks revision 1');
+  const preflight = await fetch(`${on.origin}/api`, { method: 'OPTIONS' });
+  assert.strictEqual(preflight.headers.get('wrpc-version'), '2');
+});
+
+test('revision http: a result holding bytes is a frame only for a caller that asked for one', async (t) => {
+  const { origin } = await boot(t);
+  const call = { type: 'call', id: '7', method: 'files/get', args: {} };
+  // No Accept — a 1.0 client, curl: the JSON 1.0 answered.
+  const plain = await post(`${origin}/api`, call);
+  assert.strictEqual(plain.headers.get('content-type'), 'application/json');
+  assert.deepStrictEqual(await plain.json(), { type: 'callback', id: '7', result: { blob: JSON_BYTES } });
+  // Asked for: the frame.
+  const framed = await post(`${origin}/api`, call, FRAMES);
+  assert.strictEqual(framed.headers.get('content-type'), 'application/octet-stream');
+  const bytes = new Uint8Array(await framed.arrayBuffer());
+  assert.deepStrictEqual([bytes[0], bytes[1]], [0, 1], 'a framed message of kind 1');
+});
+
+test('revision http: a batch and the conventional REST mode follow the same rule', async (t) => {
+  const { origin } = await boot(t);
+  const batch = [
+    { type: 'call', id: 'a', method: 'files/get', args: {} },
+    { type: 'call', id: 'b', method: 'files/put', args: {} },
+  ];
+  const plain = await post(`${origin}/api`, batch);
+  assert.strictEqual(plain.headers.get('content-type'), 'application/json');
+  assert.deepStrictEqual(await plain.json(), [
+    { type: 'callback', id: 'a', result: { blob: JSON_BYTES } },
+    { type: 'callback', id: 'b', result: true },
+  ]);
+  const framed = await post(`${origin}/api`, batch, FRAMES);
+  assert.strictEqual(framed.headers.get('content-type'), 'application/octet-stream');
+  // GET /api/files/get — what a browser's fetch or curl sends has no such
+  // Accept, and reads JSON; the envelope is framed only on request.
+  const rest = await fetch(`${origin}/api/files/get`);
+  assert.strictEqual(rest.headers.get('content-type'), 'application/json');
+  assert.deepStrictEqual((await rest.json()).result, { blob: JSON_BYTES });
+  const restFramed = await fetch(`${origin}/api/files/get`, { headers: FRAMES });
+  assert.strictEqual(restFramed.headers.get('content-type'), 'application/octet-stream');
+});
+
+test('revision http: the client sends a frame only after a response said 2', async (t) => {
+  const { origin, seen } = await boot(t);
+  const client = await connectClient(t, `${origin}/api`);
+  assert.strictEqual(client.revision, 1, 'nothing heard yet');
+  // Before any answer the server is unknown: bytes leave as 1.0 JSON.
+  assert.strictEqual(await client.call('files/put', { blob: BYTES }), true);
+  assert.deepStrictEqual(seen.args[0], { blob: JSON_BYTES });
+  assert.strictEqual(client.revision, 2, 'the answer carried wrpc-version: 2');
+  assert.strictEqual(await client.call('files/put', { blob: BYTES }), true);
+  assert.ok(seen.args[1].blob instanceof Uint8Array);
+  assert.deepStrictEqual(await client.call('files/get'), { blob: BYTES });
+});
+
+test('revision http: against a server that speaks revision 1 the client never sends a frame', async (t) => {
+  const { origin, seen } = await boot(t, { attachments: false });
+  const client = await connectClient(t, `${origin}/api`);
+  await client.load('files');
+  assert.strictEqual(client.revision, 1);
+  assert.strictEqual(await client.api.files.put({ blob: BYTES }), true);
+  assert.deepStrictEqual(seen.args[0], { blob: JSON_BYTES });
+  assert.deepStrictEqual(await client.api.files.get(), { blob: JSON_BYTES });
+});
+
+test('revision http: `attachments: false` on the client asks for no frame', async (t) => {
+  const { origin } = await boot(t);
+  const client = await connectClient(t, `${origin}/api`, { attachments: false });
+  await client.load('files');
+  assert.deepStrictEqual(await client.api.files.get(), { blob: JSON_BYTES });
+});

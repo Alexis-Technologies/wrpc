@@ -101,7 +101,14 @@ const ENTRIES = [
   // the WebTransport mux's fallback callback, which the wt client bundles
   // (+0.1 KB — measured 26,638 B against a 26,624 B budget: over by 14,
   // found by the size run, not shaved away to fit).
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 27 },
+  // 27 -> 28 for protocol revision 2 on the client half (protocol.md
+  // #versioning): the `wrpc.v2, wrpc.v1` offer and the revision a connection
+  // negotiated, the one redial with the query carrier against a server that
+  // answered `wrpc.v1`, the `Accept` that asks an HTTP server for a frame
+  // and the `wrpc-version` that says it may be sent one, the worker port's
+  // revision on its first ping — what lets a 2.x client talk to a 1.0 peer
+  // without a flag (the http leg crossed it: 27,692 B against 27,648).
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 28 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
@@ -138,7 +145,9 @@ const ENTRIES = [
   // the main entry's own 26 -> 27 raise never reached it — it sat 11 bytes
   // under. The client core checking by deed that a session transport sealed
   // what it opened (+0.1 KB, measured 27,768 B against 27,648) is what crossed it.
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 28 },
+  // 28 -> 29 with the main entry's revision-2 raise (measured 28,735 B
+  // against 28,672).
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 29 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and

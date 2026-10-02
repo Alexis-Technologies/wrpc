@@ -98,6 +98,32 @@ for (const pair of PAIRS) {
   });
 }
 
+for (const pair of PAIRS) {
+  test(`interop http: bytes in a call and in its answer travel as 1.0 JSON — ${pair.name}`, { skip }, async (t) => {
+    const { http } = await boot(t, pair.server);
+    const client = await connect(t, pair.client, http, { callTimeout: 2000 });
+    assert.deepStrictEqual(await client.api.echo.say({ blob: BYTES }), { blob: JSON_BYTES });
+  });
+
+  test(`interop http: a batch with bytes in one answer loses none of its calls — ${pair.name}`, { skip }, async (t) => {
+    const { http } = await boot(t, pair.server);
+    const client = await connect(t, pair.client, http, { callTimeout: 2000, batch: true });
+    const answers = await Promise.all([
+      client.api.echo.say({ n: 1 }),
+      client.api.echo.say({ blob: BYTES }),
+      client.api.echo.say({ n: 3 }),
+    ]);
+    assert.deepStrictEqual(answers, [{ n: 1 }, { blob: JSON_BYTES }, { n: 3 }]);
+  });
+}
+
+test('interop http: this client never raises its revision against a 1.0 server', { skip }, async (t) => {
+  const { http } = await boot(t, legacy);
+  const client = await connect(t, next, http);
+  await client.api.echo.say({ n: 1 });
+  assert.strictEqual(client.revision, 1);
+});
+
 test('interop ws: this client knows a 1.0 server by the revision it selected', { skip }, async (t) => {
   const { ws } = await boot(t, legacy);
   const client = await connect(t, next, ws);

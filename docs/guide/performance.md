@@ -472,7 +472,7 @@ it is a ratchet, and it runs in CI's lint job. See
 [Browser & bundling](./browser#bundle-size) for the table and what is in each
 entry.
 
-The main entry's budget is 27 KB min+gzip ([the measured table](./browser#bundle-size)), and that is the *whole* client —
+The main entry's budget is 28 KB min+gzip ([the measured table](./browser#bundle-size)), and that is the *whole* client —
 calls, subscriptions, streams, reconnection with backoff, auth hooks — not
 a core that then needs a realtime add-on and a query-binding add-on layered
 on top of it. It is small enough to arrive in the same round trip as your

@@ -379,9 +379,13 @@ const wrpcFastify = async (fastify, options = {}) => {
   // A sealed request (@alexify/wrpc/encryption) is opaque bytes under its
   // own content type — which fastify would answer 415 before this handler
   // ran. Registered once, and only if the app has not claimed it.
-  const sealed = 'application/wrpc-sealed';
-  if (typeof fastify.hasContentTypeParser === 'function' && !fastify.hasContentTypeParser(sealed)) {
-    fastify.addContentTypeParser(sealed, { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
+  // The same holds for a call whose arguments hold bytes: it arrives as an
+  // attachments frame under `application/octet-stream`, which fastify
+  // parses no more than the sealed type — two 2.x ends were answered 415.
+  for (const type of ['application/wrpc-sealed', 'application/octet-stream']) {
+    if (typeof fastify.hasContentTypeParser === 'function' && !fastify.hasContentTypeParser(type)) {
+      fastify.addContentTypeParser(type, { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
+    }
   }
   const routes =
     base === ''
