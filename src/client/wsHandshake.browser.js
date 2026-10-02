@@ -66,6 +66,10 @@ const openSocket = (WebSocket, url, protocols, options, log) => {
         }
         budget -= token.length;
         offer = [...offer, token];
+        // Told to the caller (the ws transport, which hands in an object of
+        // its own): a server that turns out to speak revision 1 may be a
+        // 1.0 server, which never read a carrier token.
+        options.carried = true;
       }
       headers = meta = null;
     }

@@ -32,6 +32,10 @@ class ClientWsTransport extends ClientTransport {
   // `{ ready, send, receive }`. Re-made per open — a reconnect is a new
   // handshake and new keys.
   #secure = null;
+  // Set once a server answered `wrpc.v1` to a handshake that carried the
+  // declared bags as subprotocol tokens: a 1.0 server reads them from the
+  // connect URL only, so every later open of this transport uses the query.
+  #requery = false;
 
   /** The session's facts once established (see WrpcClient#encryption), or null. */
   encryption = null;
@@ -67,7 +71,10 @@ class ClientWsTransport extends ClientTransport {
       const url =
         encryption === null ? this.url : `${this.url}${this.url.includes('?') ? '&' : '?'}${encryption.param}=1`;
       const offer = options.protocols ?? (this.attachments === false ? [WRPC_V1] : [WRPC_V2, WRPC_V1]);
-      const socket = openSocket(WebSocket, url, offer, options, this.log);
+      // A copy the handshake may write to (`carried`), and where a transport
+      // that already met a revision-1 server asks for the query carrier.
+      const handshake = this.#requery ? { ...options, carrier: 'query' } : { ...options };
+      const socket = openSocket(WebSocket, url, offer, handshake, this.log);
       // Bytes arrive as ArrayBuffers, never Blobs: an attachments frame is
       // classified synchronously on the way in, in order with the packets.
       socket.binaryType = 'arraybuffer';
@@ -105,6 +112,25 @@ class ClientWsTransport extends ClientTransport {
       const onOpen = () => {
         this.protocol = socket.protocol || '';
         this.revision = this.protocol === WRPC_V2 ? 2 : 1;
+        // Offered `wrpc.v2`, answered `wrpc.v1`: possibly a 1.0 server, and
+        // 1.0 reads the declared bags from the connect URL only — the
+        // tokens this handshake carried went unread. Dialled again, once,
+        // with the query 1.0 itself used; an application that chose its
+        // carrier, or its offer, is left with its choice.
+        if (
+          handshake.carried &&
+          this.protocol === WRPC_V1 &&
+          offer.includes(WRPC_V2) &&
+          (options.carrier ?? 'auto') === 'auto'
+        ) {
+          this.#requery = true;
+          this.log?.warn({ event: 'handshake.requery' });
+          // Abandoned, not closed-and-reported: its close is nobody's now.
+          this.#socket = null;
+          socket.close();
+          this.#opening = null;
+          return void this.open(options).then(resolve, reject);
+        }
         if (encryption === null) return void established();
         // The handshake first: nothing of this connection leaves in the
         // clear, the compression offer included. `connectTimeout` is racing

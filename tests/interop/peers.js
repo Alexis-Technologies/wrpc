@@ -6,6 +6,9 @@
 // must not run helpers. A machine without the alias installed skips the
 // interop suite, the way the adapter suites skip a missing framework.
 
+const path = require('node:path');
+const vm = require('node:vm');
+
 const next = require('../../index.js');
 require('../../sse.js');
 
@@ -26,6 +29,15 @@ const routerOf = (lib) =>
   lib.defineRouter({
     echo: {
       say: lib.procedure({ access: 'public', handler: async (_context, args) => args }),
+      // What the server observed of the connection: one declared header, the
+      // declared data, and the connect URL (where a query carrier shows).
+      seen: lib.procedure({
+        access: 'public',
+        handler: async (context) => {
+          const { headers, data, url } = context.client.meta;
+          return { tenant: headers['x-tenant'] ?? null, data: { ...data }, url };
+        },
+      }),
       nudge: lib.procedure({
         access: 'public',
         handler: async (context, args) => {
@@ -62,4 +74,29 @@ const connect = async (t, lib, url, options = {}) => {
   return client;
 };
 
-module.exports = { next, legacy, boot, connect, routerOf };
+// The BROWSER build of this tree's client, bundled the way an application's
+// bundler does it (the `browser` field map swaps the platform halves in) and
+// evaluated here: Node has the WebSocket, btoa and TextEncoder it needs. It
+// is the only way to drive what a page does on a handshake — a Node client
+// sends real request headers and never reaches the carrier tokens.
+let bundled = null;
+const browserBuild = () => {
+  bundled ??= (async () => {
+    const esbuild = require('esbuild');
+    const result = await esbuild.build({
+      entryPoints: [path.join(__dirname, '..', '..', 'browser.js')],
+      bundle: true,
+      platform: 'browser',
+      format: 'cjs',
+      write: false,
+      logLevel: 'silent',
+    });
+    const module = { exports: {} };
+    const wrapped = `(function (module, exports) {${result.outputFiles[0].text}\n})`;
+    vm.runInThisContext(wrapped, { filename: 'wrpc.browser.bundle.js' })(module, module.exports);
+    return module.exports;
+  })();
+  return bundled;
+};
+
+module.exports = { next, legacy, boot, connect, routerOf, browserBuild };

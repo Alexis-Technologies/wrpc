@@ -9,7 +9,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { next, legacy, boot, connect } = require('./peers.js');
+const { next, legacy, boot, connect, browserBuild } = require('./peers.js');
 const { waitFor } = require('../helpers/wait.js');
 
 const skip = legacy ? false : 'wrpc-v1 (the published 1.0) is not installed';
@@ -120,3 +120,92 @@ test(
     assert.deepStrictEqual(got.modern, [{ blob: BYTES }]);
   },
 );
+
+// ---- a page's labels against a 1.0 server --------------------------------
+//
+// A browser cannot set a handshake header, so a 2.x page declares `headers`
+// and `meta` as `wrpc.h.`/`wrpc.m.` subprotocol tokens — which 1.0 never
+// read: it took them from the connect URL. A server that answers `wrpc.v1`
+// to an offer of `wrpc.v2` may be that server, so the client dials again
+// with the query.
+
+const recorder = () => {
+  const lines = [];
+  return { lines, logger: { debug() {}, info() {}, error() {}, warn: (line) => lines.push(line) } };
+};
+
+const LABELS = { headers: { 'x-tenant': 'acme' }, meta: { userId: 7 } };
+
+test(
+  'interop ws: a page’s declared headers and meta reach a 1.0 server — redialled once with the query',
+  { skip },
+  async (t) => {
+    const page = await browserBuild();
+    const { server, ws } = await boot(t, legacy);
+    let handshakes = 0;
+    server.wsServer.on('connection', () => handshakes++);
+    const { lines, logger } = recorder();
+    const client = await connect(t, page, ws, { ...LABELS, logger });
+    const seen = await client.api.echo.seen();
+    assert.strictEqual(seen.tenant, 'acme');
+    assert.deepStrictEqual(seen.data, { 'user-id': 7 });
+    assert.ok(seen.url.includes('wrpc_h='), `the query carrier 1.0 reads (url was '${seen.url}')`);
+    assert.strictEqual(handshakes, 2, 'the tokens, then the query');
+    // The transport remembers: a later open goes straight to the query.
+    client.close();
+    await waitFor(() => !client.active, 'closed');
+    await client.open();
+    assert.strictEqual((await client.api.echo.seen()).tenant, 'acme');
+    assert.strictEqual(handshakes, 3, 'one handshake for the reopen, not two');
+    assert.deepStrictEqual(
+      lines.filter((line) => line.event === 'handshake.requery'),
+      [{ event: 'handshake.requery' }],
+      'said once',
+    );
+    assert.strictEqual(client.revision, 1);
+  },
+);
+
+test(
+  'interop ws: against this server the same page keeps its tokens — no second handshake, a clean URL',
+  { skip },
+  async (t) => {
+    const page = await browserBuild();
+    const { ws } = await boot(t, next);
+    const { lines, logger } = recorder();
+    const client = await connect(t, page, ws, { ...LABELS, logger });
+    const seen = await client.api.echo.seen();
+    assert.strictEqual(seen.tenant, 'acme');
+    assert.deepStrictEqual(seen.data, { 'user-id': 7 });
+    assert.ok(!seen.url.includes('wrpc_'), `nothing rides the url (was '${seen.url}')`);
+    assert.deepStrictEqual(lines, []);
+    assert.strictEqual(client.revision, 2);
+  },
+);
+
+test(
+  'interop ws: `carrier: "protocol"` is the application’s choice — never redialled, the labels are lost on 1.0',
+  { skip },
+  async (t) => {
+    const page = await browserBuild();
+    const { ws } = await boot(t, legacy);
+    const { lines, logger } = recorder();
+    const client = await connect(t, page, ws, { ...LABELS, carrier: 'protocol', logger });
+    const seen = await client.api.echo.seen();
+    assert.strictEqual(seen.tenant, null);
+    assert.deepStrictEqual(seen.data, {});
+    assert.deepStrictEqual(lines, []);
+  },
+);
+
+test('interop ws: a page with nothing to declare connects to a 1.0 server in one handshake', { skip }, async (t) => {
+  const page = await browserBuild();
+  const { server, ws } = await boot(t, legacy);
+  let handshakes = 0;
+  server.wsServer.on('connection', () => handshakes++);
+  const { lines, logger } = recorder();
+  const client = await connect(t, page, ws, { logger });
+  assert.deepStrictEqual(await client.api.echo.say({ ok: true }), { ok: true });
+  assert.strictEqual(handshakes, 1);
+  assert.deepStrictEqual(lines, []);
+});

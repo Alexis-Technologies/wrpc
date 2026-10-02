@@ -297,6 +297,7 @@ They are what a "connection that works but is missing something" looks like:
 | `meta.oversize` | warn | A declared bag (headers, meta, or the per-call aggregate under batching) did not fit `metaMaxBytes` on its carrier (`carrier`, `bytes`) and was **not sent** — the server would have dropped it whole |
 | `declared.unsendable` | warn | A declared header could not travel on this carrier at all (a value the carrier's grammar refuses) |
 | `declared.exposed` | warn | A credential (`authorization`) was put in the connect URL's query because `carrier: 'query'` (or WebTransport) left no other carrier — it will show in access logs |
+| `handshake.requery` | warn | The server answered `wrpc.v1` to a handshake that offered `wrpc.v2` and carried `headers`/`meta` as subprotocol tokens — possibly a 1.0 server, which reads them from the connect URL only. The client dialled again with the query carrier, and keeps it for every later reconnect; `carrier: 'query'` up front saves the extra handshake, `carrier: 'protocol'` forbids the query |
 | `handshake.fallback` | warn | The Node WebSocket constructor refused the headers init bag (`reason` is the error's name, never the message: undici repeats a header value in it); the browser carriers were used instead |
 | `transport.fallback` | warn | A transport of the list could not connect; the next one was tried |
 | `authenticate.failed`, `refresh.failed`, `restore.failed` | warn | The `authenticate` hook, the `refresh` hook, or the re-`load()`/re-subscribe after a reconnect failed |
