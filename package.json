@@ -246,6 +246,7 @@
     "uWebSockets.js": "github:uNetworking/uWebSockets.js#v20.69.0",
     "vitepress": "^1.6.4",
     "vitepress-plugin-mermaid": "^2.0.17",
+    "wrpc-v1": "npm:@alexify/wrpc@1.0.0",
     "ws": "^8.21.3"
   },
   "engines": {

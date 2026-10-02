@@ -125,11 +125,19 @@ importers:
       vitepress-plugin-mermaid:
         specifier: ^2.0.17
         version: 2.0.17(mermaid@11.16.1)(vitepress@1.6.4(@algolia/client-search@5.56.0)(@types/node@22.20.1)(postcss@8.5.26)(search-insights@2.17.3)(typescript@7.0.2))
+      wrpc-v1:
+        specifier: npm:@alexify/wrpc@1.0.0
+        version: '@alexify/wrpc@1.0.0'
       ws:
         specifier: ^8.21.3
         version: 8.21.3
 
 packages:
+
+  '@alexify/wrpc@1.0.0':
+    resolution: {integrity: sha512-aFfPWCVgui1i8RPjxZLNFj3v3bUvymcvge2TSIFn+bL4CiSsC6aGFtXcitU+OBTKZ+4+tv+7Ve8rgSkI6+KQxA==}
+    engines: {node: '>=22'}
+    hasBin: true
 
   '@algolia/abtesting@1.22.0':
     resolution: {integrity: sha512-BFR6zNowNKcY7Ou7TaJc9QWexES4YKPbmf/OTFofpdsdhz4x6q0lbxp3duO0EHnyrN7rE4ba/TSXuY+BDGu4+g==}
@@ -3561,6 +3569,8 @@ packages:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
 snapshots:
+
+  '@alexify/wrpc@1.0.0': {}
 
   '@algolia/abtesting@1.22.0':
     dependencies:
