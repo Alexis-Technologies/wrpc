@@ -7,6 +7,18 @@ const assert = require('node:assert');
 const { Server, WrpcClient, defineRouter, procedure, createEventStream, tracked } = require('../../index.js');
 const { SseParser, CHANNEL_HEADER } = require('../../sse.js');
 const { waitFor } = require('../helpers/wait.js');
+const { splitChannelRef } = require('../../src/sse/constants.js');
+
+// The `ready` frame: ONE field, `channel`, holding the whole reference a
+// client presents back — `<id>.<secret>`. Split here into the id the
+// registry is keyed by and the secret, for the tests that present one
+// without the other; `ref` is what a client actually holds.
+const readyOf = (data) => {
+  const frame = JSON.parse(data);
+  assert.deepStrictEqual(Object.keys(frame), ['channel'], 'the frame names the reference and nothing else');
+  const { id, secret } = splitChannelRef(frame.channel);
+  return { channel: id, secret, ref: frame.channel };
+};
 
 // ---------------------------------------------------------------------------
 // The parser, on its own
@@ -281,7 +293,7 @@ test('sse: the channel is what ties the two halves together', async (t) => {
       events.push(...parser.push(decoder.decode(value, { stream: true })));
     }
     assert.strictEqual(events[0].event, 'ready');
-    const ready = JSON.parse(events[0].data);
+    const ready = readyOf(events[0].data);
     channelId = ready.channel;
     secret = ready.secret;
     assert.match(channelId, /^[0-9a-f][0-9a-f-]{34}[0-9a-f]$/, 'the id comes from the server, not the request');
@@ -331,7 +343,7 @@ test('sse: a guessable channel id is not a hijack — the application counts, th
   const victim = await readStream(`${base}/events`);
   t.after(() => victim.controller.abort());
   await waitFor(() => victim.events.some((event) => event.event === 'ready'), 'the ready event never arrived');
-  const ready = JSON.parse(victim.events.find((event) => event.event === 'ready').data);
+  const ready = readyOf(victim.events.find((event) => event.event === 'ready').data);
   assert.match(ready.channel, /^id-\d+$/, "the id is the application's — a counter here");
   const post = (ref, id) =>
     fetch(base, {
@@ -384,7 +396,7 @@ test('sse: Last-Event-ID replays what the dropped stream missed', async (t) => {
 
   const first = await open();
   await waitFor(() => first.events.length >= 1, 'the ready event never arrived');
-  const ready = JSON.parse(first.events[0].data);
+  const ready = readyOf(first.events[0].data);
   const keep = `${ready.channel}.${ready.secret}`;
   await fetch(base, {
     method: 'POST',
@@ -459,7 +471,7 @@ test('sse: a channel restores the session its GET arrived with', async (t) => {
   const openChannel = async (headers = {}) => {
     const stream = await readStream(`${base}/events`, headers);
     await waitFor(() => stream.events.some((event) => event.event === 'ready'), 'the ready event never arrived');
-    const ready = JSON.parse(stream.events.find((event) => event.event === 'ready').data);
+    const ready = readyOf(stream.events.find((event) => event.event === 'ready').data);
     // What a request presents: the id and the secret, in one header.
     stream.channel = `${ready.channel}.${ready.secret}`;
     return stream;
@@ -570,7 +582,7 @@ test('sse: a cross-origin channel is granted, not silently blocked', async (t) =
     assert.strictEqual(stream.res.headers.get('access-control-allow-origin'), origin);
     assert.strictEqual(stream.res.headers.get('access-control-allow-credentials'), 'true');
     await waitFor(() => stream.events.some((event) => event.event === 'ready'), 'the ready event never arrived');
-    const ready = JSON.parse(stream.events.find((event) => event.event === 'ready').data);
+    const ready = readyOf(stream.events.find((event) => event.event === 'ready').data);
     const channel = `${ready.channel}.${ready.secret}`;
 
     const res = await fetch(base, {
@@ -629,7 +641,7 @@ test('sse: a resume past the replay buffer gets an honest gap frame', async (t) 
 
   const first = await readStream(`${base}/events`);
   await waitFor(() => first.events.some((event) => event.event === 'ready'), 'ready never arrived');
-  const ready = JSON.parse(first.events.find((event) => event.event === 'ready').data);
+  const ready = readyOf(first.events.find((event) => event.event === 'ready').data);
   const channel = `${ready.channel}.${ready.secret}`;
 
   const call = (id) =>
@@ -672,7 +684,7 @@ test('sse: the replay buffer is capped by bytes, not only frames', async (t) => 
   const stream = await readStream(`${base}/events`);
   t.after(() => stream.controller.abort());
   await waitFor(() => stream.events.some((event) => event.event === 'ready'), 'ready never arrived');
-  const ready = JSON.parse(stream.events.find((event) => event.event === 'ready').data);
+  const ready = readyOf(stream.events.find((event) => event.event === 'ready').data);
 
   // Each answer is ~300 bytes; after several the byte budget must evict old
   // frames long before the 100-frame cap would.

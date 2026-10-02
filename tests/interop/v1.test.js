@@ -235,3 +235,28 @@ test('interop ws: a page with nothing to declare connects to a 1.0 server in one
   assert.strictEqual(handshakes, 1);
   assert.deepStrictEqual(lines, []);
 });
+
+// ---- SSE: the channel secret, with no revision to negotiate --------------
+//
+// A 2.x server guards an SSE channel with a secret, and a 1.0 client knows
+// of none: it presents the `channel` of the `ready` frame, whatever it is.
+// So the frame carries the whole reference there — `<id>.<secret>` — and a
+// 1.0 client presents the secret without knowing it holds one. (Before, it
+// presented the id alone, was answered 409 on every POST and re-opened the
+// channel for ever.)
+
+test(
+  'interop sse: a 1.0 client against this server — calls, an event, and one channel for all of it',
+  { skip },
+  async (t) => {
+    const { server, http } = await boot(t, next);
+    const client = await connect(t, legacy, http, { transport: 'sse', callTimeout: 2000 });
+    const seen = [];
+    client.api.echo.on('poke', (data) => seen.push(data));
+    assert.deepStrictEqual(await client.api.echo.say({ text: 'sse' }), { text: 'sse' });
+    assert.strictEqual(await client.api.echo.nudge({ at: 1 }), true);
+    await waitFor(() => seen.length === 1, 'the event arrives on the stream');
+    assert.deepStrictEqual(seen, [{ at: 1 }]);
+    assert.strictEqual(server.rpc.sse.size, 1, 'the channel it opened is the channel it kept');
+  },
+);

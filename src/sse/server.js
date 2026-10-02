@@ -35,7 +35,7 @@ const { wireError } = require('../rpc/errors.js');
 // What it cannot do is binary: SSE frames are text, so wrpc's binary streams
 // are refused on this transport rather than silently corrupted.
 
-const { CHANNEL_HEADER } = require('./constants.js');
+const { CHANNEL_HEADER, joinChannelRef } = require('./constants.js');
 
 const DEFAULT_RETENTION = 30 * 1000;
 // The channel secret: 18 bytes is 24 base64url characters, 144 bits — no
@@ -406,12 +406,16 @@ class SseChannels {
     // The response's own high-water mark is the channel's backpressure, so
     // the subscription pump waits on it exactly as it does on a socket.
     writer.onDrain?.(() => channel.transport.emit('drain'));
-    // The client needs its channel id and secret before it can POST
-    // anything, and this frame is the ONLY place the server hands them out
-    // (again on a re-attach: the frame's shape is one, and the client that
-    // re-attached already holds them).
+    // The client needs its channel reference before it can POST anything,
+    // and this frame is the ONLY place the server hands it out (again on a
+    // re-attach: the frame's shape is one, and the client that re-attached
+    // already holds it). ONE opaque string — `<id>.<secret>` — in the field
+    // 1.0 named `channel`: a 1.0 client presents whatever it was given
+    // there, so it presents the secret without knowing there is one, and
+    // the credential costs no revision of the protocol.
     writer.write(`retry: ${this.#options.retry}\n\n`);
-    writer.write(`event: ready\ndata: ${JSON.stringify({ channel: channel.id, secret: channel.secret })}\n\n`);
+    const ref = joinChannelRef(channel.id, channel.secret);
+    writer.write(`event: ready\ndata: ${JSON.stringify({ channel: ref })}\n\n`);
     this.#otel?.recordSseEvent(existing ? 'reattach' : 'open');
     if (existing && lastEventId !== null) {
       const outcome = channel.resume(lastEventId);

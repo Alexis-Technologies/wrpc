@@ -74,7 +74,7 @@ const openStream = (origin, headers = {}) =>
 // What a request presents: the id and the secret the `ready` frame handed out.
 const channelOf = (events) => {
   const ready = JSON.parse(events.find((e) => e.event === 'ready').data);
-  return `${ready.channel}.${ready.secret}`;
+  return ready.channel;
 };
 
 const postPacket = async (origin, channel, packet) => {
