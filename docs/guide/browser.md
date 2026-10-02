@@ -73,14 +73,14 @@ the run — it is a ratchet, and it runs in CI's lint job.
 
 | Entry | min | min+gzip | budget |
 | --- | ---: | ---: | ---: |
-| `@alexify/wrpc` — browser | 79.5 KB | **26.8 KB** | 28.0 KB |
-| `@alexify/wrpc/sse` — browser | 82.9 KB | **27.8 KB** | 29.0 KB |
+| `@alexify/wrpc` — browser | 80.7 KB | **27.2 KB** | 28.0 KB |
+| `@alexify/wrpc/sse` — browser | 84.0 KB | **28.1 KB** | 29.0 KB |
 | `@alexify/wrpc/query` | 2.7 KB | **1.1 KB** | 2.0 KB |
-| `@alexify/wrpc/auth` | 3.8 KB | **1.8 KB** | 2.0 KB |
+| `@alexify/wrpc/auth` | 3.9 KB | **1.8 KB** | 2.0 KB |
 | `@alexify/wrpc/deflate` | 10.7 KB | **4.4 KB** | 5.0 KB |
 | `@alexify/wrpc/encryption` — browser | 31.4 KB | **11.4 KB** | 12.0 KB |
-| `@alexify/wrpc/webrtc` — browser | 176.5 KB | **57.3 KB** | 58.0 KB |
-| `@alexify/wrpc` — node | 293.4 KB | 98.6 KB | — |
+| `@alexify/wrpc/webrtc` — browser | 177.0 KB | **57.5 KB** | 58.0 KB |
+| `@alexify/wrpc` — node | 295.8 KB | 99.4 KB | — |
 
 The Node-only entries carry no budget because their gzip size is not a shipping
 cost; they are measured so a regression is *visible*, not gated.

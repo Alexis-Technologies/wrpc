@@ -11,7 +11,7 @@ Key facts:
 - Hosts: batteries-included `Server`, or fastify / express / bare `node:http` / uWebSockets.js — every host injected, never depended on.
 - Public API: `Server`, `RpcServer`, `defineRouter`, `procedure`, `WrpcClient`, `connect<Api>()`, `tracked`, `createEventLog`, `RoomRegistry`, `Broadcast`, `Cluster`, `WrpcReadable`, `WrpcWritable`.
 - Subpaths: `@alexify/wrpc`, `/ws`, `/engine`, `/uws`, `/fastify`, `/express`, `/scaling`, `/sse`, `/query`, `/auth`, `/deflate`, `/webrtc`, `/wt`, `/encryption`, `/broker` and `/broker/redis`, `/broker/nats`, `/broker/amqp`, `/broker/kafka` (the WebTransport, broker and encryption ones `@experimental`), plus a `wrpc types` codegen CLI.
-- The wire protocol is documented at revision 2.0 — its packet core unchanged since 1.0 (the wire marker is still `wrpc.v1`), its newer carrier conventions badged `since 2.0` with a changes-since-1.0 table: JSON packets (`call`, `callback`, `event`, `subscribe`, `data`, `end`, `unsubscribe`, `cancel`, `stream`, `ping`, `pong`) plus a binary chunk framing.
+- The wire protocol is documented at revision 2 (`wrpc.v2`) — revision 1 plus framed messages (bytes travel as bytes), negotiated per connection so a 2.x peer speaks `wrpc.v1` to a 1.0 peer with nothing to configure; its newer carrier conventions are badged `since 2.0` with a changes-since-1.0 table: JSON packets (`call`, `callback`, `event`, `subscribe`, `data`, `end`, `unsubscribe`, `cancel`, `stream`, `ping`, `pong`) plus a binary chunk framing.
 - Source: https://github.com/Alexis-Technologies/wrpc
 
 ## Introduction

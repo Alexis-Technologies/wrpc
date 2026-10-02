@@ -11,9 +11,10 @@ import type { Client, HttpCall, HttpEncoding, WrpcLogger } from './index.js';
  *
  * The id is SERVER-minted (by the application's `generateId` — a uuid, a
  * cuid, a counter: its format is the application's business) and the secret
- * server-drawn; both are handed out in the `ready` frame, and every
- * re-attach and POST presents them after each other in one header, split
- * at the last dot. The secret is the credential: a request without the
+ * server-drawn; both are handed out as ONE string in the `ready` frame's
+ * `channel` (`<id>.<secret>` — opaque to the client, a 1.0 one included),
+ * and every re-attach and POST presents it back in one header, split by
+ * the server at the last dot. The secret is the credential: a request without the
  * channel's is answered 409, exactly like an unknown id. On top, a channel
  * is bound to the cookie identity of the GET that created it, and a request
  * presenting the secret without that identity is 403. Both halves belong to ONE server-side `Client`,

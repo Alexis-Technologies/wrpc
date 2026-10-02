@@ -453,8 +453,10 @@ export interface RpcServerOptions {
    * Binary attachments: raw bytes (typed arrays, ArrayBuffers) anywhere in
    * a packet's args, result, data or error details travel as bytes in one
    * binary frame, and arrive as Uint8Arrays — instead of the plain objects
-   * JSON makes of them. On by default; `false` sends every packet as JSON
-   * as revision 1 did (set it on both ends). Off by itself under a packet
+   * JSON makes of them — to every peer that negotiated protocol revision 2
+   * (protocol.md#versioning); a 1.0 client is sent JSON. On by default;
+   * `false` makes this server speak revision 1 to everyone (`wrpc.v1`
+   * selected, `wrpc-version: 1` answered). Off by itself under a packet
    * `codec`, which owns the wire. SSE refuses them explicitly (501/415).
    */
   attachments?: boolean;
@@ -557,7 +559,14 @@ export declare class RpcServer extends Emitter {
     socket: WrpcSocket | Connection,
     meta?: { headers?: Record<string, string | undefined>; url?: string; remoteAddress?: string; kind?: string },
   ): Client;
-  attachPort(port: MessagePort): Client;
+  /**
+   * Speaks the protocol over a `MessagePort`. `meta` is what a consumer
+   * took from the page's `wrpc:connect` message, if it hands it over:
+   * `headers` (declared), and `v` — the protocol revision the page speaks.
+   * Without `v` the port starts at revision 1 and the page names its own on
+   * its first ping (protocol.md#versioning).
+   */
+  attachPort(port: MessagePort, meta?: { headers?: Record<string, string | undefined>; v?: number } | null): Client;
   /**
    * Any persistent transport announcing its inbound traffic as 'packet'
    * (text) and 'chunk' (bytes) events — the seam a wire the core never heard

@@ -14,7 +14,8 @@ something at the frame level.
 A stream id is at least one byte long, so `0x00` never begins a chunk: it
 begins a *framed message* — a packet carrying [binary attachments](../guide/streams#attachments),
 or a packet a Node client compressed. The [protocol page](./protocol#binary-chunks)
-has the kinds.
+has the kinds, and framed messages are [revision 2](./protocol#versioning):
+none is sent to a peer that negotiated revision 1.
 :::
 
 JSON packets travel as WebSocket **text** frames. Stream payloads travel as

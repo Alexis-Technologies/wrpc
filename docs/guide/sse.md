@@ -52,8 +52,10 @@ sequenceDiagram
   S-->>C: replay of what was missed, then live frames
 ```
 
-**The server mints the id and draws the secret**, and hands both out in the
-`ready` frame that opens every stream — a client never proposes its own.
+**The server mints the id and draws the secret**, and hands both out — as
+one string, `<id>.<secret>` — in the `ready` frame that opens every stream;
+a client never proposes its own, and presents the string back as it got it
+(which is why a 1.0 client, that knows of no secret, still holds one).
 The id is whatever your `generateId` makes of it (a uuid, a cuid, a counter:
 one option covers every id the server mints); the secret is 18 random bytes
 from the server, and it is the credential: every re-attach and POST presents

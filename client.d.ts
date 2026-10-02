@@ -978,7 +978,10 @@ export interface WrpcClientOptions {
    *
    * `'auto'` (default): real request headers where the platform's WebSocket
    * can set them (Node), subprotocol carrier tokens where it cannot (a
-   * browser: `Sec-WebSocket-Protocol: wrpc.v1, wrpc.h.<b64u>, wrpc.m.<b64u>`).
+   * browser: `Sec-WebSocket-Protocol: wrpc.v2, wrpc.v1, wrpc.h.<b64u>,
+   * wrpc.m.<b64u>`). A server that answers `wrpc.v1` to that may be a 1.0
+   * server, which reads no token: the client then dials once more with the
+   * query, and keeps it for that connection's reconnects.
    * Either way the connect URL — which lands in access logs — stays clean.
    *
    * `'protocol'` forces the tokens. `'query'` sends the `wrpc_h` /
@@ -1018,8 +1021,10 @@ export interface WrpcClientOptions {
    */
   /**
    * Binary attachments: bytes in args and results travel as bytes in one
-   * frame and arrive as Uint8Arrays. On by default; `false` sends JSON as
-   * revision 1 did (set it on both ends); off under a packet `codec`.
+   * frame and arrive as Uint8Arrays — on a connection that negotiated
+   * protocol revision 2 (see `revision`); a 1.0 server is sent JSON. On by
+   * default; `false` makes this client speak revision 1 to every server
+   * (it offers `wrpc.v1` alone); off under a packet `codec`.
    */
   attachments?: boolean;
   codec?:

@@ -184,7 +184,10 @@ the full code table.
 
 ## Subprotocol negotiation
 
-The client offers `wrpc.v1`. A server can require it through `protocols` /
+The client offers the [protocol revisions](../reference/protocol#versioning)
+it speaks — `wrpc.v2, wrpc.v1` — and the server selects the newest; a 1.0
+peer on either end settles the connection on `wrpc.v1`, where bytes travel
+as 1.0's JSON. A server can require a revision through `protocols` /
 `handleProtocols` on the [engine](../reference/engine#attach-options), where
 returning `false` rejects the handshake — useful when a shared listener must
 tell wrpc clients apart from everything else pointed at the same port.

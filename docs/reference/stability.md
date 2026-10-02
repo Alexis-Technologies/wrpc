@@ -58,12 +58,14 @@ a **minor** (described in the CHANGELOG):
 
 ## The wire protocol's own, stronger promise
 
-The [wire protocol](./protocol#stability) is documented at **revision 2.0**,
+The [wire protocol](./protocol#stability) is documented at **revision 2**,
 in three tiers: the packet core, which never breaks inside a major — 2.0
-changed no packet, so the revision named on the wire is still the `wrpc.v1`
-subprotocol on WebSocket and `wrpc-version: 1` on HTTP; the carrier
-conventions, additive under the same rule, of which the ones a 1.0 peer
-never saw are badged `since 2.0` and listed with what happens when the
+added one thing to it, the framed messages that carry bytes as bytes, and
+that is what the revision named on the wire negotiates: `wrpc.v2` on a
+WebSocket and `wrpc-version: 2` on HTTP between two 2.x ends, `wrpc.v1`
+with a 1.0 peer, [with nothing to configure](./protocol#versioning); the
+carrier conventions, additive under the same rule, of which the ones a 1.0
+peer never saw are badged `since 2.0` and listed with what happens when the
 versions meet under [Changes since 1.0](./protocol#changes-since-1-0); and
 the experimental sections, which follow the carve-outs above. An independent
 implementation written against the reference keeps working for the life of

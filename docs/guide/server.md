@@ -51,7 +51,7 @@ with every adapter; the network half belongs to the shell.
 | `http` | `{}` | The HTTP side's own options: `compression`, off by default — see [Compression](#compression). |
 | `compression` | off | Accept per-message compressed frames from a Node WebSocket client that negotiated them — see [Compression](#compression). |
 | `maxMessage` | 16 MiB | The largest inflated client frame accepted on a socket. |
-| `attachments` | `true` | Bytes in args, results and events travel as [binary attachments](./streams#attachments); `false` sends JSON as revision 1 did. |
+| `attachments` | `true` | Bytes in args, results and events travel as [binary attachments](./streams#attachments) to every peer that negotiated [revision 2](../reference/protocol#versioning); `false` makes the server speak revision 1 — JSON, to everyone, with `wrpc.v1` selected and `wrpc-version: 1` answered. |
 | `logger` | `globalThis.console` | Where the server logs — a Console or a pino-shaped logger; `false` silences it. See [Logging](./logging). |
 | `telemetry` | `null` | OTel traces and metrics — see [Telemetry](./telemetry). |
 
@@ -298,7 +298,10 @@ framework request.
 ## Ports
 
 `attachPort(port)` speaks the protocol over a `MessagePort` instead of a
-socket: JSON packets as strings, binary chunks as `Uint8Array`. That covers a
+socket: JSON packets as strings, binary chunks as `Uint8Array`. A port has no
+handshake, so the [revision](../reference/protocol#versioning) rides its first
+`ping` — a wrpc client sends it by itself — and until then the port is sent
+no framed message. That covers a
 worker thread, an embedded peer, or a test harness that wants a real client
 against a real server with no network in between. The `Server` shell wires it
 to a `'port'` event, so a host can hand ports in without reaching for

@@ -8,10 +8,11 @@ which is what lets the same client code work behind a worker.
 
 ## Stability
 
-**This page is the wire protocol at revision 2.0** — what `@alexify/wrpc@2.x`
-speaks. An independent implementation written against it keeps working for
-the life of the major version. It has three tiers, and the promise differs
-by tier:
+**This page is the wire protocol at revision 2** — what `@alexify/wrpc@2.x`
+speaks, next to revision 1, which it still speaks to a 1.0 peer
+([Versioning](#versioning)). An independent implementation written against
+it keeps working for the life of the major version. It has three tiers, and
+the promise differs by tier:
 
 - **The core** — the [packets](#packets), their fields and their meanings,
   the error codes, batch frames, binary chunks,
@@ -21,20 +22,22 @@ by tier:
   Unknown packet types are answered with a `callback` carrying code 500 and
   unknown fields are ignored, which is what makes an additive change safe
   for an older peer; error codes keep their meanings, and new codes may
-  appear for new failure modes. The core is unchanged since 1.0 — which is
-  why the revision marker on the wire still reads `wrpc.v1` and
-  `wrpc-version: 1` ([Versioning](#versioning)).
+  appear for new failure modes. Revision 2 changed one thing in the core
+  1.0 shipped: a binary frame whose first byte is `0x00` is a
+  [framed message](#binary-chunks), and a packet holding bytes travels as
+  one. No JSON packet changed — and because a 1.0 peer reads no framed
+  message, that one thing is what the revision marker negotiates.
 - **The carrier conventions** — how a transport carries the core:
-  [connection metadata](#connection-metadata) and its carriers, the
-  [framed message kinds](#binary-chunks) of a binary frame and the `enc`
+  [connection metadata](#connection-metadata) and its carriers, the `enc`
   negotiation on `ping`/`pong`, the [SSE](#server-sent-events) channel
   handshake, the [rooms](#rooms) envelope, the [WebRTC](#webrtc) framing and
   signaling messages, the [compression](#compression) rule. Additive within
   2.x under the same rule as the core. Most of them are new since 1.0 —
   every `##` section 1.0 did not have carries a <Badge type="info" text="since 2.0" />
-  — and two of them are not additive for a 1.0 peer: the table under
-  [Changes since 1.0](#changes-since-1-0) says which, what happens when the
-  versions meet, and what to set until every peer is upgraded.
+  — and none of them asks anything of a 1.0 client or server: the table
+  under [Changes since 1.0](#changes-since-1-0) says what happens when the
+  versions meet. What is left to configure is between the instances of one
+  fleet, which have no handshake to negotiate on.
 - **The experimental sections** — [WebTransport](#webtransport), the
   [broker binding](#broker-binding), [session encryption](#session-encryption)
   with [sealed requests](#sealed-requests) and
@@ -50,67 +53,118 @@ tier of this page is a major version, with the reasoning in the
 
 ## Versioning
 
-The wire carries a revision marker, negotiated as a WebSocket subprotocol:
+The wire carries a revision marker. **Revision 1** (`wrpc.v1`) is what 1.0
+speaks. **Revision 2** (`wrpc.v2`) is revision 1 plus the
+[framed messages](#binary-chunks): a packet whose byte values travel as
+bytes. A 2.x peer speaks both, and the rule is one line — **a framed message
+is sent only where the peer said it reads one**. Everywhere else a packet
+holding bytes travels as the JSON 1.0 made of it (`{ "0": 137, … }` for a
+typed array, `{ "type": "Buffer", "data": [ … ] }` for a Node `Buffer`), so
+a 1.0 client and a 1.0 server keep working against 2.x with nothing to set.
+
+On a WebSocket the revision is negotiated as a subprotocol:
 
 ```
-Sec-WebSocket-Protocol: wrpc.v1        (client offer)
-Sec-WebSocket-Protocol: wrpc.v1        (server echo)
+Sec-WebSocket-Protocol: wrpc.v2, wrpc.v1   (client offer, newest first)
+Sec-WebSocket-Protocol: wrpc.v2            (server selection)
 ```
 
-A wrpc client **offers** `wrpc.v1` by default; a wrpc server with no
-app-configured `protocols`/`handleProtocols` **echoes** it back. Both sides
-therefore know, before the first packet, which revision the other speaks —
-and the selected name is on `connection.protocol` server-side.
-
-The marker names the revision of the **core** — the packets — not the
-package's major. 2.0 changed no packet, so a 2.x peer still offers and
-echoes `wrpc.v1` (and answers `wrpc-version: 1` on HTTP): a 1.0 peer and a
-2.0 peer agree on every packet, and where they can disagree is a carrier
-convention, each listed under [Changes since 1.0](#changes-since-1-0).
+A wrpc client **offers** the revisions it speaks; a wrpc server with no
+app-configured `protocols`/`handleProtocols` **selects** the newest one
+offered, wherever it sits in the list. Both sides therefore know, before the
+first packet, which revision the connection speaks — the selected name is on
+`connection.protocol` server-side, and the number on `client.revision` at
+both ends.
 
 The rules that keep this compatible in every direction:
 
-- A peer that offers **nothing** gets no subprotocol and both sides speak
-  this page as written — the pre-marker handshake stays valid forever.
+- A **1.0 client** offers `wrpc.v1` alone, and gets it. A **1.0 server**
+  picks `wrpc.v1` out of a 2.x client's offer. Either way the connection
+  speaks revision 1.
+- A peer that offers **nothing** gets no subprotocol and the connection
+  speaks revision 1 — the pre-marker handshake stays valid forever.
+- An end that sends and reads no framed messages — `attachments: false`, or
+  an injected packet codec — has nothing of revision 2 to offer: it offers,
+  or selects, `wrpc.v1` alone. Two 2.x ends whose options disagree therefore
+  settle on revision 1 instead of one refusing the other's frames.
 - A server whose app configures its own `protocols` list takes over
-  negotiation entirely; offering `wrpc.v1` alongside app protocols is the
-  app's decision.
-- A future `wrpc.v2` — a change to the core — will be offered ALONGSIDE
-  `wrpc.v1` (`Sec-WebSocket-Protocol: wrpc.v2, wrpc.v1`), so an old server
-  picks the one it knows and nothing breaks. What `v2` may change is exactly
-  what the core tier above says `v1` never will.
+  negotiation entirely; the connection speaks revision 2 only when `wrpc.v2`
+  is what was selected.
+- A future `wrpc.v3` will be offered ALONGSIDE the older names, so an old
+  server picks the one it knows and nothing breaks.
 - The name `wrpc.` is reserved as a prefix: applications must not mint their
   own subprotocols under it. Besides revisions it holds the **carrier
   tokens** of [connection metadata](#connection-metadata) — offers that are
   read, never selected.
 
-HTTP and SSE requests carry no subprotocol. Their marker is the reserved
-**`wrpc-version`** header: every response echoes `wrpc-version: 1`, and a
-request MAY send one — revision 1 accepts and ignores it, which is exactly
-what reserves the negotiation seam inside the freeze (a future revision can
-branch on it without breaking a v1 peer). Beyond that, the HTTP side stays
-versioned by this page (additive changes only), which is safe because every
-request/response pair is self-contained.
+The other carriers have no subprotocol, and each says the revision where it
+can:
+
+| Carrier | How the revision is said |
+| --- | --- |
+| WebSocket | the subprotocol, above |
+| HTTP | the response header `wrpc-version`, and the request's `Accept` |
+| SSE | nothing to say — the transport is text-only and carries no framed message |
+| Worker port | `v` on the port's first `ping` and its `pong` |
+| WebRTC, WebTransport, the broker binding | carriers 1.0 never had: always revision 2 |
+
+**HTTP.** Every response carries **`wrpc-version`**: the newest revision the
+server speaks — `2`, or `1` for a server that reads no framed messages, which
+is also what 1.0 answers — named in `Access-Control-Expose-Headers` so a page
+on another origin can read it. A client sends a request whose body is a
+framed message only after a response said `2`; until then, and against a 1.0
+server always, its bytes travel as JSON. In the other direction a server
+answers with a framed message only when the request's `Accept` names
+`application/octet-stream`: a 1.0 client, `curl` and a browser's own `fetch`
+name no such thing and read JSON. `Accept` rather than a request header of
+wrpc's own because it is CORS-safelisted — a new request header needs a
+preflight that a 1.0 server, or an application's own `cors.headers` list,
+refuses. (A request MAY still send `wrpc-version`; it is accepted and
+ignored.) Every request/response pair is self-contained, so a fleet behind
+one address must agree: an instance that answers `2` promises that every
+instance reads a frame.
+
+**Worker port.** A `MessagePort` has no handshake, and the two ends are
+deployed apart — a tab that loaded before a release, a Service Worker that
+outlives its pages. The page's first packet is a `ping` naming the revision
+it speaks, and a 2.x end answers with its own:
+
+```json
+{ "type": "ping", "v": 2 }
+```
+
+```json
+{ "type": "pong", "v": 2 }
+```
+
+The port speaks the older of the two. A 1.0 end ignores the field and
+answers a plain `pong` — revision 1 — and a 1.0 page sends no such ping, so
+it is sent no framed message. The field means nothing on a transport that
+settled the revision elsewhere.
 
 ## Changes since 1.0 {#changes-since-1-0}
 
 What a 2.0 peer speaks that a 1.0 peer does not, section by section, and
-what happens when the two meet. The core is not in this table: no packet
-changed. Three rows are **not additive** — a 1.0 peer does not simply ignore
-them — and each says what to set until every peer is upgraded; the
+what happens when the two meet. Between a client and a server nothing needs
+setting: the revision is negotiated, and what is not negotiated is additive.
+Two rows are **not additive**, both between the instances of one fleet —
+where there is no handshake to negotiate on — and each says what to set
+until every instance is upgraded; the
 [CHANGELOG](https://github.com/Alexis-Technologies/wrpc/blob/main/CHANGELOG.md#migrating-from-10)
 has the upgrade order.
 
 | Since 2.0 | Where | Meeting a 1.0 peer | Until every peer is 2.0 |
 | --- | --- | --- | --- |
-| The subprotocol **carrier tokens** `wrpc.h.`, `wrpc.m.` and `wrpc.bearer.` — a browser's declared headers, data and bearer on a WebSocket handshake — and a wider deny list of declared names | [Connection metadata](#connection-metadata) | A 1.0 server selects `wrpc.v1` from the offer and ignores the tokens: the connection lives, the browser's labels are lost. A 1.0 client never sends one. | `carrier: 'query'` on the client — the `wrpc_h`/`wrpc_meta` query 1.0 sent |
+| **Revision 2**: framed messages of kind 1 — **binary attachments**, a packet whose byte values travel as bytes, on WebSocket, a worker port and packet-mode HTTP | [Versioning](#versioning), [Binary chunks](#binary-chunks) | Negotiated: a connection with a 1.0 peer speaks revision 1 and carries no frame; its bytes travel as the `{ "0": … }` / `{ type: 'Buffer', data }` JSON of 1.0. | nothing |
+| `wrpc-version: 2` on an HTTP response, and the `Accept` that asks for a framed answer | [Versioning](#versioning) | Additive: a 1.0 server answers `1` and is sent no frame; a 1.0 client sends no such `Accept` and is answered JSON. | nothing behind one address per version; a mixed fleet behind ONE address sets `attachments: false` on its 2.0 instances, so they answer `1` |
+| `v` on a worker port's first `ping`/`pong` | [Versioning](#versioning) | Additive: a 1.0 end answers a plain `pong`, a 1.0 page sends no such ping — revision 1 either way. | nothing |
 | **Framed messages** of kind 3 and 4 — a packet or a chunk compressed by a Node client — and the `enc` field of `ping`/`pong` that negotiates them | [Binary chunks](#binary-chunks), [Compression](#compression) | Negotiated: a 1.0 server ignores `enc` on the `ping` and answers a plain `pong`, so a 2.0 client never sends one; a 1.0 client never sends one. | nothing |
-| **Framed messages of kind 1 — binary attachments**: a packet whose byte values travel as bytes, on WebSocket, a worker port and packet-mode HTTP | [Binary chunks](#binary-chunks) | **Not additive.** Sent whenever a packet holds bytes and negotiated by nothing: a 1.0 client throws on the frame and its callback is lost (the call times out), a 1.0 server answers it `400` with an empty id. | `attachments: false` on the 2.0 server while a 1.0 client can connect, and on a 2.0 client against a 1.0 server — bytes then travel as the `{ type: 'Buffer', data }` JSON of 1.0 |
-| The **SSE channel secret**: `secret` in the `ready` frame, presented as `x-wrpc-channel: <id>.<secret>` | [Server-Sent Events](#server-sent-events) | **Not additive.** A 1.0 client presents the id alone and is answered `409` on every POST and re-attach, so it opens a fresh channel each time and no call completes; a 2.0 client against a 1.0 server presents `<id>.<secret>`, which that server reads as an unknown id — `409` as well. | nothing — upgrade a server and its SSE clients together; the WebSocket and HTTP transports are unaffected |
+| The subprotocol **carrier tokens** `wrpc.h.` and `wrpc.m.` — a browser's declared headers and data on a WebSocket handshake — and a wider deny list of declared names (`wrpc.bearer.` is 1.0's own) | [Connection metadata](#connection-metadata) | A 1.0 server selects `wrpc.v1` and reads no token — so a 2.0 browser client that was answered `wrpc.v1` dials once more with the `wrpc_h`/`wrpc_meta` query 1.0 reads. A 1.0 client never sends one. | nothing — `carrier: 'query'` on the client saves the second handshake |
+| The **SSE channel secret**, presented as `x-wrpc-channel: <id>.<secret>` | [Server-Sent Events](#server-sent-events) | Additive: the `ready` frame hands out the whole reference in the field 1.0 named `channel`, and a 1.0 client presents it back as it is. A 2.0 client against a 1.0 server presents the bare id that server gave it. | nothing |
 | `epoch` and `seq` on the **rooms envelope** — loss detection between instances | [Rooms](#rooms) | Additive: a 1.0 instance ignores them, a 2.0 instance delivers a 1.0 instance's envelopes untracked. | nothing |
-| The `wrpc-bin:` **rooms and cluster envelope** — an event (or a node-to-node question or answer) whose data holds bytes, as an attachments frame | [Rooms](#rooms), [Cluster channels](#cluster-channels) | A 1.0 instance cannot parse it and drops the event (logged). | `attachments: false` on the publishing instance keeps the envelope JSON, as in 1.0 — the same flag as kind 1 |
-| The `wrpc-enc:` and `wrpc-sealed:` **rooms and cluster envelopes** — compressed, encrypted | [Rooms](#rooms) | Opt-in on the publisher; a 1.0 instance drops what it cannot read (logged). | turn `rooms.compression`, `cluster.compression` and the `encryption` options on only once every instance is 2.0 — the two-step rollout the section describes |
-| `seq`, `ch` and `at` on a **signed cluster envelope** — the sender's counter, channel and clock, under `cluster.secret` | [Cluster channels](#cluster-channels) | **Not additive** one way. A 1.0 instance verifies a 2.0 envelope as before (the fields are inside the signed bytes) and applies it; a 2.0 instance refuses a 1.0 instance's envelope, which has no counter — the two halves of a mixed cluster stop seeing each other. Clusters without `secret` are unaffected. | `cluster: { replay: 'accept' }` on the 2.0 instances while a 1.0 instance is left |
+| The `wrpc-bin:` **rooms and cluster envelope** — an event (or a node-to-node question or answer) whose data holds bytes, as an attachments frame | [Rooms](#rooms), [Cluster channels](#cluster-channels) | **Not additive.** A backplane is a broadcast with no handshake: a 1.0 instance cannot parse the envelope and drops the event, without a log line. | `attachments: false` on the 2.0 instances keeps the envelope JSON, as in 1.0 |
+| The `wrpc-enc:` and `wrpc-sealed:` **rooms and cluster envelopes** — compressed, encrypted | [Rooms](#rooms) | Opt-in on the publisher; a 1.0 instance drops what it cannot read. | turn `rooms.compression`, `cluster.compression` and the `encryption` options on only once every instance is 2.0 — the two-step rollout the section describes |
+| `seq`, `ch` and `at` on a **signed cluster envelope** — the sender's counter, channel and clock, under `cluster.secret` | [Cluster channels](#cluster-channels) | **Not additive** one way. A 1.0 instance verifies a 2.0 envelope as before (the fields are inside the signed bytes) and applies it; a 2.0 instance refuses a 1.0 instance's envelope, which has no counter — the two halves of a mixed cluster stop seeing each other. Accepting one unasked would be a replay hole. Clusters without `secret` are unaffected. | `cluster: { replay: 'accept' }` on the 2.0 instances while a 1.0 instance is left |
 | `headers` and `cache` on a procedure's `http` descriptor in **introspection** | [Introspection](#introspection) | Additive: unknown keys of a descriptor are ignored. | nothing |
 | **WebRTC**: the data-channel framing, the signaling messages, the trust assertions | [WebRTC](#webrtc) | A new carrier: a 1.0 peer has no WebRTC transport and never meets it. | nothing |
 | The **compression rule** — `enc` lists, a sender compresses with the first codec of its own list the peer announced | [Compression](#compression) | Governs only what two 2.0 ends negotiate. | nothing |
@@ -179,17 +233,27 @@ UTF-8, base64url **without padding** — a subprotocol name is an RFC 7230
 token, so neither raw JSON nor `=` is admissible:
 
 ```
-Sec-WebSocket-Protocol: wrpc.v1, wrpc.h.eyJ4LXRlbmFudCI6ImFjbWUifQ, wrpc.m.eyJ1c2VySWQiOjd9
+Sec-WebSocket-Protocol: wrpc.v2, wrpc.v1, wrpc.h.eyJ4LXRlbmFudCI6ImFjbWUifQ, wrpc.m.eyJ1c2VySWQiOjd9
 ```
 
 Carrier tokens — `wrpc.h.`, `wrpc.m.` and the credential token
 `wrpc.bearer.<token>` — are **data riding the offer, never a protocol to
 select**. A server MUST NOT echo one: the response would reflect a credential,
 and the client did not ask for it. Because a client fails a handshake whose
-offers all went unanswered, a client MUST offer a selectable protocol
-(`wrpc.v1`) next to a carrier token, and MUST NOT emit carrier tokens when it
-offers nothing else. wrpc's negotiators remove the tokens from the offer
-before an application's `protocols`/`handleProtocols` sees it.
+offers all went unanswered, a client MUST offer a selectable protocol (a
+revision — `wrpc.v2`, `wrpc.v1`) next to a carrier token, and MUST NOT emit
+carrier tokens when it offers nothing else. wrpc's negotiators remove the
+tokens from the offer before an application's `protocols`/`handleProtocols`
+sees it.
+
+`wrpc.h.` and `wrpc.m.` are new since 1.0, which read the declared bags from
+the connect-URL query only and ignores them (`wrpc.bearer.` is 1.0's own).
+The revision is how a client finds out: a handshake that offered `wrpc.v2`,
+carried a token and was answered `wrpc.v1` may have reached a 1.0 server, so
+a wrpc client dials **once more** with the query carrier and keeps it for
+that connection's later reconnects. A client told which carrier to use
+(`carrier: 'protocol'` or `'query'`), or given its own `protocols`, is left
+with that choice.
 
 The `x-wrpc-meta-<key>` spelling carries string values only and the JSON
 header wins a key collision. A conformant client MAY emit either; on a
@@ -373,6 +437,11 @@ within its timeout. On a WebRTC link each direction has its own client and
 its own channel (see [WebRTC](#webrtc)), so each direction heartbeats on its
 own channel.
 
+Two optional fields ride the pair, both ignored by a peer that does not know
+them: `enc`, the [compression](#compression) offer of a Node WebSocket
+client, and `v`, the revision a [worker port](#versioning) names on its
+first ping.
+
 ### `subscribe` / `data` / `end` / `unsubscribe` — a stream of values
 
 A subscription is a procedure that answers with many values instead of one.
@@ -487,7 +556,10 @@ closes it. The payload travels as binary chunks in between.
 
 Each binary frame is one chunk of one stream — unless its first byte is
 `0x00`, which no chunk has (a stream id is at least one byte long): such a
-frame is a **framed message**, its second byte the kind:
+frame is a **framed message**, its second byte the kind. This is what
+revision 2 adds to the core — revision 1 never sent an empty stream id
+either, but did not reserve the byte, and a 1.0 peer reads such a frame as a
+chunk of a stream it does not know:
 
 ```
 0x00  kind  payload
@@ -507,12 +579,16 @@ or `prototype`, walk through a non-container, land on anything but `null`,
 exceed 32 levels, or whose lengths do not add up to exactly the bytes that
 follow — with a `400`, never a partial packet — and SHOULD copy the bytes
 out of the frame rather than hold views into it. The same frame is the
-body of a packet-mode HTTP request or response under
-`Content-Type: application/octet-stream`. It is sent whenever a packet
-holds bytes, unless an end opted out (`attachments: false`) or a wire codec
-is in use; a receiver that opted out answers it as a malformed packet.
-SSE, being text-only, refuses one on a channel POST with `415` and answers
-a call whose result holds bytes with `501`. Kind 2 is reserved.
+body of a packet-mode HTTP request or response — and of a conventional
+REST answer — under `Content-Type: application/octet-stream`. It is sent for
+a packet that holds bytes **only where revision 2 was negotiated**
+([Versioning](#versioning)): a WebSocket that selected `wrpc.v2`, an HTTP
+exchange whose other side said it reads one, a worker port whose two ends
+both named revision 2. An end that opted out (`attachments: false`) or
+speaks a wire codec negotiates revision 1 in the first place; one that is
+sent a frame anyway answers it as a malformed packet. SSE, being text-only,
+refuses one on a channel POST with `415` and answers a call whose result
+holds bytes with `501`. Kind 2 is reserved.
 
 The negotiation is a `ping` whose `enc` is the client's codec ids in its
 order of preference (a list; one id is a list of one), answered by a `pong`
@@ -786,16 +862,21 @@ POST {basePath}         x-wrpc-channel: <id>.<secret>  client -> server
 **The channel id is minted by the server** — by the application's
 `generateId`, so its format (a uuid, a cuid, a counter) is the application's
 — and the **channel secret drawn by the server**: 18 random bytes as
-base64url. Both are handed out in the `ready` frame that opens every stream:
+base64url. Both are handed out, joined, in the `ready` frame that opens
+every stream:
 
 ```
 event: ready
-data: {"channel":"b1f0…","secret":"Kx9…"}
+data: {"channel":"b1f0….Kx9…"}
 ```
 
-A request presents them in one header, the secret after the id, split at
-the LAST dot (the secret holds none; the id may). **The secret is the
-credential.** A client cannot propose its own id, and a GET or POST naming
+ONE string, the **channel reference** — the secret after the id — which a
+client treats as opaque and presents back whole in one header; the server
+splits it at the LAST dot (the secret holds none; the id may). It rides the
+field 1.0 named `channel` on purpose: a 1.0 client presents whatever that
+field held, so it presents the secret without knowing there is one — and a
+1.0 server's `channel` is the bare id, which a 2.x client presents just the
+same. **The secret is the credential.** A client cannot propose its own id, and a GET or POST naming
 an id without the channel's secret answers `409` — the same answer as for an
 id the server does not hold, so a guessed id learns nothing; `409` is the
 client's signal to drop its channel state and start a fresh one.
@@ -1280,7 +1361,8 @@ connection. Nothing is negotiated back — a reply of "try this instead" would
 be a downgrade channel. The prologue is
 `"wrpc.v1" ‖ 0 ‖ transport kind ‖ 0 ‖ hello header`, so a header rewritten in
 flight, or a handshake replayed onto another kind of connection, fails the
-handshake.
+handshake. (That `wrpc.v1` is the label of this framing, fixed with its own
+version byte — not the [revision](#versioning) the connection negotiated.)
 
 After it, each direction is a Noise CipherState: the nonce is the message
 counter (four zero bytes, then 64 bits — big-endian for AESGCM, little-endian

@@ -114,6 +114,6 @@ follow:
   `codec.contentType` when set. Under the [fastify adapter](./adapters/fastify)
   a non-JSON content type needs an app-side `addContentTypeParser` (as raw
   text), or fastify rejects the body before wrpc sees it.
-- The frozen [1.0 protocol](../reference/protocol) is JSON: a codec is an
+- The [protocol](../reference/protocol) is JSON: a codec is an
   opt-in framing **outside** that interop promise. Two peers you control,
   one codec — that is the contract.

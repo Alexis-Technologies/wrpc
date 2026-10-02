@@ -96,11 +96,14 @@ header a page does control is the subprotocol offer, so that is what carries
 the bag:
 
 ```
-Sec-WebSocket-Protocol: wrpc.v1, wrpc.h.eyJ4LWFwcC12ZXJzaW9uIjoiMS4yLjMifQ
+Sec-WebSocket-Protocol: wrpc.v2, wrpc.v1, wrpc.h.eyJ4LWFwcC12ZXJzaW9uIjoiMS4yLjMifQ
 ```
 
-The server echoes `wrpc.v1`, reads the token, and never selects or echoes
-it. Node's built-in `WebSocket` has no such limit — it takes
+The server selects `wrpc.v2`, reads the token, and never selects or echoes
+it. (A 1.0 server reads no token — it took the bag from the connect URL — and
+answers `wrpc.v1`; the client then dials once more with the query, so the
+labels arrive there too. `carrier: 'query'` saves that second handshake.)
+Node's built-in `WebSocket` has no such limit — it takes
 `{ protocols, headers }` — so from Node the same option is simply real
 headers, and the server needs nothing special to read them. Either way the
 connect URL stays clean, and the server's read order is unchanged:

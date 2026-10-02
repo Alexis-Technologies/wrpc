@@ -172,8 +172,11 @@ or breaking change of a stable API needs (1) a deprecation note in the
 CHANGELOG and the docs for at least one minor release, and (2) a major
 version to actually remove it. The wire protocol has its own, stronger
 promise — see [protocol.md](./docs/reference/protocol.md#stability): packet
-shapes never break inside a major, and the `wrpc.v1` subprotocol names the
-core's revision on the wire (2.0 changed no packet, so it still reads v1).
+shapes never break inside a major, and the subprotocol names the core's
+revision on the wire — `wrpc.v2` since 2.0 (framed messages), negotiated
+down to `wrpc.v1` with a 1.0 peer. A change a 1.0 peer cannot ignore belongs
+behind the revision, and `tests/interop/` runs the published 1.0 against the
+tree to keep that true.
 
 ## Release checklist
 

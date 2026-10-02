@@ -360,9 +360,10 @@ messages that large to the threadpool instead, in order; the
 ## What it cannot do
 
 - **Cookies.** See above — sessions need a token transport.
-- **A subprotocol.** The `wrpc.v1` offer a WebSocket makes has no carrier
-  here yet (`WT-Available-Protocols` is young); the revision is implied by
-  the wire, as it is on HTTP and SSE.
+- **A subprotocol.** The revision offer a WebSocket makes (`wrpc.v2,
+  wrpc.v1`) has no carrier here yet (`WT-Available-Protocols` is young), and
+  needs none: 1.0 had no WebTransport, so a session always speaks
+  revision 2.
 - **Serve HTTP.** The WebSocket engine still serves the REST and packet
   routes over HTTP/1.1; the HTTP/3 host is the session's only job.
 - **Run without an implementation.** There is no default host in Node; a

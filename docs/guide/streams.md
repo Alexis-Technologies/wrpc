@@ -186,11 +186,16 @@ worker port, an HTTP body under `application/octet-stream` — except SSE,
 which is text-only and refuses explicitly: a `TypeError` on the client for
 bytes going up, a `501` on the call for a result coming down.
 
-On by default. The cost is a walk of every outbound packet to find the
-bytes (`bench/attachments.js`: tens of nanoseconds on a small callback, a
-few microseconds on a 30 KB one); `attachments: false` on both ends skips
-it and sends every packet as JSON, as revision 1 did. Under a packet
-[codec](./codec) it is off by itself — the codec owns the wire. A REST
+On by default between two 2.x ends. The frame is
+[revision 2](../reference/protocol#versioning) of the protocol, negotiated
+per connection, so a 1.0 peer is never sent one: its bytes arrive — and are
+sent — as the plain objects 1.0 made of them, and `client.revision` (on the
+client, and on `context.client` in a handler) says which kind of connection
+this is. The cost is a walk of every outbound packet to find the bytes
+(`bench/attachments.js`: tens of nanoseconds on a small callback, a few
+microseconds on a 30 KB one); `attachments: false` skips it and makes that
+end speak revision 1 — JSON, to everyone. Under a packet [codec](./codec)
+it is off by itself — the codec owns the wire. A REST
 result holding bytes needs `codec.rest` and answers `501` without it. A
 room event with bytes crosses the [backplane](./scaling) too: its envelope
 rides as the same frame, base64 under a `wrpc-bin:` marker (or inside the

@@ -13,6 +13,59 @@ narrower promise — see
 
 ### Added
 
+**Protocol revision 2 (`wrpc.v2`), negotiated — a 1.0 peer is spoken to as 1.0 was**
+
+- The framed messages of 2.0 — a packet whose bytes travel as bytes — are
+  **revision 2** of the protocol, and a 2.x peer speaks both revisions. A
+  frame is sent only where the peer said it reads one; everywhere else a
+  packet holding bytes travels as the JSON 1.0 made of it. A 1.0 client and
+  a 1.0 server therefore work against 2.x **with nothing to set** — the
+  `attachments: false` and `carrier: 'query'` steps of the earlier upgrade
+  notes are gone, and so is the SSE breakage that had no flag at all. Each
+  carrier says the revision where it can:
+  - **WebSocket** — the subprotocol. A client offers `wrpc.v2, wrpc.v1`
+    (newest first); every engine selects the newest revision offered. A 1.0
+    server picks `wrpc.v1` from that offer, a 1.0 client offers it alone.
+  - **HTTP** — a response's `wrpc-version` is the newest revision the server
+    speaks (`2`; exposed to other origins), and a client sends a framed body
+    only after an answer said so. A result holding bytes is a frame only
+    for a request whose `Accept` names `application/octet-stream` — in
+    packet mode, in a batch and in the conventional REST mode — so a 1.0
+    client, `curl` and a page's own `fetch` read JSON. (`Accept` because it
+    is CORS-safelisted: a `wrpc-version` request header needs a preflight a
+    1.0 server, or an application's own `cors.headers`, refuses.)
+  - **Worker port** — `v` on the port's first `ping`/`pong`. The worker
+    proxy keeps a revision per page and translates: a frame from upstream
+    reaches a stale 1.0 page as JSON, a page's frame leaves as JSON when the
+    server upstream is 1.0. `attachPort(port, meta)` takes `meta.v`.
+  - **SSE** carries no framed message, and WebRTC, WebTransport and the
+    broker binding are carriers 1.0 never had: nothing to negotiate.
+- `revision` (1 | 2), read-only, on `WrpcClient`, on the server-side
+  `Client` and on `RpcServer` (the newest it speaks). No new option:
+  `attachments: false` — or a packet codec — now means *this end speaks
+  revision 1*. It offers or selects `wrpc.v1` and answers `wrpc-version: 1`,
+  so two 2.x ends whose flags disagree settle on revision 1 instead of one
+  answering the other's frame with an id-less `500`. The built-in shells
+  (`Server`, the fastify plugin, the express middleware) narrow their engine
+  themselves; an engine composed by hand takes `protocols: ['wrpc.v1']`, and
+  `revision.mismatch` says when it did not.
+- A room of both revisions costs one extra `JSON.stringify` per emit, not
+  one per member: the fan-out shares one frame among the 2.x clients and one
+  JSON text among the 1.0 ones.
+- A browser client's declared `headers`/`meta` reach a 1.0 server again: a
+  handshake that offered `wrpc.v2`, carried them as `wrpc.h.`/`wrpc.m.`
+  tokens and was answered `wrpc.v1` is dialled **once more** with the
+  connect-URL query 1.0 reads, which that transport keeps for its later
+  reconnects (`handshake.requery`). `carrier: 'query'` up front saves the
+  second handshake; `carrier: 'protocol'` forbids the query.
+- The whole matrix runs against the **published 1.0**: `tests/interop/`
+  takes `@alexify/wrpc@1.0.0` from npm under the test-only alias `wrpc-v1`
+  and drives it as a client and as a server over ws, http, sse, a worker
+  port and the worker proxy.
+- [Protocol reference: Versioning](./docs/reference/protocol.md#versioning)
+  has the rules, [Changes since 1.0](./docs/reference/protocol.md#changes-since-1-0)
+  the table.
+
 **Docs: the encryption guide**
 
 - [Encryption](./docs/guide/encryption.md): whether you need it at all (a
@@ -306,8 +359,8 @@ narrower promise — see
 **The ws handshake: declared `headers`/`meta` as subprotocol offers, and `readHandshake`**
 
 - The server reads a browser client's declared bags from the one handshake
-  header a page controls: `Sec-WebSocket-Protocol: wrpc.v1, wrpc.h.<base64url>,
-  wrpc.m.<base64url>` — the generalization of `wrpc.bearer.<token>`. A
+  header a page controls: `Sec-WebSocket-Protocol: wrpc.v2, wrpc.v1,
+  wrpc.h.<base64url>, wrpc.m.<base64url>` — the generalization of `wrpc.bearer.<token>`. A
   carrier is chosen, never merged (real `x-wrpc-meta` header → offer →
   `wrpc_h`/`wrpc_meta` query, which stays for `carrier: 'query'` and
   WebTransport), the two offers share **one** `metaMaxBytes` budget, and
@@ -449,8 +502,9 @@ narrower promise — see
   dropped event. A REST result with bytes answers `501` without
   `codec.rest`; a room event with bytes is delivered locally and refused
   for the JSON backplane (`backplane.bytes`).
-- On by default, with `attachments: false` on either end (set both) for
-  revision-1 JSON; off by itself under a packet codec. The cost is
+- On by default wherever revision 2 was negotiated (the first entry of this
+  section); `attachments: false` on either end makes that end speak
+  revision 1 — JSON, to everyone — and a packet codec does so by itself. The cost is
   `hasBytes`, a walk of every outbound packet (`bench/attachments.js`);
   the compiled-serializer fast path walks the result only when a
   serializer is compiled.
@@ -1250,24 +1304,23 @@ narrower promise — see
 
 ### Changed (breaking)
 
-- **Breaking — binary attachments are on by default and are not
-  negotiated.** A `Buffer`, typed array, `ArrayBuffer` or `DataView` anywhere
+- **Breaking — binary attachments are on by default between two 2.x
+  ends.** A `Buffer`, typed array, `ArrayBuffer` or `DataView` anywhere
   in a call's arguments, result, event data or error details now leaves as
   the binary attachments frame (`0x00 01`, the Added entry above) and
   arrives as a `Uint8Array` — not as `{ type: 'Buffer', data: [...] }` or
   `{ "0": 137, ... }`, which is what `JSON.stringify` made of it in 1.0.
   What that changes: (1) a handler or listener that read `.data` or
-  `Object.values()` off such a value reads a `Uint8Array` now; (2) a REST
-  result with bytes answers `501` unless `codec.rest` is set, and SSE
-  refuses bytes outright (`501`/`415`/`sse.bytes`); (3) nothing on the wire
-  announces the frame, so a **1.0 client** given a result with bytes throws
-  on the binary frame (a chunk for an unknown, empty stream id), the
-  callback never arrives and the call rejects `408` after `callTimeout`
-  (7 s); (4) a **1.0 server** sent bytes in a call answers `400` with
-  `id: ''` for the same reason. `attachments: false` on the
-  server restores the 1.0 JSON for every peer, `attachments: false` on the
-  client the same for what it sends; a packet `codec` turns them off by
-  itself. See [Migrating from 1.0](#migrating-from-10).
+  `Object.values()` off such a value reads a `Uint8Array` now; (2) a
+  declared REST route's result with bytes answers `501` unless `codec.rest`
+  is set, and SSE refuses bytes outright (`501`/`415`/`sse.bytes`). It is
+  **not** a wire break for a 1.0 peer: the frame is protocol revision 2,
+  negotiated (the first Added entry), and a connection with a 1.0 client or
+  server carries the JSON 1.0 sent — so during an upgrade the same handler
+  sees a `Uint8Array` from a 2.x peer and the 1.0 object from a 1.0 one,
+  and `client.revision` (on either end) says which. `attachments: false`
+  makes an end speak revision 1 to everyone; a packet `codec` does the
+  same by itself. See [Migrating from 1.0](#migrating-from-10).
 - **Breaking — the ws client no longer puts `headers`/`meta` in the connect
   URL.** From Node they are real request headers on the upgrade (the built-in
   `WebSocket` takes `{ protocols, headers }`); from a browser — where no API
@@ -1280,9 +1333,10 @@ narrower promise — see
   The new `carrier` option (`'auto'` | `'protocol'` |
   `'query'`) brings the query back for an intermediary that mangles
   `Sec-WebSocket-Protocol`; `protocols: []` implies it. What changes for an
-  application: a **new client against an older server loses its ws labels**
-  (that server reads the query only — upgrade the server first, or set
-  `carrier: 'query'`); a Node client's declared `cookie`/`origin` now arrive,
+  application: a **new browser client against a 1.0 server pays a second
+  handshake** (that server reads the query only, so the client, answered
+  `wrpc.v1`, dials again with it — the first Added entry; `carrier:
+  'query'` up front saves the round trip); a Node client's declared `cookie`/`origin` now arrive,
   being real headers no deny list applies to; `metaFormat: 'prefixed'` now
   shapes the ws wire from Node too; the client caps the two tokens **together**
   at 2048 bytes (the query was capped per parameter, against a server that
@@ -1332,32 +1386,40 @@ narrower promise — see
 
 #### Migrating from 1.0
 
-Upgrade the **server first**, then the clients — a 2.0 client against a 1.0
-server loses its ws labels (see the carriers entry) and gets `400` for any
-bytes it sends. In that order:
+Clients and servers upgrade **in any order, with no flag**: the protocol
+revision is negotiated, and a 2.x end speaks revision 1 to a 1.0 peer —
+bytes as 1.0's JSON, labels by the carrier 1.0 reads, the SSE channel
+reference as one opaque string. What is left to do:
 
-1. **Server**: deploy 2.0 with `attachments: false` while any 1.0 client can
-   still connect; its results with bytes then stay JSON, as in 1.0. Reading
-   the labels of a 2.0 client needs nothing — the server reads every
-   carrier.
-2. **Clients**: upgrade; a browser client behind a proxy that mangles
-   `Sec-WebSocket-Protocol` sets `carrier: 'query'`. A client that must talk
-   to a 1.0 server for a while sets `attachments: false` too.
-3. **Drop the flags** once no 1.0 peer is left — bytes travel as bytes.
+1. **Bytes during the upgrade**: a handler or listener that receives bytes
+   sees a `Uint8Array` from a 2.x peer and 1.0's `{ "0": … }` /
+   `{ type: 'Buffer', data }` object from a 1.0 one until the last peer is
+   upgraded; `context.client.revision` (server) and `client.revision`
+   (client) say which a connection is.
+2. **Several instances behind one address, over HTTP**: an HTTP client keeps
+   what one answer told it, so while a 1.0 instance is still in the pool
+   deploy the 2.0 ones with `attachments: false` — they then answer
+   `wrpc-version: 1` and nobody is sent a frame. Drop the flag once the
+   pool is all 2.0. (A WebSocket is one connection to one instance and needs
+   nothing.)
+3. **A rooms backplane or a cluster** has no handshake to negotiate on. The
+   same `attachments: false` on the 2.0 instances keeps their envelopes
+   JSON while a 1.0 instance subscribes — it drops a `wrpc-bin:` envelope
+   without a word. And under **`cluster.secret`**: deploy 2.0 with
+   `cluster: { secret, replay: 'accept' }` while a 1.x node is still in the
+   cluster — without it the 2.0 nodes refuse the 1.x nodes' envelopes
+   (`cluster.replay`, reason `unsequenced`) and each half sees only itself.
+   Drop both once the last 1.x node is gone.
 4. **TypeScript**: `context.server.sessions`, `.cluster` and `.sendTo` need
    `if (context.server instanceof RpcServer)` (or a cast) — the type is the
    `ClientHost` contract now.
 5. **`@alexify/wrpc/ws` directly**: `WebsocketServer` logs through
    `globalThis.console` by default (it had no logger); `logger: false`
-   restores the silence, `logger: pino` routes it.
+   restores the silence, `logger: pino` routes it. An `RpcServer` wired to
+   it by hand with `attachments: false` passes `protocols: ['wrpc.v1']`.
 6. **`generateId`**: a bad value is a `TypeError` at construction now (it
    was ignored in 1.0, logged in 1.x) — fix the option rather than catch
    the error; a valid generator behaves exactly as before.
-7. **`cluster.secret`**: deploy 2.0 with `cluster: { secret, replay:
-   'accept' }` while a 1.x node is still in the cluster — without it the
-   2.0 nodes refuse the 1.x nodes' envelopes (`cluster.replay`, reason
-   `unsequenced`) and each half sees only itself. Drop `replay` once the
-   last 1.x node is gone. Nothing to do without `secret`.
 
 ### Changed
 - **The logging guide catalogues every `event` wrpc writes, and a test keeps
@@ -2932,15 +2994,16 @@ bytes it sends. In that order:
   into. The id stays the application's (a uuid, a cuid, a counter — the
   format is its business, and `generateId` still covers it); what
   authorizes a request is now a **channel secret** the server draws (18
-  random bytes, base64url) and hands out with the id in the `ready` frame.
-  A re-attach or POST presents both in the one `x-wrpc-channel` header as
-  `<id>.<secret>` (split at the last dot; no new header, so a CORS
+  random bytes, base64url) and hands out after the id in the `ready` frame
+  — ONE string, `<id>.<secret>`, in the field 1.0 named `channel`.
+  A re-attach or POST presents it back whole in the one `x-wrpc-channel`
+  header (split at the last dot; no new header, so a CORS
   `Access-Control-Allow-Headers` stays what it was), compared in constant
   time; a request without the channel's secret is answered `409` exactly
-  like an unknown id. The cookie/bearer binding stays on top. **A wire
-  change of the SSE binding**: a pre-2.0 client presenting the id alone is
-  refused and starts a fresh channel on every reconnect. `protocol.md`'s
-  SSE section says so.
+  like an unknown id. The cookie/bearer binding stays on top. **Not a wire
+  break**: a 1.0 client presents whatever its `ready` frame's `channel`
+  held, so it presents the secret without knowing there is one.
+  `protocol.md`'s SSE section says so.
 - **A response header could split the response.** `context.http.setHeader`,
   a procedure's static `http.headers` and the fastify adapter's reply seam
   wrote whatever value they were handed: on node the engine refused a
