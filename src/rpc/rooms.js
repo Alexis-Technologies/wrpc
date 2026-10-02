@@ -284,7 +284,8 @@ class Broadcast {
     // The same event for a recipient that reads no frames — a 1.0 client on
     // a revision-1 connection (protocol.md#versioning): the JSON 1.0 sent,
     // built on the first such recipient and shared by the rest, so a mixed
-    // room costs one extra stringify per emit, not one per member.
+    // room costs one extra stringify per emit, not one per member
+    // (bench/broadcast-revisions.js).
     let plain = null;
     let sent = 0;
     for (const client of this.#recipients()) {
