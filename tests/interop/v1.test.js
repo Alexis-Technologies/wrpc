@@ -68,3 +68,55 @@ test('interop ws: a 1.0 client is served under wrpc.v1, the revision it offered'
   const protocols = [...server.wsServer.connections].map((connection) => connection.protocol);
   assert.deepStrictEqual(protocols, ['wrpc.v1']);
 });
+
+// ---- revision 2 is negotiated: bytes with a 1.0 peer --------------------
+//
+// A 1.0 peer reads no framed message. Before the revision was negotiated a
+// result holding bytes reached a 1.0 client as a frame it threw on (the call
+// timed out after 7 s) and a 1.0 server answered a call holding bytes with
+// an id-less 400. Now the subprotocol says who the peer is, and it is sent
+// the JSON 1.0 itself made of a Uint8Array.
+
+const BYTES = Uint8Array.of(1, 2, 3);
+const JSON_BYTES = { 0: 1, 1: 2, 2: 3 };
+
+for (const pair of PAIRS) {
+  test(`interop ws: bytes in a call and in its answer travel as 1.0 JSON — ${pair.name}`, { skip }, async (t) => {
+    const { ws } = await boot(t, pair.server);
+    const client = await connect(t, pair.client, ws, { callTimeout: 2000 });
+    assert.deepStrictEqual(await client.api.echo.say({ blob: BYTES }), { blob: JSON_BYTES });
+  });
+
+  test(`interop ws: an event holding bytes arrives as 1.0 JSON — ${pair.name}`, { skip }, async (t) => {
+    const { ws } = await boot(t, pair.server);
+    const client = await connect(t, pair.client, ws, { callTimeout: 2000 });
+    const seen = [];
+    client.api.echo.on('poke', (data) => seen.push(data));
+    assert.strictEqual(await client.api.echo.nudge({ blob: BYTES }), true);
+    await waitFor(() => seen.length === 1, 'the event arrives');
+    assert.deepStrictEqual(seen, [{ blob: JSON_BYTES }]);
+  });
+}
+
+test('interop ws: this client knows a 1.0 server by the revision it selected', { skip }, async (t) => {
+  const { ws } = await boot(t, legacy);
+  const client = await connect(t, next, ws);
+  assert.strictEqual(client.revision, 1);
+});
+
+test(
+  'interop ws: a room broadcast with bytes reaches a 1.0 client and a 2.x client, each in its own form',
+  { skip },
+  async (t) => {
+    const { server, ws } = await boot(t, next);
+    const old = await connect(t, legacy, ws);
+    const modern = await connect(t, next, ws);
+    const got = { old: [], modern: [] };
+    old.api.echo.on('poke', (data) => got.old.push(data));
+    modern.api.echo.on('poke', (data) => got.modern.push(data));
+    assert.strictEqual(server.rpc.broadcast('echo/poke', { blob: BYTES }), 2);
+    await waitFor(() => got.old.length === 1 && got.modern.length === 1, 'both hear the broadcast');
+    assert.deepStrictEqual(got.old, [{ blob: JSON_BYTES }]);
+    assert.deepStrictEqual(got.modern, [{ blob: BYTES }]);
+  },
+);

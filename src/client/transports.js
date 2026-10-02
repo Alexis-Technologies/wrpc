@@ -4,7 +4,7 @@
 // exactly the way the SSE subpath registers its own — the registry is the
 // one seam every transport, built-in or not, goes through.
 
-const { WrpcClient, ClientTransport, WRPC_PROTOCOL, META_MAX, metaHeaders, refusedStatus } = require('./core.js');
+const { WrpcClient, ClientTransport, WRPC_V1, WRPC_V2, META_MAX, metaHeaders, refusedStatus } = require('./core.js');
 const { jsonParse } = require('../utils.js');
 const { createWsCompression } = require('./wsCompression.js');
 const { openSocket } = require('./wsHandshake.js');
@@ -18,6 +18,8 @@ class ClientWsTransport extends ClientTransport {
 
   // The one transport that can die without saying so.
   heartbeat = true;
+  // Until the server selected `wrpc.v2`: a 1.0 server selects `wrpc.v1`.
+  revision = 1;
 
   #socket = null;
   #opening = null;
@@ -47,9 +49,12 @@ class ClientWsTransport extends ClientTransport {
     this.#compression = this.codec ? null : createWsCompression(options.compression);
     this.#negotiating = this.#compression !== null;
     const opening = new Promise((resolve, reject) => {
-      // The client OFFERS the protocol revision; the server echoes it (see
-      // protocol.md#versioning). `protocols` overrides the offer, and an
-      // empty array offers nothing — an escape hatch for a proxy that
+      // The client OFFERS the protocol revisions it speaks, newest first, and
+      // the server selects one (see protocol.md#versioning): a 1.0 server
+      // picks `wrpc.v1`, and this connection then speaks what 1.0 spoke. A
+      // client that sends no frames (`attachments: false`, a packet codec)
+      // has nothing of revision 2 to offer. `protocols` overrides the offer,
+      // and an empty array offers nothing — an escape hatch for a proxy that
       // mangles the header. The selected protocol lands on `this.protocol`.
       // The declared headers/meta leave with the handshake: real request
       // headers from Node, subprotocol carrier tokens from a browser, the
@@ -61,7 +66,8 @@ class ClientWsTransport extends ClientTransport {
       // gets a refusal, never plaintext.
       const url =
         encryption === null ? this.url : `${this.url}${this.url.includes('?') ? '&' : '?'}${encryption.param}=1`;
-      const socket = openSocket(WebSocket, url, options.protocols ?? [WRPC_PROTOCOL], options, this.log);
+      const offer = options.protocols ?? (this.attachments === false ? [WRPC_V1] : [WRPC_V2, WRPC_V1]);
+      const socket = openSocket(WebSocket, url, offer, options, this.log);
       // Bytes arrive as ArrayBuffers, never Blobs: an attachments frame is
       // classified synchronously on the way in, in order with the packets.
       socket.binaryType = 'arraybuffer';
@@ -98,6 +104,7 @@ class ClientWsTransport extends ClientTransport {
       };
       const onOpen = () => {
         this.protocol = socket.protocol || '';
+        this.revision = this.protocol === WRPC_V2 ? 2 : 1;
         if (encryption === null) return void established();
         // The handshake first: nothing of this connection leaves in the
         // clear, the compression offer included. `connectTimeout` is racing

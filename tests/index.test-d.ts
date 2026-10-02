@@ -919,3 +919,13 @@ expectError(wrpc.readHandshake(upgradeRequest, { metaMaxBytes: '4096' }));
 // checks before anything opens, and the field a session transport sets.
 expectType<boolean | 'request' | 'keys' | undefined>(wrpc.WrpcClient.transport.wt.encrypts);
 expectAssignable<object | null | undefined>(clientWs.encryption);
+
+// The protocol revision of a connection, on both ends and on the server.
+{
+  const client = {} as WrpcClient;
+  expectType<1 | 2>(client.revision);
+  const rpc = {} as RpcServer;
+  expectType<1 | 2>(rpc.revision);
+  const peer = {} as Client;
+  expectType<1 | 2>(peer.revision);
+}

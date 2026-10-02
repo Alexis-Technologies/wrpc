@@ -581,7 +581,7 @@ test('generateId: an oversize id is caught at construction, and again per stream
   assert.throws(() => sometimes.createStream('name', 10), /at most 255 characters/);
 });
 
-test('subprotocol: the server echoes wrpc.v1 and the client records it', async (t) => {
+test('subprotocol: the server selects wrpc.v2, the newest revision offered, and the client records it', async (t) => {
   const router = defineRouter({
     unit: { ping: procedure({ access: 'public', handler: async () => 'pong' }) },
   });
@@ -592,7 +592,8 @@ test('subprotocol: the server echoes wrpc.v1 and the client records it', async (
   // The engine saw the offer and selected the revision.
   const connections = [...server.wsServer.connections];
   assert.strictEqual(connections.length, 1);
-  assert.strictEqual(connections[0].protocol, 'wrpc.v1');
+  assert.strictEqual(connections[0].protocol, 'wrpc.v2');
+  assert.strictEqual(client.revision, 2);
 });
 
 test('subprotocol: a peer that offers nothing still connects (1.0 stays valid)', async (t) => {

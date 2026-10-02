@@ -369,6 +369,15 @@ class Client extends Emitter {
     return this.#transport.attachments !== false;
   }
 
+  /**
+   * The protocol revision this connection speaks: 2 when the peer reads
+   * framed messages, 1 for a 1.0 peer (protocol.md#versioning) — a handler
+   * that must know which form the bytes it was sent arrived in reads it.
+   */
+  get revision() {
+    return this.#transport.revision ?? 2;
+  }
+
   sendEvent(name, data, options = null) {
     const packet = { type: 'event', name, data };
     if (!this.#transport.connection) {

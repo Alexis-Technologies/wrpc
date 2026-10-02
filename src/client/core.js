@@ -21,7 +21,7 @@ const { hasBytes, encodeAttachments, decodeAttachments, isAttachmentsFrame } = r
 const { WrpcReadable, WrpcWritable } = require('../streams.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createClientTelemetry } = require('../telemetry/client.js');
-const { META_HEADER, META_PREFIX, HEADERS_PARAM, META_PARAM, WRPC_PROTOCOL } = require('../wire.js');
+const { META_HEADER, META_PREFIX, HEADERS_PARAM, META_PARAM, WRPC_V1, WRPC_V2 } = require('../wire.js');
 
 const CALL_TIMEOUT = 7 * 1000;
 
@@ -297,6 +297,11 @@ class ClientTransport extends Emitter {
   // heartbeat. A request/response transport has nothing to keep alive, and
   // a MessagePort to a worker cannot half-close.
   heartbeat = false;
+  // The protocol revision this connection speaks (protocol.md#versioning).
+  // 2 on the carriers 1.0 never had; a transport a 1.0 peer can be behind
+  // starts at 1 and raises it once its peer said 2 — only then does a
+  // packet with bytes leave as a frame.
+  revision = 2;
 
   constructor(url) {
     super();
@@ -308,10 +313,11 @@ class ClientTransport extends Emitter {
     // `obj.meta` rides along so a transport with a header block can mirror
     // it; a control packet has none, and ws/worker ignore the argument. A
     // packet holding bytes leaves as an attachments frame (attachments.js)
-    // unless the client opted out; a codec owns the wire and skips it.
+    // unless the client opted out or the peer speaks revision 1, where the
+    // bytes are the JSON 1.0 made of them; a codec owns the wire and skips it.
     const wire = this.codec
       ? this.codec.encode(obj)
-      : this.attachments !== false && hasBytes(obj)
+      : this.attachments !== false && this.revision === 2 && hasBytes(obj)
         ? encodeAttachments(obj)
         : JSON.stringify(obj);
     this.write(wire, obj?.meta);
@@ -506,6 +512,16 @@ class WrpcClient extends Emitter {
    */
   get encryption() {
     return this.#transport.encryption ?? null;
+  }
+
+  /**
+   * The protocol revision of the current connection: 2 when the peer reads
+   * framed messages (bytes travel as bytes), 1 when it is a 1.0 peer — or
+   * this client opted out with `attachments: false` — and bytes travel as
+   * the JSON 1.0 made of them.
+   */
+  get revision() {
+    return this.#transport.revision;
   }
 
   constructor(url, transport, options = {}) {
@@ -2386,7 +2402,8 @@ module.exports = {
   WrpcError,
   ClientTransport,
   isClientTransport,
-  WRPC_PROTOCOL,
+  WRPC_V1,
+  WRPC_V2,
   CALL_TIMEOUT,
   normalizeReconnect,
   metaHeaders,

@@ -9,7 +9,7 @@ const { effectiveSchema } = require('../rpc/router.js');
 const { publicErrorMessage, publicErrorDetails } = require('../transport.js');
 const { createNodeEngine, isEngine } = require('../engine/index.js');
 const { createUwsEngine } = require('./uws.js');
-const { normalizeBody, eachHeader, nodeStream, createUpgradeGate } = require('./common.js');
+const { normalizeBody, eachHeader, nodeStream, createUpgradeGate, revisionProtocols } = require('./common.js');
 const { cacheHeadersFor, RESERVED_HEADERS, checkHeader } = require('../rpc/rest.js');
 const { setupMirror } = require('./mirror.js');
 
@@ -419,6 +419,7 @@ const wrpcFastify = async (fastify, options = {}) => {
     logger: rpc.log,
     ...(engine.standalone ? {} : { server: fastify.server }),
     ...ws,
+    ...revisionProtocols(rpc, ws),
     verifyClient: createUpgradeGate({ rpc, cors, ws }),
   });
   source.on('connection', (socket, req) => {

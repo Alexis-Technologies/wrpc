@@ -599,6 +599,13 @@ export declare class RpcServer extends Emitter {
    */
   readonly encryptionRequired: boolean;
   /**
+   * The newest protocol revision this server speaks (protocol.md#versioning):
+   * 2, or 1 when it sends and reads no framed messages (`attachments: false`,
+   * a packet codec). A shell composing its own engine narrows the WebSocket
+   * negotiation to `protocols: ['wrpc.v1']` when this reads 1.
+   */
+  readonly revision: 1 | 2;
+  /**
    * True while drain() runs: new calls are refused with 503. Draining is
    * announced once as a `'draining'` event, so a binding that pulls work
    * on its own (a broker consumer) stops fetching.

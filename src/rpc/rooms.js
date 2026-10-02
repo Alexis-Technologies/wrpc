@@ -257,11 +257,12 @@ class Broadcast {
     // the broadcaster is usually far from whoever built the value.
     let text;
     let binary = false;
+    const packet = { type: 'event', name, data };
     try {
       // A configured codec is server-wide, so this stays a SINGLE encode
       // for the whole fan-out — same property the JSON path has. Bytes in
-      // the data make it ONE attachments frame for every recipient.
-      const packet = { type: 'event', name, data };
+      // the data make it ONE attachments frame for every recipient that
+      // reads frames.
       if (this.#codec) text = this.#codec.encode(packet);
       else if (this.#attachments !== false && hasBytes(packet)) {
         binary = true;
@@ -280,13 +281,27 @@ class Broadcast {
     // the plaintext it seals, built once (src/encryption/server.js). Both
     // slots exist from the start so the object keeps one shape.
     const message = { text, frames: null, inner: null, compress: options === null || options.compress !== false };
+    // The same event for a recipient that reads no frames — a 1.0 client on
+    // a revision-1 connection (protocol.md#versioning): the JSON 1.0 sent,
+    // built on the first such recipient and shared by the rest, so a mixed
+    // room costs one extra stringify per emit, not one per member.
+    let plain = null;
     let sent = 0;
     for (const client of this.#recipients()) {
       if (this.#excluded?.has(client)) continue;
       // HTTP clients cannot carry events; skipping beats throwing mid-fan-out.
       if (!client.persistent) continue;
       try {
-        const flushed = client.sendShared(message, unreliable ? options : null);
+        let shared = message;
+        if (binary && !client.attachments) {
+          // Its own slots: `message.frames` may already hold the frame an
+          // earlier recipient's engine built from the binary form.
+          if (plain === null) {
+            plain = { text: JSON.stringify(packet), frames: null, inner: null, compress: message.compress };
+          }
+          shared = plain;
+        }
+        const flushed = client.sendShared(shared, unreliable ? options : null);
         sent++;
         // Not silently discarded any more: a recipient above its high-water
         // mark is visible in the metrics, and every persistent carrier's

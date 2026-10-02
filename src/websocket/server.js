@@ -25,7 +25,7 @@ const hasToken = (value, token) => !!value && value.toLowerCase().includes(token
 // echoes it back, which is what stamps the wire with a version both sides
 // can rely on. A peer that offers nothing gets no subprotocol and speaks
 // 1.0 — additive, nothing breaks. Re-exported below, as it always was.
-const { WRPC_PROTOCOL, CARRIER_PROTOCOL } = require('../wire.js');
+const { WRPC_V1, WRPC_V2, CARRIER_PROTOCOL } = require('../wire.js');
 
 const writeResponse = (socket, headerLines) => {
   socket.cork();
@@ -182,10 +182,12 @@ class WebsocketServer extends EventEmitter {
       const selected = offered.find((name) => protocols.includes(name));
       return { protocol: selected ?? '' };
     }
-    // No app configuration: answer the wrpc revision when it was offered.
-    // Required, not a nicety — a browser fails the whole connection when it
-    // offered subprotocols and the server selected none.
-    if (offered.includes(WRPC_PROTOCOL)) return { protocol: WRPC_PROTOCOL };
+    // No app configuration: answer the newest wrpc revision that was offered
+    // — a 2.x client offers both, a 1.0 client `wrpc.v1` alone. Required, not
+    // a nicety — a browser fails the whole connection when it offered
+    // subprotocols and the server selected none.
+    if (offered.includes(WRPC_V2)) return { protocol: WRPC_V2 };
+    if (offered.includes(WRPC_V1)) return { protocol: WRPC_V1 };
     return { protocol: '' };
   }
 
@@ -286,4 +288,4 @@ class WebsocketServer extends EventEmitter {
   }
 }
 
-module.exports = { WebsocketServer, MAGIC, WRPC_PROTOCOL };
+module.exports = { WebsocketServer, MAGIC };

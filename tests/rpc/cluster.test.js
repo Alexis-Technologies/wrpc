@@ -42,6 +42,9 @@ const router = () =>
 const fakeSocket = () => {
   const listeners = new Map();
   return {
+    // A 2.x client's connection: the revision under which bytes travel as
+    // a frame (a socket with no subprotocol is spoken to as 1.0 was).
+    protocol: 'wrpc.v2',
     events: [],
     on(name, fn) {
       listeners.set(name, fn);

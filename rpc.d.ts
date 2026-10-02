@@ -803,6 +803,12 @@ export class Client extends Emitter {
   session: Session | null;
   /** True for transports that stay open (WebSocket, worker port). */
   readonly persistent: boolean;
+  /**
+   * The protocol revision this connection speaks (protocol.md#versioning):
+   * 2 when the peer reads framed messages, 1 for a 1.0 peer — whose bytes
+   * arrive, and are sent, as the JSON 1.0 made of them.
+   */
+  readonly revision: 1 | 2;
   /** The host this client belongs to (an RpcServer, a PeerHost); null for a standalone Client. */
   readonly server: ClientHost | null;
   /**

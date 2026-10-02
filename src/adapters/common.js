@@ -1,5 +1,7 @@
 'use strict';
 
+const { WRPC_V1 } = require('../wire.js');
+
 // The streaming half of the abstract HTTP call, implemented once for every
 // host that hands over a node ServerResponse (the built-in shell, express
 // and fastify all do). Returning null means the response is already gone.
@@ -105,6 +107,16 @@ const eachHeader = (headers, visit) => {
   }
 };
 
+// What a shell adds to its engine's attach options so the WebSocket
+// negotiation agrees with the core (protocol.md#versioning). An engine
+// selects the newest revision offered, and knows nothing of the server
+// above it: a server that sends and reads no framed messages (`attachments:
+// false`, a packet codec — `rpc.revision` 1) narrows it to `wrpc.v1`, so a
+// 2.x client does not send a frame it would be refused. An application that
+// configured its own `protocols`/`handleProtocols` owns the negotiation.
+const revisionProtocols = (rpc, ws = {}) =>
+  rpc.revision === 1 && !ws.protocols && !ws.handleProtocols ? { protocols: [WRPC_V1] } : null;
+
 module.exports = {
   MAX_BODY_SIZE,
   receiveBody,
@@ -114,5 +126,6 @@ module.exports = {
   nodeStream,
   getPathname,
   createUpgradeGate,
+  revisionProtocols,
   respondBodyError,
 };

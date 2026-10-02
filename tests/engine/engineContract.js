@@ -270,6 +270,35 @@ const runEngineContract = async (harness, t) => {
     assert.strictEqual(reflected.headers['sec-websocket-protocol'], undefined);
   });
 
+  await t.test('with no app configuration the newest wrpc revision offered is selected', async (sub) => {
+    // A 2.x client offers both revisions and a 1.0 client `wrpc.v1` alone:
+    // every engine answers the newest one it was offered, wherever it sits
+    // in the list, and nothing when no revision was offered at all.
+    const { port } = await boot(sub);
+    const selected = async (offer) => {
+      const res = await ProtocolClient.attemptHandshake({
+        host: '127.0.0.1',
+        port,
+        path: '/',
+        headers: {
+          Upgrade: 'websocket',
+          Connection: 'Upgrade',
+          'Sec-WebSocket-Version': '13',
+          'Sec-WebSocket-Key': Buffer.from('0123456789abcdef').toString('base64'),
+          'Sec-WebSocket-Protocol': offer,
+        },
+        timeoutMs: 600,
+      });
+      assert.strictEqual(parseInt(res.statusLine.split(' ')[1], 10), 101, offer);
+      return res.headers['sec-websocket-protocol'];
+    };
+    assert.strictEqual(await selected('wrpc.v2, wrpc.v1'), 'wrpc.v2');
+    assert.strictEqual(await selected('wrpc.v1, wrpc.v2'), 'wrpc.v2');
+    assert.strictEqual(await selected('wrpc.v1'), 'wrpc.v1');
+    assert.strictEqual(await selected('wrpc.h.eyJhIjoiMSJ9, wrpc.v2, wrpc.v1, wrpc.bearer.secret'), 'wrpc.v2');
+    assert.strictEqual(await selected('chat'), undefined);
+  });
+
   await t.test('sendPrepared (when present) delivers one shared message to two peers like send(text)', async (sub) => {
     const { engine, source, port } = await boot(sub);
     if (!engine.capabilities.prepared) return void sub.skip('engine has no prepared-frame path');

@@ -24,6 +24,10 @@ class ServerTransport extends Emitter {
     // concurrently stalled stream.
     super({ maxListeners: Number.MAX_SAFE_INTEGER });
     this.source = source;
+    // The protocol revision this connection speaks (protocol.md#versioning):
+    // lowered to 1 — together with `attachments` — by whoever attaches a
+    // transport a 1.0 peer is behind.
+    this.revision = 2;
   }
 
   error(code = 500, { id = '', error = null } = {}) {

@@ -18,9 +18,14 @@ const { CHANNEL_HEADER } = require('./sse/constants.js');
 const HEADERS_PARAM = 'wrpc_h';
 const META_PARAM = 'wrpc_meta';
 
-// The protocol revision a wrpc client OFFERS as a WebSocket subprotocol and
-// the server echoes (protocol.md#versioning).
-const WRPC_PROTOCOL = 'wrpc.v1';
+// The protocol revisions a wrpc client OFFERS as WebSocket subprotocols —
+// newest first — and the server selects from (protocol.md#versioning).
+// Revision 1 is what 1.0 speaks. Revision 2 adds the framed messages below
+// (a packet whose bytes travel as bytes), and a frame is sent only on a
+// connection that negotiated it: a 1.0 peer offers or selects `wrpc.v1`
+// and is spoken to as 1.0 was.
+const WRPC_V1 = 'wrpc.v1';
+const WRPC_V2 = 'wrpc.v2';
 
 // The same two bags, and the Bearer credential, as subprotocol OFFERS:
 // Sec-WebSocket-Protocol is the one handshake header a page controls, so on
@@ -63,7 +68,8 @@ const ENCRYPTION_PARAM = 'wrpc_e';
 module.exports = {
   HEADERS_PARAM,
   META_PARAM,
-  WRPC_PROTOCOL,
+  WRPC_V1,
+  WRPC_V2,
   HEADERS_PROTOCOL,
   META_PROTOCOL,
   BEARER_PROTOCOL,

@@ -502,12 +502,16 @@ const runAdapterSpec = async (entry, t) => {
       const meta = await client.call('test/peekMeta');
       assert.ok(meta.url.includes('/api'), `ws ${carrier}: the upgrade url survived (got '${meta.url}')`);
       assert.strictEqual(meta.hasHeaders, true, `ws ${carrier}: the upgrade headers survived`);
-      assert.strictEqual(meta.protocol, 'wrpc.v1', `ws ${carrier}: the revision was echoed next to the tokens`);
+      assert.strictEqual(meta.protocol, 'wrpc.v2', `ws ${carrier}: the revision was echoed next to the tokens`);
       assert.strictEqual(meta.appVersion, '8.8', `ws ${carrier}: the declared header arrived, kebab-cased`);
       assert.deepStrictEqual(meta.data, { 'device-id': 'd-1', build: 42 }, `ws ${carrier}: the meta bag arrived`);
       assert.strictEqual(meta.url.includes('wrpc_'), carrier === 'query', `ws ${carrier}: url was '${meta.url}'`);
       assert.ok(!meta.url.includes('spec-token'), `ws ${carrier}: the credential never rides the url`);
-      assert.strictEqual(meta.offer, 'wrpc.v1', `ws ${carrier}: carrier tokens left the header a handler sees`);
+      assert.strictEqual(
+        meta.offer,
+        'wrpc.v2, wrpc.v1',
+        `ws ${carrier}: carrier tokens left the header a handler sees`,
+      );
     }
   });
 

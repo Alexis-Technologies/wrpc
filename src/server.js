@@ -6,7 +6,14 @@ const https = require('node:https');
 const { Emitter } = require('./utils.js');
 const { RpcServer, rpcOptions } = require('./rpc/core.js');
 const { createNodeEngine, isEngine } = require('./engine/index.js');
-const { receiveBody, nodeStream, createUpgradeGate, respondBodyError, MAX_BODY_SIZE } = require('./adapters/common.js');
+const {
+  receiveBody,
+  nodeStream,
+  createUpgradeGate,
+  revisionProtocols,
+  respondBodyError,
+  MAX_BODY_SIZE,
+} = require('./adapters/common.js');
 const { createLoggerWriter } = require('./logging.js');
 
 const DEFAULT_LISTEN_RETRY = 3;
@@ -103,6 +110,7 @@ class Server extends Emitter {
       // lands in the operator's stream rather than in an unlistened 'error'.
       logger: this.#log,
       ...wsOptions,
+      ...revisionProtocols(this.rpc, wsOptions),
       verifyClient: createUpgradeGate({ rpc: this.rpc, cors, ws: wsOptions }),
       onHttpCall: (call) => this.rpc.handleHttpCall(call),
     });
@@ -125,7 +133,13 @@ class Server extends Emitter {
     });
 
     const verifyClient = createUpgradeGate({ rpc: this.rpc, cors, ws: wsOptions });
-    this.wsServer = this.#engine.attach({ logger: this.#log, server: this.httpServer, ...wsOptions, verifyClient });
+    this.wsServer = this.#engine.attach({
+      logger: this.#log,
+      server: this.httpServer,
+      ...wsOptions,
+      ...revisionProtocols(this.rpc, wsOptions),
+      verifyClient,
+    });
     this.wsServer.on('connection', (socket, req) => {
       this.#onConnection(socket, req);
     });

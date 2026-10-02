@@ -235,6 +235,13 @@ declare class ClientTransport extends Emitter {
   static encrypts?: boolean | 'request' | 'keys';
   /** @experimental The facts of the encrypted session once established — a `static encrypts = true` transport sets it before `'open'`. */
   encryption?: EncryptionInfo | null;
+  /**
+   * The protocol revision this connection speaks: 2 by default (the carriers
+   * 1.0 never had); a transport a 1.0 peer can be behind starts at 1 and
+   * raises it once its peer said 2. A packet holding bytes leaves as a
+   * framed message only at 2.
+   */
+  revision: 1 | 2;
   url: string;
   active: boolean;
   /** Stays open (WebSocket, port, SSE, data channel): carries subscriptions, cancel and streams. */
@@ -391,6 +398,13 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
   readonly active: boolean;
   /** @experimental The facts of this connection's encrypted session, or null when it is not one. */
   readonly encryption: EncryptionInfo | null;
+  /**
+   * The protocol revision of the current connection (protocol.md#versioning):
+   * 2 when the peer reads framed messages, so bytes travel as bytes; 1 when
+   * it is a 1.0 peer — or this client opted out with `attachments: false` —
+   * and bytes travel as the JSON 1.0 made of them (`{ "0": 137, … }`).
+   */
+  readonly revision: 1 | 2;
 
   constructor(
     url: string,
@@ -1102,10 +1116,13 @@ export interface WrpcClientOptions {
    */
   generateId?: () => string;
   /**
-   * WebSocket subprotocols to offer. Defaults to ['wrpc.v1'], which the
-   * server echoes back as the wire revision; an empty array offers nothing
-   * (the pre-versioning handshake) — and with nothing offered a browser's
-   * declared bags fall back to the connect-URL query, see `carrier`.
+   * WebSocket subprotocols to offer. Defaults to ['wrpc.v2', 'wrpc.v1'] —
+   * the revisions this client speaks, newest first (['wrpc.v1'] alone under
+   * `attachments: false` or a packet codec) — of which the server selects
+   * one: a 1.0 server selects 'wrpc.v1' and is then spoken to as 1.0 was
+   * (see `revision`). An empty array offers nothing (the pre-versioning
+   * handshake, revision 1) — and with nothing offered a browser's declared
+   * bags fall back to the connect-URL query, see `carrier`.
    * See protocol.md#versioning.
    */
   protocols?: Array<string>;

@@ -22,7 +22,7 @@
 // and the framed kinds of wire.js alike, as the payload of a kind-6 frame.
 // Compression therefore happens INSIDE (compress, then seal).
 
-const { FRAME_MARK, FRAME_HANDSHAKE, FRAME_SEALED, WRPC_PROTOCOL } = require('../wire.js');
+const { FRAME_MARK, FRAME_HANDSHAKE, FRAME_SEALED } = require('../wire.js');
 const { concat, utf8 } = require('./bytes.js');
 const { isPromise } = require('../compression/ids.js');
 
@@ -43,7 +43,13 @@ const helloHeader = (name, kid) => {
   return concat(Uint8Array.of(HELLO_VERSION, nameBytes.length), nameBytes, Uint8Array.of(kidBytes.length), kidBytes);
 };
 
-const prologueOf = (kind, header) => concat(utf8(`${WRPC_PROTOCOL}\0${kind}\0`), header);
+// The label of THIS framing, bound into the handshake — not the revision of
+// the packet core a connection negotiated (wire.js): the session format has
+// its own version byte and changes on its own, so a core revision must not
+// change the bytes two peers hash here.
+const PROLOGUE_LABEL = 'wrpc.v1';
+
+const prologueOf = (kind, header) => concat(utf8(`${PROLOGUE_LABEL}\0${kind}\0`), header);
 
 const isFrame = (bytes, kind) => bytes.length >= 2 && bytes[0] === FRAME_MARK && bytes[1] === kind;
 

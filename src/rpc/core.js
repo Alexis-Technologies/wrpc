@@ -17,7 +17,13 @@ const {
 } = require('../compression/sync.js');
 const { createEnvelope } = require('./envelope.js');
 const { normalizeServerEncryption, wantsEncryption, SealedSocket } = require('../encryption/server.js');
-const { FRAME_MARK, FRAME_ATTACHMENTS, FRAME_PACKET_COMPRESSED, FRAME_CHUNK_COMPRESSED } = require('../wire.js');
+const {
+  FRAME_MARK,
+  FRAME_ATTACHMENTS,
+  FRAME_PACKET_COMPRESSED,
+  FRAME_CHUNK_COMPRESSED,
+  WRPC_V2,
+} = require('../wire.js');
 const { isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
 // The channel header from the import-free constants module, NOT from
 // sse/server.js: the string is shared, the implementation is not.
@@ -634,6 +640,16 @@ class RpcServer extends Emitter {
     return this.#codecOption;
   }
 
+  /**
+   * The newest protocol revision this server speaks (protocol.md#versioning):
+   * 2, or 1 when it sends and reads no framed messages (`attachments: false`,
+   * a packet codec). What a shell composing an engine reads to narrow the
+   * WebSocket negotiation, and what `wrpc-version` answers on HTTP.
+   */
+  get revision() {
+    return this.#attachments ? 2 : 1;
+  }
+
   get clients() {
     return new Set(this.#clients);
   }
@@ -916,6 +932,21 @@ class RpcServer extends Emitter {
     const sealed = this.#sealSocket(socket, meta);
     if (sealed !== null) socket = sealed;
     const transport = new (socketTransportFor(meta.kind))(socket, meta);
+    // The revision this connection speaks (protocol.md#versioning). A
+    // WebSocket says it in the subprotocol the engine selected: a 1.0 client
+    // offers `wrpc.v1` alone, and is then sent no framed message — its bytes
+    // travel as the JSON 1.0 made of them, through the same per-transport
+    // flag `attachments: false` sets for everyone. WebTransport is a carrier
+    // 1.0 never had and negotiates no subprotocol: always 2.
+    if (meta.kind !== 'wt' && socket.protocol !== WRPC_V2) {
+      transport.revision = 1;
+      transport.attachments = false;
+    } else if (!this.#attachments && meta.kind !== 'wt') {
+      // An engine composed by hand selected `wrpc.v2` for a server that
+      // sends no frames and reads none: the client will send one. The
+      // built-in shells narrow the engine to `wrpc.v1` (see `revision`).
+      this.#log.warn({ event: 'revision.mismatch', protocol: socket.protocol });
+    }
     // Declared-then-observed: whichever carrier brought the bags (subprotocol
     // offers, the query, real headers), a declaration can only add names the
     // upgrade request did not carry — see rpc/handshake.js, which a
