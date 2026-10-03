@@ -51,4 +51,20 @@ const waitForWithin = (defaultTimeout) => (predicate, options) =>
       : { timeout: defaultTimeout, ...options },
   );
 
-module.exports = { waitFor, waitForWithin, DEFAULT_TIMEOUT };
+/**
+ * Holds the event loop for the rest of the calling test FILE. The timers that
+ * end a connection — a close or an idle timeout — are unref'd, so they never
+ * hold a process open; over a fake (an in-memory WebTransport, the memory
+ * broker) nothing else holds it either, and a test awaiting one of them
+ * leaves the loop empty. Node 22's runner then cancels that test and every
+ * one after it in the file ("Promise resolution is still pending but the
+ * event loop has already resolved"); Node 24's waits. Released in the file's
+ * `after`, so a handle a test leaks still keeps the run from ending.
+ */
+const keepAlive = () => {
+  const { after } = require('node:test');
+  const timer = setInterval(() => {}, 60_000);
+  after(() => clearInterval(timer));
+};
+
+module.exports = { waitFor, waitForWithin, keepAlive, DEFAULT_TIMEOUT };

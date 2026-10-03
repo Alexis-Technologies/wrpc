@@ -22,6 +22,10 @@ const { acceptSessions } = require('../../wt.js');
 const { runChannelContract, peerEnd } = require('./channelContract.js');
 const { runTransportContract } = require('../client/transportContract.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
+const { keepAlive } = require('../helpers/wait.js');
+
+// Its tests await unref'd close and idle timers over a fake: see keepAlive.
+keepAlive();
 
 const ENDPOINT = 'https://127.0.0.1:4433/api';
 

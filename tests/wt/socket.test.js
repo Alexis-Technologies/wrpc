@@ -22,6 +22,10 @@ const { createFakeWt } = require('./fakeWebTransport.js');
 const { runChannelContract, peerEnd } = require('./channelContract.js');
 const { waitFor } = require('../helpers/server.js');
 const { recorder } = require('../helpers/recorder.js');
+const { keepAlive } = require('../helpers/wait.js');
+
+// Its tests await unref'd close and idle timers over a fake: see keepAlive.
+keepAlive();
 
 // A client end by hand: the session, its control stream, a parser over
 // what the socket sends and a writer to talk to it.

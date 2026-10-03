@@ -12,6 +12,10 @@ const { runTransportContract } = require('../client/transportContract.js');
 const { quiet, waitFor } = require('./support.js');
 const { recorder } = require('../helpers/recorder.js');
 const { createMetrics, point } = require('../helpers/metrics.js');
+const { keepAlive } = require('../helpers/wait.js');
+
+// Its tests await unref'd close and idle timers over a fake: see keepAlive.
+keepAlive();
 
 const onceEvent = (emitter, name) => new Promise((resolve) => emitter.once(name, resolve));
 

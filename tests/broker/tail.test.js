@@ -509,7 +509,10 @@ test('TopicTails: a live tail that ends under its readers is replaced, and the r
     world.ends[0](new Error('lost'));
     await assert.rejects(iterator.next(), (error) => error.code === 503 && /tail ended/.test(error.message));
     assert.ok(world.stats.live >= 3, `retried: ${world.stats.live} live() calls`);
-    assert.ok(Date.now() - started >= 300, 'with a backoff between them');
+    // Full jitter: each of the four waits is uniform in [0, 200·2ⁿ) ms, so
+    // their sum falls under 300 ms about one run in 300 (CI saw 260) and
+    // under 50 ms about one in 400 000. A loop with no backoff takes ~1 ms.
+    assert.ok(Date.now() - started >= 50, 'with a backoff between them');
   });
 
   await t.test('close() fails a reader parked on a tail with 503', async () => {

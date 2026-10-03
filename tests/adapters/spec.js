@@ -609,12 +609,16 @@ const runAdapterSpec = async (entry, t) => {
 
     // A room broadcast reaches every member, the sender included...
     assert.deepStrictEqual(await ada.api.chat.shout({ room: 'lobby', text: 'hello' }), { sent: 2 });
-    await settle();
+    // Waited for, not slept on: 25 ms was not always enough on a loaded CI
+    // runner for the second member's frame.
+    await waitFor(() => received.ada.length === 1 && received.grace.length === 1, 'the broadcast reached both members');
     assert.deepStrictEqual(received.ada, [{ text: 'hello' }]);
     assert.deepStrictEqual(received.grace, [{ text: 'hello' }]);
 
     // ...unless it is excluded.
     assert.deepStrictEqual(await ada.api.chat.shout({ room: 'lobby', text: 'psst', self: false }), { sent: 1 });
+    await waitFor(() => received.grace.length === 2, 'the broadcast reached grace');
+    // What must NOT arrive has no event to wait for: watched for a moment.
     await settle();
     assert.strictEqual(received.ada.length, 1, 'except() drops the sender');
     assert.deepStrictEqual(received.grace.at(-1), { text: 'psst' });
@@ -622,8 +626,10 @@ const runAdapterSpec = async (entry, t) => {
     // A client -> server event is fire-and-forget: nothing comes back on the
     // wire, and the handler's effect is observed through a call.
     ada.sendEvent('chat/typing', { who: 'ada' });
-    await settle();
-    assert.deepStrictEqual(await ada.api.chat.typed(), { seen: [{ who: 'ada' }] });
+    // `typed` drains what the handler saw, so the poll keeps what it read.
+    let seen = [];
+    await waitFor(async () => (seen = (await ada.api.chat.typed()).seen).length > 0, 'the handler saw the event');
+    assert.deepStrictEqual(seen, [{ who: 'ada' }]);
 
     assert.deepStrictEqual(await grace.api.chat.leave({ room: 'lobby' }), { left: true });
     assert.deepStrictEqual(await ada.api.chat.members({ room: 'lobby' }), { count: 1 });
