@@ -69,6 +69,8 @@ WRPC_WT=quico node --test tests/wt/quico.integration.test.js   # …and over the
 pnpm lint               # oxlint src tests scripts bench bin examples
 pnpm format             # oxfmt src tests scripts bench bin examples (format:check for CI)
 pnpm bench              # runs every script in bench/ (bench/run-all.js), not just bench.js
+WRPC_WT=fails WRPC_RTC=node-datachannel node bench/transports.js   # wrpc over ws/WebTransport/WebRTC on real stacks (bench/support/real-stacks.js; needs node scripts/wt-cert.js certs) — rows skip without the variables; the same gate adds the wt/webrtc rows to bench/rpc-comparison.js
+WRPC_WT=fails pnpm bench:browser transports   # the same from Chrome (bench/browser/transports.js); without WRPC_WT the WebTransport row is skipped
 pnpm size                # bundle-size report (scripts/size.js), also run in CI's lint job; browser-reachable entries carry a min+gzip budget and exceeding one FAILS the run
 pnpm docs:dev            # VitePress dev server for docs/ (docs:build / docs:preview too)
 ```

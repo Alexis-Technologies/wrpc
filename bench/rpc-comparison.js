@@ -29,10 +29,14 @@ const STACK_ORDER = [
   'wrpc',
   'wrpc-uws',
   'wrpc-batch',
+  'wrpc-wt',
+  'wrpc-webrtc',
   'ws',
   'uws',
   'fastify-websocket',
   'fastify-uws',
+  'wt-raw',
+  'webrtc-raw',
   'socket.io',
   'trpc-ws',
 ];
@@ -60,13 +64,19 @@ function main() {
   console.log(`Node ${process.version} | ${new Date().toISOString()}\n`);
 
   const byStack = new Map();
-  for (const key of STACK_ORDER) byStack.set(key, runStack(key));
+  for (const key of STACK_ORDER) {
+    const result = runStack(key);
+    // A stack over an optional native implementation (WebTransport, WebRTC)
+    // answers why it did not run instead of failing the comparison.
+    if (result.skipped) console.log(`${key}: skipped — ${result.skipped}`);
+    else byStack.set(key, result);
+  }
 
   console.log('\nSummary (ops/sec, relative to wrpc):\n');
   for (const size of MEASUREMENTS) {
     const baseline = byStack.get('wrpc').find((r) => r.name.endsWith(size)).opsPerSec;
     console.log(`  ${size}:`);
-    for (const key of STACK_ORDER) {
+    for (const key of byStack.keys()) {
       const result = byStack.get(key).find((r) => r.name.endsWith(size));
       const ratio = (result.opsPerSec / baseline).toFixed(2);
       const label = result.name.slice(0, result.name.indexOf(' — '));
