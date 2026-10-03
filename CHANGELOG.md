@@ -1920,6 +1920,13 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **An answer whose form follows `Accept` says `Vary: Accept`.** A packet-mode
+  or conventional REST answer is a frame for a request that names
+  `application/octet-stream` and JSON otherwise, and carried no `Vary` for
+  it: a shared cache could hand one caller's frame to another that reads
+  JSON. It is added (joined onto `Vary: Origin` and `Accept-Encoding`)
+  wherever the server can answer a frame; a server under
+  `attachments: false` or a packet codec does not vary on it.
 - **An HTTP client that sent a frame to a server that reads none sends it
   again as JSON instead of timing out.** The revision an HTTP client learns
   from `wrpc-version: 2` was never lowered, so behind one address shared by

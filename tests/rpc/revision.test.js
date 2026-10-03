@@ -214,6 +214,24 @@ test('revision http: a result holding bytes is a frame only for a caller that as
   assert.deepStrictEqual([bytes[0], bytes[1]], [0, 1], 'a framed message of kind 1');
 });
 
+test('revision http: an answer whose form follows Accept says so in Vary — a shared cache keys on it', async (t) => {
+  const { origin } = await boot(t);
+  const call = { type: 'call', id: '8', method: 'files/get', args: {} };
+  const plain = await post(`${origin}/api`, call);
+  const framed = await post(`${origin}/api`, call, FRAMES);
+  assert.strictEqual(plain.headers.get('vary'), 'Accept');
+  assert.strictEqual(framed.headers.get('vary'), 'Accept');
+  const rest = await fetch(`${origin}/api/files/get`);
+  assert.strictEqual(rest.headers.get('vary'), 'Accept', 'the conventional REST mode too');
+  // Joined onto what is there: an origin allowlist's Vary: Origin.
+  const listed = await boot(t, { cors: { origins: ['https://app.test'] } });
+  const cross = await post(`${listed.origin}/api`, call, { origin: 'https://app.test' });
+  assert.strictEqual(cross.headers.get('vary'), 'Origin, Accept');
+  // A server that answers no frame does not vary on Accept.
+  const off = await boot(t, { attachments: false });
+  assert.strictEqual((await post(`${off.origin}/api`, call, FRAMES)).headers.get('vary'), null);
+});
+
 test('revision http: a batch and the conventional REST mode follow the same rule', async (t) => {
   const { origin } = await boot(t);
   const batch = [

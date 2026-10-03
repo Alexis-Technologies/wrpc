@@ -255,13 +255,18 @@ const chooseEncoding = (compression, call, headers) => {
   return compression.filter === null || compression.filter(call) === true ? encoder : null;
 };
 
-// `Vary: Accept-Encoding` on an encoded response, joined onto the CORS
-// `Vary: Origin` when both apply — a shared cache must key on the request
-// header that decided the representation.
+// A request header that decided the representation, added to `Vary` —
+// joined onto what is there (the CORS `Vary: Origin`): a shared cache must
+// key on every one of them.
+const addVary = (headers, name) => {
+  const vary = headers['Vary'];
+  headers['Vary'] = vary ? `${vary}, ${name}` : name;
+};
+
+// `Vary: Accept-Encoding` on an encoded response.
 const markEncoded = (headers, token) => {
   headers['Content-Encoding'] = token;
-  const vary = headers['Vary'];
-  headers['Vary'] = vary ? `${vary}, Accept-Encoding` : 'Accept-Encoding';
+  addVary(headers, 'Accept-Encoding');
 };
 
 // The SSE half: one encoder for the life of the response (for gzip, one
@@ -325,6 +330,7 @@ module.exports = {
   normalizeCompression,
   pickEncoding,
   chooseEncoding,
+  addVary,
   markEncoded,
   encodedWriter,
 };

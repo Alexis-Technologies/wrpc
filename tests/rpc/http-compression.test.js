@@ -82,7 +82,8 @@ test('http compression: off by default — a gzip-accepting request gets plain b
   const { res, bytes } = await rawPost(origin, packet('data/big'), { 'Accept-Encoding': 'gzip' });
   assert.strictEqual(res.statusCode, 200);
   assert.strictEqual(res.headers['content-encoding'], undefined);
-  assert.strictEqual(res.headers.vary, undefined);
+  // Only what decides the frame-or-JSON form; nothing about the coding.
+  assert.strictEqual(res.headers.vary, 'Accept');
   assert.strictEqual(JSON.parse(bytes.toString()).result.rows.length, 64);
 });
 
@@ -91,7 +92,7 @@ test('http compression: enabled, a packet answer past the threshold is gzip with
   const { res, bytes } = await rawPost(origin, packet('data/big'), { 'Accept-Encoding': 'gzip, deflate, br' });
   assert.strictEqual(res.statusCode, 200);
   assert.strictEqual(res.headers['content-encoding'], 'gzip');
-  assert.strictEqual(res.headers.vary, 'Accept-Encoding');
+  assert.strictEqual(res.headers.vary, 'Accept, Accept-Encoding');
   assert.strictEqual(Number(res.headers['content-length']), bytes.length, 'Content-Length is the encoded size');
   const plain = zlib.gunzipSync(bytes);
   assert.ok(bytes.length < plain.length / 3, `compressed ${bytes.length} B against ${plain.length} B plain`);
@@ -213,7 +214,7 @@ test('http compression: Vary joins the CORS Vary: Origin', async (t) => {
     Origin: 'https://app.example',
   });
   assert.strictEqual(res.headers['content-encoding'], 'gzip');
-  assert.strictEqual(res.headers.vary, 'Origin, Accept-Encoding');
+  assert.strictEqual(res.headers.vary, 'Origin, Accept, Accept-Encoding');
 });
 
 test('http compression: async past its threshold answers from the threadpool, same bytes', async (t) => {
@@ -423,7 +424,7 @@ test('http compression: `encodings` — Brotli, zstd and gzip by the server’s 
   for (const [accept, expected] of cases) {
     const { res, bytes } = await rawPost(origin, packet('data/big'), { 'Accept-Encoding': accept });
     assert.strictEqual(res.headers['content-encoding'], expected, accept);
-    assert.strictEqual(res.headers.vary, 'Accept-Encoding');
+    assert.strictEqual(res.headers.vary, 'Accept, Accept-Encoding');
     assert.deepStrictEqual(JSON.parse(decoders[expected](bytes).toString()).result, big);
   }
   const none = await rawPost(origin, packet('data/big'), { 'Accept-Encoding': 'deflate' });

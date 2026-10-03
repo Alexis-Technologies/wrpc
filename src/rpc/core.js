@@ -8,7 +8,7 @@ const { defineRouter, procedure, runHooksSafe } = require('./router.js');
 const { RoomRegistry, Broadcast, RoomsBackplane, BROADCAST_CHANNEL } = require('./rooms.js');
 const { Cluster, instanceOfClientId } = require('./cluster.js');
 const { SseChannels } = require('../sse/server.js');
-const { normalizeCompression } = require('../contentEncoding.js');
+const { normalizeCompression, addVary } = require('../contentEncoding.js');
 const {
   maxMessageOf,
   normalizeSyncCompression,
@@ -1431,6 +1431,9 @@ class RpcServer extends Emitter {
     const client = this.#addClient(transport, restore, meta);
     // Revision 1 unless the caller asked for a framed answer: a 1.0 client
     // reads the body as JSON whatever its type says (protocol.md#versioning).
+    // The same call is a frame or JSON by its `Accept`, which a shared cache
+    // must therefore key on.
+    if (this.#attachments) addVary(headers, 'Accept');
     if (!readsFrames(call.headers)) this.#speakRevision1(transport);
     // An aborted or never-answered request must still evict the client:
     // the transport only self-closes when it writes a response.
@@ -1501,6 +1504,7 @@ class RpcServer extends Emitter {
     // does: a framed one only for a caller that asked for it — to curl, a
     // 1.0 client or a browser's fetch it stays the JSON 1.0 answered. A
     // declared route's body is a plain value and has no frame either way.
+    if (route === null && this.#attachments) addVary(headers, 'Accept');
     if (route === null && !readsFrames(call.headers)) this.#speakRevision1(transport);
     // The response seam a REST handler reaches as `context.http`: the
     // request line, and setHeader()/status() onto this very response.

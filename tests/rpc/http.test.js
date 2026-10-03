@@ -196,7 +196,8 @@ test('cors: no cors option means wildcard ACAO on responses', async (t) => {
   const res = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://anything.example' });
   assert.strictEqual(res.status, 200);
   assert.strictEqual(res.headers.get('access-control-allow-origin'), '*');
-  assert.strictEqual(res.headers.get('vary'), null);
+  // No Origin in it: only the Accept a frame-or-JSON answer is chosen by.
+  assert.strictEqual(res.headers.get('vary'), 'Accept');
 });
 
 test('cors origins list: allowed origin echoed with Vary, disallowed gets no ACAO', async (t) => {
@@ -205,7 +206,7 @@ test('cors origins list: allowed origin echoed with Vary, disallowed gets no ACA
   const allowed = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://app.example' });
   assert.strictEqual(allowed.status, 200);
   assert.strictEqual(allowed.headers.get('access-control-allow-origin'), 'http://app.example');
-  assert.strictEqual(allowed.headers.get('vary'), 'Origin');
+  assert.strictEqual(allowed.headers.get('vary'), 'Origin, Accept');
 
   // Refused outright, not merely denied the header: the page could not read
   // the answer either way, but the call itself must not run cross-site.

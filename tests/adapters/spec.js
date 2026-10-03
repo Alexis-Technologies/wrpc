@@ -478,7 +478,7 @@ const runAdapterSpec = async (entry, t) => {
     const allowed = await rpcPost(corsBase, 'test/hello', { name: 'CORS' }, { origin: 'https://allowed.example' });
     assert.strictEqual(allowed.res.status, 200);
     assert.strictEqual(allowed.res.headers.get('access-control-allow-origin'), 'https://allowed.example');
-    assert.strictEqual(allowed.res.headers.get('vary'), 'Origin');
+    assert.strictEqual(allowed.res.headers.get('vary'), 'Origin, Accept');
     assert.strictEqual(allowed.res.headers.get('access-control-allow-credentials'), 'true');
 
     const denied = await rpcPost(corsBase, 'test/hello', { name: 'CORS' }, { origin: 'https://evil.example' });
