@@ -316,6 +316,45 @@ test('events encryption: a key provider that throws once is retried, not dead-le
   assert.deepStrictEqual(dead, []);
 });
 
+test('events encryption: a sealed delivery dead-letters with the code alone outside the seal', async (t) => {
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(() => broker.close());
+  const keys = generateKey();
+  const publisher = publisherOf(t, broker, { encryption: { keys } });
+  const router = defineRouter({
+    billing: {
+      consumes: {
+        charges: procedure({
+          access: 'public',
+          consume: { retry: false, deadLetter: 'charges.dead' },
+          handler: async () => {
+            throw Object.assign(new Error('card 4111111111111111 declined'), { code: 422 });
+          },
+        }),
+      },
+    },
+  });
+  const rpc = new RpcServer({ router, logger: quiet, sse: false });
+  t.after(() => rpc.close());
+  const dead = [];
+  const graveyard = await broker.queue.consume('charges.dead', (delivery) => {
+    dead.push(delivery);
+    return delivery.ack();
+  });
+  t.after(() => graveyard.stop());
+  const { logger, entries } = allLogs();
+  const consumers = await attachConsumers(rpc, broker, {}, { encryption: { keys }, logger });
+  t.after(() => consumers.stop());
+  await publisher.publish('orders.v1/charged', { id: 'o-3' });
+  await waitFor(() => dead.length === 1);
+  // The body stayed sealed; this header is outside the seal, and used to be
+  // "422 card 4111111111111111 declined".
+  assert.strictEqual(dead[0].headers['x-wrpc-dead-reason'], '422');
+  assert.ok(!JSON.stringify(dead[0].headers).includes('4111'));
+  // The operator still has the reason — in the log, never in the broker.
+  assert.match(entries.find((entry) => entry.event === 'broker.dead').err.message, /declined/);
+});
+
 test('events encryption: a feed logs a burst of refusals once per reason, with the count, and summarizes at the end', async (t) => {
   const broker = new MemoryBroker({ logger: quiet });
   t.after(() => broker.close());

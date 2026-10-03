@@ -2847,6 +2847,14 @@ reference as one opaque string. What is left to do:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **A sealed dead letter carries its code outside the seal, not its
+  reason.** Under `encryption` a dead-lettered message keeps its body
+  sealed, but `x-wrpc-dead-reason` rides outside the seal — and held the
+  code and the handler's message, which is whatever the handler wrote,
+  the data the seal was for included. It is the code alone now; the whole
+  reason is on the `broker.dead` line and in `onDeadLetter`. The binding's
+  own refusals (`Sealed delivery refused`, `Plaintext delivery refused`)
+  keep their fixed text.
 - **The sealed-envelope sender memory evicts the least recently heard
   sender, not the oldest.** Past `maxSenders`, a new sender evicted the
   first one in — the busiest, as often as not — which came back with a

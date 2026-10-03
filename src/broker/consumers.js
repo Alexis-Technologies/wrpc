@@ -33,6 +33,15 @@ const { rpcOf } = require('./host.js');
 const { toText, reasonText } = require('./ids.js');
 const { createBrokerSealing } = require('./sealing.js');
 
+// The binding's own refusals: fixed text, safe on a dead letter's outer
+// header under sealing — unlike a handler's message (settle).
+const OWN_REFUSALS = new WeakSet();
+const refusal = (message) => {
+  const error = new Error(message);
+  OWN_REFUSALS.add(error);
+  return error;
+};
+
 const DEFAULT_PREFETCH = 16;
 const DEFAULT_TOKEN_CLIENTS = 128;
 const DEFAULT_TOKEN_TTL = 60_000;
@@ -442,8 +451,15 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     if (action === 'release') return delivery.release();
     // One line, bounded: a header value on every broker (a validator's
     // multi-line message used to make NATS refuse the dead-letter publish,
-    // and the message came back forever).
-    const reason = reasonText(`${code}${error?.message ? ` ${error.message}` : ''}`);
+    // and the message came back forever). Under sealing, the code alone: the
+    // dead letter's body stays sealed, but this header rides OUTSIDE the
+    // seal, and a handler's message is whatever it wrote — the data the
+    // seal was for sat in the broker in plaintext beside a sealed body. The
+    // whole reason is on the `broker.dead` line and in `onDeadLetter`.
+    const reason =
+      sealing === null || OWN_REFUSALS.has(error)
+        ? reasonText(`${code}${error?.message ? ` ${error.message}` : ''}`)
+        : String(code);
     // `err` alongside the code: the code says a message was dead-lettered,
     // the error says why, and only the code was ever recorded.
     log.warn({
@@ -503,9 +519,9 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
             draining: rpc.draining,
           });
           const why = opened.refused === 'kid' ? 'unknown key id' : 'the key provider failed';
-          return void (await settle(delivery, decision, 503, new Error(`Sealed delivery refused: ${why}`)));
+          return void (await settle(delivery, decision, 503, refusal(`Sealed delivery refused: ${why}`)));
         }
-        return void (await settle(delivery, { action: 'dead', delay: 0 }, 400, new Error('Sealed delivery refused')));
+        return void (await settle(delivery, { action: 'dead', delay: 0 }, 400, refusal('Sealed delivery refused')));
       }
       if (opened.sealed) {
         body = toText(opened.body);
@@ -516,12 +532,7 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
         // stricter than the rollout's, and a plaintext delivery is not
         // served — parity with `unsealed`.
         log.warn({ event: 'broker.refused', queue: policy.queue, reason: 'plaintext' });
-        return void (await settle(
-          delivery,
-          { action: 'dead', delay: 0 },
-          400,
-          new Error('Plaintext delivery refused'),
-        ));
+        return void (await settle(delivery, { action: 'dead', delay: 0 }, 400, refusal('Plaintext delivery refused')));
       }
     }
     let args;
