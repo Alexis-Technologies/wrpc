@@ -225,6 +225,7 @@ expectError(webrtc.attachChannel({}, dataChannel));
 
 // A PeerHost is a ClientHost like an RpcServer: handlers reach rooms on both.
 declare const host: PeerHost;
+expectType<1 | 2>(host.revision);
 expectAssignable<ClientHost>(host);
 expectType<number>(host.to('mesh:lobby').emit('x/y', 1));
 expectType<Set<Client>>(host.clients);

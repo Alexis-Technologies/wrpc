@@ -237,6 +237,15 @@ class WrpcPeer extends Emitter {
     }));
   }
 
+  // What every description this peer sends announces: its codecs, and
+  // which of its halves read framed messages (`f`: 1 the host, 2 the
+  // client) — each end of a link sends a frame only where the other said so.
+  #caps() {
+    const client = this.#clientOptions;
+    const f = (this.#host?.revision === 2 ? 1 : 0) | (client.attachments !== false && !client.codec ? 2 : 0);
+    return this.#compression === null ? { f } : { enc: this.#compression.ids, f };
+  }
+
   /**
    * A link to `remoteId`, dialled from either side; idempotent while one
    * exists — unless `options.instance` names another incarnation of the
@@ -434,7 +443,7 @@ class WrpcPeer extends Emitter {
       connectTimeout: this.#connectTimeout,
       restartTimeout: this.#restartTimeout,
       log: this.#log,
-      caps: this.#compression === null ? null : { enc: this.#compression.ids },
+      caps: this.#caps(),
       signal: this.#verifier === null ? relay : stamped,
     });
     const peerLink = new PeerLink(this.#linkPort, {

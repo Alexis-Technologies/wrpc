@@ -474,9 +474,10 @@ test('rtc compression (peer): both peers on — calls with large payloads both w
   assert.strictEqual(rows.length, 400);
   const echoed = await api.echo({ pad: 'z'.repeat(40_000) });
   assert.strictEqual(echoed.pad.length, 40_000);
-  assert.deepStrictEqual(linkToB.link.peerCaps, { enc: [DEFLATE] });
+  // `f: 3` — both halves of the other peer read framed messages.
+  assert.deepStrictEqual(linkToB.link.peerCaps, { enc: [DEFLATE], f: 3 });
   const linkToA = b.links.get('a');
-  assert.deepStrictEqual(linkToA.link.peerCaps, { enc: [DEFLATE] });
+  assert.deepStrictEqual(linkToA.link.peerCaps, { enc: [DEFLATE], f: 3 });
   await linkToA.load('calc');
   assert.strictEqual((await linkToA.api.calc.big({ rows: 300 })).length, 300);
 });
@@ -507,7 +508,7 @@ test('rtc compression (peer): one peer on, the other off — plain, and every ca
   await a.start();
   await b.start();
   const link = await within(a.connect('b'), 'a dials b');
-  assert.strictEqual(link.link.peerCaps, null);
+  assert.deepStrictEqual(link.link.peerCaps, { f: 3 }, 'no codecs announced — only the revision');
   await link.load('calc');
   assert.strictEqual((await link.api.calc.big({ rows: 500 })).length, 500);
   assert.throws(

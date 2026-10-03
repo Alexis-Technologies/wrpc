@@ -138,6 +138,13 @@ const activeCompression = (compression, link) => {
   return { encode: head, decode: head };
 };
 
+// The revision over a link: a frame goes only to a peer whose descriptions
+// said the half on the other end reads them — `caps.f` bit 1 its host, bit
+// 2 its client (protocol.md#webrtc). Two peers whose `attachments` disagree
+// used to send each other frames the other refused unread. A raw channel has
+// no handshake: there the two applications agree, as on compression.
+const peerReads = (link, bit) => link === null || ((link.peerCaps?.f ?? 0) & bit) !== 0;
+
 // One place for what both halves do with a channel: encode outbound frames
 // into it and decode inbound ones from it. `sink` is bound once so the hot
 // path allocates nothing per call. With compression in effect a message
@@ -540,6 +547,7 @@ class ClientRtcTransport extends ClientTransport {
     if (attempt !== this.#attempt) throw new Error('Connection terminated');
     const channel = link.clientChannel;
     if (!channel || channel.readyState !== 'open') throw new Error('The link has no open client channel');
+    this.revision = this.attachments !== false && !this.codec && peerReads(link, 1) ? 2 : 1;
     this.#attach(channel, link.maxMessageSize, activeCompression(this.#compression, link));
   }
 
@@ -735,6 +743,7 @@ class RtcPeerTransport extends ServerTransport {
     const link = raw ? null : source;
     this.#link = link;
     this.#channel = channel;
+    if (!peerReads(link, 2)) this.setRevision(1);
     this.#onError = onError;
     const marks = normalizeWaterMarks(highWaterMark, lowWaterMark, 'RtcPeerTransport: options');
     // A link's channels are already binary; a raw one carries the browser

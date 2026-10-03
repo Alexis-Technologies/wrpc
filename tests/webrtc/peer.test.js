@@ -1007,3 +1007,51 @@ test('peer: signals held for a peer whose accept() is thinking are bounded, and 
   await within(knock, 'the link still forms');
   assert.strictEqual(a.links.size, 1);
 });
+
+test('peer: the description settles the revision per direction — bytes as bytes only where both halves read frames', async (t) => {
+  const bytesRouter = defineRouter({
+    b: {
+      echo: procedure({
+        handler: async (_ctx, { blob }) => ({ kind: blob.constructor.name, blob: Uint8Array.of(7, 8) }),
+      }),
+    },
+  });
+  // Two peers whose `attachments` disagreed sent each other frames the
+  // other refused unread: the call was never answered.
+  for (const [label, aOptions, bOptions, revision] of [
+    ['both read frames', {}, {}, 2],
+    ["a's host reads none", { host: { attachments: false } }, {}, 1],
+    ["b's client reads none", {}, { client: { heartbeat: false, attachments: false } }, 1],
+  ]) {
+    const fake = createFakeRtc();
+    const hub = new FakeSignalHub();
+    const make = (id, options) =>
+      new WrpcPeer({
+        router: bytesRouter,
+        signaler: hub.signaler(id),
+        rtc: fake.adapter,
+        logger: quiet,
+        client: { heartbeat: false },
+        connectTimeout: 500,
+        ...options,
+      });
+    const a = make('a', aOptions);
+    const b = make('b', bOptions);
+    t.after(() => {
+      a.close();
+      b.close();
+      fake.world.close();
+    });
+    const ba = await within(b.connect('a'), `${label}: b→a open`);
+    await ba.load('b');
+    const answer = await within(ba.api.b.echo({ blob: Uint8Array.of(1, 2) }), `${label}: answered`);
+    assert.strictEqual(ba.remote.revision, revision, label);
+    if (revision === 2) {
+      assert.strictEqual(answer.kind, 'Uint8Array', label);
+      assert.ok(answer.blob instanceof Uint8Array, label);
+    } else {
+      assert.strictEqual(answer.kind, 'Object', label);
+      assert.deepStrictEqual(answer.blob, { 0: 7, 1: 8 }, label);
+    }
+  }
+});

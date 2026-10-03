@@ -1939,6 +1939,15 @@ reference as one opaque string. What is left to do:
   MEMBERS too: every public member of `ServerTransport` and its transports,
   the server `Client`, `RpcServer` and `WrpcClient` must be declared on its
   d.ts class, the few the core calls on itself named in the test.
+- **WebRTC negotiates the revision, per half of a peer.** Two `WrpcPeer`s
+  whose `attachments` disagreed (`host: { attachments: false }`, or a
+  client half with `attachments: false`) sent each other frames the other
+  refused unread, and a call holding bytes was never answered. Each
+  description now carries `caps.f` — bit `1` this peer's host reads framed
+  messages, bit `2` its client does — and each half sends a frame only where
+  the other peer's matching half said so. `PeerHost#revision` is what a peer
+  announces for its host. Over a raw channel there is no handshake: the two
+  applications set `attachments` alike, as they agree on compression.
 - **WebTransport negotiates the revision.** It was "always revision 2", so
   two ends whose `attachments` disagreed sent each other frames the other
   refused unread — a call holding bytes timed out (`408`) where the same

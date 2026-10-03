@@ -112,7 +112,8 @@ can:
 | SSE | nothing to say — always revision 1: the transport is text-only, carries no framed message, and a packet's bytes travel as JSON both ways |
 | Worker port | `v` on the port's first `ping` and its `pong` |
 | WebTransport | `f` in the capabilities message each end sends first ([below](#webtransport-streams)) |
-| WebRTC, the broker binding | carriers 1.0 never had: always revision 2 |
+| WebRTC | `f` in a description signal's `caps` ([below](#webrtc)), per half of the peer; over a raw channel, the applications' agreement |
+| The broker binding | a carrier 1.0 never had: always revision 2 |
 
 **HTTP.** Every response carries **`wrpc-version`**: the newest revision the
 server speaks — `2`, or `1` for a server that reads no framed messages, which
@@ -1005,8 +1006,15 @@ bit 3–7        reserved, MUST be 0
   analogue of a WebSocket `1002`.
 - **Compression** is negotiated through signaling, since the channels have
   no handshake: a `description` signal MAY carry `caps`, a JSON object whose
-  known key is `enc` — the peer's codec ids in its order of preference
-  ([the rule](#compression)). A peer MAY set the COMPRESSED bit only once
+  known keys are `enc` — the peer's codec ids in its order of preference
+  ([the rule](#compression)) — and `f`, the [revision](#versioning) of its
+  two halves as bits: `1` its host reads framed messages, `2` its client
+  does. A client half sends a frame only when the other peer's last
+  description set bit `1` (and it reads them itself); a host half only when
+  bit `2` was set. A peer that announces no `f` is spoken to at revision 1,
+  both ways. Over a raw channel there is nothing to announce through, so
+  the two applications agree — `attachments` alike on both ends, as with
+  compression. A peer MAY set the COMPRESSED bit only once
   the other peer's last description announced a codec it holds; the payload
   is then the output of the SENDER's chosen codec over the bytes the message
   would otherwise carry, compressed before fragmentation and inflated after

@@ -166,7 +166,11 @@ class PeerHost extends Emitter {
       throw new TypeError("PeerHost.attach: trust 'assertion' requires the peer's verified claims");
     }
     if (this.#codec) transport.codec = this.#codec;
-    if (!this.#attachments) transport.attachments = false;
+    // Fields, not setRevision: a transport here is structural (attach).
+    if (!this.#attachments) {
+      transport.revision = 1;
+      transport.attachments = false;
+    }
     // The roster data first — it is the peer's word — and the facts over it.
     // `delete`, not `claims: undefined`: the key must be absent when there
     // are none, whatever the roster data tried to put there.
@@ -230,6 +234,11 @@ class PeerHost extends Emitter {
       codec: this.#codec,
       attachments: this.#attachments,
     });
+  }
+
+  /** The newest protocol revision this host speaks: 1 under `attachments: false` or a packet codec. */
+  get revision() {
+    return this.#attachments ? 2 : 1;
   }
 
   /** Everyone in any of `rooms`, each client once. */

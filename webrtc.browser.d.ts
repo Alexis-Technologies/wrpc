@@ -422,6 +422,11 @@ export declare class PeerHost extends Emitter implements ClientHost {
   readonly trust: PeerTrust;
   /** The telemetry writer; `enabled` is false when nothing was injected. */
   readonly otel: { readonly enabled: boolean };
+  /**
+   * The newest protocol revision this host speaks: 1 under `attachments:
+   * false` or a packet codec. A WrpcPeer announces it in its descriptions.
+   */
+  readonly revision: 1 | 2;
   getClient(id: string): Client | undefined;
   attach(
     transport: RtcPeerTransport,
