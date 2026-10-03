@@ -261,3 +261,49 @@ test('broker: a resume token that fails its signature is warned about, by reason
   assert.ok(!JSON.stringify(entry).includes('forged!deadbeef'));
   await broker.close();
 });
+
+test('http: what throws while a request is routed is one error line and one 500', async () => {
+  const { RpcServer } = require('../../index.js');
+  const { writer, all } = recorder();
+  const rpc = new RpcServer({
+    router,
+    logger: writer,
+    querystring: {
+      parse() {
+        throw new Error('parser bug');
+      },
+    },
+  });
+  const answers = [];
+  const call = (extra = {}) => ({
+    method: 'GET',
+    url: '/api/unit/ping?a=1',
+    headers: {},
+    respond: (response) => answers.push(response.status),
+    ...extra,
+  });
+  await rpc.handleHttpCall(call());
+  assert.deepStrictEqual(answers, [500], 'answered once');
+  const [entry] = all('http.failed');
+  assert.strictEqual(entry.level, 'error');
+  assert.strictEqual(entry.err.message, 'parser bug');
+
+  await rpc.close();
+
+  // A response the host already started streaming is not answered again:
+  // the throw comes from the host's own stream(), after the core began.
+  const plain = new RpcServer({ router, logger: writer });
+  answers.length = 0;
+  await plain.handleHttpCall(
+    call({
+      url: '/api/events',
+      headers: { accept: 'text/event-stream' },
+      stream() {
+        throw new Error('host refused the stream');
+      },
+    }),
+  );
+  assert.deepStrictEqual(answers, [], 'nothing written over a started stream');
+  assert.strictEqual(all('http.failed').length, 2);
+  await plain.close();
+});

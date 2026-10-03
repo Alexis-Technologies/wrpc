@@ -1278,7 +1278,45 @@ class RpcServer extends Emitter {
     call.respond({ status: 202, headers: { ...headers, 'Content-Length': 0 } });
   }
 
+  // Every host hands a request here without a catch of its own (`void
+  // rpc.handleHttpCall(call)`), so whatever escapes the routing below — a
+  // peer's input no refusal anticipated — was an unhandled rejection and a
+  // request nobody answered. Caught once, here: logged, counted, answered 500
+  // unless something already answered or started a stream. The call is
+  // copied so the answer can be known; one object per request, against an
+  // HTTP parse.
   async handleHttpCall(call) {
+    let answered = false;
+    const { respond, stream } = call;
+    const guarded = {
+      ...call,
+      respond: (response) => {
+        answered = true;
+        return respond(response);
+      },
+      stream:
+        typeof stream === 'function'
+          ? (options) => {
+              answered = true;
+              return stream(options);
+            }
+          : stream,
+    };
+    try {
+      return await this.#routeHttpCall(guarded);
+    } catch (error) {
+      this.#log.error({ err: error, event: 'http.failed' });
+      this.#otel.recordCall(UNKNOWN_TARGET, 'error', 500);
+      if (answered) return;
+      try {
+        new ServerHttpTransport(guarded, { headers: buildHeaders(this.#cors, call.headers?.origin) }).error(500);
+      } catch {
+        // The host cannot write either: nothing more to say.
+      }
+    }
+  }
+
+  async #routeHttpCall(call) {
     const headers = buildHeaders(this.#cors, call.headers?.origin, this.revision);
     if (call.method === 'OPTIONS') {
       return void call.respond({ status: 200, headers });

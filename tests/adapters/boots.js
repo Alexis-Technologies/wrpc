@@ -67,6 +67,7 @@ const rpcOptions = (options) => ({
   basePath: options.basePath,
   http: options.http,
   encryption: options.encryption,
+  querystring: options.querystring,
   logger: false,
 });
 

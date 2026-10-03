@@ -2613,6 +2613,23 @@ reference as one opaque string. What is left to do:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **An SSE channel reference whose secret is not ASCII is a 409, not an
+  unanswered request.** `holds` compared the secret's length in characters
+  and handed the bytes to `timingSafeEqual`, which throws when the byte
+  lengths differ — so a secret of 24 `é` against a 24-character channel
+  secret, on `GET {basePath}/events` (query or `x-wrpc-channel`) or a
+  channel POST, threw out of `handleHttpCall`: an unhandled rejection, and
+  a request nobody answered, from an unauthenticated peer. The lengths are
+  compared as bytes now, as `openId` in the broker always did.
+- **`RpcServer.handleHttpCall` answers what throws while it routes.** Every
+  host hands it a request without a catch of its own (`void
+  rpc.handleHttpCall(call)` — the `Server` shell, the express middleware,
+  the fastify plugin, the uws engine, the broker binding), so anything a
+  peer's input made throw before a refusal existed for it was an unhandled
+  rejection and a hung request. It is caught once in the core now: logged
+  (`http.failed`, error, with `err`), counted on the calls series, and
+  answered `500` — unless an answer or a stream had already started, which
+  is left as it was. One case of the adapter spec runs it over every host.
 - **`Accept-Encoding` is read in one pass and capped at 256 bytes.** The
   coding scan searched for the next `;` from every token, so a header of
   8000 one-letter tokens cost 1.9 ms of CPU per request and 16 KB of commas

@@ -370,6 +370,26 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(body.error.message, 'Boom');
   });
 
+  await t.test('what throws while a request is routed is answered 500, never left hanging', async () => {
+    // An injected query parser that throws stands for any input nothing
+    // refused first: every host used to drop the rejection on the floor.
+    const failing = await boot({
+      querystring: {
+        parse() {
+          throw new Error('parser bug');
+        },
+      },
+    });
+    const failingBase = `http://127.0.0.1:${failing.port}/api`;
+    const res = await fetch(`${failingBase}/test/echo?a=1`, { signal: AbortSignal.timeout(5000) });
+    assert.strictEqual(res.status, 500);
+    const body = await res.json();
+    assert.strictEqual(body.error.code, 500);
+    assert.strictEqual(body.error.message, 'Internal Server Error', 'the error itself stays in the log');
+    const { body: next } = await rpcPost(failingBase, 'test/hello', { name: 'again' });
+    assert.strictEqual(next.result, 'Hello, again', 'and the server goes on');
+  });
+
   await t.test('access control: a session procedure without a session is 403', async () => {
     const { res, body } = await rpcPost(base, 'test/whoami', {});
     assert.strictEqual(res.status, 403);

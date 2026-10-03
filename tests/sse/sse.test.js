@@ -321,6 +321,33 @@ test('sse: the channel is what ties the two halves together', async (t) => {
     assert.strictEqual(server.rpc.sse.size, 1, 'the channel is untouched');
   });
 
+  await t.test(
+    'a secret as long in characters but not in bytes is a 409, on every path that presents one',
+    async () => {
+      // `é` is one character and two UTF-8 bytes: the comparison used to
+      // measure characters and hand bytes to timingSafeEqual, which threw —
+      // a rejection nobody caught and a request nobody answered.
+      const wide = `${channelId}.${'é'.repeat(secret.length)}`;
+      const byQuery = await fetch(`${base}/events?channel=${encodeURIComponent(wide)}`, {
+        headers: { accept: 'text/event-stream' },
+      });
+      assert.strictEqual(byQuery.status, 409, 'the query');
+      await byQuery.body?.cancel?.();
+      const byHeader = await fetch(`${base}/events`, {
+        headers: { accept: 'text/event-stream', [CHANNEL_HEADER]: wide },
+      });
+      assert.strictEqual(byHeader.status, 409, 'the header');
+      await byHeader.body?.cancel?.();
+      const byPost = await fetch(base, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', [CHANNEL_HEADER]: wide },
+        body: JSON.stringify({ type: 'call', id: 'w1', method: 'test/hello', args: { name: 'x' } }),
+      });
+      assert.strictEqual(byPost.status, 409, 'a channel POST');
+      assert.strictEqual(server.rpc.sse.size, 1, 'the channel is untouched');
+    },
+  );
+
   await t.test('a POST on that channel answers 202 and replies on the stream', async () => {
     const res = await fetch(base, {
       method: 'POST',

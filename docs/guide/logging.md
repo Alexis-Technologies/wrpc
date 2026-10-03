@@ -176,6 +176,7 @@ The first table is the request path and the engines; the ones after it are
 | `signaling.undeliverable` | debug | A signal for a peer the relay no longer has (`to`, `room`, `type`) — a trickled candidate that crossed its `leave`, a routine race |
 | `rtc.signal.overflow` | warn | A peer sent more signals than are held for it — candidates before its description (256), or anything while `accept()` still thinks (64); the rest are dropped, said once |
 | `http.refused` | warn | An HTTP request the core refused before any call existed (`code`, and the `path` or `method`): 404 for a path that is not the RPC's, 403 for a packet request that is not a POST |
+| `http.failed` | error | Something threw while an HTTP request was being routed (`err`): the request was answered `500` — or left as it was when an answer or a stream had already started. A bug, or a peer's input nothing refused first |
 | `cors.refused` | warn | A request from an `origin` the `cors` option does not allow |
 | `subscribe.end` | warn/debug | A subscription ended (`id`, `method`): `warn` with the `code` when it died on the server's side, `debug` for a completion or an unsubscribe |
 | `subscription.return` | warn | A subscription handler's own cleanup (`finally`, `return()`) threw after the stream had ended |

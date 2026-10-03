@@ -308,8 +308,13 @@ class SseChannels {
    * exactly like an unknown channel (409): the id's existence is not told.
    */
   holds(channel, secret) {
-    if (typeof secret !== 'string' || secret.length !== channel.secret.length || secret.length === 0) return false;
-    return timingSafeEqual(Buffer.from(secret), Buffer.from(channel.secret));
+    if (typeof secret !== 'string' || secret.length === 0) return false;
+    // Lengths compared as BYTES: `timingSafeEqual` throws on a mismatch, and
+    // a peer's non-ASCII secret is as long in characters as the real one
+    // while longer in bytes.
+    const given = Buffer.from(secret);
+    const expected = Buffer.from(channel.secret);
+    return given.length === expected.length && timingSafeEqual(given, expected);
   }
 
   /** True when `headers` present the identity the channel was created under (checked after `holds`). */
