@@ -84,9 +84,19 @@ fastify.addHook('onRequest', async (request) => {
 await fastify.register(wrpcFastify, { router });
 ```
 
-The routes registered are `POST {basePath}`, `{basePath}/:unit/:method` and
-`{basePath}/events` — the SSE endpoint is a static segment on purpose, so
-find-my-way prefers it over the parametric route it would otherwise fall into.
+The routes registered are `POST {basePath}`, `{basePath}/:unit/:method`,
+`{basePath}/events` and `{basePath}/encryption-key` — the SSE endpoint and the
+[key discovery](../encryption) path are static segments on purpose, so
+find-my-way prefers them over the parametric route they would otherwise fall
+into.
+
+Two request bodies fastify does not parse reach those routes as raw bytes: an
+[attachments](../streams#attachments) frame (`application/octet-stream` — a call whose
+arguments hold bytes, between two 2.x ends) and a sealed request
+(`application/wrpc-sealed`). The plugin registers a buffer parser for each,
+**unless the app already has one** — fastify would otherwise answer `415`
+before wrpc saw the call. An app that parses `application/octet-stream`
+itself keeps its parser, which must then hand the body over as a `Buffer`.
 
 A path outside `basePath` gets **fastify's** 404, not wrpc's error packet. That
 difference is the whole reason to compose as a plugin.

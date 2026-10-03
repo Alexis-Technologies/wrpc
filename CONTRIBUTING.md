@@ -201,12 +201,11 @@ publishes.
    block — the order of upgrade and the flags that keep an old peer working.
 3. **Bump `version` in `package.json`, and confirm it differs from what npm
    already has.** Semver against the **JavaScript API**; the wire protocol has
-   [its own promise](./docs/reference/protocol.md#stability). Before the first
-   publish there is nothing on the registry to compare against, so this half
-   of the step is a no-op; from the second release on, run
+   [its own promise](./docs/reference/protocol.md#stability). Run
    `npm view @alexify/wrpc version` and make sure the bumped value doesn't
-   match it — publishing an already-used version is a rejected `npm publish`,
-   not a warning.
+   match it (`npm view @alexify/wrpc versions` lists every one, 1.0.0
+   included) — publishing an already-used version is a rejected
+   `npm publish`, not a warning.
 4. **Check what would ship.** `files` in `package.json` is an explicit
    allowlist, so a new root shim or `.d.ts` that was not added to it silently
    disappears from the tarball:

@@ -19,10 +19,14 @@ narrower promise — see
   **revision 2** of the protocol, and a 2.x peer speaks both revisions. A
   frame is sent only where the peer said it reads one; everywhere else a
   packet holding bytes travels as the JSON 1.0 made of it. A 1.0 client and
-  a 1.0 server therefore work against 2.x **with nothing to set** — the
-  `attachments: false` and `carrier: 'query'` steps of the earlier upgrade
-  notes are gone, and so is the SSE breakage that had no flag at all. Each
-  carrier says the revision where it can:
+  a 1.0 server therefore work against 2.x with nothing to set on either end
+  — the SSE breakage that had no flag at all is gone too — except where the
+  [migration notes](#migrating-from-10) say otherwise: several instances of
+  both versions behind one HTTP address (a frame a 1.0 instance refuses
+  costs a resend), a browser page's `headers`/`meta` against a 1.0 server
+  (a `wrpc.v1` answer is ambiguous; `carrier: 'query'` is the sure way),
+  and a backplane or cluster, which has no handshake. Each carrier says the
+  revision where it can:
   - **WebSocket** — the subprotocol. A client offers `wrpc.v2, wrpc.v1`
     (newest first); every engine selects the newest revision offered. A 1.0
     server picks `wrpc.v1` from that offer, a 1.0 client offers it alone.
@@ -70,6 +74,11 @@ narrower promise — see
 - [Protocol reference: Versioning](./docs/reference/protocol.md#versioning)
   has the rules, [Changes since 1.0](./docs/reference/protocol.md#changes-since-1-0)
   the table.
+- The main browser entry's budget is 28 KB (was 27) and the sse entry's
+  29 KB (was 28), for the client half of the negotiation: the offer and
+  the redial, the `Accept` and `wrpc-version` of the HTTP transport, the
+  worker port's `v` — measured 27,692 B and 28,735 B against 27,648 and
+  28,672.
 
 **Docs: the encryption guide**
 
@@ -507,6 +516,12 @@ narrower promise — see
   with `415`. A REST result with bytes answers `501` without
   `codec.rest`; a room event with bytes is delivered locally and refused
   for the JSON backplane (`backplane.bytes`).
+- The fastify plugin registers a buffer parser for
+  `application/octet-stream`, as it does for `application/wrpc-sealed`,
+  unless the app already has one: fastify parses neither type, so a call
+  whose arguments hold bytes was answered `415` before the plugin's route
+  ran. An app's own parser for the type stands, and must hand the body
+  over as a `Buffer`.
 - On by default wherever revision 2 was negotiated (the first entry of this
   section); `attachments: false` on either end makes that end speak
   revision 1 — JSON, to everyone — and a packet codec does so by itself. The cost is
@@ -2035,6 +2050,12 @@ reference as one opaque string. What is left to do:
   delivery, never one more copy. The suite's fake channel took an ack on a
   closed channel silently, as amqplib does not, and that is how no test
   saw it.
+- **A WebSocket closed while its inflate queue holds the socket reads its
+  peer's Close.** A burst of compressed frames pauses the socket until the
+  inflates drain; a `close()` meanwhile dropped the queue but left the
+  socket paused, so the peer's Close went unread and the connection ended
+  at `closeTimeout` with `1006`. Dropping the queue resumes what the hold
+  paused (an application's own `pause()` stands).
 - **The `.d.ts` files describe what the runtime has.** `ServerTransport`
   gains `revision`, `attachments` and `setRevision`, the port transport
   `max` and `negotiate`, `buildHeaders` its third argument (`revision`), and
@@ -2295,9 +2316,11 @@ reference as one opaque string. What is left to do:
   and its subscriptions kept streaming for the life of the connection:
   releasing a port sends `cancel` for its calls and `unsubscribe` for its
   subscriptions. The page transport's `close()` posts a `wrpc:close`
-  goodbye before closing its port, so an engine that never fires the
-  `MessagePort` close event releases the tab too; an upstream close
-  forgets every id (the client answered their callers first).
+  goodbye before closing its port — to an end that named a revision on the
+  port's first ping and pong, a 2.x one: a 1.0 proxy reads every message as
+  a packet and throws on it — so an engine that never fires the
+  `MessagePort` close event releases a tab of a 2.x worker too; an upstream
+  close answers what the pages were waiting for and forgets every id.
 - **The connect URL's two declared bags share ONE query budget, as the
   server measures it.** Each bag was capped on its own, so two that fit
   separately — with whatever query the url already carried — were sent
@@ -2969,12 +2992,6 @@ reference as one opaque string. What is left to do:
   is now refused id-less — `500`, `packet.unknown` — like any packet that is
   not one, on every carrier. A number is still answered on: a 1.0 client
   whose own `generateId` counted sent one.
-- **A WebSocket closed while its inflate queue holds the socket reads its
-  peer's Close.** A burst of compressed frames pauses the socket until the
-  inflates drain; a `close()` meanwhile dropped the queue but left the
-  socket paused, so the peer's Close went unread and the connection ended
-  at `closeTimeout` with `1006`. Dropping the queue resumes what the hold
-  paused (an application's own `pause()` stands).
 - **A frame sent together with the upgrade request no longer ends the
   process (node engine).** The bytes behind a handshake (`head`) were
   parsed inside the `Connection` constructor: a frame breaking the protocol

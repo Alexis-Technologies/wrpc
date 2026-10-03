@@ -454,6 +454,6 @@ bundler that honours the `browser` field — webpack, Vite, esbuild with
 `browser: true`), Parcel, Bun. It contains the client, the streams and the
 chunk helpers, and **no Node builtins** — the server half is not in it.
 
-The main entry is ~18 KB min+gzip in that build; `scripts/size.js` enforces a
+The main entry is ~28 KB min+gzip in that build; `scripts/size.js` enforces a
 budget on it in CI. See [Browser & bundling](./browser) for the full table, the
 `browser` field map, and what is deliberately missing from that entry.
