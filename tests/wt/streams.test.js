@@ -147,7 +147,7 @@ test('wt streams: a peer that announces no streams gets every chunk on the contr
   transport.send({ type: 'stream', id: 's1', status: 'end' });
   await waitFor(() => kinds.length === 4, 'all on the control stream');
   assert.deepStrictEqual(kinds, [
-    [KIND_CAPS, '{"streams":true}'],
+    [KIND_CAPS, '{"streams":true,'],
     [KIND_TEXT, '{"type":"stream"'],
     [1, 6],
     [KIND_TEXT, '{"type":"stream"'],

@@ -76,6 +76,42 @@ const attachAll = (t, server, options = {}) => {
 const wtClient = (t, world, url, options = {}) =>
   connectClient(t, url, { transport: 'wt', wt: { WebTransport: world.WebTransport }, ...options });
 
+test('wt attach: the capabilities settle the revision — bytes as bytes only between two ends that read frames', async (t) => {
+  const bytesRouter = defineRouter({
+    b: {
+      echo: procedure({
+        access: 'public',
+        handler: async (_ctx, { blob }) => ({ kind: blob.constructor.name, blob: Uint8Array.of(7, 8) }),
+      }),
+    },
+  });
+  // A server with `attachments: false` used to be sent the client's frame
+  // anyway — WebTransport was "always revision 2" — refuse it unread, and
+  // leave the call to time out.
+  for (const [label, serverOptions, clientOptions, revision] of [
+    ['both read frames', {}, {}, 2],
+    ['the server reads none', { attachments: false }, {}, 1],
+    ['the client reads none', {}, { attachments: false }, 1],
+  ]) {
+    const { server, url } = await bootServer(t, { router: bytesRouter, ...serverOptions });
+    const world = attachAll(t, server);
+    const client = await wtClient(t, world, url, { callTimeout: 2000, ...clientOptions });
+    // Each end's capabilities are its first message: crossed before the load is answered.
+    await client.load('b');
+    const answer = await client.api.b.echo({ blob: Uint8Array.of(1, 2) });
+    assert.strictEqual(client.revision, revision, label);
+    const [peer] = server.rpc.clients;
+    assert.strictEqual(peer.revision, revision, `${label}, on the server`);
+    if (revision === 2) {
+      assert.strictEqual(answer.kind, 'Uint8Array', label);
+      assert.ok(answer.blob instanceof Uint8Array, label);
+    } else {
+      assert.strictEqual(answer.kind, 'Object', label);
+      assert.deepStrictEqual(answer.blob, { 0: 7, 1: 8 }, label);
+    }
+  }
+});
+
 test('wt attach: a WebTransport client calls, receives events, subscribes and streams beside a ws client', async (t) => {
   const { server, url } = await bootServer(t, { router: router() });
   const world = attachAll(t, server);

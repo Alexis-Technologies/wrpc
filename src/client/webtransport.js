@@ -156,6 +156,10 @@ class ClientWtTransport extends ClientTransport {
     // under a wire codec (the mux reads stream packets off the wire, which
     // only JSON allows), and neither under encryption.
     const plain = encryption === null;
+    // Frames go only to a server whose capabilities said it reads them —
+    // and from a client that reads them itself: revision 1 until then.
+    const frames = this.attachments !== false && !this.codec;
+    this.revision = 1;
     const channel = new WtChannel(
       session,
       stream,
@@ -168,6 +172,10 @@ class ClientWtTransport extends ClientTransport {
         maxMessage: wt.maxMessage,
         closeTimeout: wt.closeTimeout,
         compression,
+        frames,
+        onFrames: (reads) => {
+          if (this.#channel === channel) this.revision = reads && frames ? 2 : 1;
+        },
       },
       (data) => {
         // Sealed: every message is the channel's to open, from the first

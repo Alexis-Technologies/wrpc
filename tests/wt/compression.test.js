@@ -355,7 +355,8 @@ test('wt compression (client): the wt bag or connect() names it; negotiated agai
   const session = await world.next();
   const server = await controlStream(session);
   await waitFor(() => server.caps.length === 1);
-  assert.deepStrictEqual(server.caps[0], { streams: true, enc: [DEFLATE] });
+  // `f`: this client reads framed messages (revision 2, protocol.md#webtransport-streams).
+  assert.deepStrictEqual(server.caps[0], { streams: true, enc: [DEFLATE], f: 1 });
   assert.strictEqual(transport.compression, null);
   await server.writer.write(frameCaps(JSON.stringify({ streams: true, enc: [DEFLATE] })));
   await waitFor(() => transport.compression?.encode === DEFLATE);

@@ -176,6 +176,7 @@ const attachSession = async (server, session, options = {}) => {
     holdTimeout,
     log,
     onCodecError: (codec, error) => rpc.compressionFailed?.('wt', 'encode', codec, error),
+    frames: rpc.revision === 2,
   });
   // A stream the peer opened for an id it never named, past the cap or
   // without announcing streams at all: cancelled unread, and a line here.

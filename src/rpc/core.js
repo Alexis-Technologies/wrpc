@@ -946,6 +946,7 @@ class RpcServer extends Emitter {
     // changes. The flag is not a secret and stripping it buys an attacker a
     // refusal: a client configured to encrypt never accepts plaintext, and
     // under `required` neither does this server.
+    const raw = socket;
     const sealed = this.#sealSocket(socket, meta);
     if (sealed !== null) socket = sealed;
     const transport = new (socketTransportFor(meta.kind))(socket, meta);
@@ -953,9 +954,20 @@ class RpcServer extends Emitter {
     // WebSocket says it in the subprotocol the engine selected: a 1.0 client
     // offers `wrpc.v1` alone, and is then sent no framed message — its bytes
     // travel as the JSON 1.0 made of them, through the same per-transport
-    // flag `attachments: false` sets for everyone. WebTransport is a carrier
-    // 1.0 never had and negotiates no subprotocol: always 2.
-    if (meta.kind !== 'wt' && socket.protocol !== WRPC_V2) {
+    // flag `attachments: false` sets for everyone. WebTransport says it in
+    // the capabilities each end sends first (`f`): revision 1 until the
+    // client's arrive and say it reads frames — two 2.x ends whose
+    // `attachments` disagree used to send each other frames the other
+    // refused.
+    if (meta.kind === 'wt') {
+      this.#speakRevision1(transport);
+      const raise = (reads) => {
+        if (!reads) return void this.#log.debug({ event: 'revision.peer', transport: 'wt', peer: meta.remoteAddress });
+        if (this.#attachments) transport.setRevision(2);
+      };
+      if (typeof raw.peerFrames === 'boolean') raise(raw.peerFrames);
+      else raw.once?.('frames', raise);
+    } else if (socket.protocol !== WRPC_V2) {
       this.#speakRevision1(transport);
       // Who is still on 1.0 during an upgrade: per connection, at debug.
       this.#log.debug({
@@ -964,7 +976,7 @@ class RpcServer extends Emitter {
         protocol: socket.protocol || null,
         peer: meta.remoteAddress,
       });
-    } else if (!this.#attachments && meta.kind !== 'wt') {
+    } else if (!this.#attachments) {
       // An engine composed by hand selected `wrpc.v2` for a server that
       // sends no frames and reads none: the client will send one. The
       // built-in shells narrow the engine to `wrpc.v1` (see `revision`).

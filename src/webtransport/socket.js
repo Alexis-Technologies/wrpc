@@ -57,6 +57,10 @@ class WtSocket extends EventEmitter {
   // negotiates no subprotocol, so `protocol` stays ''.
   remoteAddress;
   protocol = '';
+  // Whether the peer's capabilities said it reads framed messages: null
+  // until they arrive, then announced as 'frames' too — the revision, which
+  // attachSocket raises to 2 only on a true (protocol.md#versioning).
+  peerFrames = null;
 
   #session;
   #stream;
@@ -102,6 +106,9 @@ class WtSocket extends EventEmitter {
       // `(codec id, error)`: a codec that failed on the way out — the frame
       // left plain. attachSession hands it to the server's reporter.
       onCodecError = null,
+      // This end reads framed messages (the server's revision is 2): said
+      // to the peer in the capabilities.
+      frames = false,
     } = {},
   ) {
     super();
@@ -141,6 +148,11 @@ class WtSocket extends EventEmitter {
         onActivity: () => this.#touch(),
         onCodecError,
         onDatagramDrop: () => void this.#log?.warn({ event: 'wt.datagram.dropped' }),
+        frames,
+        onFrames: (reads) => {
+          this.peerFrames = reads;
+          this.emit('frames', reads);
+        },
       },
       (data, isBinary) => this.emit('message', data, isBinary),
       () => this.emit('drain'),

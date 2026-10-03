@@ -1930,6 +1930,14 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **WebTransport negotiates the revision.** It was "always revision 2", so
+  two ends whose `attachments` disagreed sent each other frames the other
+  refused unread — a call holding bytes timed out (`408`) where the same
+  pair over a WebSocket settled on revision 1. Each end now says in its
+  capabilities message whether it reads framed messages (`f: 1`) and sends a
+  frame only once the peer said so and it reads them itself; until then a
+  packet's bytes leave as 1.0's JSON. `client.revision` and the server's
+  `context.client.revision` say what was settled.
 - **An answer whose form follows `Accept` says `Vary: Accept`.** A packet-mode
   or conventional REST answer is a frame for a request that names
   `application/octet-stream` and JSON otherwise, and carried no `Vary` for

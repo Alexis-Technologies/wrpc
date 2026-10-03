@@ -111,7 +111,8 @@ can:
 | HTTP | the response header `wrpc-version`, and the request's `Accept` |
 | SSE | nothing to say — always revision 1: the transport is text-only, carries no framed message, and a packet's bytes travel as JSON both ways |
 | Worker port | `v` on the port's first `ping` and its `pong` |
-| WebRTC, WebTransport, the broker binding | carriers 1.0 never had: always revision 2 |
+| WebTransport | `f` in the capabilities message each end sends first ([below](#webtransport-streams)) |
+| WebRTC, the broker binding | carriers 1.0 never had: always revision 2 |
 
 **HTTP.** Every response carries **`wrpc-version`**: the newest revision the
 server speaks — `2`, or `1` for a server that reads no framed messages, which
@@ -1126,10 +1127,18 @@ new session the way it does across a reconnected socket.
 
 Each end's **first message** on the control stream MAY be a capabilities
 message (KIND 2): a JSON object whose known keys are `streams`
-(`{"streams":true}`) and `enc` (the end's codec ids in its order of
-preference, `["deflate-raw"]` for the platform default). Unknown keys are
-ignored; an end that sends none, or `{}`,
-has announced nothing, and its peer treats it as a revision-1 peer.
+(`{"streams":true}`), `enc` (the end's codec ids in its order of
+preference, `["deflate-raw"]` for the platform default) and `f` (`1`: this
+end reads framed messages — revision 2). Unknown keys are ignored; an end
+that sends none, or `{}`, has announced nothing, and its peer treats it as a
+revision-1 peer.
+
+**The revision** is settled here, as on a worker port: an end sends a
+framed message only once the peer's capabilities carried `f`, and only when
+it reads them itself — so a session speaks revision 2 when both ends do,
+and an end with `attachments: false` or a packet codec announces no `f`
+and is sent none. Until the peer's capabilities arrive, a packet holding
+bytes leaves as the JSON 1.0 made of it, which every end reads.
 
 Once the two `enc` lists share a codec, either end MAY send a packet as
 KIND 3 or a chunk as KIND 4: the payload is the output of the SENDER's codec

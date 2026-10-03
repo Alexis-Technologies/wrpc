@@ -114,6 +114,10 @@ class WtChannel {
   // then, and forever when the option is off.
   #compression;
   #active = null;
+  // Whether this end reads framed messages — announced as `f` — and what
+  // to tell once the peer's capabilities said whether IT reads them.
+  #frames;
+  #onFrames;
   // Order around a codec that may answer asynchronously, one per direction.
   #outbound;
   #inbound;
@@ -134,7 +138,9 @@ class WtChannel {
    * (`onRefused`, `onFallback`, `maxHeldStreams`, `holdTimeout`).
    * `datagrams: false` leaves the session's datagrams alone.
    * `maxDatagramsInFlight` (0 = no bound) is how many datagrams may wait
-   * for the session before a further one is dropped.
+   * for the session before a further one is dropped. `frames` says this end
+   * reads framed messages (revision 2); `onFrames(peerReads)` hears the
+   * peer's answer — until it, an end sends none.
    */
   constructor(session, stream, options, onMessage, onDrain, onViolation, onOverflow, onError, onEnd) {
     const {
@@ -146,6 +152,8 @@ class WtChannel {
       onActivity = null,
       onCodecError = null,
       onDatagramDrop = null,
+      frames = false,
+      onFrames = null,
     } = options;
     const { highWaterMark, lowWaterMark, maxBackpressure, maxMessage, closeTimeout } = options;
     this.#session = session;
@@ -164,6 +172,8 @@ class WtChannel {
     this.#onActivity = onActivity;
     this.#onCodecError = onCodecError;
     this.#onDatagramDrop = onDatagramDrop;
+    this.#frames = frames;
+    this.#onFrames = onFrames;
     this.#outbound = new Sequencer(onError);
     this.#inbound = new Sequencer((error) => this.#violation(error));
     this.#writer = stream.writable.getWriter();
@@ -198,10 +208,16 @@ class WtChannel {
       onMessage: (kind, data) => {
         if (kind !== KIND_CAPS) return void this.#receive(kind, data);
         this.#mux?.peerCaps(data);
+        const caps = parseCaps(data);
         // What the two lists share: this side compresses with the first
         // codec of ITS list the peer announced, and reads the peer's.
-        this.#active = negotiate(this.#compression, parseCaps(data)?.enc);
+        this.#active = negotiate(this.#compression, caps?.enc);
         parser.compressed = this.#active !== null;
+        // The revision, as a worker port settles it on its first ping: a
+        // frame goes only to a peer that said it reads one. Two ends whose
+        // `attachments` disagree used to meet a frame the other refused —
+        // an id-less error, and a call that timed out.
+        this.#onFrames?.(caps?.f === 1);
       },
     });
     this.#parser = parser;
@@ -250,13 +266,14 @@ class WtChannel {
   }
 
   // What we announce: the mux's streams, plus the codecs we hold, in our
-  // order, when the option is on. The peer compresses only once it has read
+  // order, when the option is on, and `f` when this end reads frames. The peer compresses only once it has read
   // this, with the first of ITS list found here.
   #caps() {
     const text = this.#mux === null ? '{}' : StreamMux.caps(this.#session);
-    if (this.#compression === null) return text;
+    if (this.#compression === null && !this.#frames) return text;
     const caps = parseCaps(text) ?? {};
-    caps.enc = this.#compression.ids;
+    if (this.#compression !== null) caps.enc = this.#compression.ids;
+    if (this.#frames) caps.f = 1;
     return JSON.stringify(caps);
   }
 
