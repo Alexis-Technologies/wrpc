@@ -1991,6 +1991,10 @@ reference as one opaque string. What is left to do:
   JSON. It is added (joined onto `Vary: Origin` and `Accept-Encoding`)
   wherever the server can answer a frame; a server under
   `attachments: false` or a packet codec does not vary on it.
+- **`upload()` of a blob uploader runs once.** A second call wrote into the
+  stream the first had ended and waited for a `'drain'` that never came —
+  a promise that never settled. It rejects at once now; create another
+  uploader for another upload.
 - **The worker proxy opens one upstream connection, and answers its pages
   when it is lost.** Pages whose first packets arrived together each started
   a connect — three tabs, three sockets to the server — and when the

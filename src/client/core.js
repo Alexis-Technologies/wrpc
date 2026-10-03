@@ -1486,7 +1486,12 @@ class WrpcClient extends Emitter {
     // stream's 'drain' — and a connection that closes mid-way is the 503 a
     // call gets, not a resolve with the rest gone nowhere. A source that
     // fails terminates the stream, so the server stops waiting for its end.
+    // Once: a second run wrote into the stream the first had ended and waited
+    // for a 'drain' that never comes.
+    let started = false;
     const upload = async () => {
+      if (started) throw new Error('upload() runs once — its stream was already used; create another uploader');
+      started = true;
       try {
         for await (const chunk of blob.stream()) {
           if (!consumer.write(chunk) && !consumer.closed) {

@@ -200,6 +200,7 @@ export class WrpcWritable extends Emitter {
 
 export interface BlobUploader {
   id: string;
+  /** Feeds the blob into its stream. Once: a second call rejects — create another uploader. */
   upload(): Promise<void>;
 }
 

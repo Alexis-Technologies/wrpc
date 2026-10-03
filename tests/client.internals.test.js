@@ -532,3 +532,31 @@ test('createBlobUploader: paced by the transport, a 503 on a close mid-way, a te
   assert.deepStrictEqual(packets.at(-1), { type: 'stream', id: broken.id, status: 'terminate' });
   t.diagnostic('uploader paced and failed as designed');
 });
+
+test('createBlobUploader: upload() runs once — a second call rejects at once instead of hanging', async () => {
+  const transport = new FakeTransport('fake://once');
+  const client = new WrpcClient('fake://once', transport);
+  await transport.open();
+  const blob = {
+    name: 'once',
+    size: 4,
+    stream: () =>
+      (async function* () {
+        yield new Uint8Array(4).fill(1);
+      })(),
+  };
+  const uploader = client.createBlobUploader(blob);
+  await uploader.upload();
+  // It used to write into the ended stream and wait for a drain forever.
+  const again = await Promise.race([
+    uploader.upload().then(
+      () => 'resolved',
+      (error) => error,
+    ),
+    timers.setTimeout(500, 'pending'),
+  ]);
+  assert.ok(again instanceof Error, `rejected, not ${again}`);
+  assert.match(again.message, /runs once/);
+  const ends = transport.sent.filter((data) => typeof data === 'string' && JSON.parse(data).status === 'end');
+  assert.strictEqual(ends.length, 1, 'one end packet');
+});
