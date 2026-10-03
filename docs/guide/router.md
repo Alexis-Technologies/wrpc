@@ -139,8 +139,8 @@ procedure({
 - A schema with validation parts in a router **without** `validation.ajv`
   throws at build: a declaration nothing enforces would be an authorization
   bug in waiting. Under the [fastify adapter](./adapters/fastify) fastify
-  validates the delegated HTTP routes itself, but the same procedures over
-  WebSocket are wrpc's to validate — inject the ajv either way.
+  validates the delegated HTTP routes itself, but the same procedures over a
+  WebSocket, or any other transport, are wrpc's to validate — inject the ajv either way.
 - `schema` and `input`/`output` are mutually exclusive on one procedure.
 - The input parts travel through introspection, so a browser client with
   its own injected ajv (`WrpcClient.connect(url, { validation: { ajv } })`)

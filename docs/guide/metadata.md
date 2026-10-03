@@ -85,6 +85,9 @@ travel depends on the transport:
 | `ws` from Node | real request headers on the upgrade |
 | `ws` from a browser | a **subprotocol offer**, `wrpc.h.<base64url>`, in `Sec-WebSocket-Protocol` |
 | `event` (worker) | a field in the `wrpc:connect` message |
+| `wt` | the connect URL's query (`wrpc_h` / `wrpc_meta`) — WebTransport has neither headers nor subprotocols |
+| `broker` | message headers, on every stateless request and on a session's `hello` ([broker RPC](./brokers/rpc)) |
+| `webrtc` | no request to carry them: over a raw channel the side that attaches it declares what it knows, `attachChannel(rpc, channel, { headers, data })`; over a `WrpcPeer` link, a peer's `data` is what it joined the signaling room with ([WebRTC](./webrtc#your-own-connection)) |
 
 The browser row exists because a page cannot set a header on a WebSocket
 handshake — not with the `WebSocket` constructor (its second argument is the
@@ -268,8 +271,9 @@ const client = await connect(url, { meta: { v: pkg.version, locale } });
 Carried by the `x-wrpc-meta` request header (http/sse, and ws from Node;
 percent-encoded JSON), a `wrpc.m.<base64url>` subprotocol offer (ws from a
 browser — [the same carrier rules](#choosing-the-ws-carrier-carrier) as
-`headers`, under the same shared budget), or the `wrpc:connect` message
-(worker).
+`headers`, under the same shared budget), the `wrpc:connect` message
+(worker), the connect URL's `wrpc_meta` query (wt), or a message header on
+the broker binding.
 
 ### Choosing a spelling: `metaFormat`
 

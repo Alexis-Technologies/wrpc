@@ -25,7 +25,9 @@ and wrpc imports nothing: the codec is yours.
 ## Scope
 
 The codec frames **wrpc packets**: WebSocket frames, packet-mode HTTP
-(`POST {basePath}`, batches included), SSE `data:` payloads, worker ports.
+(`POST {basePath}`, batches included), SSE `data:` payloads, worker ports,
+WebTransport sessions, WebRTC data channels (`client: { codec }` on a
+[peer](./webrtc#options)) and the [broker binding](./brokers/rpc).
 
 It deliberately does **not** touch:
 

@@ -188,7 +188,7 @@ A descriptor is deliberately small and serializable:
 | `instance` | Which node holds the connection. |
 | `rooms` | Its room memberships on that node. |
 | `data` | `client.data` — the application's own bag; wrpc never reads it. |
-| `transport` | `'ws'`, `'http'`, `'sse'` or `'event'`. |
+| `transport` | `'ws'`, `'sse'`, `'event'`, `'wt'`, `'webrtc'` or `'broker'` — the kinds that hold a connection. |
 | `session` | Whether a [session](./sessions) is attached — never the session itself. |
 
 Only **persistent** clients are enumerated: a per-request HTTP client is not a

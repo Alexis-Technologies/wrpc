@@ -207,8 +207,10 @@ context.server.to('lobby').emit('media/chunk', base64Jpeg, { compress: false });
 context.client.sendEvent('game/tick', state, { compress: false });
 ```
 
-The flag is ignored on connections that never negotiated deflate — which is
-every connection until the server passes `perMessageDeflate`; it is
+The same flag works on every wire with per-message compression —
+WebTransport, WebRTC and the broker binding (see [Compression](./compression)
+for the knob on each). It is ignored on connections that never negotiated
+compression — which is every connection until both ends turn it on; it is
 [off by default](./performance#compression-is-off-by-default).
 
 ## Delivery, and what to do when it has to be guaranteed {#delivery}

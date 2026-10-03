@@ -3,7 +3,7 @@
 A queue carries work that must not be lost: an order to charge, an email to
 send, an event another service emitted. `attachConsumers` delivers a broker
 queue's messages into router procedures, **at least once**, through the same
-pipeline a WebSocket call takes — hooks, validators, access, the procedure's
+pipeline a call on any transport takes — hooks, validators, access, the procedure's
 `queue` and `timeout`, telemetry — and turns the outcome into an ack, a retry,
 or a dead letter.
 

@@ -103,9 +103,10 @@ comment saying why.
 
 | Transport | Use it when |
 | --- | --- |
-| `ws` (default) | Normal. Full duplex, binary streams, everything on this site. |
+| `ws` (default) | Normal. Full duplex, binary streams, every feature a connection carries. |
 | `http` | One-shot calls with no connection — no events, no subscriptions, no streams. |
 | `sse` | WebSockets are blocked by a proxy or corporate network. Text only. |
+| `wt` | [WebTransport](./wt) over HTTP/3 (experimental): binary streams that do not block each other or the calls, unreliable events; `['wt', 'ws']` falls back where the browser has none. In the main entry — nothing to import. |
 | `event` | The connection lives in a worker — a Service Worker or a SharedWorker; the page talks over a `MessagePort`. |
 | `webrtc` | Peer to peer: the other end is another browser (or a Node process), reached through a [`WrpcPeer`](./webrtc)'s `link` or a data `channel` you negotiated yourself — not a URL. |
 

@@ -10,9 +10,11 @@ const server = new Server({ router, telemetry: { api }, port: 8000, protocol: 'h
 ```
 
 Pass the same option to a client and one trace covers both sides of the wire
-— the packet transports, the mapped **REST leg** (context rides real
+— the packet transports (WebSocket, HTTP, SSE, a worker port, WebTransport, a
+[WebRTC link](./webrtc#telemetry)), the mapped **REST leg** (context rides real
 `traceparent`/`tracestate` headers there), the fastify adapter's delegated
-routes, and the cluster's node-to-node hop (context rides the backplane
+routes, a [broker message](./brokers/consumers) (the same two headers on the
+message), and the cluster's node-to-node hop (context rides the backplane
 envelope).
 
 ::: info OpenTelemetry is injected, never depended on

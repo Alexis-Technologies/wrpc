@@ -61,7 +61,8 @@ identifier.
 ::: warning A login over WebSocket sets no cookie
 A `Set-Cookie` header needs a response, and an open socket has none.
 `startSession` therefore only emits the cookie on HTTP transports; over a
-WebSocket it creates the session for that connection alone. If you want the
+WebSocket — or any persistent transport: WebTransport, a data channel, a
+broker session — it creates the session for that connection alone. If you want the
 session to survive a reconnect, log in over HTTP (the browser stores the
 cookie) and let the WebSocket upgrade restore it — which it does, from the same
 cookie.

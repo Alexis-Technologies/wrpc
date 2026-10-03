@@ -118,7 +118,9 @@ know whether yours is idempotent.
 
 Close codes are a different vocabulary — RFC 6455's, not HTTP's — and they end
 the *connection*, not one call. Exported as `CLOSE_CODES` from
-[`@alexify/wrpc/ws`](./wire-format).
+[`@alexify/wrpc/ws`](./wire-format). A [WebTransport](../guide/wt) session
+ends with the same codes — the server's 1001 on shutdown, 1002 on a framing
+violation — as its `closeCode`.
 
 | Code | Name | When wrpc uses it |
 | --- | --- | --- |

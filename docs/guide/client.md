@@ -375,9 +375,12 @@ The client therefore sends an application-level `{ type: 'ping' }` every
 `interval` and expects a `{ type: 'pong' }` within `timeout`; a miss emits
 `heartbeat-timeout` and forces a reconnect.
 
-Each transport decides whether it wants one: the WebSocket and
-[SSE](./sse) transports do, and the plain HTTP transport does not — a
-request/response transport has no connection to keep alive.
+Each transport decides whether it wants one: the persistent ones — the
+WebSocket, [SSE](./sse), [WebTransport](./wt), a [WebRTC](./webrtc) data channel
+and a [broker session](./brokers/rpc) — do; plain HTTP and a stateless broker
+request do not, since a request/response transport has no connection to keep
+alive. Behind a [worker](#workers), the `WrpcClientProxy` keeps the heartbeat
+with the server, not the page.
 
 ## Events
 

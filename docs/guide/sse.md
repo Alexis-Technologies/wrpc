@@ -188,14 +188,16 @@ oblivion.
   typed array in a call's arguments, a result or an event travels as the
   JSON 1.0 made of it: `{ type: 'Buffer', data: [...] }`, `{ "0": 137, … }`.
   A handler that takes bytes from SSE clients reads them back from that
-  shape; one that must receive `Uint8Array`s needs a WebSocket.
+  shape; one that must receive `Uint8Array`s needs a transport that carries
+  bytes — a WebSocket, WebTransport or a WebRTC data channel.
 
 **Binary streams.** SSE frames are text, so wrpc's binary streams are *refused*
 on this transport rather than silently corrupted — `client.binary` is `false`
-server-side, and `createStream`/`getStream` throw. Use a WebSocket for those.
+server-side, and `createStream`/`getStream` throw. Use a WebSocket,
+WebTransport or a WebRTC data channel for those.
 
-That is the only functional difference. Calls, events, subscriptions with
-resume, cancellation and batching all work.
+Those two — bytes and streams — are the only functional differences. Calls,
+events, subscriptions with resume, cancellation and batching all work.
 
 ## Not `EventSource`
 

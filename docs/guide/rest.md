@@ -29,8 +29,8 @@ curl -X POST https://host/api/projects/42 -H 'content-type: application/json' -d
 ```
 
 The response is the **plain result** with status `201` — external REST
-semantics, no callback envelope. The same procedure called over WebSocket is
-`projects/create` with the same `{ params, query, body }` args object: the
+semantics, no callback envelope. The same procedure called over a WebSocket
+— or any other transport — is `projects/create` with the same `{ params, query, body }` args object: the
 mapping only defines how an HTTP request is unpacked.
 
 ## The `http` option

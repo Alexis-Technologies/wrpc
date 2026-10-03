@@ -5,8 +5,8 @@ guarantee](./why): a token bucket is a dozen lines, and shipping one would
 mean picking a policy (sliding window? fixed window? per-IP? per-session?)
 every app disagrees with. What wrpc ships instead is a single seam —
 [`onRequest`](./hooks) — that runs for **every** call, event and subscription
-attempt on **every** transport (WebSocket, HTTP, SSE, WebTransport, WebRTC),
-before the handler and before a slow bucket check can be bypassed by picking
+attempt on **every** transport (WebSocket, HTTP, SSE, WebTransport, WebRTC, a
+worker port, the broker binding and queue consumers), before the handler and before a slow bucket check can be bypassed by picking
 a different transport.
 
 This page is the map: what is capped out of the box, how to write a limiter
@@ -110,8 +110,8 @@ See [Hooks → Recipe: subscription quotas](./hooks#recipe-subscription-quotas).
 
 `onRequest` is transport-agnostic by construction — the dispatcher does not
 know or care whether the packet arrived as a WebSocket frame, an HTTP body,
-an SSE POST, a WebTransport stream frame, a WebTransport datagram or a
-WebRTC data-channel message. A framework-level limiter (`@fastify/rate-limit`,
+an SSE POST, a WebTransport stream frame, a WebTransport datagram, a
+WebRTC data-channel message or a broker message. A framework-level limiter (`@fastify/rate-limit`,
 `express-rate-limit`, a custom uws hook, …) is different: it only sees what
 passes through the host framework's own request/response cycle, and **that
 differs sharply per transport**.
@@ -124,6 +124,8 @@ differs sharply per transport**.
 | WebTransport | No — the session lives on a separate HTTP/3 host the framework never runs | Nothing, not even the handshake |
 | WebRTC (data channel) | No — peer-to-peer after signaling | Nothing |
 | WebRTC signaling | Only if the signaling unit is itself served over HTTP/WS through a host framework | The signaling exchange, not the data channel it sets up |
+| Worker port (`attachPort`) | No — a `MessagePort` inside one process | Nothing |
+| [Broker binding](./brokers/rpc) and [queue consumers](./brokers/consumers) | No — messages come off the broker, never through the host | Nothing |
 
 ### HTTP and declarative REST
 

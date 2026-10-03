@@ -162,9 +162,23 @@ Redis connection cannot publish, which is why there are two.
 adapter created for itself through `duplicate()` is, since nothing else holds
 a reference to close it.
 
+### A message broker
+
+Every adapter of the [broker family](./brokers) — Redis, NATS, RabbitMQ,
+Kafka, and the in-process `MemoryBroker` — offers this contract as its
+`backplane` capability, on the broker client you already inject for feeds,
+consumers or RPC:
+
+```js
+const server = new Server({ router, backplane: broker.backplane, port: 8000 });
+```
+
+The broker pages say what each one costs as a backplane — Kafka's in
+particular ([Kafka](./brokers/kafka)).
+
 ### Something else
 
-NATS, MQTT, Postgres `LISTEN/NOTIFY`, a cloud pub/sub — all three methods, all
+MQTT, Postgres `LISTEN/NOTIFY`, a cloud pub/sub — all three methods, all
 strings. The rooms layer serializes its own envelope, so an adapter never needs
 to know the payload shape:
 
@@ -282,6 +296,8 @@ nothing.
 | WebSocket, WebTransport | **No** | The session comes from the shared store on reconnect; rooms and presence cross the backplane; the client id embeds the instance, so a cluster command finds it. |
 | Packet-mode HTTP, REST | **No** | Stateless per request; the session token is on every request. |
 | SSE | **Yes** | The channel — its replay buffer and its `Client` — lives on the instance that opened it; a misrouted POST answers `409`. |
+| WebRTC | **No** | A data channel is peer to peer; only the signaling unit runs on a server, and it relays a signal with `sendTo`, which reaches a peer on another instance through the cluster. |
+| Broker binding | **No** | A stateless request reaches any instance; a session is bound to the one that answered its `hello`, through the broker, not a balancer. |
 | Subscriptions with `createEventLog` | No, but visible | The log is per-process; a resume against another instance presents a foreign epoch, `since()` answers `null`, the handler sends a snapshot. |
 
 Share: the session store, the backplane. Keep local: event logs, SSE
