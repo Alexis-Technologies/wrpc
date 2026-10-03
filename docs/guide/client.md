@@ -22,20 +22,45 @@ variable — call through `client.api` each time.
 
 ## Transports
 
-The URL scheme picks the transport; `options.transport` overrides it.
+One router answers on every transport below — the same procedures, rooms and
+sessions, whichever one a client arrives on. An `http:`/`https:` URL means
+`http` and any other means `ws`; `options.transport` names any other
+transport, or an ordered fallback list.
 
-| Transport | Scheme | Calls | Events, subscriptions, cancel | Binary streams |
-| --- | --- | --- | --- | --- |
-| `ws` | `ws:` / `wss:` | ✅ | ✅ | ✅ |
-| `http` | `http:` / `https:` | ✅ | ❌ (code 400) | ❌ |
-| `sse` | `http:` / `https:` | ✅ | ✅ | ❌ |
-| `event` | — | ✅ | ✅ | ✅ |
-| `wt` | `https:` | ✅ | ✅ | ✅ |
+<!-- The home page's "One router, every transport" table mirrors this one:
+     tests/package/consistency.test.js keeps the shared columns equal. -->
+
+| Transport | Chosen by | Calls | Events, subscriptions, cancel | Binary streams | Bytes in a packet | Compression | Encryption |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `ws` | `ws:` / `wss:` URL | ✅ | ✅ | ✅ | ✅ | ✅ | Noise |
+| `http` | `http:` / `https:` URL | ✅ | ❌ (code 400) | ❌ | ✅ | ✅ | HPKE |
+| `sse` | `transport: 'sse'` | ✅ | ✅ | ❌ | ❌ | ✅ | HPKE |
+| `wt` | `transport: 'wt'` | ✅ | ✅ | ✅ | ✅ | ✅ | Noise |
+| `webrtc` | `transport: 'webrtc'` | ✅ | ✅ | ✅ | ✅ | ✅ | DTLS |
+| `event` | `worker` | ✅ | ✅ | ✅ | ✅ | — | — |
+| `broker`, stateless | `transport: 'broker'` | ✅ | ❌ (code 400) | ❌ | ❌ | ✅ | sealed |
+| `broker`, session | `transport: 'broker'`, `mode: 'session'` | ✅ | ✅ | ✅ | ✅ | ✅ | sealed |
+
+- **Bytes in a packet** are [binary attachments](./streams#attachments): a
+  `Uint8Array` in arguments, a result or an event arrives as bytes. Where the
+  cell is ❌ — SSE and a stateless broker request, both [revision
+  1](../reference/protocol#versioning) — bytes travel as the JSON objects 1.0
+  made of them.
+- **Compression** is off everywhere until both ends turn it on —
+  [Compression](./compression) has the knob for each wire. A worker port never
+  leaves the process, so there is nothing to compress.
+- **Encryption** is the layer _above_ TLS, opt-in and experimental: a
+  [Noise session](./encryption#session) on `ws` and `wt`, HPKE per request on
+  `http` and `sse`, [sealed broker messages](./encryption#brokers). A WebRTC
+  data channel is already DTLS end to end; a worker port never leaves the
+  process — give `encryption` to the `WrpcClientProxy` in the worker instead.
 
 `wt` is [WebTransport](./wt) (experimental), in the base entry so that
 `transport: ['wt', 'ws']` — WebTransport where the browser has it, a WebSocket
-otherwise — needs no import. `sse` has to be registered before it can be
-named — see [Server-Sent Events](./sse):
+otherwise — needs no import. `webrtc` is a [WebRTC](./webrtc) data channel to a
+peer, `broker` is [RPC over a message broker](./brokers/rpc) between services
+(experimental), `event` is a [worker](#workers). `sse` has to be registered
+before it can be named — see [Server-Sent Events](./sse):
 
 ```js
 require('@alexify/wrpc/sse');
@@ -100,7 +125,7 @@ await WrpcClient.connect(url, {
 | `heartbeat` | `{ interval: 30000, timeout: 10000 }` | `false` disables it. |
 | `batch` | off | `true` takes the defaults. |
 | `retry` | off | Opt-in per-call retry: `{ attempts, on: [503], minDelay, maxDelay, factor, jitter }`, `true` for the defaults. Coded failures re-issue with a fresh packet id after a jittered backoff — never a silent offline buffer. |
-| `transport` | from the URL | `'ws'`, `'http'`, `'sse'`, or anything registered. |
+| `transport` | from the URL | `'ws'`, `'http'`, `'sse'`, `'wt'`, `'webrtc'`, `'broker'` or anything registered — or an ordered fallback list such as `['wt', 'ws']`. See [Transports](#transports). |
 | `worker` | — | A worker to proxy through: a `ServiceWorker`, a `SharedWorker`, a dedicated `Worker` or a raw `MessagePort` — see [Workers](#workers). |
 | `authenticate` | — | Presents the connection's credential; awaited before the reconnect restore — see [Authenticating](#authenticating). |
 | `refresh` | — | Single-flight credential refresh with a one-shot retry — see [Refreshing a credential](#refreshing-a-credential). |

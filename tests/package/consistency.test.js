@@ -335,6 +335,68 @@ test('the budget column of the size tables in README and the browser guide match
   }
 });
 
+// The home page's "One router, every transport" table is the short copy of
+// the matrix in the client guide. Two hand-written tables drift: a transport
+// added to one, or a cell changed in one, must reach the other — so every
+// row of either is in both, and every shared column agrees on its verdict
+// (the first token of a cell: "❌ (code 400)" says the same as "❌").
+test('the home transport table mirrors the client guide matrix', () => {
+  const table = (file) => {
+    const lines = read(file).split('\n');
+    const start = lines.findIndex((line) => line.startsWith('| Transport |'));
+    assert.ok(start >= 0, `${file} has a "| Transport |" table`);
+    const cells = (line) =>
+      line
+        .slice(1, -1)
+        .split('|')
+        .map((cell) => cell.trim());
+    const headers = cells(lines[start]);
+    const rows = new Map();
+    for (let i = start + 2; i < lines.length && lines[i].startsWith('|'); i++) {
+      const row = cells(lines[i]);
+      rows.set(row[0], row);
+    }
+    return { headers, rows };
+  };
+  const ROWS = {
+    WebSocket: '`ws`',
+    'HTTP & REST': '`http`',
+    'Server-Sent Events': '`sse`',
+    WebTransport: '`wt`',
+    WebRTC: '`webrtc`',
+    'Worker port': '`event`',
+    'Broker, stateless': '`broker`, stateless',
+    'Broker, session': '`broker`, session',
+  };
+  const COLUMNS = {
+    Calls: 'Calls',
+    'Events & subscriptions': 'Events, subscriptions, cancel',
+    'Binary streams': 'Binary streams',
+    Compression: 'Compression',
+    Encryption: 'Encryption',
+  };
+  const home = table('docs/index.md');
+  const guide = table('docs/guide/client.md');
+  const verdict = (cell) => cell.split(/\s+/)[0];
+  const mapped = new Set();
+  for (const [label, row] of home.rows) {
+    const name = label.match(/^\[([^\]]+)\]/)?.[1];
+    assert.ok(name && Object.hasOwn(ROWS, name), `docs/index.md: unknown transport row ${label}`);
+    const twin = guide.rows.get(ROWS[name]);
+    assert.ok(twin, `docs/guide/client.md has no row ${ROWS[name]} for the home row ${name}`);
+    mapped.add(ROWS[name]);
+    for (const [homeColumn, guideColumn] of Object.entries(COLUMNS)) {
+      const a = row[home.headers.indexOf(homeColumn)];
+      const b = twin[guide.headers.indexOf(guideColumn)];
+      assert.ok(a !== undefined && b !== undefined, `${name}: column ${homeColumn} is missing on one side`);
+      assert.strictEqual(verdict(a), verdict(b), `${name} / ${homeColumn}: home says "${a}", the client guide "${b}"`);
+    }
+  }
+  for (const key of guide.rows.keys()) {
+    assert.ok(mapped.has(key), `docs/guide/client.md row ${key} is missing from the home transport table`);
+  }
+});
+
 // SECURITY.md is a release-checklist item: its version table must name the
 // current major line (never a "pre-first-publish" that shipped), and its
 // scope must name every directory that parses hostile bytes or holds keys.
