@@ -30,6 +30,17 @@ class ServerTransport extends Emitter {
     this.revision = 2;
   }
 
+  // A change of the revision once a client stands on this transport — a
+  // port's first ping, a WebTransport peer's capabilities — goes through
+  // here, `attachments` with it: whoever counts connections by revision
+  // hears 'revision' with the one that was left.
+  setRevision(revision) {
+    const from = this.revision;
+    this.revision = revision;
+    this.attachments = revision === 2;
+    if (from !== revision) this.emit('revision', from);
+  }
+
   error(code = 500, { id = '', error = null } = {}) {
     const packet = { type: 'callback', id, error: wireError(code, error) };
     return this.send(packet, code);

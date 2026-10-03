@@ -1440,6 +1440,16 @@ reference as one opaque string. What is left to do:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **Connections are counted by the protocol revision they speak.**
+  `wrpc.server.connections` carries `wrpc.revision` (`1` or `2`) beside
+  `wrpc.transport`, so who is still on 1.0 during an upgrade is the `1`
+  series rather than a guess — a worker port or a WebTransport session whose
+  revision is settled after it opened moves from one series to the other —
+  and each connection that settles on revision 1 is a `revision.peer` debug
+  line. Every change of a server transport's revision goes through
+  `ServerTransport#setRevision`, which emits `'revision'`; an HTTP request's
+  revision is settled before its client exists. `rpc.revision` and
+  `context.client.revision` are in the server and rooms guides.
 - **`revision.mismatch` is said at warn once, then at debug.** It is a
   configuration error — a hand-composed engine selecting `wrpc.v2` for a
   server that reads no frames — and the same on every connection, so it was

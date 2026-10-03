@@ -191,7 +191,7 @@ class PeerHost extends Emitter {
     if (this.#trust !== 'none') client.session = Object.freeze({ token: peer, data: about });
     this.#clients.add(client);
     this.#byId.set(client.id, client);
-    this.#otel.recordConnection(1, transport.kind);
+    this.#otel.recordConnection(1, transport.kind, transport.revision);
     // Router-level connection hooks, ordered before dispatch exactly as
     // RpcServer does it: client.ready gates the access check.
     const { onConnect, onDisconnect } = this.#router.connectionHooks;
@@ -211,7 +211,7 @@ class PeerHost extends Emitter {
       client.destroy();
       this.#clients.delete(client);
       this.#byId.delete(client.id);
-      this.#otel.recordConnection(-1, transport.kind);
+      this.#otel.recordConnection(-1, transport.kind, transport.revision);
       if (onDisconnect.length > 0) void runHooksSafe(onDisconnect, client, payload, this.#log, 'onDisconnect');
       void this.emit('detach', client).catch((error) => this.#log.error({ err: error, event: 'listener.detach' }));
     });

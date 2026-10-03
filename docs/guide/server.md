@@ -257,6 +257,16 @@ answer through fastify's own reply and are `@fastify/compress`'s to encode;
 the packet endpoint and conventional REST paths under the plugin follow this
 option like any host.
 
+## Revisions {#revisions}
+
+`rpc.revision` is the newest [protocol revision](../reference/protocol#versioning)
+this server speaks — `2`, or `1` under `attachments: false` or a packet
+codec — and `context.client.revision` the one a connection settled on. They
+are the questions an upgrade from 1.0 asks: who is still on revision 1 is the
+`1` series of `wrpc.server.connections` by `wrpc.revision`
+([telemetry](./telemetry#metrics)), and each such connection is a
+`revision.peer` debug line ([logging](./logging)).
+
 ## Lifecycle
 
 ```js

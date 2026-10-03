@@ -184,6 +184,7 @@ sessions:
 | `client.drain()` | Resolves when the transport drained — or when it closed. |
 | `client.persistent` | `false` on HTTP: no events, no subscriptions, no streams. |
 | `client.binary` | `false` on a text-only transport ([SSE](./sse)). |
+| `client.revision` | The [protocol revision](../reference/protocol#versioning) this connection speaks: `2` when the peer reads framed messages, so bytes arrive as `Uint8Array`s; `1` for a 1.0 peer, one that opted out, and every SSE channel — bytes then arrive as the JSON 1.0 made of them. |
 | `client.session` | The [session](./sessions), or `null`. |
 | `client.close()` / `destroy()` | Close the transport / tear the client down. |
 

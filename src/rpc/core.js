@@ -780,8 +780,7 @@ class RpcServer extends Emitter {
   // `attachments: false` sets server-wide, so the send paths check nothing
   // new.
   #speakRevision1(transport) {
-    transport.revision = 1;
-    transport.attachments = false;
+    transport.setRevision(1);
   }
 
   #addClient(transport, restore = null, meta = null) {
@@ -806,7 +805,13 @@ class RpcServer extends Emitter {
     const client = new Client(transport, options);
     this.#clients.add(client);
     this.#byId.set(client.id, client);
-    this.#otel.recordConnection(1, transport.kind);
+    this.#otel.recordConnection(1, transport.kind, transport.revision);
+    // A revision settled after attach (a port's ping, a WebTransport peer's
+    // capabilities) moves the connection between the two series.
+    transport.on('revision', (from) => {
+      this.#otel.recordConnection(-1, transport.kind, from);
+      this.#otel.recordConnection(1, transport.kind, transport.revision);
+    });
     // Assigned BEFORE the hooks run: the documented recipe is
     // `onConnect: async (client) => { await client.sessionReady; ... }`, and
     // a hook that ran ahead of this assignment awaited the constructor's
@@ -842,7 +847,7 @@ class RpcServer extends Emitter {
       client.destroy();
       this.#clients.delete(client);
       this.#byId.delete(client.id);
-      this.#otel.recordConnection(-1, transport.kind);
+      this.#otel.recordConnection(-1, transport.kind, transport.revision);
       if (onDisconnect.length > 0) void runHooksSafe(onDisconnect, client, payload, this.#log, 'onDisconnect');
     });
     return client;
@@ -952,6 +957,13 @@ class RpcServer extends Emitter {
     // 1.0 never had and negotiates no subprotocol: always 2.
     if (meta.kind !== 'wt' && socket.protocol !== WRPC_V2) {
       this.#speakRevision1(transport);
+      // Who is still on 1.0 during an upgrade: per connection, at debug.
+      this.#log.debug({
+        event: 'revision.peer',
+        transport: meta.kind ?? 'ws',
+        protocol: socket.protocol || null,
+        peer: meta.remoteAddress,
+      });
     } else if (!this.#attachments && meta.kind !== 'wt') {
       // An engine composed by hand selected `wrpc.v2` for a server that
       // sends no frames and reads none: the client will send one. The
@@ -1427,14 +1439,15 @@ class RpcServer extends Emitter {
       this.#otel.recordCall(UNKNOWN_TARGET, 'error', 403);
       return void transport.error(403);
     }
-    const { restore, meta } = this.#identify(call);
-    const client = this.#addClient(transport, restore, meta);
     // Revision 1 unless the caller asked for a framed answer: a 1.0 client
     // reads the body as JSON whatever its type says (protocol.md#versioning).
     // The same call is a frame or JSON by its `Accept`, which a shared cache
-    // must therefore key on.
+    // must therefore key on. Settled before the client exists, which counts
+    // the connection under its revision.
     if (this.#attachments) addVary(headers, 'Accept');
     if (!readsFrames(call.headers)) this.#speakRevision1(transport);
+    const { restore, meta } = this.#identify(call);
+    const client = this.#addClient(transport, restore, meta);
     // An aborted or never-answered request must still evict the client:
     // the transport only self-closes when it writes a response.
     if (typeof call.onAbort === 'function') call.onAbort(() => transport.emit('close'));
@@ -1490,6 +1503,13 @@ class RpcServer extends Emitter {
         : null,
     });
     const safeMethod = method === 'GET' || method === 'HEAD';
+    // The conventional mode answers a callback envelope, as packet mode
+    // does: a framed one only for a caller that asked for it — to curl, a
+    // 1.0 client or a browser's fetch it stays the JSON 1.0 answered. A
+    // declared route's body is a plain value and has no frame either way.
+    // Settled before the client exists, which counts it under its revision.
+    if (route === null && this.#attachments) addVary(headers, 'Accept');
+    if (route === null && !readsFrames(call.headers)) this.#speakRevision1(transport);
     // For a per-request client the connection IS the call, so the declared
     // data doubles as this call's meta: a curl caller passes x-wrpc-meta and
     // a hook reads context.callMeta, same as on ws.
@@ -1500,12 +1520,6 @@ class RpcServer extends Emitter {
     // envelope IS the body value, so the rest codec (when configured)
     // takes the packet codec's slot on the transport.
     transport.codec = restCodec;
-    // The conventional mode answers a callback envelope, as packet mode
-    // does: a framed one only for a caller that asked for it — to curl, a
-    // 1.0 client or a browser's fetch it stays the JSON 1.0 answered. A
-    // declared route's body is a plain value and has no frame either way.
-    if (route === null && this.#attachments) addVary(headers, 'Accept');
-    if (route === null && !readsFrames(call.headers)) this.#speakRevision1(transport);
     // The response seam a REST handler reaches as `context.http`: the
     // request line, and setHeader()/status() onto this very response.
     // Null on every other transport, and on packet-mode HTTP, where one

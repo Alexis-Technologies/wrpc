@@ -386,7 +386,10 @@ class Client extends Emitter {
    */
   negotiateRevision(v) {
     const transport = this.#transport;
-    return typeof transport.negotiate === 'function' ? transport.negotiate(v) : 0;
+    if (typeof transport.negotiate !== 'function') return 0;
+    const answer = transport.negotiate(v);
+    if (transport.revision === 1) this.log.debug({ event: 'revision.peer', transport: this.transportKind, named: v });
+    return answer;
   }
 
   sendEvent(name, data, options = null) {

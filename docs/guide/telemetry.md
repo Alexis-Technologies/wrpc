@@ -92,7 +92,7 @@ credential, not an identity, and the two do not share a switch.
 | `rpc.server.duration` | Histogram | `ms` |
 | `rpc.client.duration` | Histogram | `ms` |
 | `wrpc.server.calls` | Counter | `{call}` |
-| `wrpc.server.connections` | UpDownCounter | `{connection}` |
+| `wrpc.server.connections` | UpDownCounter | `{connection}` — live connections by `wrpc.transport` and `wrpc.revision` (`1` or `2`, the [protocol revision](../reference/protocol#versioning) the connection speaks): during an upgrade, the `1` series is who is still on 1.0 — or reads no frames. A connection whose revision is settled after it opened (a worker port's first ping, a WebTransport peer's capabilities) moves from one series to the other |
 | `wrpc.server.subscriptions` | UpDownCounter | `{subscription}` |
 | `wrpc.server.subscription.values` | Counter | `{value}` |
 | `wrpc.server.broadcasts` | Counter | `{event}` |

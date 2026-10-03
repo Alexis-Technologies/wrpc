@@ -546,8 +546,7 @@ class ServerEventTransport extends ServerTransport {
   // The page named revision `v`: this connection speaks the older of the
   // two, and the answer is this end's own — which is how the page learns it.
   negotiate(v) {
-    this.revision = v === 2 && this.max === 2 ? 2 : 1;
-    this.attachments = this.revision === 2;
+    this.setRevision(v === 2 && this.max === 2 ? 2 : 1);
     return this.max;
   }
 

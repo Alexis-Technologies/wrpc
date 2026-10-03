@@ -348,9 +348,11 @@ const createServerTelemetry = (telemetry) => {
       } catch {}
     },
 
-    recordConnection(delta, transport) {
+    // `revision` is the protocol revision the connection speaks (1 | 2): who
+    // is still on 1.0 during an upgrade is a count, not a grep.
+    recordConnection(delta, transport, revision) {
       try {
-        connections?.add(delta, { 'wrpc.transport': transport });
+        connections?.add(delta, { 'wrpc.transport': transport, 'wrpc.revision': revision });
       } catch {}
     },
 

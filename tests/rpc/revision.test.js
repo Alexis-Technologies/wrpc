@@ -15,6 +15,7 @@ const { RpcServer, defineRouter, procedure } = require('../../index.js');
 const { WebsocketServer } = require('#ws');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 const { recorder } = require('../helpers/recorder.js');
+const { createMetrics, point } = require('../helpers/metrics.js');
 
 const BYTES = Uint8Array.of(1, 2, 3);
 // What JSON.stringify makes of a Uint8Array — the form 1.0 sent and read.
@@ -444,4 +445,40 @@ test('revision: a ping that names a revision means nothing on a WebSocket — th
   await waitFor(() => frames.length === 2, 'the pong and the answer');
   assert.strictEqual(frames[0], '{"type":"pong"}');
   assert.deepStrictEqual(JSON.parse(frames[1]).result, { blob: JSON_BYTES });
+});
+
+test('revision: connections are counted by the revision they speak, and a 1.0 peer is a debug line', async (t) => {
+  const metrics = createMetrics();
+  const log = recorder();
+  const { server, url } = await boot(t, { telemetry: { meter: metrics.meter }, logger: log.writer });
+  // A 2.x client, and a client that offers wrpc.v1 alone — what 1.0 offers.
+  const modern = await connect(t, url);
+  const legacy = await connect(t, url, { attachments: false });
+  assert.deepStrictEqual([modern.revision, legacy.revision], [2, 1]);
+  const live = async (revision) =>
+    point(
+      await metrics.collect(),
+      'wrpc.server.connections',
+      (attributes) => attributes['wrpc.transport'] === 'ws' && attributes['wrpc.revision'] === revision,
+    )?.value ?? 0;
+  assert.deepStrictEqual([await live(2), await live(1)], [1, 1]);
+  assert.deepStrictEqual(
+    log.all('revision.peer').map(({ level, transport, protocol }) => ({ level, transport, protocol })),
+    [{ level: 'debug', transport: 'ws', protocol: 'wrpc.v1' }],
+  );
+  legacy.close();
+  await waitFor(async () => (await live(1)) === 0, 'the revision-1 connection is counted down under 1');
+  assert.strictEqual(await live(2), 1);
+
+  // A port settles after attach: counted under 1, then moved to 2 by the ping.
+  const worker = workerOf(server.rpc);
+  const page = await connectClient(t, 'ws://unused.invalid/api', { worker });
+  await page.load('files');
+  const port = async (revision) =>
+    point(
+      await metrics.collect(),
+      'wrpc.server.connections',
+      (attributes) => attributes['wrpc.transport'] === 'event' && attributes['wrpc.revision'] === revision,
+    )?.value ?? 0;
+  assert.deepStrictEqual([await port(2), await port(1)], [1, 0]);
 });
