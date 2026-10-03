@@ -142,15 +142,24 @@ const publicJwk = (jwk) => {
 // know: once per interval, however many tokens name unknown kids — a flood
 // of them used to be a flood on the keys endpoint. 0 asks every time.
 const DEFAULT_REFRESH_INTERVAL = 30_000;
+// How long a set a keys() function answered is trusted before it is asked
+// again, whatever the kids: a key the endpoint stopped publishing — revoked
+// — used to be accepted for the life of the verifier.
+const DEFAULT_MAX_AGE = 600_000;
+// How long a keys() that failed is left alone: every verify meanwhile meets
+// the same failure, where a burst of them used to be a burst of asks.
+// Capped by refreshInterval, so 0 still asks every time.
+const FAILED_BACKOFF = 1000;
 const noop = () => {};
 
 /**
  * Verifies assertions against a set of public keys. `keys` is a JWK, an
  * array of JWKs, or a function answering them (a signaler's `keys()`, say)
  * — asked once, and once more when a `kid` is unknown, for rotation, at
- * most once per `refreshInterval`. A keys() that fails is asked again on
- * the next verify (nothing is remembered of a failure); a refresh that
- * fails keeps the set that was.
+ * most once per `refreshInterval`, and again once the set is `maxAge` old.
+ * A keys() that failed is not asked again for a second (at most
+ * `refreshInterval`) — every verify meanwhile meets the same failure,
+ * where each used to ask; a refresh that fails keeps the set that was.
  *
  *   verify(token, { from, sdp, now? }) -> claims
  *
@@ -165,6 +174,7 @@ const createAssertionVerifier = ({
   issuer = null,
   subtle = globalThis.crypto?.subtle,
   refreshInterval = DEFAULT_REFRESH_INTERVAL,
+  maxAge = DEFAULT_MAX_AGE,
   clock = Date.now,
 } = {}) => {
   if (!subtle || typeof subtle.verify !== 'function') {
@@ -172,6 +182,9 @@ const createAssertionVerifier = ({
   }
   if (!Number.isInteger(refreshInterval) || refreshInterval < 0) {
     throw new TypeError('createAssertionVerifier: refreshInterval must be a non-negative integer (ms)');
+  }
+  if (!Number.isInteger(maxAge) || maxAge < 0) {
+    throw new TypeError('createAssertionVerifier: maxAge must be a non-negative integer (ms, 0 = never)');
   }
   if (typeof clock !== 'function') throw new TypeError('createAssertionVerifier: clock must be a function');
   if (typeof keys !== 'function' && !isJwk(keys) && !(Array.isArray(keys) && keys.every(isJwk))) {
@@ -192,6 +205,12 @@ const createAssertionVerifier = ({
   let ready = false;
   let inflight = null;
   let refreshedAt = -Infinity;
+  let loadedAt = -Infinity;
+  // The last load's failure, and when: asked again no sooner than
+  // FAILED_BACKOFF after it.
+  let failure = null;
+  let failedAt = -Infinity;
+  const mayAsk = () => failure === null || clock() - failedAt >= Math.min(FAILED_BACKOFF, refreshInterval);
 
   const load = () =>
     (inflight ??= (async () => {
@@ -212,19 +231,32 @@ const createAssertionVerifier = ({
       imported = fresh;
       wildcard = list.length === 1 && typeof list[0].kid !== 'string' ? fresh.get('') : null;
       ready = true;
-    })().finally(() => {
-      inflight = null;
-    }));
+      loadedAt = clock();
+      failure = null;
+    })()
+      .catch((error) => {
+        failure = error;
+        failedAt = clock();
+        throw error;
+      })
+      .finally(() => {
+        inflight = null;
+      }));
 
   const lookup = (kid) => imported.get(kid) ?? wildcard;
 
   const keyFor = async (kid) => {
-    if (!ready) await load();
+    if (!ready) {
+      if (!mayAsk()) throw failure;
+      await load();
+    } else if (typeof keys === 'function' && maxAge > 0 && clock() - loadedAt >= maxAge && mayAsk()) {
+      await load().catch(noop);
+    }
     const found = lookup(kid);
     if (found) return found;
     if (typeof keys === 'function') {
       const now = clock();
-      if (refreshInterval === 0 || now - refreshedAt >= refreshInterval) {
+      if ((refreshInterval === 0 || now - refreshedAt >= refreshInterval) && mayAsk()) {
         refreshedAt = now;
         await load();
         const refreshed = lookup(kid);

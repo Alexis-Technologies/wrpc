@@ -119,6 +119,7 @@ class WrpcPeer extends Emitter {
         keys,
         issuer: assertions.issuer ?? null,
         ...(assertions.refreshInterval === undefined ? {} : { refreshInterval: assertions.refreshInterval }),
+        ...(assertions.maxAge === undefined ? {} : { maxAge: assertions.maxAge }),
       });
     }
     if (host.trust === 'assertion' && this.#verifier === null) {

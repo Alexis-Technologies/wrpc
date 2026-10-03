@@ -90,9 +90,12 @@ Rotation is a `kid`: sign with a new key while `keys()` publishes both,
 and a verifier that meets an unknown `kid` asks for the keys once more —
 at most once per `refreshInterval` (30 s), so a flood of tokens under
 unknown kids is not a flood on the keys endpoint; a `keys()` that fails is
-asked again on the next verify, and a refresh that fails keeps the set that
-was —
-before it refuses. The `iat`/`exp` in the answer are also how peers learn
+left alone for a second (every verify meanwhile meets the same failure),
+and a refresh that fails keeps the set that was — before it refuses.
+**Revocation** is the other half: a set is asked again once it is `maxAge`
+old (ten minutes by default, `assertions: { maxAge }`), so a key the
+endpoint stopped publishing stops verifying within that time — before, a
+known `kid` was never asked about again. The `iat`/`exp` in the answer are also how peers learn
 the server's clock — each peer measures the offset from its own tokens
 and checks every `exp` against the server's time, so two peers with
 drifting clocks agree on what "expired" means (a minute of skew is

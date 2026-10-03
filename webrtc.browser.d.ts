@@ -576,10 +576,17 @@ export interface AssertionVerifierOptions {
   /**
    * How often a `keys` function is asked again for a kid the set does not
    * know: at most once per this many ms (default 30 000; 0 asks every
-   * time). A keys function that fails is asked again on the next verify;
-   * a refresh that fails keeps the set that was.
+   * time). A keys function that failed is not asked again for a second (at
+   * most this long) — the verifies meanwhile meet the same failure; a
+   * refresh that fails keeps the set that was.
    */
   refreshInterval?: number;
+  /**
+   * How long a set a `keys` function answered is trusted before it is asked
+   * again whatever the kids — so a key the endpoint stopped publishing is
+   * dropped (default 600 000 ms; 0 never asks again for a known kid).
+   */
+  maxAge?: number;
   /** The clock `refreshInterval` is measured on; defaults to `Date.now`. */
   clock?: () => number;
   /** WebCrypto; defaults to `globalThis.crypto.subtle`. */
@@ -719,6 +726,7 @@ export interface WrpcPeerOptions {
     keys?: AssertionVerifierOptions['keys'];
     issuer?: string | null;
     refreshInterval?: AssertionVerifierOptions['refreshInterval'];
+    maxAge?: AssertionVerifierOptions['maxAge'];
   } | null;
   logger?: WrpcLogger | boolean;
   /**

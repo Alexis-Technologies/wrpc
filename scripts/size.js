@@ -245,7 +245,13 @@ const ENTRIES = [
   // fragments per link (+0.2 KB; bench/rtc-fanout.js: 37.7 -> 2.2 µs a
   // recipient compressed, 10.3 -> 1.7 plain, at 16 KB over 32 links).
   // Measured 58,498 B against 58,368.
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 58 },
+  // 58 -> 59 (2026-10-03, review №3): the revision of each half in a
+  // description's caps (`f` — two peers whose `attachments` disagreed sent
+  // each other frames the other refused), an ended session refused by the
+  // dispatcher's gates, `maxStreams` in the host, and the assertion
+  // verifier's backoff after a failed key load and `maxAge` for a revoked
+  // key. Measured 59,436 B against 59,392.
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 59 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

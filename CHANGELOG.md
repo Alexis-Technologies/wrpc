@@ -2779,6 +2779,15 @@ reference as one opaque string. What is left to do:
   `maxStreams` (256 by default, on `RpcServer` and `PeerHost`, in
   `limits`) a `stream` packet answers `429`, logged as `stream.capacity` at
   debug, like `maxCalls` and `maxSubscriptions`.
+- **The assertion verifier backs off a failed key load, and a revoked key
+  stops verifying.** A `keys()` that failed was asked again by every verify
+  — 25 verifies in a burst were 25 calls to an endpoint that was down — and
+  a set was asked again only for an unknown `kid`, so a key the endpoint
+  stopped publishing verified for the life of the verifier. A failure is
+  now left alone for a second (at most `refreshInterval`), and a set is
+  asked again once it is `maxAge` old (600 000 ms by default; `0` keeps
+  the old behaviour), on `createAssertionVerifier` and `WrpcPeer`'s
+  `assertions`.
 - **A mesh does not dial again a link an application closed.** A
   `mesh.link(id).close()` with the member still in the room was undone
   within half a second — the mesh (and the other side, which heard the

@@ -283,19 +283,22 @@ test('assertions: a keys() that fails once is asked again on the next verify, an
   const context = { from: 'alice', sdp: CHROME_SDP };
   const token = (await sign(first)).assertion;
   let asked = 0;
+  let now = 0;
   const verifier = createAssertionVerifier({
     keys: async () => {
       asked++;
       if (asked === 1) throw new Error('offline');
       return [first.publicKey];
     },
+    clock: () => now,
   });
   await assert.rejects(
     verifier.verify(token, context),
     (error) => error.code === 'kid' && /offline/.test(error.message),
   );
-  // The next verify loads again — it used to await the same rejection
-  // for the life of the verifier.
+  // A verify loads again once the backoff passed — it used to await the
+  // same rejection for the life of the verifier.
+  now = 1000;
   assert.strictEqual((await verifier.verify(token, context)).sub, 'alice');
   assert.strictEqual(asked, 2);
   let loads = 0;
@@ -379,4 +382,42 @@ test('assertions: a refresh for an unknown kid happens at most once per refreshI
   assert.throws(() => createAssertionVerifier({ keys: first.publicKey, refreshInterval: -1 }), /refreshInterval/);
   assert.throws(() => createAssertionVerifier({ keys: first.publicKey, refreshInterval: 1.5 }), /refreshInterval/);
   assert.throws(() => createAssertionVerifier({ keys: first.publicKey, clock: 5 }), /clock must be/);
+});
+
+test('assertions: a keys() that failed waits refreshInterval; a set older than maxAge is asked again', async () => {
+  const k1 = await generateAssertionKeys({ kid: 'k1' });
+  const k2 = await generateAssertionKeys({ kid: 'k2' });
+  const sign = (keys) => createAssertionIssuer({ key: keys.privateKey }).sign({ sub: 'alice', fp: FP });
+  const context = { from: 'alice', sdp: CHROME_SDP };
+  let now = 0;
+  let asked = 0;
+  let down = true;
+  let published = [k1.publicKey];
+  const verifier = createAssertionVerifier({
+    keys: async () => {
+      asked++;
+      if (down) throw new Error('keys endpoint down');
+      return published;
+    },
+    refreshInterval: 30_000,
+    maxAge: 60_000,
+    clock: () => now,
+  });
+  const token = (await sign(k1)).assertion;
+  // 25 verifies while the endpoint is down were 25 asks.
+  for (let i = 0; i < 25; i++) await assert.rejects(verifier.verify(token, context), /keys endpoint down/);
+  assert.strictEqual(asked, 1, 'one ask per backoff while it fails');
+  now = 1000;
+  down = false;
+  assert.strictEqual((await verifier.verify(token, context)).sub, 'alice');
+  assert.strictEqual(asked, 2);
+  // k1 is revoked: the endpoint publishes k2 alone. A known kid never asked
+  // again, so k1 verified for the life of the verifier.
+  published = [k2.publicKey];
+  now = 60_000;
+  assert.strictEqual((await verifier.verify(token, context)).sub, 'alice', 'within maxAge the set stands');
+  now = 61_000;
+  await assert.rejects(verifier.verify(token, context), refused('kid'));
+  assert.strictEqual((await verifier.verify((await sign(k2)).assertion, context)).sub, 'alice');
+  assert.throws(() => createAssertionVerifier({ keys: k1.publicKey, maxAge: -1 }), /maxAge/);
 });
