@@ -429,13 +429,23 @@ const createSignalingUnit = (options = {}) => {
           throw refusal(`${name}: join data too large`, 413);
         }
         const rtc = await identify(context);
-        // A room already joined is not another room.
-        if (limits.maxRooms !== false && rtc.rooms[room] === undefined) {
-          let count = 0;
+        // A room already joined — or being joined — is not another room. The
+        // rooms being joined count: the `allow` hook is awaited between this
+        // check and the write below, and joins sent together all passed the
+        // check before any of them wrote (ten joins under maxRooms 2 were ten
+        // rooms).
+        const joining = (rtc.joining ??= new Set());
+        if (limits.maxRooms !== false && rtc.rooms[room] === undefined && !joining.has(room)) {
+          let count = joining.size;
           for (const key in rtc.rooms) if (key) count++;
           if (count >= limits.maxRooms) throw refusal(`${name}: too many rooms`, 429);
         }
-        await allow(context, { action: 'join', room, data });
+        joining.add(room);
+        try {
+          await allow(context, { action: 'join', room, data });
+        } finally {
+          joining.delete(room);
+        }
         owns(client, rtc);
         rtc.rooms[room] = data;
         // Join, announce, then read the roster: a peer joining at the same

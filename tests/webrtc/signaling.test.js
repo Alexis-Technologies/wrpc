@@ -820,6 +820,23 @@ test('signaling: the disconnect hook ignores foreign rooms and missing payloads'
   assert.deepStrictEqual(emitted, []);
 });
 
+test('signaling: maxRooms holds for joins sent together', async (t) => {
+  const boot = await bootServer(t, { router: signalingRouter({ limits: { maxRooms: 2 } }) });
+  const a = await peer(t, boot);
+  // The check came before an awaited hook and the write after it: ten joins
+  // sent together were ten rooms under maxRooms 2.
+  const results = await Promise.allSettled(Array.from({ length: 10 }, (_, i) => a.signaler.join(`r${i}`)));
+  const joined = results.filter((result) => result.status === 'fulfilled');
+  const refused = results.filter((result) => result.status === 'rejected');
+  assert.strictEqual(joined.length, 2);
+  assert.strictEqual(refused.length, 8);
+  assert.ok(refused.every((result) => result.reason.code === 429));
+  // A room joined twice at once is still one room.
+  const b = await peer(t, boot);
+  const twice = await Promise.allSettled([b.signaler.join('same'), b.signaler.join('same'), b.signaler.join('other')]);
+  assert.ok(twice.every((result) => result.status === 'fulfilled'));
+});
+
 test('signaling: limits — rooms, join data and signal size are ceilings; lookups are one per room', async (t) => {
   const boot = await bootServer(t, {
     router: signalingRouter({ limits: { maxRooms: 2, maxDataBytes: 64, maxSignalBytes: 256, maxResolves: 1 } }),

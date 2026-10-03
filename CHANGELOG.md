@@ -2779,6 +2779,11 @@ reference as one opaque string. What is left to do:
   `maxStreams` (256 by default, on `RpcServer` and `PeerHost`, in
   `limits`) a `stream` packet answers `429`, logged as `stream.capacity` at
   debug, like `maxCalls` and `maxSubscriptions`.
+- **The signaling unit's `maxRooms` holds for joins sent together.** The
+  count was checked before the awaited `allow` hook and the room written
+  after it, so joins sent at once all passed the check: ten joins under
+  `maxRooms: 2` were ten rooms. A room being joined now counts from the
+  check to the write.
 - **A logout ends the session on every connection of the instance.**
   `finalizeSession()` deleted the session from the store and dropped it on
   the connection that called it, while another connection that had restored
