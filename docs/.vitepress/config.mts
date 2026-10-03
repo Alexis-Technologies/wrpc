@@ -1,11 +1,11 @@
 import { defineConfig } from 'vitepress';
 import { withMermaid } from 'vitepress-plugin-mermaid';
 
-const ogTitle = 'wrpc — WebSocket RPC for Node.js and the browser';
+const ogTitle = 'wRPC — Web RPC for Node.js and the browser';
 const ogDescription =
-  'Fast, zero-dependency WebSocket-based RPC for Node.js and browsers: router and procedures, ' +
-  'subscriptions with resume, rooms with a scaling backplane, binary streams with real backpressure, ' +
-  'SSE, and a typed client — with no runtime dependencies.';
+  'wRPC (@alexify/wrpc) is a fast, zero-dependency Web RPC protocol for Node.js and browsers: one router ' +
+  'over WebSocket, HTTP, SSE, WebTransport and WebRTC, plus Redis, NATS, RabbitMQ and Kafka — subscriptions ' +
+  'with resume, rooms that scale, binary streams with real backpressure, compression, encryption and a typed client.';
 const repo = 'https://github.com/Alexis-Technologies/wrpc';
 const base = '/';
 const hostname = 'https://wrpc.vercel.app/';
@@ -70,7 +70,7 @@ const jsonLd = {
   '@context': 'https://schema.org',
   '@type': 'SoftwareApplication',
   name: '@alexify/wrpc',
-  alternateName: 'wrpc',
+  alternateName: ['wRPC', 'Web RPC'],
   description: ogDescription,
   applicationCategory: 'DeveloperApplication',
   operatingSystem: 'Node.js >= 22, modern browsers',
@@ -88,7 +88,7 @@ const jsonLd = {
 export default withMermaid({
   ...defineConfig({
     title: '@alexify/wrpc',
-    titleTemplate: ':title — wrpc',
+    titleTemplate: ':title — wRPC',
     description: ogDescription,
     lang: 'en-US',
     base,
@@ -191,7 +191,7 @@ export default withMermaid({
             text: 'Introduction',
             items: [
               { text: 'Getting Started', link: '/guide/getting-started' },
-              { text: 'Why wrpc?', link: '/guide/why' },
+              { text: 'Why wRPC?', link: '/guide/why' },
             ],
           },
           {

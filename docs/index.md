@@ -1,22 +1,22 @@
 ---
 layout: home
 
-title: wrpc
-titleTemplate: WebSocket-based RPC protocol for Node.js and the browser
+title: wRPC
+titleTemplate: Web RPC for Node.js and the browser
 
 hero:
-  name: wrpc
-  text: Fast, zero-dependency WebSocket RPC
-  tagline: Router and procedures, subscriptions with resume, rooms that scale, and binary streams with real backpressure — for Node.js and browsers, with nothing in your lockfile.
+  name: wRPC
+  text: Fast, zero-dependency Web RPC
+  tagline: One router, every web transport — WebSocket, HTTP, SSE, WebTransport, WebRTC — and across Redis, NATS, RabbitMQ and Kafka. Nothing in your lockfile.
   image:
     src: /logo-mark.svg
-    alt: wrpc
+    alt: wRPC
   actions:
     - theme: brand
       text: Get Started
       link: /guide/getting-started
     - theme: alt
-      text: Why wrpc?
+      text: Why wRPC?
       link: /guide/why
     - theme: alt
       text: View on GitHub

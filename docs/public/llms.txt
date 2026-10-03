@@ -1,14 +1,16 @@
-# wrpc (@alexify/wrpc)
+# wRPC (@alexify/wrpc)
 
-> A fast, zero-dependency, WebSocket-based RPC protocol for Node.js and browsers. Router and procedures, subscriptions that resume after a reconnect, rooms that scale across processes, binary streams with backpressure that reaches into TCP, and a typed client with no build step.
+> wRPC (Web RPC) is a fast, zero-dependency RPC protocol for Node.js and browsers: one router of procedures served over WebSocket, HTTP and REST, Server-Sent Events, WebTransport and WebRTC, and between services over Redis, NATS, RabbitMQ or Kafka. Subscriptions that resume after a reconnect, rooms that scale across processes, binary streams with backpressure that reaches into TCP, opt-in compression and encryption, and a typed client with no build step.
 
 Key facts:
 
+- Name: written **wRPC** in prose, short for Web RPC. The npm package is `@alexify/wrpc`; the CLI is `wrpc`; wire names keep the lowercase spelling (`wrpc.v2`, `wrpc-version`, `x-wrpc-*`).
+- Not to be confused with: wRPC by the Bytecode Alliance (a WIT-based RPC framework for WebAssembly components, Rust and Go) or webrpc (schema-first code generation over HTTP and JSON). They are unrelated projects.
 - npm: `@alexify/wrpc` — zero runtime dependencies (no `dependencies`, `peerDependencies` or `optionalDependencies` field), CommonJS, ships `src/` as-is with no build step.
 - Size: the browser entry is under 28 KB min+gzip (a budget CI enforces; 29 KB with the SSE transport, 2 KB for the TanStack Query bindings) — the measured table is at https://wrpc.vercel.app/guide/browser#bundle-size.
 - Runtimes: Node.js >= 22 on the server, any modern browser through a bundler on the client. The browser build contains zero Node builtins.
-- Transports: WebSocket, plain HTTP, Server-Sent Events, a worker `MessagePort` (Service Worker or SharedWorker).
-- Hosts: batteries-included `Server`, or fastify / express / bare `node:http` / uWebSockets.js — every host injected, never depended on.
+- Transports: WebSocket, plain HTTP (packet mode and declared REST), Server-Sent Events, WebTransport over HTTP/3 (experimental), WebRTC data channels between peers, a worker `MessagePort` (Service Worker or SharedWorker), and a message broker between services (experimental). One router serves all of them; the client picks one by URL scheme or option, with a fallback list such as `['wt', 'ws']`.
+- Hosts: batteries-included `Server`, or fastify / express / bare `node:http` / uWebSockets.js — every host injected, never depended on. Message brokers (ioredis, NATS, amqplib, kafkajs), WebRTC stacks and HTTP/3 stacks are injected the same way.
 - Public API: `Server`, `RpcServer`, `defineRouter`, `procedure`, `WrpcClient`, `connect<Api>()`, `tracked`, `createEventLog`, `RoomRegistry`, `Broadcast`, `Cluster`, `WrpcReadable`, `WrpcWritable`.
 - Subpaths: `@alexify/wrpc`, `/ws`, `/engine`, `/uws`, `/fastify`, `/express`, `/scaling`, `/sse`, `/query`, `/auth`, `/deflate`, `/webrtc`, `/wt`, `/encryption`, `/broker` and `/broker/redis`, `/broker/nats`, `/broker/amqp`, `/broker/kafka` (the WebTransport, broker and encryption ones `@experimental`), plus a `wrpc types` codegen CLI.
 - The wire protocol is documented at revision 2 (`wrpc.v2`) — revision 1 plus framed messages (bytes travel as bytes), negotiated per connection so a 2.x peer speaks `wrpc.v1` to a 1.0 peer with nothing to configure; its newer carrier conventions are badged `since 2.0` with a changes-since-1.0 table: JSON packets (`call`, `callback`, `event`, `subscribe`, `data`, `end`, `unsubscribe`, `cancel`, `stream`, `ping`, `pong`) plus a binary chunk framing.
@@ -17,24 +19,39 @@ Key facts:
 ## Introduction
 
 - [Getting Started](https://wrpc.vercel.app/guide/getting-started): Install, a first server and client, sessions, realtime and subscriptions, with an architecture diagram.
-- [Why wrpc?](https://wrpc.vercel.app/guide/why): Positioning against tRPC and Socket.IO, what zero dependencies buys, and when NOT to use it.
+- [Why wRPC?](https://wrpc.vercel.app/guide/why): One router over every transport, positioning against tRPC, Socket.IO, gRPC/Connect, Bytecode Alliance's wRPC and webrpc, what zero dependencies buys, and when NOT to use it.
 
 ## Server
 
 - [Server](https://wrpc.vercel.app/guide/server): `RpcServer` vs the batteries-included `Server`, options, what it serves over HTTP, CORS, lifecycle.
 - [Router & procedures](https://wrpc.vercel.app/guide/router): `defineRouter`/`procedure`, access levels, Standard Schema validators, timeouts, queues, versioned units, introspection.
+- [Declarative REST](https://wrpc.vercel.app/guide/rest): A real REST endpoint declared on a procedure — verb, path, status, `/vN` version paths, schemas, OpenAPI.
 - [Hooks](https://wrpc.vercel.app/guide/hooks): Lifecycle phases in the fastify tradition; router, unit and procedure levels flattened into one pipeline. No `(ctx, next)` middleware.
-- [Sessions](https://wrpc.vercel.app/guide/sessions): Token plus state store, cookies, the cross-site GET gate, pluggable stores.
+- [Sessions](https://wrpc.vercel.app/guide/sessions): Token plus state store, cookies, the cross-site GET gate, pluggable stores, a sealed store.
+- [Authentication](https://wrpc.vercel.app/guide/auth): Bearer and payload token carriers, client token stores, the authenticate/refresh lifecycle.
+- [Metadata](https://wrpc.vercel.app/guide/metadata): Connection headers and metadata, per-call metadata, and how each transport carries them.
 - [Rooms & events](https://wrpc.vercel.app/guide/rooms): Events in both directions, join/leave, the chainable `Broadcast`, acks via `ask()`.
 - [Subscriptions](https://wrpc.vercel.app/guide/subscriptions): Async-generator feeds, backpressure, and resume through `tracked()` + `createEventLog()`.
-- [Binary streams](https://wrpc.vercel.app/guide/streams): Interleaved upload/download with end-to-end backpressure.
+- [Binary streams](https://wrpc.vercel.app/guide/streams): Interleaved upload/download with end-to-end backpressure, and binary attachments in arguments, results and events.
 - [Scaling](https://wrpc.vercel.app/guide/scaling): The three-method backplane contract, memory and Redis adapters, at-most-once delivery.
 - [Cluster](https://wrpc.vercel.app/guide/cluster): Replicated presence, `fetchClients`, addressed commands, node-to-node ask, and client acks.
 
+## Message brokers
+
+- [Overview & contracts](https://wrpc.vercel.app/guide/brokers): The broker-agnostic core — backplane, log, queue and direct capabilities, every client injected (experimental).
+- [Durable feeds](https://wrpc.vercel.app/guide/brokers/feeds): `brokerFeed` — a subscription over a broker log that resumes on any instance.
+- [Queue consumers & publishing](https://wrpc.vercel.app/guide/brokers/consumers): `attachConsumers` — queue messages delivered into procedures at least once, with retry and dead-lettering; `createPublisher`.
+- [RPC over a broker](https://wrpc.vercel.app/guide/brokers/rpc): Services calling each other through the broker, stateless or with a session, with no HTTP between them.
+- [Redis](https://wrpc.vercel.app/guide/brokers/redis): Pub/sub, Streams and lists — all four capabilities.
+- [NATS](https://wrpc.vercel.app/guide/brokers/nats): Core subjects plus JetStream.
+- [RabbitMQ](https://wrpc.vercel.app/guide/brokers/amqp): Exchanges, quorum and stream queues, TTL retry and dead-letter exchanges.
+- [Kafka](https://wrpc.vercel.app/guide/brokers/kafka): The durable-log broker; kafkajs or the Confluent client.
+
 ## Client
 
-- [Client](https://wrpc.vercel.app/guide/client): Transports, options, calls, batching, reconnect with jittered backoff, heartbeat, events, workers (Service Worker, SharedWorker).
+- [Client](https://wrpc.vercel.app/guide/client): Transports and what each carries, options, calls, batching, reconnect with jittered backoff, heartbeat, events, workers (Service Worker, SharedWorker).
 - [Typed client](https://wrpc.vercel.app/guide/typed-client): `connect<Api>()` with a hand-written contract, and its three sharp edges.
+- [Multiple backends](https://wrpc.vercel.app/guide/multiple-backends): One `WrpcClient` per backend, each on its own transport.
 - [Browser & bundling](https://wrpc.vercel.app/guide/browser): The `browser` field map, what is in the browser entry, bundle budgets, framework notes.
 - [Codegen CLI](https://wrpc.vercel.app/guide/cli): `wrpc types <url> --out api.d.ts` against a running server.
 - [TanStack Query](https://wrpc.vercel.app/guide/query): Option factories (not hooks) for React/Solid/Svelte/Vue Query.
@@ -42,6 +59,10 @@ Key facts:
 ## Transports and hosts
 
 - [Server-Sent Events](https://wrpc.vercel.app/guide/sse): The full protocol over SSE, channel binding, replay, sticky routing, limitations.
+- [WebRTC](https://wrpc.vercel.app/guide/webrtc): Peer-to-peer wRPC between browsers over data channels — symmetric peers, mesh, built-in or pluggable signaling.
+- [WebRTC: identity and trust](https://wrpc.vercel.app/guide/webrtc-trust): App-level peer ids and server-signed assertions bound to the DTLS fingerprint.
+- [WebTransport](https://wrpc.vercel.app/guide/wt): wRPC over HTTP/3 — streams without head-of-line blocking, unreliable events, WebSocket fallback, an injected HTTP/3 host (experimental).
+- [Wire codec](https://wrpc.vercel.app/guide/codec): Replacing the JSON framing with your own codec on both ends.
 - [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws): The standalone engine and what it changes.
 - [Fastify](https://wrpc.vercel.app/guide/adapters/fastify): The plugin, both backends, hook ordering, shutdown.
 - [Express](https://wrpc.vercel.app/guide/adapters/express): Middleware that owns no listener; driving upgrades by hand.
@@ -49,15 +70,19 @@ Key facts:
 ## Operations
 
 - [Security](https://wrpc.vercel.app/guide/security): Trust boundary, the production checklist, prototype-pollution defences, resource limits, 5xx masking.
+- [Rate limiting & throttling](https://wrpc.vercel.app/guide/rate-limiting): One `onRequest` seam for every transport, and what is capped out of the box.
 - [Running in production](https://wrpc.vercel.app/guide/production): Graceful drain and shutdown, health checks, proxies, sticky routing, backpressure tuning.
 - [Testing](https://wrpc.vercel.app/guide/testing): Boot patterns, `t.after` teardown, multi-instance tests over `MemoryBackplane`, testing without a network.
 - [Performance](https://wrpc.vercel.app/guide/performance): Reproducible benchmarks against ws, uWebSockets.js, socket.io and tRPC; fan-out, parser and dispatch numbers.
-- [Logging](https://wrpc.vercel.app/guide/logging): The injected structured logger and what it emits.
+- [Compression](https://wrpc.vercel.app/guide/compression): Off by default; deflate, Brotli or zstd per wire, negotiated as a preference list, and a preset dictionary from the router.
+- [Encryption](https://wrpc.vercel.app/guide/encryption): Where TLS ends before the data does — sealed backplane and broker messages, a sealed session store, Noise sessions, HPKE per request, end-to-end helpers (experimental).
+- [Logging](https://wrpc.vercel.app/guide/logging): The injected structured logger and every event it emits.
 - [OpenTelemetry](https://wrpc.vercel.app/guide/telemetry): Spans, metrics, trace-context propagation, privacy.
 
 ## Reference
 
-- [Wire protocol](https://wrpc.vercel.app/reference/protocol): Every packet type, batching, trace context, introspection, sessions, rooms, SSE, reconnect. Frozen at 1.0.
-- [Wire format](https://wrpc.vercel.app/reference/wire-format): Binary chunk framing and the from-scratch RFC 6455/7692 WebSocket engine.
+- [Wire protocol](https://wrpc.vercel.app/reference/protocol): Every packet type, batching, trace context, introspection, sessions, rooms, every carrier, reconnect. Revision 2, negotiated with a 1.0 peer.
+- [Wire format](https://wrpc.vercel.app/reference/wire-format): Binary chunk framing, data-channel and WebTransport frames, and the from-scratch RFC 6455/7692 WebSocket engine.
 - [Engine port](https://wrpc.vercel.app/reference/engine): The `Engine`/`WrpcSocket` contract, hosted vs standalone, writing your own.
-- [Errors & close codes](https://wrpc.vercel.app/reference/errors): The full status-code table, which codes retry, and RFC 6455 close codes.
+- [Errors & close codes](https://wrpc.vercel.app/reference/errors): The full status-code table, which codes retry, and the close codes.
+- [Stability & deprecation](https://wrpc.vercel.app/reference/stability): What 2.x promises — semver spelled out, the `@experimental` carve-outs, and the wire protocol's own, stronger promise.

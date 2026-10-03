@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://wrpc.vercel.app/logo-mark.svg" width="104" height="104" alt="wrpc">
+  <img src="https://wrpc.vercel.app/logo-mark.svg" width="104" height="104" alt="wRPC">
 </p>
 
-<h1 align="center">wrpc</h1>
+<h1 align="center">wRPC</h1>
 
 [![npm](https://img.shields.io/npm/v/%40alexify%2Fwrpc)](https://www.npmjs.com/package/@alexify/wrpc)
 [![CI](https://github.com/Alexis-Technologies/wrpc/actions/workflows/ci.yml/badge.svg)](https://github.com/Alexis-Technologies/wrpc/actions/workflows/ci.yml)
@@ -11,11 +11,14 @@
 [![docs](https://img.shields.io/badge/docs-online-blue)](https://wrpc.vercel.app/)
 [![license](https://img.shields.io/npm/l/%40alexify%2Fwrpc)](./LICENSE)
 
-A fast, **zero-dependency** WebSocket-based RPC protocol for Node.js and
-browsers. Router and procedures, subscriptions that resume, rooms
-that scale across processes, and binary streams with backpressure that reaches
-all the way into TCP — [under 28 KB min+gzip](#bundle-size) in a browser bundle, a budget CI enforces, and
-nothing at all in your lockfile.
+**wRPC** (Web RPC) is a fast, **zero-dependency** RPC protocol for Node.js and
+browsers: one router of procedures, served over every transport the web has —
+WebSocket, HTTP and REST, Server-Sent Events, WebTransport and WebRTC — and
+between services over Redis, NATS, RabbitMQ or Kafka. Subscriptions that
+resume, rooms that scale across processes, binary streams with backpressure
+that reaches all the way into TCP, compression and encryption where you want
+them — [under 28 KB min+gzip](#bundle-size) in a browser bundle, a budget CI
+enforces, and nothing at all in your lockfile.
 
 ```javascript
 const { Server, WrpcClient, defineRouter, procedure } = require('@alexify/wrpc');
