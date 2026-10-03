@@ -2730,6 +2730,13 @@ reference as one opaque string. What is left to do:
   server cannot vouch the request fresh; retry later), with that message on
   the client, and the encryption guide asks for a rate limit per client in
   front of the server, sized under `max / (2·maxSkew)`.
+- **`maxStreams` caps the binary streams one connection holds open.** A
+  peer announces a stream with one packet and the server held a readable
+  for it until a handler read it — with no bound: 20 000 announcements from
+  an unauthenticated WebSocket were 20 000 streams (about 45 MB). Past
+  `maxStreams` (256 by default, on `RpcServer` and `PeerHost`, in
+  `limits`) a `stream` packet answers `429`, logged as `stream.capacity` at
+  debug, like `maxCalls` and `maxSubscriptions`.
 - **A logout ends the session on every connection of the instance.**
   `finalizeSession()` deleted the session from the store and dropped it on
   the connection that called it, while another connection that had restored

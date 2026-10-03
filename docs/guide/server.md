@@ -47,6 +47,7 @@ with every adapter; the network half belongs to the shell.
 | `maxBatch` | `128` | Packets accepted in one [batch frame](./client#batching). |
 | `maxSubscriptions` | `256` | Concurrent [subscriptions](./subscriptions) per client. |
 | `maxCalls` | `1000` | In-flight calls per client; past it a call answers `429`. |
+| `maxStreams` | `256` | Binary streams a client may hold open — announced and not yet ended; past it a `stream` packet answers `429`. A peer decides how many it announces, and each holds memory until a handler reads it. |
 | `sse` | `{}` | [SSE](./sse) channel options, or `false` to remove the endpoint. |
 | `http` | `{}` | The HTTP side's own options: `compression`, off by default — see [Compression](#compression). |
 | `compression` | off | Accept per-message compressed frames from a Node WebSocket client that negotiated them — see [Compression](#compression). |

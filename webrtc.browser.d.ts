@@ -389,6 +389,8 @@ export interface PeerHostOptions {
   maxBatch?: number;
   maxSubscriptions?: number;
   maxCalls?: number;
+  /** Binary streams a peer may hold open; past it a `stream` packet answers 429. Default 256. */
+  maxStreams?: number;
   metaMaxBytes?: number;
   /**
    * 'link' (default): every attached Client gets a frozen pseudo-session

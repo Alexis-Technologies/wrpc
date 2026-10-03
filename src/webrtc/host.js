@@ -30,7 +30,13 @@ const { createLoggerWriter } = require('../logging.js');
 const { createServerTelemetry } = require('../telemetry/server.js');
 const { defineRouter, procedure, runHooksSafe } = require('../rpc/router.js');
 const { RoomRegistry, Broadcast } = require('../rpc/rooms.js');
-const { Client, DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_CALLS, buildMeta } = require('../rpc/client.js');
+const {
+  Client,
+  DEFAULT_MAX_SUBSCRIPTIONS,
+  DEFAULT_MAX_CALLS,
+  DEFAULT_MAX_STREAMS,
+  buildMeta,
+} = require('../rpc/client.js');
 const { dispatchMessage, dispatchBinary } = require('../rpc/dispatcher.js');
 const { DEFAULT_META_MAX } = require('../rpc/meta.js');
 const { isInboundTransport } = require('../rpc/serverTransport.js');
@@ -63,6 +69,7 @@ class PeerHost extends Emitter {
     maxBatch = undefined,
     maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
     maxCalls = DEFAULT_MAX_CALLS,
+    maxStreams = DEFAULT_MAX_STREAMS,
     metaMaxBytes = DEFAULT_META_MAX,
     trust = 'link',
     instanceId = null,
@@ -91,7 +98,7 @@ class PeerHost extends Emitter {
     this.#metaMax = Number.isInteger(metaMaxBytes) && metaMaxBytes > 0 ? metaMaxBytes : DEFAULT_META_MAX;
     // Binary attachments, off under a packet codec (which owns the wire).
     this.#attachments = attachments !== false && !(codec && typeof codec.encode === 'function');
-    this.#limits = { maxBatch, maxSubscriptions, maxCalls, attachments: this.#attachments };
+    this.#limits = { maxBatch, maxSubscriptions, maxCalls, maxStreams, attachments: this.#attachments };
     this.#trust = trust;
     // The prefix of every client id here; a uuid has no '.', so the id
     // parses like a server's would (instanceOfClientId). Minted by the
@@ -188,6 +195,7 @@ class PeerHost extends Emitter {
       otel: this.#otel,
       maxSubscriptions: this.#limits.maxSubscriptions,
       maxCalls: this.#limits.maxCalls,
+      maxStreams: this.#limits.maxStreams,
       generateId: this.#generateId,
       meta: buildMeta({ data: about, remoteAddress: peer }),
       metaMax: this.#metaMax,

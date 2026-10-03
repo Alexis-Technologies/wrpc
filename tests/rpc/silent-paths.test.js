@@ -327,3 +327,27 @@ test('dispatcher: a refused subscription names its id clipped, never the peer te
   assert.ok(entry.id.length <= 129, `clipped (${entry.id.length})`);
   assert.ok(entry.message === undefined || entry.message.length < 200);
 });
+
+test('dispatcher: past maxStreams a stream packet answers 429, and says so at debug', async (t) => {
+  const { writer, find } = recorder();
+  const { url } = await bootServer(t, { router, logger: writer, maxStreams: 2 });
+  const socket = new WebSocket(url, ['wrpc.v2']);
+  t.after(() => socket.close());
+  const answers = [];
+  socket.addEventListener('message', ({ data }) => answers.push(JSON.parse(data)));
+  await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
+  // An unauthenticated peer announced 20 000 streams and the server held them all.
+  for (let i = 1; i <= 3; i++) socket.send(JSON.stringify({ type: 'stream', id: `s${i}`, name: 'blob', size: 10 }));
+  await waitFor(() => answers.length === 1, 'the third is refused');
+  assert.strictEqual(answers[0].id, 's3');
+  assert.strictEqual(answers[0].error.code, 429);
+  assert.strictEqual(find('stream.capacity').level, 'debug');
+  // Ending one frees a slot (a round trip later: the end is asynchronous).
+  socket.send(JSON.stringify({ type: 'stream', id: 's1', status: 'terminate' }));
+  socket.send(JSON.stringify({ type: 'call', id: 'c0', method: 'unit/ping', args: {} }));
+  await waitFor(() => answers.some((answer) => answer.id === 'c0'), 'the call after the end');
+  socket.send(JSON.stringify({ type: 'stream', id: 's4', name: 'blob', size: 10 }));
+  socket.send(JSON.stringify({ type: 'call', id: 'c1', method: 'unit/ping', args: {} }));
+  await waitFor(() => answers.some((answer) => answer.id === 'c1'), 'the call after the fourth');
+  assert.ok(!answers.some((answer) => answer.id === 's4'), 'the fourth fits once one ended');
+});

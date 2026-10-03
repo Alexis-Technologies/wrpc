@@ -844,6 +844,8 @@ export class Client extends Emitter {
   subscriptions: Map<string, AbortController>;
   maxSubscriptions: number;
   maxCalls: number;
+  /** Binary streams the peer may hold open here; past it a `stream` packet answers 429. */
+  maxStreams: number;
   /** Context uuids and server-side stream ids; injectable via RpcServerOptions. */
   generateId: () => string;
   /** The connection-scoped log writer (peer binding included). */

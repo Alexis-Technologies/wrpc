@@ -161,6 +161,12 @@ A disconnect terminates every stream the client held. `readable.status` is
 `'active'`, `'closed'` or `'terminated'`; `bytesRead` is what has been
 consumed so far, against the announced `size`.
 
+A connection holds at most [`maxStreams`](./server#rpc-options) streams at
+once (256 by default): a stream is announced by the peer, and holds a
+readable — with what was sent into it — until a handler reads it, so the
+number is the peer's to choose and the cap the server's. Past it the
+`stream` packet answers `429` (`stream.capacity` in the log, at debug).
+
 ## Bytes inside a call, not as a stream {#attachments}
 
 A stream is for bytes that do not fit in memory or should not wait for

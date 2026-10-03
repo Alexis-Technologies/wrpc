@@ -108,6 +108,7 @@ The first table is the request path and the engines; the ones after it are
 | `call.unknown` | warn | A call for a method this router does not have — a stale client, or a typo |
 | `call.duplicate` | warn | Two in-flight calls with one id: a `generateId` that repeats, or a retry that reused one |
 | `call.capacity` | debug | `maxCalls` reached on one connection |
+| `stream.capacity` | debug | `maxStreams` reached on one connection: a `stream` packet answered `429` |
 | `call.draining` | info | Refused because the server is shutting down |
 | `packet.malformed` | warn | A frame that would not parse — one line per frame, whatever it was |
 | `packet.unknown` | warn | Valid JSON that is not a packet — version skew, or somebody else's client |

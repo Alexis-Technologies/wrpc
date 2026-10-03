@@ -44,7 +44,14 @@ const {
 const { createLoggerWriter } = require('../logging.js');
 const { createServerTelemetry } = require('../telemetry/server.js');
 const { TRACEPARENT, TRACESTATE } = require('../telemetry/shared.js');
-const { Context, Client, DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_CALLS, buildMeta } = require('./client.js');
+const {
+  Context,
+  Client,
+  DEFAULT_MAX_SUBSCRIPTIONS,
+  DEFAULT_MAX_CALLS,
+  DEFAULT_MAX_STREAMS,
+  buildMeta,
+} = require('./client.js');
 const { DEFAULT_META_MAX, declaredData } = require('./meta.js');
 const { readDeclared, normalizeDeclaredHeaders } = require('./handshake.js');
 const { AMBIENT_HEADERS } = require('./reserved.js');
@@ -104,6 +111,7 @@ const RPC_OPTION_KEYS = [
   'maxBatch',
   'maxSubscriptions',
   'maxCalls',
+  'maxStreams',
   'sse',
   'http',
   'compression',
@@ -196,6 +204,7 @@ class RpcServer extends Emitter {
       maxBatch = DEFAULT_MAX_BATCH,
       maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
       maxCalls = DEFAULT_MAX_CALLS,
+      maxStreams = DEFAULT_MAX_STREAMS,
       sse = {},
       http = {},
       compression = null,
@@ -313,6 +322,7 @@ class RpcServer extends Emitter {
       maxBatch,
       maxSubscriptions,
       maxCalls,
+      maxStreams,
       compression: normalizeSyncCompression(compression, 'RpcServer: options'),
       attachments: this.#attachments,
     };
@@ -798,6 +808,7 @@ class RpcServer extends Emitter {
       otel: this.#otel,
       maxSubscriptions: this.#limits.maxSubscriptions,
       maxCalls: this.#limits.maxCalls,
+      maxStreams: this.#limits.maxStreams,
       generateId: this.#generateId,
       meta,
       metaMax: this.#metaMax,

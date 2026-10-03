@@ -429,6 +429,8 @@ export interface RpcServerOptions {
   maxSubscriptions?: number;
   /** In-flight calls per client; past it a call answers 429. Default 1000. */
   maxCalls?: number;
+  /** Binary streams a peer may hold open on one connection; past it a `stream` packet answers 429. Default 256. */
+  maxStreams?: number;
   /** SSE channel options, or `false` to remove the events endpoint. */
   sse?: import('./sse.js').SseOptions | false;
   /** The HTTP side's own options: `compression`, off by default. */
@@ -599,6 +601,7 @@ export declare class RpcServer extends Emitter {
     maxBatch: number;
     maxSubscriptions: number;
     maxCalls: number;
+    maxStreams: number;
     compression: NormalizedCompression | null;
     attachments: boolean;
   }>;

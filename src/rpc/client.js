@@ -25,6 +25,10 @@ const DEFAULT_MAX_SUBSCRIPTIONS = 256;
 // Same reasoning for in-flight calls: each holds a controller, a context and
 // possibly a queue slot until it settles.
 const DEFAULT_MAX_CALLS = 1000;
+// And for the binary streams a peer announces: each holds a readable — and
+// every chunk the peer sends into it — until a handler reads it, and the
+// peer alone decides how many it opens.
+const DEFAULT_MAX_STREAMS = 256;
 // How long client.ask() waits for the peer's answer. Mirrors the client's
 // default call timeout: an ask is a call travelling the other way.
 const DEFAULT_ASK_TIMEOUT = 7_000;
@@ -164,6 +168,7 @@ class Client extends Emitter {
       otel,
       maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
       maxCalls = DEFAULT_MAX_CALLS,
+      maxStreams = DEFAULT_MAX_STREAMS,
       generateId,
       codec = null,
       meta = null,
@@ -195,6 +200,7 @@ class Client extends Emitter {
     this.subscriptions = new Map();
     this.maxSubscriptions = maxSubscriptions;
     this.maxCalls = maxCalls;
+    this.maxStreams = maxStreams;
     // Context uuids and server-side stream ids; uuid v4 unless the app
     // brings its own (cuid/ulid/a test counter) — see RpcServerOptions.
     // A Client built by a host receives a generator that host already
@@ -667,6 +673,7 @@ module.exports = {
   Client,
   DEFAULT_MAX_SUBSCRIPTIONS,
   DEFAULT_MAX_CALLS,
+  DEFAULT_MAX_STREAMS,
   FROZEN_EMPTY,
   EMPTY_META,
   buildMeta,

@@ -415,6 +415,12 @@ const handleStream = async (client, packet) => {
     const valid = typeof name === 'string' && Number.isSafeInteger(size);
     if (!valid) throw new Error('Stream packet structure error');
     if (stream) throw new Error(`Stream ${tag} is already initialized`);
+    // Capped like calls and subscriptions: an announced stream holds its
+    // readable until a handler reads it, and the peer decides how many.
+    if (client.streams.size >= client.maxStreams) {
+      client.log.debug({ event: 'stream.capacity', code: 429, max: client.maxStreams });
+      return void client.error(429, { id, error: new Error('Too many open streams'), level: 'debug' });
+    }
     {
       const stream = new WrpcReadable(id, name, size);
       client.streams.set(id, stream);
