@@ -412,9 +412,11 @@ leaving one of them.
 
 **An edge that is lost is made again.** A mesh remembers who the room holds,
 and a member's link that ends by itself — its redial budget spent, a path
-that never came back, a `link.close()` on the other side that was not a
-`mesh.leave()` — is dialled again while that member is still in the room:
-after a second, backing off to a minute, then once a minute for as long as
+that never came back, a refusal — is dialled again while that member is
+still in the room. A link an application ended is not: a `link.close()` on
+either side is a goodbye, and neither end dials it again (the side that
+heard the goodbye used to, which undid the close within half a second). The
+dial comes after a second, backing off to a minute, then once a minute for as long as
 it stays. There is no attempt count; a member that cannot be reached, or
 refuses, costs one dial a minute. When the pace reaches that floor the mesh
 says so once — `mesh.on('unreachable', ({ id, attempts }) => {})`, and

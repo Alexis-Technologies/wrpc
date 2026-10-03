@@ -2779,6 +2779,15 @@ reference as one opaque string. What is left to do:
   `maxStreams` (256 by default, on `RpcServer` and `PeerHost`, in
   `limits`) a `stream` packet answers `429`, logged as `stream.capacity` at
   debug, like `maxCalls` and `maxSubscriptions`.
+- **A mesh does not dial again a link an application closed.** A
+  `mesh.link(id).close()` with the member still in the room was undone
+  within half a second — the mesh (and the other side, which heard the
+  goodbye) dialled the edge again, and the member came back in `peers` with
+  a new `join`. A link that ended with a goodbye — `link.close()` on either
+  side — stays ended; one that ended by itself (a failure, a redial budget
+  run out, a refusal) is still dialled again under `relink`. **Changed:**
+  the WebRTC guide used to promise a redial after a `link.close()` on the
+  OTHER side, which is what undid a close.
 - **The signaling unit's `maxRooms` holds for joins sent together.** The
   count was checked before the awaited `allow` hook and the room written
   after it, so joins sent at once all passed the check: ten joins under

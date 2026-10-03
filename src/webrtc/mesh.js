@@ -263,7 +263,7 @@ class Mesh extends Emitter {
     };
     if (link.open) onOpen();
     else link.once('open', onOpen);
-    link.once('close', () => {
+    link.once('close', (closure) => {
       link.off('open', onOpen);
       // Dropped by this mesh (a leave, a detach): not its member any more.
       if (this.#members.get(link.id) !== link) return;
@@ -271,6 +271,12 @@ class Mesh extends Emitter {
       // that was left of it — is out of the room once the link is too.
       if (this.#away.has(link.id)) this.#forget(link.id);
       this.#drop(link, true);
+      // Ended by an application — `link.close()` on either side, a goodbye:
+      // that was a decision, and it used to be undone by a redial within
+      // half a second, the member back in `peers` with a new `join` (the side
+      // that heard the goodbye redialled too). A link that ended by itself —
+      // a failure, a redial budget run out, a refusal — is dialled again.
+      if (closure?.reason === 'goodbye') return;
       // The link ended by itself and the member is still in the room: the
       // edge is dialled again.
       this.#again(link.id);

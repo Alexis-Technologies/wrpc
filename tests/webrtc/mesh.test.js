@@ -375,6 +375,28 @@ test('mesh: nothing is dialled again for a member that left, a mesh that left, o
   assert.throws(() => peer('z').join('room', { relink: { minDelay: 50, maxDelay: 10 } }), /relink must be false or/);
 });
 
+test('mesh: a link the application closed is not dialled again', async (t) => {
+  const { peer, hub } = world(t);
+  const a = peer('a');
+  const b = peer('b');
+  const ma = a.join('room', { relink });
+  const mb = b.join('room', { relink });
+  await within(settled(ma, 1), 'linked');
+  await within(settled(mb, 1), 'linked');
+  const joins = [];
+  ma.on('join', (event) => joins.push(event.id));
+  // What a dial sends — a knock or a description; the goodbye is a signal too.
+  const dials = () => hub.sent.filter((e) => e.type !== 'close' && (e.from === 'a' || e.from === 'b')).length;
+  const before = dials();
+  // b is still in the room; the application ended the edge on purpose. It
+  // used to be back in `peers` within half a second, with a new `join`.
+  ma.link('b').close();
+  await timers.setTimeout(300);
+  assert.strictEqual(ma.peers.has('b'), false);
+  assert.deepStrictEqual(joins, []);
+  assert.strictEqual(dials(), before, 'nothing dialled');
+});
+
 test('mesh: a member replaced by another incarnation of its id relinks', async (t) => {
   const { peer, hub } = world(t);
   const a = peer('a');
