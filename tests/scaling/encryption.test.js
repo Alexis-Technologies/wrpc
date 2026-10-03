@@ -411,6 +411,39 @@ test('sealer: maxSenders bounds the senders remembered — the oldest goes, and 
   }
 });
 
+test('sealer: the sender evicted is the least recently heard, not the oldest — an active one keeps its window', () => {
+  const encryption = normalizeEnvelopeEncryption({ keys: generateKey(), maxSenders: 2 }, 'x');
+  const [a, b, c, receiver] = [0, 1, 2, 3].map(() => createEnvelopeSealer({ encryption, layer: 'rooms' }));
+  const open = (sealed) => receiver.open('0', sealed, 'ch').toString();
+  const a1 = a.seal(Buffer.from('a1'), 'ch').sealed;
+  assert.strictEqual(open(a1), 'a1');
+  assert.strictEqual(open(b.seal(Buffer.from('b1'), 'ch').sealed), 'b1');
+  assert.strictEqual(open(a.seal(Buffer.from('a2'), 'ch').sealed), 'a2', 'a is the one heard last');
+  assert.throws(() => open(a1), { reason: 'replay' });
+  // C evicts b now — it evicted a, the busiest, whose frame then opened again.
+  assert.strictEqual(open(c.seal(Buffer.from('c1'), 'ch').sealed), 'c1');
+  assert.throws(() => open(a1), { reason: 'replay' }, "a's window survived");
+});
+
+test('sealer: a process keeps only its last salts for skipping its own echoes', () => {
+  // Every rotation is a new salt: the set of own salts used to grow with
+  // each one, for the life of the process. The newest ones still answer.
+  const ring = new Map([['k0', generateKey()]]);
+  let current = 'k0';
+  const keys = { current: () => current, get: (kid) => ring.get(kid) ?? null };
+  const rotating = createEnvelopeSealer({ encryption: normalizeEnvelopeEncryption({ keys }, 'x'), layer: 'rooms' });
+  const echoes = [];
+  for (let i = 1; i <= 40; i++) {
+    ring.set(`k${i}`, generateKey());
+    current = `k${i}`;
+    echoes.push(rotating.seal(Buffer.from('m'), 'ch'));
+  }
+  const latest = echoes.at(-1);
+  assert.strictEqual(rotating.open(latest.kid, latest.sealed, 'ch'), null, 'its own latest is still an echo');
+  const oldest = echoes[0];
+  assert.strictEqual(rotating.open(oldest.kid, oldest.sealed, 'ch').toString(), 'm', 'one 40 rotations back is not');
+});
+
 test('sealer: a kid withdrawn from a live provider is refused for a sender already known, not only for a new one', () => {
   const ring = new Map([['k1', generateKey()]]);
   const keys = { current: () => 'k1', get: (kid) => ring.get(kid) ?? null };

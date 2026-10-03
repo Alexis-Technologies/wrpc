@@ -2764,6 +2764,14 @@ reference as one opaque string. What is left to do:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **The sealed-envelope sender memory evicts the least recently heard
+  sender, not the oldest.** Past `maxSenders`, a new sender evicted the
+  first one in — the busiest, as often as not — which came back with a
+  fresh replay window, so a frame of its that had just been refused as a
+  replay opened a second time. The entry a message opens is moved to the
+  end now (+0.05 µs an open at 64 B, medians of five processes). And the
+  set of a process's own salts, kept to skip its echoes, holds the last 16
+  rather than every salt of every reseed and rotation.
 - **A full replay memory answers `503`, not a `409` that blames the clock.**
   The built-in memory of sealed requests can be filled by anyone holding the
   server's public key — which is public by design — and past its cap every

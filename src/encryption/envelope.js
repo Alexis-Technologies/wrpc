@@ -41,6 +41,8 @@ const SUITE_INJECTED = 0xff;
 const RESEED_AFTER = 0x100000000;
 const DEFAULT_REPLAY_WINDOW = 1024;
 const MAX_SENDERS = 1024;
+// This process's own salts kept for skipping its echoes (see `mine`).
+const MINE_KEPT = 16;
 
 const SUITES = Object.freeze({ __proto__: null, 'aes-256-gcm': SUITE_AES, 'chacha20-poly1305': SUITE_CHACHA });
 
@@ -217,6 +219,10 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
   // The sending half: one salt, one derived key, one counter — rebuilt when
   // the current kid changes (a provider rotated) or the counter is spent.
   let sender = null;
+  // The salts this process sealed under, to skip its own echoes: the last
+  // MINE_KEPT — an echo arrives within moments of its send, and the set
+  // grew by one salt every reseed and every rotation, for the life of the
+  // process.
   const mine = new Set();
 
   const senderFor = (kid) => {
@@ -229,6 +235,7 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
     header[1] = suite;
     salt.copy(header, 2);
     mine.add(header.latin1Slice(1, 2 + SALT_LENGTH));
+    if (mine.size > MINE_KEPT) mine.delete(mine.values().next().value);
     sender = { kid, key, header, counter: 0 };
     return sender;
   };
@@ -245,8 +252,8 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
     return { kid, sealed };
   };
 
-  // The receiving half: one entry per (kid, suite, sender salt), oldest
-  // first. The SUITE byte is part of the key because it is part of what the
+  // The receiving half: one entry per (kid, suite, sender salt), least
+  // recently opened first. The SUITE byte is part of the key because it is part of what the
   // subkey was derived for: were a known salt looked up without it, a copy
   // with the byte changed would be opened under the cached key by an
   // instance that knows the sender and refused by one that does not.
@@ -254,7 +261,12 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
   // process — so the map turns over with restarts and with them; a
   // forgotten sender is derived again at its next message, with a FRESH
   // replay window. That is what `maxSenders` bounds: memory on one side,
-  // how many live senders keep their window on the other.
+  // how many live senders keep their window on the other. Least recently
+  // used, not oldest: a busy sender evicted by a newcomer came back with a
+  // fresh window, and a frame of its that had just been refused as a
+  // replay opened a second time. The touch is one delete and one set on a
+  // hit: 2.66 -> 2.71 µs at 64 B, 2.80 -> 2.88 at 1 KB (medians of five
+  // processes, the hit path the decode row of bench/encryption.js runs).
   const senders = new Map();
 
   const refuse = (reason) => {
@@ -307,6 +319,10 @@ const createEnvelopeSealer = ({ encryption, layer, echo = false, randomBytes = c
     // Only now is the counter the sender's own, and the salt worth keeping.
     if (entry.window !== null && !entry.window.accept(counter)) refuse('replay');
     if (!known) remember(id, entry);
+    else {
+      senders.delete(id);
+      senders.set(id, entry);
+    }
     return bytes;
   };
 

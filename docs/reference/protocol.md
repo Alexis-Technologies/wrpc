@@ -831,7 +831,8 @@ and names its codec there; a `wrpc-enc:` marker never appears inside a
 sealed envelope. A receiver keeps a sliding window of each sender's
 counters and drops a repeat — a sender being a (kid, suite, salt), the
 window in memory only: empty when the receiver starts, and dropped with
-the oldest sender once more than `maxSenders` (1024) are remembered. The
+the least recently heard sender once more than `maxSenders` (1024) are
+remembered. The
 frame carries no time. An envelope that does not open is dropped and
 logged, never answered. The cluster channels do the same under `cluster: {
 encryption }` with the label `"wrpc cluster v1"`, after signing and

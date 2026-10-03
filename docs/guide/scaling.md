@@ -88,9 +88,9 @@ The replay memory has edges, and they are worth knowing. A receiver keeps
 one sliding window (`replayWindow`, 1024 counters) per **sender** — a key
 id, a cipher and the salt a sealing process drew at boot — in memory: it is
 empty after a restart, and at most `maxSenders` (1024) senders are
-remembered, oldest out first, so an instance that has heard more sealing
-processes than that forgets the earliest and would open its envelopes
-again. Nothing in a sealed envelope says *when* it was sealed. Where a
+remembered, the least recently heard out first, so an instance that hears
+more sealing processes than that forgets the quietest and would open its
+envelopes again. Nothing in a sealed envelope says *when* it was sealed. Where a
 replayed **command** matters, `cluster: { secret }` adds what the frame
 lacks — a signed counter, channel and clock
 ([Trusting the backplane](./cluster#trusting-the-backplane)).
