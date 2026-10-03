@@ -1991,6 +1991,12 @@ reference as one opaque string. What is left to do:
   JSON. It is added (joined onto `Vary: Origin` and `Accept-Encoding`)
   wherever the server can answer a frame; a server under
   `attachments: false` or a packet codec does not vary on it.
+- **`acceptSessions` checks the per-session options at the call.** A bad
+  `maxBackpressure`, timeout, stream cap or compression codec was accepted
+  and then failed every session it attached — each client saw `Not
+  connected`, `onError` a `TypeError` per session. They are checked once,
+  where `acceptSessions` is called, by the same check `attachSession` runs
+  before a handshake.
 - **A `WtSocket` whose option is refused leaves no timer behind.** The idle
   timer was armed before the channel was built, so an option the channel
   refuses (an unknown compression codec) threw its `TypeError` — and

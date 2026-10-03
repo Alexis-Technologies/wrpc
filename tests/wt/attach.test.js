@@ -264,6 +264,19 @@ test('wt attach: attachSession refuses on verify and on a silent client, and val
   await assert.rejects(attachSession(server, late, { maxBackpressure: -1 }), /maxBackpressure/);
   assert.throws(() => acceptSessions(server, 42), TypeError);
   assert.throws(() => acceptSessions(server, createFakeWt().sessions, { maxPending: 0 }), TypeError);
+  // The per-session options are checked at the call, not session by session
+  // after it: a bad one used to be accepted here and fail every session.
+  for (const bad of [
+    { maxBackpressure: -5 },
+    { acceptTimeout: 0 },
+    { closeTimeout: -1 },
+    { idleTimeout: 1.5 },
+    { maxHeldStreams: 0 },
+    { holdTimeout: -1 },
+    { compression: { codec: 'no-such-codec' } },
+  ]) {
+    assert.throws(() => acceptSessions(server, createFakeWt().sessions, bad), TypeError, JSON.stringify(bad));
+  }
   assert.strictEqual(server.rpc.clients.size, 0);
 });
 

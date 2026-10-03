@@ -12,6 +12,7 @@
 const { WtSocket, normalizeBackpressure, DEFAULT_HIGH_WATER_MARK, DEFAULT_LOW_WATER_MARK } = require('./socket.js');
 const { createLoggerWriter } = require('../logging.js');
 const { isWtSession, isWtStream, isWtDatagrams } = require('./port.js');
+const { normalizeCompression } = require('../compression/index.js');
 const { closeQuietly } = require('./channel.js');
 const { fromQuico } = require('./quico.js');
 // Requiring it registers ServerTransport.transport.wt — what attachSocket
@@ -99,6 +100,36 @@ const refusals = {
  * 1001 — what acceptSessions' stop() does). `idleTimeout` (off by default)
  * terminates a session that sends nothing for that long — see WtSocket.
  */
+// Every per-session option that can be checked before a session exists.
+// attachSession runs it before the handshake; acceptSessions once, at the
+// call — it used to accept a bad option and then fail every session it
+// attached, one by one (`Not connected` for each client, a TypeError in
+// onError), with nothing at the call site.
+const checkSessionOptions = (options, label) => {
+  const { acceptTimeout = DEFAULT_ACCEPT_TIMEOUT, maxBackpressure, closeTimeout, idleTimeout, compression } = options;
+  if (!Number.isInteger(acceptTimeout) || acceptTimeout <= 0) {
+    throw new TypeError(`${label}: acceptTimeout must be a positive integer (ms)`);
+  }
+  normalizeBackpressure(maxBackpressure, label);
+  for (const [name, value] of [
+    ['closeTimeout', closeTimeout],
+    ['idleTimeout', idleTimeout],
+  ]) {
+    if (value !== undefined && (!Number.isInteger(value) || value < 0)) {
+      throw new TypeError(`${label}: ${name} must be a non-negative integer (ms)`);
+    }
+  }
+  for (const [name, value] of [
+    ['maxHeldStreams', options.maxHeldStreams],
+    ['holdTimeout', options.holdTimeout],
+  ]) {
+    if (value !== undefined && (!Number.isInteger(value) || value <= 0)) {
+      throw new TypeError(`${label}: ${name} must be a positive integer`);
+    }
+  }
+  normalizeCompression(compression, label);
+};
+
 const attachSession = async (server, session, options = {}) => {
   const rpc = rpcOf(server);
   if (!isWtSession(session)) {
@@ -125,11 +156,8 @@ const attachSession = async (server, session, options = {}) => {
     signal = null,
     logger = null,
   } = options;
-  if (!Number.isInteger(acceptTimeout) || acceptTimeout <= 0) {
-    throw new TypeError('attachSession: acceptTimeout must be a positive integer (ms)');
-  }
   // Checked before the handshake, not after it by the socket.
-  normalizeBackpressure(maxBackpressure, 'attachSession');
+  checkSessionOptions(options, 'attachSession');
   // One child per session, the peer bound: what a refusal here, and the
   // socket's own lines after attach, write to. The server's writer unless
   // the caller (acceptSessions, an application) hands one down.
@@ -246,6 +274,7 @@ const acceptSessions = (server, sessions, options = {}) => {
   if (!Number.isInteger(maxPending) || maxPending <= 0) {
     throw new TypeError('acceptSessions: maxPending must be a positive integer');
   }
+  checkSessionOptions(rest, 'acceptSessions');
   // `onError` defaulted to null, so a session that failed to attach — a
   // verify that threw, a source that died — was dropped without a trace:
   // the one failure mode of a WebTransport server that nothing above could
