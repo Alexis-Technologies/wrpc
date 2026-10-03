@@ -234,7 +234,7 @@ class ChannelCodec {
     const text = typeof data === 'string';
     const bytes = text ? null : toBytes(data);
     const size = text ? data.length : bytes.length;
-    if (this.#overCap(size)) return false;
+    if (this.#overCap()) return false;
     const compression = this.#compression;
     const plain = compression === null || (options !== null && options.compress === false);
     if (text) {
@@ -265,7 +265,7 @@ class ChannelCodec {
     else if (!(shared instanceof SharedFrames)) return this.send(message.text, message);
     if (this.#faulted) return false;
     const { kind, bytes } = shared;
-    if (this.#overCap(bytes.length)) return false;
+    if (this.#overCap()) return false;
     const compression = this.#compression;
     if (compression === null || message.compress === false || bytes.length < compression.encode.threshold) {
       this.#enqueue(kind, bytes);
@@ -276,11 +276,15 @@ class ChannelCodec {
   // Past maxBackpressure: the channel is closed, and said — before the
   // message is queued, so one message larger than the cap still goes on an
   // empty buffer.
-  #overCap(size) {
+  // What is ALREADY queued is checked, as WebTransport and the WebSocket
+  // engine count it: the message's own size used to be added, so a single
+  // message past the cap closed a channel that held nothing.
+  #overCap() {
     const max = this.#maxBackpressure;
-    if (max === 0 || this.#channel.bufferedAmount + this.#pending + size <= max) return false;
+    const queued = this.#channel.bufferedAmount + this.#pending;
+    if (max === 0 || queued <= max) return false;
     this.#faulted = true;
-    const error = new Error(`Backpressure limit exceeded (${size} bytes over ${max}), closing the channel`);
+    const error = new Error(`Backpressure limit exceeded (${queued} bytes queued over ${max}), closing the channel`);
     error.code = 'backpressure';
     if (this.#onFault !== null) this.#onFault(error);
     this.#channel.close();

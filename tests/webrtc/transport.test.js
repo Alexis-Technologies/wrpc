@@ -670,10 +670,12 @@ test('webrtc transport: past maxBackpressure a write is refused and the channel 
   const closes = [];
   client.on('close', () => closes.push('client'));
   host.on('close', () => closes.push('host'));
-  // The channel's buffer, the codec's pending bytes and the message itself:
-  // 300 on an empty channel passes (past the high mark, so false), the next
-  // 300 would put it past 500 — refused, and the channel closed.
+  // What is already queued — the channel's buffer and the codec's pending
+  // bytes — as WebTransport and the WebSocket engine count it: a message
+  // goes whatever its size while the queue is under 500, and one sent onto
+  // a queue past it is refused, and the channel closed.
   assert.strictEqual(client.write(new Uint8Array(300)), false, 'past the high mark, sent');
+  assert.strictEqual(client.write(new Uint8Array(300)), false, 'under the cap when sent: sent');
   assert.strictEqual(closes.length, 0);
   assert.strictEqual(client.write(new Uint8Array(300)), false, 'refused');
   await timers.setImmediate();
@@ -696,10 +698,30 @@ test('webrtc transport: past maxBackpressure a write is refused and the channel 
   t.after(() => other.close());
   await other.open();
   assert.strictEqual(peer.write(new Uint8Array(300)), false);
+  assert.strictEqual(peer.write(new Uint8Array(300)), false);
   assert.strictEqual(peer.write(new Uint8Array(300)), false, 'refused');
   assert.strictEqual(hostErrors.length, 1);
   assert.strictEqual(hostErrors[0].code, 'backpressure');
   assert.strictEqual(peer.write('after'), false, 'closing: nothing more is sent');
+});
+
+test('webrtc transport: one message larger than maxBackpressure goes on an empty channel', async (t) => {
+  const { a, b } = await rawChannelPair(t);
+  const client = new ClientRtcTransport('webrtc:x', { channel: a, maxBackpressure: 1000 });
+  const host = new RtcPeerTransport(b, { peer: 'a' });
+  t.after(() => client.close());
+  const chunks = [];
+  host.on('chunk', (data) => chunks.push(data.length));
+  await client.open();
+  // It used to count the message itself: 2000 bytes closed a channel that
+  // held nothing, and the peer received nothing.
+  client.write(new Uint8Array(2000));
+  await within(
+    waitFor(() => chunks.length === 1, 'delivered'),
+    'delivered',
+  );
+  assert.deepStrictEqual(chunks, [2000]);
+  assert.strictEqual(client.active, true);
 });
 
 test('webrtc transport: over a link the backpressure fault closes the channel, and the link lives to redial', async (t) => {
@@ -709,6 +731,7 @@ test('webrtc transport: over a link the backpressure fault closes the channel, a
   await client.open();
   const clientClosed = onceEvent(client, 'close');
   const hostClosed = onceEvent(host, 'close');
+  assert.strictEqual(client.write(new Uint8Array(300)), false);
   assert.strictEqual(client.write(new Uint8Array(300)), false);
   assert.strictEqual(client.write(new Uint8Array(300)), false, 'refused: the channel is closed');
   await within(Promise.all([clientClosed, hostClosed]), 'both halves down');

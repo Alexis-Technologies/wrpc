@@ -218,7 +218,10 @@ test('rtc fan-out: a slot another engine filled is left alone; a link over its c
   assert.ok(made instanceof SharedFrames);
   links[2].out.writeShared(own);
   assert.strictEqual(own.frames, made);
-  // Past maxBackpressure: that channel is closed, as a direct send would do.
+  // Past maxBackpressure: that channel is closed, as a direct send would do —
+  // the second emit finds the first still queued past the cap (one message
+  // larger than the cap goes on an empty buffer).
+  host.to('room').emit('chat/state', rows(60));
   host.to('room').emit('chat/state', rows(60));
   await within(
     waitFor(() => links[1].channel.readyState !== 'open', 'the capped link closed'),

@@ -1459,6 +1459,11 @@ reference as one opaque string. What is left to do:
   `ServerTransport#setRevision`, which emits `'revision'`; an HTTP request's
   revision is settled before its client exists. `rpc.revision` and
   `context.client.revision` are in the server and rooms guides.
+- **A WebRTC message larger than `maxBackpressure` goes on an empty
+  channel.** The cap counted the message itself on top of what was queued,
+  so one message past it closed a channel that held nothing — the comment
+  over the check promised the opposite, and WebTransport and the WebSocket
+  engine let it through. Only what is already queued counts now.
 - **A WebTransport session cut off for not reading is a warn line.** Past
   `maxBackpressure` the session was terminated with only `socket.error` and
   `wt.close` at debug, where the WebSocket engine says `ws.backpressure` at
