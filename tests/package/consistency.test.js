@@ -241,8 +241,9 @@ test('every public member of a runtime class is declared on its d.ts class', () 
     const visit = (node) => {
       if (ts.isClassDeclaration(node) && node.name) {
         const members = declared.get(node.name.text) ?? new Set();
-        for (const member of node.members)
+        for (const member of node.members) {
           if (member.name && ts.isIdentifier(member.name)) members.add(member.name.text);
+        }
         declared.set(node.name.text, members);
       }
       ts.forEachChild(node, visit);
@@ -252,13 +253,14 @@ test('every public member of a runtime class is declared on its d.ts class', () 
   const wrpc = require(path.join(ROOT, 'index.js'));
   const { Client } = require(path.join(ROOT, 'src/rpc/client.js'));
   const { Emitter } = require(path.join(ROOT, 'src/utils.js'));
-  const T = wrpc.ServerTransport;
+  const { ServerTransport } = wrpc;
+  const { http: HttpTransport, ws: WsTransport, event: EventTransport } = ServerTransport.transport;
   const port = () => Object.assign(new EventEmitter(), { postMessage() {}, close() {} });
   const cases = [
-    ['ServerTransport', T, () => new T('x')],
-    ['ServerHttpTransport', T.transport.http, () => new T.transport.http({ headers: {}, respond() {} })],
-    ['ServerWsTransport', T.transport.ws, () => new T.transport.ws(Object.assign(new EventEmitter(), { send() {} }))],
-    ['ServerEventTransport', T.transport.event, () => new T.transport.event(port())],
+    ['ServerTransport', ServerTransport, () => new ServerTransport('x')],
+    ['ServerHttpTransport', HttpTransport, () => new HttpTransport({ headers: {}, respond() {} })],
+    ['ServerWsTransport', WsTransport, () => new WsTransport(Object.assign(new EventEmitter(), { send() {} }))],
+    ['ServerEventTransport', EventTransport, () => new EventTransport(port())],
     ['Client', Client, null],
     ['RpcServer', wrpc.RpcServer, null],
     ['WrpcClient', wrpc.WrpcClient, null],
@@ -272,8 +274,9 @@ test('every public member of a runtime class is declared on its d.ts class', () 
     if (make) for (const field of Object.keys(make())) runtime.add(field);
     const types = new Set(declared.get(name));
     // The transports' d.ts classes extend ServerTransport's.
-    if (name !== 'ServerTransport' && name.startsWith('Server'))
+    if (name !== 'ServerTransport' && name.startsWith('Server')) {
       for (const member of declared.get('ServerTransport')) types.add(member);
+    }
     const internal = INTERNAL_MEMBERS[name] ?? [];
     for (const member of runtime) {
       if (member.startsWith('_') || internal.includes(member)) continue;
