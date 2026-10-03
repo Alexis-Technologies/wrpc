@@ -14,6 +14,7 @@ const { RpcServer } = require('../../src/rpc/core.js');
 const { defineRouter, procedure } = require('../../src/rpc/router.js');
 const { MemoryBackplane } = require('../../src/scaling/index.js');
 const { recorder } = require('../helpers/recorder.js');
+const { createMetrics, point } = require('../helpers/metrics.js');
 
 // Node 22 aborts a still-pending test the moment the event loop goes idle
 // ('Promise resolution is still pending but the event loop has already
@@ -786,6 +787,38 @@ test('cluster replay: an envelope outside the clock window is refused; maxSkew s
     log.all('cluster.replay').map(({ from, reason }) => `${from} ${reason}`),
     ['slow stale', 'odd seq', 'odder seq'],
   );
+});
+
+test("cluster replay: what replay: 'accept' lets through is counted and said — the way to know the option can go", async (t) => {
+  const backplane = new MemoryBackplane();
+  const log = recorder();
+  const metrics = createMetrics();
+  const rolling = boot(t, backplane, {
+    instanceId: 'c',
+    logger: log.writer,
+    telemetry: { meter: metrics.meter },
+    cluster: { secret: 's3', replay: 'accept' },
+  });
+  await settle(20);
+  // A 1.x node's envelopes, accepted: before, only cluster.join said anything.
+  for (let i = 0; i < 5; i++) {
+    backplane.publish(
+      'cluster',
+      signed('s3', { v: 1, from: 'old', epoch: 'e1', t: 'hello', rooms: { lobby: i }, clients: i }),
+    );
+  }
+  await settle(20);
+  assert.deepStrictEqual(
+    log.all('cluster.unsequenced').map((entry) => entry.level),
+    ['info', 'debug', 'debug', 'debug', 'debug'],
+  );
+  const counted = point(
+    await metrics.collect(),
+    'wrpc.cluster.verifications',
+    (attributes) => attributes['wrpc.cluster.outcome'] === 'unsequenced',
+  );
+  assert.strictEqual(counted?.value, 5);
+  assert.strictEqual(rolling.cluster.count('lobby'), 4, 'and they were applied');
 });
 
 test("cluster replay: an envelope with no counter is a 1.x node's — refused, or accepted by replay: 'accept'", async (t) => {

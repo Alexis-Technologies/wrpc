@@ -535,7 +535,7 @@ class Cluster extends Emitter {
   // `replay: 'accept'` says a rolling upgrade is under way.
   #admit(envelope, from, channel) {
     const { seq, ch, at, epoch } = envelope;
-    if (seq === undefined) return this.#strict ? this.#replayed(from, channel, 'unsequenced') : true;
+    if (seq === undefined) return this.#strict ? this.#replayed(from, channel, 'unsequenced') : this.#unsequenced(from);
     if (!Number.isSafeInteger(seq) || seq < 0 || typeof at !== 'number') return this.#replayed(from, channel, 'seq');
     if (ch !== channel) return this.#replayed(from, channel, 'channel');
     if (Math.abs(Date.now() - at) > this.#maxSkew) return this.#replayed(from, channel, 'stale');
@@ -556,6 +556,17 @@ class Cluster extends Emitter {
     this.#otel.recordClusterVerification('replay');
     this.#log[this.#loud(`${from}\0${reason}`)]({ event: 'cluster.replay', from, channel, reason });
     return false;
+  }
+
+  // Under `replay: 'accept'` an envelope with no counter — a 1.x node's — is
+  // let through, and was let through without a trace: counted, and said
+  // once per sender a presence timeout at info (debug in between), so the
+  // option can be dropped once the last such sender is gone.
+  #unsequenced(from) {
+    this.#otel.recordClusterVerification('unsequenced');
+    const level = this.#loud(`unsequenced\0${from}`) === 'warn' ? 'info' : 'debug';
+    this.#log[level]({ event: 'cluster.unsequenced', from });
+    return true;
   }
 
   // The level of a refusal's line: 'warn' once per key (a sender and a

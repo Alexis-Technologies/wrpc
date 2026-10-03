@@ -1468,6 +1468,12 @@ reference as one opaque string. What is left to do:
   `maxBackpressure` the session was terminated with only `socket.error` and
   `wt.close` at debug, where the WebSocket engine says `ws.backpressure` at
   warn. It is `wt.backpressure` now (`buffered`, `max`), at warn.
+- **What `cluster: { replay: 'accept' }` lets through is counted and said.**
+  The option exists for a rolling upgrade from 1.x and should be dropped
+  once the last 1.x node is gone — but the envelopes it accepted were
+  neither counted nor logged, so nothing showed when that was. They are
+  `wrpc.cluster.verifications` with outcome `unsequenced`, and a
+  `cluster.unsequenced` line at info once per sender a `presenceTimeout`.
 - **A refused backplane or cluster envelope is a warn once, then debug.**
   `cluster.unsigned`, `cluster.badsig`, `cluster.encoded` and
   `cluster.sealed` were a warn per message — fifty unsigned envelopes,
