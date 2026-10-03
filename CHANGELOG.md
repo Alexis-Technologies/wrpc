@@ -1991,6 +1991,12 @@ reference as one opaque string. What is left to do:
   JSON. It is added (joined onto `Vary: Origin` and `Accept-Encoding`)
   wherever the server can answer a frame; a server under
   `attachments: false` or a packet codec does not vary on it.
+- **A `WtSocket` whose option is refused leaves no timer behind.** The idle
+  timer was armed before the channel was built, so an option the channel
+  refuses (an unknown compression codec) threw its `TypeError` — and
+  `idleTimeout` ms later the timer read the channel that never was: an
+  uncaught `TypeError` that ended the process. The timer is armed once the
+  channel exists.
 - **`upload()` of a blob uploader runs once.** A second call wrote into the
   stream the first had ended and waited for a `'drain'` that never came —
   a promise that never settled. It rejects at once now; create another

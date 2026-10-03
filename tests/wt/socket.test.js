@@ -290,6 +290,30 @@ test('wt socket: idleTimeout terminates a silent peer and every read re-arms it'
   assert.ok(await session.closed);
 });
 
+test('wt socket: an option the channel refuses throws at construction and leaves no timer behind', async (t) => {
+  const world = createFakeWt();
+  const client = new world.WebTransport('https://h/api');
+  await client.ready;
+  const session = await world.next();
+  await client.createBidirectionalStream();
+  const reader = session.incomingBidirectionalStreams.getReader();
+  const { value: control } = await reader.read();
+  reader.releaseLock();
+  t.after(() => session.close());
+  const uncaught = [];
+  const onUncaught = (error) => uncaught.push(error);
+  process.on('uncaughtException', onUncaught);
+  t.after(() => process.off('uncaughtException', onUncaught));
+  assert.throws(
+    () => new WtSocket(session, control, { idleTimeout: 30, compression: { codec: 'no-such-codec' } }),
+    TypeError,
+  );
+  // The idle timer used to be armed before the channel was built, and its
+  // expiry read the channel that never was.
+  await timers.setTimeout(90);
+  assert.deepStrictEqual(uncaught, []);
+});
+
 test('wt socket: a stream opened for an id the peer never names is cancelled after holdTimeout, and said so', async (t) => {
   await assert.rejects(pair(t, { maxHeldStreams: 0 }), TypeError);
   await assert.rejects(pair(t, { holdTimeout: -1 }), TypeError);

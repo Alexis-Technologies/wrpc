@@ -120,7 +120,6 @@ class WtSocket extends EventEmitter {
       throw new TypeError('WtSocket: options.closeTimeout must be a non-negative integer of milliseconds');
     }
     this.#idle = idleTimeout;
-    this.#touch();
     this.#channel = new WtChannel(
       session,
       stream,
@@ -172,6 +171,11 @@ class WtSocket extends EventEmitter {
       // session close follows with its code; 1000 when it does not.
       () => this.#channel.expectClose({ closeCode: 1000, reason: '' }),
     );
+    // Armed once the channel exists: an option the channel refused used to
+    // throw out of this constructor with the timer already set, and its
+    // expiry then read the channel that was never built — an uncaught
+    // TypeError, `idleTimeout` ms later.
+    this.#touch();
     // The session's own end — the peer closed, the transport failed — is a
     // close here; our own close() settles it too, by then a no-op.
     session.closed.then(
