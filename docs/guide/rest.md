@@ -2,7 +2,7 @@
 
 One procedure, two audiences. A procedure that declares an `http` mapping is
 addressable as a **real REST endpoint** — proper verb, proper path, proper
-status — while staying an ordinary wrpc procedure on every other transport:
+status — while staying an ordinary wRPC procedure on every other transport:
 
 ```js
 const { defineRouter, procedure } = require('@alexify/wrpc');
@@ -192,7 +192,7 @@ The rules:
 The shape is `fastify.route.schema`, verbatim: `params`, `querystring` (or
 its alias `query` — interchangeable), `body`, `headers`, `response` keyed by
 status code, plus any passthrough keys (`tags`, `summary`, `security`,
-`operationId`, …) that wrpc never interprets but forwards to hosts —
+`operationId`, …) that wRPC never interprets but forwards to hosts —
 which is what makes swagger documentation free under the
 [fastify adapter](./adapters/fastify#declarative-rest-routes).
 
@@ -212,7 +212,7 @@ exclusive** on one procedure. How schemas become validation is the
 
 ### Default error responses
 
-wrpc documents its own lifecycle errors in the effective `response` — what a
+wRPC documents its own lifecycle errors in the effective `response` — what a
 host and swagger see — derived from the procedure's options:
 
 | Status | When it is documented |

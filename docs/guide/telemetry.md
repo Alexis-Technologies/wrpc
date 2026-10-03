@@ -31,14 +31,14 @@ telemetry: { api }                  // the @opentelemetry/api module
 telemetry: { tracer, meter }        // instances you built
 ```
 
-With `{ api }`, wrpc derives its own tracer and meter so everything it emits
+With `{ api }`, wRPC derives its own tracer and meter so everything it emits
 carries the `@alexify/wrpc` instrumentation scope, and it can reach the
 propagator — which is what [trace context](#trace-context) needs.
 
 With instances, either alone is fine: tracer-only gives spans, meter-only
 gives metrics. **Propagation is off** in this mode unless you also pass
 `propagation` (and `context`), because serializing W3C trace context without a
-propagator is not something wrpc will hand-roll.
+propagator is not something wRPC will hand-roll.
 
 Without a tracer and without a meter, telemetry is off and every recording
 path is a no-op.
@@ -218,7 +218,7 @@ Changing the unit under the same metric name is the worst shape a breaking
 change can take: nothing errors, no alert fires, and every existing
 dashboard silently becomes wrong by a factor of 1000. The `@experimental`
 note on the telemetry option covers *additions* to the metric set, not
-redefining a series already in use. If wrpc moves to seconds it will be
+redefining a series already in use. If wRPC moves to seconds it will be
 under new instrument names, at a major version, with both published for one
 release.
 
@@ -234,7 +234,7 @@ rather than working around it.
 
 ## Trace context
 
-wrpc is a wire protocol, so the OpenTelemetry context manager alone cannot
+wRPC is a wire protocol, so the OpenTelemetry context manager alone cannot
 link the two sides — the caller is in another process. `call`, `subscribe` and
 `event` packets therefore carry two optional fields:
 
@@ -251,7 +251,7 @@ receiver to start a root span; a peer that does not understand them ignores
 them like any other unknown field. The context is per **packet**, so each call
 in a [batch](./client#batching) keeps its own parent.
 
-wrpc does not parse or serialize the W3C format — it hands the field to your
+wRPC does not parse or serialize the W3C format — it hands the field to your
 propagator. The two fields carry exactly the `traceparent` and `tracestate`
 keys, so the propagator has to be the W3C one: a B3 or Jaeger propagator's
 headers have other names and are not carried. On a broker message the same
@@ -279,7 +279,7 @@ Every trace then starts on your side.
 The client injects trace context the same way. Without a
 `ZoneContextManager` or `StackContextManager` from the OpenTelemetry web SDK,
 `context.active()` returns the root — so the injected traceparent names the
-span wrpc just created. Still correct, just not linked to the surrounding page
+span wRPC just created. Still correct, just not linked to the surrounding page
 interaction. Register a web context manager if you want that link.
 
 ## Failures

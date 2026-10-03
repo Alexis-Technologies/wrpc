@@ -59,7 +59,7 @@ every carrier, and it is the spelling to write in
 and `userID` both reduce to `user-id`; the last one written wins. Normalize
 at the source rather than relying on the difference.
 
-**An external caller must write kebab themselves.** wrpc can only normalize
+**An external caller must write kebab themselves.** wRPC can only normalize
 what its own client produced. By the time a hand-written
 `-H 'x-wrpc-meta-userId: 1'` reaches the server, HTTP has already lowercased
 it to `userid` and the word boundary is gone for good — no transform can
@@ -321,7 +321,7 @@ onRequest: async (context) => {
 
 A REST caller (curl, another service) passes the same thing over headers —
 for a per-request client the connection *is* the call, so they double as
-`context.callMeta`. Both spellings are accepted, the same two the wrpc
+`context.callMeta`. Both spellings are accepted, the same two the wRPC
 client chooses between with [`metaFormat`](#choosing-a-spelling-metaformat):
 
 ```bash

@@ -72,7 +72,7 @@ Sec-WebSocket-Protocol: wrpc.v2, wrpc.v1   (client offer, newest first)
 Sec-WebSocket-Protocol: wrpc.v2            (server selection)
 ```
 
-A wrpc client **offers** the revisions it speaks; a wrpc server with no
+A wRPC client **offers** the revisions it speaks; a wRPC server with no
 app-configured `protocols`/`handleProtocols` **selects** the newest one
 offered, wherever it sits in the list. Both sides therefore know, before the
 first packet, which revision the connection speaks — the selected name is on
@@ -127,14 +127,14 @@ server always, its bytes travel as JSON. In the other direction a server
 answers with a framed message only when the request's `Accept` names
 `application/octet-stream`: a 1.0 client, `curl` and a browser's own `fetch`
 name no such thing and read JSON. `Accept` rather than a request header of
-wrpc's own because it is CORS-safelisted — a new request header needs a
+wRPC's own because it is CORS-safelisted — a new request header needs a
 preflight that a 1.0 server, or an application's own `cors.headers` list,
 refuses. (A request MAY still send `wrpc-version`; it is accepted and
 ignored.) Every request/response pair is self-contained, so a fleet behind
 one address should agree: an instance that answers `2` promises that every
 instance reads a frame. One that does not — a 1.0 instance still in the
 pool, a rollback — refuses a frame before it reads a call out of it, with a
-wrpc error packet and no `wrpc-version: 2`; a client that sent a frame and
+wRPC error packet and no `wrpc-version: 2`; a client that sent a frame and
 is answered that way speaks revision 1 again and sends the same packets once
 more as JSON, so the call costs a round trip and is not lost. (An answer
 with no packet in it — a proxy's error page — changes nothing.)
@@ -259,7 +259,7 @@ select**. A server MUST NOT echo one: the response would reflect a credential,
 and the client did not ask for it. Because a client fails a handshake whose
 offers all went unanswered, a client MUST offer a selectable protocol (a
 revision — `wrpc.v2`, `wrpc.v1`) next to a carrier token, and MUST NOT emit
-carrier tokens when it offers nothing else. wrpc's negotiators remove the
+carrier tokens when it offers nothing else. wRPC's negotiators remove the
 tokens from the offer before an application's `protocols`/`handleProtocols`
 sees it.
 
@@ -267,7 +267,7 @@ sees it.
 the connect-URL query only and ignores them (`wrpc.bearer.` is 1.0's own).
 The revision is how a client finds out: a handshake that offered `wrpc.v2`,
 carried a token and was answered `wrpc.v1` may have reached a 1.0 server, so
-a wrpc client dials **once more** with the query carrier and keeps it for
+a wRPC client dials **once more** with the query carrier and keeps it for
 that connection's later reconnects. A client told which carrier to use
 (`carrier: 'protocol'` or `'query'`), or given its own `protocols`, is left
 with that choice.
@@ -281,7 +281,7 @@ A peer that declares nothing is perfectly normal, and a server that ignores
 the declarations is conformant. A server that consumes them MUST treat them
 as untrusted labels, whichever carrier brought them:
 
-- **Size-capped on the encoded input**, before any decoding. wrpc's default is
+- **Size-capped on the encoded input**, before any decoding. wRPC's default is
   2048 bytes: one budget for the two offers together (headers first), the
   query measured whole, the `x-wrpc-meta` header on its own. Keep the budget
   under the smallest request-header limit in the deployment — a WebSocket
@@ -293,7 +293,7 @@ as untrusted labels, whichever carrier brought them:
   the offer, else the query. An offered token that is refused still silences
   the query, so garbage cannot downgrade a connection to the other carrier.
 - **Never able to override an observed request header.** Declared names only
-  add, and wrpc drops the names a hostile page could otherwise forge next to
+  add, and wRPC drops the names a hostile page could otherwise forge next to
   a victim's cookie: `cookie`, `host`, `origin`, `forwarded`, `via`,
   `x-real-ip`, `x-client-ip`, `true-client-ip`, `cf-connecting-ip`,
   `fastly-client-ip`, `fly-client-ip`, `remote-user`, and everything under
@@ -377,7 +377,7 @@ are written for the caller — validation text, quota refusals — and travel
 verbatim. A 5xx message is a server internal: the peer receives the status
 line (`"Internal Server Error"`) and the exception text stays in the server
 log, correlated by the same packet `id`. A server-side error that WANTS its
-message on the wire opts in with `error.expose = true`; the errors wrpc
+message on the wire opts in with `error.expose = true`; the errors wRPC
 itself constructs (timeout, queue overflow, invalid output) are marked so.
 
 The error object MAY carry a third, optional field — `details` — with
@@ -555,9 +555,9 @@ one leaves the receiver to start a root span; a peer that does not understand
 one ignores it, like any other unknown field. The context is **per packet,
 not per frame**, so each call in a batch keeps its own parent.
 
-An implementation is not required to parse these — wrpc itself does not. It
+An implementation is not required to parse these — wRPC itself does not. It
 hands the field to whatever OpenTelemetry propagator the application
-configured, which is also why a wrpc server only reads `tp` when it was given
+configured, which is also why a wRPC server only reads `tp` when it was given
 the `@opentelemetry/api` module (or an explicit propagator) rather than a
 bare tracer.
 
@@ -935,14 +935,14 @@ missed instead of starting over — subscriptions and all. Comment frames
 
 Serverless-friendly by construction: no upgrade, no socket beyond the
 response body, nothing but HTTP in either direction. What it cannot carry is
-binary — SSE frames are text, so wrpc's binary streams are refused on this
+binary — SSE frames are text, so wRPC's binary streams are refused on this
 transport rather than silently corrupted, and a channel speaks revision 1 to
 every client: a packet's bytes travel as the JSON 1.0 made of them, both
 ways, exactly as between two 1.0 ends.
 
 ## WebRTC <Badge type="info" text="since 2.0" /> {#webrtc}
 
-Two peers speak wrpc to each other over one `RTCPeerConnection` carrying
+Two peers speak wRPC to each other over one `RTCPeerConnection` carrying
 **two negotiated data channels**, one per direction of the protocol's
 client → server relationship:
 
@@ -965,7 +965,7 @@ initiates and a dispatcher on the other, and nothing in a packet says which
 peer is "the server". Signaling (descriptions and ICE candidates) is
 application-level and reaches the peers through any channel the
 application chooses — `@alexify/wrpc/webrtc` ships one over an ordinary
-wrpc connection — and is not part of the wire either.
+wRPC connection — and is not part of the wire either.
 
 What signaling carries is nonetheless fixed, so that peers behind different
 signalers agree: `{ type: 'description', description, caps? }`,
@@ -982,7 +982,7 @@ one it does not know as `unknown` rather than refuse it — the set may grow.
 
 A data channel message has a size limit (16 KiB is the only size every
 implementation supports; `sctp.maxMessageSize` reports what a pair actually
-negotiated) and wrpc's batch frames and stream chunks are routinely larger.
+negotiated) and wRPC's batch frames and stream chunks are routinely larger.
 So on a data channel **every message is binary** (the channel's
 `binaryType` is `arraybuffer`), and a packet or chunk is sent as one or
 more fragments, each under a one-byte header:
@@ -1043,7 +1043,7 @@ reconnected socket.
 
 Signaling is not part of the wire, but the token a signaling server may
 attach to it is a format two parties written independently must agree on
-— a peer verifying, and whoever issues (the wrpc unit or any service that
+— a peer verifying, and whoever issues (the wRPC unit or any service that
 can sign a JWS). An assertion is a **JWS in compact serialization**
 (RFC 7515): `base64url(header).base64url(payload).base64url(signature)`.
 
@@ -1082,7 +1082,7 @@ payload  { "sub": string,      the peer id, as the signaling layer names it
 
 ## WebTransport <Badge type="info" text="since 2.0" /> {#webtransport}
 
-A client speaks wrpc to a server over a WebTransport session (HTTP/3) the
+A client speaks wRPC to a server over a WebTransport session (HTTP/3) the
 way it does over a WebSocket: the packets are the same and travel in the
 same order. **This section is experimental**: it describes revision 1 of
 the carrier, may change in a minor release, and sits outside this page's
@@ -1170,7 +1170,7 @@ When **both** ends announced `streams`, a sender MAY carry a binary
 stream's chunks on a **unidirectional WebTransport stream of their own**
 instead of the control stream:
 
-- The `stream` packet that opens the wrpc stream (`{ type: 'stream', id,
+- The `stream` packet that opens the wRPC stream (`{ type: 'stream', id,
   name, size }`) stays on the control stream — its order against the call
   that names the id is what the control stream guarantees.
 - The unidirectional stream opens with the chunk header — one byte of id
@@ -1218,8 +1218,8 @@ bytes 1…        the packet
 
 ## Broker binding <Badge type="info" text="since 2.0" /> {#broker-binding}
 
-A client speaks wrpc to a server **through a message broker** — RabbitMQ,
-NATS, Redis — instead of over a socket: the packets are unmodified wrpc
+A client speaks wRPC to a server **through a message broker** — RabbitMQ,
+NATS, Redis — instead of over a socket: the packets are unmodified wRPC
 packets, carried as broker messages with a few headers around them. **This
 section is experimental**: it describes revision 1 of the carrier, may change
 in a minor release, and sits outside this page's interoperability promise
@@ -1338,7 +1338,7 @@ allowance too.
 
 Every transport carries plain bytes unless the application turns compression
 on; nothing negotiates it by default. Where it exists it is the carrier's own
-mechanism, never a field of a wrpc packet:
+mechanism, never a field of a wRPC packet:
 
 | Transport | Mechanism | Negotiated by |
 | --- | --- | --- |

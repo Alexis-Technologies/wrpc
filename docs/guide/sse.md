@@ -2,7 +2,7 @@
 
 Some places will not give you a WebSocket: a serverless platform with no
 upgrade path, a corporate proxy that strips one, an edge runtime that only
-speaks HTTP. `@alexify/wrpc/sse` is a full wrpc transport built out of nothing
+speaks HTTP. `@alexify/wrpc/sse` is a full wRPC transport built out of nothing
 but HTTP requests — calls, events, subscriptions and cancellation all work, and
 the packets are identical.
 
@@ -106,7 +106,7 @@ is refused `429` while the node idles at 1% of `maxChannels`. Either inject
 `sse: { clientAddress: (call) => firstForwardedFor(call.headers) }` (trust
 your proxy's header only when the proxy is yours), set
 `maxChannelsPerAddress: 0`, or on the express adapter enable
-`app.set('trust proxy', ...)` — its `req.ip` is what wrpc receives there.
+`app.set('trust proxy', ...)` — its `req.ip` is what wRPC receives there.
 :::
 
 
@@ -144,7 +144,7 @@ give back (`bench/algorithms.js`). Reach for another coding only for a stream
 of large events.
 
 The client changes nothing: `fetch` inflates the stream incrementally, in
-browsers and in Node, and the wrpc SSE client is that `fetch`. The decision
+browsers and in Node, and the wRPC SSE client is that `fetch`. The decision
 is per response — a re-attach that stops accepting the coding gets a plain stream
 on the same channel, replay included. What it costs is one zlib deflate
 state per live stream (~256 KiB at the defaults; `memLevel` lowers it) and a
@@ -183,7 +183,7 @@ oblivion.
 - **Bytes as bytes.** Neither a binary stream nor a packet with
   [binary attachments](./streams#attachments). An SSE channel speaks
   [revision 1](../reference/protocol#versioning) to every client — the
-  stream's GET says nothing about which wrpc is asking, and a 1.0 client
+  stream's GET says nothing about which wRPC is asking, and a 1.0 client
   reads it — so `client.revision` is `1` on both ends, and a `Buffer` or a
   typed array in a call's arguments, a result or an event travels as the
   JSON 1.0 made of it: `{ type: 'Buffer', data: [...] }`, `{ "0": 137, … }`.
@@ -191,7 +191,7 @@ oblivion.
   shape; one that must receive `Uint8Array`s needs a transport that carries
   bytes — a WebSocket, WebTransport or a WebRTC data channel.
 
-**Binary streams.** SSE frames are text, so wrpc's binary streams are *refused*
+**Binary streams.** SSE frames are text, so wRPC's binary streams are *refused*
 on this transport rather than silently corrupted — `client.binary` is `false`
 server-side, and `createStream`/`getStream` throw. Use a WebSocket,
 WebTransport or a WebRTC data channel for those.

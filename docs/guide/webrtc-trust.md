@@ -159,7 +159,7 @@ interface AssertingSignaler extends Signaler {
 }
 ```
 
-Whatever issues the tokens — the wrpc unit, or any service that can sign a
+Whatever issues the tokens — the wRPC unit, or any service that can sign a
 JWS — must produce the [format](../reference/protocol#webrtc-assertions)
 the verifier expects; `createAssertionIssuer` and `createAssertionVerifier`
 are exported for both sides, and work in Node and in a page alike.

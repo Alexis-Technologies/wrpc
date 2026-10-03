@@ -1,6 +1,6 @@
 # Encryption
 
-wrpc encrypts nothing by default, and the first thing to turn on is not on
+wRPC encrypts nothing by default, and the first thing to turn on is not on
 this page: **TLS**. `protocol: 'https'` with a `key` and `cert`, or a proxy
 that terminates it — `wss://` and `https://` are what protect a connection
 from the network, and nothing here replaces them. A page served over HTTPS
@@ -42,7 +42,7 @@ const encryption = require('@alexify/wrpc/encryption');
 
 Only what the platform already has — `node:crypto` on a server, WebCrypto in
 a page — under their standard names, checked against the published test
-vectors. wrpc adds no cryptography of its own and depends on no package.
+vectors. wRPC adds no cryptography of its own and depends on no package.
 
 | Piece | Standard | Notes |
 | --- | --- | --- |
@@ -52,14 +52,14 @@ vectors. wrpc adds no cryptography of its own and depends on no package.
 | Session handshake | **Noise** — `Noise_{NN,NK,XX,NNpsk0}_25519_{AESGCM,ChaChaPoly}_SHA256` | the framework behind WireGuard and WhatsApp; verified against the cacophony vectors. |
 | Per-request sealing | **HPKE** (RFC 9180), base / psk / auth modes | the construction of Oblivious HTTP (RFC 9458); verified against the RFC's vectors. |
 
-What wrpc does **not** build in, and takes by injection instead:
+What wRPC does **not** build in, and takes by injection instead:
 
 | You want | Inject |
 | --- | --- |
 | XChaCha20-Poly1305 / NaCl / libsodium, AES-GCM-SIV, AEGIS | a [`Cipher`](#contracts), on the keyring layers and in HPKE (a Noise session names a built-in) |
 | Post-quantum key exchange — ML-KEM, X-Wing, a hybrid | a [`Kem`](#contracts) for HPKE. Node 24.7+ has ML-KEM natively; no browser's WebCrypto does yet, which is why it is not a built-in. |
 | Keys that live in a KMS or Vault | a [key provider](#keys) |
-| Double Ratchet, MLS, JWE | nothing — they produce bytes, and wrpc [carries bytes](#end-to-end) |
+| Double Ratchet, MLS, JWE | nothing — they produce bytes, and wRPC [carries bytes](#end-to-end) |
 
 Deliberately absent: AES-CBC with a separate MAC, AES-CTR without one, RSA
 for sessions.
@@ -359,7 +359,7 @@ Measured by `bench/encryption.js` on one core:
 | A Noise handshake, both ends | ~0.4 ms under NK (the default, one more DH each side), ~0.3 ms under NN |
 | A 64 KB stream chunk sealed | ~27 µs — the inner frame is a copy of the bytes, then the seal |
 | A sealed HTTP request, both ends | ~0.2 ms |
-| **A broadcast to N sealed clients** | **N seals.** Plain wrpc builds one frame for the whole fan-out; under session encryption every recipient has its own key and its own nonce. What the recipients of one emit do share is the plaintext they seal, built once. 10 000 recipients × 1 KB ≈ 32 ms per emit, ≈ 99 ms at 16 KB — the AEAD alone is 26 ms at 1 KB; the counter nonce and the header are the rest (`bench/encryption.js`, the sealed fan-out rows; the shared frame of a plain fan-out is 6 µs). |
+| **A broadcast to N sealed clients** | **N seals.** Plain wRPC builds one frame for the whole fan-out; under session encryption every recipient has its own key and its own nonce. What the recipients of one emit do share is the plaintext they seal, built once. 10 000 recipients × 1 KB ≈ 32 ms per emit, ≈ 99 ms at 16 KB — the AEAD alone is 26 ms at 1 KB; the counter nonce and the header are the rest (`bench/encryption.js`, the sealed fan-out rows; the shared frame of a plain fan-out is 6 µs). |
 
 On a WebSocket it also ends `permessage-deflate` for that connection —
 ciphertext does not compress — so server→client compression is gone;
@@ -394,7 +394,7 @@ const opener = createOpener({ keyPair: bob.keyPair, senderPublicKey: me.publicKe
 client.api.chat.on('message', async ({ sealed }) => render(await opener.open(sealed)));
 ```
 
-`sealed` is a `Uint8Array`, and wrpc carries bytes as they are — through the
+`sealed` is a `Uint8Array`, and wRPC carries bytes as they are — through the
 call, the room broadcast, and across the backplane to members on other
 instances; a 1:1 message relayed with `server.sendTo(id, …)` crosses to the
 instance that id lives on the same way. With `senderKey` the recipient learns *who* sealed it; a message
@@ -405,7 +405,7 @@ Not a messaging protocol: no forward secrecy for the recipient (a stolen seed
 opens everything ever sealed to it — and, with `senderKey`, lets its holder
 **forge** messages to that recipient from anyone, since the recipient's key
 is on both sides of the authentication), no group key, no replay memory. For
-those, run Double Ratchet or MLS and hand wrpc their bytes. **Whoever hands
+those, run Double Ratchet or MLS and hand wRPC their bytes. **Whoever hands
 out the public keys is in the middle**: a server that answers "Bob's key"
 can answer with its own and read everything — pin keys, show a fingerprint
 users compare, or exchange them out of band; TOFU is the least you do. And
@@ -438,7 +438,7 @@ rooms: { encryption: { keys, cipher } }   // the keyring layers: must answer syn
 createHpke({ kem, kdf, cipher });         // your own HPKE — may answer promises
 ```
 
-From `key(raw)` on the bytes are the cipher's: wrpc neither reuses nor
+From `key(raw)` on the bytes are the cipher's: wRPC neither reuses nor
 wipes them, so keeping the reference, as above, is fine. A **Noise
 session** is the one place an injected cipher has nowhere to go for now:
 the server's `encryption.ciphers` is a list of the two built-in names, so a

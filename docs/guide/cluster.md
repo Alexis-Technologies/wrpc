@@ -47,7 +47,7 @@ sequenceDiagram
 Both are held for the life of the process: `cluster`, which every instance
 subscribes to (presence, wide requests, commands), and `inst:<instanceId>`,
 one instance's own inbox for answers and addressed commands. The envelopes
-are an implementation detail of wrpc's cluster layer, not part of the frozen
+are an implementation detail of wRPC's cluster layer, not part of the frozen
 [wire protocol](../reference/protocol#cluster-channels) — they never reach a
 client connection.
 
@@ -187,7 +187,7 @@ A descriptor is deliberately small and serializable:
 | `id` | The client id, instance-prefixed (`<instanceId>.<generateId()>`). |
 | `instance` | Which node holds the connection. |
 | `rooms` | Its room memberships on that node. |
-| `data` | `client.data` — the application's own bag; wrpc never reads it. |
+| `data` | `client.data` — the application's own bag; wRPC never reads it. |
 | `transport` | `'ws'`, `'sse'`, `'event'`, `'wt'`, `'webrtc'` or `'broker'` — the kinds that hold a connection. |
 | `session` | Whether a [session](./sessions) is attached — never the session itself. |
 
@@ -260,7 +260,7 @@ server.cluster.respond('stats', async () => ({ load: cpu() }));
 const { answers, errors, incomplete } = await server.cluster.ask('stats');
 ```
 
-As everywhere in wrpc, `emit` is the local `Emitter` emit and the wire send is
+As everywhere in wRPC, `emit` is the local `Emitter` emit and the wire send is
 `sendEvent`. One responder per name — two answers to one question are
 ambiguous, so a duplicate `respond()` throws. A node **without** a responder
 contributes an entry in `errors`, not silence.

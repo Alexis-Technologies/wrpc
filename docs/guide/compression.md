@@ -1,6 +1,6 @@
 # Compression
 
-Nothing in wrpc compresses anything by default — on any transport, in any
+Nothing in wRPC compresses anything by default — on any transport, in any
 direction. That is a choice, not a gap: a deflate per message is CPU spent
 for every peer to save bytes only some of them need, and the server's first
 commitment is the cost per frame. This page is the map of where the knobs
@@ -136,7 +136,7 @@ What follows from it:
   WebSocket extension a browser implements; there is no algorithm to choose
   there, only `level`, `contextTakeover` and `async`.
 
-LZ4, Snappy and the rest are not in `node:zlib`, and wrpc installs nothing —
+LZ4, Snappy and the rest are not in `node:zlib`, and wRPC installs nothing —
 but [the seam](#codec) takes them: wrap the package you chose in `id`,
 `encode`, `decode` and put it first in the list.
 
@@ -171,7 +171,7 @@ attachBrokerRpc(server, broker, { compression: { codec: [lz4Codec, 'deflate-raw'
 
 ## On the loop, or on the threadpool {#async}
 
-Every Node codec in wrpc deflates **synchronously** by default, and that is
+Every Node codec in wRPC deflates **synchronously** by default, and that is
 a measured choice, not an oversight. `node:zlib` has two APIs: the
 convenience calls that block the event loop for the length of the deflate,
 and the callback ones that hand the work to libuv's threadpool. The hand-off

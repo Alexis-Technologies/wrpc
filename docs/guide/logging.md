@@ -11,12 +11,12 @@ const server = new Server({ router, logger: pino(), port: 8000, protocol: 'http'
 ```
 
 That is the whole configuration. There are no levels to set, no destination to
-choose and no format to pick — those are your logger's job, and wrpc does not
+choose and no format to pick — those are your logger's job, and wRPC does not
 duplicate them.
 
 ::: info The logger is injected, never depended on
 `@alexify/wrpc` has no dependencies and never will. Your logger is duck-typed:
-wrpc looks at which methods it has, not at what it is. `pino` is a
+wRPC looks at which methods it has, not at what it is. `pino` is a
 devDependency here purely so the tests have something real to write into.
 :::
 
@@ -61,7 +61,7 @@ present, holds the Error itself.
 
 ### Bindings
 
-wrpc builds child loggers so you do not have to correlate by hand:
+wRPC builds child loggers so you do not have to correlate by hand:
 
 | Binding | Scope |
 | ------- | ----- |
@@ -91,7 +91,7 @@ greppable end to end without threading an id through your own code.
 
 ## Event catalogue
 
-`event` is the field to build alerts on, so here is what wrpc emits, by
+`event` is the field to build alerts on, so here is what wRPC emits, by
 component: every `event` name in the source is in one of the tables below —
 a test keeps it so, and a new line without a row fails the build. Handlers
 add their own through `context.log`; those are yours to catalogue.
@@ -385,7 +385,7 @@ the per-connection and per-call bindings cost nothing when logging is off.
 
 The [fastify plugin](./adapters/fastify) uses `fastify.log` unless you pass
 `logger` explicitly. Since that is a pino, it goes in as a structured logger
-and your wrpc entries land in the same stream as fastify's own, with the same
+and your wRPC entries land in the same stream as fastify's own, with the same
 request ids.
 
 ## Failures

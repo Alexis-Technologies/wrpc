@@ -175,7 +175,7 @@ new Server({ router, sessions: { store } });
 ```
 
 Which is how Redis, a database table, or a signed-cookie store plug in
-**without wrpc depending on any of them**. The default is
+**without wRPC depending on any of them**. The default is
 `MemorySessionStore`, bounded on both axes:
 
 ```js

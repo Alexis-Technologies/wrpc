@@ -1,6 +1,6 @@
 # Authentication
 
-wrpc's auth story is three seams and one subpath that pre-wires them. This
+wRPC's auth story is three seams and one subpath that pre-wires them. This
 page is the map; the deep material lives where each seam is defined —
 [Sessions](./sessions) for the server half, the
 [client guide](./client#authenticating) for the hooks.

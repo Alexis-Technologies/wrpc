@@ -3,7 +3,7 @@
 WebTransport is the browser's API over HTTP/3 and QUIC: independent streams
 with no head-of-line blocking between them, unreliable datagrams, and a
 handshake with no TCP or TLS round trips to spare. `transport: 'wt'` runs
-the ordinary wrpc client over it — the same packets, calls, events,
+the ordinary wRPC client over it — the same packets, calls, events,
 subscriptions with resume, binary streams with backpressure, heartbeat and
 reconnect a WebSocket carries — with WebSocket as the fallback where
 WebTransport is not available. On the server, `@alexify/wrpc/wt` attaches
@@ -47,7 +47,7 @@ the `WebTransportOptions` of the constructor, plus `WebTransport` itself for
 a runtime where the global one is not the implementation to use (a Node
 client over `@fails-components/webtransport`'s, the fake in tests).
 
-On the server, the host implementation is yours to run; wrpc attaches what
+On the server, the host implementation is yours to run; wRPC attaches what
 it accepts:
 
 ```js
@@ -72,7 +72,7 @@ client that arrived over either is a `Client` like any other, and
 ## How it works
 
 A WebTransport session is a bundle of QUIC streams and datagrams, not one
-byte pipe like a WebSocket. wrpc uses **one** of them for everything: the
+byte pipe like a WebSocket. wRPC uses **one** of them for everything: the
 client opens a bidirectional stream — the _control stream_ — and every
 packet and every stream chunk travels on it, in order, under a five-byte
 header (length and kind; see the [wire format](../reference/wire-format#webtransport-stream-frames)).
@@ -114,7 +114,7 @@ when `close()` is called is not waited for.
 
 On a WebSocket, a 64 MiB upload's chunks queue in front of every callback
 and event sent after them: one ordered byte pipe. A WebTransport session
-has as many independent, ordered streams as it wants, and wrpc uses them
+has as many independent, ordered streams as it wants, and wRPC uses them
 for what they are good at: once both ends have announced the capability
 (each end's first message on the control stream says so), every binary
 stream — a `createStream()` on either side — gets a unidirectional
@@ -216,7 +216,7 @@ from whatever the application runs:
 
 | Host                                                                                                               | Kind                                                                                                                         | Adapter                                                                                                                                                                                                                                                                                                          |
 | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| [`@fails-components/webtransport`](https://github.com/fails-components/webtransport) (+ `-transport-http3-quiche`) | native, Google's libquiche; prebuilt binaries (its install script must be allowed — `pnpm.onlyBuiltDependencies` under pnpm) | sessions are W3C-shaped and attach as-is; `fromFails(session)` reads the `CONNECT` request off `session.header`; the server needs `setRequestCallback(failsRequestCallback)` — its `sessionStream(path)` matches the request path literally, query included, and a wrpc client declares its headers in the query |
+| [`@fails-components/webtransport`](https://github.com/fails-components/webtransport) (+ `-transport-http3-quiche`) | native, Google's libquiche; prebuilt binaries (its install script must be allowed — `pnpm.onlyBuiltDependencies` under pnpm) | sessions are W3C-shaped and attach as-is; `fromFails(session)` reads the `CONNECT` request off `session.header`; the server needs `setRequestCallback(failsRequestCallback)` — its `sessionStream(path)` matches the request path literally, query included, and a wRPC client declares its headers in the query |
 | [`quico`](https://github.com/colocohen/quico)                                                                      | pure JavaScript HTTP/3 stack, beta                                                                                           | `fromQuico(req, res)` in the request handler; quico reports no session end, so pass `idleTimeout` (the client pings on its heartbeat) — and give a pure-JS stack a heartbeat timeout of a second, not a hundred milliseconds                                                                                     |
 
 ```js
@@ -230,7 +230,7 @@ quico
   .listen(4433);
 ```
 
-Both are devDependencies of wrpc, used only by its guarded integration
+Both are devDependencies of wRPC, used only by its guarded integration
 tests — never runtime dependencies. Anything else with the W3C session shape
 (`incomingBidirectionalStreams`, `createBidirectionalStream`, `closed`,
 `close`, optionally `datagrams`) works too: `isWtSession` is the check.
@@ -312,8 +312,8 @@ connect(url, {
 
 Nothing compresses a QUIC stream's payload for you — HTTP/3 compresses
 headers (QPACK), never bodies — so a WebTransport session carries exactly
-the bytes wrpc hands it. Per-message compression is the answer, **off by
-default** like every compression knob in wrpc, and negotiated: each end
+the bytes wRPC hands it. Per-message compression is the answer, **off by
+default** like every compression knob in wRPC, and negotiated: each end
 names its codecs in the [capabilities message](../reference/protocol#webtransport-streams)
 and compresses — with the first of its own [list](./compression#list) the
 other end holds — only once they share one, so a client
@@ -368,7 +368,7 @@ the commands):
   call waits in one TCP stream behind the upload's chunks. Plain calls are
   1.2–1.9× cheaper over the WebSocket, and it moves a single large upload
   about four times faster.
-- **In Node**, the stack sets the ceiling: wrpc's calls run at 87–91% of a
+- **In Node**, the stack sets the ceiling: wRPC's calls run at 87–91% of a
   raw echo over the same libquiche session, and its streams at 84% of the
   bare QUIC stream. That stack is a binding, and on loopback it moves a
   fraction of what Node's WebSocket does — use WebTransport in Node for what

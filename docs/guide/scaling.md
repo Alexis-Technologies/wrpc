@@ -301,7 +301,7 @@ nothing.
 | Subscriptions with `createEventLog` | No, but visible | The log is per-process; a resume against another instance presents a foreign epoch, `since()` answers `null`, the handler sends a snapshot. |
 
 Share: the session store, the backplane. Keep local: event logs, SSE
-channels. Never pin on anything wrpc emits — the client id is a routing
+channels. Never pin on anything wRPC emits — the client id is a routing
 address for the cluster, not a cookie for a balancer.
 
 ## The cluster layer

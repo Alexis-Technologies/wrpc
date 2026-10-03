@@ -116,7 +116,7 @@ counter-based generator still starts where you expect.
 | [SSE](./sse) channel id | `generateId` on the server | Server-minted and never read from the request. An *identifier*, not a credential: the channel's secret is drawn by the server separately, so a counter is fine here |
 | Packet, subscription and stream ids on the client | `generateId` on the [client](./client) | Also the [broker transport's](./brokers/rpc) session and correlation ids |
 | Peer ids and the signaling `instance` | `generateId` on [`wrpcSignaler`](./webrtc) / `PeerHost` | |
-| Consumer names, inboxes, message ids, group ids | `generateId` on each [broker adapter](./brokers) | Used verbatim — wrpc never truncates it |
+| Consumer names, inboxes, message ids, group ids | `generateId` on each [broker adapter](./brokers) | Used verbatim — wRPC never truncates it |
 | **Session token** | **`sessions.generateToken`** | A credential, not a correlation id. Deliberately a separate option so that widening one never widens the other |
 | Subscription event ids | *not pluggable* | Monotonic by design: resume depends on their order |
 | Rooms/event-log epochs | `rooms.epoch`, or random per boot | Short by design — an epoch prefixes every event id |
@@ -138,7 +138,7 @@ stream ids are re-checked every time one is minted.
 - **TLS.** Either run `protocol: 'https'` with `key`/`cert`, or terminate TLS
   at the proxy and run `'http'` behind it. Both are normal. If the box that terminates
   it is not yours, see [session encryption](./encryption#session).
-- **Idle timeouts.** wrpc's own app-level
+- **Idle timeouts.** wRPC's own app-level
   [heartbeat](./client#heartbeat) is 30 s by default; keep the proxy's idle
   timeout above it or the proxy will close connections the client believes are
   healthy.

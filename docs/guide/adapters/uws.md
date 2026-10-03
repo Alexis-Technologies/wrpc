@@ -74,7 +74,7 @@ engine.capabilities;
 ```
 
 - **`ping: false`** — uws owns peer liveness itself, through `idleTimeout` and
-  `sendPingsAutomatically`, so wrpc runs no protocol-ping loop over it. The
+  `sendPingsAutomatically`, so wRPC runs no protocol-ping loop over it. The
   client's [application-level heartbeat](../client#heartbeat) is unaffected and
   still works.
 - **`deflate`** follows `compression`, which is off by default. Pass a uws
@@ -96,7 +96,7 @@ See [the engine reference](../../reference/engine) for the full contract.
 ## Backpressure
 
 uws' `send()` answers with one of three statuses, and the adapter maps them
-onto the boolean contract every wrpc transport speaks:
+onto the boolean contract every wRPC transport speaks:
 
 | uws status | Meaning | `WrpcSocket.send()` |
 | --- | --- | --- |

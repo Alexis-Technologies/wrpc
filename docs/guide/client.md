@@ -85,9 +85,9 @@ client→server frames from Node are sent as-is unless the client's own
 The `http` and `sse` transports call `fetch` for every request; `options.fetch`
 lets you hand in your own implementation instead of the runtime's global one —
 re-resolved on every open, like `headers`. The intended use is a Node process
-that talks wrpc to another wrpc server (a microservice calling a sibling
+that talks wRPC to another wRPC server (a microservice calling a sibling
 service) and wants undici's connection pooling, proxying, or caching tuned for
-that traffic, without wrpc depending on undici itself:
+that traffic, without wRPC depending on undici itself:
 
 ```js
 const { Agent, fetch: undiciFetch } = require('undici');
@@ -99,11 +99,11 @@ const client = await WrpcClient.connect('http://internal-service/api', {
 });
 ```
 
-This is **not** a way to reach arbitrary third-party REST APIs through wrpc —
-the http/sse transports only ever call the one connected wrpc server (packet
+This is **not** a way to reach arbitrary third-party REST APIs through wRPC —
+the http/sse transports only ever call the one connected wRPC server (packet
 POSTs, or a [mapped REST leg](./rest) against that same server's own base
 URL). Calling another service's API is still a plain, direct `fetch`/undici
-call; `options.fetch` only tunes the transport wrpc itself uses.
+call; `options.fetch` only tunes the transport wRPC itself uses.
 
 ## Options
 

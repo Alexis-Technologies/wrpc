@@ -85,7 +85,7 @@ illegal in one).
 - **Core NATS never queues.** A `direct.send` to an address nobody listens on
   is dropped by the server, as core NATS always does: the caller learns from
   its own timeout rather than a `503`.
-- **Payloads are capped** (1 MiB by default). A wrpc call or a cluster
+- **Payloads are capped** (1 MiB by default). A wRPC call or a cluster
   `fetchClients` answer above it is refused by the server — raise
   `max_payload` or keep the answers small.
 

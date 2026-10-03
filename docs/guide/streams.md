@@ -1,7 +1,7 @@
 # Binary streams
 
 Calls carry JSON. For bytes — a file upload, a video download, anything big
-enough that buffering it would be a mistake — wrpc has a second framing:
+enough that buffering it would be a mistake — wRPC has a second framing:
 **binary chunks**, interleaved on the same connection.
 
 Two objects, one on each end:

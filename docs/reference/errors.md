@@ -1,6 +1,6 @@
 # Errors and close codes
 
-wrpc reuses **HTTP status numbers** as its error vocabulary, on every transport.
+wRPC reuses **HTTP status numbers** as its error vocabulary, on every transport.
 A code that reaches a WebSocket client means the same thing it would over
 HTTP — and in [REST mode](../guide/server#what-it-serves) it literally *is* the
 HTTP status.
@@ -111,7 +111,7 @@ retried with backoff up to the attempt limit before the message is dead-lettered
 
 The client's own [reconnect](../guide/client#reconnecting) already applies
 truncated exponential backoff with full jitter to the *connection*. Per-call
-retries are yours: wrpc never replays a call automatically, because it cannot
+retries are yours: wRPC never replays a call automatically, because it cannot
 know whether yours is idempotent.
 
 ## WebSocket close codes
@@ -122,7 +122,7 @@ the *connection*, not one call. Exported as `CLOSE_CODES` from
 ends with the same codes — the server's 1001 on shutdown, 1002 on a framing
 violation — as its `closeCode`.
 
-| Code | Name | When wrpc uses it |
+| Code | Name | When wRPC uses it |
 | --- | --- | --- |
 | `1000` | Normal closure | `client.close()`, a clean goodbye. |
 | `1001` | Going away | The server is [shutting down](../guide/production#graceful-shutdown). Reconnect elsewhere. |

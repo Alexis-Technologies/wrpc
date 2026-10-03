@@ -1,6 +1,6 @@
 # Wire codec
 
-By default every wrpc packet travels as JSON. The `codec` option replaces
+By default every wRPC packet travels as JSON. The `codec` option replaces
 that framing with your own — superjson, devalue — injected on **both** sides
 (for encryption, see [Encryption](./encryption): a codec is synchronous and
 text-only, so it cannot reach WebCrypto and does not cover stream chunks):
@@ -20,11 +20,11 @@ const client = await WrpcClient.connect(url, { codec });
 ```
 
 The shape is structural — `isCodec(value)` is the check the options run —
-and wrpc imports nothing: the codec is yours.
+and wRPC imports nothing: the codec is yours.
 
 ## Scope
 
-The codec frames **wrpc packets**: WebSocket frames, packet-mode HTTP
+The codec frames **wRPC packets**: WebSocket frames, packet-mode HTTP
 (`POST {basePath}`, batches included), SSE `data:` payloads, worker ports,
 WebTransport sessions, WebRTC data channels (`client: { codec }` on a
 [peer](./webrtc#options)) and the [broker binding](./brokers/rpc).
@@ -88,7 +88,7 @@ follow:
   negotiation.
 - **The core hosts serve it natively** — the node shell, express and uws
   pass bodies through as Buffers untouched. Express 4 with a global
-  `express.json()` would consume JSON-typed bodies before wrpc reads them;
+  `express.json()` would consume JSON-typed bodies before wRPC reads them;
   a binary `contentType` is unaffected.
 - **The fastify adapter refuses `codec.rest` next to delegated REST
   routes** (procedures with `http` mappings): delegation exists *for*
@@ -115,7 +115,7 @@ follow:
 - **Content-Type**: packet-mode HTTP requests and responses carry
   `codec.contentType` when set. Under the [fastify adapter](./adapters/fastify)
   a non-JSON content type needs an app-side `addContentTypeParser` (as raw
-  text), or fastify rejects the body before wrpc sees it.
+  text), or fastify rejects the body before wRPC sees it.
 - The [protocol](../reference/protocol) is JSON: a codec is an
   opt-in framing **outside** that interop promise. Two peers you control,
   one codec — that is the contract.

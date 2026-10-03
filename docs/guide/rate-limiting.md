@@ -1,16 +1,16 @@
 # Rate limiting & throttling
 
-wrpc ships **no rate limiter** — consistent with the [zero-dependency
+wRPC ships **no rate limiter** — consistent with the [zero-dependency
 guarantee](./why): a token bucket is a dozen lines, and shipping one would
 mean picking a policy (sliding window? fixed window? per-IP? per-session?)
-every app disagrees with. What wrpc ships instead is a single seam —
+every app disagrees with. What wRPC ships instead is a single seam —
 [`onRequest`](./hooks) — that runs for **every** call, event and subscription
 attempt on **every** transport (WebSocket, HTTP, SSE, WebTransport, WebRTC, a
 worker port, the broker binding and queue consumers), before the handler and before a slow bucket check can be bypassed by picking
 a different transport.
 
 This page is the map: what is capped out of the box, how to write a limiter
-once and have it apply everywhere, and — because half of wrpc's transports
+once and have it apply everywhere, and — because half of wRPC's transports
 never pass through a host HTTP framework at all — exactly where a package
 like `@fastify/rate-limit` or `express-rate-limit` can and cannot see the
 traffic.
@@ -211,7 +211,7 @@ dispatcher an `RpcServer` uses, so the same `onRequest` hook (and
 `meta`-based per-procedure limits) applies unchanged.
 
 The signaling exchange that negotiates the connection is a separate concern:
-it is itself ordinary wrpc procedures (`createSignalingHooks()`, relayed
+it is itself ordinary wRPC procedures (`createSignalingHooks()`, relayed
 through `RpcServer.sendTo`). If your signaling server is served over
 HTTP/WebSocket through a host framework, a framework-level limiter sees the
 signaling traffic — offers, answers, ICE candidates — but never the data
@@ -221,7 +221,7 @@ channel traffic that results from it, which stays on `onRequest` alone.
 
 The pattern that covers every transport: a framework-level limiter in front
 of whatever HTTP surface exists (protects connection/handshake churn and
-plain HTTP/REST calls cheaply, before wrpc even runs), plus one
+plain HTTP/REST calls cheaply, before wRPC even runs), plus one
 `meta`-driven `onRequest` hook for per-message throttling that applies
 uniformly regardless of which transport the client is actually using:
 

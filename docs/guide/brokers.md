@@ -7,10 +7,10 @@ usually deployed *for* — work that must not be lost, history a client resumes
 from, services talking to each other without HTTP between them.
 
 `@alexify/wrpc/broker` is the broker-agnostic core for those. It describes a
-broker by what it can do, and every wrpc feature built on brokers asks only for
+broker by what it can do, and every wRPC feature built on brokers asks only for
 the capability it needs:
 
-| Capability | Guarantee | What wrpc builds on it |
+| Capability | Guarantee | What wRPC builds on it |
 | --- | --- | --- |
 | `backplane` | at-most-once fan-out | [rooms](./rooms) and the [cluster](./cluster) across instances |
 | `log` | ordered, replayable | [durable subscription feeds](./brokers/feeds) that resume on any instance |
@@ -189,9 +189,9 @@ option to replace the default:
 createRedisBroker({ client, generateId: () => myUlid() });
 ```
 
-Two things to know. The value is used **verbatim**: wrpc never truncates it,
+Two things to know. The value is used **verbatim**: wRPC never truncates it,
 because trimming an id would quietly weaken the uniqueness you chose it for.
-And the alphabet is the broker's business, not wrpc's — a generator answering
+And the alphabet is the broker's business, not wRPC's — a generator answering
 characters Redis refuses in a consumer name, NATS in a subject or RabbitMQ in
 a queue name fails at the driver, on connect, not here. Stick to
 `[A-Za-z0-9_-]` unless you know the broker better than that.

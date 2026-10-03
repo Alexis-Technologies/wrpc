@@ -85,7 +85,7 @@ is `null` and `server.address()` is the only way to read the bound address.
 | `server` | The node http(s) server. Required for hosted engines, absent otherwise. |
 | `path` | Restrict upgrades to this pathname. |
 | `verifyClient({ req, socket, head })` | Gate the handshake. `socket`/`head` are `null` for standalone engines. |
-| `protocols` / `handleProtocols(offered, req)` | Subprotocol negotiation; `false` rejects the handshake. `offered` never holds wrpc's [carrier tokens](./protocol#connection-metadata) (`wrpc.h.`, `wrpc.m.`, `wrpc.bearer.`), and an engine must not echo one. |
+| `protocols` / `handleProtocols(offered, req)` | Subprotocol negotiation; `false` rejects the handshake. `offered` never holds wRPC's [carrier tokens](./protocol#connection-metadata) (`wrpc.h.`, `wrpc.m.`, `wrpc.bearer.`), and an engine must not echo one. |
 | `perMessageDeflate` | `true`, or `{ threshold, filter, contextTakeover, async, … }`. See [wire format](./wire-format#permessage-deflate). |
 | `coalesce` | Built-in engine: cork the writes of one event-loop turn into one flush. Default `true`. |
 | `pingInterval` | Protocol-ping interval for engines that own liveness. |

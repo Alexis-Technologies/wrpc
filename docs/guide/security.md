@@ -1,6 +1,6 @@
 # Security
 
-wrpc's defaults are convenient for local development and deliberately loud
+wRPC's defaults are convenient for local development and deliberately loud
 about what has to change before production. This page collects the whole
 picture in one place: what is on by default, what you must configure, and
 which attacks the library already refuses on your behalf.
@@ -30,7 +30,7 @@ keeping that input from becoming something else.
 ### Connection metadata
 
 [Declared headers and `meta`](./metadata) are peer-controlled **labels** —
-never authorization inputs. wrpc holds that line structurally: both bags are
+never authorization inputs. wRPC holds that line structurally: both bags are
 size-capped on the encoded input (`metaMaxBytes`), plain-object-checked,
 `__proto__`-stripped and frozen; the ws query path cannot spoof an observed
 header (observed always wins the merge, and reserved names — `cookie`,
@@ -105,7 +105,7 @@ defended rather than trusted:
 - **Declared metadata.** `JSON.parse` defines `"__proto__"` as an *own* data
   property and pollutes nothing by itself — but application code that
   spreads or `Object.assign`s [`client.meta`](./metadata) bags into a config
-  would carry the key along, so wrpc drops it during sanitizing, and both
+  would carry the key along, so wRPC drops it during sanitizing, and both
   bags are null-prototyped and frozen besides.
 
 The same reasoning covers the dispatch tables: any table keyed on peer-controlled
@@ -190,7 +190,7 @@ peer on either end settles the connection on `wrpc.v1`, where bytes travel
 as 1.0's JSON. A server can require a revision through `protocols` /
 `handleProtocols` on the [engine](../reference/engine#attach-options), where
 returning `false` rejects the handshake — useful when a shared listener must
-tell wrpc clients apart from everything else pointed at the same port.
+tell wRPC clients apart from everything else pointed at the same port.
 
 The same header also carries data: a browser client rides its declared
 `headers`/`meta` and a Bearer credential as `wrpc.h.`, `wrpc.m.` and
@@ -201,7 +201,7 @@ selector like `(offered) => offered.at(-1)` cannot reflect a credential into
 the response. They remain on the raw `req.headers`, so keep that header out
 of access logs the way you would `Authorization`.
 
-## What wrpc does not do for you
+## What wRPC does not do for you
 
 - **It is not a firewall.** Rate limiting beyond the per-connection caps is an
   `onRequest` hook plus your own bucket — see
@@ -214,4 +214,4 @@ of access logs the way you would `Authorization`.
   session store, a TLS terminator you do not run, a relay that should not
   read what it relays), [Encryption](./encryption) is the opt-in layer.
 - **It does not sanitize your data.** `input`/`output` validators are yours to
-  write; wrpc only runs them.
+  write; wRPC only runs them.

@@ -1,7 +1,7 @@
 # Kafka
 
 Kafka is the durable-log broker: feeds and work queues that keep history for
-days, replayable by any consumer. wrpc uses it for `log` and `queue`, offers
+days, replayable by any consumer. wRPC uses it for `log` and `queue`, offers
 a `backplane` with real costs, and refuses `direct` outright.
 
 ```js
@@ -65,7 +65,7 @@ Replication is the cluster's to decide. The default `replicationFactor` of
 `-1` asks for the broker's `default.replication.factor`, so a production
 cluster configured for three replicas and `min.insync.replicas=2` gets
 exactly that, and a single-node development broker gets one. Pass a number
-only when the topics wrpc creates should differ from the cluster's default,
+only when the topics wRPC creates should differ from the cluster's default,
 or create them ahead of time (IaC, `kafka-topics.sh`) with the settings
 you want — the adapter will find and use them.
 
@@ -78,7 +78,7 @@ buying:
   reading `latest` never sees what was published before the join. Rooms are
   at-most-once anyway, but the silent window is seconds, not milliseconds —
   and the broker's own `group.initial.rebalance.delay.ms` (3 s by default)
-  is most of it. Set it to `0` for wrpc's groups.
+  is most of it. Set it to `0` for wRPC's groups.
 - **Every instance reads every envelope.** Filtering is local (the channel is
   a header), so a big cluster pays fan-out bandwidth a Redis or NATS
   backplane does not.
@@ -116,7 +116,7 @@ its consumer joined). The price of a resume is therefore a **group join per
 page** of catch-up, which on a broker with the default
 `group.initial.rebalance.delay.ms` (3 s) is three seconds per 256 entries:
 set it to `0` on a broker that serves feeds, or size the page. A queue's
-group is durable and is never deleted by wrpc: its committed offsets are the
+group is durable and is never deleted by wRPC: its committed offsets are the
 queue's progress.
 
 A resume **storm** — a deploy, and every client of the instance that went

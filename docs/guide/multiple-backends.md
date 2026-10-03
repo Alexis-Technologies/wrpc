@@ -16,7 +16,7 @@ flowchart LR
   B -->|ws| SvcB["Service B"]
   C -->|wt / ws fallback| SvcC["Service C"]
   D -->|MessagePort| W["SharedWorker"]
-  W -->|wrpc, event transport| SvcD["Local server"]
+  W -->|wRPC, event transport| SvcD["Local server"]
   W -.-> IDB[("IndexedDB")]
 ```
 
@@ -123,7 +123,7 @@ of the [browser bundle](./browser) — a `SharedWorker` cannot run one
 in-process. If "local IndexedDB" means logic that never leaves the browser
 (no server process behind it), keep that worker as a plain
 `postMessage`/`IndexedDB` module; reach for the `event` transport when there
-*is* a real wrpc server the worker should hold one shared connection to —
+*is* a real wRPC server the worker should hold one shared connection to —
 typically `localhost` in a desktop shell (Electron, Tauri) or during
 development.
 :::

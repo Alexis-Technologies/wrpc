@@ -169,7 +169,7 @@ outright.
 
 ## Compression {#compression}
 
-Off by default, like every compression knob in wrpc: a gzip per answer is
+Off by default, like every compression knob in wRPC: a gzip per answer is
 CPU spent for every peer to save bytes only some of them need. Turn it on
 for the HTTP side with `http.compression`:
 
@@ -313,7 +313,7 @@ framework request.
 `attachPort(port)` speaks the protocol over a `MessagePort` instead of a
 socket: JSON packets as strings, binary chunks as `Uint8Array`. A port has no
 handshake, so the [revision](../reference/protocol#versioning) rides its first
-`ping` — a wrpc client sends it by itself — and until then the port is sent
+`ping` — a wRPC client sends it by itself — and until then the port is sent
 no framed message. That covers a
 worker thread, an embedded peer, or a test harness that wants a real client
 against a real server with no network in between. The `Server` shell wires it

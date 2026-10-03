@@ -14,7 +14,7 @@ const broker = createRedisBroker({ client: new Redis(process.env.REDIS_URL) });
 const server = new Server({ router, backplane: broker.backplane, port: 8000 });
 ```
 
-The client is **injected**, as everywhere in wrpc: `ioredis` is a
+The client is **injected**, as everywhere in wRPC: `ioredis` is a
 devDependency of this repository and never a runtime one. Anything with the
 same command surface works — Valkey, KeyDB and Dragonfly need no adapter of
 their own.

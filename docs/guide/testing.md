@@ -1,6 +1,6 @@
 # Testing
 
-wrpc's own suite runs on `node --test` with no framework, and the patterns
+wRPC's own suite runs on `node --test` with no framework, and the patterns
 below are the ones it uses. They work the same in Vitest or Jest — the only
 wrpc-specific parts are how you boot a server on a free port and how you make
 sure it is closed.
@@ -122,7 +122,7 @@ Delivery is deferred to a microtask exactly like a real broker's, so a test
 that asserts immediately after an `emit()` will see nothing — `await` a tick,
 or use `waitFor`.
 
-Reach for a real Redis only when you are testing the **adapter**; wrpc's own
+Reach for a real Redis only when you are testing the **adapter**; wRPC's own
 Redis suite is skip-guarded on `REDIS_URL` and is not part of `pnpm test` for
 that reason.
 
@@ -152,7 +152,7 @@ part of the behaviour, boot a server; it costs a millisecond.
 
 If your suite covers a [host adapter](./adapters/fastify), make the framework
 optional so a machine without it **skips** rather than fails — the pattern
-wrpc's own adapter tests use for `uWebSockets.js`, whose native binary does not
+wRPC's own adapter tests use for `uWebSockets.js`, whose native binary does not
 build everywhere:
 
 ```js
@@ -168,7 +168,7 @@ const uws = optional('uWebSockets.js');
 test('uws engine', { skip: uws ? false : 'uWebSockets.js not installed' }, async (t) => { /* … */ });
 ```
 
-## Running wrpc's own tests
+## Running wRPC's own tests
 
 ```bash
 pnpm test                              # everything, recursive

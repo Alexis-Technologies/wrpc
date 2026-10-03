@@ -220,7 +220,7 @@ at-most-once across instances (the [backplane](./scaling#at-most-once-and-what-t
 reports what it lost, it does not replay it). That is the right contract for
 presence, cursors, typing indicators and every other event a later one
 supersedes. When a client must not miss anything — a chat history, an order
-book's deltas — the replayable thing in wrpc is a **subscription**, not a
+book's deltas — the replayable thing in wRPC is a **subscription**, not a
 room, and three recipes cover the cases:
 
 **A broker-backed feed.** A broker (Kafka, RabbitMQ, NATS, a Redis stream)
@@ -273,7 +273,7 @@ const { answers, expected, incomplete } = await ctx.server.to('ops').ask('deploy
 if (incomplete || answers.length < expected) escalate(expected - answers.length);
 ```
 
-What wrpc deliberately does not have is a per-room replay buffer with a
+What wRPC deliberately does not have is a per-room replay buffer with a
 client that "rejoins from an id": it would duplicate subscriptions, and it
 would need a new concept inside the [protocol's core](../reference/protocol#stability).
 If you need a queue's guarantees, you need a queue — and a subscription is

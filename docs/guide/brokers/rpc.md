@@ -19,7 +19,7 @@ await billing.load('invoices');
 await billing.api.invoices.create({ orderId });
 ```
 
-The packets on the wire are ordinary wrpc packets — the same router, hooks,
+The packets on the wire are ordinary wRPC packets — the same router, hooks,
 sessions, validators and telemetry serve a WebSocket client and a broker one
 side by side. The carrier is specified in
 [the protocol reference](../../reference/protocol#broker-binding).
@@ -154,7 +154,7 @@ nothing: that is the client's timeout, and the broker's own metrics.
 
 A broker carries the bytes it is handed — and NATS and Kafka cap a message
 at 1 MiB, Redis' `direct` wraps a binary body in base64. Per-message
-compression is **off by default**, like every compression knob in wrpc,
+compression is **off by default**, like every compression knob in wRPC,
 and negotiated so a client and a service can be upgraded in any order:
 
 ```js

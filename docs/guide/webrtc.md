@@ -1,18 +1,18 @@
 # WebRTC
 
-Two browsers can talk wrpc to each other directly, with no server in the
-data path. `@alexify/wrpc/webrtc` puts a full wrpc endpoint on each end of a
+Two browsers can talk wRPC to each other directly, with no server in the
+data path. `@alexify/wrpc/webrtc` puts a full wRPC endpoint on each end of a
 WebRTC data channel: every peer serves a router and calls the other's — calls,
 events, ask/respond, subscriptions with resume, binary streams with
 backpressure, heartbeat and reconnect — over the same packets a WebSocket
-carries. A wrpc server is still involved once, for **signaling**: peers find
+carries. A wRPC server is still involved once, for **signaling**: peers find
 each other and exchange connection descriptions through it, and it can be
-any wrpc server, on any transport.
+any wRPC server, on any transport.
 
 ## Using it
 
 On the server, spread the built-in signaling unit into your router and add
-its disconnect hook. Any wrpc server will do — the built-in `Server`, a
+its disconnect hook. Any wRPC server will do — the built-in `Server`, a
 fastify or express host, a cluster of them:
 
 ```js
@@ -76,7 +76,7 @@ the contract — `isRtcAdapter`, `isRtcPeerConnection` and `isRtcDataChannel`
 are exported so a wrapper can check itself. One rule a wrapper has to keep
 that a structural check cannot see: `send(data)` **copies before it
 returns**, and copies the view it was given — `Buffer.from(view)`, never
-`Buffer.from(view.buffer)`. wrpc frames every fragment of a message into
+`Buffer.from(view.buffer)`. wRPC frames every fragment of a message into
 one reused buffer; a `send` that keeps the view, or takes the whole
 `ArrayBuffer` under it, delivers the last fragment in place of all of them. The repo runs the shared port
 contract against node-datachannel by hand
@@ -127,7 +127,7 @@ both sides, or the link never opens and fails on `connectTimeout`.
 
 A data channel has a message-size limit (16 KiB is the only value every
 implementation agrees on; the negotiated `sctp.maxMessageSize` is used up to
-a 256 KiB ceiling), and wrpc packets — a batch of calls, a 64 KiB stream
+a 256 KiB ceiling), and wRPC packets — a batch of calls, a 64 KiB stream
 chunk — exceed it. Every message therefore travels as binary behind a
 **one-byte header**: a kind bit (text packet or binary chunk), a FIN bit, a
 deflate bit ([compression](#compression), off unless both ends turned it
@@ -165,7 +165,7 @@ works on a peer exactly as on a server.
 
 ### Trust
 
-wrpc procedures default to `access: 'session'`, and there is no session
+wRPC procedures default to `access: 'session'`, and there is no session
 manager in a browser. Under the default `trust: 'link'`, every attached
 `Client` gets a frozen pseudo-session:
 
@@ -308,7 +308,7 @@ A hand-rolled one over socket.io, a hosted signaling service, or a
 
 Everything above sits on three levels, and you can enter at any of them:
 
-| Level | wrpc owns | You own |
+| Level | wRPC owns | You own |
 | --- | --- | --- |
 | `WrpcPeer` / `Mesh` | The peer connection, negotiation, ICE restart, redial, both directions, the roster | A router and a signaler |
 | `RtcLink` | One `RTCPeerConnection`, perfect negotiation, ICE restart, two channels | Signaling and the decision to redial |
@@ -316,7 +316,7 @@ Everything above sits on three levels, and you can enter at any of them:
 
 The lowest level is the `event` transport's arrangement: you already have an
 `RTCDataChannel` — negotiated by your own signaling, perhaps next to your
-game's or media's channels on the same connection — and wrpc speaks on it.
+game's or media's channels on the same connection — and wRPC speaks on it.
 On the client, `channel` takes the place of `link`:
 
 ```js
@@ -515,8 +515,8 @@ first fragment it loses that one message and says so (code `send`).
 
 Nothing compresses a data channel's payload for you — SCTP over DTLS
 carries the bytes as they are (TLS 1.3 dropped compression) — so a link
-carries exactly what wrpc hands it. Per-message compression is the answer,
-**off by default** like every compression knob in wrpc:
+carries exactly what wRPC hands it. Per-message compression is the answer,
+**off by default** like every compression knob in wRPC:
 
 ```js
 new WrpcPeer({ router, signaler, compression: true });
@@ -582,10 +582,10 @@ Measured end to end on loopback ([Across
 transports](./performance#across-transports) has the tables and the
 commands):
 
-- **wrpc adds little to the channel.** Over the same node-datachannel pair,
-  wrpc's calls run at 87–102% of a raw echo with no RPC layer, and its
+- **wRPC adds little to the channel.** Over the same node-datachannel pair,
+  wRPC's calls run at 87–102% of a raw echo with no RPC layer, and its
   streams at 90% of the bare channel. Opening a pair took 506 ms in
-  node-datachannel — its own ICE and DTLS; wrpc's share was under a
+  node-datachannel — its own ICE and DTLS; wRPC's share was under a
   millisecond — and about 5 ms in Chrome.
 - **The channel is not a WebSocket.** From Chrome, with both peers in one
   page, a data channel carried about 5,000 small calls a second and 14 MiB/s

@@ -11,7 +11,7 @@ await fastify.listen({ port: 8000 });
 That is the whole integration. The plugin registers the RPC HTTP routes under
 `basePath`, attaches a WebSocket engine to whatever fastify is running on, and
 decorates the instance with `fastify.wrpc` — the `RpcServer` — so handlers
-outside wrpc can reach rooms and clients:
+outside wRPC can reach rooms and clients:
 
 ```js
 fastify.get('/admin/announce', async (request, reply) => {
@@ -56,7 +56,7 @@ Everything [`RpcServer`](../server#rpc-options) takes, plus:
 | `ws` | Forwarded to the engine's `attach()` — `path`, `protocols`, `verifyClient`, … |
 | `maxBodySize` | A per-route `bodyLimit` for the RPC routes. |
 
-`logger` defaults to `fastify.log`. That is a pino, which wrpc detects as a
+`logger` defaults to `fastify.log`. That is a pino, which wRPC detects as a
 [structured logger](../logging) and calls natively — so your RPC entries land
 in fastify's own stream, with its bindings, and no adapter in between.
 
@@ -72,7 +72,7 @@ security regression the app never asked for.
 ## Hooks run first
 
 HTTP calls arrive through fastify's own routes, so the app's `onRequest`,
-`preHandler`, authentication and error handling all run **before** wrpc sees
+`preHandler`, authentication and error handling all run **before** wRPC sees
 the call. That is the point of registering as a plugin rather than mounting a
 second server:
 
@@ -95,18 +95,18 @@ Two request bodies fastify does not parse reach those routes as raw bytes: an
 arguments hold bytes, between two 2.x ends) and a sealed request
 (`application/wrpc-sealed`). The plugin registers a buffer parser for each,
 **unless the app already has one** — fastify would otherwise answer `415`
-before wrpc saw the call. An app that parses `application/octet-stream`
+before wRPC saw the call. An app that parses `application/octet-stream`
 itself keeps its parser, which must then hand the body over as a `Buffer`.
 
-A path outside `basePath` gets **fastify's** 404, not wrpc's error packet. That
+A path outside `basePath` gets **fastify's** 404, not wRPC's error packet. That
 difference is the whole reason to compose as a plugin.
 
 ## Declarative REST routes {#declarative-rest-routes}
 
 A procedure with an [`http` mapping](../rest) becomes a **native fastify
-route** under this plugin — not a proxy into the wrpc dispatcher. Fastify
+route** under this plugin — not a proxy into the wRPC dispatcher. Fastify
 owns routing, schema validation, serialization and (through
-@fastify/swagger) documentation; wrpc supplies the per-request `Context`
+@fastify/swagger) documentation; wRPC supplies the per-request `Context`
 (session, rooms, client lifecycle) and runs the bare handler under the
 procedure's own queue/timeout semantics. The internal API over HTTP is
 therefore the **same endpoint external consumers hit**.
@@ -123,9 +123,9 @@ const router = defineRouter({
 });
 ```
 
-`schema` is forwarded to `fastify.route.schema` verbatim (plus wrpc's
+`schema` is forwarded to `fastify.route.schema` verbatim (plus wRPC's
 [default error responses](../rest#default-error-responses)), so swagger
-sees everything. wrpc's lifecycle hooks map onto fastify's phases by name —
+sees everything. wRPC's lifecycle hooks map onto fastify's phases by name —
 the naming was fastify's to begin with — with the payload differences
 documented in the adapter source.
 
@@ -165,7 +165,7 @@ the conventional REST paths under the plugin, like on every other host.
 
 ## Mirroring existing routes {#mirroring-existing-routes}
 
-The reverse direction: your **existing fastify routes** become wrpc
+The reverse direction: your **existing fastify routes** become wRPC
 procedures, without rewriting any of them.
 
 ```js
