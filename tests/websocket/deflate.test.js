@@ -820,6 +820,17 @@ test("async inflate: the threadpool path holds at four in flight; the applicatio
   conn.terminate();
 });
 
+test('a close while the inflate queue holds the socket reads again — the Close that answers it is not left unread', async () => {
+  const { socket, conn, segment } = await burst(ASYNC, 200, 300);
+  socket.emit('data', segment);
+  assert.strictEqual(socket.paused, true, 'held');
+  conn.close(1000, 'bye');
+  // The hold used to outlive the close: the socket stayed paused, the peer's
+  // Close went unread, and the connection ended at closeTimeout as 1006.
+  assert.strictEqual(socket.paused, false, 'reading again for the Close');
+  conn.terminate();
+});
+
 test('level and memLevel apply on the one-shot, fan-out and async paths, and are validated at construction', async () => {
   const { WebsocketServer } = require('#ws');
   const text = JSON.stringify({

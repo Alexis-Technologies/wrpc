@@ -2908,6 +2908,12 @@ reference as one opaque string. What is left to do:
   is now refused id-less — `500`, `packet.unknown` — like any packet that is
   not one, on every carrier. A number is still answered on: a 1.0 client
   whose own `generateId` counted sent one.
+- **A WebSocket closed while its inflate queue holds the socket reads its
+  peer's Close.** A burst of compressed frames pauses the socket until the
+  inflates drain; a `close()` meanwhile dropped the queue but left the
+  socket paused, so the peer's Close went unread and the connection ended
+  at `closeTimeout` with `1006`. Dropping the queue resumes what the hold
+  paused (an application's own `pause()` stands).
 - **A frame sent together with the upgrade request no longer ends the
   process (node engine).** The bytes behind a handshake (`head`) were
   parsed inside the `Connection` constructor: a frame breaking the protocol

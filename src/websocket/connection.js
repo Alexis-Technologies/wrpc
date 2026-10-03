@@ -695,9 +695,14 @@ class Connection extends EventEmitter {
   }
 
   #dropInbound() {
+    const held = this.#inboxHeld;
     this.#inbox.length = 0;
     this.#inboxBytes = 0;
     this.#inboxHeld = false;
+    // The socket the hold paused reads again (unless the application paused
+    // it): the peer's Close, answering ours, is on it — left unread, the
+    // close waited out closeTimeout and ended as 1006.
+    if (held && !this.#paused && !this.#socket.destroyed) this.#socket.resume();
   }
 
   // Both directions, and the takeover context with them: every way out but
