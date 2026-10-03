@@ -23,7 +23,7 @@ import type {
   UntypedApi,
   WrpcClient,
   WrpcError,
-} from './index.js';
+} from './client.js';
 
 /** Units of a contract, as string keys. */
 export type ApiUnits<Api> = Extract<keyof Api, string>;

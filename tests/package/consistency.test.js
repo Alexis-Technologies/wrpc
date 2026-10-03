@@ -380,6 +380,35 @@ test('every ./x.js reference inside a shipped root d.ts resolves to a shipped x.
   }
 });
 
+// What a bundler hands a browser — every row scripts/size.js bundles with
+// platform 'browser' — must type-check with no Node types at all: a page
+// whose project has no @types/node gets the client surface, not 41 errors
+// from `node:http` and `Buffer`. `query.d.ts` imported the Node barrel for
+// seven names `client.d.ts` declares, and did since 1.0.
+test('the types of every browser-reachable entry check without node types', () => {
+  const ts = require(require.resolve('@tsd/typescript', { paths: [path.dirname(require.resolve('tsd'))] }));
+  const size = read('scripts/size.js');
+  const entries = [...size.matchAll(/entry: '([^']+)',\s*platform: 'browser'/g)].map((m) => m[1]);
+  assert.ok(entries.length >= 7, `browser rows found: ${entries.join(', ')}`);
+  const program = ts.createProgram(
+    entries.map((entry) => path.join(ROOT, entry.replace(/\.js$/, '.d.ts'))),
+    {
+      noEmit: true,
+      strict: true,
+      types: [],
+      lib: ['lib.es2022.d.ts', 'lib.dom.d.ts'],
+      target: ts.ScriptTarget.ES2022,
+      module: ts.ModuleKind.ESNext,
+      moduleResolution: ts.ModuleResolutionKind.Bundler,
+    },
+  );
+  const errors = ts.getPreEmitDiagnostics(program).map((diagnostic) => {
+    const where = diagnostic.file ? path.relative(ROOT, diagnostic.file.fileName) : '';
+    return `${where}: ${ts.flattenDiagnosticMessageText(diagnostic.messageText, ' ')}`;
+  });
+  assert.deepStrictEqual(errors, []);
+});
+
 // The `[Unreleased]` section of the CHANGELOG, split by its `### ` headings:
 // a map of heading -> the lines under it. The release checklist reads the
 // breaking section to decide the bump, so an entry marked **Breaking that

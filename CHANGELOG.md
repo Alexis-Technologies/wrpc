@@ -2006,6 +2006,13 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **`@alexify/wrpc/query` type-checks in a project without Node types.**
+  Its declarations imported the Node barrel (`index.d.ts`) for seven names
+  `client.d.ts` declares, so a browser-only TypeScript project without
+  `@types/node` got some 40 errors (`node:http`, `Buffer`) for importing it —
+  in 1.0 too. They import `client.d.ts` now, and a guard type-checks every
+  browser-reachable entry (`browser`, `sse`, `query`, `auth`, `deflate`,
+  `encryption`, `webrtc`) with no Node types at all.
 - **A sealed delivery whose key provider threw is retried, not
   dead-lettered.** A consumer under `encryption` dead-lettered the message
   with `400 Sealed delivery refused`, unprocessed, on the provider's first
