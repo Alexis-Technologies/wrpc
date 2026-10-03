@@ -357,6 +357,23 @@ below ~256 KB — and `compression: { async: true | { threshold } }` sends
 messages that large to the threadpool instead, in order; the
 [compression guide](./compression#async) has the numbers.
 
+## What it costs
+
+Measured end to end on loopback, next to a WebSocket on the same machine
+([Across transports](./performance#across-transports) has the tables and
+the commands):
+
+- **From Chrome**, a small call made while uploads keep the session busy
+  answers in **9 ms** at the median, against 46 ms over a WebSocket, whose
+  call waits in one TCP stream behind the upload's chunks. Plain calls are
+  1.2–1.9× cheaper over the WebSocket, and it moves a single large upload
+  about four times faster.
+- **In Node**, the stack sets the ceiling: wrpc's calls run at 87–91% of a
+  raw echo over the same libquiche session, and its streams at 84% of the
+  bare QUIC stream. That stack is a binding, and on loopback it moves a
+  fraction of what Node's WebSocket does — use WebTransport in Node for what
+  only it does, not for throughput.
+
 ## What it cannot do
 
 - **Cookies.** See above — sessions need a token transport.

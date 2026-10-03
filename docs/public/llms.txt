@@ -73,7 +73,7 @@ Key facts:
 - [Rate limiting & throttling](https://wrpc.vercel.app/guide/rate-limiting): One `onRequest` seam for every transport, and what is capped out of the box.
 - [Running in production](https://wrpc.vercel.app/guide/production): Graceful drain and shutdown, health checks, proxies, sticky routing, backpressure tuning.
 - [Testing](https://wrpc.vercel.app/guide/testing): Boot patterns, `t.after` teardown, multi-instance tests over `MemoryBackplane`, testing without a network.
-- [Performance](https://wrpc.vercel.app/guide/performance): Reproducible benchmarks against ws, uWebSockets.js, socket.io and tRPC; fan-out, parser and dispatch numbers.
+- [Performance](https://wrpc.vercel.app/guide/performance): Reproducible benchmarks against ws, uWebSockets.js, socket.io and tRPC; wRPC over WebSocket, WebTransport and WebRTC on real stacks, in Node and in Chrome; fan-out, parser and dispatch numbers.
 - [Compression](https://wrpc.vercel.app/guide/compression): Off by default; deflate, Brotli or zstd per wire, negotiated as a preference list, and a preset dictionary from the router.
 - [Encryption](https://wrpc.vercel.app/guide/encryption): Where TLS ends before the data does — sealed backplane and broker messages, a sealed session store, Noise sessions, HPKE per request, end-to-end helpers (experimental).
 - [Logging](https://wrpc.vercel.app/guide/logging): The injected structured logger and every event it emits.

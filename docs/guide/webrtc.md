@@ -576,6 +576,24 @@ what an operator alerts on; `refused` closes are the peers a trust policy
 turned away, `gave-up` ones the paths that never came back. A client-only
 peer (no router) still counts its links.
 
+## What it costs
+
+Measured end to end on loopback ([Across
+transports](./performance#across-transports) has the tables and the
+commands):
+
+- **wrpc adds little to the channel.** Over the same node-datachannel pair,
+  wrpc's calls run at 87–102% of a raw echo with no RPC layer, and its
+  streams at 90% of the bare channel. Opening a pair took 506 ms in
+  node-datachannel — its own ICE and DTLS; wrpc's share was under a
+  millisecond — and about 5 ms in Chrome.
+- **The channel is not a WebSocket.** From Chrome, with both peers in one
+  page, a data channel carried about 5,000 small calls a second and 14 MiB/s
+  of stream; in Node, between a third (small calls) and a sixteenth
+  (streams) of what the WebSocket carries. A
+  peer-to-peer link is worth it for what it removes — the server from the
+  data path — not for throughput.
+
 ## What it cannot do
 
 - **Receive-side backpressure.** A data channel has no `pause()`: a fast

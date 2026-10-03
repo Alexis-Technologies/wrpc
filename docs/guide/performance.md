@@ -35,6 +35,12 @@ and which knobs are worth turning for your traffic shape.
   re-authenticate and rejoin their room within single-digit milliseconds —
   no sticky load balancer, no manual failover. See
   [Across instances](#across-instances).
+- **A call that does not queue behind an upload.** From Chrome, a small call
+  made while uploads saturate the connection answers in 9 ms over
+  WebTransport against 46 ms over a WebSocket — each binary stream has a QUIC
+  stream of its own. And on every transport the stack sets the ceiling, not
+  wrpc: over WebTransport and WebRTC in Node, wrpc's calls run at 87–102% of a
+  raw echo over the same stack. See [Across transports](#across-transports).
 
 **Behind, and expected to be:**
 
@@ -45,6 +51,10 @@ and which knobs are worth turning for your traffic shape.
 - **One call at a time in the browser.** The client's deadline scheduler
   earns its keep once many calls are in flight; a lone awaited call
   doesn't exercise it either way.
+- **WebTransport and WebRTC in Node.** Their stacks are native bindings
+  into userspace QUIC and SCTP, and on loopback they move a fraction of what
+  Node's WebSocket does — use them for what only they do, not for
+  throughput. See [Across transports](#across-transports).
 
 **Leave these as they are by default:**
 
@@ -209,6 +219,108 @@ calls — a dashboard hydrating a dozen panels on load — produces one timer
 and one deque entry each, not a dozen independent `setTimeout`s and their
 closures; the throughput numbers are evidence that the design doesn't cost
 anything, not the reason it exists.
+
+## Across transports {#across-transports}
+
+Everything above runs over a WebSocket. The same `Server` and the same client
+also run over [WebTransport](./wt) and a [WebRTC](./webrtc) data channel, and
+both of those have a **native stack** under them — Node has neither in its
+standard library — so the first question is whose cost a number is.
+`bench/rpc-comparison.js` answers it the way it does for the WebSocket: next
+to wrpc over each stack, a raw echo over the same stack with no RPC layer.
+`bench/transports.js` adds what an echo cannot show — opening, a stream, a
+call under load — and `pnpm bench:browser transports` does it all from
+Chrome, over the browser's own WebSocket, WebTransport and WebRTC.
+
+```bash
+node scripts/wt-cert.js certs   # the 14-day certificate WebTransport needs
+WRPC_WT=fails WRPC_RTC=node-datachannel node bench/rpc-comparison.js
+WRPC_WT=fails WRPC_RTC=node-datachannel node bench/transports.js
+WRPC_WT=fails pnpm bench:browser transports
+```
+
+The stacks are the ones the integration tests use:
+[`@fails-components/webtransport`](https://github.com/fails-components/webtransport)
+— Google's libquiche behind a native binding — for the HTTP/3 host and the
+Node client, and [`node-datachannel`](https://github.com/murat-dogan/node-datachannel)
+— libdatachannel — for both peers of a loopback pair. Without the variables
+those rows are skipped with the reason, and `pnpm bench` stays
+self-contained. Everything here is **loopback**: no packet loss and no round
+trip to speak of, so what QUIC does about loss, and what a 0-RTT handshake
+saves on a real network, are not in these numbers.
+
+### In Node
+
+Calls, one run (ops/sec, higher is better):
+
+| Stack | small payload | 10 KB payload | small ×64 in flight |
+| --- | ---: | ---: | ---: |
+| **wrpc** — own WebSocket | 24,415 | 13,834 | 116,047 |
+| **wrpc** — WebTransport (libquiche) | 11,232 | 2,169 | 15,856 |
+| WebTransport — raw echo, no RPC | 12,327 | 2,370 | 18,198 |
+| **wrpc** — WebRTC data channel (libdatachannel) | 7,223 | 1,392 | 12,262 |
+| WebRTC data channel — raw echo, no RPC | 7,335 | 1,363 | 14,062 |
+
+Opening, streaming, and a call under load (`bench/transports.js`, one run):
+
+| Transport | open + load + first call, p50 | 16 MiB up + 16 MiB down | the same bytes, bare stack | small call, idle p50 | small call under upload load, p50 / p99 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| WebSocket | 1.1 ms | 575 MiB/s | 545 MiB/s | 0.09 ms | 15.2 / 30.0 ms |
+| WebTransport | 2.6 ms | 44.5 MiB/s | 52.9 MiB/s | 0.09 ms | 15.3 / 18.0 ms |
+| WebRTC | 507 ms¹ | 35.2 MiB/s | 38.9 MiB/s | 0.14 ms | 84 / 154 ms |
+
+¹ 506 ms of it is the pair's own offer/answer, ICE and DTLS in
+libdatachannel, timed alone; wrpc's share of opening is about a millisecond.
+In Chrome the same pair opens in a few milliseconds (below).
+
+Read it honestly:
+
+- **On every transport, the stack sets the ceiling — not wrpc.** Over the
+  same libquiche session, wrpc's calls run at 91% of a raw echo's (small and
+  10 KB) and 87% with 64 in flight; over the same data channel at 98%, 102%
+  and 87%. A wrpc stream moves 84% of what the bare WebTransport stream does,
+  90% of the bare data channel, and 105% of the bare `ws` package.
+- **In Node, both native stacks are far behind the WebSocket.** Half the
+  small calls, a sixth to a tenth of the 10 KB ones, a thirteenth to a
+  sixteenth of the stream throughput: a binding into a userspace QUIC or SCTP stack, against
+  TCP on loopback, where the kernel is at its best. Reach for them in Node
+  for what only they do — a peer-to-peer link, datagrams, a client whose
+  only way in is HTTP/3 — not for throughput.
+- **Under load, the Node rows do not isolate head-of-line blocking.** A call
+  under a saturating upload has a lower p99 on WebTransport (18 ms) than on
+  the WebSocket (30 ms), but the WebSocket is moving about ten times the
+  bytes meanwhile. The browser rows below compare like with like.
+
+### In Chrome
+
+`pnpm bench:browser transports` — Chrome 154 against the same Node `Server`
+(the WebRTC row is a pair inside the page, with a `PeerHost` at the far end):
+
+| Transport | open + first call | small | 10 KB | small ×64 | 16 MiB up + down | small call under upload load, p50 / p99 |
+| --- | ---: | ---: | ---: | ---: | ---: | ---: |
+| WebSocket | 12.5 ms | 10,789 | 6,009 | 44,769 | 330 MiB/s | 46.3 / 54.5 ms |
+| WebTransport | 12.0 ms | 8,848 | 3,202 | 23,806 | 79 MiB/s | **9.0 / 11.4 ms** |
+| WebRTC² | 5.4 ms | 5,353 | 1,020 | 10,400 | 14 MiB/s | 40 / 53 ms |
+
+calls in ops/sec; ² both peers in one page, so one renderer runs both
+ends' SCTP and DTLS, and the far end is a `PeerHost` in that page rather than
+the Node server — a lower bound on a real link, not a measurement of one.
+
+- **A call does not wait behind an upload on WebTransport.** While uploads
+  keep the connection busy, a small call answers in 9 ms at the median over
+  WebTransport and in 46 ms over the WebSocket — five times faster, with no
+  packet loss involved. Over the WebSocket the call is queued in one TCP
+  stream behind whatever the upload has buffered; over WebTransport every
+  binary stream has a [QUIC stream of its own](./wt#streams-without-head-of-line-blocking)
+  and the call waits behind none of them. The WebSocket moves the upload
+  about four times faster; if what you need is a lot of bytes on one quiet
+  connection, that is the one to use.
+- **Opening is not faster on loopback.** A WebTransport session and a
+  WebSocket both open in about 12 ms here; the round trips QUIC saves are
+  network round trips, and loopback has none.
+- **Calls are cheaper over the WebSocket** — 1.2× on small payloads and
+  1.9× at 10 KB in Chrome; 2.2× and 6.4× in Node, where WebTransport's stack
+  is a binding rather than the browser's own.
 
 ## Compression is off by default
 
