@@ -575,3 +575,34 @@ test('amqp broker: a retry on a consumer channel that died publishes one copy, n
   // the retry's ONE copy: three. Three copies made it five.
   assert.ok(deliveries <= 3, `deliveries: ${deliveries}`);
 });
+
+// The fake is where a client's shape is easy to get wrong: FakeChannel grew
+// a `closed` the adapter trusted, amqplib has none, and a dead channel
+// published three copies of one delivery — invisible to every test here.
+// So what the adapter reads off a channel or a connection is checked
+// against amqplib's own classes (a devDependency), not against the fake.
+test('amqp adapter: every member it reads off a channel or a connection exists on amqplib', (t) => {
+  const { readFileSync } = require('node:fs');
+  const path = require('node:path');
+  let model;
+  try {
+    // Not an exported subpath: the module beside the package's main file.
+    model = require(path.join(path.dirname(require.resolve('amqplib')), 'lib', 'channel_model.js'));
+  } catch {
+    return void t.skip('amqplib is not installed');
+  }
+  const source = readFileSync(path.join(__dirname, '..', '..', 'src', 'broker', 'amqp', 'index.js'), 'utf8')
+    // Comments name members on purpose ("a `channel.closed` amqplib does not have").
+    .replace(/\/\*[\s\S]*?\*\//g, '')
+    .replace(/\/\/.*$/gm, '');
+  const read = (pattern) => new Set(Array.from(source.matchAll(pattern), (match) => match[1]));
+  const channelMembers = read(/\b(?:channel|consumerChannel|opened|state\.channel|live\.channel)\??\.(\w+)/g);
+  const connectionMembers = read(/\bconnection\??\.(\w+)/g);
+  assert.ok(channelMembers.size >= 10, `members found: ${[...channelMembers]}`);
+  for (const member of channelMembers) {
+    assert.ok(member in model.ConfirmChannel.prototype, `channel.${member} is not on amqplib's ConfirmChannel`);
+  }
+  for (const member of connectionMembers) {
+    assert.ok(member in model.ChannelModel.prototype, `connection.${member} is not on amqplib's ChannelModel`);
+  }
+});

@@ -1440,6 +1440,11 @@ reference as one opaque string. What is left to do:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **What the AMQP adapter reads is checked against amqplib.** Every member
+  the adapter reads off a channel or a connection must exist on amqplib's
+  own `ConfirmChannel` / `ChannelModel` (a devDependency), not only on the
+  suite's fake — which had a `closed` amqplib has none of, and hid a
+  retry that published three copies on a dead channel.
 - **The interop suite fails in CI when the published 1.0 is missing.**
   Without the `wrpc-v1` alias every interop case skipped — the one that
   guards the alias included — and the run passed green. Under
