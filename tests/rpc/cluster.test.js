@@ -766,6 +766,45 @@ test('cluster replay: an envelope of a dead process cannot bring that process ba
   assert.strictEqual(log.find('cluster.replay').reason, 'stale');
 });
 
+test('cluster replay: a node isolated by its clock is named — the skew on the line, degraded and recovered', async (t) => {
+  const backplane = new MemoryBackplane();
+  const log = recorder();
+  const b = boot(t, backplane, { instanceId: 'b', logger: log.writer, cluster: { secret: 's3' } });
+  await settle(20);
+  const events = [];
+  b.cluster.on('degraded', (event) => events.push(['degraded', event]));
+  b.cluster.on('recovered', (event) => events.push(['recovered', event]));
+  // A node a minute behind: every envelope of its refused as stale, and the
+  // only trace used to be one line a presence timeout, with no skew in it.
+  const behind = (seq) =>
+    signed('s3', {
+      v: 1,
+      from: 'slow',
+      epoch: 'e1',
+      t: 'hello',
+      rooms: {},
+      clients: 0,
+      seq,
+      ch: 'cluster',
+      at: Date.now() - 60_000,
+    });
+  for (let seq = 1; seq <= 4; seq++) backplane.publish('cluster', behind(seq));
+  await settle(20);
+  const line = log.find('cluster.replay');
+  assert.strictEqual(line.reason, 'stale');
+  assert.ok(line.skew >= 60_000 && line.skew < 61_000, `the skew is on the line (${line.skew})`);
+  assert.strictEqual(events.length, 1, 'degraded once, at the third in a row');
+  assert.deepStrictEqual(events[0][0], 'degraded');
+  assert.strictEqual(events[0][1].instance, 'slow');
+  assert.strictEqual(events[0][1].reason, 'skew');
+  // Its clock fixed: the next envelope is heard, and it says so.
+  const fixed = { v: 1, from: 'slow', epoch: 'e1', t: 'hello', rooms: {}, clients: 0, seq: 5, ch: 'cluster' };
+  backplane.publish('cluster', signed('s3', { ...fixed, at: Date.now() }));
+  await settle(20);
+  assert.deepStrictEqual(events.at(-1), ['recovered', { instance: 'slow' }]);
+  assert.ok(b.cluster.instances().includes('slow'));
+});
+
 test('cluster replay: an envelope outside the clock window is refused; maxSkew sets the window', async (t) => {
   const backplane = new MemoryBackplane();
   const log = recorder();

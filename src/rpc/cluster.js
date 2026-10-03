@@ -88,6 +88,8 @@ const instanceOfClientId = (id) => {
 
 // Refusal keys remembered for rate-limiting their lines at once (#loud).
 const MAX_REFUSED_KEYS = 1024;
+// Refusals in a row for a sender's clock before it is called 'degraded'.
+const STALE_RUN = 3;
 
 class Cluster extends Emitter {
   #backplane;
@@ -111,6 +113,8 @@ class Cluster extends Emitter {
   // `${from}\0${reason}` -> when it was last warned about: a replayed or
   // unsequenced envelope repeats, and one warn a presence timeout says it.
   #refused = new Map();
+  // Senders refused as stale for their clock, by how many times in a row.
+  #skews = new Map();
   #envelope = null;
   // False under `attachments: false`: bytes then stay the JSON 1.0 made of
   // them on every leg, this one included.
@@ -252,6 +256,7 @@ class Cluster extends Emitter {
     this.#nodes.clear();
     this.#guards.clear();
     this.#refused.clear();
+    this.#skews.clear();
   }
 
   // Subscribes with capped-backoff RETRY on rejection: a rejected subscribe
@@ -538,7 +543,8 @@ class Cluster extends Emitter {
     if (seq === undefined) return this.#strict ? this.#replayed(from, channel, 'unsequenced') : this.#unsequenced(from);
     if (!Number.isSafeInteger(seq) || seq < 0 || typeof at !== 'number') return this.#replayed(from, channel, 'seq');
     if (ch !== channel) return this.#replayed(from, channel, 'channel');
-    if (Math.abs(Date.now() - at) > this.#maxSkew) return this.#replayed(from, channel, 'stale');
+    const skew = Date.now() - at;
+    if (Math.abs(skew) > this.#maxSkew) return this.#skewed(from, channel, skew);
     let guard = this.#guards.get(from);
     if (guard === undefined || guard.epoch !== epoch) {
       if (guard !== undefined && at <= guard.newest) return this.#replayed(from, channel, 'stale');
@@ -547,14 +553,43 @@ class Cluster extends Emitter {
     }
     if (!guard.window.accept(seq)) return this.#replayed(from, channel, 'seq');
     if (at > guard.newest) guard.newest = at;
+    if (this.#skews.has(from)) this.#settled(from);
     return true;
+  }
+
+  // A node whose clock is off by more than maxSkew is refused message after
+  // message, and was isolated in silence: one stale line a presence
+  // timeout, `healthy` true, `fetchClients` complete without it. The line
+  // says by how much now, and STALE_RUN refusals in a row are 'degraded'
+  // ({ instance, reason: 'skew', skew }) — 'recovered' once it is heard.
+  #skewed(from, channel, skew) {
+    const run = (this.#skews.get(from) ?? 0) + 1;
+    if (run <= STALE_RUN) {
+      if (!this.#skews.has(from) && this.#skews.size >= MAX_REFUSED_KEYS) this.#skews.clear();
+      this.#skews.set(from, run);
+    }
+    if (run === STALE_RUN) {
+      void Promise.resolve(this.emit('degraded', { instance: from, reason: 'skew', skew })).catch((error) =>
+        this.#log.error({ err: error, event: 'cluster.listener', name: 'degraded' }),
+      );
+    }
+    return this.#replayed(from, channel, 'stale', { skew });
+  }
+
+  #settled(from) {
+    const run = this.#skews.get(from);
+    this.#skews.delete(from);
+    if (run < STALE_RUN) return;
+    void Promise.resolve(this.emit('recovered', { instance: from })).catch((error) =>
+      this.#log.error({ err: error, event: 'cluster.listener', name: 'recovered' }),
+    );
   }
 
   // Always counted; warned once per sender and reason a presence timeout,
   // debug in between — whoever replays one envelope can replay it in a loop.
-  #replayed(from, channel, reason) {
+  #replayed(from, channel, reason, extra = null) {
     this.#otel.recordClusterVerification('replay');
-    this.#log[this.#loud(`${from}\0${reason}`)]({ event: 'cluster.replay', from, channel, reason });
+    this.#log[this.#loud(`${from}\0${reason}`)]({ event: 'cluster.replay', from, channel, reason, ...extra });
     return false;
   }
 

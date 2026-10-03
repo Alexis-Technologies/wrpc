@@ -1468,6 +1468,13 @@ reference as one opaque string. What is left to do:
   `maxBackpressure` the session was terminated with only `socket.error` and
   `wt.close` at debug, where the WebSocket engine says `ws.backpressure` at
   warn. It is `wt.backpressure` now (`buffered`, `max`), at warn.
+- **A cluster node isolated by its clock is named.** A node whose clock
+  sat outside `maxSkew` had every envelope refused as `stale` while
+  `healthy` stayed true and `fetchClients` came back complete without it —
+  one `cluster.replay` line a `presenceTimeout`, with no measure of the
+  skew. The line carries `skew` (ms) now, and three refusals in a row emit
+  `'degraded'` with `{ instance, reason: 'skew', skew }` — `'recovered'`
+  with `{ instance }` once it is heard again.
 - **What `cluster: { replay: 'accept' }` lets through is counted and said.**
   The option exists for a rolling upgrade from 1.x and should be dropped
   once the last 1.x node is gone — but the envelopes it accepted were

@@ -131,7 +131,10 @@ back. Two things follow for operations:
 
 - **Clocks.** The nodes of a cluster keep their clocks within `maxSkew`
   (30 s by default) — a node outside it is refused by the others as `stale`
-  and never joins. The window is also the one bound on what a node that
+  and never joins. It is not silent about it: the `cluster.replay` line
+  carries the `skew` in ms, and after three refusals in a row the cluster
+  emits `'degraded'` with `{ instance, reason: 'skew', skew }` — and
+  `'recovered'` with `{ instance }` once one of its envelopes is heard. The window is also the one bound on what a node that
   was *not listening* can be fed: a counter window only remembers what
   this process heard, so a freshly booted node accepts an envelope up to
   `maxSkew` old that it has not seen. Lower it where the clocks allow.

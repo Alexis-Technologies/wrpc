@@ -276,7 +276,9 @@ export declare class Cluster extends Emitter {
   /**
    * False while a channel subscribe is failing and being retried: the node
    * can publish but cannot hear. 'degraded'/'recovered' fire on the
-   * transitions — wire them to a readiness probe.
+   * transitions — wire them to a readiness probe. They also fire, with
+   * `{ instance, reason: 'skew', skew }` and `{ instance }`, for a node whose
+   * clock is outside `maxSkew`: refused three times in a row, then heard.
    */
   readonly healthy: boolean;
   /** Cluster-wide membership of `room`: a local sum, no network. */
