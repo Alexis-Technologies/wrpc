@@ -90,7 +90,23 @@ const withBytes = (inner) => ({
  * ('rooms', 'cluster'); `event` prefixes the log events ('backplane',
  * 'cluster').
  */
+// A refusal is said at warn once per kind and channel in this long, debug in
+// between: whoever can publish one envelope can publish it in a loop, and a
+// line per message made the log the thing that fell over. Capped, as the
+// channels are many.
+const REFUSAL_INTERVAL = 10_000;
+const MAX_REFUSAL_KEYS = 1024;
+
 const createEnvelope = ({ compression, encryption, maxMessage, name, layer, event, log, failed = null }) => {
+  const said = new Map();
+  const level = (key) => {
+    const now = Date.now();
+    const last = said.get(key);
+    if (last !== undefined && now - last < REFUSAL_INTERVAL) return 'debug';
+    if (last === undefined && said.size >= MAX_REFUSAL_KEYS) said.clear();
+    said.set(key, now);
+    return 'warn';
+  };
   const sealing = normalizeEnvelopeEncryption(encryption, name);
   if (sealing === null) return withBytes(createEnvelopeCodec(compression, name, maxMessage, failed));
   const codecs = normalizeSyncCompression(compression, name);
@@ -159,7 +175,7 @@ const createEnvelope = ({ compression, encryption, maxMessage, name, layer, even
     decode(message, channel) {
       if (!message.startsWith(SEALED_PREFIX)) {
         if (sealing.acceptPlaintext) return plain.decode(message);
-        return void log.warn({ event: `${event}.unsealed`, channel });
+        return void log[level(`unsealed\0${channel}`)]({ event: `${event}.unsealed`, channel });
       }
       const colon = message.indexOf(':', SEALED_PREFIX.length);
       const kid = colon === -1 ? '' : message.slice(SEALED_PREFIX.length, colon);
@@ -186,7 +202,12 @@ const createEnvelope = ({ compression, encryption, maxMessage, name, layer, even
       // A frame that opened but names a codec this instance does not hold.
       if (body !== null) reason = 'codec';
       // The kid goes on the line only when it is one (peer text stays out).
-      return void log.warn({ event: `${event}.open`, channel, reason, ...(isKid(kid) ? { kid } : {}) });
+      return void log[level(`open\0${reason}\0${channel}`)]({
+        event: `${event}.open`,
+        channel,
+        reason,
+        ...(isKid(kid) ? { kid } : {}),
+      });
     },
   };
 };

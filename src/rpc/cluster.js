@@ -86,6 +86,9 @@ const instanceOfClientId = (id) => {
   return dot > 0 ? id.slice(0, dot) : null;
 };
 
+// Refusal keys remembered for rate-limiting their lines at once (#loud).
+const MAX_REFUSED_KEYS = 1024;
+
 class Cluster extends Emitter {
   #backplane;
   #otel;
@@ -483,7 +486,7 @@ class Cluster extends Emitter {
   #verify(envelope, from, binary) {
     const sig = envelope.sig;
     if (typeof sig !== 'string' || sig.length === 0) {
-      this.#log.warn({ event: 'cluster.unsigned', from });
+      this.#log[this.#loud(`unsigned\0${from}`)]({ event: 'cluster.unsigned', from });
       this.#otel.recordClusterVerification('unsigned');
       return false;
     }
@@ -505,7 +508,7 @@ class Cluster extends Emitter {
     const a = Buffer.from(sig);
     const b = Buffer.from(expected);
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-      this.#log.warn({ event: 'cluster.badsig', from });
+      this.#log[this.#loud(`badsig\0${from}`)]({ event: 'cluster.badsig', from });
       this.#otel.recordClusterVerification('badsig');
       return false;
     }
@@ -551,12 +554,23 @@ class Cluster extends Emitter {
   // debug in between — whoever replays one envelope can replay it in a loop.
   #replayed(from, channel, reason) {
     this.#otel.recordClusterVerification('replay');
-    const key = `${from}\0${reason}`;
-    const now = Date.now();
-    const loud = now - (this.#refused.get(key) ?? 0) > this.#presenceTimeout;
-    if (loud) this.#refused.set(key, now);
-    this.#log[loud ? 'warn' : 'debug']({ event: 'cluster.replay', from, channel, reason });
+    this.#log[this.#loud(`${from}\0${reason}`)]({ event: 'cluster.replay', from, channel, reason });
     return false;
+  }
+
+  // The level of a refusal's line: 'warn' once per key (a sender and a
+  // reason, a channel) a presence timeout, 'debug' in between — whoever
+  // can publish one refused envelope can publish it in a loop, and an
+  // unsigned or mis-signed one was a warn per message. Swept with the
+  // presence records, and capped: an unsigned envelope names whatever
+  // sender it likes, and each one was a new key.
+  #loud(key) {
+    const now = Date.now();
+    const last = this.#refused.get(key);
+    if (last !== undefined && now - last <= this.#presenceTimeout) return 'debug';
+    if (last === undefined && this.#refused.size >= MAX_REFUSED_KEYS) return 'debug';
+    this.#refused.set(key, now);
+    return 'warn';
   }
 
   #seen(from, epoch) {
@@ -963,12 +977,12 @@ class Cluster extends Emitter {
     if (typeof message === 'string') {
       if (this.#envelope !== null) text = this.#envelope.decode(message, channel);
       else if (message.charCodeAt(0) === 119 && message.startsWith('wrpc-enc:')) text = null;
-      if (text === null) return void this.#log.warn({ event: 'cluster.encoded' });
+      if (text === null) return void this.#log[this.#loud('encoded')]({ event: 'cluster.encoded' });
       // Refused by a sealing envelope, which reported why — or our own echo.
       if (text === undefined) return;
       // Still sealed: this node holds no keys, and says so.
       if (typeof text === 'string' && text.charCodeAt(0) === 119 && text.startsWith('wrpc-sealed:')) {
-        return void this.#log.warn({ event: 'cluster.sealed', channel });
+        return void this.#log[this.#loud(`sealed\0${channel}`)]({ event: 'cluster.sealed', channel });
       }
     }
     // A binary envelope (bytes in an event's data, a question or an answer)

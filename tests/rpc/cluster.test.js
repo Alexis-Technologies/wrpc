@@ -1060,6 +1060,36 @@ test('cluster: a binary envelope is signed over its frame — verified, replay-c
   assert.strictEqual(remote.socket.events.filter((e) => e.binary > 0).length, 1);
 });
 
+test('cluster: a refused envelope is a warn once per sender and reason, debug after — not a warn per message', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const log = recorder();
+  boot(t, backplane, { instanceId: 'b', logger: log.writer, cluster: { secret: 's3' } });
+  await settle(20);
+  const unsigned = JSON.stringify({
+    v: 1,
+    from: 'x',
+    epoch: 'e',
+    t: 'cmd',
+    op: 'event',
+    sel: {},
+    name: 'x/y',
+    data: {},
+  });
+  // Fifty unsigned envelopes were fifty warns.
+  for (let i = 0; i < 50; i++) backplane.publish('inst:b', unsigned);
+  backplane.publish('inst:b', JSON.stringify({ ...JSON.parse(unsigned), sig: 'f'.repeat(64) }));
+  backplane.publish('inst:b', JSON.stringify({ ...JSON.parse(unsigned), sig: 'e'.repeat(64) }));
+  await settle(20);
+  const levels = (event) => log.all(event).map((entry) => entry.level);
+  assert.deepStrictEqual(levels('cluster.unsigned'), ['warn', ...Array(49).fill('debug')]);
+  assert.deepStrictEqual(levels('cluster.badsig'), ['warn', 'debug'], 'its own reason, its own warn');
+  // Another sender is warned about in its own right.
+  backplane.publish('inst:b', unsigned.replace('"from":"x"', '"from":"y"'));
+  await settle(20);
+  assert.strictEqual(log.all('cluster.unsigned').at(-1).level, 'warn');
+});
+
 test('cluster: node events, asks and their answers carry bytes; `attachments: false` keeps every leg JSON', async (t) => {
   const backplane = new MemoryBackplane();
   t.after(() => backplane.close());

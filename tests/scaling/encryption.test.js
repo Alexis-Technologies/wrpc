@@ -70,19 +70,25 @@ class FakeSocket {
   }
 }
 
+// `warnings` are the warn lines; `lines` every warn AND debug one — a
+// refusal repeated on one channel is said at warn once, then at debug.
 const logs = () => {
   const warnings = [];
+  const lines = [];
   const log = {
     log() {},
     info() {},
-    debug() {},
+    debug: (entry) => lines.push({ level: 'debug', ...entry }),
     error() {},
-    warn: (entry) => warnings.push(entry),
+    warn: (entry) => {
+      warnings.push(entry);
+      lines.push({ level: 'warn', ...entry });
+    },
     child() {
       return log;
     },
   };
-  return { log, warnings };
+  return { log, warnings, lines };
 };
 
 const instance = (t, backplane, options = {}, logger = false) => {
@@ -167,7 +173,7 @@ test('rooms backplane: an envelope does not open under another key, on another c
   const published = spied(backplane);
   const keys = generateKey();
   const a = instance(t, backplane, { rooms: { encryption: { keys } } });
-  const { log, warnings } = logs();
+  const { log, lines } = logs();
   const b = instance(t, backplane, { rooms: { encryption: { keys } } }, log);
   const stranger = logs();
   const c = instance(t, backplane, { rooms: { encryption: { keys: generateKey() } } }, stranger.log);
@@ -191,10 +197,18 @@ test('rooms backplane: an envelope does not open under another key, on another c
   await backplane.publish(channel, message.replace('wrpc-sealed:0:', 'wrpc-sealed:nope:'));
   await backplane.publish(channel, 'wrpc-sealed:AAAA');
   await backplane.publish(channel, 'wrpc-sealed:0:AAAA');
-  await waitFor(() => warnings.filter((w) => w.event === 'backplane.open').length === 6);
+  await waitFor(() => lines.filter((w) => w.event === 'backplane.open').length === 6);
   assert.deepStrictEqual(
-    warnings.filter((w) => w.event === 'backplane.open').map((w) => w.reason),
-    ['replay', 'open', 'open', 'kid', 'format', 'format'],
+    lines.filter((w) => w.event === 'backplane.open').map((w) => [w.reason, w.level]),
+    [
+      ['replay', 'warn'],
+      ['open', 'warn'],
+      ['open', 'warn'], // moved to another channel: its own line
+      ['kid', 'warn'],
+      ['format', 'warn'],
+      ['format', 'debug'],
+    ],
+    'every refusal a line; a reason repeated on its channel at debug',
   );
   assert.strictEqual(b.socket.events.length, 1, 'nothing but the original was delivered');
 });
@@ -768,7 +782,7 @@ test('createEnvelope: mid-rollout, compression still rides the plaintext both wa
 });
 
 test('createEnvelope: a frame that opens but is malformed inside is refused like any other', () => {
-  const { log, warnings } = logs();
+  const { log, lines } = logs();
   const keys = generateKey();
   const base = { maxMessage: 1 << 20, name: 'x', layer: 'rooms', event: 'backplane', log };
   const receiver = createEnvelope({ ...base, compression: true, encryption: { keys } });
@@ -782,8 +796,13 @@ test('createEnvelope: a frame that opens but is malformed inside is refused like
     assert.strictEqual(receiver.decode(wire(frame), 'ch'), undefined);
   }
   assert.deepStrictEqual(
-    warnings.map((w) => w.reason),
-    ['codec', 'codec', 'codec', 'codec'],
+    lines.map((w) => [w.reason, w.level]),
+    [
+      ['codec', 'warn'],
+      ['codec', 'debug'],
+      ['codec', 'debug'],
+      ['codec', 'debug'],
+    ],
   );
   assert.strictEqual(receiver.decode(wire([0, ...Buffer.from('{"ok":1}')]), 'ch'), '{"ok":1}');
 });
