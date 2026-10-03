@@ -33,6 +33,11 @@ class WrpcClientProxy extends Emitter {
   // The ids of the pages' open subscriptions: what a port's release
   // unsubscribes upstream, where a call is cancelled.
   #feeds = new Set();
+  // The ids of the pages' calls in flight: what a lost upstream answers.
+  #calls = new Set();
+  // The connect in progress: pages whose first packets arrive together
+  // share it, where each used to open its own upstream socket.
+  #opening = null;
   #connection = null;
   #callTimeout = CALL_TIMEOUT;
   #reconnect = null;
@@ -78,7 +83,14 @@ class WrpcClientProxy extends Emitter {
     });
   }
 
-  async open() {
+  open() {
+    this.#opening ??= this.#open().finally(() => {
+      this.#opening = null;
+    });
+    return this.#opening;
+  }
+
+  async #open() {
     if (this.#connection) {
       if (this.#connection.active) return;
       await this.#connection.open();
@@ -96,11 +108,20 @@ class WrpcClientProxy extends Emitter {
       proxy: (data, packet) => this.#proxyPacket(data, packet),
     };
     this.#connection = await WrpcClient.connect(url, options);
-    // The ids in flight died with the connection (the client answered
-    // their callers first); a reconnect starts with none.
+    // What the pages were waiting for died with the connection, and the
+    // client above answers only its OWN calls — a page's went up as raw
+    // packets. Each page hears it now, where it used to wait out its
+    // callTimeout: a call its error, a subscription its end. A reconnect
+    // starts with none.
     this.#connection.on('close', () => {
+      const error = { message: 'The worker lost its connection to the server', code: 503 };
+      for (const [id, port] of this.#pending) {
+        if (this.#feeds.has(id)) port.postMessage(JSON.stringify({ type: 'end', id, error }));
+        else if (this.#calls.has(id)) port.postMessage(JSON.stringify({ type: 'callback', id, error }));
+      }
       this.#pending.clear();
       this.#feeds.clear();
+      this.#calls.clear();
     });
   }
 
@@ -115,6 +136,7 @@ class WrpcClientProxy extends Emitter {
     for (const [id, pending] of this.#pending) {
       if (pending !== port) continue;
       this.#pending.delete(id);
+      this.#calls.delete(id);
       const feed = this.#feeds.delete(id);
       if (live) connection.send(feed ? { type: 'unsubscribe', id } : { type: 'cancel', id });
     }
@@ -175,6 +197,7 @@ class WrpcClientProxy extends Emitter {
     }
     this.#pending.set(packet.id, port);
     if (packet.type === 'subscribe') this.#feeds.add(packet.id);
+    else if (packet.type === 'call') this.#calls.add(packet.id);
     // What the page wrote goes upstream as it is: a frame stays a frame —
     // unless the server speaks revision 1 and reads none, where it leaves
     // as the JSON of the packet it carries.
@@ -218,6 +241,7 @@ class WrpcClientProxy extends Emitter {
     if (type === 'callback' || type === 'end') {
       this.#pending.delete(id);
       this.#feeds.delete(id);
+      this.#calls.delete(id);
       return;
     }
     if (type !== 'stream') return;

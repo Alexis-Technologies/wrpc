@@ -645,4 +645,48 @@ test('WrpcClientProxy', async (t) => {
       assert.deepStrictEqual(unhandled, []);
     },
   );
+  await t.test('pages whose first calls arrive together share one upstream, and hear its loss at once', async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const originalConnect = WrpcClient.connect;
+    let connects = 0;
+    WrpcClient.connect = (...args) => {
+      connects++;
+      return originalConnect.apply(WrpcClient, args);
+    };
+    const proxy = new WrpcClientProxy({ reconnect: false });
+    const pages = [new MessageChannel(), new MessageChannel(), new MessageChannel()];
+    const received = pages.map(() => []);
+    try {
+      pages.forEach(({ port1, port2 }, i) => {
+        globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
+        port1.onmessage = (e) => received[i].push(JSON.parse(e.data));
+        port1.start();
+      });
+      // Three tabs, three first calls in one turn: three upstream sockets before.
+      pages.forEach(({ port1 }, i) => {
+        port1.postMessage(JSON.stringify({ type: 'call', id: `c${i}`, method: 'x/y', args: {} }));
+      });
+      await until(() => MockWebSocket.last?.sentData?.length === 3);
+      assert.strictEqual(connects, 1, 'one connect for all three');
+      // The upstream goes while the three wait: each hears it now — a call
+      // used to sit until its callTimeout.
+      MockWebSocket.last.close();
+      await until(() => received.every((messages) => messages.length === 1));
+      received.forEach((messages, i) => {
+        assert.deepStrictEqual(messages[0], {
+          type: 'callback',
+          id: `c${i}`,
+          error: { message: 'The worker lost its connection to the server', code: 503 },
+        });
+      });
+    } finally {
+      proxy.close();
+      for (const { port1, port2 } of pages) {
+        port1.close();
+        port2.close();
+      }
+      WrpcClient.connect = originalConnect;
+    }
+  });
 });

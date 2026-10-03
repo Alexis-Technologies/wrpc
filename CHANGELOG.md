@@ -1991,6 +1991,14 @@ reference as one opaque string. What is left to do:
   JSON. It is added (joined onto `Vary: Origin` and `Accept-Encoding`)
   wherever the server can answer a frame; a server under
   `attachments: false` or a packet codec does not vary on it.
+- **The worker proxy opens one upstream connection, and answers its pages
+  when it is lost.** Pages whose first packets arrived together each started
+  a connect — three tabs, three sockets to the server — and when the
+  upstream closed under a call, the page heard nothing until its own
+  `callTimeout`: the proxy's client answers only its own calls, and a page's
+  went up as raw packets. `open()` is single-flight now, and on the
+  upstream's `close` every page's call in flight is answered `503` and every
+  subscription ended with the same error.
 - **An HTTP client that sent a frame to a server that reads none sends it
   again as JSON instead of timing out.** The revision an HTTP client learns
   from `wrpc-version: 2` was never lowered, so behind one address shared by
