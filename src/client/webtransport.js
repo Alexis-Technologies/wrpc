@@ -131,8 +131,14 @@ class ClientWtTransport extends ClientTransport {
     // The session's own end — a peer close, a transport failure, our own
     // close() — is one 'close' here; a failure while still opening is
     // open()'s rejection instead (ready rejects too).
+    // A graceful end lets the channel deliver what it already read — an
+    // asynchronous codec may still be inflating it — before it is shut.
     session.closed.then(
-      () => this.#down(session),
+      () => {
+        const settled = this.#channel?.settled() ?? null;
+        if (settled === null) this.#down(session);
+        else void settled.then(() => this.#down(session));
+      },
       (error) => this.#down(session, error),
     );
     try {

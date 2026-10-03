@@ -71,6 +71,12 @@ const DEFAULT_MAX_BACKPRESSURE = 64 * 1024 * 1024;
 // control stream is given to be followed by its session close.
 const DEFAULT_CLOSE_TIMEOUT = 1000;
 const CLOSE_GRACE = 200;
+// Bytes read off the control stream and not yet delivered — waiting behind
+// an inflate in flight — before the reader stops and leaves the rest to
+// QUIC's flow control. Bytes, not a count of frames: a reader that stopped
+// at four inflates in flight left a peer's last burst unread in the stream,
+// and the peer's session close that follows resets the stream and drops it.
+const READ_AHEAD = 1 << 20;
 
 const normalizeBackpressure = (value, label) => {
   if (value === undefined) return DEFAULT_MAX_BACKPRESSURE;
@@ -114,6 +120,8 @@ class WtChannel {
   // then, and forever when the option is off.
   #compression;
   #active = null;
+  // Bytes of read messages the inbound order still holds (READ_AHEAD).
+  #held = 0;
   // Whether this end reads framed messages — announced as `f` — and what
   // to tell once the peer's capabilities said whether IT reads them.
   #frames;
@@ -287,7 +295,11 @@ class WtChannel {
     const active = this.#active;
     if (kind <= KIND_BINARY) {
       if (active === null || this.#inbound.pending === 0) return void this.#deliver(kind, data);
-      return void this.#inbound.push(data, (bytes) => this.#deliver(kind, bytes));
+      this.#held += data.length;
+      return void this.#inbound.push(data, (bytes) => {
+        this.#held -= data.length;
+        this.#deliver(kind, bytes);
+      });
     }
     const plainKind = kind === KIND_TEXT_COMPRESSED ? KIND_TEXT : KIND_BINARY;
     const codec = active.decode.codec;
@@ -302,9 +314,13 @@ class WtChannel {
         return void this.#violation(error);
       }
     }
+    this.#held += data.length;
     this.#inbound.push(
       inflated,
-      (bytes) => this.#deliver(plainKind, plainKind === KIND_TEXT ? decodeText(bytes) : bytes),
+      (bytes) => {
+        this.#held -= data.length;
+        this.#deliver(plainKind, plainKind === KIND_TEXT ? decodeText(bytes) : bytes);
+      },
       (error) => this.#violation(error),
     );
   }
@@ -328,9 +344,9 @@ class WtChannel {
       for (;;) {
         const wait = this.#gate === null ? null : this.#gate();
         if (wait !== null) await wait;
-        // Enough inflates in flight: the next read waits for them — the
+        // Enough read and not delivered: the next read waits for it — the
         // bytes wait in the stream, under QUIC's flow control.
-        if (this.#inbound.pending >= INFLIGHT_LIMIT) await this.#inbound.idle;
+        if (this.#held >= READ_AHEAD) await this.#inbound.idle;
         const { value, done } = await reader.read();
         if (done || this.#closed) break;
         if (this.#onActivity !== null) this.#onActivity();
@@ -341,6 +357,10 @@ class WtChannel {
       // FramingError is the peer's protocol violation.
       return void this.#violation(error);
     }
+    // What the peer sent before its FIN is delivered before the end: an
+    // asynchronous codec — a browser's DecompressionStream — was still
+    // inflating it, and the end shut the channel under every one.
+    if (this.#inbound.pending > 0) await this.#inbound.idle;
     if (!this.#closed) onEnd();
   }
 
@@ -530,6 +550,23 @@ class WtChannel {
   // --- the end --------------------------------------------------------
 
   /** This end is over: nothing more is delivered, sent or counted. Says nothing to the peer. */
+  /**
+   * What an end awaits between the session's graceful end and its own:
+   * resolves once the messages an asynchronous codec is still inflating
+   * are delivered, or after `closeTimeout` — null when none are. A server's
+   * graceful close used to shut the channel under every one of them.
+   */
+  settled() {
+    if (this.#closed || this.#inbound.pending === 0) return null;
+    return new Promise((resolve) => {
+      const timer = setTimeout(resolve, this.#closeTimeout);
+      void this.#inbound.idle.then(() => {
+        clearTimeout(timer);
+        resolve();
+      });
+    });
+  }
+
   shut() {
     if (this.#closed) return;
     this.#closed = true;

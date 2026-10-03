@@ -19,6 +19,7 @@ const zlib = require('node:zlib');
 
 const {
   StreamParser,
+  frame,
   frameCaps,
   KIND_CAPS,
   KIND_TEXT,
@@ -76,6 +77,10 @@ const peerEnd = (session, stream) => {
       await writer.write(frameCaps(text));
       await timers.setTimeout(5);
     },
+    /** One frame of `kind` from the peer. */
+    send: (kind, bytes) => writer.write(frame(kind, bytes)),
+    /** The peer's FIN on the control stream — its graceful end. */
+    finish: () => writer.close(),
   };
 };
 
@@ -176,6 +181,30 @@ const runChannelContract = async (t, name, harness) => {
       [KIND_TEXT_COMPRESSED, KIND_TEXT, KIND_TEXT_COMPRESSED, KIND_TEXT, KIND_TEXT_COMPRESSED],
     );
     assert.deepStrictEqual(peer.received.map(text), sent);
+  });
+
+  await t.test(`${name}: what the peer sent before its FIN arrives, inflated by an asynchronous codec`, async (sub) => {
+    const { end, peer } = await harness.open(sub, { compression: { codec: slowCodec(15) } });
+    const received = [];
+    end.on('message', (data, isBinary) => {
+      if (isBinary !== true) received.push(String(data));
+    });
+    await peer.caps(JSON.stringify({ streams: true, enc: [DEFLATE] }));
+    await waitFor(() => end.compression !== null, 'negotiated');
+    const sent = Array.from({ length: 20 }, (_, i) =>
+      JSON.stringify({ type: 'event', name: 'u/e', data: { i, pad: 'x'.repeat(200) } }),
+    );
+    for (const message of sent) await peer.send(KIND_TEXT_COMPRESSED, zlib.deflateRawSync(Buffer.from(message)));
+    // The FIN right behind them, and the session closed — a server's
+    // graceful close: the end used to shut its channel under every message
+    // still inflating, and 0 of 20 arrived.
+    await peer.finish();
+    // A graceful close: the stream's data is read before the session goes
+    // (closing a session resets its streams), as WtChannel's own close does.
+    await timers.setTimeout(5);
+    peer.session.close({ closeCode: 1000, reason: '' });
+    await waitFor(() => received.length === sent.length, 'every message sent before the FIN');
+    assert.deepStrictEqual(received, sent);
   });
 
   await t.test(

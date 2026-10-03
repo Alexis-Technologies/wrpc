@@ -1991,6 +1991,15 @@ reference as one opaque string. What is left to do:
   JSON. It is added (joined onto `Vary: Origin` and `Accept-Encoding`)
   wherever the server can answer a frame; a server under
   `attachments: false` or a packet codec does not vary on it.
+- **WebTransport delivers what the peer sent before a graceful close, under
+  an asynchronous codec too.** A channel stopped reading its control stream
+  at four inflates in flight — a browser's `DecompressionStream` answers
+  asynchronously — so a peer's last burst stayed unread in the stream, and
+  the session close that follows a graceful close resets the stream and
+  drops what it holds; what had been read was dropped by the shut. The
+  reader now stops on BYTES held (1 MiB read and not yet delivered), not on
+  a count, and on the session's graceful end both ends let the channel
+  deliver what it read (`closeTimeout` at most) before shutting it.
 - **`acceptSessions` checks the per-session options at the call.** A bad
   `maxBackpressure`, timeout, stream cap or compression codec was accepted
   and then failed every session it attached — each client saw `Not

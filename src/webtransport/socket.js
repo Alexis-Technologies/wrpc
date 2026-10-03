@@ -179,7 +179,12 @@ class WtSocket extends EventEmitter {
     // The session's own end — the peer closed, the transport failed — is a
     // close here; our own close() settles it too, by then a no-op.
     session.closed.then(
-      (info) => this.#down(info?.closeCode ?? 1006, info?.reason ?? ''),
+      (info) => {
+        const down = () => this.#down(info?.closeCode ?? 1006, info?.reason ?? '');
+        const settled = this.#channel.settled();
+        if (settled === null) down();
+        else void settled.then(down);
+      },
       (error) => {
         this.#fault('wt.session.error', error);
         this.#down(1006, '');
