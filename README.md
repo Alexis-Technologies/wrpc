@@ -55,7 +55,7 @@ installed.
 
 **Optional integrations are injected, not depended on.** uWebSockets.js, Redis,
 fastify, express and TanStack Query all work — you `require` them and hand them
-over, and wrpc duck-types the injection at the boundary. So the integrations
+over, and wRPC duck-types the injection at the boundary. So the integrations
 you do not use cost you nothing, and the ones you do use are on your version,
 not ours.
 
@@ -65,31 +65,44 @@ reimplementation.
 
 ### Positioning
 
-| | **wrpc** | **tRPC** | **Socket.IO** |
-| --- | --- | --- | --- |
-| Transport | WebSocket, HTTP, SSE, worker port | HTTP, WebSocket | WebSocket + long-poll fallback |
-| Types | contract-first + codegen, no build step | TypeScript inference | none built in |
-| Realtime | subscriptions, events, rooms, acks | subscriptions | events, rooms, acks |
-| Binary | streams with backpressure | ❌ | ❌ (messages only) |
-| Scaling | rooms backplane (any pub/sub) | your own | adapters |
-| Cluster ops | fetchClients, commands, presence (local read) | your own | fetchSockets (round-trip) |
-| Runtime deps | **0** | a few | several |
-| Needs TypeScript | ❌ | effectively yes | ❌ |
+| | **wRPC** (`@alexify/wrpc`) | **tRPC** | **Socket.IO** | **gRPC / Connect** | **wRPC** (Bytecode Alliance) | **webrpc** |
+| --- | --- | --- | --- | --- | --- | --- |
+| Transports | WebSocket, HTTP + REST, SSE, WebTransport, WebRTC, worker port, message broker | HTTP, SSE, WebSocket | WebSocket, long-polling, WebTransport | HTTP/2; Connect: HTTP/1.1–3 | TCP, QUIC, WebTransport, Unix sockets | HTTP POST |
+| Peer to peer | WebRTC data channels | — | — | — | — | — |
+| Contract / types | declared or generated, no build step | inferred from the router | hand-written generics | `.proto` + codegen | WIT + codegen | RIDL + codegen |
+| Realtime | subscriptions (resume), events, rooms, acks | subscriptions (resume) | events, rooms, acks | streaming RPCs | streams and futures | server-streaming |
+| Binary | bytes in any packet, streams with backpressure | binary inputs | bytes in events | protobuf bytes | `list<u8>`, `stream<u8>` | file up/download |
+| Message brokers | feeds, consumers, RPC (experimental) | — | a broadcast backplane | — | NATS (0.17 release) | — |
+| Encryption beyond TLS | sealed envelopes, Noise, HPKE, E2EE (experimental) | — | — | — | — | — |
+| JS runtime deps | **0** | 0 | 6 | 0 + a peer (Connect) | 0 | 0 (generated) |
+| Polyglot | JavaScript only | TypeScript only | many clients | many languages | Rust, Go, JS | 6 languages |
 
-### When NOT to use wrpc
+**Which wRPC?** The Bytecode Alliance's wRPC is an unrelated WIT-based RPC
+framework for WebAssembly components; webrpc is schema-first code generation
+over HTTP and JSON. Both are in the table because both are reasonable choices
+— see [Why wRPC?](https://wrpc.vercel.app/guide/why#against-the-alternatives),
+where every cell has its source.
 
-- **You want a public HTTP API.** wrpc has a REST mode, but it is a convenience
-  for reaching procedures, not an API design. If third parties consume it,
-  write an HTTP API and document it.
+### When NOT to use wRPC
+
+- **You want an API wRPC does not shape.** A procedure can declare a real
+  REST mapping — verb, path, status, `/vN` version paths, schemas,
+  `wrpc types --openapi` — but the URL surface follows your router. If the
+  HTTP contract itself is the product, design it first.
 - **Your stack is polyglot.** The protocol is documented and small enough to
-  reimplement, but the only implementation today is JavaScript. gRPC exists for
-  a reason.
-- **You need guaranteed delivery.** Rooms are at-most-once fan-out, not a
-  queue. Subscriptions with `tracked()` values and an event log let a client
-  catch up; if you need a broker's guarantees, use a broker.
+  reimplement, but the only implementation today is JavaScript. gRPC or
+  Connect, webrpc, or — for WebAssembly components — the Bytecode Alliance's
+  wRPC are built for many languages.
+- **You need delivery guarantees from rooms.** Rooms are at-most-once fan-out,
+  not a queue. Subscriptions with `tracked()` values and an event log let a
+  client catch up, and the broker family adds at-least-once queue consumers
+  and durable feeds (experimental) — exactly-once is the broker's and your
+  application's to build.
+- **You need audio or video.** The WebRTC layer moves data over data
+  channels, not media tracks.
 - **You want end-to-end type inference from server code.** tRPC's model — where
   the client's types come from the server's implementation with nothing written
-  twice — is genuinely nicer if your whole stack is TypeScript. wrpc's contract
+  twice — is genuinely nicer if your whole stack is TypeScript. wRPC's contract
   is declared or generated, deliberately, because it must also work for
   JavaScript users and across a network boundary the compiler cannot see.
 
@@ -259,7 +272,7 @@ const server = new Server({ router, logger: pino(), telemetry: { api } });
 ```
 
 `logger` takes a structured logger (pino, bunyan, winston), a `Console`, or
-`false` to go silent. wrpc binds children for you — `component`, `peer` and a
+`false` to go silent. wRPC binds children for you — `component`, `peer` and a
 per-call `callId` — and `context.log` inside a handler is already scoped to
 that call.
 
@@ -303,7 +316,7 @@ Every subpath ships hand-maintained TypeScript declarations — no generation, n
 ## Documentation
 
 - **Start here** — [getting started](https://wrpc.vercel.app/guide/getting-started),
-  [why wrpc?](https://wrpc.vercel.app/guide/why).
+  [why wRPC?](https://wrpc.vercel.app/guide/why).
 - **Server** — [server](https://wrpc.vercel.app/guide/server),
   [router](https://wrpc.vercel.app/guide/router),
   [hooks](https://wrpc.vercel.app/guide/hooks),
@@ -316,29 +329,43 @@ Every subpath ships hand-maintained TypeScript declarations — no generation, n
   [REST](https://wrpc.vercel.app/guide/rest),
   [authentication](https://wrpc.vercel.app/guide/auth),
   [metadata](https://wrpc.vercel.app/guide/metadata).
+- **Message brokers** — [overview & contracts](https://wrpc.vercel.app/guide/brokers),
+  [durable feeds](https://wrpc.vercel.app/guide/brokers/feeds),
+  [queue consumers & publishing](https://wrpc.vercel.app/guide/brokers/consumers),
+  [RPC over a broker](https://wrpc.vercel.app/guide/brokers/rpc),
+  [Redis](https://wrpc.vercel.app/guide/brokers/redis),
+  [NATS](https://wrpc.vercel.app/guide/brokers/nats),
+  [RabbitMQ](https://wrpc.vercel.app/guide/brokers/amqp),
+  [Kafka](https://wrpc.vercel.app/guide/brokers/kafka).
 - **Client** — [client](https://wrpc.vercel.app/guide/client),
   [typed client](https://wrpc.vercel.app/guide/typed-client),
+  [multiple backends](https://wrpc.vercel.app/guide/multiple-backends),
   [browser & bundling](https://wrpc.vercel.app/guide/browser),
   [CLI](https://wrpc.vercel.app/guide/cli),
   [TanStack Query](https://wrpc.vercel.app/guide/query).
 - **Transports & hosts** — [SSE](https://wrpc.vercel.app/guide/sse),
   [WebRTC](https://wrpc.vercel.app/guide/webrtc),
+  [WebRTC identity and trust](https://wrpc.vercel.app/guide/webrtc-trust),
   [WebTransport](https://wrpc.vercel.app/guide/wt),
   [wire codec](https://wrpc.vercel.app/guide/codec),
   [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws),
   [fastify](https://wrpc.vercel.app/guide/adapters/fastify),
   [express](https://wrpc.vercel.app/guide/adapters/express).
 - **Operations** — [security](https://wrpc.vercel.app/guide/security),
+  [rate limiting & throttling](https://wrpc.vercel.app/guide/rate-limiting),
   [running in production](https://wrpc.vercel.app/guide/production),
   [testing](https://wrpc.vercel.app/guide/testing),
   [performance](https://wrpc.vercel.app/guide/performance),
+  [compression](https://wrpc.vercel.app/guide/compression),
+  [encryption](https://wrpc.vercel.app/guide/encryption),
   [logging](https://wrpc.vercel.app/guide/logging),
   [OpenTelemetry](https://wrpc.vercel.app/guide/telemetry).
 - **Reference** — [wire protocol](https://wrpc.vercel.app/reference/protocol)
   (revision 2, negotiated with a 1.0 peer; with a changes-since-1.0 table),
   [wire format](https://wrpc.vercel.app/reference/wire-format),
   [engine port](https://wrpc.vercel.app/reference/engine),
-  [errors & close codes](https://wrpc.vercel.app/reference/errors).
+  [errors & close codes](https://wrpc.vercel.app/reference/errors),
+  [stability & deprecation](https://wrpc.vercel.app/reference/stability).
 - **Types** — [`index.d.ts`](./index.d.ts) is the full public surface, plus one
   `.d.ts` per subpath.
 

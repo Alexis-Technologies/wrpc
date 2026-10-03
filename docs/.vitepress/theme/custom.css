@@ -141,3 +141,18 @@
   fill: var(--vp-c-bg) !important;
   color: var(--vp-c-text-1);
 }
+
+/* ─── Comparison tables (the why page): every column readable ──────────
+   Five projects side by side do not fit the content column; rather than
+   squeeze each cell to a word per line, give every column a floor and let
+   the table scroll inside itself (VitePress tables are display: block with
+   overflow-x: auto), as it already does at phone width. */
+.vp-doc .compare table th,
+.vp-doc .compare table td {
+  min-width: 11rem;
+}
+.vp-doc .compare table th:first-child,
+.vp-doc .compare table td:first-child {
+  min-width: 8rem;
+  font-weight: 600;
+}
