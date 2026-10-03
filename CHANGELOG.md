@@ -1903,6 +1903,13 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **A worker port under a packet codec no longer opens with a malformed
+  packet.** The page's first `ping` — the one naming its revision — was
+  JSON text whatever the client's `codec`, and a server attached to the
+  port decodes everything with its own: `packet.malformed` on every
+  connect, and an id-less `500` the page heard as an error. The ping goes
+  through the codec now and its `pong` is read back through it, so the page
+  still learns it talks to a 2.x end and still says goodbye on `close()`.
 - **The Autobahn runner no longer calls a truncated run a pass.**
   `node scripts/autobahn/run.js` graded whatever cases the report held, and
   the fuzzing client writes a report even when it gives up half-way — one

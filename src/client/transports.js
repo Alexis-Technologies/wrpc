@@ -394,6 +394,18 @@ class ClientHttpTransport extends ClientTransport {
   }
 }
 
+const isPongText = (data) => typeof data === 'string' && data.startsWith('{"type":"pong"');
+
+// What the other end wrote, through the codec — null for anything it does
+// not decode (an injected codec may throw on a message it did not make).
+const decodeQuietly = (codec, data) => {
+  try {
+    return codec.decode(data);
+  } catch {
+    return null;
+  }
+};
+
 class ClientEventTransport extends ClientTransport {
   static instance = null;
 
@@ -435,18 +447,22 @@ class ClientEventTransport extends ClientTransport {
     this.revision = 1;
     this.#modern = false;
     // What this side reads: 2, or 1 under `attachments: false` / a codec.
-    const mine = this.attachments !== false && !this.codec ? 2 : 1;
+    const { codec } = this;
+    const mine = this.attachments !== false && !codec ? 2 : 1;
     let negotiating = true;
     port1.addEventListener('message', ({ data }) => {
       if (data === undefined) return;
       // Only until the first pong: it answers the ping below, and is the
-      // transport's — the core never asked for it.
-      if (negotiating && typeof data === 'string' && data.startsWith('{"type":"pong"')) {
-        negotiating = false;
-        const { v } = jsonParse(data) ?? {};
-        this.#modern = v !== undefined;
-        this.revision = v === 2 && mine === 2 ? 2 : 1;
-        return;
+      // transport's — the core never asked for it. Under a packet codec it
+      // is the codec's, like everything the other end writes.
+      if (negotiating) {
+        const pong = codec ? decodeQuietly(codec, data) : isPongText(data) ? jsonParse(data) : null;
+        if (pong?.type === 'pong') {
+          negotiating = false;
+          this.#modern = pong.v !== undefined;
+          this.revision = pong.v === 2 && mine === 2 ? 2 : 1;
+          return;
+        }
       }
       this.emit('message', data);
     });
@@ -461,8 +477,11 @@ class ClientEventTransport extends ClientTransport {
     this.#worker.postMessage(connect, [port2]);
     // First on the port, before anything the core sends: by the time a
     // `load()` is answered the revision is known. Not waited for — a call
-    // sent before the pong leaves as revision 1, which every end reads.
-    port1.postMessage(`{"type":"ping","v":${mine}}`);
+    // sent before the pong leaves as revision 1, which every end reads. A
+    // server under a packet codec decodes every message with it: a JSON
+    // ping was a malformed packet there, answered with an id-less 500.
+    const ping = { type: 'ping', v: mine };
+    port1.postMessage(codec ? codec.encode(ping) : JSON.stringify(ping));
     this.active = true;
     this.emit('open');
   }

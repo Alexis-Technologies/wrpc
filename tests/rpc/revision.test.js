@@ -14,6 +14,7 @@ const { MessageChannel } = require('node:worker_threads');
 const { RpcServer, defineRouter, procedure } = require('../../index.js');
 const { WebsocketServer } = require('#ws');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
+const { recorder } = require('../helpers/recorder.js');
 
 const BYTES = Uint8Array.of(1, 2, 3);
 // What JSON.stringify makes of a Uint8Array — the form 1.0 sent and read.
@@ -299,6 +300,33 @@ test('revision port: either end that reads no frames keeps the port at revision 
   assert.strictEqual(page.client.revision, 1);
   assert.strictEqual(page.peer.revision, 1);
   assert.deepStrictEqual(await page.client.api.files.get(), { blob: JSON_BYTES });
+});
+
+test("revision port: under a packet codec the ping and its pong are the codec's — and the goodbye still releases", async (t) => {
+  // A server under a codec decodes everything a port carries with it: the
+  // JSON ping was a malformed packet there, logged on every connect and
+  // answered with an id-less 500 the page saw as an error.
+  const codec = {
+    encode: (packet) => JSON.stringify({ wrapped: packet }),
+    // Like a binary codec: what it did not make is no packet at all.
+    decode: (text) => {
+      const outer = JSON.parse(text);
+      return Object.hasOwn(outer, 'wrapped') ? outer.wrapped : null;
+    },
+  };
+  const log = recorder();
+  const errors = [];
+  const { client, peer } = await overPort(t, { codec, logger: log.writer }, { codec });
+  client.on('error', (error) => errors.push(error));
+  assert.deepStrictEqual(await client.api.files.get(), { blob: JSON_BYTES });
+  assert.strictEqual(client.revision, 1);
+  assert.strictEqual(peer.revision, 1);
+  assert.deepStrictEqual([...log.all('packet.malformed'), ...log.all('packet.unknown')], []);
+  assert.deepStrictEqual(errors, []);
+  // The pong named a revision, so the page knows a 2.x end and says goodbye.
+  const closed = new Promise((resolve) => peer.once('close', resolve));
+  client.close();
+  await closed;
 });
 
 test('revision port: a page that names nothing — a 1.0 page — is answered a plain pong and sent no frame', async (t) => {

@@ -139,7 +139,9 @@ it speaks, and a 2.x end answers with its own:
 
 The port speaks the older of the two. A 1.0 end ignores the field and
 answers a plain `pong` — revision 1 — and a 1.0 page sends no such ping, so
-it is sent no framed message. The field means nothing on a transport that
+it is sent no framed message. Under a packet codec both are the codec's
+encoding, like every other packet on the port (and the port is revision 1:
+a codec owns the wire). The field means nothing on a transport that
 settled the revision elsewhere.
 
 ## Changes since 1.0 {#changes-since-1-0}
