@@ -435,7 +435,11 @@ test('webrtc transport: raw channel — an empty continuation fragment is a fram
   );
   assert.strictEqual(errors[0].name, 'FramingError');
   assert.strictEqual(errors[0].code, 'empty');
-  assert.strictEqual(a.readyState, 'closed', 'a raw channel is closed by the half that refused');
+  // 'closing' first, under load: waited for, not read at one instant.
+  await within(
+    waitFor(() => a.readyState === 'closed', 'a raw channel is closed by the half that refused'),
+    'closed',
+  );
 });
 
 test('webrtc transport: raw channel — open() waits for a connecting channel', async (t) => {
