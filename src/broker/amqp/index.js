@@ -930,66 +930,109 @@ const createAmqpBroker = (options = {}) => {
   const listen = async (address, onMessage, { group = null } = {}) => {
     if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
     checkListen('amqp direct.listen', address, onMessage);
-    // What `stop.healthy` answers: the consumer was cancelled by the broker,
-    // or its channel closed (with it an exclusive inbox queue is gone) —
-    // either way nothing is delivered here any more.
-    let listening = true;
-    const channel = await openChannel(false, () => {
-      listening = false;
-    });
+    const grouped = group !== null && group !== undefined;
     const exchangeName = await ensureDirect();
-    // RabbitMQ 4 refuses a transient non-exclusive queue, so a group's
-    // shared queue is durable and expires when nobody consumes it.
-    const queue =
-      group === null || group === undefined
-        ? (await channel.assertQueue('', { exclusive: true, autoDelete: true })).queue
-        : (
-            await channel.assertQueue(groupQueue(address, group), {
-              durable: true,
-              arguments: { 'x-expires': inboxTtl, 'x-queue-type': 'classic' },
-            })
-          ).queue;
-    await channel.bindQueue(queue, exchangeName, routingKeyOf(address));
-    const { consumerTag } = await channel.consume(
-      queue,
-      (message) => {
-        if (message === null) {
-          listening = false;
-          return void report('broker.amqp.cancelled', new Error('consumer cancelled'), { address });
+    const deliver = (message) => {
+      const headers = headersOf(message);
+      const text = headers[TEXT_HEADER] === '1';
+      delete headers[TEXT_HEADER];
+      try {
+        const result = onMessage({
+          body: text ? message.content.toString() : new Uint8Array(message.content),
+          headers,
+          correlationId: message.properties?.correlationId ?? null,
+          replyTo: message.properties?.replyTo ?? null,
+        });
+        if (result && isFunction(result.catch)) result.catch((error) => report('broker.amqp.listener', error));
+      } catch (error) {
+        report('broker.amqp.listener', error, { address });
+      }
+    };
+    // The consumer as it stands — its channel, queue and tag — or null while
+    // it is down. A cancel by the server (the queue deleted, its node gone)
+    // or a closed channel used to be the end of the listener: `healthy`
+    // false, and a send to the address taken and delivered nowhere. It comes
+    // back now, as a queue consumer does: a fresh channel, the queue declared
+    // and bound again, with a backoff.
+    let current = null;
+    let stopped = false;
+    let reopening = false;
+    const open = async () => {
+      let channel = null;
+      channel = await openChannel(false, () => {
+        if (current === null || current.channel !== channel) return;
+        current = null;
+        if (!stopped && !closed && !lost) void again();
+      });
+      try {
+        // RabbitMQ 4 refuses a transient non-exclusive queue, so a group's
+        // shared queue is durable and expires when nobody consumes it.
+        const queue = grouped
+          ? (
+              await channel.assertQueue(groupQueue(address, group), {
+                durable: true,
+                arguments: { 'x-expires': inboxTtl, 'x-queue-type': 'classic' },
+              })
+            ).queue
+          : (await channel.assertQueue('', { exclusive: true, autoDelete: true })).queue;
+        await channel.bindQueue(queue, exchangeName, routingKeyOf(address));
+        const { consumerTag } = await channel.consume(
+          queue,
+          (message) => {
+            if (message !== null) return void deliver(message);
+            // The channel stays open and hears nothing: closed, so its close
+            // brings the consumer back.
+            report('broker.amqp.cancelled', new Error('consumer cancelled'), { address });
+            void closeChannel(channel);
+          },
+          { noAck: true },
+        );
+        current = { channel, queue, tag: consumerTag };
+      } catch (error) {
+        // Not left open behind a failed attempt: a re-open that keeps failing
+        // would hold one channel per try.
+        void closeChannel(channel);
+        throw error;
+      }
+    };
+    const again = async () => {
+      if (reopening) return;
+      reopening = true;
+      try {
+        for (let attempt = 0; ; attempt++) {
+          if (stopped || closed || lost) return;
+          await sleep(backoffDelay({ ...REOPEN_BACKOFF, attempt }));
+          if (stopped || closed || lost) return;
+          try {
+            await open();
+            return;
+          } catch (error) {
+            report('broker.amqp.direct.reopen', error, { address, attempt: attempt + 1 });
+          }
         }
-        const headers = headersOf(message);
-        const text = headers[TEXT_HEADER] === '1';
-        delete headers[TEXT_HEADER];
-        try {
-          const result = onMessage({
-            body: text ? message.content.toString() : new Uint8Array(message.content),
-            headers,
-            correlationId: message.properties?.correlationId ?? null,
-            replyTo: message.properties?.replyTo ?? null,
-          });
-          if (result && isFunction(result.catch)) result.catch((error) => report('broker.amqp.listener', error));
-        } catch (error) {
-          report('broker.amqp.listener', error, { address });
-        }
-      },
-      { noAck: true },
-    );
+      } finally {
+        reopening = false;
+      }
+    };
+    await open();
     const stop = async () => {
-      listening = false;
+      stopped = true;
+      const live = current;
+      current = null;
+      if (live === null) return;
       // An inbox's own queue is unbound FIRST, so a publish racing this stop
       // gets a basic.return (nobody there) rather than a nack from a queue
       // being deleted under it. A group's queue is shared and stays bound.
-      if (group === null || group === undefined) {
-        await channel.unbindQueue(queue, exchangeName, routingKeyOf(address)).catch(() => {});
-      }
+      if (!grouped) await live.channel.unbindQueue(live.queue, exchangeName, routingKeyOf(address)).catch(() => {});
       try {
-        await channel.cancel(consumerTag);
+        await live.channel.cancel(live.tag);
       } catch {
         // Already cancelled.
       }
-      await closeChannel(channel);
+      await closeChannel(live.channel);
     };
-    return withHealth(stop, () => listening && !closed && !lost);
+    // What `stop.healthy` answers: a consumer is in place right now.
+    return withHealth(stop, () => current !== null && !stopped && !closed && !lost);
   };
 
   const send = async (address, body, { headers = null, correlationId = null, replyTo = null, timeout } = {}) => {

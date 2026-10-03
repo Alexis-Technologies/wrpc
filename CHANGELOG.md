@@ -1987,6 +1987,12 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **AMQP: a direct listener the server cancelled, or whose channel closed,
+  comes back.** It went `healthy: false` for good, and a send to its
+  address was taken and delivered nowhere. It re-opens now as a queue
+  consumer does — a fresh channel, its queue declared and bound again,
+  with a backoff, each failed attempt logged `broker.amqp.direct.reopen` —
+  and `healthy` is true again once it is in place.
 - **AMQP: a paused consumer stays paused across a re-open, and the
   backplane hears again after a cancel.** A consumer whose channel the
   server closed during `pause()` came back consuming, and delivered what
