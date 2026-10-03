@@ -1939,6 +1939,12 @@ reference as one opaque string. What is left to do:
   MEMBERS too: every public member of `ServerTransport` and its transports,
   the server `Client`, `RpcServer` and `WrpcClient` must be declared on its
   d.ts class, the few the core calls on itself named in the test.
+- **The engine contract says that `socket.protocol` decides the revision.**
+  The core reads it once at attach — `wrpc.v2` is revision 2, anything else
+  revision 1 — so an adapter that never set it served every client at
+  revision 1 without a word. `docs/reference/engine.md` and `engine.d.ts`
+  say so, and the engine contract checks that the server-side socket's
+  `protocol` is the subprotocol the handshake selected, on both engines.
 - **The broker binding negotiates the revision; a stateless request holding
   bytes is answered.** A session's `hello` and `welcome` now say whether
   each side reads framed messages (`wrpc-version: 2`), and a session sends

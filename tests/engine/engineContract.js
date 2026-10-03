@@ -17,6 +17,7 @@ const assert = require('node:assert');
 const http = require('node:http');
 
 const { ProtocolClient } = require('../websocket/protocolClient.js');
+const { waitFor } = require('../helpers/wait.js');
 
 // Hosted engines attach to a node http server the suite owns.
 const hostedHarness = (createEngine) => ({
@@ -274,8 +275,13 @@ const runEngineContract = async (harness, t) => {
     // A 2.x client offers both revisions and a 1.0 client `wrpc.v1` alone:
     // every engine answers the newest one it was offered, wherever it sits
     // in the list, and nothing when no revision was offered at all.
-    const { port } = await boot(sub);
+    const { source, port } = await boot(sub);
+    // The selection is load-bearing on the socket too: the core reads
+    // `socket.protocol` for the revision (a missing one is revision 1).
+    const sockets = [];
+    source.on('connection', (socket) => sockets.push(socket));
     const selected = async (offer) => {
+      const count = sockets.length;
       const res = await ProtocolClient.attemptHandshake({
         host: '127.0.0.1',
         port,
@@ -290,7 +296,10 @@ const runEngineContract = async (harness, t) => {
         timeoutMs: 600,
       });
       assert.strictEqual(parseInt(res.statusLine.split(' ')[1], 10), 101, offer);
-      return res.headers['sec-websocket-protocol'];
+      await waitFor(() => sockets.length > count, 'the connection event');
+      const answer = res.headers['sec-websocket-protocol'];
+      assert.strictEqual(sockets.at(-1).protocol || undefined, answer, `${offer}: socket.protocol is the selection`);
+      return answer;
     };
     assert.strictEqual(await selected('wrpc.v2, wrpc.v1'), 'wrpc.v2');
     assert.strictEqual(await selected('wrpc.v1, wrpc.v2'), 'wrpc.v2');

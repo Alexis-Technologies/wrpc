@@ -53,6 +53,13 @@ export interface WrpcSocket extends EventEmitter {
   sendPrepared?(message: SharedMessage): boolean;
   readonly bufferedAmount: number;
   readonly remoteAddress?: string;
+  /**
+   * The subprotocol the handshake selected — and so the protocol revision:
+   * the core reads it once at attach, `'wrpc.v2'` is revision 2, anything
+   * else (`'wrpc.v1'`, `''`, a missing property) revision 1, where no framed
+   * message is sent. An engine that does not set it serves every client at
+   * revision 1.
+   */
   protocol?: string;
   close(code?: number, reason?: string): void;
   terminate(): void;

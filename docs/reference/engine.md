@@ -112,7 +112,7 @@ interface WrpcSocket extends EventEmitter {
 Events: `'message'(data, isBinary)`, `'drain'`, `'ping'(payload)`,
 `'pong'(payload)`, `'close'(code, reason)`, `'error'(error)`.
 
-Two rules the whole stack depends on:
+Three rules the whole stack depends on:
 
 - **`send()` returns an honest boolean.** `false` means the buffer is above its
   high-water mark and a `'drain'` will follow. The built-in engine's
@@ -124,6 +124,14 @@ Two rules the whole stack depends on:
   consumer into unbounded server memory.
 - **A received payload may share memory with the receive buffer.** Copy it if
   you retain it past the listener call.
+- **`protocol` is the selected subprotocol, and it decides the revision.**
+  The core reads `socket.protocol` once, when the socket is attached:
+  `wrpc.v2` is [revision 2](./protocol#versioning) and the connection
+  carries framed messages, anything else — `wrpc.v1`, `''`, a property the
+  engine never set — is revision 1, bytes as 1.0's JSON. An adapter that
+  forgets it is not refused; every client is served at revision 1, which
+  only the `wrpc.revision` attribute of `wrpc.server.connections` and the
+  `revision.peer` debug line show.
 
 Two optional extensions, both feature-detected by the core:
 
