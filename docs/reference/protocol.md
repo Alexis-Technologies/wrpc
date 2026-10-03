@@ -86,7 +86,12 @@ The rules that keep this compatible in every direction:
 - An end that sends and reads no framed messages — `attachments: false`, or
   an injected packet codec — has nothing of revision 2 to offer: it offers,
   or selects, `wrpc.v1` alone. Two 2.x ends whose options disagree therefore
-  settle on revision 1 instead of one refusing the other's frames.
+  settle on revision 1 instead of one refusing the other's frames. The price
+  is that a `wrpc.v1` selection is **ambiguous**: it is what a 1.0 server
+  answers and what a 2.x server without frames answers, and nothing on the
+  handshake tells them apart. It matters only for what a 1.0 server does not
+  read — a browser's [carrier tokens](#connection-metadata) — and there a
+  client chooses its carrier rather than relying on the guess.
 - A server whose app configures its own `protocols` list takes over
   negotiation entirely; the connection speaks revision 2 only when `wrpc.v2`
   is what was selected.
@@ -166,7 +171,7 @@ has the upgrade order.
 | `wrpc-version: 2` on an HTTP response, and the `Accept` that asks for a framed answer | [Versioning](#versioning) | Additive: a 1.0 server answers `1` and is sent no frame; a 1.0 client sends no such `Accept` and is answered JSON. | nothing behind one address per version; a mixed fleet behind ONE address sets `attachments: false` on its 2.0 instances, so they answer `1` |
 | `v` on a worker port's first `ping`/`pong` | [Versioning](#versioning) | Additive: a 1.0 end answers a plain `pong`, a 1.0 page sends no such ping — revision 1 either way. | nothing |
 | **Framed messages** of kind 3 and 4 — a packet or a chunk compressed by a Node client — and the `enc` field of `ping`/`pong` that negotiates them | [Binary chunks](#binary-chunks), [Compression](#compression) | Negotiated: a 1.0 server ignores `enc` on the `ping` and answers a plain `pong`, so a 2.0 client never sends one; a 1.0 client never sends one. | nothing |
-| The subprotocol **carrier tokens** `wrpc.h.` and `wrpc.m.` — a browser's declared headers and data on a WebSocket handshake — and a wider deny list of declared names (`wrpc.bearer.` is 1.0's own) | [Connection metadata](#connection-metadata) | A 1.0 server selects `wrpc.v1` and reads no token — so a 2.0 browser client that was answered `wrpc.v1` dials once more with the `wrpc_h`/`wrpc_meta` query 1.0 reads. A 1.0 client never sends one. | nothing — `carrier: 'query'` on the client saves the second handshake |
+| The subprotocol **carrier tokens** `wrpc.h.` and `wrpc.m.` — a browser's declared headers and data on a WebSocket handshake — and a wider deny list of declared names (`wrpc.bearer.` is 1.0's own) | [Connection metadata](#connection-metadata) | A 1.0 server selects `wrpc.v1` and reads no token — so a 2.0 browser client that was answered `wrpc.v1` dials once more with the `wrpc_h`/`wrpc_meta` query 1.0 reads. A 2.0 server that sends no frames answers `wrpc.v1` too (and reads the tokens), so the answer is ambiguous: the redial happens there as well, and a client that offered `wrpc.v1` alone is never redialled. A 1.0 client never sends a token. | `carrier: 'query'` on a page that must reach a 1.0 server; `carrier: 'protocol'` to keep labels out of URLs |
 | The **SSE channel secret**, presented as `x-wrpc-channel: <id>.<secret>` | [Server-Sent Events](#server-sent-events) | Additive: the `ready` frame hands out the whole reference in the field 1.0 named `channel`, and a 1.0 client presents it back as it is. A 2.0 client against a 1.0 server presents the bare id that server gave it. | nothing |
 | `epoch` and `seq` on the **rooms envelope** — loss detection between instances | [Rooms](#rooms) | Additive: a 1.0 instance ignores them, a 2.0 instance delivers a 1.0 instance's envelopes untracked. | nothing |
 | The `wrpc-bin:` **rooms and cluster envelope** — an event (or a node-to-node question or answer) whose data holds bytes, as an attachments frame | [Rooms](#rooms), [Cluster channels](#cluster-channels) | **Not additive.** A backplane is a broadcast with no handshake: a 1.0 instance cannot parse the envelope and drops the event, without a log line. | `attachments: false` on the 2.0 instances keeps the envelope JSON, as in 1.0 |

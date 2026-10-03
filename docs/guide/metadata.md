@@ -102,7 +102,21 @@ Sec-WebSocket-Protocol: wrpc.v2, wrpc.v1, wrpc.h.eyJ4LWFwcC12ZXJzaW9uIjoiMS4yLjM
 The server selects `wrpc.v2`, reads the token, and never selects or echoes
 it. (A 1.0 server reads no token — it took the bag from the connect URL — and
 answers `wrpc.v1`; the client then dials once more with the query, so the
-labels arrive there too. `carrier: 'query'` saves that second handshake.)
+labels arrive there too — and in the URL every access log keeps, which the
+client says with `declared.exposed`. `carrier: 'query'` saves that second
+handshake.)
+
+::: warning A `wrpc.v1` answer is ambiguous
+A 2.x server that sends no frames (`attachments: false`, a packet codec)
+answers `wrpc.v1` too — and does read the tokens. The redial cannot tell the
+two apart, so behind such a server a page still dials twice and still puts
+its labels in the URL. The other way round, a page that offers `wrpc.v1`
+alone — its own `attachments: false` — is never redialled: against a 2.x
+server the tokens were read, against a 1.0 server they were not, and the
+client can only say so (`handshake.ambiguous`, once). Either way the answer
+is to choose the carrier: `carrier: 'query'` for a 1.0 server,
+`carrier: 'protocol'` to keep the labels out of URLs.
+:::
 Node's built-in `WebSocket` has no such limit — it takes
 `{ protocols, headers }` — so from Node the same option is simply real
 headers, and the server needs nothing special to read them. Either way the
@@ -171,8 +185,9 @@ label, not without a connection:
 ::: warning Labels, not secrets
 Neither default carrier touches the connect URL, which is what proxy access
 logs and the browser's network panel keep — only `carrier: 'query'` and
-`protocols: []` do, and the client warns (`declared.exposed`) when an
-`authorization` header ends up there. A subprotocol token is still a request
+`protocols: []` do — or the redial above — and the client warns
+(`declared.exposed`) when an `authorization` header ends up there, and names
+every declared header when the redial put them there. A subprotocol token is still a request
 header anyone on the path can read and some proxies can log, so treat the
 bags as labels. For credentials use [`bearerAuth`](./auth) — its token rides
 as `wrpc.bearer.<token>` from a browser and as a real `Authorization` header

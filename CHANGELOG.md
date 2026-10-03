@@ -1410,7 +1410,17 @@ reference as one opaque string. What is left to do:
    `attachments: false` — they then answer `wrpc-version: 1` and nobody is
    sent a frame. Drop the flag once the pool is all 2.0. (A WebSocket is one
    connection to one instance and needs nothing.)
-3. **A rooms backplane or a cluster** has no handshake to negotiate on. The
+3. **A page's `headers`/`meta` on a WebSocket** ride as subprotocol tokens,
+   which a 1.0 server does not read. A page that offered `wrpc.v2` and was
+   answered `wrpc.v1` dials once more with the connect-URL query 1.0 reads
+   (`handshake.requery`, and `declared.exposed` naming every header that is
+   now in the URL) — but a 2.x server deployed with `attachments: false`
+   answers `wrpc.v1` too, and is redialled for nothing, and a page that
+   itself sets `attachments: false` offers `wrpc.v1` alone and is never
+   redialled (`handshake.ambiguous`). Pages that must reach a 1.0 server set
+   `carrier: 'query'`; pages whose labels must stay out of URLs set
+   `carrier: 'protocol'`.
+4. **A rooms backplane or a cluster** has no handshake to negotiate on. The
    same `attachments: false` on the 2.0 instances keeps their envelopes
    JSON while a 1.0 instance subscribes — it drops a `wrpc-bin:` envelope
    without a word. And under **`cluster.secret`**: deploy 2.0 with
@@ -1418,14 +1428,14 @@ reference as one opaque string. What is left to do:
    cluster — without it the 2.0 nodes refuse the 1.x nodes' envelopes
    (`cluster.replay`, reason `unsequenced`) and each half sees only itself.
    Drop both once the last 1.x node is gone.
-4. **TypeScript**: `context.server.sessions`, `.cluster` and `.sendTo` need
+5. **TypeScript**: `context.server.sessions`, `.cluster` and `.sendTo` need
    `if (context.server instanceof RpcServer)` (or a cast) — the type is the
    `ClientHost` contract now.
-5. **`@alexify/wrpc/ws` directly**: `WebsocketServer` logs through
+6. **`@alexify/wrpc/ws` directly**: `WebsocketServer` logs through
    `globalThis.console` by default (it had no logger); `logger: false`
    restores the silence, `logger: pino` routes it. An `RpcServer` wired to
    it by hand with `attachments: false` passes `protocols: ['wrpc.v1']`.
-6. **`generateId`**: a bad value is a `TypeError` at construction now (it
+7. **`generateId`**: a bad value is a `TypeError` at construction now (it
    was ignored in 1.0, logged in 1.x) — fix the option rather than catch
    the error; a valid generator behaves exactly as before.
 
@@ -2637,6 +2647,20 @@ reference as one opaque string. What is left to do:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **What the ws redial puts in the URL is named, and an ambiguous `wrpc.v1`
+  answer is said.** A browser client that offered `wrpc.v2`, carried its
+  `headers`/`meta` as subprotocol tokens and was answered `wrpc.v1` redials
+  with the connect-URL query — where access logs keep it — and only an
+  `authorization` header was named (`declared.exposed`); an `x-api-key`
+  went into the URL without a word. The redial now names every declared
+  header it moved (`declared.exposed`, `keys`). And a `wrpc.v1` answer is
+  ambiguous — a 2.x server without frames gives it too, and reads the
+  tokens — so a page that offered `wrpc.v1` alone (its own
+  `attachments: false`) is never redialled and against a 1.0 server lost its
+  labels silently: it says so once (`handshake.ambiguous`). The metadata
+  guide, the protocol's versioning section and the migration notes describe
+  both cases and the answer to each: `carrier: 'query'` for a 1.0 server,
+  `carrier: 'protocol'` to keep labels out of URLs.
 - **An SSE channel reference whose secret is not ASCII is a 409, not an
   unanswered request.** `holds` compared the secret's length in characters
   and handed the bytes to `timingSafeEqual`, which throws when the byte

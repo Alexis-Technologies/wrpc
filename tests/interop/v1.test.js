@@ -269,6 +269,47 @@ test(
   },
 );
 
+// A `wrpc.v1` answer is ambiguous: a 2.x server that sends no frames gives
+// it too. Both directions of that are said, since neither can be told apart.
+test(
+  'interop ws: a 2.x server without frames answers wrpc.v1 too — redialled for nothing, and the URL is named',
+  { skip },
+  async (t) => {
+    const page = await browserBuild();
+    const { server, ws } = await boot(t, next, { attachments: false });
+    let handshakes = 0;
+    server.wsServer.on('connection', () => handshakes++);
+    const { lines, logger } = recorder();
+    const client = await connect(t, page, ws, { headers: { 'x-tenant': 'acme', 'x-api-key': 'k' }, logger });
+    assert.strictEqual((await client.api.echo.seen()).tenant, 'acme');
+    assert.strictEqual(handshakes, 2, 'the tokens were read the first time; the redial cannot know');
+    assert.deepStrictEqual(
+      lines.filter((line) => line.event === 'declared.exposed'),
+      [{ event: 'declared.exposed', keys: ['x-tenant', 'x-api-key'], carrier: 'query' }],
+      'every header the redial put in the URL is named',
+    );
+  },
+);
+
+test(
+  'interop ws: a page that offers wrpc.v1 alone is never redialled — against 1.0 its labels are lost, and said',
+  { skip },
+  async (t) => {
+    const page = await browserBuild();
+    const { ws } = await boot(t, legacy);
+    const { lines, logger } = recorder();
+    const client = await connect(t, page, ws, { ...LABELS, attachments: false, logger });
+    assert.strictEqual((await client.api.echo.seen()).tenant, null, 'a 1.0 server read no token');
+    assert.deepStrictEqual(
+      lines.filter((line) => line.event === 'handshake.ambiguous'),
+      [{ event: 'handshake.ambiguous' }],
+    );
+    // `carrier: 'query'` is the way to a 1.0 server.
+    const queried = await connect(t, page, ws, { ...LABELS, attachments: false, carrier: 'query' });
+    assert.strictEqual((await queried.api.echo.seen()).tenant, 'acme');
+  },
+);
+
 test('interop ws: a page with nothing to declare connects to a 1.0 server in one handshake', { skip }, async (t) => {
   const page = await browserBuild();
   const { server, ws } = await boot(t, legacy);

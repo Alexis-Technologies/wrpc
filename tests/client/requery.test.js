@@ -73,7 +73,7 @@ const open = async (t, select, options = {}) => {
   t.after(() => void client.close());
   await client.open();
   const requeries = lines.filter((line) => line.event === 'handshake.requery');
-  return { client, sockets: PageSocket.opened, requeries };
+  return { client, sockets: PageSocket.opened, requeries, lines };
 };
 
 const newest = (offer) => (offer.includes('wrpc.v2') ? 'wrpc.v2' : offer.includes('wrpc.v1') ? 'wrpc.v1' : '');
@@ -130,4 +130,28 @@ test('requery: never for an application that chose its carrier, its offer, or de
   const bare = await open(t, legacy, { headers: undefined, meta: undefined });
   assert.strictEqual(bare.sockets.length, 1);
   assert.strictEqual(bare.requeries.length, 0);
+});
+
+test('requery: the redial names every declared header it put in the URL, not only a credential', async (t) => {
+  const { lines } = await open(t, legacy, { headers: { 'x-tenant': 'acme', 'x-api-key': 'k' } });
+  const exposed = lines.filter((line) => line.event === 'declared.exposed');
+  assert.deepStrictEqual(exposed, [{ event: 'declared.exposed', keys: ['x-tenant', 'x-api-key'], carrier: 'query' }]);
+});
+
+test('requery: an offer of wrpc.v1 alone answered wrpc.v1 is ambiguous — no redial, said once', async (t) => {
+  // `attachments: false` on the page: a 2.x server without frames read the
+  // tokens, a 1.0 server did not, and both answer wrpc.v1.
+  const { client, sockets, lines } = await open(t, legacy, { attachments: false });
+  assert.strictEqual(sockets.length, 1, 'no redial');
+  const said = () => lines.filter((line) => line.event === 'handshake.ambiguous').length;
+  assert.strictEqual(said(), 1);
+  client.close();
+  await new Promise((resolve) => setImmediate(resolve));
+  await client.open();
+  assert.strictEqual(said(), 1, 'once per transport');
+  // Nothing to say without tokens, nor for an application that chose its carrier.
+  const bare = await open(t, legacy, { attachments: false, headers: undefined, meta: undefined });
+  assert.strictEqual(bare.lines.filter((line) => line.event === 'handshake.ambiguous').length, 0);
+  const chosen = await open(t, legacy, { attachments: false, carrier: 'protocol' });
+  assert.strictEqual(chosen.lines.filter((line) => line.event === 'handshake.ambiguous').length, 0);
 });

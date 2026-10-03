@@ -37,6 +37,9 @@ class ClientWsTransport extends ClientTransport {
   // declared bags as subprotocol tokens: a 1.0 server reads them from the
   // connect URL only, so every later open of this transport uses the query.
   #requery = false;
+  // Said once: tokens rode an offer of `wrpc.v1` alone, and `wrpc.v1` came
+  // back — which a 1.0 server and a 2.x one without frames both answer.
+  #ambiguous = false;
 
   /** The session's facts once established (see WrpcClient#encryption), or null. */
   encryption = null;
@@ -118,19 +121,28 @@ class ClientWsTransport extends ClientTransport {
         // tokens this handshake carried went unread. Dialled again, once,
         // with the query 1.0 itself used; an application that chose its
         // carrier, or its offer, is left with its choice.
-        if (
-          handshake.carried &&
-          this.protocol === WRPC_V1 &&
-          offer.includes(WRPC_V2) &&
-          (options.carrier ?? 'auto') === 'auto'
-        ) {
-          this.#requery = true;
-          this.log?.warn({ event: 'handshake.requery' });
-          // Abandoned, not closed-and-reported: its close is nobody's now.
-          this.#socket = null;
-          socket.close();
-          this.#opening = null;
-          return void this.open(options).then(resolve, reject);
+        if (handshake.carried && this.protocol === WRPC_V1 && (options.carrier ?? 'auto') === 'auto') {
+          if (offer.includes(WRPC_V2)) {
+            this.#requery = true;
+            this.log?.warn({ event: 'handshake.requery' });
+            // Every declared header now rides the URL, not only a credential:
+            // an `x-api-key` lands in each access log on the way.
+            if (options.headers) {
+              this.log?.warn({ event: 'declared.exposed', keys: Object.keys(options.headers), carrier: 'query' });
+            }
+            // Abandoned, not closed-and-reported: its close is nobody's now.
+            this.#socket = null;
+            socket.close();
+            this.#opening = null;
+            return void this.open(options).then(resolve, reject);
+          }
+          // This end offered `wrpc.v1` alone (`attachments: false`, its own
+          // `protocols`): the answer cannot tell a 2.x server, which read the
+          // tokens, from a 1.0 one, which read none. No redial — but said.
+          if (!this.#ambiguous) {
+            this.#ambiguous = true;
+            this.log?.warn({ event: 'handshake.ambiguous' });
+          }
         }
         if (encryption === null) return void established();
         // The handshake first: nothing of this connection leaves in the
