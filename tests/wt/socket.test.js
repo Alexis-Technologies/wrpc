@@ -11,6 +11,7 @@ const {
   frameText,
   frameCaps,
   datagramText,
+  datagramWriter,
   KIND_BINARY,
   KIND_TEXT,
   KIND_CAPS,
@@ -386,6 +387,79 @@ test('wt socket: datagrams — sendUnreliable is one datagram, an inbound one is
   assert.strictEqual(socket.sendUnreliable('{}'), false);
   assert.strictEqual(socket.maxDatagramSize, 0);
   assert.ok(await session.closed);
+});
+
+// The datagrams of a host on the newer API whose legacy `writable` is a
+// trap: @fails-components/webtransport logs a read of that getter as
+// deprecated. Each read is recorded, then thrown, so one is caught whether
+// the caller swallows the error or not.
+const factoryOnly = (datagrams, reads) => ({
+  readable: datagrams.readable,
+  maxDatagramSize: datagrams.maxDatagramSize,
+  createWritable: () => datagrams.writable,
+  get writable() {
+    reads.push(new Error('datagrams.writable read').stack);
+    throw new Error('datagrams.writable is deprecated');
+  },
+});
+
+test('wt port: where createWritable exists, the legacy datagrams.writable is never read', async (t) => {
+  const world = createFakeWt();
+  const client = new world.WebTransport('https://h/api');
+  await client.ready;
+  const session = await world.next();
+  const reads = [];
+  session.datagrams = factoryOnly(session.datagrams, reads);
+  // The checks attachSession runs, then the channel's datagram writer.
+  assert.strictEqual(isWtDatagrams(session.datagrams), true);
+  assert.strictEqual(isWtSession(session), true);
+  const stream = await client.createBidirectionalStream();
+  const reader = session.incomingBidirectionalStreams.getReader();
+  const { value: control } = await reader.read();
+  reader.releaseLock();
+  const socket = new WtSocket(session, control);
+  t.after(() => socket.terminate());
+  void stream.readable.pipeTo(new WritableStream()).catch(() => {});
+  const got = [];
+  const datagrams = client.datagrams.readable.getReader();
+  void (async () => {
+    for (;;) {
+      const { value, done } = await datagrams.read();
+      if (done) return;
+      got.push(Buffer.from(value.subarray(1)).toString());
+    }
+  })();
+  assert.strictEqual(socket.maxDatagramSize, 1200);
+  assert.strictEqual(socket.sendUnreliable('{"type":"ping"}'), true);
+  await waitFor(() => got.length === 1, 'datagram over createWritable()');
+  assert.deepStrictEqual(got, ['{"type":"ping"}']);
+  assert.deepStrictEqual(reads, [], 'the deprecated getter was read');
+});
+
+test('wt port: a host with only the legacy datagrams.writable still validates and sends', async () => {
+  const sink = () => {
+    const chunks = [];
+    return { chunks, writable: new WritableStream({ write: (chunk) => void chunks.push(chunk) }) };
+  };
+  const legacy = sink();
+  const duplex = { readable: new ReadableStream(), writable: legacy.writable };
+  assert.strictEqual(isWtDatagrams(duplex), true);
+  assert.ok(datagramWriter(duplex), 'the legacy stream is the writer');
+  assert.strictEqual(isWtDatagrams({ readable: new ReadableStream() }), false, 'neither: no datagrams');
+  assert.strictEqual(isWtDatagrams({ readable: new ReadableStream(), writable: {} }), false);
+  assert.strictEqual(datagramWriter({ readable: new ReadableStream() }), null);
+  // A factory that throws falls back to the legacy stream, as before.
+  const fallback = sink();
+  const writer = datagramWriter({
+    readable: new ReadableStream(),
+    createWritable: () => {
+      throw new Error('not yet');
+    },
+    writable: fallback.writable,
+  });
+  assert.ok(writer);
+  await writer.write(new Uint8Array([1]));
+  assert.strictEqual(fallback.chunks.length, 1);
 });
 
 // A client end that announces streams and uploads on a unidirectional

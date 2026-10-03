@@ -32,8 +32,8 @@
 //
 //   interface WtDatagrams {
 //     readonly readable: ReadableStream<Uint8Array>
-//     readonly writable?: WritableStream<Uint8Array>      // the legacy stream, or
-//     createWritable?(): WritableStream<Uint8Array>        // the newer factory
+//     createWritable?(): WritableStream<Uint8Array>        // the newer factory, or
+//     readonly writable?: WritableStream<Uint8Array>      // the legacy stream (read only without the factory)
 //     readonly maxDatagramSize?: number
 //   }
 
@@ -44,11 +44,17 @@ const isWritable = (value) => isObject(value) && typeof value.getWriter === 'fun
 /** A `{ readable, writable }` pair of WHATWG streams. */
 const isWtStream = (value) => isObject(value) && isReadable(value.readable) && isWritable(value.writable);
 
-/** The datagram duplex: a readable and a writable (or the newer `createWritable()`), `maxDatagramSize` optional. */
+/**
+ * The datagram duplex: a readable and the newer `createWritable()` (or the
+ * legacy writable), `maxDatagramSize` optional. The factory is tested FIRST:
+ * `writable` is a getter a host may log as deprecated when it is read
+ * (@fails-components/webtransport does, and creates a writable for it), so
+ * it is never touched where `createWritable` exists — as in datagramWriter.
+ */
 const isWtDatagrams = (value) =>
   isObject(value) &&
   isReadable(value.readable) &&
-  (isWritable(value.writable) || typeof value.createWritable === 'function') &&
+  (typeof value.createWritable === 'function' || isWritable(value.writable)) &&
   (value.maxDatagramSize === undefined || typeof value.maxDatagramSize === 'number');
 
 /** The session shape attachSession() takes — either end of a WebTransport. */

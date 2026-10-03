@@ -2028,6 +2028,13 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **WebTransport: a session on `@fails-components/webtransport` no longer
+  logs `datagrams.writable is deprecated`.** The session check of
+  `attachSession` (`isWtDatagrams`) read the legacy `datagrams.writable`
+  getter before looking for `createWritable()`, and that host warns — and
+  creates a writable — on the read. The factory is tested first now, as the
+  datagram writer already did, so the getter is read only by a host that
+  has nothing else; such a host validates and sends as before.
 - **`@alexify/wrpc/query` type-checks in a project without Node types.**
   Its declarations imported the Node barrel (`index.d.ts`) for seven names
   `client.d.ts` declares, so a browser-only TypeScript project without
