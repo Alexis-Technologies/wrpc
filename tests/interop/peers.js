@@ -22,6 +22,14 @@ const optional = (name) => {
 
 const legacy = optional('wrpc-v1');
 if (legacy) optional('wrpc-v1/sse');
+// A skip is a broken environment where the alias IS expected — CI installs
+// every devDependency — and used to pass green with every case skipped, the
+// guard of the alias included (tests/broker/support.js has the same rule).
+if (!legacy && process.env.WRPC_INTEGRATION_STRICT) {
+  throw new Error(
+    'wrpc-v1 (the published 1.0) is not installed — WRPC_INTEGRATION_STRICT is set: a skip would hide a broken environment',
+  );
+}
 
 // One router, defined with the library that serves it: `echo/say` answers
 // its arguments, `echo/nudge` sends them back as an event first.

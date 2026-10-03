@@ -1440,6 +1440,15 @@ reference as one opaque string. What is left to do:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **The interop suite fails in CI when the published 1.0 is missing.**
+  Without the `wrpc-v1` alias every interop case skipped — the one that
+  guards the alias included — and the run passed green. Under
+  `WRPC_INTEGRATION_STRICT` (now set on CI's `test` job, as on the broker
+  jobs) a missing alias is a failure; a local run without it still skips.
+  The matrix gained this review's cases: SSE with bytes both ways, a page
+  against a 2.x server without frames and a page that offers `wrpc.v1`
+  alone, a worker port under a packet codec, and 2.x and 1.0 instances
+  behind one HTTP address.
 - **Connections are counted by the protocol revision they speak.**
   `wrpc.server.connections` carries `wrpc.revision` (`1` or `2`) beside
   `wrpc.transport`, so who is still on 1.0 during an upgrade is the `1`

@@ -388,6 +388,26 @@ for (const pair of PAIRS) {
     await new Promise((resolve) => setTimeout(resolve, 20));
     assert.deepStrictEqual(unhandled, [], 'nothing was posted that the other end throws on');
   });
+
+  // Under a packet codec the port's first ping is the codec's: a JSON ping
+  // was a malformed packet to a server that decodes with it.
+  test(`interop port: under a packet codec the ping is the codec's — ${pair.name}`, { skip }, async (t) => {
+    const codec = {
+      encode: (packet) => JSON.stringify({ wrapped: packet }),
+      decode: (text) => {
+        const outer = JSON.parse(text);
+        return Object.hasOwn(outer, 'wrapped') ? outer.wrapped : null;
+      },
+    };
+    const { server } = await boot(t, pair.server, { codec });
+    const errors = [];
+    const worker = workerOf(server.rpc);
+    const client = await connect(t, pair.client, 'ws://unused.invalid/api', { worker, codec, callTimeout: 2000 });
+    client.on('error', (error) => errors.push(error));
+    assert.deepStrictEqual(await client.api.echo.say({ n: 1 }), { n: 1 });
+    assert.deepStrictEqual(await client.api.echo.say({ blob: BYTES }), { blob: JSON_BYTES });
+    assert.deepStrictEqual(errors, []);
+  });
 }
 
 // The worker PROXY — one socket for every tab — with a page of the other

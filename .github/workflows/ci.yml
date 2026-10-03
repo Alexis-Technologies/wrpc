@@ -48,8 +48,12 @@ jobs:
       # listen socket, a timer nobody cleared) is cut off and FAILS here in
       # minutes, where it used to hang until the job's own timeout with no
       # summary. `pnpm test` and `pnpm test:coverage` stay without it — a
-      # leak must stay visible locally.
+      # leak must stay visible locally. WRPC_INTEGRATION_STRICT turns a
+      # suite that would SKIP for a missing devDependency (the interop
+      # suite's `wrpc-v1` alias) into a failure: here, everything is installed.
       - run: pnpm test:ci
+        env:
+          WRPC_INTEGRATION_STRICT: 1
       # The global thresholds are an average; the directories new in 2.0 are
       # also held per file (scripts/coverage-floors.js). Reads the coverage
       # the step above left behind — same job, same workspace.
