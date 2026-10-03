@@ -2630,6 +2630,18 @@ reference as one opaque string. What is left to do:
   (`http.failed`, error, with `err`), counted on the calls series, and
   answered `500` — unless an answer or a stream had already started, which
   is left as it was. One case of the adapter spec runs it over every host.
+- **A sealed HTTP request can no longer declare what an identity-aware
+  proxy says about the user.** The names an OAuth2 proxy, AWS ALB OIDC,
+  Google IAP, Azure Easy Auth or an Apache/nginx auth module set about the
+  user they authenticated (`remote-user`, `x-auth-request-*`,
+  `x-amzn-oidc-*`, `x-goog-authenticated-user-*`, `x-goog-iap-*`,
+  `x-ms-client-principal*`) and the Fastly/Fly client-ip spellings were
+  added to the handshake's deny list only. Inside a sealed request they were
+  still the sender's: behind a proxy that set `remote-user: alice` on the
+  outer request, a page declaring `admin` inside was `admin` to the handler.
+  Both lists are now built from one set of names in `src/rpc/reserved.js`
+  (`AMBIENT_HEADERS` adds them), so the inner value is dropped and the outer
+  one stands, and a test keeps every name in both.
 - **A packet `id` is a string of at most 255 characters, or a number.** The
   dispatcher checked an id by truthiness and echoed whatever came: an array
   nested 10 000 deep in a 20 KB POST threw out of the answer's

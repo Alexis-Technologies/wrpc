@@ -15,6 +15,20 @@ const { OpenError } = require('../../src/encryption/contracts.js');
 const { buildBoots } = require('../adapters/boots.js');
 const { bootServer } = require('../helpers/server.js');
 const { bearerTransport } = require('../../auth.js');
+const { AMBIENT_HEADERS, RESERVED_DECLARED } = require('../../src/rpc/reserved.js');
+
+// One name or one prefix of each identity-aware proxy (reserved.js).
+const IDENTITY_HEADERS = [
+  'remote-user',
+  'x-auth-request-user',
+  'x-auth-request-email',
+  'x-amzn-oidc-identity',
+  'x-goog-authenticated-user-email',
+  'x-goog-iap-jwt-assertion',
+  'x-ms-client-principal-name',
+  'fly-client-ip',
+  'fastly-client-ip',
+];
 
 const SECRET = 'a card number nobody on the path should read: 4111 1111 1111 1111';
 
@@ -41,6 +55,15 @@ const router = defineRouter({
       access: 'public',
       http: { method: 'GET', path: '/projects/:id' },
       handler: async (_ctx, { params }) => ({ id: params.id, note: SECRET }),
+    }),
+    // What an identity-aware proxy said about the user, name by name.
+    identity: procedure({
+      access: 'public',
+      handler: async (ctx) => {
+        const seen = {};
+        for (const name of IDENTITY_HEADERS) seen[name] = ctx.meta.headers[name] ?? null;
+        return seen;
+      },
     }),
     // What the handler is told about the sender, header by header.
     facts: procedure({
@@ -316,6 +339,50 @@ test("http encryption: what the connection says about the sender is not the send
   const cookied = await connect({ headers: { cookie: 'sid=declared' }, fetch: jar });
   await cookied.load('data');
   assert.strictEqual((await cookied.api.data.facts()).cookie, 'sid=outer');
+});
+
+test("http encryption: what an identity-aware proxy says about the user is not the page's to declare inside", async (t) => {
+  const { connect } = await secure(t);
+  // The proxy authenticated `alice` and says so on the OUTER request; the
+  // page declares `admin` inside. These names used to be on the handshake's
+  // deny list only, so the inner value won.
+  const declared = Object.fromEntries(IDENTITY_HEADERS.map((name) => [name, 'admin']));
+  const proxied = (url, init) =>
+    fetch(url, {
+      ...init,
+      headers: { ...init.headers, ...Object.fromEntries(IDENTITY_HEADERS.map((name) => [name, 'alice'])) },
+    });
+  const behindProxy = await connect({ headers: declared, fetch: proxied });
+  await behindProxy.load('data');
+  const seen = await behindProxy.api.data.identity();
+  for (const name of IDENTITY_HEADERS) assert.strictEqual(seen[name], 'alice', name);
+  // No proxy in front: the declared names are dropped, not believed.
+  const direct = await connect({ headers: declared });
+  await direct.load('data');
+  const bare = await direct.api.data.identity();
+  for (const name of IDENTITY_HEADERS) assert.strictEqual(bare[name], null, name);
+});
+
+test('reserved headers: every name the handshake keeps from a declaration about the sender, a sealed request keeps too', () => {
+  // The handshake's list is wider by what the handshake itself owns
+  // (cookie, content-*, x-wrpc-*) and by nothing else.
+  for (const name of [
+    ...IDENTITY_HEADERS,
+    'x-forwarded-for',
+    'x-real-ip',
+    'cf-connecting-ip',
+    'sec-fetch-site',
+    'via',
+  ]) {
+    assert.ok(RESERVED_DECLARED.test(name), `${name} on the handshake`);
+    assert.ok(AMBIENT_HEADERS.test(name), `${name} inside a sealed request`);
+  }
+  for (const name of ['cookie', 'content-type', 'x-wrpc-meta']) {
+    assert.ok(RESERVED_DECLARED.test(name) && !AMBIENT_HEADERS.test(name), name);
+  }
+  for (const name of ['x-auth-token', 'x-tenant', 'authorization']) {
+    assert.ok(!RESERVED_DECLARED.test(name) && !AMBIENT_HEADERS.test(name), `${name} stays the application's`);
+  }
 });
 
 test('http encryption: the inner header is bounded before it is parsed', async (t) => {

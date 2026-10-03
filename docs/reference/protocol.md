@@ -278,9 +278,12 @@ as untrusted labels, whichever carrier brought them:
 - **Never able to override an observed request header.** Declared names only
   add, and wrpc drops the names a hostile page could otherwise forge next to
   a victim's cookie: `cookie`, `host`, `origin`, `forwarded`, `via`,
-  `x-real-ip`, `x-client-ip`, `true-client-ip`, `cf-connecting-ip`, and
-  everything under `sec-`, `content-`, `proxy-`, `x-wrpc-` and
-  `x-forwarded-`. Real headers are not filtered — a peer that can send them
+  `x-real-ip`, `x-client-ip`, `true-client-ip`, `cf-connecting-ip`,
+  `fastly-client-ip`, `fly-client-ip`, `remote-user`, and everything under
+  `sec-`, `content-`, `proxy-`, `x-wrpc-` and `x-forwarded-` — and under the
+  prefixes an identity-aware proxy sets about the user it authenticated:
+  `x-auth-request-`, `x-amzn-oidc-`, `x-goog-authenticated-user-`,
+  `x-goog-iap-`, `x-ms-client-principal`. Real headers are not filtered — a peer that can send them
   is not a page, and no deny list binds it.
 
 Keys of both declared bags are normalized to **kebab-case**
@@ -1420,9 +1423,12 @@ and a `GET` REST route travels as that POST too. The inner headers are laid
 over the outer request's, with three exceptions a server MUST keep: what
 the connection or a proxy in front of it says about the sender (`host`,
 `origin`, `forwarded`, `via`, `x-forwarded-*`, `x-real-ip`, the CDNs'
-client-ip spellings, `sec-*`) is never taken from inside — its absence is a
-fact too, so an inner one is dropped whether or not the outer request
-carried it; the framing names (`content-length`, `transfer-encoding`,
+client-ip spellings, `sec-*`) and what an identity-aware proxy says about
+the user (`remote-user` and the `x-auth-request-*`, `x-amzn-oidc-*`,
+`x-goog-authenticated-user-*`, `x-goog-iap-*`, `x-ms-client-principal*`
+names — the same as on the [handshake](#connection-metadata)) is never
+taken from inside — its absence is a fact too, so an inner one is dropped
+whether or not the outer request carried it; the framing names (`content-length`, `transfer-encoding`,
 `connection`) are the outer request's; and an outer `cookie` wins over an
 inner one. `headerLength` above 16 KiB is refused. HPKE `info` is
 `"wrpc http v1" ‖ 0 ‖` the request prefix (version, AEAD id, kid). The answer
