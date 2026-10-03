@@ -412,12 +412,15 @@ test('every **Breaking entry of [Unreleased] sits under ### Changed (breaking)',
       `"### ${heading}" holds a **Breaking entry; move it to "### Changed (breaking)"`,
     );
   }
-  // The migration block belongs to the breaking section: a reader who lands
-  // on "what broke" finds "what to do" right under it.
-  assert.ok(
-    breaking.some((line) => line.startsWith('#### Migrating from ')),
-    'the breaking section must carry a "#### Migrating from <version>" block',
-  );
+  // The migration block belongs to a breaking section that HAS entries: a
+  // reader who lands on "what broke" finds "what to do" right under it. The
+  // fresh, empty section a release opens needs none.
+  if (breaking.some((line) => line.startsWith('- '))) {
+    assert.ok(
+      breaking.some((line) => line.startsWith('#### Migrating from ')),
+      'a breaking section with entries must carry a "#### Migrating from <version>" block',
+    );
+  }
 });
 
 // The 1.x deprecation notes promised that "2.0 makes it a TypeError"; 2.0
