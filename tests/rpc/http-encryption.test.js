@@ -363,6 +363,15 @@ test("http encryption: what an identity-aware proxy says about the user is not t
   for (const name of IDENTITY_HEADERS) assert.strictEqual(bare[name], null, name);
 });
 
+test('reserved headers: a name that is no header name, or a reserved one spelled with `_`, is refused on both lists', () => {
+  for (const list of [AMBIENT_HEADERS, RESERVED_DECLARED]) {
+    for (const name of ['x-real-ip ', 'x forwarded-for', 'remote_user', 'x_forwarded_for', 'x-amzn-oidc_identity']) {
+      assert.ok(list.test(name), JSON.stringify(name));
+    }
+    assert.ok(!list.test('x_trace') && !list.test('x-tenant'), 'an application name is its own');
+  }
+});
+
 test('reserved headers: every name the handshake keeps from a declaration about the sender, a sealed request keeps too', () => {
   // The handshake's list is wider by what the handshake itself owns
   // (cookie, content-*, x-wrpc-*) and by nothing else.

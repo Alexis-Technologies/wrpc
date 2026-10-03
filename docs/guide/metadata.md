@@ -167,7 +167,10 @@ label, not without a connection:
   (oauth2-proxy), `x-amzn-oidc-` (ALB), `x-goog-authenticated-user-` /
   `x-goog-iap-` (IAP) and `x-ms-client-principal` (Azure) prefixes — the
   names an identity-aware proxy sets about the user it authenticated, exact,
-  so an application's own `x-auth-token` is not caught. The list is about a
+  so an application's own `x-auth-token` is not caught. A name that is not a
+  header name at all (a space in it) is dropped too, and `_` counts as `-`
+  against the list — `remote_user` is `remote-user` to nginx, CGI and the
+  frameworks that fold one into the other. The list is about a
   hostile **page**: it controls exactly the connect URL and the subprotocol
   offers while the victim's cookie rides along by itself, so without the list
   it could forge a `cookie`, an `origin`, or the address a rate limiter

@@ -245,3 +245,20 @@ test('the deny list names the identity-aware proxies exactly, on both carriers, 
     assert.ok(!RESERVED_DECLARED.test(name), name);
   }
 });
+
+test('sanitizeDeclared: a name that is no header name, or a reserved one spelled with `_`, is dropped', () => {
+  // The anchored deny list used to let these through: a trailing or an
+  // embedded space names no header a real request carries, and `_` is `-`
+  // to nginx with underscores_in_headers, to CGI and to the frameworks that
+  // fold one into the other.
+  const kept = sanitizeDeclared({
+    'x-real-ip ': '10.0.0.1',
+    'x forwarded-for': '10.0.0.2',
+    remote_user: 'admin',
+    x_forwarded_for: '10.0.0.3',
+    'x-goog-iap_jwt-assertion': 'forged',
+    'x-tenant': 'acme',
+    x_trace: 'kept',
+  });
+  assert.deepStrictEqual({ ...kept }, { 'x-tenant': 'acme', x_trace: 'kept' });
+});

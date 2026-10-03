@@ -2766,6 +2766,14 @@ reference as one opaque string. What is left to do:
   (`http.failed`, error, with `err`), counted on the calls series, and
   answered `500` — unless an answer or a stream had already started, which
   is left as it was. One case of the adapter spec runs it over every host.
+- **A declared header name must be a header name; `_` counts as `-`.** The
+  deny lists of declared headers are anchored patterns, so `x-real-ip ` (a
+  trailing space), `x forwarded-for` and `remote_user` passed them and
+  reached the application beside the real headers — and `remote_user` is
+  `remote-user` to nginx with `underscores_in_headers`, to CGI and to the
+  frameworks that fold the two. A name that is not an RFC 9110 token is now
+  dropped, and `_` is read as `-` before the lists are checked, on the ws
+  handshake and inside a sealed request alike.
 - **A sealed HTTP request can no longer declare what an identity-aware
   proxy says about the user.** The names an OAuth2 proxy, AWS ALB OIDC,
   Google IAP, Azure Easy Auth or an Apache/nginx auth module set about the

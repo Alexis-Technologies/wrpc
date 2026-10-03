@@ -35,13 +35,26 @@ const CONNECTION_PREFIXES = 'sec-|proxy-|x-forwarded-';
 const IDENTITY_NAMES = 'remote-user';
 const IDENTITY_PREFIXES = 'x-auth-request-|x-amzn-oidc-|x-goog-authenticated-user-|x-goog-iap-|x-ms-client-principal';
 
-const AMBIENT_HEADERS = new RegExp(
-  `^(?:${CONNECTION_NAMES}|${IDENTITY_NAMES})$|^(?:${CONNECTION_PREFIXES}|${IDENTITY_PREFIXES})`,
+// A header name is an RFC 9110 token. A declared name that is not one — a
+// trailing or an embedded space — names nothing a real request carries, and
+// used to slip past the anchored lists below as `x-real-ip `. And `_` is read
+// as `-`: nginx's `underscores_in_headers`, CGI's `HTTP_REMOTE_USER` and the
+// frameworks that fold one into the other would hand a declared `remote_user`
+// to the application as the proxy's `remote-user`.
+const TOKEN = /^[!#$%&'*+.^_`|~0-9A-Za-z-]+$/;
+
+// What callers test a lowercase name against: true is "drop it".
+const refusing = (list) => ({ test: (name) => !TOKEN.test(name) || list.test(name.replaceAll('_', '-')) });
+
+const AMBIENT_HEADERS = refusing(
+  new RegExp(`^(?:${CONNECTION_NAMES}|${IDENTITY_NAMES})$|^(?:${CONNECTION_PREFIXES}|${IDENTITY_PREFIXES})`),
 );
 
 // The handshake's list adds what the handshake itself owns.
-const RESERVED_DECLARED = new RegExp(
-  `^(?:cookie|${CONNECTION_NAMES}|${IDENTITY_NAMES})$|^(?:content-|x-wrpc-|${CONNECTION_PREFIXES}|${IDENTITY_PREFIXES})`,
+const RESERVED_DECLARED = refusing(
+  new RegExp(
+    `^(?:cookie|${CONNECTION_NAMES}|${IDENTITY_NAMES})$|^(?:content-|x-wrpc-|${CONNECTION_PREFIXES}|${IDENTITY_PREFIXES})`,
+  ),
 );
 
 module.exports = { AMBIENT_HEADERS, RESERVED_DECLARED };

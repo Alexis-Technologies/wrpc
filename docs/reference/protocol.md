@@ -297,7 +297,9 @@ as untrusted labels, whichever carrier brought them:
   `sec-`, `content-`, `proxy-`, `x-wrpc-` and `x-forwarded-` — and under the
   prefixes an identity-aware proxy sets about the user it authenticated:
   `x-auth-request-`, `x-amzn-oidc-`, `x-goog-authenticated-user-`,
-  `x-goog-iap-`, `x-ms-client-principal`. Real headers are not filtered — a peer that can send them
+  `x-goog-iap-`, `x-ms-client-principal`. A declared name that is not an
+  RFC 9110 token is dropped, and `_` is read as `-` before the list is
+  checked. Real headers are not filtered — a peer that can send them
   is not a page, and no deny list binds it.
 
 Keys of both declared bags are normalized to **kebab-case**
