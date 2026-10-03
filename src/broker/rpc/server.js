@@ -28,6 +28,7 @@ const {
   HEADER_REASON,
   HEADER_ENC,
   HEADER_TIME,
+  HEADER_VERSION,
   KIND,
   serviceAddress,
   peerHeaders,
@@ -339,6 +340,8 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
         endSession(id, 'send_failed', { notify: false, detail: 'send failed' });
       },
     });
+    // The client's revision, from its hello: a frame only to one that said 2.
+    if (message.headers?.[HEADER_VERSION] !== '2') transport.setRevision(1);
     const session = {
       transport,
       client: null,
@@ -367,6 +370,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     }
     const welcome = { [HEADER_KIND]: KIND.WELCOME, [HEADER_INBOX]: inbox };
     if (active !== null) welcome[HEADER_ENC] = announce;
+    if (rpc.revision === 2) welcome[HEADER_VERSION] = '2';
     void reply(message, welcome, '');
   };
 

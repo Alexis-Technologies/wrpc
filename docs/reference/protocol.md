@@ -113,7 +113,7 @@ can:
 | Worker port | `v` on the port's first `ping` and its `pong` |
 | WebTransport | `f` in the capabilities message each end sends first ([below](#webtransport-streams)) |
 | WebRTC | `f` in a description signal's `caps` ([below](#webrtc)), per half of the peer; over a raw channel, the applications' agreement |
-| The broker binding | a carrier 1.0 never had: always revision 2 |
+| The broker binding | `wrpc-version` on a session's `hello` and `welcome` ([the binding](#broker-binding)); a stateless request is always revision 1 |
 
 **HTTP.** Every response carries **`wrpc-version`**: the newest revision the
 server speaks — `2`, or `1` for a server that reads no framed messages, which
@@ -1233,6 +1233,7 @@ all start with `wrpc-`; a peer's connection headers (`authorization`,
 | `wrpc-inbox` | on `welcome`: the address the session's frames go to |
 | `wrpc-reason` | on `bye`: why, for logs |
 | `wrpc-enc` | on a `request`, `hello` or `welcome`: the sender's codec ids, joined by commas, in its order of preference (`zstd,deflate-raw`); on a `response`, `packet` or `chunk`: the ONE codec its body is the output of — the sender's first that the other end listed. A `welcome` carries it only when the lists share a codec. A marked frame a receiver cannot inflate ends the session. |
+| `wrpc-version` | on a `hello`: `2` when the client reads framed messages; on a `welcome`: `2` when the service does. A session sends a frame only to a side that said `2` ([revision](#versioning)); a stateless request is revision 1 both ways — its body is read as text and its answer is JSON |
 
 Every server instance consumes one **service address** — `wrpc.<service>` by
 default — as members of one competing group, so each message addressed to the

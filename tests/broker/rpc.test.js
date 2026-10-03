@@ -699,3 +699,48 @@ test('broker rpc: a session id is a credential — logs and the transport source
     }
   }
 });
+
+test('broker rpc: the revision is negotiated — a frame only to a side that said it reads them', async (t) => {
+  const app = {
+    router: defineRouter({
+      b: {
+        echo: procedure({
+          access: 'public',
+          handler: async (_ctx, { blob }) => ({ kind: blob.constructor.name, blob: Uint8Array.of(7, 8) }),
+        }),
+      },
+    }),
+  };
+  // Two ends whose `attachments` disagreed sent each other frames the other
+  // refused unread: every such call was a 408. `wrpc-version` on the hello
+  // and the welcome settles a session. A stateless request is revision 1
+  // both ways — its body is read as text, its answer is JSON — and used to
+  // send a frame anyway, a 408 even between two ends that both read them.
+  for (const [label, mode, rpc, client, expected] of [
+    ['session, both read frames', 'session', {}, {}, { revision: 2, kind: 'Uint8Array', framed: true }],
+    ['session, the service reads none', 'session', { attachments: false }, {}, { revision: 1, kind: 'Object' }],
+    ['session, the client reads none', 'session', {}, { attachments: false }, { revision: 1, kind: 'Object' }],
+    ['stateless, both read frames', 'stateless', {}, {}, { revision: 1, kind: 'Object' }],
+    ['stateless, the service reads none', 'stateless', { attachments: false }, {}, { revision: 1, kind: 'Object' }],
+  ]) {
+    const broker = new MemoryBroker();
+    await instance(t, broker, app, { rpc });
+    const peer = await WrpcClient.connect('broker://calc', {
+      transport: 'broker',
+      broker,
+      mode,
+      heartbeat: false,
+      reconnect: false,
+      callTimeout: 2000,
+      connectTimeout: 1000,
+      ...client,
+    });
+    t.after(() => peer.close());
+    await peer.load('b');
+    const answer = await peer.api.b.echo({ blob: Uint8Array.of(1, 2) });
+    assert.strictEqual(peer.revision, expected.revision, label);
+    assert.strictEqual(answer.kind, expected.kind, `${label}: what the service was sent`);
+    if (expected.framed) assert.ok(answer.blob instanceof Uint8Array, label);
+    else assert.deepStrictEqual(answer.blob, { 0: 7, 1: 8 }, label);
+  }
+});

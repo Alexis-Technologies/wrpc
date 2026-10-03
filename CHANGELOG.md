@@ -500,7 +500,7 @@ narrower promise — see
   the WebSocket engine hands over zero-copy views into its socket segments.
   Every transport carries it — a BINARY WebSocket frame (the shared fan-out
   frame included: `PreparedFrames` and `SharedMessage.text` take bytes), a
-  WebTransport or data-channel message, a broker frame, a worker port, a
+  WebTransport or data-channel message, a broker session frame, a worker port, a
   packet-mode HTTP body under `application/octet-stream`, both ways, batches
   included. SSE speaks revision 1 to every client — bytes travel as the
   JSON 1.0 made of them, both ways — and refuses a frame on a channel POST
@@ -1939,6 +1939,15 @@ reference as one opaque string. What is left to do:
   MEMBERS too: every public member of `ServerTransport` and its transports,
   the server `Client`, `RpcServer` and `WrpcClient` must be declared on its
   d.ts class, the few the core calls on itself named in the test.
+- **The broker binding negotiates the revision; a stateless request holding
+  bytes is answered.** A session's `hello` and `welcome` now say whether
+  each side reads framed messages (`wrpc-version: 2`), and a session sends
+  a frame only to a side that said so — two ends whose `attachments`
+  disagreed used to send each other frames the other refused unread, a
+  `408` per call. A stateless request is revision 1 both ways: its body is
+  read as text and its answer was always JSON, yet the client sent a frame
+  whenever the arguments held bytes, and the call timed out even between
+  two ends with the defaults. Its bytes now travel as 1.0's JSON.
 - **WebRTC negotiates the revision, per half of a peer.** Two `WrpcPeer`s
   whose `attachments` disagreed (`host: { attachments: false }`, or a
   client half with `attachments: false`) sent each other frames the other

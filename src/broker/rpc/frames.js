@@ -35,6 +35,13 @@ const HEADER_ENC = 'wrpc-enc';
 // whose window never saw it. The clock bounds how long that stays possible
 // (the receiver's `maxSkew`); a shared replay memory closes the rest.
 const HEADER_TIME = 'wrpc-t';
+// The protocol revision of a session (protocol.md#versioning): `2` on a
+// `hello` when the client reads framed messages, on a `welcome` when the
+// service does, and a frame goes only where the other side said 2 — two ends
+// whose `attachments` disagreed used to send each other frames the other
+// refused unread. A stateless request is revision 1 both ways: its body is
+// read as text and its answer is JSON, so bytes travel as 1.0's JSON.
+const HEADER_VERSION = 'wrpc-version';
 const RESERVED_PREFIX = 'wrpc-';
 
 const KIND = Object.freeze({
@@ -165,6 +172,7 @@ module.exports = {
   HEADER_REASON,
   HEADER_ENC,
   HEADER_TIME,
+  HEADER_VERSION,
   KIND,
   serviceAddress,
   peerHeaders,

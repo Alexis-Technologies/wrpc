@@ -24,6 +24,7 @@ const {
   HEADER_KIND,
   HEADER_INBOX,
   HEADER_ENC,
+  HEADER_VERSION,
   KIND,
   HEADER_REASON,
   serviceAddress,
@@ -82,6 +83,8 @@ class ClientBrokerTransport extends ClientTransport {
   // opener) is a downgrade, dropped.
   #sealedSession = false;
   #active = null;
+  // This end reads framed messages: what its hello and requests say.
+  #frames = true;
   #maxMessage;
   // Correlation ids AND the session id. The session id is the key the server
   // holds this connection's frame state under, so guessing one lets a sender
@@ -117,6 +120,10 @@ class ClientBrokerTransport extends ClientTransport {
     // What every stateless request and the hello announce: the codecs an
     // answer may come back in, in this end's order of preference.
     if (this.#compression !== null) this.#headers[HEADER_ENC] = this.#compression.ids.join(',');
+    // Revision 1 until the service's welcome said 2, and only when this end
+    // reads frames itself; a stateless request stays at 1 (frames.js).
+    this.#frames = this.attachments !== false && !this.codec;
+    this.revision = 1;
     this.mode = mode;
     this.persistent = mode === 'session';
     this.heartbeat = mode === 'session';
@@ -153,7 +160,9 @@ class ClientBrokerTransport extends ClientTransport {
       this.#sealing,
       this.#address,
       this.#session,
-      { ...this.#headers, [HEADER_KIND]: KIND.HELLO },
+      this.#frames
+        ? { ...this.#headers, [HEADER_KIND]: KIND.HELLO, [HEADER_VERSION]: '2' }
+        : { ...this.#headers, [HEADER_KIND]: KIND.HELLO },
       '',
     );
     await this.#direct.send(this.#address, hello.body, {
@@ -190,6 +199,7 @@ class ClientBrokerTransport extends ClientTransport {
       this.#welcome = null;
       this.#active = headerNegotiator(this.#compression)(message.headers?.[HEADER_ENC]);
       this.#sealedSession = message.sealed === true;
+      this.revision = this.#frames && message.headers?.[HEADER_VERSION] === '2' ? 2 : 1;
       if (pending && typeof remote === 'string' && remote.length > 0) pending.resolve(remote);
       return;
     }
