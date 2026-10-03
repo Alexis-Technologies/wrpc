@@ -108,9 +108,20 @@ test('amqp broker (fake): a consumer the server cancels is reported, unhealthy, 
   await broker.queue.produce('cancelled', 'one');
   await waitFor(() => got.length === 1);
   assert.strictEqual(consumer.healthy, true);
+  // Channels are refused while the test looks at the down state: a re-open
+  // waits a FULLY jittered delay — anywhere from 0 to 200 ms — and a poll
+  // could miss one that took a millisecond.
+  const createChannel = connection.createChannel.bind(connection);
+  let refusing = false;
+  connection.createChannel = async () => {
+    if (refusing) throw new Error('no channels now');
+    return createChannel();
+  };
+  refusing = true;
   const [tag] = connection.server.queue('wrpc.q.cancelled').consumers.keys();
   assert.strictEqual(connection.server.cancelConsumer(tag), true);
   await waitFor(() => consumer.healthy === false, 'unhealthy on cancel');
+  refusing = false;
   await waitFor(() => consumer.healthy === true, 'back on a fresh channel');
   await broker.queue.produce('cancelled', 'two');
   await waitFor(() => got.length === 2);
@@ -135,6 +146,16 @@ test('amqp broker (fake): a direct listener cancelled, or whose channel is gone,
   });
   const kept = await broker.direct.listen(broker.direct.inbox(), () => {});
   assert.deepStrictEqual([cancelled.healthy, killed.healthy, kept.healthy], [true, true, true]);
+  // Channels are refused while the test looks at the down state: a re-open
+  // waits a FULLY jittered delay — anywhere from 0 to 200 ms — and a poll
+  // could miss one that took a millisecond.
+  const createChannel = connection.createChannel.bind(connection);
+  let refusing = false;
+  connection.createChannel = async () => {
+    if (refusing) throw new Error('no channels now');
+    return createChannel();
+  };
+  refusing = true;
   const consumersOf = (address) =>
     Array.from(connection.server.queues.entries()).find(([name]) => name.includes(address))[1].consumers;
   const [tag] = consumersOf('svc-cancel').keys();
@@ -147,7 +168,8 @@ test('amqp broker (fake): a direct listener cancelled, or whose channel is gone,
   assert.strictEqual(kept.healthy, true, 'a listener on its own channel is untouched');
   // Both come back — they used to stay dead, and a send to them was taken
   // and delivered nowhere.
-  await waitFor(() => cancelled.healthy && killed.healthy, { message: 'back', timeout: 4000 });
+  refusing = false;
+  await waitFor(() => cancelled.healthy && killed.healthy, { message: 'back', timeout: 5000 });
   await broker.direct.send('svc-cancel', 'after the cancel');
   await broker.direct.send('svc-kill', 'after the kill');
   await waitFor(() => heard.cancel.length === 1 && heard.kill.length === 1, 'delivered again');
