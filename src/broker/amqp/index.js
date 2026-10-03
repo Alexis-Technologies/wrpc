@@ -243,9 +243,15 @@ const createAmqpBroker = (options = {}) => {
       await consumerChannel.consume(
         queue,
         (message) => {
-          // null = the server cancelled this consumer; the channel closes
-          // with it, and onClose rebinds on a fresh one.
-          if (message === null) return;
+          // null = the server cancelled this consumer (its queue deleted,
+          // its node gone). The channel stays open and hears nothing — this
+          // used to return, as if it closed, and the backplane went deaf
+          // without a line. Closed here, so onClose rebinds on a fresh one.
+          if (message === null) {
+            report('broker.amqp.cancelled', new Error('consumer cancelled'), { queue: 'backplane' });
+            void closeChannel(consumerChannel);
+            return;
+          }
           const set = handlers.get(message.fields?.routingKey);
           if (set === undefined) return;
           const text = message.content.toString();
@@ -681,7 +687,9 @@ const createAmqpBroker = (options = {}) => {
     // corpse forever, `healthy` still true, taking nothing. It re-opens
     // with a backoff instead; every delivery settles on the channel it
     // arrived on, whichever that was.
-    const state = { running: true, healthy: true, tag: null, channel: null, reopening: false };
+    // `paused`: the application's pause(), which a re-open must respect — a
+    // channel the server closed under a paused consumer came back consuming.
+    const state = { running: true, healthy: true, paused: false, tag: null, channel: null, reopening: false };
     const attach = async () => {
       let opened = null;
       opened = await openChannel(false, (error) => void onChannelClosed(opened, error));
@@ -810,7 +818,9 @@ const createAmqpBroker = (options = {}) => {
           if (!state.running || closed || lost) return;
           try {
             await ensureQueue(queue, deadLetter);
-            await start(await attach());
+            const channel = await attach();
+            if (!state.paused) await start(channel);
+            else state.healthy = true;
             return;
           } catch (error) {
             report('broker.amqp.consumer.reopen', error, { queue, attempt: attempt + 1 });
@@ -855,9 +865,15 @@ const createAmqpBroker = (options = {}) => {
       stop,
       // basic.cancel keeps the channel, so the messages this consumer holds
       // stay ackable — which is what a draining node needs.
-      pause: cancel,
+      pause: async () => {
+        state.paused = true;
+        await cancel();
+      },
       resume: async () => {
-        if (!state.running || state.tag !== null || state.channel === null) return;
+        state.paused = false;
+        if (!state.running || state.tag !== null) return;
+        // Closed while paused: the re-open (running, or about to) starts it.
+        if (state.channel === null) return void (await reopen());
         await start(state.channel);
       },
       get healthy() {

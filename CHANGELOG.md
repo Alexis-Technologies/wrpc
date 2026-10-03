@@ -1987,6 +1987,15 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **AMQP: a paused consumer stays paused across a re-open, and the
+  backplane hears again after a cancel.** A consumer whose channel the
+  server closed during `pause()` came back consuming, and delivered what
+  was sent during the pause; the re-open respects the pause now and
+  `resume()` starts it. The backplane's consumer, cancelled by the server
+  (its queue deleted, its node gone), took the cancel for a closed channel
+  — which it was not — and the rooms went deaf without a line. It is
+  logged `broker.amqp.cancelled` and its channel closed, so
+  `backplane.rebind` brings it back.
 - **A session store that fails is a `503`, not a `403` — so a broker
   delivery retries it.** A connection whose token restore threw
   (`session.restore`) went on without a session, and a `session` procedure

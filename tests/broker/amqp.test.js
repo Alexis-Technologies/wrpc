@@ -606,3 +606,48 @@ test('amqp adapter: every member it reads off a channel or a connection exists o
     assert.ok(member in model.ChannelModel.prototype, `connection.${member} is not on amqplib's ChannelModel`);
   }
 });
+
+test('amqp broker: a paused consumer stays paused across a re-open; the backplane hears again after a cancel', async (t) => {
+  const connection = createFakeAmqp();
+  const { logger, entries } = recording();
+  const broker = open(connection, { logger });
+  t.after(() => broker.close());
+  const name = unique('jobs');
+  const seen = [];
+  const consumer = await broker.queue.consume(name, (delivery) => {
+    seen.push(delivery.body);
+    return delivery.ack();
+  });
+  t.after(() => consumer.stop());
+  const [held] = connection.server.queue(`wrpc.q.${name}`).consumers.values();
+  const channel = held.channel;
+  await consumer.pause();
+  connection.server.killChannel(channel, 320);
+  await broker.queue.produce(name, 'during the pause');
+  // Re-opened, and — paused — not consuming: it used to come back delivering.
+  await timers.setTimeout(1500);
+  assert.deepStrictEqual(seen, []);
+  await consumer.resume();
+  await waitFor(() => seen.length === 1, { message: 'resumed', timeout: 3000 });
+  // The backplane: a cancel by the server used to leave it deaf, silently.
+  const room = unique('room');
+  const heard = [];
+  await broker.backplane.subscribe(room, (message) => heard.push(message));
+  const other = open(connection);
+  t.after(() => other.close());
+  other.backplane.publish(room, 'one');
+  await waitFor(() => heard.length === 1);
+  // The backplane's own queue: server-named, and consumed.
+  const [, backplaneQueue] = Array.from(connection.server.queues.entries()).find(
+    ([queueName, queue]) => queueName.startsWith('amq.gen') && queue.consumers.size > 0,
+  );
+  const [tag] = backplaneQueue.consumers.keys();
+  connection.server.cancelConsumer(tag);
+  await waitFor(() => entries.some((entry) => entry.event === 'broker.amqp.backplane.rebind'), {
+    message: 'rebound',
+    timeout: 4000,
+  });
+  other.backplane.publish(room, 'two');
+  await waitFor(() => heard.length === 2, 'heard again');
+  assert.deepStrictEqual(heard, ['one', 'two']);
+});
