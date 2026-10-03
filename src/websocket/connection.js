@@ -174,6 +174,18 @@ class Connection extends EventEmitter {
   }
 
   #init(head) {
+    // Bytes the peer sent right behind its handshake. Parsed here, a frame
+    // among them that failed emitted 'error' from inside this constructor —
+    // before anyone could listen, so it was thrown out of the server's
+    // 'upgrade' listener, which is the process. Handed back to the socket
+    // instead, they are read first through 'data', once the owner of this
+    // connection is listening. A socket without `unshift` (a test double)
+    // gets them on the next tick — queued before the 'data' listener below
+    // resumes the socket, so nothing the socket holds overtakes them.
+    if (head && head.length > 0) {
+      if (typeof this.#socket.unshift === 'function') this.#socket.unshift(head);
+      else process.nextTick(() => this.#receive(head));
+    }
     this.#socket.on('data', (data) => this.#receive(data));
     this.#socket.on('drain', () => {
       if (!this.#needsDrain) return;
@@ -192,9 +204,6 @@ class Connection extends EventEmitter {
       if (this.#closeTimer) clearTimeout(this.#closeTimer);
       this.emit('close', this.#closeCode, this.#closeReason);
     });
-
-    // received data before upgrade
-    if (head && head.length > 0) this.#receive(head);
   }
 
   // Receive-side flow control: stops/restarts socket reads so a slow

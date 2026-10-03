@@ -2638,6 +2638,20 @@ reference as one opaque string. What is left to do:
   is now refused id-less — `500`, `packet.unknown` — like any packet that is
   not one, on every carrier. A number is still answered on: a 1.0 client
   whose own `generateId` counted sent one.
+- **A frame sent together with the upgrade request no longer ends the
+  process (node engine).** The bytes behind a handshake (`head`) were
+  parsed inside the `Connection` constructor: a frame breaking the protocol
+  there — RSV1 without a negotiated extension, as Autobahn's 3.x cases send
+  — emitted `'error'` before anyone could listen, `handleUpgrade` re-emitted
+  it on a `WebsocketServer` none of the shells listens on, and the throw
+  left the http server's `'upgrade'` listener. They are handed back to the
+  socket now (`unshift`) and read through `'data'` once the connection is
+  listened to: that connection is closed `1002`, nothing else. A throw in
+  `handleUpgrade` itself is logged (`ws.upgrade`, error) and emitted only to
+  a listener. The same change makes VALID frames sent that way arrive —
+  they were parsed before the `'connection'` event and lost. (The uws engine
+  does not deliver frames sent in the same write as the upgrade request
+  either — uWebSockets.js drops them itself; nothing fails there.)
 - **`Accept-Encoding` is read in one pass and capped at 256 bytes.** The
   coding scan searched for the next `;` from every token, so a header of
   8000 one-letter tokens cost 1.9 ms of CPU per request and 16 KB of commas

@@ -115,6 +115,7 @@ The first table is the request path and the engines; the ones after it are
 | `batch.refused` | debug | A batch outside `1..maxBatch` |
 | `subscribe.refused` | warn | A subscription refused before it started |
 | `ws.frame`, `ws.protocol`, `ws.invalid-utf8` | warn | A peer's frame violated the protocol; the connection was closed |
+| `ws.upgrade` | error | The node engine's upgrade handling threw (`err`) — a `verifyClient`, `handleProtocols` or deflate `filter` of the application, or a `'connection'` listener; the socket was answered `500`. Emitted as `'error'` on the `WebsocketServer` too, when something listens |
 | `ws.too-big`, `ws.overflow`, `ws.backpressure` | warn | A configured limit closed the connection — the entry names the limit |
 | `ws.inflate`, `ws.deflate` | warn | permessage-deflate failed on the way in (or the inflated message was too big), or on the way out; the connection was closed |
 | `ws.close.dropped` | warn | A graceful `close()` waited `closeTimeout` for messages still queued behind a compress in flight (context takeover, `async`) and gave up: `frames` and `bytes` never left, the Close frame did |

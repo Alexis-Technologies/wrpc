@@ -93,7 +93,10 @@ class WebsocketServer extends EventEmitter {
 
   // Drives one upgrade by hand. Same guarantees as the bound path: the raw
   // socket gets an error handler before parsing, and a throwing handshake
-  // answers 500 instead of leaving the socket dangling.
+  // answers 500 instead of leaving the socket dangling. The error is said in
+  // the log and emitted only to a listener: an 'error' with none throws, and
+  // the caller here is an http server's 'upgrade' listener — none of the
+  // shells puts a catch around it, so that throw ended the process.
   handleUpgrade(req, socket, head) {
     socket.on('error', () => {
       socket.destroy();
@@ -101,7 +104,8 @@ class WebsocketServer extends EventEmitter {
     try {
       this.#handleUpgrade(req, socket, head);
     } catch (error) {
-      this.emit('error', error);
+      this.#log.error({ err: error, event: 'ws.upgrade' });
+      if (this.listenerCount('error') > 0) this.emit('error', error);
       abort(socket, 500, 'Internal Server Error');
     }
   }
