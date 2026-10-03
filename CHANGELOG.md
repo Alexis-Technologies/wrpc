@@ -2630,6 +2630,14 @@ reference as one opaque string. What is left to do:
   (`http.failed`, error, with `err`), counted on the calls series, and
   answered `500` — unless an answer or a stream had already started, which
   is left as it was. One case of the adapter spec runs it over every host.
+- **A packet `id` is a string of at most 255 characters, or a number.** The
+  dispatcher checked an id by truthiness and echoed whatever came: an array
+  nested 10 000 deep in a 20 KB POST threw out of the answer's
+  `JSON.stringify` (`Maximum call stack size exceeded`) where nothing caught
+  it, and at 1000 deep the array came back as the answer's id. Any other id
+  is now refused id-less — `500`, `packet.unknown` — like any packet that is
+  not one, on every carrier. A number is still answered on: a 1.0 client
+  whose own `generateId` counted sent one.
 - **`Accept-Encoding` is read in one pass and capped at 256 bytes.** The
   coding scan searched for the next `;` from every token, so a header of
   8000 one-letter tokens cost 1.9 ms of CPU per request and 16 KB of commas

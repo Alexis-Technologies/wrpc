@@ -530,29 +530,40 @@ const negotiatePing = (client, enc, options) => {
   client.send(active === null ? { type: 'pong' } : { type: 'pong', enc: active.id });
 };
 
+// A packet id is the caller's correlation token, echoed back as it came: a
+// string of at most 255 characters — what every generateId of this package
+// answers, and all a chunk header has room for — or a number, which a 1.0
+// client whose own generateId counted sent and was answered on. Anything
+// else used to be echoed too: an array nested 10 000 deep threw out of the
+// answer's JSON.stringify, synchronously, where nothing caught it.
+const MAX_PACKET_ID = 255;
+const isPacketId = (id) =>
+  typeof id === 'string' ? id.length !== 0 && id.length <= MAX_PACKET_ID : typeof id === 'number' && id !== 0;
+
 const handlePacket = (client, packet, router, options = EMPTY_OPTIONS) => {
   const { id, type, method, name } = packet;
+  const hasId = isPacketId(id);
   // The target is type-checked, not just truthiness-checked: a non-string
   // `method`/`name` would throw inside parseTarget, and these calls are not
   // awaited. A malformed packet has to fall through to the error below.
-  if (type === 'call' && id && typeof method === 'string') {
+  if (type === 'call' && hasId && typeof method === 'string') {
     return void handleRpc(client, packet, router).catch(contain(client, 'CALL'));
-  } else if (type === 'subscribe' && id && typeof method === 'string') {
+  } else if (type === 'subscribe' && hasId && typeof method === 'string') {
     if (!client.persistent) {
       return void refuse(client, id, 400, 'Subscriptions require a persistent connection', UNKNOWN_TARGET);
     }
     return void handleSubscribe(client, packet, router).catch(contain(client, 'SUBSCRIBE'));
-  } else if (type === 'unsubscribe' && id) {
+  } else if (type === 'unsubscribe' && hasId) {
     if (needsConnection(client, id, 'Subscriptions')) return;
     return void handleUnsubscribe(client, packet);
-  } else if (type === 'cancel' && id) {
+  } else if (type === 'cancel' && hasId) {
     if (needsConnection(client, id, 'Cancellation')) return;
     return void handleCancel(client, packet);
-  } else if (type === 'stream' && id) {
+  } else if (type === 'stream' && hasId) {
     return void handleStream(client, packet).catch(contain(client, 'STREAM'));
   } else if (type === 'event' && typeof name === 'string' && name) {
     return void handleEvent(client, packet, router).catch(contain(client, 'EVENT'));
-  } else if (type === 'callback' && typeof id === 'string' && id) {
+  } else if (type === 'callback' && hasId && typeof id === 'string') {
     // Asks only travel on persistent transports, so a callback on HTTP can
     // never match one — and it MUST still be answered, or the request (and
     // every other slot of its batch) would hang unanswered forever.
@@ -589,7 +600,7 @@ const handlePacket = (client, packet, router, options = EMPTY_OPTIONS) => {
   // parse; this is the other half of the same funnel, and was silent.
   const error = new Error('Packet structure error');
   client.log.warn({ event: 'packet.unknown', code: 500, type: typeof type === 'string' ? clip(type) : null });
-  client.error(500, { id: typeof id === 'string' ? id : '', error, level: 'debug' });
+  client.error(500, { id: hasId && typeof id === 'string' ? id : '', error, level: 'debug' });
 };
 
 // A JSON array is a batch frame: several packets in one message, each
