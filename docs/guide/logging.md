@@ -114,7 +114,7 @@ The first table is the request path and the engines; the ones after it are
 | `revision.peer` | debug | A connection settled on [revision 1](../reference/protocol#versioning) — a 1.0 peer, or one that reads no frames (`transport`; on a WebSocket the selected `protocol`, on a worker port the revision the page `named`). Per connection, so debug: the count is `wrpc.server.connections` by `wrpc.revision` |
 | `revision.mismatch` | warn, then debug | A WebSocket engine composed by hand selected `wrpc.v2` (`protocol`) for a server that sends and reads no framed messages (`attachments: false`, a packet codec): the client will send a frame this server refuses. The built-in shells narrow their engine to `wrpc.v1` themselves — pass `protocols: ['wrpc.v1']` to yours. A warn for the first connection, debug for every one after it |
 | `batch.refused` | debug | A batch outside `1..maxBatch` |
-| `subscribe.refused` | warn | A subscription refused before it started |
+| `subscribe.refused` | warn | A subscription refused before it started (`code`; the peer's `id`, clipped to 128 characters) |
 | `ws.frame`, `ws.protocol`, `ws.invalid-utf8` | warn | A peer's frame violated the protocol; the connection was closed |
 | `ws.upgrade` | error | The node engine's upgrade handling threw (`err`) — a `verifyClient`, `handleProtocols` or deflate `filter` of the application, or a `'connection'` listener; the socket was answered `500`. Emitted as `'error'` on the `WebsocketServer` too, when something listens |
 | `ws.too-big`, `ws.overflow`, `ws.backpressure` | warn | A configured limit closed the connection — the entry names the limit |

@@ -287,7 +287,10 @@ const refuse = (client, id, code, message, target, details) => {
   const error = { message, code };
   if (details !== undefined) error.details = details;
   client.send({ type: 'end', id, error });
-  client.warn(`SUBSCRIBE\t${id}\t${code}\t${message}`, { event: 'subscribe.refused', id, code });
+  // The id is the peer's: bounded to 255 by the packet rule, bounded again
+  // for a log line, as every peer-supplied text in one is.
+  const said = clip(id);
+  client.warn(`SUBSCRIBE\t${said}\t${code}\t${message}`, { event: 'subscribe.refused', id: said, code });
   client.otel.recordCall(target, 'error', code);
 };
 

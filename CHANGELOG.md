@@ -1459,6 +1459,10 @@ reference as one opaque string. What is left to do:
   `ServerTransport#setRevision`, which emits `'revision'`; an HTTP request's
   revision is settled before its client exists. `rpc.revision` and
   `context.client.revision` are in the server and rooms guides.
+- **`subscribe.refused` clips the peer's id.** The line carried the
+  subscription's `id` as the peer sent it — 100 000 characters gave a
+  100 048-character warn. Ids are bounded at 255 now (the packet rule), and
+  this line clips it to 128 like every other peer-supplied text in a log.
 - **`revision.mismatch` is said at warn once, then at debug.** It is a
   configuration error — a hand-composed engine selecting `wrpc.v2` for a
   server that reads no frames — and the same on every connection, so it was

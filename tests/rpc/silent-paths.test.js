@@ -307,3 +307,23 @@ test('http: what throws while a request is routed is one error line and one 500'
   assert.strictEqual(all('http.failed').length, 2);
   await plain.close();
 });
+
+test('dispatcher: a refused subscription names its id clipped, never the peer text whole', async (t) => {
+  const { writer, find } = recorder();
+  const feeds = defineRouter({
+    u: { feed: procedure.subscription({ access: 'public', handler: async function* () {} }) },
+  });
+  const { url } = await bootServer(t, { router: feeds, logger: writer });
+  const http = url.replace(/^ws/, 'http');
+  // Over HTTP a subscription is refused (400): its line carries the id.
+  const res = await fetch(http, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ type: 'subscribe', id: 'x'.repeat(255), method: 'u/feed' }),
+  });
+  await res.text();
+  await waitFor(() => find('subscribe.refused'), 'the refusal reached the log');
+  const entry = find('subscribe.refused');
+  assert.ok(entry.id.length <= 129, `clipped (${entry.id.length})`);
+  assert.ok(entry.message === undefined || entry.message.length < 200);
+});
