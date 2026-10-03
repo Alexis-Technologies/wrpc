@@ -1,0 +1,15 @@
+// The gRPC row of bench/rpc-comparison.js: one unary echo, loaded at runtime
+// by @grpc/proto-loader (no codegen). The two fields carry the comparison's
+// two payloads — `{ name: 'Ada' }` and `{ text: 'x' × 10 000 }`.
+syntax = "proto3";
+
+package bench;
+
+service Bench {
+  rpc Echo (Payload) returns (Payload);
+}
+
+message Payload {
+  string name = 1;
+  string text = 2;
+}

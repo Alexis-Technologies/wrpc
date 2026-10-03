@@ -393,6 +393,37 @@ async function startTrpcWs() {
   };
 }
 
+// gRPC — a unary echo over HTTP/2 through @grpc/grpc-js, the service loaded
+// from bench/support/echo.proto at runtime by @grpc/proto-loader (no
+// codegen). Protobuf on the wire, so its envelope is cheaper to encode than
+// the JSON every other row pays; that is part of what gRPC is.
+async function startGrpc() {
+  const path = require('node:path');
+  const grpc = require('@grpc/grpc-js');
+  const loader = require('@grpc/proto-loader');
+  const definition = loader.loadSync(path.join(__dirname, 'echo.proto'), { keepCase: true });
+  const { bench } = grpc.loadPackageDefinition(definition);
+  const server = new grpc.Server();
+  server.addService(bench.Bench.service, { Echo: (call, callback) => callback(null, call.request) });
+  const port = await new Promise((resolve, reject) =>
+    server.bindAsync('127.0.0.1:0', grpc.ServerCredentials.createInsecure(), (error, bound) =>
+      error ? reject(error) : resolve(bound),
+    ),
+  );
+  const client = new bench.Bench(`127.0.0.1:${port}`, grpc.credentials.createInsecure());
+  await new Promise((resolve, reject) =>
+    client.waitForReady(Date.now() + 5000, (error) => (error ? reject(error) : resolve())),
+  );
+  return {
+    call: (args) =>
+      new Promise((resolve, reject) => client.Echo(args, (error, reply) => (error ? reject(error) : resolve(reply)))),
+    stop: async () => {
+      client.close();
+      await new Promise((resolve) => server.tryShutdown(resolve));
+    },
+  };
+}
+
 module.exports = {
   wrpc: { label: 'wrpc (own WS + RPC dispatch)', start: startWrpc },
   'wrpc-uws': { label: 'wrpc (uws engine + RPC dispatch)', start: startWrpcUws },
@@ -419,4 +450,5 @@ module.exports = {
   },
   'socket.io': { label: 'socket.io (framework RPC via emitWithAck)', start: startSocketIo },
   'trpc-ws': { label: 'tRPC (framework RPC over wsLink)', start: startTrpcWs },
+  grpc: { label: 'gRPC (@grpc/grpc-js unary over HTTP/2)', start: startGrpc },
 };

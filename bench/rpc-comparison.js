@@ -39,6 +39,7 @@ const STACK_ORDER = [
   'webrtc-raw',
   'socket.io',
   'trpc-ws',
+  'grpc',
 ];
 // Matched by suffix against the names rpc-stack-worker.js prints. The
 // pipelined row keeps its own suffix (`… ×64`), so the match stays unambiguous.
