@@ -271,6 +271,7 @@ one — and bound to the remote `peer`.
 | `rtc.ice.failed`, `rtc.ice.restarted` | warn / info | The connection failed and an ICE restart was started; the restart brought it back |
 | `rtc.link.failed` | warn | A link failed (`reason`) — a dial or an ICE restart that did not complete; the peer link above it decides whether to redial |
 | `rtc.link.error` | error | Something threw inside the link (`origin`: the dial, a negotiation step, a channel) |
+| `rtc.signal.goodbye` | debug | A knock or an offer (`type`) from a peer this side said goodbye to less than 5 s ago, dropped: the other side's redial, begun before the goodbye reached it |
 | `rtc.signal.malformed`, `rtc.signal.unknown` | warn | A signal that is not an object, or of a `type` this peer does not know — version skew, or a relay passing on something else |
 | `rtc.peer.redial`, `rtc.peer.gave-up` | info / warn | A dead link is being dialled again (`attempt`, `delay`); the redial budget ran out (`attempts`) and the link is closed |
 | `rtc.peer.refused` | warn | A peer was refused before its description was applied (`peer`, `reason`: the assertion's code — `signature`, `fingerprint`, `expired`, … — or `assertion`) |

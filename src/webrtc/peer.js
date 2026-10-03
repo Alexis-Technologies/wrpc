@@ -31,6 +31,12 @@ const { PeerLink, normalizeRedial, REDIAL } = require('./peerLink.js');
 // Signals held for a peer whose accept() has not answered yet; past it
 // they are dropped, said once.
 const MAX_PENDING_SIGNALS = 64;
+// How long a peer that said goodbye ignores a knock or an offer from the
+// incarnation it said it to: the other side's channels close before the
+// goodbye — which goes through the signaling server — reaches it, and the
+// redial that starts meanwhile would re-open what the application ended.
+// A goodbye is one signaling hop; this is many.
+const GOODBYE_HOLD = 5000;
 const { PeerHost } = require('./host.js');
 const { isSignaler, isSignalMessage } = require('./signaler.js');
 const { isPeerId } = require('./ids.js');
@@ -59,6 +65,8 @@ class WrpcPeer extends Emitter {
   #log;
   #otel;
   #links = new Map();
+  // Peers this side said goodbye to, for GOODBYE_HOLD: id -> { instance, until }.
+  #goodbyes = new Map();
   // Signals for a peer whose accept() is still pending.
   #pending = new Map();
   #meshes = new Map();
@@ -260,6 +268,8 @@ class WrpcPeer extends Emitter {
     await this.start();
     if (remoteId === this.id) throw new Error('WrpcPeer.connect: cannot connect to self');
     const instance = isPeerId(options.instance) ? options.instance : null;
+    // Dialling it is this side changing its mind about a goodbye.
+    this.#goodbyes.delete(remoteId);
     const existing = this.#links.get(remoteId);
     if (existing && this.#current(existing, instance)) return existing.ready();
     const link = this.#create(remoteId, options.room ?? null, options.data ?? null, instance);
@@ -382,9 +392,28 @@ class WrpcPeer extends Emitter {
     return { fingerprint, claims: verified };
   }
 
-  // A link closed: forget it.
+  // A link closed: forget it — and, when this side said goodbye, remember
+  // whom to for GOODBYE_HOLD (see #receive). Swept as it grows: every entry
+  // is younger than the hold.
   #released(link) {
     if (this.#links.get(link.id) === link) this.#links.delete(link.id);
+    const closure = link.link.closure;
+    if (closure?.reason !== 'goodbye' || closure.remote) return;
+    const now = Date.now();
+    for (const [id, said] of this.#goodbyes) if (said.until <= now) this.#goodbyes.delete(id);
+    this.#goodbyes.set(link.id, { instance: link.instance, until: now + GOODBYE_HOLD });
+  }
+
+  // Whether this side said goodbye to that incarnation of `id` a moment ago.
+  // A signaler that names no instances matches by id alone.
+  #saidGoodbye(id, instance) {
+    const said = this.#goodbyes.get(id);
+    if (said === undefined) return false;
+    if (said.until <= Date.now()) {
+      this.#goodbyes.delete(id);
+      return false;
+    }
+    return said.instance === null || instance === null || said.instance === instance;
   }
 
   /** A link (or mesh) with nobody listening for its error: the peer's 'error', or a log line. */
@@ -505,6 +534,13 @@ class WrpcPeer extends Emitter {
       (message.type === 'description' && message.description?.type === 'offer') ||
       (stale && message.type !== 'close' && this.id < from);
     if (!opening) return;
+    // The other side's redial, begun before our goodbye reached it — its
+    // channels closed first — would undo an application's close: a link it
+    // ended came back within half a second. The goodbye is on its way and
+    // ends that redial; the knock or offer is dropped.
+    if (this.#saidGoodbye(from, incarnation)) {
+      return void this.#log.debug({ event: 'rtc.signal.goodbye', peer: from, type: message.type });
+    }
     const queue = [message];
     this.#pending.set(from, queue);
     // Verification is protocol, accept() is policy: an offer's assertion is

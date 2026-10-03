@@ -2916,9 +2916,14 @@ reference as one opaque string. What is left to do:
   goodbye) dialled the edge again, and the member came back in `peers` with
   a new `join`. A link that ended with a goodbye — `link.close()` on either
   side — stays ended; one that ended by itself (a failure, a redial budget
-  run out, a refusal) is still dialled again under `relink`. **Changed:**
-  the WebRTC guide used to promise a redial after a `link.close()` on the
-  OTHER side, which is what undid a close.
+  run out, a refusal) is still dialled again under `relink`. The goodbye
+  goes through the signaling server while the channel resets go peer to
+  peer, so the other side can see its channels close first and start a
+  redial before the goodbye reaches it: the side that said goodbye ignores a
+  knock or an offer from that incarnation for 5 s (`rtc.signal.goodbye`,
+  debug), and dialling it again itself — `peer.connect(id)` — lifts that.
+  **Changed:** the WebRTC guide used to promise a redial after a
+  `link.close()` on the OTHER side, which is what undid a close.
 - **The signaling unit's `maxRooms` holds for joins sent together.** The
   count was checked before the awaited `allow` hook and the room written
   after it, so joins sent at once all passed the check: ten joins under

@@ -386,15 +386,53 @@ test('mesh: a link the application closed is not dialled again', async (t) => {
   const joins = [];
   ma.on('join', (event) => joins.push(event.id));
   // What a dial sends — a knock or a description; the goodbye is a signal too.
-  const dials = () => hub.sent.filter((e) => e.type !== 'close' && (e.from === 'a' || e.from === 'b')).length;
-  const before = dials();
+  const dials = (from, since) => hub.sent.slice(since).filter((e) => e.type !== 'close' && e.from === from).length;
+  const mark = hub.sent.length;
+  let heard = null;
+  b.link('a').once('close', () => void (heard = hub.sent.length));
   // b is still in the room; the application ended the edge on purpose. It
   // used to be back in `peers` within half a second, with a new `join`.
   ma.link('b').close();
   await timers.setTimeout(300);
   assert.strictEqual(ma.peers.has('b'), false);
   assert.deepStrictEqual(joins, []);
-  assert.strictEqual(dials(), before, 'nothing dialled');
+  assert.strictEqual(dials('a', mark), 0, 'the side that closed dials nothing');
+  // b may knock once if its channels closed before the goodbye reached it
+  // (the next test) — never once it heard the goodbye.
+  assert.notStrictEqual(heard, null, 'b heard the goodbye');
+  assert.strictEqual(dials('b', heard), 0, 'nor the side that heard it');
+});
+
+test('mesh: a closed link stays closed when the other side hears the channels close before the goodbye', async (t) => {
+  const { peer, hub } = world(t);
+  const a = peer('a');
+  const b = peer('b');
+  const ma = a.join('room', { relink });
+  const mb = b.join('room', { relink });
+  await within(settled(ma, 1), 'linked');
+  await within(settled(mb, 1), 'linked');
+  const joins = [];
+  ma.on('join', (event) => joins.push(event.id));
+  // The goodbye goes through the signaling server, the channel resets peer
+  // to peer: b's link fails and its redial knocks before the goodbye lands.
+  // a dialled back on that knock, and b was in `peers` again with a new
+  // `join` — the application's close undone.
+  hub.tamper('a', 'b', (message) => {
+    if (message.type !== 'close') return message;
+    setTimeout(() => {
+      hub.tamper('a', 'b', null);
+      hub.relay('a', 'b', 'room', message);
+    }, 200);
+    return null;
+  });
+  ma.link('b').close();
+  await waitFor(() => hub.sent.some((entry) => entry.from === 'b' && entry.type === 'connect'), 'b knocked');
+  await timers.setTimeout(500);
+  assert.strictEqual(ma.peers.has('b'), false);
+  assert.strictEqual(mb.peers.has('a'), false);
+  assert.deepStrictEqual(joins, []);
+  // Dialling it again is the application's to do, and it works.
+  await within(a.connect('b', { room: 'room' }), 'dialled again');
 });
 
 test('mesh: a member replaced by another incarnation of its id relinks', async (t) => {

@@ -416,6 +416,11 @@ that never came back, a refusal — is dialled again while that member is
 still in the room. A link an application ended is not: a `link.close()` on
 either side is a goodbye, and neither end dials it again (the side that
 heard the goodbye used to, which undid the close within half a second). The
+goodbye travels through the signaling server and the channels close peer to
+peer, so the other side may see its link fail first and start a redial: for
+5 s the side that said goodbye ignores a knock or an offer from that
+incarnation of the peer, until the goodbye has ended that redial —
+`peer.connect(id)` from its own side is the way to dial it again sooner. The
 dial comes after a second, backing off to a minute, then once a minute for as long as
 it stays. There is no attempt count; a member that cannot be reached, or
 refuses, costs one dial a minute. When the pace reaches that floor the mesh
