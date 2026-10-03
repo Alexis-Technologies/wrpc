@@ -1982,6 +1982,17 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **AMQP: a retry or a dead letter on a consumer channel that died writes
+  one copy.** A settlement publishes its copy (the retry, the dead letter)
+  and then acks the original; the two were retried together, under a
+  `channel.closed` amqplib's channel does not have — so on a consumer
+  channel that had died the ack kept failing and every round published
+  again: three copies of one delivery. The publish is retried alone now,
+  while the channel is still the consumer's, and the ack runs once after
+  it; a channel gone by then hands the original back itself — one more
+  delivery, never one more copy. The suite's fake channel took an ack on a
+  closed channel silently, as amqplib does not, and that is how no test
+  saw it.
 - **The `.d.ts` files describe what the runtime has.** `ServerTransport`
   gains `revision`, `attachments` and `setRevision`, the port transport
   `max` and `negotiate`, `buildHeaders` its third argument (`revision`), and

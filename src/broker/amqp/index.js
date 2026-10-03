@@ -709,36 +709,49 @@ const createAmqpBroker = (options = {}) => {
       const headers = headersOf(message);
       const attempt = Number(headers[ATTEMPT_HEADER] ?? '1') || 1;
       let settled = false;
-      // `publishes`: the settlement writes a copy somewhere before it acks
-      // (a retry, a dead letter). A refused publish used to be swallowed
-      // after one log line with the original still unacked — which the
-      // channel's eventual close handed back, or a channel that lived on
-      // never did. Tried again, then handed back on purpose.
-      const finish = async (work, publishes = false) => {
+      // `publish`: the copy a settlement writes before it acks (a retry, a
+      // dead letter). A refused publish used to be swallowed after one log
+      // line with the original still unacked — which the channel's eventual
+      // close handed back, or a channel that lived on never did. Tried
+      // again, then handed back on purpose. The ack (`work`) runs ONCE after
+      // it: retried together, an ack refused by a consumer channel that had
+      // died ran the publish again — three copies of one delivery — under a
+      // `channel.closed` amqplib does not have. A channel is gone when it is
+      // no longer this consumer's (onChannelClosed).
+      const finish = async (work, publish = null) => {
         if (settled) return;
         settled = true;
-        for (let round = 0; ; round++) {
-          try {
-            await work();
-            return;
-          } catch (error) {
-            if (publishes && round < SETTLE_ATTEMPTS - 1 && !channel.closed) {
-              await sleep(backoffDelay({ ...SETTLE_BACKOFF, attempt: round }));
-              continue;
-            }
-            report('broker.amqp.settle', error, { queue, attempt, round: round + 1 });
-            if (!publishes) return;
+        if (publish !== null) {
+          for (let round = 0; ; round++) {
             try {
-              // Back in line for another consumer, attempt untouched (a
-              // requeue does not count one on RabbitMQ 4): at least once.
-              channel.nack(message, false, true);
-            } catch {
-              // The channel is gone; its unacked messages are already back.
+              await publish();
+              break;
+            } catch (error) {
+              if (round < SETTLE_ATTEMPTS - 1 && state.channel === channel) {
+                await sleep(backoffDelay({ ...SETTLE_BACKOFF, attempt: round }));
+                continue;
+              }
+              report('broker.amqp.settle', error, { queue, attempt, round: round + 1 });
+              try {
+                // Back in line for another consumer, attempt untouched (a
+                // requeue does not count one on RabbitMQ 4): at least once.
+                channel.nack(message, false, true);
+              } catch {
+                // The channel is gone; its unacked messages are already back.
+              }
+              return;
             }
-            return;
           }
         }
+        try {
+          await work();
+        } catch (error) {
+          // A channel gone after the copy was written hands the original
+          // back itself: one more delivery, never one more copy.
+          report('broker.amqp.settle', error, { queue, attempt, round: 1 });
+        }
       };
+      const ack = () => channel.ack(message);
       const carry = (extra) => ({ ...headers, [REDELIVERED_HEADER]: '1', ...extra });
       const delivery = Object.freeze({
         id: String(message.properties?.messageId ?? message.fields?.deliveryTag ?? ''),
@@ -746,11 +759,11 @@ const createAmqpBroker = (options = {}) => {
         headers,
         attempt,
         redelivered: message.fields?.redelivered === true || headers[REDELIVERED_HEADER] === '1',
-        ack: () => finish(() => channel.ack(message)),
+        ack: () => finish(ack),
         // A requeue would NOT count the attempt on RabbitMQ 4, so a retry is
         // a republish — through the TTL queue when it must wait.
         retry: ({ delay = 0 } = {}) =>
-          finish(async () => {
+          finish(ack, async () => {
             const headersOut = carry({ [ATTEMPT_HEADER]: String(attempt + 1) });
             if (delay > 0) {
               await confirmPublish('', retryQueue(queue), message.content, {
@@ -761,25 +774,22 @@ const createAmqpBroker = (options = {}) => {
             } else {
               await confirmPublish('', main, message.content, { persistent: true, headers: headersOut });
             }
-            channel.ack(message);
-          }, true),
+          }),
         // Exactly what a requeue means on RabbitMQ 4: back in line, attempt
         // untouched.
         release: () => finish(() => channel.nack(message, false, true)),
         deadLetter: (reason = '') =>
-          finish(async () => {
-            if (deadLetter) {
-              await confirmPublish('', workQueue(deadLetter), message.content, {
-                persistent: true,
-                headers: {
-                  ...headers,
-                  [DEAD_REASON_HEADER]: reasonText(reason),
-                  [ATTEMPT_HEADER]: String(attempt),
-                },
-              });
-            }
-            channel.ack(message);
-          }, true),
+          finish(ack, async () => {
+            if (!deadLetter) return;
+            await confirmPublish('', workQueue(deadLetter), message.content, {
+              persistent: true,
+              headers: {
+                ...headers,
+                [DEAD_REASON_HEADER]: reasonText(reason),
+                [ATTEMPT_HEADER]: String(attempt),
+              },
+            });
+          }),
       });
       runDelivery(onDelivery, delivery, report, 'broker.amqp.delivery', queue);
     };

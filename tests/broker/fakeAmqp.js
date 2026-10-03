@@ -206,8 +206,9 @@ class FakeChannel extends EventEmitter {
     this.confirm = confirm;
   }
 
-  // amqplib refuses every operation on a closed channel; a channel-level
-  // error is emitted, then the channel closes — the real order.
+  // amqplib refuses every operation on a closed channel — an ack and a nack
+  // included, which this fake used to take silently; a channel-level error
+  // is emitted, then the channel closes — the real order.
   #open() {
     if (this.closed) throw Object.assign(new Error('Channel closed'), { code: 504 });
   }
@@ -316,6 +317,7 @@ class FakeChannel extends EventEmitter {
   }
 
   ack(message) {
+    this.#open();
     const tag = message.fields.deliveryTag;
     const held = this.inflight.get(tag);
     if (!held) return;
@@ -326,6 +328,7 @@ class FakeChannel extends EventEmitter {
   }
 
   nack(message, _all, requeue) {
+    this.#open();
     const tag = message.fields.deliveryTag;
     const held = this.inflight.get(tag);
     if (!held) return;

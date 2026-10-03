@@ -537,3 +537,41 @@ test('amqp broker: a settlement the broker keeps refusing hands the message back
   const settle = entries.find((entry) => entry.event === 'broker.amqp.settle');
   assert.deepStrictEqual([settle?.queue, settle?.round], [name, 3]);
 });
+
+test('amqp broker: a retry on a consumer channel that died publishes one copy, not three', async (t) => {
+  // amqplib's channel has no `closed`: the adapter used to read it, find it
+  // undefined, and retry the publish AND the ack together while the ack kept
+  // failing on the dead channel. The fake's channels hide it here as amqplib's do.
+  const connection = createFakeAmqp();
+  const createChannel = connection.createChannel.bind(connection);
+  const hide = (channel) =>
+    new Proxy(channel, {
+      get: (target, key) => {
+        if (key === 'closed') return undefined;
+        const value = Reflect.get(target, key, target);
+        // The fake keeps its state in private fields: its methods run on it.
+        return typeof value === 'function' ? value.bind(target) : value;
+      },
+      has: (target, key) => key !== 'closed' && key in target,
+    });
+  connection.createChannel = async () => hide(await createChannel());
+  const broker = open(connection);
+  t.after(() => broker.close());
+  const name = unique('jobs');
+  let deliveries = 0;
+  const consumer = await broker.queue.consume(name, (delivery) => {
+    deliveries++;
+    if (deliveries > 1) return delivery.ack();
+    // The node the consumer's channel lived on goes, between the work and
+    // the settlement.
+    const [held] = connection.server.queue(`wrpc.q.${name}`).consumers.values();
+    connection.server.killChannel(held.channel, 320);
+    return delivery.retry();
+  });
+  t.after(() => consumer.stop());
+  await broker.queue.produce(name, 'once');
+  await timers.setTimeout(1500);
+  // The first delivery, the original handed back by the dead channel, and
+  // the retry's ONE copy: three. Three copies made it five.
+  assert.ok(deliveries <= 3, `deliveries: ${deliveries}`);
+});
