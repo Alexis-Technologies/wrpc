@@ -33,6 +33,10 @@ Run a single file with `node --test tests/smoke.test.js`, or filter by name
 with `--test-name-pattern`. `node --test` takes **files**, not directories — a
 targeted run of a folder needs a glob (`node --test tests/adapters/*.test.js`).
 
+The `wrpc` command of this tree is `node bin/wrpc.js`. Inside the repository
+`npx wrpc` and `node_modules/.bin/wrpc` run the **published 1.0** CLI: the
+interop suite's `wrpc-v1` alias installs `@alexify/wrpc@1.0.0`, bin included.
+
 ## House rules
 
 **Zero runtime dependencies.** `package.json` has no `dependencies` field, and
