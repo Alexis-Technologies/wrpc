@@ -1,6 +1,6 @@
 # Connection & call metadata
 
-Three different things answer to the word "meta" in wrpc. They are deliberately
+Three different things answer to the word "meta" in wRPC. They are deliberately
 separate channels with separate contracts:
 
 | Channel | Phase | Validated? | Read as |

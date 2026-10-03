@@ -39,15 +39,22 @@ and which knobs are worth turning for your traffic shape.
   made while uploads saturate the connection answers in 9 ms over
   WebTransport against 46 ms over a WebSocket — each binary stream has a QUIC
   stream of its own. And on every transport the stack sets the ceiling, not
-  wRPC: over WebTransport and WebRTC in Node, wRPC's calls run at 87–102% of a
+  wRPC: over WebTransport and WebRTC in Node, wRPC's calls run at 85–100% of a
   raw echo over the same stack. See [Across transports](#across-transports).
+- **Against RPC frameworks.** With 64 calls in flight wRPC answers 117K calls
+  a second — 1.15× socket.io, 5.0× tRPC, 5.6× gRPC through `@grpc/grpc-js` —
+  and 201K with client batching on. See [Against other stacks](#against-other-stacks).
 
 **Behind, and expected to be:**
 
 - **A single tiny call against a raw echo.** A socket with no router, no
-  access check and no correlation ID was always going to win that race.
-  wRPC paying roughly a fifth more for real request handling is the trade
-  for getting one, not a defect — see [Against other stacks](#against-other-stacks).
+  access check and no correlation ID was always going to win that race:
+  the raw echoes answer 1.25–1.48× as many. Paying that for real request
+  handling is the trade for getting one, not a defect — see
+  [Against other stacks](#against-other-stacks).
+- **Plain HTTP against fastify and express.** wRPC's HTTP paths answer
+  0.58× fastify's requests and 0.77× express's on a JSON echo — every request
+  pays the RPC path and wRPC's default headers. See [Over HTTP](#over-http).
 - **One call at a time in the browser.** The client's deadline scheduler
   earns its keep once many calls are in flight; a lone awaited call
   doesn't exercise it either way.
@@ -64,7 +71,7 @@ and which knobs are worth turning for your traffic shape.
 | `perMessageDeflate` | off | the peer is bandwidth-bound (mobile, metered, cross-region) and frames are past a kilobyte — [Compression is off by default](#compression-is-off-by-default) has the numbers. Off because a default would spend CPU on every frame of every peer to save bytes only some of them need |
 | `contextTakeover` | off | you repeatedly broadcast the **same shape** (price ticks, presence deltas) to bandwidth-constrained clients — ~10× the compression ratio, for ~160 KiB of zlib state per direction per connection |
 | `async: { threshold }` | off | large broadcasts (≥256 KB payloads) would otherwise stall the event loop for the length of the burst |
-| client `batch: true` | off | you fire many RPC calls back to back — bulk hydration, chart backfills — where it beats an engine swap by ~11× below, at the cost of a single call waiting on a flush |
+| client `batch: true` | off | you fire many RPC calls back to back — bulk hydration, chart backfills — where it buys 72% more pipelined throughput below (an engine swap buys nothing on that path), at the cost of a single call waiting on a flush |
 | [uws engine](./adapters/uws) | Node's own engine | you're CPU-bound on the WS engine at very high concurrency and can take a native dependency |
 
 The rest of this page is where every one of those numbers comes from.
@@ -73,25 +80,30 @@ The rest of this page is where every one of those numbers comes from.
 
 `bench/rpc-comparison.js` puts wRPC's **full RPC path** (router, validation,
 context, callback correlation) next to raw WebSocket echoes with no RPC layer
-at all, and next to two frameworks that do the same job wRPC does. Three
-wRPC rows: the default (own engine, one frame per call), the same RPC path
-over the [uws engine](./adapters/uws), and the own engine with client
+at all, and next to three frameworks that do the same job wRPC does:
+socket.io and tRPC over a WebSocket, and gRPC — `@grpc/grpc-js`, unary over
+HTTP/2, the service loaded from a `.proto` at runtime. Three wRPC rows: the
+default (own engine, one frame per call), the same RPC path over the
+[uws engine](./adapters/uws), and the own engine with client
 [batching](./client#batching) on.
+
+<BenchChart set="rpc" />
 
 | Stack | small payload | 10 KB payload | small ×64 in flight |
 | --- | ---: | ---: | ---: |
-| **wRPC** — own WS + RPC dispatch | 24,607 | **12,408** | 110,257 |
-| **wRPC** — uws engine + RPC dispatch | 24,143 | **12,979** | 117,567 |
-| **wRPC** — own WS, `batch: true` | 25,707 | 13,432 | 192,573 |
-| `ws` — raw echo, no RPC | 34,191 | 11,540 | 104,971 |
-| uWebSockets.js — raw echo, no RPC | 29,786 | 11,855 | 162,495 |
-| `@fastify/websocket` — raw echo, no RPC | 35,194 | 12,701 | 105,817 |
-| fastify-uws — raw echo, no RPC | 30,099 | 8,270 | 152,956 |
-| socket.io — framework RPC via `emitWithAck` | 23,535 | 10,598 | 95,497 |
-| tRPC — framework RPC over `wsLink` | 636¹ | 582¹ | 22,010 |
+| **wRPC** — own WS + RPC dispatch | 25,213 | **13,986** | 116,704 |
+| **wRPC** — uws engine + RPC dispatch | 26,042 | **13,801** | 116,174 |
+| **wRPC** — own WS, `batch: true` | 27,078 | **14,027** | **201,075** |
+| `ws` — raw echo, no RPC | 34,987 | 12,206 | 112,487 |
+| uWebSockets.js — raw echo, no RPC | 31,567 | 12,226 | 160,872 |
+| `@fastify/websocket` — raw echo, no RPC | 37,334 | 12,746 | 112,133 |
+| fastify-uws — raw echo, no RPC | 31,572 | 8,702 | 160,046 |
+| socket.io — framework RPC via `emitWithAck` | 26,213 | 10,862 | 101,455 |
+| tRPC — framework RPC over `wsLink` | 628¹ | 596¹ | 23,310 |
+| gRPC — `@grpc/grpc-js` unary over HTTP/2 | 8,127 | 7,844² | 20,921 |
 
-ops/sec, higher is better; one run, one machine, so read rows against each
-other rather than against an earlier table.
+ops/sec, higher is better; one run, one machine (Node v24.14.1, Apple M3
+Max), so read rows against each other rather than against an earlier table.
 
 ¹ tRPC's sequential number is a **client-side flush-timer artifact, not
 throughput**: its per-call latency measures a near-constant ~1.5 ms
@@ -101,34 +113,38 @@ pipelined column shows what the same stack does when many calls share a
 flush. Compare tRPC on the batched column, where its per-call machinery
 amortizes.
 
+² gRPC encodes protobuf, not JSON: its 10 KB payload is a string field
+copied as bytes, which is why that column barely moves from the small one.
+Every other row pays JSON for it.
+
 Read it honestly:
 
-- **A raw echo is the ceiling, not a competitor.** uWebSockets.js at 1.21×
-  on small payloads is what a socket costs with no router, no access check
-  and no correlation on top. wRPC paying about a fifth for all of that
-  still clears socket.io; this run's `ws` and `@fastify/websocket` echoes
-  happen to land ahead of uWebSockets.js's own raw echo too, which is noise
-  at this payload size, not a real ordering — read the whole small-payload
-  column as one cluster, not a ladder.
-- **On real payloads the gap narrows.** At 10 KB, wRPC's own engine (12,408)
-  is within 2% of the fastest raw echo in the table (`@fastify/websocket`,
-  12,701), and switching to the uws engine (12,979) or turning on batching
-  (13,432) puts it back in front of every raw echo — the send path avoids
-  re-encoding and re-copying what it already has.
-- **Batching closes more of the pipelined gap than the engine does.** With
-  64 calls in flight wRPC over its own engine runs at 110K and over the uws
-  engine at 118K, against 162K for a raw uws echo: swapping the JavaScript
-  WebSocket engine for the native one buys ~7% this run, and the rest of
-  the distance to the raw echo is the RPC layer plus the client. Turning on
-  client batching — 64 calls sharing frames — buys far more, ~75%, taking
-  the own engine to 193K and past every raw echo in the table, uws's
-  included. Both are one option away; neither is the default, because a
-  single call should not wait for a flush.
-- **Against frameworks doing the same job**, wRPC is ahead of socket.io on
-  every payload shape this run. The tRPC rows read through footnote ¹: its
-  sequential number is a client flush-timer artifact, and the honest
-  comparison is the pipelined column — where wRPC is still ~5.0× ahead.
-  tRPC's type story is excellent and unaffected by any of this.
+- **A raw echo is the ceiling, not a competitor.** The raw echoes answer
+  1.25–1.48× as many single small calls as wRPC's default row: that is what a
+  socket costs with no router, no access check and no correlation on top.
+  Read the small-payload column as one cluster, not a ladder — the three
+  wRPC rows (25.2K–27.1K) and socket.io (26.2K) sit within 8% of each other
+  this run, socket.io 4% ahead of the default row and behind the batched one.
+- **On real payloads wRPC moves ahead.** At 10 KB every wRPC row (13.8K–14.0K)
+  is ahead of every raw echo — the fastest, `@fastify/websocket`, at 12.7K —
+  and 29% ahead of socket.io: the send path never re-encodes or re-copies
+  what it already built.
+- **Batching, not the engine, closes the pipelined gap.** With 64 calls in
+  flight wRPC runs at 117K on its own engine and 116K on the uws engine,
+  against 161K for a raw uws echo: swapping the JavaScript WebSocket engine
+  for the native one buys nothing on this path this run, and the distance to
+  the raw echo is the RPC layer plus the client. Client batching — 64 calls
+  sharing frames — buys 72%, to 201K, past every raw echo in the table. Both
+  are one option away; neither is the default, because a single call should
+  not wait for a flush.
+- **Against frameworks doing the same job**, wRPC is 15% ahead of socket.io
+  with 64 calls in flight and 29% at 10 KB, and level with it on single small
+  calls. tRPC reads through footnote ¹: on the pipelined column wRPC is 5.0×
+  ahead, and tRPC's type story is excellent and unaffected by any of this.
+  gRPC through `@grpc/grpc-js` answers 8.1K small calls a second and 20.9K
+  with 64 in flight — wRPC is 3.1× and 5.6× that — and closes most of the gap
+  at 10 KB (footnote ²). Connect and gRPC's other implementations were not
+  measured.
 
 Step back from the individual rows and the question this table actually
 answers is: is the RPC layer the bottleneck? On every payload size
@@ -139,9 +155,57 @@ round-trips and network RTT long before a request queue backs up waiting
 on wRPC's own dispatch. Read this table as proof the floor is high enough
 to stop worrying about, not as a number to chase in production.
 
+## Over HTTP
+
+`bench/http-comparison.js` loads one JSON echo per stack the way
+[fastify/benchmarks](https://github.com/fastify/benchmarks) loads Node
+frameworks — autocannon, 100 connections, 10 pipelined requests each, 10 s,
+every server in a process of its own — and puts wRPC's two HTTP paths next to
+fastify, express, tRPC's standalone adapter and `node:http` with no framework
+at all:
+
+```bash
+node bench/http-comparison.js   # WRPC_BENCH_DURATION=30 for longer runs
+```
+
+<BenchChart set="http" />
+
+| Stack | requests/s | mean latency | p99 latency |
+| --- | ---: | ---: | ---: |
+| **wRPC** — declared REST route | 34,988 | 28.1 ms | 57 ms |
+| **wRPC** — packet mode | 34,410 | 28.5 ms | 57 ms |
+| fastify | 60,778 | 15.9 ms | 33 ms |
+| express | 45,479 | 21.5 ms | 42 ms |
+| tRPC — standalone HTTP adapter | 15,470 | 64.0 ms | 99 ms |
+| `node:http` — no framework | 93,728 | 10.2 ms | 19 ms |
+
+One run, one machine (Node v24.14.1, Apple M3 Max), loopback — the load
+generator shares the machine with the server, as it does in
+fastify/benchmarks.
+
+Read it honestly:
+
+- **Plain HTTP is not where wRPC is fastest.** Its two HTTP paths answer
+  about 35,000 requests a second: 0.58× fastify, 0.77× express, 2.3× tRPC's
+  adapter. Each request pays what a WebSocket call pays once per connection —
+  parsing, routing — on top of the RPC path itself (dispatcher, access check,
+  hooks, a `Context`), and every answer carries wRPC's default headers: CORS,
+  `strict-transport-security`, `x-content-type-options`, `wrpc-version`, a few
+  hundred bytes a bare fastify or express route does not send.
+- **The two paths cost the same.** A declared REST route (plain JSON in and
+  out) and packet mode (the call packet a WebSocket carries, as one POST)
+  are within 2% of each other: the REST bridge's trie is not where the time
+  goes.
+- **Which to reach for.** For traffic that is mostly RPC, a persistent
+  transport is the better carrier — the WebSocket rows above. For an
+  HTTP-first API, the [fastify adapter](./adapters/fastify) serves wRPC's
+  procedures from the fastify instance that already serves the rest of it.
+
 ## Fan-out
 
 `bench/send-path.js` — one room, N members, 512-byte payload:
+
+<BenchChart set="fanout" />
 
 | Scenario | rate | throughput |
 | --- | ---: | ---: |
@@ -251,17 +315,22 @@ saves on a real network, are not in these numbers.
 
 ### In Node
 
-Calls, one run (ops/sec, higher is better):
+Calls — the same run as [Against other stacks](#against-other-stacks)
+(ops/sec, higher is better):
+
+<BenchChart set="transport-calls" />
 
 | Stack | small payload | 10 KB payload | small ×64 in flight |
 | --- | ---: | ---: | ---: |
-| **wRPC** — own WebSocket | 24,415 | 13,834 | 116,047 |
-| **wRPC** — WebTransport (libquiche) | 11,232 | 2,169 | 15,856 |
-| WebTransport — raw echo, no RPC | 12,327 | 2,370 | 18,198 |
-| **wRPC** — WebRTC data channel (libdatachannel) | 7,223 | 1,392 | 12,262 |
-| WebRTC data channel — raw echo, no RPC | 7,335 | 1,363 | 14,062 |
+| **wRPC** — own WebSocket | 25,213 | 13,986 | 116,704 |
+| **wRPC** — WebTransport (libquiche) | 10,873 | 2,351 | 17,054 |
+| WebTransport — raw echo, no RPC | 12,810 | 2,396 | 18,646 |
+| **wRPC** — WebRTC data channel (libdatachannel) | 7,694 | 1,417 | 13,666 |
+| WebRTC data channel — raw echo, no RPC | 8,114 | 1,415 | 13,782 |
 
 Opening, streaming, and a call under load (`bench/transports.js`, one run):
+
+<BenchChart set="transport-node" />
 
 | Transport | open + load + first call, p50 | 16 MiB up + 16 MiB down | the same bytes, bare stack | small call, idle p50 | small call under upload load, p50 / p99 |
 | --- | ---: | ---: | ---: | ---: | ---: |
@@ -275,13 +344,13 @@ In Chrome the same pair opens in a few milliseconds (below).
 
 Read it honestly:
 
-- **On every transport, the stack sets the ceiling — not wrpc.** Over the
-  same libquiche session, wRPC's calls run at 91% of a raw echo's (small and
-  10 KB) and 87% with 64 in flight; over the same data channel at 98%, 102%
-  and 87%. A wRPC stream moves 84% of what the bare WebTransport stream does,
+- **On every transport, the stack sets the ceiling — not wRPC.** Over the
+  same libquiche session, wRPC's calls run at 85% of a raw echo's on small
+  payloads, 98% at 10 KB and 91% with 64 in flight; over the same data
+  channel at 95%, 100% and 99%. A wRPC stream moves 84% of what the bare WebTransport stream does,
   90% of the bare data channel, and 105% of the bare `ws` package.
-- **In Node, both native stacks are far behind the WebSocket.** Half the
-  small calls, a sixth to a tenth of the 10 KB ones, a thirteenth to a
+- **In Node, both native stacks are far behind the WebSocket.** A third to a
+  half of the small calls, a sixth to a tenth of the 10 KB ones, a thirteenth to a
   sixteenth of the stream throughput: a binding into a userspace QUIC or SCTP stack, against
   TCP on loopback, where the kernel is at its best. Reach for them in Node
   for what only they do — a peer-to-peer link, datagrams, a client whose
@@ -295,6 +364,8 @@ Read it honestly:
 
 `pnpm bench:browser transports` — Chrome 154 against the same Node `Server`
 (the WebRTC row is a pair inside the page, with a `PeerHost` at the far end):
+
+<BenchChart set="transport-chrome" />
 
 | Transport | open + first call | small | 10 KB | small ×64 | 16 MiB up + down | small call under upload load, p50 / p99 |
 | --- | ---: | ---: | ---: | ---: | ---: | ---: |
@@ -319,7 +390,7 @@ the Node server — a lower bound on a real link, not a measurement of one.
   WebSocket both open in about 12 ms here; the round trips QUIC saves are
   network round trips, and loopback has none.
 - **Calls are cheaper over the WebSocket** — 1.2× on small payloads and
-  1.9× at 10 KB in Chrome; 2.2× and 6.4× in Node, where WebTransport's stack
+  1.9× at 10 KB in Chrome; 2.3× and 5.9× in Node, where WebTransport's stack
   is a binding rather than the browser's own.
 
 ## Compression is off by default

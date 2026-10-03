@@ -1,5 +1,6 @@
 import DefaultTheme from 'vitepress/theme';
 import type { Theme } from 'vitepress';
+import BenchChart from './components/BenchChart.vue';
 import './custom.css';
 
 // Extends the default VitePress theme with our brand styling (see custom.css).
@@ -7,7 +8,10 @@ import './custom.css';
 // layout and components stay the default theme, the look comes from CSS variables.
 export default {
   extends: DefaultTheme,
-  enhanceApp({ router }) {
+  enhanceApp({ app, router }) {
+    // <BenchChart set="…" /> in any page — registered before the SSR guard
+    // below, so the charts are in the pre-rendered HTML too.
+    app.component('BenchChart', BenchChart);
     // Vercel Web Analytics + Speed Insights. The framework-agnostic `inject`
     // entrypoints are used rather than the `/vue` components: those require
     // `vue-router`, which VitePress does not use (it ships its own router).

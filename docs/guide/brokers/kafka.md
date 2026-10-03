@@ -14,7 +14,7 @@ const broker = createKafkaBroker({ kafka });
 
 `kafkajs` works the same way — `new Kafka({ brokers })` — and the adapter
 detects which client it was handed. Both are **injected**: neither is a
-runtime dependency of wrpc.
+runtime dependency of wRPC.
 
 ::: tip Which client
 `@confluentinc/kafka-javascript` (librdkafka, actively released) is the one

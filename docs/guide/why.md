@@ -81,7 +81,7 @@ hard to make fast:
   binary stream has a QUIC stream of its own: from Chrome, a small call made
   while uploads saturate the connection answers in 9 ms at the median, against
   46 ms over a WebSocket. And on every transport the stack, not wRPC, sets the
-  ceiling — over WebTransport and WebRTC, wRPC's calls run at 87–102% of a raw
+  ceiling — over WebTransport and WebRTC, wRPC's calls run at 85–100% of a raw
   echo over the same stack.
 - **Failure.** An instance can die with clients on it and, with a shared
   session store and any pub/sub as a backplane, those clients reconnect,

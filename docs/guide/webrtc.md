@@ -583,7 +583,7 @@ transports](./performance#across-transports) has the tables and the
 commands):
 
 - **wRPC adds little to the channel.** Over the same node-datachannel pair,
-  wRPC's calls run at 87–102% of a raw echo with no RPC layer, and its
+  wRPC's calls run at 95–100% of a raw echo with no RPC layer, and its
   streams at 90% of the bare channel. Opening a pair took 506 ms in
   node-datachannel — its own ICE and DTLS; wRPC's share was under a
   millisecond — and about 5 ms in Chrome.

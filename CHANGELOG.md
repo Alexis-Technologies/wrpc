@@ -1481,6 +1481,18 @@ reference as one opaque string. What is left to do:
   tests (`WRPC_WT=fails`, `WRPC_RTC=node-datachannel`), skipped with the
   reason otherwise. The numbers and how to read them are in
   [Performance](./docs/guide/performance.md#across-transports).
+- **The benchmarks are charted, and wRPC is measured against more
+  neighbours.** Every comparison on the performance page has a bar chart
+  before its table — wRPC in the brand green, the rest in gray, a metric
+  switch, best first — and the home page shows the RPC-framework one. The
+  charts read `docs/.vitepress/theme/benchmarks.json`, which a guard keeps
+  equal to the printed tables. `bench/rpc-comparison.js` gained a gRPC row
+  (`@grpc/grpc-js` unary over HTTP/2, the `.proto` loaded at runtime), and the
+  new `bench/http-comparison.js` loads wRPC's two HTTP paths next to fastify,
+  express, tRPC's standalone adapter and bare `node:http` with autocannon, as
+  fastify/benchmarks does. Over a WebSocket wRPC leads the frameworks with
+  calls in flight and at 10 KB; over plain HTTP it answers 0.58× fastify's
+  requests and 0.77× express's — said on the page, with why.
 - **What the AMQP adapter reads is checked against amqplib.** Every member
   the adapter reads off a channel or a connection must exist on amqplib's
   own `ConfirmChannel` / `ChannelModel` (a devDependency), not only on the

@@ -136,3 +136,15 @@ Compression and encryption are off until you turn them on; encryption here is
 the layer above TLS, never in place of it. The full matrix — how each
 transport is chosen, and which carry bytes inside a packet — is in
 [Client › Transports](/guide/client#transports).
+
+## Fast where it counts
+
+wRPC's whole call path — router, validation, access check, correlation —
+against the frameworks that do the same job, one machine, over a WebSocket
+(gRPC over HTTP/2). Switch the metric: wRPC leads with calls in flight and at
+10 KB, and is level with socket.io one small call at a time. Over plain HTTP,
+fastify and express answer more requests than wRPC does —
+[Performance](/guide/performance) has that too, with raw sockets, every
+transport, and how to reproduce each number.
+
+<BenchChart set="rpc" pick="wrpc,wrpc-batch,socket.io,trpc,grpc" title="RPC frameworks, calls per second" />

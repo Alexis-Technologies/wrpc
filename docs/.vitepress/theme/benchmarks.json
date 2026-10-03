@@ -1,0 +1,486 @@
+{
+  "rpc": {
+    "title": "RPC round trips per second, over a WebSocket",
+    "source": "bench/rpc-comparison.js",
+    "note": "Node v24.14.1 · Apple M3 Max · loopback · one run (3 October 2026)",
+    "page": "docs/guide/performance.md",
+    "metrics": [
+      {
+        "key": "pipelined",
+        "label": "small, 64 in flight",
+        "unit": "calls/s",
+        "better": "higher"
+      },
+      {
+        "key": "small",
+        "label": "small, one at a time",
+        "unit": "calls/s",
+        "better": "higher"
+      },
+      {
+        "key": "large",
+        "label": "10 KB, one at a time",
+        "unit": "calls/s",
+        "better": "higher"
+      }
+    ],
+    "rows": [
+      {
+        "id": "wrpc",
+        "label": "wRPC — own WebSocket",
+        "kind": "wrpc",
+        "small": 25213,
+        "large": 13986,
+        "pipelined": 116704
+      },
+      {
+        "id": "wrpc-uws",
+        "label": "wRPC — uws engine",
+        "kind": "wrpc",
+        "small": 26042,
+        "large": 13801,
+        "pipelined": 116174
+      },
+      {
+        "id": "wrpc-batch",
+        "label": "wRPC — batch: true",
+        "kind": "wrpc",
+        "small": 27078,
+        "large": 14027,
+        "pipelined": 201075
+      },
+      {
+        "id": "socket.io",
+        "label": "socket.io (emitWithAck)",
+        "kind": "other",
+        "small": 26213,
+        "large": 10862,
+        "pipelined": 101455
+      },
+      {
+        "id": "trpc",
+        "label": "tRPC (wsLink)",
+        "kind": "other",
+        "small": 628,
+        "large": 596,
+        "pipelined": 23310
+      },
+      {
+        "id": "grpc",
+        "label": "gRPC (grpc-js, HTTP/2)",
+        "kind": "other",
+        "small": 8127,
+        "large": 7844,
+        "pipelined": 20921
+      },
+      {
+        "id": "ws",
+        "label": "ws — raw echo, no RPC",
+        "kind": "other",
+        "small": 34987,
+        "large": 12206,
+        "pipelined": 112487
+      },
+      {
+        "id": "uws",
+        "label": "uWebSockets.js — raw echo",
+        "kind": "other",
+        "small": 31567,
+        "large": 12226,
+        "pipelined": 160872
+      },
+      {
+        "id": "fastify-websocket",
+        "label": "@fastify/websocket — raw echo",
+        "kind": "other",
+        "small": 37334,
+        "large": 12746,
+        "pipelined": 112133
+      },
+      {
+        "id": "fastify-uws",
+        "label": "fastify-uws — raw echo",
+        "kind": "other",
+        "small": 31572,
+        "large": 8702,
+        "pipelined": 160046
+      }
+    ]
+  },
+  "http": {
+    "title": "HTTP requests per second, a JSON echo",
+    "source": "bench/http-comparison.js",
+    "note": "Node v24.14.1 · Apple M3 Max · autocannon, 100 connections × 10 pipelined, 10 s · loopback · one run",
+    "page": "docs/guide/performance.md",
+    "metrics": [
+      {
+        "key": "requests",
+        "label": "requests per second",
+        "unit": "req/s",
+        "better": "higher"
+      },
+      {
+        "key": "latency",
+        "label": "mean latency",
+        "unit": "ms",
+        "better": "lower",
+        "digits": 1
+      },
+      {
+        "key": "p99",
+        "label": "p99 latency",
+        "unit": "ms",
+        "better": "lower"
+      }
+    ],
+    "rows": [
+      {
+        "id": "wrpc-rest",
+        "label": "wRPC — declared REST route",
+        "kind": "wrpc",
+        "requests": 34988,
+        "latency": 28.1,
+        "p99": 57
+      },
+      {
+        "id": "wrpc-packet",
+        "label": "wRPC — packet mode",
+        "kind": "wrpc",
+        "requests": 34410,
+        "latency": 28.5,
+        "p99": 57
+      },
+      {
+        "id": "fastify",
+        "label": "fastify",
+        "kind": "other",
+        "requests": 60778,
+        "latency": 15.9,
+        "p99": 33
+      },
+      {
+        "id": "express",
+        "label": "express",
+        "kind": "other",
+        "requests": 45479,
+        "latency": 21.5,
+        "p99": 42
+      },
+      {
+        "id": "trpc",
+        "label": "tRPC (standalone adapter)",
+        "kind": "other",
+        "requests": 15470,
+        "latency": 64.0,
+        "p99": 99
+      },
+      {
+        "id": "node-http",
+        "label": "node:http — no framework",
+        "kind": "other",
+        "requests": 93728,
+        "latency": 10.2,
+        "p99": 19
+      }
+    ]
+  },
+  "fanout": {
+    "title": "Room fan-out, emits per second",
+    "source": "bench/send-path.js",
+    "note": "Node v24.14.1 · Apple Silicon · 512-byte payload · one run",
+    "page": "docs/guide/performance.md",
+    "metrics": [
+      {
+        "key": "rate",
+        "label": "emits per second",
+        "unit": "emits/s",
+        "better": "higher"
+      },
+      {
+        "key": "throughput",
+        "label": "bytes written",
+        "unit": "MB/s",
+        "better": "higher"
+      }
+    ],
+    "rows": [
+      {
+        "id": "room-50",
+        "label": "room ×50",
+        "kind": "wrpc",
+        "rate": 539105,
+        "throughput": 14910
+      },
+      {
+        "id": "room-200",
+        "label": "room ×200",
+        "kind": "wrpc",
+        "rate": 208685,
+        "throughput": 23086
+      },
+      {
+        "id": "deflate-50",
+        "label": "room ×50 + deflate",
+        "kind": "wrpc",
+        "rate": 102914,
+        "throughput": 339
+      },
+      {
+        "id": "deflate-200",
+        "label": "room ×200 + deflate",
+        "kind": "wrpc",
+        "rate": 66083,
+        "throughput": 870
+      },
+      {
+        "id": "deflate-windows",
+        "label": "room ×50 + deflate, two windows",
+        "kind": "wrpc",
+        "rate": 53152,
+        "throughput": 175
+      }
+    ]
+  },
+  "transport-calls": {
+    "title": "RPC round trips per second, by transport (Node)",
+    "source": "bench/rpc-comparison.js",
+    "note": "Node v24.14.1 · Apple M3 Max · loopback · the same run as the WebSocket comparison",
+    "page": "docs/guide/performance.md",
+    "metrics": [
+      {
+        "key": "small",
+        "label": "small, one at a time",
+        "unit": "calls/s",
+        "better": "higher"
+      },
+      {
+        "key": "large",
+        "label": "10 KB, one at a time",
+        "unit": "calls/s",
+        "better": "higher"
+      },
+      {
+        "key": "pipelined",
+        "label": "small, 64 in flight",
+        "unit": "calls/s",
+        "better": "higher"
+      }
+    ],
+    "rows": [
+      {
+        "id": "ws",
+        "label": "wRPC — WebSocket",
+        "kind": "wrpc",
+        "small": 25213,
+        "large": 13986,
+        "pipelined": 116704
+      },
+      {
+        "id": "wt",
+        "label": "wRPC — WebTransport",
+        "kind": "wrpc",
+        "small": 10873,
+        "large": 2351,
+        "pipelined": 17054
+      },
+      {
+        "id": "wt-raw",
+        "label": "WebTransport — raw echo",
+        "kind": "other",
+        "small": 12810,
+        "large": 2396,
+        "pipelined": 18646
+      },
+      {
+        "id": "webrtc",
+        "label": "wRPC — WebRTC",
+        "kind": "wrpc",
+        "small": 7694,
+        "large": 1417,
+        "pipelined": 13666
+      },
+      {
+        "id": "webrtc-raw",
+        "label": "WebRTC — raw echo",
+        "kind": "other",
+        "small": 8114,
+        "large": 1415,
+        "pipelined": 13782
+      }
+    ]
+  },
+  "transport-node": {
+    "title": "Opening, streaming and a call under load, by transport (Node)",
+    "source": "bench/transports.js",
+    "note": "Node v24.14.1 · Apple M3 Max · loopback · one run",
+    "page": "docs/guide/performance.md",
+    "metrics": [
+      {
+        "key": "loadedP99",
+        "label": "call under upload load, p99",
+        "unit": "ms",
+        "better": "lower",
+        "digits": 1
+      },
+      {
+        "key": "loadedP50",
+        "label": "call under upload load, p50",
+        "unit": "ms",
+        "better": "lower",
+        "digits": 1
+      },
+      {
+        "key": "stream",
+        "label": "16 MiB up + down",
+        "unit": "MiB/s",
+        "better": "higher",
+        "digits": 1
+      },
+      {
+        "key": "open",
+        "label": "open + load + first call",
+        "unit": "ms",
+        "better": "lower",
+        "digits": 1
+      }
+    ],
+    "rows": [
+      {
+        "id": "ws",
+        "label": "wRPC — WebSocket",
+        "kind": "wrpc",
+        "open": 1.1,
+        "stream": 575,
+        "loadedP50": 15.2,
+        "loadedP99": 30.0
+      },
+      {
+        "id": "wt",
+        "label": "wRPC — WebTransport",
+        "kind": "wrpc",
+        "open": 2.6,
+        "stream": 44.5,
+        "loadedP50": 15.3,
+        "loadedP99": 18.0
+      },
+      {
+        "id": "webrtc",
+        "label": "wRPC — WebRTC",
+        "kind": "wrpc",
+        "open": 507,
+        "stream": 35.2,
+        "loadedP50": 84,
+        "loadedP99": 154
+      },
+      {
+        "id": "ws-bare",
+        "label": "ws — bare stream",
+        "kind": "other",
+        "stream": 545
+      },
+      {
+        "id": "wt-bare",
+        "label": "WebTransport — bare stream",
+        "kind": "other",
+        "stream": 52.9
+      },
+      {
+        "id": "webrtc-bare",
+        "label": "WebRTC — bare stream",
+        "kind": "other",
+        "stream": 38.9
+      }
+    ]
+  },
+  "transport-chrome": {
+    "title": "wRPC from Chrome, by transport",
+    "source": "pnpm bench:browser transports",
+    "note": "Chrome 154 · Node v24.14.1 server · Apple M3 Max · loopback · one run",
+    "page": "docs/guide/performance.md",
+    "metrics": [
+      {
+        "key": "loadedP50",
+        "label": "call under upload load, p50",
+        "unit": "ms",
+        "better": "lower",
+        "digits": 1
+      },
+      {
+        "key": "loadedP99",
+        "label": "call under upload load, p99",
+        "unit": "ms",
+        "better": "lower",
+        "digits": 1
+      },
+      {
+        "key": "small",
+        "label": "small calls",
+        "unit": "calls/s",
+        "better": "higher"
+      },
+      {
+        "key": "large",
+        "label": "10 KB calls",
+        "unit": "calls/s",
+        "better": "higher"
+      },
+      {
+        "key": "pipelined",
+        "label": "small, 64 in flight",
+        "unit": "calls/s",
+        "better": "higher"
+      },
+      {
+        "key": "stream",
+        "label": "16 MiB up + down",
+        "unit": "MiB/s",
+        "better": "higher"
+      },
+      {
+        "key": "open",
+        "label": "open + first call",
+        "unit": "ms",
+        "better": "lower",
+        "digits": 1
+      }
+    ],
+    "rows": [
+      {
+        "id": "ws",
+        "label": "WebSocket",
+        "kind": "wrpc",
+        "open": 12.5,
+        "small": 10789,
+        "large": 6009,
+        "pipelined": 44769,
+        "stream": 330,
+        "loadedP50": 46.3,
+        "loadedP99": 54.5
+      },
+      {
+        "id": "wt",
+        "label": "WebTransport",
+        "kind": "wrpc",
+        "open": 12.0,
+        "small": 8848,
+        "large": 3202,
+        "pipelined": 23806,
+        "stream": 79,
+        "loadedP50": 9.0,
+        "loadedP99": 11.4
+      },
+      {
+        "id": "webrtc",
+        "label": "WebRTC (both peers in the page)",
+        "kind": "wrpc",
+        "open": 5.4,
+        "small": 5353,
+        "large": 1020,
+        "pipelined": 10400,
+        "stream": 14,
+        "loadedP50": 40,
+        "loadedP99": 53
+      }
+    ]
+  }
+}

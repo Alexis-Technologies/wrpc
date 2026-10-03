@@ -256,7 +256,7 @@ and HTTP/3 datagrams, but that is where it stops:
   says ("no built-in support for the `:protocol` pseudo-header, WebTransport
   datagram demultiplexing, or capsule framing").
 
-So a `node:quic` host is a change in Node, not an adapter in wrpc. The
+So a `node:quic` host is a change in Node, not an adapter in wRPC. The
 session contract is where it will plug in once it exists, and nothing
 above it will change.
 
@@ -368,7 +368,7 @@ the commands):
   call waits in one TCP stream behind the upload's chunks. Plain calls are
   1.2–1.9× cheaper over the WebSocket, and it moves a single large upload
   about four times faster.
-- **In Node**, the stack sets the ceiling: wRPC's calls run at 87–91% of a
+- **In Node**, the stack sets the ceiling: wRPC's calls run at 85–98% of a
   raw echo over the same libquiche session, and its streams at 84% of the
   bare QUIC stream. That stack is a binding, and on loopback it moves a
   fraction of what Node's WebSocket does — use WebTransport in Node for what

@@ -397,6 +397,46 @@ test('the home transport table mirrors the client guide matrix', () => {
   }
 });
 
+// The benchmark charts (docs/.vitepress/theme/benchmarks.json, drawn by
+// BenchChart.vue) and the tables under them are two copies of one run: a
+// re-run pasted into one and not the other draws numbers the page does not
+// say. Every value a chart draws must be a number its page prints, and every
+// <BenchChart> in the docs must name a dataset (and rows) that exist.
+test('every number a benchmark chart draws is in its page, and every chart names real data', () => {
+  const sets = JSON.parse(read('docs/.vitepress/theme/benchmarks.json'));
+  const numbers = (text) =>
+    new Set([...text.matchAll(/\d[\d,]*(?:\.\d+)?/g)].map((m) => Number(m[0].replaceAll(',', ''))));
+  for (const [name, set] of Object.entries(sets)) {
+    const page = read(set.page);
+    assert.ok(page.includes(`<BenchChart set="${name}"`), `${set.page} draws no chart of "${name}"`);
+    const printed = numbers(page);
+    for (const row of set.rows) {
+      assert.ok(row.kind === 'wrpc' || row.kind === 'other', `${name}/${row.id}: kind is wrpc or other`);
+      for (const metric of set.metrics) {
+        const value = row[metric.key];
+        if (value === undefined) continue;
+        assert.ok(printed.has(value), `${name}/${row.id}/${metric.key}: ${value} is not printed in ${set.page}`);
+      }
+    }
+  }
+  const docs = require('node:fs')
+    .readdirSync(path.join(ROOT, 'docs'), { recursive: true })
+    .filter((file) => file.endsWith('.md') && !file.includes('.vitepress'));
+  for (const file of docs) {
+    for (const [tag] of read(`docs/${file}`).matchAll(/<BenchChart\b[^>]*>/g)) {
+      const name = tag.match(/\bset="([^"]+)"/)?.[1];
+      assert.ok(name && Object.hasOwn(sets, name), `docs/${file}: ${tag} names no dataset`);
+      const pick = tag.match(/\bpick="([^"]+)"/)?.[1];
+      for (const id of pick ? pick.split(',') : []) {
+        assert.ok(
+          sets[name].rows.some((row) => row.id === id.trim()),
+          `docs/${file}: ${tag} picks "${id}", not a row of "${name}"`,
+        );
+      }
+    }
+  }
+});
+
 // SECURITY.md is a release-checklist item: its version table must name the
 // current major line (never a "pre-first-publish" that shipped), and its
 // scope must name every directory that parses hostile bytes or holds keys.
