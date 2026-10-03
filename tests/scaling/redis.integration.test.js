@@ -20,6 +20,7 @@ const { RpcServer, defineRouter, procedure } = require('../../index.js');
 const { createRedisAdapter, createRedisSessionStore } = require('../../scaling.js');
 const { sealedStore, generateKey } = require('../../encryption.js');
 const { decodeAttachments } = require('../../src/attachments.js');
+const { WRPC_V2 } = require('../../src/wire.js');
 const { waitFor: sharedWaitFor } = require('../helpers/wait.js');
 
 const REDIS_URL = process.env.REDIS_URL;
@@ -43,12 +44,15 @@ const skip = !REDIS_URL ? 'REDIS_URL is not set' : !Redis ? 'ioredis is not inst
 
 const router = defineRouter({ test: { ping: procedure({ access: 'public', handler: async () => 'pong' }) } });
 
-// A socket-shaped stub: attachSocket only needs the events and a send().
+// A socket-shaped stub: attachSocket only needs the events and a send() —
+// and the subprotocol a 2.x client negotiated, which is what lets bytes
+// travel as bytes (without it the connection speaks revision 1, as to 1.0).
 class FakeSocket {
   constructor() {
     this.sent = [];
     this.listeners = new Map();
     this.remoteAddress = '127.0.0.1';
+    this.protocol = WRPC_V2;
   }
 
   on(event, listener) {
