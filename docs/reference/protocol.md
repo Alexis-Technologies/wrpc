@@ -104,7 +104,7 @@ can:
 | --- | --- |
 | WebSocket | the subprotocol, above |
 | HTTP | the response header `wrpc-version`, and the request's `Accept` |
-| SSE | nothing to say — the transport is text-only and carries no framed message |
+| SSE | nothing to say — always revision 1: the transport is text-only, carries no framed message, and a packet's bytes travel as JSON both ways |
 | Worker port | `v` on the port's first `ping` and its `pong` |
 | WebRTC, WebTransport, the broker binding | carriers 1.0 never had: always revision 2 |
 
@@ -595,8 +595,8 @@ exchange whose other side said it reads one, a worker port whose two ends
 both named revision 2. An end that opted out (`attachments: false`) or
 speaks a wire codec negotiates revision 1 in the first place; one that is
 sent a frame anyway answers it as a malformed packet. SSE, being text-only,
-refuses one on a channel POST with `415` and answers a call whose result
-holds bytes with `501`. Kind 2 is reserved.
+speaks revision 1 — bytes as JSON, both ways — and refuses a frame on a
+channel POST with `415`. Kind 2 is reserved.
 
 The negotiation is a `ping` whose `enc` is the client's codec ids in its
 order of preference (a list; one id is a list of one), answered by a `pong`
@@ -915,7 +915,9 @@ missed instead of starting over — subscriptions and all. Comment frames
 Serverless-friendly by construction: no upgrade, no socket beyond the
 response body, nothing but HTTP in either direction. What it cannot carry is
 binary — SSE frames are text, so wrpc's binary streams are refused on this
-transport rather than silently corrupted.
+transport rather than silently corrupted, and a channel speaks revision 1 to
+every client: a packet's bytes travel as the JSON 1.0 made of them, both
+ways, exactly as between two 1.0 ends.
 
 ## WebRTC <Badge type="info" text="since 2.0" /> {#webrtc}
 

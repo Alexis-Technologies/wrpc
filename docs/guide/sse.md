@@ -180,10 +180,15 @@ oblivion.
 
 ## What it cannot do
 
-- **Bytes.** Neither a binary stream nor a packet with
-  [binary attachments](./streams#attachments): a call with bytes in its
-  arguments is a `TypeError` on the client, a result with bytes answers
-  `501`, and an event with bytes is dropped with `sse.bytes` in the log.
+- **Bytes as bytes.** Neither a binary stream nor a packet with
+  [binary attachments](./streams#attachments). An SSE channel speaks
+  [revision 1](../reference/protocol#versioning) to every client — the
+  stream's GET says nothing about which wrpc is asking, and a 1.0 client
+  reads it — so `client.revision` is `1` on both ends, and a `Buffer` or a
+  typed array in a call's arguments, a result or an event travels as the
+  JSON 1.0 made of it: `{ type: 'Buffer', data: [...] }`, `{ "0": 137, … }`.
+  A handler that takes bytes from SSE clients reads them back from that
+  shape; one that must receive `Uint8Array`s needs a WebSocket.
 
 **Binary streams.** SSE frames are text, so wrpc's binary streams are *refused*
 on this transport rather than silently corrupted — `client.binary` is `false`

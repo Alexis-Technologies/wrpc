@@ -45,6 +45,16 @@ const routerOf = (lib) =>
           return true;
         },
       }),
+      // Bytes MADE on the server, in a result and in an event — what a 1.0
+      // client's own bytes never are: they reach the server as 1.0 JSON.
+      make: lib.procedure({ access: 'public', handler: async () => ({ blob: Uint8Array.of(1, 2, 3) }) }),
+      blast: lib.procedure({
+        access: 'public',
+        handler: async (context) => {
+          context.client.sendEvent('echo/poke', { blob: Uint8Array.of(1, 2, 3) });
+          return true;
+        },
+      }),
     },
   });
 

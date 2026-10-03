@@ -38,8 +38,13 @@ narrower promise — see
     proxy keeps a revision per page and translates: a frame from upstream
     reaches a stale 1.0 page as JSON, a page's frame leaves as JSON when the
     server upstream is 1.0. `attachPort(port, meta)` takes `meta.v`.
-  - **SSE** carries no framed message, and WebRTC, WebTransport and the
-    broker binding are carriers 1.0 never had: nothing to negotiate.
+  - **SSE** carries no framed message: a channel speaks revision 1 to every
+    client, 1.0 or 2.x — the stream's GET does not say which is asking —
+    so a packet's bytes travel on it as the JSON 1.0 made of them, both
+    ways, and `client.revision` is `1` on both ends. (It answered a result
+    holding bytes with `501` and dropped such an event, which a 1.0 SSE
+    client met with no flag to set.) WebRTC, WebTransport and the broker
+    binding are carriers 1.0 never had: nothing to negotiate.
 - `revision` (1 | 2), read-only, on `WrpcClient`, on the server-side
   `Client` and on `RpcServer` (the newest it speaks). No new option:
   `attachments: false` — or a packet codec — now means *this end speaks
@@ -497,9 +502,9 @@ narrower promise — see
   frame included: `PreparedFrames` and `SharedMessage.text` take bytes), a
   WebTransport or data-channel message, a broker frame, a worker port, a
   packet-mode HTTP body under `application/octet-stream`, both ways, batches
-  included. SSE refuses explicitly: a `TypeError` on the client, `501` on a
-  call whose result holds bytes, `415` on a channel POST, `sse.bytes` for a
-  dropped event. A REST result with bytes answers `501` without
+  included. SSE speaks revision 1 to every client — bytes travel as the
+  JSON 1.0 made of them, both ways — and refuses a frame on a channel POST
+  with `415`. A REST result with bytes answers `501` without
   `codec.rest`; a room event with bytes is delivered locally and refused
   for the JSON backplane (`backplane.bytes`).
 - On by default wherever revision 2 was negotiated (the first entry of this
@@ -1313,7 +1318,7 @@ narrower promise — see
   What that changes: (1) a handler or listener that read `.data` or
   `Object.values()` off such a value reads a `Uint8Array` now; (2) a
   declared REST route's result with bytes answers `501` unless `codec.rest`
-  is set, and SSE refuses bytes outright (`501`/`415`/`sse.bytes`). It is
+  is set. (SSE is unchanged: it speaks revision 1, bytes as 1.0's JSON.) It is
   **not** a wire break for a 1.0 peer: the frame is protocol revision 2,
   negotiated (the first Added entry), and a connection with a 1.0 client or
   server carries the JSON 1.0 sent — so during an upgrade the same handler

@@ -117,6 +117,28 @@ for (const pair of PAIRS) {
   });
 }
 
+// SSE speaks revision 1 to every client: a 2.x server answered a 1.0 SSE
+// client's call holding bytes in its result with 501 and dropped such an
+// event, with no flag to set on either end.
+for (const pair of PAIRS) {
+  test(
+    `interop sse: bytes in a call, its answer and an event travel as 1.0 JSON — ${pair.name}`,
+    { skip },
+    async (t) => {
+      const { http } = await boot(t, pair.server);
+      const client = await connect(t, pair.client, http, { transport: 'sse', callTimeout: 2000 });
+      assert.deepStrictEqual(await client.api.echo.say({ blob: BYTES }), { blob: JSON_BYTES }, "the client's bytes");
+      assert.deepStrictEqual(await client.api.echo.make(), { blob: JSON_BYTES }, "the server's bytes in a result");
+      const seen = [];
+      client.api.echo.on('poke', (data) => seen.push(data));
+      assert.strictEqual(await client.api.echo.nudge({ blob: BYTES }), true);
+      assert.strictEqual(await client.api.echo.blast(), true);
+      await waitFor(() => seen.length === 2, 'both events arrive on the stream');
+      assert.deepStrictEqual(seen, [{ blob: JSON_BYTES }, { blob: JSON_BYTES }]);
+    },
+  );
+}
+
 test('interop http: this client never raises its revision against a 1.0 server', { skip }, async (t) => {
   const { http } = await boot(t, legacy);
   const client = await connect(t, next, http);

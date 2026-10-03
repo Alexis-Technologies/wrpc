@@ -183,8 +183,8 @@ otherwise: a `{"0":137,"1":80,…}` object nine times the size that used to
 arrive silently as a plain object. Every transport carries it — a binary
 WebSocket frame, a WebTransport or data-channel message, a broker frame, a
 worker port, an HTTP body under `application/octet-stream` — except SSE,
-which is text-only and refuses explicitly: a `TypeError` on the client for
-bytes going up, a `501` on the call for a result coming down.
+which is text-only: it speaks [revision 1](./sse#what-it-cannot-do) to
+every client, so bytes on it travel as the JSON objects 1.0 made of them.
 
 On by default between two 2.x ends. The frame is
 [revision 2](../reference/protocol#versioning) of the protocol, negotiated

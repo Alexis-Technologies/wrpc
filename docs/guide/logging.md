@@ -218,7 +218,6 @@ The first table is the request path and the engines; the ones after it are
 | `session.migrate` | warn | A stale copy of a session row — under an older key, or a sealed one while `seal: false` — could not be deleted (`err`); the session itself was written |
 | `sse.refused` | warn | A channel request refused (`code`, `reason`): an unknown or expired channel, a wrong channel secret, a cap (`maxChannels`, `maxChannelsPerAddress`) |
 | `sse.gap` | warn | A reconnecting stream asked for events the replay buffer no longer holds (`channel`, `requested`): event loss, told to the client — which logs the same name when it hears it |
-| `sse.bytes` | warn | A packet with bytes in it could not go out on a text-only SSE channel (`type`, `name`) |
 | `sse.expired` | debug | A channel nobody re-attached to within `retention` was dropped |
 | `sse.supersede`, `sse.close` | error | Ending a stream a newer one replaced, or closing a channel, threw |
 

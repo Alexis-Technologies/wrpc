@@ -329,25 +329,30 @@ test('http: a packet POST carries a frame up and a frame down; a batch too; REST
   assert.match((await res.json()).message, /codec\.rest/);
 });
 
-test('sse: refused explicitly — a TypeError on the client, a 501 for a result, a dropped event with a warning', async (t) => {
-  const warnings = [];
-  const logger = {
-    log() {},
-    info() {},
-    debug() {},
-    error() {},
-    warn: (entry) => warnings.push(entry),
-    child() {
-      return logger;
-    },
-  };
-  const { port } = await bootServer(t, { router, logger });
+test('sse: revision 1 to every client — bytes travel as the JSON 1.0 made of them, both ways', async (t) => {
+  const { server, port } = await bootServer(t, { router });
   const client = await connectClient(t, `http://127.0.0.1:${port}/api`, { transport: 'sse' });
   await client.load('files');
-  await assert.rejects(client.api.files.put({ name: 's', body: bytes(4, 1) }), /binary attachments need a WebSocket/);
-  await assert.rejects(client.api.files.get({ size: 4, fill: 1 }), (error) => error.code === 501);
-  await client.api.files.notify({ fill: 1 });
-  await waitFor(() => warnings.some((w) => w.event === 'sse.bytes'));
+  assert.strictEqual(client.revision, 1);
+  assert.deepStrictEqual(
+    [...server.rpc.clients.values()].map((c) => c.revision),
+    [1],
+    'and the channel is revision 1 on the server',
+  );
+  received.length = 0;
+  // Up: the arguments' bytes leave as JSON — a plain object on the server.
+  const answer = await client.api.files.put({ name: 's', body: bytes(4, 1) });
+  assert.strictEqual(answer.kind, 'Object', 'what JSON makes of a typed array');
+  assert.deepStrictEqual(received[0].body, { 0: 1, 1: 1, 2: 1, 3: 1 });
+  // Down: a result holding bytes is answered, not refused.
+  const got = await client.api.files.get({ size: 2, fill: 9 });
+  assert.deepStrictEqual(got.body, { 0: 9, 1: 9 });
+  // And an event holding bytes is delivered, not dropped.
+  const events = [];
+  client.api.files.on('blob', (data) => events.push(data));
+  await client.api.files.notify({ fill: 5 });
+  await waitFor(() => events.length === 1, 'the event with bytes never arrived');
+  assert.strictEqual(events[0].body[15], 5);
   assert.strictEqual(await client.api.files.plain({ n: 5 }), 10, 'the channel is fine');
 });
 

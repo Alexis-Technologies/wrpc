@@ -401,8 +401,9 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
   /**
    * The protocol revision of the current connection (protocol.md#versioning):
    * 2 when the peer reads framed messages, so bytes travel as bytes; 1 when
-   * it is a 1.0 peer — or this client opted out with `attachments: false` —
-   * and bytes travel as the JSON 1.0 made of them (`{ "0": 137, … }`).
+   * it is a 1.0 peer — or this client opted out with `attachments: false`, or
+   * the transport is SSE, which is text-only — and bytes travel as the JSON
+   * 1.0 made of them (`{ "0": 137, … }`).
    */
   readonly revision: 1 | 2;
 

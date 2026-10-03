@@ -806,7 +806,8 @@ export class Client extends Emitter {
   /**
    * The protocol revision this connection speaks (protocol.md#versioning):
    * 2 when the peer reads framed messages, 1 for a 1.0 peer — whose bytes
-   * arrive, and are sent, as the JSON 1.0 made of them.
+   * arrive, and are sent, as the JSON 1.0 made of them — and on every SSE
+   * channel, which is text-only.
    */
   readonly revision: 1 | 2;
   /** The host this client belongs to (an RpcServer, a PeerHost); null for a standalone Client. */

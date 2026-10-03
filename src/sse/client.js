@@ -99,6 +99,10 @@ class ClientSseTransport extends ClientTransport {
   // The stream can die without a close frame just like a socket can.
   heartbeat = true;
 
+  // Revision 1 against any server: an event stream carries no frame, so a
+  // packet holding bytes leaves as the JSON 1.0 made of it.
+  revision = 1;
+
   #controller = null;
   // The channel reference, exactly as the `ready` frame gave it: presented
   // again on every POST and re-attach, forgotten with the channel. Opaque
@@ -267,7 +271,9 @@ class ClientSseTransport extends ClientTransport {
 
   write(data) {
     if (!this.active || this.#channel === null) throw new Error('Not connected');
-    if (typeof data !== 'string') throw new TypeError('SSE carries text only: binary attachments need a WebSocket');
+    // Only a binary packet codec gets here with bytes: revision 1 sends a
+    // packet's bytes as JSON.
+    if (typeof data !== 'string') throw new TypeError('SSE carries text only: a binary codec needs a WebSocket');
     const headers = {
       ...this.#headers,
       ...this.#meta,
