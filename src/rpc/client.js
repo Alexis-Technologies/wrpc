@@ -562,9 +562,13 @@ class Client extends Emitter {
     if (typeof id !== 'string' || id.length === 0 || id.length > 255) {
       throw new TypeError('createStream: generateId must return a string of at most 255 characters');
     }
-    const stream = new WrpcWritable(id, name, size, this.#transport, this.#otel);
-    this.streams.set(id, stream);
-    return stream;
+    // Not registered in `streams`: that map holds what the PEER announced —
+    // what getStream() answers, chunks are routed to and `maxStreams` caps.
+    // A writable kept there was never removed, so every download stayed for
+    // the connection's life and, past `maxStreams` of them, the peer's
+    // uploads were answered 429. It watches the transport's 'close' itself
+    // until it finishes.
+    return new WrpcWritable(id, name, size, this.#transport, this.#otel);
   }
 
   // A host with no session manager (a browser-side peer host, a standalone

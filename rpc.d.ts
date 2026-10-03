@@ -837,7 +837,11 @@ export class Client extends Emitter {
   readonly isReady: boolean;
   /** The REST response seam (Context.http); null except on a REST call. */
   http: HttpReply | null;
-  streams: Map<string, WrpcReadable | WrpcWritable>;
+  /**
+   * The streams the PEER announced here, by id — what `getStream()` answers
+   * and `maxStreams` caps. A `createStream()` writable is not kept in it.
+   */
+  streams: Map<string, WrpcReadable>;
   /** In-flight calls, by id — what `{type:'cancel'}` reaches. */
   calls: Map<string, AbortController>;
   /** Live subscriptions, by id — what `{type:'unsubscribe'}` reaches. */
@@ -933,7 +937,7 @@ export class Client extends Emitter {
   in(room: string): boolean;
   /** The rooms this client is in — a copy, safe to iterate while leaving. */
   readonly rooms: Set<string>;
-  getStream(id: string): WrpcReadable | WrpcWritable;
+  getStream(id: string): WrpcReadable;
   createStream(name: string, size: number): WrpcWritable;
   initializeSession(token?: string, data?: State): boolean;
   finalizeSession(): Promise<boolean>;

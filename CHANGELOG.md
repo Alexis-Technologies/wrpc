@@ -2028,6 +2028,26 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **A finished `WrpcWritable` lets go of its transport, and a server's
+  downloads no longer lock a connection's uploads out.** Every writable
+  arms a `'close'` listener on its transport — so a disconnect mid-stream
+  sets `closed` and releases a parked `'drain'` — and nothing took it off
+  again: a long-lived connection held one listener (and one writable) per
+  stream it had ever carried, and a `WrpcClient` printed
+  `MaxListenersExceededWarning: Possible close memory leak` from the 11th
+  (`node bench/support/transport-worker.js ws`, 60 sequential 16 MiB
+  uploads: 52 warnings, 62 listeners) — in 1.0 too. The listener comes off
+  once the stream is finished: ended or terminated, with no `'drain'` still
+  owed to a producer, which the close listener stays to release if the
+  transport dies first. A stream that is still open notices the disconnect
+  as before; one already finished stays `closed: false`. The server-side
+  `Client.createStream()` also kept every writable in `client.streams` for
+  the connection's life, where the `maxStreams` cap counts what the peer
+  announced: once 256 downloads had gone, every later upload on that
+  connection was answered `429`. The map holds the peer's streams only now —
+  `getStream()` is never handed this end's own writable, and the typing is
+  `Map<string, WrpcReadable>`. `WrpcReadable` waits on its own events
+  only and had no such listener.
 - **WebTransport: a session on `@fails-components/webtransport` no longer
   logs `datagrams.writable is deprecated`.** The session check of
   `attachSession` (`isWtDatagrams`) read the legacy `datagrams.writable`

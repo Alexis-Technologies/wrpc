@@ -189,7 +189,11 @@ export class WrpcWritable extends Emitter {
   name: string;
   size: number;
   transport: Transport;
-  /** True once the transport closed: write() reports false, no 'drain' follows. */
+  /**
+   * True once the transport closed under an unfinished stream: write() reports
+   * false, no 'drain' follows. A stream already ended (or terminated), with no
+   * 'drain' still owed, stops watching the transport and stays false.
+   */
   readonly closed: boolean;
   constructor(id: string, name: string, size: number, transport: Transport);
   init(): void;
