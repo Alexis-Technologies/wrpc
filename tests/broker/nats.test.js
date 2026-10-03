@@ -420,6 +420,9 @@ test('nats broker: a reader deletes its consumer when the read is done', async (
   const pending = iterator.next();
   await waitFor(() => stream.ephemeral.size === 1, { timeout: 2000 });
   const config = Array.from(stream.ephemeral)[0].config;
+  // What the server is told, through the client's own ms -> ns conversion:
+  // 30 s. The adapter used to pass nanoseconds already, converted twice into
+  // 3·10¹⁶ ns — 347 days.
   assert.strictEqual(config.inactive_threshold, 30_000 * 1_000_000, 'the server reaps a reader that died');
   controller.abort();
   await pending.catch(() => {});

@@ -238,10 +238,13 @@ const createNatsBroker = (options = {}) => {
   // is done, and — should the process die first — reaped by the server
   // after `inactive_threshold`. They used to be left behind, one per page
   // of catch-up and one per tail, until the server's own default reaping.
+  // In MILLISECONDS: `consumers.get()` takes ordered-consumer options and
+  // converts them to the server's nanoseconds itself — this used to hand it
+  // nanoseconds, and the server was told 347 days instead of 30 s.
   const ephemeral = (config) => ({
     ...config,
     deliver_policy: 'by_start_sequence',
-    inactive_threshold: EPHEMERAL_INACTIVE_MS * MILLIS,
+    inactive_threshold: EPHEMERAL_INACTIVE_MS,
   });
   const discard = async (consumer) => {
     if (!isFunction(consumer?.delete)) return;

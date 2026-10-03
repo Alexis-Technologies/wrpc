@@ -1987,6 +1987,13 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **NATS: a feed reader's consumer is reaped 30 s after its reader dies, not
+  347 days.** The ephemeral consumers of a log read and its catch-up carry
+  `inactive_threshold`, which the adapter passed in nanoseconds to
+  `consumers.get()` — and that takes milliseconds and converts them
+  itself, so the server was told 3·10¹⁶ ns. The in-repo fake converts as
+  `@nats-io/jetstream` does now, and the suite reads what the server
+  would be told.
 - **AMQP: a retry or a dead letter on a consumer channel that died writes
   one copy.** A settlement publishes its copy (the retry, the dead letter)
   and then acks the original; the two were retried together, under a

@@ -362,8 +362,15 @@ const createFakeNats = () => {
           return consumer;
         }
         // An ephemeral consumer, as the log tail and its catch-up use —
-        // tracked, so a test can see what a read left behind.
-        const consumer = new FakeConsumer(stream, durableOrConfig ?? {});
+        // tracked, so a test can see what a read left behind. These are
+        // ORDERED-consumer options, in milliseconds, and @nats-io/jetstream
+        // converts `inactive_threshold` to the server's nanoseconds itself
+        // (jsmstream_api.js) — so the fake does too: the config it keeps is
+        // what the server would be told. It used to keep the option as it
+        // came, and the adapter's own ×10⁶ looked right here.
+        const options = { ...(durableOrConfig ?? {}) };
+        if (typeof options.inactive_threshold === 'number') options.inactive_threshold *= 1_000_000;
+        const consumer = new FakeConsumer(stream, options);
         stream.ephemeral.add(consumer);
         return consumer;
       },
