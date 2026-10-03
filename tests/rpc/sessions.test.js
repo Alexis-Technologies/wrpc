@@ -487,3 +487,42 @@ test('SessionManager: a write after a logout elsewhere does not resurrect the se
   assert.strictEqual(await store.set('gone', { a: 1 }, { create: false }), false);
   assert.strictEqual(await store.get('gone'), null);
 });
+
+test('sessions: a logout on one connection ends the session on the others of this instance', async (t) => {
+  const { bearerTransport } = require('../../auth.js');
+  const { bootServer, connectClient } = require('../helpers/server.js');
+  const router = defineRouter({
+    auth: {
+      login: procedure({
+        access: 'public',
+        handler: async (context) => {
+          context.client.startSession(undefined, { user: 'alice' });
+          return context.session.token;
+        },
+      }),
+      whoami: procedure({ access: 'session', handler: async (context) => context.session.state.user }),
+      logout: procedure({ access: 'session', handler: async (context) => context.client.finalizeSession() }),
+    },
+  });
+  const { url } = await bootServer(t, { router, sessions: { transport: bearerTransport() } });
+  const first = await connectClient(t, url);
+  await first.load('auth');
+  const token = await first.api.auth.login();
+  // Two more connections — two tabs — restored from the same bearer token.
+  const tab = async () => {
+    const client = await connectClient(t, url, { headers: { authorization: `Bearer ${token}` } });
+    await client.load('auth');
+    return client;
+  };
+  const a = await tab();
+  const b = await tab();
+  assert.strictEqual(await a.api.auth.whoami(), 'alice');
+  assert.strictEqual(await b.api.auth.whoami(), 'alice');
+  assert.strictEqual(await a.api.auth.logout(), true);
+  // B used to go on answering `alice` until it reconnected.
+  await assert.rejects(b.api.auth.whoami(), (error) => error.code === 403);
+  await assert.rejects(first.api.auth.whoami(), (error) => error.code === 403);
+  // And a fresh connection with the token is refused as before.
+  const late = await tab();
+  await assert.rejects(late.api.auth.whoami(), (error) => error.code === 403);
+});

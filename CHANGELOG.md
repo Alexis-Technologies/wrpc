@@ -2718,6 +2718,15 @@ reference as one opaque string. What is left to do:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **A logout ends the session on every connection of the instance.**
+  `finalizeSession()` deleted the session from the store and dropped it on
+  the connection that called it, while another connection that had restored
+  the same token — a second tab, a second device — kept answering `session`
+  procedures as that user until it reconnected: the access gate looked only
+  at whether a session object was there. The other connections' copies are
+  now marked ended and the gate refuses an ended session (`403`); a handler
+  already running finishes. Across instances the store is the signal, on the
+  next restore — the sessions guide says so.
 - **What the ws redial puts in the URL is named, and an ambiguous `wrpc.v1`
   answer is said.** A browser client that offered `wrpc.v2`, carried its
   `headers`/`meta` as subprotocol tokens and was answered `wrpc.v1` redials

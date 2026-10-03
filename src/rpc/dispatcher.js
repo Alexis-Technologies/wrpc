@@ -115,6 +115,14 @@ const parseTarget = (target) => {
 // (the answer going out) is written at debug, never a second alert at a
 // level the site did not choose. The method and the id are the peer's text,
 // clipped before they become a record.
+// A session ended on another connection of this instance (finalizeSession
+// there) is no session here either: the next call is refused, as after a
+// logout on this one.
+const hasSession = (client) => {
+  const { session } = client;
+  return session !== null && session !== undefined && session.ended !== true;
+};
+
 const refuseCall = (client, id, code, method, event) => {
   const level = code === 429 ? 'debug' : code === 503 ? 'info' : 'warn';
   const shown = clip(method);
@@ -193,7 +201,7 @@ const handleRpc = async (client, packet, router) => {
       // which is every call after the first (bench/bench.js).
       if (!client.isReady) await client.ready;
       if (controller.signal.aborted) return void (status = 'cancelled');
-      if (!client.session && proc.access !== 'public') {
+      if (!hasSession(client) && proc.access !== 'public') {
         status = 'error';
         code = 403;
         return void client.error(403, { id });
@@ -312,7 +320,7 @@ const handleSubscribe = async (client, packet, router) => {
     client.subscriptions.delete(id);
     return;
   }
-  if (!client.session && proc.access !== 'public') {
+  if (!hasSession(client) && proc.access !== 'public') {
     client.subscriptions.delete(id);
     return void refuse(client, id, 403, 'Forbidden', method);
   }
@@ -458,7 +466,7 @@ const handleEvent = async (client, packet, router) => {
   const handler = router.getEventHandler(unit, version, name);
   if (!handler) return void client.warn(`EVENT\t${target}\tno handler`);
   if (!client.isReady) await client.ready;
-  if (!client.session && handler.access !== 'public') {
+  if (!hasSession(client) && handler.access !== 'public') {
     return void client.warn(`EVENT\t${target}\tsession required`);
   }
   // Events run the invocation phases (preValidation/preHandler/onError);

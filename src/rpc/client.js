@@ -582,6 +582,17 @@ class Client extends Emitter {
     // A save queued in this turn must not land after the delete below.
     if (typeof this.session.end === 'function') this.session.end();
     this.session = null;
+    // The other connections of this instance that restored the same token
+    // end with it: a logout in one tab used to leave the session working in
+    // the others until they reconnected. Ended, not removed — a handler
+    // still running there keeps its context — and refused from the next
+    // call on. Another instance learns it from the store, on its next restore.
+    const others = this.#server?.clients;
+    if (others) {
+      for (const other of others) {
+        if (other !== this && other.session?.token === token) other.session.end?.();
+      }
+    }
     // A session that never came from a store (a peer host's link identity)
     // has nothing to destroy.
     if (this.#sessions) await this.#sessions.destroy(token);

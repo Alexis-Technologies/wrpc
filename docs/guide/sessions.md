@@ -53,7 +53,7 @@ These live on `context.client`:
 | `startSession(token?, data?)` | Creates a session **and** sends the cookie. What a login calls. |
 | `initializeSession(token?, data?)` | Creates it without touching cookies. |
 | `restoreSession(token)` | Loads one from the store. `false` if it is gone. |
-| `finalizeSession()` | Deletes it from the store and drops it. `false` if there was none. |
+| `finalizeSession()` | Deletes it from the store and drops it — and ends it on this instance's other connections that restored the same token. `false` if there was none. |
 
 `token` defaults to a freshly generated one; pass your own to adopt an existing
 identifier.
@@ -76,6 +76,17 @@ is the **only** way a session survives a reconnect.
 A dropped connection never deletes the session from the store. That is exactly
 what makes a reconnect cheap: sessions end through `finalizeSession()` or
 store-side expiry, and nothing else.
+
+**A logout ends the session everywhere on this instance.** Every connection
+that restored the same token — another tab, a second device holding the same
+bearer token — holds its own copy of the session; `finalizeSession()` on one
+marks the others ended, so their next call to a `session` procedure is a
+`403`, as on the connection that logged out (a handler already running there
+finishes with its `context.session`). **Another instance** has its copies in
+its own memory and does not hear of it: a connection there keeps the session
+until it reconnects — the restore then finds no row — or until your
+application tells it, over the [cluster](./scaling) or the rooms backplane. A
+store with short TTLs and `touch()` narrows that window.
 
 ## The lifecycle
 
