@@ -150,6 +150,35 @@ test('kafka broker: the flavor is detected, and can be forced', async (t) => {
   assert.throws(() => createKafkaBroker({ kafka: kafkajs, partitions: 0 }), /partitions/);
 });
 
+// The join signal's failure paths, driven directly: through the fakes they
+// ran only when a join happened to be slow, so whether they were covered
+// depended on the machine's load.
+test('kafka shape: the join watcher answers false when the group never joins, whatever the client throws', async () => {
+  const { joinWatcher } = require('../../src/broker/kafka/shape.js');
+  // kafkajs: a GROUP_JOIN that never fires — false at the timeout, and the
+  // listener removed through the remover kafkajs' `on` answers.
+  const removed = [];
+  const silent = { events: { GROUP_JOIN: 'group.join' }, on: (event) => () => removed.push(event) };
+  assert.strictEqual(await joinWatcher('kafkajs', silent, { timeout: 20 }), false);
+  assert.deepStrictEqual(removed, ['group.join']);
+  // An `events` getter that throws (as the confluent facade's does) and an
+  // `assignment()` that throws: polled, not trusted, until the deadline.
+  const throwing = {
+    get events() {
+      throw new Error('not on this client');
+    },
+    assignment: () => {
+      throw new Error('not implemented');
+    },
+  };
+  assert.strictEqual(await joinWatcher('kafkajs', throwing, { timeout: 30, step: 5 }), false);
+  // ...and an assignment that arrives is the join.
+  let assigned = [];
+  const polled = joinWatcher('confluent', { assignment: () => assigned }, { timeout: 2000, step: 5 });
+  setTimeout(() => (assigned = [{ topic: 't', partition: 0 }]), 20);
+  assert.strictEqual(await polled, true);
+});
+
 test('kafka broker: the resume token is a vector of partition offsets', (t) => {
   const { broker } = open('kafkajs');
   t.after(() => broker.close());
