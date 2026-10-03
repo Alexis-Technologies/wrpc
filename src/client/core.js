@@ -1009,6 +1009,7 @@ class WrpcClient extends Emitter {
       // Same reasoning, same ordering, as the restore path below: put the
       // pre-open attempt count back BEFORE terminate() synchronously hands
       // it to the reconnect scheduler.
+      this.#unproven();
       if (this.#attempt === 0) this.#attempt = attempts;
       if (this.active) this.#transport.terminate();
       throw error;
@@ -1020,6 +1021,18 @@ class WrpcClient extends Emitter {
     // is an observer, and one that throws must not take the restore with it.
     this.emit('open').catch((error) => this.#escalate(error, 'listener.open'));
     if (reconnected) await this.#restore(attempts);
+  }
+
+  // A connection that failed its credential or its restore never proved
+  // itself, so its stability window must not zero the attempt count while
+  // the close terminate() starts is still on its way: a ws transport still
+  // settling its open (a hook that throws synchronously runs inside the
+  // 'open' emit) can only begin a close handshake, and 'close' arrives when
+  // the peer answers — past stableAfter on a slow runner, and the backoff
+  // went back to minDelay every time.
+  #unproven() {
+    clearTimeout(this.#stableTimer);
+    this.#stableTimer = null;
   }
 
   async #restore(attempts) {
@@ -1042,6 +1055,7 @@ class WrpcClient extends Emitter {
       // and that is where the scheduler reads it. The guard covers the other
       // ordering: a socket that died on its own already advanced the
       // counter, and that number is the fresher one.
+      this.#unproven();
       if (this.#attempt === 0) this.#attempt = attempts;
       // Still "open" from the transport's point of view — force the cycle.
       if (this.active) this.#transport.terminate();

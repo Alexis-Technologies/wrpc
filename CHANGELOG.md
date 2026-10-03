@@ -2028,6 +2028,18 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **A connection refused by `authenticate` no longer resets the reconnect
+  backoff.** A hook that throws synchronously runs inside the transport's
+  `'open'` emit, where the ws transport is still settling its open, so the
+  `terminate()` the failure forces can only start a close handshake — and
+  the `'close'` comes when the server answers it. If that took longer than
+  `reconnect.stableAfter` (which defaults to `minDelay`), the stability
+  window counted the refused connection as proven and zeroed the attempt
+  count: the backoff restarted at `minDelay` (`10, 20, 10, 20, 40` on a
+  slow CI runner), and with a close slow enough every time it never grew
+  and `retries` never exhausted. A connection that fails its credential —
+  or its restore — now stops the stability window before it reports the
+  close; a test drives a transport whose forced close always arrives late.
 - **A finished `WrpcWritable` lets go of its transport, and a server's
   downloads no longer lock a connection's uploads out.** Every writable
   arms a `'close'` listener on its transport — so a disconnect mid-stream

@@ -925,6 +925,87 @@ test('authenticate: a failing hook walks the backoff and emits authenticate-fail
   assert.ok(failed[0].attempts >= 1);
 });
 
+test('authenticate: a refused connection never turns stable, however late its close arrives', async (t) => {
+  // A hook that throws synchronously runs inside the transport's 'open'
+  // emit, where the ws transport is still settling its open: terminate()
+  // there can only start a close handshake, and 'close' comes when the
+  // server answers it. The stability window (stableAfter defaults to
+  // minDelay) used to run out first on a slow runner and zero the attempt
+  // count — the backoff started over: [10, 20, 10, 20, 40]. This transport
+  // reports every forced close late, so the race is not left to the runner.
+  const instances = [];
+  class LateClose extends Emitter {
+    constructor(url) {
+      super();
+      this.url = url;
+      this.persistent = true;
+      this.heartbeat = false;
+      this.active = false;
+      instances.push(this);
+    }
+
+    async open() {
+      this.active = true;
+      this.emit('open');
+    }
+
+    write() {
+      return true;
+    }
+
+    send() {
+      return true;
+    }
+
+    close() {
+      this.terminate();
+    }
+
+    terminate() {
+      if (!this.active) return;
+      this.active = false;
+      setTimeout(() => this.emit('close'), 40);
+    }
+
+    drop() {
+      this.active = false;
+      this.emit('close');
+    }
+
+    online() {}
+
+    offline() {}
+  }
+  WrpcClient.transport.lateclose = LateClose;
+  t.after(() => delete WrpcClient.transport.lateclose);
+
+  let allow = true;
+  const client = await WrpcClient.connect('fake://x', {
+    transport: ['lateclose'],
+    heartbeat: false,
+    logger: false,
+    reconnect: { minDelay: 10, maxDelay: 1000, factor: 2, jitter: false, retries: 3 },
+    authenticate: () => {
+      if (!allow) throw new Error('credential rejected');
+    },
+  });
+  t.after(() => void client.close());
+
+  const delays = [];
+  let exhausted = false;
+  client.on('reconnecting', ({ delay }) => void delays.push(delay));
+  client.on('reconnect-failed', () => {
+    exhausted = true;
+  });
+
+  allow = false;
+  instances.at(-1).drop();
+  // Bounded: a counter that keeps going back to zero never exhausts.
+  await waitFor(() => exhausted || delays.length > 3, 'the reconnect cycle stalled');
+  assert.deepStrictEqual(delays, [10, 20, 40]);
+  assert.strictEqual(exhausted, true);
+});
+
 test('authenticate: a first-connect failure rejects connect() and leaves no zombie', async (t) => {
   const { port } = await authBoot(t, { introspection: true });
   const before = WrpcClient.connections.size;
