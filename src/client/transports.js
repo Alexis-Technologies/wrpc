@@ -6,6 +6,7 @@
 
 const { WrpcClient, ClientTransport, WRPC_V1, WRPC_V2, META_MAX, metaHeaders, refusedStatus } = require('./core.js');
 const { jsonParse } = require('../utils.js');
+const { decodeAttachments } = require('../attachments.js');
 const { createWsCompression } = require('./wsCompression.js');
 const { openSocket } = require('./wsHandshake.js');
 
@@ -232,7 +233,8 @@ class ClientHttpTransport extends ClientTransport {
   persistent = false;
   // No handshake to negotiate on: a server says the revision it speaks in
   // the `wrpc-version` of every response, so this side sends a frame only
-  // after an answer said 2 — and a 1.0 server, which says 1, never gets one.
+  // after an answer said 2 — and a 1.0 server, which says 1, never gets one
+  // unless it shares an address with 2.x ones; see write().
   revision = 1;
   // Can carry procedure-mapped REST requests (client/core #restCall): a
   // call whose procedure declares `http` goes out as the same REST request
@@ -363,15 +365,25 @@ class ClientHttpTransport extends ClientTransport {
       try {
         const res = await doFetch(this.url, options);
         // The server reads framed messages: from here on, bytes this side
-        // sends travel as bytes. Never lowered — a proxy's error page has
-        // no marker, and it says nothing about the server behind it.
-        if (res.headers.get('wrpc-version') === '2') this.revision = 2;
+        // sends travel as bytes.
+        const modern = res.headers.get('wrpc-version') === '2';
+        if (modern) this.revision = 2;
         // A frame answer (a result holding bytes) is read as bytes and
         // handed on as one; the core classifies it.
         if (res.ok && res.headers.get('content-type') === 'application/octet-stream') {
           return void this.emit('message', new Uint8Array(await res.arrayBuffer()));
         }
         const text = await res.text();
+        // A frame reached a server that does not say 2 — a 1.0 instance
+        // behind the same address as 2.x ones, a rollback — and wrpc
+        // answered it (a proxy's page has no packet in it, and says nothing
+        // about the server behind). That server refused the frame before
+        // reading a call out of it: this side speaks revision 1 again, and
+        // the same packets go once more as the JSON 1.0 reads.
+        if (!modern && typeof data !== 'string' && this.#decode(text) !== null) {
+          this.revision = 1;
+          return void this.write(JSON.stringify(decodeAttachments(data)), meta);
+        }
         // Error statuses normally still carry wrpc callback packets (the
         // server answers errors as JSON with the same code). Only when the
         // body is NOT wrpc's — a proxy's HTML 502, an empty body — are

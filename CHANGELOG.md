@@ -1402,11 +1402,14 @@ reference as one opaque string. What is left to do:
    upgraded; `context.client.revision` (server) and `client.revision`
    (client) say which a connection is.
 2. **Several instances behind one address, over HTTP**: an HTTP client keeps
-   what one answer told it, so while a 1.0 instance is still in the pool
-   deploy the 2.0 ones with `attachments: false` — they then answer
-   `wrpc-version: 1` and nobody is sent a frame. Drop the flag once the
-   pool is all 2.0. (A WebSocket is one connection to one instance and needs
-   nothing.)
+   what one answer told it, and a frame it then sends to a 1.0 instance is
+   refused — the client takes the hint, speaks revision 1 again and resends
+   those packets once as JSON, so nothing is lost, but each such call costs
+   a second round trip. To spare it while a 1.0 instance is still in the
+   pool (or to make a rollback to 1.0 free), deploy the 2.0 ones with
+   `attachments: false` — they then answer `wrpc-version: 1` and nobody is
+   sent a frame. Drop the flag once the pool is all 2.0. (A WebSocket is one
+   connection to one instance and needs nothing.)
 3. **A rooms backplane or a cluster** has no handshake to negotiate on. The
    same `attachments: false` on the 2.0 instances keeps their envelopes
    JSON while a 1.0 instance subscribes — it drops a `wrpc-bin:` envelope
@@ -1903,6 +1906,15 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **An HTTP client that sent a frame to a server that reads none sends it
+  again as JSON instead of timing out.** The revision an HTTP client learns
+  from `wrpc-version: 2` was never lowered, so behind one address shared by
+  2.x and 1.0 instances — or after a rollback to 1.0 — every call holding
+  bytes that landed on a 1.0 instance was refused before it was read (an
+  id-less `500`) and ended in a `408` after `callTimeout`. A frame answered
+  by wrpc without `wrpc-version: 2` now lowers the client to revision 1 and
+  the same packets go once more as JSON; an answer with no packet in it (a
+  proxy's error page) changes nothing.
 - **A worker port under a packet codec no longer opens with a malformed
   packet.** The page's first `ping` — the one naming its revision — was
   JSON text whatever the client's `codec`, and a server attached to the

@@ -121,8 +121,13 @@ wrpc's own because it is CORS-safelisted — a new request header needs a
 preflight that a 1.0 server, or an application's own `cors.headers` list,
 refuses. (A request MAY still send `wrpc-version`; it is accepted and
 ignored.) Every request/response pair is self-contained, so a fleet behind
-one address must agree: an instance that answers `2` promises that every
-instance reads a frame.
+one address should agree: an instance that answers `2` promises that every
+instance reads a frame. One that does not — a 1.0 instance still in the
+pool, a rollback — refuses a frame before it reads a call out of it, with a
+wrpc error packet and no `wrpc-version: 2`; a client that sent a frame and
+is answered that way speaks revision 1 again and sends the same packets once
+more as JSON, so the call costs a round trip and is not lost. (An answer
+with no packet in it — a proxy's error page — changes nothing.)
 
 **Worker port.** A `MessagePort` has no handshake, and the two ends are
 deployed apart — a tab that loaded before a release, a Service Worker that

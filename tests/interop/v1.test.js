@@ -139,6 +139,29 @@ for (const pair of PAIRS) {
   );
 }
 
+test(
+  'interop http: a 2.x and a 1.0 instance behind one address — a call holding bytes lands on either',
+  { skip },
+  async (t) => {
+    const modern = await boot(t, next);
+    const old = await boot(t, legacy);
+    // A round-robin balancer: every other request goes to the 1.0 instance.
+    let requests = 0;
+    const balanced = (url, init) => {
+      const base = requests++ % 2 === 0 ? modern.http : old.http;
+      return fetch(base + String(url).slice(modern.http.length), init);
+    };
+    const client = await connect(t, next, modern.http, { fetch: balanced, callTimeout: 2000 });
+    // The load was answered `wrpc-version: 2`, so the next call leaves as a
+    // frame — and reaches the 1.0 instance, which refuses it unread. It used
+    // to end in a 408; it is sent again as JSON.
+    assert.strictEqual(client.revision, 2);
+    for (let i = 0; i < 4; i++) {
+      assert.deepStrictEqual(await client.api.echo.say({ blob: BYTES }), { blob: JSON_BYTES }, `call ${i}`);
+    }
+  },
+);
+
 test('interop http: this client never raises its revision against a 1.0 server', { skip }, async (t) => {
   const { http } = await boot(t, legacy);
   const client = await connect(t, next, http);

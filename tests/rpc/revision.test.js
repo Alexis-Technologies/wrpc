@@ -253,6 +253,41 @@ test('revision http: against a server that speaks revision 1 the client never se
   assert.deepStrictEqual(await client.api.files.get(), { blob: JSON_BYTES });
 });
 
+test('revision http: a frame refused by a server that does not say 2 is sent again as JSON — a proxy page is not', async (t) => {
+  // One address, two instances that disagree: the second reads no frames
+  // (a 1.0 one refuses a frame the same way — tests/interop).
+  const framed = await boot(t);
+  const plain = await boot(t, { attachments: false });
+  let requests = 0;
+  const balanced = (url, init) => {
+    const target = requests++ % 2 === 0 ? framed.origin : plain.origin;
+    return fetch(target + String(url).slice(framed.origin.length), init);
+  };
+  const client = await connectClient(t, `${framed.origin}/api`, { fetch: balanced, callTimeout: 2000 });
+  await client.load('files');
+  assert.strictEqual(client.revision, 2);
+  // The frame lands on the instance that reads none; it used to be a 408.
+  assert.strictEqual(await client.api.files.put({ blob: BYTES }), true);
+  assert.strictEqual(requests, 3, 'the load, the refused frame, the JSON');
+  assert.deepStrictEqual(plain.seen.args, [], 'the frame was refused unread');
+  assert.deepStrictEqual(framed.seen.args, [{ blob: JSON_BYTES }], 'the JSON went to the next instance');
+
+  // An answer with no packet in it says nothing about the server behind it.
+  const page = await boot(t);
+  let fail = true;
+  const flaky = async (url, init) => {
+    if (typeof init.body !== 'string' && fail) {
+      fail = false;
+      return new Response('<html>502 Bad Gateway</html>', { status: 502, headers: { 'content-type': 'text/html' } });
+    }
+    return fetch(url, init);
+  };
+  const behindProxy = await connectClient(t, `${page.origin}/api`, { fetch: flaky, callTimeout: 2000 });
+  await behindProxy.load('files');
+  await assert.rejects(behindProxy.api.files.put({ blob: BYTES }), (error) => error.code === 502);
+  assert.strictEqual(behindProxy.revision, 2, 'still 2');
+});
+
 test('revision http: `attachments: false` on the client asks for no frame', async (t) => {
   const { origin } = await boot(t);
   const client = await connectClient(t, `${origin}/api`, { attachments: false });
