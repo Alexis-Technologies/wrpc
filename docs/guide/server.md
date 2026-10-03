@@ -4,9 +4,11 @@ There are two server objects, and the difference matters:
 
 - **`RpcServer`** is the engine-agnostic core. It knows nothing about
   `node:http`, sockets or listening — you hand it a socket
-  (`attachSocket`), a `MessagePort` (`attachPort`), or an abstract HTTP call
-  (`handleHttpCall`), and it does the RPC. Every [adapter](./adapters/fastify)
-  is a thin shell around one.
+  (`attachSocket`), a `MessagePort` (`attachPort`), an abstract HTTP call
+  (`handleHttpCall`), or any persistent transport (`attach`) — which is how a
+  [WebTransport](./wt) session, a [WebRTC](./webrtc) data channel and the
+  [broker binding](./brokers/rpc) get in — and it does the RPC. Every
+  [adapter](./adapters/fastify) is a thin shell around one.
 - **`Server`** is the batteries-included shell: a `node:http(s)` listener plus a
   WebSocket engine, composed around an `RpcServer`. It is what you want unless
   you already have a framework owning the port.

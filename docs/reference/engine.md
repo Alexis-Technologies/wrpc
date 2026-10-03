@@ -5,6 +5,12 @@ above it — the router, clients, rooms, subscriptions, the wire protocol — is
 written against this contract and nothing else, which is what makes
 [uWebSockets.js](../guide/adapters/uws) a drop-in swap rather than a fork.
 
+The engine is the WebSocket's way in, not the only one: a
+[WebTransport](../guide/wt) session (`attachSession`), a
+[WebRTC](../guide/webrtc) data channel (`attachChannel`) and the [broker
+binding](../guide/brokers/rpc) (`attachBrokerRpc`) reach the same `RpcServer`
+through `attach(transport)` and never pass through an engine.
+
 ```js
 const { createNodeEngine, isEngine } = require('@alexify/wrpc/engine');
 ```

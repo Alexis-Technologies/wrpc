@@ -2,9 +2,12 @@
 
 The wire protocol is deliberately small: **JSON packets** for everything
 addressable, plus a **binary framing** for stream payloads. It rides on a
-WebSocket, an HTTP request/response pair, or a `MessagePort` to a worker (a
-Service Worker or a SharedWorker) — the packets are identical on all three,
-which is what lets the same client code work behind a worker.
+WebSocket, an HTTP request/response pair, [Server-Sent
+Events](#server-sent-events), a `MessagePort` to a worker (a Service Worker or
+a SharedWorker), a [WebRTC data channel](#webrtc), a
+[WebTransport](#webtransport) session or a [message broker](#broker-binding)
+— the packets are identical on every one of them, which is what lets the same
+client code work over any, and behind a worker.
 
 ## Stability
 
@@ -688,8 +691,9 @@ callable one.
 
 Being an ordinary procedure, it is reachable over **every** transport: a
 WebSocket frame, a plain `POST {basePath}` with the packet as the body (which
-is how the CLI asks, needing no socket), an SSE channel, or a worker port. It
-also answers in REST mode at `{basePath}/system/introspect`.
+is how the CLI asks, needing no socket), an SSE channel, a worker port, a
+WebTransport session, a data channel or a broker request. It also answers in
+REST mode at `{basePath}/system/introspect`.
 
 ### The `signature` descriptor
 

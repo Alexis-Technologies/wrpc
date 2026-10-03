@@ -1,8 +1,10 @@
 # Wire format
 
 [The protocol reference](./protocol) describes the **packets**. This page
-describes what carries them: the binary chunk framing wrpc defines, and the
-from-scratch RFC 6455 WebSocket implementation the default engine is built on.
+describes what carries them: the binary chunk framing wrpc defines, the frames
+a [WebRTC data channel](#data-channel-frames) and a [WebTransport
+stream](#webtransport-stream-frames) wrap them in, and the from-scratch
+RFC 6455 WebSocket implementation the default engine is built on.
 
 Most applications never need this page. Read it if you are implementing an
 [engine](./engine), speaking the protocol from another language, or debugging
