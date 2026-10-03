@@ -148,12 +148,11 @@ test('revision: a direct event to a revision-1 client is JSON', async (t) => {
 test('revision: an engine composed by hand that selects wrpc.v2 for a frameless server is named in the log', async (t) => {
   // The shells narrow their engine to wrpc.v1 (revisionProtocols); a server
   // wired to a bare WebsocketServer has nobody to do it, and says so.
-  const lines = [];
-  const logger = { debug() {}, info() {}, error() {}, warn: (line) => lines.push(line) };
+  const log = recorder();
   const rpc = new RpcServer({
     router: defineRouter({ unit: { ping: procedure({ access: 'public', handler: async () => 'pong' }) } }),
     attachments: false,
-    logger,
+    logger: log.writer,
   });
   const http = require('node:http').createServer();
   const wsServer = new WebsocketServer({ server: http, logger: false });
@@ -164,9 +163,17 @@ test('revision: an engine composed by hand that selects wrpc.v2 for a frameless 
     http.close();
     rpc.close();
   });
-  const client = await connectClient(t, `ws://127.0.0.1:${http.address().port}/api`);
+  const url = `ws://127.0.0.1:${http.address().port}/api`;
+  const client = await connectClient(t, url);
   assert.strictEqual(client.revision, 2, 'the bare engine selected the newest revision offered');
-  await waitFor(() => lines.some((line) => line.event === 'revision.mismatch'), 'the mismatch is logged');
+  await waitFor(() => log.all('revision.mismatch').length === 1, 'the mismatch is logged');
+  // A configuration error is the same on every connection: one warn, then debug.
+  for (let i = 0; i < 4; i++) await connectClient(t, url);
+  await waitFor(() => log.all('revision.mismatch').length === 5, 'every connection is still a line');
+  assert.deepStrictEqual(
+    log.all('revision.mismatch').map((entry) => entry.level),
+    ['warn', 'debug', 'debug', 'debug', 'debug'],
+  );
 });
 
 // ---- HTTP: no handshake, so the two directions say it in headers --------

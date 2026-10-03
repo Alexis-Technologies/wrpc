@@ -1440,6 +1440,10 @@ reference as one opaque string. What is left to do:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **`revision.mismatch` is said at warn once, then at debug.** It is a
+  configuration error — a hand-composed engine selecting `wrpc.v2` for a
+  server that reads no frames — and the same on every connection, so it was
+  a warn per connection.
 - **The logging guide catalogues every `event` wrpc writes, and a test keeps
   it so.** `docs/guide/logging.md` promised "every line an operator would
   want an alert for" and listed about a hundred of some 240 names: none of

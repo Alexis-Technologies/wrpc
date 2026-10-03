@@ -173,6 +173,9 @@ class RpcServer extends Emitter {
   // Binary attachments (src/attachments.js): on by default, `attachments:
   // false` sends every packet as JSON as revision 1 did.
   #attachments = true;
+  // `revision.mismatch` is a configuration error, the same on every
+  // connection: said once at warn, then at debug.
+  #mismatchSaid = false;
   #draining = false;
   #clients = new Set();
   #byId = new Map();
@@ -953,7 +956,9 @@ class RpcServer extends Emitter {
       // An engine composed by hand selected `wrpc.v2` for a server that
       // sends no frames and reads none: the client will send one. The
       // built-in shells narrow the engine to `wrpc.v1` (see `revision`).
-      this.#log.warn({ event: 'revision.mismatch', protocol: socket.protocol });
+      const level = this.#mismatchSaid ? 'debug' : 'warn';
+      this.#mismatchSaid = true;
+      this.#log[level]({ event: 'revision.mismatch', protocol: socket.protocol });
     }
     // Declared-then-observed: whichever carrier brought the bags (subprotocol
     // offers, the query, real headers), a declaration can only add names the

@@ -111,7 +111,7 @@ The first table is the request path and the engines; the ones after it are
 | `call.draining` | info | Refused because the server is shutting down |
 | `packet.malformed` | warn | A frame that would not parse — one line per frame, whatever it was |
 | `packet.unknown` | warn | Valid JSON that is not a packet — version skew, or somebody else's client |
-| `revision.mismatch` | warn | A WebSocket engine composed by hand selected `wrpc.v2` (`protocol`) for a server that sends and reads no framed messages (`attachments: false`, a packet codec): the client will send a frame this server refuses. The built-in shells narrow their engine to `wrpc.v1` themselves — pass `protocols: ['wrpc.v1']` to yours |
+| `revision.mismatch` | warn, then debug | A WebSocket engine composed by hand selected `wrpc.v2` (`protocol`) for a server that sends and reads no framed messages (`attachments: false`, a packet codec): the client will send a frame this server refuses. The built-in shells narrow their engine to `wrpc.v1` themselves — pass `protocols: ['wrpc.v1']` to yours. A warn for the first connection, debug for every one after it |
 | `batch.refused` | debug | A batch outside `1..maxBatch` |
 | `subscribe.refused` | warn | A subscription refused before it started |
 | `ws.frame`, `ws.protocol`, `ws.invalid-utf8` | warn | A peer's frame violated the protocol; the connection was closed |
