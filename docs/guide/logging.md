@@ -217,7 +217,7 @@ The first table is the request path and the engines; the ones after it are
 
 | `event` | Level | Means |
 | ------- | ----- | ----- |
-| `session.restore` | error | The session store threw while a connection's session was being restored (`err`); the client continues anonymous |
+| `session.restore` | error | The session store threw while a connection's session was being restored (`err`); the client continues without a session, and a `session` procedure answers it `503` (`Session store unavailable`) rather than `403` — what a broker consumer retries |
 | `session.unsealed` | warn | A row under a sealed store's key that is not a sealed row of that `kid` — written by something else. Read as a missing session; **never carries the token** |
 | `session.migrate` | warn | A stale copy of a session row — under an older key, or a sealed one while `seal: false` — could not be deleted (`err`); the session itself was written |
 | `sse.refused` | warn | A channel request refused (`code`, `reason`): an unknown or expired channel, a wrong channel secret, a cap (`maxChannels`, `maxChannelsPerAddress`) |

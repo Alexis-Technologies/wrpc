@@ -123,6 +123,10 @@ const hasSession = (client) => {
   return session !== null && session !== undefined && session.ended !== true;
 };
 
+// No session because the store could not be asked is a 503 — retryable —
+// not the 403 of a token that is not one.
+const refusedFor = (client) => (client.sessionUnavailable === true ? 503 : 403);
+
 const refuseCall = (client, id, code, method, event) => {
   const level = code === 429 ? 'debug' : code === 503 ? 'info' : 'warn';
   const shown = clip(method);
@@ -203,8 +207,8 @@ const handleRpc = async (client, packet, router) => {
       if (controller.signal.aborted) return void (status = 'cancelled');
       if (!hasSession(client) && proc.access !== 'public') {
         status = 'error';
-        code = 403;
-        return void client.error(403, { id });
+        code = refusedFor(client);
+        return void client.error(code, { id });
       }
       // The caller's per-call deadline, validated as a bounded positive
       // number — an additive packet field, absent on every packet that
@@ -325,7 +329,8 @@ const handleSubscribe = async (client, packet, router) => {
   }
   if (!hasSession(client) && proc.access !== 'public') {
     client.subscriptions.delete(id);
-    return void refuse(client, id, 403, 'Forbidden', method);
+    const code = refusedFor(client);
+    return void refuse(client, id, code, code === 503 ? 'Session store unavailable' : 'Forbidden', method);
   }
   const hooks = router.hooksFor(proc);
   const compiled = router.compiledFor(proc);

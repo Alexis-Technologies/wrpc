@@ -1987,6 +1987,15 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **A session store that fails is a `503`, not a `403` — so a broker
+  delivery retries it.** A connection whose token restore threw
+  (`session.restore`) went on without a session, and a `session` procedure
+  answered it `403` — which a consumer in token mode dead-letters at once:
+  one blip of the store sent deliveries to the dead-letter queue
+  unprocessed. Such a connection answers `503` now (a subscribe:
+  `Session store unavailable`), which the binding's `retry` takes;
+  `Client#sessionUnavailable` says which it is. A token that names no
+  session is still `403`.
 - **NATS: a feed reader's consumer is reaped 30 s after its reader dies, not
   347 days.** The ephemeral consumers of a log read and its catch-up carry
   `inactive_threshold`, which the adapter passed in nanoseconds to

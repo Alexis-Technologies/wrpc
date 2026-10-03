@@ -846,6 +846,8 @@ export class Client extends Emitter {
   maxCalls: number;
   /** Binary streams the peer may hold open here; past it a `stream` packet answers 429. */
   maxStreams: number;
+  /** True when the session store could not be asked for this client's token: a session procedure answers 503, not 403. */
+  sessionUnavailable: boolean;
   /** Context uuids and server-side stream ids; injectable via RpcServerOptions. */
   generateId: () => string;
   /** The connection-scoped log writer (peer binding included). */

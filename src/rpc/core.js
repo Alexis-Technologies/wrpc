@@ -908,6 +908,10 @@ class RpcServer extends Emitter {
       (error) => {
         this.#log.error({ err: error, event: 'session.restore' });
         this.#otel.recordSession('restore', 'error');
+        // Not "no session": the store could not be asked. A session
+        // procedure is then refused 503 — what a broker consumer retries —
+        // where a 403 sent the delivery straight to its dead-letter queue.
+        client.sessionUnavailable = true;
         return false;
       },
     );

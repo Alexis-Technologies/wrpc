@@ -88,6 +88,12 @@ until it reconnects — the restore then finds no row — or until your
 application tells it, over the [cluster](./scaling) or the rooms backplane. A
 store with short TTLs and `touch()` narrows that window.
 
+**A store that fails is not a missing session.** When the store throws while a
+connection's token is restored (`session.restore` in the log), the connection
+goes on without a session, and a `session` procedure answers it `503` — which
+a [broker consumer](./brokers/consumers#identity) retries — rather than the
+`403` of a token that names no session.
+
 ## The lifecycle
 
 ```mermaid

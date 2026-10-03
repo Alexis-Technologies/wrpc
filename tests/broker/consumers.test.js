@@ -634,7 +634,7 @@ test('attachConsumers: an evicted token client finishes its in-flight delivery, 
 });
 
 // A token binding over a session store the test can fail and count.
-const tokenWorld = (t, { tokenTtl, failGets = 0 } = {}) => {
+const tokenWorld = (t, { tokenTtl, failGets = 0, retry = false } = {}) => {
   const { MemorySessionStore } = require('../../index.js');
   const inner = new MemorySessionStore();
   const store = {
@@ -657,7 +657,7 @@ const tokenWorld = (t, { tokenTtl, failGets = 0 } = {}) => {
       acct: {
         consumes: {
           work: procedure({
-            consume: { identity: { trust: 'token' }, retry: false, deadLetter: 'work.dead' },
+            consume: { identity: { trust: 'token' }, retry, deadLetter: 'work.dead' },
             handler: async (ctx) => void seen.push(ctx.session.state.user),
           }),
         },
@@ -692,16 +692,32 @@ test('attachConsumers: a token whose session did not restore is not cached as an
   const consumers = await attachConsumers(rpc, broker);
   t.after(() => consumers.stop());
   const headers = { authorization: `Bearer ${ada.token}` };
-  // The store is down for the first restore: that delivery is refused 403
-  // (dead, retry: false). It used to leave an anonymous client cached
-  // under Ada's token, refusing every later delivery of hers as well.
+  // The store is down for the first restore: that delivery is refused 503
+  // (dead here only because retry: false — the test below retries it). It
+  // used to leave an anonymous client cached under Ada's token, refusing
+  // every later delivery of hers as well.
   await broker.queue.produce('work', '{}', { headers });
   await waitFor(() => dead.length === 1);
-  assert.match(dead[0].headers['x-wrpc-dead-reason'], /^403/);
+  assert.match(dead[0].headers['x-wrpc-dead-reason'], /^503/);
   await broker.queue.produce('work', '{}', { headers });
   await waitFor(() => seen.length === 1);
   assert.deepStrictEqual(seen, ['ada']);
   assert.strictEqual(store.gets, 2, 'the second delivery went to the store again');
+});
+
+test('attachConsumers: a session store that could not be asked is retried, not dead-lettered as a 403', async (t) => {
+  const { rpc, broker, seen } = tokenWorld(t, { failGets: 1, retry: { attempts: 3 } });
+  const dead = await drain(t, broker, 'work.dead');
+  const ada = rpc.sessions.create(undefined, { user: 'ada' });
+  await timers.setTimeout(5);
+  const consumers = await attachConsumers(rpc, broker);
+  t.after(() => consumers.stop());
+  // A store blip used to read as "no session": 403, outside retryOn, and
+  // the delivery went straight to the dead-letter queue.
+  await broker.queue.produce('work', '{}', { headers: { authorization: `Bearer ${ada.token}` } });
+  await waitFor(() => seen.length === 1);
+  assert.deepStrictEqual(seen, ['ada']);
+  assert.deepStrictEqual(dead, []);
 });
 
 test('attachConsumers: past tokenTtl a token is presented to the store again, so a logout takes effect', async (t) => {

@@ -187,7 +187,9 @@ deliveries it still holds and closes after the last one — an eviction never
 releases work back to the broker; the cost of a cache too small for the
 distinct tokens in flight is a session restore per message, logged
 `broker.evict`. A message without a token runs anonymous, so a session
-procedure refuses it with `403` — which dead-letters.
+procedure refuses it with `403` — which dead-letters. A token the session
+store could not be asked about (it threw) is a `503` instead, which the
+binding's `retry` takes like any other.
 
 A cached client is trusted for `tokenTtl` (default 60 s, `0` for the life of
 the binding); past that the token is presented to the session store again, so

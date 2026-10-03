@@ -201,6 +201,9 @@ class Client extends Emitter {
     this.maxSubscriptions = maxSubscriptions;
     this.maxCalls = maxCalls;
     this.maxStreams = maxStreams;
+    // Set when the session store could not be asked for this client's
+    // token (core #restoreToken): a session procedure answers 503, not 403.
+    this.sessionUnavailable = false;
     // Context uuids and server-side stream ids; uuid v4 unless the app
     // brings its own (cuid/ulid/a test counter) — see RpcServerOptions.
     // A Client built by a host receives a generator that host already
