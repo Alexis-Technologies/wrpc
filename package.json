@@ -1,6 +1,6 @@
 {
   "name": "@alexify/wrpc",
-  "version": "1.0.0",
+  "version": "2.0.0",
   "description": "Fast, zero-dependency, WebSocket-based RPC protocol for Node.js and browsers: one router over WebSocket, HTTP, SSE and REST - typed client, subscriptions, rooms, cluster and binary streams",
   "main": "index.js",
   "browser": {

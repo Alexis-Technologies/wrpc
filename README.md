@@ -117,29 +117,29 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 80.7 KB | **27.2 KB** | 28.0 KB |
-| `@alexify/wrpc` — node (client + server) | 295.8 KB | 99.4 KB | — |
-| `@alexify/wrpc/ws` (WebSocket engine) | 32.7 KB | 11.6 KB | — |
-| `@alexify/wrpc/engine` (engine port) | 33.3 KB | 11.8 KB | — |
-| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 43.9 KB | 16.3 KB | — |
-| `@alexify/wrpc/fastify` | 241.8 KB | 83.0 KB | — |
-| `@alexify/wrpc/express` | 228.3 KB | 77.8 KB | — |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 82.3 KB | **27.7 KB** | 28.0 KB |
+| `@alexify/wrpc` — node (client + server) | 300.4 KB | 101.0 KB | — |
+| `@alexify/wrpc/ws` (WebSocket engine) | 32.9 KB | 11.6 KB | — |
+| `@alexify/wrpc/engine` (engine port) | 33.5 KB | 11.8 KB | — |
+| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 44.1 KB | 16.3 KB | — |
+| `@alexify/wrpc/fastify` | 244.9 KB | 84.2 KB | — |
+| `@alexify/wrpc/express` | 231.3 KB | 78.9 KB | — |
 | `@alexify/wrpc/scaling` (rooms backplane) | 5.5 KB | 2.2 KB | — |
-| `@alexify/wrpc/broker` (broker core, memory broker) | 165.5 KB | 57.0 KB | — |
+| `@alexify/wrpc/broker` (broker core, memory broker) | 166.8 KB | 57.6 KB | — |
 | `@alexify/wrpc/broker/redis` | 31.6 KB | 11.8 KB | — |
 | `@alexify/wrpc/broker/nats` | 30.2 KB | 11.2 KB | — |
-| `@alexify/wrpc/broker/amqp` | 33.4 KB | 12.1 KB | — |
+| `@alexify/wrpc/broker/amqp` | 34.1 KB | 12.4 KB | — |
 | `@alexify/wrpc/broker/kafka` | 28.6 KB | 10.6 KB | — |
-| `@alexify/wrpc/sse` — browser (client transport) | 84.0 KB | **28.1 KB** | 29.0 KB |
-| `@alexify/wrpc/sse` — node | 144.4 KB | 48.6 KB | — |
+| `@alexify/wrpc/sse` — browser (client transport) | 85.5 KB | **28.8 KB** | 29.0 KB |
+| `@alexify/wrpc/sse` — node | 146.1 KB | 49.2 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` (token strategies) | 3.9 KB | **1.8 KB** | 2.0 KB |
 | `@alexify/wrpc/deflate` (pure-JS DEFLATE codec) | 10.7 KB | **4.4 KB** | 5.0 KB |
-| `@alexify/wrpc/encryption` — browser (primitives, sessions, HPKE, E2EE) | 31.4 KB | **11.4 KB** | 12.0 KB |
-| `@alexify/wrpc/encryption` — node | 44.9 KB | 16.4 KB | — |
-| `@alexify/wrpc/webrtc` — browser (peer, link, mesh, assertions) | 178.6 KB | **58.1 KB** | 59.0 KB |
-| `@alexify/wrpc/webrtc` — node | 190.9 KB | 62.0 KB | — |
-| `@alexify/wrpc/wt` (WebTransport server half) | 62.3 KB | 22.1 KB | — |
+| `@alexify/wrpc/encryption` — browser (primitives, sessions, HPKE, E2EE) | 31.5 KB | **11.5 KB** | 12.0 KB |
+| `@alexify/wrpc/encryption` — node | 45.1 KB | 16.5 KB | — |
+| `@alexify/wrpc/webrtc` — browser (peer, link, mesh, assertions) | 179.2 KB | **58.3 KB** | 59.0 KB |
+| `@alexify/wrpc/webrtc` — node | 193.2 KB | 62.9 KB | — |
+| `@alexify/wrpc/wt` (WebTransport server half) | 63.6 KB | 22.5 KB | — |
 
 The Node-only rows are reported for visibility into what each subpath pulls in
 — they never ship to a browser, and the adapter rows include the whole core

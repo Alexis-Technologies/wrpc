@@ -11,6 +11,10 @@ narrower promise — see
 
 ## [Unreleased]
 
+### Changed (breaking)
+
+## [2.0.0] - 2026-10-03
+
 ### Added
 
 **Protocol revision 2 (`wrpc.v2`), negotiated — a 1.0 peer is spoken to as 1.0 was**
