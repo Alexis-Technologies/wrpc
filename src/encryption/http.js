@@ -161,6 +161,7 @@ const REFUSAL_MESSAGES = {
   400: 'the sealed request was not accepted — the pinned server key may be retired',
   409: "the sealed request was refused as stale or replayed — check this device's clock",
   426: 'the server requires encryption and this request did not carry it',
+  503: 'the server cannot vouch a sealed request fresh right now (its replay memory is full or out of reach) — retry later',
 };
 
 class EncryptionRefusedError extends Error {

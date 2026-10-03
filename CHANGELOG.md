@@ -2718,6 +2718,14 @@ reference as one opaque string. What is left to do:
   opens to its own `AbortController`, aborted when the feed ends.
 
 ### Security
+- **A full replay memory answers `503`, not a `409` that blames the clock.**
+  The built-in memory of sealed requests can be filled by anyone holding the
+  server's public key — which is public by design — and past its cap every
+  sealed request was refused `409`, which the client reported as "refused
+  as stale or replayed — check this device's clock". It is a `503` now (the
+  server cannot vouch the request fresh; retry later), with that message on
+  the client, and the encryption guide asks for a rate limit per client in
+  front of the server, sized under `max / (2·maxSkew)`.
 - **A logout ends the session on every connection of the instance.**
   `finalizeSession()` deleted the session from the store and dropped it on
   the connection that called it, while another connection that had restored

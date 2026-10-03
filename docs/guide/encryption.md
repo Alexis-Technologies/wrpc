@@ -172,11 +172,20 @@ The built-in memory is bounded, and the bound is a capacity to size: it must
 hold every sealed request of the last `2 · maxSkew`, so
 `max ≥ rps × 2·maxSkew/1000` — the default (100 000 entries, five minutes
 of skew) holds about 167 requests a second. Past it, full of live entries,
-it **refuses** (`409`, said once per ten seconds as
+it **refuses** (`503`, said once per ten seconds as
 `encryption.replay.overflow`) rather than forget an entry and accept its
 request twice; `encryption: { replay: { max, overflow: 'evict' } }` sizes it
 and trades that for availability if you would rather. A traffic that
 outgrows one process's memory is the case for the shared memory above.
+
+The memory is filled by **anyone who holds the public key** — and the key is
+public by design (`GET <basePath>/encryption-key`). A sealed request is
+checked fresh before anything else is known about its sender, so one client
+can fill the memory and the next is refused: put a rate limit per client
+address in front of the server (the proxy's, or the framework's), sized
+under `max / (2·maxSkew)`. A client refused this way hears `503`, never the
+`409` of a stale or replayed request, whose message points at the device's
+clock.
 
 ## Sessions at rest {#sessions}
 

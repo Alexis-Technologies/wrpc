@@ -542,7 +542,7 @@ test('replay cache: once within the ttl, again after it; full of live entries it
   assert.throws(() => createReplayCache({ onOverflow: 1 }), /onOverflow must be/);
 });
 
-test('http encryption: a replay cache full of live entries refuses (409), one line per interval — or evicts by choice', async (t) => {
+test('http encryption: a replay cache full of live entries refuses (503), one line per interval — or evicts by choice', async (t) => {
   const warnings = [];
   const logger = {
     log() {},
@@ -567,8 +567,17 @@ test('http encryption: a replay cache full of live entries refuses (409), one li
   });
   t.after(() => void client.close());
   await client.load('data');
-  await assert.rejects(client.api.data.echo({ ok: 1 }), /./, 'the second distinct request met the cap');
-  assert.strictEqual(spy.seen.at(-1).status, 409);
+  const errors = [];
+  client.on('error', (error) => errors.push(error));
+  await assert.rejects(
+    client.api.data.echo({ ok: 1 }),
+    (error) => error.code === 503,
+    'the second distinct request met the cap',
+  );
+  // Not the 409 of a stale or replayed request — whose message blames the clock.
+  assert.strictEqual(spy.seen.at(-1).status, 503);
+  assert.match(errors.at(-1).message, /retry later/);
+  assert.doesNotMatch(errors.at(-1).message, /clock/);
   const overflow = warnings.filter((w) => w.event === 'encryption.replay.overflow');
   assert.strictEqual(overflow.length, 1, 'said once for the interval');
   assert.strictEqual(overflow[0].refused, 1);

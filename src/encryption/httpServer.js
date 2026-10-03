@@ -193,7 +193,8 @@ const createHttpSealing = ({
       // The cache is full of live entries: nothing more can be vouched
       // fresh, and each refusal is one line per interval, not one each — a
       // flood past the cap is exactly when a line per request would drown
-      // the log.
+      // the log. 503, not the 409 of a stale or replayed request: the
+      // sender did nothing wrong, and a 409 told it to check its clock.
       overflows++;
       const at = now();
       if (at - overflowSaid >= OVERFLOW_INTERVAL) {
@@ -201,7 +202,7 @@ const createHttpSealing = ({
         log.warn({ event: 'encryption.replay.overflow', refused: overflows });
         overflows = 0;
       }
-      return void refuse(call, outerHeaders, 409, 'replay-full', true);
+      return void refuse(call, outerHeaders, 503, 'replay-full', true);
     }
 
     // The outer request's own headers stay underneath, and what the client
