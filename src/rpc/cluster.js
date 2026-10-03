@@ -6,7 +6,7 @@ const { Emitter, jsonParse } = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { createLoggerWriter } = require('../logging.js');
 const { DISABLED, SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
-const { hasBytes, encodeAttachments } = require('../attachments.js');
+const { hasBytes, encodeAttachments, ENVELOPE_DEPTH } = require('../attachments.js');
 const { ReplayWindow, DEFAULT_REPLAY_WINDOW } = require('../encryption/envelope.js');
 
 // Cluster: presence, introspection and node-to-node messaging across every
@@ -439,10 +439,10 @@ class Cluster extends Emitter {
   // order, as JSON does). A frame never equals a JSON text, so a signature
   // made for one form cannot be presented under the other.
   #frame(envelope) {
-    const frame = encodeAttachments(envelope);
+    const frame = encodeAttachments(envelope, ENVELOPE_DEPTH);
     if (this.#secret === null) return frame;
     envelope.sig = crypto.createHmac('sha256', this.#secret).update(frame).digest('hex');
-    return encodeAttachments(envelope);
+    return encodeAttachments(envelope, ENVELOPE_DEPTH);
   }
 
   // -----------------------------------------------------------------------
@@ -498,7 +498,7 @@ class Cluster extends Emitter {
     delete envelope.sig;
     let expected = null;
     try {
-      const signed = binary ? encodeAttachments(envelope) : JSON.stringify(envelope);
+      const signed = binary ? encodeAttachments(envelope, ENVELOPE_DEPTH) : JSON.stringify(envelope);
       expected = crypto.createHmac('sha256', this.#secret).update(signed).digest('hex');
     } catch (error) {
       // The third way verification fails, and the only one that was silent:

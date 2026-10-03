@@ -1468,6 +1468,14 @@ reference as one opaque string. What is left to do:
   `maxBackpressure` the session was terminated with only `socket.error` and
   `wt.close` at debug, where the WebSocket engine says `ws.backpressure` at
   warn. It is `wt.backpressure` now (`buffered`, `max`), at warn.
+- **Bytes as deep as a direct send carries them cross the cluster as bytes.**
+  A backplane envelope wraps the packet, or a question's `args`, up to two
+  levels deeper than a packet holds its data, and the frame's depth limit
+  was counted from the envelope: bytes 31 levels deep in a node-to-node
+  question or answer — which a direct send delivers — reached the other
+  node as `{"0":…}`. A backplane envelope's frame reaches two levels
+  further (`ENVELOPE_DEPTH`), encoding, decoding and the HMAC's re-encoding
+  alike.
 - **A cluster node isolated by its clock is named.** A node whose clock
   sat outside `maxSkew` had every envelope refused as `stale` while
   `healthy` stayed true and `fetchClients` came back complete without it —

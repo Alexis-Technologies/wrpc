@@ -37,7 +37,7 @@ const {
 } = require('../compression/sync.js');
 const { normalizeEnvelopeEncryption, createEnvelopeSealer } = require('../encryption/envelope.js');
 const { isKid } = require('../encryption/keyring.js');
-const { encodeAttachments, decodeAttachments } = require('../attachments.js');
+const { encodeAttachments, decodeAttachments, ENVELOPE_DEPTH } = require('../attachments.js');
 
 const SEALED_PREFIX = 'wrpc-sealed:';
 // An envelope whose event data holds BYTES: a backplane carries strings and
@@ -56,7 +56,7 @@ const asBuffer = (bytes) => Buffer.from(bytes.buffer, bytes.byteOffset, bytes.by
 // does not decode is a peer's malformed message, never a throw in a handler.
 const binaryEnvelope = (bytes) => {
   try {
-    return decodeAttachments(bytes);
+    return decodeAttachments(bytes, ENVELOPE_DEPTH);
   } catch {
     return null;
   }
@@ -67,7 +67,7 @@ const binaryEnvelope = (bytes) => {
 const withBytes = (inner) => ({
   ...inner,
   encode: inner === null ? (text) => text : (text) => inner.encode(text),
-  encodeBytes: (envelope) => BINARY_PREFIX + asBuffer(encodeAttachments(envelope)).toString('base64'),
+  encodeBytes: (envelope) => BINARY_PREFIX + asBuffer(encodeAttachments(envelope, ENVELOPE_DEPTH)).toString('base64'),
   // The same for a frame the caller already encoded — the cluster signs the
   // frame's bytes, so it holds them before this is asked for anything.
   encodeFrame: (frame) => BINARY_PREFIX + asBuffer(frame).toString('base64'),
@@ -165,7 +165,7 @@ const createEnvelope = ({ compression, encryption, maxMessage, name, layer, even
       return `${SEALED_PREFIX}${kid}:${sealed.toString('base64')}`;
     },
     encodeBytes(envelope, channel) {
-      return this.encodeFrame(encodeAttachments(envelope), channel);
+      return this.encodeFrame(encodeAttachments(envelope, ENVELOPE_DEPTH), channel);
     },
     encodeFrame(bytes, channel) {
       if (!sealing.seal) return plain.encodeFrame(bytes);

@@ -1162,6 +1162,34 @@ test('cluster: a refused envelope is a warn once per sender and reason, debug af
   assert.strictEqual(log.all('cluster.unsigned').at(-1).level, 'warn');
 });
 
+test('cluster: bytes as deep as a direct send delivers them cross instances as bytes', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { secret: 's3' } });
+  const b = boot(t, backplane, { instanceId: 'b', cluster: { secret: 's3' } });
+  await settle(20);
+  const nest = (depth) => {
+    let value = Uint8Array.of(7);
+    for (let i = 0; i < depth; i++) value = { d: value };
+    return value;
+  };
+  const leaf = (value) => {
+    while (value !== null && typeof value === 'object' && 'd' in value) value = value.d;
+    return value;
+  };
+  // A question carries its data under `args`, two levels inside its
+  // envelope: at 31 levels — which a direct send carries as bytes — it was
+  // past the frame's depth, and the other node read {"0":7}.
+  let asked = null;
+  b.cluster.respond('deep', (data) => {
+    asked = leaf(data);
+    return nest(31);
+  });
+  const { answers } = await a.cluster.ask('deep', nest(31), { timeout: 2_000 });
+  assert.ok(asked instanceof Uint8Array, `the question: ${JSON.stringify(asked)}`);
+  assert.ok(leaf(answers[0]) instanceof Uint8Array, `the answer: ${JSON.stringify(leaf(answers[0]))}`);
+});
+
 test('cluster: node events, asks and their answers carry bytes; `attachments: false` keeps every leg JSON', async (t) => {
   const backplane = new MemoryBackplane();
   t.after(() => backplane.close());

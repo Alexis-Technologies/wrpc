@@ -120,7 +120,7 @@ const asUint8 = (value) => {
  * not mutated: containers on the way to a byte leaf are copied, everything
  * else is shared.
  */
-const encodeAttachments = (packet) => {
+const encodeAttachments = (packet, maxDepth = MAX_DEPTH) => {
   const index = [];
   const buffers = [];
   // ONE mutable path, copied only at a byte leaf — a `path.concat(key)`
@@ -144,7 +144,7 @@ const encodeAttachments = (packet) => {
     }
     if (isOpaque(value)) return value;
     if (stack.includes(value)) throw new TypeError('Converting circular structure to JSON');
-    if (stack.length >= MAX_DEPTH) return value;
+    if (stack.length >= maxDepth) return value;
     stack.push(value);
     let copy = null;
     if (Array.isArray(value)) {
@@ -215,7 +215,7 @@ const validKey = (key) =>
  * anything but the `null` placeholder, or byte lengths that do not add up
  * to exactly what follows the header.
  */
-const decodeAttachments = (bytes) => {
+const decodeAttachments = (bytes, maxDepth = MAX_DEPTH) => {
   if (!isAttachmentsFrame(bytes)) throw malformed('not an attachments frame');
   const headerLen = ((bytes[2] << 24) >>> 0) + (bytes[3] << 16) + (bytes[4] << 8) + bytes[5];
   if (HEADER_BYTES + headerLen > bytes.length) throw malformed('header past the end of the frame');
@@ -235,7 +235,7 @@ const decodeAttachments = (bytes) => {
     if (!Array.isArray(entry) || entry.length !== 2) throw malformed('index entry is not [path, length]');
     const path = entry[0];
     const length = entry[1];
-    if (!Array.isArray(path) || path.length === 0 || path.length > MAX_DEPTH) throw malformed('bad path');
+    if (!Array.isArray(path) || path.length === 0 || path.length > maxDepth) throw malformed('bad path');
     if (!Number.isInteger(length) || length < 0 || offset + length > bytes.length) throw malformed('bad length');
     let target = packet;
     for (let j = 0; j < path.length - 1; j++) {
@@ -259,4 +259,17 @@ const decodeAttachments = (bytes) => {
   return packet;
 };
 
-module.exports = { hasBytes, encodeAttachments, decodeAttachments, isAttachmentsFrame, FRAME_ATTACHMENTS };
+// A backplane envelope wraps the packet — or a command's args — at most two
+// levels deeper than a packet holds its data: its frame reaches that much
+// further, so bytes a direct send delivers are delivered across instances
+// too (at 31 levels they arrived as `{"0":…}` there).
+const ENVELOPE_DEPTH = MAX_DEPTH + 2;
+
+module.exports = {
+  hasBytes,
+  encodeAttachments,
+  decodeAttachments,
+  isAttachmentsFrame,
+  FRAME_ATTACHMENTS,
+  ENVELOPE_DEPTH,
+};
