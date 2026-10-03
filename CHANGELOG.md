@@ -1459,6 +1459,10 @@ reference as one opaque string. What is left to do:
   `ServerTransport#setRevision`, which emits `'revision'`; an HTTP request's
   revision is settled before its client exists. `rpc.revision` and
   `context.client.revision` are in the server and rooms guides.
+- **A WebTransport session cut off for not reading is a warn line.** Past
+  `maxBackpressure` the session was terminated with only `socket.error` and
+  `wt.close` at debug, where the WebSocket engine says `ws.backpressure` at
+  warn. It is `wt.backpressure` now (`buffered`, `max`), at warn.
 - **`subscribe.refused` clips the peer's id.** The line carried the
   subscription's `id` as the peer sent it — 100 000 characters gave a
   100 048-character warn. Ids are bounded at 255 now (the packet rule), and

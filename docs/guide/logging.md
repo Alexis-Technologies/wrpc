@@ -169,6 +169,7 @@ The first table is the request path and the engines; the ones after it are
 | `wt.onError` | error | The `onError` handed to `acceptSessions` threw itself (`err`) — said here instead of rejecting `done` |
 | `wt.refused` | warn | A session refused before attach: `status` 403 (`verify` said no) or 408 (no control stream, or `ready`/`verify` not settled, within `acceptTimeout`) |
 | `wt.accept.saturated` | warn | `maxPending` sessions were still in their handshake; the next was refused 503 — said once per episode |
+| `wt.backpressure` | warn | A session's queue passed `maxBackpressure` — a client that does not read — and it was terminated (`buffered`, `max`): the WebTransport `ws.backpressure` |
 | `wt.violation`, `wt.idle`, `wt.session.error` | warn | A peer's frame that could not be read (`code`; closed 1002), a peer silent past `idleTimeout` (terminated), the session's own failure reported by the host |
 | `wt.mux.refused`, `wt.mux.fallback` | warn / info | A side stream the peer opened for an id it never named, past the cap or unannounced (cancelled unread); the host granted no side stream, so every chunk of this session rides the control stream — once per session |
 | `wt.datagram.dropped` | warn | The session had not taken the 64 datagrams before this one, so it was dropped rather than queued — **once** per session; the total is `dropped` on that session's `wt.close` line |

@@ -161,9 +161,14 @@ class WtSocket extends EventEmitter {
         this.#fault('wt.violation', error, { code: typeof error?.code === 'string' ? error.code : null });
         this.close(1002, 'Protocol error');
       },
-      // Past maxBackpressure: a peer that never drains.
+      // Past maxBackpressure: a peer that never drains. A warn, as the
+      // WebSocket engine's `ws.backpressure` — a limit the operator set cut
+      // a client off, and it used to show only at debug.
       (error) => {
-        this.#error(error);
+        this.#fault('wt.backpressure', error, {
+          buffered: this.#channel.bufferedAmount,
+          max: normalizeBackpressure(maxBackpressure, 'WtSocket: options'),
+        });
         this.terminate();
       },
       (error) => this.#error(error),

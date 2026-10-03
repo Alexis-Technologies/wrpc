@@ -21,6 +21,7 @@ const { chunkDecode } = require('../../src/chunks.js');
 const { createFakeWt } = require('./fakeWebTransport.js');
 const { runChannelContract, peerEnd } = require('./channelContract.js');
 const { waitFor } = require('../helpers/server.js');
+const { recorder } = require('../helpers/recorder.js');
 
 // A client end by hand: the session, its control stream, a parser over
 // what the socket sends and a writer to talk to it.
@@ -120,7 +121,6 @@ test('wt socket: the engine-port shape — text and binary both ways, boolean se
 });
 
 test('wt socket: a peer close, a terminate and a peer framing violation', async (t) => {
-  const { recorder } = require('../helpers/recorder.js');
   const log = recorder();
   const first = await pair(t, { log: log.writer });
   const closes = [];
@@ -288,6 +288,27 @@ test('wt socket: idleTimeout terminates a silent peer and every read re-arms it'
   assert.deepStrictEqual(closes, [1006]);
   assert.deepStrictEqual(errors, ['No data for 60 ms']);
   assert.ok(await session.closed);
+});
+
+test('wt socket: a client cut off past maxBackpressure is a warn line, as on the WebSocket engine', async (t) => {
+  const log = recorder();
+  const { world, socket } = await pair(t, {
+    maxBackpressure: 1000,
+    highWaterMark: 100,
+    lowWaterMark: 20,
+    log: log.writer,
+  });
+  socket.on('error', () => {});
+  const closed = new Promise((resolve) => socket.once('close', resolve));
+  world.hold();
+  socket.send('x'.repeat(5000));
+  socket.send('y');
+  await closed;
+  // It used to be `socket.error` and `wt.close`, both at debug.
+  const [line] = log.all('wt.backpressure');
+  assert.strictEqual(line.level, 'warn');
+  assert.strictEqual(line.max, 1000);
+  assert.ok(line.buffered >= 0);
 });
 
 test('wt socket: an option the channel refuses throws at construction and leaves no timer behind', async (t) => {
