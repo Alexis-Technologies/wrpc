@@ -507,6 +507,16 @@ expectType<boolean>(httpTransport.responded);
 // buildHeaders computes per-request CORS headers
 expectType<Record<string, string>>(wrpc.buildHeaders());
 expectType<Record<string, string>>(wrpc.buildHeaders({ origins: ['https://a'] }, 'https://a'));
+expectType<Record<string, string>>(wrpc.buildHeaders(null, undefined, 2));
+
+// Every server transport says the revision it speaks, and changes it in one place.
+declare const anyTransport: wrpc.ServerTransport;
+expectType<1 | 2>(anyTransport.revision);
+expectType<boolean | undefined>(anyTransport.attachments);
+expectType<void>(anyTransport.setRevision(1));
+declare const portTransport: InstanceType<typeof wrpc.ServerTransport.transport.event>;
+expectType<1 | 2>(portTransport.negotiate(2));
+expectType<1 | 2>(portTransport.max);
 
 // WrpcClientOptions: real proxy option is typed, phantom handlers are gone
 expectAssignable<wrpc.WrpcClientOptions>({ proxy: (data: string) => void data });
@@ -928,4 +938,5 @@ expectAssignable<object | null | undefined>(clientWs.encryption);
   expectType<1 | 2>(rpc.revision);
   const peer = {} as Client;
   expectType<1 | 2>(peer.revision);
+  expectType<boolean>(peer.attachments);
 }

@@ -562,9 +562,10 @@ export declare class RpcServer extends Emitter {
   /**
    * Speaks the protocol over a `MessagePort`. `meta` is what a consumer
    * took from the page's `wrpc:connect` message, if it hands it over:
-   * `headers` (declared), and `v` — the protocol revision the page speaks.
-   * Without `v` the port starts at revision 1 and the page names its own on
-   * its first ping (protocol.md#versioning).
+   * `headers` (declared) — plus `v`, the protocol revision the page speaks,
+   * for a consumer that knows it some other way: a wrpc page's `wrpc:connect`
+   * carries no `v`. Without it the port starts at revision 1 and the page
+   * names its own on its first ping (protocol.md#versioning).
    */
   attachPort(port: MessagePort, meta?: { headers?: Record<string, string | undefined>; v?: number } | null): Client;
   /**
@@ -849,7 +850,17 @@ export class ServerTransport extends Emitter {
   connection?: unknown;
   /** False on a text-only transport, where binary streams are refused. */
   binary?: boolean;
+  /**
+   * The protocol revision this connection speaks (protocol.md#versioning):
+   * 2 until whoever attaches the transport lowers it for a peer that reads
+   * no framed messages — `setRevision`.
+   */
+  revision: 1 | 2;
+  /** False while a packet holding bytes leaves as JSON — revision 1, or the server's `attachments: false`. */
+  attachments?: boolean;
   constructor(source: string);
+  /** Sets the revision and `attachments` with it; emits 'revision' with the one that was left. */
+  setRevision(revision: 1 | 2): void;
   error(code?: number, options?: ErrorOptions): boolean;
   /** Returns the transport's backpressure signal (false = above the mark). */
   send(obj: object, code?: number): boolean;
@@ -886,11 +897,18 @@ declare class ServerEventTransport extends ServerTransport {
   port: MessagePort;
   /** Set to the transport itself: a port stays open, so the Client is persistent. */
   connection: ServerEventTransport;
+  /** The newest revision the server behind the port speaks; `attachPort` lowers it for a server that sends no frames. */
+  max: 1 | 2;
   constructor(port: MessagePort);
+  /** The page named revision `v` on its first ping: the port speaks the older of the two; answers this end's `max`. */
+  negotiate(v: unknown): 1 | 2;
   write(data: string | Buffer): boolean;
   close(): void;
 }
 export type { ServerEventTransport };
 
-/** Per-request response headers: security defaults + CORS for `origin`. */
-export function buildHeaders(cors?: CorsOptions | null, origin?: string): Record<string, string>;
+/**
+ * Per-request response headers: security defaults + CORS for `origin`, and
+ * `wrpc-version: 2` when `revision` (the server's newest, default 1) is 2.
+ */
+export function buildHeaders(cors?: CorsOptions | null, origin?: string, revision?: 1 | 2): Record<string, string>;

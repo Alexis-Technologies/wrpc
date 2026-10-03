@@ -810,6 +810,12 @@ export class Client extends Emitter {
    * channel, which is text-only.
    */
   readonly revision: 1 | 2;
+  /**
+   * Whether bytes in a packet leave this connection as an attachments frame:
+   * false at revision 1, and under the server's `attachments: false` or a
+   * packet codec.
+   */
+  readonly attachments: boolean;
   /** The host this client belongs to (an RpcServer, a PeerHost); null for a standalone Client. */
   readonly server: ClientHost | null;
   /**

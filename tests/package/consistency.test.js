@@ -216,6 +216,72 @@ test('runtime barrel exports and the hand-written types agree, both ways, on eve
   }
 });
 
+// Members, not just names: a member the runtime class has and its d.ts
+// class never declares is an untyped API too — `ServerTransport#revision`,
+// `#setRevision` and the port transport's `negotiate` were, with every name
+// above in order. The classes an application reaches: their prototype chain
+// up to the Emitter, plus the instance fields of the ones a test can build.
+// The d.ts side is read with the TypeScript tsd itself type-checks with.
+// What the core calls on its own objects is named here, with the caller.
+const INTERNAL_MEMBERS = {
+  // httpReply (`context.http`) and the fastify adapter's delegated routes.
+  ServerHttpTransport: ['setHeader', 'setStatus', 'pendingCookies'],
+  // The broadcast fan-out's shared frames.
+  ServerWsTransport: ['writeWith', 'writeShared'],
+  // The dispatcher's.
+  Client: ['decodePacket', 'negotiateRevision'],
+};
+
+test('every public member of a runtime class is declared on its d.ts class', () => {
+  const { EventEmitter } = require('node:events');
+  const ts = require(require.resolve('@tsd/typescript', { paths: [path.dirname(require.resolve('tsd'))] }));
+  const declared = new Map();
+  for (const file of ['index.d.ts', 'rpc.d.ts', 'client.d.ts']) {
+    const source = ts.createSourceFile(file, read(file), ts.ScriptTarget.Latest, true);
+    const visit = (node) => {
+      if (ts.isClassDeclaration(node) && node.name) {
+        const members = declared.get(node.name.text) ?? new Set();
+        for (const member of node.members)
+          if (member.name && ts.isIdentifier(member.name)) members.add(member.name.text);
+        declared.set(node.name.text, members);
+      }
+      ts.forEachChild(node, visit);
+    };
+    visit(source);
+  }
+  const wrpc = require(path.join(ROOT, 'index.js'));
+  const { Client } = require(path.join(ROOT, 'src/rpc/client.js'));
+  const { Emitter } = require(path.join(ROOT, 'src/utils.js'));
+  const T = wrpc.ServerTransport;
+  const port = () => Object.assign(new EventEmitter(), { postMessage() {}, close() {} });
+  const cases = [
+    ['ServerTransport', T, () => new T('x')],
+    ['ServerHttpTransport', T.transport.http, () => new T.transport.http({ headers: {}, respond() {} })],
+    ['ServerWsTransport', T.transport.ws, () => new T.transport.ws(Object.assign(new EventEmitter(), { send() {} }))],
+    ['ServerEventTransport', T.transport.event, () => new T.transport.event(port())],
+    ['Client', Client, null],
+    ['RpcServer', wrpc.RpcServer, null],
+    ['WrpcClient', wrpc.WrpcClient, null],
+  ];
+  for (const [name, Class, make] of cases) {
+    const runtime = new Set();
+    for (let proto = Class.prototype; proto !== Emitter.prototype && proto !== Object.prototype;) {
+      for (const member of Object.getOwnPropertyNames(proto)) if (member !== 'constructor') runtime.add(member);
+      proto = Object.getPrototypeOf(proto);
+    }
+    if (make) for (const field of Object.keys(make())) runtime.add(field);
+    const types = new Set(declared.get(name));
+    // The transports' d.ts classes extend ServerTransport's.
+    if (name !== 'ServerTransport' && name.startsWith('Server'))
+      for (const member of declared.get('ServerTransport')) types.add(member);
+    const internal = INTERNAL_MEMBERS[name] ?? [];
+    for (const member of runtime) {
+      if (member.startsWith('_') || internal.includes(member)) continue;
+      assert.ok(types.has(member), `${name}#${member} exists at runtime but its d.ts class never declares it`);
+    }
+  }
+});
+
 // The size tables in README.md and docs/guide/browser.md are hand-pasted
 // from `pnpm size`; the numbers go stale by design (the release checklist
 // refreshes them), but a BUDGET that differs from scripts/size.js is a lie

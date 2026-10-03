@@ -1930,6 +1930,15 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **The `.d.ts` files describe what the runtime has.** `ServerTransport`
+  gains `revision`, `attachments` and `setRevision`, the port transport
+  `max` and `negotiate`, `buildHeaders` its third argument (`revision`), and
+  the server `Client` its `attachments` getter; `attachPort`'s comment no
+  longer says a page's `wrpc:connect` carries `v` — a wrpc page sends none.
+  The parity guard of `tests/package/consistency.test.js` now compares
+  MEMBERS too: every public member of `ServerTransport` and its transports,
+  the server `Client`, `RpcServer` and `WrpcClient` must be declared on its
+  d.ts class, the few the core calls on itself named in the test.
 - **WebTransport negotiates the revision.** It was "always revision 2", so
   two ends whose `attachments` disagreed sent each other frames the other
   refused unread — a call holding bytes timed out (`408`) where the same
