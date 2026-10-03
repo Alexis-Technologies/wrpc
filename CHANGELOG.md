@@ -1459,6 +1459,28 @@ reference as one opaque string. What is left to do:
    the error; a valid generator behaves exactly as before.
 
 ### Changed
+- **Docs: the project is presented as wRPC — Web RPC.** 2.0 serves one
+  router over WebSocket, HTTP and REST, SSE, WebTransport, WebRTC, a worker
+  port and a message broker, and the site, the README, `llms.txt`, the og
+  image and `package.json#description` still described a WebSocket RPC
+  library. The name in prose is now **wRPC**; the package, the `wrpc` CLI,
+  every wire name (`wrpc.v2`, `x-wrpc-*`) and the classes keep their
+  spelling. The home page has sixteen tiles — WebTransport, WebRTC,
+  brokers, encryption, compression, bytes as bytes and "upgrade in any
+  order" among them — and a "one router, every transport" table that a
+  guard keeps equal to the client guide's matrix. The why page compares
+  wRPC with tRPC, Socket.IO, gRPC/Connect, the Bytecode Alliance's wRPC (an
+  unrelated project of the same name) and webrpc, every cell sourced; the
+  guides that listed transports list all of them.
+- **WebTransport and WebRTC are measured end to end.** `bench/transports.js`,
+  four new rows in `bench/rpc-comparison.js` and `pnpm bench:browser
+  transports` run the same Server and client over a real HTTP/3 session
+  (`@fails-components/webtransport`) and a real data channel
+  (`node-datachannel`, and Chrome's own), next to a raw echo over the same
+  stack and a WebSocket on the same machine — gated like the integration
+  tests (`WRPC_WT=fails`, `WRPC_RTC=node-datachannel`), skipped with the
+  reason otherwise. The numbers and how to read them are in
+  [Performance](./docs/guide/performance.md#across-transports).
 - **What the AMQP adapter reads is checked against amqplib.** Every member
   the adapter reads off a channel or a connection must exist on amqplib's
   own `ConfirmChannel` / `ChannelModel` (a devDependency), not only on the
