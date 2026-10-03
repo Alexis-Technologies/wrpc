@@ -273,6 +273,49 @@ test('events encryption: a consumer retries a delivery under a key id it does no
   assert.strictEqual(dead[0].headers['x-wrpc-attempt'], '3');
 });
 
+test('events encryption: a key provider that throws once is retried, not dead-lettered', async (t) => {
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(() => broker.close());
+  const k1 = generateKey();
+  const publisher = publisherOf(t, broker, { encryption: { keys: { current: 'k1', ring: { k1 } } } });
+  const calls = [];
+  const router = defineRouter({
+    billing: {
+      consumes: {
+        charges: procedure({
+          access: 'public',
+          consume: { retry: { attempts: 3, backoff: { base: 5, max: 10, jitter: false } }, deadLetter: 'charges.dead' },
+          handler: async (_ctx, args) => void calls.push(args),
+        }),
+      },
+    },
+  });
+  const rpc = new RpcServer({ router, logger: quiet, sse: false });
+  t.after(() => rpc.close());
+  const dead = [];
+  const graveyard = await broker.queue.consume('charges.dead', (delivery) => {
+    dead.push(delivery);
+    return delivery.ack();
+  });
+  t.after(() => graveyard.stop());
+  // The vault the provider reads blips once: the first open throws.
+  let blips = 1;
+  const provider = {
+    current: () => 'k1',
+    get: (kid) => {
+      if (blips-- > 0) throw new Error('vault unreachable');
+      return kid === 'k1' ? k1 : null;
+    },
+  };
+  const consumers = await attachConsumers(rpc, broker, {}, { encryption: { keys: provider }, logger: quiet });
+  t.after(() => consumers.stop());
+  await publisher.publish('orders.v1/charged', { id: 'o-2' });
+  // It went to the dead-letter queue on that first failure: 400, never handled.
+  await waitFor(() => calls.length === 1);
+  assert.deepStrictEqual(calls, [{ id: 'o-2' }]);
+  assert.deepStrictEqual(dead, []);
+});
+
 test('events encryption: a feed logs a burst of refusals once per reason, with the count, and summarizes at the end', async (t) => {
   const broker = new MemoryBroker({ logger: quiet });
   t.after(() => broker.close());

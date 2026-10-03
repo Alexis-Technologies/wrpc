@@ -1987,6 +1987,12 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **A sealed delivery whose key provider threw is retried, not
+  dead-lettered.** A consumer under `encryption` dead-lettered the message
+  with `400 Sealed delivery refused`, unprocessed, on the provider's first
+  failure. A provider that throws is this service's own blip: it is
+  retried like an unknown key id — `503` under the binding's `retry` —
+  before it dead-letters.
 - **AMQP: a direct listener the server cancelled, or whose channel closed,
   comes back.** It went `healthy: false` for good, and a send to its
   address was taken and delivered nowhere. It re-opens now as a queue
