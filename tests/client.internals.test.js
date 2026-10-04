@@ -202,34 +202,142 @@ test('WrpcClient static online/offline/initialize', async (t) => {
 });
 
 test('WrpcClient.connect with a Service Worker (event transport)', async (t) => {
-  await t.test('getInstance returns a shared singleton', () => {
+  await t.test('getInstance (deprecated) still returns a shared singleton', () => {
     const first = WrpcClient.transport.event.getInstance('worker://app');
-    const second = WrpcClient.transport.event.getInstance('worker://app');
+    const second = WrpcClient.transport.event.getInstance('worker://other');
     assert.strictEqual(first, second);
   });
 
   await t.test('a fresh instance requires a worker to open', async () => {
     const EventTransport = WrpcClient.transport.event;
     const transport = new EventTransport('worker://fresh');
-    await assert.rejects(transport.open({}), /Service Worker not provided/);
+    await assert.rejects(transport.open({}), /Worker not provided/);
   });
 
-  await t.test('connect() opens the singleton, exposes online/offline, and closes cleanly', async () => {
+  await t.test('connect() opens its own transport, forwards online/offline, and closes cleanly', async () => {
     const sent = [];
     const worker = { postMessage: (msg) => sent.push(msg) };
 
     const client = await WrpcClient.connect('worker://shared', { worker });
     assert.strictEqual(client.active, true);
     assert.ok(sent.some((m) => m.type === 'wrpc:connect'));
+    assert.strictEqual(WrpcClient.transport.event.getInstance('worker://shared').active, false, 'not the singleton');
 
-    const transport = WrpcClient.transport.event.getInstance('worker://shared');
-    transport.online();
-    transport.offline();
+    WrpcClient.offline();
+    WrpcClient.online();
     assert.ok(sent.some((m) => m.type === 'wrpc:online'));
     assert.ok(sent.some((m) => m.type === 'wrpc:offline'));
 
     client.close();
     assert.strictEqual(client.active, false);
+  });
+
+  // A fake worker answering every call on the port it was handed with its
+  // own label — which worker answered is the whole assertion.
+  const fakeWorker = (label) => {
+    const worker = { connects: [], control: [] };
+    worker.postMessage = (message, transfer) => {
+      worker.control.push(message.type);
+      if (message.type !== 'wrpc:connect') return;
+      const port = transfer[0];
+      worker.connects.push(port);
+      port.addEventListener('message', ({ data }) => {
+        // The control goodbye (`{ type: 'wrpc:close' }`) is an object; packets are strings.
+        if (typeof data !== 'string') return;
+        const packet = JSON.parse(data);
+        if (packet.type !== 'call') return;
+        port.postMessage(
+          JSON.stringify({ type: 'callback', id: packet.id, result: `${label}:${worker.connects.indexOf(port)}` }),
+        );
+      });
+      port.start();
+    };
+    worker.closeAll = () => {
+      for (const port of worker.connects) port.close();
+    };
+    return worker;
+  };
+
+  await t.test('one page, two workers: each connect() gets its own channel', async (t) => {
+    const workerA = fakeWorker('A');
+    const workerB = fakeWorker('B');
+    const a = await WrpcClient.connect('local:a', { worker: workerA });
+    const b = await WrpcClient.connect('local:b', { worker: workerB });
+    t.after(() => {
+      a.close();
+      b.close();
+      workerA.closeAll();
+      workerB.closeAll();
+    });
+
+    assert.strictEqual(workerA.connects.length, 1, 'workerA saw its own wrpc:connect');
+    assert.strictEqual(workerB.connects.length, 1, 'workerB was reached, not skipped');
+    assert.strictEqual(await a.call('unit/method'), 'A:0');
+    assert.strictEqual(await b.call('unit/method'), 'B:0');
+
+    // Online/offline reach every worker once per client, not one worker twice.
+    WrpcClient.offline();
+    WrpcClient.online();
+    assert.deepStrictEqual(workerA.control, ['wrpc:connect', 'wrpc:offline', 'wrpc:online']);
+    assert.deepStrictEqual(workerB.control, ['wrpc:connect', 'wrpc:offline', 'wrpc:online']);
+
+    // Independent lifecycles: closing one leaves the other connected.
+    a.close();
+    assert.strictEqual(a.active, false);
+    assert.strictEqual(b.active, true);
+    assert.strictEqual(await b.call('unit/method'), 'B:0');
+  });
+
+  await t.test('two clients, one worker: two channels, and close() is per client', async (t) => {
+    const worker = fakeWorker('W');
+    const first = await WrpcClient.connect('local:w', { worker });
+    const second = await WrpcClient.connect('local:w', { worker });
+    t.after(() => {
+      first.close();
+      second.close();
+      worker.closeAll();
+    });
+
+    assert.strictEqual(worker.connects.length, 2);
+    assert.notStrictEqual(worker.connects[0], worker.connects[1]);
+    assert.strictEqual(await first.call('unit/method'), 'W:0');
+    assert.strictEqual(await second.call('unit/method'), 'W:1');
+
+    first.close();
+    assert.strictEqual(second.active, true);
+    assert.strictEqual(await second.call('unit/method'), 'W:1');
+  });
+
+  await t.test('a SharedWorker is reached through its port', async () => {
+    const sent = [];
+    const worker = { port: { postMessage: (msg) => sent.push(msg) } };
+    const EventTransport = WrpcClient.transport.event;
+    const transport = new EventTransport('worker://shared-worker');
+    await transport.open({ worker, headers: { a: '1' } });
+    assert.strictEqual(sent.length, 1);
+    assert.deepStrictEqual(sent[0], { type: 'wrpc:connect', headers: { a: '1' } });
+    transport.online();
+    transport.offline();
+    assert.deepStrictEqual(
+      sent.slice(1).map((m) => m.type),
+      ['wrpc:online', 'wrpc:offline'],
+    );
+    transport.close();
+    // A reopen addresses the resolved port, not the SharedWorker object.
+    await transport.open({});
+    assert.strictEqual(sent.at(-1).type, 'wrpc:connect');
+    transport.close();
+  });
+
+  await t.test('close() is idempotent and safe before open()', async () => {
+    const EventTransport = WrpcClient.transport.event;
+    const transport = new EventTransport('worker://idle');
+    assert.doesNotThrow(() => transport.close());
+    await transport.open({ worker: { postMessage() {} } });
+    transport.close();
+    assert.doesNotThrow(() => transport.close());
+    assert.doesNotThrow(() => transport.terminate());
+    assert.strictEqual(transport.active, false);
   });
 });
 
@@ -310,4 +418,145 @@ test('use(): static introspection without wire traffic', async (t) => {
     assert.throws(() => client.use({ unit: 'nope' }), /unit 'unit' must be an object/);
     assert.throws(() => client.use({ unit: [] }), TypeError);
   });
+});
+
+// The client is the transport a WrpcWritable holds, so the transport's
+// flow-control signal has to pass through it — both the write() boolean
+// and the 'drain' that releases the producer. A WebSocket in a browser
+// reports nothing (undefined counts as accepted); an RTCDataChannel does.
+test('WrpcClient backpressure passthrough', async (t) => {
+  class ThrottledTransport extends FakeTransport {
+    accept = true;
+    write(data) {
+      super.write(data);
+      return this.accept;
+    }
+  }
+
+  await t.test('write() returns the transport signal and createStream parks on drain', async () => {
+    const transport = new ThrottledTransport('fake://x');
+    const client = new WrpcClient('fake://x', transport);
+    await client.open();
+    t.after(() => client.close());
+
+    assert.strictEqual(client.write('{"type":"ping"}'), true);
+    transport.accept = false;
+    assert.strictEqual(client.write('{"type":"ping"}'), false);
+
+    const stream = client.createStream('upload.bin', 6);
+    assert.strictEqual(stream.write(new Uint8Array([1, 2, 3])), false);
+    let drained = 0;
+    stream.on('drain', () => drained++);
+    transport.accept = true;
+    transport.emit('drain');
+    await timers.setImmediate();
+    assert.strictEqual(drained, 1);
+    assert.strictEqual(stream.write(new Uint8Array([4, 5, 6])), true);
+  });
+
+  await t.test('a transport that reports nothing counts as accepted', async () => {
+    const { client, transport } = makeClient();
+    await client.open();
+    t.after(() => client.close());
+    assert.strictEqual(client.write('{"type":"ping"}'), undefined);
+    const before = transport.sent.length;
+    const stream = client.createStream('upload.bin', 1);
+    assert.strictEqual(stream.write(new Uint8Array([1])), true);
+    assert.strictEqual(transport.sent.length - before, 2); // stream packet + chunk
+  });
+});
+
+test('createBlobUploader: paced by the transport, a 503 on a close mid-way, a terminate on a failing source', async (t) => {
+  // A transport that answers false to every chunk: the uploader must wait
+  // for the stream's 'drain' between chunks — it used to write the whole
+  // blob whatever the answer.
+  class Slow extends FakeTransport {
+    chunks = 0;
+    write(data) {
+      this.sent.push(data);
+      if (typeof data === 'string') return true;
+      this.chunks++;
+      return false;
+    }
+  }
+  const transport = new Slow('fake://x');
+  const client = new WrpcClient('fake://x', transport);
+  await transport.open();
+  // Three chunks from the source, whatever a Blob's own chunking would be.
+  const blob = {
+    name: 'paced',
+    size: 3 * 65536,
+    stream: () =>
+      (async function* () {
+        for (let i = 0; i < 3; i++) yield new Uint8Array(65536).fill(i);
+      })(),
+  };
+  const uploader = client.createBlobUploader(blob);
+  const done = uploader.upload();
+  let settled = false;
+  done.then(
+    () => (settled = true),
+    () => (settled = true),
+  );
+  await timers.setTimeout(10);
+  assert.strictEqual(transport.chunks, 1, 'one chunk, then a wait for drain');
+  // The writable listens for the TRANSPORT's drain after a false.
+  transport.emit('drain');
+  await timers.setTimeout(10);
+  assert.strictEqual(transport.chunks, 2, 'the next chunk after the drain');
+  assert.strictEqual(settled, false);
+  // The connection closes with a chunk still to go: the upload rejects
+  // 503 like a call would, instead of resolving.
+  transport.close();
+  await assert.rejects(done, (error) => error instanceof WrpcError && error.code === 503);
+  const last = JSON.parse(transport.sent.findLast((data) => typeof data === 'string'));
+  assert.notStrictEqual(last.status, 'end', 'no end packet for a stream that did not finish');
+
+  // A source that fails: the stream is terminated on the server, and the
+  // failure is the caller's.
+  const fresh = new FakeTransport('fake://y');
+  const other = new WrpcClient('fake://y', fresh);
+  await fresh.open();
+  const failing = {
+    name: 'broken',
+    size: 10,
+    stream: () =>
+      (async function* () {
+        yield new Uint8Array(5);
+        throw new Error('disk');
+      })(),
+  };
+  const broken = other.createBlobUploader(failing);
+  await assert.rejects(broken.upload(), /disk/);
+  const packets = fresh.sent.filter((data) => typeof data === 'string').map((data) => JSON.parse(data));
+  assert.deepStrictEqual(packets.at(-1), { type: 'stream', id: broken.id, status: 'terminate' });
+  t.diagnostic('uploader paced and failed as designed');
+});
+
+test('createBlobUploader: upload() runs once — a second call rejects at once instead of hanging', async () => {
+  const transport = new FakeTransport('fake://once');
+  const client = new WrpcClient('fake://once', transport);
+  await transport.open();
+  const blob = {
+    name: 'once',
+    size: 4,
+    stream: () =>
+      (async function* () {
+        yield new Uint8Array(4).fill(1);
+      })(),
+  };
+  const uploader = client.createBlobUploader(blob);
+  await uploader.upload();
+  // It used to write into the ended stream and wait for a drain forever.
+  const again = await Promise.race([
+    uploader.upload().then(
+      () => 'resolved',
+      (error) => error,
+    ),
+    timers.setTimeout(500, 'pending'),
+  ]);
+  assert.ok(again instanceof Error, `rejected, not ${again}`);
+  assert.match(again.message, /runs once/);
+  const ends = transport.sent.filter((data) => typeof data === 'string' && JSON.parse(data).status === 'end');
+  assert.strictEqual(ends.length, 1, 'one end packet');
 });

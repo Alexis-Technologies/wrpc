@@ -6,17 +6,10 @@ const assert = require('node:assert');
 
 const { Server, WrpcClient, defineRouter, procedure } = require('../../index.js');
 const { handleMessage } = require('../../src/rpc/dispatcher.js');
+const { waitFor } = require('../helpers/wait.js');
 
 const noop = () => {};
 const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
-
-const waitFor = async (predicate, message = 'condition never held') => {
-  for (let i = 0; i < 200; i++) {
-    if (predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
-};
 
 // ---------------------------------------------------------------------------
 // Router level: `on` declares handlers, not a method

@@ -18,6 +18,8 @@ There is no build step: `src/` ships as-is.
 ```bash
 pnpm test              # node --test, recursive over tests/
 pnpm test:coverage     # c8 over src/ — thresholds 95 lines / 95 statements / 90 branches / 95 functions
+pnpm test:ci           # test:coverage as CI runs it: a 5 min per-test timeout and a forced exit, so a leak fails instead of hanging
+pnpm test:coverage:floors  # per-file floors for the directories new in 2.0 — run right after test:coverage, it reads what that left
 pnpm test:types        # tsd against the .d.ts files
 pnpm test:perf         # the 1 GiB stream memory guard
 pnpm lint              # oxlint
@@ -30,6 +32,10 @@ pnpm docs:dev          # the VitePress site (docs:build / docs:preview too)
 Run a single file with `node --test tests/smoke.test.js`, or filter by name
 with `--test-name-pattern`. `node --test` takes **files**, not directories — a
 targeted run of a folder needs a glob (`node --test tests/adapters/*.test.js`).
+
+The `wrpc` command of this tree is `node bin/wrpc.js`. Inside the repository
+`npx wrpc` and `node_modules/.bin/wrpc` run the **published 1.0** CLI: the
+interop suite's `wrpc-v1` alias installs `@alexify/wrpc@1.0.0`, bin included.
 
 ## House rules
 
@@ -50,9 +56,13 @@ entry and a `tests/<name>.test-d.ts`.
 both.
 
 **Wire-protocol changes are documented in
-[`docs/reference/protocol.md`](./docs/reference/protocol.md)**, which is frozen
-at 1.0: additive, optional fields within a major version; anything else is a
-major.
+[`docs/reference/protocol.md`](./docs/reference/protocol.md)**, which names
+its revision and what each of its tiers promises: additive, optional fields
+within a major version; anything else is a major, with a row in the page's
+"Changes since" table saying what an older peer does with it and what to set
+until every peer is upgraded. A `##` section the previous major did not have
+carries a `since N.0` badge (`tests/package/consistency.test.js` holds the
+list of the sections that need none).
 
 **Style** is enforced by oxlint/oxfmt: 2-space indent, single quotes,
 semicolons, 120-column lines. The `correctness` category is intentionally off,
@@ -72,6 +82,16 @@ Adapter tests **skip** (never fail) when a framework is missing, so a machine
 without a working `uWebSockets.js` binary can still run the suite. CI has them
 all.
 
+Coverage has two gates. `test:coverage` checks the global thresholds — an
+average, behind which one thin new file hides. So the directories that are
+new in 2.0 (`src/broker`, `src/webtransport`, `src/encryption`, `src/webrtc`,
+`src/compression`, `src/deflate`) are also held **per file** by
+`test:coverage:floors` (`scripts/coverage-floors.js` has the numbers and the
+one exception). Only those: the 1.0 files below these floors predate the rule,
+and a floor low enough to admit them would hold nothing. A floor moves up when
+its directory's weakest file improves — never down to let a change in; cover
+the new branch instead.
+
 > **A leaked uws engine hangs `node --test` forever.** A standalone engine holds
 > a native listen socket; if a test fails an assertion before its cleanup line
 > runs, the socket is never released and the whole run wedges instead of
@@ -80,37 +100,75 @@ all.
 
 ## CI
 
-Three jobs (`.github/workflows/ci.yml`):
+Three always-on jobs and four service jobs (`.github/workflows/ci.yml`):
 
 - **lint** (Node 22) — `lint`, `format:check`, `size`
-- **test** (Node 22 and 24) — `test:coverage`, `test:types`
+- **test** (Node 22 and 24) — `test:ci` (`test:coverage` with
+  `--test-timeout=300000 --test-force-exit`: a file that outlives its tests
+  fails in minutes instead of hanging to the job's timeout),
+  `test:coverage:floors`, `test:types`
 - **docs** (Node 22) — `docs:build`, which fails on dead links
+- **redis**, **nats**, **rabbitmq**, **kafka** — the integration suites
+  against a real server each (Redis 7.4, NATS 2.11 with JetStream — started
+  through `compose.yaml`, since a GitHub service container cannot be given
+  the `-js` flag — RabbitMQ 4.1, Kafka 3.9.1), under
+  `WRPC_INTEGRATION_STRICT=1`: there a missing client package fails the job
+  instead of skipping it green. Locally, `pnpm brokers:up` starts the same
+  four and each suite skips itself without its env var.
 
-Lint and format deliberately target `src tests scripts bench bin` only, so
-`docs/` is not covered by them.
+Lint and format target `src tests scripts bench bin examples` — the examples'
+scripts, not their pages or READMEs — and deliberately not `docs/`. The
+examples are not run by the suite (they need servers and a browser);
+`tests/examples.test.js` checks that each compiles and that every name it
+takes from a root entry is one that entry exports.
 
-Three checks are deliberately **not** in CI — run them by hand:
+Checks deliberately **not** in CI — run them by hand:
 
 - `node scripts/autobahn/run.js` — the RFC 6455/7692 conformance suite against
-  the engine in `src/websocket/`. Needs docker; several minutes for 500+
-  cases. `FAILED` and `WRONG CODE` fail the run, `NON-STRICT` and
-  `INFORMATIONAL` do not.
+  the engine in `src/websocket/`, and again with `AUTOBAHN_DEFLATE=takeover`
+  for the queued, asynchronous compression paths. Needs docker; several
+  minutes for 517 cases. `FAILED` and `WRONG CODE` fail the run, `NON-STRICT`
+  and `INFORMATIONAL` do not — and so does a run the fuzzing client cut
+  short (it gives up on the suite when one connect times out). Run it on an
+  otherwise idle Docker: with the four broker containers up, the emulated
+  client image loses the server half-way.
 - `pnpm test:perf` — the 1 GiB stream memory guard.
-- `REDIS_URL=redis://127.0.0.1:6379 node --test tests/scaling/redis.integration.test.js`
-  — the scaling backplane against a real Redis. `pnpm test` already covers the
-  adapter's contract through an in-repo ioredis-shaped fake
-  (`tests/scaling/redis.test.js`); this is only useful when you want to check
-  a live server, and the file skips itself without `REDIS_URL`.
+- `WRPC_RTC=node-datachannel node --test tests/webrtc/node-datachannel.integration.test.js`
+  — the WebRTC port contract against a real implementation (the fake in
+  `tests/webrtc/fakeRtc.js` is what `pnpm test` runs); needs the native
+  `node-datachannel` build.
+- `WRPC_WT=fails node --test tests/wt/fails.integration.test.js` and
+  `WRPC_WT=quico node --test tests/wt/quico.integration.test.js` — the
+  WebTransport server half against a real HTTP/3 stack
+  (`@fails-components/webtransport` with its native `-transport-http3-quiche`
+  binary, or the pure-JS `quico`). `pnpm test` covers the same code through
+  the in-memory fake (`tests/wt/fakeWebTransport.js`); both files skip
+  themselves without `WRPC_WT`. `node scripts/wt-cert.js` makes the
+  short-lived ECDSA certificate they and a browser need.
 
 ## Stability and deprecation
 
-The published surface is stable under semver, with two carve-outs marked
-`@experimental` in the `.d.ts` files:
+The published surface is stable under semver, with five carve-outs marked
+`@experimental` in the `.d.ts` files (the consumer-facing list is
+[docs/reference/stability.md](./docs/reference/stability.md#experimental-carve-outs);
+`tests/package/consistency.test.js` keeps the two counts equal):
 
 - the **telemetry** writer shapes and metric set (`telemetry` option) — the
   signals will keep improving in minors;
 - the **engine port** internals beyond the documented `WrpcSocket` contract
-  (`capabilities` in particular).
+  (`capabilities` in particular);
+- **WebTransport**, whole — the `wt` client transport, the `@alexify/wrpc/wt`
+  subpath and the control-stream framing — until Node has a WebTransport of
+  its own to settle the carrier against;
+- the **message-broker family**, whole — `@alexify/wrpc/broker` and the
+  `@alexify/wrpc/broker/*` adapters, their capability contracts, the broker
+  metrics, the `broker` client transport and the broker binding — until every
+  adapter has shipped;
+- **application-level encryption**, whole — `@alexify/wrpc/encryption` and
+  every `encryption` option it feeds, `Client.encryption`,
+  `encryptionKey()`/`encryptionRequired`, `attach({ encrypted })`, and the
+  session-encryption, sealed-request and broker-sealing wire formats — until
+  the formats have been reviewed against real deployments.
 
 An `@experimental` API may change in a minor release, with the change
 described in the CHANGELOG. Everything else follows the usual rule: removal
@@ -118,8 +176,11 @@ or breaking change of a stable API needs (1) a deprecation note in the
 CHANGELOG and the docs for at least one minor release, and (2) a major
 version to actually remove it. The wire protocol has its own, stronger
 promise — see [protocol.md](./docs/reference/protocol.md#stability): packet
-shapes never break inside a major, and the `wrpc.v1` subprotocol names the
-revision on the wire.
+shapes never break inside a major, and the subprotocol names the core's
+revision on the wire — `wrpc.v2` since 2.0 (framed messages), negotiated
+down to `wrpc.v1` with a 1.0 peer. A change a 1.0 peer cannot ignore belongs
+behind the revision, and `tests/interop/` runs the published 1.0 against the
+tree to keep that true.
 
 ## Release checklist
 
@@ -134,18 +195,21 @@ publishes.
    `docs/.vitepress/config.mts`'s keywords or nav version label drift from
    `package.json` — there is no separate manual sync step for either.
 2. **Move `[Unreleased]` to the new version** in `CHANGELOG.md`, with the date,
-   and open a fresh empty `[Unreleased]` above it. Before the first publish,
-   `[Unreleased]` carries a "not published to npm yet" note right under its
-   heading — delete that note as part of this move; it does not apply again
-   after v1.0.0 ships.
+   and open a fresh empty `[Unreleased]` above it — with an empty
+   `### Changed (breaking)` section, which `tests/package/consistency.test.js`
+   requires to exist. **Read that section before choosing the bump**: a
+   non-empty one is a major, whatever the other sections say, and the same
+   test fails the build if an entry marked `**Breaking` sits anywhere else
+   (an "Added" feature that a 1.x peer cannot ignore is breaking too). A
+   non-empty breaking section also carries a `#### Migrating from <version>`
+   block — the order of upgrade and the flags that keep an old peer working.
 3. **Bump `version` in `package.json`, and confirm it differs from what npm
    already has.** Semver against the **JavaScript API**; the wire protocol has
-   [its own promise](./docs/reference/protocol.md#stability). Before the first
-   publish there is nothing on the registry to compare against, so this half
-   of the step is a no-op; from the second release on, run
+   [its own promise](./docs/reference/protocol.md#stability). Run
    `npm view @alexify/wrpc version` and make sure the bumped value doesn't
-   match it — publishing an already-used version is a rejected `npm publish`,
-   not a warning.
+   match it (`npm view @alexify/wrpc versions` lists every one, 1.0.0
+   included) — publishing an already-used version is a rejected
+   `npm publish`, not a warning.
 4. **Check what would ship.** `files` in `package.json` is an explicit
    allowlist, so a new root shim or `.d.ts` that was not added to it silently
    disappears from the tarball:

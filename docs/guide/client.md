@@ -22,17 +22,45 @@ variable — call through `client.api` each time.
 
 ## Transports
 
-The URL scheme picks the transport; `options.transport` overrides it.
+One router answers on every transport below — the same procedures, rooms and
+sessions, whichever one a client arrives on. An `http:`/`https:` URL means
+`http` and any other means `ws`; `options.transport` names any other
+transport, or an ordered fallback list.
 
-| Transport | Scheme | Calls | Events, subscriptions, cancel | Binary streams |
-| --- | --- | --- | --- | --- |
-| `ws` | `ws:` / `wss:` | ✅ | ✅ | ✅ |
-| `http` | `http:` / `https:` | ✅ | ❌ (code 400) | ❌ |
-| `sse` | `http:` / `https:` | ✅ | ✅ | ❌ |
-| `event` | — | ✅ | ✅ | ✅ |
+<!-- The home page's "One router, every transport" table mirrors this one:
+     tests/package/consistency.test.js keeps the shared columns equal. -->
 
-`sse` has to be registered before it can be named — see [Server-Sent
-Events](./sse):
+| Transport | Chosen by | Calls | Events, subscriptions, cancel | Binary streams | Bytes in a packet | Compression | Encryption |
+| --- | --- | --- | --- | --- | --- | --- | --- |
+| `ws` | `ws:` / `wss:` URL | ✅ | ✅ | ✅ | ✅ | ✅ | Noise |
+| `http` | `http:` / `https:` URL | ✅ | ❌ (code 400) | ❌ | ✅ | ✅ | HPKE |
+| `sse` | `transport: 'sse'` | ✅ | ✅ | ❌ | ❌ | ✅ | HPKE |
+| `wt` | `transport: 'wt'` | ✅ | ✅ | ✅ | ✅ | ✅ | Noise |
+| `webrtc` | `transport: 'webrtc'` | ✅ | ✅ | ✅ | ✅ | ✅ | DTLS |
+| `event` | `worker` | ✅ | ✅ | ✅ | ✅ | — | — |
+| `broker`, stateless | `transport: 'broker'` | ✅ | ❌ (code 400) | ❌ | ❌ | ✅ | sealed |
+| `broker`, session | `transport: 'broker'`, `mode: 'session'` | ✅ | ✅ | ✅ | ✅ | ✅ | sealed |
+
+- **Bytes in a packet** are [binary attachments](./streams#attachments): a
+  `Uint8Array` in arguments, a result or an event arrives as bytes. Where the
+  cell is ❌ — SSE and a stateless broker request, both [revision
+  1](../reference/protocol#versioning) — bytes travel as the JSON objects 1.0
+  made of them.
+- **Compression** is off everywhere until both ends turn it on —
+  [Compression](./compression) has the knob for each wire. A worker port never
+  leaves the process, so there is nothing to compress.
+- **Encryption** is the layer _above_ TLS, opt-in and experimental: a
+  [Noise session](./encryption#session) on `ws` and `wt`, HPKE per request on
+  `http` and `sse`, [sealed broker messages](./encryption#brokers). A WebRTC
+  data channel is already DTLS end to end; a worker port never leaves the
+  process — give `encryption` to the `WrpcClientProxy` in the worker instead.
+
+`wt` is [WebTransport](./wt) (experimental), in the base entry so that
+`transport: ['wt', 'ws']` — WebTransport where the browser has it, a WebSocket
+otherwise — needs no import. `webrtc` is a [WebRTC](./webrtc) data channel to a
+peer, `broker` is [RPC over a message broker](./brokers/rpc) between services
+(experimental), `event` is a [worker](#workers). `sse` has to be registered
+before it can be named — see [Server-Sent Events](./sse):
 
 ```js
 require('@alexify/wrpc/sse');
@@ -41,6 +69,41 @@ const client = await WrpcClient.connect('https://host/api', { transport: 'sse' }
 
 Anything HTTP cannot carry is an **error**, not a silent no-op: asking for a
 subscription over HTTP is answered with code `400` rather than hanging.
+
+::: tip Compression is the server's decision — and, in Node, one-directional
+`ws` frames are compressed only when the server enables `perMessageDeflate`
+(off by default). A browser then compresses both directions itself; a Node
+client does not — its built-in `WebSocket` inflates but never deflates, so
+client→server frames from Node are sent as-is unless the client's own
+`compression` option is on and the server accepts it
+([the Node client's frames](./server#node-client-frames)). See
+[performance](./performance#compression-is-off-by-default).
+:::
+
+### Injecting `fetch` (http/sse)
+
+The `http` and `sse` transports call `fetch` for every request; `options.fetch`
+lets you hand in your own implementation instead of the runtime's global one —
+re-resolved on every open, like `headers`. The intended use is a Node process
+that talks wRPC to another wRPC server (a microservice calling a sibling
+service) and wants undici's connection pooling, proxying, or caching tuned for
+that traffic, without wRPC depending on undici itself:
+
+```js
+const { Agent, fetch: undiciFetch } = require('undici');
+
+const agent = new Agent({ keepAliveTimeout: 10_000, connections: 128 });
+const client = await WrpcClient.connect('http://internal-service/api', {
+  transport: 'http',
+  fetch: (url, init) => undiciFetch(url, { ...init, dispatcher: agent }),
+});
+```
+
+This is **not** a way to reach arbitrary third-party REST APIs through wRPC —
+the http/sse transports only ever call the one connected wRPC server (packet
+POSTs, or a [mapped REST leg](./rest) against that same server's own base
+URL). Calling another service's API is still a plain, direct `fetch`/undici
+call; `options.fetch` only tunes the transport wRPC itself uses.
 
 ## Options
 
@@ -62,15 +125,17 @@ await WrpcClient.connect(url, {
 | `heartbeat` | `{ interval: 30000, timeout: 10000 }` | `false` disables it. |
 | `batch` | off | `true` takes the defaults. |
 | `retry` | off | Opt-in per-call retry: `{ attempts, on: [503], minDelay, maxDelay, factor, jitter }`, `true` for the defaults. Coded failures re-issue with a fresh packet id after a jittered backoff — never a silent offline buffer. |
-| `transport` | from the URL | `'ws'`, `'http'`, `'sse'`, or anything registered. |
-| `worker` | — | A `ServiceWorker` to proxy through. |
+| `transport` | from the URL | `'ws'`, `'http'`, `'sse'`, `'wt'`, `'webrtc'`, `'broker'` or anything registered — or an ordered fallback list such as `['wt', 'ws']`. See [Transports](#transports). |
+| `worker` | — | A worker to proxy through: a `ServiceWorker`, a `SharedWorker`, a dedicated `Worker` or a raw `MessagePort` — see [Workers](#workers). |
 | `authenticate` | — | Presents the connection's credential; awaited before the reconnect restore — see [Authenticating](#authenticating). |
 | `refresh` | — | Single-flight credential refresh with a one-shot retry — see [Refreshing a credential](#refreshing-a-credential). |
 | `headers` | — | Connection-phase headers, re-evaluated per open; validated by `schema.headers` — see [Metadata](./metadata). |
 | `meta` | — | Connection-phase metadata (unvalidated); per-call twin via `{ meta }` / `withMeta()` — see [Metadata](./metadata). |
+| `carrier` | `'auto'` | ws only — how `headers`/`meta` leave on the handshake: real headers from Node, subprotocol tokens from a browser; `'protocol'` / `'query'` force one — see [Choosing the ws carrier](./metadata#choosing-the-ws-carrier-carrier). |
+| `fetch` | global `fetch` | http/sse only — see [Injecting `fetch`](#injecting-fetch-http-sse). |
 | `random` | `Math.random` | Jitter source; injectable so tests can pin the schedule. |
-| `generateId` | uuid v4 | Packet/subscription/stream ids — bring your own (cuid/ulid/a test counter). Correlation ids, not secrets; stream ids must stay within 255 UTF-8 bytes. |
-| `protocols` | `['wrpc.v1']` | WebSocket subprotocols to offer; the server echoes the wire revision back. `[]` offers nothing. |
+| `generateId` | uuid v4 | Packet/subscription/stream ids, and the [broker transport's](./brokers/rpc) session and correlation ids — bring your own (cuid/ulid/a test counter). Correlation ids, not secrets; every id must stay within 255 UTF-8 bytes. |
+| `protocols` | `['wrpc.v2', 'wrpc.v1']` | WebSocket subprotocols to offer: the [protocol revisions](../reference/protocol#versioning) this client speaks, newest first, of which the server selects one — a 1.0 server selects `wrpc.v1`, and is then spoken to as 1.0 was (`client.revision` reads `1`). `['wrpc.v1']` alone under `attachments: false`. `[]` offers nothing — revision 1, and a browser's declared bags go through the connect-URL query, since a carrier token needs a protocol the server can answer. |
 | `logger` | off | A Console or pino-shaped logger; observes errors in addition to the `'error'` event. |
 | `telemetry` | off | OTel tracer/meter/api — see [Telemetry](./telemetry). |
 
@@ -198,7 +263,11 @@ The hook is awaited in two places:
 
 - **Inside `open()` on the first connect** — `await connect(...)` resolves an
   already-authenticated client. A throw here rejects `connect()` and leaves
-  nothing behind (no reconnect timer, no registered connection).
+  nothing behind (no reconnect timer, no registered connection) — with a
+  [transport list](#transport-fallback) too: the hook's refusal is the
+  application's verdict on the connection, not a transport failure, so no
+  further candidate is tried behind its back. Only a candidate that never
+  opened hands over to the next.
 - **On every reconnect, BEFORE the restore** — the subscriptions are
   re-opened and the units re-loaded only after the hook resolved, so a
   `session`-gated feed resumes instead of being refused with a terminal 403.
@@ -269,7 +338,10 @@ const client = await WrpcClient.connect('wss://host/api', {
 There is deliberately **no default order** — the list is yours. Every name
 is validated up front (a fallback that fails at fall-back time is a fallback
 nobody tested), and `'event'` cannot appear in one (it is selected through
-`worker`, not by URL).
+`worker`, not by URL). Neither can `'webrtc'` in practice: that transport,
+registered by [`@alexify/wrpc/webrtc`](./webrtc), speaks over a `link` (or a
+raw data `channel`) given in the options rather than to a URL, and `WrpcPeer`
+constructs it for you.
 
 The semantics:
 
@@ -288,6 +360,10 @@ The semantics:
   in the list if feeds matter: it carries events, subscriptions and cancel
   (everything but binary streams).
 
+A fallback list is several ways to reach **one** backend. Talking to several
+*different* backends at once — a REST service, a realtime one, a local
+worker — is a separate concern; see [Multiple backends](./multiple-backends).
+
 ## Heartbeat
 
 A browser `WebSocket` exposes no protocol-level ping, so a connection that died
@@ -299,9 +375,12 @@ The client therefore sends an application-level `{ type: 'ping' }` every
 `interval` and expects a `{ type: 'pong' }` within `timeout`; a miss emits
 `heartbeat-timeout` and forces a reconnect.
 
-Each transport decides whether it wants one: the WebSocket and
-[SSE](./sse) transports do, and the plain HTTP transport does not — a
-request/response transport has no connection to keep alive.
+Each transport decides whether it wants one: the persistent ones — the
+WebSocket, [SSE](./sse), [WebTransport](./wt), a [WebRTC](./webrtc) data channel
+and a [broker session](./brokers/rpc) — do; plain HTTP and a stateless broker
+request do not, since a request/response transport has no connection to keep
+alive. Behind a [worker](#workers), the `WrpcClientProxy` keeps the heartbeat
+with the server, not the page.
 
 ## Events
 
@@ -352,10 +431,11 @@ Static, because connectivity is a property of the machine rather than of one
 connection. `WrpcClient.initialize()` wires them to the browser's `online` /
 `offline` events; `WrpcClient.connections` is the live set.
 
-## Service Workers
+## Workers
 
-For an offline-capable app, the Service Worker holds the connection and the
-page talks to the worker over a `MessagePort`. In the worker:
+A worker can hold the connection while every page talks to the worker over a
+`MessagePort` — one socket for all tabs, and (with a Service Worker) a peer
+that survives a page reload. In the worker:
 
 ```js
 const { WrpcClientProxy } = require('@alexify/wrpc');
@@ -364,15 +444,35 @@ const proxy = new WrpcClientProxy({ callTimeout: 7000 });
 await proxy.open();
 ```
 
-…and in the page:
+…and in the page, hand `worker` whatever holds the proxy:
 
 ```js
+// a Service Worker
 const client = await WrpcClient.connect(url, { worker: navigator.serviceWorker.controller });
+
+// a SharedWorker — reached through its port
+const shared = new SharedWorker('/wrpc-worker.js', { name: 'wrpc' });
+const client = await WrpcClient.connect(url, { worker: shared });
 ```
 
+A dedicated `Worker` or a raw `MessagePort` work the same way. The proxy takes
+every client option plus `url`, the server it connects to; without it the URL
+is derived from the worker's own `location` — right for a Service Worker on
+the site it serves, and what a SharedWorker proxying to another origin
+overrides.
+
 The packets are identical on both hops, so nothing above the transport
-changes — which is what makes the arrangement worth having: one socket for
-every tab, and a peer that survives a page reload.
+changes. Each `connect()` gets its own `MessageChannel` to the worker — two
+workers from one page are two independent clients; the
+proxy routes answers back to the port that asked and broadcasts events to
+every port, and lets go of a port when its page closes it.
+
+This is also how a purely local backend — one fronting `IndexedDB`, say —
+joins a client that otherwise talks to remote services over `ws`/`http`/`wt`;
+see [Multiple backends](./multiple-backends#a-local-backend-behind-a-worker)
+for the combined picture, including a sharp edge in `getInstance`'s
+per-page singleton worth knowing about before you reach for two worker
+targets from one page.
 
 ## In a browser bundle
 
@@ -382,6 +482,6 @@ bundler that honours the `browser` field — webpack, Vite, esbuild with
 `browser: true`), Parcel, Bun. It contains the client, the streams and the
 chunk helpers, and **no Node builtins** — the server half is not in it.
 
-The main entry is under 15 KB min+gzip in that build; `scripts/size.js` enforces a
+The main entry is ~28 KB min+gzip in that build; `scripts/size.js` enforces a
 budget on it in CI. See [Browser & bundling](./browser) for the full table, the
 `browser` field map, and what is deliberately missing from that entry.

@@ -184,12 +184,100 @@ sessions:
 | `client.drain()` | Resolves when the transport drained — or when it closed. |
 | `client.persistent` | `false` on HTTP: no events, no subscriptions, no streams. |
 | `client.binary` | `false` on a text-only transport ([SSE](./sse)). |
+| `client.revision` | The [protocol revision](../reference/protocol#versioning) this connection speaks: `2` when the peer reads framed messages, so bytes arrive as `Uint8Array`s; `1` for a 1.0 peer, one that opted out, and every SSE channel — bytes then arrive as the JSON 1.0 made of them. |
 | `client.session` | The [session](./sessions), or `null`. |
 | `client.close()` / `destroy()` | Close the transport / tear the client down. |
 
 `persistent` and `binary` are how a handler stays honest across transports: the
 same procedure can be reachable over HTTP for the call and skip the
 event-emitting half when it is.
+
+## Compression
+
+A broadcast is serialized once, and on the built-in engine framed and
+deflated once too — one shared frame per emit, per negotiated window, rather
+than one deflate per member (the numbers are in
+[performance](./performance#fan-out)). Compression itself is negotiated per
+connection, and the server's `perMessageDeflate.filter(req)` chooses which
+peers get it. Per message, opt out when the payload is already compressed
+or latency matters more than bytes:
+
+```js
+context.server.to('lobby').emit('media/chunk', base64Jpeg, { compress: false });
+context.client.sendEvent('game/tick', state, { compress: false });
+```
+
+The same flag works on every wire with per-message compression —
+WebTransport, WebRTC and the broker binding (see [Compression](./compression)
+for the knob on each). It is ignored on connections that never negotiated
+compression — which is every connection until both ends turn it on; it is
+[off by default](./performance#compression-is-off-by-default).
+
+## Delivery, and what to do when it has to be guaranteed {#delivery}
+
+A room emit is a **fire-and-forget fan-out**: no id, no acknowledgement,
+at-most-once across instances (the [backplane](./scaling#at-most-once-and-what-to-do-about-it)
+reports what it lost, it does not replay it). That is the right contract for
+presence, cursors, typing indicators and every other event a later one
+supersedes. When a client must not miss anything — a chat history, an order
+book's deltas — the replayable thing in wRPC is a **subscription**, not a
+room, and three recipes cover the cases:
+
+**A broker-backed feed.** A broker (Kafka, RabbitMQ, NATS, a Redis stream)
+guarantees delivery to your *server*, not to a browser: the last hop still
+loses whatever was in flight during a reconnect unless the server replays
+from where the client left off. The offset the broker already keeps is the
+event id, and [`brokerFeed`](./brokers/feeds) is that subscription, resuming
+on any instance:
+
+```js
+const { brokerFeed } = require('@alexify/wrpc/broker');
+
+feed: procedure.subscription({
+  access: 'session',
+  handler: brokerFeed(broker, 'chat.lobby', { onGap: (ctx) => loadRecent(ctx) }),
+}),
+```
+
+**A room-backed feed.** For events that originate in this process, keep an
+[event log](./subscriptions#resuming) next to the room and serve the
+subscription from it; the room emit stays for the members who only want
+"now":
+
+```js
+const log = createEventLog({ size: 1000 });
+const bus = new Emitter();
+
+const post = (ctx, message) => {
+  const id = log.push(message);              // one id for both audiences
+  ctx.server.to('chat').emit('chat/message', message);
+  bus.emit('message', tracked(id, message));
+};
+
+history: procedure.subscription({
+  handler: async function* (ctx, args, { lastEventId, signal }) {
+    const missed = log.since(lastEventId);
+    if (missed === null) yield { type: 'snapshot', items: await loadRecent() };
+    else for (const item of missed) yield item;
+    for await (const item of createEventStream(bus, 'message', { signal })) yield item;
+  },
+}),
+```
+
+**An acknowledged emit.** When the sender needs to know the event *arrived*,
+ask instead of emitting — [`ask()`](#asking-a-room) is the same event packet
+with an id, and each client's answer is its acknowledgement:
+
+```js
+const { answers, expected, incomplete } = await ctx.server.to('ops').ask('deploy/notice', payload);
+if (incomplete || answers.length < expected) escalate(expected - answers.length);
+```
+
+What wRPC deliberately does not have is a per-room replay buffer with a
+client that "rejoins from an id": it would duplicate subscriptions, and it
+would need a new concept inside the [protocol's core](../reference/protocol#stability).
+If you need a queue's guarantees, you need a queue — and a subscription is
+how its offsets reach the browser.
 
 ## Rooms and reconnects
 

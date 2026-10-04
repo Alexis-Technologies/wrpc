@@ -74,11 +74,46 @@ test('SessionManager create', async (t) => {
     session.state.count = 5;
     session.state.name = 'alex';
     await settle();
-    assert.strictEqual(store.sets.length, 3);
-    assert.deepStrictEqual(store.sets[1], { token: 'tok', data: { count: 5 } });
-    assert.deepStrictEqual(store.sets[2], { token: 'tok', data: { count: 5, name: 'alex' } });
+    // The two assignments of one turn coalesce into ONE write (plus the
+    // initial state persisted by create()).
+    assert.strictEqual(store.sets.length, 2);
+    assert.deepStrictEqual(store.sets[1], { token: 'tok', data: { count: 5, name: 'alex' } });
     assert.strictEqual(session.state.count, 5);
     assert.strictEqual(session.state.name, 'alex');
+  });
+
+  await t.test('a store whose set() throws synchronously is a logged save failure, not a crash', async () => {
+    // sealedStore over a keyring that lost its current key threw from
+    // set() before its first await; the flush ran it in a microtask.
+    const errors = [];
+    // A structured (child-bearing) logger receives the entry as it is; a
+    // console-shaped one would be handed the Error alone.
+    const log = {
+      ...quiet,
+      error: (entry) => errors.push(entry),
+      child() {
+        return log;
+      },
+    };
+    const store = {
+      async get() {
+        return null;
+      },
+      set() {
+        throw new Error('the keyring does not hold its current key');
+      },
+      async delete() {},
+    };
+    const manager = new SessionManager({ store }, log);
+    const session = manager.create('tok', { count: 0 });
+    session.state.count = 1;
+    await settle();
+    assert.deepStrictEqual(
+      errors.map((entry) => entry.event),
+      ['session.save', 'session.save'],
+      'the initial write and the one auto-save',
+    );
+    assert.match(errors[0].err.message, /current key/);
   });
 
   await t.test('custom generateToken is used for omitted tokens', () => {
@@ -394,4 +429,100 @@ test('token transport: the cookie default and the structural check', async (t) =
     assert.strictEqual(isTokenTransport({ read: () => null }), false);
     assert.strictEqual(isTokenTransport(null), false);
   });
+});
+
+test('SessionManager: state writes in one turn coalesce into one store.set, and none after end()', async () => {
+  const store = capturingStore();
+  const manager = new SessionManager({ store }, quiet);
+  const session = manager.create('tok', { a: 0 });
+  assert.strictEqual(store.sets.length, 1, 'the initial state is persisted immediately');
+  session.state.a = 1;
+  session.state.b = 2;
+  session.state.c = 3;
+  assert.strictEqual(store.sets.length, 1, 'nothing written synchronously');
+  await settle();
+  assert.strictEqual(store.sets.length, 2, 'three assignments, one write');
+  assert.deepStrictEqual(store.sets[1].data, { a: 1, b: 2, c: 3 });
+  session.state.d = 4;
+  session.end();
+  assert.strictEqual(session.ended, true);
+  await settle();
+  assert.strictEqual(store.sets.length, 2, 'a write queued before end() does not land');
+  session.state.e = 5;
+  await settle();
+  assert.strictEqual(store.sets.length, 2);
+});
+
+test('SessionManager: a write after a logout elsewhere does not resurrect the session — the memory store answers false', async () => {
+  const warned = [];
+  const logger = {
+    log() {},
+    info() {},
+    debug() {},
+    error() {},
+    warn: (entry) => warned.push(entry),
+    child: () => logger,
+  };
+  const store = new MemorySessionStore();
+  const first = new SessionManager({ store }, logger);
+  const second = new SessionManager({ store }, logger);
+  first.create('tok', { userId: 1 });
+  const restored = await second.restore('tok');
+  // A logout lands on the first connection; the second, still holding the
+  // session, writes to it afterwards. The write used to be an unconditional
+  // set that brought the row back, token and all.
+  await first.destroy('tok');
+  restored.state.role = 'admin';
+  await settle();
+  assert.strictEqual(await store.get('tok'), null, 'not resurrected');
+  assert.strictEqual(restored.ended, true, 'the session that lost its row ended');
+  assert.ok(warned.some((entry) => entry.event === 'session.save' && entry.reason === 'gone'));
+  // And nothing more is written for it.
+  restored.state.again = true;
+  await settle();
+  assert.strictEqual(await store.get('tok'), null);
+  // The store's own contract: an update of a missing or expired row is false.
+  assert.strictEqual(await store.set('fresh', { a: 1 }), true);
+  assert.strictEqual(await store.set('fresh', { a: 2 }, { create: false }), true);
+  assert.strictEqual(await store.set('gone', { a: 1 }, { create: false }), false);
+  assert.strictEqual(await store.get('gone'), null);
+});
+
+test('sessions: a logout on one connection ends the session on the others of this instance', async (t) => {
+  const { bearerTransport } = require('../../auth.js');
+  const { bootServer, connectClient } = require('../helpers/server.js');
+  const router = defineRouter({
+    auth: {
+      login: procedure({
+        access: 'public',
+        handler: async (context) => {
+          context.client.startSession(undefined, { user: 'alice' });
+          return context.session.token;
+        },
+      }),
+      whoami: procedure({ access: 'session', handler: async (context) => context.session.state.user }),
+      logout: procedure({ access: 'session', handler: async (context) => context.client.finalizeSession() }),
+    },
+  });
+  const { url } = await bootServer(t, { router, sessions: { transport: bearerTransport() } });
+  const first = await connectClient(t, url);
+  await first.load('auth');
+  const token = await first.api.auth.login();
+  // Two more connections — two tabs — restored from the same bearer token.
+  const tab = async () => {
+    const client = await connectClient(t, url, { headers: { authorization: `Bearer ${token}` } });
+    await client.load('auth');
+    return client;
+  };
+  const a = await tab();
+  const b = await tab();
+  assert.strictEqual(await a.api.auth.whoami(), 'alice');
+  assert.strictEqual(await b.api.auth.whoami(), 'alice');
+  assert.strictEqual(await a.api.auth.logout(), true);
+  // B used to go on answering `alice` until it reconnected.
+  await assert.rejects(b.api.auth.whoami(), (error) => error.code === 403);
+  await assert.rejects(first.api.auth.whoami(), (error) => error.code === 403);
+  // And a fresh connection with the token is refused as before.
+  const late = await tab();
+  await assert.rejects(late.api.auth.whoami(), (error) => error.code === 403);
 });

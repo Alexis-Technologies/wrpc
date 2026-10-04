@@ -5,9 +5,15 @@ on:
     branches: [main]
   pull_request:
 
+# Nothing here writes to the repository: a read token is all a leaked action
+# could use.
+permissions:
+  contents: read
+
 jobs:
   lint:
     runs-on: ubuntu-latest
+    timeout-minutes: 10
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -38,8 +44,137 @@ jobs:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
       - run: pnpm install --frozen-lockfile
-      - run: pnpm test:coverage
+      # test:coverage with a guard: a file that outlives its tests (a leaked
+      # listen socket, a timer nobody cleared) is cut off and FAILS here in
+      # minutes, where it used to hang until the job's own timeout with no
+      # summary. `pnpm test` and `pnpm test:coverage` stay without it — a
+      # leak must stay visible locally. WRPC_INTEGRATION_STRICT turns a
+      # suite that would SKIP for a missing devDependency (the interop
+      # suite's `wrpc-v1` alias) into a failure: here, everything is installed.
+      - run: pnpm test:ci
+        env:
+          WRPC_INTEGRATION_STRICT: 1
+      # The global thresholds are an average; the directories new in 2.0 are
+      # also held per file (scripts/coverage-floors.js). Reads the coverage
+      # the step above left behind — same job, same workspace.
+      - run: pnpm test:coverage:floors
       - run: pnpm test:types
+
+  # The Redis leg of the scaling suites against a real server — the fake in
+  # tests/scaling/redis.test.js is what `pnpm test` runs; this is the
+  # contract check against ioredis + a broker. The multi-node benchmark
+  # (bench/cluster-nodes.js) stays a manual run: a benchmark in CI is noise.
+  redis:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    services:
+      redis:
+        image: redis:7.4-alpine
+        ports: ['6379:6379']
+        options: >-
+          --health-cmd "redis-cli ping"
+          --health-interval 5s
+          --health-timeout 3s
+          --health-retries 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node --test tests/scaling/redis.integration.test.js tests/broker/redis.integration.test.js
+        env:
+          REDIS_URL: redis://127.0.0.1:6379
+          # The client IS installed here: a skip would be a broken environment passing.
+          WRPC_INTEGRATION_STRICT: 1
+
+  # The NATS leg of the broker suites against a real server WITH JetStream;
+  # the in-repo fake in tests/broker/fakeNats.js is what `pnpm test` runs.
+  # Not a `services:` container: GitHub cannot pass a command to one, and a
+  # nats without `-js` makes the log, queue and feed suites skip — green
+  # and untested. compose.yaml is the one place the flags live.
+  nats:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - run: docker compose up -d --wait nats
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node --test tests/broker/nats.integration.test.js
+        env:
+          NATS_URL: nats://127.0.0.1:4222
+          WRPC_INTEGRATION_STRICT: 1
+      - run: docker compose down
+        if: always()
+
+  # The RabbitMQ leg of the broker suites against a real server; the in-repo
+  # fake in tests/broker/fakeAmqp.js is what `pnpm test` runs.
+  rabbitmq:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    services:
+      rabbitmq:
+        image: rabbitmq:4.1-alpine
+        ports: ['5672:5672']
+        options: >-
+          --health-cmd "rabbitmq-diagnostics -q ping"
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node --test tests/broker/amqp.integration.test.js
+        env:
+          AMQP_URL: amqp://127.0.0.1:5672
+          WRPC_INTEGRATION_STRICT: 1
+
+  # The Kafka leg of the broker suites against a real broker (KRaft), on
+  # whichever KafkaJS-shaped clients are installed; the in-repo fake in
+  # tests/broker/fakeKafka.js covers both shapes in `pnpm test`.
+  kafka:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    services:
+      kafka:
+        image: apache/kafka:3.9.1
+        ports: ['9092:9092']
+        env:
+          KAFKA_NODE_ID: 1
+          KAFKA_PROCESS_ROLES: broker,controller
+          KAFKA_LISTENERS: PLAINTEXT://:9092,CONTROLLER://:9093
+          KAFKA_ADVERTISED_LISTENERS: PLAINTEXT://127.0.0.1:9092
+          KAFKA_CONTROLLER_LISTENER_NAMES: CONTROLLER
+          KAFKA_LISTENER_SECURITY_PROTOCOL_MAP: CONTROLLER:PLAINTEXT,PLAINTEXT:PLAINTEXT
+          KAFKA_CONTROLLER_QUORUM_VOTERS: 1@localhost:9093
+          KAFKA_OFFSETS_TOPIC_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_REPLICATION_FACTOR: 1
+          KAFKA_TRANSACTION_STATE_LOG_MIN_ISR: 1
+          KAFKA_GROUP_INITIAL_REBALANCE_DELAY_MS: 0
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+      - run: pnpm install --frozen-lockfile
+      - run: node --test tests/broker/kafka.integration.test.js
+        env:
+          KAFKA_BROKERS: 127.0.0.1:9092
+          WRPC_INTEGRATION_STRICT: 1
 
   # Node 22 only: the docs build exercises VitePress, not the package runtime,
   # so repeating it across the test matrix would just repeat the same work.

@@ -2,7 +2,7 @@
 
 Some places will not give you a WebSocket: a serverless platform with no
 upgrade path, a corporate proxy that strips one, an edge runtime that only
-speaks HTTP. `@alexify/wrpc/sse` is a full wrpc transport built out of nothing
+speaks HTTP. `@alexify/wrpc/sse` is a full wRPC transport built out of nothing
 but HTTP requests — calls, events, subscriptions and cancellation all work, and
 the packets are identical.
 
@@ -32,8 +32,8 @@ SSE is one-way, so a channel is two halves that find each other by id:
 
 ```
 GET  {basePath}/events                        opens a NEW channel
-GET  {basePath}/events  x-wrpc-channel: <id>  re-attaches to an existing one
-POST {basePath}         x-wrpc-channel: <id>  client -> server
+GET  {basePath}/events  x-wrpc-channel: <id>.<secret>  re-attaches to an existing one
+POST {basePath}         x-wrpc-channel: <id>.<secret>  client -> server
 ```
 
 ```mermaid
@@ -52,19 +52,26 @@ sequenceDiagram
   S-->>C: replay of what was missed, then live frames
 ```
 
-**The server mints the id** and hands it out exactly once, in the `ready`
-frame that opens every stream — a client never proposes its own. The channel
-is bound to the cookie identity of the GET that created it, and every
-re-attach and POST must present the same one: a request naming a live id
-without it is refused with `403`, so a leaked id (URLs end up in logs) is
-not a bearer token for the channel's session. An id the server no longer
-holds answers `409` — the built-in transport reacts by starting a fresh
-channel and letting the client re-load and re-subscribe.
+**The server mints the id and draws the secret**, and hands both out — as
+one string, `<id>.<secret>` — in the `ready` frame that opens every stream;
+a client never proposes its own, and presents the string back as it got it
+(which is why a 1.0 client, that knows of no secret, still holds one).
+The id is whatever your `generateId` makes of it (a uuid, a cuid, a counter:
+one option covers every id the server mints); the secret is 18 random bytes
+from the server, and it is the credential: every re-attach and POST presents
+it after the id in the one `x-wrpc-channel` header, and a request naming a
+live id without it is refused with `409`, exactly like an id the server does
+not hold — a guessed id learns nothing, and a leaked id (URLs end up in
+logs) opens nothing. On top, the channel is bound to the cookie identity of
+the GET that created it, and a request presenting the secret without that
+identity is `403`. An id the server no longer holds answers `409` — the
+built-in transport reacts by starting a fresh channel and letting the client
+re-load and re-subscribe.
 
 Both halves belong to **one** server-side `Client`, which is what lets a
 subscription opened by a POST deliver its values down the stream. A POST
 answers `202` with no body: every reply, callbacks included, travels on the
-stream — the same shape the Service Worker port transport has.
+stream — the same shape the worker port transport has.
 
 Each frame carries the channel's own monotonic `id:`, and a dropped stream does
 **not** destroy the channel. It is held for `retention` (30 s by default), so a
@@ -90,6 +97,7 @@ new Server({
 | `maxChannels` | `10000` | Live channels per server; past it a new GET is `503`. |
 | `maxChannelsPerAddress` | `100` | Live channels per remote address; past it `429`. **Behind a proxy this counts the proxy**, not your users — see the warning below. |
 | `clientAddress` | socket peer | `(call) => string` — what the per-address cap counts by. Inject a reader for your proxy's client header. |
+| `compression` | off | `true` or `{ filter, encodings }` — gzip (by default) the stream for peers that accept it, one member per response, flushed after every event. See [Compression](#compression). |
 
 ::: warning Behind a load balancer, set `clientAddress`
 The per-address cap defaults to the TCP peer address. Behind nginx/ALB that
@@ -98,11 +106,51 @@ is refused `429` while the node idles at 1% of `maxChannels`. Either inject
 `sse: { clientAddress: (call) => firstForwardedFor(call.headers) }` (trust
 your proxy's header only when the proxy is yours), set
 `maxChannelsPerAddress: 0`, or on the express adapter enable
-`app.set('trust proxy', ...)` — its `req.ip` is what wrpc receives there.
+`app.set('trust proxy', ...)` — its `req.ip` is what wRPC receives there.
 :::
 
 
 `sse: false` removes the endpoint entirely.
+
+## Compression {#compression}
+
+Off by default. `sse: { compression: true }` gzips the event stream for a
+GET whose `Accept-Encoding` admits gzip — one gzip member for the life of
+the response, **flushed after every event**, so nothing waits for a next
+event and every event compresses against the stream's own history. The same
+shape repeated is where it pays: a 125 B tick leaves as 16 B on the wire
+(7.8×, `bench/http-compression.js`), the effect
+[context takeover](../reference/wire-format#context-takeover) has on a
+WebSocket, without the extra option.
+
+```js
+new Server({
+  router,
+  sse: {
+    compression: {
+      filter: (call) => call.headers['x-forwarded-proto'] !== undefined, // per GET, optional
+      encodings: [{ encoding: 'gzip', level: 6, memLevel: 8 }],          // the default is ['gzip']
+    },
+  },
+});
+```
+
+`encodings` is the same list [`http.compression`](./server#compression)
+takes — `'br'`, `'zstd'`, your own coding with a `createStream()` — and gzip
+is the default here **on purpose**: flushed per event, Brotli and zstd save
+nothing on small events (23 and 18 B against gzip's 20) and hold 570 and
+930 KB per open response against gzip's 320, which a smaller window does not
+give back (`bench/algorithms.js`). Reach for another coding only for a stream
+of large events.
+
+The client changes nothing: `fetch` inflates the stream incrementally, in
+browsers and in Node, and the wRPC SSE client is that `fetch`. The decision
+is per response — a re-attach that stops accepting the coding gets a plain stream
+on the same channel, replay included. What it costs is one zlib deflate
+state per live stream (~256 KiB at the defaults; `memLevel` lowers it) and a
+deflate call per event (~11 µs). A proxy that buffers compressed responses
+needs the same `X-Accel-Buffering: no` treatment as a plain stream; the
+stream's `Cache-Control: no-transform` already asks it not to re-encode.
 
 ## Replay is honest
 
@@ -132,12 +180,24 @@ oblivion.
 
 ## What it cannot do
 
-**Binary streams.** SSE frames are text, so wrpc's binary streams are *refused*
-on this transport rather than silently corrupted — `client.binary` is `false`
-server-side, and `createStream`/`getStream` throw. Use a WebSocket for those.
+- **Bytes as bytes.** Neither a binary stream nor a packet with
+  [binary attachments](./streams#attachments). An SSE channel speaks
+  [revision 1](../reference/protocol#versioning) to every client — the
+  stream's GET says nothing about which wRPC is asking, and a 1.0 client
+  reads it — so `client.revision` is `1` on both ends, and a `Buffer` or a
+  typed array in a call's arguments, a result or an event travels as the
+  JSON 1.0 made of it: `{ type: 'Buffer', data: [...] }`, `{ "0": 137, … }`.
+  A handler that takes bytes from SSE clients reads them back from that
+  shape; one that must receive `Uint8Array`s needs a transport that carries
+  bytes — a WebSocket, WebTransport or a WebRTC data channel.
 
-That is the only functional difference. Calls, events, subscriptions with
-resume, cancellation and batching all work.
+**Binary streams.** SSE frames are text, so wRPC's binary streams are *refused*
+on this transport rather than silently corrupted — `client.binary` is `false`
+server-side, and `createStream`/`getStream` throw. Use a WebSocket,
+WebTransport or a WebRTC data channel for those.
+
+Those two — bytes and streams — are the only functional differences. Calls,
+events, subscriptions with resume, cancellation and batching all work.
 
 ## Not `EventSource`
 

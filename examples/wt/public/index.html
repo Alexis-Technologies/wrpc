@@ -1,0 +1,75 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>wrpc over WebTransport</title>
+<style>
+  body {
+    font:
+      14px system-ui,
+      sans-serif;
+    max-width: 40rem;
+    margin: 2rem auto;
+    padding: 0 1rem;
+  }
+  #log {
+    border: 1px solid #ccc;
+    padding: 0.5rem;
+    height: 16rem;
+    overflow: auto;
+    white-space: pre-wrap;
+  }
+  #status {
+    color: #5fa04e;
+    font-weight: 600;
+  }
+</style>
+<h1>wrpc over WebTransport</h1>
+<p>Transport: <span id="status">connecting…</span></p>
+<div id="log"></div>
+<form id="form"><input id="text" placeholder="say something" autocomplete="off" /> <button>send</button></form>
+<script src="wrpc.browser.js"></script>
+<script>
+  const log = (line) => {
+    const el = document.getElementById('log');
+    el.textContent += line + '\n';
+    el.scrollTop = el.scrollHeight;
+  };
+  const name = `tab-${Math.random().toString(36).slice(2, 6)}`;
+  (async () => {
+    const { hash, h3Port, wsPort } = await (await fetch('/cert-hash.json', { cache: 'no-store' })).json();
+    const hashBytes = Uint8Array.from(atob(hash), (c) => c.charCodeAt(0));
+    // WebTransport where the browser has it (HTTP/3 on the UDP port), the
+    // WebSocket on the http origin otherwise — same client, same API.
+    // The HTTP/3 host and the WebSocket live on different ports here, and a
+    // transport list can only re-spell the scheme of ONE url — so the
+    // fallback is spelled by hand: WebTransport first, the WebSocket if it
+    // could not be had (a browser without it, a blocked UDP path).
+    let transport = 'wt';
+    let client;
+    try {
+      client = await wrpc.connect(`https://127.0.0.1:${h3Port}/api`, {
+        transport: 'wt',
+        wt: { serverCertificateHashes: [{ algorithm: 'sha-256', value: hashBytes }] },
+        connectTimeout: 4000,
+        reconnect: { retries: 2 },
+      });
+    } catch (error) {
+      log(`WebTransport unavailable (${error.message}); falling back to the WebSocket`);
+      transport = 'ws';
+      client = await wrpc.connect(`ws://127.0.0.1:${wsPort}/api`, { reconnect: { retries: 2 } });
+    }
+    await client.load('chat');
+    client.api.chat.on('joined', ({ name, transport }) => log(`${name} joined over ${transport}`));
+    client.api.chat.on('message', ({ name, text }) => log(`${name}: ${text}`));
+    const { transport: seen, clients } = await client.api.chat.join({ name });
+    document.getElementById('status').textContent = `${seen} (${clients} connected, wanted ${transport})`;
+    document.getElementById('form').addEventListener('submit', (event) => {
+      event.preventDefault();
+      const input = document.getElementById('text');
+      client.api.chat.say({ name, text: input.value });
+      input.value = '';
+    });
+  })().catch((error) => {
+    document.getElementById('status').textContent = `failed: ${error.message}`;
+    log(String(error));
+  });
+</script>

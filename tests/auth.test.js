@@ -14,14 +14,7 @@ const {
   bearerTransport,
   payloadTransport,
 } = require('../auth.js');
-
-const waitFor = async (predicate, message = 'condition never held') => {
-  for (let i = 0; i < 200; i++) {
-    if (predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
-};
+const { waitFor } = require('./helpers/wait.js');
 
 // ---------------------------------------------------------------------------
 // The store contract, run against every implementation — the engineContract
@@ -303,8 +296,14 @@ const payloadBoot = async (t) => {
 test('payloadTransport: the token restores on every carrier and both meta spellings', async (t) => {
   const { port, token } = await payloadBoot(t);
   const cases = [
+    // ws from Node: a real x-wrpc-meta header; then what a browser is left
+    // with (the wrpc.m. subprotocol token), then the query opt-out.
     ['ws json', `ws://127.0.0.1:${port}/api`, {}],
     ['ws prefixed', `ws://127.0.0.1:${port}/api`, { metaFormat: 'prefixed' }],
+    ['ws token json', `ws://127.0.0.1:${port}/api`, { carrier: 'protocol' }],
+    ['ws token prefixed', `ws://127.0.0.1:${port}/api`, { carrier: 'protocol', metaFormat: 'prefixed' }],
+    ['ws query json', `ws://127.0.0.1:${port}/api`, { carrier: 'query' }],
+    ['ws query prefixed', `ws://127.0.0.1:${port}/api`, { carrier: 'query', metaFormat: 'prefixed' }],
     ['http json', `http://127.0.0.1:${port}/api`, { transport: 'http' }],
     ['http prefixed', `http://127.0.0.1:${port}/api`, { transport: 'http', metaFormat: 'prefixed' }],
     ['sse json', `http://127.0.0.1:${port}/api`, { transport: 'sse' }],
@@ -336,40 +335,61 @@ test('payloadTransport: a hand-written x-wrpc-meta-<field> header restores too',
   assert.strictEqual(body.result, 'zoe');
 });
 
-test('bearerAuth over ws: the token rides the subprotocol offer, never the connect URL', async (t) => {
+test('bearerAuth over ws: the token never rides the connect URL, whichever carrier brought it', async (t) => {
+  // 'auto' from Node is a real Authorization header; 'protocol' is a
+  // browser's `wrpc.bearer.<token>` offer; 'query' still lifts the token out
+  // of wrpc_h into that same offer.
+  for (const carrier of ['auto', 'protocol', 'query']) {
+    const { server, port } = await bearerBoot(t);
+    const store = memoryStore();
+    const options = { heartbeat: false, logger: false, reconnect: false, carrier };
+    const client = await WrpcClient.connect(
+      `ws://127.0.0.1:${port}/api`,
+      Object.assign({}, options, bearerAuth({ store, signIn: (c) => c.call('auth/signIn') })),
+    );
+    t.after(() => void client.close());
+    await client.load('secure');
+    // The FIRST connect signs in, so assert on a second connection that
+    // presents the stored token.
+    const stored = await store.get('tokens');
+    assert.ok(stored.access);
+    const again = await WrpcClient.connect(
+      `ws://127.0.0.1:${port}/api`,
+      Object.assign({}, options, bearerAuth({ store, signIn: () => assert.fail(`${carrier}: a signIn ran`) })),
+    );
+    t.after(() => void again.close());
+    await again.load('secure');
+    // The stored token restored the session with NO signIn.
+    assert.strictEqual(await again.api.secure.whoami(), 'noa', carrier);
+    for (const peer of server.clients) {
+      const url = String(peer.meta?.url ?? '');
+      assert.ok(!url.includes('wrpc_h') && !url.includes(stored.access), `${carrier}: the token leaked into '${url}'`);
+      // Nor does it sit in the offer a handler may log.
+      assert.ok(!String(peer.meta.headers['sec-websocket-protocol'] ?? '').includes('bearer'), carrier);
+    }
+  }
+});
+
+test('bearerAuth over ws with `protocols: []`: nothing is offered, so the token is not lifted into an offer', async (t) => {
   const { server, port } = await bearerBoot(t);
   const store = memoryStore();
-  const client = await WrpcClient.connect(
+  const options = { heartbeat: false, logger: false, reconnect: false, connectTimeout: 2000, protocols: [] };
+  const first = await WrpcClient.connect(
     `ws://127.0.0.1:${port}/api`,
-    Object.assign(
-      { heartbeat: false, logger: false, reconnect: false },
-      bearerAuth({ store, signIn: (c) => c.call('auth/signIn') }),
-    ),
+    Object.assign({}, options, bearerAuth({ store, signIn: (c) => c.call('auth/signIn') })),
   );
-  t.after(() => void client.close());
-  await client.load('secure');
-  // Session restored on reconnect-shaped opens proves the carrier works;
-  // here the FIRST connect signs in, so assert on a second connection that
-  // presents the stored token.
-  const stored = await store.get('tokens');
-  assert.ok(stored.access);
+  t.after(() => void first.close());
+  // A lone `wrpc.bearer.<token>` offer is one the server never echoes, and a
+  // client fails a handshake whose offers all went unanswered: the second
+  // connect, which PRESENTS the stored token, used to die right here.
   const again = await WrpcClient.connect(
     `ws://127.0.0.1:${port}/api`,
-    Object.assign(
-      { heartbeat: false, logger: false, reconnect: false },
-      bearerAuth({ store, signIn: () => assert.fail('stored token must restore without a signIn') }),
-    ),
+    Object.assign({}, options, bearerAuth({ store, signIn: () => assert.fail('the stored token must restore') })),
   );
   t.after(() => void again.close());
   await again.load('secure');
-  // The stored token restored the session with NO signIn — the subprotocol
-  // carrier did the work.
   assert.strictEqual(await again.api.secure.whoami(), 'noa');
-  // And the upgrade URL the server observed carries no credential: wrpc_h
-  // (the query fallback that lands in access logs) must be absent.
-  for (const peer of server.clients) {
-    assert.ok(!String(peer.meta?.url ?? '').includes('wrpc_h'), 'the bearer token leaked into the connect URL');
-  }
+  for (const peer of server.clients) assert.strictEqual(peer.meta.protocol, '', 'nothing was offered');
 });
 
 test('payloadTransport: raw fallbacks — prefixed header, oversize canonical, camelCase field', () => {
@@ -385,4 +405,49 @@ test('payloadTransport: raw fallbacks — prefixed header, oversize canonical, c
   const camel = payloadTransport({ field: 'authToken' });
   assert.strictEqual(camel.read({ headers: {}, meta: { 'auth-token': 'k1' } }), 'k1');
   assert.strictEqual(camel.read({ headers: { 'x-wrpc-meta-auth-token': 'k2' } }), 'k2');
+});
+
+test('declaredHeaders: the server allowlists what a ws handshake may declare, and meta.declared names what did', async (t) => {
+  const router = defineRouter({
+    who: {
+      headers: procedure({
+        access: 'public',
+        handler: async (ctx) => ({
+          authorization: ctx.meta.headers.authorization ?? null,
+          tenant: ctx.meta.headers['x-tenant'] ?? null,
+          declared: [...ctx.meta.declared],
+        }),
+      }),
+    },
+  });
+  const server = new Server({
+    router,
+    logger: false,
+    host: '127.0.0.1',
+    port: 0,
+    protocol: 'http',
+    declaredHeaders: ['authorization'],
+  });
+  await server.listen();
+  t.after(() => server.close());
+  const { port } = server.address();
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    logger: false,
+    reconnect: false,
+    carrier: 'query',
+    // A Basic value, deliberately: a Bearer rides the `wrpc.bearer.` lift
+    // for the bearer transport and is never a declared header.
+    headers: { authorization: 'Basic Zm9vOmJhcg==', 'x-tenant': 'acme', cookie: 'sid=forged' },
+  });
+  t.after(() => client.close());
+  await client.load('who');
+  // Only the allowlisted name got through the declaration; the rest is
+  // as if never declared — and the handler can see it was a declaration.
+  assert.deepStrictEqual(await client.api.who.headers(), {
+    authorization: 'Basic Zm9vOmJhcg==',
+    tenant: null,
+    declared: ['authorization'],
+  });
+  assert.throws(() => new Server({ router, logger: false, declaredHeaders: 'authorization' }), /declaredHeaders/);
 });

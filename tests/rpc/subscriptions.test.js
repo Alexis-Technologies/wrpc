@@ -6,16 +6,9 @@ const assert = require('node:assert');
 
 const { Server, WrpcClient, defineRouter, procedure } = require('../../index.js');
 const { tracked, createEventLog, createEventStream } = require('../../index.js');
+const { waitFor } = require('../helpers/wait.js');
 
 const noop = () => {};
-
-const waitFor = async (predicate, message = 'condition never held') => {
-  for (let i = 0; i < 200; i++) {
-    if (predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
-};
 
 // A subscription that never answers would hang the whole run rather than
 // fail it: node's runner has no default per-test timeout.

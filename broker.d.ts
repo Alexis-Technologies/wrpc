@@ -1,0 +1,619 @@
+/**
+ * `@alexify/wrpc/broker` — broker-agnostic messaging for wrpc.
+ *
+ * A broker is described by CAPABILITIES; each adapter implements the subset
+ * natural to it. Every concrete broker lives behind its own subpath
+ * (`@alexify/wrpc/broker/redis`, `/nats`, `/amqp`, `/kafka`) and takes its
+ * client by injection — nothing here depends on a broker package.
+ *
+ * @experimental The API may change in a minor release until every adapter
+ * has shipped.
+ */
+
+import type {
+  WrpcLogger,
+  Context,
+  SubscriptionOptions,
+  Tracked,
+  ConsumePolicy,
+  Server,
+  RpcServer,
+  Validator,
+} from './index.js';
+
+export type { ConsumePolicy } from './index.js';
+import type { Backplane } from './scaling.js';
+import type { EnvelopeEncryptionOptions } from './encryption.js';
+
+export type { Backplane } from './scaling.js';
+
+export type MessageHeaders = Record<string, string>;
+
+/** A read position was refused: 400 malformed or beyond the tip, 410 gone. */
+export interface BrokerError extends Error {
+  code: number;
+  expose?: boolean;
+}
+
+// ---------------------------------------------------------------------------
+// log
+
+export interface LogEntry {
+  /** The resume token after this entry — what a feed yields as its event id. */
+  id: string;
+  value: string;
+  headers: MessageHeaders;
+}
+
+export interface LogReadOptions {
+  /** Entries strictly after this id; 410 when trimmed or foreign, 400 when malformed or past the tip. */
+  after?: string | null;
+  /** Without `after`: only new entries (default) or everything retained. */
+  from?: 'latest' | 'earliest';
+  signal?: AbortSignal | null;
+}
+
+export interface LogRead extends AsyncIterable<LogEntry> {
+  /** Resolves once the read position is fixed. */
+  readonly ready: Promise<void>;
+}
+
+/** An ordered, replayable journal — what a durable feed reads from. */
+export interface BrokerLog {
+  name?: string;
+  append(
+    topic: string,
+    value: string | Uint8Array,
+    options?: { headers?: MessageHeaders; key?: string },
+  ): Promise<string>;
+  read(topic: string, options?: LogReadOptions): LogRead;
+  /** Syntax only: the id when well-formed, null otherwise. */
+  parseId(text: unknown): string | null;
+}
+
+// ---------------------------------------------------------------------------
+// queue
+
+export interface Delivery {
+  readonly id: string;
+  readonly body: string;
+  readonly headers: MessageHeaders;
+  /** 1-based, counted by the adapter. */
+  readonly attempt: number;
+  readonly redelivered: boolean;
+  ack(): Promise<void>;
+  /** Redelivered no sooner than `delay` ms, attempt + 1. */
+  retry(options?: { delay?: number }): Promise<void>;
+  /** Back to the queue, attempt unchanged. */
+  release(): Promise<void>;
+  /**
+   * To the consumer's dead-letter queue, or dropped when it has none. The
+   * reason is folded to one line of at most 512 characters (control
+   * characters become spaces): a header value on every broker.
+   */
+  deadLetter(reason?: string): Promise<void>;
+}
+
+export interface ConsumeOptions {
+  /** The broker-side consumer group; defaults to the queue name. */
+  group?: string;
+  /** Unsettled deliveries at once, dispatched concurrently. Default 16. */
+  prefetch?: number;
+  deadLetter?: string | null;
+  signal?: AbortSignal | null;
+}
+
+export interface QueueConsumer {
+  /** No new deliveries; the unsettled ones stay settleable and are not handed back. */
+  pause(): Promise<void>;
+  resume(): Promise<void>;
+  /** No new deliveries; the unsettled ones are redelivered later. */
+  stop(): Promise<void>;
+  readonly healthy: boolean;
+}
+
+/** At-least-once work distribution between competing consumers. */
+export interface BrokerQueue {
+  name?: string;
+  produce(
+    queue: string,
+    body: string | Uint8Array,
+    options?: { headers?: MessageHeaders; key?: string },
+  ): Promise<void>;
+  consume(queue: string, onDelivery: (delivery: Delivery) => unknown, options?: ConsumeOptions): Promise<QueueConsumer>;
+}
+
+// ---------------------------------------------------------------------------
+// direct
+
+export interface DirectMessage {
+  body: string | Uint8Array;
+  headers: MessageHeaders;
+  correlationId: string | null;
+  replyTo: string | null;
+}
+
+export interface DirectSendOptions {
+  headers?: MessageHeaders;
+  correlationId?: string;
+  replyTo?: string;
+  /** A hint: the broker may discard a message nobody took within it. */
+  timeout?: number;
+}
+
+/**
+ * What `direct.listen()` resolves with: the function that stops the listener.
+ * An adapter that knows may also say whether the listener is still
+ * receiving.
+ */
+export interface DirectStop {
+  (): Promise<void>;
+  /**
+   * `false` while the adapter KNOWS this listener is deaf — its read is
+   * failing, its consumer was cancelled, its channel or connection is gone.
+   * Optional: absent means the adapter cannot tell, and reads as healthy.
+   */
+  readonly healthy?: boolean;
+}
+
+/** Addressable inboxes — the substrate of RPC over a broker. At-most-once. */
+export interface BrokerDirect {
+  name?: string;
+  inbox(): string;
+  listen(
+    address: string,
+    onMessage: (message: DirectMessage) => unknown,
+    options?: { group?: string | null },
+  ): Promise<DirectStop>;
+  send(address: string, body: string | Uint8Array, options?: DirectSendOptions): Promise<void>;
+}
+
+// ---------------------------------------------------------------------------
+
+export interface Broker {
+  readonly name: string;
+  readonly backplane?: Backplane;
+  readonly log?: BrokerLog;
+  readonly queue?: BrokerQueue;
+  readonly direct?: BrokerDirect;
+  close(): void | Promise<void>;
+}
+
+export declare function isBroker(value: unknown): value is Broker;
+export declare function isBrokerLog(value: unknown): value is BrokerLog;
+export declare function isBrokerQueue(value: unknown): value is BrokerQueue;
+export declare function isBrokerDirect(value: unknown): value is BrokerDirect;
+export declare function isBackplane(value: unknown): value is Backplane;
+
+export interface MemoryBrokerOptions {
+  /**
+   * Mints every id this adapter puts on the wire — in practice just the `epoch`, since message ids and inboxes are counters off it. Used
+   * VERBATIM — wrpc never truncates it, so a generator answering characters
+   * the broker refuses in a name fails at the driver, not here.
+   * Strict: a non-function, or a function that does not answer a non-empty
+   * string of at most 255 characters, is a TypeError at construction.
+   */
+  generateId?: () => string;
+  /** Backplane channel namespace; default 'wrpc'. */
+  prefix?: string;
+  /** Defaults to the global console; `false` silences the broker. */
+  logger?: WrpcLogger | boolean;
+  /** Stamped into every log id; random per instance by default. */
+  epoch?: string;
+  retention?: { maxEntries?: number };
+}
+
+/**
+ * The in-process broker: the reference implementation of every capability.
+ * Two RpcServers sharing one behave like two processes sharing a real broker.
+ */
+export declare class MemoryBroker implements Broker {
+  constructor(options?: MemoryBrokerOptions);
+  readonly name: 'memory';
+  readonly epoch: string;
+  readonly backplane: Backplane;
+  readonly log: BrokerLog;
+  readonly queue: BrokerQueue;
+  readonly direct: BrokerDirect;
+  /** Drops all but the newest `keep` entries of a topic. */
+  trim(topic: string, keep: number): void;
+  close(): void;
+}
+
+export declare function createMemoryBroker(options?: MemoryBrokerOptions): MemoryBroker;
+
+// ---------------------------------------------------------------------------
+// Durable feeds
+
+export interface GapInfo {
+  /** What the client holds: the id it sent, or the last token the feed handed it. */
+  lastEventId: string | null | undefined;
+  /** 400 — malformed, forged or past the tip; 410 — history gone or from another log. */
+  code: 400 | 410;
+}
+
+export interface BrokerFeedOptions<Value = unknown, Mapped = Value> {
+  /** A fresh subscription (no lastEventId) reads new entries (default) or everything retained. */
+  from?: 'latest' | 'earliest';
+  /** How an entry's string value becomes the yielded value. Default 'json'. */
+  decode?: 'json' | 'text' | ((text: string) => Value);
+  /** Reshape a value; answer undefined to skip the entry. */
+  map?: (value: Value, entry: LogEntry, context: Context) => Mapped | undefined | Promise<Mapped | undefined>;
+  /**
+   * An unusable lastEventId, or a reader the retention overtook. Answer a
+   * snapshot (a value, an iterable, an async iterable, or nothing); the feed
+   * then continues with everything appended from the moment of the gap.
+   * Without it the subscription ends with the coded error.
+   */
+  onGap?: (
+    context: Context,
+    args: any,
+    info: GapInfo,
+  ) => unknown | Iterable<unknown> | AsyncIterable<unknown> | Promise<unknown>;
+  /** HMAC-sign the yielded ids, refusing any the feed never issued. */
+  secret?: string;
+  /** Longer peer-supplied ids are refused with 400. Default 512. */
+  maxIdLength?: number;
+  /**
+   * Opens what a publisher's `encryption` sealed; an entry that does not
+   * open is skipped and logged `broker.feed.refused`.
+   *
+   * The publisher, the feeds and the consumers of a topic take the same
+   * option (`@alexify/wrpc/encryption`): the value AND its headers are
+   * sealed, bound to the topic, as base64 text since every log keeps a
+   * string; the partition `key` stays readable, the broker routes by it.
+   * Off by default; rolled out like `rooms.encryption`, except that a
+   * retired key stays in the ring until the backlog sealed under it has
+   * drained. No replay window: a log is read again.
+   */
+  encryption?: EnvelopeEncryptionOptions | false | null;
+}
+
+/**
+ * A subscription handler reading a broker log: every value is `tracked()`
+ * with the log's resume token, so a client re-subscribing with
+ * `lastEventId` resumes there — on any instance.
+ *
+ *   feed: procedure.subscription({ access: 'session', handler: brokerFeed(broker, 'orders') })
+ */
+export declare function brokerFeed<Value = unknown, Mapped = Value>(
+  broker: Broker | BrokerLog,
+  topic: string | ((context: Context, args: any) => string | Promise<string>),
+  options?: BrokerFeedOptions<Value, Mapped>,
+): (context: Context, args: any, subscription: SubscriptionOptions) => AsyncGenerator<Tracked<Mapped> | unknown>;
+
+// ---------------------------------------------------------------------------
+// Consumers and publishers
+
+/** A binding-table entry: an override for a declared consumer, or a queue bound to an ordinary procedure. */
+export interface ConsumerBinding extends ConsumePolicy {
+  /** 'unit.vN/method' — only for a key that is not a declared consumer. */
+  target?: string;
+  /**
+   * For a binding on a dead-letter queue under `encryption`: the queue its
+   * messages were sealed for (the seal binds a message to its queue), so a
+   * re-drive opens them. Default: the bound queue itself.
+   */
+  sealedFor?: string | null;
+}
+
+export interface DeadLetterInfo {
+  queue: string;
+  method: string;
+  /** The wire code the call failed with (400 for an undecodable body). */
+  code: number;
+  error: Error | null;
+  delivery: Delivery;
+  /**
+   * What a sealed delivery held — its opened body (text) and headers — or
+   * null for a plaintext delivery and for a sealed one that did not open.
+   * The dead letter itself is forwarded as it arrived, sealed: this is the
+   * one place the plaintext is in hand. Do not log it whole.
+   */
+  opened: { headers: Record<string, string>; body: string } | null;
+}
+
+/**
+ * Opens one sealed log entry or delivery by hand — a dead letter, a row
+ * read off a topic — under the keyring that sealed it (`topic`: the queue
+ * or topic it was sealed for). `{ headers, body, sealed }` with the body as
+ * text, or `{ refused }` with the reason.
+ */
+export declare function openSealedMessage(
+  encryption: EnvelopeEncryptionOptions,
+  message: { topic: string; headers: Record<string, string> | null | undefined; body: string | Uint8Array },
+): { headers: Record<string, string>; body: string; sealed: boolean } | { refused: string };
+
+export interface AttachConsumersOptions {
+  /** Bind every declared `consumes` procedure, not only the table's. Default true. */
+  auto?: boolean;
+  /** Called before a message is dead-lettered — for alerting. */
+  onDeadLetter?: (info: DeadLetterInfo) => unknown;
+  logger?: WrpcLogger | boolean | null;
+  /**
+   * Clients kept per `identity.trust: 'token'` binding (LRU; a positive
+   * integer, default 128). An evicted client finishes the deliveries it
+   * holds and closes after the last one — nothing is released.
+   */
+  tokenClients?: number;
+  /**
+   * How long a cached token client is trusted before the token is presented
+   * to the session store again (ms; default 60 000; `0` keeps a client for
+   * the life of the binding). A logout or a rotation takes effect within
+   * one ttl; `forget(token)` makes it immediate. A restore that failed is
+   * never cached.
+   */
+  tokenTtl?: number;
+  /**
+   * Opens what a publisher's `encryption` sealed, before anything reads the
+   * delivery — its headers may carry the credential a binding restores a
+   * session from. A delivery that does not open is dead-lettered (400) and
+   * logged `broker.refused`.
+   */
+  encryption?: EnvelopeEncryptionOptions | false | null;
+}
+
+export interface ConsumerBindingInfo {
+  key: string;
+  queue: string;
+  group: string;
+  method: string;
+  healthy: boolean;
+}
+
+export interface ConsumersHandle {
+  readonly bindings: Array<ConsumerBindingInfo>;
+  readonly healthy: boolean;
+  /** Also triggered by the server's `'draining'`. */
+  pause(): Promise<void>;
+  resume(): Promise<void>;
+  /**
+   * Drops the cached client of a token (the `identity.header` value as
+   * messages carry it, `Bearer …`) across every binding — the logout hook.
+   * The next delivery under it attaches afresh; a client mid-delivery
+   * finishes first. True when any binding held one.
+   */
+  forget(token: string): boolean;
+  /** Also triggered by the server's close(). */
+  stop(): Promise<void>;
+}
+
+/**
+ * Delivers broker queues into procedures, at least once, through the same
+ * pipeline a call takes. Keys: 'unit.vN/source' overrides a declared
+ * consumer; any other key is a queue bound to `target`.
+ */
+export declare function attachConsumers(
+  server: Server | RpcServer,
+  broker: Broker | BrokerQueue,
+  table?: Record<string, ConsumerBinding>,
+  options?: AttachConsumersOptions,
+): Promise<ConsumersHandle>;
+
+export interface PublishedEvent {
+  /** Default '<unitKey>.<event>'. */
+  topic?: string;
+  /** Default 'log' when the broker has one, 'queue' otherwise. */
+  to?: 'log' | 'queue';
+  /** A partition/ordering key, or how to derive one from the payload. */
+  key?: string | ((data: any) => string);
+  validate?: Validator;
+}
+
+export interface Publisher {
+  /** Resolves with the log id for a log target, undefined for a queue. */
+  publish(
+    name: string,
+    data: unknown,
+    options?: { headers?: MessageHeaders; key?: string },
+  ): Promise<string | undefined>;
+  readonly events: Array<string>;
+}
+
+/** Publishes declared `emits` events; each name must be declared unless `strict: false`. */
+export declare function createPublisher(
+  server: Server | RpcServer,
+  broker: Broker | { name?: string; close(): unknown; log?: BrokerLog; queue?: BrokerQueue },
+  table: Record<string, PublishedEvent>,
+  options?: {
+    strict?: boolean;
+    /**
+     * Seals what rests in the topic under a shared keyring
+     * (`@alexify/wrpc/encryption`): the value AND its headers, bound to the
+     * topic — base64 text, as every log keeps a string. The publisher, the
+     * feeds and the consumers of a topic take the same option; the partition
+     * `key` stays readable, the broker routes by it. Off by default; rolled
+     * out like `rooms.encryption`. No replay window: a log is read again.
+     */
+    encryption?: EnvelopeEncryptionOptions | false | null;
+  },
+): Publisher;
+
+// ---------------------------------------------------------------------------
+// RPC over a broker
+
+export interface BrokerRpcOptions {
+  /** Served at `wrpc.<service>` unless `address` names the address outright. */
+  service?: string;
+  address?: string;
+  /** A session silent this long is ended; keep above the client heartbeat. Default 90 000. */
+  idleTimeout?: number;
+  /** Unconfirmed frames per session before write() reports backpressure. Default 1024. */
+  highWaterMark?: number;
+  /**
+   * Sessions this instance holds at once (default 10 000; `0` for no
+   * limit). A `hello` past it is answered `bye` ("too many sessions") and
+   * counted into one `broker.rpc.capacity` line per sweep.
+   */
+  maxSessions?: number;
+  /** false serves stateless requests only. Default true. */
+  sessions?: boolean;
+  logger?: WrpcLogger | boolean | null;
+  /**
+   * Per-message compression on the binding (src/compression), off by
+   * default. A session's frames both ways once the client named the same
+   * codec on `hello` (answered on `welcome`); a stateless answer when the
+   * request named it — the request itself always travels plain. Node↔Node,
+   * so the codec must answer synchronously (the platform one does).
+   */
+  compression?: boolean | import('./client.js').CompressionOptions;
+  /**
+   * Seals every frame of the binding under a keyring the service and its
+   * clients share (`@alexify/wrpc/encryption`) — body AND headers, so the
+   * `authorization` a client presents no longer rests in the broker; only
+   * `wrpc-kind`, `wrpc-seq` and the key id stay readable, and they are bound
+   * into the seal with the address and the correlation id. A frame that does
+   * not open is dropped and logged `broker.rpc.refused`, never answered. A
+   * sealed binding is also what `encryption.required` on the server accepts.
+   *
+   * A sealed `request` or `hello` carries the sender's clock inside the
+   * seal: one older than `maxSkew` (default 5 minutes) is refused as
+   * `stale`. The envelope's replay window is per sender and per process,
+   * and the service address is consumed by every instance, so behind more
+   * than one inject `replay` — a shared "seen once" memory, `seen(id, ttl)`
+   * as `createReplayCache()` of `@alexify/wrpc/encryption` answers it
+   * (`SET id 1 NX PX ttl` in Redis) — which refuses a frame another
+   * instance already took; one that cannot be asked serves nothing.
+   */
+  encryption?: (EnvelopeEncryptionOptions & { maxSkew?: number; replay?: BrokerReplayMemory | null }) | false | null;
+  /** The largest inflated frame accepted (default 16 MiB); past it the session ends. */
+  maxMessage?: number;
+}
+
+/** A shared "seen once" memory: true for an id it was shown within `ttl` ms. */
+export interface BrokerReplayMemory {
+  seen(id: string, ttl: number): boolean | Promise<boolean>;
+}
+
+export interface BrokerRpcHandle {
+  /** The shared service address every instance consumes as a group. */
+  readonly address: string;
+  /** This instance's own inbox, where its sessions' frames arrive. */
+  readonly inbox: string;
+  readonly sessions: number;
+  /**
+   * `false` once stopped, and while either listener — the service address,
+   * this instance's inbox — says it is not receiving (`DirectStop.healthy`).
+   * A broker whose adapter reports nothing (memory, a custom one) is healthy
+   * until stopped.
+   */
+  readonly healthy: boolean;
+  /** Also triggered by the server's close(); draining stops taking new work. */
+  stop(): Promise<void>;
+}
+
+/**
+ * Serves wrpc over a broker's `direct` capability: stateless requests
+ * (answered like packet-mode HTTP by any instance) and full-protocol
+ * sessions (one instance each). Clients connect with
+ * `connect('broker://<service>', { transport: 'broker', broker, mode })`.
+ */
+export declare function attachBrokerRpc(
+  server: Server | RpcServer,
+  broker: Broker | BrokerDirect,
+  options: BrokerRpcOptions,
+): Promise<BrokerRpcHandle>;
+
+/** The client transport registered as `WrpcClient.transport.broker`. */
+export declare class ClientBrokerTransport {
+  constructor(url: string);
+  readonly url: string;
+  active: boolean;
+  persistent: boolean;
+  heartbeat: boolean;
+  mode: 'stateless' | 'session';
+  /**
+   * Mints the session id and per-request correlation ids. Assigned by the
+   * owning `WrpcClient` from its own `generateId` option, the way `codec`
+   * and `log` are; set it yourself only when driving this transport
+   * standalone. The session id is the key the server holds this
+   * connection's frame state under.
+   */
+  generateId: () => string;
+  open(options?: {
+    broker: Broker | BrokerDirect;
+    mode?: 'stateless' | 'session';
+    address?: string;
+    requestTimeout?: number;
+    headers?: Record<string, string>;
+    meta?: Record<string, unknown>;
+    /** Per-message compression, off by default; on a session only once the server agreed on `welcome`. */
+    compression?: boolean | import('./client.js').CompressionOptions;
+    /** The binding's sealing under a shared keyring — `{ keys, … }`, NOT the session object of `createEncryption()`. */
+    encryption?: EnvelopeEncryptionOptions | false | null;
+    /** The largest inflated frame accepted (default 16 MiB). */
+    maxMessage?: number;
+  }): Promise<void>;
+  /** The codecs in effect — null until the two lists share one. */
+  readonly compression: import('./client.js').NegotiatedCompression | null;
+  /**
+   * `false` is backpressure: `highWaterMark` frames are unconfirmed by the
+   * broker. `compress: false` sends this frame plain on a session that
+   * agreed on a codec.
+   */
+  write(data: string | Uint8Array, options?: { compress?: boolean } | null): boolean | void;
+  close(): void;
+  terminate(): void;
+  on(event: string, listener: (...args: Array<any>) => void): unknown;
+}
+
+// ---------------------------------------------------------------------------
+// Adapter building blocks
+
+export interface TailEntry {
+  value: string;
+  headers: MessageHeaders;
+  [position: string]: unknown;
+}
+
+export interface TopicTailsOptions<Cursor, Entry extends TailEntry> {
+  /** Starts one tail; resolves with the tip cursor once positioned. */
+  live(topic: string, options: { signal: AbortSignal; onEntry(entry: Entry): void }): Promise<Cursor | null>;
+  /** Entries strictly after `after` (null: the oldest retained), at most `limit`. */
+  range(topic: string, options: { after: Cursor | null; limit: number }): Promise<Array<Entry>>;
+  covered(cursor: Cursor, entry: Entry): boolean;
+  advance(cursor: Cursor | null, entry: Entry): Cursor;
+  highWaterMark?: number;
+  page?: number;
+  /**
+   * Hears of readers of `topic` that just fell `highWaterMark` entries
+   * behind its tail: their buffers were dropped and they catch up through
+   * `range()`. Called once per entry that made any reader fall, with how
+   * many did; never while everybody keeps up. A throw from it is ignored.
+   */
+  onLag?: ((topic: string, readers: number) => void) | null;
+}
+
+/** One live reader per topic, shared by every local read; see src/broker/tail.js. */
+export declare class TopicTails<Cursor = string, Entry extends TailEntry = TailEntry> {
+  constructor(options: TopicTailsOptions<Cursor, Entry>);
+  readonly size: number;
+  read(
+    topic: string,
+    options?: { after?: Cursor | null; from?: 'latest' | 'earliest'; signal?: AbortSignal | null },
+  ): AsyncIterable<{ id: Cursor; value: string; headers: MessageHeaders }> & { readonly ready: Promise<void> };
+  close(): void;
+}
+
+export interface EncodeTokenOptions {
+  /** Tests ONE character; everything else is escaped. Default /[A-Za-z0-9_-]/. */
+  safe?: RegExp;
+  /** Default '~'. */
+  escape?: string;
+  /** Longer tokens are shortened with a SHA-256 digest. Default 200. */
+  maxLength?: number;
+}
+
+/** Maps an arbitrary name into one broker-safe token, injectively. */
+export declare function encodeToken(name: string, options?: EncodeTokenOptions): string;
+export declare function toText(body: unknown): string;
+export declare function toBytes(body: unknown): Uint8Array;
+export declare function toHeaders(value: unknown): MessageHeaders;
+
+export interface RetryPolicy {
+  attempts: number;
+  backoff: { base: number; max: number; factor: number; jitter: boolean };
+  retryOn: ReadonlyArray<number>;
+}
+
+export declare const DEFAULT_RETRY: Readonly<RetryPolicy>;

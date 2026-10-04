@@ -60,7 +60,35 @@ expectAssignable<WebsocketServerOptions>({
     return offered[0] ?? false;
   },
 });
-expectError<WebsocketServerOptions>({ server: httpServer, perMessageDeflate: { level: 9 } });
+expectError<WebsocketServerOptions>({ server: httpServer, perMessageDeflate: { window: 9 } });
+// Selective compression: a per-connection filter on the upgrade request,
+// coalesced writes, and per-message opt-out on the Connection.
+expectAssignable<WebsocketServerOptions>({
+  server: httpServer,
+  coalesce: false,
+  perMessageDeflate: {
+    threshold: 256,
+    filter: (req) => {
+      expectType<import('node:http').IncomingMessage>(req);
+      return req.headers['x-slow-link'] === 'yes';
+    },
+  },
+});
+expectAssignable<WebsocketServerOptions>({
+  server: httpServer,
+  perMessageDeflate: { contextTakeover: 'server', level: 6, memLevel: 8, async: { threshold: 65536 } },
+});
+expectAssignable<WebsocketServerOptions>({
+  server: httpServer,
+  perMessageDeflate: { contextTakeover: true, async: {} },
+});
+expectError<WebsocketServerOptions>({ server: httpServer, perMessageDeflate: { contextTakeover: 'both' } });
+declare const conn: Connection;
+expectType<boolean>(conn.send('text', { compress: false }));
+expectType<boolean>(conn.sendText('text', null));
+expectType<boolean>(conn.sendBinary(Buffer.alloc(1), { compress: false }));
+expectType<boolean>(conn.sendPrepared({ text: '{}', frames: null, compress: true }));
+expectError(conn.sendPrepared({ text: '{}' }));
 
 declare const wss: WebsocketServer;
 expectType<Set<Connection>>(wss.connections);

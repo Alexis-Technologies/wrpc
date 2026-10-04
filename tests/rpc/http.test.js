@@ -76,6 +76,42 @@ test('basePath default /api: packet POST endpoint', async (t) => {
   assert.deepStrictEqual(packet, { type: 'callback', id: '1', result: { a: 1, b: 'two' } });
 });
 
+test('packet id: a string of at most 255 characters or a number, anything else an id-less refusal', async (t) => {
+  const { origin } = await startServer(t);
+  const post = async (body) => {
+    const res = await fetch(`${origin}/api`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal: AbortSignal.timeout(5000),
+    });
+    return { status: res.status, packet: await res.json() };
+  };
+  const nested = (depth) => '['.repeat(depth) + ']'.repeat(depth);
+  // An id nested 10 000 deep used to be echoed into the answer, where
+  // JSON.stringify ran out of stack: an unhandled rejection and a request
+  // nobody answered. 1000 deep was answered — with the array as its id.
+  for (const [label, id, type] of [
+    ['an array nested 10 000 deep', nested(10_000), 'subscribe'],
+    ['an array nested 1000 deep', nested(1000), 'call'],
+    ['an object', '{"a":1}', 'call'],
+    ['a string past 255 characters', JSON.stringify('x'.repeat(256)), 'call'],
+    ['an empty string', '""', 'call'],
+  ]) {
+    const { status, packet } = await post(`{"type":"${type}","id":${id},"method":"echo/args","args":{}}`);
+    assert.strictEqual(status, 500, label);
+    assert.strictEqual(packet.id, '', `${label}: never echoed`);
+  }
+  // What 1.0 clients send — a counter's numbers included — is answered on.
+  const longest = 'x'.repeat(255);
+  assert.strictEqual(
+    (await post(`{"type":"call","id":"${longest}","method":"echo/args","args":{}}`)).packet.id,
+    longest,
+  );
+  const numeric = await post('{"type":"call","id":7,"method":"echo/args","args":{"a":1}}');
+  assert.deepStrictEqual(numeric.packet, { type: 'callback', id: 7, result: { a: 1 } });
+});
+
 test('basePath default /api: REST GET with query args', async (t) => {
   const { origin } = await startServer(t);
   const res = await fetch(`${origin}/api/echo/args?a=1&b=two`);
@@ -160,7 +196,8 @@ test('cors: no cors option means wildcard ACAO on responses', async (t) => {
   const res = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://anything.example' });
   assert.strictEqual(res.status, 200);
   assert.strictEqual(res.headers.get('access-control-allow-origin'), '*');
-  assert.strictEqual(res.headers.get('vary'), null);
+  // No Origin in it: only the Accept a frame-or-JSON answer is chosen by.
+  assert.strictEqual(res.headers.get('vary'), 'Accept');
 });
 
 test('cors origins list: allowed origin echoed with Vary, disallowed gets no ACAO', async (t) => {
@@ -169,7 +206,7 @@ test('cors origins list: allowed origin echoed with Vary, disallowed gets no ACA
   const allowed = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://app.example' });
   assert.strictEqual(allowed.status, 200);
   assert.strictEqual(allowed.headers.get('access-control-allow-origin'), 'http://app.example');
-  assert.strictEqual(allowed.headers.get('vary'), 'Origin');
+  assert.strictEqual(allowed.headers.get('vary'), 'Origin, Accept');
 
   // Refused outright, not merely denied the header: the page could not read
   // the answer either way, but the call itself must not run cross-site.
@@ -359,6 +396,8 @@ test('ws attach: declared headers (wrpc_h) merge UNDER the observed ones', async
     cookie: 'token=forged', // reserved: cannot be spoofed through the URL
     'x-wrpc-channel': 'forged', // reserved prefix
     'Sec-Fetch-Site': 'same-origin', // reserved prefix
+    'X-Forwarded-For': '10.0.0.1', // reserved: the caller's address is never declared
+    'x-real-ip': '10.0.0.1', // reserved
     num: 5, // not a string: dropped
     nested: { a: 1 }, // not a string: dropped
     __proto__: { polluted: 1 }, // never carried over
@@ -373,6 +412,8 @@ test('ws attach: declared headers (wrpc_h) merge UNDER the observed ones', async
   assert.strictEqual(client.meta.headers.cookie, 'token=real');
   assert.strictEqual(client.meta.headers['x-wrpc-channel'], undefined);
   assert.strictEqual(client.meta.headers['sec-fetch-site'], undefined);
+  assert.strictEqual(client.meta.headers['x-forwarded-for'], undefined);
+  assert.strictEqual(client.meta.headers['x-real-ip'], undefined);
   assert.strictEqual(client.meta.headers.num, undefined);
   assert.strictEqual(client.meta.headers.nested, undefined);
   assert.strictEqual({}.polluted, undefined, 'Object.prototype survived');

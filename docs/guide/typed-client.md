@@ -1,6 +1,6 @@
 # Typed client
 
-wrpc has **no TypeScript at runtime**. The typed client is types only: you
+wRPC has **no TypeScript at runtime**. The typed client is types only: you
 declare the api once as an ordinary interface and thread it through
 `connect<Api>()`. Nothing is generated, nothing is checked at runtime — what
 you buy is autocompletion and a compile error on a typo.
@@ -74,7 +74,7 @@ await client.api.math.ping(undefined, { signal });   // ✅
 await client.api.math.ping({ signal });              // ❌ compile error
 ```
 
-**A member with two parameters is rejected.** A wrpc procedure receives exactly
+**A member with two parameters is rejected.** A wRPC procedure receives exactly
 one args object, so anything else maps to `InvalidContractMember`, whose text
 the compiler quotes back at the call site:
 

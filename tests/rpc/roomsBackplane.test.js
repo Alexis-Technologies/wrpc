@@ -195,7 +195,16 @@ test('RoomsBackplane: publishing', async (t) => {
     const channels = backplane.state.published.map(([channel]) => channel);
     assert.deepStrictEqual(channels, [roomChannel('chat'), BROADCAST_CHANNEL, BROADCAST_CHANNEL]);
     const envelope = JSON.parse(backplane.state.published[1][1]);
-    assert.deepStrictEqual(envelope, { v: 1, instance: 'node-1', rooms: ['chat', 'lobby'], name: 'msg', data: 2 });
+    // epoch/seq are the loss-detection fields (their own test below).
+    assert.deepStrictEqual(envelope, {
+      v: 1,
+      instance: 'node-1',
+      epoch: binder.epoch,
+      seq: 1,
+      rooms: ['chat', 'lobby'],
+      name: 'msg',
+      data: 2,
+    });
   });
 
   await t.test('a payload that cannot be serialized is reported, not thrown', () => {
@@ -343,4 +352,203 @@ test('RoomsBackplane: the linger window absorbs a reconnect bounce', async () =>
   await timers.setTimeout(80);
   await settle();
   assert.strictEqual(unsubscribed.length, 1);
+});
+
+test('RoomsBackplane: the publish counters are bounded by maxTracked, and an evicted channel restarts under a suffixed epoch', async (t) => {
+  const backplane = createBackplane();
+  const binder = new RoomsBackplane({
+    backplane,
+    instance: 'node-1',
+    epoch: 'e1',
+    linger: 0,
+    maxTracked: 2,
+    deliver: noop,
+    log: { log: noop, error: noop, warn: noop },
+  });
+  t.after(() => binder.close());
+  const publish = (room) => {
+    binder.publish({ rooms: [room], name: 'ev', data: null });
+    const [, message] = backplane.state.published.at(-1);
+    const { epoch, seq } = JSON.parse(message);
+    return `${epoch}#${seq}`;
+  };
+  // maxTracked 2. Two channels fill the young generation; the third
+  // rotates it (young → old) and starts under the rotation's epoch.
+  assert.deepStrictEqual([publish('a'), publish('a'), publish('b')], ['e1#1', 'e1#2', 'e1#1']);
+  assert.strictEqual(publish('c'), 'e1.1#1'); // old = {a, b}, young = {c}
+  // a and b come back from the old generation with their counts intact;
+  // b's return finds young full and rotates again.
+  assert.strictEqual(publish('a'), 'e1#3'); // old = {b}, young = {c, a}
+  assert.strictEqual(publish('b'), 'e1#2'); // old = {c, a}, young = {b}
+  assert.strictEqual(publish('d'), 'e1.2#1'); // young = {b, d}
+  assert.strictEqual(publish('c'), 'e1.1#2'); // taken over, then rotated: old = {b, d}, young = {c}
+  // a was dropped with the generation before: a new count, a new epoch.
+  assert.strictEqual(publish('a'), 'e1.3#1'); // young = {c, a}
+  assert.strictEqual(publish('e'), 'e1.4#1'); // old = {c, a}, young = {e}
+  assert.strictEqual(publish('b'), 'e1.4#1'); // dropped with {b, d}: new
+  // Whatever the churn, the table never exceeds two generations, and a
+  // channel that fell out starts over under the current rotation.
+  for (let i = 0; i < 1000; i++) publish(`room-${i}`);
+  assert.match(publish('a'), /^e1\.(50\d|5[1-9]\d)#1$/);
+  assert.throws(() => new RoomsBackplane({ backplane, instance: 'x', deliver: noop, maxTracked: 0 }), /maxTracked/);
+  assert.throws(() => new RoomsBackplane({ backplane, instance: 'x', deliver: noop, maxTracked: 1.5 }), /maxTracked/);
+});
+
+test('RpcServer: a backplane gap is counted by the channel KIND, never by the room name', async (t) => {
+  const { RpcServer, defineRouter, procedure } = require('../../index.js');
+  const { createMetrics, point } = require('../helpers/metrics.js');
+  const { recorder } = require('../helpers/recorder.js');
+  const metrics = createMetrics();
+  t.after(() => metrics.provider.shutdown());
+  const backplane = createBackplane();
+  const log = recorder();
+  const rpc = new RpcServer({
+    router: defineRouter({ x: { ping: procedure({ access: 'public', handler: async () => 1 }) } }),
+    backplane,
+    instanceId: 'node-1',
+    logger: log.writer,
+    telemetry: { meter: metrics.meter },
+  });
+  t.after(() => rpc.close());
+  await settle();
+  // A member on this instance retains the room's channel.
+  const socket = { events: [], on: noop, once: noop, off: noop, send: noop, close: noop, terminate: noop, emit: noop };
+  const client = rpc.attachSocket(socket, { headers: {} });
+  client.join('secret-project-x');
+  await settle();
+  const envelope = (channel, seq, rooms) =>
+    backplane.state.handlers.get(channel)(
+      JSON.stringify({ v: 1, instance: 'node-2', epoch: 'e', seq, rooms, name: 'ev', data: null }),
+    );
+  const channel = roomChannel('secret-project-x');
+  envelope(channel, 1, ['secret-project-x']);
+  envelope(channel, 4, ['secret-project-x']); // two missed
+  envelope(BROADCAST_CHANNEL, 1, null);
+  envelope(BROADCAST_CHANNEL, 2, null);
+  envelope(BROADCAST_CHANNEL, 7, null); // four missed
+  const exported = await metrics.collect();
+  const gaps = exported.find((metric) => metric.descriptor.name === 'wrpc.server.backplane.gaps');
+  assert.ok(gaps, 'the counter was exported');
+  assert.strictEqual(point(exported, 'wrpc.server.backplane.gaps', (a) => a['wrpc.channel.kind'] === 'room').value, 2);
+  assert.strictEqual(
+    point(exported, 'wrpc.server.backplane.gaps', (a) => a['wrpc.channel.kind'] === 'broadcast').value,
+    4,
+  );
+  for (const dataPoint of gaps.dataPoints) {
+    assert.deepStrictEqual(Object.keys(dataPoint.attributes), ['wrpc.channel.kind'], 'no room name on the metric');
+  }
+  // The exact channel and count are the log line's.
+  assert.deepStrictEqual(
+    log.all('backplane.gap').map((e) => [e.channel, e.missed]),
+    [
+      [channel, 2],
+      [BROADCAST_CHANNEL, 4],
+    ],
+  );
+});
+
+test('RoomsBackplane: loss detection through epoch and seq', async (t) => {
+  const backplane = createBackplane();
+  const gaps = [];
+  const delivered = [];
+  const binder = new RoomsBackplane({
+    backplane,
+    instance: 'node-1',
+    epoch: 'e1',
+    linger: 0,
+    deliver: (rooms, name) => delivered.push(name),
+    onGap: (gap) => gaps.push(gap),
+    log: { log: noop, error: noop, warn: noop },
+  });
+  binder.start();
+  binder.joinRoom('chat');
+  await settle();
+  const channel = roomChannel('chat');
+  const send = (instance, epoch, seq, name = 'ev') =>
+    backplane.state.handlers.get(channel)(
+      JSON.stringify({ v: 1, instance, epoch, seq, rooms: ['chat'], name, data: null }),
+    );
+
+  await t.test('every envelope published carries the epoch and a per-channel seq', () => {
+    binder.publish({ rooms: ['chat'], name: 'a', data: 1 });
+    binder.publish({ rooms: ['chat'], name: 'b', data: 2 });
+    binder.publish({ rooms: null, name: 'c', data: 3 });
+    const envelopes = backplane.state.published.map(([, message]) => JSON.parse(message));
+    assert.deepStrictEqual(
+      envelopes.map((e) => [e.epoch, e.seq]),
+      [
+        ['e1', 1],
+        ['e1', 2],
+        ['e1', 1],
+      ],
+      'seq counts per channel: the broadcast channel starts its own',
+    );
+    assert.strictEqual(binder.epoch, 'e1');
+  });
+
+  await t.test('a contiguous sequence is no gap', () => {
+    send('node-2', 'x', 1);
+    send('node-2', 'x', 2);
+    send('node-2', 'x', 3);
+    assert.deepStrictEqual(gaps, []);
+    assert.strictEqual(delivered.length, 3);
+  });
+
+  await t.test('a jump reports the envelopes missed, once', () => {
+    send('node-2', 'x', 7);
+    assert.deepStrictEqual(gaps, [{ channel, instance: 'node-2', missed: 3, seq: 7 }]);
+    send('node-2', 'x', 8);
+    assert.strictEqual(gaps.length, 1);
+  });
+
+  await t.test('a late or duplicate envelope never regresses the cursor', () => {
+    send('node-2', 'x', 5);
+    send('node-2', 'x', 8);
+    send('node-2', 'x', 9);
+    assert.strictEqual(gaps.length, 1);
+  });
+
+  await t.test('a new epoch (the publisher restarted) resets rather than reports', () => {
+    send('node-2', 'y', 1);
+    send('node-2', 'y', 2);
+    // A rotation suffix is just another epoch to a receiver: a restart of
+    // that channel's count, no gap.
+    send('node-2', 'y.1', 1);
+    send('node-2', 'y.1', 2);
+    assert.strictEqual(gaps.length, 1);
+    assert.strictEqual(gaps.length, 1);
+  });
+
+  await t.test('an unknown publisher starts clean; an old instance without the fields is untracked', () => {
+    send('node-3', 'z', 40);
+    backplane.state.handlers.get(channel)(
+      JSON.stringify({ v: 1, instance: 'node-4', rooms: ['chat'], name: 'old', data: null }),
+    );
+    assert.strictEqual(gaps.length, 1);
+    assert.strictEqual(delivered.at(-1), 'old');
+  });
+
+  await t.test('a throwing onGap is contained and the envelope still delivered', async () => {
+    const errors = [];
+    const loud = new RoomsBackplane({
+      backplane,
+      instance: 'node-9',
+      linger: 0,
+      deliver: (rooms, name) => delivered.push(name),
+      onGap: () => {
+        throw new Error('boom');
+      },
+      log: { log: noop, warn: noop, error: (entry) => errors.push(entry) },
+    });
+    loud.start();
+    await settle(); // the subscribe is deferred a microtask; the handler is now loud's
+    const broadcast = backplane.state.handlers.get(BROADCAST_CHANNEL);
+    broadcast(JSON.stringify({ v: 1, instance: 'n', epoch: 'q', seq: 1, rooms: null, name: 'one', data: null }));
+    broadcast(JSON.stringify({ v: 1, instance: 'n', epoch: 'q', seq: 5, rooms: null, name: 'two', data: null }));
+    assert.strictEqual(errors.length, 1);
+    assert.strictEqual(delivered.at(-1), 'two');
+    loud.close();
+  });
+
+  binder.close();
 });

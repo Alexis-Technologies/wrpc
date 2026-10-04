@@ -6,7 +6,14 @@ const https = require('node:https');
 const { Emitter } = require('./utils.js');
 const { RpcServer, rpcOptions } = require('./rpc/core.js');
 const { createNodeEngine, isEngine } = require('./engine/index.js');
-const { receiveBody, nodeStream, createUpgradeGate, respondBodyError, MAX_BODY_SIZE } = require('./adapters/common.js');
+const {
+  receiveBody,
+  nodeStream,
+  createUpgradeGate,
+  revisionProtocols,
+  respondBodyError,
+  MAX_BODY_SIZE,
+} = require('./adapters/common.js');
 const { createLoggerWriter } = require('./logging.js');
 
 const DEFAULT_LISTEN_RETRY = 3;
@@ -82,6 +89,10 @@ class Server extends Emitter {
     return this.rpc.getClient(id);
   }
 
+  sendTo(clientId, name, data, options) {
+    return this.rpc.sendTo(clientId, name, data, options);
+  }
+
   #onConnection(socket, req) {
     this.rpc.attachSocket(socket, {
       headers: req.headers,
@@ -94,7 +105,12 @@ class Server extends Emitter {
   // and hands the core's HTTP entry point to the engine instead.
   #initStandalone(wsOptions, cors) {
     this.wsServer = this.#engine.attach({
+      // The engine and the connections under it report through the same
+      // writer as everything else, so a framing failure or a dropped frame
+      // lands in the operator's stream rather than in an unlistened 'error'.
+      logger: this.#log,
       ...wsOptions,
+      ...revisionProtocols(this.rpc, wsOptions),
       verifyClient: createUpgradeGate({ rpc: this.rpc, cors, ws: wsOptions }),
       onHttpCall: (call) => this.rpc.handleHttpCall(call),
     });
@@ -117,7 +133,13 @@ class Server extends Emitter {
     });
 
     const verifyClient = createUpgradeGate({ rpc: this.rpc, cors, ws: wsOptions });
-    this.wsServer = this.#engine.attach({ server: this.httpServer, ...wsOptions, verifyClient });
+    this.wsServer = this.#engine.attach({
+      logger: this.#log,
+      server: this.httpServer,
+      ...wsOptions,
+      ...revisionProtocols(this.rpc, wsOptions),
+      verifyClient,
+    });
     this.wsServer.on('connection', (socket, req) => {
       this.#onConnection(socket, req);
     });

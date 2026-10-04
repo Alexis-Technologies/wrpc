@@ -1,11 +1,11 @@
 import { defineConfig } from 'vitepress';
 import { withMermaid } from 'vitepress-plugin-mermaid';
 
-const ogTitle = 'wrpc — WebSocket RPC for Node.js and the browser';
+const ogTitle = 'wRPC — Web RPC for Node.js and the browser';
 const ogDescription =
-  'Fast, zero-dependency WebSocket-based RPC for Node.js and browsers: router and procedures, ' +
-  'subscriptions with resume, rooms with a scaling backplane, binary streams with real backpressure, ' +
-  'SSE, and a typed client — with no runtime dependencies.';
+  'wRPC (@alexify/wrpc) is a fast, zero-dependency Web RPC protocol for Node.js and browsers: one router ' +
+  'over WebSocket, HTTP, SSE, WebTransport and WebRTC, plus Redis, NATS, RabbitMQ and Kafka — subscriptions ' +
+  'with resume, rooms that scale, binary streams with real backpressure, compression, encryption and a typed client.';
 const repo = 'https://github.com/Alexis-Technologies/wrpc';
 const base = '/';
 const hostname = 'https://wrpc.vercel.app/';
@@ -44,6 +44,24 @@ const keywords = [
   'pubsub',
   'cluster',
   'streams',
+  'webrtc',
+  'peer-to-peer',
+  'data-channel',
+  'webtransport',
+  'http3',
+  'quic',
+  'message-broker',
+  'broker',
+  'kafka',
+  'rabbitmq',
+  'amqp',
+  'nats',
+  'jetstream',
+  'redis-streams',
+  'queue',
+  'consumer',
+  'event-driven',
+  'durable-feed',
 ].join(', ');
 
 // schema.org structured data — helps search and AI engines understand the
@@ -52,7 +70,7 @@ const jsonLd = {
   '@context': 'https://schema.org',
   '@type': 'SoftwareApplication',
   name: '@alexify/wrpc',
-  alternateName: 'wrpc',
+  alternateName: ['wRPC', 'Web RPC'],
   description: ogDescription,
   applicationCategory: 'DeveloperApplication',
   operatingSystem: 'Node.js >= 22, modern browsers',
@@ -70,13 +88,44 @@ const jsonLd = {
 export default withMermaid({
   ...defineConfig({
     title: '@alexify/wrpc',
-    titleTemplate: ':title — wrpc',
+    titleTemplate: ':title — wRPC',
     description: ogDescription,
     lang: 'en-US',
     base,
     cleanUrls: true,
     lastUpdated: true,
     sitemap: { hostname },
+
+    markdown: {
+      config: (md) => {
+        // VitePress builds a heading permalink's aria-label from the
+        // heading's RAW source, so a heading that carries a badge and an
+        // explicit id — `## WebRTC <Badge … text="since 2.0" /> {#webrtc}` —
+        // was announced by a screen reader as its markup, tags and all.
+        // Rewritten once the anchors exist: the badge's text in
+        // parentheses, the id dropped, any other tag removed.
+        md.core.ruler.push('wrpc-permalink-label', (state) => {
+          for (const token of state.tokens) {
+            if (token.type !== 'inline' || !token.children) continue;
+            for (const child of token.children) {
+              if (child.type !== 'link_open' || child.attrGet('class') !== 'header-anchor') continue;
+              const label = child.attrGet('aria-label');
+              if (label === null || !/[<{]/.test(label)) continue;
+              child.attrSet(
+                'aria-label',
+                label
+                  .replace(/\s*\{#[^}]*\}/g, '')
+                  .replace(/<Badge\b[^>]*\btext="([^"]*)"[^>]*>/g, '($1)')
+                  .replace(/<[^>]+>/g, '')
+                  .replace(/\s+/g, ' ')
+                  .replace(/\s+"$/, '"'),
+              );
+            }
+          }
+          return false;
+        });
+      },
+    },
 
     head: [
       ['link', { rel: 'icon', type: 'image/svg+xml', href: `${base}logo-mark.svg` }],
@@ -126,7 +175,7 @@ export default withMermaid({
         { text: 'Reference', link: '/reference/protocol', activeMatch: '/reference/' },
         {
           // Hand-synced with package.json "version" — part of the release checklist.
-          text: 'v1.0.0',
+          text: 'v2.0.0',
           items: [
             { text: 'Changelog', link: `${repo}/blob/main/CHANGELOG.md` },
             { text: 'npm', link: 'https://www.npmjs.com/package/@alexify/wrpc' },
@@ -142,7 +191,7 @@ export default withMermaid({
             text: 'Introduction',
             items: [
               { text: 'Getting Started', link: '/guide/getting-started' },
-              { text: 'Why wrpc?', link: '/guide/why' },
+              { text: 'Why wRPC?', link: '/guide/why' },
             ],
           },
           {
@@ -163,10 +212,24 @@ export default withMermaid({
             ],
           },
           {
+            text: 'Message brokers',
+            items: [
+              { text: 'Overview & contracts', link: '/guide/brokers' },
+              { text: 'Durable feeds', link: '/guide/brokers/feeds' },
+              { text: 'Queue consumers & publishing', link: '/guide/brokers/consumers' },
+              { text: 'RPC over a broker', link: '/guide/brokers/rpc' },
+              { text: 'Redis', link: '/guide/brokers/redis' },
+              { text: 'NATS', link: '/guide/brokers/nats' },
+              { text: 'RabbitMQ', link: '/guide/brokers/amqp' },
+              { text: 'Kafka', link: '/guide/brokers/kafka' },
+            ],
+          },
+          {
             text: 'Client',
             items: [
               { text: 'Client', link: '/guide/client' },
               { text: 'Typed client', link: '/guide/typed-client' },
+              { text: 'Multiple backends', link: '/guide/multiple-backends' },
               { text: 'Browser & bundling', link: '/guide/browser' },
               { text: 'Codegen CLI', link: '/guide/cli' },
               { text: 'TanStack Query', link: '/guide/query' },
@@ -176,6 +239,9 @@ export default withMermaid({
             text: 'Transports & hosts',
             items: [
               { text: 'Server-Sent Events', link: '/guide/sse' },
+              { text: 'WebRTC', link: '/guide/webrtc' },
+              { text: 'WebRTC: identity and trust', link: '/guide/webrtc-trust' },
+              { text: 'WebTransport', link: '/guide/wt' },
               { text: 'Wire codec', link: '/guide/codec' },
               { text: 'uWebSockets.js', link: '/guide/adapters/uws' },
               { text: 'Fastify', link: '/guide/adapters/fastify' },
@@ -186,9 +252,12 @@ export default withMermaid({
             text: 'Operations',
             items: [
               { text: 'Security', link: '/guide/security' },
+              { text: 'Rate limiting & throttling', link: '/guide/rate-limiting' },
               { text: 'Running in production', link: '/guide/production' },
               { text: 'Testing', link: '/guide/testing' },
               { text: 'Performance', link: '/guide/performance' },
+              { text: 'Compression', link: '/guide/compression' },
+              { text: 'Encryption', link: '/guide/encryption' },
               { text: 'Logging', link: '/guide/logging' },
               { text: 'OpenTelemetry', link: '/guide/telemetry' },
             ],

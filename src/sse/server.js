@@ -1,19 +1,31 @@
 'use strict';
 
+const { randomBytes, timingSafeEqual } = require('node:crypto');
 const { ServerTransport } = require('../transport.js');
-const { generateUUID } = require('../runtime/node.js');
+const { resolveGenerateId } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
 const { UNKNOWN_TARGET } = require('../rpc/dispatcher.js');
+const { normalizeCompression, chooseEncoding, markEncoded, encodedWriter } = require('../contentEncoding.js');
+const { createFailureReporter } = require('../compression/sync.js');
 
 // Server-Sent Events as a wrpc transport.
 //
 // SSE is one-way, so a channel is two halves that find each other by id:
-//   GET  {basePath}/events?channel=<id>   the server -> client stream
-//   POST {basePath} + x-wrpc-channel: <id>   the client -> server direction
+//   GET  {basePath}/events?channel=<id>.<secret>   the server -> client stream
+//   POST {basePath} + x-wrpc-channel: <id>.<secret>   the client -> server direction
 // Both halves belong to ONE server-side Client, which is what lets a
 // subscription started by a POST deliver its values down the GET stream.
 // The POST answers 202 with no body; every reply — callbacks included —
 // comes back on the stream, exactly like the Service Worker port transport.
+//
+// The id IDENTIFIES the channel and comes from the application's
+// generator (a uuid, a cuid, a counter — the format is its business, and
+// one `generateId` covers every id the server mints). What AUTHORIZES a
+// request to act on the channel is the secret: 18 random bytes the server
+// draws per channel and hands out with the id in the `ready` frame, which
+// every re-attach and POST must present again (constants.js has the wire
+// form). A channel opened without a cookie or a bearer used to be held by
+// its id alone — a guessable generator was a hijack.
 //
 // Serverless-friendly by construction: no upgrade, no long-lived socket
 // beyond the response body, and nothing but HTTP in either direction.
@@ -21,9 +33,12 @@ const { UNKNOWN_TARGET } = require('../rpc/dispatcher.js');
 // What it cannot do is binary: SSE frames are text, so wrpc's binary streams
 // are refused on this transport rather than silently corrupted.
 
-const { CHANNEL_HEADER } = require('./constants.js');
+const { CHANNEL_HEADER, joinChannelRef } = require('./constants.js');
 
 const DEFAULT_RETENTION = 30 * 1000;
+// The channel secret: 18 bytes is 24 base64url characters, 144 bits — no
+// padding, no dot, and beyond guessing at any request rate.
+const SECRET_BYTES = 18;
 const DEFAULT_REPLAY = 100;
 // The replay buffer is per-channel memory held for `retention` even with no
 // stream attached — a byte budget caps it where a frame-count cap cannot
@@ -63,6 +78,11 @@ class ServerSseTransport extends ServerTransport {
     super(remoteAddress);
     this.channelId = channelId;
     this.connection = this; // what Client.persistent checks
+    // Revision 1, to every client: an event stream carries text, and a 1.0
+    // client reads it — with nothing on the GET to tell the two apart. A
+    // packet holding bytes travels as the JSON 1.0 made of it, both ways.
+    this.revision = 1;
+    this.attachments = false;
   }
 
   get attached() {
@@ -128,8 +148,11 @@ class ServerSseTransport extends ServerTransport {
 // channel id alone is a bearer token for a session-carrying Client, and ids
 // travel in URLs, which proxies and logs keep.
 class SseChannel {
-  constructor({ id, key = '', client, transport, replay, replayBytes, retention }) {
+  constructor({ id, secret = '', key = '', client, transport, replay, replayBytes, retention }) {
     this.id = id;
+    // The credential (server-drawn); `key` is the identity the opening GET
+    // presented, a second lock for a channel opened with one.
+    this.secret = secret;
     this.key = key;
     this.client = client;
     this.transport = transport;
@@ -207,9 +230,30 @@ class SseChannels {
   #clientAddress;
   #log;
   #otel;
+  #generateId;
+  // The normalized `sse.compression` option, or null (off, the default):
+  // one gzip member per response, flushed after every event.
+  #compression = null;
+  // An encoder stream that failed, counted and said once per coding.
+  #failed;
 
-  constructor({ addClient, channelKey = null, log = globalThis.console, otel = null, ...options } = {}) {
+  constructor({
+    addClient,
+    channelKey = null,
+    log = globalThis.console,
+    otel = null,
+    generateId = null,
+    compression = null,
+    ...options
+  } = {}) {
+    this.#compression = normalizeCompression(compression, 'SseChannels: options', { streaming: true });
+    this.#failed = createFailureReporter(createLoggerWriter(log), otel);
     this.#addClient = addClient;
+    // Strict, unlike the 1.0 options: this one is new, so a bad generator
+    // is a TypeError here rather than a channel id that fails later.
+    // The core passes its own, so one `generateId` on the server covers
+    // channel ids too.
+    this.#generateId = resolveGenerateId(generateId, 'SseChannels').generate;
     // Extracts the identity a request presents (the session token from its
     // cookie); injected by the core, which owns the SessionManager. Without
     // one every request presents the same identity and only the unguessable
@@ -244,7 +288,22 @@ class SseChannels {
     return this.#channels.get(channelId) ?? null;
   }
 
-  /** True when `headers` present the identity the channel was created under. */
+  /**
+   * True when `secret` is the channel's — the credential handed out in its
+   * `ready` frame. Constant-time, and a missing or wrong one is answered
+   * exactly like an unknown channel (409): the id's existence is not told.
+   */
+  holds(channel, secret) {
+    if (typeof secret !== 'string' || secret.length === 0) return false;
+    // Lengths compared as BYTES: `timingSafeEqual` throws on a mismatch, and
+    // a peer's non-ASCII secret is as long in characters as the real one
+    // while longer in bytes.
+    const given = Buffer.from(secret);
+    const expected = Buffer.from(channel.secret);
+    return given.length === expected.length && timingSafeEqual(given, expected);
+  }
+
+  /** True when `headers` present the identity the channel was created under (checked after `holds`). */
   authorized(channel, requestHeaders) {
     return channel.key === this.#channelKey(requestHeaders ?? {});
   }
@@ -266,15 +325,16 @@ class SseChannels {
    * stream gets an honest 501 instead of a response that never arrives.
    *
    * Channel ids are SERVER-minted: a request without one gets a fresh
-   * channel and learns the id from the `ready` frame. A request naming an
-   * id re-attaches to that channel — 409 when it is unknown (expired,
-   * another instance, or a guess), 403 when the request's cookie does not
-   * present the identity the channel was created under.
+   * channel and learns the id and the secret from the `ready` frame. A
+   * request naming an id re-attaches to that channel — 409 when it is
+   * unknown (expired, another instance, a guess) or its `secret` is not the
+   * channel's, 403 when the request's cookie does not present the identity
+   * the channel was created under.
    *
    * `headers` are RESPONSE headers (CORS and the rest); the REQUEST headers a
    * new channel's client is built from come off `call` itself.
    */
-  open(call, { channelId = null, lastEventId = null, headers = {} } = {}) {
+  open(call, { channelId = null, secret = '', lastEventId = null, headers = {} } = {}) {
     if (typeof call.stream !== 'function') {
       return void call.respond({
         status: 501,
@@ -285,9 +345,11 @@ class SseChannels {
       });
     }
     const existing = channelId ? this.#channels.get(channelId) : null;
-    if (channelId && !existing) {
+    if (channelId && (!existing || !this.holds(existing, secret))) {
       // Distinguishable from every other refusal: the client reacts to 409
-      // by dropping its stale channel state and starting a fresh one.
+      // by dropping its stale channel state and starting a fresh one. The
+      // same answer for a channel that exists but whose secret was not
+      // presented: a guessed id learns nothing.
       return void this.#refuse(call, headers, 409, 'Unknown channel');
     }
     if (existing && !this.authorized(existing, call.headers)) {
@@ -302,13 +364,23 @@ class SseChannels {
       clearTimeout(channel.timer);
       channel.timer = null;
     }
-    const writer = call.stream({ status: 200, headers: { ...headers, ...SSE_HEADERS } });
+    // Encoded when the option is on and this GET asked for it: the decision
+    // is per response, so a re-attach from a peer that stopped accepting
+    // the coding gets a plain stream on the same channel.
+    const streamHeaders = { ...headers, ...SSE_HEADERS };
+    const compression = this.#compression;
+    const encoder = compression === null ? null : chooseEncoding(compression, call, streamHeaders);
+    if (encoder !== null) markEncoded(streamHeaders, encoder.token);
+    let writer = call.stream({ status: 200, headers: streamHeaders });
     if (!writer) {
       // The host could not open the stream. A channel created for it would
       // sit there with no writer, no retention timer and no close listener —
       // unreachable and never collected.
       if (!existing) channel.transport.close();
       return;
+    }
+    if (encoder !== null) {
+      writer = encodedWriter(writer, encoder, (error) => this.#failed('sse', 'encode', encoder.token, error));
     }
     // Replacing a live writer: the superseded response is nobody's now, so
     // end it rather than leaking it open until a proxy times it out.
@@ -325,10 +397,16 @@ class SseChannels {
     // The response's own high-water mark is the channel's backpressure, so
     // the subscription pump waits on it exactly as it does on a socket.
     writer.onDrain?.(() => channel.transport.emit('drain'));
-    // The client needs its channel id before it can POST anything, and this
-    // frame is the ONLY place the server hands the id out.
+    // The client needs its channel reference before it can POST anything,
+    // and this frame is the ONLY place the server hands it out (again on a
+    // re-attach: the frame's shape is one, and the client that re-attached
+    // already holds it). ONE opaque string — `<id>.<secret>` — in the field
+    // 1.0 named `channel`: a 1.0 client presents whatever it was given
+    // there, so it presents the secret without knowing there is one, and
+    // the credential costs no revision of the protocol.
     writer.write(`retry: ${this.#options.retry}\n\n`);
-    writer.write(`event: ready\ndata: ${JSON.stringify({ channel: channel.id })}\n\n`);
+    const ref = joinChannelRef(channel.id, channel.secret);
+    writer.write(`event: ready\ndata: ${JSON.stringify({ channel: ref })}\n\n`);
     this.#otel?.recordSseEvent(existing ? 'reattach' : 'open');
     if (existing && lastEventId !== null) {
       const outcome = channel.resume(lastEventId);
@@ -359,11 +437,13 @@ class SseChannels {
   // The GET that opens a channel is the channel's only handshake, so its
   // headers are handed on: they carry the cookie the client's session is
   // restored from, exactly as an upgrade's headers do for a socket. The id
-  // is minted here — never taken from the request — so holding one proves
-  // the server said it, and the cookie's token is captured as the key every
-  // later request must present again.
+  // is minted here — never taken from the request — and the secret drawn
+  // here; holding the secret is what proves a later request is the
+  // channel's, and the cookie's token is captured as the key it must
+  // present again on top.
   #create(call) {
-    const channelId = generateUUID();
+    const channelId = this.#generateId();
+    const secret = randomBytes(SECRET_BYTES).toString('base64url');
     // The capacity key comes from the seam; the transport keeps the raw
     // TCP peer, which is what client.meta reports.
     const address = this.#clientAddress(call);
@@ -372,7 +452,7 @@ class SseChannels {
     // the client's meta (headers, url, remoteAddress) from it too.
     const client = this.#addClient(transport, call);
     const key = this.#channelKey(call.headers ?? {});
-    const channel = new SseChannel({ id: channelId, key, client, transport, ...this.#options });
+    const channel = new SseChannel({ id: channelId, secret, key, client, transport, ...this.#options });
     this.#channels.set(channelId, channel);
     this.#byAddress.set(address, (this.#byAddress.get(address) ?? 0) + 1);
     // Every teardown path — retention timeout, close(), a dead response —

@@ -1,0 +1,562 @@
+'use strict';
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+const timers = require('node:timers/promises');
+
+const { WtSocket } = require('../../src/webtransport/socket.js');
+const {
+  StreamParser,
+  frame,
+  frameText,
+  frameCaps,
+  datagramText,
+  datagramWriter,
+  KIND_BINARY,
+  KIND_TEXT,
+  KIND_CAPS,
+} = require('../../src/webtransport/framing.js');
+const { isWtSession, isWtStream, isWtDatagrams } = require('../../src/webtransport/port.js');
+const { idHeader } = require('../../src/webtransport/streams.js');
+const { chunkDecode } = require('../../src/chunks.js');
+const { createFakeWt } = require('./fakeWebTransport.js');
+const { runChannelContract, peerEnd } = require('./channelContract.js');
+const { waitFor } = require('../helpers/server.js');
+const { recorder } = require('../helpers/recorder.js');
+const { keepAlive } = require('../helpers/wait.js');
+
+// Its tests await unref'd close and idle timers over a fake: see keepAlive.
+keepAlive();
+
+// A client end by hand: the session, its control stream, a parser over
+// what the socket sends and a writer to talk to it.
+const pair = async (t, options = {}) => {
+  const world = createFakeWt();
+  const client = new world.WebTransport('https://h/api');
+  await client.ready;
+  const session = await world.next();
+  const stream = await client.createBidirectionalStream();
+  const reader = session.incomingBidirectionalStreams.getReader();
+  const { value: control } = await reader.read();
+  reader.releaseLock();
+  const socket = new WtSocket(session, control, options);
+  t.after(() => socket.terminate());
+  const received = [];
+  const parser = new StreamParser({
+    onMessage: (kind, data) => {
+      if (kind !== KIND_CAPS) received.push({ kind, data });
+    },
+  });
+  void (async () => {
+    const r = stream.readable.getReader();
+    try {
+      for (;;) {
+        const { value, done } = await r.read();
+        if (done) return;
+        parser.push(value);
+      }
+    } catch {
+      // closed under the read
+    }
+  })();
+  return { world, client, session, socket, received, writer: stream.writable.getWriter() };
+};
+
+test('wt port: the validators are structural', async () => {
+  const world = createFakeWt();
+  const client = new world.WebTransport('https://h/api');
+  assert.strictEqual(isWtSession(client), true);
+  await client.ready;
+  const session = await world.next();
+  assert.strictEqual(isWtSession(session), true);
+  assert.strictEqual(isWtSession({}), false);
+  assert.strictEqual(isWtSession(null), false);
+  assert.strictEqual(isWtSession({ ...session, datagrams: { readable: 1 } }), false);
+  const stream = await client.createBidirectionalStream();
+  assert.strictEqual(isWtStream(stream), true);
+  assert.strictEqual(isWtStream({ readable: stream.readable }), false);
+  assert.strictEqual(isWtDatagrams(session.datagrams), true);
+  assert.strictEqual(isWtDatagrams({ ...session.datagrams, maxDatagramSize: '1' }), false);
+  client.close();
+});
+
+test('wt socket: the engine-port shape — text and binary both ways, boolean send, close codes', async (t) => {
+  const { session, socket, received, writer } = await pair(t);
+  assert.strictEqual(socket.remoteAddress, '');
+  assert.strictEqual(socket.protocol, '');
+  assert.strictEqual(socket.bufferedAmount, 0);
+  const messages = [];
+  socket.on('message', (data, isBinary) => messages.push({ data, isBinary }));
+  await writer.write(frameText('{"type":"ping"}'));
+  await writer.write(frame(KIND_BINARY, new Uint8Array([1, 2, 3])));
+  await waitFor(() => messages.length === 2, 'inbound');
+  assert.deepStrictEqual(messages[0], { data: '{"type":"ping"}', isBinary: false });
+  assert.strictEqual(messages[1].isBinary, true);
+  assert.deepStrictEqual(Array.from(messages[1].data), [1, 2, 3]);
+  assert.strictEqual(socket.send('{"type":"pong"}'), true);
+  assert.strictEqual(socket.send(Buffer.from([9, 9])), true);
+  assert.strictEqual(socket.send(new Uint8Array([7]).buffer), true);
+  await waitFor(() => received.length === 3, 'outbound');
+  assert.deepStrictEqual(received[0], { kind: KIND_TEXT, data: '{"type":"pong"}' });
+  assert.deepStrictEqual(Array.from(received[1].data), [9, 9]);
+  assert.deepStrictEqual(Array.from(received[2].data), [7]);
+  // The payload survives the callback: the socket handed over a view over
+  // its own read, and the fake delivered a copy.
+  await writer.write(frame(KIND_BINARY, new Uint8Array([5, 5, 5])));
+  await waitFor(() => messages.length === 3, 'inbound');
+  const kept = messages[2].data;
+  await writer.write(frame(KIND_BINARY, new Uint8Array([6, 6, 6])));
+  await waitFor(() => messages.length === 4, 'inbound');
+  assert.deepStrictEqual(Array.from(kept), [5, 5, 5]);
+
+  const closes = [];
+  socket.on('close', (code, reason) => closes.push([code, reason]));
+  socket.close(1001, 'Server is closing');
+  assert.deepStrictEqual(closes, [[1001, 'Server is closing']], 'reported synchronously');
+  assert.deepStrictEqual(await session.closed, { closeCode: 1001, reason: 'Server is closing' });
+  // Poisoned handle: quiet, false, 0.
+  assert.strictEqual(socket.send('x'), false);
+  assert.strictEqual(socket.bufferedAmount, 0);
+  socket.close();
+  socket.terminate();
+  socket.pause();
+  socket.resume();
+  await timers.setImmediate();
+  assert.strictEqual(closes.length, 1);
+});
+
+test('wt socket: a peer close, a terminate and a peer framing violation', async (t) => {
+  const log = recorder();
+  const first = await pair(t, { log: log.writer });
+  const closes = [];
+  first.socket.on('close', (code, reason) => closes.push([code, reason]));
+  first.client.close({ closeCode: 4000, reason: 'bye' });
+  await waitFor(() => closes.length === 1, 'close');
+  assert.deepStrictEqual(closes, [[4000, 'bye']]);
+  // A routine end is a debug line with the code and the peer's reason.
+  assert.deepStrictEqual(log.all('wt.close'), [{ level: 'debug', event: 'wt.close', code: 4000, reason: 'bye' }]);
+
+  const second = await pair(t);
+  const events = [];
+  second.socket.on('close', (code) => events.push(code));
+  second.socket.terminate();
+  assert.deepStrictEqual(events, [1006]);
+  assert.ok(await second.client.closed);
+
+  const violations = recorder();
+  const third = await pair(t, { log: violations.writer });
+  const errors = [];
+  const ends = [];
+  third.socket.on('error', (error) => errors.push(error));
+  third.socket.on('close', (code, reason) => ends.push([code, reason]));
+  await third.writer.write(frame(5, new Uint8Array(1)));
+  await waitFor(() => ends.length === 1, 'close');
+  assert.strictEqual(errors[0].name, 'FramingError');
+  const line = violations.find('wt.violation');
+  assert.deepStrictEqual([line.level, line.code, line.err.name], ['warn', errors[0].code, 'FramingError']);
+  assert.deepStrictEqual(ends, [[1002, 'Protocol error']]);
+  assert.deepStrictEqual(await third.client.closed, { closeCode: 1002, reason: 'Protocol error' });
+
+  // The peer ending the control stream ends the connection, with 1000 —
+  // after the moment its own session close is given to arrive with a code.
+  const fourth = await pair(t);
+  const done = [];
+  fourth.socket.on('close', (code) => done.push(code));
+  await fourth.writer.close();
+  await timers.setTimeout(50);
+  assert.deepStrictEqual(done, [], 'not yet: a graceful peer closes the session next, with its code');
+  await waitFor(() => done.length === 1, 'close');
+  assert.deepStrictEqual(done, [1000]);
+  // And when it does come, it is the peer's code that is reported.
+  const fifth = await pair(t);
+  const codes = [];
+  fifth.socket.on('close', (code, reason) => codes.push([code, reason]));
+  await fifth.writer.close();
+  fifth.client.close({ closeCode: 4001, reason: 'done here' });
+  await waitFor(() => codes.length === 1, 'close');
+  assert.deepStrictEqual(codes, [[4001, 'done here']]);
+});
+
+// Closing a session resets its streams and drops what they still hold. A
+// graceful close() therefore ends the control stream first — what send()
+// accepted arrives — and the session after it, with the code.
+test('wt socket: close() delivers what send() accepted, then the code; terminate() does not wait', async (t) => {
+  const { world, client, socket, received } = await pair(t);
+  await waitFor(() => socket.bufferedAmount === 0, 'the capabilities left');
+  // Every write is held: at close() time nothing below has reached the peer.
+  const release = world.hold();
+  const closes = [];
+  socket.on('close', (code, reason) => closes.push([code, reason]));
+  assert.strictEqual(socket.send('{"type":"event","name":"kicked","data":{"why":"policy"}}'), true);
+  assert.strictEqual(socket.send(Buffer.from([1, 2, 3])), true);
+  socket.close(1008, 'Policy');
+  assert.deepStrictEqual(closes, [[1008, 'Policy']], "'close' is reported synchronously");
+  assert.strictEqual(socket.send('late'), false, 'and nothing more is accepted');
+  assert.strictEqual(received.length, 0);
+  release();
+  assert.deepStrictEqual(await client.closed, { closeCode: 1008, reason: 'Policy' });
+  assert.deepStrictEqual(
+    received.map((m) => m.kind),
+    [KIND_TEXT, KIND_BINARY],
+    'both messages arrived before the session closed',
+  );
+  assert.ok(received[0].data.includes('"why":"policy"'));
+
+  // A stream that never takes its queue: closeTimeout is the bound.
+  const slow = await pair(t, { closeTimeout: 40 });
+  await waitFor(() => slow.socket.bufferedAmount === 0, 'the capabilities left');
+  slow.world.hold();
+  slow.socket.send('never delivered');
+  const started = Date.now();
+  slow.socket.close(1001, 'Server is closing');
+  assert.deepStrictEqual(await slow.client.closed, { closeCode: 1001, reason: 'Server is closing' });
+  assert.ok(Date.now() - started >= 30, 'the session was held open for the stream, up to closeTimeout');
+  assert.strictEqual(slow.received.length, 0);
+
+  // terminate(): at once, whatever is queued.
+  const hard = await pair(t);
+  await waitFor(() => hard.socket.bufferedAmount === 0, 'the capabilities left');
+  hard.world.hold();
+  hard.socket.send('dropped');
+  hard.socket.terminate();
+  assert.ok(await hard.client.closed);
+  assert.strictEqual(hard.received.length, 0);
+
+  assert.throws(() => new WtSocket(hard.session, hard.session, { closeTimeout: -1 }), /closeTimeout must be/);
+});
+
+// The channel contract shared with the client transport: send/drain on
+// every path, order under an async codec, the count after terminate().
+test('wt socket: the channel contract', async (t) => {
+  await runChannelContract(t, 'wt socket', {
+    async open(sub, options = {}) {
+      const world = createFakeWt();
+      const client = new world.WebTransport('https://h/api');
+      await client.ready;
+      const session = await world.next();
+      const stream = await client.createBidirectionalStream();
+      const reader = session.incomingBidirectionalStreams.getReader();
+      const { value: control } = await reader.read();
+      reader.releaseLock();
+      const socket = new WtSocket(session, control, options);
+      sub.after(() => socket.terminate());
+      const end = {
+        session,
+        send: (data, sendOptions) => socket.send(data, sendOptions),
+        // What ServerWtTransport does with an outbound stream packet: the
+        // mux is told first, the control stream carries it unless the mux
+        // took it.
+        stream: (packet) => {
+          if (!socket.streamControl(packet)) socket.send(JSON.stringify(packet));
+        },
+        on: (event, listener) => socket.on(event, listener),
+        get bufferedAmount() {
+          return socket.bufferedAmount;
+        },
+        get compression() {
+          return socket.compression;
+        },
+        terminate: () => socket.terminate(),
+      };
+      return { world, end, peer: peerEnd(client, stream) };
+    },
+  });
+});
+
+test('wt socket: pause() stops reading the control stream, resume() takes it up', async (t) => {
+  const { socket, writer } = await pair(t);
+  const messages = [];
+  socket.on('message', (data) => messages.push(data));
+  socket.pause();
+  assert.strictEqual(socket.isPaused, true);
+  await writer.write(frameText('a'));
+  await writer.write(frameText('b'));
+  await timers.setTimeout(20);
+  assert.ok(messages.length <= 1, 'paused: at most the read already in flight');
+  socket.resume();
+  await waitFor(() => messages.length === 2, 'resumed');
+  assert.deepStrictEqual(messages, ['a', 'b']);
+});
+
+test('wt socket: idleTimeout terminates a silent peer and every read re-arms it', async (t) => {
+  const { socket, session, writer } = await pair(t, { idleTimeout: 60 });
+  const closes = [];
+  const errors = [];
+  socket.on('error', (error) => errors.push(error.message));
+  socket.on('close', (code) => closes.push(code));
+  for (let i = 0; i < 4; i++) {
+    await timers.setTimeout(30);
+    await writer.write(frameText('{"type":"ping"}'));
+  }
+  assert.deepStrictEqual(closes, [], 'a talking peer is never idle');
+  await waitFor(() => closes.length === 1, 'idle');
+  assert.deepStrictEqual(closes, [1006]);
+  assert.deepStrictEqual(errors, ['No data for 60 ms']);
+  assert.ok(await session.closed);
+});
+
+test('wt socket: a client cut off past maxBackpressure is a warn line, as on the WebSocket engine', async (t) => {
+  const log = recorder();
+  const { world, socket } = await pair(t, {
+    maxBackpressure: 1000,
+    highWaterMark: 100,
+    lowWaterMark: 20,
+    log: log.writer,
+  });
+  socket.on('error', () => {});
+  const closed = new Promise((resolve) => socket.once('close', resolve));
+  world.hold();
+  socket.send('x'.repeat(5000));
+  socket.send('y');
+  await closed;
+  // It used to be `socket.error` and `wt.close`, both at debug.
+  const [line] = log.all('wt.backpressure');
+  assert.strictEqual(line.level, 'warn');
+  assert.strictEqual(line.max, 1000);
+  assert.ok(line.buffered >= 0);
+});
+
+test('wt socket: an option the channel refuses throws at construction and leaves no timer behind', async (t) => {
+  const world = createFakeWt();
+  const client = new world.WebTransport('https://h/api');
+  await client.ready;
+  const session = await world.next();
+  await client.createBidirectionalStream();
+  const reader = session.incomingBidirectionalStreams.getReader();
+  const { value: control } = await reader.read();
+  reader.releaseLock();
+  t.after(() => session.close());
+  const uncaught = [];
+  const onUncaught = (error) => uncaught.push(error);
+  process.on('uncaughtException', onUncaught);
+  t.after(() => process.off('uncaughtException', onUncaught));
+  assert.throws(
+    () => new WtSocket(session, control, { idleTimeout: 30, compression: { codec: 'no-such-codec' } }),
+    TypeError,
+  );
+  // The idle timer used to be armed before the channel was built, and its
+  // expiry read the channel that never was.
+  await timers.setTimeout(90);
+  assert.deepStrictEqual(uncaught, []);
+});
+
+test('wt socket: a stream opened for an id the peer never names is cancelled after holdTimeout, and said so', async (t) => {
+  await assert.rejects(pair(t, { maxHeldStreams: 0 }), TypeError);
+  await assert.rejects(pair(t, { holdTimeout: -1 }), TypeError);
+  const { client, socket, writer } = await pair(t, { holdTimeout: 30 });
+  const refused = [];
+  socket.on('stream-refused', (info) => refused.push(info));
+  // The client announces streams, then opens one for an id it never names
+  // on the control stream — before any packet, before any session.
+  await writer.write(frameCaps('{"streams":true}'));
+  const uni = await client.createUnidirectionalStream();
+  const w = uni.getWriter();
+  await w.write(idHeader('ghost'));
+  await w.write(new Uint8Array(1000));
+  await waitFor(() => refused.length === 1);
+  assert.deepStrictEqual(refused, [{ reason: 'timeout', id: 'ghost' }]);
+  // The session lives on: it is the stream that was refused, not the peer.
+  assert.strictEqual(socket.send('still here'), true);
+});
+
+test('wt socket: datagrams — sendUnreliable is one datagram, an inbound one is a text message', async (t) => {
+  const { client, socket, session } = await pair(t);
+  assert.strictEqual(socket.maxDatagramSize, 1200);
+  const got = [];
+  const reader = client.datagrams.readable.getReader();
+  void (async () => {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      got.push(Buffer.from(value.subarray(1)).toString());
+    }
+  })();
+  assert.strictEqual(socket.sendUnreliable('{"type":"event","name":"x/y"}'), true);
+  assert.strictEqual(socket.sendUnreliable('x'.repeat(2000)), false, 'too large for one datagram');
+  assert.strictEqual(socket.sendUnreliable(new Uint8Array(1)), false, 'bytes never ride datagrams');
+  await waitFor(() => got.length === 1, 'datagram');
+  assert.deepStrictEqual(got, ['{"type":"event","name":"x/y"}']);
+  const messages = [];
+  socket.on('message', (data, isBinary) => messages.push([data, isBinary]));
+  const writer = client.datagrams.writable.getWriter();
+  await writer.write(datagramText('{"type":"ping"}'));
+  await writer.write(new Uint8Array([9]));
+  await waitFor(() => messages.length === 1, 'inbound');
+  assert.deepStrictEqual(messages, [['{"type":"ping"}', false]]);
+  socket.close();
+  assert.strictEqual(socket.sendUnreliable('{}'), false);
+  assert.strictEqual(socket.maxDatagramSize, 0);
+  assert.ok(await session.closed);
+});
+
+// The datagrams of a host on the newer API whose legacy `writable` is a
+// trap: @fails-components/webtransport logs a read of that getter as
+// deprecated. Each read is recorded, then thrown, so one is caught whether
+// the caller swallows the error or not.
+const factoryOnly = (datagrams, reads) => ({
+  readable: datagrams.readable,
+  maxDatagramSize: datagrams.maxDatagramSize,
+  createWritable: () => datagrams.writable,
+  get writable() {
+    reads.push(new Error('datagrams.writable read').stack);
+    throw new Error('datagrams.writable is deprecated');
+  },
+});
+
+test('wt port: where createWritable exists, the legacy datagrams.writable is never read', async (t) => {
+  const world = createFakeWt();
+  const client = new world.WebTransport('https://h/api');
+  await client.ready;
+  const session = await world.next();
+  const reads = [];
+  session.datagrams = factoryOnly(session.datagrams, reads);
+  // The checks attachSession runs, then the channel's datagram writer.
+  assert.strictEqual(isWtDatagrams(session.datagrams), true);
+  assert.strictEqual(isWtSession(session), true);
+  const stream = await client.createBidirectionalStream();
+  const reader = session.incomingBidirectionalStreams.getReader();
+  const { value: control } = await reader.read();
+  reader.releaseLock();
+  const socket = new WtSocket(session, control);
+  t.after(() => socket.terminate());
+  void stream.readable.pipeTo(new WritableStream()).catch(() => {});
+  const got = [];
+  const datagrams = client.datagrams.readable.getReader();
+  void (async () => {
+    for (;;) {
+      const { value, done } = await datagrams.read();
+      if (done) return;
+      got.push(Buffer.from(value.subarray(1)).toString());
+    }
+  })();
+  assert.strictEqual(socket.maxDatagramSize, 1200);
+  assert.strictEqual(socket.sendUnreliable('{"type":"ping"}'), true);
+  await waitFor(() => got.length === 1, 'datagram over createWritable()');
+  assert.deepStrictEqual(got, ['{"type":"ping"}']);
+  assert.deepStrictEqual(reads, [], 'the deprecated getter was read');
+});
+
+test('wt port: a host with only the legacy datagrams.writable still validates and sends', async () => {
+  const sink = () => {
+    const chunks = [];
+    return { chunks, writable: new WritableStream({ write: (chunk) => void chunks.push(chunk) }) };
+  };
+  const legacy = sink();
+  const duplex = { readable: new ReadableStream(), writable: legacy.writable };
+  assert.strictEqual(isWtDatagrams(duplex), true);
+  assert.ok(datagramWriter(duplex), 'the legacy stream is the writer');
+  assert.strictEqual(isWtDatagrams({ readable: new ReadableStream() }), false, 'neither: no datagrams');
+  assert.strictEqual(isWtDatagrams({ readable: new ReadableStream(), writable: {} }), false);
+  assert.strictEqual(datagramWriter({ readable: new ReadableStream() }), null);
+  // A factory that throws falls back to the legacy stream, as before.
+  const fallback = sink();
+  const writer = datagramWriter({
+    readable: new ReadableStream(),
+    createWritable: () => {
+      throw new Error('not yet');
+    },
+    writable: fallback.writable,
+  });
+  assert.ok(writer);
+  await writer.write(new Uint8Array([1]));
+  assert.strictEqual(fallback.chunks.length, 1);
+});
+
+// A client end that announces streams and uploads on a unidirectional
+// stream of its own: the open packet on the control stream, the chunk
+// header then raw payload on the side stream (src/webtransport/streams.js).
+const sideStream = async ({ client, writer }, id, size) => {
+  await writer.write(frameCaps('{"streams":true}'));
+  await writer.write(frameText(JSON.stringify({ type: 'stream', id, name: 'blob', size })));
+  const uni = (await client.createUnidirectionalStream()).getWriter();
+  await uni.write(idHeader(id));
+  return uni;
+};
+
+test('wt socket: a datagram the session has not kept up with is dropped, not queued — and answered true', async (t) => {
+  const { recorder } = require('../helpers/recorder.js');
+  const log = recorder();
+  const { world, client, socket } = await pair(t, { log: log.writer });
+  const got = [];
+  const reader = client.datagrams.readable.getReader();
+  void (async () => {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      got.push(Number(Buffer.from(value.subarray(1)).toString()));
+    }
+  })();
+  // A healthy session: three in one tick all go — a sink is asynchronous
+  // even when it is fast, and that alone must not cost the second one.
+  for (let n = 0; n < 3; n++) assert.strictEqual(socket.sendUnreliable(String(n)), true);
+  await waitFor(() => got.length === 3, 'three datagrams');
+  assert.strictEqual(socket.droppedDatagrams, 0);
+  // A sink that holds: positions pile up at the sender. The first 64 wait
+  // for it, the rest are gone — and every one is answered true, because
+  // false would send it reliably, behind the very queue that is stuck.
+  const release = world.hold();
+  for (let n = 100; n < 1100; n++) assert.strictEqual(socket.sendUnreliable(String(n)), true);
+  assert.strictEqual(socket.droppedDatagrams, 936);
+  release();
+  await waitFor(() => got.length === 67, 'the held datagrams');
+  await timers.setTimeout(20);
+  assert.strictEqual(got.length, 67, 'nothing past the cap was queued');
+  assert.deepStrictEqual(got.slice(3, 6), [100, 101, 102]);
+  // Said once for the session, not per datagram; the count goes on the close line.
+  assert.strictEqual(log.all('wt.datagram.dropped').length, 1);
+  assert.strictEqual(log.find('wt.datagram.dropped').level, 'warn');
+  // And it flows again once the sink caught up.
+  assert.strictEqual(socket.sendUnreliable('7'), true);
+  await waitFor(() => got.at(-1) === 7, 'a datagram after the congestion');
+  socket.close();
+  assert.strictEqual(log.find('wt.close').dropped, 936);
+});
+
+test('wt socket: pause() stops the side streams too; resume() takes them up; a close under pause lets the reads go', async (t) => {
+  const end = await pair(t);
+  const chunks = [];
+  end.socket.on('message', (data, isBinary) => {
+    if (isBinary) chunks.push(chunkDecode(data).payload[0]);
+  });
+  const uni = await sideStream(end, 'up', 6);
+  await uni.write(new Uint8Array([1]));
+  await waitFor(() => chunks.length === 1, 'flowing');
+  end.socket.pause();
+  for (let i = 2; i <= 5; i++) await uni.write(new Uint8Array([i]));
+  await timers.setTimeout(30);
+  // At most the read already in flight: the pause used to stop the
+  // control stream only, and an upload kept flowing around it.
+  assert.ok(chunks.length <= 2, `paused: ${chunks.length} chunks arrived`);
+  end.socket.resume();
+  await waitFor(() => chunks.length === 5, 'resumed');
+  assert.deepStrictEqual(chunks, [1, 2, 3, 4, 5]);
+  // A close under a pause releases the gated reads, and nothing arrives
+  // after it: the read in flight may still deliver one chunk (6), the
+  // next one (7) finds the gate and then the close.
+  end.socket.pause();
+  await uni.write(new Uint8Array([6]));
+  await timers.setTimeout(20);
+  await uni.write(new Uint8Array([7]));
+  end.socket.terminate();
+  await timers.setTimeout(20);
+  assert.ok(chunks.length <= 6, `${chunks.length} chunks`);
+  assert.ok(!chunks.includes(7), 'nothing after the close');
+  assert.ok(await end.client.closed);
+});
+
+test('wt socket: bytes on a side stream re-arm idleTimeout like bytes on the control stream', async (t) => {
+  const end = await pair(t, { idleTimeout: 80 });
+  const closes = [];
+  end.socket.on('close', (code) => closes.push(code));
+  const uni = await sideStream(end, 'live', 100);
+  // Nothing on the control stream for 300 ms, a chunk on the side stream
+  // every 20: a session busy with an upload used to idle out.
+  const started = Date.now();
+  while (Date.now() - started < 300) {
+    await uni.write(new Uint8Array([7]));
+    await timers.setTimeout(20);
+  }
+  assert.deepStrictEqual(closes, [], 'an upload in progress is not idle');
+  await waitFor(() => closes.length === 1, 'idle once the upload stopped');
+  assert.deepStrictEqual(closes, [1006]);
+});

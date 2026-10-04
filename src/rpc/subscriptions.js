@@ -26,7 +26,7 @@
 // needs the same primitive to back `subscription.iterate()`, and it is no
 // more subscription-specific than Emitter is.
 const { EventStream, createEventStream } = require('../utils.js');
-const { publicErrorMessage } = require('../transport.js');
+const { publicErrorMessage } = require('./errors.js');
 
 const TRACKED = Symbol.for('wrpc.tracked');
 

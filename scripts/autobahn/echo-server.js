@@ -31,11 +31,17 @@ const server = http.createServer((req, res) => {
   res.end('WebSocket upgrade required');
 });
 
+// AUTOBAHN_DEFLATE=takeover runs the suite with context takeover in both
+// directions plus async deflate over 1 KiB — the queued, asynchronous
+// paths — instead of the default stateless one-shot compression.
+const perMessageDeflate =
+  process.env.AUTOBAHN_DEFLATE === 'takeover' ? { contextTakeover: true, async: { threshold: 1024 } } : true;
+
 const wss = new WebsocketServer({
   server,
   pingInterval: PING_INTERVAL,
   maxBuffer: MAX_BUFFER,
-  perMessageDeflate: true,
+  perMessageDeflate,
 });
 
 wss.on('connection', (ws) => {

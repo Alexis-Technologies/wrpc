@@ -1,6 +1,7 @@
 'use strict';
 
 const crypto = require('node:crypto');
+const { createLoggerWriter } = require('../logging.js');
 const { EventEmitter } = require('node:events');
 
 const { Connection } = require('./connection.js');
@@ -23,8 +24,8 @@ const hasToken = (value, token) => !!value && value.toLowerCase().includes(token
 // A wrpc client OFFERS it; with no app-configured protocols the server
 // echoes it back, which is what stamps the wire with a version both sides
 // can rely on. A peer that offers nothing gets no subprotocol and speaks
-// 1.0 — additive, nothing breaks.
-const WRPC_PROTOCOL = 'wrpc.v1';
+// 1.0 — additive, nothing breaks. Re-exported below, as it always was.
+const { WRPC_V1, WRPC_V2, CARRIER_PROTOCOL } = require('../wire.js');
 
 const writeResponse = (socket, headerLines) => {
   socket.cork();
@@ -55,6 +56,7 @@ const getPathname = (url) => (url ? url.split('?')[0] : '/');
 
 class WebsocketServer extends EventEmitter {
   #options;
+  #log;
   #connections = new Set();
   #heartbeats = new Map(); // { awaiting: boolean }
   #pingTimer;
@@ -63,13 +65,21 @@ class WebsocketServer extends EventEmitter {
   // `server` is optional: without it nothing is bound and upgrades are
   // driven manually through handleUpgrade(req, socket, head) — that is how
   // middleware adapters (express) hook their own 'upgrade' listener.
-  constructor({ server, ...opts } = {}) {
+  constructor({ server, logger = globalThis.console, ...opts } = {}) {
     super();
     if (server !== undefined && (!server || typeof server.on !== 'function')) {
       throw new TypeError('WebsocketServer: options.server must be an http.Server');
     }
+    permessageDeflate.assertDeflateOptions(opts.perMessageDeflate);
+    // Normalized once here, childed per connection below. The `Server` shell
+    // passes its own writer down, and re-wrapping a writer is free, so the
+    // common path allocates nothing extra.
+    this.#log = createLoggerWriter(logger).child({ component: 'ws' });
     this.#options = {
       pingInterval: PING_INTERVAL,
+      // Server connections coalesce the writes of one event-loop turn into
+      // one flush (Connection's `coalesce`); `coalesce: false` opts out.
+      coalesce: true,
       ...opts,
     };
     this.#startHeartbeat();
@@ -83,7 +93,10 @@ class WebsocketServer extends EventEmitter {
 
   // Drives one upgrade by hand. Same guarantees as the bound path: the raw
   // socket gets an error handler before parsing, and a throwing handshake
-  // answers 500 instead of leaving the socket dangling.
+  // answers 500 instead of leaving the socket dangling. The error is said in
+  // the log and emitted only to a listener: an 'error' with none throws, and
+  // the caller here is an http server's 'upgrade' listener — none of the
+  // shells puts a catch around it, so that throw ended the process.
   handleUpgrade(req, socket, head) {
     socket.on('error', () => {
       socket.destroy();
@@ -91,7 +104,8 @@ class WebsocketServer extends EventEmitter {
     try {
       this.#handleUpgrade(req, socket, head);
     } catch (error) {
-      this.emit('error', error);
+      this.#log.error({ err: error, event: 'ws.upgrade' });
+      if (this.listenerCount('error') > 0) this.emit('error', error);
       abort(socket, 500, 'Internal Server Error');
     }
   }
@@ -151,10 +165,14 @@ class WebsocketServer extends EventEmitter {
   #negotiateProtocol(req, socket) {
     const header = req.headers['sec-websocket-protocol'];
     if (!header) return { protocol: '' };
+    // Carrier tokens (wire.js) are DATA riding the offer, never a protocol to
+    // select: they leave the list before the application sees it, and one
+    // that comes back anyway is not echoed — `(offered) => offered.at(-1)`
+    // would otherwise reflect a Bearer credential into the response headers.
     const offered = header
       .split(',')
       .map((token) => token.trim())
-      .filter(Boolean);
+      .filter((token) => token.length > 0 && !CARRIER_PROTOCOL.test(token));
     const { protocols, handleProtocols } = this.#options;
     if (handleProtocols) {
       const selected = handleProtocols(offered, req);
@@ -162,16 +180,18 @@ class WebsocketServer extends EventEmitter {
         abort(socket, 400, 'Subprotocol negotiation failed');
         return null;
       }
-      return { protocol: selected || '' };
+      return { protocol: typeof selected === 'string' && !CARRIER_PROTOCOL.test(selected) ? selected : '' };
     }
     if (protocols) {
       const selected = offered.find((name) => protocols.includes(name));
       return { protocol: selected ?? '' };
     }
-    // No app configuration: answer the wrpc revision when it was offered.
-    // Required, not a nicety — a browser fails the whole connection when it
-    // offered subprotocols and the server selected none.
-    if (offered.includes(WRPC_PROTOCOL)) return { protocol: WRPC_PROTOCOL };
+    // No app configuration: answer the newest wrpc revision that was offered
+    // — a 2.x client offers both, a 1.0 client `wrpc.v1` alone. Required, not
+    // a nicety — a browser fails the whole connection when it offered
+    // subprotocols and the server selected none.
+    if (offered.includes(WRPC_V2)) return { protocol: WRPC_V2 };
+    if (offered.includes(WRPC_V1)) return { protocol: WRPC_V1 };
     return { protocol: '' };
   }
 
@@ -228,6 +248,11 @@ class WebsocketServer extends EventEmitter {
       if (deflate && deflate.malformed) {
         return void abort(socket, 400, 'Invalid Sec-WebSocket-Extensions header');
       }
+      // Per-connection selection: `filter(req)` decides whether THIS peer
+      // gets compression at all — a browser on a slow link yes, a service
+      // in the same datacenter no — by declining the offer, so the peer
+      // learns it from the handshake rather than from a missing RSV1.
+      if (deflate && typeof deflateOptions.filter === 'function' && !deflateOptions.filter(req)) deflate = null;
     }
 
     const extraHeaders = [];
@@ -242,6 +267,7 @@ class WebsocketServer extends EventEmitter {
       isClient: false,
       protocol,
       deflate,
+      logger: this.#log.child({ peer: socket.remoteAddress ?? '' }),
     });
     this.#setupHeartbeat(ws);
     this.emit('connection', ws, req);
@@ -266,4 +292,4 @@ class WebsocketServer extends EventEmitter {
   }
 }
 
-module.exports = { WebsocketServer, MAGIC, WRPC_PROTOCOL };
+module.exports = { WebsocketServer, MAGIC };

@@ -1,6 +1,6 @@
 # Authentication
 
-wrpc's auth story is three seams and one subpath that pre-wires them. This
+wRPC's auth story is three seams and one subpath that pre-wires them. This
 page is the map; the deep material lives where each seam is defined —
 [Sessions](./sessions) for the server half, the
 [client guide](./client#authenticating) for the hooks.
@@ -35,10 +35,12 @@ Three client options make it work end to end:
 cookie is the byte-identical default. Two ready-made strategies ship in
 **`@alexify/wrpc/auth`**:
 
-- **`bearerTransport()`** — `Authorization: Bearer <token>` on http/sse; on
-  browser ws the token rides a `wrpc.bearer.<token>` **subprotocol offer**,
+- **`bearerTransport()`** — `Authorization: Bearer <token>` on http/sse and
+  on ws from Node; on browser ws the token rides a `wrpc.bearer.<token>` **subprotocol offer**,
   a real upgrade header, so it never lands in the connect URL or the access
-  logs that keep URLs.
+  logs that keep URLs. Where the query IS the carrier — `carrier: 'query'`,
+  or WebTransport — a declared `authorization` header is sent as asked and
+  the client logs `declared.exposed` once, because that URL will be kept.
 - **`payloadTransport({ field })`** — a field of the declared
   [`meta`](./metadata) bag, either `x-wrpc-meta` spelling.
 

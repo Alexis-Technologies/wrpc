@@ -1,0 +1,105 @@
+'use strict';
+
+const { OPCODES, RSV1 } = require('./constants.js');
+const { encodeFrame } = require('./frame.js');
+const { compress, compressAsync, MIN_WINDOW_BITS, MAX_WINDOW_BITS } = require('./permessageDeflate.js');
+
+// The engine-owned half of a shared message (see Connection.sendPrepared):
+// one text, encoded to the wire ONCE for however many connections write it.
+//
+// The plain frame is header + utf8 payload in one buffer. The deflated
+// frames are keyed by the recipient's negotiated windowBits: with both
+// no-context-takeover params pinned (permessageDeflate.js) the compressed
+// bytes are a pure function of (payload, windowBits), so two connections
+// that negotiated the same window get byte-identical frames — which is what
+// turns a room fan-out's N deflates into at most one per distinct window.
+// Without this a room of 50 paid 50 deflateRawSync calls per emit
+// (bench/send-path.js, "room fan-out +deflate").
+//
+// Server frames are never masked, so a prepared frame can be written to any
+// number of sockets; a client Connection falls back to its own encoding.
+const SLOTS = MAX_WINDOW_BITS - MIN_WINDOW_BITS + 1;
+
+class PreparedFrames {
+  #plain = null;
+  #deflated = null;
+
+  // `text` is a string (a JSON packet, TEXT frames) or bytes (an
+  // attachments frame, BINARY frames) — one opcode per message, decided here.
+  constructor(text) {
+    if (typeof text === 'string') {
+      this.payload = Buffer.from(text, 'utf8');
+      this.opcode = OPCODES.TEXT;
+    } else {
+      this.payload = Buffer.isBuffer(text) ? text : Buffer.from(text.buffer, text.byteOffset, text.byteLength);
+      this.opcode = OPCODES.BINARY;
+    }
+  }
+
+  get length() {
+    return this.payload.length;
+  }
+
+  plain() {
+    let frame = this.#plain;
+    if (frame === null) frame = this.#plain = encodeFrame(this.opcode, 0, this.payload);
+    return frame;
+  }
+
+  #slots() {
+    let frames = this.#deflated;
+    if (frames === null) {
+      frames = this.#deflated = new Array(SLOTS);
+      for (let i = 0; i < SLOTS; i++) frames[i] = null;
+    }
+    return frames;
+  }
+
+  // `options` are the recipient engine's zlib knobs (level, memLevel). The
+  // slot is keyed by windowBits alone: two engines on different levels in
+  // one process would give the slot the first recipient's bytes — correct
+  // for every recipient (any level inflates the same), just not their
+  // own level — and one PreparedFrames belongs to one broadcast, so the
+  // common case of one engine never sees it.
+  deflated(windowBits, options = null) {
+    const frames = this.#slots();
+    const slot = windowBits - MIN_WINDOW_BITS;
+    let frame = frames[slot];
+    // A slot may hold the waiters of an in-flight async deflate (below);
+    // a synchronous caller then computes the same bytes itself rather than
+    // block on the threadpool.
+    if (frame === null || !Buffer.isBuffer(frame)) {
+      frame = encodeFrame(this.opcode, RSV1, compress(this.payload, windowBits, options));
+      if (frames[slot] === null) frames[slot] = frame;
+    }
+    return frame;
+  }
+
+  // The off-loop variant (`perMessageDeflate.async`): the first recipient
+  // to need a window's frame starts ONE zlib.deflateRaw, and every later
+  // recipient of the same emit waits on that same result — still one
+  // deflate per window per fan-out, just not on the event loop.
+  deflatedAsync(windowBits, options, cb) {
+    const frames = this.#slots();
+    const slot = windowBits - MIN_WINDOW_BITS;
+    const current = frames[slot];
+    if (current !== null) {
+      if (Buffer.isBuffer(current)) return void cb(null, current);
+      return void current.push(cb);
+    }
+    const waiters = [cb];
+    frames[slot] = waiters;
+    compressAsync(
+      this.payload,
+      windowBits,
+      (error, compressed) => {
+        const frame = error ? null : encodeFrame(this.opcode, RSV1, compressed);
+        frames[slot] = frame;
+        for (let i = 0; i < waiters.length; i++) waiters[i](error, frame);
+      },
+      options,
+    );
+  }
+}
+
+module.exports = { PreparedFrames };

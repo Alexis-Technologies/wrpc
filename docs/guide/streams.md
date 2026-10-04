@@ -1,7 +1,7 @@
 # Binary streams
 
 Calls carry JSON. For bytes — a file upload, a video download, anything big
-enough that buffering it would be a mistake — wrpc has a second framing:
+enough that buffering it would be a mistake — wRPC has a second framing:
 **binary chunks**, interleaved on the same connection.
 
 Two objects, one on each end:
@@ -29,6 +29,12 @@ const receiving = client.api.media.receive({ id: uploader.id });
 await uploader.upload();
 console.log(await receiving);
 ```
+
+`upload()` is paced by the transport — a chunk it did not accept waits for
+the stream's `'drain'` — and rejects with a `503` `WrpcError` when the
+connection closes before the last chunk went, instead of resolving with the
+rest gone nowhere; a source that fails mid-way terminates the stream on the
+server, which stops waiting for its end.
 
 ```js
 // server
@@ -154,6 +160,64 @@ fails if RSS grows with it.
 A disconnect terminates every stream the client held. `readable.status` is
 `'active'`, `'closed'` or `'terminated'`; `bytesRead` is what has been
 consumed so far, against the announced `size`.
+
+A connection holds at most [`maxStreams`](./server#rpc-options) streams at
+once (256 by default): a stream is announced by the peer, and holds a
+readable — with what was sent into it — until a handler reads it, so the
+number is the peer's to choose and the cap the server's. Past it the
+`stream` packet answers `429` (`stream.capacity` in the log, at debug).
+
+## Bytes inside a call, not as a stream {#attachments}
+
+A stream is for bytes that do not fit in memory or should not wait for
+their end. Bytes that *do* fit — an avatar, a thumbnail, a signature, a
+serialized model — belong in the call, and they can simply be put there:
+
+```js
+await client.api.files.put({ name: 'avatar.png', body: pngBytes }); // a Uint8Array
+const { thumbnail } = await client.api.files.get({ id }); // arrives as a Uint8Array
+context.client.sendEvent('files/ready', { preview: bytes });
+```
+
+Any typed array, `ArrayBuffer` or `DataView` anywhere in a packet's args,
+result, event data or error details travels as **binary attachments**: the
+packet's JSON goes out with `null` at each byte leaf and an index of where
+the leaves were, the buffers follow in the same frame, and the other end
+puts them back — as fresh `Uint8Array`s that own their bytes. No base64
+(a third more), and none of what `JSON.stringify` makes of a typed array
+otherwise: a `{"0":137,"1":80,…}` object nine times the size that used to
+arrive silently as a plain object. Every transport carries it — a binary
+WebSocket frame, a WebTransport or data-channel message, a broker session frame, a
+worker port, an HTTP body under `application/octet-stream` — except SSE,
+which is text-only: it speaks [revision 1](./sse#what-it-cannot-do) to
+every client, so bytes on it travel as the JSON objects 1.0 made of them.
+
+On by default between two 2.x ends. The frame is
+[revision 2](../reference/protocol#versioning) of the protocol, negotiated
+per connection, so a 1.0 peer is never sent one: its bytes arrive — and are
+sent — as the plain objects 1.0 made of them, and `client.revision` (on the
+client, and on `context.client` in a handler) says which kind of connection
+this is. The cost is a walk of every outbound packet to find the bytes
+(`bench/attachments.js`: tens of nanoseconds on a small callback, a few
+microseconds on a 30 KB one); `attachments: false` skips it and makes that
+end speak revision 1 — JSON, to everyone. Under a packet [codec](./codec)
+it is off by itself — the codec owns the wire. A REST
+result holding bytes needs `codec.rest` and answers `501` without it. A
+room event with bytes crosses the [backplane](./scaling) too: its envelope
+rides as the same frame, base64 under a `wrpc-bin:` marker (or inside the
+sealed envelope, under `rooms.encryption`), and the members on another
+instance receive bytes.
+
+Two things the walk leaves to JSON. An object with a `toJSON()` **is its
+projection**: what `toJSON()` answers is what travels, and a typed array
+kept behind it (a password hash on a user entity, say) is never lifted out
+and sent — put the bytes in the projection if they should go. And a packet
+with a cycle in it answers `false` to the walk and is handed to
+`JSON.stringify`, whose "Converting circular structure" `TypeError` is the
+one you would have seen anyway; the walk itself stays linear on a graph
+with back-references (a parent every child points at), where a walk with
+no memory of what it visited would take 12^16 steps.
+The frame's layout is on the [protocol page](../reference/protocol#binary-chunks).
 
 ## Chunk framing
 

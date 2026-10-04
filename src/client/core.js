@@ -6,13 +6,22 @@
 // Worker proxy in ./proxy.js; ../client.js is the barrel that assembles
 // them, so require paths and the browser field are unchanged.
 
-const { Emitter, jsonParse, isCodec, toKebab, backoffDelay, createEventStream } = require('../utils.js');
+const {
+  Emitter,
+  jsonParse,
+  isCodec,
+  toKebab,
+  backoffDelay,
+  createEventStream,
+  resolveGenerateId,
+} = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { chunkDecode } = require('../chunks.js');
+const { hasBytes, encodeAttachments, decodeAttachments, isAttachmentsFrame } = require('../attachments.js');
 const { WrpcReadable, WrpcWritable } = require('../streams.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createClientTelemetry } = require('../telemetry/client.js');
-const { META_HEADER, META_PREFIX } = require('../wire.js');
+const { META_HEADER, META_PREFIX, HEADERS_PARAM, META_PARAM, WRPC_V1, WRPC_V2 } = require('../wire.js');
 
 const CALL_TIMEOUT = 7 * 1000;
 
@@ -27,9 +36,6 @@ const CONNECT_TIMEOUT_ERROR = { message: 'Connect timeout', code: 408 };
 // What a call that outlived callTimeout rejects with: 408, coded like every
 // other client-produced refusal, so `error.code` checks work here too.
 const REQUEST_TIMEOUT_ERROR = { message: 'Request timeout', code: 408 };
-
-// The wire revision this client speaks, offered as a WebSocket subprotocol.
-const WRPC_PROTOCOL = 'wrpc.v1';
 
 // Monotonic where available; Date.now is the fallback for a host without it.
 const now = () => (typeof performance === 'object' ? performance.now() : Date.now());
@@ -230,6 +236,51 @@ const metaHeaders = (meta, prefixed) => {
   return out;
 };
 
+// Mirrors the server's metaMaxBytes default: past it the server drops the
+// entire declared bag, so refusing here is the difference between a visible
+// warning and a label that silently stopped arriving.
+const META_MAX = 2048;
+
+// The connect URL of a transport whose constructor cannot set real headers
+// — the WHATWG WebSocket by spec, a browser WebTransport too: connection-
+// phase headers and metadata ride as ONE query parameter each. WebTransport
+// has nothing else; ws uses it only by `carrier: 'query'` or under an empty
+// offer (wsHandshake.browser.js). The server reads observed request headers
+// first and these parameters only for names they do not carry. Loud caveat: the connect URL lands in proxy access logs — a
+// device id belongs here, a secret does not.
+const connectUrl = (url, headers, meta, log) => {
+  const at = url.indexOf('?');
+  // ONE budget for the whole query, as the server measures it (the length
+  // of everything after '?', against metaMaxBytes — past it the server
+  // drops the ENTIRE bag): what the url already carries counts, and so does
+  // every separator. Two bags each within the cap used to be sent and
+  // dropped together on the side that could not see it. Headers first,
+  // meta after; what does not fit is refused loudly, and the connection
+  // works un-labelled.
+  let spent = at < 0 ? 0 : url.length - at - 1;
+  const params = [];
+  const declare = (param, bag) => {
+    const value = encodeURIComponent(JSON.stringify(bag));
+    const bytes = (spent > 0 ? 1 : 0) + param.length + 1 + value.length;
+    if (spent + bytes > META_MAX) {
+      return void log?.warn({ event: 'meta.oversize', carrier: 'query', param, bytes: spent + bytes });
+    }
+    spent += bytes;
+    params.push(`${param}=${value}`);
+  };
+  if (headers) {
+    declare(HEADERS_PARAM, headers);
+    // Loud on purpose: the connect URL is what access logs keep.
+    for (const key in headers) {
+      if (key.toLowerCase() !== 'authorization') continue;
+      log?.warn({ event: 'declared.exposed', key: 'authorization', carrier: 'query' });
+      break;
+    }
+  }
+  if (meta) declare(META_PARAM, meta);
+  return params.length > 0 ? `${url}${at < 0 ? '?' : '&'}${params.join('&')}` : url;
+};
+
 // ws and http spell the same endpoint with different schemes; a fallback
 // list crosses that line, so the URL is re-spelled per candidate.
 const mapScheme = (url, name) => {
@@ -244,8 +295,13 @@ class ClientTransport extends Emitter {
   persistent = true;
   // Opt-in: only a transport that can silently die needs an app-level
   // heartbeat. A request/response transport has nothing to keep alive, and
-  // a MessagePort to a Service Worker cannot half-close.
+  // a MessagePort to a worker cannot half-close.
   heartbeat = false;
+  // The protocol revision this connection speaks (protocol.md#versioning).
+  // 2 on the carriers 1.0 never had; a transport a 1.0 peer can be behind
+  // starts at 1 and raises it once its peer said 2 — only then does a
+  // packet with bytes leave as a frame.
+  revision = 2;
 
   constructor(url) {
     super();
@@ -255,8 +311,16 @@ class ClientTransport extends Emitter {
   send(obj) {
     // The codec is handed to the transport at bind time (client core).
     // `obj.meta` rides along so a transport with a header block can mirror
-    // it; a control packet has none, and ws/worker ignore the argument.
-    this.write(this.codec ? this.codec.encode(obj) : JSON.stringify(obj), obj?.meta);
+    // it; a control packet has none, and ws/worker ignore the argument. A
+    // packet holding bytes leaves as an attachments frame (attachments.js)
+    // unless the client opted out or the peer speaks revision 1, where the
+    // bytes are the JSON 1.0 made of them; a codec owns the wire and skips it.
+    const wire = this.codec
+      ? this.codec.encode(obj)
+      : this.attachments !== false && this.revision === 2 && hasBytes(obj)
+        ? encodeAttachments(obj)
+        : JSON.stringify(obj);
+    this.write(wire, obj?.meta);
   }
 
   // Drop the connection without waiting for a close handshake. The default
@@ -281,14 +345,14 @@ class ClientTransport extends Emitter {
   // subscribe's terminal signal is an `end`, not a callback.
   failPackets(data, status) {
     let parsed = null;
-    if (this.codec) {
-      try {
-        parsed = this.codec.decode(data);
-      } catch {
-        parsed = null;
-      }
-    } else {
-      parsed = jsonParse(data);
+    try {
+      if (this.codec) parsed = this.codec.decode(data);
+      // A request with bytes left as an attachments frame: its calls are
+      // parked on their ids like any other's.
+      else if (typeof data === 'string') parsed = jsonParse(data);
+      else if (isAttachmentsFrame(data)) parsed = decodeAttachments(data);
+    } catch {
+      parsed = null;
     }
     if (!parsed) return;
     const packets = Array.isArray(parsed) ? parsed : [parsed];
@@ -387,6 +451,9 @@ class WrpcClient extends Emitter {
   #transportIndex = 0;
   #boundHandlers = null;
   #codec = null;
+  // Binary attachments (attachments.js): on by default, `attachments:
+  // false` sends every packet as JSON as revision 1 did.
+  #attachments = true;
   #codecRest = null;
   #reconnect = RECONNECT;
   #reconnectTimer = null;
@@ -414,6 +481,7 @@ class WrpcClient extends Emitter {
   #metaFormat = 'json';
   #random = Math.random;
   #generateId = generateUUID;
+  #pingSentAt = 0;
   #heartbeat = null;
   #pingTimer = null;
   #pongTimer = null;
@@ -434,6 +502,26 @@ class WrpcClient extends Emitter {
   /** How many reconnect attempts have been made since the last open. */
   get attempt() {
     return this.#attempt;
+  }
+
+  /**
+   * The facts of this connection's encrypted session — `{ protocol, pattern,
+   * cipher, kid, remoteStatic, handshakeHash }` — or null when it is not
+   * one. `handshakeHash` is unique to the handshake and the same on both
+   * ends: what an `authenticate` hook binds a credential to.
+   */
+  get encryption() {
+    return this.#transport.encryption ?? null;
+  }
+
+  /**
+   * The protocol revision of the current connection: 2 when the peer reads
+   * framed messages (bytes travel as bytes), 1 when it is a 1.0 peer — or
+   * this client opted out with `attachments: false` — and bytes travel as
+   * the JSON 1.0 made of them.
+   */
+  get revision() {
+    return this.#transport.revision;
   }
 
   constructor(url, transport, options = {}) {
@@ -517,6 +605,21 @@ class WrpcClient extends Emitter {
       }
       this.#metaFormat = metaFormat;
     }
+    const { carrier } = options;
+    // How the declared bags leave on the ws handshake. 'auto': real request
+    // headers where the platform's WebSocket can set them (Node), subprotocol
+    // carrier tokens where it cannot (a browser). 'protocol' forces the
+    // tokens, 'query' the connect-URL parameters — for an intermediary that
+    // mangles Sec-WebSocket-Protocol, at the price of labels in access logs.
+    if (carrier !== undefined) {
+      if (carrier !== 'auto' && carrier !== 'protocol' && carrier !== 'query') {
+        throw new TypeError("WrpcClient: options.carrier must be 'auto', 'protocol' or 'query'");
+      }
+      // A token needs an offer the server can answer next to it.
+      if (carrier === 'protocol' && options.protocols?.length === 0) {
+        throw new TypeError("WrpcClient: carrier 'protocol' cannot ride an empty `protocols` offer");
+      }
+    }
     // Off by default, unlike the server: a client that printed on every
     // reconnect would be noise in a browser console nobody asked for.
     this.#log = createLoggerWriter(logger);
@@ -547,10 +650,15 @@ class WrpcClient extends Emitter {
       this.#codecRest = codec.rest ?? null;
     }
     if (proxy) this.#proxyPacket = proxy;
+    // A packet codec owns the wire, so attachments are off under one.
+    this.#attachments = options.attachments !== false && this.#codec === null;
     if (random) this.#random = random; // deterministic jitter in tests
     // Packet, subscription and stream ids; uuid v4 unless the app brings
-    // its own (cuid/ulid/a test counter). Correlation ids, not secrets.
-    if (typeof generateId === 'function') this.#generateId = generateId;
+    // its own (cuid/ulid/a test counter). Correlation ids, not secrets. A
+    // bad generator is a TypeError here, as on every other option since 2.0.
+    if (generateId !== undefined && generateId !== null) {
+      this.#generateId = resolveGenerateId(generateId, 'WrpcClient').generate;
+    }
     this.#reconnect = normalizeReconnect(options);
     this.#heartbeat = normalizeHeartbeat(options);
     this.#batch = normalizeBatch(options);
@@ -565,19 +673,94 @@ class WrpcClient extends Emitter {
   // WrpcClient.connections before the transport was reached, and a failing
   // authenticate arms the reconnect timer — close() undoes both, so the
   // caller who never received the client has nothing running for it.
+  // The first connect walks the fallback list on its own: a candidate whose
+  // open() rejects outright — no WebTransport in this runtime, a refused
+  // upgrade — hands over to the next one at once, with no reconnect budget
+  // to burn first, because nothing was ever connected to recover. Only the
+  // last candidate's rejection is connect()'s.
   static async #openOrClose(client) {
-    try {
-      await client.open();
-    } catch (error) {
-      client.close();
-      throw error;
+    for (;;) {
+      try {
+        await client.open();
+        return client;
+      } catch (error) {
+        // A candidate that never opened hands over to the next. A hook that
+        // refused AFTER the transport opened is the application's verdict
+        // on the connection, not the transport's failure: connect() rejects
+        // — it used to advance with `#connected` still set from the first
+        // candidate, so the next one opened as a "reconnect", the hook ran
+        // unawaited, and connect() resolved unauthenticated.
+        const beforeOpen = !client.#connected;
+        client.#resetSession();
+        if (beforeOpen && client.#advanceTransport()) continue;
+        client.close();
+        throw error;
+      }
     }
-    return client;
+  }
+
+  // A client that was handed `encryption` never speaks plaintext: every
+  // transport it may use — the fallback candidates included, checked up
+  // front like their names — must be one that carries it (`static encrypts`).
+  static #checkEncryption(options, name, Transport) {
+    const { encryption } = options;
+    if (encryption === undefined || encryption === null) return;
+    // A transport over a shared carrier (the broker binding) seals under a
+    // keyring instead of a handshake, and says so: `encrypts = 'keys'`.
+    if (Transport.encrypts === 'keys' && typeof encryption === 'object' && encryption.keys !== undefined) return;
+    if (typeof encryption !== 'object' || typeof encryption.secure !== 'function') {
+      throw new TypeError("options.encryption must come from createEncryption() ('@alexify/wrpc/encryption')");
+    }
+    // A transport that seals each request (http, sse) needs the server's
+    // key before the first one, which only some patterns have: said here,
+    // for every fallback candidate, not on the day ws is unreachable.
+    if (Transport.encrypts === 'request') {
+      if (typeof encryption.fetch === 'function') return;
+      throw new TypeError(`options.encryption has no serverKey to seal a request to — the ${name} transport needs one`);
+    }
+    if (Transport.encrypts !== true) {
+      throw new TypeError(`Transport '${name}' cannot carry options.encryption — and plaintext is not a fallback`);
+    }
+  }
+
+  // The other half of `static encrypts = true`, checked by deed: a session
+  // transport asked to encrypt has `encryption` set by the time it says
+  // 'open'. A static is inherited, so a subclass with an open() of its own
+  // passes the check above and may still open a session nobody sealed —
+  // refused here, before 'open' is announced, a hook presents a credential
+  // or a packet leaves. Terminal (out of the reconnect cycle before the
+  // terminate reports its close): the next attempt would be the same. The
+  // connection is counted in so the close handler's count out balances, and
+  // the rejection is what open() re-raises — it awaits #opened.
+  #refuseUnsealed() {
+    const transport = this.#transport;
+    if (typeof this.#options.encryption?.secure !== 'function') return false;
+    if (transport.constructor.encrypts !== true || transport.encryption) return false;
+    WrpcClient.connections.delete(this);
+    this.#otel.recordConnection(1);
+    try {
+      transport.terminate();
+    } catch {
+      // Already dead.
+    }
+    this.#resetSession();
+    this.#opened = Promise.reject(new TypeError('The transport opened a session it did not encrypt'));
+    this.#opened.catch(() => {});
+    return true;
   }
 
   static async connect(url, options = {}) {
     if (options.worker) {
-      const transport = WrpcClient.transport.event.getInstance(url);
+      // The port to a worker is in-process; the hop that leaves the machine
+      // is the one WrpcClientProxy opens, and that is where the option goes.
+      if (options.encryption) {
+        throw new TypeError('options.encryption belongs to the WrpcClientProxy in the worker, not to its page');
+      }
+      // One transport per client, never the class-level getInstance(): a
+      // shared one made a second connect() to ANOTHER worker reuse the first
+      // MessageChannel, and one client's close() close the other's port.
+      const EventTransport = WrpcClient.transport.event;
+      const transport = new EventTransport(url);
       const client = new WrpcClient(url, transport, options);
       return WrpcClient.#openOrClose(client);
     }
@@ -598,6 +781,7 @@ class WrpcClient extends Emitter {
         if (!isClientTransport(WrpcClient.transport[candidate])) {
           throw new TypeError(`Transport '${candidate}' does not satisfy the ClientTransport contract`);
         }
+        WrpcClient.#checkEncryption(options, candidate, WrpcClient.transport[candidate]);
       }
     }
     const name = Array.isArray(options.transport)
@@ -610,6 +794,7 @@ class WrpcClient extends Emitter {
     if (!isClientTransport(Transport)) {
       throw new TypeError(`Transport '${name}' does not satisfy the ClientTransport contract`);
     }
+    WrpcClient.#checkEncryption(options, name, Transport);
     const transport = new Transport(mapScheme(url, name));
     const client = new WrpcClient(url, transport, options);
     return WrpcClient.#openOrClose(client);
@@ -634,12 +819,16 @@ class WrpcClient extends Emitter {
     if (this.#calls.size === 0 && this.#pending.length === 0) return;
     const entries = Array.from(this.#calls.values());
     this.#calls.clear();
+    this.#lanes.clear();
+    if (this.#deadlineTimer !== null) {
+      clearTimeout(this.#deadlineTimer);
+      this.#deadlineTimer = null;
+    }
     this.#pending.length = 0;
     this.#pendingBytes = 0;
     this.#cancelled.clear();
     for (const entry of entries) {
-      clearTimeout(entry.timeout);
-      entry.release();
+      entry.release?.();
       entry.reject(new WrpcError(CONNECTION_CLOSED_ERROR));
     }
   }
@@ -651,9 +840,7 @@ class WrpcClient extends Emitter {
   #failCall(id) {
     const entry = this.#calls.get(id);
     if (!entry) return;
-    this.#calls.delete(id);
-    clearTimeout(entry.timeout);
-    entry.release();
+    this.#forget(entry, id);
     entry.reject(new WrpcError(CONNECTION_CLOSED_ERROR));
   }
 
@@ -684,13 +871,20 @@ class WrpcClient extends Emitter {
     // seam: a transport that refuses something (an oversize meta block) has
     // to be able to say so where the application can see it.
     if (this.#codec) this.#transport.codec = this.#codec;
+    if (!this.#attachments) this.#transport.attachments = false;
     this.#transport.log = this.#log;
+    // A transport that mints ids of its own (the broker transport's session
+    // and correlation ids) gets the generator this client already resolved,
+    // rather than re-resolving the same option in a stricter mode and
+    // disagreeing with it about what a bad value means.
+    this.#transport.generateId = this.#generateId;
     const bind = (event, handler) => {
       this.#boundHandlers ??= [];
       this.#boundHandlers.push([event, handler]);
       this.#transport.on(event, handler);
     };
     bind('open', () => {
+      if (this.#refuseUnsealed()) return;
       clearTimeout(this.#reconnectTimer);
       this.#reconnectTimer = null;
       const attempts = this.#attempt;
@@ -759,10 +953,25 @@ class WrpcClient extends Emitter {
       this.#escalate(error, 'transport.error');
     });
 
+    // The client IS the transport a WrpcWritable holds (createStream), so
+    // a flow-controlled transport's 'drain' has to be re-announced here or
+    // the producer parked on it never wakes.
+    bind('drain', () => {
+      this.emit('drain').catch((error) => this.#escalate(error, 'listener.drain'));
+    });
+
     bind('message', (data) => {
       const escalate = (error) => this.#escalate(error, 'message');
-      if (typeof data === 'string') this.#handlePacket(data).catch(escalate);
-      else this.#handleBinary(data).catch(escalate);
+      if (typeof data === 'string') return void this.#handlePacket(data).catch(escalate);
+      // Bytes: a stream chunk, or — under the 0x00 marker no chunk has — an
+      // attachments frame carrying a packet. Classified synchronously, so
+      // a packet and the chunk behind it stay in wire order; the ws
+      // transport sets binaryType to 'arraybuffer' for exactly this.
+      const view = data instanceof Uint8Array ? data : data instanceof ArrayBuffer ? new Uint8Array(data) : null;
+      if (view !== null && this.#attachments && isAttachmentsFrame(view)) {
+        return void this.#handleFrame(view).catch(escalate);
+      }
+      this.#handleBinary(data).catch(escalate);
     });
   }
 
@@ -800,6 +1009,7 @@ class WrpcClient extends Emitter {
       // Same reasoning, same ordering, as the restore path below: put the
       // pre-open attempt count back BEFORE terminate() synchronously hands
       // it to the reconnect scheduler.
+      this.#unproven();
       if (this.#attempt === 0) this.#attempt = attempts;
       if (this.active) this.#transport.terminate();
       throw error;
@@ -811,6 +1021,18 @@ class WrpcClient extends Emitter {
     // is an observer, and one that throws must not take the restore with it.
     this.emit('open').catch((error) => this.#escalate(error, 'listener.open'));
     if (reconnected) await this.#restore(attempts);
+  }
+
+  // A connection that failed its credential or its restore never proved
+  // itself, so its stability window must not zero the attempt count while
+  // the close terminate() starts is still on its way: a ws transport still
+  // settling its open (a hook that throws synchronously runs inside the
+  // 'open' emit) can only begin a close handshake, and 'close' arrives when
+  // the peer answers — past stableAfter on a slow runner, and the backoff
+  // went back to minDelay every time.
+  #unproven() {
+    clearTimeout(this.#stableTimer);
+    this.#stableTimer = null;
   }
 
   async #restore(attempts) {
@@ -833,6 +1055,7 @@ class WrpcClient extends Emitter {
       // and that is where the scheduler reads it. The guard covers the other
       // ordering: a socket that died on its own already advanced the
       // counter, and that number is the fresher one.
+      this.#unproven();
       if (this.#attempt === 0) this.#attempt = attempts;
       // Still "open" from the transport's point of view — force the cycle.
       if (this.active) this.#transport.terminate();
@@ -964,6 +1187,9 @@ class WrpcClient extends Emitter {
     } catch (error) {
       return void this.#escalate(error, 'heartbeat.ping');
     }
+    // Only when something is listening: `now()` on an idle client, every
+    // heartbeat interval forever, is not a cost telemetry-off should pay.
+    this.#pingSentAt = this.#otel.enabled ? now() : 0;
     this.#pongTimer = unref(
       setTimeout(() => {
         this.#pongTimer = null;
@@ -976,6 +1202,13 @@ class WrpcClient extends Emitter {
     if (!this.#pongTimer) return; // unsolicited pong: nothing was waiting
     clearTimeout(this.#pongTimer);
     this.#pongTimer = null;
+    // AFTER the guard above, deliberately: an unsolicited pong has no ping
+    // to measure against and would record a garbage sample from whenever
+    // the last one happened to go out.
+    if (this.#pingSentAt > 0) {
+      this.#otel.recordHeartbeat('ok', now() - this.#pingSentAt);
+      this.#pingSentAt = 0;
+    }
     if (this.#heartbeat && this.active) this.#armPing();
   }
 
@@ -983,6 +1216,11 @@ class WrpcClient extends Emitter {
   // the normal reconnect path takes over.
   #onHeartbeatTimeout() {
     this.#log.warn({ event: 'heartbeat.timeout', url: this.url });
+    // Counted, never timed: there is no round trip here, and inventing one
+    // from the timeout would put a spike into the latency percentiles that
+    // says more about the configured timeout than about the network.
+    this.#otel.recordHeartbeat('timeout');
+    this.#pingSentAt = 0;
     // Like every lifecycle emit: a throwing listener on a documented event
     // must surface through #escalate, not as an unhandled rejection.
     this.emit('heartbeat-timeout').catch((error) => this.#escalate(error, 'listener.heartbeat-timeout'));
@@ -1063,12 +1301,21 @@ class WrpcClient extends Emitter {
     await opened;
   }
 
-  close() {
+  // What close() and a failed first connect share: the timers, the pending
+  // authenticate hand-off, and the connected/attempt state — so the next
+  // open() is a first open, never a reconnect of a connection that was.
+  #resetSession() {
     clearTimeout(this.#reconnectTimer);
     this.#reconnectTimer = null;
     clearTimeout(this.#stableTimer);
     this.#stableTimer = null;
     this.#opened = null;
+    this.#connected = false;
+    this.#attempt = 0;
+  }
+
+  close() {
+    this.#resetSession();
     this.#stopHeartbeat();
     // Anything still queued leaves before the socket does; a call whose
     // packet never shipped would otherwise wait out its whole timeout.
@@ -1079,10 +1326,9 @@ class WrpcClient extends Emitter {
     // reads true by the time it is asked.
     const ended = Array.from(this.#subscriptions.values());
     this.#subscriptions.clear();
-    // An explicit close ends the session: a later open() is a fresh start,
-    // not a reconnect, so it must not replay 'reconnect'.
-    this.#connected = false;
-    this.#attempt = 0;
+    // An explicit close ends the session (#resetSession above): a later
+    // open() is a fresh start, not a reconnect, so it must not replay
+    // 'reconnect'.
     WrpcClient.connections.delete(this);
     // An explicit close settles everything in flight the same way a dropped
     // connection does — flushed packets included, since their answers can
@@ -1115,8 +1361,12 @@ class WrpcClient extends Emitter {
     record.stream?.end();
   }
 
+  // Returns the transport's backpressure signal (false = above its
+  // high-water mark) so a WrpcWritable can park on 'drain' instead of
+  // buffering without limit; a transport that reports nothing counts as
+  // accepted (undefined !== false).
   write(data) {
-    this.#transport.write(data);
+    return this.#transport.write(data);
   }
 
   send(data) {
@@ -1127,6 +1377,12 @@ class WrpcClient extends Emitter {
   }
 
   #enqueue(packet) {
+    // A call holding bytes cannot join a text batch: what is pending
+    // leaves first, in order, and the call goes on its own frame.
+    if (this.#attachments && hasBytes(packet)) {
+      this.flush();
+      return void this.#transport.send(packet);
+    }
     // Serialized ONCE: the same text is the size accounting and the wire
     // bytes — the old path stringified for the length, dropped the string,
     // and paid stringify again at flush. Sizes are UTF-16 code units
@@ -1240,9 +1496,26 @@ class WrpcClient extends Emitter {
     const { name = 'blob', size } = blob;
     const consumer = this.createStream(name, size);
     const { id } = consumer;
+    // Paced by the transport — a chunk it did not accept waits for the
+    // stream's 'drain' — and a connection that closes mid-way is the 503 a
+    // call gets, not a resolve with the rest gone nowhere. A source that
+    // fails terminates the stream, so the server stops waiting for its end.
+    // Once: a second run wrote into the stream the first had ended and waited
+    // for a 'drain' that never comes.
+    let started = false;
     const upload = async () => {
-      for await (const chunk of blob.stream()) {
-        consumer.write(chunk);
+      if (started) throw new Error('upload() runs once — its stream was already used; create another uploader');
+      started = true;
+      try {
+        for await (const chunk of blob.stream()) {
+          if (!consumer.write(chunk) && !consumer.closed) {
+            await new Promise((resolve) => consumer.once('drain', resolve));
+          }
+          if (consumer.closed) throw new WrpcError(CONNECTION_CLOSED_ERROR);
+        }
+      } catch (error) {
+        consumer.terminate();
+        throw error;
       }
       consumer.end();
     };
@@ -1265,6 +1538,26 @@ class WrpcClient extends Emitter {
       if (this.#proxyPacket) return void this.#proxyPacket(data, null);
       throw new Error('Invalid JSON packet');
     }
+    return this.#handleParsed(data, packet);
+  }
+
+  // An attachments frame: its packet, bytes restored, handled exactly as
+  // the same packet parsed from text would be.
+  async #handleFrame(view) {
+    let packet;
+    try {
+      packet = decodeAttachments(view);
+    } catch (error) {
+      if (this.#proxyPacket) return void this.#proxyPacket(view, null);
+      throw error;
+    }
+    return this.#handleParsed(view, packet);
+  }
+
+  async #handleParsed(data, packet) {
+    // The answer to a call is the commonest inbound packet: settle it here,
+    // before the batch and heartbeat checks and without the #dispatch hop.
+    if (packet.type === 'callback' && packet.id && !this.#proxyPacket) return void this.#settle(packet);
     // A batch frame answers several packets at once; each one is dispatched
     // exactly as it would have been on its own.
     if (Array.isArray(packet)) {
@@ -1311,9 +1604,7 @@ class WrpcClient extends Emitter {
     // rejected the moment it aborted, so the ack is expected, not an error.
     if (!call && this.#cancelled.delete(id)) return;
     if (!call) throw new Error(`Callback ${id} not found`);
-    this.#calls.delete(id);
-    clearTimeout(call.timeout);
-    call.release?.();
+    this.#forget(call, id);
     if (packet.error) return void call.reject(new WrpcError(packet.error));
     call.resolve(packet.result);
   }
@@ -1350,8 +1641,12 @@ class WrpcClient extends Emitter {
         .then(() => {
           if (this.active && this.#subscriptions.has(id)) this.#openSubscription(record);
         })
-        .catch(() => {
+        .catch((error) => {
           // The refresh's own failure: deliver the refusal the feed earned.
+          // Logged like its call-side twin (`refresh.failed`): a feed dying
+          // for want of a credential looks, from the application, exactly
+          // like a feed with nothing to say.
+          this.#log.warn({ err: error, event: 'subscription.refresh', id });
           if (this.#subscriptions.delete(id)) this.#failSubscription(record, packet.error);
         });
       return;
@@ -1548,13 +1843,27 @@ class WrpcClient extends Emitter {
     this.#unitMethods.set(unit, new Set(methodNames));
   }
 
-  /** Sends a fire-and-forget event to the server; `name` is 'unit/event'. */
-  sendEvent(name, data) {
+  /**
+   * Sends a fire-and-forget event to the server; `name` is 'unit/event'.
+   * `unreliable: true` lets a transport with datagrams (WebTransport) send
+   * it as one — lossy and unordered, for state a later event supersedes,
+   * a cursor or a position — and falls back to the ordinary reliable send
+   * where the transport has none or the packet does not fit in one.
+   */
+  sendEvent(name, data, options = null) {
     const packet = { type: 'event', name, data };
     // Fire-and-forget still deserves a parent: the server opens a CONSUMER
     // span for the event, and this is what links it to the caller's trace.
     this.#otel.inject(packet);
+    if (options?.unreliable === true && this.#sendUnreliable(packet)) return;
     this.send(packet);
+  }
+
+  #sendUnreliable(packet) {
+    const transport = this.#transport;
+    if (typeof transport.writeUnreliable !== 'function' || !transport.active) return false;
+    const text = transport.codec ? transport.codec.encode(packet) : JSON.stringify(packet);
+    return transport.writeUnreliable(text) === true;
   }
 
   // `unit` is the introspection unit key — 'auth' or the pinned 'auth.v1' —
@@ -1812,44 +2121,125 @@ class WrpcClient extends Emitter {
   #dispatchCall(target, packet, id, signal, callTimeout) {
     return new Promise((resolve, reject) => {
       if (signal?.aborted) return void reject(new WrpcError(CANCELLED_ERROR));
-      const timeout = setTimeout(
-        () => {
-          if (!this.#calls.has(id)) return;
-          this.#calls.delete(id);
-          this.#unqueue(id);
-          release();
-          reject(new WrpcError(REQUEST_TIMEOUT_ERROR));
-        },
-        callTimeout > 0 ? callTimeout : this.#callTimeout,
-      );
-      const onAbort = () => {
-        if (!this.#calls.has(id)) return;
-        this.#calls.delete(id);
-        clearTimeout(timeout);
-        // Still queued: drop it instead of racing a cancel ahead of the
-        // call. And a request/response transport cannot carry a cancel at
-        // all — sending one there only earns a 400 nobody can route.
-        if (!this.#unqueue(id) && this.active && this.#transport.persistent !== false) {
-          this.#cancelled.add(id);
-          this.send({ type: 'cancel', id });
-        }
-        reject(new WrpcError(CANCELLED_ERROR));
-      };
-      const release = () => signal?.removeEventListener('abort', onAbort);
-      signal?.addEventListener('abort', onAbort, { once: true });
-      this.#calls.set(id, { resolve, reject, timeout, release });
+      const bucket = this.#armCall(id, callTimeout > 0 ? callTimeout : this.#callTimeout);
+      let release = null;
+      if (signal) {
+        const onAbort = () => {
+          const call = this.#calls.get(id);
+          if (!call) return;
+          this.#forget(call, id);
+          // Still queued: drop it instead of racing a cancel ahead of the
+          // call. And a request/response transport cannot carry a cancel at
+          // all — sending one there only earns a 400 nobody can route.
+          if (!this.#unqueue(id) && this.active && this.#transport.persistent !== false) {
+            this.#cancelled.add(id);
+            this.send({ type: 'cancel', id });
+          }
+          reject(new WrpcError(CANCELLED_ERROR));
+        };
+        release = () => signal.removeEventListener('abort', onAbort);
+        signal.addEventListener('abort', onAbort, { once: true });
+      }
+      const call = { resolve, reject, bucket, release };
+      this.#calls.set(id, call);
       try {
         this.send(packet);
       } catch (error) {
         // A dead transport throws synchronously ('Not connected'). Reject
         // CODED like every other dead-connection path — and clean up now,
-        // or the armed timer would hold the entry for the full callTimeout.
-        this.#calls.delete(id);
-        clearTimeout(timeout);
-        release();
+        // or the armed deadline would hold the entry for the full callTimeout.
+        this.#forget(call, id);
         reject(new WrpcError({ message: error?.message ?? 'Connection closed', code: 503 }));
       }
     });
+  }
+
+  // --- Call deadlines --------------------------------------------------
+  //
+  // One timer for every call in flight instead of a setTimeout per call.
+  // Calls are bucketed by deadline, one lane per distinct timeout value
+  // (the default callTimeout is one lane; a per-call `timeout` gets its
+  // own), each lane quantized to a bucket width of 1/32 of its timeout: a
+  // call times out between its deadline and deadline + width — never
+  // early, and 3 % late at most. Within a lane deadlines are monotonic, so
+  // a lane's buckets stay ordered by insertion and the earliest is the
+  // first entry. Settling a call removes it from its bucket at once, so an
+  // idle client holds no timer (bench/browser/calls.js, bench/bench.js).
+  #lanes = new Map();
+  #deadlineTimer = null;
+  #deadlineAt = 0;
+
+  #armCall(id, ms) {
+    let lane = this.#lanes.get(ms);
+    if (lane === undefined) {
+      lane = { ms, width: Math.max(1, Math.floor(ms / 32)), buckets: new Map() };
+      this.#lanes.set(ms, lane);
+    }
+    const end = Math.ceil((Date.now() + ms) / lane.width) * lane.width;
+    let bucket = lane.buckets.get(end);
+    if (bucket === undefined) {
+      bucket = new Set();
+      bucket.lane = lane;
+      bucket.end = end;
+      lane.buckets.set(end, bucket);
+    }
+    bucket.add(id);
+    if (this.#deadlineTimer === null || end < this.#deadlineAt) this.#armDeadline(end);
+    return bucket;
+  }
+
+  #armDeadline(at) {
+    if (this.#deadlineTimer !== null) clearTimeout(this.#deadlineTimer);
+    this.#deadlineAt = at;
+    this.#deadlineTimer = setTimeout(this.#onDeadline, Math.max(0, at - Date.now()));
+  }
+
+  #onDeadline = () => {
+    this.#deadlineTimer = null;
+    const now = Date.now();
+    let next = 0;
+    for (const lane of this.#lanes.values()) {
+      for (const bucket of lane.buckets.values()) {
+        if (bucket.end > now) {
+          if (next === 0 || bucket.end < next) next = bucket.end;
+          break;
+        }
+        lane.buckets.delete(bucket.end);
+        for (const id of bucket) this.#timeoutCall(id);
+      }
+      if (lane.buckets.size === 0) this.#lanes.delete(lane.ms);
+    }
+    if (next !== 0) this.#armDeadline(next);
+  };
+
+  #timeoutCall(id) {
+    const call = this.#calls.get(id);
+    if (!call) return;
+    this.#calls.delete(id);
+    this.#unqueue(id);
+    call.release?.();
+    call.reject(new WrpcError(REQUEST_TIMEOUT_ERROR));
+  }
+
+  // Drops a call's bookkeeping: its map entry, its deadline bucket (and the
+  // lane and timer when they empty — an idle client keeps nothing armed)
+  // and its abort listener.
+  #forget(call, id) {
+    this.#calls.delete(id);
+    const { bucket } = call;
+    bucket.delete(id);
+    if (bucket.size === 0) {
+      const { lane } = bucket;
+      lane.buckets.delete(bucket.end);
+      if (lane.buckets.size === 0) {
+        this.#lanes.delete(lane.ms);
+        if (this.#lanes.size === 0 && this.#deadlineTimer !== null) {
+          clearTimeout(this.#deadlineTimer);
+          this.#deadlineTimer = null;
+        }
+      }
+    }
+    call.release?.();
   }
 
   /**
@@ -2015,15 +2405,29 @@ class WrpcClient extends Emitter {
   }
 }
 
+// The status a transport hands the calls a refused SEALED request carried
+// (src/encryption/http.js throws EncryptionRefusedError): only the closed
+// set the sealing layer vouches for — a retired key, a clock, a required
+// mode — because the outer status of anything else is unauthenticated.
+// Here and not in encryption/http.js: the transports must not load HPKE.
+const refusedStatus = (error) =>
+  error?.code === 'ENCRYPTION_REFUSED' && (error.status === 400 || error.status === 409 || error.status === 426)
+    ? error.status
+    : 503;
+
 module.exports = {
+  refusedStatus,
   WrpcClient,
   WrpcError,
   ClientTransport,
   isClientTransport,
-  WRPC_PROTOCOL,
+  WRPC_V1,
+  WRPC_V2,
   CALL_TIMEOUT,
   normalizeReconnect,
   metaHeaders,
+  connectUrl,
+  META_MAX,
   unref,
   toByteView,
 };

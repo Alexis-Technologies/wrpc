@@ -8,16 +8,9 @@ const assert = require('node:assert');
 const { WebsocketServer } = require('#ws');
 const { Server, WrpcClient, defineRouter, procedure } = require('../index.js');
 const { backoffDelay, jsonParse } = require('../src/utils.js');
+const { waitFor } = require('./helpers/wait.js');
 
 const noop = () => {};
-
-const waitFor = async (predicate, message = 'condition never held') => {
-  for (let i = 0; i < 100; i++) {
-    if (predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
-};
 
 const router = (extra = {}) =>
   defineRouter({
@@ -339,7 +332,7 @@ test('heartbeat: only a transport that can die silently gets one', () => {
   const { ws: WsTransport, http: HttpTransport, event: EventTransport } = WrpcClient.transport;
   assert.strictEqual(new WsTransport('ws://127.0.0.1:1').heartbeat, true);
   assert.strictEqual(new HttpTransport('http://127.0.0.1:1').heartbeat, false);
-  assert.strictEqual(EventTransport.getInstance('http://127.0.0.1:1').heartbeat, false);
+  assert.strictEqual(new EventTransport('http://127.0.0.1:1').heartbeat, false);
 });
 
 // ---------------------------------------------------------------------------
@@ -932,6 +925,87 @@ test('authenticate: a failing hook walks the backoff and emits authenticate-fail
   assert.ok(failed[0].attempts >= 1);
 });
 
+test('authenticate: a refused connection never turns stable, however late its close arrives', async (t) => {
+  // A hook that throws synchronously runs inside the transport's 'open'
+  // emit, where the ws transport is still settling its open: terminate()
+  // there can only start a close handshake, and 'close' comes when the
+  // server answers it. The stability window (stableAfter defaults to
+  // minDelay) used to run out first on a slow runner and zero the attempt
+  // count — the backoff started over: [10, 20, 10, 20, 40]. This transport
+  // reports every forced close late, so the race is not left to the runner.
+  const instances = [];
+  class LateClose extends Emitter {
+    constructor(url) {
+      super();
+      this.url = url;
+      this.persistent = true;
+      this.heartbeat = false;
+      this.active = false;
+      instances.push(this);
+    }
+
+    async open() {
+      this.active = true;
+      this.emit('open');
+    }
+
+    write() {
+      return true;
+    }
+
+    send() {
+      return true;
+    }
+
+    close() {
+      this.terminate();
+    }
+
+    terminate() {
+      if (!this.active) return;
+      this.active = false;
+      setTimeout(() => this.emit('close'), 40);
+    }
+
+    drop() {
+      this.active = false;
+      this.emit('close');
+    }
+
+    online() {}
+
+    offline() {}
+  }
+  WrpcClient.transport.lateclose = LateClose;
+  t.after(() => delete WrpcClient.transport.lateclose);
+
+  let allow = true;
+  const client = await WrpcClient.connect('fake://x', {
+    transport: ['lateclose'],
+    heartbeat: false,
+    logger: false,
+    reconnect: { minDelay: 10, maxDelay: 1000, factor: 2, jitter: false, retries: 3 },
+    authenticate: () => {
+      if (!allow) throw new Error('credential rejected');
+    },
+  });
+  t.after(() => void client.close());
+
+  const delays = [];
+  let exhausted = false;
+  client.on('reconnecting', ({ delay }) => void delays.push(delay));
+  client.on('reconnect-failed', () => {
+    exhausted = true;
+  });
+
+  allow = false;
+  instances.at(-1).drop();
+  // Bounded: a counter that keeps going back to zero never exhausts.
+  await waitFor(() => exhausted || delays.length > 3, 'the reconnect cycle stalled');
+  assert.deepStrictEqual(delays, [10, 20, 40]);
+  assert.strictEqual(exhausted, true);
+});
+
 test('authenticate: a first-connect failure rejects connect() and leaves no zombie', async (t) => {
   const { port } = await authBoot(t, { introspection: true });
   const before = WrpcClient.connections.size;
@@ -972,6 +1046,66 @@ test('authenticate: a hook that closes the client stops the retry cycle', async 
   const settled = reconnecting.length;
   await timers.setTimeout(60);
   assert.strictEqual(reconnecting.length, settled, 'the cycle kept scheduling after close()');
+});
+
+test('authenticate: a hook refusing the FIRST candidate rejects connect() — it does not resolve unauthenticated on the next', async (t) => {
+  const a = registerFake('authfirst-a');
+  const b = registerFake('authfirst-b');
+  t.after(() => {
+    a.teardown();
+    b.teardown();
+  });
+  const before = WrpcClient.connections.size;
+  let calls = 0;
+  await assert.rejects(
+    WrpcClient.connect('fake://x', {
+      transport: ['authfirst-a', 'authfirst-b'],
+      heartbeat: false,
+      logger: false,
+      reconnect: { minDelay: 5, maxDelay: 10, jitter: false, retries: 2 },
+      authenticate: () => {
+        calls++;
+        throw new Error('bad credentials');
+      },
+    }),
+    /bad credentials/,
+  );
+  // The hook's verdict is the application's: no second candidate was
+  // tried behind its back, nothing was kept, nothing reconnects.
+  assert.strictEqual(calls, 1);
+  assert.strictEqual(b.instances.length, 0, 'candidate B was never opened');
+  assert.strictEqual(a.instances[0].active, false, 'candidate A was closed');
+  assert.strictEqual(WrpcClient.connections.size, before);
+  await timers.setTimeout(40);
+  assert.strictEqual(a.instances.length, 1, 'no reconnect cycle survived the rejection');
+  assert.strictEqual(b.instances.length, 0);
+
+  // A candidate that never OPENS, on the other hand, hands over — and the
+  // hook is awaited on the one that did before connect() resolves.
+  const dead = registerFake('deadfirst-a');
+  const live = registerFake('deadfirst-b');
+  t.after(() => {
+    dead.teardown();
+    live.teardown();
+  });
+  WrpcClient.transport['deadfirst-a'].prototype.open = async function open() {
+    throw new Error('unreachable');
+  };
+  let authenticated = false;
+  const client = await WrpcClient.connect('fake://x', {
+    transport: ['deadfirst-a', 'deadfirst-b'],
+    heartbeat: false,
+    logger: false,
+    reconnect: { minDelay: 5, maxDelay: 10, jitter: false, retries: 1 },
+    authenticate: async () => {
+      await timers.setTimeout(5);
+      authenticated = true;
+    },
+  });
+  t.after(() => void client.close());
+  assert.strictEqual(authenticated, true, 'connect() resolved authenticated, on candidate B');
+  assert.strictEqual(client.active, true);
+  assert.strictEqual(live.instances[0].active, true);
 });
 
 test('authenticate: exhausted retries fall through to the next transport candidate', async (t) => {
@@ -1582,6 +1716,22 @@ test('a call issued while the transport is down rejects with a coded 503', async
   const started = Date.now();
   await assert.rejects(client.api.test.hello({}), (error) => error.code === 503 && /Not connected/.test(error.message));
   assert.ok(Date.now() - started < 5000, 'rejected on write, not at the timeout');
+});
+
+test('failPackets: a request that left as an attachments frame is answered too', () => {
+  const { encodeAttachments } = require('../src/attachments.js');
+  const transport = new ClientTransport('x');
+  const seen = [];
+  transport.on('message', (text) => void seen.push(jsonParse(text)));
+  const frame = encodeAttachments({ type: 'call', id: 'b', method: 'files/put', args: { body: new Uint8Array(3) } });
+  transport.failPackets(frame, 503);
+  assert.deepStrictEqual(seen, [
+    { type: 'callback', id: 'b', error: { message: 'HTTP request failed (503)', code: 503 } },
+  ]);
+  // Bytes that are no frame, and a frame that does not decode, answer nothing.
+  transport.failPackets(new Uint8Array([1, 2, 3]), 503);
+  transport.failPackets(frame.subarray(0, 12), 503);
+  assert.strictEqual(seen.length, 1);
 });
 
 test('failPackets: only call packets earn synthesized answers', () => {

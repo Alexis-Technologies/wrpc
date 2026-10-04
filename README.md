@@ -1,8 +1,8 @@
 <p align="center">
-  <img src="https://wrpc.vercel.app/logo-mark.svg" width="104" height="104" alt="wrpc">
+  <img src="https://wrpc.vercel.app/logo-mark.svg" width="104" height="104" alt="wRPC">
 </p>
 
-<h1 align="center">wrpc</h1>
+<h1 align="center">wRPC</h1>
 
 [![npm](https://img.shields.io/npm/v/%40alexify%2Fwrpc)](https://www.npmjs.com/package/@alexify/wrpc)
 [![CI](https://github.com/Alexis-Technologies/wrpc/actions/workflows/ci.yml/badge.svg)](https://github.com/Alexis-Technologies/wrpc/actions/workflows/ci.yml)
@@ -11,11 +11,14 @@
 [![docs](https://img.shields.io/badge/docs-online-blue)](https://wrpc.vercel.app/)
 [![license](https://img.shields.io/npm/l/%40alexify%2Fwrpc)](./LICENSE)
 
-A fast, **zero-dependency** WebSocket-based RPC protocol for Node.js and
-browsers. Router and procedures, subscriptions that resume, rooms
-that scale across processes, and binary streams with backpressure that reaches
-all the way into TCP — [under 15 KB min+gzip](#bundle-size) in a browser bundle, and
-nothing at all in your lockfile.
+**wRPC** (Web RPC) is a fast, **zero-dependency** RPC protocol for Node.js and
+browsers: one router of procedures, served over every transport the web has —
+WebSocket, HTTP and REST, Server-Sent Events, WebTransport and WebRTC — and
+between services over Redis, NATS, RabbitMQ or Kafka. Subscriptions that
+resume, rooms that scale across processes, binary streams with backpressure
+that reaches all the way into TCP, compression and encryption where you want
+them — [under 28 KB min+gzip](#bundle-size) in a browser bundle, a budget CI
+enforces, and nothing at all in your lockfile.
 
 ```javascript
 const { Server, WrpcClient, defineRouter, procedure } = require('@alexify/wrpc');
@@ -52,7 +55,7 @@ installed.
 
 **Optional integrations are injected, not depended on.** uWebSockets.js, Redis,
 fastify, express and TanStack Query all work — you `require` them and hand them
-over, and wrpc duck-types the injection at the boundary. So the integrations
+over, and wRPC duck-types the injection at the boundary. So the integrations
 you do not use cost you nothing, and the ones you do use are on your version,
 not ours.
 
@@ -62,31 +65,44 @@ reimplementation.
 
 ### Positioning
 
-| | **wrpc** | **tRPC** | **Socket.IO** |
-| --- | --- | --- | --- |
-| Transport | WebSocket, HTTP, SSE, worker port | HTTP, WebSocket | WebSocket + long-poll fallback |
-| Types | contract-first + codegen, no build step | TypeScript inference | none built in |
-| Realtime | subscriptions, events, rooms, acks | subscriptions | events, rooms, acks |
-| Binary | streams with backpressure | ❌ | ❌ (messages only) |
-| Scaling | rooms backplane (any pub/sub) | your own | adapters |
-| Cluster ops | fetchClients, commands, presence (local read) | your own | fetchSockets (round-trip) |
-| Runtime deps | **0** | a few | several |
-| Needs TypeScript | ❌ | effectively yes | ❌ |
+| | **wRPC** (`@alexify/wrpc`) | **tRPC** | **Socket.IO** | **gRPC / Connect** | **wRPC** (Bytecode Alliance) | **webrpc** |
+| --- | --- | --- | --- | --- | --- | --- |
+| Transports | WebSocket, HTTP + REST, SSE, WebTransport, WebRTC, worker port, message broker | HTTP, SSE, WebSocket | WebSocket, long-polling, WebTransport | HTTP/2; Connect: HTTP/1.1–3 | TCP, QUIC, WebTransport, Unix sockets | HTTP POST |
+| Peer to peer | WebRTC data channels | — | — | — | — | — |
+| Contract / types | declared or generated, no build step | inferred from the router | hand-written generics | `.proto` + codegen | WIT + codegen | RIDL + codegen |
+| Realtime | subscriptions (resume), events, rooms, acks | subscriptions (resume) | events, rooms, acks | streaming RPCs | streams and futures | server-streaming |
+| Binary | bytes in any packet, streams with backpressure | binary inputs | bytes in events | protobuf bytes | `list<u8>`, `stream<u8>` | file up/download |
+| Message brokers | feeds, consumers, RPC (experimental) | — | a broadcast backplane | — | NATS (0.17 release) | — |
+| Encryption beyond TLS | sealed envelopes, Noise, HPKE, E2EE (experimental) | — | — | — | — | — |
+| JS runtime deps | **0** | 0 | 6 | 0 + a peer (Connect) | 0 | 0 (generated) |
+| Polyglot | JavaScript only | TypeScript only | many clients | many languages | Rust, Go, JS | 6 languages |
 
-### When NOT to use wrpc
+**Which wRPC?** The Bytecode Alliance's wRPC is an unrelated WIT-based RPC
+framework for WebAssembly components; webrpc is schema-first code generation
+over HTTP and JSON. Both are in the table because both are reasonable choices
+— see [Why wRPC?](https://wrpc.vercel.app/guide/why#against-the-alternatives),
+where every cell has its source.
 
-- **You want a public HTTP API.** wrpc has a REST mode, but it is a convenience
-  for reaching procedures, not an API design. If third parties consume it,
-  write an HTTP API and document it.
+### When NOT to use wRPC
+
+- **You want an API wRPC does not shape.** A procedure can declare a real
+  REST mapping — verb, path, status, `/vN` version paths, schemas,
+  `wrpc types --openapi` — but the URL surface follows your router. If the
+  HTTP contract itself is the product, design it first.
 - **Your stack is polyglot.** The protocol is documented and small enough to
-  reimplement, but the only implementation today is JavaScript. gRPC exists for
-  a reason.
-- **You need guaranteed delivery.** Rooms are at-most-once fan-out, not a
-  queue. Subscriptions with `tracked()` values and an event log let a client
-  catch up; if you need a broker's guarantees, use a broker.
+  reimplement, but the only implementation today is JavaScript. gRPC or
+  Connect, webrpc, or — for WebAssembly components — the Bytecode Alliance's
+  wRPC are built for many languages.
+- **You need delivery guarantees from rooms.** Rooms are at-most-once fan-out,
+  not a queue. Subscriptions with `tracked()` values and an event log let a
+  client catch up, and the broker family adds at-least-once queue consumers
+  and durable feeds (experimental) — exactly-once is the broker's and your
+  application's to build.
+- **You need audio or video.** The WebRTC layer moves data over data
+  channels, not media tracks.
 - **You want end-to-end type inference from server code.** tRPC's model — where
   the client's types come from the server's implementation with nothing written
-  twice — is genuinely nicer if your whole stack is TypeScript. wrpc's contract
+  twice — is genuinely nicer if your whole stack is TypeScript. wRPC's contract
   is declared or generated, deliberately, because it must also work for
   JavaScript users and across a network boundary the compiler cannot see.
 
@@ -117,18 +133,29 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 44.3 KB | **14.9 KB** | 15.0 KB |
-| `@alexify/wrpc` — node (client + server) | 158.2 KB | 52.2 KB | — |
-| `@alexify/wrpc/ws` (WebSocket engine) | 20.7 KB | 7.5 KB | — |
-| `@alexify/wrpc/engine` (engine port) | 21.2 KB | 7.7 KB | — |
-| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 16.0 KB | 6.4 KB | — |
-| `@alexify/wrpc/fastify` | 135.3 KB | 46.2 KB | — |
-| `@alexify/wrpc/express` | 122.9 KB | 41.3 KB | — |
-| `@alexify/wrpc/scaling` (rooms backplane) | 4.1 KB | 1.7 KB | — |
-| `@alexify/wrpc/sse` — browser (client transport) | 47.2 KB | **15.9 KB** | 16.0 KB |
-| `@alexify/wrpc/sse` — node | 86.1 KB | 28.6 KB | — |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 82.3 KB | **27.7 KB** | 28.0 KB |
+| `@alexify/wrpc` — node (client + server) | 300.4 KB | 101.0 KB | — |
+| `@alexify/wrpc/ws` (WebSocket engine) | 32.9 KB | 11.6 KB | — |
+| `@alexify/wrpc/engine` (engine port) | 33.5 KB | 11.8 KB | — |
+| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 44.1 KB | 16.3 KB | — |
+| `@alexify/wrpc/fastify` | 244.9 KB | 84.2 KB | — |
+| `@alexify/wrpc/express` | 231.3 KB | 78.9 KB | — |
+| `@alexify/wrpc/scaling` (rooms backplane) | 5.5 KB | 2.2 KB | — |
+| `@alexify/wrpc/broker` (broker core, memory broker) | 166.8 KB | 57.6 KB | — |
+| `@alexify/wrpc/broker/redis` | 31.6 KB | 11.8 KB | — |
+| `@alexify/wrpc/broker/nats` | 30.2 KB | 11.2 KB | — |
+| `@alexify/wrpc/broker/amqp` | 34.1 KB | 12.4 KB | — |
+| `@alexify/wrpc/broker/kafka` | 28.6 KB | 10.6 KB | — |
+| `@alexify/wrpc/sse` — browser (client transport) | 85.5 KB | **28.8 KB** | 29.0 KB |
+| `@alexify/wrpc/sse` — node | 146.1 KB | 49.2 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 2.7 KB | **1.1 KB** | 2.0 KB |
-| `@alexify/wrpc/auth` (token strategies) | 3.3 KB | **1.5 KB** | 2.0 KB |
+| `@alexify/wrpc/auth` (token strategies) | 3.9 KB | **1.8 KB** | 2.0 KB |
+| `@alexify/wrpc/deflate` (pure-JS DEFLATE codec) | 10.7 KB | **4.4 KB** | 5.0 KB |
+| `@alexify/wrpc/encryption` — browser (primitives, sessions, HPKE, E2EE) | 31.5 KB | **11.5 KB** | 12.0 KB |
+| `@alexify/wrpc/encryption` — node | 45.1 KB | 16.5 KB | — |
+| `@alexify/wrpc/webrtc` — browser (peer, link, mesh, assertions) | 179.2 KB | **58.3 KB** | 59.0 KB |
+| `@alexify/wrpc/webrtc` — node | 193.2 KB | 62.9 KB | — |
+| `@alexify/wrpc/wt` (WebTransport server half) | 63.6 KB | 22.5 KB | — |
 
 The Node-only rows are reported for visibility into what each subpath pulls in
 — they never ship to a browser, and the adapter rows include the whole core
@@ -223,11 +250,13 @@ for await (const message of client.api.chat.onMessage.iterate()) {
 | **REST** | [Declarative endpoints](https://wrpc.vercel.app/guide/rest) on the same procedures — verb, path, status, fastify-shaped schemas, `/vN` version paths, OpenAPI via [`wrpc types --openapi`](https://wrpc.vercel.app/guide/cli) |
 | **Sessions & auth** | [Cookie-backed sessions](https://wrpc.vercel.app/guide/sessions) restored on reconnect, pluggable store, CSRF-aware REST dispatch; [bearer/payload token carriers, client stores and the authenticate/refresh lifecycle](https://wrpc.vercel.app/guide/auth) |
 | **Scaling** | [Rooms backplane](https://wrpc.vercel.app/guide/scaling) over any pub/sub; Redis and in-memory adapters included; [cluster layer](https://wrpc.vercel.app/guide/cluster) — replicated presence (`count` with no round-trip), `fetchClients`, cross-instance commands, node-to-node ask |
-| **Transports** | WebSocket, plain HTTP, [Server-Sent Events](https://wrpc.vercel.app/guide/sse), Service Worker `MessagePort`; [pluggable wire codec](https://wrpc.vercel.app/guide/codec) and [request metadata](https://wrpc.vercel.app/guide/metadata) (`x-wrpc-meta-<key>`) |
+| **Message brokers** | [Broker-agnostic capabilities](https://wrpc.vercel.app/guide/brokers) (backplane, log, queue, direct) with adapters for [Redis](https://wrpc.vercel.app/guide/brokers/redis), [NATS](https://wrpc.vercel.app/guide/brokers/nats), [RabbitMQ](https://wrpc.vercel.app/guide/brokers/amqp) and [Kafka](https://wrpc.vercel.app/guide/brokers/kafka), every client injected: [durable feeds](https://wrpc.vercel.app/guide/brokers/feeds) that resume on any instance, [queue consumers](https://wrpc.vercel.app/guide/brokers/consumers) into procedures with retry and dead-lettering, and [RPC between services](https://wrpc.vercel.app/guide/brokers/rpc) over the broker (experimental) |
+| **Transports** | WebSocket, plain HTTP, [Server-Sent Events](https://wrpc.vercel.app/guide/sse), a worker `MessagePort` (Service Worker or SharedWorker), [WebRTC data channels](https://wrpc.vercel.app/guide/webrtc) between browsers (symmetric peers, mesh, built-in or pluggable signaling, stable app-level identity, [server-signed trust assertions](https://wrpc.vercel.app/guide/webrtc-trust)); [WebTransport](https://wrpc.vercel.app/guide/wt) over HTTP/3 (experimental; WebSocket as the fallback, sessions from an injected host); [pluggable wire codec](https://wrpc.vercel.app/guide/codec) and [request metadata](https://wrpc.vercel.app/guide/metadata) (`x-wrpc-meta-<key>`); [compression](https://wrpc.vercel.app/guide/compression) on every wire, off by default — performance first; deflate, Brotli, zstd or your own codec, negotiated as a preference list |
 | **Hosts** | Batteries-included [server](https://wrpc.vercel.app/guide/server), or [fastify](https://wrpc.vercel.app/guide/adapters/fastify) / [express](https://wrpc.vercel.app/guide/adapters/express) / [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws) / bare `node:http` |
 | **Client** | Exponential backoff with full jitter, app-level heartbeat, automatic re-`load()` and re-subscribe, offline/online |
 | **Observability** | [Structured logging](https://wrpc.vercel.app/guide/logging) into your pino, [OpenTelemetry](https://wrpc.vercel.app/guide/telemetry) spans and metrics, W3C trace context across the wire |
 | **Operations** | [Security](https://wrpc.vercel.app/guide/security) hardening, [graceful drain and shutdown](https://wrpc.vercel.app/guide/production), [benchmarks](https://wrpc.vercel.app/guide/performance) you can reproduce, [testing patterns](https://wrpc.vercel.app/guide/testing) |
+| **Encryption** | Opt-in, never in place of TLS, for where TLS ends before the data does: [sealed backplane, cluster and broker messages](https://wrpc.vercel.app/guide/encryption) under a rotating keyring, a [sealed session store](https://wrpc.vercel.app/guide/sessions#sealed), [session encryption](https://wrpc.vercel.app/guide/encryption#session) — canonical Noise on WebSocket/WebTransport, HPKE per request on HTTP/SSE, the server key pinned — and [end-to-end helpers](https://wrpc.vercel.app/guide/encryption#end-to-end). Platform crypto only (AES-256-GCM, X25519, HKDF), checked against the published vectors; other ciphers, KMS keys and post-quantum KEMs by injection |
 | **DX** | [Contract-first typed client](https://wrpc.vercel.app/guide/typed-client), [`wrpc types` codegen](https://wrpc.vercel.app/guide/cli), [TanStack Query bindings](https://wrpc.vercel.app/guide/query), hand-maintained `.d.ts` for every subpath |
 
 ## Observability
@@ -243,7 +272,7 @@ const server = new Server({ router, logger: pino(), telemetry: { api } });
 ```
 
 `logger` takes a structured logger (pino, bunyan, winston), a `Console`, or
-`false` to go silent. wrpc binds children for you — `component`, `peer` and a
+`false` to go silent. wRPC binds children for you — `component`, `peer` and a
 per-call `callId` — and `context.log` inside a handler is already scoped to
 that call.
 
@@ -263,16 +292,22 @@ See [Logging](https://wrpc.vercel.app/guide/logging) and
 
 | Subpath | Exports | Docs |
 | --- | --- | --- |
-| `@alexify/wrpc` | `Server`, `RpcServer`, `WrpcClient`, `connect`, `defineRouter`, `procedure`, `tracked`, `createEventLog`, `createEventStream`, `MemorySessionStore`, `WrpcReadable`, `WrpcWritable`, `WrpcError`, `chunkEncode`/`chunkDecode` | [Server](https://wrpc.vercel.app/guide/server) · [Client](https://wrpc.vercel.app/guide/client) |
+| `@alexify/wrpc` | `Server`, `RpcServer`, `WrpcClient`, `connect`, `defineRouter`, `procedure`, `tracked`, `createEventLog`, `createEventStream`, `MemorySessionStore`, `WrpcReadable`, `WrpcWritable`, `WrpcError`, `chunkEncode`/`chunkDecode`, `buildDictionary`, `dictionaryCompressor`, `deflateCompressor`, `brotliCompressor`, `zstdCompressor`, `isCompressor` | [Server](https://wrpc.vercel.app/guide/server) · [Client](https://wrpc.vercel.app/guide/client) · [Compression](https://wrpc.vercel.app/guide/compression) |
 | `@alexify/wrpc/ws` | `WebsocketServer`, `Connection`, `Frame`, `FrameParser`, `OPCODES`, `CLOSE_CODES` | [Wire format](https://wrpc.vercel.app/reference/wire-format) |
 | `@alexify/wrpc/engine` | `createNodeEngine`, `isEngine`, the `Engine`/`WrpcSocket` contracts | [Engine port](https://wrpc.vercel.app/reference/engine) |
 | `@alexify/wrpc/uws` | `createUwsEngine`, `UwsSocket` | [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws) |
 | `@alexify/wrpc/fastify` | `wrpcFastify`, `findUwsApp` | [Fastify](https://wrpc.vercel.app/guide/adapters/fastify) |
 | `@alexify/wrpc/express` | `createWrpc` | [Express](https://wrpc.vercel.app/guide/adapters/express) |
 | `@alexify/wrpc/scaling` | `MemoryBackplane`, `createRedisAdapter`, `isBackplane` | [Scaling](https://wrpc.vercel.app/guide/scaling) |
+| `@alexify/wrpc/broker` | `MemoryBroker`, `brokerFeed`, `attachConsumers`, `createPublisher`, `attachBrokerRpc`, `isBroker`, `TopicTails`, `encodeToken` (experimental) | [Message brokers](https://wrpc.vercel.app/guide/brokers) |
+| `@alexify/wrpc/broker/{redis,nats,amqp,kafka}` | `createRedisBroker`, `createNatsBroker`, `createAmqpBroker`, `createKafkaBroker` — every client injected (experimental) | [Redis](https://wrpc.vercel.app/guide/brokers/redis) · [NATS](https://wrpc.vercel.app/guide/brokers/nats) · [RabbitMQ](https://wrpc.vercel.app/guide/brokers/amqp) · [Kafka](https://wrpc.vercel.app/guide/brokers/kafka) |
 | `@alexify/wrpc/sse` | `SseChannels`, `ServerSseTransport`, `ClientSseTransport`, `SseParser` | [Server-Sent Events](https://wrpc.vercel.app/guide/sse) |
 | `@alexify/wrpc/query` | `createQueryUtils` | [TanStack Query](https://wrpc.vercel.app/guide/query) |
 | `@alexify/wrpc/auth` | `bearerAuth`, `memoryStore`, `webStorage`, `cookieStorage`, `bearerTransport`, `payloadTransport` | [Authentication](https://wrpc.vercel.app/guide/auth) |
+| `@alexify/wrpc/deflate` | `createDeflateCodec`, `inflateRaw`, `deflateRaw`, `DeflateError` — a pure-JS DEFLATE codec with a preset dictionary, for browsers and anywhere a synchronous codec is wanted | [Compression](https://wrpc.vercel.app/guide/compression#deflate) |
+| `@alexify/wrpc/encryption` | `createEncryption`, `fetchServerKey`, `sealedStore`, `createIdentity`, `createSealer`, `createOpener`, `generateKey`, `normalizeKeys`, `aead`, `x25519`, `createKdf`, `createNoise`, `createHpke`, `dhKem`, `isCipher`/`isDh`/`isKem`/`isKeyProvider` (experimental) | [Encryption](https://wrpc.vercel.app/guide/encryption) |
+| `@alexify/wrpc/webrtc` | `WrpcPeer`, `PeerLink`, `Mesh`, `PeerHost`, `RtcLink`, `wrpcSignaler`, `createSignalingUnit`, `createSignalingHooks`, `createAssertionIssuer`, `createAssertionVerifier`, `createW3cAdapter` | [WebRTC](https://wrpc.vercel.app/guide/webrtc), [identity and trust](https://wrpc.vercel.app/guide/webrtc-trust) |
+| `@alexify/wrpc/wt` | `attachSession`, `acceptSessions`, `fromFails`, `failsRequestCallback`, `fromQuico`, `WtSocket`, `isWtSession` (experimental; the `wt` client transport is in the main entry) | [WebTransport](https://wrpc.vercel.app/guide/wt) |
 | `wrpc` (bin) | `wrpc types <url> --out api.d.ts` | [Codegen CLI](https://wrpc.vercel.app/guide/cli) |
 
 Every subpath ships hand-maintained TypeScript declarations — no generation, no
@@ -281,7 +316,7 @@ Every subpath ships hand-maintained TypeScript declarations — no generation, n
 ## Documentation
 
 - **Start here** — [getting started](https://wrpc.vercel.app/guide/getting-started),
-  [why wrpc?](https://wrpc.vercel.app/guide/why).
+  [why wRPC?](https://wrpc.vercel.app/guide/why).
 - **Server** — [server](https://wrpc.vercel.app/guide/server),
   [router](https://wrpc.vercel.app/guide/router),
   [hooks](https://wrpc.vercel.app/guide/hooks),
@@ -294,26 +329,43 @@ Every subpath ships hand-maintained TypeScript declarations — no generation, n
   [REST](https://wrpc.vercel.app/guide/rest),
   [authentication](https://wrpc.vercel.app/guide/auth),
   [metadata](https://wrpc.vercel.app/guide/metadata).
+- **Message brokers** — [overview & contracts](https://wrpc.vercel.app/guide/brokers),
+  [durable feeds](https://wrpc.vercel.app/guide/brokers/feeds),
+  [queue consumers & publishing](https://wrpc.vercel.app/guide/brokers/consumers),
+  [RPC over a broker](https://wrpc.vercel.app/guide/brokers/rpc),
+  [Redis](https://wrpc.vercel.app/guide/brokers/redis),
+  [NATS](https://wrpc.vercel.app/guide/brokers/nats),
+  [RabbitMQ](https://wrpc.vercel.app/guide/brokers/amqp),
+  [Kafka](https://wrpc.vercel.app/guide/brokers/kafka).
 - **Client** — [client](https://wrpc.vercel.app/guide/client),
   [typed client](https://wrpc.vercel.app/guide/typed-client),
+  [multiple backends](https://wrpc.vercel.app/guide/multiple-backends),
   [browser & bundling](https://wrpc.vercel.app/guide/browser),
   [CLI](https://wrpc.vercel.app/guide/cli),
   [TanStack Query](https://wrpc.vercel.app/guide/query).
 - **Transports & hosts** — [SSE](https://wrpc.vercel.app/guide/sse),
+  [WebRTC](https://wrpc.vercel.app/guide/webrtc),
+  [WebRTC identity and trust](https://wrpc.vercel.app/guide/webrtc-trust),
+  [WebTransport](https://wrpc.vercel.app/guide/wt),
   [wire codec](https://wrpc.vercel.app/guide/codec),
   [uWebSockets.js](https://wrpc.vercel.app/guide/adapters/uws),
   [fastify](https://wrpc.vercel.app/guide/adapters/fastify),
   [express](https://wrpc.vercel.app/guide/adapters/express).
 - **Operations** — [security](https://wrpc.vercel.app/guide/security),
+  [rate limiting & throttling](https://wrpc.vercel.app/guide/rate-limiting),
   [running in production](https://wrpc.vercel.app/guide/production),
   [testing](https://wrpc.vercel.app/guide/testing),
   [performance](https://wrpc.vercel.app/guide/performance),
+  [compression](https://wrpc.vercel.app/guide/compression),
+  [encryption](https://wrpc.vercel.app/guide/encryption),
   [logging](https://wrpc.vercel.app/guide/logging),
   [OpenTelemetry](https://wrpc.vercel.app/guide/telemetry).
 - **Reference** — [wire protocol](https://wrpc.vercel.app/reference/protocol)
-  (frozen at 1.0), [wire format](https://wrpc.vercel.app/reference/wire-format),
+  (revision 2, negotiated with a 1.0 peer; with a changes-since-1.0 table),
+  [wire format](https://wrpc.vercel.app/reference/wire-format),
   [engine port](https://wrpc.vercel.app/reference/engine),
-  [errors & close codes](https://wrpc.vercel.app/reference/errors).
+  [errors & close codes](https://wrpc.vercel.app/reference/errors),
+  [stability & deprecation](https://wrpc.vercel.app/reference/stability).
 - **Types** — [`index.d.ts`](./index.d.ts) is the full public surface, plus one
   `.d.ts` per subpath.
 

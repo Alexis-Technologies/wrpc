@@ -5,15 +5,19 @@
 // they reach the RpcServer only through the options bag #addClient builds,
 // so the dependency is one-way: core requires this file, never the reverse.
 
-const http = require('node:http');
-
 const { Emitter, jsonParse } = require('../utils.js');
+const { STATUS_CODES } = require('../status.js');
 const { generateUUID } = require('../runtime/node.js');
 const { WrpcWritable } = require('../streams.js');
 const { RoomRegistry } = require('./rooms.js');
 const { DEFAULT_META_MAX } = require('./meta.js');
 const { createLoggerWriter } = require('../logging.js');
-const { createServerTelemetry } = require('../telemetry/server.js');
+const { clip } = require('./errors.js');
+// The disabled shape only: a Client without an injected writer (a peer
+// host, a standalone Client) must not pull the whole server facade into a
+// browser bundle for it.
+const { DISABLED: DISABLED_TELEMETRY } = require('../telemetry/shared.js');
+const { hasBytes, encodeAttachments } = require('../attachments.js');
 
 // One peer holding thousands of open generators is a denial of service the
 // application never opted into; the cap is generous but present.
@@ -21,6 +25,10 @@ const DEFAULT_MAX_SUBSCRIPTIONS = 256;
 // Same reasoning for in-flight calls: each holds a controller, a context and
 // possibly a queue slot until it settles.
 const DEFAULT_MAX_CALLS = 1000;
+// And for the binary streams a peer announces: each holds a readable — and
+// every chunk the peer sends into it — until a handler reads it, and the
+// peer alone decides how many it opens.
+const DEFAULT_MAX_STREAMS = 256;
 // How long client.ask() waits for the peer's answer. Mirrors the client's
 // default call timeout: an ask is a call travelling the other way.
 const DEFAULT_ASK_TIMEOUT = 7_000;
@@ -39,11 +47,22 @@ const EMPTY_META = Object.freeze({
 
 // The frozen snapshot of what the peer presented when the connection was
 // made. `headers` is copied, not adopted: the source object belongs to the
-// host request and other code may still be reading (or mutating) it.
-const buildMeta = ({ headers, url, remoteAddress, protocol, data } = {}) =>
+// host request and other code may still be reading (or mutating) it. The
+// copy is a plain spread whose prototype is dropped AFTER: a `__proto__:
+// null` literal is born in V8's dictionary mode, and with one built per HTTP
+// request and alive until its answer, leaving that mode took handleHttpCall
+// from 256k to 305k requests/s (bench/http-call.js). Null-prototyped and
+// frozen either way.
+// The names in `headers` a ws handshake DECLARED (a carrier token, the
+// query) rather than carried — what readDeclared answers; `[]` on every
+// other transport, so a handler reads `meta.declared.includes(name)` bare.
+const NO_NAMES = Object.freeze([]);
+
+const buildMeta = ({ headers, url, remoteAddress, protocol, data, declared } = {}) =>
   Object.freeze({
     data: data ?? FROZEN_EMPTY,
-    headers: headers ? Object.freeze({ __proto__: null, ...headers }) : FROZEN_EMPTY,
+    headers: headers ? Object.freeze(Object.setPrototypeOf({ ...headers }, null)) : FROZEN_EMPTY,
+    declared: declared ?? NO_NAMES,
     url: url ?? '',
     remoteAddress: remoteAddress ?? '',
     protocol: protocol ?? '',
@@ -58,10 +77,10 @@ const refusal = (message) => {
 
 class Context {
   #log = null;
+  #uuid = null;
 
   constructor(client, signal = null, target = null) {
     this.client = client;
-    this.uuid = client.generateId();
     this.state = {};
     // Aborted when the caller cancels, unsubscribes, or disconnects. A
     // handler that awaits anything long-lived should pass it along; one
@@ -82,9 +101,25 @@ class Context {
     return this.client.session;
   }
 
+  /**
+   * The HTTP response seam on a REST call — `{ method, url, headers,
+   * setHeader(name, value), status(code) }` — and null on every other
+   * transport (ws, wt, sse, port) and on packet-mode HTTP, where one
+   * response answers a whole batch.
+   */
+  get http() {
+    return this.client.http;
+  }
+
+  // Minted on first read: a Context is allocated for every call, and a
+  // random id per call (crypto.randomUUID) is paid only by the handlers and
+  // hooks that correlate on it — the child logger below is the usual one.
+  get uuid() {
+    return (this.#uuid ??= this.client.generateId());
+  }
+
   // Bound lazily: a Context is allocated for every call, subscribe and
-  // inbound event, and most handlers never log. `uuid` is already there, so
-  // the correlation id exists whether or not anyone asks for the child.
+  // inbound event, and most handlers never log.
   get log() {
     return (this.#log ??= this.client.log.child({ callId: this.uuid }));
   }
@@ -114,6 +149,19 @@ class Client extends Emitter {
   // server sent it. See ask()/expectAnswer()/settleAnswer().
   #asks = new Map();
   #ready = null;
+  #isReady = false;
+  /** The REST response seam (see Context.http); null except on a REST call. */
+  http = null;
+  /**
+   * The per-message compression this connection's peer negotiated for ITS
+   * frames (a Node ws client's `compression`, agreed on ping/pong), or
+   * null. Set by the dispatcher, read by the core's frame path.
+   */
+  compression = null;
+  // The facts of a session-encrypted connection once its handshake is done
+  // — `{ protocol, pattern, cipher, kid, remoteStatic, handshakeHash }` —
+  // and null on a connection that is not one (src/encryption/server.js).
+  encryption = null;
 
   constructor(transport, options = {}) {
     super();
@@ -125,6 +173,7 @@ class Client extends Emitter {
       otel,
       maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
       maxCalls = DEFAULT_MAX_CALLS,
+      maxStreams = DEFAULT_MAX_STREAMS,
       generateId,
       codec = null,
       meta = null,
@@ -146,7 +195,7 @@ class Client extends Emitter {
     // Connection-scoped, bound once: a connection lives for minutes, and the
     // binding hoists the peer id out of every line logged for it.
     this.#log = createLoggerWriter(log ?? globalThis.console).child({ peer: transport.source });
-    this.#otel = otel ?? createServerTelemetry(null);
+    this.#otel = otel ?? DISABLED_TELEMETRY;
     this.source = transport.source;
     this.session = null;
     this.sessionReady = Promise.resolve();
@@ -156,8 +205,16 @@ class Client extends Emitter {
     this.subscriptions = new Map();
     this.maxSubscriptions = maxSubscriptions;
     this.maxCalls = maxCalls;
+    this.maxStreams = maxStreams;
+    // Set when the session store could not be asked for this client's
+    // token (core #restoreToken): a session procedure answers 503, not 403.
+    this.sessionUnavailable = false;
     // Context uuids and server-side stream ids; uuid v4 unless the app
     // brings its own (cuid/ulid/a test counter) — see RpcServerOptions.
+    // A Client built by a host receives a generator that host already
+    // resolved and probed, so this is a trust rather than a second
+    // validation: probing here would cost one id per CONNECTION, which a
+    // connection storm would feel. A standalone Client falls back.
     this.generateId = typeof generateId === 'function' ? generateId : generateUUID;
     // Instance-prefixed, so the id IS the address: a cluster command for
     // this client goes straight to this instance's channel, no broadcast.
@@ -168,12 +225,18 @@ class Client extends Emitter {
     this.data = {};
   }
 
-  error(code, { id = '', error = null } = {}) {
+  // `level` is the line's: `error` by default — a handler that threw, a
+  // refusal nothing else reported — and `debug` from a site that already
+  // wrote its own event, so one refusal is ONE alert at the level that site
+  // chose (a 429 the dispatcher logs at debug used to come with an
+  // error-level twin here, which made the choice moot). The id is the
+  // peer's text, clipped for the line; the answer carries it whole.
+  error(code, { id = '', error = null, level = 'error' } = {}) {
     const httpCode = code <= 599 ? code : 500;
-    const status = http.STATUS_CODES[httpCode];
+    const status = STATUS_CODES[httpCode];
     const info = error ? error.stack : status || 'Unknown error';
     this.#transport.error(code, { id, error });
-    this.#log.error({ event: 'rpc.error', code, id, err: error }, `${this.source}\t${code}\t${info}`);
+    this.#log[level]({ event: 'rpc.error', code, id: clip(id), err: error }, `${this.source}\t${code}\t${info}`);
   }
 
   // What dispatch actually gates on: the session restore PLUS the settled
@@ -188,6 +251,22 @@ class Client extends Emitter {
 
   set ready(value) {
     this.#ready = value;
+    this.#isReady = false;
+    // Settled-state flag for the hot path: once the gate opened, a call
+    // skips the `await` (and its microtask) instead of awaiting a promise
+    // that has already resolved. A rejected gate stays "not ready" so the
+    // await keeps surfacing the rejection.
+    Promise.resolve(value).then(
+      () => {
+        if (this.#ready === value) this.#isReady = true;
+      },
+      () => {},
+    );
+  }
+
+  /** True once `ready` has resolved — the dispatcher's cue to skip the await. */
+  get isReady() {
+    return this.#isReady;
   }
 
   /** The connection-scoped writer, reached by the dispatcher and handlers. */
@@ -211,15 +290,27 @@ class Client extends Emitter {
     this.#log.warn({ event: 'rpc.warn', ...entry }, `${this.source}\t${message}`);
   }
 
-  /** Returns false when the transport is above its high-water mark. */
+  /**
+   * Returns false when the transport is above its high-water mark.
+   * `compress: false` sends this packet uncompressed on a transport that
+   * negotiated permessage-deflate (ignored elsewhere).
+   */
   send(obj, options = {}) {
     const { code, method, text } = options;
-    const flushed = this.#transport.send(obj, code, text);
+    const transport = this.#transport;
+    let flushed;
+    if (options.compress === false && typeof transport.writeWith === 'function') {
+      const codec = transport.codec;
+      flushed = transport.writeWith(codec ? codec.encode(obj) : (text ?? JSON.stringify(obj)), options);
+    } else {
+      flushed = transport.send(obj, code, text);
+    }
     // Debug on purpose: one line per successful call is a firehose. A
     // console logger drops debug outright; a structured logger's own level
-    // decides. Failures still log at error, unconditionally.
-    const isSuccessCallback = obj.type === 'callback' && !obj.error;
-    if (isSuccessCallback) {
+    // decides. Failures still log at error, unconditionally. The writer's
+    // `debugEnabled` flag is what keeps the entry object and the message
+    // string from being built for a writer that would drop them.
+    if (this.#log.debugEnabled && obj.type === 'callback' && !obj.error) {
       this.#log.debug({ event: 'call.ok', method, id: obj.id }, `${this.source}\tCALL\t${method}\tOK`);
     }
     return flushed;
@@ -277,25 +368,107 @@ class Client extends Emitter {
   // works, and Client is substitutable for the Emitter it extends. The wire
   // send has its own name and always had it: `sendEvent`.
 
-  sendEvent(name, data) {
+  /**
+   * `unreliable: true` sends the event as a datagram where the transport
+   * has them (WebTransport) — lossy and unordered, for state a later event
+   * supersedes — and reliably everywhere else; the application code is the
+   * same either way.
+   */
+  /**
+   * Whether bytes in a packet leave this connection as an attachments frame
+   * (the server's `attachments` option, off under a packet codec): what
+   * decides if a result is worth walking for bytes at all.
+   */
+  get attachments() {
+    return this.#transport.attachments !== false;
+  }
+
+  /**
+   * The protocol revision this connection speaks: 2 when the peer reads
+   * framed messages, 1 for a 1.0 peer (protocol.md#versioning) — a handler
+   * that must know which form the bytes it was sent arrived in reads it.
+   */
+  get revision() {
+    return this.#transport.revision ?? 2;
+  }
+
+  /**
+   * A ping that names a revision (protocol.md#versioning) — how a transport
+   * with no handshake of its own, a worker port, negotiates one. Returns
+   * the revision to answer with, or 0 on a transport that settled it
+   * elsewhere (a WebSocket's subprotocol), where the field is ignored.
+   */
+  negotiateRevision(v) {
+    const transport = this.#transport;
+    if (typeof transport.negotiate !== 'function') return 0;
+    const answer = transport.negotiate(v);
+    if (transport.revision === 1) this.log.debug({ event: 'revision.peer', transport: this.transportKind, named: v });
+    return answer;
+  }
+
+  sendEvent(name, data, options = null) {
     const packet = { type: 'event', name, data };
     if (!this.#transport.connection) {
       throw refusal(`Can't send wrpc event to http transport`);
+    }
+    if (options !== null && (options.unreliable === true || options.compress === false)) {
+      const transport = this.#transport;
+      const codec = transport.codec;
+      const wire = codec
+        ? codec.encode(packet)
+        : transport.attachments !== false && hasBytes(packet)
+          ? encodeAttachments(packet)
+          : JSON.stringify(packet);
+      return void this.sendRaw(wire, options);
     }
     this.send(packet);
   }
 
   /**
-   * Writes an ALREADY-serialized packet. The fan-out seam: a broadcast to N
-   * clients stringifies once and hands every recipient the same text,
-   * instead of paying JSON.stringify per client. Returns the transport's
-   * backpressure signal, like send().
+   * Writes an ALREADY-serialized packet. Returns the transport's
+   * backpressure signal, like send(). `unreliable` and `compress` options
+   * as on sendEvent.
    */
-  sendRaw(text) {
-    if (!this.#transport.connection) {
+  sendRaw(text, options = null) {
+    const transport = this.#transport;
+    if (!transport.connection) {
       throw refusal(`Can't send wrpc event to http transport`);
     }
-    return this.#transport.write(text);
+    if (options !== null) {
+      // A datagram where the transport can, the reliable write otherwise.
+      if (options.unreliable === true && typeof transport.writeUnreliable === 'function') {
+        if (transport.writeUnreliable(text)) return true;
+      }
+      if (options.compress === false && typeof transport.writeWith === 'function') {
+        return transport.writeWith(text, options);
+      }
+    }
+    return transport.write(text);
+  }
+
+  /**
+   * The fan-out seam. `message` is `{ text, frames, inner, compress }`
+   * shared by every recipient of one broadcast: the text is serialized
+   * once, and a transport with the prepared-frame path (`writeShared`)
+   * encodes and deflates it once into `frames` for every recipient after
+   * the first, instead of paying utf8 + deflate + framing per member.
+   * `frames` belongs to the engine that filled it; `inner` is the
+   * plaintext a sealed socket seals per recipient, built once. Transports
+   * without the path write the text. Returns the backpressure signal.
+   */
+  sendShared(message, options = null) {
+    const transport = this.#transport;
+    if (!transport.connection) {
+      throw refusal(`Can't send wrpc event to http transport`);
+    }
+    if (options !== null && options.unreliable === true && typeof transport.writeUnreliable === 'function') {
+      if (transport.writeUnreliable(message.text)) return true;
+    }
+    if (typeof transport.writeShared === 'function') return transport.writeShared(message);
+    if (message.compress === false && typeof transport.writeWith === 'function') {
+      return transport.writeWith(message.text, message);
+    }
+    return transport.write(message.text);
   }
 
   /**
@@ -308,6 +481,8 @@ class Client extends Emitter {
     if (!this.#transport.connection) {
       throw refusal(`Can't send wrpc event to http transport`);
     }
+    // An ask expects an answer, and a datagram may never arrive.
+    if (options.unreliable) throw new TypeError('ask() cannot be unreliable: an answer is expected');
     const id = this.generateId();
     const packet = { type: 'event', name, data, id };
     this.send(packet);
@@ -392,41 +567,70 @@ class Client extends Emitter {
     if (typeof id !== 'string' || id.length === 0 || id.length > 255) {
       throw new TypeError('createStream: generateId must return a string of at most 255 characters');
     }
-    const stream = new WrpcWritable(id, name, size, this.#transport);
-    this.streams.set(id, stream);
-    return stream;
+    // Not registered in `streams`: that map holds what the PEER announced —
+    // what getStream() answers, chunks are routed to and `maxStreams` caps.
+    // A writable kept there was never removed, so every download stayed for
+    // the connection's life and, past `maxStreams` of them, the peer's
+    // uploads were answered 429. It watches the transport's 'close' itself
+    // until it finishes.
+    return new WrpcWritable(id, name, size, this.#transport, this.#otel);
+  }
+
+  // A host with no session manager (a browser-side peer host, a standalone
+  // Client) refuses the session calls with a coded error instead of a
+  // TypeError from inside a handler.
+  #requireSessions(method) {
+    if (this.#sessions) return this.#sessions;
+    throw refusal(`${method}: sessions are not available on this host`);
   }
 
   initializeSession(token, data = {}) {
+    const sessions = this.#requireSessions('initializeSession');
     // Re-initializing the SAME token must not finalize first: with an async
     // store the fire-and-forget delete(token) could land after the new
     // set(token) and silently wipe the fresh session
     if (this.session && this.session.token !== token) void this.finalizeSession();
-    this.session = this.#sessions.create(token, data);
+    this.session = sessions.create(token, data);
     return true;
   }
 
   async finalizeSession() {
     if (!this.session) return false;
     const { token } = this.session;
+    // A save queued in this turn must not land after the delete below.
+    if (typeof this.session.end === 'function') this.session.end();
     this.session = null;
-    await this.#sessions.destroy(token);
+    // The other connections of this instance that restored the same token
+    // end with it: a logout in one tab used to leave the session working in
+    // the others until they reconnected. Ended, not removed — a handler
+    // still running there keeps its context — and refused from the next
+    // call on. Another instance learns it from the store, on its next restore.
+    const others = this.#server?.clients;
+    if (others) {
+      for (const other of others) {
+        if (other !== this && other.session?.token === token) other.session.end?.();
+      }
+    }
+    // A session that never came from a store (a peer host's link identity)
+    // has nothing to destroy.
+    if (this.#sessions) await this.#sessions.destroy(token);
     return true;
   }
 
   startSession(token, data = {}) {
+    const sessions = this.#requireSessions('startSession');
     this.initializeSession(token, data);
     if (!this.#transport.connection) {
       // The carrier stamps the response when it can (a cookie); a bearer
       // carrier answers null and the handler returns tokens in its result.
-      const header = this.#sessions.transport.write(this.session.token);
+      const header = sessions.transport.write(this.session.token);
       if (header) this.#transport.sendSessionCookie(header);
     }
     return true;
   }
 
   async restoreSession(token) {
-    const session = await this.#sessions.restore(token);
+    const session = await this.#requireSessions('restoreSession').restore(token);
     if (!session) return false;
     this.session = session;
     return true;
@@ -444,12 +648,17 @@ class Client extends Emitter {
     this.#rooms.leaveAll(this);
     // A gone peer cannot receive an answer, so everything still running on
     // its behalf is told to stop — this is what runs a subscription
-    // handler's `finally`, releasing whatever it had open.
-    const disconnected = new Error('Client disconnected');
-    for (const controller of this.calls.values()) controller.abort(disconnected);
-    for (const controller of this.subscriptions.values()) controller.abort(disconnected);
-    this.calls.clear();
-    this.subscriptions.clear();
+    // handler's `finally`, releasing whatever it had open. The reason is
+    // built only when there is someone to give it to: an Error captures a
+    // stack, and an HTTP client is destroyed once per request with nothing
+    // left in flight (bench/http-call.js).
+    if (this.calls.size > 0 || this.subscriptions.size > 0) {
+      const disconnected = new Error('Client disconnected');
+      for (const controller of this.calls.values()) controller.abort(disconnected);
+      for (const controller of this.subscriptions.values()) controller.abort(disconnected);
+      this.calls.clear();
+      this.subscriptions.clear();
+    }
     // An answer can no longer arrive: whoever asked is settled NOW instead
     // of waiting out the ask timeout on a peer that is gone.
     if (this.#asks.size > 0) {
@@ -481,6 +690,7 @@ module.exports = {
   Client,
   DEFAULT_MAX_SUBSCRIPTIONS,
   DEFAULT_MAX_CALLS,
+  DEFAULT_MAX_STREAMS,
   FROZEN_EMPTY,
   EMPTY_META,
   buildMeta,

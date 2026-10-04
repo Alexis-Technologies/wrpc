@@ -8,9 +8,10 @@ const { RoomRegistry, Broadcast } = require('../../src/rpc/rooms.js');
 const noop = () => {};
 const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
 
-// Rooms only ever touch `persistent` and `sendRaw` on a client (the fan-out
-// serializes once and hands every recipient the same text), which is what
-// makes the registry testable without a socket underneath.
+// Rooms only ever touch `persistent`, `sendShared` (emit: one shared
+// `{ text, frames, compress }` message for the whole fan-out) and `sendRaw`
+// (ask: a per-recipient text) on a client, which is what makes the registry
+// testable without a socket underneath.
 const fakeClient = (name, { persistent = true, broken = false } = {}) => ({
   name,
   persistent,
@@ -20,6 +21,10 @@ const fakeClient = (name, { persistent = true, broken = false } = {}) => ({
     const packet = JSON.parse(text);
     this.received.push([packet.name, packet.data]);
     return true;
+  },
+  sendShared(message) {
+    this.shared = message;
+    return this.sendRaw(message.text);
   },
 });
 
@@ -206,5 +211,40 @@ test('Broadcast: publishing to the backplane', async (t) => {
     const sent = target(registry, clients, { publish }).to('chat').local().emit('msg', 3);
     assert.strictEqual(sent, 1);
     assert.deepStrictEqual(published, [], 'a replayed event must not be republished');
+  });
+});
+
+test('Broadcast.emit: one shared message object reaches every recipient', async (t) => {
+  const registry = new RoomRegistry();
+  const ada = fakeClient('ada');
+  const grace = fakeClient('grace');
+  registry.join(ada, 'chat');
+  registry.join(grace, 'chat');
+
+  await t.test('the same object, serialized once, with the compress flag on by default', () => {
+    target(registry, [ada, grace]).to('chat').emit('hello', { n: 1 });
+    assert.strictEqual(ada.shared, grace.shared, 'recipients share ONE message');
+    assert.strictEqual(ada.shared.frames, null, "the slot is the engine's to claim");
+    assert.strictEqual(ada.shared.compress, true);
+    assert.deepStrictEqual(JSON.parse(ada.shared.text), { type: 'event', name: 'hello', data: { n: 1 } });
+  });
+
+  await t.test('compress:false travels on the shared message', () => {
+    target(registry, [ada, grace]).to('chat').emit('bulk', 'x'.repeat(4096), { compress: false });
+    assert.strictEqual(ada.shared.compress, false);
+    assert.strictEqual(grace.shared.compress, false);
+  });
+
+  await t.test('a slot claimed by the first recipient is what the second one sees', () => {
+    const claimer = fakeClient('claimer');
+    claimer.sendShared = function (message) {
+      message.frames = 'claimed';
+      this.shared = message;
+      return this.sendRaw(message.text);
+    };
+    registry.join(claimer, 'shared');
+    registry.join(grace, 'shared');
+    target(registry, [claimer, grace]).to('shared').emit('once', null);
+    assert.strictEqual(grace.shared.frames, 'claimed');
   });
 });

@@ -4,6 +4,8 @@
 // re-exports all of it and adds the server surface on top; browser.d.ts
 // (the `browser` types condition) re-exports ONLY this.
 
+import type { Encryption, EncryptionInfo } from './encryption.browser.js';
+
 /**
  * Structural view of a node Writable — what finalize()/pipe() need. Typed
  * structurally so this file stays free of node imports: a browser TS
@@ -59,6 +61,83 @@ export type WrpcCodec = WrpcPacketCodec | { rest: WrpcRestCodec };
  */
 export declare function isCodec(value: unknown): value is WrpcCodec;
 
+/**
+ * A per-message compression codec for the transports that have nothing
+ * under them (WebRTC data channels, WebTransport streams): `id` is what
+ * the two ends compare — a peer compresses only for a peer that named the
+ * same codec — and either method may answer a promise (a browser's
+ * CompressionStream can only). `decode` MUST stop at `maxOutput` bytes.
+ * The platform default is raw deflate (`'deflate-raw'`: node:zlib on
+ * Node, CompressionStream in a browser); `threshold` is the codec's own
+ * default for the size under which a message goes plain.
+ */
+export interface Compressor {
+  id: string;
+  threshold?: number;
+  /**
+   * The byte size from which `encode` answers a promise (the built-in
+   * codecs' `async` option), or null/absent for a synchronous codec. The
+   * Node↔Node carriers — the broker binding, the backplane envelopes, a
+   * Node WebSocket client — refuse a codec that declares it.
+   */
+  readonly async?: number | null;
+  encode(bytes: Uint8Array): Uint8Array | Promise<Uint8Array>;
+  decode(bytes: Uint8Array, maxOutput: number): Uint8Array | Promise<Uint8Array>;
+}
+/** Structural check for the `Compressor` contract. */
+export declare function isCompressor(value: unknown): value is Compressor;
+
+/**
+ * A platform codec by name — the ids are CompressionStream's format names,
+ * so Node and a browser negotiate the same one. `'deflate-raw'` is what
+ * `compression: true` means and exists everywhere; `'zstd'` needs Node
+ * 22.15+ / 23.8+ (a TypeError otherwise) and `'brotli'`/`'zstd'` only some
+ * browsers (compression stays off in one that lacks the format).
+ */
+export type CompressionAlgorithm = 'deflate-raw' | 'brotli' | 'zstd';
+
+/**
+ * The codecs in effect on a connection, by id: what this side sends with
+ * and what the peer does. The two may differ — each end sends with the
+ * first codec of its own list the other announced.
+ */
+export interface NegotiatedCompression {
+  readonly encode: string;
+  readonly decode: string;
+}
+
+/**
+ * `compression: true | { codec, threshold, async }` — off by default.
+ * `true` takes the platform's raw deflate; `codec` names another platform
+ * codec (`'zstd'`, `'brotli'`) or injects one (`zstdCompressor({ level })`,
+ * `@alexify/wrpc/deflate` for a dictionary, your own); `threshold` is the byte size
+ * under which a message goes plain (the codec's own default, 1 KiB on Node
+ * and 4 KiB in a browser). `async` (Node, the platform codecs only — an
+ * injected codec takes it on its own factory) hands a message of
+ * `async.threshold` bytes or more (256 KiB) to zlib's threadpool instead
+ * of deflating it on the event loop: the hand-off costs ~20 µs a call, so
+ * below that size it only slows the message down (`bench/zlib-async.js`);
+ * inflate stays synchronous at every size. Accepted on the WebTransport
+ * and WebRTC carriers, which keep messages in order around a promise;
+ * the Node↔Node carriers refuse it. A platform with no native codec and
+ * nothing injected stays off.
+ */
+export interface CompressionOptions {
+  /**
+   * One codec, or a list in order of preference. Each end announces the
+   * ids it holds and a sender compresses with the FIRST codec of its own
+   * list the peer announced — so a list is the fallback (`['zstd',
+   * 'deflate-raw']` still compresses for a peer without zstd), the two
+   * directions choose independently, and a name the platform lacks is
+   * skipped in a list rather than refused. On the backplane, which
+   * negotiates nothing, an instance encodes with the head and decodes any
+   * codec on the list: a change of codec is a rollout, not an outage.
+   */
+  codec?: CompressionAlgorithm | Compressor | ReadonlyArray<CompressionAlgorithm | Compressor>;
+  threshold?: number;
+  async?: boolean | { threshold?: number };
+}
+
 export class WrpcError extends Error {
   code: number;
   /** Structured issue lists the server attached; an optional wire field. */
@@ -101,7 +180,8 @@ export class WrpcReadable extends Emitter {
 
 export interface Transport {
   send(obj: object): void;
-  write(data: string | ArrayBufferView): void;
+  /** `false` means above the high-water mark: wait for 'drain'. `void` counts as accepted. */
+  write(data: string | ArrayBufferView): boolean | void;
 }
 
 export class WrpcWritable extends Emitter {
@@ -109,7 +189,11 @@ export class WrpcWritable extends Emitter {
   name: string;
   size: number;
   transport: Transport;
-  /** True once the transport closed: write() reports false, no 'drain' follows. */
+  /**
+   * True once the transport closed under an unfinished stream: write() reports
+   * false, no 'drain' follows. A stream already ended (or terminated), with no
+   * 'drain' still owed, stops watching the transport and stays false.
+   */
   readonly closed: boolean;
   constructor(id: string, name: string, size: number, transport: Transport);
   init(): void;
@@ -120,6 +204,7 @@ export class WrpcWritable extends Emitter {
 
 export interface BlobUploader {
   id: string;
+  /** Feeds the blob into its stream. Once: a second call rejects — create another uploader. */
   upload(): Promise<void>;
 }
 
@@ -142,17 +227,128 @@ export interface WrpcMethodInfo {
 }
 
 declare class ClientTransport extends Emitter {
+  /**
+   * @experimental How this transport carries `options.encryption`, checked
+   * for every candidate before anything opens — plaintext is never a
+   * fallback. `true`: a session transport (ws, wt), which runs the
+   * handshake inside `open()` and MUST have `encryption` set by the time it
+   * emits `'open'` — the client closes one that has not. `'request'`: each
+   * request is sealed on its own (http, sse), which needs an option made
+   * with a `serverKey`. `'keys'`: a keyring over a shared carrier (the
+   * broker transport). Absent or `false`: the option is refused.
+   */
+  static encrypts?: boolean | 'request' | 'keys';
+  /** @experimental The facts of the encrypted session once established — a `static encrypts = true` transport sets it before `'open'`. */
+  encryption?: EncryptionInfo | null;
+  /**
+   * The protocol revision this connection speaks: 2 by default (the carriers
+   * 1.0 never had); a transport a 1.0 peer can be behind starts at 1 and
+   * raises it once its peer said 2. A packet holding bytes leaves as a
+   * framed message only at 2.
+   */
+  revision: 1 | 2;
   url: string;
   active: boolean;
+  /** Stays open (WebSocket, port, SSE, data channel): carries subscriptions, cancel and streams. */
+  persistent: boolean;
+  /** Opts into the client's app-level ping/pong; the client owns the timers. */
+  heartbeat: boolean;
   constructor(url: string);
   open(options?: WrpcClientOptions): Promise<void>;
   close(): void;
+  /** Synchronous, unconditional: flips `active` and emits 'close' without a peer handshake. */
+  terminate(): void;
   send(obj: object): void;
-  write(data: string | ArrayBufferView): void;
+  /** Returns the flow-control signal when the wire has one (`false` = above the high-water mark, then 'drain'). */
+  write(data: string | ArrayBufferView): boolean | void;
+  /**
+   * @experimental A packet as ONE unreliable datagram, where the wire has
+   * them: true when it went out, false when it could not (no datagrams,
+   * too large) — the core then sends it reliably. Only the `wt` transport
+   * implements it.
+   */
+  writeUnreliable?(data: string): boolean;
+  /** @experimental The largest datagram the wire carries; 0 or absent when it carries none. */
+  maxDatagramSize?: number;
   online(): void;
   offline(): void;
 }
 export type { ClientTransport };
+
+/** @experimental Delivery options of a fire-and-forget event. */
+export interface SendEventOptions {
+  /**
+   * Send as an unreliable datagram where the transport has them
+   * (WebTransport) — lossy and unordered, for state a later event
+   * supersedes: a cursor, a position. Reliable everywhere else, and where
+   * the packet does not fit in one datagram.
+   */
+  unreliable?: boolean;
+}
+
+/** @experimental The `wt` option of connect(), and ClientWtTransport's constructor options. */
+export interface WtTransportOptions {
+  /** `new WebTransport(url, init)` — an implementation; the global one by default. */
+  WebTransport?: new (url: string, init?: object) => unknown;
+  serverCertificateHashes?: Array<{ algorithm: string; value: BufferSource | string }>;
+  congestionControl?: 'default' | 'throughput' | 'low-latency';
+  allowPooling?: boolean;
+  requireUnreliable?: boolean;
+  /** Application protocols to offer (`WT-Available-Protocols`), where the browser supports them. */
+  protocols?: Array<string>;
+  /** Outbound bytes queued on the control stream before write() answers false (default 1 MiB). */
+  highWaterMark?: number;
+  /** Queue level under which 'drain' fires (default 256 KiB). */
+  lowWaterMark?: number;
+  /**
+   * Outbound bytes queued before the session is terminated for a server
+   * that never drains (default 64 MiB; 0 = off) — the cap behind the
+   * high-water mark.
+   */
+  maxBackpressure?: number;
+  /** The largest inbound message accepted (default 16 MiB); past it the session is hung up. */
+  maxMessage?: number;
+  /**
+   * How long `close()` waits for the control stream to take what was
+   * already written before it closes the session (ms, default 1000).
+   */
+  closeTimeout?: number;
+  /**
+   * @experimental Per-message compression on the control stream, off by
+   * default; connect()'s own `compression` wins over this one. Negotiated
+   * through the capabilities message: on only once the server named the
+   * same codec.
+   */
+  compression?: boolean | CompressionOptions;
+}
+
+/**
+ * @experimental The WebTransport client transport — `transport: 'wt'`,
+ * registered in the base entry. One client-opened bidirectional stream (the
+ * control stream) carries every packet and stream chunk under a
+ * length-prefixed framing; the session comes from `globalThis.WebTransport`
+ * or `options.wt.WebTransport`. Declared headers and meta ride the connect
+ * URL exactly as on ws (the CONNECT request cannot carry them), and cookies
+ * do not travel at all — a WebTransport CONNECT sends no credentials, so
+ * sessions need a bearer or payload token transport.
+ */
+declare class ClientWtTransport extends ClientTransport {
+  constructor(url: string, options?: WtTransportOptions);
+  /** The WebTransport session spoken on; null before open() and after close. */
+  readonly session: unknown;
+  /** The codecs in effect — null until the two lists share one. */
+  readonly compression: NegotiatedCompression | null;
+  /** The facts of this session's encryption once established, or null. */
+  encryption: EncryptionInfo | null;
+  /** The largest datagram the session carries; 0 when it carries none. */
+  readonly maxDatagramSize: number;
+  /** Bytes handed to the session and not yet taken by it; 0 between sessions. */
+  readonly bufferedAmount: number;
+  writeUnreliable(data: string): boolean;
+}
+// A type, not a value: the class is reached through `WrpcClient.transport.wt`
+// and connect({ transport: 'wt' }), never imported (the barrels export none).
+export type { ClientWtTransport };
 
 export class WrpcClient<Api = UntypedApi> extends Emitter {
   static connections: Set<WrpcClient>;
@@ -173,9 +369,22 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
   static transport: {
     ws: new (url: string) => ClientTransport;
     http: new (url: string) => ClientTransport;
-    event: {
+    /** The worker transport; `connect(url, { worker })` builds one per client. */
+    event: (new (url: string) => ClientTransport) & {
+      /**
+       * @deprecated A class-level singleton that `connect()` no longer uses —
+       * each `connect({ worker })` builds its own transport, so the one
+       * returned here belongs to no client. Use `new WrpcClient.transport.event(url)`.
+       */
       getInstance(url: string): ClientTransport;
     };
+    /** Registered by `@alexify/wrpc/webrtc`; `connect('webrtc:<peer>', { transport: 'webrtc', link })`. */
+    webrtc?: new (url: string, options?: object) => ClientTransport;
+    /**
+     * @experimental WebTransport (HTTP/3), in the base entry: `connect(url,
+     * { transport: ['wt', 'ws'], wt: { serverCertificateHashes } })`.
+     */
+    wt: typeof ClientWtTransport;
     /** Late registration — how the sse subpath (and tests) add transports. */
     [name: string]: unknown;
   };
@@ -192,6 +401,16 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
    */
   api: TypedApi<Api>;
   readonly active: boolean;
+  /** @experimental The facts of this connection's encrypted session, or null when it is not one. */
+  readonly encryption: EncryptionInfo | null;
+  /**
+   * The protocol revision of the current connection (protocol.md#versioning):
+   * 2 when the peer reads framed messages, so bytes travel as bytes; 1 when
+   * it is a 1.0 peer — or this client opted out with `attachments: false`, or
+   * the transport is SSE, which is text-only — and bytes travel as the JSON
+   * 1.0 made of them (`{ "0": 137, … }`).
+   */
+  readonly revision: 1 | 2;
 
   constructor(
     url: string,
@@ -225,7 +444,11 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
   createBlobUploader(blob: Blob): BlobUploader;
   send(obj: object): void;
   /** Fire-and-forget event to the server; `name` is 'unit/event'. */
-  sendEvent<Name extends ClientSendName<Api> | (string & {})>(name: Name, data?: ClientSendData<Api, Name>): void;
+  sendEvent<Name extends ClientSendName<Api> | (string & {})>(
+    name: Name,
+    data?: ClientSendData<Api, Name>,
+    options?: SendEventOptions | null,
+  ): void;
   /**
    * Registers the answer this client gives when the server asks `name`
    * ('unit/event') — the receiving half of the server's `client.ask()` and
@@ -241,7 +464,8 @@ export class WrpcClient<Api = UntypedApi> extends Emitter {
   unrespond(name: string): boolean;
   /** Sends whatever calls are waiting to be batched. Safe to call anytime. */
   flush(): void;
-  write(data: string | ArrayBufferView): void;
+  /** The transport's flow-control signal, passed through (see ClientTransport.write). */
+  write(data: string | ArrayBufferView): boolean | void;
 }
 
 /**
@@ -679,7 +903,7 @@ export interface WrpcClientOptions {
    * takes over ('transport-fallback' fires) and only the last exhausting
    * emits 'reconnect-failed'. No default order — the list is yours.
    */
-  transport?: 'ws' | 'http' | 'sse' | string | Array<string>;
+  transport?: 'ws' | 'http' | 'sse' | 'webrtc' | 'wt' | 'broker' | string | Array<string>;
   reconnect?: ReconnectOptions | false;
   /**
    * Presents this connection's credential. Awaited inside `open()` on the
@@ -708,14 +932,15 @@ export interface WrpcClientOptions {
   /**
    * Connection-phase headers, re-evaluated on every open (function form
    * included) so a reconnect presents fresh values. They ride as REAL
-   * request headers on http/sse, as one `wrpc_h` query parameter on the
-   * browser ws connect URL (the WHATWG WebSocket constructor takes no
-   * headers — note the URL lands in proxy access logs), and in the
-   * `wrpc:connect` message on the worker transport. The server surfaces
-   * them on `client.meta.headers` / `context.meta.headers`, observed
-   * headers winning, reserved names (cookie, host, origin, sec-*,
-   * content-*, proxy-*, x-wrpc-*) dropped from the query path. Labels,
-   * never credentials on the ws leg.
+   * request headers on http/sse and on ws from Node; on ws from a browser —
+   * whose WebSocket constructor takes no headers — as a `wrpc.h.<base64url>`
+   * subprotocol offer, the one handshake header a page controls (see
+   * `carrier`); and in the `wrpc:connect` message on the worker transport.
+   * The server surfaces them on `client.meta.headers` /
+   * `context.meta.headers`, observed headers winning, and drops the names a
+   * page could forge from a declared bag (cookie, host, origin, forwarded,
+   * via, x-real-ip, sec-*, content-*, proxy-*, x-wrpc-*, x-forwarded-*).
+   * A `Bearer` authorization rides as `wrpc.bearer.<token>`.
    *
    * Keys are normalized to kebab-case (`xAppVersion` -> `x-app-version`), so
    * one spelling addresses a value whatever carrier brought it — and that is
@@ -726,9 +951,10 @@ export interface WrpcClientOptions {
   headers?: Record<string, unknown> | (() => Record<string, unknown> | Promise<Record<string, unknown>>);
   /**
    * Connection-phase metadata — headers' unvalidated sibling. Re-evaluated
-   * on every open; rides the `x-wrpc-meta` request header on http/sse, the
-   * `wrpc_meta` connect-URL parameter on ws, and the `wrpc:connect` message
-   * on the worker transport. Lands on `client.meta.data` server-side. Never
+   * on every open; rides the `x-wrpc-meta` request header on http/sse and
+   * on ws from Node, a `wrpc.m.<base64url>` subprotocol offer on ws from a
+   * browser (see `carrier`), and the `wrpc:connect` message on the worker
+   * transport. Lands on `client.meta.data` server-side. Never
    * runs through schema validation — see the per-call twin in CallOptions.
    *
    * Keys are kebab-normalized like `headers`; values keep their JSON types
@@ -747,17 +973,46 @@ export interface WrpcClientOptions {
    * JSON-stringified, null/undefined drop the key), and cross-origin
    * callers must name each key in `cors.metaHeaders`.
    *
-   * The choice changes the wire only on http/sse; ws and the worker
-   * transport have no headers and keep the one query parameter. What it
-   * changes everywhere is the VALUES: `'prefixed'` flattens on every
+   * The choice changes the wire wherever real headers travel — http, sse,
+   * ws from Node; a browser ws token and the worker message stay one JSON
+   * bag. What it changes everywhere is the VALUES: `'prefixed'` flattens on every
    * transport, so the bag the server observes never depends on the carrier.
    */
   metaFormat?: 'json' | 'prefixed';
+  /**
+   * How the declared `headers`/`meta` leave on the **ws** handshake.
+   *
+   * `'auto'` (default): real request headers where the platform's WebSocket
+   * can set them (Node), subprotocol carrier tokens where it cannot (a
+   * browser: `Sec-WebSocket-Protocol: wrpc.v2, wrpc.v1, wrpc.h.<b64u>,
+   * wrpc.m.<b64u>`). A server that answers `wrpc.v1` to that may be a 1.0
+   * server, which reads no token: the client then dials once more with the
+   * query, and keeps it for that connection's reconnects.
+   * Either way the connect URL — which lands in access logs — stays clean.
+   *
+   * `'protocol'` forces the tokens. `'query'` sends the `wrpc_h` /
+   * `wrpc_meta` connect-URL parameters instead — for an intermediary that
+   * mangles `Sec-WebSocket-Protocol`. An empty `protocols` offer means the
+   * query too (a token needs a protocol the server can answer next to it),
+   * so `'protocol'` with `protocols: []` is a TypeError.
+   *
+   * The two tokens share ONE 2048-byte budget, headers first; an oversize
+   * bag is dropped with a `meta.oversize` warning, never the connection.
+   */
+  carrier?: 'auto' | 'protocol' | 'query';
   /**
    * Pluggable query-string serializer (qs and friends) for mapped REST
    * requests over the http transport — mirror of the server's option.
    */
   querystring?: { stringify(query: object): string };
+  /**
+   * Fetch implementation for the http/sse transports; defaults to the
+   * runtime's own global `fetch`. Lets a Node server inject undici's
+   * `fetch` bound to a tuned `Agent`/`Pool` (keep-alive, proxying, a
+   * caching interceptor) for server-to-server wrpc traffic, without wrpc
+   * ever depending on undici. Re-resolved on every open, like `headers`.
+   */
+  fetch?: typeof globalThis.fetch;
   /**
    * Client-side pre-validation: an injected ajv-shaped compiler applied to
    * the introspected input schema parts, so a doomed call rejects locally
@@ -770,6 +1025,14 @@ export interface WrpcClientOptions {
    * the optional `rest` section frames REST-leg BODIES (values, not
    * packets — binary allowed). Either half alone is valid.
    */
+  /**
+   * Binary attachments: bytes in args and results travel as bytes in one
+   * frame and arrive as Uint8Arrays — on a connection that negotiated
+   * protocol revision 2 (see `revision`); a 1.0 server is sent JSON. On by
+   * default; `false` makes this client speak revision 1 to every server
+   * (it offers `wrpc.v1` alone); off under a packet `codec`.
+   */
+  attachments?: boolean;
   codec?:
     | {
         encode(packet: unknown): string;
@@ -781,7 +1044,66 @@ export interface WrpcClientOptions {
   /** Shorthand for `reconnect.minDelay`. */
   reconnectTimeout?: number;
   heartbeat?: HeartbeatOptions | false;
-  worker?: ServiceWorker;
+  /**
+   * Selects the `event` transport: the connection lives in the worker, the
+   * page talks to it over a private `MessagePort`. A `ServiceWorker`
+   * (`navigator.serviceWorker.controller`), a `SharedWorker` (reached
+   * through its `port`), a dedicated `Worker`, or a raw `MessagePort` — the
+   * worker side runs a `WrpcClientProxy`.
+   */
+  worker?: ServiceWorker | SharedWorker | Worker | MessagePort;
+  /** The RtcLink a `transport: 'webrtc'` client speaks over (`@alexify/wrpc/webrtc`). */
+  link?: import('./webrtc.browser.js').RtcLink;
+  /**
+   * Instead of a link: a data channel the application negotiated itself,
+   * or a factory asked for one on every (re)open (`@alexify/wrpc/webrtc`).
+   */
+  channel?: import('./webrtc.browser.js').ChannelSource;
+  /** With `channel`: the message size to fragment at (default 16 KiB). */
+  maxMessageSize?: number;
+  /**
+   * @experimental Options of the `wt` transport (WebTransport over HTTP/3):
+   * the `WebTransportOptions` handed to the constructor, plus the
+   * implementation to construct with where `globalThis.WebTransport` is not
+   * one — a Node client over an injected implementation, a fake in tests.
+   * Without either, open() throws and a fallback list moves on.
+   */
+  wt?: WtTransportOptions;
+  /**
+   * @experimental Per-message compression of what this client sends —
+   * WebTransport, WebRTC over `channel` or `link`, the broker binding, and
+   * the WebSocket from Node (where the built-in WebSocket only inflates;
+   * negotiated over the first ping/pong, a no-op in a browser). Off by
+   * default; on only once the peer named the same codec (a raw WebRTC
+   * channel has no handshake: both applications turn it on).
+   */
+  compression?: boolean | CompressionOptions;
+  /**
+   * @experimental Session encryption, from `createEncryption()` of
+   * `@alexify/wrpc/encryption`: a Noise handshake inside `open()`, then
+   * every frame sealed. A client that has one never speaks plaintext — a
+   * transport that cannot carry it (checked up front, the fallback list
+   * included) is a TypeError, a server that does not answer is a failed
+   * connection. With `worker`, it belongs to the `WrpcClientProxy` instead.
+   * The `broker` transport takes the KEYRING form instead — `{ keys, … }`,
+   * shared with the service (`EnvelopeEncryptionOptions`).
+   */
+  encryption?: Encryption | { keys: unknown; [option: string]: unknown } | null;
+  /**
+   * @experimental The `broker` transport (`@alexify/wrpc/broker`, Node): a
+   * broker with the `direct` capability, or the capability itself. Typed
+   * structurally here so this browser-safe file never references the Node
+   * subpath; `Broker` in `@alexify/wrpc/broker` is the precise type.
+   */
+  broker?: { direct?: object; inbox?: () => string } | object;
+  /** With `transport: 'broker'`: request/response (default) or a full-protocol session. */
+  mode?: 'stateless' | 'session';
+  /** With `transport: 'broker'`: the service address; default `wrpc.<host of broker://host>`. */
+  address?: string;
+  /** With `transport: 'broker'`: how long the broker may hold a request nobody took (ms). */
+  requestTimeout?: number;
+  /** @experimental With `transport: 'broker'`: the largest inflated frame accepted (default 16 MiB). */
+  maxMessage?: number;
   /**
    * Off by default, unlike the server: a client that printed on every
    * reconnect would be noise in a browser console nobody asked for. A logger
@@ -805,16 +1127,30 @@ export interface WrpcClientOptions {
    */
   generateId?: () => string;
   /**
-   * WebSocket subprotocols to offer. Defaults to ['wrpc.v1'], which the
-   * server echoes back as the wire revision; an empty array offers nothing
-   * (the pre-versioning handshake). See protocol.md#versioning.
+   * WebSocket subprotocols to offer. Defaults to ['wrpc.v2', 'wrpc.v1'] —
+   * the revisions this client speaks, newest first (['wrpc.v1'] alone under
+   * `attachments: false` or a packet codec) — of which the server selects
+   * one: a 1.0 server selects 'wrpc.v1' and is then spoken to as 1.0 was
+   * (see `revision`). An empty array offers nothing (the pre-versioning
+   * handshake, revision 1) — and with nothing offered a browser's declared
+   * bags fall back to the connect-URL query, see `carrier`.
+   * See protocol.md#versioning.
    */
   protocols?: Array<string>;
   proxy?: (data: string, packet: object | null) => void;
 }
 
+export interface WrpcClientProxyOptions extends WrpcClientOptions {
+  /**
+   * The server the worker connects to. Defaults to `self.location`'s origin
+   * with the matching `ws:`/`wss:` scheme — right for a Service Worker on
+   * the site it serves; a SharedWorker proxying to another origin names it.
+   */
+  url?: string;
+}
+
 export class WrpcClientProxy extends Emitter {
-  constructor(options?: WrpcClientOptions);
+  constructor(options?: WrpcClientProxyOptions);
   open(): Promise<void>;
   close(): void;
 }
@@ -892,15 +1228,34 @@ export interface WrpcLogWriter {
 
 export interface WrpcSpan {
   setAttribute?(key: string, value: unknown): unknown;
-  addEvent?(name: string, attributes?: Record<string, unknown>): unknown;
-  recordException?(error: unknown): void;
-  setStatus?(status: { code: number; message?: string }): unknown;
-  end(): void;
+  // The optional parameters are `unknown`, not a narrower guess. A real
+  // OTel `Span.addEvent` takes `Attributes | TimeInput` there and a real
+  // `setStatus` takes a `SpanStatus`, and a structural view that describes
+  // them more narrowly than they are does not merely lose precision — it
+  // makes the genuine article UNASSIGNABLE, which is the one thing this
+  // view exists to allow. wrpc only ever calls these, never implements
+  // them, so nothing here needs the narrower shape.
+  addEvent?(name: string, attributes?: unknown, startTime?: unknown): unknown;
+  recordException?(error: unknown, time?: unknown): void;
+  setStatus?(status: unknown): unknown;
+  end(endTime?: unknown): void;
 }
 
 export interface WrpcTracer {
   startSpan?(name: string, options?: unknown): WrpcSpan;
-  startActiveSpan?<T>(name: string, options: unknown, fn: (span: WrpcSpan) => T): T;
+  /**
+   * A UNION of the two shapes, because wrpc calls both and a tracer
+   * implements one: with a parent context when the implementation declares
+   * four parameters, without one otherwise (a 3-argument implementation
+   * handed four arguments never runs its callback at all, so the arity is
+   * checked, not assumed). Declaring only the 3-argument form let a
+   * hand-written parented tracer type-check and then break at runtime; an
+   * overload pair would have demanded both shapes from one implementation,
+   * which no real tracer provides.
+   */
+  startActiveSpan?:
+    | (<T>(name: string, options: unknown, fn: (span: WrpcSpan) => T) => T)
+    | (<T>(name: string, options: unknown, parent: unknown, fn: (span: WrpcSpan) => T) => T);
 }
 
 export interface WrpcCounter {

@@ -56,8 +56,8 @@ const ogCard = (body) => `<svg xmlns="http://www.w3.org/2000/svg" width="1200" h
     <rect y="614" width="1200" height="16" fill="${GREEN}"/>
     <g transform="translate(104 196) scale(7.4)">${body}</g>
     <g font-family="Helvetica Neue, Helvetica, Arial, sans-serif" fill="#FFFFFF">
-      <text x="392" y="300" font-size="132" font-weight="700" letter-spacing="-4">wrpc</text>
-      <text x="396" y="368" font-size="36" font-weight="500" fill="${GREEN_LIGHT}">Fast, zero-dependency WebSocket RPC</text>
+      <text x="392" y="300" font-size="132" font-weight="700" letter-spacing="-4">wRPC</text>
+      <text x="396" y="368" font-size="36" font-weight="500" fill="${GREEN_LIGHT}">Fast, zero-dependency Web RPC</text>
       <text x="396" y="424" font-size="27" font-weight="400" fill="${MUTED}">Node.js and the browser · 0 runtime dependencies</text>
     </g>
   </g>

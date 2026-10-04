@@ -44,7 +44,7 @@ sequenceDiagram
 A failure takes the same path back: the procedure throws, and the client
 receives `callback { id, error: { code, message } }` with the error's numeric
 `code`. Nothing about that shape depends on the transport — the same exchange
-happens over [HTTP](./server), [SSE](./sse) and a Service Worker port.
+happens over [HTTP](./server), [SSE](./sse) and a worker port.
 
 ## Procedures
 
@@ -84,13 +84,13 @@ The dispatcher's rule is exactly one line: a client with no session may call
 `access: 'public'` and nothing else. Any other string — `'admin'`,
 `'internal'` — behaves like `'session'` at that gate and is carried through
 introspection for your own layer to interpret. Fine-grained authorization is
-not wrpc's job; do it in the handler, or with a policy engine.
+not wRPC's job; do it in the handler, or with a policy engine.
 
 ### Validators
 
 An `input`/`output` validator is either a plain function or a
 [Standard Schema](https://standardschema.dev) object — which means Zod, Valibot,
-ArkType and friends plug in **without wrpc depending on any of them**:
+ArkType and friends plug in **without wRPC depending on any of them**:
 
 ```js
 const { z } = require('zod');
@@ -103,7 +103,7 @@ procedure({
 ```
 
 The third spelling is **declarative**: a fastify-shaped `schema` object plus
-an injected compiler. wrpc imports no schema library — you pass your own
+an injected compiler. wRPC imports no schema library — you pass your own
 ajv (and, optionally, a fast-json-stringify) and the router compiles every
 declared part **once**, when it is built:
 
@@ -139,8 +139,8 @@ procedure({
 - A schema with validation parts in a router **without** `validation.ajv`
   throws at build: a declaration nothing enforces would be an authorization
   bug in waiting. Under the [fastify adapter](./adapters/fastify) fastify
-  validates the delegated HTTP routes itself, but the same procedures over
-  WebSocket are wrpc's to validate — inject the ajv either way.
+  validates the delegated HTTP routes itself, but the same procedures over a
+  WebSocket, or any other transport, are wRPC's to validate — inject the ajv either way.
 - `schema` and `input`/`output` are mutually exclusive on one procedure.
 - The input parts travel through introspection, so a browser client with
   its own injected ajv (`WrpcClient.connect(url, { validation: { ajv } })`)
@@ -234,8 +234,9 @@ On the wire that is the `method` string: `auth/signIn` or `auth.v1/signIn`.
 
 `on` is **reserved** inside a unit — it holds the unit's inbound event
 handlers, so no method may be called `on`. `hooks` is reserved too: the
-unit's slice of the [lifecycle pipeline](./hooks). Neither is usable as a
-method name:
+unit's slice of the [lifecycle pipeline](./hooks), and so are `emits` (the
+declared outbound events) and `consumes` (the unit's
+[queue consumers](./brokers/consumers)). None is usable as a method name:
 
 ```js
 defineRouter({

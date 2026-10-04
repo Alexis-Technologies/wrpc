@@ -1,5 +1,9 @@
 'use strict';
 
+const { destroy: destroyStream } = require('node:stream');
+
+const { WRPC_V1 } = require('../wire.js');
+
 // The streaming half of the abstract HTTP call, implemented once for every
 // host that hands over a node ServerResponse (the built-in shell, express
 // and fastify all do). Returning null means the response is already gone.
@@ -22,9 +26,8 @@ const nodeStream =
     };
   };
 
-const http = require('node:http');
-
 const { isOriginAllowed } = require('../transport.js');
+const { STATUS_CODES } = require('../status.js');
 
 // Shared plumbing for everything that turns a host framework's request into
 // the abstract call description RpcServer.handleHttpCall consumes:
@@ -58,20 +61,68 @@ const respondBodyError = (respond, error) => {
   respond({ status: 400, headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(packet) });
 };
 
-const receiveBody = async (stream, limit = MAX_BODY_SIZE) => {
+const prematureClose = () => {
+  const error = new Error('Premature close');
+  error.code = 'ERR_STREAM_PREMATURE_CLOSE';
+  return error;
+};
+
+// Listeners on the request, not `for await`: the async iterator builds an
+// end-of-stream watcher and a paused-mode reader around every request —
+// ~760k against ~1.07M one-chunk bodies/s (bench/http-call.js), and a
+// twentieth of a REST call's CPU under bench/http-comparison.js's load.
+// Same outcomes as the loop it replaces: the body (null when empty), the
+// stream's own error, a premature close, and — past the limit — the stream
+// destroyed and the request refused. The error listener stays once the body
+// is settled, as the loop's did: a late error is swallowed, never thrown.
+const receiveBody = (stream, limit = MAX_BODY_SIZE) => {
   if (!Number.isSafeInteger(limit) || limit < 0) {
-    throw new TypeError('Body size limit must be a non-negative safe integer');
+    return Promise.reject(new TypeError('Body size limit must be a non-negative safe integer'));
   }
-  const chunks = [];
-  let size = 0;
-  for await (const chunk of stream) {
-    size += chunk.length;
-    if (size > limit) throw new Error('Body size limit exceeded');
-    chunks.push(chunk);
-  }
-  if (chunks.length === 0) return null;
-  if (chunks.length === 1) return chunks[0];
-  return Buffer.concat(chunks, size);
+  if (stream.errored) return Promise.reject(stream.errored);
+  if (stream.readableEnded) return Promise.resolve(null);
+  if (stream.destroyed) return Promise.reject(prematureClose());
+  return new Promise((resolve, reject) => {
+    const chunks = [];
+    let size = 0;
+    let settled = false;
+    const settle = () => {
+      settled = true;
+      stream.off('data', onData);
+      stream.off('end', onEnd);
+      stream.off('close', onClose);
+    };
+    const onData = (chunk) => {
+      size += chunk.length;
+      if (size <= limit) return void chunks.push(chunk);
+      settle();
+      // node's own stream destroyer, as the loop's return called it: a
+      // server request is let go of its socket first, so the 400 still
+      // reaches the peer over a connection that stays usable.
+      destroyStream(stream);
+      reject(new Error('Body size limit exceeded'));
+    };
+    const onEnd = () => {
+      settle();
+      resolve(chunks.length === 0 ? null : chunks.length === 1 ? chunks[0] : Buffer.concat(chunks, size));
+    };
+    const onError = (error) => {
+      if (settled) return;
+      settle();
+      reject(error);
+    };
+    const onClose = () => {
+      settle();
+      reject(prematureClose());
+    };
+    stream.on('data', onData);
+    stream.on('end', onEnd);
+    stream.on('error', onError);
+    stream.on('close', onClose);
+    // A 'data' listener does not restart a stream something upstream
+    // paused by hand; the loop read it regardless, and so does this.
+    if (stream.readableFlowing === false) stream.resume();
+  });
 };
 
 // Frameworks that own body parsing (fastify, express + express.json()) hand
@@ -89,7 +140,7 @@ const normalizeBody = (body) => {
   }
 };
 
-const statusLine = (code) => `${code} ${http.STATUS_CODES[code] ?? 'Unknown'}`;
+const statusLine = (code) => `${code} ${STATUS_CODES[code] ?? 'Unknown'}`;
 
 // The core answers with `Set-Cookie` as an array and Content-Length as a
 // number; frameworks want strings and repeated header lines.
@@ -106,6 +157,16 @@ const eachHeader = (headers, visit) => {
   }
 };
 
+// What a shell adds to its engine's attach options so the WebSocket
+// negotiation agrees with the core (protocol.md#versioning). An engine
+// selects the newest revision offered, and knows nothing of the server
+// above it: a server that sends and reads no framed messages (`attachments:
+// false`, a packet codec — `rpc.revision` 1) narrows it to `wrpc.v1`, so a
+// 2.x client does not send a frame it would be refused. An application that
+// configured its own `protocols`/`handleProtocols` owns the negotiation.
+const revisionProtocols = (rpc, ws = {}) =>
+  rpc.revision === 1 && !ws.protocols && !ws.handleProtocols ? { protocols: [WRPC_V1] } : null;
+
 module.exports = {
   MAX_BODY_SIZE,
   receiveBody,
@@ -115,5 +176,6 @@ module.exports = {
   nodeStream,
   getPathname,
   createUpgradeGate,
+  revisionProtocols,
   respondBodyError,
 };

@@ -10,9 +10,11 @@ const server = new Server({ router, telemetry: { api }, port: 8000, protocol: 'h
 ```
 
 Pass the same option to a client and one trace covers both sides of the wire
-— the packet transports, the mapped **REST leg** (context rides real
+— the packet transports (WebSocket, HTTP, SSE, a worker port, WebTransport, a
+[WebRTC link](./webrtc#telemetry)), the mapped **REST leg** (context rides real
 `traceparent`/`tracestate` headers there), the fastify adapter's delegated
-routes, and the cluster's node-to-node hop (context rides the backplane
+routes, a [broker message](./brokers/consumers) (the same two headers on the
+message), and the cluster's node-to-node hop (context rides the backplane
 envelope).
 
 ::: info OpenTelemetry is injected, never depended on
@@ -29,14 +31,14 @@ telemetry: { api }                  // the @opentelemetry/api module
 telemetry: { tracer, meter }        // instances you built
 ```
 
-With `{ api }`, wrpc derives its own tracer and meter so everything it emits
+With `{ api }`, wRPC derives its own tracer and meter so everything it emits
 carries the `@alexify/wrpc` instrumentation scope, and it can reach the
 propagator — which is what [trace context](#trace-context) needs.
 
 With instances, either alone is fine: tracer-only gives spans, meter-only
 gives metrics. **Propagation is off** in this mode unless you also pass
 `propagation` (and `context`), because serializing W3C trace context without a
-propagator is not something wrpc will hand-roll.
+propagator is not something wRPC will hand-roll.
 
 Without a tracer and without a meter, telemetry is off and every recording
 path is a no-op.
@@ -67,7 +69,7 @@ span and a duration sample exactly as a slow handler does.
 | `wrpc.status` | `ok`, `error`, `cancelled`, `timeout` |
 | `error.type` | the error's constructor name |
 | `wrpc.packet.type`, `wrpc.packet.id` | every span |
-| `wrpc.transport` | `ws`, `http`, `sse`, `event` |
+| `wrpc.transport` | `ws`, `http`, `sse`, `event`, `webrtc`, `wt`, `broker` |
 | `wrpc.persistent` | whether the connection stays open |
 | `wrpc.subscription.values` | values yielded |
 | `wrpc.subscription.terminal` | `complete`, `error`, `unsubscribed` |
@@ -92,22 +94,62 @@ credential, not an identity, and the two do not share a switch.
 | `rpc.server.duration` | Histogram | `ms` |
 | `rpc.client.duration` | Histogram | `ms` |
 | `wrpc.server.calls` | Counter | `{call}` |
-| `wrpc.server.connections` | UpDownCounter | `{connection}` |
+| `wrpc.server.connections` | UpDownCounter | `{connection}` — live connections by `wrpc.transport` and `wrpc.revision` (`1` or `2`, the [protocol revision](../reference/protocol#versioning) the connection speaks): during an upgrade, the `1` series is who is still on 1.0 — or reads no frames. A connection whose revision is settled after it opened (a worker port's first ping, a WebTransport peer's capabilities) moves from one series to the other |
 | `wrpc.server.subscriptions` | UpDownCounter | `{subscription}` |
 | `wrpc.server.subscription.values` | Counter | `{value}` |
 | `wrpc.server.broadcasts` | Counter | `{event}` |
 | `wrpc.server.broadcast.recipients` | Histogram | `{client}` |
 | `wrpc.server.stream.bytes` | Counter | `By` |
 | `wrpc.server.backpressure` | Counter | `{event}` |
+| `wrpc.server.backplane.gaps` | Counter | `{envelope}` — envelopes a publisher sent that this instance never received, by `wrpc.channel.kind` (`room` or `broadcast`; the room's name is on the `backplane.gap` log line, never a label — a room name is unbounded); see [scaling](./scaling#loss-detection) |
 | `wrpc.server.sessions` | Counter | `{operation}` |
+| `wrpc.server.encryption` | Counter | `{handshake}` — session handshakes established and refusals, by `wrpc.kind` (`ws`, `wt`, `http`) and `wrpc.outcome` (`established`, or the refusal reason the `encryption.refused` line carries — a closed set) |
 | `wrpc.server.sse.channels` | UpDownCounter | `{channel}` |
 | `wrpc.server.sse.events` | Counter | `{event}` |
 | `wrpc.cluster.messages` | Counter | `{message}` |
 | `wrpc.cluster.requests` | Counter | `{request}` |
 | `wrpc.cluster.instances` | UpDownCounter | `{instance}` |
+| `wrpc.rtc.links` | UpDownCounter | `{link}` |
+| `wrpc.rtc.redials` | Counter | `{attempt}` |
+| `wrpc.rtc.ice_restarts` | Counter | `{restart}` |
+| `wrpc.rtc.closes` | Counter | `{link}` — peer links closed, by `wrpc.rtc.reason` (`goodbye`, `refused`, `gave-up`, `abandoned`, `unknown`) and `wrpc.rtc.side` (`local` / `remote`) |
+| `wrpc.broker.deliveries` | Counter | `{message}` |
+| `wrpc.broker.rpc.session.ends` | Counter | `{session}` — broker RPC sessions ended, by `wrpc.broker.reason`: `gap` and `peer_gap` (the broker lost a frame — seen by the server, or reported by the client), `undecodable`, `send_failed`, `idle`, `replaced`, `bye`, `closing`. Open sessions are `wrpc.server.connections` with `wrpc.transport: broker` |
+| `wrpc.broker.published` | Counter | `{message}` |
+| `wrpc.broker.refused` | Counter | `{message}` |
 | `wrpc.client.reconnects` | Counter | `{attempt}` |
 | `wrpc.client.refreshes` | Counter | `{run}` |
 | `wrpc.client.connections` | UpDownCounter | `{connection}` |
+| `wrpc.client.heartbeat.rtt` | Histogram | `ms` |
+| `wrpc.client.calls` | Counter | `{call}` |
+| `wrpc.server.queue.depth` | UpDownCounter | `{call}` |
+| `wrpc.server.queue.wait` | Histogram | `ms` |
+| `wrpc.server.rooms` | UpDownCounter | `{room}` |
+| `wrpc.cluster.verifications` | Counter | `{envelope}` — cluster envelopes refused under `cluster.secret`, by `wrpc.cluster.outcome`: `unsigned`, `badsig`, `error`, and `replay` (signed, but a repeat, on another channel, outside the clock window or uncounted) — and `unsequenced`, an envelope with no counter **accepted** under `replay: 'accept'`: a 1.x node still in the cluster. When that series stays flat, the option can go |
+| `wrpc.compression.failures` | Counter | `{message}` — messages a compression codec threw on, by `wrpc.compression.carrier` (`ws`, `http`, `sse`, `wt`, `rooms`, `cluster`, `broker`) and `wrpc.compression.direction` (`encode`: sent plain; `decode`: refused). Recorded on the failure path only |
+| `wrpc.rtc.assertions` | Counter | `{assertion}` — trust assertions verified, by `wrpc.rtc.outcome`: `ok`; `missing`, `signature`, `fingerprint`, `subject` are **substitution signals** (a peer presenting no token, another key's, a replayed one, or someone else's); `expired`, `kid`, `issuer`, `malformed` are operational (clock, rotation, configuration) |
+| `wrpc.broker.delivery.attempts` | Histogram | `{attempt}` |
+
+The four `wrpc.rtc.*` instruments come from a [WebRTC peer](./webrtc): open
+links by `wrpc.rtc.role` (`initiator` / `responder`), redials and knocks
+after a link failed by role, ICE restarts by `wrpc.rtc.outcome`
+(`requested`, `recovered`, `failed`), and closed links by reason and side —
+a `refused` close is a peer a trust policy turned away, a `gave-up` one a
+path that never came back. A peer's host half also records the
+ordinary server spans and `wrpc.server.connections` under
+`wrpc.transport: 'webrtc'`.
+
+The two `wrpc.broker.*` instruments come from the
+[message-broker](./brokers) bindings: messages consumed into procedures by
+`messaging.system` and `wrpc.broker.outcome` (`ack`, `retry`, `release`,
+`dead`), and messages published by outcome (`ok`, `error`).
+`wrpc.broker.refused` counts what a [sealed](./encryption#brokers) feed or
+consumer could not open, by `messaging.system` and `wrpc.reason` (`unsealed`,
+`kid`, `open`, `format`, `replay`) — a rising `kid` series during a rotation
+is a fleet that dropped a key before the backlog under it drained. A consumed
+message's call span is a `CONSUMER` span carrying `messaging.*` attributes,
+parented on the trace context the message arrived with; a published one is a
+`PRODUCER` span whose context rides in the message headers.
 
 `wrpc.server.sse.events` labels a closed kind set — `open`, `reattach`,
 `replay`, `gap`, `expired` — and the `gap`/`expired` series are **real event
@@ -118,13 +160,81 @@ that keeps recovering stays visible. Early HTTP/SSE refusals that happen
 before any client exists (CORS 403, 404, 405, capacity 429/503) are counted
 on `wrpc.server.calls` under the `<unknown>` target.
 
+`wrpc.client.heartbeat.rtt` is the client's only true latency signal that
+does not need a call to produce it: the app-level ping/pong is an exact round
+trip, and it keeps reporting while the application is idle. A heartbeat that
+timed out records no sample — there is no round trip to measure, and a value
+invented from the timeout would say more about your configuration than about
+the network. Nothing is recorded on this instrument for it: a timeout is the
+client's `heartbeat.timeout` log line and, because the connection is then
+terminated and dialled again, an `attempted` on `wrpc.client.reconnects`.
+
+`wrpc.server.sessions` labels six operations — `create`, `restore`,
+`touch`, `destroy`, `evict`, `expire` — where it once only ever said
+`restore`. `evict` is the one to alert on: unlike `expire` it discards
+sessions that are still live, so it means signed-in users were signed out to
+stay under `maxSessions`.
+
+`wrpc.stream.direction` finally has both values. `send` is recorded only by
+the server: on the client the counter has nothing to feed and the bytes
+would only cost the browser bundle.
+
+`wrpc.broker.delivery.attempts` is recorded when a message SETTLES — on an
+ack or a dead-letter, never on a retry — so it is the distribution of how
+many deliveries each message took, not a triangle counting the same message
+once per attempt.
+
 Metric attributes deliberately stay low-cardinality: the method, the status,
 the transport. Packet ids and peer addresses go on spans, never on a metric
-series.
+series. `wrpc.server.queue.depth` carries **no** attribute at all, per
+procedure or otherwise: one series per procedure is a cardinality bomb, and
+the question it answers — "is this server queueing?" — is a whole-process
+one.
+
+## Queue saturation
+
+A call that waits for a concurrency slot spends that time inside
+`rpc.server.duration`, which makes a saturated queue and a slow handler look
+identical on a dashboard. They are opposite problems with opposite fixes:
+one wants a bigger `queue`, the other wants the handler looked at.
+
+`wrpc.server.queue.wait` separates them. It is the time between a call
+asking for a slot and getting one, sampled per queued call;
+`wrpc.server.queue.depth` is how many are waiting right now. A rising
+`wait` with a flat `rpc.server.duration` minus the wait is a capacity
+problem; the reverse is a handler problem.
+
+Both are recorded only when telemetry is on — with no meter there is not even
+a clock read on the path.
+
+## Units
+
+`rpc.server.duration` and `rpc.client.duration` are in **milliseconds**,
+while current OpenTelemetry semantic conventions specify seconds for RPC
+duration histograms. This is a deliberate, documented divergence rather than
+an oversight.
+
+Changing the unit under the same metric name is the worst shape a breaking
+change can take: nothing errors, no alert fires, and every existing
+dashboard silently becomes wrong by a factor of 1000. The `@experimental`
+note on the telemetry option covers *additions* to the metric set, not
+redefining a series already in use. If wRPC moves to seconds it will be
+under new instrument names, at a major version, with both published for one
+release.
+
+## A note on the gauges
+
+The seven UpDownCounter-backed gauges (`connections`, `subscriptions`,
+`sse.channels`, `rooms`, `rtc.links`, `cluster.instances`, `queue.depth`)
+are incremented and decremented at lifecycle edges rather than observed from
+a registry. A missed decrement therefore leaks for the life of the process.
+The edges are latched where that risk is real, but if you see a gauge that
+never returns to zero on an idle server, that is the mechanism — report it
+rather than working around it.
 
 ## Trace context
 
-wrpc is a wire protocol, so the OpenTelemetry context manager alone cannot
+wRPC is a wire protocol, so the OpenTelemetry context manager alone cannot
 link the two sides — the caller is in another process. `call`, `subscribe` and
 `event` packets therefore carry two optional fields:
 
@@ -141,9 +251,12 @@ receiver to start a root span; a peer that does not understand them ignores
 them like any other unknown field. The context is per **packet**, so each call
 in a [batch](./client#batching) keeps its own parent.
 
-wrpc does not parse or serialize the W3C format — it hands the field to your
-propagator, so whichever one you configured globally (W3C, B3, Jaeger) is what
-runs. The full wire description is in the
+wRPC does not parse or serialize the W3C format — it hands the field to your
+propagator. The two fields carry exactly the `traceparent` and `tracestate`
+keys, so the propagator has to be the W3C one: a B3 or Jaeger propagator's
+headers have other names and are not carried. On a broker message the same
+context rides under the W3C header names themselves. The full wire
+description is in the
 [protocol reference](../reference/protocol#trace-context).
 
 ### Untrusted peers
@@ -166,7 +279,7 @@ Every trace then starts on your side.
 The client injects trace context the same way. Without a
 `ZoneContextManager` or `StackContextManager` from the OpenTelemetry web SDK,
 `context.active()` returns the root — so the injected traceparent names the
-span wrpc just created. Still correct, just not linked to the surrounding page
+span wRPC just created. Still correct, just not linked to the surrounding page
 interaction. Register a web context manager if you want that link.
 
 ## Failures

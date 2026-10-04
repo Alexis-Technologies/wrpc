@@ -42,6 +42,8 @@ const createClientTelemetry = (telemetry) => {
   let duration = null;
   let reconnects = null;
   let connections = null;
+  let heartbeat = null;
+  let calls = null;
   if (hasMethod(meter, 'createHistogram') && hasMethod(meter, 'createCounter')) {
     try {
       duration = meter.createHistogram('rpc.client.duration', {
@@ -52,9 +54,28 @@ const createClientTelemetry = (telemetry) => {
         unit: '{attempt}',
         description: 'Reconnect attempts, by outcome',
       });
+      // The app-level ping/pong pair is an exact round trip the client
+      // already measures the ends of — the one true latency signal it has
+      // that does not need a call to produce it, and the only one that
+      // keeps reporting while the application is idle.
+      heartbeat = meter.createHistogram('wrpc.client.heartbeat.rtt', {
+        unit: 'ms',
+        description: 'Round-trip time of the app-level ping/pong',
+      });
+      // `rpc.client.duration` alone could not answer "what fraction of my
+      // calls fail": a histogram records nothing for a call whose elapsed
+      // time is unknown, so error RATE was not derivable from it.
+      calls = meter.createCounter('wrpc.client.calls', {
+        unit: '{call}',
+        description: 'RPC calls made, by outcome',
+      });
     } catch {
+      // Every instrument of this block, including the new ones: a meter
+      // whose factory throws must leave no half-initialized writer behind.
       duration = null;
       reconnects = null;
+      heartbeat = null;
+      calls = null;
     }
   }
   let refreshes = null;
@@ -130,10 +151,22 @@ const createClientTelemetry = (telemetry) => {
     },
 
     recordCall(target, status, elapsed) {
+      const attributes = { 'rpc.system': 'wrpc', ...targetAttributes(target), 'wrpc.status': status };
       try {
-        if (elapsed !== undefined) {
-          duration?.record(elapsed, { 'rpc.system': 'wrpc', ...targetAttributes(target), 'wrpc.status': status });
-        }
+        calls?.add(1, attributes);
+      } catch {}
+      if (elapsed === undefined) return;
+      try {
+        duration?.record(elapsed, attributes);
+      } catch {}
+    },
+
+    // `outcome` is 'ok' for a pong that answered our ping, 'timeout' for one
+    // that never came. A timeout records no sample: there is no round trip
+    // to measure, and a made-up one would poison the percentiles.
+    recordHeartbeat(outcome, rtt) {
+      try {
+        if (outcome === 'ok') heartbeat?.record(rtt);
       } catch {}
     },
 

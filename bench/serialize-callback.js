@@ -12,6 +12,7 @@
 // not any particular serializer library.
 
 const { bench } = require('./support/harness.js');
+const { hasBytes } = require('../src/attachments.js');
 
 const result = {
   id: 'p_812',
@@ -49,6 +50,23 @@ const run = async () => {
       let out;
       for (let i = 0; i < BATCH; i++) {
         out = `{"type":"callback","id":${JSON.stringify(id)},"result":${compiledSerialize(result)}}`;
+      }
+      return out;
+    },
+    { opsPerIteration: BATCH },
+  );
+
+  // What the fast path pays with attachments on: the result is walked for
+  // bytes before the serializer runs (a frame cannot carry serializer
+  // JSON). With `attachments: false` the walk is skipped — the row above.
+  await bench(
+    'hasBytes(result) + envelope surgery + compiled result',
+    async () => {
+      let out;
+      for (let i = 0; i < BATCH; i++) {
+        out = hasBytes(result)
+          ? null
+          : `{"type":"callback","id":${JSON.stringify(id)},"result":${compiledSerialize(result)}}`;
       }
       return out;
     },

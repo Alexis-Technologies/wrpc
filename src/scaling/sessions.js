@@ -1,0 +1,102 @@
+'use strict';
+
+// A Redis session store, modelled on the ioredis API — `get(key)`,
+// `set(key, value, 'PX', ttl)`, `del(key)` and `pexpire(key, ttl)` — for
+// the `sessions: { store }` injection. The backplane carries room events
+// between instances, not sessions: without a shared store a client that
+// reconnects to another instance arrives anonymous, and the load balancer
+// has to pin it (docs/guide/scaling.md). With this one, no instance owns a
+// session and nothing needs pinning.
+//
+// Per the zero-dependency rule nothing is required here: the caller injects
+// its own client and it is validated structurally, so anything with that
+// shape plugs in.
+//
+//   const { createRedisSessionStore } = require('@alexify/wrpc/scaling');
+//   const Redis = require('ioredis');
+//   new Server({ router, sessions: { store: createRedisSessionStore({ client: new Redis(url) }) } });
+//
+// node-redis v4 spells the expiring set differently — `set(key, value,
+// { PX: ttl, XX: true })` — so it needs a small wrapper that carries the
+// conditions this store passes (PX, and XX for an update):
+//   const client = { get: (k) => redis.get(k), del: (k) => redis.del(k),
+//     set: (k, v, ...args) => redis.set(k, v, {
+//       ...(args[0] === 'PX' ? { PX: args[1] } : {}), ...(args.includes('XX') ? { XX: true } : {}) }),
+//     pexpire: (k, ttl) => redis.pExpire(k, ttl) };
+//
+// State is stored as JSON: a session's state is the plain data the
+// application assigns, which is JSON by construction (it crosses the
+// Session proxy as own enumerable properties).
+
+const { createLoggerWriter } = require('../logging.js');
+
+const DEFAULT_PREFIX = 'wrpc:session:';
+const DEFAULT_TTL = 24 * 60 * 60 * 1000; // 24h, like MemorySessionStore
+
+const isFunction = (value) => typeof value === 'function';
+
+const checkClient = (client) => {
+  if (!client || !isFunction(client.get) || !isFunction(client.set) || !isFunction(client.del)) {
+    throw new TypeError(
+      'createRedisSessionStore: options.client must be a Redis client with get(key), set(key, value, ...), del(key)',
+    );
+  }
+  return client;
+};
+
+const createRedisSessionStore = (options = {}) => {
+  const { client, prefix = DEFAULT_PREFIX, ttl = DEFAULT_TTL, logger = globalThis.console } = options;
+  // This store sits BELOW SessionManager, which never sees a row it
+  // rejected, so a corrupt entry would otherwise be invisible from above.
+  const log = createLoggerWriter(logger).child({ component: 'sessions', store: 'redis' });
+  checkClient(client);
+  if (typeof prefix !== 'string') throw new TypeError('createRedisSessionStore: options.prefix must be a string');
+  if (!(Number.isFinite(ttl) && ttl >= 0)) throw new TypeError('createRedisSessionStore: options.ttl must be >= 0 ms');
+  const key = (token) => prefix + token;
+  // Sliding expiry needs PEXPIRE; a client without it keeps absolute TTLs,
+  // which SessionManager treats as a valid policy (no touch()).
+  const sliding = ttl > 0 && isFunction(client.pexpire);
+
+  const store = {
+    name: 'redis',
+    async get(token) {
+      const raw = await client.get(key(token));
+      if (raw === null || raw === undefined) return null;
+      try {
+        const data = JSON.parse(raw);
+        if (typeof data === 'object' && data !== null && !Array.isArray(data)) return data;
+        log.warn({ event: 'session.corrupt', reason: 'not an object' });
+        return null;
+      } catch (error) {
+        // A corrupt entry is a missing session, not a thrown request — but
+        // "missing" here means a signed-in user is silently signed out, and
+        // that is worth one line. The token is NOT logged: it is the
+        // credential, and a log pipeline is not where credentials go.
+        log.warn({ err: error, event: 'session.corrupt' });
+        return null;
+      }
+    },
+    // `create: false` (every write after the first) is SET … XX: a row that
+    // is gone — a logout on another instance — is not brought back, and
+    // Redis's null answer becomes the false the session manager reads.
+    async set(token, data, { create = true } = {}) {
+      const value = JSON.stringify(data);
+      const args = [];
+      if (ttl > 0) args.push('PX', ttl);
+      if (!create) args.push('XX');
+      const result = await client.set(key(token), value, ...args);
+      return create || (result !== null && result !== undefined);
+    },
+    async delete(token) {
+      await client.del(key(token));
+    },
+  };
+  if (sliding) {
+    store.touch = async (token) => {
+      await client.pexpire(key(token), ttl);
+    };
+  }
+  return store;
+};
+
+module.exports = { createRedisSessionStore, DEFAULT_SESSION_PREFIX: DEFAULT_PREFIX };

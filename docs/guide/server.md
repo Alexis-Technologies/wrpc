@@ -4,9 +4,11 @@ There are two server objects, and the difference matters:
 
 - **`RpcServer`** is the engine-agnostic core. It knows nothing about
   `node:http`, sockets or listening — you hand it a socket
-  (`attachSocket`), a `MessagePort` (`attachPort`), or an abstract HTTP call
-  (`handleHttpCall`), and it does the RPC. Every [adapter](./adapters/fastify)
-  is a thin shell around one.
+  (`attachSocket`), a `MessagePort` (`attachPort`), an abstract HTTP call
+  (`handleHttpCall`), or any persistent transport (`attach`) — which is how a
+  [WebTransport](./wt) session, a [WebRTC](./webrtc) data channel and the
+  [broker binding](./brokers/rpc) get in — and it does the RPC. Every
+  [adapter](./adapters/fastify) is a thin shell around one.
 - **`Server`** is the batteries-included shell: a `node:http(s)` listener plus a
   WebSocket engine, composed around an `RpcServer`. It is what you want unless
   you already have a framework owning the port.
@@ -42,12 +44,17 @@ with every adapter; the network half belongs to the shell.
 | `cors` | `null` | See [CORS](#cors) below. |
 | `backplane` | `null` | Carries room events between instances — see [Scaling](./scaling). |
 | `instanceId` | a uuid | Identifies this instance on the backplane. |
-| `generateId` | uuid v4 | Context uuids, server stream ids, REST packet ids — bring your own (cuid/ulid). |
+| `generateId` | uuid v4 | Every id the server mints — `instanceId`, client ids, context uuids, stream ids, REST packet ids, SSE channel ids, the cluster epoch. Bring your own (cuid/ulid). See [Identifiers](./production#identifiers). |
 | `introspection` | `true` | `system/introspect` exposure: `true` public, `'session'` gated, `false` off. |
 | `maxBatch` | `128` | Packets accepted in one [batch frame](./client#batching). |
 | `maxSubscriptions` | `256` | Concurrent [subscriptions](./subscriptions) per client. |
 | `maxCalls` | `1000` | In-flight calls per client; past it a call answers `429`. |
+| `maxStreams` | `256` | Binary streams a client may hold open — announced and not yet ended; past it a `stream` packet answers `429`. A peer decides how many it announces, and each holds memory until a handler reads it. |
 | `sse` | `{}` | [SSE](./sse) channel options, or `false` to remove the endpoint. |
+| `http` | `{}` | The HTTP side's own options: `compression`, off by default — see [Compression](#compression). |
+| `compression` | off | Accept per-message compressed frames from a Node WebSocket client that negotiated them — see [Compression](#compression). |
+| `maxMessage` | 16 MiB | The largest inflated client frame accepted on a socket. |
+| `attachments` | `true` | Bytes in args, results and events travel as [binary attachments](./streams#attachments) to every peer that negotiated [revision 2](../reference/protocol#versioning); `false` makes the server speak revision 1 — JSON, to everyone, with `wrpc.v1` selected and `wrpc-version: 1` answered. |
 | `logger` | `globalThis.console` | Where the server logs — a Console or a pino-shaped logger; `false` silences it. See [Logging](./logging). |
 | `telemetry` | `null` | OTel traces and metrics — see [Telemetry](./telemetry). |
 
@@ -64,7 +71,7 @@ adapter shares.
 | `key` / `cert` / `SNICallback` | — | TLS material, forwarded to `https.createServer`. |
 | `nagle` | `true` | `false` sets `noDelay` on the listener. |
 | `engine` | `createNodeEngine()` | The WebSocket [engine](../reference/engine). |
-| `ws` | `{}` | Forwarded to the engine's `attach()` — `path`, `protocols`, `verifyClient`, `perMessageDeflate`, … |
+| `ws` | `{}` | Forwarded to the engine's `attach()` — `path`, `protocols`, `verifyClient`, `perMessageDeflate`, … Compression is **off** until you pass `perMessageDeflate` — see [performance](./performance#compression-is-off-by-default). |
 | `maxBodySize` | 10 MiB | Request-body cap in bytes for the built-in HTTP path. |
 | `retry` | `3` | `EADDRINUSE` bind attempts before giving up. |
 | `timeouts.bind` | `2000` | Milliseconds between those attempts. |
@@ -160,6 +167,109 @@ socket to your server with the user's cookies attached. Configure
 `cors.origins` and the default `verifyClient` refuses a mismatched `Origin`
 outright.
 
+## Compression {#compression}
+
+Off by default, like every compression knob in wRPC: a gzip per answer is
+CPU spent for every peer to save bytes only some of them need. Turn it on
+for the HTTP side with `http.compression`:
+
+```js
+new Server({
+  router,
+  http: {
+    compression: {
+      threshold: 1024,                            // bytes; smaller answers go plain
+      filter: (call) => !call.headers['x-internal'], // per request, optional
+      async: { threshold: 256 * 1024 },           // hand bodies this large to the threadpool
+      encodings: ['zstd', 'br', 'gzip'],          // this server's order; the default is ['gzip']
+    },
+  },
+});
+```
+
+`compression: true` takes the defaults — gzip alone. An answer is encoded
+when the request's `Accept-Encoding` admits one of the server's codings, the
+body is at or over `threshold`,
+nothing upstream set a `Content-Encoding` already (a route's own
+[`headers`](./rest#response-headers), a framework compression plugin), and
+`filter(call)` — when given — returns `true`. The response then carries
+`Content-Encoding`, `Vary: Accept-Encoding` (joined onto the CORS
+`Vary: Origin`) and the encoded `Content-Length`. Packet-mode POSTs, batch
+frames, REST results and errors all leave through the same funnel; a REST
+route's [ETag](./rest#caching) is computed over the plain body, so a `304` is
+the same validator whichever encoding was asked for, and a `204` or `304` is
+never encoded.
+
+**Which coding** is `encodings`, the server's list in **its** order of
+preference: the first one on it the request accepts is used. A weight of
+zero refuses a coding and `*` covers the ones not named; other weights say
+*acceptable*, not *preferred* — which acceptable coding costs this server
+least is not the client's to know (nginx reads the header the same way).
+
+| `encodings` entry | Default level | On a 27 KB answer (`bench/algorithms.js`) |
+| --- | --- | --- |
+| `'gzip'` or `{ encoding: 'gzip', level, memLevel }` | zlib's 6 | 110 µs, 3,214 B — what every client accepts |
+| `'br'` or `{ encoding: 'br', quality }` | 4 | 93 µs, 2,601 B — the smallest at gzip's cost |
+| `'zstd'` or `{ encoding: 'zstd', level }` | 1 | 36 µs, 2,848 B — a third of the CPU; Node 22.15+ / 23.8+, a `TypeError` at construction before |
+| `{ encoding, encode(bytes), createStream? }` | — | your own coding; `encode` may answer a promise, a failure answers the plain body |
+
+Under ~2 KB the three are within a few bytes and microseconds of each other,
+so the list earns its place on large answers. zlib's own Brotli default is
+quality 11 — **33 ms** on that answer — which is why the default here is 4.
+Browsers announce `br` and `zstd` over HTTPS only, so plain-HTTP development
+sees gzip whatever the list says.
+
+Nothing changes on the client: `fetch` sends `Accept-Encoding` and inflates
+by itself, in browsers and in Node. The event stream has its own option,
+[`sse.compression`](./sse#compression); the WebSocket has
+[`perMessageDeflate`](./performance#compression-is-off-by-default).
+
+### The Node client's frames {#node-client-frames}
+
+`perMessageDeflate` compresses what the server sends; a **Node** client's
+built-in `WebSocket` only ever inflates, so its uploads — a 4 KB call, a
+stream chunk — arrive as they are. The server-level `compression` option
+accepts per-message compressed frames from a Node client that asked for
+them: the client sends `{ type: 'ping', enc: ['deflate-raw'] }` on open —
+its codecs, in its [order of preference](./compression#list) — a server
+answers with the first of them it holds as the `enc` of its `pong`, and
+from then on the client sends every packet or chunk past the threshold as a binary
+frame under a `0x00` marker (a stream chunk never starts with one) that
+the server inflates before dispatch. Off on both ends by default; a lone
+end stays plain. A browser never needs it — it compresses both directions
+itself under `perMessageDeflate`.
+
+```js
+new Server({ router, compression: true });                   // accept them
+const client = await connect('wss://host/api', { compression: true }); // send them (Node)
+```
+
+What it costs — `bench/http-compression.js`, one-shot gzip of a callback:
+
+| Answer | rate | ratio |
+| --- | ---: | ---: |
+| 295 B (2 rows) | 110,649/sec | 1.7× |
+| 1.6 KB (12 rows) | 76,920/sec | 5.5× |
+| 8.5 KB (64 rows) | 27,563/sec | 9.9× |
+| 135 KB (1000 rows) | 2,056/sec | 12.0× |
+
+The first row is the reason for the 1 KiB threshold; the last one — half a
+millisecond on the event loop — is what `async` is for. Under the fastify
+adapter, [delegated REST routes](./adapters/fastify#response-headers-and-caching-on-delegated-routes)
+answer through fastify's own reply and are `@fastify/compress`'s to encode;
+the packet endpoint and conventional REST paths under the plugin follow this
+option like any host.
+
+## Revisions {#revisions}
+
+`rpc.revision` is the newest [protocol revision](../reference/protocol#versioning)
+this server speaks — `2`, or `1` under `attachments: false` or a packet
+codec — and `context.client.revision` the one a connection settled on. They
+are the questions an upgrade from 1.0 asks: who is still on revision 1 is the
+`1` series of `wrpc.server.connections` by `wrpc.revision`
+([telemetry](./telemetry#metrics)), and each such connection is a
+`revision.peer` debug line ([logging](./logging)).
+
 ## Lifecycle
 
 ```js
@@ -187,7 +297,8 @@ const { RpcServer } = require('@alexify/wrpc');
 const rpc = new RpcServer({ router });
 
 rpc.attachSocket(socket, { headers, remoteAddress });   // a WrpcSocket or Connection
-rpc.attachPort(port);                                   // a MessagePort (Service Worker)
+rpc.attachPort(port);                                   // a node:worker_threads MessagePort
+rpc.attach(transport);                                  // any persistent 'packet'/'chunk' transport
 await rpc.handleHttpCall({ method, url, headers, body, respond });
 ```
 
@@ -200,7 +311,10 @@ framework request.
 ## Ports
 
 `attachPort(port)` speaks the protocol over a `MessagePort` instead of a
-socket: JSON packets as strings, binary chunks as `Uint8Array`. That covers a
+socket: JSON packets as strings, binary chunks as `Uint8Array`. A port has no
+handshake, so the [revision](../reference/protocol#versioning) rides its first
+`ping` — a wRPC client sends it by itself — and until then the port is sent
+no framed message. That covers a
 worker thread, an embedded peer, or a test harness that wants a real client
 against a real server with no network in between. The `Server` shell wires it
 to a `'port'` event, so a host can hand ports in without reaching for
@@ -213,4 +327,14 @@ server.emit('port', port);
 This is *not* the browser Service Worker story — there, the worker holds a real
 WebSocket to the server and the page reaches the worker over a `MessagePort`.
 That is entirely a client-side arrangement; see
-[Client](./client#service-workers).
+[Client](./client#workers).
+
+`attach(transport)` is the seam under both: any persistent transport that
+announces inbound text as `'packet'` and bytes as `'chunk'` events becomes a
+client, whether this package knows the wire or not. The one it ships on top
+of it is `attachChannel(rpc, dc, options)` from
+[`@alexify/wrpc/webrtc`](./webrtc#your-own-connection) — a WebRTC data
+channel the application negotiated itself, a browser reaching this server
+peer to peer with `connect(url, { transport: 'webrtc', channel })`. Like a
+port, a channel carries no request: the client starts with no session, and
+what the application observed about the peer goes in `headers` / `data`.

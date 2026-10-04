@@ -1,6 +1,6 @@
 # TanStack Query
 
-`@alexify/wrpc/query` binds a wrpc client to [TanStack
+`@alexify/wrpc/query` binds a wRPC client to [TanStack
 Query](https://tanstack.com/query). Not hooks — **option factories**, in the
 shape tRPC v11 settled on:
 
@@ -15,7 +15,7 @@ useQuery(wq.queryOptions(['chat', 'list'], { room: 'a' }));
 `queryOptions()` hands back the plain `{ queryKey, queryFn }` object you spread
 into your own `useQuery`. So one file serves React Query, Solid Query, Svelte
 Query, Vue Query and query-core alike — and imports **none** of them. Together
-with the wrpc client being injected too, that is what keeps this subpath at
+with the wRPC client being injected too, that is what keeps this subpath at
 ~1 KB min+gzip and free of runtime dependencies.
 
 ## Setup
@@ -106,7 +106,7 @@ useEffect(() => {
 | `lastEventId` | — | Where to resume from. |
 | `onData` / `onError` / `onEnd` | — | The usual [subscription callbacks](./subscriptions#when-callbacks-fire). |
 
-It returns the wrpc `Subscription` handle: call `unsubscribe()` on teardown.
+It returns the wRPC `Subscription` handle: call `unsubscribe()` on teardown.
 One call opens one subscription, and nothing here de-duplicates two callers of
 the same feed.
 

@@ -49,7 +49,66 @@ const ENTRIES = [
   // the reconnect stability window (stableAfter), refresh-aware subscribe
   // restore, the joined-run refresh guard, coded 408/503 rejections and the
   // shared failPackets settlement — measured together at ~+450 B min+gzip.
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 15 },
+  // 15 -> 16: the worker proxy grew a SharedWorker leg (the `connect`
+  // listener, the `url` option, port cleanup on `close`) with 16 bytes of
+  // headroom left; the marketing line moved to "~15 KB" in the same change.
+  // 16 -> 17 for the WebTransport client transport (`transport: 'wt'`, in
+  // the base entry so the `['wt', 'ws']` fallback list needs no import) and
+  // its stream framing — measured together at +1.8 KB min+gzip (16.9); the
+  // connect-URL builder it shares with ws moved into the core in the same
+  // change, so the ws leg paid nothing twice.
+  // 17 -> 19 for the rest of WebTransport: unreliable events over datagrams
+  // and binary streams on their own WebTransport streams (the stream mux,
+  // capabilities negotiation) — measured together at +1.5 KB (18.4).
+  // 19 -> 20 for the call-path work behind the paper's 26 % figure: the
+  // bucketed deadline scheduler (one timer for every call in flight instead
+  // of a setTimeout + three closures per call), the synchronous `callback`
+  // fast path and the per-message `compress` option — +0.6 KB (measured
+  // 19.0), earned by bench/browser/calls.js and bench/bench.js.
+  // 20 -> 22 for per-message compression on the WebTransport client
+  // (src/compression: the structural codec seam, the Sequencer that keeps an
+  // asynchronous CompressionStream's output in order, the KIND 3/4 framing
+  // and the caps negotiation) — +1.3 KB, measured 20.8 against 19.5. Off by
+  // default; the bytes are the seam every browser transport shares.
+  // 22 -> 23 for binary attachments (src/attachments.js: the hasBytes walk,
+  // the frame encoder/decoder, and the client's send/receive frame
+  // classification — a Uint8Array in args or data travels as bytes instead
+  // of a `{"0":1,…}` object nine times the size) — +1.2 KB, measured 22.4
+  // against 21.2. On by default because it is a correctness fix, priced in
+  // bench/attachments.js; `attachments: false` skips the walk.
+  // 23 -> 24 for the choice of compression algorithm: `codec` as a name, a
+  // Compressor or a preference LIST of them, the negotiation that gives
+  // each direction its own codec (`{ encode, decode }` over two id lists,
+  // bounded against a peer's junk), and the platform half that asks
+  // CompressionStream which formats it has — +0.4 KB, measured 23.1
+  // against 22.7. What it buys is the fallback: a peer without zstd is
+  // served deflate instead of plain.
+  // 24 -> 25 for the session-encryption SEAM — not the encryption: the ws and wt
+  // transports run an injected handshake inside open() and hand every
+  // frame to it afterwards, the client refuses up front a transport that
+  // cannot carry `options.encryption`, and the worker proxy forwards the
+  // option — +0.6 KB, measured 24.2 against 23.6. Noise, the AEADs and the
+  // rest live in @alexify/wrpc/encryption, and only a page that injects
+  // them pays for them.
+  // 25 -> 26 for the 2.0 security review's fixes on the client half: the
+  // attachments walk's toJSON and cycle guards, the SSE channel secret, the
+  // worker proxy routing frames, `cancel()` on the Noise handshake, and the
+  // WebTransport mux holding an inbound stream no further than its first
+  // read until its open packet passes (capped, timed) — +1.0 KB, measured
+  // 25.2 against 24.2.
+  // 26 -> 27 for the observability pass on the client half: the typed
+  // ENCRYPTION_REFUSED error (its status predicate in the client core) and
+  // the WebTransport mux's fallback callback, which the wt client bundles
+  // (+0.1 KB — measured 26,638 B against a 26,624 B budget: over by 14,
+  // found by the size run, not shaved away to fit).
+  // 27 -> 28 for protocol revision 2 on the client half (protocol.md
+  // #versioning): the `wrpc.v2, wrpc.v1` offer and the revision a connection
+  // negotiated, the one redial with the query carrier against a server that
+  // answered `wrpc.v1`, the `Accept` that asks an HTTP server for a frame
+  // and the `wrpc-version` that says it may be sent one, the worker port's
+  // revision on its first ping — what lets a 2.x client talk to a 1.0 peer
+  // without a flag (the http leg crossed it: 27,692 B against 27,648).
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 28 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
@@ -57,6 +116,13 @@ const ENTRIES = [
   { label: 'fastify adapter (@alexify/wrpc/fastify)', entry: 'fastify.js', platform: 'node' },
   { label: 'express adapter (@alexify/wrpc/express)', entry: 'express.js', platform: 'node' },
   { label: 'rooms backplane (@alexify/wrpc/scaling)', entry: 'scaling.js', platform: 'node' },
+  // The broker family is Node-only: brokers are reached from servers, never
+  // from a browser bundle.
+  { label: 'broker core (@alexify/wrpc/broker)', entry: 'broker.js', platform: 'node' },
+  { label: 'redis broker (@alexify/wrpc/broker/redis)', entry: 'broker/redis.js', platform: 'node' },
+  { label: 'nats broker (@alexify/wrpc/broker/nats)', entry: 'broker/nats.js', platform: 'node' },
+  { label: 'amqp broker (@alexify/wrpc/broker/amqp)', entry: 'broker/amqp.js', platform: 'node' },
+  { label: 'kafka broker (@alexify/wrpc/broker/kafka)', entry: 'broker/kafka.js', platform: 'node' },
   // 12 -> 13 alongside the main-entry raise: the sse entry bundles the same
   // client core, so the REST-bridge bytes land here too. 13 -> 14 with the
   // main entry's static-introspection raise, for the same reason; 14 -> 15
@@ -64,13 +130,133 @@ const ENTRIES = [
   // the sse transport's own declared-headers/meta legs); 15 -> 16 with its
   // resilience raise (same shared core, plus the sse POST settling its own
   // refused calls through failPackets).
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 16 },
+  // 16 -> 17: bundles the main browser entry, so it inherits its SharedWorker bytes.
+  // 17 -> 18 with the main entry's WebTransport raise, for the same reason (measured 17.8);
+  // 18 -> 20 with its datagram + stream-mux raise (measured 19.2).
+  // 20 -> 21 with the main entry's call-path raise (measured 19.9).
+  // 21 -> 23 with the main entry's compression raise (measured 21.7).
+  // 23 -> 24 with the main entry's attachments raise, plus the sse client's
+  // explicit refusal of bytes (measured 23.4 against 22.0).
+  // 24 -> 25 with the main entry's codec-list raise (measured 24.1 against 23.6).
+  // 25 -> 26 with the main entry's session-encryption seam (measured 24.9 against 24.5).
+  // 26 -> 27 with the main entry's 2.0 review raise, plus the SSE channel
+  // secret the client carries after the id (measured 26.2 against 25.7).
+  // 27 -> 28: this entry is the main one plus the SSE client (~1 KB), and
+  // the main entry's own 26 -> 27 raise never reached it — it sat 11 bytes
+  // under. The client core checking by deed that a session transport sealed
+  // what it opened (+0.1 KB, measured 27,768 B against 27,648) is what crossed it.
+  // 28 -> 29 with the main entry's revision-2 raise (measured 28,735 B
+  // against 28,672).
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 29 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and
   // deliberately OUTSIDE the main entry so only apps that opt into the
   // strategies pay for them.
   { label: 'auth strategies (@alexify/wrpc/auth)', entry: 'auth.js', platform: 'browser', budget: 2 },
+  // The pure-JS DEFLATE codec: inflate (stored, fixed, dynamic) and a
+  // fixed-Huffman encoder against a preset dictionary — browser-reachable
+  // by design, and deliberately OUTSIDE every other entry so only a page
+  // that injects it pays for it. 5 -> 4: it takes the dictionary id from
+  // the src/compression/ids.js leaf instead of the whole negotiation
+  // (measured 3.8 against 4.5) — the ratchet, turned the other way.
+  // deflate: 4 → 5 for the two-level decoding table (the root's width no
+  // longer follows the longest code a block declares) — ~100 B of bound.
+  { label: 'deflate codec (@alexify/wrpc/deflate)', entry: 'deflate.js', platform: 'browser', budget: 5 },
+  // Encryption: the AEAD, X25519, HKDF and keyring primitives over
+  // crypto.subtle — browser-reachable, and OUTSIDE every other entry like the
+  // deflate codec: the base entry carries an injection seam, the page that
+  // injects pays for the rest. Set from the measurement when the row landed
+  // (3.1). 4 -> 9 for the session: the Noise handshake (NN, NK, XX, NNpsk0),
+  // the sealed framing and `createEncryption` — measured 7.8. 9 -> 11 for
+  // HPKE (RFC 9180 base + psk, DHKEM, the exporter) and the sealed `fetch` of
+  // the http transport — measured 9.9. 11 -> 12 for the sealed event stream
+  // (sse), HPKE's auth modes and the end-to-end helpers — measured 10.8.
+  {
+    label: 'encryption — browser (@alexify/wrpc/encryption)',
+    entry: 'encryption.browser.js',
+    platform: 'browser',
+    budget: 12,
+  },
+  { label: 'encryption — node (@alexify/wrpc/encryption)', entry: 'encryption.js', platform: 'node' },
+  // A peer is a client AND a server: the webrtc browser entry bundles the
+  // client core plus the router, dispatcher, per-peer Client, rooms and
+  // Broadcast (what makes a mesh broadcast/ask one fan-out: serialized,
+  // utf8-encoded and compressed once, fragmented per link),
+  // plus the link, framing, peer, mesh and signaler halves — measured at
+  // 38.3 KB when the row landed. 40 -> 41 for the server telemetry writer:
+  // a peer answers calls, so it emits the server spans and gauges a server
+  // does (+1.9 KB, the whole of src/telemetry/server.js). 41 -> 42 for stable
+  // identity: the signaler's instance/address bookkeeping, the peer's
+  // incarnation check and the mesh's away set (+0.7 KB, measured 41.4).
+  // 42 -> 45 for trust assertions: the JWS verifier over crypto.subtle
+  // (base64url, the SDP fingerprint parser, key lookup and rotation) plus
+  // the peer's per-link verify/stamp chains and the host's trust
+  // 'assertion' (+2.6 KB, measured 44.0) — the cryptographic layer the
+  // peer-to-peer trust model rests on, a deliberate spend.
+  // 45 -> 46 for the shared fan-out message (`Client.sendShared`, the
+  // `compress` option, `isReady`, the lazy Context uuid) — the rpc leaves
+  // this entry bundles for PeerHost (+0.5 KB, measured 45.0).
+  // 46 -> 47 for the message-broker telemetry seams (the CONSUMER span kind
+  // a host-built client picks, withMessagingSpan, the wrpc.broker.*
+  // instruments): they live in telemetry/server.js, which PeerHost bundles
+  // (+0.3 KB, measured 46.2 against 45.9).
+  // 47 -> 48 for the dispatcher's six refused-call log lines and the mesh
+  // dial's. They had been silent while their subscription twin logged, so
+  // half of what a dispatcher rejects was invisible to an operator; the
+  // bytes are the entry objects on those branches (+0.5 KB, measured 47.0
+  // against 46.5, which is the budget exactly and too thin to leave).
+  // 48 -> 50 for per-message compression on the data channels: the
+  // src/compression seam (shared with the main entry's wt client), the
+  // ChannelCodec's two Sequencers and compress-before-fragmentation, the
+  // DEFLATE header bit, the link's caps in the description signal and
+  // WrpcPeer's option (+1.7 KB, measured 49.2 against 47.5). Off by
+  // default; both peers must name the codec before a byte changes.
+  // 50 -> 51 for `buildDictionary` in the browser barrel: a browser peer
+  // builds the same router dictionary a Node peer does, for the pure-JS
+  // dictionary codec (+0.9 KB, measured 50.3 against 49.4 — the packet
+  // skeleton strings are most of it).
+  // 51 -> 53 for binary attachments on both halves this entry bundles: the
+  // client transport's frames and, through PeerHost, the server-side
+  // encoder in serverTransport.js and the dispatcher's frame routing
+  // (+1.5 KB, measured 51.8 against 50.3). 53 -> 54 for the 2.0 security
+  // review's fixes on the peer half: roster data written under
+  // peer/room/claims, the fragment count cap and the 1 KiB message-size
+  // floor, every a=fingerprint line compared, the stale-leave incarnation
+  // check, the attachments walk's toJSON/cycle guards and the seal-failure
+  // path of rooms (+0.6 KB, measured 53.4 against 52.8).
+  // 54 → 55 (2026-09-27): the channel codec owns the 'drain' after a false
+  // (bytes waiting in an asynchronous codec never cross the channel's own
+  // threshold), the water marks and maxBackpressure are validated, and a
+  // consumer that never drains is disconnected at the cap — ~0.5 KB of
+  // backpressure correctness the wt/ws carriers already had.
+  // 55 → 56 (2026-09-27): redial correctness — one link per peer under a
+  // racing connect(), a responder that gives up quietly and re-arms after
+  // the connect window, a knock or a new-certificate offer that rebuilds a
+  // link only one side saw fail, and no unhandled rejection from a signal,
+  // a join or a dial (measured 55.1).
+  // 56 -> 57 for the goodbye's reason: the closed set on the wire, the
+  // { reason, remote } closure RtcLink keeps and both 'close' events carry,
+  // abandon() as a real method, and the wrpc.rtc.closes counter in the
+  // telemetry writer (+0.3 KB, measured 56.2 against 55.9).
+  // 57 -> 58: a mesh that dials a lost edge again (the roster, the backoff,
+  // 'unreachable' — +0.5 KB) and a fan-out that prepares its message once
+  // for every link — the UTF-8 and the deflated body shared, only the
+  // fragments per link (+0.2 KB; bench/rtc-fanout.js: 37.7 -> 2.2 µs a
+  // recipient compressed, 10.3 -> 1.7 plain, at 16 KB over 32 links).
+  // Measured 58,498 B against 58,368.
+  // 58 -> 59 (2026-10-03, review №3): the revision of each half in a
+  // description's caps (`f` — two peers whose `attachments` disagreed sent
+  // each other frames the other refused), an ended session refused by the
+  // dispatcher's gates, `maxStreams` in the host, and the assertion
+  // verifier's backoff after a failed key load and `maxAge` for a revoked
+  // key. Measured 59,436 B against 59,392.
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 59 },
+  { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
+  // The server half of WebTransport (session contract, socket shim, host
+  // adapters); the client transport is in the main entry, so this never
+  // reaches a browser.
+  { label: 'webtransport — node (@alexify/wrpc/wt)', entry: 'wt.js', platform: 'node' },
 ];
 
 // A browser entry has to be self-contained: no node builtins, and no packages

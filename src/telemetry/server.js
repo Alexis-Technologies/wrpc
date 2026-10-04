@@ -1,8 +1,9 @@
 'use strict';
 
 // The server half: spans for calls, subscriptions and inbound events, plus
-// the twelve instruments a server has anything to say about. Node-only —
-// nothing browser-reachable requires this file.
+// the instruments a server has anything to say about. Browser-reachable
+// through PeerHost (the webrtc browser entry), so it counts against that
+// entry's budget in scripts/size.js.
 
 const {
   SPAN_KIND_SERVER,
@@ -36,6 +37,10 @@ const buildCallAttributes = (client, packet, target, includeIdentity) => {
   // A session TOKEN never appears at any setting: that is a credential, not
   // an identity, and the two must not share one switch.
   if (includeIdentity && client.source) attributes['network.peer.address'] = client.source;
+  // A host-built client (a broker binding) adds its own semantic
+  // attributes — `messaging.*` for a consumed message.
+  const extra = client.spanAttributes;
+  if (extra) for (const key in extra) attributes[key] = extra[key];
   return attributes;
 };
 
@@ -68,12 +73,29 @@ const createServerTelemetry = (telemetry) => {
   let recipients = null;
   let streamBytes = null;
   let backpressure = null;
+  let backplaneGaps = null;
   let sessions = null;
   let sseChannels = null;
   let clusterMessages = null;
   let clusterRequests = null;
   let clusterInstances = null;
   let sseEvents = null;
+  let rtcLinks = null;
+  let rtcRedials = null;
+  let rtcRestarts = null;
+  let rtcCloses = null;
+  let brokerDeliveries = null;
+  let brokerPublished = null;
+  let brokerRefused = null;
+  let brokerAttempts = null;
+  let brokerSessionEnds = null;
+  let queueWait = null;
+  let clusterVerifications = null;
+  let rtcAssertions = null;
+  let encryption = null;
+  let compressionFailures = null;
+  let rooms = null;
+  let queueDepth = null;
 
   // Checked separately from the others: a meter with counters and histograms
   // but no up/down counter would otherwise disable every instrument here.
@@ -105,6 +127,10 @@ const createServerTelemetry = (telemetry) => {
         unit: 'By',
         description: 'Binary stream bytes, by direction',
       });
+      backplaneGaps = meter.createCounter('wrpc.server.backplane.gaps', {
+        unit: '{envelope}',
+        description: 'Backplane envelopes a publisher sent that this instance never received',
+      });
       backpressure = meter.createCounter('wrpc.server.backpressure', {
         unit: '{event}',
         description: 'Times a producer parked waiting for the transport to drain',
@@ -121,9 +147,70 @@ const createServerTelemetry = (telemetry) => {
         unit: '{request}',
         description: 'Cluster requests settled, by op and completeness',
       });
+      rtcRedials = meter.createCounter('wrpc.rtc.redials', {
+        unit: '{attempt}',
+        description: 'Redials (initiator) and knocks (responder) after a peer link failed, by role',
+      });
+      rtcRestarts = meter.createCounter('wrpc.rtc.ice_restarts', {
+        unit: '{restart}',
+        description: 'ICE restarts on peer links, by outcome',
+      });
+      rtcCloses = meter.createCounter('wrpc.rtc.closes', {
+        unit: '{link}',
+        description: 'Peer links closed, by reason and by which side closed',
+      });
       sseEvents = meter.createCounter('wrpc.server.sse.events', {
         unit: '{event}',
         description: 'SSE channel lifecycle events (open/reattach/replay/gap/expired)',
+      });
+      brokerDeliveries = meter.createCounter('wrpc.broker.deliveries', {
+        unit: '{message}',
+        description: 'Broker messages consumed into procedures, by broker and settlement',
+      });
+      brokerPublished = meter.createCounter('wrpc.broker.published', {
+        unit: '{message}',
+        description: 'Messages published to a broker, by broker and outcome',
+      });
+      // What a sealed topic refused, by reason: a rising `kid` series during
+      // a rotation is a fleet that dropped a key before its backlog drained.
+      brokerRefused = meter.createCounter('wrpc.broker.refused', {
+        unit: '{message}',
+        description: 'Sealed broker messages a feed or a consumer could not open, by broker and reason',
+      });
+      // A histogram, never an attribute on the delivery counter: the attempt
+      // number is unbounded, and a counter series per value is a cardinality
+      // bomb. Redelivery depth was unmeasurable — the number was available
+      // on every delivery and simply never recorded.
+      brokerSessionEnds = meter.createCounter('wrpc.broker.rpc.session.ends', {
+        unit: '{session}',
+        description: 'Broker RPC sessions ended, by reason',
+      });
+      brokerAttempts = meter.createHistogram('wrpc.broker.delivery.attempts', {
+        unit: '{attempt}',
+        description: 'How many deliveries a message took to settle',
+      });
+      // Time a call spent waiting for a queue slot, which `rpc.server.duration`
+      // folds in invisibly — so a saturated queue is indistinguishable from
+      // a slow handler, which are opposite problems with opposite fixes.
+      queueWait = meter.createHistogram('wrpc.server.queue.wait', {
+        unit: 'ms',
+        description: 'Time a call waited for a concurrency slot',
+      });
+      clusterVerifications = meter.createCounter('wrpc.cluster.verifications', {
+        unit: '{envelope}',
+        description: 'Backplane envelope authentication outcomes',
+      });
+      rtcAssertions = meter.createCounter('wrpc.rtc.assertions', {
+        unit: '{assertion}',
+        description: 'Peer trust assertion verification outcomes',
+      });
+      compressionFailures = meter.createCounter('wrpc.compression.failures', {
+        unit: '{message}',
+        description: 'Messages a compression codec failed on, by carrier and direction',
+      });
+      encryption = meter.createCounter('wrpc.server.encryption', {
+        unit: '{handshake}',
+        description: 'Session handshakes established and sealed requests refused, by kind and outcome',
       });
     } catch {
       duration = null;
@@ -133,10 +220,23 @@ const createServerTelemetry = (telemetry) => {
       recipients = null;
       streamBytes = null;
       backpressure = null;
+      backplaneGaps = null;
       sessions = null;
       clusterMessages = null;
       clusterRequests = null;
       sseEvents = null;
+      rtcRedials = null;
+      rtcRestarts = null;
+      brokerDeliveries = null;
+      brokerPublished = null;
+      brokerRefused = null;
+      brokerAttempts = null;
+      brokerSessionEnds = null;
+      queueWait = null;
+      clusterVerifications = null;
+      rtcAssertions = null;
+      encryption = null;
+      compressionFailures = null;
     }
   }
   if (canGauge) {
@@ -153,15 +253,33 @@ const createServerTelemetry = (telemetry) => {
         unit: '{channel}',
         description: 'Live SSE channels',
       });
+      rtcLinks = meter.createUpDownCounter('wrpc.rtc.links', {
+        unit: '{link}',
+        description: 'Open peer links, by role',
+      });
       clusterInstances = meter.createUpDownCounter('wrpc.cluster.instances', {
         unit: '{instance}',
         description: 'Peer instances this node currently sees on the backplane',
+      });
+      rooms = meter.createUpDownCounter('wrpc.server.rooms', {
+        unit: '{room}',
+        description: 'Rooms with at least one local member',
+      });
+      // Deliberately carries NO per-procedure attribute: one series per
+      // procedure would be a cardinality bomb, and the question this answers
+      // — "is the server queueing?" — is a whole-process one.
+      queueDepth = meter.createUpDownCounter('wrpc.server.queue.depth', {
+        unit: '{call}',
+        description: 'Calls waiting for a concurrency slot',
       });
     } catch {
       connections = null;
       subscriptions = null;
       sseChannels = null;
       clusterInstances = null;
+      rtcLinks = null;
+      rooms = null;
+      queueDepth = null;
     }
   }
 
@@ -188,11 +306,27 @@ const createServerTelemetry = (telemetry) => {
      * the caller's `finally`, which is the only place that knows the call
      * actually finished.
      */
-    withSpan({ client, packet, target, kind = SPAN_KIND_SERVER, suffix = '' }, fn) {
+    withSpan({ client, packet, target, kind, suffix = '' }, fn) {
       const handle = { span: null, error: false };
       if (!tracer) return fn(handle);
       const attributes = buildCallAttributes(client, packet, target, includeIdentity);
-      return startSpanWith(tracer, `${target}${suffix}`, { kind, attributes }, extract(packet), handle, fn);
+      // An explicit kind wins; otherwise the client's own (a broker consumer
+      // binding marks its client CONSUMER), SERVER for everything else.
+      const spanKind = kind ?? client.spanKind ?? SPAN_KIND_SERVER;
+      return startSpanWith(tracer, `${target}${suffix}`, { kind: spanKind, attributes }, extract(packet), handle, fn);
+    },
+
+    /**
+     * A span that is not a packet's: a message published to (PRODUCER) or
+     * taken from (CONSUMER) a broker outside the dispatcher. `carrier` is the
+     * packet-shaped `{ tp, ts }` a consumed message arrived with; `fn`
+     * receives the handle and runs with the span active, so an `inject`
+     * inside it writes this span's context into the outgoing headers.
+     */
+    withMessagingSpan({ name, kind, attributes, carrier = null }, fn) {
+      const handle = { span: null, error: false };
+      if (!tracer) return fn(handle);
+      return startSpanWith(tracer, name, { kind, attributes }, carrier ? extract(carrier) : null, handle, fn);
     },
 
     recordError(handle, error, code) {
@@ -214,9 +348,11 @@ const createServerTelemetry = (telemetry) => {
       } catch {}
     },
 
-    recordConnection(delta, transport) {
+    // `revision` is the protocol revision the connection speaks (1 | 2): who
+    // is still on 1.0 during an upgrade is a count, not a grep.
+    recordConnection(delta, transport, revision) {
       try {
-        connections?.add(delta, { 'wrpc.transport': transport });
+        connections?.add(delta, { 'wrpc.transport': transport, 'wrpc.revision': revision });
       } catch {}
     },
 
@@ -245,9 +381,25 @@ const createServerTelemetry = (telemetry) => {
       } catch {}
     },
 
+    // `kind` is 'room' or 'broadcast' — a closed set; the channel NAME is a
+    // room name, which only the log line carries (cardinality).
+    recordBackplaneGap(kind, missed) {
+      try {
+        backplaneGaps?.add(missed, { 'wrpc.channel.kind': kind });
+      } catch {}
+    },
+
     recordBackpressure(transport) {
       try {
         backpressure?.add(1, { 'wrpc.transport': transport });
+      } catch {}
+    },
+
+    // A codec that threw — the message left plain, or the frame was refused.
+    // Called on the failure path only; nothing is counted per message.
+    recordCompressionFailure(carrier, direction) {
+      try {
+        compressionFailures?.add(1, { 'wrpc.compression.carrier': carrier, 'wrpc.compression.direction': direction });
       } catch {}
     },
 
@@ -277,6 +429,107 @@ const createServerTelemetry = (telemetry) => {
         // The envelope type set is closed (hello/state/delta/bye/e/cmd/q/a)
         // — a bounded label, unlike anything peer-named.
         clusterMessages?.add(1, { 'wrpc.cluster.type': type });
+      } catch {}
+    },
+
+    // The WebRTC peer layer. `role` is 'initiator' or 'responder', an
+    // ICE restart's outcome is 'requested', 'recovered' or 'failed'.
+    recordRtcLink(delta, role) {
+      try {
+        rtcLinks?.add(delta, { 'wrpc.rtc.role': role });
+      } catch {}
+    },
+
+    recordRtcRedial(role) {
+      try {
+        rtcRedials?.add(1, { 'wrpc.rtc.role': role });
+      } catch {}
+    },
+
+    recordRtcRestart(outcome) {
+      try {
+        rtcRestarts?.add(1, { 'wrpc.rtc.outcome': outcome });
+      } catch {}
+    },
+
+    // A link's end. `reason` is what a goodbye may name (goodbye, refused,
+    // gave-up), 'abandoned' for a close this side never sent, or 'unknown'
+    // for one a newer peer named — a closed set; `remote` says whose.
+    recordRtcClose(reason, remote) {
+      try {
+        rtcCloses?.add(1, { 'wrpc.rtc.reason': reason, 'wrpc.rtc.side': remote ? 'remote' : 'local' });
+      } catch {}
+    },
+
+    // `outcome` is a closed set: ack | retry | release | dead (consumed) and
+    // ok | error (published) — bounded labels, never a queue name a peer
+    // could multiply.
+    recordBrokerDelivery(system, outcome) {
+      try {
+        brokerDeliveries?.add(1, { 'messaging.system': system, 'wrpc.broker.outcome': outcome });
+      } catch {}
+    },
+
+    // `reason` is a closed set (src/broker/rpc/server.js): the sequence
+    // numbers of a gap are the log line's, never a label.
+    recordBrokerSessionEnd(reason) {
+      try {
+        brokerSessionEnds?.add(1, { 'wrpc.broker.reason': reason });
+      } catch {}
+    },
+
+    recordBrokerAttempts(system, attempts) {
+      try {
+        brokerAttempts?.record(attempts, { 'messaging.system': system });
+      } catch {}
+    },
+
+    recordQueue(delta, waited) {
+      try {
+        queueDepth?.add(delta);
+        if (waited !== undefined) queueWait?.record(waited);
+      } catch {}
+    },
+
+    recordRooms(delta) {
+      try {
+        rooms?.add(delta);
+      } catch {}
+    },
+
+    recordClusterVerification(outcome) {
+      try {
+        clusterVerifications?.add(1, { 'wrpc.cluster.outcome': outcome });
+      } catch {}
+    },
+
+    recordRtcAssertion(outcome) {
+      try {
+        rtcAssertions?.add(1, { 'wrpc.rtc.outcome': outcome });
+      } catch {}
+    },
+
+    // `outcome` is 'established' or a refusal reason — a closed set the
+    // sealing layers spell (plaintext, handshake, protocol, kid, keys,
+    // hook, authorize, timeout, queue, crypto; format, open, stale,
+    // replay, replay-store on http); `kind` is ws, wt or http.
+    recordEncryption(outcome, kind) {
+      try {
+        encryption?.add(1, { 'wrpc.kind': kind, 'wrpc.outcome': outcome });
+      } catch {}
+    },
+
+    recordBrokerPublish(system, outcome) {
+      try {
+        brokerPublished?.add(1, { 'messaging.system': system, 'wrpc.broker.outcome': outcome });
+      } catch {}
+    },
+
+    // `reason` is the sealer's closed set (unsealed | kid | open | format |
+    // replay), never a topic or a message id.
+    recordBrokerRefusal(system, reason) {
+      try {
+        brokerRefused?.add(1, { 'messaging.system': system, 'wrpc.reason': reason });
       } catch {}
     },
 

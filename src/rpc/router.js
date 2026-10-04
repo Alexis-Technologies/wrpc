@@ -9,6 +9,7 @@ const {
   buildRestTrees,
   matchRestTrees,
   collectRestRoutes,
+  publicHttp,
 } = require('./rest.js');
 
 const DEFAULT_VERSION = '*';
@@ -236,6 +237,7 @@ class Procedure {
       preHandler = null,
       preSerialization = null,
       onError = null,
+      consume = null,
     } = options;
     if (typeof handler !== 'function') {
       throw new TypeError('procedure() requires a handler function');
@@ -292,6 +294,16 @@ class Procedure {
       throw new TypeError('procedure.subscription() does not support http');
     }
     this.semaphore = queue ? new Semaphore(queue) : null;
+    // A queue-consumer procedure's delivery policy (see the unit's reserved
+    // `consumes` key). Plain data, shape-checked here; the broker binding
+    // owns what the values mean.
+    if (consume !== null && (typeof consume !== 'object' || Array.isArray(consume))) {
+      throw new TypeError('procedure() consume must be an object');
+    }
+    if (consume && (this.kind === SUBSCRIPTION || this.http)) {
+      throw new TypeError('procedure() consume cannot be combined with a subscription or an http mapping');
+    }
+    this.consume = consume ? Object.freeze({ ...consume }) : null;
   }
 
   get subscription() {
@@ -348,25 +360,49 @@ class Procedure {
   // semaphore and the deadline behave EXACTLY as in invoke() — the slot is
   // held until the handler settles — but hooks, access and validators are
   // the host's job, already run by the time this is called.
+  // Queue wait, measured once and in one place. Without it the time a call
+  // spends waiting for a slot is folded invisibly into `rpc.server.duration`,
+  // so a saturated queue and a slow handler look identical — and they are
+  // opposite problems with opposite fixes (raise the queue vs. fix the
+  // handler). Both `invoke` and `invokeBare` take this path, so the two
+  // cannot drift apart.
+  async #acquire(context) {
+    const otel = context.client?.otel;
+    // Nothing listening: no clock reads, no counter traffic.
+    const started = otel?.enabled ? Date.now() : 0;
+    if (started > 0) otel.recordQueue(1);
+    try {
+      // Abort-aware: a queued waiter whose caller cancelled or disconnected
+      // leaves the queue instead of taking a slot later.
+      await this.semaphore.enter(context.signal ?? null);
+    } catch (error) {
+      if (started > 0) otel.recordQueue(-1);
+      throw codedError(error.message, 503);
+    }
+    if (started > 0) otel.recordQueue(-1, Date.now() - started);
+  }
+
   async invokeBare(context, args) {
     if (this.kind === SUBSCRIPTION) {
       throw codedError('This procedure is a subscription: use {type:"subscribe"}', 400);
     }
     const deadline = this.timeout > 0 ? Date.now() + this.timeout : 0;
-    if (this.semaphore) {
-      try {
-        await this.semaphore.enter(context.signal ?? null);
-      } catch (error) {
-        throw codedError(error.message, 503);
-      }
-    }
+    if (this.semaphore) await this.#acquire(context);
     let handlerStarted = false;
     try {
       if (deadline > 0 && Date.now() >= deadline) {
         throw codedError('Procedure timeout', 408);
       }
       handlerStarted = true;
-      const invocation = Promise.resolve().then(() => this.handler(context, args));
+      // Called directly rather than through Promise.resolve().then(): the
+      // handler starts now instead of a microtask later, and a synchronous
+      // throw becomes the rejection it would have been (bench/bench.js).
+      let invocation;
+      try {
+        invocation = Promise.resolve(this.handler(context, args));
+      } catch (error) {
+        invocation = Promise.reject(error);
+      }
       if (this.semaphore) {
         const release = () => this.semaphore.leave();
         invocation.then(release, release);
@@ -393,15 +429,7 @@ class Procedure {
     const cap = this.timeout > 0 ? this.timeout : 0;
     const limit = budget > 0 && (cap === 0 || budget < cap) ? budget : cap;
     const deadline = limit > 0 ? Date.now() + limit : 0;
-    if (this.semaphore) {
-      try {
-        // Abort-aware: a queued waiter whose caller cancelled or
-        // disconnected leaves the queue instead of taking a slot later.
-        await this.semaphore.enter(context.signal ?? null);
-      } catch (error) {
-        throw codedError(error.message, 503);
-      }
-    }
+    if (this.semaphore) await this.#acquire(context);
     if (deadline > 0 && Date.now() >= deadline) {
       throw codedError('Procedure timeout', 408);
     }
@@ -420,7 +448,15 @@ class Procedure {
       }
       if (hooks.preHandler.length > 0) await runHooks(hooks.preHandler, context, args);
       handlerStarted = true;
-      const invocation = Promise.resolve().then(() => this.handler(context, args));
+      // Called directly rather than through Promise.resolve().then(): the
+      // handler starts now instead of a microtask later, and a synchronous
+      // throw becomes the rejection it would have been (bench/bench.js).
+      let invocation;
+      try {
+        invocation = Promise.resolve(this.handler(context, args));
+      } catch (error) {
+        invocation = Promise.reject(error);
+      }
       if (this.semaphore) {
         // The queue slot is held until the HANDLER settles: a timeout
         // rejects the caller but cannot cancel the handler, and freeing
@@ -465,6 +501,13 @@ procedure.subscription = (options) => {
   return new Procedure({ ...options, kind: SUBSCRIPTION });
 };
 
+// `consume` is a consumer's policy: on a callable method or an event handler
+// it would silently do nothing, so it is refused where it cannot apply.
+const rejectConsume = (proc, label) => {
+  if (proc.consume) throw new TypeError(`${label}: consume is only valid inside a unit's consumes block`);
+  return proc;
+};
+
 const toProcedure = (value, unitKey, methodName) => {
   if (value instanceof Procedure) return value;
   if (typeof value === 'function') return new Procedure({ handler: value });
@@ -486,6 +529,11 @@ const HOOKS_KEY = 'hooks';
 // the map travels through introspection so `wrpc types` can generate the
 // contract's `events` key, the same way `signature` types calls.
 const EMITS_KEY = 'emits';
+// The unit's QUEUE CONSUMERS: `consumes: { 'orders.created': procedure(...) }`.
+// Each is a full Procedure (hooks, validators, access, queue, timeout) that
+// a broker binding invokes per delivered message — and that no peer can
+// call: they live apart from `methods`, so a `call` packet cannot reach one.
+const CONSUMES_KEY = 'consumes';
 
 // unit-level hooks may not carry the connection phases: a connection is not
 // scoped to a unit, so an onConnect there could never mean anything.
@@ -711,6 +759,7 @@ class Router {
       for (const entry of versions.values()) {
         for (const proc of entry.methods.values()) this.#chains.set(proc, this.#chainFor(entry, proc));
         for (const proc of entry.events.values()) this.#chains.set(proc, this.#chainFor(entry, proc));
+        for (const proc of entry.consumes.values()) this.#chains.set(proc, this.#chainFor(entry, proc));
       }
     }
     this.#rebuildRest();
@@ -732,6 +781,10 @@ class Router {
         }
         for (const [eventName, proc] of entry.events) {
           const artifacts = this.#compileFor(proc, `${unitKey}/on.${eventName}`);
+          if (artifacts) this.#compiled.set(proc, artifacts);
+        }
+        for (const [consumerName, proc] of entry.consumes) {
+          const artifacts = this.#compileFor(proc, `${unitKey}/consumes.${consumerName}`);
           if (artifacts) this.#compiled.set(proc, artifacts);
         }
       }
@@ -814,12 +867,16 @@ class Router {
     }
     let entry = versions.get(version);
     if (!entry) {
-      entry = { methods: new Map(), events: new Map(), emits: null, hooks: null };
+      entry = { methods: new Map(), events: new Map(), consumes: new Map(), emits: null, hooks: null };
       versions.set(version, entry);
     }
     for (const [name, value] of Object.entries(definition)) {
       if (name === EVENTS_KEY) {
         this.#addEvents(unitKey, entry.events, value);
+        continue;
+      }
+      if (name === CONSUMES_KEY) {
+        this.#addConsumers(unitKey, entry.consumes, value);
         continue;
       }
       if (name === EMITS_KEY) {
@@ -834,7 +891,20 @@ class Router {
         entry.hooks = entry.hooks ? concatHooks(entry.hooks, unitHooks, INVOCATION_PHASES) : unitHooks;
         continue;
       }
-      entry.methods.set(name, toProcedure(value, unitKey, name));
+      entry.methods.set(name, rejectConsume(toProcedure(value, unitKey, name), `${unitKey}/${name}`));
+    }
+  }
+
+  #addConsumers(unitKey, consumes, definition) {
+    if (typeof definition !== 'object' || definition === null || Array.isArray(definition)) {
+      throw new TypeError(`Router definition ${unitKey}.consumes must be an object of consumer procedures`);
+    }
+    for (const [name, value] of Object.entries(definition)) {
+      const proc = toProcedure(value, unitKey, `consumes.${name}`);
+      if (proc.subscription) {
+        throw new TypeError(`Router definition ${unitKey}.consumes.${name} cannot be a subscription`);
+      }
+      consumes.set(name, proc);
     }
   }
 
@@ -845,7 +915,7 @@ class Router {
       throw new TypeError(`Router definition ${unitKey}.on must be an object of event handlers`);
     }
     for (const [name, value] of Object.entries(definition)) {
-      events.set(name, toProcedure(value, unitKey, `on.${name}`));
+      events.set(name, rejectConsume(toProcedure(value, unitKey, `on.${name}`), `${unitKey}/on.${name}`));
     }
   }
 
@@ -857,6 +927,28 @@ class Router {
   getEventHandler(unit, version = DEFAULT_VERSION, name) {
     const entry = this.#units.get(unit)?.get(version);
     return entry?.events.get(name) ?? null;
+  }
+
+  /** A unit's queue-consumer procedure, or null. Never reachable by a call packet. */
+  getConsumer(unit, version = DEFAULT_VERSION, name) {
+    const entry = this.#units.get(unit)?.get(version);
+    return entry?.consumes.get(name) ?? null;
+  }
+
+  /**
+   * Every declared queue consumer — what a broker binding subscribes to.
+   * Cold path. Deliberately NOT part of introspect(): which queues a server
+   * drains is deployment topology, not a client contract.
+   */
+  consumers() {
+    const list = [];
+    for (const [unit, versions] of this.#units) {
+      for (const [version, entry] of versions) {
+        const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
+        for (const [name, proc] of entry.consumes) list.push({ unitKey, unit, version, name, procedure: proc });
+      }
+    }
+    return list;
   }
 
   /** True when at least one procedure declares an `http` mapping. */
@@ -900,7 +992,7 @@ class Router {
           // The REST mapping travels so clients (and codegen/OpenAPI
           // tooling) can address the same procedure as a plain endpoint —
           // effective, so a client's REST leg calls the versioned URL.
-          if (proc.http) info.http = effectiveHttp(proc.http, version, this.#restOptions);
+          if (proc.http) info.http = publicHttp(effectiveHttp(proc.http, version, this.#restOptions));
           if (schemas && proc.schema) {
             const parts = {};
             if (proc.schema.params !== undefined) parts.params = proc.schema.params;
@@ -957,6 +1049,7 @@ class Router {
           const unitKey = version === DEFAULT_VERSION ? unit : `${unit}.${version}`;
           const definition = Object.fromEntries(entry.methods);
           if (entry.events.size > 0) definition[EVENTS_KEY] = Object.fromEntries(entry.events);
+          if (entry.consumes.size > 0) definition[CONSUMES_KEY] = Object.fromEntries(entry.consumes);
           if (entry.emits) definition[EMITS_KEY] = entry.emits;
           if (entry.hooks) definition[HOOKS_KEY] = entry.hooks;
           merged.#addUnit(unitKey, definition);
@@ -1012,6 +1105,7 @@ const effectiveSchema = (proc) => {
 const defineRouter = (definition, options) => new Router(definition, options);
 
 module.exports = {
+  runValidator,
   Procedure,
   Router,
   procedure,

@@ -39,6 +39,91 @@ const backplane = {
 Each may return a promise. `isBackplane(value)` is the structural check
 `RpcServer` runs, exported so you can run it yourself.
 
+### Compressing the envelopes {#compression}
+
+The message is always a string, so a room envelope carries its JSON as it
+is — a 5 KB event is 5 KB on Redis, per instance that receives it. `rooms:
+{ compression: true }` deflates every envelope this instance publishes
+past the threshold (1 KiB) and carries it as base64 under a
+`wrpc-enc:deflate-raw:` marker; a receiver with the same option inflates
+it. **Off by default**, and — unlike the socket transports — with nothing
+to negotiate against: an instance *without* the option cannot read such an
+envelope, drops it and logs `backplane.encoded`. Roll it out in two steps
+(every instance on a version that has the option, then the option on),
+and the same for turning it off. Changing the codec needs no such gap: an
+instance encodes with the head of [a list](./compression#list) and reads
+anything on it, so list both everywhere (`codec: ['deflate-raw', 'zstd']`),
+then swap the order. The codec must be synchronous; the
+platform one is. `rooms.maxMessage` (16 MiB) caps an inflated envelope.
+The [cluster layer](./cluster) has its own `cluster: { compression }`,
+applied after signing.
+
+### Sealing the envelopes {#encryption}
+
+TLS to Redis protects the hop, not what Redis holds: every room event
+crosses the backplane as readable JSON — payload, event name, room list —
+for its operator, a `MONITOR` session, or a neighbour on a shared instance
+to read. `rooms: { encryption: { keys } }` seals each envelope under a key
+the backplane never sees:
+
+```js
+const { generateKey } = require('@alexify/wrpc/encryption');
+// once, into your secret store: Buffer.from(generateKey()).toString('base64url')
+
+new Server({
+  router,
+  backplane,
+  rooms: { encryption: { keys: process.env.WRPC_ROOMS_KEY } },
+  cluster: { secret, encryption: { keys: process.env.WRPC_CLUSTER_KEY } },
+});
+```
+
+**Off by default**, AES-256-GCM (or `cipher: 'chacha20-poly1305'`), about
+3.5 µs per 1 KB envelope each way (13 µs at 16 KB — `bench/encryption.js`). It composes with `compression` — compress,
+then seal, one base64. An envelope that does not open — another key, a
+flipped bit, one moved from another room's channel, a replay — is dropped
+and logged `backplane.open`; it is never delivered and never answered.
+
+The replay memory has edges, and they are worth knowing. A receiver keeps
+one sliding window (`replayWindow`, 1024 counters) per **sender** — a key
+id, a cipher and the salt a sealing process drew at boot — in memory: it is
+empty after a restart, and at most `maxSenders` (1024) senders are
+remembered, the least recently heard out first, so an instance that hears
+more sealing processes than that forgets the quietest and would open its
+envelopes again. Nothing in a sealed envelope says *when* it was sealed. Where a
+replayed **command** matters, `cluster: { secret }` adds what the frame
+lacks — a signed counter, channel and clock
+([Trusting the backplane](./cluster#trusting-the-backplane)).
+
+Two things it does not hide: the **channel name**, which names the room,
+and sizes and timing. And it is a fan-out under one shared key, not
+end-to-end: every instance holds the key, and so reads every room.
+
+A backplane delivers at most once, so turning it on is **three deploys**,
+never a flag day:
+
+| Deploy | `encryption` | Publishes | Accepts |
+| --- | --- | --- | --- |
+| 1 | `{ keys, seal: false, acceptPlaintext: true }` | plaintext | both |
+| 2 | `{ keys, acceptPlaintext: true }` | sealed | both |
+| 3 | `{ keys }` | sealed | sealed only — plaintext logs `backplane.unsealed` |
+
+Rotating a key is the same shape: `keys: { current: 'k1', ring: { k1, k2 }
+}` everywhere, then `current: 'k2'`, then drop `k1`. The key id travels in
+the clear beside the ciphertext; it selects the key, nothing is tried until
+it fits. `keys` also takes a provider — `{ current(), get(kid) }`, both
+synchronous — for keys that live in a KMS or Vault and are refreshed on
+your own schedule.
+
+The cluster layer takes the same option. `cluster.secret` says a command
+came from a node, once, on the channel it was published on — a signed
+envelope carries its sender's counter, channel and clock, so a copy
+replayed later or moved elsewhere is refused
+([Trusting the backplane](./cluster#trusting-the-backplane)).
+`cluster.encryption` hides what it says — presence, `sendTo` payloads,
+`fetchClients` replies with their `client.data` — and refuses a plaintext
+command outright.
+
 ## Adapters
 
 ### Memory
@@ -77,9 +162,23 @@ Redis connection cannot publish, which is why there are two.
 adapter created for itself through `duplicate()` is, since nothing else holds
 a reference to close it.
 
+### A message broker
+
+Every adapter of the [broker family](./brokers) — Redis, NATS, RabbitMQ,
+Kafka, and the in-process `MemoryBroker` — offers this contract as its
+`backplane` capability, on the broker client you already inject for feeds,
+consumers or RPC:
+
+```js
+const server = new Server({ router, backplane: broker.backplane, port: 8000 });
+```
+
+The broker pages say what each one costs as a backplane — Kafka's in
+particular ([Kafka](./brokers/kafka)).
+
 ### Something else
 
-NATS, MQTT, Postgres `LISTEN/NOTIFY`, a cloud pub/sub — all three methods, all
+MQTT, Postgres `LISTEN/NOTIFY`, a cloud pub/sub — all three methods, all
 strings. The rooms layer serializes its own envelope, so an adapter never needs
 to know the payload shape:
 
@@ -132,6 +231,29 @@ A failing backplane is isolated: a publish that throws is logged, and local
 delivery happens either way. A broken Redis degrades a cluster to a set of
 independent instances rather than taking the room mechanism down.
 
+## Loss detection {#loss-detection}
+
+Every envelope an instance publishes carries its boot `epoch` and a
+per-channel `seq`. A receiver keeps the last `seq` it saw per (channel,
+publisher) and, when the next one jumps, logs `backplane.gap` — `{ channel,
+instance, missed }` — and adds `missed` to the `wrpc.server.backplane.gaps`
+counter. Redis pub/sub is fire-and-forget: a subscriber connection that
+dropped for 200 ms, or a client the broker disconnected for exceeding its
+output buffer, loses envelopes **silently**; this is what makes the loss a
+number on a dashboard instead of a bug report about a message nobody
+received. It detects, it does not recover — at-most-once is still the
+contract, below. A new epoch (the publisher restarted) resets the count; an
+envelope from an instance that predates the fields is delivered untracked.
+
+The publisher's side of this is bounded: an instance keeps the counters of
+at most `2 × rooms.maxTracked` channels (16384 by default, in two
+generations), not of every room name it ever published to. A channel
+evicted from the table and published to again starts a new count under a
+suffixed epoch — `<epoch>.<n>` — which a receiver reads as a restart of
+that channel, never as a gap. Raise `maxTracked` if an instance genuinely
+publishes to more rooms than that at once and you want gaps on every one
+of them detected.
+
 ## At-most-once, and what to do about it
 
 Delivery is **at-most-once**, deliberately. A message published while an
@@ -149,7 +271,38 @@ subscriptions are what let one catch up.
 The backplane carries room events, not sessions. Two instances behind a load
 balancer need a shared [session store](./sessions#stores) as well — the default
 `MemorySessionStore` lives in one process, so a client that reconnects to a
-different instance would arrive anonymous.
+different instance would arrive anonymous. `createRedisSessionStore` from
+this same subpath is that store:
+
+```js
+const { createRedisAdapter, createRedisSessionStore } = require('@alexify/wrpc/scaling');
+const Redis = require('ioredis');
+const redis = new Redis(url);
+
+new Server({
+  router,
+  backplane: createRedisAdapter({ pub: redis }),
+  sessions: { store: createRedisSessionStore({ client: redis }) },
+});
+```
+
+## Who needs sticky routing {#affinity}
+
+With a shared session store and a backplane, the honest answer is: almost
+nothing.
+
+| Transport | Sticky routing? | Why |
+| --- | --- | --- |
+| WebSocket, WebTransport | **No** | The session comes from the shared store on reconnect; rooms and presence cross the backplane; the client id embeds the instance, so a cluster command finds it. |
+| Packet-mode HTTP, REST | **No** | Stateless per request; the session token is on every request. |
+| SSE | **Yes** | The channel — its replay buffer and its `Client` — lives on the instance that opened it; a misrouted POST answers `409`. |
+| WebRTC | **No** | A data channel is peer to peer; only the signaling unit runs on a server, and it relays a signal with `sendTo`, which reaches a peer on another instance through the cluster. |
+| Broker binding | **No** | A stateless request reaches any instance; a session is bound to the one that answered its `hello`, through the broker, not a balancer. |
+| Subscriptions with `createEventLog` | No, but visible | The log is per-process; a resume against another instance presents a foreign epoch, `since()` answers `null`, the handler sends a snapshot. |
+
+Share: the session store, the backplane. Keep local: event logs, SSE
+channels. Never pin on anything wRPC emits — the client id is a routing
+address for the cluster, not a cookie for a balancer.
 
 ## The cluster layer
 

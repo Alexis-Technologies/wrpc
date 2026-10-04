@@ -3,9 +3,14 @@
 const { jsonParse } = require('../utils.js');
 const { WrpcReadable } = require('../streams.js');
 const { chunkDecode } = require('../chunks.js');
+const { negotiate } = require('../compression/index.js');
+const { hasBytes, isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
+const { FRAME_MARK } = require('../wire.js');
+
+const EMPTY_OPTIONS = Object.freeze({});
 const { runSubscription } = require('./subscriptions.js');
 const { runHooks, runHooksSafe } = require('./router.js');
-const { publicErrorMessage, publicErrorDetails, wireError } = require('../transport.js');
+const { publicErrorMessage, publicErrorDetails, wireError, clip } = require('./errors.js');
 const { SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
 
 const DEFAULT_VERSION = '*';
@@ -79,7 +84,10 @@ const split = (s, separator) => {
   return [s.slice(0, i), s.slice(i + separator.length)];
 };
 
-const parseParams = (params) => Object.fromEntries(new URLSearchParams(params));
+// No query string is the common REST call, and URLSearchParams + fromEntries
+// cost it ~58 ns to parse nothing, against ~6 (bench/http-call.js); the
+// answer is the same empty object either way.
+const parseParams = (params) => (params ? Object.fromEntries(new URLSearchParams(params)) : {});
 
 // 'unit/name', 'unit.vN/name' -> { unit, version, name }.
 // Split on the FIRST dot only: 'unit.v1.2/m' must look up version 'v1.2'
@@ -92,30 +100,91 @@ const parseTarget = (target) => {
   return { unit, version, name };
 };
 
+// A call refused before it ever reaches a handler. Its subscription twin
+// (`refuse`, below) logged from the day it was written; these six did not,
+// so half of what a dispatcher rejects was invisible to an operator — and
+// the half that was invisible is the half that says "your client and my
+// router disagree about what exists".
+//
+// The level is deliberately not uniform. 429 and the batch cap are reachable
+// by any peer, in a loop, without authenticating: logging those at `warn`
+// turns a refused flood into a log-pipeline flood, which is a worse outage
+// than the one being prevented. They go to `debug` — dropped outright by a
+// Console writer, left to its own level by a structured one. `503` is the
+// operator's own doing (a draining server), so it is `info`. The codes that
+// mean something is actually wrong stay at `warn`.
+//
+// Every refusal below is the ONE line for it: the `rpc.error` that follows
+// (the answer going out) is written at debug, never a second alert at a
+// level the site did not choose. The method and the id are the peer's text,
+// clipped before they become a record.
+// A session ended on another connection of this instance (finalizeSession
+// there) is no session here either: the next call is refused, as after a
+// logout on this one.
+const hasSession = (client) => {
+  const { session } = client;
+  return session !== null && session !== undefined && session.ended !== true;
+};
+
+// No session because the store could not be asked is a 503 — retryable —
+// not the 403 of a token that is not one.
+const refusedFor = (client) => (client.sessionUnavailable === true ? 503 : 403);
+
+const refuseCall = (client, id, code, method, event) => {
+  const level = code === 429 ? 'debug' : code === 503 ? 'info' : 'warn';
+  const shown = clip(method);
+  client.log[level]({ event, code, id: clip(id), method: shown }, `${client.source}\tCALL\t${shown}\t${code}`);
+  client.otel.recordCall(method, 'error', code);
+  client.error(code, { id, level: 'debug' });
+};
+
+// An answered call is no longer in flight: released the moment its answer
+// is written, not after. On HTTP the write IS the end of the connection —
+// the transport closes and Client#destroy aborts whatever is still in
+// `calls` — so a call still registered there was aborted after it had
+// answered, at the cost of a stack-captured Error per request: releasing
+// first took handleHttpCall from 85k to 235k requests/s on a declared REST
+// route (bench/http-call.js, with the lazy reason in Client#destroy). On a
+// socket it also stops a cancel that arrives while onResponse hooks run
+// from answering an already-answered call a second time, with a 499.
+const release = (client, id, controller) => {
+  if (client.calls.get(id) === controller) client.calls.delete(id);
+};
+
 const handleRpc = async (client, packet, router) => {
   const { id, method, args } = packet;
   const { unit, version, name: methodName } = parseTarget(method);
   const proc = router.getProcedure(unit, version, methodName);
   if (!proc) {
+    // The target is UNKNOWN on the metric (an unbounded method string would
+    // be a cardinality bomb) but present in the log, where it is the whole
+    // point: this is what a stale client or a typo looks like.
+    const shown = clip(method);
+    client.log.warn(
+      { event: 'call.unknown', code: 404, id: clip(id), method: shown },
+      `${client.source}\tCALL\t${shown}\t404`,
+    );
     client.otel.recordCall(UNKNOWN_TARGET, 'error', 404);
-    return void client.error(404, { id });
+    return void client.error(404, { id, level: 'debug' });
   }
   if (client.calls.has(id)) {
+    // Two calls with one id: a generateId that repeats, or a client that
+    // retried without minting a fresh one. Either is a bug worth seeing.
+    const error = new Error(`Call ${id} is already in flight`);
+    client.log.warn({ event: 'call.duplicate', code: 400, id: clip(id), method: clip(method), err: error });
     client.otel.recordCall(method, 'error', 400);
-    return void client.error(400, { id, error: new Error(`Call ${id} is already in flight`) });
+    return void client.error(400, { id, error, level: 'debug' });
   }
   // Subscriptions are capped, and calls have to be too: each in-flight call
   // holds a controller, a context and (with a queue) a semaphore slot, so an
   // unbounded burst from one connection is memory the app never agreed to.
   if (client.calls.size >= client.maxCalls) {
-    client.otel.recordCall(method, 'error', 429);
-    return void client.error(429, { id });
+    return void refuseCall(client, id, 429, method, 'call.capacity');
   }
   // A draining server finishes what it started and takes nothing new: the
   // 503 tells a well-behaved client to reconnect elsewhere.
   if (client.server?.draining) {
-    client.otel.recordCall(method, 'error', 503);
-    return void client.error(503, { id });
+    return void refuseCall(client, id, 503, method, 'call.draining');
   }
   // The controller is what `{type:'cancel'}` and a disconnect reach: the
   // handler sees it as ctx.signal, and once it is aborted the call has
@@ -143,17 +212,20 @@ const handleRpc = async (client, packet, router) => {
   // The span covers the whole invocation including session wait, access
   // check, validation and the timeout race — an argument error deserves an
   // error span and a duration sample exactly as much as a slow handler does.
-  return client.otel.withSpan({ client, packet, target: method }, async (handle) => {
+  const run = async (handle) => {
     let status = 'ok';
     let code;
     try {
       if (hooks.onRequest.length > 0) await runHooks(hooks.onRequest, context, packet);
-      await client.ready;
+      // One microtask hop per call skipped once the connection is ready —
+      // which is every call after the first (bench/bench.js).
+      if (!client.isReady) await client.ready;
       if (controller.signal.aborted) return void (status = 'cancelled');
-      if (!client.session && proc.access !== 'public') {
+      if (!hasSession(client) && proc.access !== 'public') {
         status = 'error';
-        code = 403;
-        return void client.error(403, { id });
+        code = refusedFor(client);
+        release(client, id, controller);
+        return void client.error(code, { id });
       }
       // The caller's per-call deadline, validated as a bounded positive
       // number — an additive packet field, absent on every packet that
@@ -166,6 +238,7 @@ const handleRpc = async (client, packet, router) => {
         code = result.code;
         client.otel.recordError(handle, result, code);
         if (hooks.onError.length > 0) await runHooksSafe(hooks.onError, context, result, client.log, 'onError');
+        release(client, id, controller);
         return void client.error(code, { id, error: result });
       }
       const callback = { type: 'callback', id, result };
@@ -178,10 +251,16 @@ const handleRpc = async (client, packet, router) => {
       // fast-json-stringify — bench/serialize-callback.js). Correctness
       // gates: an onSend hook may have mutated the packet after the shape
       // the serializer was compiled for, so hooks win over the fast path.
+      // A result holding bytes leaves as an attachments frame, which the
+      // serializer's JSON cannot be: the walk runs only under a serializer,
+      // and only where a frame could leave at all (`attachments: false`, a
+      // packet codec) — the walk on a 400-row result costs about what the
+      // envelope surgery saves (bench/serialize-callback.js).
       const text =
-        compiled?.serialize && hooks.onSend.length === 0
+        compiled?.serialize && hooks.onSend.length === 0 && (!client.attachments || !hasBytes(result))
           ? `{"type":"callback","id":${JSON.stringify(id)},"result":${compiled.serialize(result)}}`
           : undefined;
+      release(client, id, controller);
       client.send(callback, { method, text });
       if (hooks.onResponse.length > 0) {
         await runHooksSafe(hooks.onResponse, context, callback, client.log, 'onResponse');
@@ -196,15 +275,21 @@ const handleRpc = async (client, packet, router) => {
         await runHooksSafe(hooks.onTimeout, context, error, client.log, 'onTimeout');
       }
       if (hooks.onError.length > 0) await runHooksSafe(hooks.onError, context, error, client.log, 'onError');
+      release(client, id, controller);
       return void client.error(code, { id, error });
     } finally {
-      if (client.calls.get(id) === controller) client.calls.delete(id);
+      release(client, id, controller);
       if (enabled) {
         client.otel.endSpan(handle, { 'rpc.wrpc.status_code': code, 'wrpc.status': status });
         client.otel.recordCall(method, status, code, now() - started);
       }
     }
-  });
+  };
+  // With telemetry off the span options object and the writer's own wrapper
+  // are skipped, not just the no-op recorders — the client side guards its
+  // span the same way.
+  if (!enabled) return run(null);
+  return client.otel.withSpan({ client, packet, target: method }, run);
 };
 
 // Cancellation is best-effort by nature: a handler that never looks at
@@ -226,7 +311,10 @@ const refuse = (client, id, code, message, target, details) => {
   const error = { message, code };
   if (details !== undefined) error.details = details;
   client.send({ type: 'end', id, error });
-  client.warn(`SUBSCRIBE\t${id}\t${code}\t${message}`, { event: 'subscribe.refused', id, code });
+  // The id is the peer's: bounded to 255 by the packet rule, bounded again
+  // for a log line, as every peer-supplied text in one is.
+  const said = clip(id);
+  client.warn(`SUBSCRIBE\t${said}\t${code}\t${message}`, { event: 'subscribe.refused', id: said, code });
   client.otel.recordCall(target, 'error', code);
 };
 
@@ -254,14 +342,15 @@ const handleSubscribe = async (client, packet, router) => {
   // same turn has something to find.
   const controller = new AbortController();
   client.subscriptions.set(id, controller);
-  await client.ready;
+  if (!client.isReady) await client.ready;
   if (controller.signal.aborted) {
     client.subscriptions.delete(id);
     return;
   }
-  if (!client.session && proc.access !== 'public') {
+  if (!hasSession(client) && proc.access !== 'public') {
     client.subscriptions.delete(id);
-    return void refuse(client, id, 403, 'Forbidden', method);
+    const code = refusedFor(client);
+    return void refuse(client, id, code, code === 503 ? 'Session store unavailable' : 'Forbidden', method);
   }
   const hooks = router.hooksFor(proc);
   const compiled = router.compiledFor(proc);
@@ -351,6 +440,12 @@ const handleStream = async (client, packet) => {
     const valid = typeof name === 'string' && Number.isSafeInteger(size);
     if (!valid) throw new Error('Stream packet structure error');
     if (stream) throw new Error(`Stream ${tag} is already initialized`);
+    // Capped like calls and subscriptions: an announced stream holds its
+    // readable until a handler reads it, and the peer decides how many.
+    if (client.streams.size >= client.maxStreams) {
+      client.log.debug({ event: 'stream.capacity', code: 429, max: client.maxStreams });
+      return void client.error(429, { id, error: new Error('Too many open streams'), level: 'debug' });
+    }
     {
       const stream = new WrpcReadable(id, name, size);
       client.streams.set(id, stream);
@@ -360,7 +455,14 @@ const handleStream = async (client, packet) => {
   }
 };
 
-const handleBinary = async (client, data) => {
+const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS) => {
+  // A 0x00 first byte is never a chunk (an id is at least one byte): an
+  // attachments frame is a packet with its bytes, dispatched as one.
+  if (data.length > 1 && data[0] === FRAME_MARK) {
+    if (router !== null && isAttachmentsFrame(data)) return void handleMessage(client, data, router, options);
+    client.log.warn({ event: 'frame.refused', kind: data[1] });
+    return void client.error(400, { error: new Error('Unexpected framed message'), level: 'debug' });
+  }
   const { id, payload } = chunkDecode(data);
   try {
     const upstream = client.streams.get(id);
@@ -397,8 +499,8 @@ const handleEvent = async (client, packet, router) => {
   const { unit, version, name } = parseTarget(target);
   const handler = router.getEventHandler(unit, version, name);
   if (!handler) return void client.warn(`EVENT\t${target}\tno handler`);
-  await client.ready;
-  if (!client.session && handler.access !== 'public') {
+  if (!client.isReady) await client.ready;
+  if (!hasSession(client) && handler.access !== 'public') {
     return void client.warn(`EVENT\t${target}\tsession required`);
   }
   // Events run the invocation phases (preValidation/preHandler/onError);
@@ -455,29 +557,55 @@ const needsConnection = (client, id, what) => {
   return true;
 };
 
-const handlePacket = (client, packet, router) => {
+// A ping that names codecs (`enc`: its ids, in its order of preference) is
+// a Node ws client offering per-message compression for its own frames.
+// Only the client compresses on this wire, so the rule of src/compression
+// reduces to one choice — the first codec of ITS list configured here
+// (`options.compression`): the pong names that one id back and the client's
+// marked binary frames are inflated with it from then on (core
+// attachSocket); nothing in common, a plain pong, and the client stays
+// plain. Only on a WebSocket: the other carriers negotiate their own way.
+const negotiatePing = (client, enc, options) => {
+  const agreed = client.transportKind === 'ws' ? negotiate(options.compression ?? null, enc) : null;
+  const active = agreed === null ? null : agreed.decode;
+  client.compression = active;
+  client.send(active === null ? { type: 'pong' } : { type: 'pong', enc: active.id });
+};
+
+// A packet id is the caller's correlation token, echoed back as it came: a
+// string of at most 255 characters — what every generateId of this package
+// answers, and all a chunk header has room for — or a number, which a 1.0
+// client whose own generateId counted sent and was answered on. Anything
+// else used to be echoed too: an array nested 10 000 deep threw out of the
+// answer's JSON.stringify, synchronously, where nothing caught it.
+const MAX_PACKET_ID = 255;
+const isPacketId = (id) =>
+  typeof id === 'string' ? id.length !== 0 && id.length <= MAX_PACKET_ID : typeof id === 'number' && id !== 0;
+
+const handlePacket = (client, packet, router, options = EMPTY_OPTIONS) => {
   const { id, type, method, name } = packet;
+  const hasId = isPacketId(id);
   // The target is type-checked, not just truthiness-checked: a non-string
   // `method`/`name` would throw inside parseTarget, and these calls are not
   // awaited. A malformed packet has to fall through to the error below.
-  if (type === 'call' && id && typeof method === 'string') {
+  if (type === 'call' && hasId && typeof method === 'string') {
     return void handleRpc(client, packet, router).catch(contain(client, 'CALL'));
-  } else if (type === 'subscribe' && id && typeof method === 'string') {
+  } else if (type === 'subscribe' && hasId && typeof method === 'string') {
     if (!client.persistent) {
       return void refuse(client, id, 400, 'Subscriptions require a persistent connection', UNKNOWN_TARGET);
     }
     return void handleSubscribe(client, packet, router).catch(contain(client, 'SUBSCRIBE'));
-  } else if (type === 'unsubscribe' && id) {
+  } else if (type === 'unsubscribe' && hasId) {
     if (needsConnection(client, id, 'Subscriptions')) return;
     return void handleUnsubscribe(client, packet);
-  } else if (type === 'cancel' && id) {
+  } else if (type === 'cancel' && hasId) {
     if (needsConnection(client, id, 'Cancellation')) return;
     return void handleCancel(client, packet);
-  } else if (type === 'stream' && id) {
+  } else if (type === 'stream' && hasId) {
     return void handleStream(client, packet).catch(contain(client, 'STREAM'));
   } else if (type === 'event' && typeof name === 'string' && name) {
     return void handleEvent(client, packet, router).catch(contain(client, 'EVENT'));
-  } else if (type === 'callback' && typeof id === 'string' && id) {
+  } else if (type === 'callback' && hasId && typeof id === 'string') {
     // Asks only travel on persistent transports, so a callback on HTTP can
     // never match one — and it MUST still be answered, or the request (and
     // every other slot of its batch) would hang unanswered forever.
@@ -488,13 +616,19 @@ const handlePacket = (client, packet, router) => {
     // The id is peer-controlled text: bounded and escaped before it becomes
     // a log line.
     if (!client.settleAnswer(packet)) {
-      const shown = id.length > 128 ? `${id.slice(0, 128)}…` : id;
-      client.warn(`ANSWER\t${JSON.stringify(shown)}\tno pending ask`);
+      client.warn(`ANSWER\t${JSON.stringify(clip(id))}\tno pending ask`);
     }
     return;
   } else if (type === 'ping') {
     // App-level heartbeat: a browser WebSocket cannot see protocol pings,
     // so liveness is measured with packets the client can observe.
+    if (packet.enc !== undefined) return void negotiatePing(client, packet.enc, options);
+    // A port's first ping names the revision its page speaks; the answer
+    // names this end's. Anywhere else the field means nothing.
+    if (packet.v !== undefined) {
+      const v = client.negotiateRevision(packet.v);
+      if (v !== 0) return void client.send({ type: 'pong', v });
+    }
     return void client.send({ type: 'pong' });
   } else if (type === 'pong' && client.persistent) {
     return; // answer to a server-initiated ping; liveness is the transport's
@@ -502,30 +636,88 @@ const handlePacket = (client, packet, router) => {
   // The id travels with the refusal when the packet carried one: an HTTP
   // batch answers positionally, so an id-less error would lose this slot and
   // shift every answer after it.
+  // Structurally valid JSON that is not a packet this protocol has: a
+  // version skew, a proxy rewriting bodies, or somebody else's client
+  // pointed at this port. `handleMessage` already logs frames that do not
+  // parse; this is the other half of the same funnel, and was silent.
   const error = new Error('Packet structure error');
-  client.error(500, { id: typeof id === 'string' ? id : '', error });
+  client.log.warn({ event: 'packet.unknown', code: 500, type: typeof type === 'string' ? clip(type) : null });
+  client.error(500, { id: hasId && typeof id === 'string' ? id : '', error, level: 'debug' });
 };
 
 // A JSON array is a batch frame: several packets in one message, each
 // answered on its own (on a request/response transport the answers come
 // back as an array in the same order — see ServerHttpTransport).
+// An attachments frame's packet, or null when the server opted out or the
+// frame is malformed — both land in the same 'packet.malformed' funnel.
+const parseFrame = (data, options) => {
+  if (options.attachments === false) return null;
+  try {
+    return decodeAttachments(data);
+  } catch {
+    return null;
+  }
+};
+
 const handleMessage = (client, data, router, options = {}) => {
-  const parsed = client.decodePacket ? client.decodePacket(data) : jsonParse(data);
+  // A frame is checked before the codec seam: `decodePacket` is the JSON
+  // (or codec) parse, and a frame is neither.
+  const parsed =
+    typeof data !== 'string' && isAttachmentsFrame(data)
+      ? parseFrame(data, options)
+      : client.decodePacket
+        ? client.decodePacket(data)
+        : jsonParse(data);
+  handleParsed(client, parsed, data, router, options);
+};
+
+// handleMessage past its parse, for a caller that already parsed the
+// message — the HTTP packet path reads a batch's ids before the client
+// exists, and parsing the body a second time here held packet mode at 214k
+// requests/s against 245k parsed once (bench/http-call.js). `data` is the
+// raw message, for the log line.
+const handleParsed = (client, parsed, data, router, options = {}) => {
   // jsonParse answers null for both "malformed" and "the literal null", and
   // the `|| {}` below hides the difference. This is the single funnel every
-  // unparseable packet in the system passes through, so it is worth a line.
-  if (parsed === null) client.log.warn({ event: 'packet.malformed', bytes: data?.length ?? 0 });
+  // unparseable packet in the system passes through, so it is worth a line
+  // — ONE line: the empty packet it used to fall through as would have been
+  // reported again as `packet.unknown`, and then a third time as the
+  // error-level answer. The answer is the same id-less 500.
+  if (parsed === null) {
+    client.log.warn({ event: 'packet.malformed', bytes: data?.length ?? 0 });
+    return void client.error(500, { error: new Error('Packet structure error'), level: 'debug' });
+  }
   const packet = parsed || {};
-  if (!Array.isArray(packet)) return void handlePacket(client, packet, router);
+  if (!Array.isArray(packet)) return void handlePacket(client, packet, router, options);
   const { maxBatch = DEFAULT_MAX_BATCH } = options;
   if (packet.length === 0 || packet.length > maxBatch) {
     const error = new Error(`Batch size must be between 1 and ${maxBatch}`);
-    return void client.error(400, { error });
+    // Debug for the same reason as the 429 above: any peer can send an
+    // oversize batch in a loop, and a warn per attempt would make the log
+    // the thing that falls over.
+    client.log.debug({ event: 'batch.refused', code: 400, size: packet.length, max: maxBatch });
+    return void client.error(400, { error, level: 'debug' });
   }
   for (const item of packet) {
-    handlePacket(client, item && typeof item === 'object' ? item : {}, router);
+    handlePacket(client, item && typeof item === 'object' ? item : {}, router, options);
   }
 };
+
+// The two entry points for a transport that announces its traffic as
+// 'packet'/'chunk' events (RpcServer.attach, PeerHost.attach, attachPort):
+// what the handlers throw or reject with stays here — a listener that threw
+// would reject the transport's emit(), which nobody awaits, and a rejected
+// handleBinary used to be an unhandled rejection outright.
+const dispatchMessage = (client, text, router, options) => {
+  try {
+    handleMessage(client, text, router, options);
+  } catch (error) {
+    contain(client, 'PACKET')(error);
+  }
+};
+
+const dispatchBinary = (client, bytes, router, options) =>
+  void handleBinary(client, bytes, router, options).catch(contain(client, 'CHUNK'));
 
 module.exports = {
   sanitizeMeta,
@@ -533,12 +725,15 @@ module.exports = {
   handleRpc,
   handleStream,
   handleBinary,
+  dispatchMessage,
+  dispatchBinary,
   handleEvent,
   handleSubscribe,
   handleUnsubscribe,
   handleCancel,
   handlePacket,
   handleMessage,
+  handleParsed,
   isError,
   split,
   parseTarget,

@@ -1,13 +1,19 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
+import { trace as otelTrace } from '@opentelemetry/api';
 import * as wrpc from '../index.js';
+
+// A type only: the wt transport is reached through WrpcClient.transport.wt.
+expectError(wrpc.ClientWtTransport);
 import type {
   Emitter,
   WrpcClient,
   WrpcClientProxy,
+  WrpcClientOptions,
   WrpcError,
   Server,
   RpcServer,
   Client,
+  ClientHost,
   Context,
   Session,
   ServerTransport,
@@ -27,6 +33,14 @@ import type { Engine, EngineConnectionSource } from '../engine.js';
 expectType<typeof Emitter>(wrpc.Emitter);
 expectType<typeof WrpcClient>(wrpc.WrpcClient);
 expectType<typeof WrpcClientProxy>(wrpc.WrpcClientProxy);
+// The `event` transport's worker: a ServiceWorker, a SharedWorker (through
+// its port), a dedicated Worker or a raw MessagePort.
+expectAssignable<WrpcClientOptions>({ worker: {} as ServiceWorker });
+expectAssignable<WrpcClientOptions>({ worker: {} as SharedWorker });
+expectAssignable<WrpcClientOptions>({ worker: {} as Worker });
+expectAssignable<WrpcClientOptions>({ worker: {} as MessagePort });
+expectError<WrpcClientOptions>({ worker: 'sw.js' });
+expectType<WrpcClientProxy>(new wrpc.WrpcClientProxy({ url: 'wss://api.example.com', callTimeout: 7000 }));
 expectType<typeof WrpcError>(wrpc.WrpcError);
 expectType<typeof Server>(wrpc.Server);
 expectType<typeof RpcServer>(wrpc.RpcServer);
@@ -158,6 +172,13 @@ expectType<number>(stream.dropped);
 
 // Sessions
 expectAssignable<SessionStore>(new wrpc.MemorySessionStore());
+// A store may answer false to a conditional update; one that ignores the option still fits.
+expectAssignable<SessionStore>({
+  get: async () => null,
+  set: async (_token: string, _data: object, options?: { create: boolean }) => options?.create !== false,
+  delete: async () => {},
+});
+expectAssignable<SessionStore>({ get: async () => null, set: async () => {}, delete: async () => {} });
 expectAssignable<wrpc.SessionsOptions>({
   store: new wrpc.MemorySessionStore(),
   cookie: { name: 'sid', secure: false, sameSite: 'Strict', maxAge: 3600 },
@@ -216,11 +237,36 @@ expectType<string>(rpc.basePath);
 expectType<Set<Client>>(rpc.clients);
 expectType<Promise<void>>(rpc.close());
 
+// The seam under @alexify/wrpc/webrtc's attachChannel: any inbound transport is a client.
+declare const inbound: wrpc.InboundTransport;
+expectType<Client>(rpc.attach(inbound));
+expectType<Client>(rpc.attach(inbound, { meta: null }));
+// A meta may be any subset of a ClientMeta: attach() normalizes it.
+expectType<Client>(rpc.attach(inbound, { meta: { headers: { 'x-tenant': 't1' } } }));
+expectType<Client>(rpc.attach(inbound, { meta: { url: '/x', remoteAddress: '10.0.0.7' } }));
+expectError(rpc.attach(inbound, { meta: 'x-tenant: t1' }));
+// limits is what the runtime hands out: the caps, the normalized socket
+// compression and whether attachments are on.
+expectType<number>(rpc.limits.maxBatch);
+expectType<number>(rpc.limits.maxCalls);
+expectType<boolean>(rpc.limits.attachments);
+expectType<import('../index.js').NormalizedCompression | null>(rpc.limits.compression);
+expectType<ReadonlyArray<string> | undefined>(rpc.limits.compression?.ids);
+expectError((rpc.limits.maxBatch = 1));
+expectError(rpc.attach({ write() {} }));
+
 // Rooms: chainable targets, a local recipient count
 declare const someClient: Client;
 expectType<Broadcast>(rpc.to('chat'));
 expectType<Broadcast>(rpc.to('chat', 'lobby').except(someClient).local());
 expectType<number>(rpc.to('chat').emit('message', { text: 'hi' }));
+expectType<number>(rpc.to('chat').emit('bulk', { rows: [] }, { compress: false }));
+expectType<number>(rpc.to('chat').emit('pos', { x: 1 }, { unreliable: true, compress: false }));
+expectError(rpc.to('chat').emit('bulk', {}, { compress: 'no' }));
+expectType<boolean>(someClient.sendShared({ text: '{}', frames: null, compress: true }));
+expectType<boolean>(someClient.sendRaw('{}', { compress: false }));
+expectType<boolean>(someClient.send({ type: 'event' }, { compress: false }));
+someClient.sendEvent('chat/bulk', {}, { compress: false });
 expectType<number>(rpc.broadcast('announce'));
 expectType<Array<string> | null>(rpc.to('chat').rooms);
 expectType<RoomRegistry>(rpc.rooms);
@@ -271,9 +317,13 @@ expectType<Promise<void>>(client.emit('room/event', { x: 1 }));
 // Context.session mirrors the live client session
 declare const context: Context;
 expectType<Session | null>(context.session);
-// ...and Context.server is how a handler reaches rooms
-expectType<RpcServer | null>(context.server);
-expectType<RpcServer | null>(client.server);
+// ...and Context.server is how a handler reaches rooms: the host contract
+// an RpcServer and a WebRTC PeerHost both satisfy (narrow for the rest)
+expectType<ClientHost | null>(context.server);
+expectType<ClientHost | null>(client.server);
+declare const rpcServer: RpcServer;
+expectAssignable<ClientHost>(rpcServer);
+if (context.server instanceof wrpc.RpcServer) expectType<RpcServer>(context.server);
 
 // Every public getter of Context and Client is typed: the documented
 // `context.log.info(...)` pattern must compile, and so must the rest —
@@ -303,6 +353,83 @@ expectAssignable<wrpc.WrpcClientOptions>({ generateId: () => 'id-1', protocols: 
 expectAssignable<wrpc.WrpcClientOptions>({ protocols: [] });
 expectAssignable<wrpc.RpcServerOptions>({ router, generateId: () => 'id-1' });
 expectAssignable<wrpc.RpcServerOptions>({ router, introspection: 'session', maxCalls: 64 });
+// http.compression: off unless asked for; every field optional, the filter sees the abstract call
+expectAssignable<wrpc.RpcServerOptions>({ router, http: { compression: true } });
+expectAssignable<wrpc.RpcServerOptions>({ router, http: {} });
+expectAssignable<wrpc.RpcServerOptions>({
+  router,
+  http: {
+    compression: {
+      threshold: 2048,
+      encodings: ['zstd', { encoding: 'br', quality: 5 }, { encoding: 'gzip', level: 6, memLevel: 8 }],
+      filter: (call) => call.method === 'POST',
+      async: { threshold: 65536 },
+    },
+  },
+});
+expectAssignable<wrpc.HttpCompressionOptions>({ async: true });
+// An application's own coding, one-shot or streaming; the zlib knobs live in the coding they belong to
+expectAssignable<wrpc.HttpEncoding>({ encoding: 'x-mine', encode: (body: Uint8Array) => body });
+expectAssignable<wrpc.HttpEncoding>({ encoding: 'x-mine', encode: async (body: Uint8Array) => body });
+expectError<wrpc.HttpCompressionOptions>({ encodings: ['deflate'] });
+expectError<wrpc.HttpCompressionOptions>({ level: 6 });
+expectError<wrpc.HttpEncoding>({ encoding: 'br', level: 5 });
+// A dictionary from the router, and the codec over it, injected anywhere a codec goes
+expectType<Uint8Array>(wrpc.buildDictionary(router));
+expectType<Uint8Array>(wrpc.buildDictionary(router, { limit: 8192 }));
+const dictCodec = wrpc.dictionaryCompressor(wrpc.buildDictionary(router), { threshold: 32 });
+expectType<number | null>(wrpc.dictionaryCompressor('d', { async: { threshold: 65536 } }).async);
+expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ wt: { compression: { async: true } } });
+expectError<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ wt: { compression: { async: 'soon' } } });
+expectAssignable<wrpc.Compressor>(dictCodec);
+expectType<Uint8Array>(dictCodec.dictionary);
+expectAssignable<wrpc.RpcServerOptions>({ router, compression: { codec: dictCodec } });
+// Per-message compression (WebTransport, WebRTC): a structural codec, negotiated by id
+expectType<boolean>(wrpc.isCompressor({}));
+declare const maybeCodec: unknown;
+if (wrpc.isCompressor(maybeCodec)) expectType<string>(maybeCodec.id);
+expectAssignable<wrpc.Compressor>({ id: 'x', encode: (b: Uint8Array) => b, decode: (b: Uint8Array) => b });
+expectAssignable<wrpc.Compressor>({
+  id: 'x',
+  threshold: 512,
+  encode: async (b: Uint8Array) => b,
+  decode: async (b: Uint8Array, max: number) => b.subarray(0, max),
+});
+expectError<wrpc.Compressor>({ encode: (b: Uint8Array) => b, decode: (b: Uint8Array) => b });
+expectAssignable<wrpc.CompressionOptions>({ threshold: 2048 });
+expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ transport: 'wt', compression: true });
+expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ wt: { compression: { threshold: 4096 } } });
+expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ wt: { maxBackpressure: 0 } });
+expectError<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ compression: 'zstd' });
+// A platform codec by name, or built with its own level — the name lives under `codec`
+expectAssignable<wrpc.CompressionOptions>({ codec: 'zstd' });
+expectAssignable<wrpc.CompressionOptions>({ codec: 'brotli', async: true });
+expectError<wrpc.CompressionOptions>({ codec: 'lz4' });
+// …or a list in order of preference, names and injected codecs alike
+expectAssignable<wrpc.CompressionOptions>({ codec: ['zstd', wrpc.brotliCompressor({ quality: 5 }), 'deflate-raw'] });
+expectError<wrpc.CompressionOptions>({ codec: ['zstd', 'lz4'] });
+expectAssignable<wrpc.RpcServerOptions>({ router, rooms: { compression: { codec: ['deflate-raw', 'zstd'] } } });
+expectAssignable<wrpc.RpcServerOptions>({ router, compression: { codec: 'zstd' } });
+expectAssignable<wrpc.Compressor>(wrpc.deflateCompressor({ level: 1 }));
+expectAssignable<wrpc.Compressor>(wrpc.brotliCompressor({ quality: 5, threshold: 256 }));
+expectType<number | null>(wrpc.zstdCompressor({ level: 3, async: { threshold: 65536 } }).async);
+expectError(wrpc.brotliCompressor({ level: 5 }));
+expectAssignable<wrpc.RpcServerOptions>({ router, rooms: { compression: { codec: wrpc.zstdCompressor() } } });
+// The backplane envelopes, per layer
+expectAssignable<wrpc.RpcServerOptions>({ router, rooms: { compression: true, maxMessage: 1 << 20 } });
+expectAssignable<wrpc.RpcServerOptions>({ router, cluster: { secret: 's', compression: { threshold: 0 } } });
+expectError<wrpc.RoomsOptions>({ compression: 'lz4' });
+// Binary attachments: a switch on both ends
+expectAssignable<wrpc.RpcServerOptions>({ router, attachments: false });
+expectAssignable<Parameters<typeof wrpc.WrpcClient.connect>[1]>({ attachments: false });
+expectError<wrpc.RpcServerOptions>({ router, attachments: 'auto' });
+// The socket side: a Node ws client's frames
+expectAssignable<wrpc.RpcServerOptions>({ router, compression: true, maxMessage: 1 << 20 });
+expectError<wrpc.RpcServerOptions>({ router, compression: 'lz4' });
+declare const negotiatedClient: wrpc.Client;
+expectType<{ readonly id: string; readonly threshold: number } | null>(negotiatedClient.compression);
+expectError<wrpc.RpcServerOptions>({ router, http: { compression: 'gzip' } });
+expectError<wrpc.RpcServerOptions>({ router, http: { compression: { threshold: 'big' } } });
 expectAssignable<wrpc.ServerOptions>({ router, maxBodySize: 1024 });
 
 // Cluster: identity, replicated presence, introspection, commands, messaging
@@ -369,6 +496,10 @@ expectError(wrpc.ServerEventTransport);
 declare const clientWs: ClientTransport;
 expectType<boolean>(clientWs.active);
 expectType<ClientTransport>(new wrpc.WrpcClient.transport.ws('ws://localhost'));
+// The worker transport is a constructor like the others (one per connect);
+// the deprecated class-level singleton is still typed.
+expectType<ClientTransport>(new wrpc.WrpcClient.transport.event('local:idb'));
+expectType<ClientTransport>(wrpc.WrpcClient.transport.event.getInstance('local:idb'));
 declare const httpTransport: ServerHttpTransport;
 expectType<Record<string, string>>(httpTransport.getCookies());
 expectType<boolean>(httpTransport.responded);
@@ -376,6 +507,16 @@ expectType<boolean>(httpTransport.responded);
 // buildHeaders computes per-request CORS headers
 expectType<Record<string, string>>(wrpc.buildHeaders());
 expectType<Record<string, string>>(wrpc.buildHeaders({ origins: ['https://a'] }, 'https://a'));
+expectType<Record<string, string>>(wrpc.buildHeaders(null, undefined, 2));
+
+// Every server transport says the revision it speaks, and changes it in one place.
+declare const anyTransport: wrpc.ServerTransport;
+expectType<1 | 2>(anyTransport.revision);
+expectType<boolean | undefined>(anyTransport.attachments);
+expectType<void>(anyTransport.setRevision(1));
+declare const portTransport: InstanceType<typeof wrpc.ServerTransport.transport.event>;
+expectType<1 | 2>(portTransport.negotiate(2));
+expectType<1 | 2>(portTransport.max);
 
 // WrpcClientOptions: real proxy option is typed, phantom handlers are gone
 expectAssignable<wrpc.WrpcClientOptions>({ proxy: (data: string) => void data });
@@ -661,6 +802,9 @@ expectAssignable<wrpc.RpcServerOptions>({
   rooms: { linger: 2000 },
 });
 expectAssignable<wrpc.RpcServerOptions>({ router, cluster: false });
+// Replay protection under `secret`: the two modes, and the clock window.
+expectAssignable<wrpc.RpcServerOptions>({ router, cluster: { secret: 's', replay: 'accept', maxSkew: 5_000 } });
+expectError<wrpc.RpcServerOptions>({ router, cluster: { secret: 's', replay: 'lenient' } });
 expectAssignable<wrpc.ClusterOptions>({ rooms: /^topic:/ });
 expectAssignable<wrpc.ClusterOptions>({ rooms: (room: string) => room.startsWith('t:') });
 expectError<wrpc.ClusterOptions>({ rooms: 42 });
@@ -724,6 +868,75 @@ void wrpc.connect('ws://host', { headers: async () => ({ authorization: 'Bearer 
 void wrpc.connect('ws://host', { metaFormat: 'prefixed' });
 void wrpc.connect('ws://host', { metaFormat: 'json' });
 expectError(wrpc.connect('ws://host', { metaFormat: 'base64' }));
+// carrier: how the declared bags leave on the ws handshake.
+void wrpc.connect('ws://host', { carrier: 'auto' });
+void wrpc.connect('ws://host', { carrier: 'protocol', headers: { 'x-tenant': 'acme' } });
+void wrpc.connect('ws://host', { carrier: 'query', protocols: [] });
+expectError(wrpc.connect('ws://host', { carrier: 'headers' }));
 expectAssignable<wrpc.RpcServerOptions>({ router, metaMaxBytes: 4096, cors: { metaHeaders: ['userId', 'tenantId'] } });
 expectError<wrpc.RpcServerOptions>({ router, cors: { metaHeaders: 'userId' } });
 expectError<wrpc.RpcServerOptions>({ router, metaMaxBytes: '4k' });
+
+// REST response seam and cache policy.
+declare const restCtx: wrpc.Context;
+expectType<wrpc.HttpReply | null>(restCtx.http);
+if (restCtx.http) {
+  expectType<string>(restCtx.http.method);
+  restCtx.http.setHeader('X-Trace', 'abc');
+  restCtx.http.status(202);
+}
+wrpc.procedure({
+  access: 'public',
+  http: {
+    method: 'GET',
+    path: '/pub',
+    headers: { 'X-Static': '1' },
+    cache: { maxAge: 60, public: true, staleWhileRevalidate: 30, etag: false },
+  },
+  handler: async () => 1,
+});
+expectError(
+  wrpc.procedure({
+    access: 'public',
+    http: { method: 'GET', path: '/pub', cache: { maxAge: '60' } },
+    handler: async () => 1,
+  }),
+);
+
+// The structural OTel views exist so a real SDK is assignable without wrpc
+// depending on @opentelemetry/api. Both of these once failed: a real
+// `Tracer` was rejected because `WrpcSpan.addEvent` was declared narrower
+// than the article it describes, and a tracer implementing only the
+// parented `startActiveSpan` — the overload wrpc calls when the arity
+// allows — had no declaration to match.
+expectAssignable<wrpc.WrpcTracer>(otelTrace.getTracer('tsd'));
+expectAssignable<wrpc.WrpcTracer>({
+  startActiveSpan<T>(_name: string, _options: unknown, _parent: unknown, fn: (span: wrpc.WrpcSpan) => T): T {
+    return fn({ end() {} });
+  },
+});
+expectAssignable<wrpc.WrpcTelemetryOptions>({ tracer: otelTrace.getTracer('tsd') });
+
+// readHandshake: what a verifyClient gate reads the declared bags through —
+// a node IncomingMessage and the uws look-alike both satisfy the request.
+declare const upgradeRequest: import('node:http').IncomingMessage;
+expectType<wrpc.DeclaredHandshake>(wrpc.readHandshake(upgradeRequest));
+expectType<wrpc.DeclaredHandshake>(wrpc.readHandshake({ url: '/api', headers: {} }, { metaMaxBytes: 4096 }));
+expectType<string | Array<string> | undefined>(wrpc.readHandshake(upgradeRequest).headers['x-app-version']);
+expectError(wrpc.readHandshake(upgradeRequest, { metaMaxBytes: '4096' }));
+
+// How a client transport carries `options.encryption`: the static the client
+// checks before anything opens, and the field a session transport sets.
+expectType<boolean | 'request' | 'keys' | undefined>(wrpc.WrpcClient.transport.wt.encrypts);
+expectAssignable<object | null | undefined>(clientWs.encryption);
+
+// The protocol revision of a connection, on both ends and on the server.
+{
+  const client = {} as WrpcClient;
+  expectType<1 | 2>(client.revision);
+  const rpc = {} as RpcServer;
+  expectType<1 | 2>(rpc.revision);
+  const peer = {} as Client;
+  expectType<1 | 2>(peer.revision);
+  expectType<boolean>(peer.attachments);
+}

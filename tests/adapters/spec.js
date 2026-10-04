@@ -17,10 +17,13 @@
 // close would wedge the whole run instead of failing it.
 
 const assert = require('node:assert');
+const http = require('node:http');
+const zlib = require('node:zlib');
 const { randomUUID } = require('node:crypto');
 const { Blob } = require('node:buffer');
 
 const { WrpcClient, defineRouter, procedure, createEventStream, tracked } = require('../../index.js');
+const { waitFor } = require('../helpers/wait.js');
 
 const JSON_HEADERS = { 'Content-Type': 'application/json' };
 
@@ -59,6 +62,8 @@ const router = defineRouter({
         protocol: context.meta.protocol,
         hasHeaders: Object.keys(context.meta.headers).length > 0,
         appVersion: context.meta.headers['x-app-version'] ?? null,
+        offer: context.meta.headers['sec-websocket-protocol'] ?? null,
+        data: context.meta.data,
       }),
     }),
     whoami: procedure({
@@ -80,6 +85,26 @@ const router = defineRouter({
       access: 'public',
       http: { method: 'POST', path: '/things/:thingId', status: 201 },
       handler: async (_context, { params, query, body }) => ({ thingId: params.thingId, q: query, name: body?.name }),
+    }),
+    // A handler that tries to write a header value with a line break in it:
+    // on node a refusal, on uws a split response — unless the seam refuses.
+    split: procedure({
+      access: 'public',
+      http: { method: 'GET', path: '/split' },
+      handler: async (context) => {
+        context.http.setHeader('X-Note', `ok\r\nX-Injected: yes\r\n\r\n<script>`);
+        return { split: true };
+      },
+    }),
+    // And one that sets the same header twice under two spellings.
+    spelled: procedure({
+      access: 'public',
+      http: { method: 'GET', path: '/spelled' },
+      handler: async (context) => {
+        context.http.setHeader('x-note', 'first');
+        context.http.setHeader('X-Note', 'second');
+        return { spelled: true };
+      },
     }),
     readUpload: procedure({
       access: 'public',
@@ -186,14 +211,6 @@ const callPacket = (method, args = {}) => ({ type: 'call', id: randomUUID(), met
 // round trip to land before asserting on it.
 const settle = () => new Promise((resolve) => setTimeout(resolve, 25));
 
-const waitFor = async (predicate, message) => {
-  for (let i = 0; i < 100; i++) {
-    if (await predicate()) return;
-    await new Promise((resolve) => setTimeout(resolve, 10));
-  }
-  assert.fail(message);
-};
-
 // A packet-mode POST: the wire form every transport shares.
 const rpcPost = async (url, method, args = {}, headers = {}) => {
   const packet = callPacket(method, args);
@@ -205,6 +222,19 @@ const rpcPost = async (url, method, args = {}, headers = {}) => {
   const body = await res.json();
   return { res, body, id: packet.id };
 };
+
+// The same POST through node:http, bytes untouched — fetch would inflate a
+// gzip body before an assertion could see it.
+const rawPost = (url, body, headers = {}) =>
+  new Promise((resolve, reject) => {
+    const req = http.request(url, { method: 'POST', headers: { ...JSON_HEADERS, ...headers } }, (res) => {
+      const chunks = [];
+      res.on('data', (chunk) => chunks.push(chunk));
+      res.on('end', () => resolve({ res, bytes: Buffer.concat(chunks) }));
+    });
+    req.on('error', reject);
+    req.end(body);
+  });
 
 const rpcGet = async (url, headers = {}) => {
   const res = await fetch(url, { headers });
@@ -264,6 +294,26 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(body.result.test.whoami.access, 'session');
   });
 
+  await t.test(
+    'http: the revision is announced, and bytes travel as bytes once the client has seen it',
+    async (sub) => {
+      // Every host answers `wrpc-version: 2`, exposed to script on another
+      // origin; a client that read it sends a call holding bytes as a frame
+      // (`application/octet-stream` — the body a host must hand over raw), and
+      // asked with Accept, is answered with one.
+      const probe = await rpcPost(base, 'test/hello', { name: 'Ada' });
+      assert.strictEqual(probe.res.headers.get('wrpc-version'), '2');
+      assert.strictEqual(probe.res.headers.get('access-control-expose-headers'), 'wrpc-version');
+      const client = await WrpcClient.connect(base, { reconnect: false });
+      sub.after(() => void client.close());
+      await client.load('test');
+      assert.strictEqual(client.revision, 2);
+      const echoed = await client.api.test.echo({ blob: Uint8Array.of(1, 2, 3) });
+      assert.ok(echoed.blob instanceof Uint8Array, 'a frame went up, and a frame came back');
+      assert.deepStrictEqual([...echoed.blob], [1, 2, 3]);
+    },
+  );
+
   await t.test('REST mode: GET takes its args from the query as strings', async () => {
     const { res, body } = await rpcGet(`${base}/test/echo?a=1&b=two`);
     assert.strictEqual(res.status, 200);
@@ -291,6 +341,20 @@ const runAdapterSpec = async (entry, t) => {
     assert.deepStrictEqual(await res.json(), { thingId: '42', q: { x: '1' }, name: 'Alpha' });
   });
 
+  await t.test('a header value that would split the response is refused, never written', async () => {
+    const res = await fetch(`${base}/split`);
+    assert.strictEqual(res.status, 500, 'the handler threw at the seam');
+    assert.strictEqual(res.headers.get('x-injected'), null, 'nothing of the value reached the wire');
+    assert.strictEqual(res.headers.get('x-note'), null);
+    await res.text();
+    // The same header under two spellings is one header, the last one.
+    const spelled = await fetch(`${base}/spelled`);
+    assert.strictEqual(spelled.status, 200);
+    assert.deepStrictEqual(spelled.headers.getSetCookie?.() ?? [], []);
+    assert.strictEqual(spelled.headers.get('x-note'), 'second');
+    await spelled.text();
+  });
+
   await t.test('an unknown method is a 404 error packet', async () => {
     const { res, body, id } = await rpcPost(base, 'test/nothing', {});
     assert.strictEqual(res.status, 404);
@@ -304,6 +368,26 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(res.status, 418);
     assert.strictEqual(body.error.code, 418);
     assert.strictEqual(body.error.message, 'Boom');
+  });
+
+  await t.test('what throws while a request is routed is answered 500, never left hanging', async () => {
+    // An injected query parser that throws stands for any input nothing
+    // refused first: every host used to drop the rejection on the floor.
+    const failing = await boot({
+      querystring: {
+        parse() {
+          throw new Error('parser bug');
+        },
+      },
+    });
+    const failingBase = `http://127.0.0.1:${failing.port}/api`;
+    const res = await fetch(`${failingBase}/test/echo?a=1`, { signal: AbortSignal.timeout(5000) });
+    assert.strictEqual(res.status, 500);
+    const body = await res.json();
+    assert.strictEqual(body.error.code, 500);
+    assert.strictEqual(body.error.message, 'Internal Server Error', 'the error itself stays in the log');
+    const { body: next } = await rpcPost(failingBase, 'test/hello', { name: 'again' });
+    assert.strictEqual(next.result, 'Hello, again', 'and the server goes on');
   });
 
   await t.test('access control: a session procedure without a session is 403', async () => {
@@ -346,6 +430,34 @@ const runAdapterSpec = async (entry, t) => {
     assert.deepStrictEqual(bare.body.result, { user: 'ada' });
   });
 
+  await t.test('http.compression: a gzip-accepting request past the threshold is answered gzip', async () => {
+    // Every host hands the encoded Buffer through unchanged — fastify
+    // derives its own Content-Length from it, uws from end(), express
+    // writes it as is.
+    const encoded = await boot({ http: { compression: { encodings: ['br', 'gzip'] } } });
+    const url = `http://127.0.0.1:${encoded.port}/api`;
+    const packet = callPacket('test/echo', { pad: 'x'.repeat(4096) });
+    const { res, bytes } = await rawPost(url, JSON.stringify(packet), { 'Accept-Encoding': 'gzip' });
+    assert.strictEqual(res.statusCode, 200);
+    assert.strictEqual(res.headers['content-encoding'], 'gzip');
+    assert.strictEqual(Number(res.headers['content-length']), bytes.length, 'Content-Length is the encoded size');
+    const body = JSON.parse(zlib.gunzipSync(bytes).toString());
+    assert.strictEqual(body.id, packet.id);
+    assert.strictEqual(body.result.pad.length, 4096);
+    // The server's first choice for a peer that takes it — the same seam, another coding.
+    const brotli = await rawPost(url, JSON.stringify(packet), { 'Accept-Encoding': 'gzip, br' });
+    assert.strictEqual(brotli.res.headers['content-encoding'], 'br');
+    assert.strictEqual(Number(brotli.res.headers['content-length']), brotli.bytes.length);
+    assert.strictEqual(JSON.parse(zlib.brotliDecompressSync(brotli.bytes).toString()).result.pad.length, 4096);
+    // Under the threshold, and on the un-configured boot, nothing changes.
+    const small = await rawPost(url, JSON.stringify(callPacket('test/hello', { name: 'Ada' })), {
+      'Accept-Encoding': 'gzip',
+    });
+    assert.strictEqual(small.res.headers['content-encoding'], undefined);
+    const plain = await rawPost(base, JSON.stringify(packet), { 'Accept-Encoding': 'gzip' });
+    assert.strictEqual(plain.res.headers['content-encoding'], undefined, 'off by default');
+  });
+
   await t.test('a path outside basePath is 404', async () => {
     const res = await fetch(`${origin}/nowhere`);
     const text = await res.text();
@@ -366,7 +478,7 @@ const runAdapterSpec = async (entry, t) => {
     const allowed = await rpcPost(corsBase, 'test/hello', { name: 'CORS' }, { origin: 'https://allowed.example' });
     assert.strictEqual(allowed.res.status, 200);
     assert.strictEqual(allowed.res.headers.get('access-control-allow-origin'), 'https://allowed.example');
-    assert.strictEqual(allowed.res.headers.get('vary'), 'Origin');
+    assert.strictEqual(allowed.res.headers.get('vary'), 'Origin, Accept');
     assert.strictEqual(allowed.res.headers.get('access-control-allow-credentials'), 'true');
 
     const denied = await rpcPost(corsBase, 'test/hello', { name: 'CORS' }, { origin: 'https://evil.example' });
@@ -416,16 +528,31 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(body.result.hasHeaders, true, 'http: meta.headers observed');
     assert.strictEqual(body.result.appVersion, '9.9', 'http: a declared header rides as a real one');
     // The ws upgrade: url, headers, the negotiated subprotocol — and the
-    // declared headers, carried by the wrpc_h query (lowercased on arrival).
-    const client = await WrpcClient.connect(`ws://127.0.0.1:${main.port}/api`, {
-      headers: { 'X-App-Version': '8.8' },
-    });
-    sub.after(() => void client.close());
-    const meta = await client.call('test/peekMeta');
-    assert.ok(meta.url.includes('/api'), `ws: the upgrade url survived (got '${meta.url}')`);
-    assert.strictEqual(meta.hasHeaders, true, 'ws: the upgrade headers survived');
-    assert.strictEqual(meta.protocol, 'wrpc.v1');
-    assert.strictEqual(meta.appVersion, '8.8', 'ws: the declared header arrived through the connect url');
+    // declared bags, on every carrier a client may pick. 'auto' from Node is
+    // REAL headers; 'protocol' is what a browser is left with (subprotocol
+    // carrier tokens); 'query' is the opt-out. Only the last touches the url,
+    // and no host may lose any of them: uws rebuilds the request by hand.
+    for (const carrier of ['auto', 'protocol', 'query']) {
+      const client = await WrpcClient.connect(`ws://127.0.0.1:${main.port}/api`, {
+        carrier,
+        headers: { 'X-App-Version': '8.8', authorization: 'Bearer spec-token' },
+        meta: { deviceId: 'd-1', build: 42 },
+      });
+      sub.after(() => void client.close());
+      const meta = await client.call('test/peekMeta');
+      assert.ok(meta.url.includes('/api'), `ws ${carrier}: the upgrade url survived (got '${meta.url}')`);
+      assert.strictEqual(meta.hasHeaders, true, `ws ${carrier}: the upgrade headers survived`);
+      assert.strictEqual(meta.protocol, 'wrpc.v2', `ws ${carrier}: the revision was echoed next to the tokens`);
+      assert.strictEqual(meta.appVersion, '8.8', `ws ${carrier}: the declared header arrived, kebab-cased`);
+      assert.deepStrictEqual(meta.data, { 'device-id': 'd-1', build: 42 }, `ws ${carrier}: the meta bag arrived`);
+      assert.strictEqual(meta.url.includes('wrpc_'), carrier === 'query', `ws ${carrier}: url was '${meta.url}'`);
+      assert.ok(!meta.url.includes('spec-token'), `ws ${carrier}: the credential never rides the url`);
+      assert.strictEqual(
+        meta.offer,
+        'wrpc.v2, wrpc.v1',
+        `ws ${carrier}: carrier tokens left the header a handler sees`,
+      );
+    }
   });
 
   await t.test('WebSocket: load, call, event and streams over one connection', async (sub) => {
@@ -482,12 +609,16 @@ const runAdapterSpec = async (entry, t) => {
 
     // A room broadcast reaches every member, the sender included...
     assert.deepStrictEqual(await ada.api.chat.shout({ room: 'lobby', text: 'hello' }), { sent: 2 });
-    await settle();
+    // Waited for, not slept on: 25 ms was not always enough on a loaded CI
+    // runner for the second member's frame.
+    await waitFor(() => received.ada.length === 1 && received.grace.length === 1, 'the broadcast reached both members');
     assert.deepStrictEqual(received.ada, [{ text: 'hello' }]);
     assert.deepStrictEqual(received.grace, [{ text: 'hello' }]);
 
     // ...unless it is excluded.
     assert.deepStrictEqual(await ada.api.chat.shout({ room: 'lobby', text: 'psst', self: false }), { sent: 1 });
+    await waitFor(() => received.grace.length === 2, 'the broadcast reached grace');
+    // What must NOT arrive has no event to wait for: watched for a moment.
     await settle();
     assert.strictEqual(received.ada.length, 1, 'except() drops the sender');
     assert.deepStrictEqual(received.grace.at(-1), { text: 'psst' });
@@ -495,8 +626,10 @@ const runAdapterSpec = async (entry, t) => {
     // A client -> server event is fire-and-forget: nothing comes back on the
     // wire, and the handler's effect is observed through a call.
     ada.sendEvent('chat/typing', { who: 'ada' });
-    await settle();
-    assert.deepStrictEqual(await ada.api.chat.typed(), { seen: [{ who: 'ada' }] });
+    // `typed` drains what the handler saw, so the poll keeps what it read.
+    let seen = [];
+    await waitFor(async () => (seen = (await ada.api.chat.typed()).seen).length > 0, 'the handler saw the event');
+    assert.deepStrictEqual(seen, [{ who: 'ada' }]);
 
     assert.deepStrictEqual(await grace.api.chat.leave({ room: 'lobby' }), { left: true });
     assert.deepStrictEqual(await ada.api.chat.members({ room: 'lobby' }), { count: 1 });

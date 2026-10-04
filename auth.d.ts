@@ -65,7 +65,8 @@ export declare function bearerAuth(options: BearerAuthOptions): Pick<
 /**
  * The server half (`sessions.transport`): token in
  * `Authorization: <scheme> <token>` — the real header where the transport
- * can send one, the `wrpc_h` connect-URL parameter on browser ws.
+ * can send one (http, sse, ws from Node), the `wrpc.bearer.<token>`
+ * subprotocol offer on browser ws, else the declared bag the core parsed.
  * Non-ambient: exempt from the safe-method CSRF rule, `write()` stamps
  * nothing.
  */

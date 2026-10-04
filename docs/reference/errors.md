@@ -1,6 +1,6 @@
 # Errors and close codes
 
-wrpc reuses **HTTP status numbers** as its error vocabulary, on every transport.
+wRPC reuses **HTTP status numbers** as its error vocabulary, on every transport.
 A code that reaches a WebSocket client means the same thing it would over
 HTTP — and in [REST mode](../guide/server#what-it-serves) it literally *is* the
 HTTP status.
@@ -85,6 +85,7 @@ A code above `599` is reported as `500`.
 | `500` | Handler threw without a code; a subscription handler returned a non-iterable; an `output` validator rejected the result | router |
 | `501` | No responder registered for an [ask](../guide/rooms#asking-a-room); a binary stream attempted over [SSE](../guide/sse#what-it-cannot-do) | client, SSE |
 | `503` | Queue full, server [draining](../guide/production#graceful-shutdown), transport closed under an in-flight call, `maxChannels` reached | router, core, SSE |
+| `400`, `409`, `426` (sealed) | A [sealed request](../guide/encryption#session) refused before it was read: not accepted (the pinned key may be retired), stale or replayed (a clock), or plaintext where encryption is `required`. Bare statuses, no body — the calls the request carried fail with the same code on the client, and the client emits `EncryptionRefusedError` (`code: 'ENCRYPTION_REFUSED'`, `status`); any other plaintext answer to a sealed request is a `503` | encryption |
 
 ::: tip 499 is not a failure
 It acknowledges a cancel the caller asked for. The client resolves the
@@ -94,33 +95,41 @@ already-rejected call silently rather than surfacing it twice — you see the
 
 ## Which codes are worth retrying
 
-| Code | Retry? | Why |
-| --- | --- | --- |
-| `400`, `403`, `404`, `501` | **No** | The same request will fail identically. |
-| `408` | Careful | Only if the operation is idempotent — it may have completed. |
-| `409` | Automatic | The SSE transport starts a fresh channel itself. |
-| `429`, `503` | **Yes, with backoff** | Load or a rolling deploy; both are temporary by construction. |
-| `499` | No | You caused it. |
-| `500` | No, alert | A bug, not a condition. |
+| Code | Retry? | Broker consumer | Why |
+| --- | --- | --- | --- |
+| `400`, `403`, `404`, `501` | **No** | dead letter | The same request will fail identically. |
+| `408` | Careful | retry | Only if the operation is idempotent — it may have completed. |
+| `409` | Automatic | — | The SSE transport starts a fresh channel itself. |
+| `429`, `503` | **Yes, with backoff** | retry | Load or a rolling deploy; both are temporary by construction. |
+| `499` | No | — | You caused it. |
+| `500` | No, alert | retry, then dead letter | A bug, not a condition — but on a queue usually a dependency that fell over. |
+
+The **Broker consumer** column is the default `retryOn` policy of
+[queue consumers](../guide/brokers/consumers#what-a-message-becomes): at-least-once
+delivery already requires an idempotent handler, so a transient `408`/`500` is
+retried with backoff up to the attempt limit before the message is dead-lettered.
 
 The client's own [reconnect](../guide/client#reconnecting) already applies
 truncated exponential backoff with full jitter to the *connection*. Per-call
-retries are yours: wrpc never replays a call automatically, because it cannot
+retries are yours: wRPC never replays a call automatically, because it cannot
 know whether yours is idempotent.
 
 ## WebSocket close codes
 
 Close codes are a different vocabulary — RFC 6455's, not HTTP's — and they end
 the *connection*, not one call. Exported as `CLOSE_CODES` from
-[`@alexify/wrpc/ws`](./wire-format).
+[`@alexify/wrpc/ws`](./wire-format). A [WebTransport](../guide/wt) session
+ends with the same codes — the server's 1001 on shutdown, 1002 on a framing
+violation — as its `closeCode`.
 
-| Code | Name | When wrpc uses it |
+| Code | Name | When wRPC uses it |
 | --- | --- | --- |
 | `1000` | Normal closure | `client.close()`, a clean goodbye. |
 | `1001` | Going away | The server is [shutting down](../guide/production#graceful-shutdown). Reconnect elsewhere. |
-| `1002` | Protocol error | A frame violated RFC 6455 — bad opcode, bad continuation, reserved bit set. |
+| `1002` | Protocol error | A frame violated RFC 6455 — bad opcode, bad continuation, reserved bit set. With reason `encryption`: a [session handshake](../guide/encryption#session) frame that did not verify or parse, or a sealed frame that did not open. |
 | `1006` | Abnormal closure | No close frame arrived. Never sent — it is what a local socket reports. |
 | `1007` | Invalid payload | A text frame that was not valid UTF-8. |
+| `1008` | Policy violation | With reason `encryption`: the session handshake was refused by policy — plaintext where encryption is required, an unlisted protocol or key id, `authorize` said no, the handshake timed out, or the server had too much to say before it finished. |
 | `1009` | Message too big | Over `maxPayload`. |
 | `1011` | Internal error | The engine could not continue. |
 

@@ -1,14 +1,34 @@
 'use strict';
 
 const { EventEmitter } = require('node:events');
+const { createLoggerWriter } = require('../logging.js');
+
+const crypto = require('node:crypto');
 
 const { OPCODES, CLOSE_CODES, RSV1 } = require('./constants.js');
-const { Frame, EMPTY_PING, EMPTY_PONG } = require('./frame.js');
+const { Frame, EMPTY_PING, EMPTY_PONG, encodeFrame, encodeFrameFrom } = require('./frame.js');
 const { FrameParser, isValidUTF8 } = require('./frameParser.js');
 const { SegmentQueue } = require('./segments.js');
+const { PreparedFrames } = require('./prepared.js');
+const { DeflateContext } = require('./deflateContext.js');
 const permessageDeflate = require('./permessageDeflate.js');
 
+// The write-queue pressure signal when a socket does not say (a test
+// double): net.Socket's own default.
+const DEFAULT_HIGH_WATER_MARK = 16 * 1024;
+
 const MAX_BUFFER = 1024 * 1024 * 100;
+// Up to this payload size a data frame is encoded as ONE contiguous buffer
+// (header + payload) and written once; above it the payload is written as
+// its own chunk behind a separate header, because copying a large payload
+// costs more than the second write it saves (bench/send-path.js).
+const SINGLE_WRITE_MAX = 16 * 1024;
+// Module-wide utf8 scratch for sendText: written and copied out within one
+// synchronous call, so sharing it between connections is safe. 48 KiB
+// covers a 16 K-char message at the 3-bytes-per-unit worst case, i.e.
+// every message that can take the single-write path.
+const SCRATCH_SIZE = 48 * 1024;
+const SCRATCH = Buffer.allocUnsafeSlow(SCRATCH_SIZE);
 // The inflated-size cap for permessage-deflate, separate from MAX_BUFFER on
 // purpose: MAX_BUFFER bounds bytes that already crossed the wire, while a
 // compression bomb turns a few KB on the wire into whatever this allows —
@@ -19,8 +39,16 @@ const CLOSE_TIMEOUT = 1000;
 const CLOSE_GRACE = 200;
 const MAX_HEADER_SIZE = 14; // 2 base + 8 extended length + 4 mask key
 
+// The inflate queue's marks (messages): held at INBOX_HIGH — INBOX_ASYNC_HIGH
+// on the threadpool path, where inflates run in parallel — and taken up
+// again at INBOX_LOW. Bytes are bounded by maxPayload alongside.
+const INBOX_HIGH = 32;
+const INBOX_ASYNC_HIGH = 4;
+const INBOX_LOW = 8;
+
 class Connection extends EventEmitter {
   #socket;
+  #log;
   #isClient;
   #queue = new SegmentQueue();
   #pendingHeader = null;
@@ -38,8 +66,49 @@ class Connection extends EventEmitter {
   #closeTimer = null;
   #needsDrain = false;
   #paused = false;
+  // Receive-side backpressure of the INFLATE queue: while this many
+  // messages (or maxPayload of compressed bytes) are inflating off the
+  // loop, the socket is paused — apart from the public pause(), which the
+  // application owns — and the frame loop stops, until enough landed. A
+  // peer that sent thousands of compressed frames in one segment used to
+  // have every one of them inflating at once, each holding its output.
+  #inboxBytes = 0;
+  #inboxHeld = false;
   #closeCode = CLOSE_CODES.CONNECTION_CLOSED_ABNORMALLY;
   #closeReason = '';
+  // Set when WE failed the connection (a protocol error, an oversized or
+  // undecodable message): RFC 6455 7.1.7 — nothing the peer sends after
+  // that is acted on except its Close, which lets us hang up sooner. A
+  // ping in particular is not answered any more (Autobahn 4.1.3–4.2.5).
+  #failed = false;
+  // Context takeover (a live zlib stream per direction) when negotiated.
+  #context = null;
+  // Ordering queues around an asynchronous deflate/inflate — context
+  // takeover, or `async` past its threshold. Outbound: every write issued
+  // while a compress is in flight waits behind it, so frames leave in send
+  // order; `#outboxBytes` counts them into bufferedAmount so backpressure
+  // stays honest while they wait. Inbound: a message decoded off the loop
+  // is delivered in arrival order, the ones behind it held until it lands.
+  #outbox = [];
+  #outboxBytes = 0;
+  #draining = false;
+  // The Close frame of a graceful close() that found writes still waiting
+  // behind a compress: it is the outbox's tail, and the pump sends it when
+  // it gets there (see sendClose).
+  #pendingClose = null;
+  #inbox = [];
+  #coalesce;
+  #corked = false;
+  // Write coalescing: the first write of an event-loop turn corks the socket
+  // and this uncorks it on the next tick, so every frame produced in that
+  // turn — the N callbacks of a batch, a burst of events — leaves in ONE
+  // writev instead of N syscalls. The idiom node:http uses. The `send()`
+  // boolean stays honest: a corked write still reports writableLength
+  // against the high-water mark, and 'drain' is unchanged.
+  #uncork = () => {
+    this.#corked = false;
+    if (!this.#socket.destroyed) this.#socket.uncork();
+  };
 
   constructor(socket, head, options = {}) {
     super();
@@ -59,7 +128,17 @@ class Connection extends EventEmitter {
       fragmentThreshold = 0,
       protocol = '',
       deflate = null,
+      // Off for a bare Connection so a write is on the socket the moment
+      // send() returns; WebsocketServer turns it on for the connections it
+      // creates (a server answering many peers is where bursts happen).
+      coalesce = false,
+      // The writer WebsocketServer hands down, already childed with this
+      // connection's peer. A bare Connection gets the disabled one, whose
+      // methods are frozen no-ops — so the guarded paths below cost nothing
+      // when nobody is listening.
+      logger = false,
     } = options;
+    this.#log = createLoggerWriter(logger);
     this.#isClient = isClient;
     this.#maxBuffer = maxBuffer;
     this.#maxPayload = maxPayload;
@@ -67,13 +146,27 @@ class Connection extends EventEmitter {
     this.#maxBackpressure = maxBackpressure;
     this.#fragmentThreshold = fragmentThreshold;
     this.#deflate = deflate;
+    if (deflate && (deflate.serverTakeover || deflate.clientTakeover)) {
+      this.#context = new DeflateContext({
+        windowBits: deflate.windowBits,
+        level: deflate.level,
+        memLevel: deflate.memLevel,
+        server: deflate.serverTakeover,
+        client: deflate.clientTakeover,
+      });
+    }
+    this.#coalesce = coalesce && typeof socket.cork === 'function';
     if (deflate) this.#allowedRsv = RSV1;
     this.protocol = protocol;
     this.#init(head);
   }
 
   get bufferedAmount() {
-    return this.#socket.writableLength ?? 0;
+    return (this.#socket.writableLength ?? 0) + this.#outboxBytes;
+  }
+
+  #highWaterMark() {
+    return this.#socket.writableHighWaterMark ?? DEFAULT_HIGH_WATER_MARK;
   }
 
   get remoteAddress() {
@@ -81,9 +174,24 @@ class Connection extends EventEmitter {
   }
 
   #init(head) {
+    // Bytes the peer sent right behind its handshake. Parsed here, a frame
+    // among them that failed emitted 'error' from inside this constructor —
+    // before anyone could listen, so it was thrown out of the server's
+    // 'upgrade' listener, which is the process. Handed back to the socket
+    // instead, they are read first through 'data', once the owner of this
+    // connection is listening. A socket without `unshift` (a test double)
+    // gets them on the next tick — queued before the 'data' listener below
+    // resumes the socket, so nothing the socket holds overtakes them.
+    if (head && head.length > 0) {
+      if (typeof this.#socket.unshift === 'function') this.#socket.unshift(head);
+      else process.nextTick(() => this.#receive(head));
+    }
     this.#socket.on('data', (data) => this.#receive(data));
     this.#socket.on('drain', () => {
       if (!this.#needsDrain) return;
+      // Bytes still waiting behind a compress keep the pressure on; the
+      // queue pump announces the drain once they have left.
+      if (this.#outboxBytes > 0 && this.bufferedAmount >= this.#highWaterMark()) return;
       this.#needsDrain = false;
       this.emit('drain');
     });
@@ -96,9 +204,6 @@ class Connection extends EventEmitter {
       if (this.#closeTimer) clearTimeout(this.#closeTimer);
       this.emit('close', this.#closeCode, this.#closeReason);
     });
-
-    // received data before upgrade
-    if (head && head.length > 0) this.#receive(head);
   }
 
   // Receive-side flow control: stops/restarts socket reads so a slow
@@ -106,7 +211,7 @@ class Connection extends EventEmitter {
   // paused, inbound pongs are not read either — liveness checks must not
   // treat a paused connection as dead (see the heartbeat's isPaused skip).
   get isPaused() {
-    return this.#paused;
+    return this.#paused || this.#inboxHeld;
   }
 
   pause() {
@@ -118,7 +223,24 @@ class Connection extends EventEmitter {
   resume() {
     if (this.#socket.destroyed) return;
     this.#paused = false;
-    this.#socket.resume();
+    // Held for the inflate queue: the socket stays paused until it drains.
+    if (!this.#inboxHeld) this.#socket.resume();
+  }
+
+  #holdInbox() {
+    if (this.#inboxHeld) return;
+    this.#inboxHeld = true;
+    if (!this.#socket.destroyed) this.#socket.pause();
+  }
+
+  // Enough inflates landed: the socket reads again (unless the application
+  // paused it), and the frames already buffered are taken up — no 'data'
+  // event will come for those.
+  #releaseInbox() {
+    this.#inboxHeld = false;
+    if (this.#socket.destroyed) return;
+    if (!this.#paused) this.#socket.resume();
+    this.#processFrames();
   }
 
   #receive(data) {
@@ -128,12 +250,13 @@ class Connection extends EventEmitter {
 
     if (this.#queue.length > this.#maxBuffer) {
       const error = new Error('Buffer overflow, closing connection');
-      this.emit('error', error);
+      this.#fault('ws.overflow', error, { queued: this.#queue.length, max: this.#maxBuffer });
       if (this.#isClient) {
+        this.#failed = true;
         return void this.sendClose(CLOSE_CODES.MESSAGE_TOO_BIG, 'Message too big');
       }
       const frame = Frame.errorClose('MESSAGE_TOO_BIG');
-      return void this.#close(frame);
+      return void this.#fail(frame);
     }
 
     this.#processFrames();
@@ -146,6 +269,9 @@ class Connection extends EventEmitter {
       // so anything pipelined behind the peer's Close in the same segment is
       // not just pointless to handle, it would write past end().
       if (this.#closeReceived) break;
+      // The inflate queue is full: what is left waits in the segment queue
+      // (under maxBuffer) until it drains — see #releaseInbox.
+      if (this.#inboxHeld) break;
       if (!this.#pendingHeader) {
         const headerBytes = this.#queue.peek(MAX_HEADER_SIZE);
         const result = FrameParser.parseHeader(headerBytes, { allowedRsv: this.#allowedRsv });
@@ -155,11 +281,11 @@ class Connection extends EventEmitter {
 
         if (!this.#isClient && !value.masked) {
           const closeFrame = Frame.protocolErrorClose('UNMASKED');
-          return void this.#close(closeFrame);
+          return void this.#fail(closeFrame);
         }
         if (this.#isClient && value.masked) {
           const closeFrame = Frame.protocolErrorClose('MASKED', this.#isClient);
-          return void this.#close(closeFrame);
+          return void this.#fail(closeFrame);
         }
         // A frame that can never fit is rejected on its header, before the
         // payload is buffered.
@@ -191,6 +317,7 @@ class Connection extends EventEmitter {
 
     const { opcode } = frame;
     if (opcode === OPCODES.PING) {
+      if (this.#failed) return;
       this.emit('ping', frame.payload);
       return void this.sendPong(frame.payload);
     }
@@ -216,24 +343,25 @@ class Connection extends EventEmitter {
   #processFrameParserError(error) {
     const { code } = error;
     const [type, subtype] = code.split('-');
-    this.emit('error', error);
+    this.#fault('ws.frame', error, { close: code });
     const frame =
       type === 'PROTOCOL_ERROR'
         ? Frame.protocolErrorClose(subtype, this.#isClient)
         : Frame.errorClose(type, this.#isClient);
-    this.#close(frame);
+    this.#fail(frame);
   }
 
   #trackMessageSize(size) {
     const tooBig = size > this.#maxBuffer;
     if (tooBig) {
       const error = new Error('Message too big');
-      this.emit('error', error);
+      this.#fault('ws.too-big', error, { size, max: this.#maxBuffer });
       if (this.#isClient) {
+        this.#failed = true;
         this.sendClose(CLOSE_CODES.MESSAGE_TOO_BIG, 'Message too big');
       } else {
         const frame = Frame.errorClose('MESSAGE_TOO_BIG');
-        this.#close(frame);
+        this.#fail(frame);
       }
     }
     return !tooBig;
@@ -246,15 +374,15 @@ class Connection extends EventEmitter {
       // Continuation frame without a started fragmented message
       if (opcode === OPCODES.CONTINUATION) {
         const error = new Error('Protocol error: Unexpected CONTINUATION without start');
-        this.emit('error', error);
+        this.#fault('ws.protocol', error);
         const frame = Frame.protocolErrorClose('COMMON', this.#isClient);
-        return void this.#close(frame);
+        return void this.#fail(frame);
       }
       if (frame.fin) {
         // single frame
         if (compressed) return void this.#emitInflated(opcode, payload);
         const isBinary = opcode === OPCODES.BINARY;
-        this.emit('message', frame.payload, isBinary);
+        this.#emitMessage(frame.payload, isBinary);
       } else {
         if (!this.#trackMessageSize(payload.length)) return;
         this.#fragments = {
@@ -279,17 +407,27 @@ class Connection extends EventEmitter {
       const isText = firstOpcode === OPCODES.TEXT;
       if (isText && !isValidUTF8(fullPayload)) {
         const error = new Error('Invalid UTF-8 in text frame');
-        this.emit('error', error);
+        this.#fault('ws.invalid-utf8', error);
         const frame = Frame.errorClose('INVALID_PAYLOAD', this.#isClient);
-        return void this.#close(frame);
+        return void this.#fail(frame);
       }
-      this.emit('message', fullPayload, isBinary);
+      this.#emitMessage(fullPayload, isBinary);
     } else {
       const error = new Error('Protocol error: Unexpected data frame during fragments');
-      this.emit('error', error);
+      this.#fault('ws.protocol', error);
       const frame = Frame.protocolErrorClose('COMMON', this.#isClient);
-      return void this.#close(frame);
+      return void this.#fail(frame);
     }
+  }
+
+  // A message decoded synchronously while others are still inflating off
+  // the loop waits behind them: the inbox is what keeps arrival order.
+  #emitMessage(data, isBinary) {
+    if (this.#inbox.length > 0) {
+      this.#inbox.push({ done: true, error: null, data, isBinary, isText: false, size: 0 });
+      return;
+    }
+    this.emit('message', data, isBinary);
   }
 
   #emitInflated(opcode, payload) {
@@ -297,30 +435,141 @@ class Connection extends EventEmitter {
     // inflation the moment output would exceed it, so a compression bomb
     // costs at most `maxPayload` of memory and CPU before the close.
     const limit = Math.min(this.#maxPayload, this.#maxBuffer);
+    const isBinary = opcode === OPCODES.BINARY;
+    const isText = opcode === OPCODES.TEXT;
+    const deflate = this.#deflate;
+    const viaContext = this.#context !== null && deflate.clientTakeover === true;
+    const async = deflate.async ?? null;
+    if (viaContext || (async !== null && payload.length >= async.threshold)) {
+      const size = payload.length;
+      const item = { done: false, error: null, data: null, isBinary, isText, size };
+      this.#inbox.push(item);
+      this.#inboxBytes += size;
+      // Never called inside decompress(): zlib's callback API and the live
+      // stream both settle off the loop, which is what lets #deliver take
+      // the socket up again without a re-entrancy guard here.
+      const settle = (error, inflated) => {
+        item.done = true;
+        item.error = error ?? null;
+        item.data = inflated ?? null;
+        this.#deliver();
+      };
+      if (viaContext) this.#context.decompress(payload, limit, settle);
+      else permessageDeflate.decompressAsync(payload, limit, settle);
+      // The context is one stream, so its inflates are serial anyway and
+      // the bound is on what waits; the threadpool path runs them in
+      // parallel, and libuv's pool is four threads wide.
+      const high = viaContext ? INBOX_HIGH : INBOX_ASYNC_HIGH;
+      if (this.#inbox.length >= high || this.#inboxBytes >= this.#maxPayload) this.#holdInbox();
+      return;
+    }
     let inflated = null;
     try {
       inflated = permessageDeflate.decompress(payload, limit);
     } catch (error) {
-      this.emit('error', error);
-      const type = error.code === 'ERR_BUFFER_TOO_LARGE' ? 'MESSAGE_TOO_BIG' : 'INVALID_PAYLOAD';
-      return void this.#close(Frame.errorClose(type, this.#isClient));
+      return void this.#failInflate(error);
     }
-    const isText = opcode === OPCODES.TEXT;
     if (isText && !isValidUTF8(inflated)) {
       const error = new Error('Invalid UTF-8 in text frame');
-      this.emit('error', error);
-      return void this.#close(Frame.errorClose('INVALID_PAYLOAD', this.#isClient));
+      this.#fault('ws.invalid-utf8', error);
+      return void this.#fail(Frame.errorClose('INVALID_PAYLOAD', this.#isClient));
     }
-    this.emit('message', inflated, opcode === OPCODES.BINARY);
+    this.#emitMessage(inflated, isBinary);
   }
 
-  send(data) {
-    if (typeof data === 'string') return this.sendText(data);
-    if (Buffer.isBuffer(data)) return this.sendBinary(data);
+  // Every way this connection dies of its own accord used to be an 'error'
+  // event and nothing else. A server rarely listens for 'error' on an
+  // individual socket, so the operator's view was a connection that simply
+  // vanished — the classic "it just disconnects sometimes" report, with
+  // nothing in the log to work from.
+  //
+  // `warn`, not `error`: a peer sending a bad frame or overrunning a limit
+  // is that peer's problem, and a server with many of them must not have its
+  // log dominated by them. The limits (maxPayload, maxBuffer,
+  // maxBackpressure) are the operator's to raise, which is exactly why they
+  // have to be told the limit was what closed the connection.
+  #fault(event, error, extra = null) {
+    this.#log.warn({ ...extra, err: error, event });
+    this.emit('error', error);
+  }
+
+  #failInflate(error) {
+    const type = error.code === 'ERR_BUFFER_TOO_LARGE' ? 'MESSAGE_TOO_BIG' : 'INVALID_PAYLOAD';
+    this.#fault('ws.inflate', error, { close: type });
+    this.#fail(Frame.errorClose(type, this.#isClient));
+  }
+
+  // Delivers inbox messages in order as far as they have landed.
+  #deliver() {
+    const inbox = this.#inbox;
+    while (inbox.length > 0 && inbox[0].done) {
+      const item = inbox.shift();
+      this.#inboxBytes -= item.size;
+      if (this.#closing) continue;
+      if (item.error !== null) return void this.#failInflate(item.error);
+      if (item.isText && !isValidUTF8(item.data)) {
+        const error = new Error('Invalid UTF-8 in text frame');
+        this.#fault('ws.invalid-utf8', error);
+        return void this.#fail(Frame.errorClose('INVALID_PAYLOAD', this.#isClient));
+      }
+      this.emit('message', item.data, item.isBinary);
+    }
+    if (this.#inboxHeld && inbox.length <= INBOX_LOW && this.#inboxBytes <= this.#maxPayload / 2) {
+      this.#releaseInbox();
+    }
+  }
+
+  // `options.compress === false` sends this one message uncompressed even
+  // when deflate was negotiated and the payload clears the threshold.
+  send(data, options = null) {
+    if (typeof data === 'string') return this.sendText(data, options);
+    if (Buffer.isBuffer(data)) return this.sendBinary(data, options);
     throw new TypeError('send() accepts only string or Buffer');
   }
 
+  // A message prepared for fan-out: `{ text, frames, compress }` where
+  // `frames` is the engine-owned cache slot (see prepared.js). The slot is
+  // claimed when empty and reused when it already holds our own cache; a
+  // slot another engine claimed means a mixed room, and the text goes the
+  // ordinary way. Client connections and fragmenting ones do too — a client
+  // frame needs a fresh mask, and a fragmented one is not one buffer.
+  sendPrepared(message) {
+    if (this.#closing) return false;
+    if (this.#exceedsBackpressure()) return false;
+    if (this.#isClient || this.#fragmentThreshold) return this.send(message.text, message);
+    let frames = message.frames;
+    if (frames === null) {
+      frames = message.frames = new PreparedFrames(message.text);
+    } else if (!(frames instanceof PreparedFrames)) {
+      return this.send(message.text, message);
+    }
+    const deflate = this.#deflate;
+    if (deflate !== null && message.compress !== false && frames.length >= deflate.threshold) {
+      // Context takeover is per connection by construction: the shared
+      // frame cannot serve it, the shared utf8 payload still can.
+      if (this.#context !== null && deflate.serverTakeover === true) {
+        return this.#enqueueCompress(frames.opcode, frames.payload, null);
+      }
+      const async = deflate.async ?? null;
+      if (async !== null && frames.length >= async.threshold) {
+        return this.#enqueueCompress(frames.opcode, frames.payload, frames);
+      }
+      return this.#write(frames.deflated(deflate.windowBits, deflate.zlibOptions ?? null));
+    }
+    return this.#write(frames.plain());
+  }
+
   #write(buffer) {
+    // Behind an in-flight compress every write waits its turn (the pump
+    // writes with #draining set, so its own frames pass through).
+    if (this.#outbox.length > 0 && !this.#draining) {
+      return this.#enqueue({ buffer, payload: null, shared: null, opcode: 0, started: false });
+    }
+    if (this.#coalesce && !this.#corked) {
+      this.#corked = true;
+      this.#socket.cork();
+      process.nextTick(this.#uncork);
+    }
     const ok = this.#socket.write(buffer);
     if (!ok) this.#needsDrain = true;
     return ok;
@@ -339,19 +588,143 @@ class Connection extends EventEmitter {
     if (!this.#maxBackpressure) return false;
     if (this.bufferedAmount <= this.#maxBackpressure) return false;
     const error = new Error('Backpressure limit exceeded, terminating connection');
-    this.emit('error', error);
+    this.#fault('ws.backpressure', error, { buffered: this.bufferedAmount, max: this.#maxBackpressure });
     this.terminate();
     return true;
   }
 
-  #sendData(opcode, payload) {
+  #shouldCompress(length, options) {
+    const deflate = this.#deflate;
+    return deflate !== null && length >= deflate.threshold && (options === null || options.compress !== false);
+  }
+
+  #sendData(opcode, payload, options) {
     let rsv = 0;
-    if (this.#deflate && payload.length >= this.#deflate.threshold) {
-      payload = permessageDeflate.compress(payload, this.#deflate.windowBits);
+    if (this.#shouldCompress(payload.length, options)) {
+      const deflate = this.#deflate;
+      const async = deflate.async ?? null;
+      const takeover = this.#context !== null && deflate.serverTakeover === true;
+      if (takeover || (async !== null && payload.length >= async.threshold)) {
+        return this.#enqueueCompress(opcode, payload, null);
+      }
+      payload = permessageDeflate.compress(payload, deflate.windowBits, deflate.zlibOptions ?? null);
       rsv = RSV1;
     }
+    return this.#emitFrames(opcode, payload, rsv);
+  }
+
+  // --- The outbound ordering queue ---------------------------------------
+
+  #enqueue(item) {
+    this.#outbox.push(item);
+    this.#outboxBytes += item.buffer !== null ? item.buffer.length : item.payload.length;
+    const ok = this.bufferedAmount < this.#highWaterMark();
+    if (!ok) this.#needsDrain = true;
+    return ok;
+  }
+
+  // A message whose deflate runs off the loop (context takeover, or
+  // `async` past its threshold; `shared` is a fan-out's PreparedFrames
+  // whose one deflate every recipient waits on). Queued behind whatever
+  // is already waiting, then the pump starts it.
+  #enqueueCompress(opcode, payload, shared) {
+    const ok = this.#enqueue({ buffer: null, payload, shared, opcode, started: false });
+    this.#pump();
+    return ok;
+  }
+
+  #pump() {
+    const outbox = this.#outbox;
+    while (outbox.length > 0) {
+      const head = outbox[0];
+      if (head.buffer !== null) {
+        outbox.shift();
+        this.#outboxBytes -= head.buffer.length;
+        // The Close a graceful close() queued behind what it had accepted:
+        // everything ahead of it is on the socket now.
+        if (head.buffer === this.#pendingClose) return void this.#flushClose();
+        this.#draining = true;
+        this.#write(head.buffer);
+        this.#draining = false;
+        continue;
+      }
+      if (head.started) return;
+      head.started = true;
+      return void this.#startCompress(head);
+    }
+    // Everything queued has reached the socket: if the queue was what held
+    // the pressure, say so now; a socket above its own mark says it later.
+    if (this.#needsDrain && (this.#socket.writableLength ?? 0) < this.#highWaterMark()) {
+      this.#needsDrain = false;
+      this.emit('drain');
+    }
+  }
+
+  #startCompress(job) {
+    const finish = (error, compressed, frame) => {
+      // The connection went away meanwhile: the queue was dropped with it.
+      if (this.#outbox[0] !== job) return;
+      if (error) {
+        // The mirror of ws.inflate: a deflate that failed on the way out is
+        // a line, not only an 'error' nobody may be listening to.
+        this.#fault('ws.deflate', error);
+        return void this.terminate();
+      }
+      this.#outbox.shift();
+      this.#outboxBytes -= job.payload.length;
+      this.#draining = true;
+      if (frame !== null) this.#write(frame);
+      else this.#emitFrames(job.opcode, compressed, RSV1);
+      this.#draining = false;
+      this.#pump();
+    };
+    const deflate = this.#deflate;
+    const zlibOptions = deflate.zlibOptions ?? null;
+    if (job.shared !== null) {
+      job.shared.deflatedAsync(deflate.windowBits, zlibOptions, (error, frame) => finish(error, null, frame));
+    } else if (this.#context !== null && deflate.serverTakeover === true) {
+      this.#context.compress(job.payload, (error, compressed) => finish(error, compressed, null));
+    } else {
+      permessageDeflate.compressAsync(
+        job.payload,
+        deflate.windowBits,
+        (error, compressed) => finish(error, compressed, null),
+        zlibOptions,
+      );
+    }
+  }
+
+  #dropInbound() {
+    const held = this.#inboxHeld;
+    this.#inbox.length = 0;
+    this.#inboxBytes = 0;
+    this.#inboxHeld = false;
+    // The socket the hold paused reads again (unless the application paused
+    // it): the peer's Close, answering ours, is on it — left unread, the
+    // close waited out closeTimeout and ended as 1006.
+    if (held && !this.#paused && !this.#socket.destroyed) this.#socket.resume();
+  }
+
+  // Both directions, and the takeover context with them: every way out but
+  // a graceful close whose accepted writes are still on their way.
+  #dropQueues() {
+    this.#outbox.length = 0;
+    this.#outboxBytes = 0;
+    this.#pendingClose = null;
+    this.#dropInbound();
+    if (this.#context !== null) this.#context.close();
+  }
+
+  // Frames an already-compressed (or plain) payload: one contiguous buffer
+  // up to SINGLE_WRITE_MAX, header + payload above it, fragments when a
+  // fragmentThreshold asks for them.
+  #emitFrames(opcode, payload, rsv) {
     const threshold = this.#fragmentThreshold;
     if (!threshold || payload.length <= threshold) {
+      if (payload.length <= SINGLE_WRITE_MAX) {
+        const mask = this.#isClient ? crypto.randomBytes(4) : null;
+        return this.#write(encodeFrame(opcode, rsv, payload, mask));
+      }
       return this.#writeFrame(new Frame(true, opcode, false, payload, null, rsv));
     }
     let ok = true;
@@ -372,17 +745,34 @@ class Connection extends EventEmitter {
 
   // Data send methods return false when the socket did not take the bytes
   // without exceeding its high-water mark — wait for 'drain' before more.
-  sendText(message) {
+  sendText(message, options = null) {
     if (this.#closing) return false;
     if (this.#exceedsBackpressure()) return false;
-    return this.#sendData(OPCODES.TEXT, Buffer.from(message, 'utf8'));
+    // A message that fits the scratch buffer even at 3 bytes per UTF-16
+    // unit is utf8-encoded ONCE into it; the frame then copies those bytes
+    // behind its header. Encoding straight into the frame would need
+    // Buffer.byteLength first — a second pass over the string that costs
+    // more than the memcpy it saves at typical packet sizes, and
+    // Buffer.from + a separate header costs an allocation and two writes
+    // (bench/send-path.js, "sendText 200 B").
+    if (message.length * 3 <= SCRATCH_SIZE) {
+      const length = SCRATCH.write(message, 0, 'utf8');
+      const threshold = this.#fragmentThreshold;
+      if (length <= SINGLE_WRITE_MAX && (!threshold || length <= threshold) && !this.#shouldCompress(length, options)) {
+        const mask = this.#isClient ? crypto.randomBytes(4) : null;
+        return this.#write(encodeFrameFrom(OPCODES.TEXT, 0, SCRATCH, length, mask));
+      }
+      // Compressed, fragmented or large: a copy the scratch can outlive.
+      return this.#sendData(OPCODES.TEXT, Buffer.from(SCRATCH.subarray(0, length)), options);
+    }
+    return this.#sendData(OPCODES.TEXT, Buffer.from(message, 'utf8'), options);
   }
 
-  sendBinary(buffer) {
+  sendBinary(buffer, options = null) {
     if (this.#closing) return false;
     if (this.#exceedsBackpressure()) return false;
     if (!Buffer.isBuffer(buffer)) buffer = Buffer.from(buffer);
-    return this.#sendData(OPCODES.BINARY, buffer);
+    return this.#sendData(OPCODES.BINARY, buffer, options);
   }
 
   sendPing(payload) {
@@ -401,6 +791,8 @@ class Connection extends EventEmitter {
   // compliance is not a suicide pact — past the cap the connection is
   // terminated like any other non-reading peer.
   sendPong(payload) {
+    // Behind a queued Close it would leave AFTER the Close frame.
+    if (this.#pendingClose !== null) return false;
     if (this.#exceedsBackpressure()) return false;
     if (payload) return this.#writeFrame(Frame.pong(payload));
     return this.#fastPong();
@@ -416,11 +808,19 @@ class Connection extends EventEmitter {
     return this.#write(buf);
   }
 
+  // A close WE initiated because the peer broke the protocol: the close
+  // frame goes out and the connection is failed (see #failed).
+  #fail(frameBuffer) {
+    this.#failed = true;
+    this.#close(frameBuffer);
+  }
+
   #close(frameBuffer) {
     if (this.#closing) return;
     this.#closing = true;
     this.#closeSent = true;
     this.#fragments = null;
+    this.#dropQueues();
 
     this.#socket.write(frameBuffer);
 
@@ -435,6 +835,16 @@ class Connection extends EventEmitter {
     }, this.#closeTimeout);
   }
 
+  // The queued Close of a graceful close(), at the moment it leaves: by the
+  // pump once the outbox ahead of it is written, or by the close timer when
+  // that took longer than `closeTimeout`.
+  #flushClose() {
+    const frame = this.#pendingClose;
+    this.#dropQueues();
+    this.#closeSent = true;
+    this.#socket.write(frame);
+  }
+
   // Answers a peer-initiated Close and hangs up.
   //
   // RFC 6455 5.5.1: the side ANSWERING a Close closes the TCP connection
@@ -446,10 +856,14 @@ class Connection extends EventEmitter {
   // end() rather than destroy(): the echo has to flush before the FIN, and
   // the short grace timer only covers a peer that never answers the FIN.
   #answerClose(code = 1000, reason = '') {
-    if (this.#closing) return;
+    // Our own Close may still be queued behind accepted writes (closing,
+    // not yet sent): the peer closing first ends that — it reads nothing
+    // more — so the queue is dropped and the peer's Close answered.
+    if (this.#closing && this.#pendingClose === null) return;
     this.#closing = true;
     this.#closeSent = true;
     this.#fragments = null;
+    this.#dropQueues();
     const frame = Frame.close(code, reason);
     if (this.#isClient) frame.maskPayload();
     this.#socket.write(frame.toBuffer());
@@ -460,10 +874,38 @@ class Connection extends EventEmitter {
     }, CLOSE_GRACE);
   }
 
+  // A graceful close delivers what send() already accepted. With a compress
+  // in flight (context takeover, or `async` past its threshold) accepted
+  // writes wait in the outbox, and closing used to drop them — so whether
+  // `send(x); close()` delivered x depended on a performance option. The
+  // Close frame now takes its place at the outbox's TAIL; nothing new is
+  // accepted meanwhile, and `closeTimeout` stays the upper bound on the
+  // whole close: when it expires with the queue still waiting, the queue is
+  // dropped — and said (`ws.close.dropped`) — and the Close goes out.
   sendClose(code = 1000, reason = '') {
     const frame = Frame.close(code, reason);
     if (this.#isClient) frame.maskPayload();
-    this.#close(frame.toBuffer());
+    const buffer = frame.toBuffer();
+    if (this.#closing || this.#outbox.length === 0) return void this.#close(buffer);
+    this.#closing = true;
+    this.#fragments = null;
+    this.#dropInbound();
+    this.#pendingClose = buffer;
+    this.#enqueue({ buffer, payload: null, shared: null, opcode: 0, started: false });
+    this.#closeTimer = setTimeout(() => {
+      if (this.#pendingClose !== null) {
+        // A line, not an 'error': nothing is wrong with the connection but
+        // the time its last writes took.
+        const frames = this.#outbox.length - 1;
+        const bytes = this.#outboxBytes - this.#pendingClose.length;
+        this.#log.warn({ event: 'ws.close.dropped', frames, bytes });
+        this.#flushClose();
+      }
+      this.#socket.end();
+      setTimeout(() => {
+        this.#socket.destroy();
+      }, 200);
+    }, this.#closeTimeout);
   }
 
   // WrpcSocket engine-contract alias for sendClose
@@ -476,6 +918,7 @@ class Connection extends EventEmitter {
       clearTimeout(this.#closeTimer);
       this.#closeTimer = null;
     }
+    this.#dropQueues();
     if (!this.#socket.destroyed) this.#socket.destroy();
   }
 }

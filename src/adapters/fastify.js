@@ -9,7 +9,8 @@ const { effectiveSchema } = require('../rpc/router.js');
 const { publicErrorMessage, publicErrorDetails } = require('../transport.js');
 const { createNodeEngine, isEngine } = require('../engine/index.js');
 const { createUwsEngine } = require('./uws.js');
-const { normalizeBody, eachHeader, nodeStream, createUpgradeGate } = require('./common.js');
+const { normalizeBody, eachHeader, nodeStream, createUpgradeGate, revisionProtocols } = require('./common.js');
+const { cacheHeadersFor, RESERVED_HEADERS, checkHeader } = require('../rpc/rest.js');
 const { setupMirror } = require('./mirror.js');
 
 // Fastify plugin. One plugin, two backends, picked by looking at what
@@ -137,12 +138,19 @@ const registerRestRoutes = (fastify, rpc, options) => {
     // Arity matters to fastify: an async hook with a third parameter is
     // read as callback-style and refused — so the payload-less phases get
     // two-parameter wrappers, and only the payload phases take three.
+    // A request the core refused a context to (426 under
+    // encryption.required, thrown from `init`) still runs fastify's
+    // onSend/onError/onResponse phases for the refusal itself: those see
+    // no context and leave the payload as it is, rather than throwing the
+    // same refusal a second time into the error reply.
+    const settled = (request, target) => contextOf(request, target).catch(() => null);
     const wrap = (list, payloadOf) => {
       const wrapped = [];
       for (const hook of list) {
         wrapped.push(async (request, reply) => {
-          const { context } = await contextOf(request, rpcTarget);
-          return void (await hook(context, payloadOf(request)));
+          const resolved = await settled(request, rpcTarget);
+          if (resolved === null) return;
+          return void (await hook(resolved.context, payloadOf(request)));
         });
       }
       return wrapped;
@@ -151,8 +159,9 @@ const registerRestRoutes = (fastify, rpc, options) => {
       const wrapped = [];
       for (const hook of list) {
         wrapped.push(async (request, reply, payload) => {
-          const { context } = await contextOf(request, rpcTarget);
-          return void (await hook(context, payload));
+          const resolved = await settled(request, rpcTarget);
+          if (resolved === null) return;
+          return void (await hook(resolved.context, payload));
         });
       }
       return wrapped;
@@ -164,15 +173,35 @@ const registerRestRoutes = (fastify, rpc, options) => {
       const wrapped = [];
       for (const hook of list) {
         wrapped.push(async (request, reply, payload) => {
-          const { context } = await contextOf(request, rpcTarget);
-          const replaced = await hook(context, payload);
+          const resolved = await settled(request, rpcTarget);
+          if (resolved === null) return payload;
+          const replaced = await hook(resolved.context, payload);
           return replaced === undefined ? payload : replaced;
         });
       }
       return wrapped;
     };
     const init = async (request, reply) => {
-      const { release } = await contextOf(request, rpcTarget);
+      const { client, release } = await contextOf(request, rpcTarget);
+      // The same `context.http` seam the core hosts give a REST handler,
+      // onto fastify's own reply.
+      client.http = {
+        method: request.method,
+        url: request.url,
+        headers: request.headers,
+        setHeader: (name, value) => {
+          if (RESERVED_HEADERS.has(String(name).toLowerCase())) {
+            throw new TypeError(`setHeader: '${name}' is owned by the transport`);
+          }
+          // The same rule the core's seam applies: fastify over uws writes
+          // what it is given.
+          const text = String(value);
+          checkHeader(name, text, 'setHeader');
+          reply.header(name, text);
+        },
+        status: (code) => void reply.code(code),
+      };
+      if (http.headers) eachHeader(http.headers, (name, value) => reply.header(name, value));
       // The response's close is the eviction signal, whether the reply was
       // sent, hijacked or the peer vanished.
       reply.raw?.on?.('close', release);
@@ -240,7 +269,17 @@ const registerRestRoutes = (fastify, rpc, options) => {
           // A login that called startSession queued its cookie on the
           // transport nothing will flush — copy it onto the real reply.
           if (transport.pendingCookies.length > 0) reply.header('set-cookie', transport.pendingCookies);
-          reply.code(status);
+          // The route's cache policy, decided with the session known. ETag
+          // and 304 are fastify's business (@fastify/etag) on this path.
+          const policy = http.cache
+            ? cacheHeadersFor(http.cache, {
+                access: proc.access,
+                session: Boolean(client.session),
+                cookies: transport.pendingCookies.length > 0,
+              })
+            : null;
+          if (policy !== null) reply.header('cache-control', policy.control);
+          if (reply.statusCode === 200) reply.code(status);
           // 204 promises "no content": the result is discarded by contract.
           if (status === 204) return reply.send();
           return result === undefined ? null : result;
@@ -332,11 +371,26 @@ const wrpcFastify = async (fastify, options = {}) => {
   // handler runs. `maxBodySize` only narrows that per route; left unset, the
   // app's limit stands, because a plugin silently RAISING the host's body
   // limit would be a security regression the app never asked for.
-  // The SSE endpoint is a static segment, so find-my-way prefers it over
+  // The key-discovery path of session encryption is a single static
+  // segment the parametric route would never match (the core answers 404
+  // for it when encryption is off). The SSE endpoint is a static segment, so find-my-way prefers it over
   // the parametric '/:unit/:method' it would otherwise fall into — where the
   // core never sees it as an events request.
+  // A sealed request (@alexify/wrpc/encryption) is opaque bytes under its
+  // own content type — which fastify would answer 415 before this handler
+  // ran. Registered once, and only if the app has not claimed it.
+  // The same holds for a call whose arguments hold bytes: it arrives as an
+  // attachments frame under `application/octet-stream`, which fastify
+  // parses no more than the sealed type — two 2.x ends were answered 415.
+  for (const type of ['application/wrpc-sealed', 'application/octet-stream']) {
+    if (typeof fastify.hasContentTypeParser === 'function' && !fastify.hasContentTypeParser(type)) {
+      fastify.addContentTypeParser(type, { parseAs: 'buffer' }, (_request, body, done) => done(null, body));
+    }
+  }
   const routes =
-    base === '' ? ['/', rpc.eventsPath, '/:unit/:method'] : [base, rpc.eventsPath, `${base}/:unit/:method`];
+    base === ''
+      ? ['/', rpc.eventsPath, '/encryption-key', '/:unit/:method']
+      : [base, rpc.eventsPath, `${base}/encryption-key`, `${base}/:unit/:method`];
   for (const url of routes) {
     fastify.route({
       method: ['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE', 'OPTIONS'],
@@ -364,8 +418,12 @@ const wrpcFastify = async (fastify, options = {}) => {
   // ---- WebSocket: engine attach ------------------------------------------
 
   const source = engine.attach({
+    // The engine reports through the server's writer, as the Server shell
+    // arranges; `ws.logger` overrides.
+    logger: rpc.log,
     ...(engine.standalone ? {} : { server: fastify.server }),
     ...ws,
+    ...revisionProtocols(rpc, ws),
     verifyClient: createUpgradeGate({ rpc, cors, ws }),
   });
   source.on('connection', (socket, req) => {

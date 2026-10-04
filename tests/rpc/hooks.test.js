@@ -6,14 +6,7 @@ const assert = require('node:assert');
 
 const { WrpcClient, defineRouter, procedure } = require('../../index.js');
 const { bootServer } = require('../helpers/server.js');
-
-const waitFor = async (predicate, message = 'condition never held') => {
-  for (let i = 0; i < 200; i++) {
-    if (predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
-};
+const { waitFor } = require('../helpers/wait.js');
 
 const codedError = (message, code) => {
   const error = new Error(message);
@@ -570,16 +563,25 @@ test('generateId: the server stamps REST packets and contexts with it', async (t
   assert.match(packet.result.uuid, /^srv-\d+$/, 'the context uuid does too');
 });
 
-test('generateId: a stream id past 255 characters is refused at the source', async (t) => {
+test('generateId: an oversize id is caught at construction, and again per stream', async (t) => {
   const router = defineRouter({
     unit: { noop: procedure({ access: 'public', handler: async () => null }) },
   });
   const { url } = await boot(t, router);
-  const client = await connect(t, url, { generateId: () => 'x'.repeat(256) });
-  assert.throws(() => client.createStream('name', 10), /at most 255 characters/);
+  // A bad generator is a TypeError at construction since 2.0 — 1.x reported
+  // it and fell back, because the option had shipped ignoring a bad value.
+  await assert.rejects(
+    connect(t, url, { generateId: () => 'x'.repeat(256) }),
+    (error) => error instanceof TypeError && /at most 255 characters/.test(error.message),
+  );
+  // The per-stream check is not redundant: it catches a generator that only
+  // SOMETIMES answers a long id, which the one-shot probe cannot see.
+  let call = 0;
+  const sometimes = await connect(t, url, { generateId: () => (++call > 1 ? 'x'.repeat(256) : 'ok') });
+  assert.throws(() => sometimes.createStream('name', 10), /at most 255 characters/);
 });
 
-test('subprotocol: the server echoes wrpc.v1 and the client records it', async (t) => {
+test('subprotocol: the server selects wrpc.v2, the newest revision offered, and the client records it', async (t) => {
   const router = defineRouter({
     unit: { ping: procedure({ access: 'public', handler: async () => 'pong' }) },
   });
@@ -590,7 +592,8 @@ test('subprotocol: the server echoes wrpc.v1 and the client records it', async (
   // The engine saw the offer and selected the revision.
   const connections = [...server.wsServer.connections];
   assert.strictEqual(connections.length, 1);
-  assert.strictEqual(connections[0].protocol, 'wrpc.v1');
+  assert.strictEqual(connections[0].protocol, 'wrpc.v2');
+  assert.strictEqual(client.revision, 2);
 });
 
 test('subprotocol: a peer that offers nothing still connects (1.0 stays valid)', async (t) => {

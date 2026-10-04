@@ -1,6 +1,7 @@
 'use strict';
 
 const { WrpcClient, ClientTransport, metaHeaders } = require('../client.js');
+const { refusedStatus } = require('../client/core.js');
 const { CHANNEL_HEADER } = require('./constants.js');
 
 // The client half of the SSE transport. Browser-safe: `fetch`, streams and
@@ -91,10 +92,23 @@ class SseParser {
 const joinUrl = (base, path) => (base.endsWith('/') ? base.slice(0, -1) : base) + path;
 
 class ClientSseTransport extends ClientTransport {
+  // Carries `options.encryption`, per request like http — see open().
+  // Sealed per request, like http: needs the option's `fetch`.
+  static encrypts = 'request';
+
   // The stream can die without a close frame just like a socket can.
   heartbeat = true;
 
+  // Revision 1 against any server: an event stream carries no frame, so a
+  // packet holding bytes leaves as the JSON 1.0 made of it.
+  revision = 1;
+
   #controller = null;
+  // The channel reference, exactly as the `ready` frame gave it: presented
+  // again on every POST and re-attach, forgotten with the channel. Opaque
+  // on purpose — a 2.x server puts the channel's secret after its id there
+  // (`<id>.<secret>`), a 1.0 server the id alone, and this side has no
+  // reason to tell them apart.
   #channel = null;
   #lastEventId = null;
   #parser = null;
@@ -104,6 +118,11 @@ class ClientSseTransport extends ClientTransport {
   // headers on both the stream GET and every packet POST.
   #headers = null;
   #meta = null;
+  // Injectable fetch, resolved per open like headers/meta. Always CALLED
+  // unbound (never as this.#fetch(...) via a stored `this`) — native fetch
+  // throws "Illegal invocation" in browsers when invoked with a receiver
+  // other than the global object, which a plain method call would hand it.
+  #fetch = null;
 
   get eventsUrl() {
     return joinUrl(this.url, '/events');
@@ -114,6 +133,17 @@ class ClientSseTransport extends ClientTransport {
     // A header BLOCK, not one encoded value: the client's metaFormat picks
     // the spelling, both legs below just spread the result.
     this.#meta = options.meta ? metaHeaders(options.meta, options.metaPrefixed) : null;
+    this.#fetch = options.fetch ?? globalThis.fetch;
+    // Session encryption has no session here: every request — the stream
+    // GET and each packet POST — is sealed on its own (HPKE), and the
+    // stream comes back sealed frame by frame, all inside a wrapped fetch.
+    const { encryption = null } = options;
+    if (encryption !== null) {
+      if (typeof encryption.fetch !== 'function') {
+        throw new TypeError('options.encryption has no serverKey to seal a request to — the sse transport needs one');
+      }
+      this.#fetch = encryption.fetch(this.#fetch, this.url);
+    }
     if (this.active) return;
     if (this.#reading) return this.#reading;
     const opening = this.#open(true);
@@ -135,7 +165,8 @@ class ClientSseTransport extends ClientTransport {
     // replays what this channel did not acknowledge.
     if (this.#channel !== null) headers[CHANNEL_HEADER] = this.#channel;
     if (this.#lastEventId !== null) headers['last-event-id'] = this.#lastEventId;
-    const response = await fetch(this.eventsUrl, { headers, signal: controller.signal, cache: 'no-store' });
+    const doFetch = this.#fetch;
+    const response = await doFetch(this.eventsUrl, { headers, signal: controller.signal, cache: 'no-store' });
     // 409: the channel this transport remembers no longer exists. Its
     // replay state is worthless now — drop it and start a fresh channel;
     // the WrpcClient above re-loads and re-subscribes on 'open'/'reconnect'.
@@ -199,7 +230,8 @@ class ClientSseTransport extends ClientTransport {
       // client above re-loads and re-subscribes, and each subscription
       // resumes (or honestly refuses to) from its own lastEventId. Said out
       // loud: this is event loss, not routine reconnection.
-      this.log?.warn({ event: 'sse.gap', channel: this.#channel });
+      // Without the channel: the reference holds its credential.
+      this.log?.warn({ event: 'sse.gap' });
       this.#channel = null;
       this.#lastEventId = null;
       this.close();
@@ -207,7 +239,8 @@ class ClientSseTransport extends ClientTransport {
     }
     if (event.event === 'ready') {
       const ready = JSON.parse(event.data);
-      // The server mints the id; this frame is the only place it is learned.
+      // The server mints the reference; this frame is the only place it
+      // is learned.
       if (ready.channel) this.#channel = ready.channel;
       if (this.#onReady) {
         this.#onReady();
@@ -238,14 +271,18 @@ class ClientSseTransport extends ClientTransport {
 
   write(data) {
     if (!this.active || this.#channel === null) throw new Error('Not connected');
+    // Only a binary packet codec gets here with bytes: revision 1 sends a
+    // packet's bytes as JSON.
+    if (typeof data !== 'string') throw new TypeError('SSE carries text only: a binary codec needs a WebSocket');
     const headers = {
       ...this.#headers,
       ...this.#meta,
       'Content-Type': this.codec?.contentType ?? 'application/json',
       [CHANNEL_HEADER]: this.#channel,
     };
+    const doFetch = this.#fetch;
     const post = async () => {
-      const response = await fetch(this.url, { method: 'POST', headers, body: data });
+      const response = await doFetch(this.url, { method: 'POST', headers, body: data });
       // 202 is the expected answer: everything a call produces comes back
       // on the event stream, not in this response.
       if (response.status === 202) return void (await response.body?.cancel?.());
@@ -264,7 +301,11 @@ class ClientSseTransport extends ClientTransport {
     };
     post().catch((error) => {
       this.emit('error', error);
-      this.failPackets(data, 503);
+      // A sealed POST refused in plaintext: the sealing layer's closed set
+      // of statuses (400, 409, 426) reaches the calls, a 409 from it never
+      // closes the channel (that branch above is the plain transport's
+      // "channel gone"), anything else is a 503.
+      this.failPackets(data, refusedStatus(error));
     });
     return true;
   }

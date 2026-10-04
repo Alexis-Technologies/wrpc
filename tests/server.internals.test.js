@@ -11,6 +11,7 @@ const { SessionManager } = require('../src/rpc/sessions.js');
 const { defineRouter, procedure } = require('../src/rpc/router.js');
 const { handleRpc, handleMessage, handleBinary } = require('../src/rpc/dispatcher.js');
 const { chunkEncode } = require('../src/chunks.js');
+const { WrpcWritable } = require('../src/streams.js');
 
 const noop = () => {};
 const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
@@ -130,12 +131,16 @@ test('Client over WS transport', async (t) => {
     assert.throws(() => client.createStream('name', 0), /Stream size is not provided/);
   });
 
-  await t.test('createStream registers a WrpcWritable and sends the init packet', () => {
+  await t.test('createStream sends the init packet and keeps the writable out of streams', () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     const stream = client.createStream('upload', 10);
-    assert.strictEqual(client.getStream(stream.id), stream);
+    assert.ok(stream instanceof WrpcWritable);
     assert.deepStrictEqual(transport.sent, [{ type: 'stream', id: stream.id, name: 'upload', size: 10 }]);
+    // `streams` is what the peer announced: getStream() is never handed
+    // this end's own writable, and `maxStreams` never counts it.
+    assert.strictEqual(client.streams.size, 0);
+    assert.throws(() => client.getStream(stream.id), /is not initialized/);
   });
 
   await t.test('getStream throws for an unknown id', () => {

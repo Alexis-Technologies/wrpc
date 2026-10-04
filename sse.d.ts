@@ -1,18 +1,23 @@
-import type { Client, HttpCall, WrpcLogger } from './index.js';
+import type { Client, HttpCall, HttpEncoding, WrpcLogger } from './index.js';
 
 /**
  * `@alexify/wrpc/sse` — Server-Sent Events as a wrpc transport.
  *
  * SSE is one-way, so a channel is two halves that find each other by id:
  *
- *   GET  {basePath}/events                        opens a NEW channel
- *   GET  {basePath}/events  x-wrpc-channel: <id>  re-attaches to it
- *   POST {basePath}         x-wrpc-channel: <id>  client -> server
+ *   GET  {basePath}/events                                 opens a NEW channel
+ *   GET  {basePath}/events  x-wrpc-channel: <id>.<secret>  re-attaches to it
+ *   POST {basePath}         x-wrpc-channel: <id>.<secret>  client -> server
  *
- * The id is SERVER-minted and handed out once, in the `ready` frame; the
- * channel is bound to the cookie identity of the GET that created it, and
- * every re-attach and POST must present the same one (403 otherwise; 409
- * when the id is unknown). Both halves belong to ONE server-side `Client`,
+ * The id is SERVER-minted (by the application's `generateId` — a uuid, a
+ * cuid, a counter: its format is the application's business) and the secret
+ * server-drawn; both are handed out as ONE string in the `ready` frame's
+ * `channel` (`<id>.<secret>` — opaque to the client, a 1.0 one included),
+ * and every re-attach and POST presents it back in one header, split by
+ * the server at the last dot. The secret is the credential: a request without the
+ * channel's is answered 409, exactly like an unknown id. On top, a channel
+ * is bound to the cookie identity of the GET that created it, and a request
+ * presenting the secret without that identity is 403. Both halves belong to ONE server-side `Client`,
  * which is what lets a subscription opened by a POST deliver its values
  * down the stream. A POST answers `202` with no body — every reply,
  * callbacks included, travels on the stream.
@@ -58,6 +63,18 @@ export interface SseOptions {
   replay?: number;
   /** Comment-frame interval in ms; 0 disables. Default 15000. */
   heartbeat?: number;
+  /**
+   * Mints the channel id. The id is server-minted and never taken from the
+   * request, so holding one proves the server said it — replace the default
+   * uuid only with something at least as unguessable.
+   *
+   * An `RpcServer` passes its own `generateId` down, so setting it there
+   * covers channel ids too; this is the override for a standalone
+   * `SseChannels`. Strict: a value that is not a function, or a function
+   * that does not answer a non-empty string of at most 255 characters, is a
+   * TypeError at construction.
+   */
+  generateId?: () => string;
   /** The `retry:` value handed to the peer, in ms. Default 2000. */
   retry?: number;
   /** Byte budget for the replay buffer; evicts oldest first. Default 1 MiB. */
@@ -75,6 +92,28 @@ export interface SseOptions {
    * (trust it only when the proxy is yours).
    */
   clientAddress?: (call: { headers?: Record<string, unknown>; remoteAddress?: string }) => string;
+  /**
+   * Encode the event stream for a GET whose `Accept-Encoding` admits it —
+   * one encoder per response (for gzip, one member), flushed after every
+   * event, so a repeated event shape compresses against the stream's own
+   * history and nothing waits for a next event. Off by default; decided
+   * per response, so a re-attach negotiates again. `filter(call)` decides
+   * per GET; `encodings` is the server's list of codings (default
+   * `['gzip']`, and gzip is the recommendation here: flushed per event,
+   * Brotli and zstd save nothing on small events and hold 570 / 930 KB per
+   * open response against gzip's 320 — `bench/algorithms.js`). The wrpc
+   * client needs nothing: `fetch` inflates.
+   */
+  compression?: boolean | SseCompressionOptions;
+}
+
+export interface SseCompressionOptions {
+  filter?: (call: { headers?: Record<string, unknown>; remoteAddress?: string; method?: string; url?: string }) => boolean;
+  /**
+   * The codings, in the server's order of preference; every one must be
+   * able to stream (a custom coding needs `createStream`). Default `['gzip']`.
+   */
+  encodings?: ReadonlyArray<HttpEncoding>;
 }
 
 /** The server-side transport behind one event stream. Text-only. */
@@ -89,9 +128,16 @@ export declare class ServerSseTransport {
 export declare class SseChannel {
   readonly id: string;
   /**
+   * The channel's credential: 18 random bytes as base64url, drawn by the
+   * server at creation and handed out in the `ready` frame. Every re-attach
+   * and POST presents it after the id (`<id>.<secret>`); the id alone is
+   * never enough, whatever generator made it.
+   */
+  readonly secret: string;
+  /**
    * The identity the channel was created under: the session token read from
    * the opening GET's cookie, or '' for an anonymous peer. Every re-attach
-   * and POST must present it again — the id alone is never enough.
+   * and POST must present it again, on top of the secret.
    */
   readonly key: string;
   readonly client: Client;
@@ -124,20 +170,28 @@ export declare class SseChannels {
   );
   readonly size: number;
   get(channelId: string): SseChannel | null;
+  /** True when `secret` is the channel's (constant-time). Checked before `authorized`. */
+  holds(channel: SseChannel, secret: string): boolean;
   /** True when `headers` present the identity the channel was created under. */
   authorized(channel: SseChannel, requestHeaders?: Record<string, string | undefined>): boolean;
   /**
    * Opens or re-attaches the server -> client half. The call must provide
    * `stream`; a host that cannot keep a response open gets a 501. Ids are
-   * server-minted: an unknown `channelId` answers 409, a known one with the
-   * wrong cookie identity 403, and creation past the caps 503/429.
+   * server-minted: an unknown `channelId`, or a known one without its
+   * `secret`, answers 409; a known one with the wrong cookie identity 403;
+   * creation past the caps 503/429.
    *
    * `headers` are RESPONSE headers (CORS and the rest); the request headers a
    * new channel's client is built from come off `call` itself.
    */
   open(
     call: HttpCall,
-    options?: { channelId?: string | null; lastEventId?: string | null; headers?: Record<string, string> },
+    options?: {
+      channelId?: string | null;
+      secret?: string;
+      lastEventId?: string | null;
+      headers?: Record<string, string>;
+    },
   ): SseChannel | undefined;
   close(): void;
 }

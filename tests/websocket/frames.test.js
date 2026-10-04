@@ -13,6 +13,10 @@ async function startServer(onConn) {
     server: httpServer,
     closeTimeout: 0,
     pingInterval: 60_000,
+    // This suite drives protocol violations on purpose; the framing faults
+    // they raise are logged now, and a console default would narrate every
+    // one of them into the test output.
+    logger: false,
   });
   if (onConn) tinyWsServer.on('connection', onConn);
   await new Promise((resolve) => httpServer.listen(0, resolve));

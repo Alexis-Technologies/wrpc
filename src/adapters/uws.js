@@ -1,6 +1,8 @@
 'use strict';
 
 const { EventEmitter } = require('node:events');
+const { createLoggerWriter } = require('../logging.js');
+const { WRPC_V1, WRPC_V2, CARRIER_PROTOCOL } = require('../wire.js');
 
 const { MAX_BODY_SIZE, statusLine, eachHeader } = require('./common.js');
 
@@ -45,25 +47,25 @@ const createUpgradeRequest = (path, query, headers, remoteAddress) => ({
   socket: { remoteAddress },
 });
 
-// The protocol revision marker; must match the built-in engine's.
-const WRPC_PROTOCOL = 'wrpc.v1';
-
 // Mirrors WebsocketServer's negotiation: `false` from handleProtocols
 // rejects the handshake, anything else selects (or declines) a subprotocol,
-// and with no app configuration the wrpc revision is echoed when offered.
+// and with no app configuration the newest wrpc revision offered is echoed.
+// Carrier tokens (wire.js) are data riding the offer: removed before the
+// application sees the list, and never echoed back.
 const negotiateProtocol = (header, { protocols, handleProtocols }, request) => {
   if (!header) return '';
   const offered = header
     .split(',')
     .map((token) => token.trim())
-    .filter(Boolean);
+    .filter((token) => token.length > 0 && !CARRIER_PROTOCOL.test(token));
   if (handleProtocols) {
     const selected = handleProtocols(offered, request);
     if (selected === false) return false;
-    return selected || '';
+    return typeof selected === 'string' && !CARRIER_PROTOCOL.test(selected) ? selected : '';
   }
   if (protocols) return offered.find((name) => protocols.includes(name)) ?? '';
-  if (offered.includes(WRPC_PROTOCOL)) return WRPC_PROTOCOL;
+  if (offered.includes(WRPC_V2)) return WRPC_V2;
+  if (offered.includes(WRPC_V1)) return WRPC_V1;
   return '';
 };
 
@@ -78,11 +80,14 @@ class UwsSocket extends EventEmitter {
   #ws;
   #closed = false;
 
-  constructor(ws, { remoteAddress = '', protocol = '' } = {}) {
+  constructor(ws, { remoteAddress = '', protocol = '', log = null } = {}) {
     super();
     this.#ws = ws;
     this.remoteAddress = remoteAddress;
     this.protocol = protocol;
+    // A writer, already normalized by the engine — this socket reports the
+    // one failure nothing above it can see (uws dropping a frame).
+    this.log = log;
   }
 
   get closed() {
@@ -98,12 +103,17 @@ class UwsSocket extends EventEmitter {
     }
   }
 
-  send(data) {
+  // The third uws argument asks for permessage-deflate on this message;
+  // it defaults to false in uws, so without it a compressor configured on
+  // the engine never compressed a single outbound frame. `compress: false`
+  // is the per-message opt-out the built-in engine honours too.
+  send(data, options = null) {
     if (this.#closed) return false;
     const isBinary = typeof data !== 'string';
+    const compress = options === null || options.compress !== false;
     let status;
     try {
-      status = this.#ws.send(data, isBinary);
+      status = this.#ws.send(data, isBinary, compress);
     } catch {
       // Raced a close between the guard and the call.
       return false;
@@ -112,7 +122,12 @@ class UwsSocket extends EventEmitter {
       // uws silently discarded the message (maxBackpressure hit with
       // closeOnBackpressureLimit off). A hole in the frame stream corrupts
       // the RPC protocol, so fail loudly instead of continuing.
-      this.emit('error', new Error('uws dropped an outgoing message: backpressure limit exceeded'));
+      const error = new Error('uws dropped an outgoing message: backpressure limit exceeded');
+      // Logged as well as emitted: 'error' on a socket frequently has no
+      // listener, and this is a connection dying from a limit the operator
+      // configured — exactly the thing they need to see to raise it.
+      this.log?.error({ err: error, event: 'uws.dropped', bytes: this.bufferedAmount });
+      this.emit('error', error);
       this.terminate();
       return false;
     }
@@ -161,7 +176,14 @@ const createUwsEngine = (engineOptions = {}) => {
     compression = null,
     sendPingsAutomatically = true,
     maxBodySize = MAX_BODY_SIZE,
+    // Silent by default and not `globalThis.console`: an engine is usually
+    // built by the `Server` shell, which hands its own writer to attach()
+    // (below), and a standalone one printing uninvited would be a surprise.
+    // Left undefined here so attach() can tell "not configured" from
+    // `logger: false`.
+    logger,
   } = engineOptions;
+  let log = createLoggerWriter(logger ?? false).child({ component: 'uws' });
 
   if (!providedApp && (typeof uws !== 'object' || uws === null || typeof uws.App !== 'function')) {
     throw new TypeError(
@@ -236,7 +258,7 @@ const createUwsEngine = (engineOptions = {}) => {
 
       open(ws) {
         const data = ws.getUserData();
-        const socket = new UwsSocket(ws, data);
+        const socket = new UwsSocket(ws, { ...data, log });
         data.socket = socket;
         sockets.add(socket);
         source.emit('connection', socket, data.request);
@@ -352,6 +374,9 @@ const createUwsEngine = (engineOptions = {}) => {
       // No receive-side flow control: uws exposes no socket-level pause, so
       // a fast uploader is not throttled by a slow stream consumer.
       pause: false,
+      // No prepared-frame path: uws frames (and compresses) inside send().
+      // Its topic publish() is the equivalent seam — a different design.
+      prepared: false,
     },
     app,
 
@@ -361,6 +386,13 @@ const createUwsEngine = (engineOptions = {}) => {
       if (attached) throw new Error('createUwsEngine: this engine is already attached');
       attached = true;
       const { path = '/*', onHttpCall } = attachOptions;
+      // The writer the Server shell (or an adapter) hands down, as the
+      // node engine takes it: an engine built without a logger reports
+      // through it — a dropped frame used to go nowhere, whatever the
+      // shell was told. `logger: false` on the engine stays silent.
+      if (logger === undefined && attachOptions.logger !== undefined) {
+        log = createLoggerWriter(attachOptions.logger).child({ component: 'uws' });
+      }
       app.ws(path, behavior(attachOptions));
       // Without onHttpCall the host framework (fastify) owns HTTP routing
       // and we only take over the upgrade path.

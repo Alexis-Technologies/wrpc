@@ -9,11 +9,3559 @@ Semver here versions the **JavaScript API**. The wire protocol carries its own,
 narrower promise — see
 [Stability](./docs/reference/protocol.md#stability).
 
-## [1.0.0] - 2026-08-23
+## [Unreleased]
 
-This package has not been published to npm yet — there is no `[1.0.0]`
-release section until the first publish; everything below lands there
-verbatim on release day.
+### Changed (breaking)
+
+## [2.0.0] - 2026-10-04
+
+### Added
+
+**Protocol revision 2 (`wrpc.v2`), negotiated — a 1.0 peer is spoken to as 1.0 was**
+
+- The framed messages of 2.0 — a packet whose bytes travel as bytes — are
+  **revision 2** of the protocol, and a 2.x peer speaks both revisions. A
+  frame is sent only where the peer said it reads one; everywhere else a
+  packet holding bytes travels as the JSON 1.0 made of it. A 1.0 client and
+  a 1.0 server therefore work against 2.x with nothing to set on either end
+  — the SSE breakage that had no flag at all is gone too — except where the
+  [migration notes](#migrating-from-10) say otherwise: several instances of
+  both versions behind one HTTP address (a frame a 1.0 instance refuses
+  costs a resend), a browser page's `headers`/`meta` against a 1.0 server
+  (a `wrpc.v1` answer is ambiguous; `carrier: 'query'` is the sure way),
+  and a backplane or cluster, which has no handshake. Each carrier says the
+  revision where it can:
+  - **WebSocket** — the subprotocol. A client offers `wrpc.v2, wrpc.v1`
+    (newest first); every engine selects the newest revision offered. A 1.0
+    server picks `wrpc.v1` from that offer, a 1.0 client offers it alone.
+  - **HTTP** — a response's `wrpc-version` is the newest revision the server
+    speaks (`2`; exposed to other origins), and a client sends a framed body
+    only after an answer said so. A result holding bytes is a frame only
+    for a request whose `Accept` names `application/octet-stream` — in
+    packet mode, in a batch and in the conventional REST mode — so a 1.0
+    client, `curl` and a page's own `fetch` read JSON. (`Accept` because it
+    is CORS-safelisted: a `wrpc-version` request header needs a preflight a
+    1.0 server, or an application's own `cors.headers`, refuses.)
+  - **Worker port** — `v` on the port's first `ping`/`pong`. The worker
+    proxy keeps a revision per page and translates: a frame from upstream
+    reaches a stale 1.0 page as JSON, a page's frame leaves as JSON when the
+    server upstream is 1.0. `attachPort(port, meta)` takes `meta.v`.
+  - **SSE** carries no framed message: a channel speaks revision 1 to every
+    client, 1.0 or 2.x — the stream's GET does not say which is asking —
+    so a packet's bytes travel on it as the JSON 1.0 made of them, both
+    ways, and `client.revision` is `1` on both ends. (It answered a result
+    holding bytes with `501` and dropped such an event, which a 1.0 SSE
+    client met with no flag to set.) WebRTC, WebTransport and the broker
+    binding are carriers 1.0 never had: nothing to negotiate.
+- `revision` (1 | 2), read-only, on `WrpcClient`, on the server-side
+  `Client` and on `RpcServer` (the newest it speaks). No new option:
+  `attachments: false` — or a packet codec — now means *this end speaks
+  revision 1*. It offers or selects `wrpc.v1` and answers `wrpc-version: 1`,
+  so two 2.x ends whose flags disagree settle on revision 1 instead of one
+  answering the other's frame with an id-less `500`. The built-in shells
+  (`Server`, the fastify plugin, the express middleware) narrow their engine
+  themselves; an engine composed by hand takes `protocols: ['wrpc.v1']`, and
+  `revision.mismatch` says when it did not.
+- A room of both revisions costs one extra `JSON.stringify` per emit, not
+  one per member: the fan-out shares one frame among the 2.x clients and one
+  JSON text among the 1.0 ones.
+- A browser client's declared `headers`/`meta` reach a 1.0 server again: a
+  handshake that offered `wrpc.v2`, carried them as `wrpc.h.`/`wrpc.m.`
+  tokens and was answered `wrpc.v1` is dialled **once more** with the
+  connect-URL query 1.0 reads, which that transport keeps for its later
+  reconnects (`handshake.requery`). `carrier: 'query'` up front saves the
+  second handshake; `carrier: 'protocol'` forbids the query.
+- The whole matrix runs against the **published 1.0**: `tests/interop/`
+  takes `@alexify/wrpc@1.0.0` from npm under the test-only alias `wrpc-v1`
+  and drives it as a client and as a server over ws, http, sse, a worker
+  port and the worker proxy.
+- [Protocol reference: Versioning](./docs/reference/protocol.md#versioning)
+  has the rules, [Changes since 1.0](./docs/reference/protocol.md#changes-since-1-0)
+  the table.
+- The main browser entry's budget is 28 KB (was 27) and the sse entry's
+  29 KB (was 28), for the client half of the negotiation: the offer and
+  the redial, the `Accept` and `wrpc-version` of the HTTP transport, the
+  worker port's `v` — measured 27,692 B and 28,735 B against 27,648 and
+  28,672.
+
+**Docs: the encryption guide**
+
+- [Encryption](./docs/guide/encryption.md): whether you need it at all (a
+  table of where TLS ends before the data does — and the row that says you
+  do not), what it is built from and what is left to injection, keys and
+  rotation, each layer with its cost, what it does NOT protect. Linked from
+  the security, production, codec, compression, scaling and sessions pages;
+  the security page no longer says "it does not encrypt" without saying
+  where the opt-in is, and the codec page no longer offers a codec as the
+  way to encrypt.
+
+**End-to-end helpers: `createIdentity`, `createSealer`, `createOpener`**
+
+- For a payload the SERVER should not read — a chat message it only relays.
+  `createSealer({ recipientPublicKey }).seal(data)` answers bytes (`enc ‖
+  ciphertext`, HPKE with a fresh context per message) that wrpc carries as
+  they are: in a call, an event, a room broadcast and — since the previous
+  change — across the backplane, to a room's members and to one client by
+  `sendTo`. `createOpener({ keyPair }).open(sealed)`.
+- With `senderKey` / `senderPublicKey` it is HPKE **auth mode**: the
+  recipient learns which identity sealed the message, and one from anybody
+  else does not open. `info` says what the messages are for (a room, a
+  conversation), and one sealed for one purpose does not open for another.
+- HPKE gained the auth and auth_psk modes for it (RFC 9180 vectors for all
+  four modes now).
+- Said plainly, in the types and the guide: this is not a messaging
+  protocol — no forward secrecy for the recipient, no group key, no replay
+  memory; an application that needs those runs Double Ratchet or MLS over
+  the same bytes. And in a browser it protects against a server that READS,
+  not one that serves the page a different script.
+
+**Room events with bytes cross the backplane**
+
+- An event whose data holds a `Uint8Array` used to reach only the members on
+  the emitting instance: the backplane's envelopes are JSON, so the
+  cross-instance half was refused and logged `backplane.bytes`. The envelope
+  now rides as the binary attachments frame itself — base64 under a
+  `wrpc-bin:` marker, or inside the sealed envelope (flag bit 1) under
+  `rooms.encryption` — and members on every instance receive bytes. This is
+  what a relayed end-to-end payload needs: opaque bytes, room-wide,
+  cluster-wide.
+- The core always injects the envelope now (it used to be `null` without
+  `compression`); text envelopes pass through it untouched. A
+  `RoomsBackplane` wired by hand without one still names the loss.
+
+**Sealed broker messages: `encryption` on every broker binding**
+
+- A broker KEEPS what it carries — a Kafka topic, a stream, a quorum queue
+  hold every message for their retention. Until now that was every RPC
+  packet, every published event, and the bearer token in a client's headers
+  (`authorization` rode as a plaintext broker header on every `hello` and
+  every stateless `request`). `encryption: { keys }` — the keyring option of
+  `rooms.encryption`, rollout flags included — on `attachBrokerRpc`, the
+  `broker` client transport, `createPublisher`, `brokerFeed` and
+  `attachConsumers` seals them.
+- **The headers move inside with the body.** What stays readable is what the
+  binding routes by — `wrpc-kind`, `wrpc-seq`, the key id — and that is bound
+  into the seal with the address and the correlation id, so it cannot be
+  rewritten and a frame does not open in another conversation. RPC frames
+  get a replay window; published events are bound to their topic and have
+  none (a log is read again, a delivery redelivered).
+- Compression composes: compress, then seal, the codec id inside.
+- A message that does not open is dropped (`broker.rpc.refused`), skipped by
+  a feed (`feed.refused`) or dead-lettered with 400 by a consumer
+  (`broker.refused`) — logged with its reason, never answered.
+- A dead letter is forwarded as it arrived — sealed, key id and all — so a
+  dead-letter queue is as unreadable as the work queue. `onDeadLetter`
+  receives `opened` (the body and headers as the binding opened them);
+  a binding on the dead-letter queue names the queue its messages were
+  sealed for with `sealedFor`, since the seal binds a message to its queue;
+  and `openSealedMessage(encryption, { topic, headers, body })` opens one
+  by hand for a script.
+- A sealed binding is what `encryption.required` on the server accepts from
+  a broker; an unsealed `hello` is answered `bye: encryption required`.
+- Published bodies ride as base64 text: a log or a queue is only promised to
+  keep a string as it was (a Redis stream field is one). The partition `key`
+  stays the broker's to read.
+
+**Sealed Server-Sent Events**
+
+- The `sse` client transport carries `options.encryption` through the same
+  per-request binding as `http`: the stream request and every channel POST
+  are sealed requests, so the channel id and `Last-Event-ID` travel inside —
+  the channel id is no longer something an observer can lift.
+- The stream comes back as `text/event-stream; wrpc-sealed=1`: one opaque
+  `data:` event per chunk of the real stream, the `ready` frame that hands
+  out the channel id and the heartbeat included. Each stream has its own key,
+  exported from the request that opened it and salted with a nonce the
+  server draws per stream (the `n` parameter of the `Content-Type`), and
+  counts its frames from zero — so a re-attach with `Last-Event-ID` replays
+  under a NEW key, nothing of the first stream repeats on the wire, and the
+  same open request replayed onto another instance gets a different key
+  too. A dropped, reordered or altered frame errors the stream; the client
+  re-attaches as it does after any drop.
+- It is sealed at the writer, not in the channel: the replay ring, retention
+  and `resume()` are untouched. The type stays `text/event-stream` for the
+  intermediaries; no HTTP content coding is applied to a sealed stream or a
+  sealed answer (the outer `Accept-Encoding` no longer reaches the inner
+  request).
+- With this, `encryption.required` holds on every client↔server transport:
+  ws, WebTransport, http and sse.
+
+**Sealed HTTP requests: HPKE per request**
+
+- The `http` client transport carries `options.encryption` too. A request is
+  not a connection, so each one is sealed on its own with **HPKE (RFC 9180)**
+  — `DHKEM(X25519, HKDF-SHA256)`, AES-256-GCM or ChaCha20Poly1305, checked
+  against the RFC's vectors on both primitive halves — to the pinned server
+  key, and the answer under a key both ends export from that same context
+  (the Oblivious HTTP construction, RFC 9458 §4, without the relay).
+- The real request is INSIDE: an observer sees `POST <endpoint>` with
+  `Content-Type: application/wrpc-sealed` and a `200`, whatever the method,
+  route or status really was. On the server it is one block in
+  `handleHttpCall`: the call is unwrapped before routing and carries on as an
+  ordinary one, so packets, batches and mapped REST routes all ride it — over
+  the built-in server, uWebSockets.js, express and fastify (whose adapter now
+  registers the content type, which fastify would otherwise answer 415, and
+  the discovery route).
+- On the client it is a wrapped `fetch`: `createEncryption(...).fetch`. A
+  response that is not sealed is an error whatever its status — a client
+  that encrypts does not read plaintext.
+- Replay: HPKE has none, so a sealed request carries the sender's clock and
+  is accepted once — `maxSkew` (5 min) and an `enc` memory, in process by
+  default, injectable as `replay: { seen(id, ttl) }` for a shared one.
+  Refusals are bare statuses (`400` does not parse or open, `409` stale or
+  replayed, `426` plaintext under `required`), the reason in the log only.
+- `Set-Cookie` stays on the outer response, so a cookie session keeps
+  working; everything else of the answer is inside.
+- `GET <basePath>/encryption-key` publishes the bundle (`fetchServerKey(url)`
+  on the client; `discovery: false` removes it). Trust on first use — pin the
+  bundle wherever the client can be shipped it.
+- `createHpke`, `dhKem`, `isKem` are exported: the KEM is a structural seam,
+  which is where ML-KEM or a hybrid is injected.
+- HKDF is now a platform pair as well: `node:crypto` on Node. A sealed
+  request costs 219 µs for both ends against 550 µs over `crypto.subtle`, and
+  a Noise handshake 291 µs against 745 (`bench/encryption.js`).
+
+**Session encryption over WebTransport**
+
+- The `wt` client transport carries `options.encryption` too (`static
+  encrypts`), and the server needs nothing new: `attachSession` hands its
+  `WtSocket` to `attachSocket`, which wraps it exactly as it wraps a
+  WebSocket. The handshake runs over the control stream after the
+  capabilities exchange, with `wt` bound into the prologue — a handshake
+  recorded on one kind of connection does not finish on the other.
+- Under it everything rides the control stream, sealed: no per-stream
+  transport (no `streams` capability is announced, so binary streams fall
+  back to control-stream chunks), no datagrams (an `unreliable` event goes
+  reliably), and the carrier's per-message compression is left off — each
+  would be a way around the channel, or work spent on ciphertext. QUIC is
+  already TLS 1.3, so what this protects against is the edge that
+  terminates it.
+
+**Session encryption: a Noise handshake on the WebSocket, then every frame sealed**
+
+- `new Server({ encryption: { keys } })` and
+  `connect(url, { encryption: createEncryption({ serverKey }) })` from
+  `@alexify/wrpc/encryption`. For the TLS terminator you do not trust — a
+  CDN, a corporate proxy, a body-logging balancer — and for `ws://` where no
+  certificate can be had. Opt-in, and never in place of TLS.
+- The handshake is the **Noise Protocol Framework under its canonical
+  names**: `Noise_{NN,NK,XX,NNpsk0}_25519_{AESGCM,ChaChaPoly}_SHA256`,
+  checked against the cacophony vectors on both the `node:crypto` and the
+  `crypto.subtle` primitives. `NK` is the default — the client pins the
+  server's key, as TLS does for a browser; `XX` is mutual, and the server's
+  `authorize(peer)` sees the client's authenticated key; `NN` and `NNpsk0`
+  have to be named on both sides. A client names its protocol and the
+  server holds it or refuses: nothing is negotiated down.
+- On the server it is a wrapper around the engine's socket (`SealedSocket`),
+  not a change to the dispatcher: decrypted messages are re-announced as the
+  engine would, so compression (now inside the sealed frame), attachments
+  and stream chunks work unchanged — over the built-in engine and
+  uWebSockets.js alike. `attachSocket` stays synchronous: the session
+  restore waits for the handshake, and `client.encryption` is set by then.
+- `client.encryption` on both ends: `{ protocol, pattern, cipher, kid,
+  remoteStatic, handshakeHash }`. The hash is unique to the handshake and
+  the same on both sides — bind a credential to it and a relayed credential
+  is worthless on another connection.
+- A client that was handed `encryption` never speaks plaintext: a transport
+  that cannot carry it is a `TypeError` at `connect()`, the fallback list
+  included; a server that does not answer, or answers in plaintext, is a
+  failed connection. `encryption.required` is the server's half: sockets
+  close `1008`, HTTP answers `426` (until the per-request binding lands),
+  `attach()` must be told `encrypted: true`.
+- `rpc.encryptionKey()` → the public bundle `<kid>:<noise key>:<hpke key>`
+  a client pins. Static keys are derived from one secret per kid, never
+  shared between the two protocols; an old pin keeps working while its kid
+  is on the ring.
+- **What it costs** (`bench/encryption.js`): 3.6 µs to seal a 1 KB packet,
+  0.6 ms for a handshake — and the single shared frame of a broadcast: each
+  recipient has its own key, so an emit to N sealed clients is N seals, and
+  permessage-deflate is told to leave the ciphertext alone.
+- Not covered, by design: whatever the upgrade itself carried — the URL,
+  headers, `wrpc.bearer.` tokens, cookies. Under session encryption a
+  credential belongs in `authenticate`. Wire format in the
+  [protocol reference](./docs/reference/protocol.md#session-encryption);
+  main browser entry +0.4 KB for the seam, `./encryption` 7.8 KB.
+
+**`sealedStore()`: a session store that holds nothing readable**
+
+- `sealedStore(store, { keys })` from `@alexify/wrpc/encryption` wraps any
+  `sessions: { store }` — the Redis one, a table, the in-memory default.
+  Until now the Redis store kept each session's state as JSON **under the
+  bearer token itself**: a keyspace listing was a list of live credentials.
+  Wrapped, a row is keyed by `HMAC-SHA256(index key, token)` and holds the
+  state sealed (the backplane envelope's frame — a key per writing process,
+  a counter nonce) with the row's own key as additional data, so a row
+  copied into another session's slot does not open.
+- A key rotation signs nobody out: a read that misses under the current kid
+  finds the row under an older one and moves it (the index key rotates with
+  the rest). `acceptPlaintext: true` is the same move for adopting it over a
+  store that already holds sessions. `touch` is forwarded when the wrapped
+  store has one.
+- A row that does not open is a missing session and one warning
+  (`session.open`, `session.unsealed`, `session.migrate`); the token is
+  never logged. See [Sessions](./docs/guide/sessions.md#sealed).
+
+**`rooms.encryption` / `cluster.encryption`: sealed backplane envelopes**
+
+- TLS to Redis protects the hop, not what Redis holds: until now every room
+  event, presence delta, `sendTo` payload and `fetchClients` reply crossed
+  the backplane as readable JSON. `rooms: { encryption: { keys } }` and
+  `cluster: { encryption: { keys } }` seal each envelope under a shared
+  keyring (AES-256-GCM, or `cipher: 'chacha20-poly1305'`, or an injected
+  synchronous `Cipher`): the backplane carries
+  `wrpc-sealed:<kid>:<base64>`. Off by default; ~3.5 µs per 1 KB envelope
+  each way (`bench/encryption.js`). See
+  [Scaling](./docs/guide/scaling.md#encryption) and the
+  [protocol reference](./docs/reference/protocol.md).
+- No random nonces: each process derives its own key from the keyring key
+  and a salt it draws at boot (HKDF-SHA256) and counts under it, reseeding
+  after 2^32 messages — GCM's random-nonce bound is hours away on a busy
+  fan-out. The additional data binds layer, key id and **channel**, so an
+  envelope moved to another room's channel does not open, and a per-sender
+  sliding window (`replayWindow`, default 1024) drops a replay.
+- Composes with `compression` inside ONE frame — compress, then seal, one
+  base64 — rather than a marker inside a marker.
+- A pub/sub backplane delivers at most once, so turning it on is three
+  deploys, not a flag day: `{ seal: false, acceptPlaintext: true }`, then
+  `{ acceptPlaintext: true }`, then neither. Key rotation is the same shape
+  through `keys: { current, ring }`; the key id selects the key, nothing is
+  tried until it fits.
+- New log events, all warnings: `backplane.open` / `cluster.open` (does not
+  open — `reason`: `kid`, `open`, `replay`, `format`, `codec`; for the log
+  only, nothing is answered), `backplane.unsealed` / `cluster.unsealed`
+  (plaintext where none is accepted — which also makes a sealing cluster
+  refuse a forged plaintext command even without `secret`),
+  `backplane.sealed` / `cluster.sealed` (an instance without the keys).
+- A sealing instance no longer decodes its own echo: it recognizes its salt
+  and skips the envelope before any cryptography or JSON parsing.
+- Not hidden, by construction: the channel name (it names the room), the
+  key id, sizes and timing. Every instance holds the key — this is a sealed
+  fan-out, not end-to-end.
+
+**`@alexify/wrpc/encryption`: the primitives (experimental)**
+
+- A new subpath, with a `browser` condition, for application-level encryption
+  — opt-in like every knob in wrpc and **never a substitute for TLS**: it is
+  for where TLS ends before the data does (a backplane, a broker's log, a
+  TLS-terminating proxy, a relay that should not read what it relays). This
+  release lands the primitives the later pieces are built from; nothing in
+  the core reads them yet.
+- `aead({ algorithm })` — the platform AEADs behind one structural `Cipher`
+  contract (`isCipher`): `'aes-256-gcm'` on both platforms and
+  `'chacha20-poly1305'` on Node. Synchronous over `node:crypto` on Node (a
+  1 KB seal is 2.4 µs against 14 µs through `crypto.subtle` on the same
+  machine — `bench/encryption.js`), promise-answering over `crypto.subtle` in
+  a browser, where a key is imported once into a **non-extractable**
+  `CryptoKey`. Every failure to open is one `OpenError`, whatever the cause.
+  An application injects its own cipher (XChaCha20, AES-GCM-SIV, AEGIS)
+  through the same contract.
+- `x25519()` (RFC 7748, the `Dh` contract Noise and HPKE's DHKEM consume;
+  a low-order public key is refused), `createKdf()` (SHA-256, HMAC and
+  HKDF with Extract and Expand apart). HKDF is one implementation over
+  `crypto.subtle` for both platforms; X25519 is a platform pair like the
+  AEADs — `node:crypto` on Node, because the same algorithm through subtle
+  prints an `ExperimentalWarning` on the early Node 22 releases `engines`
+  admits (22.10 does, 22.23 does not).
+- `normalizeKeys(keys)` — the keyring: one key, `{ current, ring }` for
+  rotation, or an injected provider (`isKeyProvider` — a KMS or Vault
+  client). A kid is a closed alphabet and SELECTS the key; nothing tries key
+  after key on one message.
+- No `Math.random` fallback anywhere in it: without `crypto.getRandomValues`
+  and `crypto.subtle` (a page served over plain http has neither) the
+  factories throw where they are built.
+- `Sequencer` moved to the `src/sequencer.js` leaf so the new entry keeps
+  message order around an asynchronous cipher without carrying the
+  compression negotiation; `src/compression/index.js` still exports it.
+  Bundle: 3.1 KB min+gzip, its own row and budget in `scripts/size.js`.
+
+**The ws handshake: declared `headers`/`meta` as subprotocol offers, and `readHandshake`**
+
+- The server reads a browser client's declared bags from the one handshake
+  header a page controls: `Sec-WebSocket-Protocol: wrpc.v2, wrpc.v1,
+  wrpc.h.<base64url>, wrpc.m.<base64url>` — the generalization of `wrpc.bearer.<token>`. A
+  carrier is chosen, never merged (real `x-wrpc-meta` header → offer →
+  `wrpc_h`/`wrpc_meta` query, which stays for `carrier: 'query'` and
+  WebTransport), the two offers share **one** `metaMaxBytes` budget, and
+  every rule is still a refusal rather than a closed connection. See the
+  [protocol reference](./docs/reference/protocol.md#connection-metadata).
+- `readHandshake(req, { metaMaxBytes? })` → `{ headers, meta }`: what a
+  `verifyClient` gate should call instead of parsing `wrpc_h` by hand. It is
+  the function `attachSocket` itself runs, so a gate sees exactly what the
+  connection will get.
+- Carrier tokens are data, never a protocol to select: both negotiators (the
+  built-in engine and the uWebSockets.js one) remove `wrpc.h.`, `wrpc.m.` and
+  `wrpc.bearer.` from the offer before `protocols`/`handleProtocols` sees it
+  and refuse to echo one, so a selector like `(offered) => offered.at(-1)`
+  cannot reflect a credential into the response. The tokens also leave the
+  `sec-websocket-protocol` of `context.meta.headers`.
+
+**Docs: which compression algorithm**
+
+- The [compression guide](./docs/guide/compression.md#algorithm) has the
+  table that decides — deflate 3 / 6, Brotli 4 / 11, zstd 1 over 361 B to
+  255 KB — and what follows from it: deflate up to ~2 KB and wherever a
+  browser or the router dictionary is involved, `['zstd', 'deflate-raw']`
+  on Node↔Node wires with large answers, Brotli 4 when the link is the
+  cost, gzip for SSE, and an injected LZ4 as the worked example of the
+  seam. The protocol reference states the list rule once, under its
+  compression table.
+
+**`http.compression.encodings` / `sse.compression.encodings` — Brotli, zstd, or your own coding**
+
+- `encodings` is the server's list of `Content-Encoding`s in **its** order
+  of preference; the first one the request's `Accept-Encoding` admits is
+  used (a zero weight refuses a coding, `*` covers the unnamed, other
+  weights say acceptable rather than preferred — as nginx reads it).
+  Default `['gzip']`, so nothing changes until it is set. Entries: `'gzip'`,
+  `'br'`, `'zstd'`, the same with their knobs (`{ encoding: 'br', quality }`),
+  or an application's own `{ encoding, encode(bytes), createStream? }` —
+  `encode` may answer a promise, and a coding that throws or rejects
+  answers the plain body, honestly labelled.
+- Measured defaults (`bench/algorithms.js`, a 27 KB answer): gzip 110 µs /
+  3,214 B, Brotli quality 4 93 µs / 2,601 B, zstd level 1 36 µs / 2,848 B.
+  `'zstd'` is a `TypeError` at construction where `node:zlib` has none.
+- SSE takes the same list, every coding flushed per event; a coding with
+  no `createStream()` is refused at construction. gzip stays the default
+  and the recommendation there — Brotli and zstd save nothing on small
+  events and hold 570 / 930 KB per open response against gzip's 320.
+- The `Accept-Encoding` scan stays one pass with no per-token allocation:
+  twice the split-and-map spelling (`bench/http-compression.js`).
+
+**`compression: { codec: [...] }` — a preference list, negotiated per direction**
+
+- `codec` takes a list in order of preference, names and injected codecs
+  alike. Each end announces the ids it can decode and **a sender compresses
+  with the first codec of its own list the other end announced** — so a
+  list is the fallback (a peer without zstd is served deflate instead of
+  plain), the two directions choose independently (a Node server answers in
+  zstd a browser that sends deflate), and no frame has to name its codec.
+  A name the platform lacks is skipped in a list, refused alone. A peer's
+  list is bounded (16 ids) and only ever compared, never a key.
+- On every negotiated wire: the `enc` list of the WebTransport capabilities
+  message and of the WebRTC description `caps`, `{ type: 'ping', enc: [ids] }`
+  from a Node WebSocket client (the `pong` names the one to send with), the
+  comma-separated `wrpc-enc` of a broker `request` / `hello` / `welcome`.
+- The backplane and cluster envelopes negotiate nothing, so there an
+  instance **encodes with the head of the list and decodes any codec on
+  it** — a change of codec becomes a rollout without a lost envelope (list
+  both everywhere, then swap the order). A raw WebRTC channel uses the head
+  both ways.
+- `transport.compression` (WebTransport, WebRTC, the broker client) is
+  `{ encode, decode } | null`; `NegotiatedCompression` in the types. The
+  Node↔Node carriers probe every codec of the list for a synchronous answer.
+
+**`compression: { codec: 'zstd' | 'brotli' }` — the platform codecs by name, and their factories**
+
+- `codec` takes the name of a platform codec beside an injected one. The ids
+  are `CompressionStream`'s format names — `'deflate-raw'`, `'brotli'`,
+  `'zstd'` — so Node (`node:zlib`) and a browser negotiate the same id with
+  no table between them. `compression: true` still means `'deflate-raw'`:
+  level with zstd up to ~2 KB and the one format every platform has.
+  `'zstd'` is detected, not assumed (`node:zlib` has it since 22.15 / 23.8):
+  a `TypeError` at construction where it is missing; in a browser a format
+  the `CompressionStream` lacks leaves compression off.
+- `deflateCompressor({ level })`, `brotliCompressor({ quality })` and
+  `zstdCompressor({ level })` from the main entry (Node), each with
+  `threshold` and `async`, for another level than the name takes. An id
+  names the format, never the level.
+- The default levels are measured (`bench/algorithms.js`): Brotli quality 4
+  and zstd level 1 with the source size pledged — zlib's own Brotli default,
+  quality 11, is 33 ms on a 27 KB message.
+
+**`bench/algorithms.js` — which algorithm, at which level**
+
+- deflate, Brotli and Zstandard out of `node:zlib`, at the levels a
+  per-message codec can afford, over 200 B – 255 KB callback packets, plus
+  the flushed persistent stream an SSE response uses with its memory per
+  open response. What it found: up to ~2 KB deflate is level with zstd in
+  bytes and CPU; deflate's knee is level 3 (27 KB: 46 µs / 3,351 B against
+  level 6's 118 µs / 3,196 B, and level 4 is slower and larger than 3);
+  zstd level 1 is the cheapest at 27 KB and past it (36 µs / 2,848 B);
+  Brotli quality 4 is the smallest at deflate-6 cost (93 µs / 2,601 B), and
+  zlib's own Brotli default, quality 11, takes 33 **ms** there; a flushed
+  Brotli or zstd stream saves nothing over gzip on small events (23 / 18 /
+  20 B an event) and holds 570 / 930 KB per open response against 320.
+
+**`compression: { async }` — large messages deflate on zlib's threadpool on WebTransport and WebRTC**
+
+- The Node platform codec and `dictionaryCompressor(dict, { async })` take
+  `async: true | { threshold }` (256 KiB): a message that large is handed to
+  zlib's callback API and `encode` answers a promise for it, which the
+  WebTransport and WebRTC transports already keep in order; everything
+  smaller — and every inflate — stays synchronous. Measured, not assumed
+  (`bench/zlib-async.js`): the threadpool hand-off costs ~20 µs a call, so
+  below ~256 KB it only slows a message down (291 B: 28 µs against 9), and
+  inflate is cheaper on the loop at every size up to the cap. The same
+  default as `perMessageDeflate.async` and `http.compression.async`.
+- Off by default, like every compression knob. The Node↔Node carriers
+  (the broker binding, the backplane envelopes, a Node WebSocket client)
+  refuse a codec that declares `async` at construction — they have no
+  ordering queue for a promise; `compression.async` with an injected
+  `codec` is refused too (the option belongs on the codec's factory).
+- `Compressor.async` (a byte threshold or null) in the types; the
+  [compression guide](./docs/guide/compression.md#async) has the table.
+
+**Binary attachments: bytes in args, results and events travel as bytes**
+- A `Uint8Array` in a call's arguments used to arrive as `{"0":137,"1":80,…}`
+  — nine times the size, and a plain object, silently. Now any typed
+  array, `ArrayBuffer` or `DataView` anywhere in a packet's args, result,
+  event data or error details travels as **binary attachments**: one frame
+  (`0x00 01`, a length-prefixed JSON `[packet, index]` with `null` at each
+  byte leaf and the buffers back to back, paths in the Jupyter
+  `buffer_paths` shape so nothing in user data can collide) and arrives as
+  fresh `Uint8Array`s that own their bytes — copied out of the frame, since
+  the WebSocket engine hands over zero-copy views into its socket segments.
+  Every transport carries it — a BINARY WebSocket frame (the shared fan-out
+  frame included: `PreparedFrames` and `SharedMessage.text` take bytes), a
+  WebTransport or data-channel message, a broker session frame, a worker port, a
+  packet-mode HTTP body under `application/octet-stream`, both ways, batches
+  included. SSE speaks revision 1 to every client — bytes travel as the
+  JSON 1.0 made of them, both ways — and refuses a frame on a channel POST
+  with `415`. A REST result with bytes answers `501` without
+  `codec.rest`; a room event with bytes is delivered locally and refused
+  for the JSON backplane (`backplane.bytes`).
+- The fastify plugin registers a buffer parser for
+  `application/octet-stream`, as it does for `application/wrpc-sealed`,
+  unless the app already has one: fastify parses neither type, so a call
+  whose arguments hold bytes was answered `415` before the plugin's route
+  ran. An app's own parser for the type stands, and must hand the body
+  over as a `Buffer`.
+- On by default wherever revision 2 was negotiated (the first entry of this
+  section); `attachments: false` on either end makes that end speak
+  revision 1 — JSON, to everyone — and a packet codec does so by itself. The cost is
+  `hasBytes`, a walk of every outbound packet (`bench/attachments.js`);
+  the compiled-serializer fast path walks the result only when a
+  serializer is compiled.
+
+**`@alexify/wrpc/deflate` — the dictionary in a browser, and a synchronous codec anywhere**
+- A DEFLATE codec in plain JavaScript on its own subpath (3.8 KB
+  min+gzip, loaded only by a page that injects it). `createDeflateCodec({
+  dictionary })` is a `Compressor` whose `id` matches
+  `dictionaryCompressor`'s for the same bytes, so a browser peer on it and
+  a Node peer on node:zlib negotiate with each other; without a dictionary
+  it is `deflate-raw`, which the platform codecs read. The inflater is
+  complete — stored, fixed and dynamic blocks, a preset dictionary, the
+  inflated-size cap — and every malformed input is a coded `DeflateError`.
+  The encoder is LZ77 against the dictionary written as one fixed-Huffman
+  block, measured first (`bench/deflate-js.js`): on a 108 B event with the
+  dictionary it produces the same 51 B zlib's dynamic trees do, at 100K/sec
+  against zlib's 136K and CompressionStream's 24K, and its inflate runs at
+  a million a second. Past `nativeAbove` (4 KiB) — where fixed codes fall
+  30–45% behind — a browser hands the message to CompressionStream
+  (dynamic Huffman, no dictionary; the output still inflates on the
+  dictionary side); in Node the codec stays synchronous. `inflateRaw` and
+  `deflateRaw` are exported as primitives.
+- Tests, the main body of it: an interop matrix both ways against
+  node:zlib at every level and strategy and against the platform streams,
+  a 400-payload fuzz corpus, and the malformed-input table.
+
+**A preset dictionary from the router (`buildDictionary`, `dictionaryCompressor`)**
+- One-shot deflate has no history: a 108 B event compresses to 99 B.
+  `buildDictionary(router)` reads the router's introspection — field names
+  from signatures and schemas, every `unit/method` target and `unit/event`
+  name, the packet skeletons — ordered least to most frequent and cut from
+  the front past 32 KiB, deterministically, so a fleet builds the same
+  bytes. `dictionaryCompressor(dictionary)` is the codec over them (raw
+  deflate through node:zlib), its `id` carrying the dictionary's hash so
+  every wire's negotiation compares dictionaries too: a rolling deploy's
+  odd instance names another id and stays plain. Injected as
+  `compression: { codec }` on any Node↔Node carrier. Measured
+  (`bench/dictionary.js`, a 546 B dictionary): a 108 B event 99 → 55 B, an
+  84 B call 77 → 30 B, a 1.1 KB callback 201 → 160 B, at the same rate — so
+  the dictionary codec's threshold is 64 B against the plain codec's 1 KiB.
+  `buildDictionary` is browser-safe and in the WebRTC browser barrel too,
+  for the pure-JS codec that follows.
+- A **Compression** guide page collecting every knob, its negotiation and
+  its numbers in one place.
+
+**Per-message compression from a Node WebSocket client (`compression` on both ends)**
+- Node's built-in `WebSocket` only ever inflates: a Node client's uploads
+  arrived as they were whatever the server negotiated. Now
+  `connect(url, { compression: true })` in Node sends `{ type: 'ping', enc:
+  'deflate-raw' }` on open; a server with `new Server({ compression: true
+  })` answers the `enc` on its `pong`, and from then on every packet or
+  chunk past the threshold leaves as a binary frame under a `0x00` marker
+  — a stream chunk never starts with one — that the server inflates before
+  dispatch (`maxMessage`, 16 MiB, caps it; a frame before negotiation, of
+  an unknown kind or past the cap is an id-less 400, not a hang-up). Off
+  on both ends by default; a lone end stays plain; a browser is untouched
+  (it compresses both directions under permessage-deflate) and its bundle
+  carries none of this — the client half is a `package.json#browser` pair
+  whose browser side is a stub.
+
+**Per-message compression on the broker binding and the backplane (`compression`)**
+- The broker binding: `attachBrokerRpc(server, broker, { compression })`
+  and `connect('broker://…', { compression })`, off by default and
+  negotiated so the two ends upgrade in any order. A session names its
+  codec on `hello` (`wrpc-enc`), the server that agreed answers it on
+  `welcome`, and every frame past the threshold then travels compressed
+  both ways — packets, events, subscription values, stream chunks —
+  marked `wrpc-enc` on the frame; `{ compress: false }` per message and
+  `writeWith` as on a WebSocket. A stateless request names what it accepts
+  and travels plain itself (HTTP's `Accept-Encoding` shape); only the
+  answer is compressed. A marked frame the receiver cannot inflate ends
+  the session like a sequence gap; `maxMessage` (16 MiB) caps the inflate.
+  Node↔Node, so the codec must answer synchronously — a promise-answering
+  one is refused at construction (`src/compression/sync.js`). Measured
+  (`bench/broker.js`): a session call answering a 9 KB result 9,315/sec
+  plain, 5,407/sec compressed — ~80 µs a round trip for ~10× fewer bytes.
+- The backplane envelopes: `rooms: { compression }` and `cluster:
+  { compression }` deflate what this instance publishes past the threshold
+  and carry it as base64 under a `wrpc-enc:<id>:` marker, since the
+  backplane contract is strings. Nothing to negotiate against on a fan-out,
+  so this one is a two-step rollout: an instance without the option drops
+  such an envelope and logs `backplane.encoded` / `cluster.encoded` rather
+  than staying silent. The cluster signs first, then compresses, so HMAC
+  verification is unchanged. The codec is injected into `RoomsBackplane`
+  and `Cluster` by the core, so the browser-bundled `rooms.js` carries none
+  of zlib or base64.
+
+**Per-message compression on WebRTC (`compression` on the peer, the transports and `attachChannel`)**
+- The other half of the transports with nothing under them: SCTP over
+  DTLS carries a data channel's bytes as they are. `new WrpcPeer({
+  compression: true })` names the codec in every description this peer
+  sends (`caps: { deflate: "deflate-raw" }` in the signal, next to the
+  assertion when there is one) and a link compresses only once the other
+  peer named the same — a peer without the option is served plain, and
+  nothing hangs up. Bit 2 of the data-channel header is the DEFLATE flag,
+  a reserved bit (a protocol error) until negotiated; a message past the
+  threshold is compressed **before** fragmentation, the one place it
+  exists whole, and every fragment carries the flag. `{ compress: false }`
+  per message and `writeWith` on the peer transport, as on a WebSocket;
+  an inflate past `maxReassembly` closes the channel like any bad frame.
+- Over a raw channel there is no description to announce in:
+  `compression` on `attachChannel`, on `connect(url, { channel,
+  compression })` and on either transport is applied as given, so both
+  applications turn it on or neither — documented, and tested: the plain
+  side closes on the first flagged frame.
+- `RtcLink` grew `caps` (announced) and `peerCaps` (read before the
+  description is applied, so the channels open already knowing). The
+  webrtc browser entry's budget 48 → 50 KB (measured 49.2).
+
+**Per-message compression on WebTransport (`compression`, both ends)**
+- Nothing compresses a QUIC stream's payload — HTTP/3 does headers only —
+  so a WebTransport session carried exactly the bytes wrpc handed it. Now
+  `attachSession`/`acceptSessions` and the client (`connect(url,
+  { compression })` or the `wt` bag) take `compression: true | { codec,
+  threshold }`, off by default and negotiated: each end names its codec in
+  the capabilities message (`deflate: "deflate-raw"`) and compresses only
+  once the other named the same, so a lone end is served plain. A packet
+  or chunk past the threshold leaves as KIND 3 or 4 and is inflated before
+  delivery; `{ compress: false }` per message still works; chunks on their
+  own streams and datagrams are never compressed; an inflate past
+  `maxMessage` is a 1002.
+- `src/compression/`: the structural `Compressor` seam (`isCompressor`,
+  exported from the main entry — `id`, `encode`, `decode(bytes, maxOutput)`,
+  either may answer a promise), the platform codec as a browser-swapped
+  pair (node:zlib raw deflate, sync, 1 KiB threshold; `CompressionStream`,
+  async, 4 KiB — ~6× the cost per call and no dictionary), and the
+  `Sequencer` that keeps the wire in order around an asynchronous codec
+  with a synchronous fast path when nothing is in flight. Measured
+  (`bench/message-compression.js`): a 1.4 KB callback 6.4× at 84K/sec, a
+  24 KB one 13.8× at 12K/sec, a 108 B event 1.1× — the threshold's reason.
+- The main browser entry's budget 20 → 22 KB (measured 20.8), sse 21 → 23:
+  the seam every browser transport will share.
+
+**`Content-Encoding` on the HTTP side (`http.compression`, `sse.compression`)**
+- gzip for packet-mode and REST answers, opt-in and off by default:
+  `http: { compression: true | { threshold, filter, level, memLevel, async } }`.
+  Applied in the one funnel every HTTP answer leaves through, so packet
+  POSTs, batch frames, REST results and errors all qualify. A response is
+  encoded when the peer's `Accept-Encoding` admits gzip, the body is at or
+  over `threshold` (1 KiB), nothing upstream set a `Content-Encoding` (a
+  route's own `headers`, a framework plugin) and `filter(call)` agrees; it
+  then carries `Vary: Accept-Encoding`, joined onto the CORS `Vary`. A REST
+  ETag stays over the plain body, a `204`/`304` is never encoded, and
+  `async: { threshold }` hands large bodies to zlib's threadpool — the same
+  shape as `perMessageDeflate.async`. Nothing changes on the client: `fetch`
+  inflates by itself. `bench/http-compression.js` prices it: a 1.6 KB
+  callback 5.5× at 77K/sec, an 8.5 KB one 9.9× at 28K/sec.
+- The event stream: `sse: { compression: true | { filter, level, memLevel } }`
+  — one gzip member per response, flushed after every event, which is
+  context takeover for free: a repeated 125 B tick leaves as 16 B (7.8×),
+  and the `ready` frame is not held back by it. Decided per GET, so a
+  re-attach negotiates again and replays through the new member. The wrpc
+  SSE client needed no change; every host's `stream` writer is wrapped the
+  same way.
+- `rpcOptions` learned the `http` key: an `http` option given to `Server`,
+  `wrpcFastify` or `createWrpc` reaches the core. Fastify's delegated REST
+  routes stay fastify's — `@fastify/compress` encodes those.
+
+**Compression, documented as the choice it is**
+- Nothing in wrpc compresses by default — `perMessageDeflate` on the
+  built-in engine, `compression` on uws — and that stays: a default would
+  spend a deflate on every frame of every peer to save bytes only some of
+  them need. The performance guide now says so in one place ("Compression is
+  off by default"), with the cost of the knob from `bench/deflate-context.js`
+  next to the ratio it buys; the knob table names `perMessageDeflate` itself
+  ahead of `contextTakeover` and `async`, which do nothing without it; the
+  server options, the rooms page, the proxy notes and the deploy checklist
+  point at the same section. No behavior changed.
+- The honest limits are written down too: `perMessageDeflate` covers the
+  WebSocket only — every other wire has its own knob (the entries above) —
+  and a Node client never sends a compressed frame by itself: the built-in
+  `WebSocket` offers `permessage-deflate` but only inflates, which is what
+  the client's own `compression` option is for.
+
+**Telemetry: the honest set**
+- `wrpc.server.sessions` records all five operations. It only ever said
+  `restore`, while a unit test asserted a `create` shape nothing in the
+  package could produce — the metric described a surface that did not exist.
+  `evict` is the one worth alerting on: unlike `expire` it discards sessions
+  that are still live, which is signed-in users being signed out to stay
+  under `maxSessions`.
+- `wrpc.stream.direction` has both values. The `send` half was never
+  recorded anywhere, so an attribute that promised two values had exactly
+  one for the life of the metric. The server records it; the client does
+  not, where the counter has nothing to feed and the bytes would only cost
+  the browser bundle.
+- **`wrpc.client.heartbeat.rtt`** — the client's only true latency signal
+  that needs no call to produce it. The ping/pong pair is an exact round
+  trip and both ends were already timestamped; nothing read them. A
+  heartbeat that times out is counted, never timed: there is no round trip
+  to measure, and a sample invented from the timeout would describe your
+  configuration rather than the network.
+- **`wrpc.server.queue.wait`** and **`wrpc.server.queue.depth`**. Time spent
+  waiting for a concurrency slot was folded into `rpc.server.duration`,
+  which made a saturated queue and a slow handler indistinguishable — two
+  opposite problems with opposite fixes. `depth` carries no attribute at
+  all: one series per procedure is a cardinality bomb, and the question is a
+  whole-process one.
+- **`wrpc.broker.delivery.attempts`**, recorded on settlement only (an ack
+  or a dead-letter, never a retry), so it is the distribution of deliveries
+  per message rather than a triangle counting each message once per
+  attempt. The number was on every delivery all along and never read.
+- **`wrpc.cluster.verifications`** and **`wrpc.rtc.assertions`** put a
+  counter behind two security signals that had none: a backplane envelope
+  that fails authentication, and a peer presenting a trust assertion that
+  does not bind to the DTLS fingerprint of the connection it arrived on.
+- **`wrpc.client.calls`** and **`wrpc.server.rooms`**: a client error *rate*
+  was not derivable from the duration histogram alone (a call with no
+  elapsed time recorded nothing), and live rooms had no gauge. The room
+  gauge rides the existing first-member/last-member callbacks, so the hot
+  join/leave path is untouched.
+
+**Logging reaches the silent paths**
+- `RpcServer` gains a `log` getter, the pair of the `otel` one that already
+  existed for the same reason: a framework adapter or an external attacher
+  now has somewhere to report a failure that never reaches a `Client`,
+  instead of emitting an `'error'` nobody listens for. `Client` had both
+  getters all along; the server having only one was the anomaly.
+- The **dispatcher's six refused calls** — unknown method, duplicate id,
+  `maxCalls`, draining, unknown packet type, oversize batch — now log. Their
+  subscription twin had logged from the day it was written, so half of what
+  a dispatcher rejects was invisible to an operator, and the invisible half
+  was the one that says "your client and my router disagree about what
+  exists". The levels are not uniform on purpose: the two any peer can drive
+  in a loop go to `debug`, so a refused flood cannot become a log flood.
+- The **WebSocket engine** logs for the first time. Every way a connection
+  died at the framing layer — invalid UTF-8, a protocol violation, a message
+  past `maxBuffer`, a backpressure limit, a failed inflate — emitted an
+  `'error'` a server rarely listens for and then closed, which is the
+  "it just disconnects sometimes" report with nothing to work from. They go
+  through one seam now and name the limit that closed the connection, since
+  raising it is the operator's decision to make. `WebsocketServer` takes a
+  `logger` option; the `Server` shell passes its own writer down.
+- `acceptSessions` (WebTransport) defaulted `onError` to `null`, so a session
+  that failed to attach vanished without a trace — the one failure mode of a
+  WebTransport server nothing above could observe. It now reports through the
+  server's writer; an explicit `onError` still wins.
+- Broker consumers log every settlement decision, not only the terminal one:
+  a queue retrying itself in a circle used to look exactly like a healthy
+  one. The dead-letter line carries the error, not just its code, and the
+  per-token client cache says when it is thrashing.
+- A tampered **resume token** on a broker feed is now a `warn` naming
+  `reason: 'signature'` — previously indistinguishable from a stale or
+  garbled one, and silent. The token itself is never logged.
+- Session capacity eviction says so. Unlike a TTL sweep it discards sessions
+  that are still live — signed-in users signed out with no error anywhere —
+  and it logs once per sweep with a count, never once per session.
+- `createUwsEngine` and `createRedisSessionStore` take a `logger`.
+  uWebSockets.js dropping an outbound frame, and a stored session row that
+  will not parse, both had no channel at all.
+- `docs/guide/logging.md` gains an **event catalogue** — the `event` names to
+  alert on, by component — and a section on what is deliberately left
+  unlogged, so the four principled zeroes are not "fixed" later.
+
+**Pluggable identifiers, everywhere an id is minted**
+- `generateId` had shipped on the server, the client, the cluster, a peer
+  host and the signaler, and then fourteen other places went on calling
+  `randomUUID` directly — including the server's own `instanceId`, the SSE
+  channel id and the broker RPC session id. One resolver in `src/utils.js`
+  now backs every one of them, and the ids that had no seam got one.
+- The **SSE channel id** is the one that mattered most: it is peer-visible,
+  it keys the channel registry, and holding one is most of what proves a
+  request belongs to a channel. An `RpcServer` passes its own `generateId`
+  down, so a server that injected a generator now covers channel ids too;
+  `SseChannels` takes the option directly when driven standalone.
+- The **broker RPC session id** is the server's key for a connection's frame
+  state, so a guessable one lets a sender inject frames into somebody else's
+  session. The broker transport now mints it with the owning client's
+  generator, handed down the same seam as `codec` and `log` — one option,
+  resolved once, rather than the same option resolved twice in two modes.
+- `instanceId` on `RpcServer` and `PeerHost` is minted by `generateId` when
+  omitted, instead of a `randomUUID` the option could not reach. The "must
+  not contain `.`" rule now covers a generated id too, and says which of the
+  two options produced the offending one.
+- Each broker adapter (`redis`, `nats`, `amqp`, `kafka`) and `MemoryBroker`
+  takes a `generateId` for the names it puts on the wire — consumer names,
+  inboxes, groups, message ids. An injected generator is used **verbatim**:
+  the two sites that shortened a uuid still shorten the default, never a
+  value you supplied.
+- `rooms.epoch` is declared and forwarded. `RoomsBackplane` had accepted it
+  all along, but `RpcServer` passed only `linger`, so it was unreachable
+  from the public surface.
+- Validation is uniform and happens once: a generator must be a function
+  answering a non-empty string of at most 255 characters — the binary chunk
+  header's own limit, now applied to every id rather than only to stream
+  ids. The check calls the generator, and that first id becomes the
+  `instanceId` rather than being discarded, so a counter-based generator
+  still starts where you expect. The per-stream check stays: it catches a
+  generator that only *sometimes* answers something too long.
+
+**Message brokers, part 9: benchmarks and the finished guide**
+- `bench/broker.js` measures what the bindings cost on top of a broker, on
+  the in-process `MemoryBroker` so the numbers are wrpc's own overhead and
+  not a network's: a queue delivery into a procedure end to end (~530k
+  ops/sec bare, ~400k through a validator, a hook and a `meta` header),
+  `createPublisher.publish` into a log append (~2.1M ops/sec) and a durable
+  feed's pump, append to tracked value (~750k ops/sec).
+- `docs/guide/brokers.md` gains a "choosing one" table, the README its
+  broker rows, and `pnpm brokers:up`/`brokers:down` bring the four servers
+  in `compose.yaml` up and down for the integration suites.
+
+**Message brokers, part 8: the Kafka adapter (`@alexify/wrpc/broker/kafka`)**
+- `createKafkaBroker({ kafka })` over an injected KafkaJS-shaped client —
+  `kafkajs` or `@confluentinc/kafka-javascript`'s `.KafkaJS`. The two differ
+  in CONFIG, not in method names, and `src/broker/kafka/shape.js`
+  normalizes every difference the phase-0 spike found: the `kafkaJS` config
+  nesting, `fromBeginning`/`autoCommit` placement, the `consumer.events`
+  getter that THROWS on one of them, `fetchTopicMetadata` answering an
+  array vs `{ topics }`, and the join signal (a GROUP_JOIN event vs polling
+  `assignment()`).
+- `log`: a topic per feed, single-partition by default (order), and the
+  resume token is a VECTOR of partition offsets. Readers pin their position
+  by seeking to a watermark captured before the join, because a fresh group
+  resolves `latest` at its first fetch — a race that would otherwise drop
+  the first entries.
+- `queue`: one consumer group, manual commits, `partitionsConsumedConcurrently`
+  as the prefetch. Kafka has no nack, so a retry is a republish carrying
+  `x-wrpc-attempt` (the delay waits in-process, the original stays
+  uncommitted meanwhile) and an exhausted message goes to a dead-letter
+  topic.
+- `backplane`: one topic, the channel in a header, a unique consumer group
+  per instance, publishes chained so a per-channel sequence cannot reorder.
+  Caveated in the guide: an instance is deaf until its group joins.
+- **No `direct`** — and it says so: RPC over a broker refuses Kafka rather
+  than limping.
+- Suites run over an in-repo fake Kafka (both client shapes) in `pnpm test`
+  and against a real broker in CI's new `kafka` job.
+
+**Message brokers, part 7: the RabbitMQ adapter (`@alexify/wrpc/broker/amqp`)**
+- `createAmqpBroker({ connection })` over an injected amqplib connection: a
+  direct exchange with one exclusive queue per instance for the backplane,
+  stream queues (`x-stream-offset` as the feed's resume token) for logs,
+  quorum queues with a TTL retry queue and a dead-letter queue for work, and
+  a fanout exchange per address for RPC (plain listeners each bind their own
+  exclusive queue, a group binds one durable queue).
+- Two RabbitMQ 4 behaviours the phase-0 spike measured are built in: a
+  requeue does NOT count a delivery, so `retry()` republishes with an
+  `x-wrpc-attempt` header while `release()` is the plain requeue that must
+  not count one; and a transient non-exclusive queue is refused at the
+  CONNECTION level, so every shared queue the adapter declares is durable.
+- `mandatory` + `basic.return` turns "nobody is listening" into the fast
+  `503` an RPC caller wants, and a request's timeout rides as the message's
+  `expiration` so a stale one is dropped rather than executed late.
+- Suites run over an in-repo fake RabbitMQ in `pnpm test` and against a real
+  server in CI's new `rabbitmq` job.
+
+**Message brokers, part 6: the NATS adapter (`@alexify/wrpc/broker/nats`)**
+- `createNatsBroker({ nc, headers, jetstream, jetstreamManager })` over an
+  injected nats.js connection: core subjects carry the backplane and RPC
+  (queue groups for a service address, native reply subjects for inboxes),
+  JetStream carries feeds (a stream per topic, the message sequence as the
+  resume token) and work queues (a durable pull consumer per group,
+  `max_ack_pending` as the prefetch, `working()` keeping a slow handler's
+  lease and releasing it the moment the consumer stops).
+- Without the JetStream factories the broker has backplane and direct only —
+  the capability checks do the rest.
+- Every application name becomes exactly ONE subject token, so a room called
+  `room:*` can never become a wildcard subscription; stream names are encoded
+  the same way.
+- Suites run over an in-repo fake NATS + JetStream in `pnpm test` and against
+  a real server in CI's new `nats` job.
+
+**Message brokers, part 5: the Redis adapter (`@alexify/wrpc/broker/redis`)**
+- `createRedisBroker({ client })` implements all four capabilities over an
+  injected ioredis-shaped client — pub/sub for the backplane (the adapter
+  `./scaling` already shipped), Streams for logs and queues (`XREADGROUP`,
+  `XACK`+`XDEL`, `XAUTOCLAIM` for what a stopped consumer held, a sorted set
+  for delayed retries), pub/sub plus a list for RPC inboxes and service
+  groups. Valkey, KeyDB and Dragonfly need no adapter of their own.
+- One blocking `XREAD` per instance serves every live feed reader
+  (`TopicTails`), and a stream id is the feed's resume token. The adapter
+  opens the extra connections blocking reads need through `duplicate()` (or
+  an injected `connect`) and quits only those — never the injected client.
+- The four contract suites run over an in-repo fake Redis in `pnpm test` and
+  against a real server in CI's `redis` job.
+
+**Message brokers, part 4: RPC over a broker (`attachBrokerRpc`, `transport: 'broker'`)**
+- `attachBrokerRpc(server, broker, { service })` serves wrpc over a broker's
+  `direct` capability, and `connect('broker://<service>', { transport:
+  'broker', broker, mode })` calls it — no HTTP, no WebSocket, no service
+  discovery between services that share a broker.
+- `mode: 'stateless'` (default): a request is handled exactly like a
+  packet-mode HTTP POST (`handleHttpCall`: batches, header sessions, meta),
+  by whichever instance the broker's group hands it to.
+- `mode: 'session'`: the full protocol (events, subscriptions, cancellation,
+  binary streams) with one instance, found by a `hello`/`welcome`
+  handshake. Frames are numbered per direction and a gap is a lost
+  connection; `bye` both ways; a server-side `idleTimeout` (90 s) reclaims
+  sessions whose client vanished; backpressure from unconfirmed sends.
+  Losing the instance is an ordinary reconnect, and subscriptions resume.
+- Draining stops consuming the service address while held sessions finish.
+- The carrier is specified as the experimental
+  [Broker binding](./docs/reference/protocol.md#broker-binding) section of
+  the protocol reference.
+
+**Message brokers, part 3: queue consumers and publishing (`attachConsumers`, `createPublisher`, `consumes`)**
+- A unit's reserved `consumes` block declares queue consumers — full
+  procedures with an optional `consume` policy — that no call packet can
+  reach and introspection does not list. `attachConsumers(server, broker,
+  table)` binds them (and, through the table, overrides their policy or binds
+  ORDINARY procedures to queues) and delivers each message through the same
+  pipeline a call takes: hooks, validators, access, queue/timeout, telemetry.
+- Settlement follows one table for every broker: ack on success; retry with
+  full-jitter backoff on `408/429/500/503` up to `attempts`; dead letter (with
+  `x-wrpc-dead-reason`/`x-wrpc-attempt`, after `onDeadLetter`) on anything
+  else or when exhausted; release on `503` while draining. `ctx.callMeta`
+  carries `messageId`, `attempt`, `queue` and allowlisted headers.
+- Identity per binding: `none` (default; a session procedure refuses to
+  bind), `service` (a pseudo-session) or `token` (a bearer header restores a
+  real session, one LRU-cached client per token).
+- The server's `'draining'` pauses every binding (held messages finish and
+  ack); `close()` now emits `'close'` first and stops them, releasing
+  whatever a close cut off. `RpcServer#limits` exposes the per-connection
+  caps; `attach(transport, { persistent: false })` attaches a
+  request/response carrier that is not counted among connected clients.
+- `createPublisher(server, broker, table)` publishes a unit's declared
+  `emits` by name to a log or a queue, with an optional validator and key;
+  each publish is a `PRODUCER` span whose context rides in the headers, so a
+  trace runs from the call that placed an order to the consumer that charged
+  it.
+- The queue contract gains `pause()`/`resume()`: no new deliveries, held
+  ones stay settleable.
+
+**Message brokers, part 2: durable subscription feeds (`brokerFeed`)**
+- `procedure.subscription({ handler: brokerFeed(broker, topic, options) })`
+  reads a broker log and `tracked()`s every value with the log's resume
+  token, so a client re-subscribing with `lastEventId` resumes on ANY
+  instance — the "broker-backed feed" recipe of the rooms guide, made
+  first-class. The topic may be a function of the context and arguments;
+  `map` reshapes or skips entries; an undecodable entry is logged
+  (`feed.decode`) and skipped.
+- A `lastEventId` the log cannot resume from ends the feed with `400`
+  (malformed, forged, past the tip) or `410` (history gone, another log) —
+  or, with `onGap`, becomes a snapshot followed by everything appended from
+  the moment of the gap (the read is positioned before the snapshot is
+  built). A reader the retention overtook mid-stream takes the same path.
+- `secret` HMAC-signs the ids a feed hands out and refuses any it never
+  issued; `maxIdLength` caps what a peer may send.
+
+**Message brokers, part 1: the broker-agnostic core (`@alexify/wrpc/broker`, experimental)**
+- A broker is described by four capabilities — `backplane` (the existing
+  at-most-once fan-out), `log` (ordered, replayable), `queue` (at-least-once,
+  competing consumers) and `direct` (addressable inboxes) — and every adapter
+  implements the subset natural to it. `isBroker`/`isBrokerLog`/
+  `isBrokerQueue`/`isBrokerDirect` are the structural checks.
+- `MemoryBroker` implements all four in one process: the reference the
+  contracts are written against, and what makes a multi-instance setup
+  testable without infrastructure. The contracts are executable
+  (`tests/broker/*Contract.js`) and run over the memory broker, the scaling
+  backplanes (a first shared backplane contract: `MemoryBackplane` and the
+  Redis adapter over its fake — which surfaced that the fake delivered
+  synchronously inside `publish()`, as no real Redis does) and, from the
+  adapter releases on, real servers.
+- Adapter building blocks: `TopicTails` (one live reader per topic shared by
+  every local read, catch-up joined without a gap or a duplicate, bounded
+  memory per slow reader) and `encodeToken` (arbitrary names into a broker's
+  alphabet, injectively — a room called `room:*` must never become a NATS
+  wildcard subscription).
+- Core seams, additive: `RpcServer.attach(transport, { session })` gives an
+  attached client a vouched-for identity before the onConnect hooks run, and
+  `{ request: { headers, url } }` restores a real one through the token
+  carrier; `drain()` announces itself once as a `'draining'` event; a
+  host-built client may set `spanKind`/`spanAttributes` for its call spans,
+  and the server telemetry writer gains `withMessagingSpan` and the
+  `wrpc.broker.deliveries`/`wrpc.broker.published` counters. The webrtc
+  browser budget moves 46 → 47 KB for those telemetry bytes (PeerHost
+  bundles the server writer).
+- `compose.yaml` starts RabbitMQ 4, Kafka 3.9 (KRaft) and NATS 2 with
+  JetStream next to Redis.
+
+
+**Injectable `fetch` for the http/sse client transports (`options.fetch`)**
+- `WrpcClient.connect(url, { transport: 'http' | 'sse', fetch })` lets the
+  transport call an injected `fetch` instead of the runtime's global one,
+  re-resolved on every open like `headers`/`meta`. The seam is for a Node
+  process that talks wrpc to another wrpc server and wants undici's
+  connection pooling, proxying, or a caching interceptor tuned for that
+  traffic — without wrpc ever depending on undici (it stays uninstalled;
+  the caller supplies the function). Not a way to reach arbitrary
+  third-party REST APIs through wrpc: the http/sse transports still only
+  call the one connected wrpc server.
+
+**Backplane loss detection (`epoch`/`seq`, `backplane.gap`, `wrpc.server.backplane.gaps`)**
+- Every backplane envelope carries the publisher's boot `epoch` and a
+  per-channel `seq`; a receiver that sees the sequence jump within one
+  epoch logs `backplane.gap` — `{ channel, instance, missed }` — and adds
+  `missed` to the new `wrpc.server.backplane.gaps` counter. Redis pub/sub
+  loses envelopes silently (a subscriber blip, an output-buffer eviction);
+  the loss is now a number on a dashboard. Additive fields: an older
+  instance's envelopes are delivered untracked; a new epoch resets rather
+  than reports. At-most-once stays the contract — the rooms guide gains
+  the three recipes for the cases that need more (a broker-backed
+  subscription, a room-backed event log, an acknowledged `ask`).
+
+**A multi-node bench and the Redis it needs (`bench/cluster-nodes.js`, `compose.yaml`)**
+- `pnpm redis:up` starts a Redis (`compose.yaml`); with `REDIS_URL` set,
+  `bench/cluster-nodes.js` forks N wrpc processes over that Redis (backplane
+  + session store, bearer sessions) with M clients spread across them and
+  measures cross-instance emit rate and latency, presence convergence after
+  a join/leave storm, broadcast ask across instances, and an instance loss —
+  its clients rehomed with their session token and no sticky routing, the
+  presence count converging, the loss detector's count. 4 instances × 200
+  clients: emit latency p50 2 ms / p99 4 ms across the broker, a 200-join
+  storm converging in 6 ms, ask answered 200/200, 50 rehomed clients with
+  50/50 sessions restored and 0 gaps. Without `REDIS_URL` it skips, so
+  `pnpm bench` stays self-contained. CI gains a `redis` job
+  (a Redis service) for `tests/scaling/redis.integration.test.js`.
+
+**REST response headers and a cache policy (`http.headers`, `http.cache`, `context.http`)**
+- The paper's "loss of intermediate HTTP caching" was a missing seam, not a
+  property of the model: a mapped route can now declare static response
+  `headers`, a handler (or hook) can shape the response through
+  `context.http` — `{ method, url, headers, setHeader(name, value),
+  status(code) }`, null on every non-REST transport and on packet-mode
+  HTTP — and `http.cache: { maxAge, public?, staleWhileRevalidate?, etag? }`
+  answers `Cache-Control`, a weak `ETag` and `304` on `If-None-Match`, on
+  GET and HEAD (HEAD is now served by the GET route, RFC 9110 9.3.2). The
+  policy is decided once the session is known and is the same function on
+  every host (`cacheHeadersFor`): only a public procedure on a request that
+  restored no session and set no cookie gets the declared policy; anything
+  session-bearing answers `private, no-store` and no ETag. Transport-owned
+  header names are refused. The fastify adapter applies both seams onto its
+  `reply` and leaves ETag/304 to `@fastify/etag`. Introspection carries
+  `headers`/`cache` only when declared.
+
+**`createRedisSessionStore` (`@alexify/wrpc/scaling`)**
+- An ioredis-shaped, injected session store — `get`, `set(key, value,
+  'PX', ttl)`, `del`, `pexpire` for the sliding expiry — so a client that
+  reconnects to another instance keeps its session and WebSocket traffic
+  needs no sticky routing. The scaling guide gains an affinity table: with a
+  shared store and a backplane only SSE channels stay pinned.
+
+**Context takeover and async deflate (`perMessageDeflate.contextTakeover`, `.async`)**
+- `contextTakeover: 'server' | 'client' | true` keeps a live zlib stream per
+  direction per connection (`src/websocket/deflateContext.js`), so a message
+  may reference the ones before it — the ratio the stateless default gives
+  up, at ~160 KiB per direction per connection at the defaults (`level`,
+  `memLevel` tune it). A peer's own `*_no_context_takeover` request is
+  always honoured. `async: { threshold }` (256 KiB by default) runs the
+  deflate and inflate of larger messages on zlib's threadpool instead of
+  the event loop. Both go through per-connection ordering queues: writes
+  issued behind an in-flight deflate wait for it, inbound messages are
+  delivered in arrival order, `bufferedAmount` counts the queued bytes so
+  the `send()` boolean and `'drain'` stay honest, and a fan-out over the
+  async threshold still deflates once (the first recipient starts it, the
+  rest wait on the same frame). `bench/deflate-context.js`: a repeated JSON
+  event compresses 10.6× with a context against 1.1× without; a burst of
+  100 × 252 KB frames stalls the loop for 328 ms synchronously and 2 ms
+  async, at four times the throughput. Takeover members of a room compress per
+  connection, the stateless default keeps the shared frame. Autobahn passes
+  in both modes (`AUTOBAHN_DEFLATE=takeover node scripts/autobahn/run.js`).
+
+**The call path, measured and trimmed (phase 1b of the paper's findings)**
+- `bench/support/rpc-stacks.js` gains two rows: the same RPC path over the
+  uws engine, and the own engine with `batch: true`. They answer the
+  question the old table could not: with 64 calls in flight wrpc runs at
+  95.8K over its own engine and 112K over uws against 129K for a raw uws
+  echo — the JavaScript engine is ~17 % of the gap, the RPC layer and the
+  client are the rest; client batching is worth as much as the engine swap.
+- `pnpm bench:browser` (`scripts/bench-browser.js` + `bench/browser/calls.js`,
+  `playwright-core` as a devDependency driving the installed Chrome) measures
+  the client's call path where it ships, over an in-page echo on a
+  `MessageChannel`. Chrome 152: 64 calls in flight 101,666 → 114,158 ops/sec,
+  1024 in flight 90,665 → 104,864 (the table is in `docs/guide/performance.md`).
+- Client call deadlines are one bucketed timer per client instead of a
+  `setTimeout` plus three closures per call: one lane per distinct timeout,
+  buckets of 1/32 of it (a call times out between its deadline and 3 % after,
+  never before), settled calls leave their bucket at once so an idle client
+  arms nothing. `bench/bench.js` call + server event round-trip 14.7K → 17.0K.
+- `Client.isReady` (server side): true once `ready` resolved, so a call
+  after the first skips the `await` and its microtask; `Context.uuid` is
+  minted on first read; `Procedure.invoke` calls the handler directly
+  instead of through `Promise.resolve().then()`; the dispatcher skips the
+  span wrapper and its options object when telemetry is off, as the client
+  already did; logger writers carry `debugEnabled` so the per-call debug
+  entry is not built for a writer that drops it. The client settles a
+  `callback` before the batch and heartbeat checks, without the `#dispatch`
+  hop.
+- Browser budgets raised with the measurement that earned them
+  (`scripts/size.js`): main 19 → 20 KB, sse 20 → 21 KB, webrtc 45 → 46 KB.
+
+**Fan-out frames encoded once (`Connection.sendPrepared`, capability `prepared`)**
+- A room broadcast now hands every recipient ONE shared
+  `{ text, frames, compress }` message (`Client.sendShared`,
+  `ServerWsTransport.writeShared`): the built-in engine encodes the frame —
+  and, with permessage-deflate, deflates it once per negotiated window — into
+  the message's cache slot on first use and writes that buffer to every later
+  recipient. `bench/send-path.js`: room fan-out ×50 went 102,997 → 637,248/sec,
+  ×200 28,651 → 321,820/sec, and ×50 with deflate 2,708 → 101,609/sec (the
+  36× compression cliff was N deflates per emit; it is now one per window).
+  `WrpcSocket.sendPrepared?()` is an optional, feature-detected addition to
+  the engine contract (`EngineCapabilities.prepared`; the contract suite
+  exercises it when present), so third-party engines need no change.
+- **Selective compression.** `perMessageDeflate: { filter: (req) => boolean }`
+  decides per connection whether a peer's offer is accepted — compression for
+  bandwidth-bound browsers, none for in-datacenter peers — and
+  `{ compress: false }` on `server.to(room).emit()`, `client.sendEvent()`,
+  `client.sendRaw()`, `client.send()` and `Connection.send()` sends one
+  message uncompressed past the threshold. `WrpcSocket.send()` gains the
+  optional second argument; sockets that ignore it compress as before.
+- `Connection` option `coalesce` (default `true` for server connections, off
+  for a bare `Connection`): the first write of an event-loop turn corks the
+  socket and the next tick uncorks it, so a batch of N answers or a burst of
+  events leaves in one `writev` instead of N syscalls. The `send()` boolean
+  and `'drain'` are unchanged.
+
+**WebTransport, experimental (`transport: 'wt'`, `@alexify/wrpc/wt`)**
+- `connect(url, { transport: ['wt', 'ws'], wt: { serverCertificateHashes } })`
+  runs the ordinary client over a WebTransport session (HTTP/3): every
+  packet and stream chunk travels on ONE client-opened bidirectional
+  stream — the control stream — under a five-byte length/kind header
+  (`docs/reference/protocol.md#webtransport`), so calls, events,
+  subscriptions with resume, binary streams with backpressure, heartbeat and
+  reconnect all work unchanged and the WebSocket fallback is invisible. The
+  transport is in the base client entry (no import for the fallback list;
+  the browser budget went 16 → 19 KB for it, datagrams and the stream mux included); the session comes from
+  `globalThis.WebTransport` or an injected `wt.WebTransport`. Declared
+  headers and meta ride the connect URL as on ws; a `CONNECT` sends no
+  cookies, so sessions need `bearerTransport()`/`payloadTransport()`.
+- `@alexify/wrpc/wt` is the server half, and binds to no implementation —
+  Node has no WebTransport of its own (`node:quic` is behind a compile-time
+  flag and speaks no WebTransport): `attachSession(server, session, meta)`
+  waits for the control stream, wraps the W3C-shaped session as a
+  `WrpcSocket` (`WtSocket`) and attaches it through `RpcServer.attachSocket`,
+  so a WebTransport client lands in the same `Server`, rooms, cluster and
+  session store as a WebSocket one; `acceptSessions(server, sessions)` loops
+  a host's `sessionStream()` (or any iterable); `fromFails(session)` and
+  `fromQuico(req, res)` read the `CONNECT` request off
+  `@fails-components/webtransport` and `quico` respectively (both
+  devDependencies, exercised by `WRPC_WT=`-guarded integration tests),
+  `failsRequestCallback` is the request callback a fails server needs, and
+  `isWtSession` is the structural check. `idleTimeout` terminates a session
+  that sends nothing — the liveness a host without its own session-end
+  reporting (quico) lacks. Close codes carry over: 1001 on
+  shutdown, 1002 on a framing violation, 403/408 on a refused session.
+- **Binary streams on their own WebTransport streams.** Once both ends have
+  announced it (each end's first message on the control stream is a KIND 2
+  capabilities message), every `createStream()` on either side gets a
+  unidirectional WebTransport stream: its chunks travel there, its `end()`
+  is that stream's FIN and its `terminate()` a reset, while calls, events
+  and subscriptions keep flowing on the control stream beside a large
+  transfer instead of behind it. The receiver holds early chunks until the
+  opening `stream` packet has passed and synthesizes the end only after the
+  stream's own FIN, so ordering is what a WebSocket gave; a peer that
+  announces nothing (an older peer, a wire codec) gets every chunk on the
+  control stream as before. `ServerWtTransport` (registered as
+  `ServerTransport.transport.wt`, which `attachSocket` now consults for
+  `meta.kind`) is what lets the server side see a stream packet before it
+  is serialized.
+- **Unreliable events.** `sendEvent(name, data, { unreliable: true })` on
+  the client, `client.sendEvent(...)` / `server.to(room).emit(...)` with the
+  same option on the server, send an event as ONE WebTransport datagram —
+  at most once, unordered, for state a later event supersedes (a cursor, a
+  position) — and reliably wherever the transport has no datagrams or the
+  packet does not fit in one, so application code is written once. A
+  `Broadcast` picks per recipient and carries the flag across the
+  backplane; `ask()` refuses it. The wire (`[KIND][packet]`) is in
+  `docs/reference/protocol.md#webtransport-datagrams`; `ClientTransport`
+  and `ServerTransport` gain an optional `writeUnreliable(text)` seam.
+- `node:quic` was evaluated as a host on a custom Node build and does not
+  qualify yet (it cannot send the WebTransport SETTINGS a client waits
+  for); the findings are in the guide.
+- The whole feature is marked `@experimental` and may change in a minor.
+
+**Transport fallback on the first connect**
+- `connect()` with a transport list now walks it on the FIRST connect too: a
+  candidate whose `open()` rejects outright (no `WebTransport` in this
+  runtime, a refused upgrade) hands over to the next one at once, with no
+  reconnect budget to burn first; only the last candidate's rejection is
+  `connect()`'s. Reconnect exhaustion falls through the list as before.
+- `RpcServer.attachSocket(socket, meta)` takes `meta.kind` — what
+  `Client.transportKind` and the log lines report for a socket that is not a
+  WebSocket (`'wt'`).
+
+**Shared Workers behind the `event` transport**
+- `connect(url, { worker })` takes a `SharedWorker` (reached through its
+  `port`), a dedicated `Worker` or a raw `MessagePort` as well as a
+  `ServiceWorker` — the page side posts to `worker.port ?? worker`, and every
+  client still gets its own `MessageChannel`.
+- `WrpcClientProxy` also listens on the SharedWorker `connect` event and
+  treats each page's port as the control bus `self` is in a Service Worker;
+  both listeners are registered, no context sniffing.
+- `WrpcClientProxy` takes a `url` option — the server the worker connects to,
+  defaulting to the one derived from `self.location` as before.
+- The proxy releases a port, and the answers parked on it, when the page
+  closes it (the `MessagePort` `close` event; best effort in older engines).
+
+**WebRTC: peer-to-peer wrpc (`@alexify/wrpc/webrtc`)**
+- WebRTC ships stable, signaling included: the whole surface — `WrpcPeer`,
+  `PeerLink`, `Mesh`, the link and the transports, the trust assertions and
+  the signaling unit — is under the ordinary semver promise, none of it
+  `@experimental`. The release gate the review set for it closed in this
+  release, each item with its normative line in the protocol reference:
+  reserved `peer`/`room`/`claims` in session data, a `members` roster for
+  members only, no empty fragments and a `maxFragments` cap, a minimum
+  negotiable message size, every `a=fingerprint` line bound by an
+  assertion, a responder that gives up without ending the link, the
+  goodbye's reason on the wire, the relay's limits, TypeErrors on water
+  marks and on a closing channel, `maxBackpressure`.
+- `WrpcPeer` — a router others call, a signaler to find them through, an
+  RTC adapter to reach them with. Two browsers (or a browser and a Node
+  process with an injected implementation) each serve a router and call the
+  other's over ONE `RTCPeerConnection` carrying two negotiated data
+  channels, one per client→host direction, so the ordinary `WrpcClient` and
+  dispatcher speak across the link unchanged: calls, events, ask/respond,
+  subscriptions with `lastEventId` resume, binary streams, heartbeat and
+  reconnect. `PeerLink` is one peer, both directions (`remote`, `api`,
+  `client`, `send`/`ask`/`createStream`); roles are by id order alone and
+  `connect()` works from either side (the non-initiator knocks).
+- `Mesh` (`peer.join(room)`) — everyone in a signaling room linked to
+  everyone, with `broadcast()`/`ask()` as one `Broadcast` fan-out over the
+  host room `mesh:<room>`, `respond()` covering members present and
+  future, and a rebuild on a signaling reset. A member whose signaling
+  connection dropped is only `away`: its link stays up until it leaves for
+  real, comes back as another incarnation, or the link itself fails.
+- Signaling: the structural `Signaler`/`RosterSignaler` contract
+  (`isSignaler`, `hasRoster`), the built-in server unit
+  `createSignalingUnit()` + `createSignalingHooks()` (relayed through
+  `RpcServer.sendTo`, so it clusters with no extra state) and its client
+  half `wrpcSignaler(client)` over any transport.
+- Stable peer identity: `createSignalingUnit({ identity })` decides a
+  connection's peer id — a user id from the session, say — from the context
+  and the id the client proposed (`wrpcSignaler(client, { identity })`); the
+  default stays the connection's client id. The id survives a signaling
+  reconnect, so a `WrpcPeer`'s links do too (`reset` with `id === previous`
+  keeps them). Each signaler carries one `instance` (`generateId` option),
+  which tells two incarnations of one id apart: a signal from another
+  incarnation abandons the stale link and relinks. `duplicate: 'replace' |
+  'refuse'` decides a second connection under a held id; the first hears
+  `replaced` (the peer emits it and closes). Rosters, `join`/`leave` and
+  signals carry `instance` and the routable `address`, and `leave` a
+  `reason` (`'left' | 'disconnect' | 'replaced'`).
+- Trust assertions: `createSignalingUnit({ assertions: { key, ttl, issuer,
+  claims } })` signs a JWS (compact, ES256, `typ: 'wrpc-rtc+jwt'`) per peer
+  binding its id to the DTLS certificate fingerprint it dials with, and
+  publishes its keys (`assert({ fingerprint })`, public `keys()`; the
+  client half's `signaler.assert()`/`keys()`, `hasAssertions`). `WrpcPeer({
+  assertions })` gets a token for every description it sends and verifies
+  every one it receives — `sub` is the sender, `fp` is the description's
+  fingerprint, `exp`/`iss` hold, the signature checks against the server's
+  public key (rotation by `kid`) — before the link applies it and before
+  `accept(from, room, { instance, claims })` runs; a redial's new
+  certificate is verified anew, an ICE restart is a string compare. The
+  verified claims are `link.claims`, and `PeerHost({ trust: 'assertion' })`
+  requires them and exposes them as `context.session.data.claims`. Exported
+  for both sides: `createAssertionVerifier`, `sdpFingerprint`,
+  `normalizeFingerprint`, `isAssertion`, `AssertionError` (browser and
+  Node), `createAssertionIssuer`, `generateAssertionKeys` (Node). The
+  format is specified in the protocol reference.
+- Bring your own data channel — the level under `RtcLink`, the `event`
+  transport's arrangement for WebRTC: `connect(url, { transport: 'webrtc',
+  channel })` speaks on an `RTCDataChannel` the application negotiated
+  itself (a factory instead of a channel plugs the application's own
+  recovery into the client's reconnect cycle), `RtcPeerTransport` takes a
+  raw channel for a `PeerHost`, and `attachChannel(rpc, dc, { peer,
+  headers, data, maxMessageSize })` from the Node barrel is the
+  `attachPort` of WebRTC — an ordinary server, sessions and cluster
+  included, reachable peer to peer. Under it, `RpcServer.attach(transport)`
+  accepts any persistent transport that announces inbound traffic as
+  `'packet'`/`'chunk'` events; the core stays free of any framing.
+- The lower layers, all exported: the W3C-shaped `RtcAdapter` port
+  (`createW3cAdapter`, structural checks — wrpc binds to no Node WebRTC
+  package), `RtcLink` (perfect negotiation, trickle ICE, ICE restart,
+  redial, configurable negotiated channel ids), the one-byte data-channel
+  framing (`FrameEncoder`/`FrameDecoder`, fragmentation to the negotiated
+  message size, documented in the protocol reference), `ClientRtcTransport`
+  (registered as `WrpcClient.transport.webrtc`), `RtcPeerTransport` and the
+  browser-safe `PeerHost` (`trust: 'link'` pseudo-sessions so
+  `access: 'session'` procedures run on a peer).
+- Peer telemetry: `WrpcPeer({ telemetry })` / `PeerHost({ telemetry })` take
+  the server's injection — SERVER spans for what a peer answers, joined to
+  the calling peer's CLIENT spans through the packet's traceparent,
+  `wrpc.server.connections` under `wrpc.transport: 'webrtc'` — plus four
+  instruments of the peer layer's own: `wrpc.rtc.links`, `wrpc.rtc.redials`,
+  `wrpc.rtc.ice_restarts`, `wrpc.rtc.closes`. `RtcLink` emits `'restart'`
+  with the outcome.
+- A link's goodbye says why: `{ type: 'close', reason }` on the wire —
+  `goodbye`, `refused` (a failed trust assertion, a `false` from `accept()`)
+  or `gave-up` (the redial budget) — and both `PeerLink`s (and the `RtcLink`
+  under them) emit `'close'` with a `{ reason, remote }` closure, kept on
+  `link.closure`; `abandoned` is a close this side never sent, `unknown` a
+  reason a newer peer named. `RtcLink.close(reason)` and `abandon(reason)`
+  take it, and `wrpc.rtc.closes` counts by `wrpc.rtc.reason` and
+  `wrpc.rtc.side` — a refusal, a give-up and a goodbye used to look the same
+  from the other end.
+- The webrtc browser entry also exports `defineRouter`, `procedure`,
+  `tracked` and `createEventLog` — a browser peer defines its router with
+  them, and the main browser entry leaves them out for its byte budget.
+- Cluster: `cluster.send(clientId, name, data, { room })` and
+  `RpcServer.sendTo()` / `Server.sendTo()` — one event to one client by id,
+  on this instance or through the cluster's addressed command, optionally
+  bounded by a room membership.
+- Types: `rpc.d.ts`, the node-free server-core types (routers, sessions,
+  rooms, `Client`, `Context`) shared by the Node surface and the browser
+  peer types, and `ClientHost` — the host contract `context.server` is now
+  typed as (see Changed).
+
+### Changed (breaking)
+
+- **Breaking — binary attachments are on by default between two 2.x
+  ends.** A `Buffer`, typed array, `ArrayBuffer` or `DataView` anywhere
+  in a call's arguments, result, event data or error details now leaves as
+  the binary attachments frame (`0x00 01`, the Added entry above) and
+  arrives as a `Uint8Array` — not as `{ type: 'Buffer', data: [...] }` or
+  `{ "0": 137, ... }`, which is what `JSON.stringify` made of it in 1.0.
+  What that changes: (1) a handler or listener that read `.data` or
+  `Object.values()` off such a value reads a `Uint8Array` now; (2) a
+  declared REST route's result with bytes answers `501` unless `codec.rest`
+  is set. (SSE is unchanged: it speaks revision 1, bytes as 1.0's JSON.) It is
+  **not** a wire break for a 1.0 peer: the frame is protocol revision 2,
+  negotiated (the first Added entry), and a connection with a 1.0 client or
+  server carries the JSON 1.0 sent — so during an upgrade the same handler
+  sees a `Uint8Array` from a 2.x peer and the 1.0 object from a 1.0 one,
+  and `client.revision` (on either end) says which. `attachments: false`
+  makes an end speak revision 1 to everyone; a packet `codec` does the
+  same by itself. See [Migrating from 1.0](#migrating-from-10).
+- **Breaking — the ws client no longer puts `headers`/`meta` in the connect
+  URL.** From Node they are real request headers on the upgrade (the built-in
+  `WebSocket` takes `{ protocols, headers }`); from a browser — where no API
+  can set a handshake header — they are `wrpc.h.` / `wrpc.m.` subprotocol
+  carrier tokens (the budget is measured on that base64url text, a third
+  longer than the JSON — about 1.5 KB of JSON for both bags; a JWT belongs
+  in `bearerAuth`, outside it). What the client could not send it says
+  only through its `logger`, off by default: `meta.oversize`,
+  `declared.unsendable`, `declared.exposed`, `handshake.fallback`.
+  The new `carrier` option (`'auto'` | `'protocol'` |
+  `'query'`) brings the query back for an intermediary that mangles
+  `Sec-WebSocket-Protocol`; `protocols: []` implies it. What changes for an
+  application: a **new browser client against a 1.0 server pays a second
+  handshake** (that server reads the query only, so the client, answered
+  `wrpc.v1`, dials again with it — the first Added entry; `carrier:
+  'query'` up front saves the round trip); a Node client's declared `cookie`/`origin` now arrive,
+  being real headers no deny list applies to; `metaFormat: 'prefixed'` now
+  shapes the ws wire from Node too; the client caps the two tokens **together**
+  at 2048 bytes (the query was capped per parameter, against a server that
+  measured it whole); and an `authorization` that ends up in the query is a
+  `declared.exposed` warning. uWebSockets.js hosts: mind its 4096-byte limit
+  on all request headers — see the [uws adapter guide](./docs/guide/adapters/uws.md#request-header-limit).
+- **Declared headers: the deny list grew.** `forwarded`, `via`, `x-real-ip`,
+  `x-client-ip`, `true-client-ip`, `cf-connecting-ip` and everything under
+  `x-forwarded-` are now dropped from a peer-declared header bag, next to
+  `cookie`/`host`/`origin` and the `sec-`/`content-`/`proxy-`/`x-wrpc-`
+  prefixes. A page could previously ADD `x-forwarded-for` to
+  `context.meta.headers` whenever no proxy had set one. `declaredHeaders` and
+  `RESERVED_DECLARED` moved from `src/rpc/meta.js` to the Node-only
+  `src/rpc/handshake.js` (neither was exported from the package).
+- `Context.server` and `Client.server` are typed as `ClientHost | null`
+  instead of `RpcServer | null`: the contract both an `RpcServer` and a
+  WebRTC `PeerHost` satisfy (`router`, `rooms`, `getClient`, `to`, `except`,
+  `broadcast`). Narrow with `instanceof RpcServer` to reach sessions, the
+  cluster or `sendTo`. Runtime behaviour is unchanged; TypeScript code that
+  reached `context.server.sessions` without a check stops compiling.
+- `ServerEventTransport` (the `attachPort` transport) now exposes
+  `connection`, so a MessagePort client is `persistent`: events,
+  subscriptions and streams work over it as over a socket. A server that
+  relied on a port client being request-scoped — one `Client` per call, no
+  `onConnect` — sees one long-lived `Client` per port instead.
+- **Breaking — under `cluster.secret`, a signed envelope must be counted,
+  and a 1.x node's is not.** Every envelope a node signs now carries, inside
+  the signed bytes, its counter (`seq`), the channel it is published on
+  (`ch`) and its clock (`at`), and a receiver refuses one that repeats, sits
+  on another channel, is further than `maxSkew` (30 s, new option) from its
+  own clock, or has no counter at all — the Security entry below has the
+  why. A 1.x node signs but does not count, so **a 2.0 node ignores a 1.x
+  node** and a rolling upgrade of a cluster that uses `secret` splits in two
+  until it completes: set `cluster: { secret, replay: 'accept' }` on the 2.0
+  nodes for its length. (The other direction is additive: a 1.x node
+  verifies the HMAC over the whole envelope, new fields included.) Clusters
+  without `secret` are unaffected, and so is `cluster.encryption`. The nodes
+  of a signed cluster now need clocks within `maxSkew` of each other.
+- **`generateId` on `RpcServer`/`Server`, `WrpcClient` and `PeerHost` is
+  validated strictly.** A value that is not a function, or a function that
+  answers something other than a non-empty string of at most 255
+  characters, is a `TypeError` at construction — as it has been on every
+  option added since 1.0 (`SseChannels`, the broker adapters, the
+  signaler). 1.0 ignored such a value silently; 1.x reported it through the
+  logger as `event: 'options.generateId'` and fell back to uuid v4, with
+  the note that 2.0 would throw. That log event is gone with the fallback.
+
+#### Migrating from 1.0
+
+Clients and servers upgrade **in any order, with no flag**: the protocol
+revision is negotiated, and a 2.x end speaks revision 1 to a 1.0 peer —
+bytes as 1.0's JSON, labels by the carrier 1.0 reads, the SSE channel
+reference as one opaque string. What is left to do:
+
+1. **Bytes during the upgrade**: a handler or listener that receives bytes
+   sees a `Uint8Array` from a 2.x peer and 1.0's `{ "0": … }` /
+   `{ type: 'Buffer', data }` object from a 1.0 one until the last peer is
+   upgraded; `context.client.revision` (server) and `client.revision`
+   (client) say which a connection is.
+2. **Several instances behind one address, over HTTP**: an HTTP client keeps
+   what one answer told it, and a frame it then sends to a 1.0 instance is
+   refused — the client takes the hint, speaks revision 1 again and resends
+   those packets once as JSON, so nothing is lost, but each such call costs
+   a second round trip. To spare it while a 1.0 instance is still in the
+   pool (or to make a rollback to 1.0 free), deploy the 2.0 ones with
+   `attachments: false` — they then answer `wrpc-version: 1` and nobody is
+   sent a frame. Drop the flag once the pool is all 2.0. (A WebSocket is one
+   connection to one instance and needs nothing.)
+3. **A page's `headers`/`meta` on a WebSocket** ride as subprotocol tokens,
+   which a 1.0 server does not read. A page that offered `wrpc.v2` and was
+   answered `wrpc.v1` dials once more with the connect-URL query 1.0 reads
+   (`handshake.requery`, and `declared.exposed` naming every header that is
+   now in the URL) — but a 2.x server deployed with `attachments: false`
+   answers `wrpc.v1` too, and is redialled for nothing, and a page that
+   itself sets `attachments: false` offers `wrpc.v1` alone and is never
+   redialled (`handshake.ambiguous`). Pages that must reach a 1.0 server set
+   `carrier: 'query'`; pages whose labels must stay out of URLs set
+   `carrier: 'protocol'`.
+4. **A rooms backplane or a cluster** has no handshake to negotiate on. The
+   same `attachments: false` on the 2.0 instances keeps their envelopes
+   JSON while a 1.0 instance subscribes — it drops a `wrpc-bin:` envelope
+   without a word. And under **`cluster.secret`**: deploy 2.0 with
+   `cluster: { secret, replay: 'accept' }` while a 1.x node is still in the
+   cluster — without it the 2.0 nodes refuse the 1.x nodes' envelopes
+   (`cluster.replay`, reason `unsequenced`) and each half sees only itself.
+   Drop both once the last 1.x node is gone.
+5. **TypeScript**: `context.server.sessions`, `.cluster` and `.sendTo` need
+   `if (context.server instanceof RpcServer)` (or a cast) — the type is the
+   `ClientHost` contract now.
+6. **`@alexify/wrpc/ws` directly**: `WebsocketServer` logs through
+   `globalThis.console` by default (it had no logger); `logger: false`
+   restores the silence, `logger: pino` routes it. An `RpcServer` wired to
+   it by hand with `attachments: false` passes `protocols: ['wrpc.v1']`.
+7. **`generateId`**: a bad value is a `TypeError` at construction now (it
+   was ignored in 1.0, logged in 1.x) — fix the option rather than catch
+   the error; a valid generator behaves exactly as before.
+
+### Changed
+- **Docs: the project is presented as wRPC — Web RPC.** 2.0 serves one
+  router over WebSocket, HTTP and REST, SSE, WebTransport, WebRTC, a worker
+  port and a message broker, and the site, the README, `llms.txt`, the og
+  image and `package.json#description` still described a WebSocket RPC
+  library. The name in prose is now **wRPC**; the package, the `wrpc` CLI,
+  every wire name (`wrpc.v2`, `x-wrpc-*`) and the classes keep their
+  spelling. The home page has sixteen tiles — WebTransport, WebRTC,
+  brokers, encryption, compression, bytes as bytes and "upgrade in any
+  order" among them — and a "one router, every transport" table that a
+  guard keeps equal to the client guide's matrix. The why page compares
+  wRPC with tRPC, Socket.IO, gRPC/Connect, the Bytecode Alliance's wRPC (an
+  unrelated project of the same name) and webrpc, every cell sourced; the
+  guides that listed transports list all of them.
+- **WebTransport and WebRTC are measured end to end.** `bench/transports.js`,
+  four new rows in `bench/rpc-comparison.js` and `pnpm bench:browser
+  transports` run the same Server and client over a real HTTP/3 session
+  (`@fails-components/webtransport`) and a real data channel
+  (`node-datachannel`, and Chrome's own), next to a raw echo over the same
+  stack and a WebSocket on the same machine — gated like the integration
+  tests (`WRPC_WT=fails`, `WRPC_RTC=node-datachannel`), skipped with the
+  reason otherwise. The numbers and how to read them are in
+  [Performance](./docs/guide/performance.md#across-transports).
+- **The benchmarks are charted, and wRPC is measured against more
+  neighbours.** Every comparison on the performance page has a bar chart
+  before its table — wRPC in the brand green, the rest in gray, a metric
+  switch, best first — and the home page shows the RPC-framework one. The
+  charts read `docs/.vitepress/theme/benchmarks.json`, which a guard keeps
+  equal to the printed tables. `bench/rpc-comparison.js` gained a gRPC row
+  (`@grpc/grpc-js` unary over HTTP/2, the `.proto` loaded at runtime), and the
+  new `bench/http-comparison.js` loads wRPC's two HTTP paths next to fastify,
+  express, tRPC's standalone adapter and bare `node:http` with autocannon, as
+  fastify/benchmarks does. Over a WebSocket wRPC leads the frameworks with
+  calls in flight and at 10 KB; over plain HTTP it answers 0.9× fastify's
+  requests and 1.2× express's — said on the page, with why.
+- **An HTTP request costs wRPC about half what it did.** Under
+  `bench/http-comparison.js`'s load the two HTTP paths answered ~35,000
+  requests a second, 0.58× fastify; they now answer ~61,000, 0.9×. A profile
+  of that load put a fifth of the server's CPU in `Client#destroy`: the
+  HTTP transport closes as its answer is written, the dispatcher released the
+  call only after, so every request built an `Error('Client disconnected')`
+  — a captured stack — to abort the call that had just answered. A call is
+  now released the moment its answer is written, and the reason is built
+  only when something is still in flight. The rest, each measured: a
+  packet-mode body is parsed once, not twice; `receiveBody` listens on the
+  request instead of `for await` (node's own stream destroyer still answers
+  an oversized body with its 400); `meta.headers` is a fast-mode
+  null-prototype copy where a `__proto__: null` literal made a dictionary;
+  the per-client close listener is `on` and a flag, not `once`; a declared
+  route's path skips the per-segment decode when nothing is escaped, an
+  absent query string skips `URLSearchParams`, and a body is handed to
+  `JSON.parse` as text. Each cites `bench/http-call.js`, new: it drives
+  `handleHttpCall` with a stub where the socket would be, and the core went
+  from 85K to ~320K requests a second on it. `bench/http-headers.js`, also
+  new, prices the default headers at about a tenth of `node:http`'s own
+  ceiling — they stay on. One thing a handler can see: on HTTP, `ctx.signal`
+  is no longer aborted once the call has answered — as on a WebSocket; a
+  request that goes away before its answer still aborts it.
+- **What the AMQP adapter reads is checked against amqplib.** Every member
+  the adapter reads off a channel or a connection must exist on amqplib's
+  own `ConfirmChannel` / `ChannelModel` (a devDependency), not only on the
+  suite's fake — which had a `closed` amqplib has none of, and hid a
+  retry that published three copies on a dead channel.
+- **The interop suite fails in CI when the published 1.0 is missing.**
+  Without the `wrpc-v1` alias every interop case skipped — the one that
+  guards the alias included — and the run passed green. Under
+  `WRPC_INTEGRATION_STRICT` (now set on CI's `test` job, as on the broker
+  jobs) a missing alias is a failure; a local run without it still skips.
+  The matrix gained this review's cases: SSE with bytes both ways, a page
+  against a 2.x server without frames and a page that offers `wrpc.v1`
+  alone, a worker port under a packet codec, and 2.x and 1.0 instances
+  behind one HTTP address.
+- **Connections are counted by the protocol revision they speak.**
+  `wrpc.server.connections` carries `wrpc.revision` (`1` or `2`) beside
+  `wrpc.transport`, so who is still on 1.0 during an upgrade is the `1`
+  series rather than a guess — a worker port or a WebTransport session whose
+  revision is settled after it opened moves from one series to the other —
+  and each connection that settles on revision 1 is a `revision.peer` debug
+  line. Every change of a server transport's revision goes through
+  `ServerTransport#setRevision`, which emits `'revision'`; an HTTP request's
+  revision is settled before its client exists. `rpc.revision` and
+  `context.client.revision` are in the server and rooms guides.
+- **A WebRTC message larger than `maxBackpressure` goes on an empty
+  channel.** The cap counted the message itself on top of what was queued,
+  so one message past it closed a channel that held nothing — the comment
+  over the check promised the opposite, and WebTransport and the WebSocket
+  engine let it through. Only what is already queued counts now.
+- **A WebTransport session cut off for not reading is a warn line.** Past
+  `maxBackpressure` the session was terminated with only `socket.error` and
+  `wt.close` at debug, where the WebSocket engine says `ws.backpressure` at
+  warn. It is `wt.backpressure` now (`buffered`, `max`), at warn.
+- **Bytes as deep as a direct send carries them cross the cluster as bytes.**
+  A backplane envelope wraps the packet, or a question's `args`, up to two
+  levels deeper than a packet holds its data, and the frame's depth limit
+  was counted from the envelope: bytes 31 levels deep in a node-to-node
+  question or answer — which a direct send delivers — reached the other
+  node as `{"0":…}`. A backplane envelope's frame reaches two levels
+  further (`ENVELOPE_DEPTH`), encoding, decoding and the HMAC's re-encoding
+  alike.
+- **A cluster node isolated by its clock is named.** A node whose clock
+  sat outside `maxSkew` had every envelope refused as `stale` while
+  `healthy` stayed true and `fetchClients` came back complete without it —
+  one `cluster.replay` line a `presenceTimeout`, with no measure of the
+  skew. The line carries `skew` (ms) now, and three refusals in a row emit
+  `'degraded'` with `{ instance, reason: 'skew', skew }` — `'recovered'`
+  with `{ instance }` once it is heard again.
+- **What `cluster: { replay: 'accept' }` lets through is counted and said.**
+  The option exists for a rolling upgrade from 1.x and should be dropped
+  once the last 1.x node is gone — but the envelopes it accepted were
+  neither counted nor logged, so nothing showed when that was. They are
+  `wrpc.cluster.verifications` with outcome `unsequenced`, and a
+  `cluster.unsequenced` line at info once per sender a `presenceTimeout`.
+- **A refused backplane or cluster envelope is a warn once, then debug.**
+  `cluster.unsigned`, `cluster.badsig`, `cluster.encoded` and
+  `cluster.sealed` were a warn per message — fifty unsigned envelopes,
+  fifty warns — and so were `*.unsealed` and `*.open` of the sealing
+  envelope on the backplane and the cluster. They are a warn once per
+  sender and reason a `presenceTimeout` (as `cluster.replay` was), and once
+  per reason and channel in ten seconds on the envelope, debug in between;
+  the memory behind them is capped, as an unsigned envelope names whatever
+  sender it likes.
+- **`subscribe.refused` clips the peer's id.** The line carried the
+  subscription's `id` as the peer sent it — 100 000 characters gave a
+  100 048-character warn. Ids are bounded at 255 now (the packet rule), and
+  this line clips it to 128 like every other peer-supplied text in a log.
+- **`revision.mismatch` is said at warn once, then at debug.** It is a
+  configuration error — a hand-composed engine selecting `wrpc.v2` for a
+  server that reads no frames — and the same on every connection, so it was
+  a warn per connection.
+- **The logging guide catalogues every `event` wrpc writes, and a test keeps
+  it so.** `docs/guide/logging.md` promised "every line an operator would
+  want an alert for" and listed about a hundred of some 240 names: none of
+  the broker adapters' lines (`broker.<adapter>.*` — the ones that say a
+  consumer stopped consuming), most of `rtc.*`, the rooms, backplane and
+  cluster failures, the SSE channel lines, the client's escalated errors.
+  They are all there now, by component, with their level and what they
+  mean. A guard in `tests/package/consistency.test.js` reads the event
+  names out of `src/` and fails on one with no row — and on a row whose
+  event is gone — so a log line cannot be added or renamed without its
+  documentation. `docs/guide/telemetry.md` lost four wrong statements with
+  it: a heartbeat timeout records **nothing** on `wrpc.client.heartbeat.rtt`
+  (it said "counted as `timeout`"; the signal is the `heartbeat.timeout`
+  line and an `attempted` reconnect), `wrpc.server.sessions` has six
+  operations and the gauges are seven (both said five), and
+  `wrpc.transport` also takes `wt` and `broker`.
+- **`RpcServer`: one `#identify` where five entry points each spelled out
+  who a request is (internal).** An SSE channel's GET, a packet POST, a
+  REST call, a host-delegated route and `attach({ request })` each built
+  the declared data, the session-restoring thunk and the client's meta by
+  hand, and two of them repeated the safe-method CSRF rule. They share one
+  private method now, and the rule lives only there. No behaviour change.
+  Two things caught up alongside: `RpcServer.attach({ meta })` normalizes
+  the meta it is given like every other entry point's — frozen, `headers` a
+  null-prototype copy, the rest defaulted — so `{ headers }` written by
+  hand is enough (typed `Partial<ClientMeta>`; a non-object is a
+  `TypeError`), and `RpcServer#limits` is typed with the `compression` and
+  `attachments` fields it always returned (`NormalizedCompression`).
+- **Broker adapters share one leaf instead of four copies (internal).**
+  `src/broker/adapter.js` now holds what Redis, NATS, RabbitMQ and Kafka
+  each spelled out themselves: the header names a redelivery carries, the
+  id factory, a refused `log.read` and a position-checked one (three
+  variants of the same wrapper, one of which differed only by accident),
+  the checks `consume` and `listen` open with, and what happens to a
+  delivery whose handler threw. The delivery object itself stays per
+  adapter — how a message is settled is where the brokers really differ.
+  No behaviour change: the four contract suites and the live brokers run
+  the same before and after; about 220 lines fewer. The RPC binding's two
+  ends likewise read and build a session frame through one `frameBody` and
+  one `sessionFrame` in `src/broker/rpc/frames.js`, where each had its own
+  (`bench/broker.js`, the rpc session rows, level before and after). And a
+  type caught up with its runtime: `ClientBrokerTransport.write(data,
+  options?)` takes the `{ compress: false }` it always honoured.
+- **WebRTC: `PeerLink` has a file of its own, and `WrpcPeer`'s internal
+  methods are private (internal).** `src/webrtc/peer.js` held three state
+  machines; `PeerLink` — the link's life, the redial and knock cycle — is
+  `src/webrtc/peerLink.js` now, re-exported from where it was. It and
+  `Mesh` used to be handed the whole peer and call public methods marked
+  `@internal` — `signal`, `stamp`, `verifyDescription`, `released`, `held`
+  — which were never in the types and could be called all the same, to
+  desynchronize it. They are `#private`, and what a link or a mesh needs
+  is a narrow port the peer builds over them. `escalate` stays public. One
+  `deferred()` (`src/webrtc/ids.js`) instead of two. No change of
+  behaviour: the WebRTC suites pass with one test rewritten, the one that
+  called `peer.signal()` directly.
+- **WebRTC fan-out: the message is prepared once for every link.**
+  `Mesh.broadcast` — `PeerHost.to(room).emit` — serialized its payload once
+  and then did everything else per link: an emit to 32 peers was 32 UTF-8
+  encodes of the same string and, under compression, 32 deflates of the
+  same bytes. A data channel cannot share a frame (each link has its own
+  message size), but everything before the fragments is common:
+  `RtcPeerTransport.writeShared` + `ChannelCodec.sendShared` keep the UTF-8
+  and one compressed body per codec id in the shared message, and only
+  fragment per link. `bench/rtc-fanout.js` (new), per recipient over 32
+  links: 16 KB compressed 37.7 → 2.2 µs, 16 KB plain 10.3 → 1.7, 512 B
+  0.51 → 0.14 plain and 9.1 → 0.44 compressed; an emit to exactly one link
+  pays 0.2 µs for it. An asynchronous codec is awaited once and each link
+  keeps its own send order around it; a codec that throws is asked once per
+  emit and the message goes plain; a slot a WebSocket engine filled (a room
+  mixing both) is left alone. The webrtc browser entry's budget is 58 KB
+  (was 57), for this and for the mesh's re-linking.
+- **WebTransport: one channel core for both ends (internal).** `WtSocket`
+  (the server's socket) and `ClientWtTransport` were mirror copies of the
+  same channel — the capabilities exchange, compression and its ordering,
+  the stream mux wiring, datagrams, the byte accounting, the graceful
+  close — and every change of it was two edits that could disagree. That
+  part is `src/webtransport/channel.js` now (browser-safe: callbacks, no
+  `node:events`); the two classes are adapters that keep what is theirs —
+  events, `pause()`, the idle timer, the log and the close codes on the
+  server; the open lifecycle, the wire codec and the encryption seam on the
+  client. No change of behaviour beyond the fix above: the suites of both
+  ends, the shared channel contract included, pass unchanged, and a
+  200-byte packet costs what it did through a socket (570 ns to send,
+  295 ns to receive, before and after). The main browser entry is 0.5 KB
+  larger for it (27,424 B of its 27 KB budget): the core carries what only
+  the server uses.
+- **WebTransport stream mux: measured, and one decode removed.** The new
+  `bench/wt-streams.js` times the per-chunk paths `bench/wt-framing.js`
+  stops short of. An outbound chunk decoded its stream id twice — once to
+  find the stream, once more only for the payload offset, which is one
+  byte read: `StreamMux.chunk()` is 13 % faster (867K → 980K ops/sec at
+  1 KiB). Two further candidates were measured and left alone, with the
+  numbers in the bench file's header: re-framing an inbound read from a
+  header cached per stream (13 % of the re-frame at 1 KiB, 7 % at 16 KiB —
+  the payload copy is the cost) and an idle timer that keeps a timestamp
+  instead of re-arming (55 ns a read, behind an option that is off by
+  default).
+- **`@alexify/wrpc/deflate`: a codec prepares its dictionary once.** The
+  pure-JS encoder allocated its window and 128 KB of hash heads on every
+  call and hashed the whole dictionary again each time, so a 108 B event
+  cost 11 µs — most of it the fill — and a 2 KB callback 32 µs against a
+  4 KB dictionary and 116 µs against a 32 KiB one: the codec that exists
+  for small frequent messages on a browser's main thread paid for the
+  dictionary per message. `createDeflateCodec` now keeps the window, the
+  dictionary's chains and a scratch region, built on its first message; a
+  call copies the message in, runs the same pass, and the next call first
+  puts back the hash slots the last one wrote. Same bytes — a thousand
+  messages through one codec are each compared with a fresh `deflateRaw`,
+  at three levels, with and without a dictionary. `bench/deflate-js.js`,
+  the new codec rows: the event 10.9 → 1.4 µs, the callback 32 → 13 and
+  116 → 13 µs; a message over 8 KiB takes the one-shot path as before.
+  The public `deflateRaw` is unchanged. One codec holds about 0.2 MB plus
+  five bytes per dictionary byte: one per page or process, not per
+  connection. The entry is 4.4 KB (budget 5).
+- **Broker RPC sessions and feed tails say when a broker loses frames or a
+  reader cannot keep up.** Why a session ended was in the log and nowhere
+  on a graph: `wrpc.broker.rpc.session.ends` counts every end by a closed
+  `wrpc.broker.reason` (`gap`, `peer_gap`, `undecodable`, `send_failed`,
+  `idle`, `replaced`, `bye`, `closing`) — the sequence numbers of a gap stay
+  in the log line and the peer's `wrpc-reason`. A frame lost on the
+  SERVER's way out is one only the client can see: its goodbye now carries
+  `wrpc-reason: gap`, and the server ends the session as `peer_gap`, at
+  warn, where it used to read as a routine `bye`. And a `TopicTails` reader
+  that falls `highWaterMark` entries behind had its buffer dropped and went
+  to `range()` without a sign: `onLag(topic, readers)` hears of it — once
+  per fall, nothing while everybody keeps up — and the four adapters log it
+  as `broker.tail.lag` (info).
+- **Docs: a heading with a badge is announced as its text.** A section
+  heading carrying a `since 2.0` badge and an explicit anchor had a
+  permalink whose `aria-label` was the heading's raw source — a screen
+  reader read out `<Badge type="info" …/> {#webrtc}`. The label is now
+  `Permalink to "WebRTC (since 2.0)"`.
+- **The examples are linted, formatted and checked against the package.**
+  `examples/` — what a reader copies first — was outside lint and format,
+  and nothing ran it, while the entries it requires (`webrtc.js`, `wt.js`,
+  `auth.js`) were reshaped on the way to 2.0. Its scripts are lint and
+  format targets now, and `tests/examples.test.js` compiles each one and
+  checks every name it takes from a root entry against what that entry
+  exports: a rename no longer leaves an example that throws on its first
+  line.
+- **The Redis session stores are tested against a real Redis.**
+  `createRedisSessionStore` and `sealedStore` over it were only ever run on
+  in-repo fakes, which accept an expiring `SET`, `PEXPIRE` and `SET … XX`
+  whatever they are handed. `tests/scaling/redis.integration.test.js` (CI's
+  `redis` job) now checks them on the server: the row's TTL and its slide
+  on `touch`, an update that does not bring back a deleted session, that
+  neither the token nor the state rests in Redis under `sealedStore`, and
+  that a key rotation moves the row — one per token, still expiring — and
+  signs nobody out.
+- **Coverage is held per file where the code is new.** The global
+  thresholds are an average, and a new adapter at 80% branches hid behind
+  three hundred well-covered files. `pnpm test:coverage:floors`
+  (`scripts/coverage-floors.js`, a step of CI's `test` job) checks every
+  file of the six directories new in 2.0 against its directory's floor —
+  set just under today's weakest file, with one named exception — and a
+  floor only ever moves up.
+- **Tests wait for what they assert, and watch as long as a real broker
+  needs.** The suites had seventeen copies of `waitFor` in three signatures,
+  most of them a count of polls — which stretches under load and still fails
+  a slow machine; they are one deadline-based helper now
+  (`tests/helpers/wait.js`, 5 s or `WRPC_TEST_TIMEOUT`). Three positive
+  assertions that slept a fixed time first wait for their event instead.
+  And the queue contract's "nothing more arrives" windows scale with the
+  harness: against a real broker an acked message was checked for 50 ms —
+  shorter than any redelivery — and is now watched for the broker's own
+  redelivery time (`ackWindow`), so a lost acknowledgement fails the live
+  suite instead of passing it. (Negative control: with the ack dropped and a
+  400 ms redelivery, the 50 ms window passes and the scaled one fails.)
+- **CI's test run cannot hang on a leak.** `pnpm test:ci` is
+  `test:coverage` with `--test-timeout=300000 --test-force-exit`, and it is
+  what the `test` job runs: a suite that leaves a listener or a timer behind
+  now fails in minutes with a summary, where it used to sit until the job's
+  own timeout. `pnpm test` and `test:coverage` are unchanged, so a leak stays
+  visible locally. The Kafka suite registers every broker's `close()` right
+  after it is opened, and the live Kafka suite warms the broker — one
+  throwaway group join and round trip, tried twice — before its first
+  contract case, so a broker that has just come up no longer fails the run.
+- **A durable feed opens and signs an entry once, not once per
+  subscriber.** `TopicTails` made a topic one broker read for all its local
+  subscribers, and each of them then opened the sealed entry and signed its
+  resume token again — the same bytes, N times. `brokerFeed` now remembers
+  both per entry: the opening by the entry the live tail shares, the token
+  in a small FIFO per feed. `bench/feed-fanout.js` (new), 1000 subscribers,
+  per subscriber-entry: with `secret` 2.34 → 0.84 µs, with `encryption`
+  4.67 → 0.71 µs at 0.2 KB and 5.71 → 0.74 µs at 2 KB, with both 6.69 →
+  0.91 µs — against 0.7 µs for a feed with neither. `decode` is still each
+  subscriber's own (a decoded object is never shared between connections;
+  the bench's `json` rows are that cost), and so is a catch-up page. One
+  visible change: an entry that does not open is logged and counted
+  (`broker.feed.refused`, `wrpc.broker.refused`) once, by the subscriber
+  that opened it, where every subscriber of the topic used to report it.
+- **`attachBrokerRpc().healthy` knows when its listeners are deaf.** It was
+  `true` until `stop()`, whatever happened to the broker — an instance whose
+  service consumer had been cancelled stayed in rotation, answering nothing.
+  The function `direct.listen()` resolves with may now carry a `healthy`
+  getter (`DirectStop`, optional — the structural check is unchanged and a
+  custom broker without it reads as healthy), and the binding's `healthy` is
+  `false` while either of its listeners says so. Redis: the service's
+  `BLPOP` or its presence lease is failing, or the connection reports
+  itself down — and back to `true` when they work again. NATS: the
+  subscription reported an error, or the connection closed. RabbitMQ: the
+  consumer was cancelled, its channel closed, or the connection is lost.
+  The last two do not recover by themselves: an unhealthy binding there is
+  the signal to restart the instance.
+- **A compression codec that fails is said, and counted.** A message is
+  never lost to compression — a codec that throws sends it plain, a frame
+  that does not inflate is refused and answered — which is exactly why a
+  dictionary that stopped matching, or a codec out of memory, showed up
+  nowhere but in the traffic. Every such failure is now counted
+  (`wrpc.compression.failures`, by `wrpc.compression.carrier` and
+  `wrpc.compression.direction`) and logged as `compression.failed` once per
+  carrier, direction and codec: the three encode paths of an HTTP answer,
+  an SSE encoder stream (which used to end the response without a word),
+  a WebTransport session, the rooms and cluster envelopes, the broker RPC
+  binding. A socket frame that does not inflate carries its `codec` and the
+  `code` in `frame.refused` — `ERR_BUFFER_TOO_LARGE` is `maxMessage`,
+  anything else the bytes. `encodeIfSmaller`/`decodeOrNull` take an error
+  receiver; `RpcServer#compressionFailed` is the seam the attachers report
+  through, `WtSocket` takes `onCodecError`. A WebRTC data channel stays
+  silent on purpose (per-frame, and in a browser bundle); nothing is added
+  per message — the counter is touched on the failure path alone.
+- **WebTransport: an unreliable datagram the session has not kept up with
+  is dropped, not queued.** `WtSocket.sendUnreliable` wrote to the
+  session's datagram sink without counting what it had not taken yet. On
+  the two hosts wrpc runs against that sink is synchronous and nothing
+  accumulates; on a W3C-shaped host whose sink holds its promise under
+  congestion, a room emitting positions `{ unreliable: true }` would have
+  queued stale ones without bound — the opposite of the option's promise.
+  Past 64 datagrams in flight a further one is dropped and still answered
+  `true` (false would re-send it on the control stream, behind the same
+  congestion), `wt.datagram.dropped` is logged once per session and the
+  total rides the session's `wt.close` line; `droppedDatagrams` reads it.
+  The protocol reference says a sender SHOULD drop rather than queue.
+- **WebTransport: `close()` delivers what was sent before it.** A session
+  close resets every stream, and both ends closed the session at once: the
+  last callback after `drain()`, the event sent before a kick and a
+  client's `flush()` were lost on `wt` and delivered on `ws`, so a
+  `['wt', 'ws']` fallback list was not invisible. A graceful `close()` on
+  either end now closes the control stream first — which resolves once its
+  queue was taken — and the session after it with the code, bounded by the
+  new `closeTimeout` (1000 ms; `attachSession`, `WtSocket`, the client's
+  `wt` options). `'close'` still fires synchronously on the closing end.
+  The end that reads the stream's end gives the session close 200 ms to
+  arrive, so the code it reports is the closer's rather than its own 1000.
+  `terminate()` is immediate, as before.
+- **ws engine: `close()` delivers what `send()` accepted, with or without
+  context takeover.** A message whose deflate runs off the loop (context
+  takeover, or `async` past its threshold) waits in an outbound queue with
+  everything sent behind it, and `close()` dropped that queue before
+  writing its Close frame — so `send(x); close()` delivered `x` on a plain
+  connection and silently lost it on one with takeover: the answer of the
+  call that ends a session, the event that says why a client is being
+  kicked. The Close frame now takes the queue's tail; nothing new is
+  accepted meanwhile, and `closeTimeout` bounds the whole close — a queue
+  that has not drained by then is dropped with one `ws.close.dropped` line
+  (`frames`, `bytes`) and the Close goes out. `terminate()`, a close for a
+  protocol violation or a limit, and a Close the peer sent first drop the
+  queue at once, as before. A behaviour of the stable `./ws` engine, hence
+  under Changed: code that relied on `close()` discarding queued writes
+  wants `terminate()`.
+- **A sealed fan-out builds its plaintext once.** Under session encryption
+  every recipient of a broadcast has its own key, so the frame cannot be
+  shared — but the plaintext inner frame can: the kind byte and the text's
+  UTF-8 were rebuilt from the same string for every sealed recipient.
+  `SealedSocket.sendPrepared` now builds it once per emit, on the shared
+  message, and seals it per recipient (`SecureChannel.sealInner`); each
+  recipient still gets its own nonce and ciphertext. Per recipient, in
+  `bench/encryption.js`: 2.76 → 2.68 µs at 64 B, 3.61 → 3.22 at 1 KB
+  (−11 %), 14.5 → 9.9 at 16 KB (−32 %) — the saving is the copy, so it grows
+  with the message; 10 000 recipients × 16 KB is ≈ 99 ms an emit where it
+  was ≈ 145. A broadcast held for a client still in its handshake is sealed
+  from the text when the handshake completes, as before.
+- **Tests: the broker adapters' recovery branches run against faults the
+  fakes now inject.** A JetStream consume that rejects (`failConsume` on the
+  NATS fake), a Redis server refusing `XREADGROUP` and `BLPOP` for a moment
+  (the fake's `fail` hook), a RabbitMQ `basic.cancel` (`cancelConsumer` on
+  the AMQP fake) — the branches where `healthy` goes false and comes back,
+  and the lines that say so, are covered where they used to be reachable
+  only against a live broker. The Kafka fake's comment on a handler that
+  throws says what the real clients do and what the fake does.
+- **Broker bindings log through the server's writer, and three events are
+  named by their family.** `attachConsumers` and `attachBrokerRpc` defaulted
+  their logger to the console, so a pino-configured server saw a dead
+  letter on the raw console without `event`, `queue` or `id`; they use
+  `rpc.log` now (`logger: false` still silences them). `feed.decode`,
+  `feed.refused` and `channel.error` are `broker.feed.decode`,
+  `broker.feed.refused` and `rtc.channel.error` — the prefix every other
+  line of their family carries — before any of them is released.
+- **README's Exports table is whole again, the size tables are current, and
+  the headlines quote the budget.** Two Exports rows (`wrpcFastify`/
+  `findUwsApp`, `createWrpc`) had been overwritten with size numbers; the
+  size tables in README and the browser guide are regenerated from
+  `pnpm size` with the `deflate`, `encryption` and broker rows added; the
+  headline sizes (README, the docs home, `llms.txt`, the performance and
+  WebTransport guides) quote the budget CI enforces rather than a number
+  that drifts, and the guides link the measured table. A package test holds
+  the tables' budget column to `scripts/size.js`.
+- **`http.compression.async` is validated by the one normalizer every
+  `async` knob shares.** `{ threshold: '64kb' }`, `{ threshold: 0 }` and
+  `async: []` landed silently on the 256 KiB default; they are TypeErrors
+  now, as on the socket codecs. The permessage-deflate `async` stays
+  lenient on purpose (the `./ws` engine must not import the negotiation
+  module) and the compression guide says so. The pure-JS deflate directory
+  keeps one `toBytes`.
+- **CI's NATS job runs JetStream, a missing client fails a service job
+  instead of skipping it, and the images are pinned.** A GitHub service
+  container cannot be given a command, so CI's NATS ran without `-js` and
+  the log, queue and feed suites skipped — green and untested; the job
+  starts `compose.yaml`'s service now, the one place the flags live.
+  `WRPC_INTEGRATION_STRICT=1` (set in the four service jobs) turns "client
+  not installed" from a skip into a failure. Images are pinned to a minor
+  in CI and compose alike (Redis 7.4, NATS 2.11, RabbitMQ 4.1, Kafka 3.9.1),
+  the workflow declares `permissions: contents: read`, and the lint job
+  has a timeout.
+- **SECURITY.md knows about the cryptography and the new parsers, and
+  says which line is supported.** The scope names `src/encryption/` (nonce
+  reuse, cross-layer opening, distinguishable `OpenError`s, downgrade,
+  replay), the parsers of hostile bytes beyond the WebSocket engine
+  (WebTransport framing, the pure-JS inflater, attachments frames, WebRTC
+  framing and trust assertions, broker resume tokens and sealed messages),
+  and says `@experimental` subpaths are in scope; a "documented limits"
+  paragraph points at what the encryption does not protect. The version
+  table says `2.x` is supported and `1.x` is not (no maintenance branch),
+  and a package test guards the table and the scope list.
+- **The types and the runtime are checked against each other both ways, on
+  every subpath.** The package test compared six barrels one way (a runtime
+  export the types never declared); it derives every subpath under both
+  conditions from `package.json#exports` now and checks both directions —
+  and found two: `ClientWtTransport` was declared as an exported class the
+  barrels never export (it is a type now, reached through
+  `WrpcClient.transport.wt`), and `@alexify/wrpc/deflate` exported an
+  `isPromise` helper its types never named (gone).
+- **The server half of WebTransport logs a session's death.** After
+  `attachSession` nothing was written: a refused handshake, a frame that
+  would not read, a silent peer, a session the host failed — none of them a
+  line. Every session has a `wt` child logger bound to its peer now
+  (`attachSession`'s `logger`, the server's by default, what
+  `acceptSessions` hands down): `wt.refused` (403/408), `wt.violation`
+  (`code`), `wt.idle`, `wt.session.error`, `wt.mux.refused`, a
+  once-per-session `wt.mux.fallback`, and a debug `wt.close` with the code
+  and the peer's reason clipped.
+- **A broker RPC session's end is logged at the level its reason
+  deserves, and a frame for a lost session leaves a debug line.** Every
+  `broker.rpc.session.end` was debug, so a broker losing frames (a sequence
+  gap, an undecodable frame) was as quiet as a goodbye; those are warn now,
+  an idle client info, the routine ends stay debug. A frame for a session
+  this instance does not hold answers the same bye it always did and says so
+  as `broker.rpc.session.unknown` — at debug, because any participant can
+  send those in a loop.
+- **A key provider that throws is an error line with the error, under
+  its own event — not a refusal without a reason.** On the rooms backplane,
+  the cluster channel, a broker feed or consumer and the sealed session
+  store, a provider that threw while a message was being opened used to
+  produce a warn without `reason` or `err` (a "vault unreachable" looked
+  like a peer's bad envelope). It is `backplane.keys`, `cluster.keys`,
+  `session.keys`, and `broker.refused`/`feed.refused` with reason `keys`,
+  at error with `err`; a refusal's `*.open` line carries the `kid` when it
+  is one; and a plaintext session row adopted under `acceptPlaintext` is a
+  `session.adopt` info line — what to count down before turning it off.
+- **A sealed request the server refused is a typed client error, with the
+  status the calls can act on.** The sealed `fetch` threw "answered in
+  plaintext (N)" and every call in the request failed `503`, so a device
+  with a wrong clock (`409`), a retired pinned key (`400`) and a server that
+  now requires encryption (`426`) all looked like an outage. The client
+  emits `EncryptionRefusedError` (`code: 'ENCRYPTION_REFUSED'`, `status`, a
+  message that says what to check) and the calls fail with that status —
+  for that closed set only, since the outer status is unauthenticated;
+  anything else stays `503`. On SSE a sealed-layer `409` never closes the
+  channel (that is the plain transport's "channel gone"), and a stale open
+  rejects with the typed error instead of reconnecting forever. The errors
+  reference lists the sealed statuses and the `encryption` close reasons.
+- **A refused session handshake says who, why, and at the level it
+  deserves — and is counted.** `encryption.refused` on a socket carries the
+  `peer` (a child binding), a `kid` or `protocol` only when it is shaped
+  like one (else its length — peer text stays out of the line), and a
+  failure on the server's side — a key provider or the `authorize` hook
+  that threw — is an error line with `err` under its own reason (`keys`,
+  `hook`) rather than a peer's `handshake` at debug. A new counter,
+  `wrpc.server.encryption`, counts handshakes established and refusals by
+  `wrpc.kind` (`ws`, `wt`, `http`) and `wrpc.outcome`.
+- **Trace context on a broker message rides as `traceparent`/`tracestate`.**
+  The publisher wrote the packet's field names (`tp`/`ts`) into the message
+  headers, which no consumer that is not wrpc reads; it writes the W3C
+  header names now, and the consumer reads them first (`tp`/`ts` still
+  read, for a message an earlier publisher left in a topic). The packet
+  fields on the wire are unchanged. The telemetry guide also stops promising
+  B3 or Jaeger propagators: the fields carry the W3C keys only.
+- **`wrpc.server.backplane.gaps` is labelled by `wrpc.channel.kind`, not
+  by the room's name.** The counter carried `wrpc.channel` — a room name, a
+  peer-chosen and unbounded value, which is a cardinality bomb in any
+  metrics backend. It carries `wrpc.channel.kind` (`room` or `broadcast`)
+  now; the exact channel and the count stay on the `backplane.gap` log line.
+  (The counter is new in this release, so no dashboard breaks.)
+- **Tests: one log recorder that keeps a child's bindings, one metrics rig.**
+  `tests/helpers/recorder.js` answers `child()` with a writer over the same
+  entries with the bindings merged in — the copies it replaces answered
+  `this`, so a line's `component` or `peer` never reached an assertion;
+  `tests/helpers/metrics.js` is the in-memory OpenTelemetry rig the WebRTC
+  telemetry test carried. The suites the observability work touches next use
+  them; the rest migrate as they are touched.
+- **The bench rows and the guide's numbers price what actually runs.** The
+  sealed fan-out row measured the bare AEAD per recipient (`bench/encryption.js`)
+  and the guide quoted it: 10 000 × 1 KB "≈ 25 ms". A recipient's
+  `SecureChannel.seal(text)` — the inner frame, the counter nonce, the
+  header — is 36 ms; the bench has that row now, a 64 KB binary chunk (27
+  µs) and the NK handshake (0.4 ms, the default pattern — the guide said
+  NN's 0.3), and the guide says so. A mesh broadcast is "serialized once",
+  not "single-encode": utf8, compression and fragmentation run per link
+  (`mesh.js`, the WebRTC guide, `scripts/size.js`). The pure-JS deflate
+  encoder re-hashes its dictionary on every call, and its comment and
+  `bench/deflate-js.js` (4 KB and 32 KiB dictionary rows: 34 and 138 µs on
+  a 2 KB callback) say so.
+- **The broker feed's resume, gap and snapshot scenarios run on the Redis
+  adapter, not only on the reference broker.** They live in one spec now
+  (`tests/broker/feedSpec.js`, the shape of the adapter spec), replayed over
+  the `MemoryBroker` and the fake Redis server — the reference and an
+  adapter can no longer drift apart unnoticed on what a feed promises.
+- **A raw channel's `maxMessageSize` is validated where it is given.**
+  `ClientRtcTransport`, `RtcPeerTransport` and `attachChannel` refuse a
+  value that is not an integer between 1024 and 262144 — negotiation's own
+  floor and ceiling — with a TypeError at construction (and at `open()`),
+  rather than a framing error at the first write or a scratch buffer of
+  whatever size was typed. (SEC-3; WebRTC ships stable, so the TypeError
+  lands before the release.)
+- **The compiled-serializer fast path does not walk a result for bytes
+  where no attachments frame could leave.** Under `attachments: false` (or
+  a packet codec) the dispatcher used to run `hasBytes` over every result
+  before its compiled serializer — a walk that costs about what the
+  envelope surgery saves on a large result (`bench/serialize-callback.js`
+  gained the row). `Client.attachments` says whether bytes would leave as a
+  frame on that connection; the walk runs only when they would.
+- **`rekeyAfter` is a per-deployment constant, and said to be one.** The
+  rekey interval of a Noise session travels in no handshake message, so a
+  client and a server that disagree fail at the first rekey — exactly that
+  many messages in, as a plain decrypt error. Both ends default to the same
+  2^20 out of one module (asserted), the option's JSDoc on both ends, the
+  guide and the protocol reference say it is not negotiated, and the
+  client's `encryption` object exposes its `rekeyAfter` read-only so a
+  deployment can compare the two.
+
+- `@alexify/wrpc/encryption` is `@experimental` **whole**: the subpath's
+  types, every `encryption` option it feeds (the server's and the client's,
+  `rooms`/`cluster`, the broker bindings, `sealedStore`),
+  `Client.encryption`, `encryptionKey()`/`encryptionRequired`,
+  `attach({ encrypted })`, and the session-encryption, sealed-request and
+  broker-sealing wire formats — the fifth carve-out next to telemetry, the
+  engine port, WebTransport and the brokers
+  ([Stability](./docs/reference/stability.md#experimental-carve-outs)). The
+  formats may change in a minor until they have been reviewed against real
+  deployments; `consistency.test.js` keeps the stability page, CONTRIBUTING
+  and `llms.txt` in step with `exports`.
+- `http.compression` / `sse.compression`: `level` and `memLevel` moved into
+  the coding they tune — `encodings: [{ encoding: 'gzip', level, memLevel }]`
+  — and are a `TypeError` at the top level (nothing of this was released).
+- Wire names that said "deflate" while carrying any codec are neutral
+  (nothing of this was released): the capabilities key `deflate` → `enc`
+  (WebTransport, WebRTC `caps`), `KIND_TEXT_DEFLATE` / `KIND_BINARY_DEFLATE`
+  → `KIND_TEXT_COMPRESSED` / `KIND_BINARY_COMPRESSED` and
+  `StreamParser.deflate` → `.compressed` in `@alexify/wrpc/wt`, the WebRTC
+  header's DEFLATE bit → COMPRESSED. Byte values are unchanged.
+- `@alexify/wrpc/deflate` is 3.8 KB min+gzip (was 4.5): it takes the
+  dictionary id from a leaf instead of the whole negotiation; its budget
+  goes 5 → 4. The main browser entry's goes 23 → 24 for the codec list
+  (+0.4 KB, measured 23.1), sse 24 → 25.
+- The platform deflate codec (`compression: true` on WebTransport, WebRTC,
+  the broker binding, the backplane envelopes and a Node WebSocket client)
+  compresses at zlib level **3** instead of 6: the knee of the curve — at
+  27 KB 46 µs for 3,351 B against 118 µs for 3,196 B, and the same bytes
+  under ~400 B (`bench/algorithms.js`). `deflateCompressor({ level: 6 })`
+  is the old behaviour.
+- `ClientEventTransport.getInstance` is deprecated. It still returns the
+  class-level singleton it always did, but `connect({ worker })` no longer
+  uses it — construct one with `new WrpcClient.transport.event(url)`.
+  `WrpcClient.transport.event` is now typed as that constructor.
+
+### Fixed
+- **A cancel that arrives while `onResponse` hooks run no longer answers the
+  call a second time.** The call stayed registered until its hooks settled,
+  so a `cancel` in that window aborted it and sent a 499 after the result
+  had gone out; an answered call is now released as its answer is written.
+  And an empty packet-mode POST is a malformed packet — one
+  `packet.malformed` warning and the id-less 500 — where it used to throw
+  inside the router and be logged at error level as `http.failed`.
+- **A connection refused by `authenticate` no longer resets the reconnect
+  backoff.** A hook that throws synchronously runs inside the transport's
+  `'open'` emit, where the ws transport is still settling its open, so the
+  `terminate()` the failure forces can only start a close handshake — and
+  the `'close'` comes when the server answers it. If that took longer than
+  `reconnect.stableAfter` (which defaults to `minDelay`), the stability
+  window counted the refused connection as proven and zeroed the attempt
+  count: the backoff restarted at `minDelay` (`10, 20, 10, 20, 40` on a
+  slow CI runner), and with a close slow enough every time it never grew
+  and `retries` never exhausted. A connection that fails its credential —
+  or its restore — now stops the stability window before it reports the
+  close; a test drives a transport whose forced close always arrives late.
+- **A finished `WrpcWritable` lets go of its transport, and a server's
+  downloads no longer lock a connection's uploads out.** Every writable
+  arms a `'close'` listener on its transport — so a disconnect mid-stream
+  sets `closed` and releases a parked `'drain'` — and nothing took it off
+  again: a long-lived connection held one listener (and one writable) per
+  stream it had ever carried, and a `WrpcClient` printed
+  `MaxListenersExceededWarning: Possible close memory leak` from the 11th
+  (`node bench/support/transport-worker.js ws`, 60 sequential 16 MiB
+  uploads: 52 warnings, 62 listeners) — in 1.0 too. The listener comes off
+  once the stream is finished: ended or terminated, with no `'drain'` still
+  owed to a producer, which the close listener stays to release if the
+  transport dies first. A stream that is still open notices the disconnect
+  as before; one already finished stays `closed: false`. The server-side
+  `Client.createStream()` also kept every writable in `client.streams` for
+  the connection's life, where the `maxStreams` cap counts what the peer
+  announced: once 256 downloads had gone, every later upload on that
+  connection was answered `429`. The map holds the peer's streams only now —
+  `getStream()` is never handed this end's own writable, and the typing is
+  `Map<string, WrpcReadable>`. `WrpcReadable` waits on its own events
+  only and had no such listener.
+- **WebTransport: a session on `@fails-components/webtransport` no longer
+  logs `datagrams.writable is deprecated`.** The session check of
+  `attachSession` (`isWtDatagrams`) read the legacy `datagrams.writable`
+  getter before looking for `createWritable()`, and that host warns — and
+  creates a writable — on the read. The factory is tested first now, as the
+  datagram writer already did, so the getter is read only by a host that
+  has nothing else; such a host validates and sends as before.
+- **`@alexify/wrpc/query` type-checks in a project without Node types.**
+  Its declarations imported the Node barrel (`index.d.ts`) for seven names
+  `client.d.ts` declares, so a browser-only TypeScript project without
+  `@types/node` got some 40 errors (`node:http`, `Buffer`) for importing it —
+  in 1.0 too. They import `client.d.ts` now, and a guard type-checks every
+  browser-reachable entry (`browser`, `sse`, `query`, `auth`, `deflate`,
+  `encryption`, `webrtc`) with no Node types at all.
+- **A sealed delivery whose key provider threw is retried, not
+  dead-lettered.** A consumer under `encryption` dead-lettered the message
+  with `400 Sealed delivery refused`, unprocessed, on the provider's first
+  failure. A provider that throws is this service's own blip: it is
+  retried like an unknown key id — `503` under the binding's `retry` —
+  before it dead-letters.
+- **AMQP: a direct listener the server cancelled, or whose channel closed,
+  comes back.** It went `healthy: false` for good, and a send to its
+  address was taken and delivered nowhere. It re-opens now as a queue
+  consumer does — a fresh channel, its queue declared and bound again,
+  with a backoff, each failed attempt logged `broker.amqp.direct.reopen` —
+  and `healthy` is true again once it is in place.
+- **AMQP: a paused consumer stays paused across a re-open, and the
+  backplane hears again after a cancel.** A consumer whose channel the
+  server closed during `pause()` came back consuming, and delivered what
+  was sent during the pause; the re-open respects the pause now and
+  `resume()` starts it. The backplane's consumer, cancelled by the server
+  (its queue deleted, its node gone), took the cancel for a closed channel
+  — which it was not — and the rooms went deaf without a line. It is
+  logged `broker.amqp.cancelled` and its channel closed, so
+  `backplane.rebind` brings it back.
+- **A session store that fails is a `503`, not a `403` — so a broker
+  delivery retries it.** A connection whose token restore threw
+  (`session.restore`) went on without a session, and a `session` procedure
+  answered it `403` — which a consumer in token mode dead-letters at once:
+  one blip of the store sent deliveries to the dead-letter queue
+  unprocessed. Such a connection answers `503` now (a subscribe:
+  `Session store unavailable`), which the binding's `retry` takes;
+  `Client#sessionUnavailable` says which it is. A token that names no
+  session is still `403`.
+- **NATS: a feed reader's consumer is reaped 30 s after its reader dies, not
+  347 days.** The ephemeral consumers of a log read and its catch-up carry
+  `inactive_threshold`, which the adapter passed in nanoseconds to
+  `consumers.get()` — and that takes milliseconds and converts them
+  itself, so the server was told 3·10¹⁶ ns. The in-repo fake converts as
+  `@nats-io/jetstream` does now, and the suite reads what the server
+  would be told.
+- **AMQP: a retry or a dead letter on a consumer channel that died writes
+  one copy.** A settlement publishes its copy (the retry, the dead letter)
+  and then acks the original; the two were retried together, under a
+  `channel.closed` amqplib's channel does not have — so on a consumer
+  channel that had died the ack kept failing and every round published
+  again: three copies of one delivery. The publish is retried alone now,
+  while the channel is still the consumer's, and the ack runs once after
+  it; a channel gone by then hands the original back itself — one more
+  delivery, never one more copy. The suite's fake channel took an ack on a
+  closed channel silently, as amqplib does not, and that is how no test
+  saw it.
+- **A WebSocket closed while its inflate queue holds the socket reads its
+  peer's Close.** A burst of compressed frames pauses the socket until the
+  inflates drain; a `close()` meanwhile dropped the queue but left the
+  socket paused, so the peer's Close went unread and the connection ended
+  at `closeTimeout` with `1006`. Dropping the queue resumes what the hold
+  paused (an application's own `pause()` stands).
+- **The `.d.ts` files describe what the runtime has.** `ServerTransport`
+  gains `revision`, `attachments` and `setRevision`, the port transport
+  `max` and `negotiate`, `buildHeaders` its third argument (`revision`), and
+  the server `Client` its `attachments` getter; `attachPort`'s comment no
+  longer says a page's `wrpc:connect` carries `v` — a wrpc page sends none.
+  The parity guard of `tests/package/consistency.test.js` now compares
+  MEMBERS too: every public member of `ServerTransport` and its transports,
+  the server `Client`, `RpcServer` and `WrpcClient` must be declared on its
+  d.ts class, the few the core calls on itself named in the test.
+- **The engine contract says that `socket.protocol` decides the revision.**
+  The core reads it once at attach — `wrpc.v2` is revision 2, anything else
+  revision 1 — so an adapter that never set it served every client at
+  revision 1 without a word. `docs/reference/engine.md` and `engine.d.ts`
+  say so, and the engine contract checks that the server-side socket's
+  `protocol` is the subprotocol the handshake selected, on both engines.
+- **The broker binding negotiates the revision; a stateless request holding
+  bytes is answered.** A session's `hello` and `welcome` now say whether
+  each side reads framed messages (`wrpc-version: 2`), and a session sends
+  a frame only to a side that said so — two ends whose `attachments`
+  disagreed used to send each other frames the other refused unread, a
+  `408` per call. A stateless request is revision 1 both ways: its body is
+  read as text and its answer was always JSON, yet the client sent a frame
+  whenever the arguments held bytes, and the call timed out even between
+  two ends with the defaults. Its bytes now travel as 1.0's JSON.
+- **WebRTC negotiates the revision, per half of a peer.** Two `WrpcPeer`s
+  whose `attachments` disagreed (`host: { attachments: false }`, or a
+  client half with `attachments: false`) sent each other frames the other
+  refused unread, and a call holding bytes was never answered. Each
+  description now carries `caps.f` — bit `1` this peer's host reads framed
+  messages, bit `2` its client does — and each half sends a frame only where
+  the other peer's matching half said so. `PeerHost#revision` is what a peer
+  announces for its host. Over a raw channel there is no handshake: the two
+  applications set `attachments` alike, as they agree on compression.
+- **WebTransport negotiates the revision.** It was "always revision 2", so
+  two ends whose `attachments` disagreed sent each other frames the other
+  refused unread — a call holding bytes timed out (`408`) where the same
+  pair over a WebSocket settled on revision 1. Each end now says in its
+  capabilities message whether it reads framed messages (`f: 1`) and sends a
+  frame only once the peer said so and it reads them itself; until then a
+  packet's bytes leave as 1.0's JSON. `client.revision` and the server's
+  `context.client.revision` say what was settled.
+- **An answer whose form follows `Accept` says `Vary: Accept`.** A packet-mode
+  or conventional REST answer is a frame for a request that names
+  `application/octet-stream` and JSON otherwise, and carried no `Vary` for
+  it: a shared cache could hand one caller's frame to another that reads
+  JSON. It is added (joined onto `Vary: Origin` and `Accept-Encoding`)
+  wherever the server can answer a frame; a server under
+  `attachments: false` or a packet codec does not vary on it.
+- **WebTransport delivers what the peer sent before a graceful close, under
+  an asynchronous codec too.** A channel stopped reading its control stream
+  at four inflates in flight — a browser's `DecompressionStream` answers
+  asynchronously — so a peer's last burst stayed unread in the stream, and
+  the session close that follows a graceful close resets the stream and
+  drops what it holds; what had been read was dropped by the shut. The
+  reader now stops on BYTES held (1 MiB read and not yet delivered), not on
+  a count, and on the session's graceful end both ends let the channel
+  deliver what it read (`closeTimeout` at most) before shutting it.
+- **`acceptSessions` checks the per-session options at the call.** A bad
+  `maxBackpressure`, timeout, stream cap or compression codec was accepted
+  and then failed every session it attached — each client saw `Not
+  connected`, `onError` a `TypeError` per session. They are checked once,
+  where `acceptSessions` is called, by the same check `attachSession` runs
+  before a handshake.
+- **A `WtSocket` whose option is refused leaves no timer behind.** The idle
+  timer was armed before the channel was built, so an option the channel
+  refuses (an unknown compression codec) threw its `TypeError` — and
+  `idleTimeout` ms later the timer read the channel that never was: an
+  uncaught `TypeError` that ended the process. The timer is armed once the
+  channel exists.
+- **`upload()` of a blob uploader runs once.** A second call wrote into the
+  stream the first had ended and waited for a `'drain'` that never came —
+  a promise that never settled. It rejects at once now; create another
+  uploader for another upload.
+- **The worker proxy opens one upstream connection, and answers its pages
+  when it is lost.** Pages whose first packets arrived together each started
+  a connect — three tabs, three sockets to the server — and when the
+  upstream closed under a call, the page heard nothing until its own
+  `callTimeout`: the proxy's client answers only its own calls, and a page's
+  went up as raw packets. `open()` is single-flight now, and on the
+  upstream's `close` every page's call in flight is answered `503` and every
+  subscription ended with the same error.
+- **An HTTP client that sent a frame to a server that reads none sends it
+  again as JSON instead of timing out.** The revision an HTTP client learns
+  from `wrpc-version: 2` was never lowered, so behind one address shared by
+  2.x and 1.0 instances — or after a rollback to 1.0 — every call holding
+  bytes that landed on a 1.0 instance was refused before it was read (an
+  id-less `500`) and ended in a `408` after `callTimeout`. A frame answered
+  by wrpc without `wrpc-version: 2` now lowers the client to revision 1 and
+  the same packets go once more as JSON; an answer with no packet in it (a
+  proxy's error page) changes nothing.
+- **A worker port under a packet codec no longer opens with a malformed
+  packet.** The page's first `ping` — the one naming its revision — was
+  JSON text whatever the client's `codec`, and a server attached to the
+  port decodes everything with its own: `packet.malformed` on every
+  connect, and an id-less `500` the page heard as an error. The ping goes
+  through the codec now and its `pong` is read back through it, so the page
+  still learns it talks to a 2.x end and still says goodbye on `close()`.
+- **The Autobahn runner no longer calls a truncated run a pass.**
+  `node scripts/autobahn/run.js` graded whatever cases the report held, and
+  the fuzzing client writes a report even when it gives up half-way — one
+  connect to the echo server that times out (an emulated image on a busy
+  Docker VM) ends the whole suite. Such a run printed "all cases passed" on
+  262 of 517 cases. The runner now reads the client's output as it goes: a
+  lost connection, or a report with fewer cases than were started, fails
+  the run, and a pass says how many cases it stands on ("all 517 cases
+  passed").
+- **Kafka feeds: a resume storm is queued, and identical pages are one
+  read.** A catch-up page is a consumer group of its own (the KafkaJS shape
+  has no manual assignment) — a connection, a JoinGroup, seconds of a
+  coordinator's time — and after a deploy every resuming client opened one
+  at once: hundreds of groups joining together. `createKafkaBroker` takes
+  `maxCatchUp` (4): that many pages are read at a time, the rest wait first
+  come first served, and a page that fails hands its turn on. Pages asked
+  for with the same topic, resume token and size — a room that lost one
+  instance — share a single read. Latency under a storm is the trade; the
+  option is validated (a positive integer).
+- **Docs: what a retry delay means on RabbitMQ, and how to drain a
+  dead-letter queue.** The AMQP adapter republishes every retry to one
+  `<queue>.retry` queue with a per-message expiration, and RabbitMQ expires
+  only the head of a queue — so under the *default* policy (exponential,
+  full jitter) a retry due in 300 ms can wait behind one due in 8 s. The
+  guide advised a "uniform" schedule without saying the default was not
+  one; it now says the delays are a lower bound there, gives the policy
+  that makes them exact (`backoff: { base, max: base, factor: 1, jitter:
+  false }`), and that the retry queue is classic — durable, not replicated.
+  The consumers guide gained "Draining a dead-letter queue": the two
+  headers a dead letter carries, where to alert, and why a message moved
+  back verbatim goes straight to the dead-letter queue again (it still
+  carries `x-wrpc-attempt`) — re-drive by publishing a new one.
+- **A mesh makes a lost edge again.** `Mesh` linked a member when it
+  joined and never looked back: once a link gave up — its redial budget
+  spent, a goodbye to the link that was not a leave of the room, an
+  `accept()` that refused — the two peers stayed in the room unlinked for
+  good, and `broadcast()`/`ask()` went around the member without a word.
+  The mesh keeps the roster now, and an edge to a member still on it is
+  dialled again: after `minDelay` (1 s), backing off with full jitter to
+  `maxDelay` (60 s), then every minute while the member stays — no attempt
+  count, since a refusal arrives as a close like any other. `'unreachable'`
+  (`{ id, attempts }`, and `mesh.unreachable` in the log) says once per
+  outage that the pace has reached that floor; `'join'` fires again when
+  the edge is back. `peer.join(room, { relink })` sets the pace or, with
+  `false`, restores the old behaviour. A member that left, a mesh that
+  left, and a member that was only `away` when its link went are not
+  dialled.
+- **WebRTC port: `send()` must copy, and the contract says so; the
+  declarations match the runtime.** The framing layer writes every fragment
+  of a message into one reused buffer and hands `channel.send()` a view of
+  it — which relies on `send` copying synchronously, and copying the view's
+  own offset and length. A browser and node-datachannel do; neither the port
+  contract, its types nor the wrapper advice in the guide said so, and the
+  shared contract suite sent only whole-buffer views, so a wrapper doing
+  `Buffer.from(view.buffer)` passed it and corrupted every multi-fragment
+  message. The contract is stated (`src/webrtc/port.js`, the JSDoc of
+  `RtcDataChannelLike.send`, the guide) and tested
+  (`tests/webrtc/portContract.js`, against the fake and, by hand,
+  node-datachannel). Types: `PeerHostOptions.introspection` takes
+  `'session'` and `{ access, schemas }` as the runtime does;
+  `FrameEncoder.encode`/`encodeText` answer the fragment count;
+  `FrameDecoder` has `compressed` and `push()` says whether its result is
+  still deflated; `FramingError` codes include `'inflate'`; `WrpcPeer#log`
+  is declared.
+- **WebTransport client: `highWaterMark`, `lowWaterMark`, `maxBackpressure`
+  and `maxMessage` in the `wt` bag of `connect()` take effect.** The
+  transport read those four from its constructor's options only, and
+  `connect()` builds the transport with none — so the documented
+  `connect(url, { wt: { highWaterMark } })` was ignored and the defaults
+  applied. They are read per open, from the same merged bag as
+  `compression` and `closeTimeout`; a bad `maxBackpressure` there rejects
+  `open()`.
+- **`@alexify/wrpc/wt`: the types caught up with the runtime, and a
+  throwing `onError` no longer rejects `done`.** `acceptSessions` calls
+  `onError(error, null)` when the session SOURCE fails, which the type did
+  not admit (`session: WtSession`) — so the natural handler,
+  `(error, session) => session.close()`, threw there, and that throw
+  rejected the `done` promise documented as always resolving: an unhandled
+  rejection. `onError` is typed `WtSession | null`, and one that throws is
+  logged as `wt.onError`. Also typed now: `WtSocket.send(data, { compress })`,
+  `WtSocket.streamControl(packet)`, and `frame()` with the compressed kinds
+  3 and 4 it has always written.
+- **`rooms.compression` and `rooms.encryption` are validated on an instance
+  without a backplane, `rooms.backplane` is refused, an unknown `rooms` key
+  warns.** The rooms envelope was only built once a backplane existed, so a
+  single-instance server accepted a codec name the platform lacks or a
+  keyring that is not one and found out on the day a backplane was added;
+  and `rooms: { backplane }` — the compression guide's own snippet — was a
+  silent no-op (the backplane is a top-level option): a TypeError now, and
+  any other unknown key a `rooms.option` warning. The guide's snippets and
+  the wire-format reference are brought to the code (the data-channel
+  header's COMPRESSED bit, the five WebTransport frame kinds, the PeerHost's
+  real `maxCalls` default, the WebTransport example's manual fallback, the
+  `auth` import the WebTransport guide's snippet needed).
+- **`createRedisBroker({ client: new Redis() })` type-checks again — and
+  every injected client type is held against the real package.** The
+  Redis client interface spelled each stream, sorted-set and `set` command
+  with exact arguments; ioredis declares them as stacks of overloads, which
+  no single signature is assignable from, so the documented use was a
+  TypeScript error (ten of twenty-six members). Those commands are
+  `(...args) => Promise<any>` now, in `RedisBrokerClient` and the session
+  store's client alike, and the tsd suites hold the real `Redis`, kafkajs
+  `Kafka`, Confluent `KafkaJS.Kafka`, NATS connection and amqplib
+  `ChannelModel` types against the interfaces they are meant to satisfy.
+- **`wrpc.rtc.assertions` says why a trust assertion was refused.** The
+  counter read a `reason` no `AssertionError` ever had, so every refusal
+  was `invalid` and a substitution (`signature`, `fingerprint`, `subject`)
+  could not be told from a clock or a rotation (`expired`, `kid`). It
+  carries the verifier's code now; the telemetry guide says which outcomes
+  are security signals. Redials are counted where they happen, and a
+  `signaling.undeliverable` is a debug line (a trickled candidate that
+  crossed a `leave` is a routine race).
+- **A connection that dies on an engine leaves a line.** The uWebSockets.js
+  engine ignored the logger the `Server` shell handed to `attach()` (its own
+  default was `false`), so `uws.dropped` went nowhere whatever the shell was
+  told; it takes the attached writer now unless built with its own, and the
+  fastify and express adapters pass the server's. A permessage-deflate
+  failure on the way OUT was an `'error'` nobody may be listening to; it is
+  `ws.deflate`, the mirror of `ws.inflate`. And a socket's `error` under a
+  client is a debug `socket.error` line beside the engine's own.
+- **A broadcast flood during a client's Noise handshake no longer costs
+  it the connection.** A sealed socket held everything sent before the
+  handshake in one queue of 256 and closed the connection past it — so a
+  busy room closed every client that was still connecting. It offers
+  `sendPrepared` now: a shared (broadcast) message before the handshake is
+  held under its own bound of 256, past which the rest is dropped for that
+  client, counted, and said once as `encryption.queue.dropped` when the
+  handshake completes; a direct send flood still closes (`1008`, `queue`).
+  After the handshake every recipient seals its own copy, as before.
+- **The rooms backplane's per-channel publish counters no longer grow with
+  every room name an instance ever published to.** The `seq` table of loss
+  detection kept one entry per channel forever (300k unique rooms held ~38
+  MiB). It is two generations of `rooms.maxTracked` channels now (16384 by
+  default; the hot path is still one get and one increment); a channel
+  evicted and published to again starts a new count under a suffixed epoch,
+  `<epoch>.<n>`, which a receiver already reads as a restart — never a
+  false gap. `maxTracked` must be a positive integer.
+- **`sendTo` carries bytes to a client on another instance.** A cluster
+  command envelope was JSON, so a `Uint8Array` in the event's data arrived
+  on the other node as the `{"0":…}` object JSON makes of it, and `sendTo`
+  still answered `true` — the natural 1:1 relay of a `createSealer` payload
+  broke only in production, with two instances or more. An envelope whose
+  application payload holds bytes now leaves as the binary envelope the
+  rooms backplane already uses (`wrpc-bin:` + the attachments frame, or the
+  same frame inside a sealed one): `sendTo`/`cluster.send`,
+  `cluster.sendEvent`, the question and the answers of `cluster.ask`, and
+  the answers a broadcast `ask` collects from other instances. Under
+  `cluster.secret` it is signed over the frame's bytes — verified by
+  encoding the decoded envelope again — with the same counter, channel and
+  clock as a JSON one, and a signature made for one form does not verify
+  as the other. Presence and room commands are never walked for bytes;
+  `attachments: false` keeps every leg the JSON of 1.0. `cluster.bytes` is
+  now only what a `Cluster` constructed without the core's envelope logs
+  when it has to refuse (`false`) rather than mangle.
+- **Worker proxy: an answer for a tab that left is dropped, and a tab's
+  release cancels what it was waiting for upstream.** A `callback`, `data`
+  or `end` whose id no port waited for — the tab closed, or unsubscribed
+  — was broadcast to every other tab (a private answer handed around, and
+  a feed nobody read fanned out); it is dropped now, while events and
+  server-opened streams still reach every tab. A closed tab's calls ran on
+  and its subscriptions kept streaming for the life of the connection:
+  releasing a port sends `cancel` for its calls and `unsubscribe` for its
+  subscriptions. The page transport's `close()` posts a `wrpc:close`
+  goodbye before closing its port — to an end that named a revision on the
+  port's first ping and pong, a 2.x one: a 1.0 proxy reads every message as
+  a packet and throws on it — so an engine that never fires the
+  `MessagePort` close event releases a tab of a 2.x worker too; an upstream
+  close answers what the pages were waiting for and forgets every id.
+- **The connect URL's two declared bags share ONE query budget, as the
+  server measures it.** Each bag was capped on its own, so two that fit
+  separately — with whatever query the url already carried — were sent
+  together past the server's limit, where the WHOLE query is dropped
+  silently on the side that cannot see it. Headers are declared first,
+  then meta, against one 2048-byte budget over everything after `?`
+  (the encryption marker of a WebTransport session included); what does
+  not fit is refused with `meta.oversize { carrier: 'query', param, bytes }`
+  and the connection works un-labelled.
+- **`sealedStore`: a key provider must answer `kids()`, and `seal: false`
+  is the first of three deploys.** A provider without `kids()` was
+  accepted and every session under an older kid became unreadable the
+  moment `current` moved — a mass logout at the first rotation; it is a
+  TypeError at construction now. Adopting the store over a fleet that
+  already holds sessions needed a deploy that reads sealed rows without
+  writing them (an instance rolled back must still find every session):
+  `seal: false` writes plaintext under the token and removes the token's
+  sealed slots, reads a sealed row where it is without moving it, and
+  touches and deletes the row on either side. The sessions guide has the
+  three-deploy table, mirroring the backplane's.
+- **permessage-deflate: `level` and `memLevel` apply on every deflate
+  path, and are validated at construction.** The two knobs, introduced on
+  this branch with context takeover, reached the live context only: a
+  `level` on the default no-takeover connection was silently ignored on
+  the one-shot, fan-out and threadpool paths, which compressed at zlib's
+  6 whatever was asked. The negotiated params now carry the zlib options
+  once (`zlibOptions`, null when neither is set, so the common path builds
+  nothing), and every path takes them; the fan-out cache stays keyed by
+  window (two engines on different levels in one process would share the
+  first recipient's bytes — correct for all, and one `PreparedFrames` is
+  one broadcast). `level` outside −1..9 or `memLevel` outside 1..9 is a
+  TypeError from `WebsocketServer`, not a zlib error at the first
+  message. `bench/send-path.js` measures levels 1, 3 and 6 on 2 KB and
+  24 KB, and `bench/deflate-context.js` the same under a live context. The
+  default stays 6: one-shot it has the knee `bench/algorithms.js` found
+  (level 3 at 3.2× the throughput for the same ratio on 24 KB), but under
+  context takeover — the mode where the level matters most — level 6 buys
+  a 19% better ratio (10.6× vs 8.9×) for 6% more CPU, because the stream's
+  own overhead dominates there.
+- **Trust assertions: one failure of `keys()` no longer poisons the
+  verifier, a broken JWK is no unhandled rejection, and a refresh for an
+  unknown kid is bounded.** The verifier kept a failed first load as "the"
+  load, so every verify after an outage of the keys endpoint awaited the
+  same rejection until the process restarted; the set and the load in
+  flight are kept apart now — a failed first load is retried on the next
+  verify, concurrent verifies share one load, and a refresh that fails
+  keeps the set that was. A JWK the platform refuses (`use: 'enc'`, bad
+  coordinates) rejected its import with nobody listening until a token
+  named its kid — handled then, never unhandled. Every token under an
+  unknown kid asked `keys()` again: at most once per `refreshInterval`
+  now (30 s; 0 asks every time), on `createAssertionVerifier` and
+  `WrpcPeer`'s `assertions`.
+- **WebRTC redial: a responder no longer burns its budget in milliseconds
+  or kills the link its initiator is rebuilding; a knock on a link the
+  initiator thinks is up rebuilds it.** A responder whose link failed
+  knocked, re-armed itself at once and counted each knock as an attempt —
+  the whole `retries` budget gone within one backoff step, before the
+  initiator's dial had even timed out — and then gave up with a goodbye
+  that ended the link the initiator was still redialling. It now re-arms
+  once the connect window has passed, and gives up quietly (`abandon`,
+  no goodbye); the initiator's goodbye still ends a link nobody else can
+  rebuild. A knock arriving at an initiator whose link looks connected
+  but once opened is the responder saying its half is gone — an
+  asymmetric failure the initiator's pc never noticed — so the link is
+  failed (`RtcLink.fail()`) for the redial cycle to rebuild; a knock
+  during a dial is ignored. The mirror case is covered too: an offer under
+  a NEW certificate arriving at a responder whose link still looks
+  connected — the initiator redialled after a failure only it noticed —
+  makes the responder dial a fresh pc rather than renegotiate the old one,
+  which was never the new pc's to renegotiate. The fake's channels now
+  carry a close to the peer only over a live path (a dead one carries no
+  SCTP reset), which is what surfaced this. `wrpc.rtc.redials` is counted where a redial
+  or knock actually happened, not where one was scheduled, and a
+  scheduled one is cancelled when the link comes up on the peer's offer.
+  The relay's `signaling.undeliverable` — a trickle candidate that
+  crossed the peer's leave, mostly — is `debug`, not a warning per
+  candidate.
+- **WebRTC peers: one link per peer under a racing `connect()`, and no
+  unhandled rejection from a signal, a join or a dial.** A `connect()`
+  made while an inbound open for the same peer was still in its
+  `accept()` hook got a second `PeerLink` over it when the hook answered
+  — the first leaked, with its client and its half of the signals: the
+  hook's queue is the connecting link's now, and an accept that finds its
+  queue taken opens nothing (`#create` also refuses to make a second link
+  over one that is not closed, logged `rtc.peer.duplicate`). A signal
+  whose handling rejected, a fire-and-forget `peer.join()` whose roster
+  fetch failed, and a redial whose `createPeerConnection()` threw (a
+  browser past its connection cap) were each an unhandled rejection or an
+  uncaught exception from a timer: the first two reach the peer's error
+  listener (the mesh detaches — it never joined), the dial failure is
+  reported and leaves the link failed for the next attempt, and a first
+  dial that cannot be made throws from `start()`/`connect()` with no link
+  kept.
+- **`createBlobUploader().upload()` honours backpressure, and a connection
+  closing mid-upload is a rejection.** It wrote every chunk of the blob
+  as fast as the source produced them — a 1 GiB file went into the
+  transport's buffer whole, whatever `write()` answered — and resolved
+  even when the connection had closed halfway. A chunk the transport did
+  not accept now waits for the stream's `'drain'`, a close before the last
+  chunk rejects with the `503` `WrpcError` a call gets, and a source that
+  throws terminates the stream so the server stops waiting for its end.
+- **Compression on WebTransport and WebRTC: an inflate is never an
+  unhandled rejection, and no more than four run at once.** The
+  `Sequencer` that keeps an asynchronous codec's output in order attached
+  its handler to a promise only when that promise's turn came, so a decode
+  rejecting behind a slower one (a bomb, a truncated frame) was reported
+  unhandled before it was handled; a promise queued behind another is
+  adopted the moment it is pushed. Every compressed frame used to start
+  its inflate at once — a burst of them was a burst of parallel inflates
+  on `CompressionStream` or the threadpool: past four in flight the rest
+  start in their slot (the `Sequencer` takes a thunk), and a WebTransport
+  reader waits for them before it reads on, so the bytes wait in the
+  stream under QUIC's flow control. `bench/message-compression.js`: the
+  plain path is unchanged (104M vs 107M pushes/s), the queued-promise path
+  pays the adoption (1.65M vs 1.93M/s on 200 000 resolved promises).
+- **`RpcServer.attach` and `PeerHost.attach`: the transport contract is
+  checked whole, and nothing a packet handler throws escapes as an
+  unhandled rejection.** The structural check accepted a transport with
+  `write`/`close`/`on`/`once` and no `send`/`error`/`off`, which the
+  dispatcher then called on the first packet — a TypeError at attach now,
+  named in the message; `InboundTransport` in the types says so. A 'chunk'
+  whose handling rejected (a stream the client never opened, on a transport
+  whose `error()` throws) was an unhandled rejection, and a 'packet'
+  listener that threw rejected the transport's `emit()`, which nobody
+  awaited: both are contained and logged through the client, as every
+  other handler failure is (`dispatchMessage`/`dispatchBinary` in the
+  dispatcher, used by `attach`, `attachPort` and `PeerHost.attach`).
+- **WebRTC: a `send()` the channel throws from cannot desynchronise the
+  wire, and never reaches the core.** `RTCDataChannel.send()` throws when
+  the channel closed under the transport or refuses a message, and the
+  frame encoder used to go on with the next fragment — the peer was left a
+  message with no end, after which nothing parsed — while the exception
+  came out of `write()` into the dispatcher. The codec now owns the one
+  call to `send()`: thrown mid-message, the encoder stops, the fault is
+  reported (code `desync`) and the CHANNEL is closed, locally, so over a
+  link the link redials rather than ending; thrown before the first
+  fragment, that message alone is lost and reported (code `send`); on a
+  channel that is no longer open the close event says it all. `write()`
+  answers `false` for a lost message. Also: an `RtcPeerTransport` over a
+  channel that is closing or closed is a `TypeError` at construction, not
+  a surprise at the first write; a channel a factory produced after
+  `terminate()` won is closed, not left open for nobody; an inflate
+  settling on a channel a redial replaced no longer hangs up the new one.
+- **WebRTC: a `false` from `write()` under an asynchronous codec is
+  followed by `'drain'`; the water marks are validated.** The transports
+  counted the bytes a codec was still compressing towards the high-water
+  mark but left `'drain'` to the channel's own `bufferedamountlow`, which
+  bytes waiting in a codec never cross — so a `false` answered for them
+  (a large message under `CompressionStream`, or zlib's threadpool) was a
+  false with no drain ever after, and a `WrpcWritable` waiting for it hung.
+  The codec now owns the decision: one `'drain'` after a false, once the
+  channel's buffer and its own pending bytes are under the low mark,
+  whichever of the two settled last. `highWaterMark`/`lowWaterMark` on
+  `ClientRtcTransport`, `RtcPeerTransport`, `attachChannel` and
+  `WrpcPeer`'s `host` are validated at construction: positive integers,
+  the low mark no higher than the high one (a `TypeError`), and a high mark
+  set below the default low mark pulls the low mark down with it — a low
+  mark above the high one used to mean a drain that never came.
+- **WebTransport: `pause()` stops the side streams too, and their bytes
+  keep the session alive.** The server socket's `pause()` — what the core
+  calls while a binary stream's readable is over its high-water mark —
+  stopped the control stream only, so an upload on its own WebTransport
+  stream kept flowing around it and the readable's mark had to grow to
+  hold what arrived (an overflow in the making on a large upload into a
+  slow handler). Every inbound read now waits on one gate the pause holds
+  and `resume()` (or the close) releases. Bytes on a side stream also
+  re-arm `idleTimeout`: a session busy with nothing but an upload used to
+  idle out. `bench/wt-framing.js` is unchanged by it — the gate is one
+  call per read on the mux path, which the bench does not cover.
+- **WebTransport: every `false` from `send()`/`write()` is followed by a
+  `'drain'`; chunks waiting for a side stream are counted; an open the
+  host never answers falls back.** A `false` answered from the side-stream
+  path, from a message compressing in flight or from a frame queued behind
+  one set no mark, so the `'drain'` that should follow never came and a
+  `WrpcWritable` waiting for it waited forever — the same on the client
+  transport's sealed path under session encryption. Every path now answers
+  through one gate that arms the drain. Chunks held for a WebTransport
+  stream still opening did not count towards `bufferedAmount` (an unbounded
+  hold against a host that never opened it); they count from the moment
+  they are held, once. A `createUnidirectionalStream()` that never settles
+  — a browser waits for stream credit — is given five seconds, after which
+  that stream and every later one ride the control stream, as a refused
+  open already did; a stream granted late is reset unused. A write that
+  settled after `terminate()` took `bufferedAmount` negative; the count
+  is zeroed and stays so. `ClientWtTransport` gained `bufferedAmount`.
+  The two ends of the channel now share one behavioural suite
+  (`tests/wt/channelContract.js`), so a fix on one cannot skip the other.
+- **Kafka: topics are created with the broker's default replication
+  factor, and their creation is logged.** `replicationFactor` defaulted to
+  `1`, so every topic the adapter made on a production cluster was a
+  single-replica topic whatever the cluster's own default said. The default
+  is now `-1` — the broker's `default.replication.factor` (KIP-464, Kafka
+  2.4+), verified on both client shapes — and each creation is logged once
+  as `broker.kafka.topic` with the partition count and replication factor.
+  An existing topic keeps what it was created with; the option is
+  documented, and the guide has a Topics section on sizing replication.
+- **NATS queues: `prefetch` is each instance's, the group's cap is
+  `maxAckPending`; a pause keeps its leases; readers delete their
+  consumers.** `prefetch` was written into the durable consumer's
+  `max_ack_pending` — the cap on unacked messages for the WHOLE group —
+  so a fleet of four with `prefetch: 16` held 16 between them, not 64, and
+  the last instance to bind set it for all. The prefetch is now counted
+  per instance (a pull waits for a settlement at capacity), and the new
+  broker option `maxAckPending` sets the group's cap (JetStream's default
+  otherwise); a durable that already exists with other values is served
+  with those and logged `broker.nats.consumer.config` once. `pause()`
+  used to clear the keepalives of the messages it still held, so
+  JetStream redelivered them to another member while a draining node was
+  still working on them — a pause keeps its leases now, a stop lets them
+  go. A feed's readers left their ephemeral consumers on the server (one
+  per catch-up page, one per tail) until its default reaping; they are
+  deleted when the read is done, with a 30-second `inactive_threshold` as
+  the backstop for a process that died mid-read.
+- **NATS queues: a short `ackWait` no longer expires under a live
+  handler.** The keepalive (`working()`) ran every `ackWait / 2` but never
+  more often than once a second, so a window shorter than two seconds
+  expired before the first keepalive — the redelivery it existed to
+  prevent. It runs every third of the window now (100 ms at the least).
+  The unit test that was meant to prove the keepalive could not: it waited
+  900 ms of real time against a 2-second window, which passes with no
+  keepalive at all; it now ticks a mocked interval and counts the
+  `working()` calls the fake receives, and the integration suite holds a
+  message for longer than `ackWait` against a real server. A broker built
+  without JetStream simply has no `log` and no `queue` — the `501` guards
+  behind those two are gone with the test that reached past them.
+- **Redis RPC groups: one instance stopping no longer takes the group
+  offline, and `close()` stops its timers.** A service group's presence was
+  one key, refreshed by every member and deleted by whichever member
+  stopped first — from that moment a sender found "nobody there" (`503`)
+  while the other instances were still taking work off the list. Each
+  listener now holds its own lease in a members set (`…:members`, a
+  sorted set scored with the lease's expiry), and the group is present
+  while any lease is live; a crashed member's lease runs out on its own.
+  `close()` releases the leases and clears the heartbeat and sweep timers,
+  which used to keep firing against the injected client after the broker
+  was closed.
+- **Redis queues: a delayed retry can no longer overwrite another, and its
+  promotion is atomic.** A delayed retry was a sorted-set member made of
+  the message's body and headers, so two retries of one payload were ONE
+  member and the second overwrote the first — a message gone; and the
+  promotion was `ZREM` then `XADD` as two commands, so an instance that
+  fell between them (a crash, a refused `XADD`) took the entry off the set
+  and never put it on the stream. The member now carries the message id,
+  and the promotion is one `EVAL` (`ZREM` then `XADD`) — a client without
+  `eval` gets the two steps apart, with the entry put back at its original
+  time when the stream refuses it, and kept in memory for the next sweep
+  if even that fails. A queue's keys are `<prefix>:q:{<queue>}` and
+  `…:delayed` — braces being the Cluster hash tag that keeps both in one
+  slot, so the script runs on a cluster too. (The key layout changed from
+  the unreleased `<prefix>:q:<queue>`; nothing migrates a queue left
+  there.)
+- **A feed's live read that the broker ends is replaced; the subscribers
+  miss nothing.** `TopicTails` shares one live read of a topic among every
+  local subscriber, and that read had no way to say it had died: a
+  RabbitMQ channel the server closed, a NATS pull that ended, a kafkajs
+  consumer that crashed left every subscription of the topic frozen for
+  good, silently. The adapters' `live()` now reports its end (`onEnd`,
+  additive — `broker.<name>.tail` in the log); the readers move to a fresh
+  tail, positioned before each catches up from its own cursor, so nothing
+  appended meanwhile is lost. A broker that cannot start the fresh tail is
+  asked again five times with a backoff, then the subscriptions end with
+  `503` and clients resubscribe with `lastEventId`. `TopicTails.close()`
+  fails a parked reader with `503` instead of leaving it waiting.
+- **A feed's catch-up no longer mistakes a slow page for the tip.** A
+  reader resuming from a position, or reading from `'earliest'`, catches
+  up through range reads until a page comes back short — which is the end
+  for a log read straight off its store (memory, Redis), and was taken for
+  the end on the three brokers that page by *time* too: a RabbitMQ stream
+  reader that paused for 60 ms handed back a page called complete with
+  entries still behind it, a Kafka page whose 10-second window opened
+  before the group had joined, a NATS pull cut by its expiry. The reader
+  then joined the live tail past what it had not read: a silent hole in a
+  durable feed. Those three now answer `{ entries, done }`, complete only
+  once the page reached the tip read before it started — RabbitMQ reads
+  the stream's last offset first and waits up to 250 ms of idle / 10 s
+  overall, Kafka opens its window after the join and the seek and counts
+  from the low watermark, NATS stops at the stream's last sequence instead
+  of parking for the expiry — and `TopicTails` pages on until `done`,
+  asking again after a pause when a page brought nothing (503 after ten).
+  RabbitMQ also declares its offsets dense: a page whose head skipped past
+  the cursor is asked again rather than yielded with a hole. The in-repo
+  fakes now pause stream deliveries and park a NATS fetch for its expiry,
+  as the brokers do, and the log contract reads 300 entries across two
+  pages on every adapter.
+- **Kafka and RabbitMQ: a settlement the broker refuses no longer loses
+  the message.** On Kafka a refused settlement — a retry's copy the
+  producer could not write, a commit the group would not take — was
+  swallowed after one log line, and the next message's commit moved the
+  group's offset past it; on RabbitMQ the retry's or dead letter's publish
+  failed once and the original sat unacked on a channel that might never
+  close. Both now try the settlement again (100 ms doubling to 1 s, three
+  times), then hand the message back on purpose: Kafka seeks the partition
+  back to that offset (`broker.kafka.settle`, `healthy` false until a
+  settlement lands), RabbitMQ requeues it (`broker.amqp.settle`, attempt
+  untouched). A Kafka retry's in-process delay is cut into heartbeat-sized
+  steps (3 s), so a long wait no longer looks like a dead member to the
+  coordinator; a heartbeat that fails mid-wait is a rebalance, and the
+  message is left to the partition's new owner (`broker.kafka.rebalanced`)
+  — neither republished nor committed by a member that no longer owns it.
+  The queue contract exercises a refused settlement on every fake that can
+  refuse a publish.
+- **`consumers.healthy` on RabbitMQ and Kafka now turns `false`.** The
+  guide says to wire it into readiness, and on those two brokers it never
+  moved: a RabbitMQ consumer whose channel the server closed, and a
+  kafkajs consumer whose fetch loop crashed, both reported a binding that
+  consumed nothing as healthy. RabbitMQ flips while the channel is
+  re-opened; kafkajs flips on `CRASH` (`broker.kafka.crash`) and back on
+  the rejoin. A join that times out (more instances than partitions) is
+  logged `broker.kafka.join-timeout` once and stays healthy — an empty
+  assignment is a legitimate state, and a readiness that flipped there
+  would crash-loop the fourth instance of a three-partition queue. The
+  confluent facade reports no consumer events, which the guide now says.
+  The queue contract exercises the flip on every fake that can break a
+  consumer from the outside.
+- **RabbitMQ backplane: one channel and one queue for every room, not
+  one of each per room.** Every `subscribe` opened its own channel and
+  declared its own exclusive queue — a room is a subscription, so a
+  server with a few hundred rooms ran into RabbitMQ's `channel_max`
+  (2047 by default, lower behind many proxies), after which every new
+  room failed to subscribe. An instance now keeps one consumer channel
+  and one exclusive auto-delete queue for the whole backplane, bound and
+  unbound per room by routing key (bind and unbind of one room run in
+  order, so a subscribe racing an unsubscribe settles as the last caller
+  asked); a consumer channel closed under live rooms is replaced and every
+  room bound again with a backoff (`broker.amqp.backplane.rebind`).
+- **RabbitMQ: a channel the server closed is not used again, and a
+  consumer comes back.** A channel-level error — a declaration that did
+  not match what the server held (`406`), a queue deleted under a reader
+  (`404`), a node going away — closes that channel, and the adapter kept
+  handing out the closed one: every later declaration, publish and send on
+  the broker failed with "channel closed" until the broker itself was
+  closed, and a queue consumer sat on its closed channel forever,
+  `healthy` still `true`, taking nothing. The memoized channels are
+  forgotten the moment they close; a consumer re-opens its channel with a
+  backoff (200 ms doubling to 5 s, `broker.amqp.consumer.closed` /
+  `.reopen`), declares a deleted queue again, and settles every delivery
+  on the channel it arrived on. A closed **connection** is reported once
+  (`broker.amqp.connection`), marks every binding unhealthy for good and
+  stops the re-open loops — nothing can be re-opened on it. The in-repo
+  fake answers a mismatched redeclaration with `406`, cancels the
+  consumers of a deleted queue, and refuses work on a closed channel, as
+  RabbitMQ does.
+- **RabbitMQ `direct`: one exchange, not one per address.** Every address
+  — and an address is whatever a peer puts in `replyTo`, one per client
+  inbox — got its own durable fanout exchange, which RabbitMQ never
+  deletes by itself: a service's topology grew by one exchange per client
+  for as long as the broker lived. Every address now binds to the one
+  `<prefix>.direct` exchange under its own routing key; `mandatory` still
+  reports "nobody there" as the `503`, and so does a publish the broker
+  nacks (a queue being deleted under a listener that just stopped) — an
+  inbox unbinds its queue before it goes, so that race is rare. The
+  adapter declares exactly two exchanges, `<prefix>.bp` and
+  `<prefix>.direct`. (A dev RabbitMQ that ran
+  the unreleased per-address code keeps its `wrpc.direct.<address>`
+  exchanges; delete them by hand — nothing migrates them.)
+- **Broker adapters: a bad numeric option is a `TypeError` at construction,
+  not a silent misbehaviour later.** Redis `blockMs` (`0` was `XREAD BLOCK
+  0`, forever, and no pause after a failed read), `claimIdleMs` (`0` stole
+  every other consumer's in-flight message), `maxLen`, `inboxTtl`; NATS
+  `ackWait`; RabbitMQ `queueType` (`'quorum'` or `'classic'`), `inboxTtl`,
+  `streamMaxBytes`; Kafka `replicationFactor` (a positive integer or `-1`
+  for the broker's default) and `maxRetryDelay` — a string read from an
+  environment variable compared as a number in each of these places.
+  `queue.consume` on every adapter refuses a `deadLetter` that is not a
+  queue name, as the in-process broker did. The NATS broker's `close()`
+  stops its queue consumers, which kept their keepalives and their pull
+  loop running against a connection the caller was about to drain.
+- **`attachBrokerRpc`: a cap on sessions, and a live session cannot be
+  taken over by a second `hello`.** Every `hello` that reached the service
+  address opened a session — a Client, a transport, a table entry until
+  `idleTimeout` — with no ceiling, so one sender could grow an instance
+  without bound; and a `hello` naming an existing session id replaced that
+  session outright, ending it for the client that held it and handing the
+  id to whoever sent the hello. `maxSessions` (default 10 000, `0` for no
+  limit) answers a hello past it with `bye` and reports the refusals as one
+  `broker.rpc.capacity` line per sweep; a hello for a session that has seen
+  a frame, or from another inbox, is ignored — only a client re-saying
+  hello for a session that never got going is given a fresh one. The
+  [trust model](./docs/guide/brokers/rpc.md#what-the-brokers-acl-is-the-boundary-for)
+  of the stateless mode is written down.
+- **Sealed broker messages: a key the service does not hold yet is a
+  retry, refusals are counted, and a feed's are not a log flood.** A
+  consumer dead-lettered every delivery it could not open with `400`,
+  including one sealed under a key id its ring lacked — which is what a
+  rotation in progress looks like across a fleet, and what a key dropped a
+  moment too early looks like. That case (`reason: 'kid'`) is retried like
+  a `503`, to the binding's `attempts`, before it dead-letters; the others
+  (`unsealed`, `open`, `format`) stay dead at once. A feed logged every
+  refused entry at `warn` — a topic holding a thousand entries under a
+  retired key was a thousand lines per subscriber — and now logs one
+  `feed.refused` per reason per ten seconds with the running `count`, the
+  rest at `debug`, and an `info` summary when the feed ends. Both count
+  `wrpc.broker.refused` by `messaging.system` and `wrpc.reason`. The
+  headers a sealed message carries inside are the same string map a
+  plaintext one has (`{ n: 7 }` arrives as `'7'` on both paths).
+- **`MemoryBroker`: a handler that throws is retried with a backoff, and
+  `trim()` frees what it trims.** A delivery whose handler threw was
+  released — back at the head of the queue and re-dispatched on the next
+  microtask — so a handler that always threw spun the queue without ever
+  yielding to a timer. It is retried after a backoff now (50 ms doubling
+  to 1 s, attempt + 1) — the delivery contract, and what the Redis, NATS,
+  RabbitMQ and Kafka adapters do too (each released as well; the queue
+  contract now pins attempt + 1). `trim()` moved the head index but never
+  compacted the array, so
+  a topic trimmed by hand kept every trimmed entry alive; it compacts like
+  the retention cap does.
+- **A dead-letter reason spanning lines no longer keeps the message
+  alive.** `x-wrpc-dead-reason` is a broker header, and a header is a
+  line: NATS refuses a value holding CR or LF, so a handler error whose
+  message listed its failures one per line (a validator's) made the
+  dead-letter publish reject, the settlement never landed, and the message
+  was redelivered forever. Every adapter — memory, Redis, NATS, RabbitMQ,
+  Kafka — now folds the reason to one line of at most 512 characters
+  (runs of control characters become one space), and `attachConsumers`
+  folds its `"<code> <message>"` the same way; `onDeadLetter` still
+  receives the whole `error`. The in-repo NATS fake refuses CR/LF like the
+  real client, so the contract suite proves it.
+- **`attachConsumers`: evicting a token client no longer releases the
+  deliveries it holds.** Under `identity.trust: 'token'` the per-token
+  client cache (`tokenClients`, LRU) closed the evicted client on the spot,
+  which settled its in-flight calls as released — the broker redelivered
+  them, the handler ran twice, and with `prefetch` above `tokenClients` a
+  busy queue could livelock, every delivery evicting the next before it
+  finished. An evicted client now finishes what it holds and closes after
+  its last settlement (never inside it, where the close would destroy the
+  `Client` under the dispatcher). `tokenClients` must be a positive
+  integer (`0` used to evict everything at once, a string never evicted).
+- **WebRTC: a `leave` naming another incarnation of a member no longer
+  tears down the live one.** A signaling `leave` that reached `Mesh` or
+  `wrpcSignaler` late — a peer that had crashed and rejoined under the same
+  id, or a relay replaying the old instance's departure — was applied to
+  whichever link now carried that id. `Mesh` ignores a leave whose
+  `instance` is not the member's (`mesh.leave.stale`, debug) and
+  `wrpcSignaler` one whose `address` is not the one it knows for that id.
+  Peer ids have one bound — `MAX_ID_LENGTH` (256) in `src/webrtc/ids.js`,
+  what the signaling unit, the signaler and the mesh validate against — so
+  `connect('x'.repeat(257))` is a `TypeError` at once rather than an id the
+  relay refuses later.
+- **`protocols: []` with a Bearer credential could not connect.** The client
+  lifted the token into a lone `wrpc.bearer.<token>` offer, which no server
+  echoes — and a client fails a handshake whose offers all went unanswered
+  (Chrome closes 1006, Node's WebSocket errors). With nothing offered the
+  credential now stays in the query carrier.
+- **Two public telemetry types rejected the things they exist to accept.**
+  A real `@opentelemetry/api` `Tracer` was not assignable to `WrpcTracer`,
+  because `WrpcSpan` declared `addEvent`, `setStatus` and `recordException`
+  more narrowly than the article they describe — so the structural view that
+  exists precisely to let an SDK in kept it out. And `startActiveSpan` was
+  declared with only its 3-argument form while `startSpanWith` calls the
+  4-argument one whenever the arity allows, so a hand-written parented
+  tracer type-checked and then broke at runtime. Both are typed from what
+  wrpc actually calls now, with tsd assertions against the real SDK.
+- `connect(url, { worker })` builds its own `ClientEventTransport` per
+  client instead of sharing a class-level singleton. A second `connect` to a
+  DIFFERENT worker on the same page used to reuse the first `MessageChannel`
+  and never reach its worker, and closing one worker client closed the port
+  of every other one; now each client has its own channel and lifecycle.
+- `ClientEventTransport.close()` is idempotent: `terminate()` after `close()`,
+  or the cleanup after an `open()` that threw before a port existed, no
+  longer throws a `TypeError` in place of the original error.
+- `attachPort` routed a `Buffer` chunk to the text handler; binary chunks
+  now reach `handleBinary` whatever the view type.
+- `WrpcClient.write()` returns the transport's backpressure signal and the
+  client re-announces the transport's `'drain'`, so a `WrpcWritable` on the
+  client side actually waits for the wire.
+- **`SessionManager#destroy` could take the process down.**
+  `initializeSession` calls `finalizeSession()` through `void`, so a
+  `store.delete` that rejected became an unhandled rejection: a Redis blip
+  ended the server rather than one session. It is guarded and logged now.
+- The Redis backplane wrote its entries as `{ err, component }` with **no
+  `event` field** — the one writer in the package breaking the convention
+  its own guide documents, so those lines could not be alerted on alongside
+  the rest. A test now asserts the rule on every entry a server writes.
+- **A refused WebTransport handshake waited out the handshake timeout.**
+  The server hung up on a hello it refused (a pin under a kid it no longer
+  holds, say), the session closed, and the client's `open()` stayed
+  pending until `handshakeTimeout` — ten seconds by default — because
+  nothing told the handshake its transport was gone. `secure()` gained
+  `cancel(error)`: the ws transport calls it from its close and terminate
+  paths, the WebTransport client from its teardown, and a pending `ready`
+  rejects the moment the connection does. The handshake timer is `unref`ed.
+- **Five encryption seams could take the process down, or crash a handler.**
+  `sealedStore.set` threw synchronously when the keyring lost its current
+  key, out of the session manager's microtask flush (now `session.save`,
+  logged); a shared replay store that rejected (`replay.seen` over a Redis
+  that is down) was an unhandled rejection per sealed request (now a `503`
+  and one `encryption.replay` line — a request that cannot be vouched
+  fresh is not served); a primitive throwing inside `unwrap` was one too
+  (now a `500` and `encryption.unwrap`); a static-key derivation that
+  failed was cached as the answer for that kid forever (forgotten now);
+  and a sealer that could not seal — the same lost key — threw out of
+  `Broadcast.emit()` into the handler, or was filed as a serialization
+  problem (`backplane.seal` / `cluster.seal` now, and the event stays
+  local: never plaintext across the wire).
+- **`connect()` with a transport list resolved unauthenticated when the
+  hook refused the first candidate.** The `authenticate` hook throwing on
+  candidate A was treated like A failing to open: the client advanced to
+  B with `#connected` still set from A, so B opened as a "reconnect", the
+  hook ran unawaited on the reconnect path, and `connect()` resolved with
+  a client the application had just refused. A candidate that never opens
+  still hands over to the next; a hook that refused after the transport
+  opened is the application's verdict, and `connect()` rejects with it —
+  the state a failed first connect leaves is reset the way `close()`
+  resets it (`#resetSession`).
+- **`encryption.required` broke `attachConsumers` and `attachChannel`.** A
+  consumer binding attached its clients through `attach()` without
+  vouching for the transport, so under `required` every attach threw
+  inside the delivery path and every delivery settled nowhere — the queue
+  stood still with no line to say why; a raw data channel (DTLS end to
+  end) was refused the same way. `attachConsumers` now refuses to bind
+  without `encryption` (a `TypeError` at bind time), attaches a sealing
+  binding's clients as encrypted, dead-letters a plaintext delivery its
+  `acceptPlaintext` let through (`broker.refused reason: 'plaintext'`,
+  `400`) and settles a delivery whose `attach()` threw as a bounded retry
+  then dead; `attachChannel` vouches for the channel by default
+  (`encrypted: true`, `false` for one relayed in the clear).
+  `RpcServer.encryptionRequired` is the flag a binding of your own reads.
+- **Kafka: `close()` deleted the queue's durable consumer group.** The
+  adapter deleted every group it had opened — to keep a backplane
+  instance's or a reader's empty group from lingering until
+  `offsets.retention` — and a queue's group was among them, committed
+  offsets included: the last instance's clean restart redelivered the
+  queue's whole retention. Only the groups the broker made for itself are
+  deleted now, and each with its consumer rather than at `close()`: a
+  catch-up page's group goes with the page, a tail's with the tail, and a
+  reader whose subscribe or run fails leaves neither a joined consumer nor
+  a group behind (it used to leave both, one per failed read). A group the
+  broker refuses to delete yet (`NON_EMPTY_GROUP`) is a debug line.
+- **A `'latest'` feed read lost what was appended between `ready` and its
+  first `next()`.** `TopicTails` took a reader's start position from the
+  shared tail at the first `next()`, not at `ready` — and the tail had
+  already advanced past whatever arrived in between, so those entries,
+  sitting in the reader's own queue, were called "covered" and dropped.
+  The contract says entries appended after `ready` are read; the position
+  is fixed at `ready` now, on every adapter built on `TopicTails` (Redis,
+  NATS, AMQP, Kafka — `MemoryBroker` always did), and the log contract
+  pins it.
+- **A feed read closed before its first `next()` held the live tail
+  forever.** `return()` on an async generator that never started runs no
+  `finally`, so a subscription refused at once (a stale `lastEventId`, a
+  snapshot that threw) left its reader on the shared tail — one broker
+  consumer per such subscription, for the life of the process — and the
+  same for a read whose iterator was taken and abandoned. The place is
+  released from the iterator's `return`/`throw` now, an abort lets go until
+  the body runs, a tail still positioning is stopped once it is (never in
+  the middle of the adapter's setup), and `brokerFeed` scopes every read it
+  opens to its own `AbortController`, aborted when the feed ends.
+
+### Security
+- **A sealed dead letter carries its code outside the seal, not its
+  reason.** Under `encryption` a dead-lettered message keeps its body
+  sealed, but `x-wrpc-dead-reason` rides outside the seal — and held the
+  code and the handler's message, which is whatever the handler wrote,
+  the data the seal was for included. It is the code alone now; the whole
+  reason is on the `broker.dead` line and in `onDeadLetter`. The binding's
+  own refusals (`Sealed delivery refused`, `Plaintext delivery refused`)
+  keep their fixed text.
+- **The sealed-envelope sender memory evicts the least recently heard
+  sender, not the oldest.** Past `maxSenders`, a new sender evicted the
+  first one in — the busiest, as often as not — which came back with a
+  fresh replay window, so a frame of its that had just been refused as a
+  replay opened a second time. The entry a message opens is moved to the
+  end now (+0.05 µs an open at 64 B, medians of five processes). And the
+  set of a process's own salts, kept to skip its echoes, holds the last 16
+  rather than every salt of every reseed and rotation.
+- **A full replay memory answers `503`, not a `409` that blames the clock.**
+  The built-in memory of sealed requests can be filled by anyone holding the
+  server's public key — which is public by design — and past its cap every
+  sealed request was refused `409`, which the client reported as "refused
+  as stale or replayed — check this device's clock". It is a `503` now (the
+  server cannot vouch the request fresh; retry later), with that message on
+  the client, and the encryption guide asks for a rate limit per client in
+  front of the server, sized under `max / (2·maxSkew)`.
+- **`maxStreams` caps the binary streams one connection holds open.** A
+  peer announces a stream with one packet and the server held a readable
+  for it until a handler read it — with no bound: 20 000 announcements from
+  an unauthenticated WebSocket were 20 000 streams (about 45 MB). Past
+  `maxStreams` (256 by default, on `RpcServer` and `PeerHost`, in
+  `limits`) a `stream` packet answers `429`, logged as `stream.capacity` at
+  debug, like `maxCalls` and `maxSubscriptions`.
+- **The assertion verifier backs off a failed key load, and a revoked key
+  stops verifying.** A `keys()` that failed was asked again by every verify
+  — 25 verifies in a burst were 25 calls to an endpoint that was down — and
+  a set was asked again only for an unknown `kid`, so a key the endpoint
+  stopped publishing verified for the life of the verifier. A failure is
+  now left alone for a second (at most `refreshInterval`), and a set is
+  asked again once it is `maxAge` old (600 000 ms by default; `0` keeps
+  the old behaviour), on `createAssertionVerifier` and `WrpcPeer`'s
+  `assertions`.
+- **A mesh does not dial again a link an application closed.** A
+  `mesh.link(id).close()` with the member still in the room was undone
+  within half a second — the mesh (and the other side, which heard the
+  goodbye) dialled the edge again, and the member came back in `peers` with
+  a new `join`. A link that ended with a goodbye — `link.close()` on either
+  side — stays ended; one that ended by itself (a failure, a redial budget
+  run out, a refusal) is still dialled again under `relink`. The goodbye
+  goes through the signaling server while the channel resets go peer to
+  peer, so the other side can see its channels close first and start a
+  redial before the goodbye reaches it: the side that said goodbye ignores a
+  knock or an offer from that incarnation for 5 s (`rtc.signal.goodbye`,
+  debug), and dialling it again itself — `peer.connect(id)` — lifts that.
+  **Changed:** the WebRTC guide used to promise a redial after a
+  `link.close()` on the OTHER side, which is what undid a close.
+- **The signaling unit's `maxRooms` holds for joins sent together.** The
+  count was checked before the awaited `allow` hook and the room written
+  after it, so joins sent at once all passed the check: ten joins under
+  `maxRooms: 2` were ten rooms. A room being joined now counts from the
+  check to the write.
+- **A logout ends the session on every connection of the instance.**
+  `finalizeSession()` deleted the session from the store and dropped it on
+  the connection that called it, while another connection that had restored
+  the same token — a second tab, a second device — kept answering `session`
+  procedures as that user until it reconnected: the access gate looked only
+  at whether a session object was there. The other connections' copies are
+  now marked ended and the gate refuses an ended session (`403`); a handler
+  already running finishes. Across instances the store is the signal, on the
+  next restore — the sessions guide says so.
+- **What the ws redial puts in the URL is named, and an ambiguous `wrpc.v1`
+  answer is said.** A browser client that offered `wrpc.v2`, carried its
+  `headers`/`meta` as subprotocol tokens and was answered `wrpc.v1` redials
+  with the connect-URL query — where access logs keep it — and only an
+  `authorization` header was named (`declared.exposed`); an `x-api-key`
+  went into the URL without a word. The redial now names every declared
+  header it moved (`declared.exposed`, `keys`). And a `wrpc.v1` answer is
+  ambiguous — a 2.x server without frames gives it too, and reads the
+  tokens — so a page that offered `wrpc.v1` alone (its own
+  `attachments: false`) is never redialled and against a 1.0 server lost its
+  labels silently: it says so once (`handshake.ambiguous`). The metadata
+  guide, the protocol's versioning section and the migration notes describe
+  both cases and the answer to each: `carrier: 'query'` for a 1.0 server,
+  `carrier: 'protocol'` to keep labels out of URLs.
+- **An SSE channel reference whose secret is not ASCII is a 409, not an
+  unanswered request.** `holds` compared the secret's length in characters
+  and handed the bytes to `timingSafeEqual`, which throws when the byte
+  lengths differ — so a secret of 24 `é` against a 24-character channel
+  secret, on `GET {basePath}/events` (query or `x-wrpc-channel`) or a
+  channel POST, threw out of `handleHttpCall`: an unhandled rejection, and
+  a request nobody answered, from an unauthenticated peer. The lengths are
+  compared as bytes now, as `openId` in the broker always did.
+- **`RpcServer.handleHttpCall` answers what throws while it routes.** Every
+  host hands it a request without a catch of its own (`void
+  rpc.handleHttpCall(call)` — the `Server` shell, the express middleware,
+  the fastify plugin, the uws engine, the broker binding), so anything a
+  peer's input made throw before a refusal existed for it was an unhandled
+  rejection and a hung request. It is caught once in the core now: logged
+  (`http.failed`, error, with `err`), counted on the calls series, and
+  answered `500` — unless an answer or a stream had already started, which
+  is left as it was. One case of the adapter spec runs it over every host.
+- **A declared header name must be a header name; `_` counts as `-`.** The
+  deny lists of declared headers are anchored patterns, so `x-real-ip ` (a
+  trailing space), `x forwarded-for` and `remote_user` passed them and
+  reached the application beside the real headers — and `remote_user` is
+  `remote-user` to nginx with `underscores_in_headers`, to CGI and to the
+  frameworks that fold the two. A name that is not an RFC 9110 token is now
+  dropped, and `_` is read as `-` before the lists are checked, on the ws
+  handshake and inside a sealed request alike.
+- **A sealed HTTP request can no longer declare what an identity-aware
+  proxy says about the user.** The names an OAuth2 proxy, AWS ALB OIDC,
+  Google IAP, Azure Easy Auth or an Apache/nginx auth module set about the
+  user they authenticated (`remote-user`, `x-auth-request-*`,
+  `x-amzn-oidc-*`, `x-goog-authenticated-user-*`, `x-goog-iap-*`,
+  `x-ms-client-principal*`) and the Fastly/Fly client-ip spellings were
+  added to the handshake's deny list only. Inside a sealed request they were
+  still the sender's: behind a proxy that set `remote-user: alice` on the
+  outer request, a page declaring `admin` inside was `admin` to the handler.
+  Both lists are now built from one set of names in `src/rpc/reserved.js`
+  (`AMBIENT_HEADERS` adds them), so the inner value is dropped and the outer
+  one stands, and a test keeps every name in both.
+- **A packet `id` is a string of at most 255 characters, or a number.** The
+  dispatcher checked an id by truthiness and echoed whatever came: an array
+  nested 10 000 deep in a 20 KB POST threw out of the answer's
+  `JSON.stringify` (`Maximum call stack size exceeded`) where nothing caught
+  it, and at 1000 deep the array came back as the answer's id. Any other id
+  is now refused id-less — `500`, `packet.unknown` — like any packet that is
+  not one, on every carrier. A number is still answered on: a 1.0 client
+  whose own `generateId` counted sent one.
+- **A frame sent together with the upgrade request no longer ends the
+  process (node engine).** The bytes behind a handshake (`head`) were
+  parsed inside the `Connection` constructor: a frame breaking the protocol
+  there — RSV1 without a negotiated extension, as Autobahn's 3.x cases send
+  — emitted `'error'` before anyone could listen, `handleUpgrade` re-emitted
+  it on a `WebsocketServer` none of the shells listens on, and the throw
+  left the http server's `'upgrade'` listener. They are handed back to the
+  socket now (`unshift`) and read through `'data'` once the connection is
+  listened to: that connection is closed `1002`, nothing else. A throw in
+  `handleUpgrade` itself is logged (`ws.upgrade`, error) and emitted only to
+  a listener. The same change makes VALID frames sent that way arrive —
+  they were parsed before the `'connection'` event and lost. (The uws engine
+  does not deliver frames sent in the same write as the upgrade request
+  either — uWebSockets.js drops them itself; nothing fails there.)
+- **`Accept-Encoding` is read in one pass and capped at 256 bytes.** The
+  coding scan searched for the next `;` from every token, so a header of
+  8000 one-letter tokens cost 1.9 ms of CPU per request and 16 KB of commas
+  3.8 ms — unauthenticated, once `http.compression` was on. The next `;` is
+  remembered now (one pass), and a header longer than 256 bytes is treated
+  as absent: identity is always a correct answer, and a real header is 20–100
+  bytes. `bench/http-compression.js` carries the adversarial rows.
+- **Docs without dangerous promises, and one warning.** The encryption
+  guide's table said a sealed HTTP request hides "the headers"; `Cookie`
+  and `Set-Cookie` stay on the outer request and response by construction
+  (script cannot set HttpOnly), and the guide now says so — and says that
+  under a terminator you do not trust the cookie is therefore the wrong
+  session credential (`bearerTransport()`/`payloadTransport()` carry it
+  inside). A server built with `encryption` and the cookie transport warns
+  once at construction (`encryption.ambient-session`). The end-to-end
+  section names what it left out: whoever hands out public keys is in the
+  middle (pin, compare, or exchange out of band), and a stolen recipient
+  seed forges as well as reads under `senderKey`. The seed exists for
+  portability; a browser that never needs it keeps a non-extractable
+  `x25519().generateKeyPair()` in IndexedDB and hands the pair over (JSDoc
+  and typings say so). The compression guide's custom-codec example checked
+  the inflated size after inflating — too late for a bomb — and now refuses
+  before, with the output buffer as the bound.
+- **The pure-JS inflater's cost per dynamic block is bounded by its
+  header, not by the codes it declares.** `inflateRaw` built a decoding
+  table of `1 << maxLen` entries for every dynamic block — 128 KB, and as
+  many writes, when a block declared a 15-bit code — and a block that emits
+  nothing is outside `maxOutput`'s reach, so a stream of such headers cost
+  seconds of CPU per megabyte. The table is two-level now (zlib's scheme):
+  a 12-bit root plus sub-tables a prefix-free code bounds by itself, an
+  eighth of the old worst case per block and the same whatever the block
+  claims. Decoding is at parity or better on every row of
+  `bench/deflate-js.js`, which gained a many-blocks row and a Huffman-only
+  row that runs every rare symbol through the sub-table path. The
+  `./deflate` budget is 5 KB (was 4; the entry is 4.1).
+- **A key id withdrawn from a live key provider stops working at once.**
+  The server derived its static key pairs once per kid and answered from
+  that cache before it asked the keyring, and the envelope sealer kept a
+  known sender's subkey the same way — so with a provider (`{ current(),
+  get(kid) }` over a KMS) a kid taken off the ring because its key leaked
+  went on finishing Noise handshakes, opening sealed requests and opening
+  envelopes sealed under a remembered salt (which is on the wire) until the
+  process restarted. The ring is asked first now, every time: one
+  synchronous lookup per handshake or sealed request, and one per envelope
+  from a known sender (2.6 µs an open before and after on a ring, +0.04 µs
+  through a provider). A session already established keeps its own keys.
+  The encryption guide gained "Rotating the server key": an old pin works
+  only while its key is on the ring, so dropping one is when its clients
+  stop connecting — and what to do when the reason is a leak.
+- **Client: `static encrypts` is checked by deed, and a per-request
+  transport is checked for its key up front.** The client refused
+  `options.encryption` for a transport without the static, but a static is
+  inherited: a subclass of the ws transport with an `open()` of its own
+  passed the check and could open a session nobody sealed. A session
+  transport (`encrypts = true`) that says `'open'` with no `encryption` set
+  is now terminated before `'open'` is announced, the `authenticate` hook
+  runs or a packet leaves — `connect()` rejects with a `TypeError` (or moves
+  to the next fallback candidate), and nothing reconnects. The http and sse
+  transports declare `encrypts = 'request'`: an option with no `serverKey`
+  (the `NN`, `XX`, `NNpsk0` patterns) is refused for them when the list of
+  candidates is read, not on the day ws is unreachable and the fallback
+  nobody tested is taken. `ClientTransport` types the static and the
+  instance field; the transport contract suite checks both. The sse
+  browser entry's budget is 28 KB (was 27: it is the main entry plus the SSE
+  client, sat 11 bytes under, and the check is +0.1 KB in the shared core).
+- **Sealed envelopes: `maxSenders`, and a sender is known by its cipher
+  too.** A receiver remembered senders under (key id, salt) and looked a
+  known one up without the frame's suite byte, so a copy of a known
+  sender's envelope with that byte changed was handled differently by an
+  instance that knew the sender and one that did not; the cache key is
+  (key id, suite, salt) now — such a copy derives another key and does not
+  open, on every instance. And the cap on remembered senders, a constant
+  1024, is the `maxSenders` option of an envelope `encryption` (rooms, cluster,
+  brokers): a forgotten sender comes back with an
+  empty replay window, which a broker RPC address with more client
+  processes than that reached by itself. The guides and the protocol
+  reference now state the edges of the replay memory — per sender, in
+  memory, empty after a restart, bounded by `maxSenders`, no time in the
+  frame — instead of "a replay is dropped". No change to the wire or the
+  additional data.
+- **`cluster.secret` refuses a replayed or transplanted envelope.** The
+  HMAC covered an envelope's bytes — not when or where they were seen — so
+  anything that could read the backplane and write to it (a compromised
+  broker, a client with too wide an ACL) could publish a signed
+  `disconnect` again, move an addressed `sendTo` or `join` to another
+  instance's inbox, or replay a dead process' `hello` to wipe the presence
+  of the one that replaced it. A signed envelope now carries the sender's
+  counter, channel and clock inside the signature, and a receiver keeps a
+  sliding window of 1024 counters per life of each sender: a repeat, an
+  envelope on a channel it was not signed for, one outside `maxSkew`
+  (30 s — also the bound on what a node that was not listening can be fed)
+  and one from a life older than the one being followed are refused,
+  counted (`wrpc.cluster.verifications`, outcome `replay`) and logged as
+  `cluster.replay` with the `reason` — one warn per sender and reason each
+  `presenceTimeout`, debug in between. `cluster: { replay: 'accept' }` is
+  the opt-out for a rolling upgrade from 1.x (see Changed (breaking)). The
+  cluster guide's "Trusting the backplane" and the protocol reference
+  describe the fields and the four reasons.
+- **A refusal is one log line, at the level the refusal deserves, with the
+  peer's strings clipped.** Every error answer the server sent also wrote
+  `rpc.error` at `error`, so the 429 and oversize-batch refusals the
+  dispatcher deliberately logs at `debug` — reachable by any peer in a loop —
+  came with an error-level twin, and a frame that would not parse was
+  reported three times (`packet.malformed`, then `packet.unknown` for the
+  empty packet it fell through as, then the answer). `Client.error()` takes
+  a `level` now: `debug` from every site that already wrote its own line,
+  `error` where nothing else said why (a handler that threw). A malformed
+  frame is one `warn` and the same id-less 500. The method, id and packet
+  type in those lines are clipped to 128 characters (`clip` in
+  `src/rpc/errors.js`) — a log line is no longer as long as `maxPayload`.
+- **Declared ws headers: an exact deny list for identity-aware proxies, an
+  opt-in allowlist, and `meta.declared` naming what came from the
+  declaration.** A hostile page could declare the headers an OAuth2 proxy,
+  an ALB, IAP, Azure Easy Auth or an auth module set ABOUT the user they
+  authenticated (`x-auth-request-*`, `x-amzn-oidc-*`,
+  `x-goog-authenticated-user-*`, `x-goog-iap-*`, `x-ms-client-principal*`,
+  `remote-user`) and the client-ip spellings of Fastly and Fly, and a
+  handler reading them as the proxy's word could not tell; they are refused
+  by name now, exactly (`x-auth-request-`, not `x-auth-` — an application's
+  `x-auth-token` passes). `new RpcServer({ declaredHeaders:
+  ['authorization'] })` allowlists the names a declaration may carry at
+  all (`cookie` never), and `context.meta.declared` lists which of
+  `meta.headers` the peer declared rather than the connection carried —
+  the one thing a handler needed to tell a label from a fact.
+  `readHandshake()` takes the allowlist and answers the list too.
+- **The sealed-request replay memory refuses at its cap, and checks before
+  it evicts.** Full of live entries, the built-in cache evicted the oldest
+  to make room BEFORE looking the id up — so past ~167 requests a second
+  (the default 100 000 entries over twice the five-minute skew) a replayed
+  request whose entry had just been evicted was accepted again, and the
+  "accepted once" guarantee did not hold under exactly the load an
+  attacker brings. A known live id is a replay whatever the fill now, and
+  at the cap the cache refuses (`409`, `encryption.replay.overflow` once
+  per ten seconds with the count, no line per request) unless
+  `overflow: 'evict'` asks for the old behaviour by name;
+  `encryption.replay` takes the built-in cache's `{ max, overflow }`
+  beside a shared `{ seen }`. The guide has the sizing formula.
+- **Secrets stay out of logs and transport labels.** A broker RPC session
+  id — what its client speaks under, a credential — was the transport's
+  `source` (every log line and span of that client) and the `session`
+  field of `broker.rpc.session.*`; both carry a 12-character SHA-256
+  fingerprint of it now. The client's `handshake.fallback` warning carried
+  the error undici raised, whose message repeats the offending header's
+  VALUE (a bearer token, say); it carries the error's name only. A
+  declared `authorization` header about to ride the connect URL — the
+  query carrier, or WebTransport, which has no other — is said once as
+  `declared.exposed` on every path, not only the browser ws one.
+- **A session finalized on one connection or instance is not resurrected
+  by a write on another.** A handler still holding the session — on the
+  connection that was not the one signing out, or on another instance —
+  wrote its state with an unconditional `store.set`, which brought the
+  deleted row back, token and all. Every write after the one that creates
+  the row is now `set(token, state, { create: false })`; the memory store,
+  the Redis store (`SET … XX`) and `sealedStore` answer `false` for a row
+  that is gone, and the session ends there (`session.save`,
+  `reason: 'gone'`). `sealedStore` treats a row still under an older kid
+  — or, adopting, in plaintext — as the row to move. The `SessionStore`
+  contract gained the option; a store that ignores it writes as before.
+- **`sealedStore`: a sealed record under the raw token is refused, and a
+  fleet mid-rotation keeps one row per token.** With `acceptPlaintext` on,
+  the raw token is a row name the store still answers to, and a sealed
+  record placed there — a row copied from another session's slot, what
+  someone holding one would try — was adopted as that session's state,
+  re-sealed under the token and the original deleted; only a session-shaped
+  object is taken for a plaintext session now, anything else is a missing
+  session and a `session.unsealed` line. Two instances on different
+  `current` kids over one store left two rows per token, each reading its
+  own kid's stale one: a write removes the token's rows under the other
+  kids, and a migration deletes the old row only while it is still the row
+  that was read — a newer state an instance on the old kid wrote meanwhile
+  is moved instead of dropped.
+- **WebSocket engine: the inbound inflate queue has backpressure.** Under
+  context takeover or `async` inflation every compressed frame the peer
+  sent started its inflate at once, each holding its output until
+  delivered in order — thousands of them in one segment were thousands of
+  inflates in flight, bounded only by the segment queue's `maxBuffer`. At
+  most 32 messages (4 on the threadpool path) or `maxPayload` of
+  compressed bytes are in flight now: past that the socket is paused and
+  the frame loop stops, taken up again once the queue drained below 8
+  messages and half the bytes. An internal hold, apart from the
+  application's `pause()` (`resume()` while held keeps the socket paused,
+  a hold released under an application pause leaves it paused), and
+  `isPaused` reports both so the heartbeat does not take a held
+  connection for dead.
+- **The signaling relay has ceilings, one lookup per room, and bounded
+  queues on the peer.** One connection could join rooms without bound,
+  replicate any amount of join `data` to every instance, relay a signal
+  of any size the server's `maxMessage` let through, and make every
+  signal to a peer this instance did not hold a cluster-wide fetch of its
+  own — a burst of them to a peer that left was a burst of fetches on
+  every node. `createSignalingUnit({ limits })` — `maxRooms` 32 (429),
+  `maxDataBytes` 4096 and `maxSignalBytes` 65536 (413, the signal's size
+  bounded without serializing it first), `maxResolves` 4 (503) — is on by
+  default, each `false` to switch off; the room lookup behind `resolve()`
+  is single-flight per room, so every signal waiting on it shares one
+  fetch. On the peer, the signals held for a peer whose `accept()` is
+  still thinking are capped at 64 and the candidates held before a
+  description at 256, the rest dropped and said once
+  (`rtc.signal.overflow`).
+- **WebTransport and WebRTC: a consumer that never drains is disconnected
+  at `maxBackpressure`.** Neither carrier had the cap the WebSocket engine
+  has behind its high-water mark, so a peer that stopped reading could
+  hold as much as the process had — every broadcast to it queued without
+  bound. `WtSocket`/`attachSession` and the client's `wt` options take
+  `maxBackpressure` (64 MiB by default, `0` off), checked before a frame is
+  queued, as the engine counts it: one frame past the cap on an empty queue
+  is sent, a queue the peer never drains terminates the session (the
+  error's `code` is `backpressure`). `ClientRtcTransport`,
+  `RtcPeerTransport`, `attachChannel` and a `WrpcPeer`'s `host` take the
+  same option; a write that would put the channel past it — its buffer, the
+  codec's pending bytes and the message together — is refused and the
+  channel closed locally, a redial over a link, the end of a raw channel.
+- **Broker RPC: a sealed session takes no plaintext frame.** Under
+  `encryption: { keys, acceptPlaintext: true }` — the rollout's second
+  deploy — a plaintext frame carrying the right session id and the next
+  sequence number walked into a session a sealed `hello` had opened, on
+  both ends: a `packet` was dispatched as the client's, a `bye` ended the
+  session. A session welcomed sealed now takes sealed frames only; a
+  plaintext one naming it is logged `broker.rpc.refused` with
+  `reason: 'downgrade'` and dropped without consuming its sequence number.
+- **Broker RPC: a captured `request` cannot be replayed to another
+  instance.** The envelope's replay window is per sender and per process,
+  and the service address is consumed by every instance, so a sealed
+  frame replayed later reached an instance whose window had never seen it
+  — and was served again. A sealed `request` or `hello` now carries the
+  sender's clock inside the seal (`wrpc-t`), refused past
+  `encryption.maxSkew` (five minutes) as `stale`; behind more than one
+  instance, `encryption.replay` takes a shared "seen once" memory —
+  `seen(id, ttl)`, as `createReplayCache()` answers it — keyed by the
+  envelope's own header, and one that cannot be asked serves nothing
+  (`broker.rpc.replay`). A 1.x sealed client sends no clock and is refused
+  by a 2.0 service: upgrade the clients with the service.
+- **`attachConsumers` under `identity.trust: 'token'`: a logout takes
+  effect, and a failed restore is not remembered.** The per-token client
+  cache kept a client, and with it the session it had restored, for the
+  life of the binding: a token whose session had since been destroyed kept
+  running deliveries as that user, and a token whose first restore failed
+  — a store that was down, a token naming no session — was cached as an
+  anonymous client that refused every later delivery `403`. A cached
+  client is now re-validated after `tokenTtl` (default 60 s, `0` disables),
+  `consumers.forget(value)` drops one at once (the logout hook), and a
+  restore that did not happen is never cached. A client dropped
+  mid-delivery finishes it first.
+- **WebRTC: roster data could impersonate another peer.** `PeerHost.attach`
+  spread what a peer said about itself at `join` OVER `peer` and `room`, so
+  a member joining with `data: { peer: 'alice' }` ran every handler on the
+  other peers as `context.session.data.peer === 'alice'` (and could plant
+  `claims` where no assertion was verified). `peer`, `room` and `claims`
+  are now written over the roster data, the built-in signaling unit refuses
+  a `join` whose `data` names one of them (400), and `members` answers a
+  member of the room only (403) — the roster of a room could be read, and a
+  cluster-wide fetch triggered, by anyone who knew its name.
+- **WebRTC framing: empty fragments slipped under the reassembly cap.** A
+  peer could send non-final fragments with no payload for as long as it
+  liked — each one a buffered view, none of them counted by
+  `maxReassembly` — and with one-byte fragments the cap was met only after
+  16 million views (~200× the bytes sent). A fragment that is not the last
+  must now carry a byte (`FramingError` code `'empty'`), and the fragment
+  count of one message is capped as well: `framing.maxFragments`, code
+  `'fragments'`, default `maxReassembly` in 1 KiB pieces and never under
+  1024. And a peer whose `a=max-message-size` is under 1 KiB — a demand for
+  a send and a view per few bytes, on both sides, for every packet — is
+  refused: the link fails (`'message-size'`) instead of connecting.
+  `protocol.md#webrtc-framing` says so.
+- **WebRTC trust assertions bound to the FIRST `a=fingerprint:` line.** DTLS
+  binds to the media-level line (RFC 8122 §5), so a relay in the signaling
+  path could keep the honest session-level line — the one the token names
+  — and append its own certificate where DTLS looks: the assertion
+  verified, the DTLS handshake was with the relay. `sdpFingerprint` now
+  answers a fingerprint only when every `a=fingerprint:` line of the
+  description, at either level and of any algorithm, is that one; a
+  description naming two is refused (`'fingerprint'`), on a dial and on an
+  ICE restart alike (the pinned shortcut needs a single fingerprint to
+  compare), and `stamp()` refuses to sign an ambiguous local description.
+  The `algorithm` parameter of `sdpFingerprint` (unreleased) is gone with
+  it. `protocol.md#webrtc-assertions` says every line MUST equal `fp`.
+- **Binary attachments lifted bytes out from behind `toJSON()`.** The walk
+  that finds the bytes in a packet went through every enumerable field of
+  every object, `toJSON()` or not — so a domain object that keeps a Buffer
+  (a password hash on a user entity) and projects it away in `toJSON()`
+  had the Buffer sent anyway, as an attachment, on every result and event
+  that carried the object. An object with a `toJSON()` is opaque to the
+  walk now: its projection is what travels, exactly as `JSON.stringify`
+  would write it (the projection itself is never called by the walk), and
+  the frame skips inherited keys like JSON does.
+- **A packet with back-references hung the event loop.** `hasBytes` kept
+  no memory of what it had visited, so a parent whose children point back
+  at it was walked once per path — 12 children, 12^16 paths before the
+  depth cap. The fast walk now hands over to one with an ancestor stack
+  the moment it reaches the depth cap; a cycle answers `false` and the
+  packet goes to `JSON.stringify`, whose "Converting circular structure"
+  `TypeError` is the one the caller saw before attachments existed
+  (`encodeAttachments` throws the same one). The frame's path bookkeeping
+  is one mutable path copied at each leaf instead of an array per
+  container: 414 → 137 µs on a 30 KB result with an attachment
+  (`bench/attachments.js`).
+- **The worker proxy did not know the attachments frame.** A call with
+  bytes from a page arrived at `WrpcClientProxy` as a frame, which it
+  refused as "not JSON" (an unhandled rejection in the worker, a call that
+  waited out its timeout on the page); an answer with bytes from the
+  server was broadcast to EVERY tab instead of the one that asked, and a
+  batch or an unparseable frame the same. The proxy routes a frame by the
+  packet inside it now, exactly like its JSON twin, forwards the page's
+  frames upstream as they are, and answers a call it could not forward
+  (no connection, no packet) with a coded error instead of silence.
+  `failPackets` — the http/sse leg's "this request died" answer — reads a
+  frame too, so a call with bytes that failed no longer waits out its
+  `callTimeout`.
+- **An injected `Cipher` sealed envelopes under an all-zero key.** The
+  envelope sealer behind `rooms.encryption`, `cluster.encryption`, every
+  broker binding's `encryption` and `sealedStore` wiped the derived subkey
+  right after `cipher.key(subkey)` — correct for the built-in ciphers,
+  which copy it into a `KeyObject`, and exactly wrong for a cipher that
+  keeps the reference, which is the shape the guide shows (`key: (raw) =>
+  ({ seal: … xchacha20poly1305(raw, …) })`): every message was sealed with
+  32 zero bytes, and its opener, seeing the same zeros, opened it. From
+  `key(raw)` on the bytes belong to the cipher (the contract says so now);
+  the sealer wipes only what a cipher built by wrpc was handed. The probe
+  that admits a cipher is a round trip under a random key — one that
+  cannot open its own seal is refused where it is configured — and the
+  guide no longer suggests an injected cipher for a Noise session, whose
+  server half takes the two built-in names only.
+- **A Noise client delivered frames behind one that did not open.** With
+  a cipher over `crypto.subtle` the sealed frames arriving right behind a
+  tampered one were already in the inbound queue, resolved after it had
+  failed, and were handed to the application in order — after the session
+  had been declared over and the socket told to close. Nothing is
+  delivered, stepped or sealed once the connection failed; the counter
+  advancing on a failed decrypt (a departure from Noise §5.1) is documented
+  as the deliberate choice it is.
+- **A sealed event stream's key was a function of the request alone.** It
+  was `Export("wrpc sse stream")` from the HPKE context, and its frames
+  counted from zero — so the same open request, replayed onto another
+  instance (whose replay memory is its own) or accepted twice by a shared
+  replay store that evicted early, opened a second stream under the SAME
+  key with the SAME nonces: two ciphertexts of the `ready` frame under one
+  (key, nonce), which is the one thing an AEAD must never be given. The
+  server now draws 32 bytes per stream and carries them as the `n`
+  parameter of the stream's `Content-Type`; the key is
+  `Expand(Extract(enc ‖ n, Export(…)), "key")`, and a client refuses a
+  sealed stream without a 32-byte `n`. A wire change, before the format is
+  frozen. `protocol.md#sealed-requests` says so.
+- **A sealed request could declare what the proxy knew about it.** The
+  headers inside a sealed request were laid over the outer request's, any
+  name, no cap — so a page behind a proxy that sets `x-forwarded-for`,
+  `cf-connecting-ip` or `x-real-ip` on the outer request (which the proxy
+  can see) could name any address inside (which it cannot), and a rate
+  limit, an allowlist or an audit log keyed on those, or `sse.clientAddress`
+  counting channels per address, saw the sender's word. What the connection
+  or a proxy says about the sender — the forwarded chain, the client-ip
+  spellings, `host`, `origin`, `via`, `sec-*` — is never taken from inside
+  now, whether or not the outer request carried it; the framing names are
+  the outer request's; an outer `cookie` (the HttpOnly one script cannot
+  set) wins over an inner one; and the inner header is refused above 16 KiB
+  before it is parsed. The list lives in `src/rpc/reserved.js`, beside the
+  ws handshake's, and the core hands it to the sealing layer.
+- **`encryption.required` did not reach the fastify adapter's REST routes.**
+  The adapter mounts the router's REST routes natively and runs them
+  through `delegatedContext`, outside `handleHttpCall` — where the `426`
+  gate lives — so a server that answered every packet, socket and
+  core-served route with "encryption required" served those routes in the
+  clear, and added a client for each. `delegatedContext` refuses under
+  `required` now, before a client exists, with the same `426` and the same
+  `encryption.refused` line; the adapter's onSend/onError/onResponse
+  wrappers leave a refused request's payload alone instead of throwing
+  the refusal a second time into the error reply.
+- **The broker binding's goodbye went past the sealer.** Every frame of a
+  sealed broker session was sealed except `bye`, so a sealed client
+  dropped the binding's goodbye as `unsealed` — on `stop()`, on a server
+  close, on `client.close()` from a handler — and went on waiting for a
+  session that was over. It rides `sealFrame` like the rest now, the
+  reason inside.
+- **An SSE channel opened without a cookie or a bearer was held by its id
+  alone.** The channel's identity key is `''` for such a channel, so the
+  authorization check compared `''` with `''` and the id — minted by the
+  application's `generateId`, which the production guide happily shows as
+  a counter — was the whole credential: whoever guessed it could POST on
+  the channel, replay its stream, and take over the session it signed
+  into. The id stays the application's (a uuid, a cuid, a counter — the
+  format is its business, and `generateId` still covers it); what
+  authorizes a request is now a **channel secret** the server draws (18
+  random bytes, base64url) and hands out after the id in the `ready` frame
+  — ONE string, `<id>.<secret>`, in the field 1.0 named `channel`.
+  A re-attach or POST presents it back whole in the one `x-wrpc-channel`
+  header (split at the last dot; no new header, so a CORS
+  `Access-Control-Allow-Headers` stays what it was), compared in constant
+  time; a request without the channel's secret is answered `409` exactly
+  like an unknown id. The cookie/bearer binding stays on top. **Not a wire
+  break**: a 1.0 client presents whatever its `ready` frame's `channel`
+  held, so it presents the secret without knowing there is one.
+  `protocol.md`'s SSE section says so.
+- **A response header could split the response.** `context.http.setHeader`,
+  a procedure's static `http.headers` and the fastify adapter's reply seam
+  wrote whatever value they were handed: on node the engine refused a
+  value with a line break and the request hung, unanswered, until the peer
+  gave up; on uWebSockets.js — which writes what it is given — the value
+  reached the wire, `\r\n` and all, as a second header or a second
+  response. Every seam now checks the name (an RFC 7230 token) and the
+  value (node's own rule: no CR, LF or NUL) and throws where the value was
+  set, a handler error the caller sees as `500`; a second `setHeader` under
+  another spelling of the same name replaces the first instead of sending
+  both; and a host that still refuses a response answers a bare `500` and
+  closes the request rather than leaving it hanging.
+- **A signed feed id positioned a reader on any feed sharing the secret.**
+  `brokerFeed`'s `secret` signed the bare id, so a token issued by the
+  `orders` feed verified on `invoices` when both used one `FEED_SECRET` —
+  the documented setup — and a subscriber of one could resume from a
+  position on the other. The MAC binds the id to its topic now, under a
+  versioned, length-prefixed layout; a token from one feed is a `400` on
+  another. A MAC change: ids clients hold from before are refused once,
+  and `onGap` answers as for any rotation.
+- **WebTransport: a peer could fill the server's memory through streams it
+  never named.** The server read every incoming unidirectional stream to
+  its end and buffered the chunks of any whose open packet had not passed
+  — for an id the peer never named, forever — from any session, before any
+  authentication and past `maxMessage`; a stream from a peer that never
+  announced streams was read the same way. A stream is now read no further
+  than the read that carried its header until its open packet passes (the
+  rest waits in the peer's stream under QUIC's own flow control), at most
+  `maxHeldStreams` (32) are held at once, a held stream is cancelled
+  unread after `holdTimeout` (10 s), and an empty id, a second stream for
+  an id, or any stream from a peer that announced none is cancelled at
+  once — each a `wt.mux.refused` line with the reason, the session left
+  alone. Both options ride `attachSession` / `WtSocket` and are validated.
+- **WebTransport: one silent session blocked every session behind it.**
+  `acceptSessions` attached sessions one at a time, so a peer that
+  connected and never opened its control stream held the accept loop for
+  the whole `acceptTimeout` (10 s) — and a session whose `ready` never
+  settled held it forever, outside any timeout. Sessions attach
+  concurrently now, at most `maxPending` (256) in their handshake at once
+  — the next is refused `503` and `wt.accept.saturated` is logged once per
+  episode — under ONE `acceptTimeout` that covers `verify`, the session's
+  `ready` and the first stream; `stop()` closes what is still handshaking
+  (`1001`) and `done` waits for it; `attachSession` takes a `signal` for
+  the same. `onClient` may therefore be called out of arrival order.
+
+## [1.0.0] - 2026-08-23
 
 ### Added
 
@@ -532,6 +4080,23 @@ only by adapter tests; never a runtime dependency).
 
 ### Fixed
 
+- A cluster node that asked a peer for its presence `state` and never got
+  the answer (the reply travels at-most-once too — the node's own inbox
+  channel may not be subscribed yet on the first digest) kept its
+  `syncing` flag forever and ignored every later digest, so its view of that
+  peer stayed wrong until restart. The wait is now bounded: after two
+  presence intervals without an answer the sync is asked again. Found by
+  the multi-node bench on its first run.
+- A ping arriving after the engine had FAILED the connection (a protocol
+  error, an oversized or undecodable message) was still answered with a
+  pong; RFC 6455 7.1.7 says nothing after the failure is acted on. Autobahn
+  cases 4.1.3–4.2.5 flagged it; the full suite now passes. A ping after an
+  app-initiated `close()` is still answered, as before.
+- The uws engine never compressed an outbound frame: `UwsSocket.send` did not
+  pass uws' third `compress` argument (which defaults to false), so a
+  configured `compression` only ever applied to inbound messages while
+  `capabilities.deflate` reported true. It now asks uws to compress, and
+  `tests/adapters/uws.test.js` asserts RSV1 on the wire.
 - `client.sessionReady` is assigned **before** the `onConnect` hooks run —
   the documented `await client.sessionReady` recipe used to await the
   constructor's resolved default and see `session === null`; the packet-POST
@@ -596,6 +4161,18 @@ only by adapter tests; never a runtime dependency).
 
 ### Changed
 
+- Writes to `session.state` coalesce: the assignments of one turn become one
+  `store.set` on a microtask (`create()` still persists the initial state
+  immediately), and a session finalized in the meantime is not written back
+  (`Session.end()`, called by `finalizeSession`). One round trip per turn to
+  a shared store instead of one per assignment.
+- Unicast frames are one contiguous buffer up to 16 KiB — header and payload
+  in a single socket write, text utf8-encoded from a module scratch buffer
+  instead of an intermediate `Buffer.from` — and header + payload writes
+  above it. `sendText 4 KB` 735,099 → 1,671,520/sec; 200 B unchanged.
+- `docs/guide/performance.md` no longer claims the fan-out frame was encoded
+  once — before this release only the JSON was; utf8, deflate and framing
+  were per recipient.
 - Server transports carry a `kind` — `ws`, `http`, `sse` or `event` — as a
   metric attribute and log field.
 - Every shell and adapter funnels its option bag through `rpcOptions()`

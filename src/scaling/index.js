@@ -2,6 +2,7 @@
 
 const { MemoryBackplane, createMemoryBackplane, DEFAULT_PREFIX } = require('./memory.js');
 const { createRedisAdapter } = require('./redis.js');
+const { createRedisSessionStore, DEFAULT_SESSION_PREFIX } = require('./sessions.js');
 
 // The structural backplane contract — anything with this shape plugs into
 // `new Server({ backplane })` / `new RpcServer({ backplane })`:
@@ -28,6 +29,8 @@ module.exports = {
   MemoryBackplane,
   createMemoryBackplane,
   createRedisAdapter,
+  createRedisSessionStore,
+  DEFAULT_SESSION_PREFIX,
   isBackplane,
   DEFAULT_PREFIX,
 };

@@ -47,7 +47,7 @@ sequenceDiagram
 Both are held for the life of the process: `cluster`, which every instance
 subscribes to (presence, wide requests, commands), and `inst:<instanceId>`,
 one instance's own inbox for answers and addressed commands. The envelopes
-are an implementation detail of wrpc's cluster layer, not part of the frozen
+are an implementation detail of wRPC's cluster layer, not part of the frozen
 [wire protocol](../reference/protocol#cluster-channels) — they never reach a
 client connection.
 
@@ -78,7 +78,10 @@ from "same process, merge them".
 | `requestTimeout` | `2000` ms | Backstop for `fetchClients`/`ask`; resolves `incomplete`, never rejects. |
 | `rooms` | all | Which rooms replicate: an array, predicate or RegExp. See the cardinality note below. |
 | `maxFetch` | `1000` | Per-node ceiling on one `fetchClients` reply; a node over it answers its first `maxFetch` descriptors and the result carries `truncated: true` (never silent). `0` disables. |
-| `secret` | — | Opt-in HMAC-SHA256 envelope authentication — see [Trusting the backplane](#trusting-the-backplane). |
+| `secret` | — | Opt-in HMAC-SHA256 envelope authentication, with replay protection — see [Trusting the backplane](#trusting-the-backplane). |
+| `replay` | `'strict'` | Under `secret`: what to do with a signed envelope that carries no counter, which is what a 1.x node sends. `'strict'` refuses it; `'accept'` lets it through during a rolling upgrade from 1.x. |
+| `maxSkew` | `30000` ms | Under `secret`: how far an envelope's clock may sit from this node's, both ways. |
+| `compression` | off | Deflate the cluster envelopes this node publishes, after signing — the same marker and two-step rollout rule as [`rooms.compression`](./scaling#compression); an unreadable envelope logs `cluster.encoded`. |
 
 `cluster: false` opts out of the cluster layer entirely: presence, commands
 and asks degrade to their local halves while the [rooms
@@ -107,6 +110,50 @@ every node: envelopes are HMAC-SHA256-signed and an unsigned or mis-signed
 message is dropped and logged (`cluster.unsigned` / `cluster.badsig`).
 Room *events* travel on separate channels and are not signed — the secret
 guards the command surface, the broker ACL guards the rest.
+
+A signature alone says a command **was written by a node holding the
+secret** — not when, and not where. So under `secret` every envelope also
+carries, inside what is signed, the sender's **counter**, the **channel**
+it was published on and the sender's **clock**, and a receiver refuses
+(`cluster.replay`, with a `reason`):
+
+| `reason` | What arrived |
+| --- | --- |
+| `seq` | A counter this node already accepted from that sender, or one older than its window of 1024 — a copy of an earlier envelope |
+| `channel` | An envelope on a channel other than the one it was signed for — an addressed command moved to another instance's inbox, or onto `cluster` |
+| `stale` | A clock further than `maxSkew` from this node's, or an envelope of a **previous life** of a sender whose restarted process this node already follows |
+| `unsequenced` | A signed envelope with no counter at all — a 1.x node's |
+
+So a party that can read the backplane and write to it (a compromised
+broker, a client with a wider ACL than intended) cannot run a `disconnect`
+again, move a `join` to another node, or bring a dead process' presence
+back. Two things follow for operations:
+
+- **Clocks.** The nodes of a cluster keep their clocks within `maxSkew`
+  (30 s by default) — a node outside it is refused by the others as `stale`
+  and never joins. It is not silent about it: the `cluster.replay` line
+  carries the `skew` in ms, and after three refusals in a row the cluster
+  emits `'degraded'` with `{ instance, reason: 'skew', skew }` — and
+  `'recovered'` with `{ instance }` once one of its envelopes is heard. The window is also the one bound on what a node that
+  was *not listening* can be fed: a counter window only remembers what
+  this process heard, so a freshly booted node accepts an envelope up to
+  `maxSkew` old that it has not seen. Lower it where the clocks allow.
+- **Upgrading from 1.x.** A 1.x node signs but does not count, so a 2.0
+  node refuses it and the two halves of a mixed cluster do not see each
+  other. Deploy 2.0 with `cluster: { secret, replay: 'accept' }` while any
+  1.x node is left — that waives the counter of a node that has none, and
+  nothing else — then drop the option. (A 1.x node reads a 2.0 envelope as
+  it always did: the new fields are inside the bytes it verifies.)
+
+The refusal is logged once per sender and reason each `presenceTimeout`
+(`debug` in between — a copy can be published in a loop) and always
+counted, as `wrpc.cluster.verifications` with outcome `replay`.
+
+What `secret` does not do is hide anything: the envelope is still
+readable JSON on the broker. Where the backplane itself is in the threat
+model, add `cluster: { encryption }` — the sealed frame has its own
+counter window and is bound to its channel as well — see
+[Encryption](./encryption#backplane).
 
 ### Health
 
@@ -140,8 +187,8 @@ A descriptor is deliberately small and serializable:
 | `id` | The client id, instance-prefixed (`<instanceId>.<generateId()>`). |
 | `instance` | Which node holds the connection. |
 | `rooms` | Its room memberships on that node. |
-| `data` | `client.data` — the application's own bag; wrpc never reads it. |
-| `transport` | `'ws'`, `'http'`, `'sse'` or `'event'`. |
+| `data` | `client.data` — the application's own bag; wRPC never reads it. |
+| `transport` | `'ws'`, `'sse'`, `'event'`, `'wt'`, `'webrtc'` or `'broker'` — the kinds that hold a connection. |
 | `session` | Whether a [session](./sessions) is attached — never the session itself. |
 
 Only **persistent** clients are enumerated: a per-request HTTP client is not a
@@ -175,6 +222,34 @@ Commands are fire-and-forget with the backplane's at-most-once delivery: they
 are the right tool for "kick these connections", and the wrong one for
 anything that must be exactly-once.
 
+### One event to one client
+
+```js
+server.sendTo(clientId, 'chat/dm', { text: 'hi' });                   // here, or on the node its id names
+server.sendTo(clientId, 'signaling/signal', payload, { room: 'lobby' }); // only while it is still in `room`
+```
+
+`server.sendTo` is the id-addressed counterpart of `to(room).emit`: a local
+id is delivered directly, a foreign one becomes an addressed `event` command
+on that node's channel (`server.cluster.send` is the same call without the
+local short-cut). `room` bounds the delivery to a client still in that room —
+a relay tied to a membership must not outlive it. It returns `true` when the
+event was delivered locally or handed to the backplane and `false` when it is
+known undeliverable (no such local client, a per-request HTTP client, not in
+`room`, a foreign id with no backplane). The remote leg is at-most-once,
+like every command.
+
+**Bytes cross as bytes.** A `Uint8Array` (or `Buffer`, typed array,
+`ArrayBuffer`) anywhere in `data` reaches the other instance as a
+`Uint8Array`, exactly as `to(room).emit` carries it: the command envelope
+leaves as a binary [attachments frame](../reference/protocol#cluster-channels)
+instead of JSON — signed, compressed and sealed like any other. That is
+what makes `sendTo` the 1:1 relay of an [end-to-end sealed
+payload](./encryption#end-to-end). The same holds for `cluster.sendEvent`,
+for the question and the answers of `cluster.ask`, and for the answers a
+broadcast `ask` collects from other instances. `attachments: false` keeps
+all of it the JSON of 1.0.
+
 ## Node-to-node messaging
 
 ```js
@@ -185,7 +260,7 @@ server.cluster.respond('stats', async () => ({ load: cpu() }));
 const { answers, errors, incomplete } = await server.cluster.ask('stats');
 ```
 
-As everywhere in wrpc, `emit` is the local `Emitter` emit and the wire send is
+As everywhere in wRPC, `emit` is the local `Emitter` emit and the wire send is
 `sendEvent`. One responder per name — two answers to one question are
 ambiguous, so a duplicate `respond()` throws. A node **without** a responder
 contributes an entry in `errors`, not silence.

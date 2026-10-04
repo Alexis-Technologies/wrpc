@@ -1,0 +1,339 @@
+'use strict';
+
+// Framing for an RTCDataChannel: how wrpc packets and stream chunks ride a
+// channel whose messages have a size limit.
+//
+// A WebSocket carries a JSON packet as one text frame and a stream chunk as
+// one binary frame, however large. A data channel message is capped —
+// 16 KiB is the only size every implementation agrees on, a modern browser
+// negotiates more through `sctp.maxMessageSize` — and wrpc's batch frames
+// and 64 KiB stream chunks are routinely over it. So every message is sent
+// as binary (the channel's `binaryType` is set to 'arraybuffer'), split into
+// fragments that fit, each with a one-byte header:
+//
+//   bit 0   KIND   0 = a wrpc packet (UTF-8 JSON, what a WebSocket text frame carries)
+//                  1 = a binary stream chunk (a chunkEncode frame)
+//   bit 1   FIN    1 = the last fragment of this message
+//   bit 2   COMPRESSED 1 = the message is compressed (src/compression) — only once
+//                  both ends negotiated it; reserved, and a protocol error, before
+//   bit 3-7 reserved, MUST be 0 — a set bit is a protocol error
+//
+// No message id, no sequence number: the channel is ordered and reliable,
+// all fragments of one message are sent back to back, the KIND of a
+// continuation must match the message it continues, and a fragment that
+// is not the last carries at least one byte. The format is documented in
+// docs/reference/protocol.md (WebRTC) and wire-format.md.
+//
+// This file is on the hot path (once per packet, once per chunk) and
+// browser-budgeted: manual loops, no generators, no spread.
+
+const KIND_TEXT = 0;
+const KIND_BINARY = 1;
+const FLAG_FIN = 0b10;
+const FLAG_COMPRESSED = 0b100;
+const KIND_MASK = 0b01;
+// What a continuation must repeat: the kind and the deflate flag.
+const MESSAGE_MASK = KIND_MASK | FLAG_COMPRESSED;
+const RESERVED_MASK = 0b11111000;
+const HEADER_BYTES = 1;
+
+// The interop floor (RFC 8831 §6.6, what old Firefox honoured) — used when
+// the implementation reports no size at all; and the ceiling above which
+// one message would hold too much memory on the receiving side at once.
+const MIN_MESSAGE_SIZE = 16 * 1024;
+const MAX_MESSAGE_SIZE = 256 * 1024;
+// Under this a peer's `a=max-message-size` is not a limit anyone needs
+// (SCTP's own default is 64 KiB, the interop floor 16 KiB) but a demand
+// for a fragment per few bytes — a send and a view per fragment, on both
+// sides, for every packet: refused, and the link fails.
+const MIN_NEGOTIABLE_SIZE = 1024;
+// A peer that never sends FIN would otherwise grow the reassembly buffer
+// without bound — and one sending a byte per fragment would cost a view
+// object per byte long before the byte cap is near, so the fragment count
+// is capped too: the byte cap in 1 KiB pieces (16 384 by default), never
+// under 1024.
+const DEFAULT_MAX_REASSEMBLY = 16 * 1024 * 1024;
+const MIN_MAX_FRAGMENTS = 1024;
+const defaultMaxFragments = (maxReassembly) => Math.max(MIN_MAX_FRAGMENTS, Math.ceil(maxReassembly / 1024));
+
+class FramingError extends Error {
+  constructor(message, code) {
+    super(message);
+    this.name = 'FramingError';
+    this.code = code;
+  }
+}
+
+/**
+ * The message size to fragment at. `sctp.maxMessageSize` already reflects
+ * the REMOTE side's `a=max-message-size` (W3C §5.5), so it is the
+ * agreed-upon limit — capped at `ceiling`, and the interop floor when
+ * nothing usable is reported (no sctp, 0, 1, Infinity). A reported size
+ * UNDER the floor is honoured as-is: the floor is a fallback, never an
+ * override — down to MIN_NEGOTIABLE_SIZE, under which the peer's demand is
+ * refused with a FramingError ('message-size') for the link to fail on.
+ */
+const negotiateMessageSize = (sctp, ceiling = MAX_MESSAGE_SIZE) => {
+  const advertised = sctp !== null && sctp !== undefined ? sctp.maxMessageSize : 0;
+  const usable = typeof advertised === 'number' && Number.isFinite(advertised) && advertised > HEADER_BYTES;
+  if (!usable) return Math.min(MIN_MESSAGE_SIZE, ceiling);
+  const size = Math.floor(advertised);
+  if (size < MIN_NEGOTIABLE_SIZE) {
+    throw new FramingError(`peer max-message-size ${size} is under ${MIN_NEGOTIABLE_SIZE}`, 'message-size');
+  }
+  return Math.min(size, ceiling);
+};
+
+// The `maxMessageSize` an application hands a raw-channel transport: the
+// same floor and ceiling negotiation applies to a peer's advertisement,
+// refused as a TypeError where the option is given rather than as a
+// framing error at the first write (or a 256 KiB scratch buffer nobody
+// asked for). Undefined is the default.
+const checkMessageSize = (value, label) => {
+  if (value === undefined) return;
+  if (!Number.isInteger(value) || value < MIN_NEGOTIABLE_SIZE || value > MAX_MESSAGE_SIZE) {
+    throw new TypeError(
+      `${label}: maxMessageSize must be an integer between ${MIN_NEGOTIABLE_SIZE} and ${MAX_MESSAGE_SIZE}`,
+    );
+  }
+};
+
+const TEXT_ENCODER = new TextEncoder();
+// fatal: an invalid byte sequence in a text frame is a protocol error, not
+// a U+FFFD the JSON parser then trips over one layer up.
+const TEXT_DECODER = new TextDecoder('utf-8', { fatal: true });
+
+const toBytes = (input) => {
+  if (input instanceof Uint8Array) return input;
+  if (input instanceof ArrayBuffer) return new Uint8Array(input);
+  if (ArrayBuffer.isView(input)) return new Uint8Array(input.buffer, input.byteOffset, input.byteLength);
+  throw new TypeError('framing: expected an ArrayBuffer or an ArrayBufferView');
+};
+
+/** A packet's bytes as text — the decoder's own decode, for a packet inflated after decoding. */
+const decodeText = (bytes) => {
+  try {
+    return TEXT_DECODER.decode(bytes);
+  } catch {
+    throw new FramingError('invalid UTF-8 in a text frame', 'utf8');
+  }
+};
+
+class FrameEncoder {
+  #room;
+  // One buffer per encoder, reused for every fragment: bench/rtc-framing.js
+  // measures a fresh Uint8Array per fragment at 3-7x LESS throughput (3.5M
+  // vs 25M frames/s at 64 B, 10K vs 34K at 1 MiB / 16 KiB fragments) — the
+  // allocation, not the copy, is the cost. The price is a contract — see
+  // encode().
+  #scratch;
+  // Between the first fragment of a message and its last: a sink that
+  // threw while this is true left the peer a message with no end, and
+  // nothing sent after it would parse — the channel is done for.
+  partial = false;
+
+  constructor(maxMessageSize) {
+    if (!Number.isInteger(maxMessageSize) || maxMessageSize <= HEADER_BYTES) {
+      throw new TypeError(`framing: maxMessageSize must be an integer above ${HEADER_BYTES}`);
+    }
+    this.maxMessageSize = maxMessageSize;
+    this.#room = maxMessageSize - HEADER_BYTES;
+    this.#scratch = new Uint8Array(maxMessageSize);
+  }
+
+  /**
+   * Frames `bytes` as `kind`, handing each fragment to `sink` in order,
+   * synchronously — the caller sends them back to back, which is what makes
+   * the header's FIN bit enough. Returns the fragment count.
+   *
+   * CONTRACT: the frame handed to `sink` is a view over a buffer the NEXT
+   * fragment overwrites. Consume it inside the call — RTCDataChannel.send
+   * copies synchronously, which is the consumer this exists for — and never
+   * retain it; a sink that must keep it takes `frame.slice()`.
+   */
+  encode(kind, bytes, sink) {
+    const total = bytes.length;
+    const room = this.#room;
+    const scratch = this.#scratch;
+    if (total <= room) {
+      scratch[0] = kind | FLAG_FIN;
+      scratch.set(bytes, HEADER_BYTES);
+      sink(scratch.subarray(0, total + HEADER_BYTES));
+      return 1;
+    }
+    let offset = 0;
+    let count = 0;
+    this.partial = true;
+    while (offset < total) {
+      const size = total - offset < room ? total - offset : room;
+      scratch[0] = offset + size === total ? kind | FLAG_FIN : kind;
+      scratch.set(bytes.subarray(offset, offset + size), HEADER_BYTES);
+      sink(scratch.subarray(0, size + HEADER_BYTES));
+      offset += size;
+      count++;
+    }
+    this.partial = false;
+    return count;
+  }
+
+  /**
+   * A packet. UTF-8 is at most 3 bytes per UTF-16 code unit, so a short
+   * enough string is known to fit and is encoded straight into the scratch
+   * frame — no intermediate byte array (bench/rtc-framing.js: 8.3M vs 2M
+   * packets/s at 64 B; the common case is a packet well under the limit).
+   * Anything longer is encoded first and fragmented like bytes. Same sink
+   * contract as encode().
+   */
+  encodeText(text, sink) {
+    if (text.length * 3 <= this.#room) {
+      const scratch = this.#scratch;
+      const { written } = TEXT_ENCODER.encodeInto(text, scratch.subarray(HEADER_BYTES));
+      scratch[0] = KIND_TEXT | FLAG_FIN;
+      sink(scratch.subarray(0, written + HEADER_BYTES));
+      return 1;
+    }
+    return this.encode(KIND_TEXT, TEXT_ENCODER.encode(text), sink);
+  }
+}
+
+// A fan-out's message, prepared once for every link it goes to: what fills
+// the `frames` slot of the shared message (rpc/rooms.js) on a data channel,
+// as PreparedFrames does on a WebSocket. A channel cannot share a FRAME —
+// each link has its own message size, so its own fragments — but everything
+// before the fragments is the same for every recipient: the UTF-8 of the
+// text (or the attachments frame as it is), and under compression the body
+// a codec makes of it, kept per codec id (per-message compression has no
+// shared context, so one codec answers the same bytes for every link).
+class SharedFrames {
+  constructor(text) {
+    const packet = typeof text === 'string';
+    this.kind = packet ? KIND_TEXT : KIND_BINARY;
+    this.bytes = packet ? TEXT_ENCODER.encode(text) : text;
+    // Once a link compresses it: codec id -> the compressed body, a promise
+    // of it, or null — the codec threw, and the message goes plain.
+    this.bodies = null;
+  }
+}
+
+class FrameDecoder {
+  // Whether the DEFLATE flag is accepted: set by the transport once both
+  // ends named the same codec, a reserved bit — a protocol error — before.
+  compressed = false;
+
+  #maxReassembly;
+  #maxFragments;
+  #parts = null;
+  // The kind and flags of the message being reassembled (MESSAGE_MASK).
+  #kind = -1;
+  #size = 0;
+
+  constructor({ maxReassembly = DEFAULT_MAX_REASSEMBLY, maxFragments = undefined } = {}) {
+    if (!Number.isInteger(maxReassembly) || maxReassembly <= 0) {
+      throw new TypeError('framing: maxReassembly must be a positive integer');
+    }
+    if (maxFragments !== undefined && (!Number.isInteger(maxFragments) || maxFragments <= 0)) {
+      throw new TypeError('framing: maxFragments must be a positive integer');
+    }
+    this.#maxReassembly = maxReassembly;
+    this.#maxFragments = maxFragments ?? defaultMaxFragments(maxReassembly);
+  }
+
+  /** Bytes of the message being reassembled; 0 between messages. */
+  get pending() {
+    return this.#size;
+  }
+
+  /**
+   * Feeds one channel message. Returns `{ kind, data, compressed }` when it
+   * completes a message — `data` is a string for KIND_TEXT and a Uint8Array
+   * for KIND_BINARY, and for a DEFLATED message of either kind the bytes
+   * the codec produced, text only once the transport inflated them — or
+   * null while one is still being reassembled. A single-fragment binary
+   * message is answered as a view over the input (no copy): every channel
+   * message is a fresh buffer, so nothing aliases. Throws FramingError on a
+   * malformed frame; the decoder is reset so the caller can terminate
+   * cleanly.
+   */
+  push(input) {
+    const frame = toBytes(input);
+    if (frame.length < HEADER_BYTES) throw this.#fail('empty frame', 'empty');
+    const header = frame[0];
+    if ((header & RESERVED_MASK) !== 0 || ((header & FLAG_COMPRESSED) !== 0 && !this.compressed)) {
+      throw this.#fail('reserved header bits set', 'reserved');
+    }
+    const kind = header & MESSAGE_MASK;
+    const fin = (header & FLAG_FIN) !== 0;
+    const payload = frame.subarray(HEADER_BYTES);
+    // A fragment that continues carries something: an empty one costs the
+    // receiver a view and moves the byte cap not at all.
+    if (!fin && payload.length === 0) throw this.#fail('empty fragment', 'empty');
+    if (this.#parts === null) {
+      if (fin) return this.#finish(kind, payload);
+      this.#parts = [payload];
+      this.#kind = kind;
+      this.#size = payload.length;
+      this.#guard();
+      return null;
+    }
+    if (kind !== this.#kind) throw this.#fail('continuation kind does not match the message', 'kind');
+    this.#parts.push(payload);
+    this.#size += payload.length;
+    this.#guard();
+    if (!fin) return null;
+    const parts = this.#parts;
+    const joined = new Uint8Array(this.#size);
+    let offset = 0;
+    for (let i = 0; i < parts.length; i++) {
+      joined.set(parts[i], offset);
+      offset += parts[i].length;
+    }
+    this.reset();
+    return this.#finish(kind, joined);
+  }
+
+  reset() {
+    this.#parts = null;
+    this.#kind = -1;
+    this.#size = 0;
+  }
+
+  #guard() {
+    if (this.#size > this.#maxReassembly) throw this.#fail('message exceeds maxReassembly', 'too-large');
+    if (this.#parts.length > this.#maxFragments) throw this.#fail('message exceeds maxFragments', 'fragments');
+  }
+
+  #fail(message, code) {
+    this.reset();
+    return new FramingError(message, code);
+  }
+
+  #finish(flags, bytes) {
+    const kind = flags & KIND_MASK;
+    if (flags !== kind) return { kind, data: bytes, compressed: true };
+    if (kind === KIND_BINARY) return { kind, data: bytes, compressed: false };
+    try {
+      return { kind, data: TEXT_DECODER.decode(bytes), compressed: false };
+    } catch {
+      throw this.#fail('invalid UTF-8 in a text frame', 'utf8');
+    }
+  }
+}
+
+module.exports = {
+  KIND_TEXT,
+  KIND_BINARY,
+  FLAG_FIN,
+  FLAG_COMPRESSED,
+  HEADER_BYTES,
+  MIN_MESSAGE_SIZE,
+  MAX_MESSAGE_SIZE,
+  MIN_NEGOTIABLE_SIZE,
+  checkMessageSize,
+  DEFAULT_MAX_REASSEMBLY,
+  FramingError,
+  negotiateMessageSize,
+  decodeText,
+  FrameEncoder,
+  FrameDecoder,
+  SharedFrames,
+};

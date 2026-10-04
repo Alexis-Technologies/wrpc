@@ -1,14 +1,24 @@
 # Wire format
 
 [The protocol reference](./protocol) describes the **packets**. This page
-describes what carries them: the binary chunk framing wrpc defines, and the
-from-scratch RFC 6455 WebSocket implementation the default engine is built on.
+describes what carries them: the binary chunk framing wRPC defines, the frames
+a [WebRTC data channel](#data-channel-frames) and a [WebTransport
+stream](#webtransport-stream-frames) wrap them in, and the from-scratch
+RFC 6455 WebSocket implementation the default engine is built on.
 
 Most applications never need this page. Read it if you are implementing an
 [engine](./engine), speaking the protocol from another language, or debugging
 something at the frame level.
 
 ## Binary chunks
+
+::: tip A binary frame whose first byte is `0x00` is not a chunk
+A stream id is at least one byte long, so `0x00` never begins a chunk: it
+begins a *framed message* — a packet carrying [binary attachments](../guide/streams#attachments),
+or a packet a Node client compressed. The [protocol page](./protocol#binary-chunks)
+has the kinds, and framed messages are [revision 2](./protocol#versioning):
+none is sent to a peer that negotiated revision 1.
+:::
 
 JSON packets travel as WebSocket **text** frames. Stream payloads travel as
 **binary** frames, and each one is exactly one chunk of one stream:
@@ -40,6 +50,86 @@ const { id, payload: bytes } = chunkDecode(frame);
 The Node build uses `Buffer`, the browser build `TextEncoder`/`TextDecoder` —
 swapped through the package's `browser` field, so the same code works in both.
 
+## Data-channel frames
+
+On a WebRTC data channel (the `@alexify/wrpc/webrtc` transport) both packets
+and chunks travel as **binary** messages, because a channel message has a
+size limit and a packet or a chunk may not fit in one. Each message is one
+fragment, prefixed by a single header byte:
+
+```
+┌────────────┬────────────────────────────────────────┐
+│  1 byte    │              fragment payload           │
+│  KIND|FIN  │  UTF-8 JSON (KIND 0) or chunk (KIND 1)  │
+└────────────┴────────────────────────────────────────┘
+bit 0 KIND, bit 1 FIN (last fragment), bit 2 COMPRESSED (the message body is
+under the codec the two descriptions' `caps` agreed on), bits 3–7 reserved (0)
+```
+
+A packet under the limit is one message: header `0b11`, then the JSON. A
+64 KiB stream chunk at a 16 KiB limit is five messages: four with header
+`0b01` and a final `0b11`, the payloads concatenated being exactly the chunk
+frame above (id length, id, payload). The receiver concatenates until FIN —
+the channel is ordered and reliable, so no message id is needed — and then
+hands a KIND 0 message to the packet parser and a KIND 1 message to
+`chunkDecode`. The rules and the error cases are in
+[the protocol reference](./protocol#webrtc-framing).
+
+```js
+const { FrameEncoder, FrameDecoder, KIND_TEXT } = require('@alexify/wrpc/webrtc');
+
+const encoder = new FrameEncoder(16 * 1024); // the negotiated maxMessageSize
+encoder.encodeText('{"type":"ping"}', (frame) => channel.send(frame));
+const decoder = new FrameDecoder();
+const message = decoder.push(event.data); // null until FIN; then { kind, data }
+```
+
+The frame handed to the sink is a view over a buffer the encoder reuses for
+the next fragment — hand it to `send()`, which copies, and never keep it.
+
+## WebTransport stream frames
+
+On a WebTransport session (`transport: 'wt'`, `@alexify/wrpc/wt`) every packet
+and chunk travels on one bidirectional stream, the control stream. A QUIC
+stream carries bytes with no message boundary, so each message is
+length-prefixed:
+
+```
+┌──────────────────┬────────┬────────────────────────────────────────┐
+│     4 bytes      │ 1 byte │              payload                    │
+│ LENGTH (BE u32)  │  KIND  │  UTF-8 JSON (KIND 0) or chunk (KIND 1)  │
+KIND: 0 text packet · 1 chunk · 2 capabilities (the first frame each way) ·
+3 compressed text · 4 compressed chunk (under the negotiated codec)
+└──────────────────┴────────┴────────────────────────────────────────┘
+```
+
+A `{"type":"ping"}` packet is 20 bytes: `00 00 00 0F 00` and then the 15
+bytes of JSON. A 64 KiB stream chunk is one message of 65 541 bytes, however
+many reads it takes to arrive; the receiver hands a KIND 0 message to the
+packet parser and a KIND 1 message to `chunkDecode`. The rules and the error
+cases are in [the protocol reference](./protocol#webtransport-framing).
+
+```js
+const { frame, frameText, StreamParser, KIND_BINARY } = require('@alexify/wrpc/wt');
+
+writer.write(frameText('{"type":"ping"}')); // a fresh frame — safe to queue
+writer.write(frame(KIND_BINARY, chunkEncode(id, bytes)));
+const parser = new StreamParser({ onMessage: (kind, data) => {} });
+for await (const read of readable) parser.push(read); // onMessage once per message
+```
+
+Unlike the data-channel encoder, the frames here are fresh buffers: a WHATWG
+writer takes its chunk by reference and may process it after `write()`
+returns, so a reused scratch buffer would corrupt what is still queued.
+
+Two more shapes ride a session. A **datagram** (an unreliable event) is one
+whole packet under the KIND byte alone, `00` then the JSON — see
+[the protocol reference](./protocol#webtransport-datagrams). A **binary
+stream on its own unidirectional stream** opens with the chunk header —
+`idLen`, then the id — and then carries raw payload bytes to its FIN; the
+receiver rebuilds `chunkEncode` frames from them, one per read
+([the protocol reference](./protocol#webtransport-streams)).
+
 ## The WebSocket engine
 
 `@alexify/wrpc/ws` publishes the implementation itself. It is **not** in the
@@ -64,7 +154,8 @@ wss.on('connection', (connection, req) => {
 | `path` | — | Restrict upgrades to this pathname. |
 | `verifyClient({ req, socket, head })` | — | Gate the handshake. |
 | `protocols` / `handleProtocols(offered, req)` | — | Subprotocol negotiation; `false` rejects the handshake. |
-| `perMessageDeflate` | off | `true` or `{ threshold }`. |
+| `perMessageDeflate` | off | `true` or `{ threshold, filter, contextTakeover, level, memLevel, async }`. |
+| `coalesce` | `true` | Cork every write of one event-loop turn and flush on the next tick, one `writev` per burst. |
 | `pingInterval` | `10000` | Protocol-ping interval; a peer that misses one is terminated. |
 | `maxBuffer` | 100 MiB | Largest inbound message. |
 | `maxBackpressure` | `maxBuffer` (100 MiB) | Outbound cap; a connection past it is **terminated** (the peer observes `1006`). |
@@ -111,6 +202,14 @@ uws engine's default outbound ceiling is its 16 MiB `maxPayload`; set
 are being consumed, the RPC layer stops reading from the socket, so the
 pressure reaches the sender through TCP.
 
+Server connections **coalesce** writes (`coalesce: true`): the first write of
+an event-loop turn corks the socket and the next tick uncorks it, so the N
+answers to a batch or a burst of events leave in one `writev` instead of N
+syscalls — the idiom `node:http` uses. The boolean stays honest: a corked
+write still reports the buffered length against the high-water mark, and
+`'drain'` is unchanged. A bare `Connection` defaults to `coalesce: false`,
+so a write is on the socket the moment `send()` returns.
+
 ### Payload ownership
 
 A received payload may be a view into the receive buffer. **Copy it if you
@@ -155,21 +254,134 @@ Two things that matter at volume, both measured by `bench/`:
 RFC 7692 compression, over `node:zlib`, **off by default**:
 
 ```js
-new WebsocketServer({ server, perMessageDeflate: { threshold: 1024 } });
+new WebsocketServer({
+  server,
+  perMessageDeflate: {
+    threshold: 1024,
+    // Per connection: compress for a browser on a slow link, not for a
+    // service in the same datacenter. Declines the offer, so the peer
+    // learns it from the handshake.
+    filter: (req) => req.headers['x-forwarded-proto'] !== undefined,
+  },
+});
 ```
 
 Messages below `threshold` (1 KiB by default) are sent uncompressed — below it,
-compression costs more than it saves. The negotiated response always asks for
-`server_no_context_takeover` and `client_no_context_takeover`, which trades
-some ratio for bounded per-connection memory: context takeover keeps a zlib
-window alive per peer, and thousands of idle connections each holding one is a
-worse problem than a slightly larger frame.
+compression costs more than it saves. `filter(req)` decides per upgrade
+request whether the peer's offer is accepted at all. By default the
+negotiated response asks for `server_no_context_takeover` and
+`client_no_context_takeover`, which trades some ratio for bounded
+per-connection memory: context takeover keeps a zlib window alive per peer,
+and thousands of idle connections each holding one is a worse problem than a
+slightly larger frame.
+
+The option is off by default on purpose: a deflate per frame is CPU spent for
+every peer to save bytes only some of them need, and the server's first
+commitment is the cost per frame. The peers that need it are usually
+identifiable at the handshake, which is what `filter(req)` is for — see
+[when compression is worth it](../guide/performance#compression-is-off-by-default).
+
+The algorithm is not a choice here. RFC 7692 is the only WebSocket extension
+a browser implements, so this wire is DEFLATE whatever else is available;
+the knobs are `level`, `contextTakeover` and `async` (`level` −1..9 and
+`memLevel` 1..9 apply to every deflate the server makes — unicast, fan-out,
+threadpool and context alike — and are refused at construction otherwise;
+the default stays zlib's 6, measured in `bench/send-path.js` at levels 1, 3
+and 6 beside `bench/algorithms.js`). Every other wire takes
+a codec by name or by injection — Brotli, zstd, your own — and
+[the compression guide](../guide/compression#algorithm) has the numbers that
+decide between them. A Node client's own frames are such a wire: its
+`compression` option rides above the extension and takes any codec.
+
+::: warning A Node client never sends a compressed frame
+Node's built-in `WebSocket` offers `permessage-deflate` on the upgrade and
+inflates what it receives, but never deflates what it sends — every frame it
+emits has `RSV1` clear, whatever the server accepted. Compression on a
+Node↔Node link is therefore server→client only — unless the client's
+`compression` option and the server's agree on per-message frames above
+the extension ([the Node client's frames](../guide/server#node-client-frames)).
+Browsers compress both directions.
+:::
+
+### Context takeover
+
+`contextTakeover: 'server' | 'client' | true` opts a direction into a live
+zlib stream per connection: `'server'` keeps a deflate context for what
+this side sends, `'client'` an inflate context for what the peer sends,
+`true` both. A message may then reference the bytes of the ones before it,
+which on repetitive traffic — the same JSON shape every tick — is a much
+smaller frame (`bench/deflate-context.js`). What it costs:
+
+- **Memory per connection, per direction**: the window (`1 << windowBits`,
+  32 KiB at 15) plus, for deflate, `1 << (memLevel + 9)` of hash state —
+  ~160 KiB at the defaults, tunable with `level` and `memLevel`.
+- **An asynchronous write path.** zlib has no synchronous API on a live
+  stream, so a takeover connection compresses through `write()` +
+  `flush()` off the event loop and keeps an ordering queue: every write
+  issued while a deflate is in flight — compressed or not — waits behind
+  it, so frames still leave in send order. Inbound messages are inflated
+  the same way and delivered in arrival order.
+- **No shared fan-out frame** for that connection: its bytes depend on its
+  own history, so a room broadcast compresses per recipient for takeover
+  members (they still share the serialized text). The stateless default is
+  what lets a room of 200 pay one deflate.
+
+A peer's own `server_no_context_takeover` / `client_no_context_takeover`
+request is always honoured (RFC 7692 7.1.1.1), so the accepted state can be
+narrower than the option: the [`Connection`](#connection) reports it as
+`serverTakeover` / `clientTakeover` on its negotiated params.
+
+### Async deflate
+
+`async: { threshold }` moves the deflate and inflate of messages at or over
+`threshold` bytes (256 KiB by default; `{}` takes it) to zlib's threadpool
+API, through the same ordering queues — for a peer that receives large
+payloads without stalling every other connection on the loop. Below the
+threshold a synchronous call is cheaper than the hand-off (a quarter of the
+sync throughput at 4 KB, half at 32 KB, level at 256 KB —
+`bench/deflate-context.js`); above it the loop is what the hand-off buys. A fan-out over
+the threshold still deflates **once**: the first recipient starts the job
+and every later one waits on the same frame.
+
+On both paths `bufferedAmount` counts the bytes waiting in the queue, so
+`send()` returns `false` and `'drain'` follows exactly as for a socket above
+its high-water mark — the backpressure contract holds, it just has one more
+place to hold bytes.
+
+Closing while messages wait there: `close()` **delivers** what `send()`
+already accepted — the Close frame takes the queue's tail, nothing new is
+accepted meanwhile, and `closeTimeout` bounds the whole close; if the
+queue has not drained by then it is dropped, said once as
+`ws.close.dropped` (`frames`, `bytes`), and the Close goes out. So
+`send(x); close()` delivers `x` with or without takeover. `terminate()`
+drops the queue at once, as does a close the connection makes on its own
+(a protocol violation, a limit) and a Close the peer sent first.
 
 `server_max_window_bits` is honoured when the client asks for it (8–15).
+
+Because no context spans messages, the compressed bytes of a message depend
+only on the payload and the window size. That is what lets a room broadcast
+share one deflated frame per distinct window across all its recipients
+(`Connection.sendPrepared`, see [performance](../guide/performance#fan-out))
+instead of deflating once per member.
+
+Per message, `send(data, { compress: false })` — and `emit(name, data,
+{ compress: false })` on a room — sends uncompressed past the threshold: for
+a payload that is already compressed, or one where latency matters more than
+bytes.
 
 When deflate is negotiated, `RSV1` becomes a legal bit on data frames and the
 parser is told so through `allowedRsv` — an unnegotiated RSV bit is still a
 protocol error.
+
+Inbound, the inflate queue has backpressure of its own: at most 32 messages
+(4 on the threadpool path, which inflates them in parallel) or `maxPayload`
+of compressed bytes are in flight per connection, past which the socket is
+paused and the frame loop stops until enough landed — a peer that sent
+thousands of compressed frames in one segment used to have every one of
+them inflating at once, each holding its output. The pause is the engine's,
+apart from the application's `pause()`; `isPaused` reports both, so the
+heartbeat does not take a held connection for dead.
 
 ## Conformance
 

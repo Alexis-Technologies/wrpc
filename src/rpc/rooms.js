@@ -2,6 +2,7 @@
 
 const { jsonParse } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
+const { hasBytes, encodeAttachments } = require('../attachments.js');
 
 // Rooms: named groups of clients, layered on top of the existing
 // `{ type: 'event' }` packets — no new wire type is needed, a room broadcast
@@ -147,6 +148,7 @@ class Broadcast {
   #log;
   #otel;
   #codec;
+  #attachments;
 
   constructor({
     registry,
@@ -156,6 +158,7 @@ class Broadcast {
     log = globalThis.console,
     otel = null,
     codec = null,
+    attachments = true,
     targets = null,
     excluded = null,
     localOnly = false,
@@ -167,6 +170,7 @@ class Broadcast {
     this.#log = createLoggerWriter(log);
     this.#otel = otel;
     this.#codec = codec;
+    this.#attachments = attachments;
     this.#targets = targets;
     this.#excluded = excluded;
     this.#localOnly = localOnly;
@@ -181,6 +185,7 @@ class Broadcast {
       log: this.#log,
       otel: this.#otel,
       codec: this.#codec,
+      attachments: this.#attachments,
       targets: this.#targets,
       excluded: this.#excluded,
       localOnly: this.#localOnly,
@@ -233,10 +238,16 @@ class Broadcast {
    * returns how many received it LOCALLY — remote instances are reached
    * through the backplane, whose delivery this number says nothing about.
    */
-  emit(name, data) {
+  /**
+   * `unreliable: true` sends to every recipient whose transport has
+   * datagrams as one (lossy, unordered), and reliably to the rest — and
+   * carries the flag across the backplane, so remote instances do the same.
+   */
+  emit(name, data, options = null) {
     if (typeof name !== 'string' || name.length === 0) {
       throw new TypeError('Event name must be a non-empty string');
     }
+    const unreliable = options?.unreliable === true;
     // Narrowed to no rooms at all: nobody here, nobody anywhere — so there
     // is nothing to publish either.
     if (this.#targets && this.#targets.length === 0) return 0;
@@ -245,26 +256,59 @@ class Broadcast {
     // A payload that cannot serialize (circular) is reported, not thrown:
     // the broadcaster is usually far from whoever built the value.
     let text;
+    let binary = false;
+    const packet = { type: 'event', name, data };
     try {
       // A configured codec is server-wide, so this stays a SINGLE encode
-      // for the whole fan-out — same property the JSON path has.
-      const packet = { type: 'event', name, data };
-      text = this.#codec ? this.#codec.encode(packet) : JSON.stringify(packet);
+      // for the whole fan-out — same property the JSON path has. Bytes in
+      // the data make it ONE attachments frame for every recipient that
+      // reads frames.
+      if (this.#codec) text = this.#codec.encode(packet);
+      else if (this.#attachments !== false && hasBytes(packet)) {
+        binary = true;
+        text = encodeAttachments(packet);
+      } else text = JSON.stringify(packet);
     } catch (error) {
       this.#log.error({ err: error, event: 'broadcast.serialize', name });
       return 0;
     }
+    // ONE shared message for the whole fan-out. `frames` is a slot the
+    // recipient's engine fills with the encoded (and, per negotiated
+    // window, deflated) frame on first use and every later recipient
+    // reuses — so the wire bytes, like the JSON, are built once per emit,
+    // not once per member. Engines without the seam read `text`. `inner`
+    // is the same idea for a SEALED recipient, which shares no wire bytes:
+    // the plaintext it seals, built once (src/encryption/server.js). Both
+    // slots exist from the start so the object keeps one shape.
+    const message = { text, frames: null, inner: null, compress: options === null || options.compress !== false };
+    // The same event for a recipient that reads no frames — a 1.0 client on
+    // a revision-1 connection (protocol.md#versioning): the JSON 1.0 sent,
+    // built on the first such recipient and shared by the rest, so a mixed
+    // room costs one extra stringify per emit, not one per member
+    // (bench/broadcast-revisions.js).
+    let plain = null;
     let sent = 0;
     for (const client of this.#recipients()) {
       if (this.#excluded?.has(client)) continue;
       // HTTP clients cannot carry events; skipping beats throwing mid-fan-out.
       if (!client.persistent) continue;
       try {
-        const flushed = client.sendRaw(text);
+        let shared = message;
+        if (binary && !client.attachments) {
+          // Its own slots: `message.frames` may already hold the frame an
+          // earlier recipient's engine built from the binary form.
+          if (plain === null) {
+            plain = { text: JSON.stringify(packet), frames: null, inner: null, compress: message.compress };
+          }
+          shared = plain;
+        }
+        const flushed = client.sendShared(shared, unreliable ? options : null);
         sent++;
         // Not silently discarded any more: a recipient above its high-water
-        // mark is visible in the metrics, and the engine's maxBackpressure
-        // cap is what disconnects one that never drains.
+        // mark is visible in the metrics, and every persistent carrier's
+        // maxBackpressure cap — the WebSocket engine's, the WebTransport
+        // socket's, a data channel's — is what disconnects one that never
+        // drains.
         if (flushed === false) this.#otel?.recordBackpressure(client.transportKind);
       } catch (error) {
         // One dead socket must not truncate the fan-out.
@@ -273,7 +317,14 @@ class Broadcast {
     }
     const published = Boolean(!this.#localOnly && this.#publish);
     if (published) {
-      this.#publish({ rooms: this.#targets, name, data });
+      // The flags ride only when set: the envelope stays what it was. An
+      // event whose data holds bytes crosses as a binary envelope — JSON has
+      // no bytes, and they would arrive as the plain objects the
+      // attachments frame exists to avoid.
+      const envelope = { rooms: this.#targets, name, data };
+      if (unreliable) envelope.unreliable = true;
+      if (binary) envelope.binary = true;
+      this.#publish(envelope);
     }
     this.#otel?.recordBroadcast(name, sent, published);
     return sent;
@@ -380,6 +431,8 @@ class Broadcast {
 // How long an emptied room's channel stays subscribed (ms): the grace
 // window that absorbs reconnect churn. 0 disables (`rooms: { linger: 0 }`).
 const DEFAULT_LINGER = 5_000;
+// Channels whose publish counters are kept per generation (see #seq).
+const DEFAULT_MAX_TRACKED = 16384;
 
 class RoomsBackplane {
   #backplane;
@@ -389,17 +442,67 @@ class RoomsBackplane {
   #linger;
   #channels = new Map(); // channel -> { count, off, stale, timer, lingerTimer }
   #closed = false;
+  // Loss detection. Every envelope this instance publishes carries its boot
+  // `epoch` and a per-channel `seq`; a receiver keeps the last seq it saw
+  // per (channel, publisher) and reports a jump as a gap — the broker
+  // dropped something, or this instance was between subscriptions. At-most-
+  // once stays the contract; the loss just stops being silent.
+  #epoch;
+  // The per-channel counters, in two generations: a channel published to
+  // is looked up in `young` (one get, one increment — the hot path), then
+  // in `old` and moved; when `young` reaches `maxTracked` it becomes
+  // `old` and the previous `old` is dropped — so the table holds at most
+  // 2 × maxTracked channels, not every room name this instance ever
+  // published to (300k unique rooms held ~38 MiB). A channel published to
+  // again after eviction starts a new count under `<epoch>.<rotation>`:
+  // a receiver compares epochs for equality only, so it sees a restart
+  // (its cursor resets), never a false gap. Channels of the first
+  // generation carry the bare epoch — the wire is unchanged until a
+  // rotation ever happens.
+  #seq = new Map(); // channel -> { seq, epoch }
+  #seqOld = new Map();
+  #rotation = 0;
+  #maxTracked;
+  #peers = new Map(); // channel -> Map<instance, { epoch, seq }>
+  #onGap;
   // Channels whose subscribe FAILED and is being retried: while any are
   // pending, cross-instance delivery on them is dark and `healthy` is
   // false — what a readiness probe should drain the node on.
   #pending = 0;
+  // The envelope codec (src/compression/sync.js) the core built from
+  // `rooms.compression`, or null: `encode(text)` on the way out, `decode`
+  // on the way in. Injected, so this browser-bundled file carries none of
+  // zlib, base64 or the option parsing.
+  #envelope;
 
-  constructor({ backplane, instance, deliver, log = globalThis.console, linger = DEFAULT_LINGER }) {
+  constructor({
+    backplane,
+    instance,
+    deliver,
+    log = globalThis.console,
+    linger = DEFAULT_LINGER,
+    epoch = Math.random().toString(36).slice(2, 10),
+    onGap = null,
+    envelope = null,
+    maxTracked = DEFAULT_MAX_TRACKED,
+  }) {
+    if (!Number.isInteger(maxTracked) || maxTracked < 1) {
+      throw new TypeError('RoomsBackplane: maxTracked must be a positive integer');
+    }
     this.#backplane = backplane;
     this.#instance = instance;
     this.#deliver = deliver;
     this.#log = createLoggerWriter(log);
     this.#linger = linger > 0 ? linger : 0;
+    this.#maxTracked = maxTracked;
+    this.#epoch = String(epoch);
+    this.#onGap = typeof onGap === 'function' ? onGap : null;
+    this.#envelope = envelope;
+  }
+
+  /** The boot marker stamped on every envelope this instance publishes. */
+  get epoch() {
+    return this.#epoch;
   }
 
   get healthy() {
@@ -437,7 +540,7 @@ class RoomsBackplane {
   // its channel — and on BROADCAST_CHANNEL, permanently deaf to every
   // server.broadcast() — while looking perfectly healthy.
   #subscribe(channel, record, attempt) {
-    const handler = (message) => this.#receive(message);
+    const handler = (message) => this.#receive(channel, message);
     Promise.resolve()
       .then(() => this.#backplane.subscribe(channel, handler))
       .then(
@@ -494,6 +597,7 @@ class RoomsBackplane {
   }
 
   #dispose(channel, record) {
+    this.#peers.delete(channel);
     this.#channels.delete(channel);
     if (record.timer) {
       clearTimeout(record.timer);
@@ -522,19 +626,51 @@ class RoomsBackplane {
     this.release(roomChannel(room));
   }
 
-  publish({ rooms, name, data }) {
+  publish({ rooms, name, data, unreliable = false, binary = false }) {
     if (this.#closed) return;
-    const envelope = { v: ENVELOPE_VERSION, instance: this.#instance, rooms: rooms ?? null, name, data };
+    const single = rooms && rooms.length === 1;
+    const channel = single ? roomChannel(rooms[0]) : BROADCAST_CHANNEL;
+    const counter = this.#seq.get(channel) ?? this.#counter(channel);
+    const seq = ++counter.seq;
+    const envelope = {
+      v: ENVELOPE_VERSION,
+      instance: this.#instance,
+      epoch: counter.epoch,
+      seq,
+      rooms: rooms ?? null,
+      name,
+      data,
+    };
+    // Additive: an older instance ignores the field and delivers reliably.
+    if (unreliable) envelope.unreliable = true;
     let message = null;
     try {
-      message = JSON.stringify(envelope);
+      if (binary) {
+        // Bytes in the data: the injected envelope carries them (the core's
+        // always can). Without one — a registry wired by hand — the
+        // cross-instance half is named, not silently corrupted.
+        if (typeof this.#envelope?.encodeBytes !== 'function') {
+          return void this.#log.warn({ event: 'backplane.bytes', name });
+        }
+        message = this.#envelope.encodeBytes(envelope, channel);
+      } else {
+        message = JSON.stringify(envelope);
+      }
     } catch (error) {
       // Non-serializable payload: local delivery already happened, so this
       // is a cross-instance loss, not a lost event.
       return void this.#log.error({ err: error, event: 'backplane.serialize', name });
     }
-    const single = rooms && rooms.length === 1;
-    const channel = single ? roomChannel(rooms[0]) : BROADCAST_CHANNEL;
+    // The channel rides along for a sealing envelope, which binds it. A
+    // sealer that cannot (a keyring without its current key) is named as
+    // such, and the event stays local: never plaintext across the wire.
+    if (!binary && this.#envelope !== null) {
+      try {
+        message = this.#envelope.encode(message, channel);
+      } catch (error) {
+        return void this.#log.error({ err: error, event: 'backplane.seal', name });
+      }
+    }
     try {
       const result = this.#backplane.publish(channel, message);
       if (result && typeof result.catch === 'function') {
@@ -546,19 +682,93 @@ class RoomsBackplane {
     }
   }
 
-  #receive(message) {
+  #receive(channel, message) {
     if (this.#closed) return;
-    const envelope = typeof message === 'string' ? jsonParse(message) : message;
+    let text = message;
+    if (typeof message === 'string') {
+      // An encoded envelope this instance cannot read — no codec, another
+      // instance's, a body that does not inflate: named, because the
+      // alternative is an event that silently never arrives, the
+      // rolling-deploy symptom this option's documentation warns about.
+      if (this.#envelope !== null) text = this.#envelope.decode(message, channel);
+      else if (message.charCodeAt(0) === 119 && message.startsWith('wrpc-enc:')) text = null;
+      if (text === null) return void this.#log.warn({ event: 'backplane.encoded', channel });
+      // Refused by a sealing envelope, which reported why — or our own echo.
+      if (text === undefined) return;
+      // Still sealed: this instance holds no keys (with or without a
+      // compression codec, which passes through what is not its own), and
+      // says so — JSON never starts with a `w`, so the test is one compare.
+      if (typeof text === 'string' && text.charCodeAt(0) === 119 && text.startsWith('wrpc-sealed:')) {
+        return void this.#log.warn({ event: 'backplane.sealed', channel });
+      }
+    }
+    const envelope = typeof text === 'string' ? jsonParse(text) : text;
     if (!envelope || typeof envelope !== 'object') return;
     // Echo suppression: every instance sees its own publishes.
     if (envelope.instance === this.#instance) return;
     const { rooms, name, data } = envelope;
     if (typeof name !== 'string' || name.length === 0) return;
     if (rooms !== null && rooms !== undefined && !Array.isArray(rooms)) return;
+    this.#track(channel, envelope);
     try {
-      this.#deliver(rooms ?? null, name, data);
+      this.#deliver(rooms ?? null, name, data, envelope.unreliable === true);
     } catch (error) {
       this.#log.error({ err: error, event: 'backplane.deliver', name });
+    }
+  }
+
+  // Sequence tracking per (channel, publisher). A jump within one epoch is
+  // a gap and is reported once with the count of envelopes missed; a new
+  // epoch (the publisher restarted) resets the count rather than reporting
+  // its whole history as lost; an envelope without the fields (an older
+  // instance) is delivered untracked. Out-of-order arrival never regresses
+  // the cursor, so a late envelope is not reported as a second gap.
+  // The cold half of the counter lookup: a channel not in the young
+  // generation is taken over from the old one, or started — under the
+  // rotation's epoch when the table has ever rotated — and the young
+  // generation rotates first when it is full.
+  #counter(channel) {
+    let counter = this.#seqOld.get(channel);
+    if (counter !== undefined) this.#seqOld.delete(channel);
+    if (this.#seq.size >= this.#maxTracked) {
+      this.#seqOld = this.#seq;
+      this.#seq = new Map();
+      this.#rotation++;
+    }
+    // Started AFTER the rotation, so a channel begun in generation n
+    // carries n: a count that restarts under the bare epoch would look
+    // late to a receiver holding the evicted count's cursor.
+    if (counter === undefined) {
+      counter = { seq: 0, epoch: this.#rotation === 0 ? this.#epoch : `${this.#epoch}.${this.#rotation}` };
+    }
+    this.#seq.set(channel, counter);
+    return counter;
+  }
+
+  #track(channel, envelope) {
+    const { instance, epoch, seq } = envelope;
+    if (typeof seq !== 'number' || typeof epoch !== 'string') return;
+    let peers = this.#peers.get(channel);
+    if (peers === undefined) {
+      peers = new Map();
+      this.#peers.set(channel, peers);
+    }
+    const peer = peers.get(instance);
+    if (peer === undefined) return void peers.set(instance, { epoch, seq });
+    if (peer.epoch !== epoch) {
+      peer.epoch = epoch;
+      peer.seq = seq;
+      return;
+    }
+    if (seq <= peer.seq) return;
+    const missed = seq - peer.seq - 1;
+    peer.seq = seq;
+    if (missed > 0 && this.#onGap !== null) {
+      try {
+        this.#onGap({ channel, instance, missed, seq });
+      } catch (error) {
+        this.#log.error({ err: error, event: 'backplane.gap' });
+      }
     }
   }
 
@@ -567,6 +777,8 @@ class RoomsBackplane {
   close() {
     if (this.#closed) return;
     this.#closed = true;
+    this.#seq.clear();
+    this.#seqOld.clear();
     for (const [channel, record] of Array.from(this.#channels)) {
       if (!record.off) {
         record.stale = true;

@@ -1,9 +1,14 @@
 'use strict';
 
 const { Emitter, createEventStream, EventStream, isCodec } = require('./utils.js');
+const { isCompressor } = require('./compression/index.js');
+const { dictionaryCompressor } = require('./compression/dictionary.js');
+const { deflateCompressor, brotliCompressor, zstdCompressor } = require('./compression/codecs.js');
+const { buildDictionary } = require('./rpc/dictionary.js');
 const { WrpcClient, WrpcClientProxy, WrpcError, connect } = require('./client.js');
 const { Server } = require('./server.js');
 const { RpcServer, Client, Context } = require('./rpc/core.js');
+const { readHandshake } = require('./rpc/handshake.js');
 const { defineRouter, procedure, Router, Procedure, effectiveSchema } = require('./rpc/router.js');
 const { RoomRegistry, Broadcast } = require('./rpc/rooms.js');
 const { Cluster } = require('./rpc/cluster.js');
@@ -42,7 +47,14 @@ module.exports = {
   createEventStream,
   EventStream,
   isCodec,
+  isCompressor,
+  buildDictionary,
+  dictionaryCompressor,
+  deflateCompressor,
+  brotliCompressor,
+  zstdCompressor,
   isTokenTransport,
+  readHandshake,
   MemorySessionStore,
   ServerTransport,
   buildHeaders,

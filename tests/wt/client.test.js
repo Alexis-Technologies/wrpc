@@ -1,0 +1,416 @@
+'use strict';
+
+const { test } = require('node:test');
+const assert = require('node:assert');
+const timers = require('node:timers/promises');
+
+const { WrpcClient } = require('../../src/client.js');
+const { defineRouter, procedure } = require('../../src/rpc/router.js');
+const { ClientWtTransport, UNAVAILABLE } = require('../../src/client/webtransport.js');
+const {
+  StreamParser,
+  frame,
+  frameText,
+  datagramText,
+  KIND_BINARY,
+  KIND_TEXT,
+  KIND_CAPS,
+} = require('../../src/webtransport/framing.js');
+const { chunkEncode } = require('../../src/chunks.js');
+const { createFakeWt } = require('./fakeWebTransport.js');
+const { acceptSessions } = require('../../wt.js');
+const { runChannelContract, peerEnd } = require('./channelContract.js');
+const { runTransportContract } = require('../client/transportContract.js');
+const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
+const { keepAlive } = require('../helpers/wait.js');
+
+// Its tests await unref'd close and idle timers over a fake: see keepAlive.
+keepAlive();
+
+const ENDPOINT = 'https://127.0.0.1:4433/api';
+
+// The server side of a control stream, by hand: what WtSocket does in
+// src/webtransport/socket.js, reduced to what these tests need.
+const controlStream = async (session) => {
+  const reader = session.incomingBidirectionalStreams.getReader();
+  const { value: stream } = await reader.read();
+  reader.releaseLock();
+  const received = [];
+  // The capabilities message each end sends first is the mux's, not a test's.
+  const parser = new StreamParser({
+    onMessage: (kind, data) => {
+      if (kind !== KIND_CAPS) received.push({ kind, data });
+    },
+  });
+  void (async () => {
+    const streamReader = stream.readable.getReader();
+    try {
+      for (;;) {
+        const { value, done } = await streamReader.read();
+        if (done) return;
+        parser.push(value);
+      }
+    } catch {
+      // The session closed under the read.
+    }
+  })();
+  const writer = stream.writable.getWriter();
+  return { stream, received, writer };
+};
+
+const opened = async (t, world, options = {}) => {
+  const transport = new ClientWtTransport(ENDPOINT, { WebTransport: world.WebTransport, ...options });
+  t.after(() => transport.close());
+  await transport.open();
+  const session = await world.next();
+  return { transport, session };
+};
+
+test('wt transport: registered in the base client entry and passes the shared contract', async (t) => {
+  assert.strictEqual(WrpcClient.transport.wt, ClientWtTransport);
+  await runTransportContract(t, 'wt', ClientWtTransport);
+  const bare = new ClientWtTransport('x://host/wt');
+  assert.strictEqual(bare.heartbeat, true);
+  assert.strictEqual(bare.persistent, true);
+  assert.strictEqual(bare.session, null);
+  // No global WebTransport in Node, nothing injected: a clear refusal.
+  assert.strictEqual(typeof globalThis.WebTransport, 'undefined');
+  await assert.rejects(bare.open(), { message: UNAVAILABLE });
+  assert.throws(() => bare.write('x'), /Not connected/);
+  bare.close(); // never opened: a no-op
+  bare.terminate();
+});
+
+test('wt transport: open() dials, announces open before resolving, is idempotent', async (t) => {
+  const world = createFakeWt();
+  const transport = new ClientWtTransport(ENDPOINT);
+  t.after(() => transport.close());
+  const events = [];
+  transport.on('open', () => events.push('open'));
+  let resolvedBeforeOpen = null;
+  const opening = transport
+    .open({ wt: { WebTransport: world.WebTransport, serverCertificateHashes: [{ algorithm: 'sha-256', value: 'x' }] } })
+    .then(() => {
+      resolvedBeforeOpen = events.length === 0;
+    });
+  const again = transport.open(); // the same in-flight promise
+  await Promise.all([opening, again]);
+  assert.strictEqual(resolvedBeforeOpen, false, "'open' was emitted before open() resolved");
+  assert.strictEqual(transport.active, true);
+  assert.deepStrictEqual(events, ['open']);
+  await transport.open();
+  assert.deepStrictEqual(events, ['open']);
+  // The session was constructed with the url as given and the init options only.
+  assert.strictEqual(transport.session.url, ENDPOINT);
+  assert.deepStrictEqual(transport.session.init, { serverCertificateHashes: [{ algorithm: 'sha-256', value: 'x' }] });
+});
+
+test('wt transport: declared headers and meta ride the connect URL, as on ws', async (t) => {
+  const world = createFakeWt();
+  const transport = new ClientWtTransport(ENDPOINT, { WebTransport: world.WebTransport });
+  t.after(() => transport.close());
+  await transport.open({ headers: { 'x-device': 'tablet' }, meta: { tenant: 'acme' } });
+  const session = await world.next();
+  const path = session.header[':path'];
+  const query = new URL(`https://h${path}`).searchParams;
+  assert.deepStrictEqual(JSON.parse(query.get('wrpc_h')), { 'x-device': 'tablet' });
+  assert.deepStrictEqual(JSON.parse(query.get('wrpc_meta')), { tenant: 'acme' });
+  assert.strictEqual(session.header.origin, 'https://app.example');
+});
+
+test('wt transport: the two bags share ONE query budget, headers first, as the server measures it', async (t) => {
+  const world = createFakeWt();
+  const warnings = [];
+  const log = {
+    level: 'debug',
+    warn: (entry) => warnings.push(entry),
+    info() {},
+    debug() {},
+    error() {},
+    child() {
+      return log;
+    },
+  };
+  const transport = new ClientWtTransport(`${ENDPOINT}?v=2`, { WebTransport: world.WebTransport });
+  transport.log = log;
+  t.after(() => transport.close());
+  // Each bag fits the cap on its own; together, with the query the url
+  // already carries, they do not — and the server drops the WHOLE query
+  // past its limit, so both used to be lost on the side that cannot see it.
+  const headers = { 'x-blob': 'h'.repeat(1100) };
+  const meta = { blob: 'm'.repeat(1100) };
+  await transport.open({ headers, meta });
+  const session = await world.next();
+  const path = session.header[':path'];
+  const query = path.slice(path.indexOf('?') + 1);
+  assert.ok(query.length <= 2048, `the query is ${query.length} bytes`);
+  const params = new URLSearchParams(query);
+  assert.strictEqual(params.get('v'), '2', 'what the url carried stays');
+  assert.deepStrictEqual(JSON.parse(params.get('wrpc_h')), headers, 'headers first');
+  assert.strictEqual(params.get('wrpc_meta'), null, 'meta did not fit');
+  const oversize = warnings.filter((w) => w.event === 'meta.oversize');
+  assert.strictEqual(oversize.length, 1);
+  assert.strictEqual(oversize[0].param, 'wrpc_meta');
+  assert.strictEqual(oversize[0].carrier, 'query');
+  // A credential in the query is said, loudly.
+  const bearer = new ClientWtTransport(ENDPOINT, { WebTransport: world.WebTransport });
+  bearer.log = log;
+  t.after(() => bearer.close());
+  await bearer.open({ headers: { Authorization: 'Bearer secret' } });
+  await world.next();
+  assert.ok(warnings.some((w) => w.event === 'declared.exposed' && w.key === 'authorization' && w.carrier === 'query'));
+});
+
+test('wt transport: packets and chunks cross the control stream in order, both ways', async (t) => {
+  const world = createFakeWt();
+  const { transport, session } = await opened(t, world);
+  const { received, writer } = await controlStream(session);
+  assert.strictEqual(transport.write('{"type":"ping"}'), true);
+  const big = new Uint8Array(70_000).map((_, i) => i & 255);
+  transport.write(chunkEncode('s1', big));
+  transport.write('{"type":"pong"}');
+  await waitFor(() => received.length === 3, 'delivery');
+  assert.deepStrictEqual(
+    received.map((m) => m.kind),
+    [KIND_TEXT, KIND_BINARY, KIND_TEXT],
+  );
+  assert.deepStrictEqual(received[0].data, '{"type":"ping"}');
+  assert.deepStrictEqual(Buffer.from(received[1].data), Buffer.from(chunkEncode('s1', big)));
+  // Server -> client: a string for a packet, bytes for a chunk.
+  const messages = [];
+  transport.on('message', (data) => messages.push(data));
+  await writer.write(frameText('{"type":"event"}'));
+  await writer.write(frame(KIND_BINARY, chunkEncode('s2', new Uint8Array([9, 8, 7]))));
+  await waitFor(() => messages.length === 2, 'inbound');
+  assert.strictEqual(messages[0], '{"type":"event"}');
+  assert.ok(messages[1] instanceof Uint8Array);
+  assert.deepStrictEqual(Array.from(messages[1]), Array.from(chunkEncode('s2', new Uint8Array([9, 8, 7]))));
+});
+
+test('wt transport: terminate() during the handshake rejects open() and closes the session', async (t) => {
+  const world = createFakeWt();
+  const transport = new ClientWtTransport(ENDPOINT, { WebTransport: world.WebTransport });
+  const closes = [];
+  transport.on('close', () => closes.push(1));
+  const opening = transport.open();
+  transport.terminate();
+  await assert.rejects(opening);
+  assert.strictEqual(transport.active, false);
+  assert.strictEqual(transport.session, null);
+  assert.deepStrictEqual(closes, [], 'never opened: no close announced');
+  // A refused handshake rejects open() with the session's error.
+  world.refuse(new Error('nope'));
+  await assert.rejects(transport.open(), /nope/);
+  // And a later open() works — the transport is re-entrant.
+  await transport.open();
+  t.after(() => transport.close());
+  assert.strictEqual(transport.active, true);
+});
+
+test('wt transport: a peer close is one close event; close() tells the peer; terminate() is local', async (t) => {
+  const world = createFakeWt();
+  const { transport, session } = await opened(t, world);
+  const closes = [];
+  transport.on('close', () => closes.push(1));
+  session.close({ closeCode: 42, reason: 'bye' });
+  await waitFor(() => closes.length === 1, 'close');
+  assert.strictEqual(transport.active, false);
+  assert.throws(() => transport.write('x'), /Not connected/);
+  transport.close();
+  transport.terminate();
+  await timers.setImmediate();
+  assert.deepStrictEqual(closes, [1]);
+
+  const second = await opened(t, world);
+  const closeInfo = second.session.closed;
+  second.transport.close();
+  assert.deepStrictEqual(await closeInfo, { closeCode: 0, reason: '' });
+
+  const third = await opened(t, world);
+  const events = [];
+  third.transport.on('close', () => events.push('close'));
+  third.transport.terminate();
+  assert.deepStrictEqual(events, ['close'], 'terminate reports synchronously');
+  assert.ok(await third.session.closed);
+});
+
+test('wt transport: the flow-control options of the `wt` bag reach the session through connect(), not only a hand-built transport', async (t) => {
+  const { server, url } = await bootServer(t, { router: defineRouter({}) });
+  const world = createFakeWt();
+  const acceptor = acceptSessions(server, world.sessions);
+  t.after(() => acceptor.stop());
+  const connect = (wt) => connectClient(t, url, { transport: 'wt', wt: { WebTransport: world.WebTransport, ...wt } });
+  // connect() builds the transport itself, with no options: these used to
+  // be read from the constructor's alone, so the documented `wt` bag was
+  // ignored for all four.
+  const client = await connect({ highWaterMark: 64, lowWaterMark: 16 });
+  const release = world.hold();
+  const drained = new Promise((resolve) => client.once('drain', resolve));
+  const stream = client.createStream('blob', 4096);
+  assert.strictEqual(stream.write(new Uint8Array(4096)), false, 'past a 64-byte high-water mark');
+  release();
+  await drained;
+  stream.terminate();
+  // A bad value in the bag is said when the session is opened.
+  await assert.rejects(connect({ maxBackpressure: -1 }), /maxBackpressure must be a non-negative integer/);
+  assert.throws(
+    () => new ClientWtTransport(ENDPOINT, { maxBackpressure: 1.5 }),
+    /wt transport: options: maxBackpressure must be/,
+  );
+});
+
+test('wt transport: close() delivers what was written before it, then tells the peer', async (t) => {
+  const world = createFakeWt();
+  const { transport, session } = await opened(t, world);
+  const { received } = await controlStream(session);
+  await waitFor(() => transport.bufferedAmount === 0, 'the capabilities left');
+  const release = world.hold();
+  const events = [];
+  transport.on('close', () => events.push('close'));
+  assert.strictEqual(transport.write('{"type":"event","name":"bye","data":{}}'), true);
+  transport.close();
+  assert.deepStrictEqual(events, ['close'], 'closed here at once');
+  assert.strictEqual(received.length, 0);
+  release();
+  assert.deepStrictEqual(await session.closed, { closeCode: 0, reason: '' });
+  assert.deepStrictEqual(
+    received.map((m) => m.data),
+    ['{"type":"event","name":"bye","data":{}}'],
+    'the packet reached the server before the session closed',
+  );
+  // Bounded by closeTimeout when the stream never takes its queue.
+  const slow = await opened(t, world, { closeTimeout: 40 });
+  await waitFor(() => slow.transport.bufferedAmount === 0, 'the capabilities left');
+  world.hold();
+  slow.transport.write('never delivered');
+  slow.transport.close();
+  assert.deepStrictEqual(await slow.session.closed, { closeCode: 0, reason: '' });
+});
+
+// The channel contract shared with the server socket: write/drain on
+// every path, order under an async codec, the count after terminate().
+test('wt transport: the channel contract', async (t) => {
+  await runChannelContract(t, 'wt transport', {
+    async open(sub, options = {}) {
+      const world = createFakeWt();
+      const transport = new ClientWtTransport(ENDPOINT, { WebTransport: world.WebTransport, ...options });
+      sub.after(() => transport.close());
+      await transport.open();
+      const session = await world.next();
+      const reader = session.incomingBidirectionalStreams.getReader();
+      const { value: stream } = await reader.read();
+      reader.releaseLock();
+      const end = {
+        session: transport.session,
+        send: (data, writeOptions) => transport.write(data, writeOptions),
+        stream: (packet) => transport.send(packet),
+        on: (event, listener) => transport.on(event, listener),
+        get bufferedAmount() {
+          return transport.bufferedAmount;
+        },
+        get compression() {
+          return transport.compression;
+        },
+        terminate: () => transport.terminate(),
+      };
+      return { world, end, peer: peerEnd(session, stream) };
+    },
+  });
+});
+
+test("wt transport: a peer's framing violation is escalated and hangs up", async (t) => {
+  const world = createFakeWt();
+  const { transport, session } = await opened(t, world);
+  const { writer } = await controlStream(session);
+  const errors = [];
+  const closes = [];
+  transport.on('error', (error) => errors.push(error));
+  transport.on('close', () => closes.push(1));
+  await writer.write(frame(9, new Uint8Array(1)));
+  await waitFor(() => closes.length === 1, 'close');
+  assert.strictEqual(errors[0].name, 'FramingError');
+  assert.ok(await session.closed);
+  // With no error listener the escalation is swallowed, not thrown.
+  const quiet = await opened(t, world);
+  const { writer: w2 } = await controlStream(quiet.session);
+  await w2.write(frame(9, new Uint8Array(1)));
+  await waitFor(() => quiet.transport.active === false, 'close');
+});
+
+test('wt transport: the reader ending (peer closed the control stream) is a close', async (t) => {
+  const world = createFakeWt();
+  const { transport, session } = await opened(t, world);
+  const { writer } = await controlStream(session);
+  await writer.close();
+  await waitFor(() => transport.active === false, 'close');
+  assert.ok(await session.closed);
+});
+
+// The fallback list at connect time: no WebTransport in this runtime, so
+// 'wt' hands over to 'ws' at once and the client lands on a real server.
+test('wt transport: connect() falls through the list when wt is unavailable', async (t) => {
+  const router = defineRouter({ echo: { ping: procedure(async () => 'pong') } });
+  const { url, server } = await bootServer(t, { router });
+  const fallbacks = [];
+  const client = await connectClient(t, url, {
+    transport: ['wt', 'ws'],
+    reconnect: { retries: 0 },
+  });
+  client.on('transport-fallback', (info) => fallbacks.push(info));
+  assert.strictEqual(client.active, true);
+  await waitFor(() => server.rpc.clients.size === 1, 'connected over ws');
+  // The last candidate's failure is connect()'s.
+  await assert.rejects(WrpcClient.connect(url, { transport: ['wt'], reconnect: false }), { message: UNAVAILABLE });
+});
+
+test('wt transport: an unreliable packet is one datagram, inbound datagrams are messages, a big one falls back', async (t) => {
+  const world = createFakeWt({ maxDatagramSize: 64 });
+  const { transport, session } = await opened(t, world);
+  await controlStream(session);
+  assert.strictEqual(transport.maxDatagramSize, 64);
+  const got = [];
+  const reader = session.datagrams.readable.getReader();
+  void (async () => {
+    for (;;) {
+      const { value, done } = await reader.read();
+      if (done) return;
+      got.push(value);
+    }
+  })();
+  assert.strictEqual(transport.writeUnreliable('{"type":"event","name":"a/b","data":1}'), true);
+  await waitFor(() => got.length === 1, 'datagram');
+  assert.strictEqual(got[0][0], KIND_TEXT);
+  assert.strictEqual(Buffer.from(got[0].subarray(1)).toString(), '{"type":"event","name":"a/b","data":1}');
+  // Too large for one datagram: not sent, the caller falls back.
+  assert.strictEqual(transport.writeUnreliable('x'.repeat(100)), false);
+  // Bytes never ride datagrams (a chunk needs order).
+  assert.strictEqual(transport.writeUnreliable(new Uint8Array(3)), false);
+  // Inbound: a datagram's packet is a 'message'; an unreadable one is dropped.
+  const messages = [];
+  transport.on('message', (data) => messages.push(data));
+  const writer = session.datagrams.writable.getWriter();
+  await writer.write(datagramText('{"type":"event","name":"c/d"}'));
+  await writer.write(new Uint8Array([7, 1, 2]));
+  await writer.write(new Uint8Array([KIND_TEXT, 0xff]));
+  await writer.write(datagramText('{"type":"event","name":"e/f"}'));
+  await waitFor(() => messages.length === 2, 'inbound datagrams');
+  assert.deepStrictEqual(messages, ['{"type":"event","name":"c/d"}', '{"type":"event","name":"e/f"}']);
+  transport.close();
+  assert.strictEqual(transport.writeUnreliable('{}'), false);
+  assert.strictEqual(transport.maxDatagramSize, 0);
+});
+
+test('wt transport: without datagrams on the session, writeUnreliable answers false', async (t) => {
+  const world = createFakeWt();
+  const NoDatagrams = class extends world.WebTransport {
+    constructor(url, init) {
+      super(url, init);
+      this.datagrams = undefined;
+    }
+  };
+  const transport = new ClientWtTransport(ENDPOINT, { WebTransport: NoDatagrams });
+  t.after(() => transport.close());
+  await transport.open();
+  assert.strictEqual(transport.maxDatagramSize, 0);
+  assert.strictEqual(transport.writeUnreliable('{}'), false);
+});

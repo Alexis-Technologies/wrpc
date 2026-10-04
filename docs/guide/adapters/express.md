@@ -45,7 +45,7 @@ middleware is an ordinary function the app mounts; nothing under `src/` ever
 ## Middleware semantics
 
 A request **outside** `basePath` is passed to `next()` rather than answered
-with a 404 — wrpc composes with the rest of your app instead of swallowing its
+with a 404 — wRPC composes with the rest of your app instead of swallowing its
 routes. That is the whole difference from the batteries-included
 [`Server`](../server), which owns every request that reaches it.
 
@@ -109,4 +109,4 @@ await new Promise((resolve) => httpServer.close(resolve));
 ```
 
 The listener is yours, so closing it is yours too — `wrpc.close()` only
-releases what wrpc opened.
+releases what wRPC opened.

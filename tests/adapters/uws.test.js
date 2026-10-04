@@ -74,6 +74,36 @@ test('UwsSocket: a poisoned uws handle never escapes as a throw', () => {
   assert.doesNotThrow(() => socket.terminate());
 });
 
+test(
+  'createUwsEngine: an engine built without a logger reports through the one attach() hands it; logger: false stays silent',
+  { skip: !uws && 'uWebSockets.js unavailable' },
+  async (t) => {
+    const { recorder } = require('../helpers/recorder.js');
+    const { WrpcClient } = require('../../index.js');
+    const router = defineRouter({ unit: { noop: procedure({ access: 'public', handler: async () => null }) } });
+    const probe = async (engine, expected) => {
+      const log = recorder();
+      const server = new Server({ router, host: '127.0.0.1', port: 0, logger: log.writer, engine });
+      t.after(() => server.close());
+      const sockets = [];
+      server.wsServer.on('connection', (socket) => sockets.push(socket));
+      await server.listen();
+      const { port } = server.address();
+      const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, { heartbeat: false, reconnect: false });
+      t.after(() => client.close());
+      assert.strictEqual(sockets.length, 1);
+      // What a dropped frame would write, through the socket's own writer.
+      sockets[0].log.error({ event: 'uws.probe' });
+      assert.deepStrictEqual(
+        log.all('uws.probe').map((e) => e.component),
+        expected,
+      );
+    };
+    await probe(createUwsEngine({ uws }), ['uws']);
+    await probe(createUwsEngine({ uws, logger: false }), []);
+  },
+);
+
 test('UwsSocket: a dropped message fails loudly instead of silently', () => {
   // A hole in the frame stream would corrupt the RPC protocol, so a uws
   // DROPPED status has to surface as an error plus a terminate.
@@ -263,5 +293,39 @@ test(
     assert.strictEqual(res.status, 201);
     assert.strictEqual(res.headers.get('content-type'), 'application/x-wrpc-bin');
     assert.deepStrictEqual(codec.rest.decode(Buffer.from(await res.arrayBuffer())), { orgId: '9', name: 'Bin' });
+  },
+);
+
+test(
+  'uws engine: a configured compressor actually compresses outbound frames',
+  { skip: !uws && 'uWebSockets.js unavailable' },
+  async (t) => {
+    const { decompress } = require('../../src/websocket/permessageDeflate.js');
+    const big = 'compress me '.repeat(512);
+    const server = new Server({
+      router: defineRouter({ echo: { big: procedure({ access: 'public', handler: async () => big }) } }),
+      host: '127.0.0.1',
+      port: 0,
+      logger: false,
+      engine: createUwsEngine({ uws, compression: uws.SHARED_COMPRESSOR }),
+    });
+    t.after(() => server.close());
+    await server.listen();
+    const { port } = server.address();
+    const peer = new ProtocolClient(`ws://127.0.0.1:${port}`, {
+      headers: { 'Sec-WebSocket-Extensions': 'permessage-deflate; client_max_window_bits' },
+    });
+    t.after(() => peer.close());
+    await new Promise((resolve, reject) => {
+      peer.on('open', resolve);
+      peer.on('close', () => reject(new Error('handshake rejected')));
+    });
+    assert.match(peer.handshakeHeaders['sec-websocket-extensions'] ?? '', /permessage-deflate/);
+    const answer = new Promise((resolve) => peer.once('frame', (opcode, payload, meta) => resolve({ payload, meta })));
+    peer.sendText(JSON.stringify({ type: 'call', id: '1', method: 'echo/big', args: {} }));
+    const { payload, meta } = await answer;
+    assert.strictEqual(meta.rsv & 0x40, 0x40, 'RSV1 set: the frame went out compressed');
+    const packet = JSON.parse(decompress(payload, 1 << 20).toString());
+    assert.strictEqual(packet.result, big);
   },
 );

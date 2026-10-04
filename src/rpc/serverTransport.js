@@ -1,0 +1,93 @@
+'use strict';
+
+// The base every server-side transport extends: the outbound half of a
+// connection as the dispatcher and Client see it — send(obj) → write(text),
+// error(code) → a callback packet, and the 'close'/'drain' events a
+// persistent one emits. On its own file so a transport that lives in a
+// browser bundle (the WebRTC peer half) does not drag the HTTP and
+// WebSocket transports, cookies and CORS in with it; src/transport.js
+// re-exports it, so nothing else changed its require path.
+
+const { Emitter } = require('../utils.js');
+const { wireError } = require('./errors.js');
+const { hasBytes, encodeAttachments } = require('../attachments.js');
+
+class ServerTransport extends Emitter {
+  // Which wire this is, for log entries and metric attributes. Subclasses
+  // override it; the base value covers a transport nobody labelled.
+  kind = 'unknown';
+
+  constructor(source) {
+    // No listener cap: transports are fan-out points — every backpressured
+    // outbound stream on the connection parks a once('drain'|'close')
+    // listener here, and the default cap of 10 would throw on the 11th
+    // concurrently stalled stream.
+    super({ maxListeners: Number.MAX_SAFE_INTEGER });
+    this.source = source;
+    // The protocol revision this connection speaks (protocol.md#versioning):
+    // lowered to 1 — together with `attachments` — by whoever attaches a
+    // transport a 1.0 peer is behind.
+    this.revision = 2;
+  }
+
+  // A change of the revision once a client stands on this transport — a
+  // port's first ping, a WebTransport peer's capabilities — goes through
+  // here, `attachments` with it: whoever counts connections by revision
+  // hears 'revision' with the one that was left.
+  setRevision(revision) {
+    const from = this.revision;
+    this.revision = revision;
+    this.attachments = revision === 2;
+    if (from !== revision) this.emit('revision', from);
+  }
+
+  error(code = 500, { id = '', error = null } = {}) {
+    const packet = { type: 'callback', id, error: wireError(code, error) };
+    return this.send(packet, code);
+  }
+
+  // Returns the transport's backpressure signal (false = above the
+  // high-water mark) so a producer — a subscription pump, a stream — can
+  // wait for 'drain' instead of buffering without limit.
+  //
+  // `text` is the already-serialized form of `obj` when the dispatcher's
+  // compiled-serializer fast path built one (see handleRpc); passing both
+  // keeps the object available to the overrides that need it (batch
+  // collection, REST unwrapping) while the plain path skips a stringify.
+  send(obj, code = 200, text = null) {
+    // An injected codec (RpcServer options.codec, assigned per transport)
+    // re-frames every packet; it wins over precompiled `text` by
+    // construction — the server refuses codec + serializers up front.
+    if (this.codec) return this.write(this.codec.encode(obj), code);
+    // Precompiled text was built by the dispatcher on a packet it already
+    // knows holds no bytes; anything else is walked once here, and a
+    // packet with bytes leaves as an attachments frame (attachments.js)
+    // unless the server opted out.
+    if (text !== null && text !== undefined) return this.write(text, code);
+    if (this.attachments !== false && hasBytes(obj)) return this.write(encodeAttachments(obj), code);
+    return this.write(JSON.stringify(obj), code);
+  }
+}
+
+// The shape of a transport a host can attach by itself — persistent
+// (`connection` set) and announcing inbound traffic as 'packet' (text) and
+// 'chunk' (bytes) events. What PeerHost.attach and RpcServer.attach both
+// check; structural, so a transport need not extend ServerTransport.
+// What a Client calls on its transport — write/send/error and close — and
+// what the core listens on: on/once/off. Checked whole, so a transport
+// missing send() or error() is refused at attach, not at the first packet
+// that needed it.
+const hasTransportShape = (transport) =>
+  typeof transport === 'object' &&
+  transport !== null &&
+  typeof transport.write === 'function' &&
+  typeof transport.send === 'function' &&
+  typeof transport.error === 'function' &&
+  typeof transport.close === 'function' &&
+  typeof transport.on === 'function' &&
+  typeof transport.once === 'function' &&
+  typeof transport.off === 'function';
+
+const isInboundTransport = (transport) => hasTransportShape(transport) && Boolean(transport.connection);
+
+module.exports = { ServerTransport, hasTransportShape, isInboundTransport };

@@ -20,6 +20,7 @@ test('browser barrel exposes only browser-safe exports', () => {
     'connect',
     'createEventStream',
     'isCodec',
+    'isCompressor',
   ]);
   assert.strictEqual(typeof wrpcBrowser.Emitter, 'function');
   assert.strictEqual(typeof wrpcBrowser.connect, 'function');

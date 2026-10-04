@@ -11,7 +11,7 @@
  * fan-out mechanism, not a queue.
  */
 
-import type { WrpcLogger } from './index.js';
+import type { WrpcLogger, SessionStore } from './index.js';
 
 /** Removes one subscription; safe to call more than once. */
 export type Unsubscribe = () => void | Promise<unknown>;
@@ -108,3 +108,41 @@ export declare function createRedisAdapter(
 export declare function isBackplane(value: unknown): value is Backplane;
 
 export declare const DEFAULT_PREFIX: string;
+
+/**
+ * A Redis session store for `sessions: { store }`, ioredis-shaped and
+ * injected: `get(key)`, `set(key, value, 'PX', ttl)`, `del(key)` and,
+ * for sliding expiry, `pexpire(key, ttl)`. node-redis v4 needs a two-line
+ * wrapper for its `set(key, value, { PX })` spelling.
+ */
+export interface RedisSessionClient {
+  get(key: string): Promise<string | null>;
+  /** `(...args)` on purpose: ioredis declares `set` as a stack of overloads, which no single signature is assignable from. */
+  set(...args: Array<any>): Promise<any>;
+  del(...args: Array<any>): Promise<any>;
+  pexpire?(...args: Array<any>): Promise<any>;
+}
+
+export interface RedisSessionStoreOptions {
+  /**
+   * Where a corrupt stored row reports. This store sits below
+   * `SessionManager`, which never sees an entry it rejected, so a row that
+   * fails to parse — a user silently signed out — would otherwise be
+   * invisible from above. The session token is never logged.
+   */
+  logger?: WrpcLogger | boolean;
+  client: RedisSessionClient;
+  /** Key prefix; default 'wrpc:session:'. */
+  prefix?: string;
+  /** Milliseconds; default 24h; 0 = no expiry. */
+  ttl?: number;
+}
+
+/** The store `createRedisSessionStore` returns: the core's SessionStore contract, `touch` present when the client has pexpire and ttl > 0. */
+export interface RedisSessionStore extends SessionStore {
+  readonly name: string;
+}
+
+/** A session store over an injected Redis client: what lets ws/wt run without sticky routing. */
+export declare function createRedisSessionStore(options: RedisSessionStoreOptions): RedisSessionStore;
+export declare const DEFAULT_SESSION_PREFIX: string;

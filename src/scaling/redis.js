@@ -57,7 +57,10 @@ const createRedisAdapter = (options = {}) => {
   let closed = false;
 
   const log = createLoggerWriter(logger);
-  const report = (error) => void log.error({ err: error, component: 'redis' });
+  // `event` is on every other entry in the package and is the field the
+  // logging guide tells operators to filter on; without it these lines
+  // could not be alerted on alongside the rest.
+  const report = (error) => void log.error({ err: error, event: 'backplane.redis', component: 'redis' });
   const settle = (result) => {
     if (result && isFunction(result.catch)) result.catch(report);
   };

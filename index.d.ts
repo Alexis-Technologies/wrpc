@@ -1,11 +1,22 @@
-import {
-  IncomingMessage,
-  Server as HttpServer,
-  ServerResponse,
-} from 'node:http';
+import { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
 import type { Connection } from './ws.js';
 import type { Engine, EngineConnectionSource, WrpcSocket, EngineAttachOptions } from './engine.js';
 import type { Backplane } from './scaling.js';
+import type { EnvelopeEncryptionOptions, ServerEncryptionOptions } from './encryption.js';
+import type {
+  Broadcast,
+  Client,
+  ClientMeta,
+  Context,
+  ErrorOptions,
+  EventName,
+  Procedure,
+  RoomRegistry,
+  Router,
+  SessionManager,
+  SessionsOptions,
+  procedure,
+} from './rpc.js';
 import {
   Emitter,
   WrpcError,
@@ -15,573 +26,91 @@ import {
   WrpcLogWriter,
   WrpcTelemetryOptions,
   WrpcCodec,
+  CompressionOptions,
+  Compressor,
 } from './client.js';
 
 // The browser-safe half of the surface lives in client.d.ts (which is what
-// the `browser` types condition serves); this file is that plus the server.
+// the `browser` types condition serves); the engine-agnostic server core
+// (routers, sessions, rooms, Client, Context) in rpc.d.ts, shared with the
+// WebRTC peer types; this file is both plus the Node server.
 export * from './client.js';
+export * from './rpc.js';
+
+/**
+ * The dictionary codec (raw deflate through node:zlib with a preset
+ * dictionary), for `compression: { codec }` on any Node↔Node carrier. Its
+ * `id` carries the dictionary's hash: two ends compress against the same
+ * bytes or, when their routers differ, not at all. `threshold` defaults to
+ * 64 B — with the history preloaded, small messages are what it is for.
+ * `async` (`true` or `{ threshold }`, 256 KiB) hands a message that large
+ * to zlib's threadpool and answers a promise for it — for the WebTransport
+ * and WebRTC carriers; the Node↔Node ones refuse a codec that declares it.
+ * A browser needs the pure-JS codec of `@alexify/wrpc/deflate` instead.
+ */
+export declare function dictionaryCompressor(
+  dictionary: Uint8Array | string,
+  options?: { level?: number; threshold?: number; async?: boolean | { threshold?: number } },
+): Compressor & { readonly dictionary: Uint8Array; readonly async: number | null };
+
+/** What every platform-codec factory takes beside its level. */
+export interface PlatformCodecOptions {
+  /** The byte size under which a message goes plain (1 KiB). */
+  threshold?: number;
+  /** Hand an encode of this many bytes (256 KiB) to zlib's threadpool — WebTransport and WebRTC only. */
+  async?: boolean | { threshold?: number };
+}
+/**
+ * The platform codecs with their knobs out (Node only) — for another level
+ * than `codec: '<name>'` takes. An id names the format, never the level, so
+ * two ends on different levels still negotiate. Defaults are measured
+ * (`bench/algorithms.js`): deflate 3, Brotli quality 4, zstd 1.
+ */
+export declare function deflateCompressor(
+  options?: PlatformCodecOptions & { /** zlib level, -1..9 (3). */ level?: number },
+): Compressor & { readonly async: number | null };
+/** Brotli. zlib's own default quality, 11, costs milliseconds a message — hence 4. */
+export declare function brotliCompressor(
+  options?: PlatformCodecOptions & { /** 0..11 (4). */ quality?: number },
+): Compressor & { readonly async: number | null };
+/** Zstandard. Throws a TypeError where node:zlib has none (before Node 22.15 / 23.8). */
+export declare function zstdCompressor(
+  options?: PlatformCodecOptions & { /** 1..22 (1). */ level?: number },
+): Compressor & { readonly async: number | null };
 
 // ---------------------------------------------------------------------------
-// Router / procedures
+// The ws handshake
 
-export type EventName = PropertyKey;
-
-export interface State {
-  [key: string]: unknown;
-}
-
-/**
- * A validator is a plain `(value) => value | throws` function (returning
- * undefined keeps the original value) or a Standard Schema object.
- */
-export type Validator<T = unknown> =
-  | ((value: T) => T | undefined | Promise<T | undefined>)
-  | { '~standard': { validate(value: unknown): unknown } };
-
-/**
- * One handler signature for both kinds, so a bare function still gets its
- * parameters contextually typed. A call ignores the third argument; a
- * subscription (an async generator) reads `lastEventId` and `signal` from it.
- */
-export type ProcedureHandler = (
-  context: Context,
-  args: any,
-  subscription: SubscriptionOptions,
-) => unknown | Promise<unknown> | AsyncIterable<unknown>;
-
-/** A handler that answers with a stream of values. */
-export type SubscriptionHandler = ProcedureHandler;
-
-export interface QueueOptions {
-  concurrency: number;
-  size?: number;
-  timeout?: number;
-}
-
-/**
- * One node of a {@link Signature}: a type name (`'string'`, `'number[]'`,
- * `'string|null'`), a field map whose keys may end in `?`, or a one-element
- * array meaning "an array of that". Deliberately closed — it crosses the wire
- * and ends up in a file someone compiles, so `wrpc types` renders anything it
- * does not recognise as `unknown`. See docs/reference/protocol.md.
- */
-export type SignatureShape = string | [SignatureShape] | { [field: string]: SignatureShape };
-
-/**
- * What a procedure looks like, for codegen. Not validation — `input`/`output`
- * are what enforce anything.
- */
-export interface Signature {
-  args?: SignatureShape;
-  /** A call's result. Ignored on a subscription, which yields `data`. */
-  returns?: SignatureShape;
-  /** A subscription's value. Ignored on a call, which answers `returns`. */
-  data?: SignatureShape;
-}
-
-// ---------------------------------------------------------------------------
-// Subscriptions
-
-/** A value labelled with the id a resuming client will send back. */
-export interface Tracked<T = unknown> {
-  id: string;
-  data: T;
-}
-
-/** Labels one yielded value so a reconnect can resume after it. */
-export declare function tracked<T>(eventId: string | number, data: T): Tracked<T>;
-
-export declare function isTracked(value: unknown): value is Tracked<unknown>;
-
-/**
- * A bounded replay buffer. `since()` answers with what a client missed —
- * or `null` when the id has fallen out of the buffer, so a caller can
- * choose between a snapshot and an error instead of silently skipping a gap.
- */
-export declare class EventLog<T = unknown> {
-  /** Which log incarnation mints this log's ids (the `<epoch>.` prefix). */
-  readonly epoch: string;
-  constructor(options?: { size?: number; start?: number });
-  readonly size: number;
-  readonly length: number;
-  readonly lastEventId: string | null;
-  push(data: T): string;
-  since(lastEventId?: string | null): Array<Tracked<T>> | null;
-  clear(): void;
-}
-
-/**
- * Ids are `<epoch>.<n>`: random epoch per instance by default, so a
- * lastEventId from another process (or a restart) is a foreign epoch and
- * since() answers null — an honest "cannot resume" — instead of a numeric
- * coincidence. A persisted/shared log passes its own stable `epoch`.
- */
-export declare function createEventLog<T = unknown>(options?: {
-  size?: number;
-  start?: number;
-  epoch?: string;
-}): EventLog<T>;
-
-export interface SubscriptionOptions {
-  /** What the client says it last saw; undefined on a fresh subscribe. */
-  lastEventId?: string;
-  /** Aborted on unsubscribe or disconnect. Honour it, or the feed leaks. */
-  signal: AbortSignal;
-}
-
-
-/**
- * A lifecycle hook: named phases, fastify-style, with no `next`. A hook
- * runs and either returns (the pipeline continues) or throws an error whose
- * numeric `code` becomes the wire code. "After" is a later phase, not code
- * after a next() call. The payload depends on the phase: the packet for
- * onRequest/onSend/onResponse/onSubscribe, the args for
- * preValidation/preHandler, the result for preSerialization (returning a
- * value replaces it), the error for onError/onTimeout, the terminal packet
- * for onUnsubscribe.
- */
-export type Hook = (context: Context, payload: unknown) => unknown | Promise<unknown>;
-/**
- * Connection lifecycle hook; observational and contained. `onConnect`
- * receives null; `onDisconnect` receives `{ rooms }` — a snapshot of the
- * client's rooms taken before destroy() emptied the registry.
- */
-export type ConnectionHook = (client: Client, payload: { rooms: Set<string> } | null) => unknown | Promise<unknown>;
-
-/** The phases a router (or a unit's reserved `hooks` key) may register. */
-export interface RouterHooks {
-  onRequest?: Hook | Array<Hook>;
-  preValidation?: Hook | Array<Hook>;
-  preHandler?: Hook | Array<Hook>;
-  preSerialization?: Hook | Array<Hook>;
-  onSend?: Hook | Array<Hook>;
-  onResponse?: Hook | Array<Hook>;
-  onError?: Hook | Array<Hook>;
-  onTimeout?: Hook | Array<Hook>;
-  onSubscribe?: Hook | Array<Hook>;
-  onUnsubscribe?: Hook | Array<Hook>;
-  /** Router-level only. */
-  onConnect?: ConnectionHook | Array<ConnectionHook>;
-  /** Router-level only. */
-  onDisconnect?: ConnectionHook | Array<ConnectionHook>;
-}
-
-/** The subset a unit's reserved `hooks` key accepts (no connection phases). */
-export type UnitHooks = Omit<RouterHooks, 'onConnect' | 'onDisconnect'>;
-
-/** A declarative REST mapping: this procedure IS `method path` under basePath. */
-export interface HttpRoute {
-  method: 'GET' | 'HEAD' | 'POST' | 'PUT' | 'PATCH' | 'DELETE';
-  /** Relative to the server's basePath; segments are static or `:name`. */
-  path: string;
-  /** Success status; 204 discards the result body by contract. */
-  status?: number;
-}
-
-/**
- * The fastify.route.schema shape: the parts wrpc understands plus any
- * passthrough keys (tags, summary, security, ...) forwarded to hosts
- * verbatim. `query` and `querystring` are interchangeable spellings.
- */
-export interface ProcedureSchema {
-  params?: object;
-  querystring?: object;
-  /** Alias of `querystring`; setting both to different objects throws. */
-  query?: object;
-  body?: object;
-  headers?: object;
-  /** Keyed by status code; `false` removes a default wrpc error entry. */
-  response?: Record<string | number, object | false>;
-  [passthrough: string]: unknown;
-}
-
-export interface ProcedureOptions {
-  handler: ProcedureHandler;
-  access?: 'public' | 'session';
-  input?: Validator;
-  output?: Validator;
-  /** Maps this procedure onto a real REST endpoint. Calls only. */
-  http?: HttpRoute;
-  /** Declarative validation/serialization/docs; excludes input/output. */
-  schema?: ProcedureSchema;
-  /** Milliseconds; the call fails with code 408 when exceeded. */
-  timeout?: number;
-  /** Concurrency limit; overflow/starvation fails with code 503. */
-  queue?: QueueOptions;
-  meta?: Record<string, unknown>;
-  /** Descriptor consumed by `wrpc types`; see {@link Signature}. */
-  signature?: Signature;
-  /** Inferred from an async generator handler; rarely written by hand. */
-  kind?: 'call' | 'subscription';
-  /** This procedure's own slice of the pipeline. */
-  preValidation?: Hook | Array<Hook>;
-  preHandler?: Hook | Array<Hook>;
-  preSerialization?: Hook | Array<Hook>;
-  onError?: Hook | Array<Hook>;
-}
-
-/** Same as ProcedureOptions minus the three a stream cannot mean. */
-export type SubscriptionProcedureOptions = Omit<ProcedureOptions, 'queue' | 'timeout' | 'http'>;
-
-export declare class Procedure {
-  handler: ProcedureHandler;
-  access: string;
-  input: Validator | null;
-  output: Validator | null;
-  timeout: number;
-  meta: Record<string, unknown>;
-  signature: Signature | null;
-  http: HttpRoute | null;
-  /** Normalized: `query` folded into `querystring`. */
-  schema: ProcedureSchema | null;
-  kind: 'call' | 'subscription';
-  readonly subscription: boolean;
-  constructor(options: ProcedureOptions);
-  invoke(context: Context, args: unknown, hooks?: Readonly<Record<string, ReadonlyArray<Hook>>>): Promise<unknown>;
+/** What a peer declared on an upgrade request, merged the way `attachSocket` merges it. */
+export interface DeclaredHandshake {
   /**
-   * The host-delegated entry: queue/timeout semantics without hooks or
-   * validators — the host (a fastify route) already ran its own.
+   * The header bag a procedure will see: the declared names (kebab-cased,
+   * reserved names dropped) UNDER the observed ones, with wrpc's carrier
+   * tokens taken out of `sec-websocket-protocol`.
    */
-  invokeBare(context: Context, args: unknown): Promise<unknown>;
-  /** The value stream behind `{type:'subscribe'}`. */
-  subscribe(
-    context: Context,
-    args: unknown,
-    options?: Partial<SubscriptionOptions>,
-    hooks?: Readonly<Record<string, ReadonlyArray<Hook>>>,
-  ): AsyncIterableIterator<unknown>;
-}
-
-export interface ProcedureFactory {
-  (options: ProcedureOptions | ProcedureHandler): Procedure;
-  /**
-   * Explicit spelling for a subscription — redundant when the handler is an
-   * async generator (which is detected), required when it is a plain
-   * function returning an async iterable.
-   */
-  subscription(options: SubscriptionProcedureOptions | SubscriptionHandler): Procedure;
-}
-
-export declare const procedure: ProcedureFactory;
-
-export type MethodDefinition = Procedure | ProcedureHandler | ProcedureOptions;
-
-/**
- * Inbound (client -> server) event handlers. An event is a call that never
- * answers, so handlers are procedures too: access, input validation and
- * queueing all work the same way.
- */
-export type EventsDefinition = Record<string, MethodDefinition>;
-
-/**
- * A unit's methods, plus two reserved keys: `on` holds its inbound event
- * handlers and `hooks` its slice of the lifecycle pipeline. Neither is
- * usable as a method name.
- */
-export interface UnitDefinition {
-  on?: EventsDefinition;
-  hooks?: UnitHooks;
-  [method: string]: MethodDefinition | EventsDefinition | UnitHooks | undefined;
+  headers: Record<string, string | Array<string> | undefined>;
+  /** The sanitized connection-metadata bag; empty when nothing was declared. */
+  meta: Readonly<Record<string, unknown>>;
+  /** The names in `headers` that came from the declaration and stand (not shadowed by an observed header). */
+  declared: ReadonlyArray<string>;
 }
 
 /**
- * Unit keys are 'unit' or 'unit.vN' ('auth.v1'); method values are procedures,
- * bare handler functions, or procedure option objects.
+ * Reads the declared `headers`/`meta` of an upgrade request from whichever
+ * carrier the client used — real headers (a Node client), the `wrpc.h.` /
+ * `wrpc.m.` subprotocol offers (a browser), or the `wrpc_h` / `wrpc_meta`
+ * query (`carrier: 'query'`, WebTransport). For a `verifyClient` gate, which
+ * runs before any `Client` exists; PEER-CONTROLLED, exactly like the result
+ * on `context.meta`. Malformed or oversize input is refused, never thrown.
  */
-export type RouterDefinition = Record<string, UnitDefinition>;
-
-export interface MethodInfo {
-  access: string;
-  /** Present only on subscriptions; a client scaffolds a call otherwise. */
-  kind?: 'subscription';
-  meta?: Record<string, unknown>;
-  signature?: Signature;
-  /** The declarative REST mapping, when the procedure carries one. */
-  http?: HttpRoute;
-  /** Input schema parts (params/querystring/body) for client pre-validation. */
-  schema?: { params?: object; querystring?: object; body?: object };
-}
-
-/**
- * Injected JSON Schema compilers, structural: `ajv` is anything with
- * compile(schema) -> validateFn (ajv-shaped: boolean answer, `.errors` on
- * failure), `serializer` anything with compile(schema) -> (value) -> string
- * (fast-json-stringify-shaped). wrpc imports neither.
- */
-export interface ValidationOptions {
-  ajv?: { compile(schema: object): (value: unknown) => boolean };
-  serializer?: { compile(schema: object): (value: unknown) => string };
-}
-
-/** What the injected compilers produced for one procedure. */
-export interface CompiledArtifacts {
-  input?: Validator;
-  output?: Validator;
-  serialize?: (value: unknown) => string;
-}
-
-/**
- * Router-level REST options. `version: 'path'` maps a versioned unit's
- * declared routes under a `/vN` prefix (`auth.v1` + `/auth/signIn` →
- * `/v1/auth/signIn`); a function receives the version token (`'v1'`) and the
- * declared path and returns the effective path. The default version stays
- * unprefixed, and `proc.http` (the declaration) is never mutated.
- */
-export interface RestOptions {
-  version?: 'path' | ((version: string, path: string) => string);
-}
-
-export declare class Router {
-  constructor(
-    definition?: RouterDefinition,
-    options?: { hooks?: RouterHooks; validation?: ValidationOptions; rest?: RestOptions },
-  );
-  /**
-   * Adds a unit after construction (how the fastify mirror lands units
-   * discovered at onReady). Refuses an already-registered unit key.
-   */
-  addUnit(unitKey: string, definition: UnitDefinition): this;
-  /** Adds a router-level hook after construction. Returns the router. */
-  addHook(name: keyof RouterHooks, fn: Hook | ConnectionHook): this;
-  /** The flattened pipeline for one procedure (router + unit + procedure). */
-  hooksFor(proc: Procedure): Readonly<Record<string, ReadonlyArray<Hook>>>;
-  /** The compiled { input?, output?, serialize? } for one procedure. */
-  compiledFor(proc: Procedure): CompiledArtifacts | null;
-  /** True when any procedure compiled a response serializer. */
-  readonly hasSerializers: boolean;
-  /** Router-level connection lifecycle hooks, consumed by RpcServer. */
-  readonly connectionHooks: { onConnect: ReadonlyArray<ConnectionHook>; onDisconnect: ReadonlyArray<ConnectionHook> };
-  getProcedure(
-    unit: string,
-    version: string | undefined,
-    method: string,
-  ): Procedure | null;
-  /** Handler for an inbound `{ type: 'event' }` packet, if the unit declares one. */
-  getEventHandler(
-    unit: string,
-    version: string | undefined,
-    name: string,
-  ): Procedure | null;
-  introspect(units?: Array<string> | null, options?: { schemas?: boolean }): Record<string, Record<string, MethodInfo>>;
-  /** True when at least one procedure declares an `http` mapping. */
-  readonly hasRestRoutes: boolean;
-  /**
-   * Matches a verb + decoded path segments against the REST table: null
-   * (unknown path), `{ allowed }` (known path, wrong verb — a 405), or the
-   * full route.
-   */
-  matchRest(
-    method: string,
-    segments: Array<string>,
-  ):
-    | { proc: Procedure; unitKey: string; methodName: string; params: Record<string, string>; http: HttpRoute }
-    | { allowed: Array<string> }
-    | null;
-  /** Every declared REST route — what a host adapter registers natively. */
-  restRoutes(): Array<{ unitKey: string; methodName: string; proc: Procedure; http: HttpRoute }>;
-  /** Returns a NEW router; on collision the other router's procedure wins. */
-  merge(other: Router): Router;
-}
-
-/**
- * The fastify-shaped schema a host receives: the user's declaration with
- * wrpc's own lifecycle error statuses documented underneath (overridable,
- * removable with `false`).
- */
-export declare function effectiveSchema(proc: Procedure): ProcedureSchema;
-
-export declare function defineRouter(
-  definition: RouterDefinition,
-  options?: { hooks?: RouterHooks; validation?: ValidationOptions; rest?: RestOptions },
-): Router;
-
-// ---------------------------------------------------------------------------
-// Sessions
-
-/** Structural store contract — anything with this shape plugs in. */
-export interface SessionStore {
-  /**
-   * Optional sliding expiry: called on restore, because restoring IS active
-   * use. A store without it keeps absolute TTLs — a valid policy too.
-   */
-  touch?(token: string): Promise<void> | void;
-  get(token: string): Promise<State | null>;
-  set(token: string, data: State): Promise<void>;
-  delete(token: string): Promise<void>;
-}
-
-export interface MemorySessionStoreOptions {
-  /** LRU cap; 0 disables it. Default 10000. */
-  maxSessions?: number;
-  /** Entry lifetime in ms; 0 disables expiry. Default 24h. */
-  ttl?: number;
-  now?: () => number;
-}
-
-/**
- * Bounded in-memory store (LRU + TTL). Sessions outlive their connection,
- * so production deployments should inject a real store instead.
- */
-export declare class MemorySessionStore implements SessionStore {
-  touch(token: string): Promise<void>;
-  constructor(options?: MemorySessionStoreOptions);
-  readonly size: number;
-  get(token: string): Promise<State | null>;
-  set(token: string, data: State): Promise<void>;
-  delete(token: string): Promise<void>;
-}
-
-export declare class Session {
-  token: string;
-  state: State;
-  constructor(token: string, data: State, save?: (data: State) => void);
-}
-
-export interface CookieOptions {
-  name?: string;
-  path?: string;
-  httpOnly?: boolean;
-  secure?: boolean;
-  sameSite?: 'Strict' | 'Lax' | 'None';
-  maxAge?: number | null;
-}
-
-/**
- * Where the session token lives on the wire — injected like a codec or a
- * logger, checked structurally (`isTokenTransport`). The cookie default
- * keeps the behaviour wrpc always had; a bearer or payload strategy is one
- * object.
- */
-export interface TokenTransport {
-  /** The token this request presents, or null. */
-  read(request: { headers?: Record<string, string | Array<string> | undefined>; url?: string }): string | null;
-  /**
-   * A Set-Cookie-style response header value to stamp (HTTP transports
-   * only), or null when the carrier cannot stamp one — a bearer strategy
-   * returns null and the signIn handler hands tokens back in its result.
-   */
-  write(token: string): string | null;
-  /** Optional: the deleting stamp. */
-  clear?(): string | null;
-  /**
-   * True when the BROWSER attaches the credential without script (a
-   * cookie) — which is what the safe-method CSRF rule exists for. A
-   * non-ambient carrier is exempt from that rule.
-   */
-  ambient?: boolean;
-}
-
-export declare function isTokenTransport(value: unknown): value is TokenTransport;
-
-export interface SessionsOptions {
-  store?: SessionStore;
-  cookie?: CookieOptions;
-  generateToken?: () => string;
-  /** The injected token carrier; the cookie default is byte-identical. */
-  transport?: TokenTransport;
-}
-
-declare class SessionManager {
-  store: SessionStore;
-  generateToken: () => string;
-  cookie: CookieOptions & { name: string; path: string };
-  /** The active token carrier (the cookie default unless injected). */
-  transport: TokenTransport;
-  create(token?: string, data?: State): Session;
-  restore(token: string): Promise<Session | null>;
-  destroy(token: string): Promise<void>;
-  cookieHeader(token: string): string;
-  cookieDeleteHeader(): string;
-  readToken(cookies: Record<string, string>): string | null;
-}
-export type { SessionManager };
-
-export function createProxy<T extends object>(
-  data: T,
-  save?: (data: T) => void,
-): T;
-
-// ---------------------------------------------------------------------------
-// Rooms
-
-/**
- * Named groups of clients, on top of the ordinary `{ type: 'event' }`
- * packets. The registry owns both directions — which clients a room holds
- * and which rooms a client joined — so a disconnect only has to call
- * `leaveAll`.
- */
-export declare class RoomRegistry {
-  constructor(options?: {
-    /** Fires when a room gains its first member (backplane subscribe). */
-    onSubscribe?: (room: string) => void;
-    /** Fires when a room loses its last member (backplane unsubscribe). */
-    onUnsubscribe?: (room: string) => void;
-    /** Fires on EVERY successful join — the cluster's presence deltas. */
-    onJoin?: (room: string, client: Client) => void;
-    /** Fires on EVERY successful leave. */
-    onLeave?: (room: string, client: Client) => void;
-  });
-  /** Number of non-empty rooms. */
-  readonly size: number;
-  list(): Array<string>;
-  members(room: string): Set<Client>;
-  count(room: string): number;
-  has(room: string): boolean;
-  roomsOf(client: Client): Set<string>;
-  /** True when the client was not already a member. */
-  join(client: Client, room: string): boolean;
-  leave(client: Client, room: string): boolean;
-  leaveAll(client: Client): void;
-  clear(): void;
-}
-
-/**
- * An immutable, chainable delivery target: every modifier returns a NEW
- * Broadcast, so a stored `server.to('chat')` cannot be mutated by a later
- * `.except()` elsewhere.
- */
-export declare class Broadcast {
-  /**
-   * Union, not intersection: `to('a').to('b')` reaches either room.
-   * `to()` with no rooms narrows to NOBODY — a computed room list that came
-   * back empty must not fall back to every connected client.
-   */
-  to(...rooms: Array<string>): Broadcast;
-  except(...clients: Array<Client>): Broadcast;
-  /** Suppresses the backplane publish; the event stays on this instance. */
-  local(): Broadcast;
-  /** The targeted rooms, or null when the target is every client. */
-  readonly rooms: Array<string> | null;
-  /**
-   * Sends `{ type: 'event', name, data }` and returns how many clients
-   * received it LOCALLY — remote instances are reached through the
-   * backplane, whose delivery this number says nothing about.
-   */
-  emit(name: string, data?: unknown): number;
-  /**
-   * Emits to every matching client — every instance's members included,
-   * unless `local()` — and waits for each one's answer (registered
-   * client-side with `client.respond(name, fn)`). Never rejects:
-   * per-client failures are collected in `errors`.
-   */
-  ask(name: string, data?: unknown, options?: AskOptions): Promise<AskResult>;
-}
-
-export interface AskOptions {
-  /** Per-client answer timeout in ms; default 7000. */
-  timeout?: number;
-}
-
-export interface AskResult {
-  /** Values the responders returned, in settlement order. */
-  answers: Array<unknown>;
-  /** Per-client failures: 501 no responder, 408 timeout, 503 disconnect. */
-  errors: Array<{ message: string; code: number; details?: unknown }>;
-  /** How many clients were asked, cluster-wide. */
-  expected: number;
-  /** True when a remote instance never answered inside the timeout. */
-  incomplete: boolean;
-}
+export declare function readHandshake(
+  req: { headers?: Record<string, string | Array<string> | undefined>; url?: string },
+  options?: {
+    metaMaxBytes?: number;
+    log?: { warn(record: Record<string, unknown>): void };
+    declaredHeaders?: ReadonlyArray<string> | null;
+  },
+): DeclaredHandshake;
 
 // ---------------------------------------------------------------------------
 // Cluster
@@ -631,12 +160,54 @@ export interface ClusterOptions {
    * Opt-in HMAC-SHA256 envelope authentication: with the same secret on
    * every node, an unsigned or mis-signed cluster message is dropped and
    * logged — "can publish on the broker" stops being "can command every
-   * node". Room events travel unsigned; ACL the broker for those.
+   * node". Room events travel unsigned; ACL the broker for those. A signed
+   * envelope also carries the sender's counter, channel and clock, so a
+   * copy replayed later or moved to another channel is refused too (see
+   * `replay`).
    */
   secret?: string;
+  /**
+   * What a node under `secret` does with a signed envelope that carries no
+   * counter — the one a 1.x node sends. `'strict'` (the default) refuses
+   * it, logged as `cluster.replay`; `'accept'` lets it through for the
+   * length of a rolling upgrade from 1.x and still checks every envelope
+   * that does carry one. Anything else is a `TypeError`.
+   */
+  replay?: 'strict' | 'accept';
+  /**
+   * How far a signed envelope's clock may sit from this node's, in ms, both
+   * ways — default 30000. It bounds what a node that was not listening can
+   * be replayed, so the nodes of a cluster keep their clocks within it.
+   */
+  maxSkew?: number;
+  /**
+   * Compresses the cluster envelopes this node publishes, after signing —
+   * the same marker, rollout rule and synchronous-codec requirement as
+   * `rooms.compression`; an unreadable envelope logs `cluster.encoded`.
+   */
+  compression?: boolean | CompressionOptions;
+  /** The largest inflated envelope accepted (default 16 MiB). */
+  maxMessage?: number;
+  /**
+   * @experimental (`@alexify/wrpc/encryption`, whole — may change in a minor.)
+   * Seals the cluster envelopes — presence, commands, `sendTo` payloads
+   * (bytes included),
+   * asks, `fetchClients` replies — under a shared keyring, after signing
+   * and compression (`@alexify/wrpc/encryption`). `secret` authenticates a
+   * node; this hides what it says, and refuses a plaintext command too.
+   * Same rollout and log events as `rooms.encryption`, prefixed `cluster.`.
+   */
+  encryption?: EnvelopeEncryptionOptions | false | null;
 }
 
 export interface RoomsOptions {
+  /**
+   * The producer-restart marker every backplane envelope carries, so a
+   * receiver can tell "this instance restarted, its sequence began again"
+   * from a real gap. Random per boot by default, which is what you want
+   * unless a deployment pins it deliberately across restarts.
+   */
+  epoch?: string;
   /**
    * How long an emptied room's backplane channel stays subscribed, in ms —
    * the grace window that absorbs reconnect churn for single-member rooms
@@ -644,6 +215,38 @@ export interface RoomsOptions {
    * bounce. Default 5000; `0` unsubscribes immediately.
    */
   linger?: number;
+  /**
+   * How many channels' publish counters (the `seq` of loss detection) this
+   * instance keeps, in two generations — at most twice this many, not every
+   * room name it ever published to. A channel evicted and published to
+   * again starts a new count under a suffixed epoch (`<epoch>.<n>`), which
+   * a receiver reads as a restart, never as a gap. Default 16384.
+   */
+  maxTracked?: number;
+  /**
+   * Compresses every room envelope this instance publishes past the
+   * threshold (src/compression), off by default. A string carrier, so a
+   * compressed envelope rides as base64 under a `wrpc-enc:<id>:` marker —
+   * and there is no negotiation: an instance without the option drops such
+   * an envelope and logs `backplane.encoded`. Roll it out in two steps
+   * (deploy the version, then turn it on). The codec must be synchronous.
+   */
+  compression?: boolean | CompressionOptions;
+  /** The largest inflated envelope accepted (default 16 MiB). */
+  maxMessage?: number;
+  /**
+   * @experimental (`@alexify/wrpc/encryption`, whole — may change in a minor.)
+   * Seals every room envelope this instance publishes under a shared
+   * keyring (`@alexify/wrpc/encryption`), after compression: the backplane
+   * carries `wrpc-sealed:<kid>:<base64>` and its operator reads nothing —
+   * not the payload, not the event name, not the room list (the CHANNEL
+   * name still names the room). Off by default; a three-deploy rollout. An
+   * envelope that does not open is dropped and logged `backplane.open`
+   * (unknown kid, another key, a moved or replayed envelope), plaintext
+   * where none is accepted `backplane.unsealed`, and an instance without
+   * the keys logs `backplane.sealed`.
+   */
+  encryption?: EnvelopeEncryptionOptions | false | null;
 }
 
 export interface ClusterAskResult {
@@ -673,7 +276,9 @@ export declare class Cluster extends Emitter {
   /**
    * False while a channel subscribe is failing and being retried: the node
    * can publish but cannot hear. 'degraded'/'recovered' fire on the
-   * transitions — wire them to a readiness probe.
+   * transitions — wire them to a readiness probe. They also fire, with
+   * `{ instance, reason: 'skew', skew }` and `{ instance }`, for a node whose
+   * clock is outside `maxSkew`: refused three times in a row, then heard.
    */
   readonly healthy: boolean;
   /** Cluster-wide membership of `room`: a local sum, no network. */
@@ -699,6 +304,12 @@ export declare class Cluster extends Emitter {
   join(target: string | ClusterSelector, ...rooms: Array<string>): void;
   leave(target: string | ClusterSelector, ...rooms: Array<string>): void;
   disconnect(target: string | ClusterSelector): void;
+  /**
+   * One event to ONE client by id — an addressed command, so only the
+   * instance its id names hears it. `room` narrows delivery to a client
+   * still in that room. Fire-and-forget, at-most-once.
+   */
+  send(clientId: string, name: string, data?: unknown, options?: { room?: string }): void;
   /** Fire-and-forget to every OTHER node's `cluster.on(name, ...)`. */
   sendEvent(name: string, data?: unknown): void;
   /** The LOCAL Emitter emit — remote nodes are reached by sendEvent. */
@@ -744,173 +355,6 @@ export interface CorsOptions {
   methods?: string;
 }
 
-export interface ErrorOptions {
-  id?: string;
-  error?: Error;
-}
-
-/**
- * What the peer presented when the connection was made. Frozen. `headers`
- * and `data` are PEER-CONTROLLED — labels for logs, metrics and feature
- * gates, never an authorization input: authorization is the session's job.
- */
-export interface ClientMeta {
-  /** Client-declared metadata (the client's `meta` option); `{}` when none. */
-  readonly data: Readonly<Record<string, unknown>>;
-  /** Request/upgrade headers; `{}` on a worker port. */
-  readonly headers: Readonly<Record<string, string | Array<string> | undefined>>;
-  /** The request/upgrade URL with its query string; `''` on a worker port. */
-  readonly url: string;
-  readonly remoteAddress: string;
-  /** The negotiated WebSocket subprotocol; `''` off ws. */
-  readonly protocol: string;
-}
-
-export declare class Context {
-  client: Client;
-  uuid: string;
-  state: Record<string, unknown>;
-  /**
-   * Aborted when the caller cancels, unsubscribes, or disconnects. A handler
-   * that awaits anything long-lived should pass it along; one that ignores
-   * it runs to completion and has its result dropped.
-   */
-  readonly signal: AbortSignal | null;
-  readonly session: Session | null;
-  /**
-   * The server this call arrived on — how a handler reaches rooms
-   * (`context.server.to(room).emit(...)`) without closing over a server
-   * that could not exist before the router it was built from.
-   */
-  readonly server: RpcServer | null;
-  /**
-   * A child of the connection's logger bound to this call's uuid — the
-   * documented way to log from a handler: `context.log.info(...)`.
-   */
-  readonly log: WrpcLogWriter;
-  /**
-   * The wire target of this invocation — `'unit/name'` or `'unit.vN/name'`
-   * for calls and subscriptions, the event name verbatim for inbound
-   * events; null on a context built without a target.
-   */
-  readonly method: string | null;
-  /** The procedure (or event handler) resolved for this invocation. */
-  readonly procedure: Procedure | null;
-  /** The connection's presented metadata — `client.meta`, mirrored. */
-  readonly meta: ClientMeta;
-  /**
-   * The caller's per-invocation metadata (the packet's optional `meta`
-   * field, sanitized: plain object, size-capped, `__proto__` dropped,
-   * frozen). A frozen EMPTY object when the packet carried none — never
-   * null, so `context.callMeta.idem` needs no `?.`. Deliberately outside
-   * schema validation; a label, never an authorization input.
-   */
-  readonly callMeta: Readonly<Record<string, unknown>>;
-  constructor(
-    client: Client,
-    signal?: AbortSignal | null,
-    target?: { method?: string; procedure?: Procedure; callMeta?: Record<string, unknown> | null } | null,
-  );
-}
-
-export class Client extends Emitter {
-  /**
-   * Instance-prefixed (`<instanceId>.<generateId()>`), so the id itself
-   * addresses the instance holding the connection — what lets a cluster
-   * command for one client travel as one message to one node.
-   */
-  readonly id: string;
-  /**
-   * The application's bag, carried by cluster descriptors (fetchClients).
-   * wrpc itself never reads it — socket.io's `socket.data`.
-   */
-  data: Record<string, unknown>;
-  source: string;
-  session: Session | null;
-  /** True for transports that stay open (WebSocket, worker port). */
-  readonly persistent: boolean;
-  /** The RpcServer this client belongs to; null for a standalone Client. */
-  readonly server: RpcServer | null;
-  /**
-   * What the peer presented when the connection was made (headers, url,
-   * negotiated subprotocol, client-declared metadata). Frozen; the
-   * peer-controlled parts are labels, never authorization inputs.
-   */
-  readonly meta: ClientMeta;
-  /** Settles once the cookie-based session restore (if any) finished. */
-  sessionReady: Promise<unknown>;
-  /**
-   * What dispatch gates on: the session restore PLUS the settled onConnect
-   * hooks. Two promises on purpose — an onConnect hook may `await
-   * client.sessionReady`, so folding the hooks into that same promise would
-   * make such a hook wait for itself. Never rejects.
-   */
-  ready: Promise<unknown>;
-  streams: Map<string, WrpcReadable | WrpcWritable>;
-  /** In-flight calls, by id — what `{type:'cancel'}` reaches. */
-  calls: Map<string, AbortController>;
-  /** Live subscriptions, by id — what `{type:'unsubscribe'}` reaches. */
-  subscriptions: Map<string, AbortController>;
-  maxSubscriptions: number;
-  maxCalls: number;
-  /** Context uuids and server-side stream ids; injectable via RpcServerOptions. */
-  generateId: () => string;
-  /** The connection-scoped log writer (peer binding included). */
-  readonly log: WrpcLogWriter;
-  /** The server's telemetry writer; disabled-shaped when unconfigured. */
-  readonly otel: object;
-  /** 'ws' | 'http' | 'sse' | 'event' — a metric attribute and a log field. */
-  readonly transportKind: string;
-  /** False on a text-only transport (SSE), where binary streams cannot go. */
-  readonly binary: boolean;
-  /** Resolves when the transport drained, or when it closed. */
-  drain(): Promise<void>;
-  error(code: number, options?: ErrorOptions): void;
-  /** Returns false when the transport is above its high-water mark. */
-  send(obj: object, options?: { code?: number; method?: string }): boolean;
-  /**
-   * Writes an ALREADY-serialized packet — the fan-out seam: a broadcast
-   * stringifies once and hands every recipient the same text.
-   */
-  sendRaw(text: string): boolean;
-  createContext(signal?: AbortSignal | null): Context;
-  /** The LOCAL Emitter emit — nothing reaches the wire; that is sendEvent. */
-  emit(name: EventName, data?: unknown): Promise<void>;
-  /** Sends a `{type:'event'}` packet to this peer; `name` is 'unit/event'. */
-  sendEvent(name: string, data?: unknown): void;
-  /**
-   * A call in the other direction: sends `{type:'event', name, data, id}`
-   * and resolves with what the peer's responder returns (registered
-   * client-side with `client.respond(name, fn)`). Rejects with 408 on
-   * timeout, 503 when the connection drops, 501 when the peer has no
-   * responder.
-   */
-  ask(name: string, data?: unknown, options?: AskOptions): Promise<unknown>;
-  /**
-   * The bookkeeping half of ask(), for a caller that writes the packet
-   * itself (Broadcast.ask's encode-once fan-out).
-   */
-  expectAnswer(id: string, timeout?: number): Promise<unknown>;
-  /** Routes an inbound `callback` to its pending ask; false when none. */
-  settleAnswer(packet: { id: string; result?: unknown; error?: { message: string; code: number; details?: unknown } }): boolean;
-  /** Diagnostics for inbound packets with no id to answer on. */
-  warn(message: string): void;
-  /** Joins a room; false when already a member. */
-  join(room: string): boolean;
-  leave(room: string): boolean;
-  in(room: string): boolean;
-  /** The rooms this client is in — a copy, safe to iterate while leaving. */
-  readonly rooms: Set<string>;
-  getStream(id: string): WrpcReadable | WrpcWritable;
-  createStream(name: string, size: number): WrpcWritable;
-  initializeSession(token?: string, data?: State): boolean;
-  finalizeSession(): Promise<boolean>;
-  startSession(token?: string, data?: State): boolean;
-  restoreSession(token: string): Promise<boolean>;
-  close(): void;
-  destroy(): void;
-}
-
 /** Abstract HTTP call description consumed by RpcServer.handleHttpCall. */
 export interface HttpCall {
   method: string;
@@ -918,11 +362,7 @@ export interface HttpCall {
   headers: Record<string, string | undefined>;
   body?: string | Buffer | null;
   remoteAddress?: string;
-  respond(response: {
-    status: number;
-    headers: Record<string, string | number | Array<string>>;
-    body?: Buffer;
-  }): void;
+  respond(response: { status: number; headers: Record<string, string | number | Array<string>>; body?: Buffer }): void;
   /**
    * Registers a listener for a request that ends without a response, so
    * the core can evict its client. Adapters should wire it to their
@@ -959,13 +399,24 @@ export interface RpcServerOptions {
    */
   backplane?: Backplane | null;
   /**
-   * Identifies this instance on the backplane; a uuid by default. Must not
-   * contain '.' — it prefixes every client id (`<instanceId>.<id>`).
+   * Identifies this instance on the backplane; minted by `generateId` when
+   * omitted. Must not contain '.' — it prefixes every client id
+   * (`<instanceId>.<id>`), and a `generateId` that returns one is refused
+   * by the same rule.
    */
   instanceId?: string;
   /**
-   * Context uuids, server-side stream ids and synthetic REST packet ids;
-   * uuid v4 unless the app brings its own. Correlation ids, not secrets.
+   * Every id this server mints: the `instanceId` above, client ids, context
+   * uuids, server-side stream ids, synthetic REST packet ids, SSE channel
+   * ids and the cluster's boot epoch. uuid v4 unless the app brings its own
+   * (cuid/ulid/a test counter). Correlation ids, not secrets — a session
+   * token has its own generator, `sessions.generateToken`.
+   *
+   * Validated once at construction: it must be a function answering a
+   * non-empty string of at most 255 characters (the binary chunk header's
+   * own limit). The check consumes one id, which becomes the `instanceId`
+   * rather than being discarded. A bad value is a TypeError at construction
+   * (1.x reported it through the logger and fell back to uuid v4).
    */
   generateId?: () => string;
   /**
@@ -973,18 +424,46 @@ export interface RpcServerOptions {
    * `'session'` gates it behind a session, `false` leaves the API surface
    * unadvertised. A router defining its own introspect always wins.
    */
-  introspection?:
-    | boolean
-    | 'session'
-    | { access?: boolean | 'session'; schemas?: boolean };
+  introspection?: boolean | 'session' | { access?: boolean | 'session'; schemas?: boolean };
   /** Packets accepted in one batch frame; default 128. */
   maxBatch?: number;
   /** Concurrent subscriptions per client; default 256. */
   maxSubscriptions?: number;
   /** In-flight calls per client; past it a call answers 429. Default 1000. */
   maxCalls?: number;
+  /** Binary streams a peer may hold open on one connection; past it a `stream` packet answers 429. Default 256. */
+  maxStreams?: number;
   /** SSE channel options, or `false` to remove the events endpoint. */
   sse?: import('./sse.js').SseOptions | false;
+  /** The HTTP side's own options: `compression`, off by default. */
+  http?: { compression?: boolean | HttpCompressionOptions };
+  /**
+   * Accept per-message compressed frames from a Node WebSocket client that
+   * negotiated them (its own `compression` option, agreed over the first
+   * ping/pong) — the direction permessage-deflate cannot cover, since
+   * Node's built-in WebSocket only inflates. Off by default; a browser
+   * client is untouched. The codec must answer synchronously.
+   */
+  compression?: boolean | CompressionOptions;
+  /** The largest inflated client frame accepted on a socket (default 16 MiB). */
+  maxMessage?: number;
+  /**
+   * @experimental Session encryption of the persistent connections
+   * (`@alexify/wrpc/encryption`): a Noise handshake, then every frame
+   * sealed; `required` refuses plaintext on every transport. Off by default.
+   */
+  encryption?: ServerEncryptionOptions | false | null;
+  /**
+   * Binary attachments: raw bytes (typed arrays, ArrayBuffers) anywhere in
+   * a packet's args, result, data or error details travel as bytes in one
+   * binary frame, and arrive as Uint8Arrays — instead of the plain objects
+   * JSON makes of them — to every peer that negotiated protocol revision 2
+   * (protocol.md#versioning); a 1.0 client is sent JSON. On by default;
+   * `false` makes this server speak revision 1 to everyone (`wrpc.v1`
+   * selected, `wrpc-version: 1` answered). Off by itself under a packet
+   * `codec`, which owns the wire. SSE refuses them explicitly (501/415).
+   */
+  attachments?: boolean;
   /**
    * Presence/request tuning for the cluster layer, or `false` to opt out:
    * presence, commands and asks then degrade to their local halves while
@@ -1007,11 +486,20 @@ export interface RpcServerOptions {
   codec?: WrpcCodec;
   /**
    * Cap on peer-declared metadata, measured on the ENCODED input: the ws
-   * `wrpc_h` connect-URL parameter and the per-packet `meta` field. Over
-   * the cap the label is refused (a warn is logged), never the connection.
-   * Default 2048.
+   * handshake carriers (the `wrpc.h.` + `wrpc.m.` subprotocol offers share
+   * ONE budget; the connect-URL query is measured whole), the `x-wrpc-meta`
+   * header and the per-packet `meta` field. Over the cap the label is
+   * refused (a warn is logged), never the connection. Default 2048.
    */
   metaMaxBytes?: number;
+  /**
+   * Opt-in allowlist of the header names a ws handshake may DECLARE (the
+   * subprotocol token or query carriers), beside the deny list that always
+   * applies — `['authorization']` for a deployment whose handlers read
+   * nothing else from a declaration. `cookie` is never declarable. Default
+   * null: everything the deny list allows.
+   */
+  declaredHeaders?: ReadonlyArray<string> | null;
 }
 
 // The codec types (WrpcCodec, WrpcPacketCodec, WrpcRestCodec) and the
@@ -1052,20 +540,91 @@ export declare class RpcServer extends Emitter {
   constructor(options: RpcServerOptions);
   /** The local client with this id; undefined when not on this instance. */
   getClient(id: string): Client | undefined;
+  /**
+   * One event to one client by id, here or on the instance its id names
+   * (via the cluster). `room` narrows delivery to a client still in that
+   * room. True when delivered locally or handed to the backplane; false
+   * when known undeliverable. Bytes in `data` reach a foreign id as bytes
+   * — a binary envelope, as a room event's do.
+   */
+  sendTo(clientId: string, name: string, data?: unknown, options?: { room?: string }): boolean;
   /** Everyone in any of `rooms`, each client once; with no rooms, nobody. */
   to(...rooms: Array<string>): Broadcast;
   /** Everyone connected, minus `clients`. */
   except(...clients: Array<Client>): Broadcast;
   /** Everyone connected; returns the number of LOCAL recipients. */
   broadcast(name: string, data?: unknown): number;
+  /**
+   * `meta` is the handshake as the host saw it: `url` carries the declared
+   * `wrpc_h`/`wrpc_meta` query, `kind` names the wire for logs and metrics
+   * when the socket is not a WebSocket (`'wt'` from `@alexify/wrpc/wt`).
+   */
   attachSocket(
     socket: WrpcSocket | Connection,
-    meta?: { headers?: Record<string, string | undefined>; remoteAddress?: string },
+    meta?: { headers?: Record<string, string | undefined>; url?: string; remoteAddress?: string; kind?: string },
   ): Client;
-  attachPort(port: MessagePort): Client;
+  /**
+   * Speaks the protocol over a `MessagePort`. `meta` is what a consumer
+   * took from the page's `wrpc:connect` message, if it hands it over:
+   * `headers` (declared) — plus `v`, the protocol revision the page speaks,
+   * for a consumer that knows it some other way: a wrpc page's `wrpc:connect`
+   * carries no `v`. Without it the port starts at revision 1 and the page
+   * names its own on its first ping (protocol.md#versioning).
+   */
+  attachPort(port: MessagePort, meta?: { headers?: Record<string, string | undefined>; v?: number } | null): Client;
+  /**
+   * Any persistent transport announcing its inbound traffic as 'packet'
+   * (text) and 'chunk' (bytes) events — the seam a wire the core never heard
+   * of plugs into (`attachChannel` in `@alexify/wrpc/webrtc` does). `meta` is
+   * what the application observed about the connection, if anything.
+   *
+   * Identity, one of: `session` — a pseudo-session the host vouches for,
+   * in place before the onConnect hooks run; `request` — what the peer
+   * presented, restored through the configured token carrier (a bearer
+   * token in a broker message's headers restores a real session).
+   */
+  attach(transport: InboundTransport, options?: AttachOptions): Client;
+  /**
+   * @experimental The public key bundle of the current `encryption` key —
+   * what a client pins as `createEncryption({ serverKey })`. Safe to
+   * publish; resolves null when encryption is off.
+   */
+  encryptionKey(): Promise<string | null>;
   handleHttpCall(call: HttpCall): Promise<void>;
   matchPath(pathname: string): { mode: 'packet' | 'rest'; rest?: string } | null;
-  /** True while drain() runs: new calls are refused with 503. */
+  /**
+   * The per-connection caps every attached client gets — a frozen copy.
+   * `compression` is the socket-side per-message compression as normalized
+   * (what a Node ws client may negotiate on ping/pong), or null when off;
+   * `attachments` is whether binary attachments are on (`false` under
+   * `attachments: false`, and under a packet `codec`, which owns the wire).
+   */
+  readonly limits: Readonly<{
+    maxBatch: number;
+    maxSubscriptions: number;
+    maxCalls: number;
+    maxStreams: number;
+    compression: NormalizedCompression | null;
+    attachments: boolean;
+  }>;
+  /**
+   * @experimental Whether `encryption.required` is on: what a binding built
+   * on `attach` (the broker consumers, a raw data channel) reads to vouch
+   * for its transport, or refuse to attach, before a delivery arrives.
+   */
+  readonly encryptionRequired: boolean;
+  /**
+   * The newest protocol revision this server speaks (protocol.md#versioning):
+   * 2, or 1 when it sends and reads no framed messages (`attachments: false`,
+   * a packet codec). A shell composing its own engine narrows the WebSocket
+   * negotiation to `protocols: ['wrpc.v1']` when this reads 1.
+   */
+  readonly revision: 1 | 2;
+  /**
+   * True while drain() runs: new calls are refused with 503. Draining is
+   * announced once as a `'draining'` event, so a binding that pulls work
+   * on its own (a broker consumer) stops fetching.
+   */
   readonly draining: boolean;
   /**
    * False while a backplane channel subscribe is failing and being retried
@@ -1080,11 +639,27 @@ export declare class RpcServer extends Emitter {
    */
   readonly otel: unknown;
   /**
+   * @experimental The same seam for a compression codec that threw on a
+   * carrier attached from outside (a WebTransport session, a broker
+   * binding): counted every time (`wrpc.compression.failures`) and logged
+   * once per carrier, direction and codec as `compression.failed`.
+   */
+  readonly compressionFailed: (carrier: string, direction: 'encode' | 'decode', codec: string, error: unknown) => void;
+  /**
+   * The normalized log writer — not the `logger` that was passed in. For
+   * hosts and attachers that need somewhere to report a failure which never
+   * reaches a `Client`: a framework adapter, a WebTransport session.
+   * Re-wrapping a writer is free, so passing this straight into another
+   * component's `logger` option is the intended use.
+   */
+  readonly log: WrpcLogWriter;
+  /**
    * The graceful half of a shutdown: refuse new calls (503) and wait up to
    * `timeout` ms for in-flight ones to settle. Subscriptions are not waited
    * for — a live feed has no natural end. Resolves early when idle.
    */
   drain(timeout?: number): Promise<void>;
+  /** Emits `'close'` first, then tears every client, channel and binding down. */
   close(): Promise<void>;
 }
 
@@ -1123,6 +698,8 @@ export class Server extends Emitter {
   readonly cluster: Cluster;
   /** The local client with this id; undefined when not on this instance. */
   getClient(id: string): Client | undefined;
+  /** One event to one client by id, here or on another instance — forwarded to the core. */
+  sendTo(clientId: string, name: string, data?: unknown, options?: { room?: string }): boolean;
   listen(): Promise<Server>;
   /**
    * With `drain` (ms): stop intake, let in-flight calls settle up to the
@@ -1136,6 +713,133 @@ export class Server extends Emitter {
 
 export interface TransportOptions {
   headers?: Record<string, string>;
+  /** The normalized `http.compression` option; the core passes its own. */
+  compression?: Readonly<{
+    threshold: number;
+    filter: ((call: HttpCall) => boolean) | null;
+    async: { threshold: number } | null;
+    /** The codings, in the server's order — what `encodings` resolved to. */
+    encoders: ReadonlyArray<{
+      readonly token: string;
+      encode(body: Uint8Array): Uint8Array | Promise<Uint8Array>;
+    }>;
+  }> | null;
+}
+
+/**
+ * `Content-Encoding` for packet-mode and REST answers — `http: {
+ * compression }`, off by default, gzip unless `encodings` says otherwise.
+ * A response is encoded when the request's `Accept-Encoding` admits one of
+ * the server's codings, the body is at or over `threshold`, nothing upstream set a
+ * `Content-Encoding`, and `filter` (when given) says yes; it then carries
+ * `Content-Encoding: gzip` and `Vary: Accept-Encoding`. Nothing changes on
+ * the client: `fetch` inflates by itself.
+ */
+/**
+ * One `Content-Encoding` the server may answer in: a built-in by name, a
+ * built-in with its own knobs, or an application's own coding. Levels
+ * default to the measured ones (`bench/algorithms.js`) — Brotli quality 4,
+ * zstd level 1 — never zlib's Brotli default of 11, which costs
+ * milliseconds a response. `'zstd'` is a TypeError at construction where
+ * node:zlib has none (before Node 22.15 / 23.8).
+ */
+export type HttpEncoding =
+  | 'gzip'
+  | 'br'
+  | 'zstd'
+  | { encoding: 'gzip'; /** zlib level, -1..9. */ level?: number; /** zlib memLevel, 1..9. */ memLevel?: number }
+  | { encoding: 'br'; /** 0..11 (4). */ quality?: number }
+  | { encoding: 'zstd'; /** 1..22 (1). */ level?: number }
+  | CustomHttpEncoding;
+
+/**
+ * An application's own coding. `encoding` is the `Content-Encoding` token;
+ * `encode` takes the whole body and may answer a promise (a throw or a
+ * rejection answers the plain body instead). `createStream` — a Node
+ * Transform that emits every write's output without waiting for more — is
+ * what an SSE response needs; without it the coding serves one-shot
+ * answers only and `sse.compression` refuses it.
+ */
+export interface CustomHttpEncoding {
+  encoding: string;
+  encode(body: Uint8Array): Uint8Array | Promise<Uint8Array>;
+  createStream?(): NodeJS.ReadWriteStream;
+}
+
+export interface HttpCompressionOptions {
+  /** Bytes; smaller bodies go plain. Default 1024. */
+  threshold?: number;
+  /** Per request: compress this answer at all? Runs after the cheaper checks. */
+  filter?: (call: HttpCall) => boolean;
+  /**
+   * The codings this server answers in, in ITS order of preference — the
+   * first one the request's `Accept-Encoding` admits is used (a weight of
+   * zero refuses a coding; other weights say acceptable, not preferred, as
+   * in nginx). Default `['gzip']`. `['zstd', 'br', 'gzip']` earns its place
+   * on answers from ~16 KB; browsers announce `br` and `zstd` over HTTPS only.
+   */
+  encodings?: ReadonlyArray<HttpEncoding>;
+  /**
+   * Bodies at or over `threshold` bytes are encoded on zlib's threadpool and
+   * the response is written from the callback — the same shape as
+   * `perMessageDeflate.async`. Default threshold 256 KiB; `{}` or `true`
+   * takes it. Off by default; a custom coding decides that for itself.
+   */
+  async?: boolean | { threshold?: number };
+}
+
+/** A `compression` option after normalization: the list in order of preference, and its head. */
+export interface NormalizedCompression {
+  /** The head of the list — what a carrier with no negotiation encodes with. */
+  readonly codec: Compressor;
+  readonly id: string;
+  readonly threshold: number;
+  readonly codecs: ReadonlyArray<Readonly<{ codec: Compressor; id: string; threshold: number }>>;
+  readonly ids: ReadonlyArray<string>;
+}
+
+export type AttachOptions = {
+  /**
+   * What the application observed about the connection — a transport
+   * carries no request of its own. Any subset of a `ClientMeta`: it is
+   * normalized like every other entry point's (frozen, `headers` a
+   * null-prototype bag, the rest defaulted), so `{ headers }` written by
+   * hand and a full meta read the same on `client.meta`.
+   */
+  meta?: Partial<ClientMeta> | null;
+  /**
+   * false: a request/response carrier (a broker consumer binding) — calls
+   * only, and not counted among connected clients. Default true.
+   */
+  persistent?: boolean;
+  /**
+   * @experimental Vouches for a wire the core cannot see into: under
+   * `encryption.required`, `attach()` throws without it. A WebRTC data
+   * channel is (DTLS, end to end); a broker binding is when it seals its
+   * own frames.
+   */
+  encrypted?: boolean;
+} & (
+  | { session?: null; request?: null }
+  | { session: { token?: string; state?: Record<string, unknown>; [key: string]: unknown }; request?: null }
+  | {
+      session?: null;
+      request: { headers?: Record<string, string | undefined>; url?: string; remoteAddress?: string };
+    }
+);
+
+/** What RpcServer.attach() accepts: persistent, and announcing 'packet'/'chunk'. */
+export interface InboundTransport extends Emitter {
+  kind?: string;
+  source?: string;
+  /** Truthy for a persistent transport; ignored (and cleared) with `persistent: false`. */
+  connection?: unknown;
+  write(data: string | Uint8Array): boolean;
+  /** A packet to the peer (`ServerTransport.send`): the backpressure boolean. */
+  send(obj: object, code?: number): boolean;
+  /** An error packet to the peer (`ServerTransport.error`). */
+  error(code?: number, options?: ErrorOptions): boolean;
+  close(): void;
 }
 
 export class ServerTransport extends Emitter {
@@ -1145,10 +849,31 @@ export class ServerTransport extends Emitter {
     event: typeof ServerEventTransport;
   };
   source: string;
+  /** 'http' | 'ws' | 'event' | 'sse' | 'webrtc' | 'wt' — what `Client.transportKind` reports. */
+  kind: string;
+  /** Set on transports that stay open; `Client.persistent` is its truthiness. */
+  connection?: unknown;
+  /** False on a text-only transport, where binary streams are refused. */
+  binary?: boolean;
+  /**
+   * The protocol revision this connection speaks (protocol.md#versioning):
+   * 2 until whoever attaches the transport lowers it for a peer that reads
+   * no framed messages — `setRevision`.
+   */
+  revision: 1 | 2;
+  /** False while a packet holding bytes leaves as JSON — revision 1, or the server's `attachments: false`. */
+  attachments?: boolean;
   constructor(source: string);
+  /** Sets the revision and `attachments` with it; emits 'revision' with the one that was left. */
+  setRevision(revision: 1 | 2): void;
   error(code?: number, options?: ErrorOptions): boolean;
   /** Returns the transport's backpressure signal (false = above the mark). */
   send(obj: object, code?: number): boolean;
+  /** The raw write every send() ends in; returns the same backpressure signal. */
+  write(data: string | Uint8Array): boolean;
+  /** @experimental A packet as one datagram where the connection has them (WebTransport); false otherwise. */
+  writeUnreliable?(text: string): boolean;
+  close(): void;
 }
 
 declare class ServerHttpTransport extends ServerTransport {
@@ -1167,10 +892,7 @@ export type { ServerHttpTransport };
 
 declare class ServerWsTransport extends ServerTransport {
   connection: WrpcSocket | Connection;
-  constructor(
-    connection: WrpcSocket | Connection,
-    meta?: { remoteAddress?: string },
-  );
+  constructor(connection: WrpcSocket | Connection, meta?: { remoteAddress?: string });
   write(data: string | Buffer): boolean;
   close(): void;
 }
@@ -1178,15 +900,20 @@ export type { ServerWsTransport };
 
 declare class ServerEventTransport extends ServerTransport {
   port: MessagePort;
+  /** Set to the transport itself: a port stays open, so the Client is persistent. */
+  connection: ServerEventTransport;
+  /** The newest revision the server behind the port speaks; `attachPort` lowers it for a server that sends no frames. */
+  max: 1 | 2;
   constructor(port: MessagePort);
-  write(data: string | Buffer): void;
+  /** The page named revision `v` on its first ping: the port speaks the older of the two; answers this end's `max`. */
+  negotiate(v: unknown): 1 | 2;
+  write(data: string | Buffer): boolean;
   close(): void;
 }
 export type { ServerEventTransport };
 
-/** Per-request response headers: security defaults + CORS for `origin`. */
-export function buildHeaders(
-  cors?: CorsOptions | null,
-  origin?: string,
-): Record<string, string>;
-
+/**
+ * Per-request response headers: security defaults + CORS for `origin`, and
+ * `wrpc-version: 2` when `revision` (the server's newest, default 1) is 2.
+ */
+export function buildHeaders(cors?: CorsOptions | null, origin?: string, revision?: 1 | 2): Record<string, string>;

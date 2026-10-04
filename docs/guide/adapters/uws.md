@@ -59,7 +59,7 @@ createUwsEngine({
 | `maxPayloadLength` | 16 MiB | Largest inbound message. |
 | `maxBackpressure` | uws default | Outbound buffer cap. |
 | `closeOnBackpressureLimit` | uws default | Close instead of dropping. |
-| `compression` | `null` | A uws compressor constant; `null` disables permessage-deflate. |
+| `compression` | `null` | A uws compressor constant (e.g. `uws.SHARED_COMPRESSOR`); `null` disables permessage-deflate. |
 | `sendPingsAutomatically` | uws default | uws' own protocol ping. |
 | `maxBodySize` | 10 MiB | Cap for HTTP bodies the engine reads. |
 
@@ -70,14 +70,22 @@ engine in three ways:
 
 ```js
 engine.capabilities;
-// { backpressure: true, ping: false, deflate: Boolean(compression), cork: true, pause: false }
+// { backpressure: true, ping: false, deflate: Boolean(compression), cork: true, pause: false, prepared: false }
 ```
 
 - **`ping: false`** — uws owns peer liveness itself, through `idleTimeout` and
-  `sendPingsAutomatically`, so wrpc runs no protocol-ping loop over it. The
+  `sendPingsAutomatically`, so wRPC runs no protocol-ping loop over it. The
   client's [application-level heartbeat](../client#heartbeat) is unaffected and
   still works.
-- **`deflate`** follows `compression`, which is off by default.
+- **`deflate`** follows `compression`, which is off by default. Pass a uws
+  compressor constant (`uws.SHARED_COMPRESSOR` is the one that, like the
+  built-in engine, keeps no per-connection context); the adapter asks uws to
+  compress every outbound message, and `send(data, { compress: false })` —
+  `emit(name, data, { compress: false })` on a room — opts one out.
+- **`prepared: false`** — uws frames and compresses inside its own `send()`,
+  so a room broadcast reaches each member through `send(text)` rather than
+  the built-in engine's shared frame. uws' topic `publish()` is the
+  equivalent seam; mapping rooms onto it is future work.
 - **`pause: false`** — uws exposes no socket-level pause, so receive-side flow
   control is missing: a fast uploader is not throttled by a slow
   [stream](../streams) consumer the way it is on the built-in engine. Outbound
@@ -88,7 +96,7 @@ See [the engine reference](../../reference/engine) for the full contract.
 ## Backpressure
 
 uws' `send()` answers with one of three statuses, and the adapter maps them
-onto the boolean contract every wrpc transport speaks:
+onto the boolean contract every wRPC transport speaks:
 
 | uws status | Meaning | `WrpcSocket.send()` |
 | --- | --- | --- |
@@ -102,6 +110,18 @@ in the frame stream corrupts the RPC protocol, since a caller would wait
 forever for an answer that was thrown away. The adapter refuses to continue:
 it raises an error and terminates the socket, which the client sees as a
 disconnect and recovers from by reconnecting.
+
+## Request header limit
+
+uWebSockets.js allows **4096 bytes for all the headers of a request**, where
+node allows 16 KB — and a WebSocket handshake is a request. A browser client
+carries its declared [`headers`/`meta`](../metadata#choosing-the-ws-carrier-carrier)
+in `Sec-WebSocket-Protocol`, capped at 2048 bytes for the two bags together,
+but a Bearer token rides next to them outside that budget: a large JWT, two
+full bags and the browser's own headers can reach the limit, and uws then
+answers 431 — which a browser reports as a bare close `1006`, on every
+reconnect. Keep the bags small, or raise the limit with the runtime
+environment variable `UWS_HTTP_MAX_HEADERS_SIZE` before uws is loaded.
 
 ## Stability
 

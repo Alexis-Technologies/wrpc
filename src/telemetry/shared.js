@@ -24,6 +24,7 @@ const SCOPE_NAME = '@alexify/wrpc';
 // 3 PRODUCER, 4 CONSUMER.
 const SPAN_KIND_SERVER = 1;
 const SPAN_KIND_CLIENT = 2;
+const SPAN_KIND_PRODUCER = 3;
 const SPAN_KIND_CONSUMER = 4;
 
 // The two packet fields that carry W3C trace context. Short on purpose:
@@ -188,14 +189,34 @@ const DISABLED = Object.freeze({
   recordBroadcast: noop,
   recordStreamBytes: noop,
   recordBackpressure: noop,
+  recordCompressionFailure: noop,
+  recordBackplaneGap: noop,
   recordSession: noop,
   recordSseChannel: noop,
   recordSseEvent: noop,
   recordClusterMessage: noop,
   recordClusterRequest: noop,
   recordClusterInstances: noop,
+  recordRtcLink: noop,
+  recordRtcRedial: noop,
+  recordRtcRestart: noop,
+  recordRtcClose: noop,
+  withMessagingSpan(_options, fn) {
+    return fn(null);
+  },
+  recordBrokerDelivery: noop,
+  recordBrokerSessionEnd: noop,
+  recordBrokerAttempts: noop,
+  recordQueue: noop,
+  recordRooms: noop,
+  recordClusterVerification: noop,
+  recordRtcAssertion: noop,
+  recordEncryption: noop,
+  recordBrokerPublish: noop,
+  recordBrokerRefusal: noop,
   // Client-side members: one disabled writer serves both halves, so it has
   // to answer to everything either of them exposes.
+  recordHeartbeat: noop,
   recordReconnect: noop,
   recordRefresh: noop,
   inject: noop,
@@ -211,6 +232,7 @@ module.exports = {
   SCOPE_NAME,
   SPAN_KIND_SERVER,
   SPAN_KIND_CLIENT,
+  SPAN_KIND_PRODUCER,
   SPAN_KIND_CONSUMER,
   TRACEPARENT,
   TRACESTATE,

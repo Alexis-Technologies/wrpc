@@ -12,6 +12,14 @@
  * timing cases are deliberately not excluded — non-strict results there are
  * acceptable.
  *
+ * A run that STOPPED EARLY fails too. The fuzzing client gives up on the
+ * whole suite when one connect to the echo server times out (an emulated
+ * amd64 image on a busy Docker VM does that), and it still writes a report
+ * — of the cases it got to. Grading that report alone called 262 of 517
+ * cases "all passed". So the client's output is read as it goes: a lost
+ * connection, or a report holding fewer cases than were started, is a
+ * failed run, and the verdict says how many cases it stands on.
+ *
  * Path scheme (one consistent scheme, container-side paths in the config):
  *   scripts/autobahn         -> /config   (base fuzzingclient.json, for reference/manual runs)
  *   scripts/autobahn/reports -> /reports  (outdir AND the generated effective config)
@@ -85,13 +93,38 @@ const runDocker = () =>
     args.push('-v', `${REPORTS_DIR}:/reports`);
     args.push(IMAGE, 'wstest', '-m', 'fuzzingclient', '-s', `/reports/${GENERATED_CONFIG}`);
     console.log(`> docker ${args.join(' ')}`);
-    const child = spawn('docker', args, { stdio: 'inherit' });
+    const child = spawn('docker', args, { stdio: ['ignore', 'pipe', 'pipe'] });
+    // Passed through as it arrives, and read line by line for the two things
+    // the report cannot say: how many cases were started, and whether the
+    // client lost the server on the way.
+    let started = 0;
+    let lost = null;
+    const scan = (stream, out) => {
+      let rest = '';
+      stream.setEncoding('utf8');
+      stream.on('data', (chunk) => {
+        out.write(chunk);
+        const lines = (rest + chunk).split('\n');
+        rest = lines.pop();
+        for (const line of lines) {
+          if (line.startsWith('Running test case ID')) started++;
+          else if (lost === null && /^Connection to \S+ failed/.test(line)) lost = line.trim();
+        }
+      });
+    };
+    scan(child.stdout, process.stdout);
+    scan(child.stderr, process.stderr);
     child.once('error', (error) => {
       reject(new Error(`failed to start docker (is it installed and running?): ${error.message}`));
     });
     child.once('exit', (code) => {
-      if (code === 0) resolve();
-      else reject(new Error(`docker exited with code ${code}`));
+      if (code !== 0) return void reject(new Error(`docker exited with code ${code}`));
+      if (lost !== null) {
+        return void reject(
+          new Error(`the fuzzing client stopped after ${started} cases — ${lost} The report is PARTIAL; run it again.`),
+        );
+      }
+      resolve(started);
     });
   });
 
@@ -102,14 +135,16 @@ const collectFailures = () => {
   }
   const index = JSON.parse(fs.readFileSync(indexPath, 'utf8'));
   const failures = [];
+  let graded = 0;
   for (const agent of Object.values(index)) {
     for (const [caseId, result] of Object.entries(agent)) {
+      graded++;
       if (FAIL_BEHAVIORS.has(result.behavior) || FAIL_BEHAVIORS.has(result.behaviorClose)) {
         failures.push(`${caseId} (behavior: ${result.behavior}, close: ${result.behaviorClose})`);
       }
     }
   }
-  return failures;
+  return { failures, graded };
 };
 
 const main = async () => {
@@ -118,14 +153,17 @@ const main = async () => {
   writeEffectiveConfig();
   const echo = await startEchoServer();
   try {
-    await runDocker();
-    const failures = collectFailures();
+    const started = await runDocker();
+    const { failures, graded } = collectFailures();
+    if (graded === 0 || graded < started) {
+      throw new Error(`the report holds ${graded} cases of the ${started} that were started`);
+    }
     if (failures.length > 0) {
-      console.error(`Autobahn: ${failures.length} failing case(s):`);
+      console.error(`Autobahn: ${failures.length} of ${graded} cases failing:`);
       for (const failure of failures) console.error(`  ${failure}`);
       process.exitCode = 1;
     } else {
-      console.log(`Autobahn: all cases passed (report: ${path.join(REPORTS_DIR, 'index.html')})`);
+      console.log(`Autobahn: all ${graded} cases passed (report: ${path.join(REPORTS_DIR, 'index.html')})`);
     }
   } finally {
     echo.kill('SIGTERM');

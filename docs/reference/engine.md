@@ -5,6 +5,12 @@ above it — the router, clients, rooms, subscriptions, the wire protocol — is
 written against this contract and nothing else, which is what makes
 [uWebSockets.js](../guide/adapters/uws) a drop-in swap rather than a fork.
 
+The engine is the WebSocket's way in, not the only one: a
+[WebTransport](../guide/wt) session (`attachSession`), a
+[WebRTC](../guide/webrtc) data channel (`attachChannel`) and the [broker
+binding](../guide/brokers/rpc) (`attachBrokerRpc`) reach the same `RpcServer`
+through `attach(transport)` and never pass through an engine.
+
 ```js
 const { createNodeEngine, isEngine } = require('@alexify/wrpc/engine');
 ```
@@ -79,11 +85,13 @@ is `null` and `server.address()` is the only way to read the bound address.
 | `server` | The node http(s) server. Required for hosted engines, absent otherwise. |
 | `path` | Restrict upgrades to this pathname. |
 | `verifyClient({ req, socket, head })` | Gate the handshake. `socket`/`head` are `null` for standalone engines. |
-| `protocols` / `handleProtocols(offered, req)` | Subprotocol negotiation; `false` rejects the handshake. |
-| `perMessageDeflate` | `true`, or `{ threshold }`. See [wire format](./wire-format#permessage-deflate). |
+| `protocols` / `handleProtocols(offered, req)` | Subprotocol negotiation; `false` rejects the handshake. `offered` never holds wRPC's [carrier tokens](./protocol#connection-metadata) (`wrpc.h.`, `wrpc.m.`, `wrpc.bearer.`), and an engine must not echo one. |
+| `perMessageDeflate` | `true`, or `{ threshold, filter, contextTakeover, async, … }`. See [wire format](./wire-format#permessage-deflate). |
+| `coalesce` | Built-in engine: cork the writes of one event-loop turn into one flush. Default `true`. |
 | `pingInterval` | Protocol-ping interval for engines that own liveness. |
 | `maxBuffer` / `maxBackpressure` / `fragmentThreshold` / `closeTimeout` | Engine limits. |
 | `onHttpCall(call)` | Standalone engines only: the core's HTTP entry point. |
+| `logger` | The structured logger the engine and its connections report through — the `Server` shell and the adapters pass their own. An engine built with its own `logger` keeps it. |
 
 It returns an `EngineConnectionSource` — an `EventEmitter` that emits
 `'connection'(socket, req)`.
@@ -95,7 +103,8 @@ natively; an adapter normalizes its own socket to this shape.
 
 ```ts
 interface WrpcSocket extends EventEmitter {
-  send(data: string | Buffer): boolean;   // false = above the high-water mark
+  send(data: string | Buffer, options?: { compress?: boolean }): boolean;   // false = above the high-water mark
+  sendPrepared?(message: SharedMessage): boolean;   // optional: capability `prepared`
   readonly bufferedAmount: number;
   readonly remoteAddress?: string;
   protocol?: string;
@@ -109,16 +118,40 @@ interface WrpcSocket extends EventEmitter {
 Events: `'message'(data, isBinary)`, `'drain'`, `'ping'(payload)`,
 `'pong'(payload)`, `'close'(code, reason)`, `'error'(error)`.
 
-Two rules the whole stack depends on:
+Three rules the whole stack depends on:
 
 - **`send()` returns an honest boolean.** `false` means the buffer is above its
-  high-water mark and a `'drain'` will follow. That is what makes
+  high-water mark and a `'drain'` will follow. The built-in engine's
+  asynchronous deflate paths (context takeover, `async`) count their queued
+  bytes into that buffer, so the boolean covers them too. That is what makes
   [stream](../guide/streams#backpressure) and
   [subscription](../guide/subscriptions#backpressure) backpressure real rather
   than aspirational — an engine that always returned `true` would turn a slow
   consumer into unbounded server memory.
 - **A received payload may share memory with the receive buffer.** Copy it if
   you retain it past the listener call.
+- **`protocol` is the selected subprotocol, and it decides the revision.**
+  The core reads `socket.protocol` once, when the socket is attached:
+  `wrpc.v2` is [revision 2](./protocol#versioning) and the connection
+  carries framed messages, anything else — `wrpc.v1`, `''`, a property the
+  engine never set — is revision 1, bytes as 1.0's JSON. An adapter that
+  forgets it is not refused; every client is served at revision 1, which
+  only the `wrpc.revision` attribute of `wrpc.server.connections` and the
+  `revision.peer` debug line show.
+
+Two optional extensions, both feature-detected by the core:
+
+- `send(data, { compress: false })` asks for this one message to go
+  uncompressed on a deflate-negotiated connection. A socket that ignores the
+  second argument simply compresses as usual.
+- `sendPrepared(message)` is the fan-out path (capability `prepared`). A
+  room broadcast hands every recipient **one** `{ text, frames, compress }`
+  (`text` is the JSON, or the bytes of an attachments frame — a BINARY frame then)
+  object; the socket claims `frames` with its own cache — the encoded frame,
+  plus a deflated one per negotiated window — when it is `null`, reuses it
+  when it already holds that engine's cache, and falls back to `send(text)`
+  when another engine claimed it (a mixed room). The built-in engine
+  implements it; a socket without it receives `send(text)`.
 
 ### `EngineRequest`
 
@@ -147,6 +180,7 @@ interface EngineCapabilities {
   deflate: boolean;
   cork: boolean;
   pause: boolean;
+  prepared: boolean;
 }
 ```
 
@@ -162,12 +196,14 @@ discovered.
 | `deflate` | ✅ (off by default) | follows `compression` |
 | `cork` | ✅ | ✅ |
 | `pause` | ✅ | ❌ — no socket-level pause |
+| `prepared` | ✅ — `sendPrepared`, one frame per fan-out | ❌ — uws frames inside `send()` |
 
 ## The built-in engine
 
 ```js
 const { createNodeEngine } = require('@alexify/wrpc/engine');
 
+// Both are opt-in; permessage-deflate in particular is off until asked for.
 const engine = createNodeEngine({ perMessageDeflate: true, maxBackpressure: 1024 * 1024 });
 new Server({ router, engine });
 ```

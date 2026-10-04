@@ -1,9 +1,16 @@
 'use strict';
 
-const http = require('node:http');
+const crypto = require('node:crypto');
 
-const { Emitter, toKebab } = require('./utils.js');
+const { toKebab } = require('./utils.js');
+const { cacheHeadersFor, RESERVED_HEADERS, checkHeader } = require('./rpc/rest.js');
+const { STATUS_CODES } = require('./status.js');
+const { publicErrorMessage, publicErrorDetails, wireError } = require('./rpc/errors.js');
+const { ServerTransport } = require('./rpc/serverTransport.js');
 const { META_HEADER, META_PREFIX, CHANNEL_HEADER } = require('./wire.js');
+const { chooseEncoding, markEncoded } = require('./contentEncoding.js');
+const { isPromise } = require('./compression/ids.js');
+const { hasBytes, encodeAttachments, isAttachmentsFrame } = require('./attachments.js');
 
 // RFC 6265 permits '=' inside cookie values (base64, JWT) — split each
 // pair on the FIRST '=' only, or the value gets silently truncated.
@@ -23,11 +30,23 @@ const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
   'Strict-Transport-Security': 'max-age=31536000; includeSubdomains; preload',
   'Content-Type': 'application/json',
-  // The HTTP side's version marker, echoed on every response — the ws
-  // subprotocol ladder's counterpart (protocol.md#versioning). A request
-  // MAY send `wrpc-version`; revision 1 accepts and ignores it, which is
-  // exactly what reserves the negotiation seam inside the 1.0 freeze.
+  // The HTTP side's version marker, on every response — the ws subprotocol
+  // ladder's counterpart (protocol.md#versioning): the newest revision the
+  // server speaks. 1 here, which is what 1.0 answers; a server that reads
+  // framed messages answers 2 through buildHeaders, and that is how an HTTP
+  // client learns it may send one.
   'wrpc-version': '1',
+};
+
+// What an HTTP client that reads framed messages asks for, and what a
+// server looks for before it answers with one. `Accept` rather than a
+// header of wrpc's own: it is CORS-safelisted, so it costs no preflight a
+// 1.0 server — or an application's own `cors.headers` list, which REPLACES
+// the default — would refuse.
+const FRAME_TYPE = 'application/octet-stream';
+const readsFrames = (headers) => {
+  const accept = headers?.accept;
+  return typeof accept === 'string' && accept.includes(FRAME_TYPE);
 };
 
 const DEFAULT_CORS_METHODS = 'POST, GET, OPTIONS';
@@ -76,12 +95,18 @@ const allowedHeaders = (cors) => {
 // headers?, metaHeaders?, methods? }. Without a `cors` option every origin is allowed
 // (wildcard, credentials-less) — the pre-F2 behavior. With `origins`, the
 // request origin is echoed back only when allowed, plus `Vary: Origin`.
-const buildHeaders = (cors, origin) => {
+//
+// `revision` is the newest protocol revision the server speaks (RpcServer's
+// `revision`); the marker is exposed because script on another origin reads
+// only the response headers named so.
+const buildHeaders = (cors, origin, revision = 1) => {
   const headers = {
     ...SECURITY_HEADERS,
     'Access-Control-Allow-Methods': cors?.methods ?? DEFAULT_CORS_METHODS,
     'Access-Control-Allow-Headers': allowedHeaders(cors),
+    'Access-Control-Expose-Headers': 'wrpc-version',
   };
+  if (revision === 2) headers['wrpc-version'] = '2';
   if (!cors || !cors.origins) {
     headers['Access-Control-Allow-Origin'] = '*';
     return headers;
@@ -103,76 +128,19 @@ const isOriginAllowed = (cors, origin) => {
   return cors.origins.includes(origin);
 };
 
-// What the peer is told. 4xx messages are written for the caller
-// (validation, quotas, refusals) and travel as-is; a 5xx message is a server
-// internal — an uncaught exception's text can carry paths, queries or stack
-// fragments — so the peer gets the status line and the details stay in the
-// server log, unless the error opts in with `expose = true` (which the
-// router's own coded errors do: their messages are part of the protocol).
-// The packet id is the correlation: the same id is on the server log line.
-const publicErrorMessage = (code, error) => {
-  const status = http.STATUS_CODES[code] || 'Unknown error';
-  if (!error) return status;
-  if (code < 500 || error.expose === true) return error.message;
-  return status;
-};
-
-// `details` follows the exact same rule as the message: structured issue
-// lists (validation paths, quota numbers) are part of the 4xx conversation,
-// while a 5xx's internals stay in the log unless the error opts in.
-const publicErrorDetails = (code, error) => {
-  if (!error || error.details === undefined) return undefined;
-  if (code < 500 || error.expose === true) return error.details;
-  return undefined;
-};
-
-// The one builder for the wire error object, so every packet that carries
-// an error ({type:'callback'} and {type:'end'} alike) redacts identically.
-// The `details` key is omitted entirely when there is nothing to say —
-// an optional field, absent rather than null, per the protocol's
-// additive-fields rule.
-const wireError = (code, error) => {
-  const wire = { message: publicErrorMessage(code, error), code };
-  const details = publicErrorDetails(code, error);
-  if (details !== undefined) wire.details = details;
-  return wire;
-};
-
-class ServerTransport extends Emitter {
-  // Which wire this is, for log entries and metric attributes. Subclasses
-  // override it; the base value covers a transport nobody labelled.
-  kind = 'unknown';
-
-  constructor(source) {
-    // No listener cap: transports are fan-out points — every backpressured
-    // outbound stream on the connection parks a once('drain'|'close')
-    // listener here, and the default cap of 10 would throw on the 11th
-    // concurrently stalled stream.
-    super({ maxListeners: Number.MAX_SAFE_INTEGER });
-    this.source = source;
+// If-None-Match: a list of entity tags, weak or strong, or `*`.
+const matchesEtag = (header, etag) => {
+  if (typeof header !== 'string' || header.length === 0) return false;
+  if (header.trim() === '*') return true;
+  const bare = etag.slice(2); // past the W/
+  const parts = header.split(',');
+  for (let i = 0; i < parts.length; i++) {
+    let tag = parts[i].trim();
+    if (tag.startsWith('W/')) tag = tag.slice(2);
+    if (tag === bare) return true;
   }
-
-  error(code = 500, { id = '', error = null } = {}) {
-    const packet = { type: 'callback', id, error: wireError(code, error) };
-    return this.send(packet, code);
-  }
-
-  // Returns the transport's backpressure signal (false = above the
-  // high-water mark) so a producer — a subscription pump, a stream — can
-  // wait for 'drain' instead of buffering without limit.
-  //
-  // `text` is the already-serialized form of `obj` when the dispatcher's
-  // compiled-serializer fast path built one (see handleRpc); passing both
-  // keeps the object available to the overrides that need it (batch
-  // collection, REST unwrapping) while the plain path skips a stringify.
-  send(obj, code = 200, text = null) {
-    // An injected codec (RpcServer options.codec, assigned per transport)
-    // re-frames every packet; it wins over precompiled `text` by
-    // construction — the server refuses codec + serializers up front.
-    if (this.codec) return this.write(this.codec.encode(obj), code);
-    return this.write(text ?? JSON.stringify(obj), code);
-  }
-}
+  return false;
+};
 
 // Net-free HTTP transport over an abstract call description:
 // { method, url, headers, body?, remoteAddress?, respond({ status, headers, body }) }.
@@ -190,13 +158,52 @@ class ServerHttpTransport extends ServerTransport {
   // `{ status }` carries the route's success status; null everywhere else.
   #rest = null;
 
+  #status = null;
+  // The normalized `http.compression` option (contentEncoding.js), or null:
+  // the core hands it to the transports it builds for real answers.
+  #compression = null;
+  #failed = null;
+
   constructor(call, options = {}) {
     super(call.remoteAddress ?? '');
     this.call = call;
     this.headers = options.headers ?? { ...SECURITY_HEADERS };
     this.#respond = call.respond;
+    if (options.compression) this.#compression = options.compression;
+    // `failed(coding, error)`: the core's reporter for an encoder that threw.
+    if (options.failed) this.#failed = options.failed;
     if (Array.isArray(options.batch)) this.#batch = options.batch;
-    if (options.rest) this.#rest = options.rest;
+    if (options.rest) {
+      this.#rest = options.rest;
+      // A declared route's static response headers, applied once here so
+      // every answer — result or error — carries them.
+      if (options.rest.headers) Object.assign(this.headers, options.rest.headers);
+    }
+  }
+
+  // The `context.http.setHeader` seam: one header onto this response,
+  // refused once the answer is written or for a transport-owned name.
+  setHeader(name, value) {
+    if (typeof name !== 'string' || name.length === 0) throw new TypeError('setHeader: name must be a string');
+    if (RESERVED_HEADERS.has(name.toLowerCase())) throw new TypeError(`setHeader: '${name}' is owned by the transport`);
+    if (this.#responded) throw new Error('setHeader: the response was already sent');
+    const text = String(value);
+    checkHeader(name, text, 'setHeader');
+    // One header per name, whatever the spelling: a second call under
+    // another case replaces the first rather than sending both.
+    const lower = name.toLowerCase();
+    for (const key in this.headers) {
+      if (key !== name && key.toLowerCase() === lower) delete this.headers[key];
+    }
+    this.headers[name] = text;
+  }
+
+  // The `context.http.status` seam: the success status of THIS response
+  // (a REST route's declared status is the default). Errors keep their code.
+  setStatus(code) {
+    if (!(Number.isInteger(code) && code >= 200 && code <= 599)) throw new TypeError('status: an integer 200-599');
+    if (this.#responded) throw new Error('status: the response was already sent');
+    this.#status = code;
   }
 
   get responded() {
@@ -222,27 +229,51 @@ class ServerHttpTransport extends ServerTransport {
       if (obj.error) {
         return this.write(codec ? codec.encode(obj.error) : JSON.stringify(obj.error), obj.error.code ?? code);
       }
-      const status = this.#rest.status ?? 200;
+      // A REST body is a plain value with no frame to carry bytes in: a
+      // result holding them needs codec.rest, and says so instead of
+      // shipping the objects JSON makes of typed arrays.
+      if (codec === null && this.attachments !== false && hasBytes(obj.result)) {
+        const error = { message: 'Binary results on REST need codec.rest', code: 501 };
+        return this.write(JSON.stringify(error), 501);
+      }
+      const status = this.#status ?? this.#rest.status ?? 200;
       // 204 promises "no content": the result (if any) is discarded on the
       // wire by contract, not by accident.
       if (status === 204) return this.write('', 204);
       // An undefined result travels as an encoded `null` — one documented
       // behaviour with and without a codec.
-      if (obj.result === undefined) return this.write(codec ? codec.encode(null) : 'null', status);
-      return this.write(codec ? codec.encode(obj.result) : JSON.stringify(obj.result), status);
+      const body =
+        obj.result === undefined
+          ? codec
+            ? codec.encode(null)
+            : 'null'
+          : codec
+            ? codec.encode(obj.result)
+            : JSON.stringify(obj.result);
+      return this.#writeCacheable(body, status);
     }
     if (!this.#batch) return super.send(obj, code, text);
     if (this.#responded) return true;
     this.#collected.push(obj);
     if (this.#collected.length < this.#batch.length) return true;
     const ordered = this.#ordered();
-    return this.write(this.codec ? this.codec.encode(ordered) : JSON.stringify(ordered), 200);
+    return this.write(this.#encodeBatch(ordered), 200);
+  }
+
+  // One batch answer: the codec's framing, an attachments frame when any
+  // answer holds bytes, JSON otherwise.
+  #encodeBatch(ordered) {
+    if (this.codec) return this.codec.encode(ordered);
+    if (this.attachments !== false && hasBytes(ordered)) return encodeAttachments(ordered);
+    return JSON.stringify(ordered);
   }
 
   // Building an id index makes this O(n), but the Map costs more than the
-  // quadratic it removes until the batch gets big: the linear scan wins 1.31x
-  // at 4 answers and 1.08x at 8, and loses 1.20x at 16 and 3.92x at 128.
-  // Re-run bench/batch-ordering.js before moving this.
+  // quadratic it removes until the batch gets big: the linear scan wins 1.23x
+  // at 4 answers and 1.05x at 8, and loses 1.18x at 16 and 3.91x at 128
+  // (docs/guide/performance.md) — so the switch sits between 8 and 16; the
+  // client's default batch.maxSize of 16 is the first measured size where
+  // the index wins. Re-run bench/batch-ordering.js before moving either.
   static #INDEX_THRESHOLD = 12;
 
   #ordered() {
@@ -287,13 +318,104 @@ class ServerHttpTransport extends ServerTransport {
     return answers;
   }
 
+  // A successful REST result under the route's cache policy: Cache-Control
+  // as the policy decides once the session is known, a weak ETag over the
+  // body, and 304 for a matching If-None-Match — HEAD and GET alike, since
+  // the host strips a HEAD body itself.
+  #writeCacheable(body, status) {
+    const rest = this.#rest;
+    const policy =
+      rest.cache && status >= 200 && status < 300
+        ? cacheHeadersFor(rest.cache, {
+            access: rest.access,
+            session: rest.hasSession?.() === true,
+            cookies: this.#setCookies.length > 0,
+          })
+        : null;
+    if (policy === null) return this.write(body, status);
+    this.headers['Cache-Control'] = policy.control;
+    if (!policy.etag) return this.write(body, status);
+    const bytes = Buffer.isBuffer(body) ? body : Buffer.from(body);
+    const etag = `W/"${crypto.createHash('sha1').update(bytes).digest('base64url')}"`;
+    this.headers['ETag'] = etag;
+    if (matchesEtag(this.call.headers?.['if-none-match'], etag)) return this.write('', 304);
+    return this.write(bytes, status);
+  }
+
+  // The one funnel every HTTP answer leaves through — packet, batch, REST,
+  // error — which is what makes `Content-Encoding` a single decision:
+  // enabled, past the threshold, accepted by the peer, not already encoded
+  // upstream, admitted by the filter. Below the async threshold the encode is
+  // synchronous, like permessage-deflate's default; at or over it the body
+  // goes to zlib's threadpool and the response is written from the
+  // callback — `responded` is already true, so a second write and a close
+  // racing it are no-ops either way.
   write(data, httpCode = 200) {
     if (this.#responded) return true;
     this.#responded = true;
-    const body = Buffer.isBuffer(data) ? data : Buffer.from(data);
-    const headers = { ...this.headers, 'Content-Length': body.length };
+    const body = Buffer.isBuffer(data)
+      ? data
+      : typeof data === 'string'
+        ? Buffer.from(data)
+        : Buffer.from(data.buffer, data.byteOffset, data.byteLength);
+    const headers = { ...this.headers };
+    // An attachments frame is bytes, and says so — a client reads the body
+    // as bytes only under this type.
+    if (typeof data !== 'string' && isAttachmentsFrame(body)) headers['Content-Type'] = 'application/octet-stream';
     if (this.#setCookies.length > 0) headers['Set-Cookie'] = this.#setCookies;
-    this.#respond({ status: httpCode, headers, body });
+    const compression = this.#compression;
+    const encoder =
+      compression !== null && body.length >= compression.threshold
+        ? chooseEncoding(compression, this.call, headers)
+        : null;
+    if (encoder === null) return this.#answer(headers, body, httpCode);
+    markEncoded(headers, encoder.token);
+    // The encoder refused the body (out of memory is the realistic case):
+    // the plain bytes still answer, and honestly labelled — and the failure
+    // is said, since nothing else about the answer shows it.
+    const plain = (error) => {
+      this.#failed?.(encoder.token, error);
+      delete headers['Content-Encoding'];
+      return this.#answer(headers, body, httpCode);
+    };
+    if (encoder.encodeAsync !== null && compression.async !== null && body.length >= compression.async.threshold) {
+      encoder.encodeAsync(
+        body,
+        (error, encoded) => void (error ? plain(error) : this.#answer(headers, encoded, httpCode)),
+      );
+      return true;
+    }
+    let encoded;
+    try {
+      encoded = encoder.encode(body);
+    } catch (error) {
+      return plain(error);
+    }
+    // An application's own coding may answer a promise.
+    if (isPromise(encoded)) {
+      encoded.then((out) => this.#answer(headers, out, httpCode), plain);
+      return true;
+    }
+    return this.#answer(headers, encoded, httpCode);
+  }
+
+  #answer(headers, body, httpCode) {
+    headers['Content-Length'] = body.length;
+    try {
+      this.#respond({ status: httpCode, headers, body });
+    } catch (error) {
+      // The host refused to write the response (node: a header value it
+      // will not send — checked at every seam a handler reaches, but a
+      // `headers` option built by hand is not). Without this the request
+      // hung until the peer gave up and the client evicted nothing: a bare
+      // 500 in its place, and the close every answer promises.
+      try {
+        this.#respond({ status: 500, headers: { ...SECURITY_HEADERS, 'Content-Length': 0 }, body: Buffer.alloc(0) });
+      } catch {
+        // The peer is gone, or the host is: nothing more to say.
+      }
+      if (this.listenerCount('error') > 0) this.emit('error', error);
+    }
     this.emit('close');
     return true;
   }
@@ -322,7 +444,7 @@ class ServerHttpTransport extends ServerTransport {
   close() {
     if (this.#responded) return;
     if (!this.#batch) return void this.error(503);
-    const message = http.STATUS_CODES[503];
+    const message = STATUS_CODES[503];
     const answered = new Set();
     for (let i = 0; i < this.#collected.length; i++) answered.add(this.#collected[i].id);
     for (const id of this.#batch) {
@@ -331,15 +453,19 @@ class ServerHttpTransport extends ServerTransport {
       this.#collected.push({ type: 'callback', id: typeof id === 'string' ? id : '', error: { message, code: 503 } });
     }
     const ordered = this.#ordered();
-    this.write(this.codec ? this.codec.encode(ordered) : JSON.stringify(ordered), 503);
+    this.write(this.#encodeBatch(ordered), 503);
   }
 }
 
 class ServerWsTransport extends ServerTransport {
   kind = 'ws';
 
+  // `meta.kind` names the wire when a WrpcSocket-shaped connection is not a
+  // WebSocket — attachSession in @alexify/wrpc/wt passes 'wt' — so logs and
+  // metrics say which; the transport itself is the same either way.
   constructor(connection, meta = {}) {
     super(meta.remoteAddress ?? connection.remoteAddress ?? '');
+    if (typeof meta.kind === 'string' && meta.kind) this.kind = meta.kind;
     this.connection = connection;
     connection.on('close', () => void this.emit('close'));
     connection.on('drain', () => void this.emit('drain'));
@@ -350,6 +476,36 @@ class ServerWsTransport extends ServerTransport {
       data = Buffer.from(data.buffer, data.byteOffset, data.byteLength);
     }
     return this.connection.send(data);
+  }
+
+  // A write with per-message options (`compress: false`); the socket
+  // contract's second argument, ignored by sockets that predate it.
+  writeWith(text, options) {
+    return this.connection.send(text, options);
+  }
+
+  // The fan-out seam: a shared `{ text, frames, compress }` message goes to
+  // the socket's prepared-frame path when it has one (the built-in engine),
+  // which encodes and deflates it once for every recipient; a socket
+  // without one (uws, WebTransport) gets the text as an ordinary send.
+  writeShared(message) {
+    const socket = this.connection;
+    // An attachments frame arrives as a Uint8Array; the engine speaks
+    // Buffers. Converted ONCE on the shared message, for every recipient.
+    const { text } = message;
+    if (typeof text !== 'string' && !Buffer.isBuffer(text)) {
+      message.text = Buffer.from(text.buffer, text.byteOffset, text.byteLength);
+    }
+    if (typeof socket.sendPrepared === 'function') return socket.sendPrepared(message);
+    return socket.send(message.text, message.compress === false ? message : null);
+  }
+
+  // An event as a datagram where the socket has them (a WebTransport
+  // session): true when it went out, false when it could not — a WebSocket
+  // has no unreliable path, and Client.sendRaw then writes it reliably.
+  writeUnreliable(text) {
+    const socket = this.connection;
+    return typeof socket.sendUnreliable === 'function' && socket.sendUnreliable(text) === true;
   }
 
   // A graceful goodbye: the peer gets a close frame (1001 "going away") and
@@ -370,7 +526,28 @@ class ServerEventTransport extends ServerTransport {
   constructor(port) {
     super('event transport');
     this.port = port;
+    // A port stays open like a socket does — what Client.persistent
+    // checks (rpc/client.js), and so what admits events, subscriptions
+    // and streams. Without it a port-attached client was silently
+    // request/response only.
+    this.connection = this;
+    // A port has no handshake: until its page said — on its first ping, or
+    // in the connect message handed to attachPort — that it reads framed
+    // messages, it is sent none (protocol.md#versioning). A 1.0 page never
+    // says so.
+    this.revision = 1;
+    this.attachments = false;
+    // The newest revision the server behind this port speaks; attachPort
+    // lowers it for a server that sends no frames.
+    this.max = 2;
     port.on('close', () => void this.emit('close'));
+  }
+
+  // The page named revision `v`: this connection speaks the older of the
+  // two, and the answer is this end's own — which is how the page learns it.
+  negotiate(v) {
+    this.setRevision(v === 2 && this.max === 2 ? 2 : 1);
+    return this.max;
   }
 
   write(data) {
@@ -392,6 +569,7 @@ ServerTransport.transport = {
 module.exports = {
   ServerTransport,
   buildHeaders,
+  readsFrames,
   isOriginAllowed,
   parseCookies,
   publicErrorMessage,

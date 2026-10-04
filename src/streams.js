@@ -141,25 +141,34 @@ class WrpcWritable extends Emitter {
   #waitingDrain = false;
   #closed = false;
   #ended = false;
+  #onClose = null;
 
-  constructor(id, name, size, transport) {
+  constructor(id, name, size, transport, otel = null) {
     super();
     this.id = id;
     this.name = name;
     this.size = size;
     this.transport = transport;
+    // Null on the client, where there is no server-side byte counter to
+    // feed and the bytes would only cost the browser bundle. On the server
+    // it is the writer, so `wrpc.server.stream.bytes` finally has a `send`
+    // direction — the attribute existed from the start with exactly one
+    // value ever recorded, which made it a lie.
+    this.otel = otel;
     // Armed HERE, not lazily inside the backpressure branch: a stream that
     // never happened to stall used to learn nothing when the transport
     // closed — `closed` stayed false and a producer loop kept writing into
     // the void. Now every writable notices the disconnect, backpressured
-    // or not.
+    // or not — and lets go of the transport once finished (#detach).
     if (typeof transport.once === 'function') {
-      transport.once('close', () => {
+      this.#onClose = () => {
+        this.#onClose = null;
         if (this.#closed) return;
         this.#closed = true;
         this.#releaseDrain();
         this.emit('close');
-      });
+      };
+      transport.once('close', this.#onClose);
     }
     this.init();
   }
@@ -171,7 +180,19 @@ class WrpcWritable extends Emitter {
   #releaseDrain() {
     if (!this.#waitingDrain) return;
     this.#waitingDrain = false;
+    this.#detach();
     this.emit('drain');
+  }
+
+  // The transport outlives its streams — a client's for every reconnect —
+  // so a listener left on it per stream piled up for the connection's whole
+  // life. Taken off once the stream is finished: ended, and no 'drain' still
+  // owed to a producer, which only the close listener could release on a
+  // transport that dies first.
+  #detach() {
+    if (!this.#ended || this.#waitingDrain || this.#onClose === null) return;
+    this.transport.off?.('close', this.#onClose);
+    this.#onClose = null;
   }
 
   init() {
@@ -189,6 +210,7 @@ class WrpcWritable extends Emitter {
   write(data) {
     if (this.#closed || this.#ended) return false;
     const chunk = chunkEncode(this.id, data);
+    this.otel?.recordStreamBytes('send', chunk.byteLength ?? chunk.length);
     const accepted = this.transport.write(chunk) !== false;
     if (!accepted && !this.#waitingDrain && typeof this.transport.once === 'function') {
       this.#waitingDrain = true;
@@ -204,6 +226,7 @@ class WrpcWritable extends Emitter {
     this.#ended = true;
     const packet = { type: 'stream', id: this.id, status: 'end' };
     this.transport.send(packet);
+    this.#detach();
   }
 
   terminate() {
@@ -211,6 +234,7 @@ class WrpcWritable extends Emitter {
     this.#ended = true;
     const packet = { type: 'stream', id: this.id, status: 'terminate' };
     this.transport.send(packet);
+    this.#detach();
   }
 }
 

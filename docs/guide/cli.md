@@ -46,7 +46,7 @@ wrpc types http://localhost:8000/api --out api.d.ts --schema api.static.js
 wrpc types http://localhost:8000/api --out -          # stdout, for piping
 ```
 
-`--package` matters in a monorepo that re-exports wrpc under its own name: the
+`--package` matters in a monorepo that re-exports wRPC under its own name: the
 generated file imports `SubscriptionContract` from wherever you say.
 
 `--schema` writes a second artifact from the same fetch: the raw

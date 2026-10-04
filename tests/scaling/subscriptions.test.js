@@ -14,14 +14,7 @@ const {
   tracked,
 } = require('../../index.js');
 const { MemoryBackplane } = require('../../scaling.js');
-
-const waitFor = async (predicate, message = 'condition never held') => {
-  for (let i = 0; i < 300; i++) {
-    if (predicate()) return;
-    await timers.setTimeout(5);
-  }
-  assert.fail(message);
-};
+const { waitFor } = require('../helpers/wait.js');
 
 // Two instances, one backplane, one logical feed. wrpc supplies the pieces —
 // the log for resume, the stream for push->pull — and the application wires

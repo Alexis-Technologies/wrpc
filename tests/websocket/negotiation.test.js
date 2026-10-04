@@ -106,6 +106,50 @@ test('subprotocol: handleProtocols returning false rejects the handshake', async
   });
 });
 
+test('subprotocol: carrier tokens are data — hidden from the application, never echoed', async () => {
+  const offer = 'wrpc.h.eyJhIjoiMSJ9, wrpc.v1, wrpc.bearer.secret, wrpc.m.e30';
+  const handshake = (port) =>
+    ProtocolClient.attemptHandshake({
+      host: 'localhost',
+      port,
+      path: '/',
+      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Protocol': offer },
+      timeoutMs: 600,
+    });
+  // The default negotiation answers the revision, whatever rides next to it.
+  await withServer({}, async ({ port }) => {
+    const res = await handshake(port);
+    assert.strictEqual(parseStatusCode(res.statusLine), 101);
+    assert.strictEqual(res.headers['sec-websocket-protocol'], 'wrpc.v1');
+  });
+  // handleProtocols sees the offer without them; the raw header stays on req.
+  let seen = null;
+  let raw = null;
+  const pickLast = (offered, req) => {
+    seen = offered;
+    raw = req.headers['sec-websocket-protocol'];
+    return offered.at(-1);
+  };
+  await withServer({ handleProtocols: pickLast }, async ({ port }) => {
+    const res = await handshake(port);
+    assert.deepStrictEqual(seen, ['wrpc.v1']);
+    assert.strictEqual(raw, offer);
+    assert.strictEqual(res.headers['sec-websocket-protocol'], 'wrpc.v1');
+  });
+  // A selector that reaches into the raw header cannot reflect a credential.
+  const reflect = (_offered, req) => req.headers['sec-websocket-protocol'].split(', ')[2];
+  await withServer({ handleProtocols: reflect }, async ({ port }) => {
+    const res = await handshake(port);
+    assert.strictEqual(parseStatusCode(res.statusLine), 101);
+    assert.strictEqual(res.headers['sec-websocket-protocol'], undefined);
+  });
+  // An application list cannot select one either.
+  await withServer({ protocols: ['wrpc.bearer.secret', 'chat'] }, async ({ port }) => {
+    const res = await handshake(port);
+    assert.strictEqual(res.headers['sec-websocket-protocol'], undefined);
+  });
+});
+
 test('deflate: server accepts a permessage-deflate offer with no-context-takeover response', async () => {
   await withServer({ perMessageDeflate: true }, async ({ port }) => {
     const res = await ProtocolClient.attemptHandshake({
@@ -199,5 +243,30 @@ test('WebsocketServer: connections getter returns a snapshot', async () => {
     snapshot.clear(); // mutating the snapshot must not affect the server
     assert.strictEqual(wsServer.connections.size, 1);
     peer.close();
+  });
+});
+
+test('deflate: filter(req) decides per connection whether the offer is accepted', async () => {
+  const filter = (req) => req.headers['x-slow-link'] === 'yes';
+  await withServer({ perMessageDeflate: { filter } }, async ({ port }) => {
+    const declined = await ProtocolClient.attemptHandshake({
+      host: 'localhost',
+      port,
+      path: '/',
+      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate' },
+      timeoutMs: 600,
+    });
+    assert.strictEqual(parseStatusCode(declined.statusLine), 101);
+    assert.strictEqual(declined.headers['sec-websocket-extensions'], undefined);
+
+    const accepted = await ProtocolClient.attemptHandshake({
+      host: 'localhost',
+      port,
+      path: '/',
+      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate', 'X-Slow-Link': 'yes' },
+      timeoutMs: 600,
+    });
+    assert.strictEqual(parseStatusCode(accepted.statusLine), 101);
+    assert.match(accepted.headers['sec-websocket-extensions'], /^permessage-deflate/);
   });
 });

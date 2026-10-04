@@ -4,72 +4,84 @@
 // exactly the way the SSE subpath registers its own — the registry is the
 // one seam every transport, built-in or not, goes through.
 
-const { WrpcClient, ClientTransport, WRPC_PROTOCOL, metaHeaders } = require('./core.js');
-const { HEADERS_PARAM, META_PARAM } = require('../wire.js');
-
-// Mirrors the server's metaMaxBytes default: past it the server drops the
-// entire declared bag, so refusing here is the difference between a visible
-// warning and a label that silently stopped arriving.
-const META_MAX = 2048;
+const { WrpcClient, ClientTransport, WRPC_V1, WRPC_V2, META_MAX, metaHeaders, refusedStatus } = require('./core.js');
 const { jsonParse } = require('../utils.js');
+const { decodeAttachments } = require('../attachments.js');
+const { createWsCompression } = require('./wsCompression.js');
+const { openSocket } = require('./wsHandshake.js');
+
 const { WebSocket } = globalThis;
 
 class ClientWsTransport extends ClientTransport {
+  // Carries `options.encryption` (@alexify/wrpc/encryption): the handshake
+  // runs inside open(), and every frame after it is sealed.
+  static encrypts = true;
+
   // The one transport that can die without saying so.
   heartbeat = true;
+  // Until the server selected `wrpc.v2`: a 1.0 server selects `wrpc.v1`.
+  revision = 1;
 
   #socket = null;
   #opening = null;
+  // Per-message compression of what THIS side sends (wsCompression.js —
+  // a stub in a browser): the offer goes out in a ping on open, and frames
+  // change only once the server's pong agreed. Re-negotiated per open.
+  #compression = null;
+  #negotiating = false;
+  // The encrypted session of this connection, from `options.encryption`:
+  // `{ ready, send, receive }`. Re-made per open — a reconnect is a new
+  // handshake and new keys.
+  #secure = null;
+  // Set once a server answered `wrpc.v1` to a handshake that carried the
+  // declared bags as subprotocol tokens: a 1.0 server reads them from the
+  // connect URL only, so every later open of this transport uses the query.
+  #requery = false;
+  // Said once: tokens rode an offer of `wrpc.v1` alone, and `wrpc.v1` came
+  // back — which a 1.0 server and a 2.x one without frames both answer.
+  #ambiguous = false;
+
+  /** The session's facts once established (see WrpcClient#encryption), or null. */
+  encryption = null;
+
+  /** The compression codec id in effect on this side's frames, or null. */
+  get compression() {
+    return this.#compression === null ? null : this.#compression.id;
+  }
 
   async open(options = {}) {
     if (this.active) return Promise.resolve();
     if (this.#opening) return this.#opening;
+    // Under a wire codec a packet is not JSON, and the negotiation ping
+    // would not be either: the option is left off there.
+    this.#compression = this.codec ? null : createWsCompression(options.compression);
+    this.#negotiating = this.#compression !== null;
     const opening = new Promise((resolve, reject) => {
-      // The client OFFERS the protocol revision; the server echoes it (see
-      // protocol.md#versioning). `protocols` overrides the offer, and an
-      // empty array offers nothing — an escape hatch for a proxy that
+      // The client OFFERS the protocol revisions it speaks, newest first, and
+      // the server selects one (see protocol.md#versioning): a 1.0 server
+      // picks `wrpc.v1`, and this connection then speaks what 1.0 spoke. A
+      // client that sends no frames (`attachments: false`, a packet codec)
+      // has nothing of revision 2 to offer. `protocols` overrides the offer,
+      // and an empty array offers nothing — an escape hatch for a proxy that
       // mangles the header. The selected protocol lands on `this.protocol`.
-      let protocols = options.protocols ?? [WRPC_PROTOCOL];
-      // The Authorization header is the ONE declared name that is a secret,
-      // and the connect URL lands in proxy access logs. RFC 6455 gives ws a
-      // header that survives the WHATWG constructor — the subprotocol offer
-      // — so a Bearer credential rides as `wrpc.bearer.<token>` and is
-      // stripped from the wrpc_h bag (the server's bearer transport reads
-      // sec-websocket-protocol first). A token outside the RFC 7230 token
-      // charset cannot be a subprotocol name and falls back to the query,
-      // with the loud caveat below.
-      let bag = options.headers;
-      const auth = bag?.authorization;
-      const bearer = typeof auth === 'string' && auth.startsWith('Bearer ') ? auth.slice(7) : null;
-      if (bearer && /^[!#$%&'*+.^_`|~A-Za-z0-9-]+$/.test(bearer)) {
-        protocols = [...protocols, `wrpc.bearer.${bearer}`];
-        bag = { ...bag };
-        delete bag.authorization;
-        if (Object.keys(bag).length === 0) bag = null;
-      }
-      // Connection-phase headers ride as ONE query parameter: the WHATWG
-      // WebSocket constructor cannot set real headers, in the browser by
-      // spec and in Node because the client uses the same globalThis
-      // implementation. The server reads observed upgrade headers first and
-      // this parameter only for names they do not carry, so a transport
-      // that CAN send real headers needs no query at all. Loud caveat: the
-      // connect URL lands in proxy access logs — a device id belongs here,
-      // a secret does not.
-      const params = [];
-      // Capped like the http leg: past metaMaxBytes the server drops the
-      // ENTIRE bag (measured over the whole query), so sending it anyway
-      // would be a silent loss on the side that cannot see it. The refusal
-      // keeps the connection working, un-labelled, and says so.
-      const declare = (param, bag) => {
-        const value = encodeURIComponent(JSON.stringify(bag));
-        const bytes = param.length + 1 + value.length;
-        if (bytes > META_MAX) return void this.log?.warn({ event: 'meta.oversize', param, bytes });
-        params.push(`${param}=${value}`);
-      };
-      if (bag) declare(HEADERS_PARAM, bag);
-      if (options.meta) declare(META_PARAM, options.meta);
-      const url = params.length > 0 ? `${this.url}${this.url.includes('?') ? '&' : '?'}${params.join('&')}` : this.url;
-      const socket = protocols.length > 0 ? new WebSocket(url, protocols) : new WebSocket(url);
+      // The declared headers/meta leave with the handshake: real request
+      // headers from Node, subprotocol carrier tokens from a browser, the
+      // connect-URL query only by `carrier: 'query'` — see wsHandshake.js
+      // and its browser half.
+      const { encryption = null } = options;
+      // Announced in the URL: the server may be the first to send, so it
+      // has to know the mode before any frame. Not a secret — stripping it
+      // gets a refusal, never plaintext.
+      const url =
+        encryption === null ? this.url : `${this.url}${this.url.includes('?') ? '&' : '?'}${encryption.param}=1`;
+      const offer = options.protocols ?? (this.attachments === false ? [WRPC_V1] : [WRPC_V2, WRPC_V1]);
+      // A copy the handshake may write to (`carried`), and where a transport
+      // that already met a revision-1 server asks for the query carrier.
+      const handshake = this.#requery ? { ...options, carrier: 'query' } : { ...options };
+      const socket = openSocket(WebSocket, url, offer, handshake, this.log);
+      // Bytes arrive as ArrayBuffers, never Blobs: an attachments frame is
+      // classified synchronously on the way in, in order with the packets.
+      socket.binaryType = 'arraybuffer';
       this.#socket = socket;
       const onClose = (error) => {
         // Scoped to the socket it was registered for. Both 'close' and
@@ -78,6 +90,11 @@ class ClientWsTransport extends ClientTransport {
         // replacement a reconnect has already installed.
         if (this.#socket !== socket) return;
         this.#socket = null;
+        // A handshake still running is over with the socket: its ready()
+        // rejects now, not at the handshake timeout.
+        this.#secure?.cancel(error);
+        this.#secure = null;
+        this.encryption = null;
         if (this.#opening) {
           this.#opening = null;
           this.emit('error', error);
@@ -87,18 +104,76 @@ class ClientWsTransport extends ClientTransport {
         this.active = false;
         this.emit('close', error);
       };
-      const onOpen = () => {
-        this.protocol = socket.protocol || '';
+      const established = () => {
+        // First on the wire, before the core's own open handler sends
+        // anything: the pong that answers it is what turns compression on.
+        if (this.#compression !== null) this.#send(this.#compression.offer);
         this.active = true;
         this.emit('open');
         this.#opening = null;
         resolve();
       };
+      const onOpen = () => {
+        this.protocol = socket.protocol || '';
+        this.revision = this.protocol === WRPC_V2 ? 2 : 1;
+        // Offered `wrpc.v2`, answered `wrpc.v1`: possibly a 1.0 server, and
+        // 1.0 reads the declared bags from the connect URL only — the
+        // tokens this handshake carried went unread. Dialled again, once,
+        // with the query 1.0 itself used; an application that chose its
+        // carrier, or its offer, is left with its choice.
+        if (handshake.carried && this.protocol === WRPC_V1 && (options.carrier ?? 'auto') === 'auto') {
+          if (offer.includes(WRPC_V2)) {
+            this.#requery = true;
+            this.log?.warn({ event: 'handshake.requery' });
+            // Every declared header now rides the URL, not only a credential:
+            // an `x-api-key` lands in each access log on the way.
+            if (options.headers) {
+              this.log?.warn({ event: 'declared.exposed', keys: Object.keys(options.headers), carrier: 'query' });
+            }
+            // Abandoned, not closed-and-reported: its close is nobody's now.
+            this.#socket = null;
+            socket.close();
+            this.#opening = null;
+            return void this.open(options).then(resolve, reject);
+          }
+          // This end offered `wrpc.v1` alone (`attachments: false`, its own
+          // `protocols`): the answer cannot tell a 2.x server, which read the
+          // tokens, from a 1.0 one, which read none. No redial — but said.
+          if (!this.#ambiguous) {
+            this.#ambiguous = true;
+            this.log?.warn({ event: 'handshake.ambiguous' });
+          }
+        }
+        if (encryption === null) return void established();
+        // The handshake first: nothing of this connection leaves in the
+        // clear, the compression offer included. `connectTimeout` is racing
+        // open(), so it covers this too; a failure closes the socket, which
+        // is what rejects the pending open.
+        this.#secure = encryption.secure({
+          kind: 'ws',
+          write: (bytes) => socket.send(bytes),
+          deliver: (data) => this.#deliver(data),
+          fail: (error) => {
+            this.log?.warn({ event: 'encryption.failed', err: error });
+            socket.close();
+          },
+        });
+        this.#secure.ready.then(
+          (info) => {
+            if (this.#socket !== socket) return;
+            this.encryption = info;
+            established();
+          },
+          () => {},
+        );
+      };
       socket.addEventListener('open', onOpen, { once: true });
       socket.addEventListener('close', onClose, { once: true });
       socket.addEventListener('error', onClose, { once: true });
       socket.addEventListener('message', ({ data }) => {
-        this.emit('message', data);
+        if (this.#socket !== socket) return;
+        if (this.#secure !== null) return void this.#secure.receive(data);
+        this.#deliver(data);
       });
     });
     this.#opening = opening;
@@ -122,19 +197,57 @@ class ClientWsTransport extends ClientTransport {
     const socket = this.#socket;
     this.active = false;
     this.#socket = null;
+    this.#secure?.cancel();
+    this.#secure = null;
+    this.encryption = null;
     this.emit('close');
     socket?.close();
   }
 
+  // One inbound message, decrypted already when the connection is sealed.
+  #deliver(data) {
+    // Only until the first pong answered the offer — a plain pong is a
+    // no, and either way nothing is inspected after that.
+    if (this.#negotiating && this.#compression.accept(data) !== null) this.#negotiating = false;
+    this.emit('message', data);
+  }
+
+  // Compress, then seal: ciphertext does not compress.
+  #send(data) {
+    if (this.#secure !== null) return void this.#secure.send(data);
+    this.#socket.send(data);
+  }
+
   write(data) {
     if (!this.active) throw new Error('Not connected');
-    this.#socket.send(data);
+    if (this.#compression !== null) {
+      const frame = this.#compression.encode(data);
+      if (frame !== null) return void this.#send(frame);
+    }
+    this.#send(data);
   }
 }
 
+// What a client that reads framed messages asks an HTTP server for: a 2.x
+// server answers a result holding bytes as a frame only to a request that
+// names it, and a 1.0 server ignores the header. CORS-safelisted, so it adds
+// no preflight.
+const ACCEPT_FRAMES = 'application/octet-stream, application/json';
+
 class ClientHttpTransport extends ClientTransport {
+  // Carries `options.encryption`: no session here, so every request is
+  // sealed to the pinned server key on its own (HPKE) — by wrapping fetch.
+  // Per request, not per session: checked up front against the option's
+  // `fetch` (see WrpcClient's #checkEncryption).
+  static encrypts = 'request';
+
   // One request, one response: nothing to cancel or subscribe on.
   persistent = false;
+  // No handshake to negotiate on: a server says the revision it speaks in
+  // the `wrpc-version` of every response, so this side sends a frame only
+  // after an answer said 2 — and a 1.0 server, which says 1, never gets one
+  // unless it shares an address with 2.x ones; see write().
+  revision = 1;
   // Can carry procedure-mapped REST requests (client/core #restCall): a
   // call whose procedure declares `http` goes out as the same REST request
   // an external consumer would send, not as a packet POST.
@@ -148,9 +261,28 @@ class ClientHttpTransport extends ClientTransport {
   meta = null;
   metaBag = null;
   prefixed = false;
+  // Injectable fetch, defaulted here (not just in open()) so a caller that
+  // uses this transport directly — request() without an open() — still
+  // gets the runtime's own fetch. Re-resolved on open() like headers/meta:
+  // lets a caller hand in undici's fetch bound to a tuned Agent/Pool
+  // (keep-alive, proxy, an undici-cache-interceptor store) without wrpc
+  // ever depending on undici.
+  fetch = globalThis.fetch;
 
   async open(options = {}) {
     this.headers = options.headers ?? null;
+    // Stored and always CALLED unbound (never as this.fetch(...)): native
+    // fetch throws "Illegal invocation" in browsers when invoked with a
+    // receiver other than the global object, which a plain method call
+    // would hand it. An injected fetch is called the same free-function way.
+    this.fetch = options.fetch ?? globalThis.fetch;
+    const { encryption = null } = options;
+    if (encryption !== null) {
+      if (typeof encryption.fetch !== 'function') {
+        throw new TypeError('options.encryption has no serverKey to seal a request to — the http transport needs one');
+      }
+      this.fetch = encryption.fetch(this.fetch, this.url);
+    }
     // Built once per open, as a header BLOCK rather than a single encoded
     // value: which spelling it is (one canonical JSON header, or one header
     // per key) is the client's metaFormat choice, and every leg below just
@@ -193,7 +325,8 @@ class ClientHttpTransport extends ClientTransport {
       'Content-Type': rest?.contentType ?? 'application/json',
     };
     const init = body === undefined ? { method, headers, signal } : { method, headers, body, signal };
-    const res = await fetch(url, init);
+    const doFetch = this.fetch;
+    const res = await doFetch(url, init);
     if (rest) return { status: res.status, body: new Uint8Array(await res.arrayBuffer()) };
     return { status: res.status, text: await res.text() };
   }
@@ -230,12 +363,39 @@ class ClientHttpTransport extends ClientTransport {
     // has one header block, so a key carried by several calls shows the last
     // value. Nothing is lost — each call's exact meta rides its own packet.
     const block = meta ? this.#requestMeta(meta) : this.meta;
-    const headers = { ...this.headers, ...block, 'Content-Type': this.codec?.contentType ?? 'application/json' };
+    // An attachments frame is bytes and says so; a text body is the packet
+    // codec's type, JSON by default.
+    const contentType =
+      typeof data === 'string' ? (this.codec?.contentType ?? 'application/json') : 'application/octet-stream';
+    const headers = { ...this.headers, ...block, 'Content-Type': contentType };
+    // A client that reads frames says so; one that opted out, or speaks a
+    // packet codec, is answered in text as before.
+    if (this.attachments !== false && !this.codec) headers.Accept = ACCEPT_FRAMES;
     const options = { method: 'POST', headers, body: data };
+    const doFetch = this.fetch;
     const send = async () => {
       try {
-        const res = await fetch(this.url, options);
+        const res = await doFetch(this.url, options);
+        // The server reads framed messages: from here on, bytes this side
+        // sends travel as bytes.
+        const modern = res.headers.get('wrpc-version') === '2';
+        if (modern) this.revision = 2;
+        // A frame answer (a result holding bytes) is read as bytes and
+        // handed on as one; the core classifies it.
+        if (res.ok && res.headers.get('content-type') === 'application/octet-stream') {
+          return void this.emit('message', new Uint8Array(await res.arrayBuffer()));
+        }
         const text = await res.text();
+        // A frame reached a server that does not say 2 — a 1.0 instance
+        // behind the same address as 2.x ones, a rollback — and wrpc
+        // answered it (a proxy's page has no packet in it, and says nothing
+        // about the server behind). That server refused the frame before
+        // reading a call out of it: this side speaks revision 1 again, and
+        // the same packets go once more as the JSON 1.0 reads.
+        if (!modern && typeof data !== 'string' && this.#decode(text) !== null) {
+          this.revision = 1;
+          return void this.write(JSON.stringify(decodeAttachments(data)), meta);
+        }
         // Error statuses normally still carry wrpc callback packets (the
         // server answers errors as JSON with the same code). Only when the
         // body is NOT wrpc's — a proxy's HTML 502, an empty body — are
@@ -247,19 +407,48 @@ class ClientHttpTransport extends ClientTransport {
         this.failPackets(data, res.status);
       } catch (error) {
         this.emit('error', error);
-        this.failPackets(data, 503);
+        // A sealed request the server refused in plaintext names its status
+        // only for the closed set the sealing layer vouches for (400, 409,
+        // 426 — a retired key, a clock, a required mode); the outer status
+        // of anything else is unauthenticated and stays a 503.
+        this.failPackets(data, refusedStatus(error));
       }
     };
     send();
   }
 }
 
+const isPongText = (data) => typeof data === 'string' && data.startsWith('{"type":"pong"');
+
+// What the other end wrote, through the codec — null for anything it does
+// not decode (an injected codec may throw on a message it did not make).
+const decodeQuietly = (codec, data) => {
+  try {
+    return codec.decode(data);
+  } catch {
+    return null;
+  }
+};
+
 class ClientEventTransport extends ClientTransport {
   static instance = null;
 
+  // A port has no handshake, so the revision rides the first ping and its
+  // pong (protocol.md#versioning): until the other end — the worker proxy,
+  // or a server the port is attached to — said it reads framed messages,
+  // this side sends none. A 1.0 worker answers a plain pong.
+  revision = 1;
+
   #port = null;
   #worker = null;
+  // Set by a pong that names a revision at all: a 2.x end, which also
+  // understands the goodbye a 1.0 proxy would throw on.
+  #modern = false;
 
+  // @deprecated Kept as the class-level singleton it always was, for code
+  // that still calls it — but connect() no longer does: each connect({
+  // worker }) builds its own transport, so the one returned here belongs to
+  // no client. Use `new WrpcClient.transport.event(url)`.
   static getInstance(url) {
     if (ClientEventTransport.instance) {
       return ClientEventTransport.instance;
@@ -272,12 +461,33 @@ class ClientEventTransport extends ClientTransport {
   async open(options = {}) {
     if (this.active) return;
     const worker = options.worker ?? this.#worker;
-    if (!worker) throw new Error('Service Worker not provided');
-    this.#worker = worker;
+    if (!worker) throw new Error('Worker not provided');
+    // A SharedWorker is reached through its `port`; a ServiceWorker, a
+    // dedicated Worker or a raw MessagePort posts directly. Resolved once,
+    // so online()/offline() and every reopen address the same target.
+    this.#worker = worker.port ?? worker;
     const { port1, port2 } = new MessageChannel();
     this.#port = port1;
+    this.revision = 1;
+    this.#modern = false;
+    // What this side reads: 2, or 1 under `attachments: false` / a codec.
+    const { codec } = this;
+    const mine = this.attachments !== false && !codec ? 2 : 1;
+    let negotiating = true;
     port1.addEventListener('message', ({ data }) => {
       if (data === undefined) return;
+      // Only until the first pong: it answers the ping below, and is the
+      // transport's — the core never asked for it. Under a packet codec it
+      // is the codec's, like everything the other end writes.
+      if (negotiating) {
+        const pong = codec ? decodeQuietly(codec, data) : isPongText(data) ? jsonParse(data) : null;
+        if (pong?.type === 'pong') {
+          negotiating = false;
+          this.#modern = pong.v !== undefined;
+          this.revision = pong.v === 2 && mine === 2 ? 2 : 1;
+          return;
+        }
+      }
       this.emit('message', data);
     });
     port1.start();
@@ -289,12 +499,32 @@ class ClientEventTransport extends ClientTransport {
     if (options.headers) connect.headers = options.headers;
     if (options.meta) connect.meta = options.meta;
     this.#worker.postMessage(connect, [port2]);
+    // First on the port, before anything the core sends: by the time a
+    // `load()` is answered the revision is known. Not waited for — a call
+    // sent before the pong leaves as revision 1, which every end reads. A
+    // server under a packet codec decodes every message with it: a JSON
+    // ping was a malformed packet there, answered with an id-less 500.
+    const ping = { type: 'ping', v: mine };
+    port1.postMessage(codec ? codec.encode(ping) : JSON.stringify(ping));
     this.active = true;
     this.emit('open');
   }
 
   close() {
+    // A second close (terminate() after close(), or #openOrClose cleaning up
+    // an open() that threw before a port existed) has nothing to close —
+    // and must not replace the original error with a TypeError.
+    if (!this.active) return;
     this.active = false;
+    // A goodbye first: the worker releases what this page was waiting for
+    // on it, where a MessagePort's own close event may never fire. Only to
+    // an end that named a revision: a 1.0 proxy reads every message as a
+    // packet and throws on this one.
+    try {
+      if (this.#modern) this.#port.postMessage({ type: 'wrpc:close' });
+    } catch {
+      // Already closed.
+    }
     this.#port.close();
     this.#port = null;
     this.emit('close');

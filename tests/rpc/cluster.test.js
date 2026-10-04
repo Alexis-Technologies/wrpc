@@ -7,11 +7,14 @@
 
 const test = require('node:test');
 const assert = require('node:assert');
+const crypto = require('node:crypto');
 const timers = require('node:timers/promises');
 
 const { RpcServer } = require('../../src/rpc/core.js');
 const { defineRouter, procedure } = require('../../src/rpc/router.js');
 const { MemoryBackplane } = require('../../src/scaling/index.js');
+const { recorder } = require('../helpers/recorder.js');
+const { createMetrics, point } = require('../helpers/metrics.js');
 
 // Node 22 aborts a still-pending test the moment the event loop goes idle
 // ('Promise resolution is still pending but the event loop has already
@@ -25,7 +28,8 @@ const { MemoryBackplane } = require('../../src/scaling/index.js');
 let loopHold = null;
 test.before(() => void (loopHold = setInterval(() => {}, 1000)));
 test.after(() => clearInterval(loopHold));
-const { instanceOfClientId } = require('../../src/rpc/cluster.js');
+const { Cluster, instanceOfClientId } = require('../../src/rpc/cluster.js');
+const { encodeAttachments, decodeAttachments } = require('../../src/attachments.js');
 
 const quiet = { log() {}, info() {}, warn() {}, error() {}, debug() {} };
 
@@ -39,6 +43,9 @@ const router = () =>
 const fakeSocket = () => {
   const listeners = new Map();
   return {
+    // A 2.x client's connection: the revision under which bytes travel as
+    // a frame (a socket with no subprotocol is spoken to as 1.0 was).
+    protocol: 'wrpc.v2',
     events: [],
     on(name, fn) {
       listeners.set(name, fn);
@@ -47,8 +54,10 @@ const fakeSocket = () => {
       listeners.set(name, fn);
     },
     off() {},
+    // A binary frame (an event whose data holds bytes) is noted by size:
+    // what matters here is which leg it took, not its encoding.
     send(text) {
-      this.events.push(JSON.parse(text));
+      this.events.push(typeof text === 'string' ? JSON.parse(text) : { binary: text.byteLength });
     },
     close() {},
     terminate() {},
@@ -590,6 +599,42 @@ test('cluster: the digest heals a dropped delta through an addressed sync', asyn
   assert.strictEqual(b.cluster.count('lobby'), 1, 'the digest healed the view');
 });
 
+test('cluster: a lost state answer does not freeze the digest heal', async (t) => {
+  const inner = new MemoryBackplane();
+  // A broker that loses the FIRST `state` answer — the at-most-once edge
+  // that used to leave a node's `syncing` flag set forever.
+  let dropped = 0;
+  const backplane = {
+    publish(channel, message) {
+      if (dropped === 0 && message.includes('"t":"state"')) {
+        dropped++;
+        return;
+      }
+      inner.publish(channel, message);
+    },
+    subscribe: (channel, handler) => inner.subscribe(channel, handler),
+    close: () => inner.close(),
+  };
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { presenceInterval: 40 } });
+  const b = boot(t, backplane, { instanceId: 'b', cluster: { presenceInterval: 40 } });
+  await settle(20);
+  attach(a).client.join('lobby');
+  await settle(20);
+  assert.strictEqual(b.cluster.count('lobby'), 1);
+  backplane.publish(
+    'cluster',
+    JSON.stringify({ v: 1, from: 'a', epoch: a.cluster.epoch, t: 'state', rooms: {}, clients: 0 }),
+  );
+  await settle(20);
+  assert.strictEqual(b.cluster.count('lobby'), 0, 'the sabotage took');
+  // First digest -> sync -> the answer is dropped. Two intervals later the
+  // sync is asked again and the answer lands.
+  await timers.setTimeout(300);
+  await settle(20);
+  assert.strictEqual(dropped, 1, 'one state answer was lost');
+  assert.strictEqual(b.cluster.count('lobby'), 1, 'the second sync healed the view');
+});
+
 test('cluster: signature edge branches — tampered payload and malformed commands are dropped', async (t) => {
   const backplane = new MemoryBackplane();
   const a = boot(t, backplane, { instanceId: 'a', cluster: { secret: 's3' } });
@@ -610,6 +655,286 @@ test('cluster: signature edge branches — tampered payload and malformed comman
   backplane.publish('cluster', forged);
   await settle(20);
   assert.strictEqual(b.clients.size, 1, 'a bad signature must not run the command');
+});
+
+// --- replay protection under `secret` ---------------------------------------
+//
+// The signature says who wrote an envelope; these say it is being heard
+// where and when it was published, and for the first time. The attacker of
+// every test below holds SUBSCRIBE and PUBLISH on the broker and no secret:
+// it can copy what it sees, never write its own.
+
+const tap = (backplane, channel) => {
+  const seen = [];
+  backplane.subscribe(channel, (message) => seen.push(message));
+  return seen;
+};
+
+const signed = (secret, envelope) => {
+  const sig = crypto.createHmac('sha256', secret).update(JSON.stringify(envelope)).digest('hex');
+  return JSON.stringify({ ...envelope, sig });
+};
+
+test('cluster replay: a signed command copied off the channel does not run twice', async (t) => {
+  const backplane = new MemoryBackplane();
+  const log = recorder();
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { secret: 's3' } });
+  const b = boot(t, backplane, { instanceId: 'b', logger: log.writer, cluster: { secret: 's3' } });
+  const seen = tap(backplane, 'cluster');
+  const { client } = attach(b);
+  await settle(20);
+  a.cluster.join({}, 'vip');
+  await settle(20);
+  assert.ok(client.in('vip'), 'the command ran');
+  const command = seen.find((message) => message.includes('"op":"join"'));
+  assert.ok(command.includes('"seq":') && command.includes('"ch":"cluster"') && command.includes('"at":'));
+  client.leave('vip');
+  backplane.publish('cluster', command);
+  backplane.publish('cluster', command);
+  await settle(20);
+  assert.ok(!client.in('vip'), 'the copy must not put the client back in the room it left');
+  // Counted every time, said once: whoever replays one envelope can loop it.
+  const refusals = log.all('cluster.replay');
+  assert.deepStrictEqual(
+    refusals.map(({ level, reason, from, channel }) => ({ level, reason, from, channel })),
+    [
+      { level: 'warn', reason: 'seq', from: 'a', channel: 'cluster' },
+      { level: 'debug', reason: 'seq', from: 'a', channel: 'cluster' },
+    ],
+  );
+});
+
+test('cluster replay: an envelope moved to another channel is refused', async (t) => {
+  const backplane = new MemoryBackplane();
+  const log = recorder();
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { secret: 's3' } });
+  const b = boot(t, backplane, { instanceId: 'b', cluster: { secret: 's3' } });
+  const c = boot(t, backplane, { instanceId: 'c', logger: log.writer, cluster: { secret: 's3' } });
+  const inbox = tap(backplane, 'inst:b');
+  const onB = attach(b);
+  const onC = attach(c);
+  await settle(20);
+  // An addressed command: one publish, on b's own inbox.
+  a.cluster.join(onB.client.id, 'vip');
+  await settle(20);
+  assert.ok(onB.client.in('vip'));
+  const addressed = inbox.find((message) => message.includes('"op":"join"'));
+  // c never heard it, so its counter window has nothing to say — the channel
+  // the sender signed is what refuses it, on c's inbox and on the shared one.
+  backplane.publish('inst:c', addressed.replace(onB.client.id, onC.client.id));
+  backplane.publish('inst:c', addressed);
+  // On the shared channel the selector would be b's client again.
+  onB.client.leave('vip');
+  backplane.publish('cluster', addressed);
+  await settle(20);
+  assert.ok(!onC.client.in('vip') && !onB.client.in('vip'));
+  assert.deepStrictEqual(
+    log.all('cluster.replay').map(({ reason, channel }) => `${reason} ${channel}`),
+    ['channel inst:c', 'channel cluster'],
+    'the rewritten copy fails the signature; the faithful ones fail the channel',
+  );
+  assert.ok(log.find('cluster.badsig'));
+});
+
+test('cluster replay: an envelope of a dead process cannot bring that process back', async (t) => {
+  const backplane = new MemoryBackplane();
+  const log = recorder();
+  const b = boot(t, backplane, { instanceId: 'b', logger: log.writer, cluster: { secret: 's3' } });
+  const seen = tap(backplane, 'cluster');
+  const first = new RpcServer({
+    router: router(),
+    logger: quiet,
+    backplane,
+    instanceId: 'a',
+    cluster: { secret: 's3' },
+  });
+  await settle(20);
+  const hello = seen.find((message) => message.includes('"t":"hello"') && message.includes('"from":"a"'));
+  assert.ok(hello, 'the first life announced itself');
+  first.close();
+  await settle(20);
+  await timers.setTimeout(2); // the next life starts on a later millisecond
+  const second = boot(t, backplane, { instanceId: 'a', cluster: { secret: 's3' } });
+  attach(second).client.join('lobby');
+  await settle(20);
+  assert.strictEqual(b.cluster.count('lobby'), 1);
+  // The old life's hello carries an empty room table under the OLD epoch:
+  // accepted, it would replace the live node's record and zero its presence.
+  backplane.publish('cluster', hello);
+  await settle(20);
+  assert.strictEqual(b.cluster.count('lobby'), 1, 'the live process keeps its record');
+  assert.strictEqual(log.find('cluster.replay').reason, 'stale');
+});
+
+test('cluster replay: a node isolated by its clock is named — the skew on the line, degraded and recovered', async (t) => {
+  const backplane = new MemoryBackplane();
+  const log = recorder();
+  const b = boot(t, backplane, { instanceId: 'b', logger: log.writer, cluster: { secret: 's3' } });
+  await settle(20);
+  const events = [];
+  b.cluster.on('degraded', (event) => events.push(['degraded', event]));
+  b.cluster.on('recovered', (event) => events.push(['recovered', event]));
+  // A node a minute behind: every envelope of its refused as stale, and the
+  // only trace used to be one line a presence timeout, with no skew in it.
+  const behind = (seq) =>
+    signed('s3', {
+      v: 1,
+      from: 'slow',
+      epoch: 'e1',
+      t: 'hello',
+      rooms: {},
+      clients: 0,
+      seq,
+      ch: 'cluster',
+      at: Date.now() - 60_000,
+    });
+  for (let seq = 1; seq <= 4; seq++) backplane.publish('cluster', behind(seq));
+  await settle(20);
+  const line = log.find('cluster.replay');
+  assert.strictEqual(line.reason, 'stale');
+  assert.ok(line.skew >= 60_000 && line.skew < 61_000, `the skew is on the line (${line.skew})`);
+  assert.strictEqual(events.length, 1, 'degraded once, at the third in a row');
+  assert.deepStrictEqual(events[0][0], 'degraded');
+  assert.strictEqual(events[0][1].instance, 'slow');
+  assert.strictEqual(events[0][1].reason, 'skew');
+  // Its clock fixed: the next envelope is heard, and it says so.
+  const fixed = { v: 1, from: 'slow', epoch: 'e1', t: 'hello', rooms: {}, clients: 0, seq: 5, ch: 'cluster' };
+  backplane.publish('cluster', signed('s3', { ...fixed, at: Date.now() }));
+  await settle(20);
+  assert.deepStrictEqual(events.at(-1), ['recovered', { instance: 'slow' }]);
+  assert.ok(b.cluster.instances().includes('slow'));
+});
+
+test('cluster replay: an envelope outside the clock window is refused; maxSkew sets the window', async (t) => {
+  const backplane = new MemoryBackplane();
+  const log = recorder();
+  const strict = boot(t, backplane, { instanceId: 'b', logger: log.writer, cluster: { secret: 's3' } });
+  const wide = boot(t, backplane, { instanceId: 'c', cluster: { secret: 's3', maxSkew: 120_000 } });
+  await settle(20);
+  const late = { v: 1, from: 'slow', epoch: 'e1', t: 'hello', rooms: {}, clients: 0, seq: 1, ch: 'cluster' };
+  backplane.publish('cluster', signed('s3', { ...late, at: Date.now() - 60_000 }));
+  await settle(20);
+  assert.ok(!strict.cluster.instances().includes('slow'), 'a minute old is outside the default 30 s');
+  assert.ok(wide.cluster.instances().includes('slow'), 'and inside a two-minute window');
+  assert.strictEqual(log.find('cluster.replay').reason, 'stale');
+  // Signed, but not counted as this layer counts: not an integer, or no clock.
+  backplane.publish('cluster', signed('s3', { ...late, from: 'odd', seq: 'x', at: Date.now() }));
+  backplane.publish('cluster', signed('s3', { ...late, from: 'odder' }));
+  await settle(20);
+  assert.deepStrictEqual(strict.cluster.instances(), ['b', 'c']);
+  assert.deepStrictEqual(
+    log.all('cluster.replay').map(({ from, reason }) => `${from} ${reason}`),
+    ['slow stale', 'odd seq', 'odder seq'],
+  );
+});
+
+test("cluster replay: what replay: 'accept' lets through is counted and said — the way to know the option can go", async (t) => {
+  const backplane = new MemoryBackplane();
+  const log = recorder();
+  const metrics = createMetrics();
+  const rolling = boot(t, backplane, {
+    instanceId: 'c',
+    logger: log.writer,
+    telemetry: { meter: metrics.meter },
+    cluster: { secret: 's3', replay: 'accept' },
+  });
+  await settle(20);
+  // A 1.x node's envelopes, accepted: before, only cluster.join said anything.
+  for (let i = 0; i < 5; i++) {
+    backplane.publish(
+      'cluster',
+      signed('s3', { v: 1, from: 'old', epoch: 'e1', t: 'hello', rooms: { lobby: i }, clients: i }),
+    );
+  }
+  await settle(20);
+  assert.deepStrictEqual(
+    log.all('cluster.unsequenced').map((entry) => entry.level),
+    ['info', 'debug', 'debug', 'debug', 'debug'],
+  );
+  const counted = point(
+    await metrics.collect(),
+    'wrpc.cluster.verifications',
+    (attributes) => attributes['wrpc.cluster.outcome'] === 'unsequenced',
+  );
+  assert.strictEqual(counted?.value, 5);
+  assert.strictEqual(rolling.cluster.count('lobby'), 4, 'and they were applied');
+});
+
+test("cluster replay: an envelope with no counter is a 1.x node's — refused, or accepted by replay: 'accept'", async (t) => {
+  const backplane = new MemoryBackplane();
+  const log = recorder();
+  const strict = boot(t, backplane, { instanceId: 'b', logger: log.writer, cluster: { secret: 's3' } });
+  const rolling = boot(t, backplane, { instanceId: 'c', cluster: { secret: 's3', replay: 'accept' } });
+  await settle(20);
+  // What 1.x signs: the envelope, and nothing about when or where.
+  const legacy = signed('s3', { v: 1, from: 'old', epoch: 'e1', t: 'hello', rooms: { lobby: 2 }, clients: 2 });
+  backplane.publish('cluster', legacy);
+  await settle(20);
+  assert.strictEqual(strict.cluster.count('lobby'), 0);
+  assert.deepStrictEqual(log.find('cluster.replay'), {
+    level: 'warn',
+    component: 'cluster',
+    event: 'cluster.replay',
+    from: 'old',
+    channel: 'cluster',
+    reason: 'unsequenced',
+  });
+  assert.strictEqual(rolling.cluster.count('lobby'), 2, 'the rolling upgrade hears the 1.x node');
+  // The 2.0 nodes hear each other in either mode: theirs are counted.
+  assert.deepStrictEqual(strict.cluster.instances(), ['b', 'c']);
+  assert.deepStrictEqual(rolling.cluster.instances().sort(), ['b', 'c', 'old']);
+  // And `accept` waives the counter of a node that has none — not the checks
+  // on one that does.
+  const seen = tap(backplane, 'cluster');
+  strict.cluster.sendEvent('note', 1);
+  let heard = 0;
+  rolling.cluster.on('note', () => heard++);
+  await settle(20);
+  backplane.publish(
+    'cluster',
+    seen.find((message) => message.includes('"t":"e"')),
+  );
+  await settle(20);
+  assert.strictEqual(heard, 1);
+});
+
+test('cluster replay: without a secret nothing is stamped and nothing is checked', async (t) => {
+  const backplane = new MemoryBackplane();
+  const seen = tap(backplane, 'cluster');
+  const a = boot(t, backplane, { instanceId: 'a' });
+  boot(t, backplane, { instanceId: 'b' });
+  await settle(20);
+  a.cluster.sendEvent('note', 1);
+  await settle(20);
+  assert.ok(seen.length > 0 && seen.every((message) => !message.includes('"seq":')));
+});
+
+test('cluster replay: the options are new in 2.0 and strict about their values', () => {
+  const make = (cluster) => () => new RpcServer({ router: router(), logger: quiet, cluster });
+  assert.throws(make({ replay: 'lenient' }), /cluster\.replay must be 'strict' or 'accept'/);
+  assert.throws(make({ replay: true }), TypeError);
+  assert.throws(make({ maxSkew: 0 }), /cluster\.maxSkew must be a positive number/);
+  assert.throws(make({ maxSkew: '30s' }), TypeError);
+  make({ replay: 'accept', maxSkew: 5_000 })().close();
+});
+
+test('cluster replay: the guard of a silent sender is dropped once the clock refuses what it remembers', async (t) => {
+  const backplane = new MemoryBackplane();
+  const log = recorder();
+  const options = { secret: 's3', presenceInterval: 20, maxSkew: 60 };
+  const b = boot(t, backplane, { instanceId: 'b', logger: log.writer, cluster: options });
+  const seen = tap(backplane, 'cluster');
+  const a = new RpcServer({ router: router(), logger: quiet, backplane, instanceId: 'a', cluster: options });
+  await settle(20);
+  const hello = seen.find((message) => message.includes('"t":"hello"') && message.includes('"from":"a"'));
+  a.close();
+  await timers.setTimeout(150);
+  // Nothing of `a` is remembered by now — no presence record, no counter
+  // window — and its hello is refused all the same: by the clock.
+  backplane.publish('cluster', hello);
+  await settle(20);
+  assert.deepStrictEqual(b.cluster.instances(), ['b']);
+  assert.strictEqual(log.all('cluster.replay').at(-1).reason, 'stale');
 });
 
 test('cluster: malformed cmd shapes are dropped before they run', async (t) => {
@@ -644,4 +969,294 @@ test('cluster: a RegExp rooms filter and maxFetch: 0 (uncapped) hold', async (t)
   const clients = await a.cluster.fetchClients({});
   assert.strictEqual(clients.truncated, undefined, 'maxFetch: 0 never truncates');
   assert.ok(clients.length >= 4);
+});
+
+test('cluster: send() delivers one event to a client on another instance', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const channels = [];
+  const spy = {
+    publish: (channel, message) => {
+      channels.push(channel);
+      backplane.publish(channel, message);
+    },
+    subscribe: (channel, handler) => backplane.subscribe(channel, handler),
+    close: () => {},
+  };
+  const a = boot(t, spy, { instanceId: 'a' });
+  const b = boot(t, backplane, { instanceId: 'b' });
+  await settle();
+  const remote = attach(b);
+  const local = attach(a);
+  await settle();
+  channels.length = 0;
+
+  a.cluster.send(remote.client.id, 'chat/dm', { text: 'hi' });
+  await settle();
+  assert.deepStrictEqual(channels, ['inst:b'], 'addressed: one publish on the target instance channel');
+  assert.deepStrictEqual(remote.socket.events, [{ type: 'event', name: 'chat/dm', data: { text: 'hi' } }]);
+
+  // A local id is applied directly, nothing published.
+  a.cluster.send(local.client.id, 'chat/dm', { text: 'local' });
+  await settle();
+  assert.deepStrictEqual(channels, ['inst:b']);
+  assert.deepStrictEqual(local.socket.events, [{ type: 'event', name: 'chat/dm', data: { text: 'local' } }]);
+
+  assert.throws(() => a.cluster.send('', 'chat/dm', {}), TypeError);
+  assert.throws(() => a.cluster.send(remote.client.id, '', {}), TypeError);
+});
+
+test('cluster: send() with a room reaches only a client still in it', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const a = boot(t, backplane, { instanceId: 'a' });
+  const b = boot(t, backplane, { instanceId: 'b' });
+  await settle();
+  const remote = attach(b);
+  remote.client.join('rtc:lobby');
+  await settle();
+
+  a.cluster.send(remote.client.id, 'signaling/signal', { n: 1 }, { room: 'rtc:lobby' });
+  a.cluster.send(remote.client.id, 'signaling/signal', { n: 2 }, { room: 'rtc:other' });
+  await settle();
+  assert.deepStrictEqual(
+    remote.socket.events.map((e) => e.data),
+    [{ n: 1 }],
+    'the event bounded by a room the client left (or never joined) is dropped',
+  );
+});
+
+test('rpc: sendTo() picks the local or the cluster leg and reports deliverability', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const a = boot(t, backplane, { instanceId: 'a' });
+  const b = boot(t, backplane, { instanceId: 'b' });
+  await settle();
+  const local = attach(a);
+  const remote = attach(b);
+  local.client.join('r');
+  await settle();
+
+  assert.strictEqual(a.sendTo(local.client.id, 'x/y', 1), true);
+  assert.strictEqual(a.sendTo(local.client.id, 'x/y', 2, { room: 'r' }), true);
+  assert.strictEqual(a.sendTo(local.client.id, 'x/y', 3, { room: 'elsewhere' }), false);
+  assert.strictEqual(a.sendTo('a.no-such-client', 'x/y', 4), false, 'a local-looking id that is not here');
+  assert.strictEqual(a.sendTo('no-dot', 'x/y', 5), false, 'no instance in the id');
+  assert.strictEqual(a.sendTo(remote.client.id, 'x/y', 6), true, 'handed to the backplane');
+  await settle();
+  assert.deepStrictEqual(
+    local.socket.events.map((e) => e.data),
+    [1, 2],
+  );
+  assert.deepStrictEqual(
+    remote.socket.events.map((e) => e.data),
+    [6],
+  );
+  assert.throws(() => a.sendTo(42, 'x/y'), TypeError);
+  assert.throws(() => a.sendTo(local.client.id, ''), TypeError);
+
+  // Without a backplane a foreign id is known undeliverable.
+  const solo = boot(t, null, { instanceId: 'solo' });
+  assert.strictEqual(solo.sendTo('b.someone', 'x/y', 7), false);
+});
+
+test('rpc: sendTo() with bytes in the data reaches a foreign id as a binary envelope', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const published = [];
+  const publish = backplane.publish.bind(backplane);
+  backplane.publish = (channel, message) => {
+    published.push({ channel, message });
+    return publish(channel, message);
+  };
+  const a = boot(t, backplane, { instanceId: 'a' });
+  const b = boot(t, backplane, { instanceId: 'b' });
+  await settle();
+  const local = attach(a);
+  const remote = attach(b);
+  await settle();
+  published.length = 0;
+  const data = { file: Uint8Array.of(1, 2, 3), nested: [{ bytes: new Uint8Array(4) }] };
+  assert.strictEqual(a.sendTo(remote.client.id, 'x/y', data), true);
+  await settle();
+  // One publish, on the target's inbox, as the attachments frame of the
+  // envelope — JSON would have landed on b as {"0":1,…}.
+  assert.deepStrictEqual(
+    published.map(({ channel, message }) => [channel, message.slice(0, 9)]),
+    [['inst:b', 'wrpc-bin:']],
+  );
+  assert.ok(remote.socket.events.at(-1).binary > 0, 'and b hands its client a binary frame');
+  // A local id takes the direct leg, where bytes travel as an attachments frame.
+  assert.strictEqual(a.sendTo(local.client.id, 'x/y', data), true);
+  assert.ok(local.socket.events.at(-1).binary > 0, 'delivered locally as a binary frame');
+  assert.strictEqual(a.sendTo(remote.client.id, 'x/y', { plain: true }), true);
+  await settle();
+  assert.deepStrictEqual(remote.socket.events.at(-1), { type: 'event', name: 'x/y', data: { plain: true } });
+  assert.ok(published.at(-1).message.startsWith('{'), 'an envelope without bytes stays JSON');
+});
+
+test('cluster: a binary envelope is signed over its frame — verified, replay-checked, and not interchangeable with JSON', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const log = recorder();
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { secret: 's3' } });
+  const b = boot(t, backplane, { instanceId: 'b', logger: log.writer, cluster: { secret: 's3' } });
+  const inbox = tap(backplane, 'inst:b');
+  await settle(20);
+  const remote = attach(b);
+  await settle(20);
+  assert.strictEqual(a.sendTo(remote.client.id, 'x/y', { file: Uint8Array.of(1, 2, 3) }), true);
+  await settle(20);
+  assert.strictEqual(remote.socket.events.filter((e) => e.binary > 0).length, 1, 'signed, and delivered');
+  const wire = inbox.find((message) => message.startsWith('wrpc-bin:'));
+  // The copy: same counter.
+  backplane.publish('inst:b', wire);
+  // One flipped byte of the payload, the signature left as it was.
+  const frame = Buffer.from(wire.slice(9), 'base64');
+  frame[frame.length - 1] ^= 1;
+  backplane.publish('inst:b', `wrpc-bin:${frame.toString('base64')}`);
+  // The signed envelope OBJECT presented as JSON text: another form, another MAC input.
+  const envelope = decodeAttachments(Buffer.from(wire.slice(9), 'base64'));
+  backplane.publish('inst:b', JSON.stringify({ ...envelope, data: { file: { 0: 1, 1: 2, 2: 3 } } }));
+  await settle(20);
+  assert.strictEqual(remote.socket.events.filter((e) => e.binary > 0 || e.name === 'x/y').length, 1);
+  assert.strictEqual(log.all('cluster.replay')[0].reason, 'seq');
+  assert.strictEqual(log.all('cluster.badsig').length, 2);
+  // An unsigned binary envelope is unsigned like any other.
+  backplane.publish(
+    'inst:b',
+    `wrpc-bin:${Buffer.from(encodeAttachments({ v: 1, from: 'x', epoch: 'e', t: 'cmd', op: 'event', sel: {}, name: 'x/y', data: { file: Uint8Array.of(9) } })).toString('base64')}`,
+  );
+  await settle(20);
+  assert.ok(log.find('cluster.unsigned'));
+  assert.strictEqual(remote.socket.events.filter((e) => e.binary > 0).length, 1);
+});
+
+test('cluster: a refused envelope is a warn once per sender and reason, debug after — not a warn per message', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const log = recorder();
+  boot(t, backplane, { instanceId: 'b', logger: log.writer, cluster: { secret: 's3' } });
+  await settle(20);
+  const unsigned = JSON.stringify({
+    v: 1,
+    from: 'x',
+    epoch: 'e',
+    t: 'cmd',
+    op: 'event',
+    sel: {},
+    name: 'x/y',
+    data: {},
+  });
+  // Fifty unsigned envelopes were fifty warns.
+  for (let i = 0; i < 50; i++) backplane.publish('inst:b', unsigned);
+  backplane.publish('inst:b', JSON.stringify({ ...JSON.parse(unsigned), sig: 'f'.repeat(64) }));
+  backplane.publish('inst:b', JSON.stringify({ ...JSON.parse(unsigned), sig: 'e'.repeat(64) }));
+  await settle(20);
+  const levels = (event) => log.all(event).map((entry) => entry.level);
+  assert.deepStrictEqual(levels('cluster.unsigned'), ['warn', ...Array(49).fill('debug')]);
+  assert.deepStrictEqual(levels('cluster.badsig'), ['warn', 'debug'], 'its own reason, its own warn');
+  // Another sender is warned about in its own right.
+  backplane.publish('inst:b', unsigned.replace('"from":"x"', '"from":"y"'));
+  await settle(20);
+  assert.strictEqual(log.all('cluster.unsigned').at(-1).level, 'warn');
+});
+
+test('cluster: bytes as deep as a direct send delivers them cross instances as bytes', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { secret: 's3' } });
+  const b = boot(t, backplane, { instanceId: 'b', cluster: { secret: 's3' } });
+  await settle(20);
+  const nest = (depth) => {
+    let value = Uint8Array.of(7);
+    for (let i = 0; i < depth; i++) value = { d: value };
+    return value;
+  };
+  const leaf = (value) => {
+    while (value !== null && typeof value === 'object' && 'd' in value) value = value.d;
+    return value;
+  };
+  // A question carries its data under `args`, two levels inside its
+  // envelope: at 31 levels — which a direct send carries as bytes — it was
+  // past the frame's depth, and the other node read {"0":7}.
+  let asked = null;
+  b.cluster.respond('deep', (data) => {
+    asked = leaf(data);
+    return nest(31);
+  });
+  const { answers } = await a.cluster.ask('deep', nest(31), { timeout: 2_000 });
+  assert.ok(asked instanceof Uint8Array, `the question: ${JSON.stringify(asked)}`);
+  assert.ok(leaf(answers[0]) instanceof Uint8Array, `the answer: ${JSON.stringify(leaf(answers[0]))}`);
+});
+
+test('cluster: node events, asks and their answers carry bytes; `attachments: false` keeps every leg JSON', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const a = boot(t, backplane, { instanceId: 'a' });
+  const b = boot(t, backplane, { instanceId: 'b' });
+  await settle();
+  const events = [];
+  b.cluster.on('blob', (data) => events.push(data));
+  b.cluster.respond('double', (data) => ({ twice: Uint8Array.from([...data.bytes, ...data.bytes]) }));
+  a.cluster.sendEvent('blob', { bytes: Uint8Array.of(7, 8) });
+  const { answers, incomplete } = await a.cluster.ask('double', { bytes: Uint8Array.of(1, 2) });
+  assert.strictEqual(incomplete, false);
+  assert.ok(events[0].bytes instanceof Uint8Array);
+  assert.deepStrictEqual([...events[0].bytes], [7, 8]);
+  assert.ok(answers[0].twice instanceof Uint8Array, 'the question arrived as bytes, and so did the answer');
+  assert.deepStrictEqual([...answers[0].twice], [1, 2, 1, 2]);
+
+  // The 1.0 form on every leg: what JSON makes of a Buffer, published as JSON.
+  const plain = new MemoryBackplane();
+  t.after(() => plain.close());
+  const seen = tap(plain, 'inst:d');
+  const c = boot(t, plain, { instanceId: 'c', attachments: false });
+  const d = boot(t, plain, { instanceId: 'd', attachments: false });
+  await settle();
+  const remote = attach(d);
+  await settle();
+  assert.strictEqual(c.sendTo(remote.client.id, 'x/y', { file: Buffer.from([1, 2]) }), true);
+  await settle();
+  assert.ok(seen.at(-1).startsWith('{'));
+  assert.deepStrictEqual(remote.socket.events.at(-1).data, { file: { type: 'Buffer', data: [1, 2] } });
+});
+
+test('cluster: a Cluster wired by hand, without the envelope the core injects, names the bytes it cannot carry', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const log = recorder();
+  const published = tap(backplane, 'inst:b');
+  const local = { snapshot: () => ({ clients: 0, rooms: {} }), count: () => 0 };
+  const cluster = new Cluster({ backplane, instance: 'a', local, log: log.writer });
+  t.after(() => cluster.close());
+  cluster.start();
+  await settle();
+  assert.strictEqual(cluster.send('b.client', 'x/y', { file: Uint8Array.of(1) }), false);
+  cluster.sendEvent('blob', { file: Uint8Array.of(1) });
+  await settle();
+  assert.deepStrictEqual(published, [], 'nothing left as the {"0":…} object JSON would make of it');
+  assert.deepStrictEqual(
+    log.all('cluster.bytes').map(({ level, type, name }) => ({ level, type, name })),
+    [
+      { level: 'warn', type: 'cmd', name: 'x/y' },
+      { level: 'warn', type: 'e', name: 'blob' },
+    ],
+  );
+  assert.strictEqual(cluster.send('b.client', 'x/y', { plain: true }), true);
+});
+
+test('cluster: a malformed or unsigned event command never runs', async (t) => {
+  const backplane = new MemoryBackplane();
+  const a = boot(t, backplane, { instanceId: 'a' });
+  const b = boot(t, backplane, { instanceId: 'b' });
+  const peer = attach(b);
+  await settle(20);
+  const post = (body) => backplane.publish('inst:b', JSON.stringify({ v: 1, from: 'x', epoch: 'e', ...body }));
+  post({ t: 'cmd', op: 'event', sel: { id: peer.client.id } }); // no name
+  post({ t: 'cmd', op: 'event', sel: { id: peer.client.id }, name: 7, data: {} }); // non-string name
+  post({ t: 'cmd', op: 'event', sel: { id: peer.client.id }, name: '', data: {} }); // empty name
+  await settle(20);
+  assert.deepStrictEqual(peer.socket.events, [], 'nothing reached the client');
+  assert.strictEqual(a.cluster.instances().includes('b'), true);
 });

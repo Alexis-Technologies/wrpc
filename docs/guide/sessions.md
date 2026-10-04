@@ -53,7 +53,7 @@ These live on `context.client`:
 | `startSession(token?, data?)` | Creates a session **and** sends the cookie. What a login calls. |
 | `initializeSession(token?, data?)` | Creates it without touching cookies. |
 | `restoreSession(token)` | Loads one from the store. `false` if it is gone. |
-| `finalizeSession()` | Deletes it from the store and drops it. `false` if there was none. |
+| `finalizeSession()` | Deletes it from the store and drops it — and ends it on this instance's other connections that restored the same token. `false` if there was none. |
 
 `token` defaults to a freshly generated one; pass your own to adopt an existing
 identifier.
@@ -61,7 +61,8 @@ identifier.
 ::: warning A login over WebSocket sets no cookie
 A `Set-Cookie` header needs a response, and an open socket has none.
 `startSession` therefore only emits the cookie on HTTP transports; over a
-WebSocket it creates the session for that connection alone. If you want the
+WebSocket — or any persistent transport: WebTransport, a data channel, a
+broker session — it creates the session for that connection alone. If you want the
 session to survive a reconnect, log in over HTTP (the browser stores the
 cookie) and let the WebSocket upgrade restore it — which it does, from the same
 cookie.
@@ -76,6 +77,23 @@ is the **only** way a session survives a reconnect.
 A dropped connection never deletes the session from the store. That is exactly
 what makes a reconnect cheap: sessions end through `finalizeSession()` or
 store-side expiry, and nothing else.
+
+**A logout ends the session everywhere on this instance.** Every connection
+that restored the same token — another tab, a second device holding the same
+bearer token — holds its own copy of the session; `finalizeSession()` on one
+marks the others ended, so their next call to a `session` procedure is a
+`403`, as on the connection that logged out (a handler already running there
+finishes with its `context.session`). **Another instance** has its copies in
+its own memory and does not hear of it: a connection there keeps the session
+until it reconnects — the restore then finds no row — or until your
+application tells it, over the [cluster](./scaling) or the rooms backplane. A
+store with short TTLs and `touch()` narrows that window.
+
+**A store that fails is not a missing session.** When the store throws while a
+connection's token is restored (`session.restore` in the log), the connection
+goes on without a session, and a `session` procedure answers it `503` — which
+a [broker consumer](./brokers/consumers#identity) retries — rather than the
+`403` of a token that names no session.
 
 ## The lifecycle
 
@@ -157,7 +175,7 @@ new Server({ router, sessions: { store } });
 ```
 
 Which is how Redis, a database table, or a signed-cookie store plug in
-**without wrpc depending on any of them**. The default is
+**without wRPC depending on any of them**. The default is
 `MemorySessionStore`, bounded on both axes:
 
 ```js
@@ -172,7 +190,104 @@ new Server({
 LRU eviction past `maxSessions`, expiry after `ttl` (`0` disables either).
 It is a real store, not a stub — but it lives in one process, so a second
 instance shares nothing with it. Anything running more than one process wants
-an injected store.
+a shared store, and one ships for Redis:
+
+```js
+const { createRedisSessionStore } = require('@alexify/wrpc/scaling');
+const Redis = require('ioredis');
+
+new Server({
+  router,
+  sessions: { store: createRedisSessionStore({ client: new Redis(url), prefix: 'wrpc:session:', ttl: 24 * 3600_000 }) },
+});
+```
+
+ioredis-shaped and injected, like the [backplane](./scaling#redis): `get`,
+`set(key, value, 'PX', ttl)`, `del`, and `pexpire` for the sliding expiry
+`restore()` performs (`touch`). State is stored as JSON under the prefix.
+node-redis v4 spells the expiring set as `set(key, value, { PX })` — a
+two-line wrapper adapts it. With a shared store, no instance owns a session
+and a WebSocket client needs **no sticky routing** — see
+[what stays per-instance](./scaling#what-stays-per-instance).
+
+### Sealing what rests in the store {#sealed}
+
+A shared store is a third party. The Redis store keeps each session's state
+as JSON **under the token itself** — so a keyspace listing is a list of live
+bearer credentials, and a dump is every user's state. `sealedStore` wraps
+any store so that neither rests in it:
+
+```js
+const { sealedStore } = require('@alexify/wrpc/encryption');
+
+new Server({
+  router,
+  sessions: {
+    store: sealedStore(createRedisSessionStore({ client: new Redis(url) }), {
+      keys: process.env.WRPC_SESSION_KEY, // 32 bytes: base64, hex or a Uint8Array
+    }),
+  },
+});
+```
+
+A row is keyed by an HMAC of the token and holds the state sealed
+(AES-256-GCM), with the row's own key as additional data — a row copied
+into another session's slot does not open. A row that does not open is a
+missing session and one `session.open` warning; the token is never logged.
+
+- **Rotation signs nobody out.** With `keys: { current: 'k2', ring: { k1,
+  k2 } }` a read that misses under `k2` finds the row under `k1` and moves
+  it. Drop `k1` once your longest session TTL has passed since it stopped
+  being current.
+- **Adopting it over a store that already holds sessions:** `acceptPlaintext:
+  true` reads a row the unwrapped store wrote once, seals it and deletes the
+  plaintext. Turn it off after the same TTL — while it is on, the raw token
+  is a name the store still answers to, and only a session-shaped object
+  under it is taken for one (a sealed record put there is refused).
+- **A fleet mid-rotation** — one instance writing under `k1`, another under
+  `k2` — keeps one row per token: a write removes the token's rows under
+  the other kids, and a migration deletes the old row only while it is
+  still the row that was read (a newer state written there meanwhile is
+  moved instead).
+- It costs one extra `get` per *older* kid on a miss — an unknown token
+  included — so keep the ring short.
+
+Adopting it over a fleet that already holds sessions is **three deploys**,
+because an instance on the previous deploy must still find every session
+where it looks for it:
+
+| Deploy | `sealedStore(store, …)` | Writes | Reads |
+| --- | --- | --- | --- |
+| 1 | `{ keys, seal: false, acceptPlaintext: true }` | plaintext | both — a sealed row is read where it is, never moved |
+| 2 | `{ keys, acceptPlaintext: true }` | sealed | both — a plaintext row is sealed on its first read |
+| 3 | `{ keys }` | sealed | sealed only |
+
+Move on once every instance runs the deploy before, and leave deploy 2 on
+for the longest session TTL. A key **provider** for the store must answer
+`kids()` — a rotation is walked through it, and a provider without it would
+keep every session under an older kid unreadable the moment `current`
+moved (a `TypeError` at construction, not a mass logout later):
+
+```js
+sealedStore(store, {
+  keys: { current: () => vault.current, get: (kid) => vault.get(kid), kids: () => vault.kids },
+});
+```
+
+What it does not do: hide how many sessions exist or when they are touched,
+or protect a session from someone holding the key — every instance does.
+
+Writes to `session.state` are coalesced: the assignments of one turn become
+**one** `store.set` on a microtask (the initial state of `create()` is
+written immediately), and a session that was finalized in the meantime is
+not written back. Every write after the first is **conditional** —
+`set(token, state, { create: false })` — and a store answering `false` to it
+is saying the row is gone: a logout on another connection or instance landed
+first, and this write must not undo it. The session ends there
+(`session.save` with `reason: 'gone'`) instead of coming back, token and
+all. The memory store, the Redis store (`SET … XX`) and `sealedStore`
+refuse such a write; a custom store may ignore the option and write as
+before.
 
 ## Tokens
 
@@ -198,8 +313,9 @@ new Server({ router, sessions: { transport: myTransport } });
 ```
 
 Besides the raw `headers`/`url`, `read()` receives what the core already
-parsed: `declared` — the merged declared+observed header bag (the ws
-`wrpc_h` query included, capped on the configurable `metaMaxBytes`) — and
+parsed: `declared` — the merged declared+observed header bag (whatever a
+ws client declared, through the `wrpc.h.` subprotocol token or the `wrpc_h`
+query, capped on the configurable `metaMaxBytes`) — and
 `meta`, the sanitized connection-metadata bag with **both** `x-wrpc-meta`
 spellings merged and keys kebab-normalized. Prefer them over re-parsing the
 wire: a strategy with its own parser can silently drift from the core's.
@@ -216,14 +332,16 @@ new Server({ router, sessions: { transport: bearerTransport() } });
 ```
 
 - **`bearerTransport()`** reads `Authorization: Bearer <token>` — the real
-  header where the transport can send one (http/sse, curl); on browser ws,
+  header where the transport can send one (http/sse, curl, ws from Node); on browser ws,
   where the WebSocket constructor cannot set headers, the client offers the
   token as a **`wrpc.bearer.<token>` subprotocol** next to the wire
   revision, so the credential travels as a real upgrade header and **never
   lands in the connect URL** (URLs end up in proxy access logs — see the
   [metadata caveat](./metadata#declared-headers-the-headers-client-option)). A token
-  outside the RFC 7230 token charset (spaces, `=` padding) cannot ride a
-  subprotocol and falls back to the declared-headers query, with a warning.
+  outside the RFC 7230 token charset (spaces, `/`, `=` padding) cannot ride
+  bare and travels inside the declared-headers token instead — base64url, so
+  still a header and still off the URL. Only `carrier: 'query'` or
+  `protocols: []` can put it in the query, and the client warns when it does.
 - **`payloadTransport({ field })`** reads a field of the client's declared
   `meta` — for apps that keep `authorization` semantics out of it. Both
   `x-wrpc-meta` spellings are read, the canonical JSON header and the

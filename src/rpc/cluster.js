@@ -6,6 +6,8 @@ const { Emitter, jsonParse } = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { createLoggerWriter } = require('../logging.js');
 const { DISABLED, SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
+const { hasBytes, encodeAttachments, ENVELOPE_DEPTH } = require('../attachments.js');
+const { ReplayWindow, DEFAULT_REPLAY_WINDOW } = require('../encryption/envelope.js');
 
 // Cluster: presence, introspection and node-to-node messaging across every
 // wrpc instance sharing a backplane. Built ON TOP of the pub/sub contract
@@ -42,6 +44,10 @@ const DEFAULT_REQUEST_TIMEOUT = 2_000;
 // fan-ins used to be able to kill the requester's broker connection
 // (redis's client-output-buffer-limit) and take every room channel with it.
 const DEFAULT_MAX_FETCH = 1_000;
+// How far a signed envelope's clock may sit from this node's — both ways. It
+// is the one bound on what a node that was NOT listening can be replayed: a
+// counter window only remembers what this process heard.
+const DEFAULT_MAX_SKEW = 30_000;
 
 // The rooms an app opts into replicating: an array, a predicate or a
 // RegExp. Null replicates everything — fine for topic rooms, expensive for
@@ -80,6 +86,11 @@ const instanceOfClientId = (id) => {
   return dot > 0 ? id.slice(0, dot) : null;
 };
 
+// Refusal keys remembered for rate-limiting their lines at once (#loud).
+const MAX_REFUSED_KEYS = 1024;
+// Refusals in a row for a sender's clock before it is called 'degraded'.
+const STALE_RUN = 3;
+
 class Cluster extends Emitter {
   #backplane;
   #otel;
@@ -93,6 +104,21 @@ class Cluster extends Emitter {
   #maxFetch;
   #roomsFilter;
   #secret;
+  // Replay protection under `secret` (see #admit): this node's own counter,
+  // and per sender name the life it follows — { epoch, window, newest }.
+  #strict = true;
+  #maxSkew = DEFAULT_MAX_SKEW;
+  #seq = 0;
+  #guards = new Map();
+  // `${from}\0${reason}` -> when it was last warned about: a replayed or
+  // unsequenced envelope repeats, and one warn a presence timeout says it.
+  #refused = new Map();
+  // Senders refused as stale for their clock, by how many times in a row.
+  #skews = new Map();
+  #envelope = null;
+  // False under `attachments: false`: bytes then stay the JSON 1.0 made of
+  // them on every leg, this one included.
+  #bytes = true;
   #generateId;
   // instance -> { epoch, lastSeen, clients, rooms: Map<room, count> }
   #nodes = new Map();
@@ -111,6 +137,7 @@ class Cluster extends Emitter {
    *   count(room), snapshot() -> { clients, rooms }
    *   descriptors(sel) -> Array
    *   join(sel, rooms) / leave(sel, rooms) / disconnect(sel)
+   *   event(sel, name, data)   — deliver one event to the selected client(s)
    *   ask(rooms, name, data, timeout, onCount) -> Promise<{answers, errors}>
    */
   constructor({
@@ -126,13 +153,17 @@ class Cluster extends Emitter {
     this.#backplane = backplane;
     this.#otel = otel ?? DISABLED;
     this.#instance = instance;
-    // The boot marker. instanceId may be STABLE across restarts ('node-1');
-    // the epoch never is, which is how a receiver tells "restarted, replace
-    // its counters" from "same process, merge".
-    this.#epoch = generateUUID();
     this.#local = local;
     this.#log = createLoggerWriter(log);
+    // RpcServer hands down a generator it already resolved and probed, so
+    // this is a trust, not a second validation — an id-per-connection server
+    // must not pay a probe per Cluster either.
     this.#generateId = typeof generateId === 'function' ? generateId : generateUUID;
+    // The boot marker. instanceId may be STABLE across restarts ('node-1');
+    // the epoch never is, which is how a receiver tells "restarted, replace
+    // its counters" from "same process, merge". It comes from the same
+    // generator as every other id so one injection covers the whole server.
+    this.#epoch = this.#generateId();
     const interval = options.presenceInterval > 0 ? options.presenceInterval : DEFAULT_PRESENCE_INTERVAL;
     this.#presenceInterval = interval;
     this.#presenceTimeout = options.presenceTimeout > 0 ? options.presenceTimeout : interval * 3;
@@ -146,6 +177,22 @@ class Cluster extends Emitter {
     // AND holds the shared secret". Node-only by construction (node:crypto)
     // — this file never ships to a browser.
     this.#secret = typeof options.secret === 'string' && options.secret.length > 0 ? options.secret : null;
+    // What a signature alone does not say: WHEN and WHERE. `replay` is new
+    // in 2.0, so a value that is not one of its two is a TypeError rather
+    // than the lenient fallback the 1.0 options above keep.
+    const { replay = 'strict', maxSkew = DEFAULT_MAX_SKEW } = options;
+    if (replay !== 'strict' && replay !== 'accept') {
+      throw new TypeError("RpcServer: options.cluster.replay must be 'strict' or 'accept'");
+    }
+    if (!(Number.isFinite(maxSkew) && maxSkew > 0)) {
+      throw new TypeError('RpcServer: options.cluster.maxSkew must be a positive number of milliseconds');
+    }
+    this.#strict = replay === 'strict';
+    this.#maxSkew = maxSkew;
+    // The envelope codec the core built from `cluster.compression`, or null —
+    // applied AFTER signing, so the signature is over the JSON text as ever.
+    this.#envelope = options.envelope ?? null;
+    this.#bytes = options.attachments !== false;
   }
 
   get instanceId() {
@@ -207,13 +254,16 @@ class Cluster extends Emitter {
       request.settle(true);
     }
     this.#nodes.clear();
+    this.#guards.clear();
+    this.#refused.clear();
+    this.#skews.clear();
   }
 
   // Subscribes with capped-backoff RETRY on rejection: a rejected subscribe
   // used to be terminal and silent — the node kept publishing but could
   // never hear again, a half-connected state nothing surfaced.
   #subscribeTo(channel, attempt = 0) {
-    const handler = (message) => this.#receive(message);
+    const handler = (message) => this.#receive(message, channel);
     return Promise.resolve()
       .then(() => this.#backplane.subscribe(channel, handler))
       .then(
@@ -291,9 +341,19 @@ class Cluster extends Emitter {
       count++;
     }
     this.#post(CLUSTER_CHANNEL, { t: 'digest', clients, n: count, h: hash });
-    const deadline = Date.now() - this.#presenceTimeout;
+    const now = Date.now();
+    const deadline = now - this.#presenceTimeout;
     for (const [instance, node] of this.#nodes) {
       if (node.lastSeen < deadline) this.#evict(instance, 'timeout');
+    }
+    // A sender's replay guard outlives its presence record on purpose — an
+    // evicted node's envelopes are exactly what a replay would bring back —
+    // and is dropped once the clock alone refuses everything it remembers.
+    for (const [instance, guard] of this.#guards) {
+      if (now - guard.newest > this.#maxSkew) this.#guards.delete(instance);
+    }
+    for (const [key, warned] of this.#refused) {
+      if (warned < deadline) this.#refused.delete(key);
     }
   }
 
@@ -302,25 +362,50 @@ class Cluster extends Emitter {
   // it; #request settles immediately on false instead of waiting out a
   // timeout for a question that never went anywhere. (An async publish
   // rejection still only logs — by then at-most-once already owns it.)
-  #post(channel, body) {
+  //
+  // `payload` is the part of the body an APPLICATION wrote — an event's
+  // data, a question's, an answer — and so the only part that can hold
+  // bytes. Presence and commands never do and are never walked; with bytes
+  // in it the envelope leaves as a binary one (see #serialize).
+  #post(channel, body, payload = undefined) {
     const envelope = { v: ENVELOPE_VERSION, from: this.#instance, epoch: this.#epoch, ...body };
+    if (this.#secret !== null) {
+      // What the signature is about to cover, set AFTER the body so nothing
+      // in it can spell them: this process' counter, the channel the
+      // envelope is published on, and the sender's clock. A 1.x node verifies
+      // the HMAC over the whole re-serialized envelope, so the three are
+      // transparent to it. (`ts` is the trace state below, hence `at`.)
+      envelope.seq = ++this.#seq;
+      envelope.ch = channel;
+      envelope.at = Date.now();
+    }
     // The active trace context rides the envelope as tp/ts (ignored by
     // receivers that predate it — the additive-fields rule): the cross-node
     // hop is where a trace is most valuable and used to be exactly where
     // context was dropped.
     this.#otel.inject(envelope);
+    const binary = this.#bytes && payload !== undefined && hasBytes(payload);
+    if (binary && typeof this.#envelope?.encodeFrame !== 'function') {
+      // A Cluster wired by hand, without the core's envelope: JSON would
+      // deliver the {"0":…} object it makes of bytes — a silently wrong
+      // delivery. Refused as undeliverable, and said.
+      this.#log.warn({ event: 'cluster.bytes', type: body.t, name: body.name ?? body.args?.name });
+      return false;
+    }
     let message = null;
     try {
-      message = JSON.stringify(envelope);
-      if (this.#secret) {
-        // Signed over the serialized body, sig appended LAST: the receiver
-        // deletes `sig` from the parsed object and re-serializes — key
-        // order survives a JSON round trip, so the bytes match.
-        envelope.sig = crypto.createHmac('sha256', this.#secret).update(message).digest('hex');
-        message = JSON.stringify(envelope);
-      }
+      message = binary ? this.#frame(envelope) : this.#text(envelope);
     } catch (error) {
       this.#log.error({ err: error, event: 'cluster.serialize', type: body.t });
+      return false;
+    }
+    // A sealer that cannot seal (a keyring without its current key) is
+    // named as such, and nothing leaves: never plaintext across the wire.
+    try {
+      if (binary) message = this.#envelope.encodeFrame(message, channel);
+      else if (this.#envelope !== null) message = this.#envelope.encode(message, channel);
+    } catch (error) {
+      this.#log.error({ err: error, event: 'cluster.seal', type: body.t });
       return false;
     }
     try {
@@ -334,6 +419,30 @@ class Cluster extends Emitter {
       return false;
     }
     return true;
+  }
+
+  // The envelope as JSON text. Signed over the serialized body, sig appended
+  // LAST: the receiver deletes `sig` from the parsed object and re-serializes
+  // — key order survives a JSON round trip, so the bytes match.
+  #text(envelope) {
+    const message = JSON.stringify(envelope);
+    if (this.#secret === null) return message;
+    envelope.sig = crypto.createHmac('sha256', this.#secret).update(message).digest('hex');
+    return JSON.stringify(envelope);
+  }
+
+  // The envelope as a binary attachments frame — what an envelope holding
+  // bytes travels as, the frame a socket carries such a packet in. The
+  // signature is the same construction over the FRAME: the bytes of the
+  // envelope without `sig`, which the receiver gets back by deleting `sig`
+  // from what it decoded and encoding again (the encoder walks keys in
+  // order, as JSON does). A frame never equals a JSON text, so a signature
+  // made for one form cannot be presented under the other.
+  #frame(envelope) {
+    const frame = encodeAttachments(envelope, ENVELOPE_DEPTH);
+    if (this.#secret === null) return frame;
+    envelope.sig = crypto.createHmac('sha256', this.#secret).update(frame).digest('hex');
+    return encodeAttachments(envelope, ENVELOPE_DEPTH);
   }
 
   // -----------------------------------------------------------------------
@@ -379,26 +488,135 @@ class Cluster extends Emitter {
   // Envelope authentication, the receiving half: a message without a valid
   // signature is dropped and logged. Constant-time compare — the signature
   // is the credential here.
-  #verify(envelope, from) {
+  #verify(envelope, from, binary) {
     const sig = envelope.sig;
     if (typeof sig !== 'string' || sig.length === 0) {
-      this.#log.warn({ event: 'cluster.unsigned', from });
+      this.#log[this.#loud(`unsigned\0${from}`)]({ event: 'cluster.unsigned', from });
+      this.#otel.recordClusterVerification('unsigned');
       return false;
     }
     delete envelope.sig;
     let expected = null;
     try {
-      expected = crypto.createHmac('sha256', this.#secret).update(JSON.stringify(envelope)).digest('hex');
-    } catch {
+      const signed = binary ? encodeAttachments(envelope, ENVELOPE_DEPTH) : JSON.stringify(envelope);
+      expected = crypto.createHmac('sha256', this.#secret).update(signed).digest('hex');
+    } catch (error) {
+      // The third way verification fails, and the only one that was silent:
+      // an envelope that will not serialize again (a cycle a replicated
+      // payload picked up), or a secret the crypto layer refuses. Its
+      // siblings above and below both log, so an operator watching
+      // `cluster.*` saw two of three reasons a node went quiet.
+      this.#log.error({ err: error, event: 'cluster.verify', from });
+      this.#otel.recordClusterVerification('error');
       return false;
     }
     const a = Buffer.from(sig);
     const b = Buffer.from(expected);
     if (a.length !== b.length || !crypto.timingSafeEqual(a, b)) {
-      this.#log.warn({ event: 'cluster.badsig', from });
+      this.#log[this.#loud(`badsig\0${from}`)]({ event: 'cluster.badsig', from });
+      this.#otel.recordClusterVerification('badsig');
       return false;
     }
     return true;
+  }
+
+  // Replay protection, the receiving half. It runs AFTER #verify, so every
+  // field read here was written by a node holding the secret; what the
+  // signature cannot say is that the envelope is being heard where and when
+  // it was published, and for the first time:
+  //
+  //   ch     the channel it was published on — a copy moved to another
+  //          instance's inbox, or from an inbox to `cluster`, is refused;
+  //   at     the sender's clock, within `maxSkew` of this one — the bound on
+  //          what a node that was not listening (a fresh boot) can be fed;
+  //   seq    the sender's counter, under a sliding window per life of that
+  //          sender (a receiver hears two of its channels, so gaps are
+  //          normal) — a repeat, or one older than the window, is refused;
+  //   epoch  another life of the same name is followed only when it is
+  //          NEWER than everything accepted from the one it replaces, so an
+  //          envelope of a dead process cannot bring that process back.
+  //
+  // An envelope with no counter is what a 1.x node sends: refused, unless
+  // `replay: 'accept'` says a rolling upgrade is under way.
+  #admit(envelope, from, channel) {
+    const { seq, ch, at, epoch } = envelope;
+    if (seq === undefined) return this.#strict ? this.#replayed(from, channel, 'unsequenced') : this.#unsequenced(from);
+    if (!Number.isSafeInteger(seq) || seq < 0 || typeof at !== 'number') return this.#replayed(from, channel, 'seq');
+    if (ch !== channel) return this.#replayed(from, channel, 'channel');
+    const skew = Date.now() - at;
+    if (Math.abs(skew) > this.#maxSkew) return this.#skewed(from, channel, skew);
+    let guard = this.#guards.get(from);
+    if (guard === undefined || guard.epoch !== epoch) {
+      if (guard !== undefined && at <= guard.newest) return this.#replayed(from, channel, 'stale');
+      guard = { epoch, window: new ReplayWindow(DEFAULT_REPLAY_WINDOW), newest: at };
+      this.#guards.set(from, guard);
+    }
+    if (!guard.window.accept(seq)) return this.#replayed(from, channel, 'seq');
+    if (at > guard.newest) guard.newest = at;
+    if (this.#skews.has(from)) this.#settled(from);
+    return true;
+  }
+
+  // A node whose clock is off by more than maxSkew is refused message after
+  // message, and was isolated in silence: one stale line a presence
+  // timeout, `healthy` true, `fetchClients` complete without it. The line
+  // says by how much now, and STALE_RUN refusals in a row are 'degraded'
+  // ({ instance, reason: 'skew', skew }) — 'recovered' once it is heard.
+  #skewed(from, channel, skew) {
+    const run = (this.#skews.get(from) ?? 0) + 1;
+    if (run <= STALE_RUN) {
+      if (!this.#skews.has(from) && this.#skews.size >= MAX_REFUSED_KEYS) this.#skews.clear();
+      this.#skews.set(from, run);
+    }
+    if (run === STALE_RUN) {
+      void Promise.resolve(this.emit('degraded', { instance: from, reason: 'skew', skew })).catch((error) =>
+        this.#log.error({ err: error, event: 'cluster.listener', name: 'degraded' }),
+      );
+    }
+    return this.#replayed(from, channel, 'stale', { skew });
+  }
+
+  #settled(from) {
+    const run = this.#skews.get(from);
+    this.#skews.delete(from);
+    if (run < STALE_RUN) return;
+    void Promise.resolve(this.emit('recovered', { instance: from })).catch((error) =>
+      this.#log.error({ err: error, event: 'cluster.listener', name: 'recovered' }),
+    );
+  }
+
+  // Always counted; warned once per sender and reason a presence timeout,
+  // debug in between — whoever replays one envelope can replay it in a loop.
+  #replayed(from, channel, reason, extra = null) {
+    this.#otel.recordClusterVerification('replay');
+    this.#log[this.#loud(`${from}\0${reason}`)]({ event: 'cluster.replay', from, channel, reason, ...extra });
+    return false;
+  }
+
+  // Under `replay: 'accept'` an envelope with no counter — a 1.x node's — is
+  // let through, and was let through without a trace: counted, and said
+  // once per sender a presence timeout at info (debug in between), so the
+  // option can be dropped once the last such sender is gone.
+  #unsequenced(from) {
+    this.#otel.recordClusterVerification('unsequenced');
+    const level = this.#loud(`unsequenced\0${from}`) === 'warn' ? 'info' : 'debug';
+    this.#log[level]({ event: 'cluster.unsequenced', from });
+    return true;
+  }
+
+  // The level of a refusal's line: 'warn' once per key (a sender and a
+  // reason, a channel) a presence timeout, 'debug' in between — whoever
+  // can publish one refused envelope can publish it in a loop, and an
+  // unsigned or mis-signed one was a warn per message. Swept with the
+  // presence records, and capped: an unsigned envelope names whatever
+  // sender it likes, and each one was a new key.
+  #loud(key) {
+    const now = Date.now();
+    const last = this.#refused.get(key);
+    if (last !== undefined && now - last <= this.#presenceTimeout) return 'debug';
+    if (last === undefined && this.#refused.size >= MAX_REFUSED_KEYS) return 'debug';
+    this.#refused.set(key, now);
+    return 'warn';
   }
 
   #seen(from, epoch) {
@@ -485,7 +703,7 @@ class Cluster extends Emitter {
       throw new TypeError('Event name must be a non-empty string');
     }
     if (!this.#backplane || this.#closed) return;
-    this.#post(CLUSTER_CHANNEL, { t: 'e', name, data });
+    this.#post(CLUSTER_CHANNEL, { t: 'e', name, data }, data);
   }
 
   /**
@@ -571,48 +789,81 @@ class Cluster extends Emitter {
    * fire-and-forget with the backplane's at-most-once delivery.
    */
   join(target, ...rooms) {
-    this.#command('join', target, rooms);
+    this.#command('join', target, { rooms });
   }
 
   leave(target, ...rooms) {
-    this.#command('leave', target, rooms);
+    this.#command('leave', target, { rooms });
   }
 
   disconnect(target) {
-    this.#command('disconnect', target, undefined);
+    this.#command('disconnect', target, {});
   }
 
-  // The three room ops, in one place. Both call sites below used to spell this
+  /**
+   * One event to ONE client, wherever it is connected: the id names the
+   * instance, so this is an addressed command — one publish, one receiver
+   * — never a broadcast-and-filter. `room` narrows delivery to a client
+   * still in that room (a relay that must not outlive a membership).
+   * Fire-and-forget with the backplane's at-most-once delivery; a local
+   * id is applied directly.
+   */
+  send(clientId, name, data, options = {}) {
+    if (typeof clientId !== 'string' || clientId.length === 0) {
+      throw new TypeError('Cluster.send: clientId must be a non-empty string');
+    }
+    if (typeof name !== 'string' || name.length === 0) {
+      throw new TypeError('Event name must be a non-empty string');
+    }
+    const room = typeof options.room === 'string' ? options.room : undefined;
+    return this.#command('event', clientId, { name, data }, room);
+  }
+
+  // The command ops, in one place. Both call sites below used to spell this
   // chain out themselves and disagreed on the unknown-op case — one fell
   // through to disconnect, the other ignored it — so the default is now the
   // caller's to state: this returns false rather than picking one.
-  #applyOp(op, sel, rooms) {
-    if (op === 'join') this.#local.join(sel, rooms);
-    else if (op === 'leave') this.#local.leave(sel, rooms);
+  // `args` is the envelope's op-specific part: { rooms } for join/leave,
+  // { name, data } for event — the same keys on the wire, so a node that
+  // predates an op ignores it and one that knows it reads it (additive).
+  #applyOp(op, sel, args) {
+    if (op === 'join') this.#local.join(sel, args.rooms);
+    else if (op === 'leave') this.#local.leave(sel, args.rooms);
     else if (op === 'disconnect') this.#local.disconnect(sel);
+    else if (op === 'event') this.#local.event(sel, args.name, args.data);
     else return false;
     return true;
   }
 
-  #command(op, target, rooms) {
+  // `room`, when given, rides inside the selector: a client that left the
+  // room between send and delivery is not selected — a relay bounded by a
+  // membership must not outlive it.
+  #command(op, target, args, room = undefined) {
     const apply = (sel) => {
-      // `op` here is a literal from join()/leave()/disconnect(), never user
-      // input, so an unknown one is a bug in this file and should be loud.
-      if (!this.#applyOp(op, sel, rooms)) throw new Error(`Unknown cluster command op '${op}'`);
+      // `op` here is a literal from join()/leave()/disconnect()/send(), never
+      // user input, so an unknown one is a bug in this file and should be loud.
+      if (!this.#applyOp(op, sel, args)) throw new Error(`Unknown cluster command op '${op}'`);
     };
     // An addressed command rides the target instance's own channel — one
     // publish, one receiver — instead of asking every node to filter.
+    // Answers whether the command was applied here or handed to the
+    // backplane: false is "known not to be delivered".
     if (typeof target === 'string') {
-      const sel = { id: target };
+      const sel = room === undefined ? { id: target } : { id: target, room };
       const instance = instanceOfClientId(target);
-      if (instance === this.#instance || instance === null) return void apply(sel);
-      if (!this.#backplane || this.#closed) return;
-      return void this.#post(instanceChannel(instance), { t: 'cmd', op, sel, rooms });
+      if (instance === this.#instance || instance === null) {
+        apply(sel);
+        return true;
+      }
+      if (!this.#backplane || this.#closed) return false;
+      // Only an event carries what an application wrote (`data`).
+      return this.#post(instanceChannel(instance), { t: 'cmd', op, sel, ...args }, args.data);
     }
     const sel = target && typeof target === 'object' ? target : {};
     apply(sel);
-    if (!this.#backplane || this.#closed) return;
-    this.#post(CLUSTER_CHANNEL, { t: 'cmd', op, sel, rooms });
+    if (!this.#backplane || this.#closed) return true;
+    this.#post(CLUSTER_CHANNEL, { t: 'cmd', op, sel, ...args });
+    return true;
   }
 
   /**
@@ -671,7 +922,7 @@ class Cluster extends Emitter {
       // A question that never left — unserializable args, a synchronously
       // broken backplane — settles NOW: nobody will ever answer it, and
       // waiting out the full timeout would just park the caller.
-      if (!this.#post(CLUSTER_CHANNEL, { t: 'q', q: requestId, op, args })) {
+      if (!this.#post(CLUSTER_CHANNEL, { t: 'q', q: requestId, op, args }, args.data)) {
         this.#requests.delete(requestId);
         clearTimeout(request.timer);
         request.settle(true);
@@ -709,7 +960,9 @@ class Cluster extends Emitter {
       // the requester to stop waiting, and a post-bye answer would arrive
       // from an instance the receiver just evicted.
       if (this.#closed) return;
-      this.#post(instanceChannel(from), { t: 'a', a: requestId, fin, payload });
+      // A fetch reply is descriptors — this node's own JSON, a thousand of
+      // them — and is not walked; an answer is the application's.
+      this.#post(instanceChannel(from), { t: 'a', a: requestId, fin, payload }, op === 'fetch' ? undefined : payload);
     };
     const run = () => {
       if (op === 'fetch') {
@@ -764,13 +1017,28 @@ class Cluster extends Emitter {
     }
   }
 
-  #receive(message) {
+  #receive(message, channel) {
     if (this.#closed) return;
-    const envelope = typeof message === 'string' ? jsonParse(message) : message;
+    let text = message;
+    if (typeof message === 'string') {
+      if (this.#envelope !== null) text = this.#envelope.decode(message, channel);
+      else if (message.charCodeAt(0) === 119 && message.startsWith('wrpc-enc:')) text = null;
+      if (text === null) return void this.#log[this.#loud('encoded')]({ event: 'cluster.encoded' });
+      // Refused by a sealing envelope, which reported why — or our own echo.
+      if (text === undefined) return;
+      // Still sealed: this node holds no keys, and says so.
+      if (typeof text === 'string' && text.charCodeAt(0) === 119 && text.startsWith('wrpc-sealed:')) {
+        return void this.#log[this.#loud(`sealed\0${channel}`)]({ event: 'cluster.sealed', channel });
+      }
+    }
+    // A binary envelope (bytes in an event's data, a question or an answer)
+    // was decoded to its object by the envelope seam already.
+    const binary = typeof message === 'string' && typeof text !== 'string';
+    const envelope = typeof text === 'string' ? jsonParse(text) : text;
     if (!envelope || typeof envelope !== 'object') return;
     const { from, epoch, t } = envelope;
     if (from === this.#instance || typeof from !== 'string' || from.length === 0) return;
-    if (this.#secret && !this.#verify(envelope, from)) return;
+    if (this.#secret && !(this.#verify(envelope, from, binary) && this.#admit(envelope, from, channel))) return;
     this.#otel.recordClusterMessage(typeof t === 'string' ? t : '<unknown>');
     if (t === 'bye') {
       // Only the life we actually track may say goodbye: a bye from a
@@ -799,7 +1067,7 @@ class Cluster extends Emitter {
         this.#post(instanceChannel(from), { t: 'state', ...this.#snapshot() });
         return;
       case 'state':
-        node.syncing = false;
+        node.syncing = 0;
         return void this.#applySnapshot(node, envelope);
       case 'digest': {
         const { clients, n, h } = envelope;
@@ -813,9 +1081,15 @@ class Cluster extends Emitter {
         }
         if (count === n && hash === h) return; // the view is correct
         // One outstanding sync per node: the answering 'state' clears it,
-        // so a slow answer cannot stack requests every tick.
-        if (node.syncing) return;
-        node.syncing = true;
+        // so a slow answer cannot stack requests every tick. The wait is
+        // BOUNDED: the answer travels at-most-once too (our own inbox
+        // channel may not even be subscribed yet on the first digest), and
+        // a lost `state` used to leave `syncing` set forever — every later
+        // digest ignored, the view wrong until the node restarted. After
+        // two presence intervals without an answer the sync is asked again.
+        const now = Date.now();
+        if (node.syncing && now - node.syncing < this.#presenceInterval * 2) return;
+        node.syncing = now;
         this.#post(instanceChannel(from), { t: 'sync' });
         return;
       }
@@ -840,19 +1114,21 @@ class Cluster extends Emitter {
       case 'q':
         return void this.#serve(envelope);
       case 'cmd': {
-        const { op, sel, rooms } = envelope;
+        const { op, sel, rooms, name, data } = envelope;
         // Wire-shape sanity on the most powerful envelope type: op a
         // string, sel a plain object, rooms (when present) an array of
-        // strings — a malformed command is dropped, never partially run.
+        // strings, an event's name a non-empty string — a malformed
+        // command is dropped, never partially run.
         if (typeof op !== 'string') return;
         if (sel !== undefined && (typeof sel !== 'object' || sel === null || Array.isArray(sel))) return;
         if (rooms !== undefined && (!Array.isArray(rooms) || rooms.some((room) => typeof room !== 'string'))) {
           return;
         }
+        if (op === 'event' && (typeof name !== 'string' || name.length === 0)) return;
         try {
           // `op` arrived from a peer: an unrecognised one is ignored, the same
           // way the switch's own default ignores an unrecognised envelope type.
-          this.#applyOp(op, sel ?? {}, rooms);
+          this.#applyOp(op, sel ?? {}, { rooms, name, data });
         } catch (error) {
           this.#log.error({ err: error, event: 'cluster.command', op });
         }

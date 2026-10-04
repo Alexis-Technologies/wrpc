@@ -1,0 +1,727 @@
+'use strict';
+
+// One WebRTC link between two wrpc peers: an RTCPeerConnection carrying two
+// negotiated data channels — one per direction of the protocol's
+// client → server relationship — negotiated through an injected signaling
+// function, kept alive through ICE restarts, and re-dialled from scratch
+// when a restart cannot save it.
+//
+// Roles are a function of the two ids, so both ends compute them without a
+// message: the peer whose id sorts first is the INITIATOR — it makes the
+// offer and is the impolite side of perfect negotiation
+// (https://w3c.github.io/webrtc-pc/#perfect-negotiation-example); the
+// other is polite. The initiator's client writes on the `initiator`
+// channel, the responder's on the `responder` channel.
+//
+// Written against the port (src/webrtc/port.js), so it runs unchanged in a
+// browser and over an injected Node implementation. Two things the port's
+// contract suite taught about real implementations are honoured here: a pc
+// may already be offering the moment a channel is created (libdatachannel),
+// so the initiator offers explicitly and negotiationneeded is a guarded
+// second trigger; and signalingState is not trusted after close() —
+// the link keeps its own state.
+//
+// Everything asynchronous surfaces through events, never a thrown promise
+// nobody awaits: 'state' on every transition, 'open' when both channels
+// are open, 'close' ({ reason, remote }) once when the link is finished for
+// good, 'error' for background failures. A missing 'error' listener downgrades to a log line
+// (Emitter throws on an unheard 'error').
+
+const { Emitter } = require('../utils.js');
+const { createLoggerWriter } = require('../logging.js');
+const { isRtcAdapter, isRtcPeerConnection } = require('./port.js');
+const { negotiateMessageSize, MIN_MESSAGE_SIZE } = require('./framing.js');
+const { sdpFingerprint } = require('./assertions.js');
+const { deferred } = require('./ids.js');
+
+// Candidates held until the remote description arrives; past it they are
+// dropped, said once per dial — a peer used to be able to fill memory
+// with them before ever sending a description.
+const MAX_PENDING_CANDIDATES = 256;
+
+// Negotiated data channels are not described in the SDP: both peers MUST
+// be configured identically, or a channel never opens (it surfaces as the
+// connect timeout). Configurable for an application keeping its own
+// channels on the same connection.
+const DEFAULT_CHANNELS = Object.freeze({ initiator: 0, responder: 1, label: 'wrpc' });
+const MAX_CHANNEL_ID = 65534;
+
+const DEFAULT_CONNECT_TIMEOUT = 30 * 1000;
+const DEFAULT_RESTART_TIMEOUT = 15 * 1000;
+
+const STATES = ['new', 'connecting', 'connected', 'reconnecting', 'failed', 'closed'];
+
+// What a goodbye says on the wire — `{ type: 'close', reason }` — and what
+// a closure reports: the application ended the link, the sender would not
+// have the peer (a failed assertion, its accept() hook), or its redial
+// budget ran out. A close naming none is a goodbye; one naming something
+// else is 'unknown' — a closed set is what keeps the metric's label
+// bounded. 'abandoned' never crosses the wire: it is this side closing
+// without a word (a stale incarnation, a responder giving up).
+const CLOSE_REASONS = Object.freeze(['goodbye', 'refused', 'gave-up']);
+const closeReason = (value) => (value === undefined ? 'goodbye' : CLOSE_REASONS.includes(value) ? value : 'unknown');
+
+const normalizeChannels = (channels = {}) => {
+  if (typeof channels !== 'object' || channels === null) throw new TypeError('channels must be an object');
+  const {
+    initiator = DEFAULT_CHANNELS.initiator,
+    responder = DEFAULT_CHANNELS.responder,
+    label = DEFAULT_CHANNELS.label,
+  } = channels;
+  for (const [name, id] of [
+    ['initiator', initiator],
+    ['responder', responder],
+  ]) {
+    if (!Number.isInteger(id) || id < 0 || id > MAX_CHANNEL_ID) {
+      throw new TypeError(`channels.${name} must be an integer in 0..${MAX_CHANNEL_ID}`);
+    }
+  }
+  if (initiator === responder) throw new TypeError('channels.initiator and channels.responder must differ');
+  if (typeof label !== 'string' || label.length === 0) throw new TypeError('channels.label must be a non-empty string');
+  return Object.freeze({ initiator, responder, label });
+};
+
+// In a browser setTimeout returns a number and there is nothing to unref;
+// in Node a link's timers must not keep a process alive on their own.
+const unref = (timer) => {
+  if (timer && typeof timer.unref === 'function') timer.unref();
+  return timer;
+};
+
+// What travels through signaling: plain data, never the platform object.
+const describe = (description) => ({ type: description.type, sdp: description.sdp });
+const candidateJson = (candidate) => {
+  if (candidate === null || candidate === undefined) return null;
+  if (typeof candidate.toJSON === 'function') return candidate.toJSON();
+  const { candidate: text, sdpMid = null, sdpMLineIndex = null, usernameFragment } = candidate;
+  return usernameFragment === undefined
+    ? { candidate: text, sdpMid, sdpMLineIndex }
+    : { candidate: text, sdpMid, sdpMLineIndex, usernameFragment };
+};
+
+class RtcLink extends Emitter {
+  #localId;
+  #remoteId;
+  #adapter;
+  #configuration;
+  #signal;
+  #channels;
+  #connectTimeout;
+  #restartTimeout;
+  #log;
+
+  #state = 'new';
+  #pc = null;
+  #clientChannel = null;
+  #hostChannel = null;
+  #unbind = null;
+  #maxMessageSize = MIN_MESSAGE_SIZE;
+
+  // Perfect negotiation bookkeeping, per pc.
+  #makingOffer = false;
+  #ignoreOffer = false;
+  #restarting = false;
+  #pendingCandidates = [];
+  #candidatesOverflowed = false;
+
+  #opened = null; // { promise, resolve, reject } for the current dial
+  #connectTimer = null;
+  #restartTimer = null;
+  #closeSent = false;
+  #closure = null; // { reason, remote } once closed
+  // What this side announces in every description it sends (`caps`), and
+  // what the peer's last description announced — the negotiation the
+  // channels have no handshake of their own for (per-message compression).
+  #caps;
+  #peerCaps = null;
+  // The certificate the peer's last description declared: a new one is a
+  // new pc on the other side, whatever this side's pc thinks.
+  #remoteFingerprint = null;
+
+  constructor({
+    localId,
+    remoteId,
+    adapter,
+    signal,
+    configuration = {},
+    channels = DEFAULT_CHANNELS,
+    connectTimeout = DEFAULT_CONNECT_TIMEOUT,
+    restartTimeout = DEFAULT_RESTART_TIMEOUT,
+    log = null,
+    caps = null,
+  }) {
+    super();
+    if (caps !== null && (typeof caps !== 'object' || Array.isArray(caps))) {
+      throw new TypeError('caps must be an object or null');
+    }
+    this.#caps = caps;
+    if (typeof localId !== 'string' || localId.length === 0) throw new TypeError('localId must be a non-empty string');
+    if (typeof remoteId !== 'string' || remoteId.length === 0) {
+      throw new TypeError('remoteId must be a non-empty string');
+    }
+    if (localId === remoteId) throw new TypeError('localId and remoteId must differ');
+    if (!isRtcAdapter(adapter)) throw new TypeError('adapter must satisfy the RtcAdapter contract');
+    if (typeof signal !== 'function') throw new TypeError('signal must be a function');
+    this.#localId = localId;
+    this.#remoteId = remoteId;
+    this.#adapter = adapter;
+    this.#signal = signal;
+    this.#configuration = configuration;
+    this.#channels = normalizeChannels(channels);
+    this.#connectTimeout = connectTimeout;
+    this.#restartTimeout = restartTimeout;
+    this.#log = createLoggerWriter(log ?? globalThis.console).child({ peer: remoteId });
+  }
+
+  get localId() {
+    return this.#localId;
+  }
+
+  get remoteId() {
+    return this.#remoteId;
+  }
+
+  /** The peer whose id sorts first offers; it is also the impolite side. */
+  get initiator() {
+    return this.#localId < this.#remoteId;
+  }
+
+  get polite() {
+    return !this.initiator;
+  }
+
+  get state() {
+    return this.#state;
+  }
+
+  get channels() {
+    return this.#channels;
+  }
+
+  get pc() {
+    return this.#pc;
+  }
+
+  /** The channel MY client writes on (the peer's host reads it). */
+  get clientChannel() {
+    return this.#clientChannel;
+  }
+
+  /** The channel MY host reads (the peer's client writes on it). */
+  get hostChannel() {
+    return this.#hostChannel;
+  }
+
+  /** What the pair negotiated (framing splits at it); the floor until connected. */
+  get maxMessageSize() {
+    return this.#maxMessageSize;
+  }
+
+  /** What the peer's last description announced, or null before one arrived (or when it announced nothing). */
+  get peerCaps() {
+    return this.#peerCaps;
+  }
+
+  get open() {
+    return this.#state === 'connected';
+  }
+
+  /** Dials: creates the connection and both channels; the initiator offers. */
+  start() {
+    if (this.#state !== 'new') throw new Error(`RtcLink.start(): already ${this.#state}`);
+    this.#dial('connecting');
+  }
+
+  /**
+   * A fresh connection after a failure: same ids, same roles, a new pc.
+   * Only from 'failed' — a link that is dialling or connected is left alone,
+   * so a responder that already re-dialled on the initiator's new offer is
+   * not torn down by its own owner's redial.
+   */
+  redial() {
+    if (this.#state !== 'failed') return false;
+    this.#dial('reconnecting');
+    return true;
+  }
+
+  /** Resolves when both channels are open; rejects when this dial fails or the link closes. */
+  waitOpen() {
+    if (this.#state === 'connected') return Promise.resolve();
+    if (this.#state === 'closed') return Promise.reject(new Error('RtcLink is closed'));
+    if (this.#state === 'failed') return Promise.reject(new Error('RtcLink failed'));
+    if (this.#state === 'new') return Promise.reject(new Error('RtcLink not started'));
+    return this.#opened.promise;
+  }
+
+  /**
+   * An ICE restart on the live connection (a NAT rebinding, a network
+   * switch): the channels survive it. Either side may ask; the initiator
+   * does so on its own when ICE fails.
+   */
+  restart() {
+    const pc = this.#pc;
+    if (!pc || this.#state === 'closed' || this.#state === 'failed') return;
+    // One restart at a time: a caller asking again while one is under way
+    // (a heartbeat timing out on every reconnect over the dead path) must
+    // not re-arm the timer, or the restart never gets to fail.
+    if (this.#restarting) return;
+    this.#restarting = true;
+    this.#armRestartTimer();
+    void this.emit('restart', { outcome: 'requested' }).catch((error) => this.#error(error, 'listener.restart'));
+    if (typeof pc.restartIce === 'function') {
+      pc.restartIce();
+      // An implementation without negotiationneeded would leave restartIce
+      // pending forever; a polite peer waits for the initiator's offer, an
+      // initiator offers itself either way.
+      if (this.initiator) void this.#offer();
+    } else {
+      void this.#offer({ iceRestart: true });
+    }
+  }
+
+  /** Why and by whom the link closed — `{ reason, remote }` — or null while it has not. */
+  get closure() {
+    return this.#closure;
+  }
+
+  /** From the signaler: a description, a candidate, or the peer's goodbye. */
+  async receive(message) {
+    if (this.#state === 'closed') return;
+    if (typeof message !== 'object' || message === null) return void this.#log.warn({ event: 'rtc.signal.malformed' });
+    const { type } = message;
+    if (type === 'close') return void this.#finish(closeReason(message.reason), false, true);
+    if (type === 'description') {
+      // Read before the description is applied, so the caps are known by
+      // the time the channels open and the transports attach.
+      const { caps } = message;
+      this.#peerCaps = typeof caps === 'object' && caps !== null && !Array.isArray(caps) ? caps : null;
+      return void (await this.#receiveDescription(message.description));
+    }
+    if (type === 'candidate') return void (await this.#receiveCandidate(message.candidate));
+    this.#log.warn({ event: 'rtc.signal.unknown', type });
+  }
+
+  /** Tells the peer why (a goodbye by default), closes the connection, emits 'close' once. */
+  close(reason = 'goodbye') {
+    if (!CLOSE_REASONS.includes(reason)) {
+      throw new TypeError(`RtcLink.close: reason must be one of ${CLOSE_REASONS.join(', ')}`);
+    }
+    this.#finish(reason, true, false);
+  }
+
+  /**
+   * Closes without telling the peer: after a signaling reset or a change of
+   * incarnation a goodbye would reach a stranger, and a responder giving up
+   * must not end the link its initiator may still rebuild. The peer learns
+   * through the roster or through ICE.
+   */
+  abandon(reason = 'abandoned') {
+    if (reason !== 'abandoned' && !CLOSE_REASONS.includes(reason)) {
+      throw new TypeError(`RtcLink.abandon: reason must be 'abandoned' or one of ${CLOSE_REASONS.join(', ')}`);
+    }
+    this.#finish(reason, false, false);
+  }
+
+  /**
+   * Fails a CONNECTED link from outside — the peer knocked on a link it
+   * lost while this side's pc never noticed — so the owner's redial cycle
+   * rebuilds it. A no-op, false, while dialling, failed or closed.
+   */
+  fail(error) {
+    if (this.#state !== 'connected') return false;
+    this.#fail(error);
+    return true;
+  }
+
+  // ---- dialling
+
+  #dial(state) {
+    // A dial still in progress is replaced: whoever waited on it learns so.
+    const replaced = this.#opened;
+    this.#opened = null;
+    this.#teardownPc();
+    if (replaced) replaced.reject(new Error('RtcLink re-dialled'));
+    const { initiator, responder, label } = this.#channels;
+    const mine = this.initiator ? initiator : responder;
+    const theirs = this.initiator ? responder : initiator;
+    let pc = null;
+    let clientChannel;
+    let hostChannel;
+    try {
+      pc = this.#adapter.createPeerConnection(this.#configuration);
+      if (!isRtcPeerConnection(pc)) {
+        throw new TypeError('adapter.createPeerConnection() did not return a peer connection');
+      }
+      // Both channels exist before the first offer: the SDP needs an
+      // m=application section, and a negotiated channel is never announced.
+      clientChannel = pc.createDataChannel(label, { negotiated: true, id: mine, ordered: true });
+      hostChannel = pc.createDataChannel(label, { negotiated: true, id: theirs, ordered: true });
+    } catch (error) {
+      // No connection to be had (an adapter out of resources, a browser
+      // past its peer-connection cap): a first dial is the caller's to
+      // hear — start() throws — and a redial, made from a timer or a
+      // peer's offer, is reported and leaves the link failed, never an
+      // uncaught exception.
+      if (pc !== null) {
+        try {
+          pc.close();
+        } catch {
+          // Already closed.
+        }
+      }
+      if (state === 'connecting') throw error;
+      this.#error(error, 'dial');
+      return;
+    }
+    this.#pc = pc;
+    this.#makingOffer = false;
+    this.#ignoreOffer = false;
+    this.#restarting = false;
+    this.#pendingCandidates = [];
+    this.#candidatesOverflowed = false;
+    this.#maxMessageSize = MIN_MESSAGE_SIZE;
+    // A fresh pc has seen no remote yet: the first description on it sets
+    // the certificate, whatever the pc before it had seen.
+    this.#remoteFingerprint = null;
+    this.#opened = deferred();
+    clientChannel.binaryType = 'arraybuffer';
+    hostChannel.binaryType = 'arraybuffer';
+    this.#clientChannel = clientChannel;
+    this.#hostChannel = hostChannel;
+    this.#bind(pc, clientChannel, hostChannel);
+    this.#setState(state);
+    this.#armConnectTimer();
+    if (this.initiator) void this.#offer();
+  }
+
+  #bind(pc, clientChannel, hostChannel) {
+    const onNegotiationNeeded = () => {
+      if (this.#pc !== pc) return;
+      // The responder only offers for a restart it asked for itself;
+      // otherwise the initiator's offer is the one that counts.
+      if (!this.initiator && !this.#restarting) return;
+      void this.#offer();
+    };
+    const onIceCandidate = ({ candidate }) => {
+      if (this.#pc !== pc) return;
+      this.#send({ type: 'candidate', candidate: candidateJson(candidate) });
+    };
+    const onConnectionState = () => {
+      if (this.#pc !== pc) return;
+      this.#onConnectionState(pc);
+    };
+    const onOpen = () => {
+      if (this.#pc !== pc) return;
+      if (clientChannel.readyState === 'open' && hostChannel.readyState === 'open') this.#onOpen(pc);
+    };
+    const onChannelClose = (which) => () => {
+      if (this.#pc !== pc) return;
+      void this.emit('channel-close', { which }).catch((error) => this.#error(error, 'listener.channel-close'));
+      // A channel does not come back on its own: the link is down until a
+      // redial, whichever side closed it.
+      if (this.#state === 'connected' || this.#state === 'connecting' || this.#state === 'reconnecting') {
+        this.#fail(new Error(`data channel '${which}' closed`));
+      }
+    };
+    const onChannelError = (event) => {
+      if (this.#pc !== pc) return;
+      this.#error(event?.error ?? new Error('data channel error'), 'channel');
+    };
+    const onClientClose = onChannelClose('client');
+    const onHostClose = onChannelClose('host');
+    pc.addEventListener('negotiationneeded', onNegotiationNeeded);
+    pc.addEventListener('icecandidate', onIceCandidate);
+    pc.addEventListener('connectionstatechange', onConnectionState);
+    pc.addEventListener('iceconnectionstatechange', onConnectionState);
+    clientChannel.addEventListener('open', onOpen);
+    hostChannel.addEventListener('open', onOpen);
+    clientChannel.addEventListener('close', onClientClose);
+    hostChannel.addEventListener('close', onHostClose);
+    clientChannel.addEventListener('error', onChannelError);
+    hostChannel.addEventListener('error', onChannelError);
+    this.#unbind = () => {
+      pc.removeEventListener('negotiationneeded', onNegotiationNeeded);
+      pc.removeEventListener('icecandidate', onIceCandidate);
+      pc.removeEventListener('connectionstatechange', onConnectionState);
+      pc.removeEventListener('iceconnectionstatechange', onConnectionState);
+      clientChannel.removeEventListener('open', onOpen);
+      hostChannel.removeEventListener('open', onOpen);
+      clientChannel.removeEventListener('close', onClientClose);
+      hostChannel.removeEventListener('close', onHostClose);
+      clientChannel.removeEventListener('error', onChannelError);
+      hostChannel.removeEventListener('error', onChannelError);
+    };
+  }
+
+  #teardownPc() {
+    if (this.#unbind) this.#unbind();
+    this.#unbind = null;
+    const pc = this.#pc;
+    this.#pc = null;
+    this.#clientChannel = null;
+    this.#hostChannel = null;
+    this.#clearTimers();
+    if (pc) {
+      try {
+        pc.close();
+      } catch {
+        // already closed by the implementation
+      }
+    }
+  }
+
+  // ---- perfect negotiation
+
+  async #offer(options = undefined) {
+    const pc = this.#pc;
+    if (!pc || this.#makingOffer) return;
+    this.#makingOffer = true;
+    try {
+      if (options?.iceRestart) {
+        const offer = await pc.createOffer({ iceRestart: true });
+        if (this.#pc !== pc) return;
+        await pc.setLocalDescription(offer);
+      } else {
+        await pc.setLocalDescription();
+      }
+      if (this.#pc !== pc) return;
+      await this.#send(this.#describe(pc));
+    } catch (error) {
+      if (this.#pc === pc) this.#error(error, 'offer');
+    } finally {
+      if (this.#pc === pc) this.#makingOffer = false;
+    }
+  }
+
+  async #receiveDescription(description) {
+    if (typeof description !== 'object' || description === null || typeof description.type !== 'string') {
+      return void this.#log.warn({ event: 'rtc.signal.malformed', what: 'description' });
+    }
+    const fingerprint = sdpFingerprint(description.sdp);
+    if (description.type === 'offer') {
+      // An offer for a link that failed (or never dialled on this side) is
+      // the initiator's redial arriving first: follow it onto a fresh pc.
+      // So is an offer under a NEW certificate on a link this side still
+      // sees as connected — the initiator redialled after a failure only
+      // it noticed, and a fresh pc cannot renegotiate the old one: it was
+      // never its own. (An ICE restart keeps the certificate.)
+      const changed =
+        fingerprint !== null && this.#remoteFingerprint !== null && fingerprint !== this.#remoteFingerprint;
+      if (this.#state === 'failed' || this.#pc === null || changed) {
+        if (this.#state === 'new' || this.#state === 'closed') return;
+        this.#dial('reconnecting');
+      }
+    }
+    if (fingerprint !== null) this.#remoteFingerprint = fingerprint;
+    const pc = this.#pc;
+    if (!pc) return;
+    const offerCollision = description.type === 'offer' && (this.#makingOffer || pc.signalingState !== 'stable');
+    this.#ignoreOffer = !this.polite && offerCollision;
+    if (this.#ignoreOffer) return;
+    try {
+      await pc.setRemoteDescription(description);
+      if (this.#pc !== pc) return;
+      if (description.type === 'offer') {
+        await pc.setLocalDescription();
+        if (this.#pc !== pc) return;
+        await this.#send(this.#describe(pc));
+      }
+      await this.#flushCandidates(pc);
+    } catch (error) {
+      if (this.#pc === pc) this.#error(error, 'description');
+    }
+  }
+
+  async #receiveCandidate(candidate) {
+    const pc = this.#pc;
+    if (!pc) return;
+    if (!pc.remoteDescription) {
+      if (this.#pendingCandidates.length < MAX_PENDING_CANDIDATES) this.#pendingCandidates.push(candidate);
+      else if (!this.#candidatesOverflowed) {
+        this.#candidatesOverflowed = true;
+        this.#log.warn({ event: 'rtc.signal.overflow', what: 'candidates', max: MAX_PENDING_CANDIDATES });
+      }
+      return;
+    }
+    await this.#addCandidate(pc, candidate);
+  }
+
+  async #flushCandidates(pc) {
+    const pending = this.#pendingCandidates;
+    this.#pendingCandidates = [];
+    for (let i = 0; i < pending.length; i++) {
+      if (this.#pc !== pc) return;
+      await this.#addCandidate(pc, pending[i]);
+    }
+  }
+
+  async #addCandidate(pc, candidate) {
+    try {
+      await pc.addIceCandidate(candidate ?? null);
+    } catch (error) {
+      // A candidate for an offer we ignored, or an end-of-candidates an
+      // implementation refuses: both harmless, per the recipe.
+      if (candidate === null || candidate === undefined || this.#ignoreOffer) return;
+      if (this.#pc === pc) this.#error(error, 'candidate');
+    }
+  }
+
+  // ---- connection lifecycle
+
+  #onConnectionState(pc) {
+    const ice = pc.iceConnectionState;
+    const connection = pc.connectionState;
+    if (ice === 'failed' || connection === 'failed') {
+      if (this.#restarting) return; // the restart timer decides
+      this.#log.warn({ event: 'rtc.ice.failed', state: this.#state });
+      // Only the initiator restarts, so the two sides never race two
+      // restarts; the responder waits for it under the same timer.
+      if (this.initiator) this.restart();
+      else {
+        this.#restarting = true;
+        this.#armRestartTimer();
+        void this.emit('restart', { outcome: 'requested' }).catch((error) => this.#error(error, 'listener.restart'));
+      }
+      return;
+    }
+    if (connection === 'closed') {
+      if (this.#state !== 'closed' && this.#state !== 'failed') this.#fail(new Error('peer connection closed'));
+      return;
+    }
+    if ((ice === 'connected' || ice === 'completed' || connection === 'connected') && this.#restarting) {
+      this.#restarting = false;
+      this.#clearRestartTimer();
+      this.#log.info({ event: 'rtc.ice.restarted' });
+      void this.emit('restart', { outcome: 'recovered' }).catch((error) => this.#error(error, 'listener.restart'));
+    }
+  }
+
+  #onOpen(pc) {
+    if (this.#state === 'connected') return;
+    // A peer demanding fragments under 1 KiB is refused here, before the
+    // link is 'connected': the failure runs the ordinary redial cycle.
+    let maxMessageSize;
+    try {
+      maxMessageSize = negotiateMessageSize(pc.sctp ?? null);
+    } catch (error) {
+      return void this.#fail(error);
+    }
+    this.#clearTimers();
+    this.#restarting = false;
+    this.#maxMessageSize = maxMessageSize;
+    this.#setState('connected');
+    const opened = this.#opened;
+    if (opened) opened.resolve();
+    void this.emit('open').catch((error) => this.#error(error, 'listener.open'));
+  }
+
+  #fail(error) {
+    if (this.#state === 'closed' || this.#state === 'failed') return;
+    this.#log.warn({ event: 'rtc.link.failed', reason: error.message });
+    const opened = this.#opened;
+    this.#opened = null;
+    this.#teardownPc();
+    this.#setState('failed');
+    if (opened) opened.reject(error);
+  }
+
+  #finish(reason, tell, remote) {
+    if (this.#state === 'closed') return;
+    const closure = Object.freeze({ reason, remote });
+    this.#closure = closure;
+    if (tell && !this.#closeSent) {
+      this.#closeSent = true;
+      this.#send({ type: 'close', reason });
+    }
+    const opened = this.#opened;
+    this.#opened = null;
+    this.#teardownPc();
+    this.#setState('closed', closure);
+    if (opened) opened.reject(new Error('RtcLink is closed'));
+    void this.emit('close', closure).catch((error) => this.#error(error, 'listener.close'));
+  }
+
+  // ---- timers
+
+  #armConnectTimer() {
+    this.#clearConnectTimer();
+    if (!(this.#connectTimeout > 0)) return;
+    this.#connectTimer = unref(
+      setTimeout(() => {
+        this.#connectTimer = null;
+        this.#fail(new Error(`RtcLink connect timeout after ${this.#connectTimeout} ms`));
+      }, this.#connectTimeout),
+    );
+  }
+
+  #armRestartTimer() {
+    this.#clearRestartTimer();
+    if (!(this.#restartTimeout > 0)) return;
+    this.#restartTimer = unref(
+      setTimeout(() => {
+        this.#restartTimer = null;
+        void this.emit('restart', { outcome: 'failed' }).catch((error) => this.#error(error, 'listener.restart'));
+        this.#fail(new Error(`ICE restart did not reconnect within ${this.#restartTimeout} ms`));
+      }, this.#restartTimeout),
+    );
+  }
+
+  #clearConnectTimer() {
+    clearTimeout(this.#connectTimer);
+    this.#connectTimer = null;
+  }
+
+  #clearRestartTimer() {
+    clearTimeout(this.#restartTimer);
+    this.#restartTimer = null;
+  }
+
+  #clearTimers() {
+    this.#clearConnectTimer();
+    this.#clearRestartTimer();
+  }
+
+  // ---- plumbing
+
+  // A description signal, with this side's caps when it has any — every
+  // description, so a redial's fresh pc and an ICE restart announce them
+  // again and the peer never reads a stale answer.
+  #describe(pc) {
+    const message = { type: 'description', description: describe(pc.localDescription) };
+    if (this.#caps !== null) message.caps = this.#caps;
+    return message;
+  }
+
+  #setState(state, extra = null) {
+    const previous = this.#state;
+    if (previous === state) return;
+    this.#state = state;
+    this.#log.debug({ event: 'rtc.link.state', state, previous, ...extra });
+    void this.emit('state', state).catch((error) => this.#error(error, 'listener.state'));
+  }
+
+  #send(message) {
+    let result;
+    try {
+      result = this.#signal(message);
+    } catch (error) {
+      this.#error(error, 'signal');
+      return Promise.resolve();
+    }
+    if (result && typeof result.then === 'function') {
+      return result.then(
+        () => undefined,
+        (error) => this.#error(error, 'signal'),
+      );
+    }
+    return Promise.resolve();
+  }
+
+  #error(error, origin) {
+    this.#log.error({ event: 'rtc.link.error', origin, err: error });
+    if (this.listenerCount('error') === 0) return;
+    void this.emit('error', error).catch(() => {});
+  }
+}
+
+module.exports = { RtcLink, normalizeChannels, DEFAULT_CHANNELS, MAX_CHANNEL_ID, STATES, CLOSE_REASONS };

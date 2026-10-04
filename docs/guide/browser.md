@@ -27,6 +27,7 @@ Two mechanisms, both declared in `package.json`:
 | --- | --- | --- |
 | `index.js` | `browser.js` | The browser barrel excludes the server half entirely. |
 | `sse.js` | `sse.browser.js` | A browser needs the [SSE](./sse) client transport, never the channel registry. |
+| `webrtc.js` | `webrtc.browser.js` | A browser peer needs the [WebRTC](./webrtc) peer, link and signaler client, never the server-side signaling unit. |
 | `src/chunks.js` | `src/chunks.browser.js` | `Buffer` vs `TextEncoder`/`TextDecoder` for [binary framing](./streams). |
 | `src/runtime/node.js` | `src/runtime/browser.js` | `node:crypto` vs `globalThis.crypto` for id generation. |
 
@@ -72,17 +73,23 @@ the run — it is a ratchet, and it runs in CI's lint job.
 
 | Entry | min | min+gzip | budget |
 | --- | ---: | ---: | ---: |
-| `@alexify/wrpc` — browser | 44.3 KB | **14.9 KB** | 15.0 KB |
-| `@alexify/wrpc/sse` — browser | 47.2 KB | **15.9 KB** | 16.0 KB |
+| `@alexify/wrpc` — browser | 82.3 KB | **27.7 KB** | 28.0 KB |
+| `@alexify/wrpc/sse` — browser | 85.5 KB | **28.8 KB** | 29.0 KB |
 | `@alexify/wrpc/query` | 2.7 KB | **1.1 KB** | 2.0 KB |
-| `@alexify/wrpc/auth` | 3.3 KB | **1.5 KB** | 2.0 KB |
-| `@alexify/wrpc` — node | 158.2 KB | 52.2 KB | — |
+| `@alexify/wrpc/auth` | 3.9 KB | **1.8 KB** | 2.0 KB |
+| `@alexify/wrpc/deflate` | 10.7 KB | **4.4 KB** | 5.0 KB |
+| `@alexify/wrpc/encryption` — browser | 31.5 KB | **11.5 KB** | 12.0 KB |
+| `@alexify/wrpc/webrtc` — browser | 179.2 KB | **58.3 KB** | 59.0 KB |
+| `@alexify/wrpc` — node | 300.4 KB | 101.0 KB | — |
 
 The Node-only entries carry no budget because their gzip size is not a shipping
 cost; they are measured so a regression is *visible*, not gated.
 
 The SSE entry is the browser entry **plus** the SSE transport — you pay the
-extra ~1 KB only if you import it.
+extra kilobyte only if you import it. [`@alexify/wrpc/deflate`](./compression#deflate)
+and [`@alexify/wrpc/encryption`](./encryption) sit outside every other entry:
+only a page that imports them pays for them. The [WebRTC](./webrtc) entry is a client
+**and** a server (a peer serves a router), which is what its budget buys.
 [`@alexify/wrpc/query`](./query) requires nothing at all (that is what keeps it
 at 1 KB); it takes the client and your `QueryClient` by injection.
 
@@ -96,20 +103,24 @@ comment saying why.
 
 | Transport | Use it when |
 | --- | --- |
-| `ws` (default) | Normal. Full duplex, binary streams, everything on this site. |
+| `ws` (default) | Normal. Full duplex, binary streams, every feature a connection carries. |
 | `http` | One-shot calls with no connection — no events, no subscriptions, no streams. |
 | `sse` | WebSockets are blocked by a proxy or corporate network. Text only. |
-| `event` | The connection lives in a Service Worker; the page talks over a `MessagePort`. |
+| `wt` | [WebTransport](./wt) over HTTP/3 (experimental): binary streams that do not block each other or the calls, unreliable events; `['wt', 'ws']` falls back where the browser has none. In the main entry — nothing to import. |
+| `event` | The connection lives in a worker — a Service Worker or a SharedWorker; the page talks over a `MessagePort`. |
+| `webrtc` | Peer to peer: the other end is another browser (or a Node process), reached through a [`WrpcPeer`](./webrtc)'s `link` or a data `channel` you negotiated yourself — not a URL. |
 
 `WrpcClient.transport` is a plain lookup table on purpose, and a subpath
 entrypoint registers into it at require time — which is how `@alexify/wrpc/sse`
 adds `'sse'` without the core knowing it exists. Registering your own works the
 same way.
 
-## Service Workers and offline
+## Workers: Service Worker and SharedWorker
 
 The `event` transport is how one socket serves every tab and survives a page
-reload: the worker holds the connection, the page talks to the worker.
+reload: the worker holds the connection, the page talks to the worker over a
+private `MessagePort`. The worker side is the same `WrpcClientProxy` whichever
+kind of worker it is.
 
 ```js
 // in the Service Worker
@@ -120,8 +131,40 @@ await proxy.open();
 const client = await WrpcClient.connect(url, { worker: navigator.serviceWorker.controller });
 ```
 
-The packets are identical on both hops, so nothing above the transport changes.
-See [Client → Service Workers](./client#service-workers).
+```js
+// in the shared worker (wrpc-worker.js)
+const proxy = new WrpcClientProxy({ url: 'wss://api.example.com' });
+await proxy.open();
+
+// in the page
+const worker = new SharedWorker('/wrpc-worker.js', { name: 'wrpc' });
+const client = await WrpcClient.connect(url, { worker });
+```
+
+The packets are identical on both hops, so nothing above the transport changes
+— [binary attachments](./streams#attachments) included: a frame crosses the
+port as bytes and is routed by the packet inside it, an answer to the tab
+that asked, an event to every tab.
+Pick the worker by what you need from it: a **Service Worker** also serves the
+page offline and outlives a reload, at the price of registration and a
+lifecycle the browser controls; a **SharedWorker** is only the shared socket —
+no registration, alive exactly as long as a tab of the site is — and can point
+at another origin through the proxy's `url`. `worker` also takes a dedicated
+`Worker` or a raw `MessagePort`. See [Client → Workers](./client#workers).
+
+::: warning Browser support
+SharedWorker reaches most of the mobile web now (Chrome and Firefox for
+Android, recent Safari on iOS), but Samsung Internet and Opera Mobile still
+don't ship it — feature-detect (`typeof SharedWorker !== 'undefined'`) and
+fall back to a direct connection rather than assuming it. The proxy releases
+a closed tab's port on the page transport's goodbye (`close()` on the
+client) and on the `MessagePort` `close` event; a tab that vanishes without
+either, on an engine that never fires the event, keeps its entry until the
+worker goes — as it always has for a Service Worker. A release cancels what
+the tab was still waiting for upstream (its calls, its subscriptions), and
+an answer arriving for a tab that left is dropped, never handed to the
+others; events and server-opened streams still reach every tab.
+:::
 
 The client also listens to `online`/`offline`: going offline stops the
 reconnect timer instead of burning retries, and coming back reconnects

@@ -30,6 +30,12 @@ async function main() {
     return;
   }
 
+  const skipped = stack.skip?.();
+  if (skipped) {
+    console.log(`RESULT_JSON:${JSON.stringify({ skipped })}`);
+    return;
+  }
+
   const handle = await stack.start();
   const results = [];
   results.push(await bench(`${stack.label} — small payload`, () => handle.call(smallPayload)));
@@ -43,6 +49,9 @@ async function main() {
   await handle.stop();
 
   console.log(`RESULT_JSON:${JSON.stringify(results)}`);
+  // A native stack (libquiche, libdatachannel) can hold a thread past its
+  // own close; the orchestrator waits on this process, so it must end.
+  setTimeout(() => process.exit(), 2000).unref();
 }
 
 main();

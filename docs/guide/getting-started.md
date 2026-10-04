@@ -1,30 +1,38 @@
 # Getting Started
 
-`@alexify/wrpc` is a WebSocket-based RPC protocol for Node.js and browsers: you
+wRPC (`@alexify/wrpc`) is a Web RPC protocol for Node.js and browsers: you
 declare a **router** of procedures on the server, and the client builds a typed
 object out of it at runtime. Calls, server → client events, subscriptions,
-rooms and binary streams all ride on one connection — and the package has
-**no runtime dependencies at all**.
+rooms and binary streams ride on whichever transport the client picks — a
+WebSocket, HTTP, Server-Sent Events, WebTransport, a WebRTC data channel or a
+message broker — and the package has **no runtime dependencies at all**.
 
 ## How it fits together
 
-One connection carries every feature on this site, and every box on the server
-side is replaceable without touching your handlers:
+One router serves every feature on this site, over every transport, and every
+box on the server side is replaceable without touching your handlers:
 
 ```mermaid
 flowchart LR
   subgraph C["browser or Node.js"]
     direction TB
     app["your code<br>client.api.chat.send()"] --> cl["WrpcClient"]
-    cl --> ctr["transport<br>ws · http · sse · event"]
+    cl --> ctr["transport<br>ws · http · sse · wt<br>webrtc · broker · event"]
   end
 
   ctr <==> eng
+  ctr <==> h3
+  ctr <==> dc
+  ctr <==> mq[("message broker")]
+  mq <==> bk
   curl["curl · partner<br>GET /v1/orders/:id"] --> eng
 
   subgraph S["Node.js server"]
     direction TB
     eng["engine<br>node · uWebSockets.js"] --> tr["ServerTransport"]
+    h3["HTTP/3 host<br>WebTransport"] --> tr
+    dc["data channel<br>WebRTC"] --> tr
+    bk["broker binding"] --> tr
     eng --> rest["REST trie<br>declared http routes"]
     rest --> disp
     tr --> disp["dispatcher"]
@@ -33,15 +41,18 @@ flowchart LR
     disp -.-> st["sessions · rooms · cluster"]
   end
 
-  st -.-> bp[("backplane<br>Redis or memory")]
+  st -.-> bp[("backplane<br>Redis · NATS · RabbitMQ<br>Kafka · memory")]
 ```
 
-The client talks to an **engine** over a transport; the engine hands raw frames
-to a `ServerTransport`, the **dispatcher** turns them into packets, and the
-**router** decides which procedure runs. Swap the engine ([uWebSockets.js](./adapters/uws)),
-swap the transport ([SSE](./sse)), or mount the whole thing inside
-[Fastify](./adapters/fastify) or [Express](./adapters/express) — the router and
-the wire protocol do not change.
+The client reaches the server over a transport: a WebSocket, HTTP or SSE
+through the **engine**, [WebTransport](./wt) through an injected HTTP/3 host, a
+[WebRTC](./webrtc) data channel, or a [message broker](./brokers/rpc). Each
+hands its frames to a `ServerTransport`, the **dispatcher** turns them into
+packets, and the **router** decides which procedure runs. Swap the engine
+([uWebSockets.js](./adapters/uws)), add a transport, or mount the whole thing
+inside [Fastify](./adapters/fastify) or [Express](./adapters/express) — the
+router and the wire protocol do not change. [Client ›
+Transports](./client#transports) has what each transport carries.
 
 ## Installation
 
@@ -87,9 +98,10 @@ await server.listen();
 server on `'http'` behind it is just as valid.
 :::
 
-That server answers on two paths under `basePath` (`/api` by default):
-a WebSocket upgrade, and plain HTTP. See [Server](./server) for everything the
-shell takes.
+That server answers under `basePath` (`/api` by default): a WebSocket
+upgrade, plain HTTP and Server-Sent Events. WebTransport, WebRTC and broker
+clients reach the same router through their own hosts. See [Server](./server)
+for everything the shell takes.
 
 ## Your first client
 
@@ -254,9 +266,15 @@ live in [Typed client](./typed-client).
 | move files over the connection | [Binary streams](./streams) |
 | tune reconnect, batching, heartbeat | [Client](./client) |
 | run inside fastify / express / uWebSockets.js | [Adapters](./adapters/fastify) |
+| pick a transport, or several | [Client › Transports](./client#transports) · [Multiple backends](./multiple-backends) |
 | serve realtime where WebSockets can't go | [Server-Sent Events](./sse) |
+| run over HTTP/3, with streams that do not block each other | [WebTransport](./wt) |
+| connect browsers to each other, with no server in the data path | [WebRTC](./webrtc) · [identity and trust](./webrtc-trust) |
+| call between services, or feed clients from a durable log | [Message brokers](./brokers) |
 | span more than one process | [Cluster](./cluster) |
 | carry per-call metadata | [Metadata](./metadata) |
 | cache and invalidate in React | [TanStack Query](./query) |
+| save bandwidth, or seal what TLS does not cover | [Compression](./compression) · [Encryption](./encryption) |
+| get ready for production | [Security](./security) · [Running in production](./production) · [Rate limiting](./rate-limiting) |
 | see calls in your traces | [OpenTelemetry](./telemetry) |
 | know exactly what goes over the wire | [Wire protocol](../reference/protocol) |

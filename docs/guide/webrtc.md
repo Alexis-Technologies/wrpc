@@ -1,0 +1,617 @@
+# WebRTC
+
+Two browsers can talk wRPC to each other directly, with no server in the
+data path. `@alexify/wrpc/webrtc` puts a full wRPC endpoint on each end of a
+WebRTC data channel: every peer serves a router and calls the other's — calls,
+events, ask/respond, subscriptions with resume, binary streams with
+backpressure, heartbeat and reconnect — over the same packets a WebSocket
+carries. A wRPC server is still involved once, for **signaling**: peers find
+each other and exchange connection descriptions through it, and it can be
+any wRPC server, on any transport.
+
+## Using it
+
+On the server, spread the built-in signaling unit into your router and add
+its disconnect hook. Any wRPC server will do — the built-in `Server`, a
+fastify or express host, a cluster of them:
+
+```js
+const { Server, defineRouter } = require('@alexify/wrpc');
+const { createSignalingUnit, createSignalingHooks } = require('@alexify/wrpc/webrtc');
+
+const router = defineRouter(
+  { ...createSignalingUnit(), ...myUnits },
+  { hooks: createSignalingHooks() },
+);
+new Server({ router, port: 8000 }).listen();
+```
+
+In the browser, a peer is a router, a signaler over an ordinary client, and
+the native `RTCPeerConnection`:
+
+```js
+import { connect } from '@alexify/wrpc';
+import { WrpcPeer, wrpcSignaler, defineRouter, procedure } from '@alexify/wrpc/webrtc';
+
+const router = defineRouter({
+  chat: {
+    hello: procedure({ handler: async (context) => `hi, ${context.session.data.peer}` }),
+  },
+});
+
+const client = await connect('wss://host/api');
+const peer = new WrpcPeer({ router, signaler: wrpcSignaler(client) });
+
+const mesh = peer.join('lobby', { data: { name: 'ada' } });
+mesh.on('join', async ({ id, data }) => {
+  const link = mesh.link(id);
+  await link.load('chat');
+  console.log(data.name, 'says', await link.api.chat.hello());
+});
+```
+
+The webrtc browser entry exports `defineRouter`, `procedure`, `tracked` and
+`createEventLog` — a browser peer defines its router with them; the main
+browser entry leaves them out to stay under [its budget](./browser#bundle-size).
+
+### Node as a peer
+
+The core binds to **no** Node WebRTC package. It talks to a small
+W3C-shaped structural contract (`RtcAdapter`: `createPeerConnection()`
+returning something with `createDataChannel`, `createOffer`,
+`setLocalDescription`, ...), which a browser satisfies natively and which
+you satisfy in Node by injection. Anything W3C-shaped is one line:
+
+```js
+const { createW3cAdapter, WrpcPeer } = require('@alexify/wrpc/webrtc');
+const peer = new WrpcPeer({
+  router,
+  signaler: wrpcSignaler(client),
+  rtc: createW3cAdapter(require('node-datachannel/polyfill')),
+});
+```
+
+A library with its own event API (werift, say) needs a wrapper that presents
+the contract — `isRtcAdapter`, `isRtcPeerConnection` and `isRtcDataChannel`
+are exported so a wrapper can check itself. One rule a wrapper has to keep
+that a structural check cannot see: `send(data)` **copies before it
+returns**, and copies the view it was given — `Buffer.from(view)`, never
+`Buffer.from(view.buffer)`. wRPC frames every fragment of a message into
+one reused buffer; a `send` that keeps the view, or takes the whole
+`ArrayBuffer` under it, delivers the last fragment in place of all of them. The repo runs the shared port
+contract against node-datachannel by hand
+(`WRPC_RTC=node-datachannel node --test tests/webrtc/node-datachannel.integration.test.js`);
+it is a devDependency there and nowhere else.
+
+## How a link works
+
+One `RTCPeerConnection` per pair of peers, carrying **two negotiated data
+channels** — one per client→host direction. That is what lets the ordinary
+`WrpcClient` and the ordinary server dispatcher speak across the link
+unchanged: each channel is a plain ordered wire with one client on one end
+and one host on the other, so there is never any doubt whose callback an id
+belongs to, and the "stream packet, then its chunks" ordering holds.
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant A as peer A (lower id)
+  participant S as signaling server
+  participant B as peer B
+  A->>S: signaling/signal { to: B, description: offer }
+  S-->>B: signaling/signal { from: A, description: offer }
+  B->>S: signaling/signal { to: A, description: answer }
+  S-->>A: answer
+  A-->>B: ICE candidates (trickled the same way)
+  Note over A,B: one RTCPeerConnection, two negotiated channels
+  A->>B: channel 0 — A.WrpcClient → B.PeerHost
+  B->>A: channel 1 — B.WrpcClient → A.PeerHost
+```
+
+**Roles are decided by id order alone.** The peer with the lower id is the
+*initiator*: it makes the offer, it restarts ICE, it redials after a failure.
+The other is the polite responder of the
+[perfect negotiation](https://developer.mozilla.org/en-US/docs/Web/API/WebRTC_API/Perfect_negotiation)
+pattern. `peer.connect(id)` works from either side — a responder that wants a
+link sends the initiator a `connect` knock over signaling and the initiator
+dials — so two peers can never glare on simultaneous offers, and a responder
+recovering from a failed link asks the same way.
+
+Negotiated channels are never described in SDP, so **both peers must
+configure the same channel ids**. The defaults are `0` and `1` with the
+label `wrpc`; an application that keeps its own channels on the same
+connection moves them with `channels: { initiator, responder, label }` — on
+both sides, or the link never opens and fails on `connectTimeout`.
+
+### Framing
+
+A data channel has a message-size limit (16 KiB is the only value every
+implementation agrees on; the negotiated `sctp.maxMessageSize` is used up to
+a 256 KiB ceiling), and wRPC packets — a batch of calls, a 64 KiB stream
+chunk — exceed it. Every message therefore travels as binary behind a
+**one-byte header**: a kind bit (text packet or binary chunk), a FIN bit, a
+deflate bit ([compression](#compression), off unless both ends turned it
+on), five reserved bits. Fragments of one message are sent back to back on
+the ordered channel, so no message id is needed. The
+[protocol reference](../reference/protocol#webrtc) has the exact layout.
+
+## Symmetric peers
+
+A `PeerLink` is one connected peer, **both directions**:
+
+| Member | Which direction | What it is |
+| --- | --- | --- |
+| `link.remote` | this peer → the other | A `WrpcClient` over channel *mine*: `load()`, `api`, `call()`, `respond()` — everything a client does against a server. |
+| `link.client` | the other → this peer | The server-side `Client` this router made for the peer: `send()`, `ask()`, `createStream()`, rooms — everything a server does to a client. |
+
+`link.api`, `link.load()`, `link.call()`, `link.respond()` delegate to
+`remote`; `link.send()`, `link.ask()`, `link.createStream()` address the peer
+through `client`. So "call the other peer" is `link.api.chat.hello()`, and
+"push the other peer a file" is `link.createStream(name, size)`.
+
+Events keep the same two directions they have between a client and a
+server. `link.remote.sendEvent('chat/ping', data)` reaches the other peer's
+router — its unit's reserved `on` map. `link.send('chat/note', data)` (and
+`mesh.broadcast`) goes host → remote and arrives on the other peer's
+**unit emitter**, `link.api.chat.on('note', handler)` after `load()`, exactly
+where a server's events reach a client. A peer that wants to *receive*
+broadcasts therefore listens on each link's `api`, not in its router.
+
+Handlers run on a `PeerHost`: a router, the dispatcher and one `Client` per
+attached peer — the pieces of `RpcServer` a peer needs, with no sessions,
+cluster or HTTP, and browser-safe. It satisfies the same `ClientHost`
+contract a handler sees as `context.server`, so `context.server.to(room)`
+works on a peer exactly as on a server.
+
+### Trust
+
+wRPC procedures default to `access: 'session'`, and there is no session
+manager in a browser. Under the default `trust: 'link'`, every attached
+`Client` gets a frozen pseudo-session:
+
+```js
+context.session;              // { token: '<peer id>', data: { ...rosterData, peer, room } }
+context.session.data.peer;    // who is calling — the link's id, never what the roster data said
+```
+
+`peer`, `room` (and `claims`, below) are written over the roster data, and
+a `join` whose `data` names one of them is refused (400): what a peer says
+about itself at `join` cannot shadow who it is.
+
+The reasoning: a link only exists because the signaling server admitted
+both peers (its unit is `access: 'session'` by default, and it runs your
+`authorize` hook), and because this peer's `accept` hook let the link in.
+So "there is a link" already means "the server vouched for this peer", and
+server routers move to a peer unchanged. `startSession` and friends are
+refused with a coded `400` on a peer. `trust: 'none'` leaves `session` null,
+in which case peer procedures must be `access: 'public'` and authorize
+themselves in hooks from `context.meta.data.peer`.
+
+A peer that wants *proof* rather than the relay's word turns on
+**trust assertions**: the signaling server signs a token per peer, bound to
+the certificate that peer dials with, every other peer verifies it with the
+server's public key before the link is allowed, and `trust: 'assertion'`
+makes the verified claims the session (`context.session.data.claims`). The
+model, the server and peer options and the wire format are on their own
+page: [WebRTC: identity and trust](./webrtc-trust).
+
+## Signaling
+
+### The built-in unit
+
+`createSignalingUnit()` is a router fragment: `whoami`, `join`, `leave`,
+`members`, and the inbound `signal` event, relayed with `RpcServer.sendTo`.
+Every roster member, `join` and signal carries the peer's `id`, its
+`instance` and its routable `address` (the signaling client id), so a relay
+never resolves a peer id on the hot path; `leave` carries a `reason`
+(`'left'`, `'disconnect'` or `'replaced'`). `members` answers only a
+member of the room (403 otherwise), and a `join` whose `data` carries
+`peer`, `room` or `claims` is refused (400) — those names are written by
+the host half, not by the peer.
+
+| Option | Default | Meaning |
+| --- | --- | --- |
+| `name` | `'signaling'` | The unit name; the client helper must agree. |
+| `access` | `'session'` | Applied to every method and the event. |
+| `identity` | the client id | `(context, { proposed }) => id`: the peer id of a connection — see [Identity](#identity). |
+| `duplicate` | `'replace'` | A second connection under a held id takes it over (the first hears `replaced`); `'refuse'` answers it `409`. |
+| `authorize` | — | `(context, { action: 'join' \| 'signal', room, ... })`: return `false` to refuse with `403`, or throw a coded error of your own. |
+| `limits` | `{ maxRooms: 32, maxDataBytes: 4096, maxSignalBytes: 65536, maxResolves: 4 }` | Per-connection ceilings: rooms joined at once (`429` past it), the JSON bytes of a join's `data` and of a relayed signal (`413`), and the room lookups in flight for signals to peers this instance does not hold (`503`; one lookup per room is shared by every signal waiting on it). `false` switches one off. |
+| `relay` | `'room'` | A signal reaches `to` only while both peers share the room; `'any'` relays to any connected id. |
+| `prefix` | `'rtc:'` | Signaling rooms live under it in the room registry, apart from your own rooms. |
+
+`createSignalingHooks()` returns the router-level `onDisconnect` that
+announces a dropped signaling connection's leave (`reason: 'disconnect'`) to
+the rooms it was in — unless a newer connection took its id meanwhile, in
+which case the peer is still there and nothing is announced.
+
+### Identity
+
+By default a peer's id **is** its signaling client id: server-issued, so
+nobody can claim another's, and instance-prefixed, so the relay is one
+addressed cluster command. It changes on every reconnect, though, and it
+says nothing about *who* the peer is. The `identity` strategy makes it the
+application's:
+
+```js
+createSignalingUnit({
+  identity: (context, { proposed }) => context.session.data.userId,
+});
+```
+
+The hook runs once per connection, on `whoami` (or lazily on the first
+`join`/`signal`), with the id the client proposed as one input:
+
+```js
+const signaler = wrpcSignaler(client, { identity: 'alice' }); // or () => Promise<string>
+await peer.start(); // 'alice', if the server agrees
+await peer.connect('bob');
+```
+
+The default strategy ignores the proposal; yours may adopt it, map it, or
+throw a coded error. Two things follow from a stable id:
+
+- **Links survive a signaling reconnect.** The signaler comes back, is the
+  same id again (`reset` with `id === previous`) and re-joins its rooms; the
+  `WrpcPeer` keeps every link, and a `Mesh` on the other side only marked
+  the member `away` for the interval — its link never needed signaling to
+  keep working. A `reset` under a *changed* id still closes them all.
+- **Incarnations.** One id may come from two endpoints — a second tab, or a
+  tab reloaded before the server noticed the first socket die. Each
+  `wrpcSignaler` carries one `instance` (from its `generateId` option, a
+  uuid by default), stamped on everything the server relays about it. A
+  signal or roster entry for a known id under **another** instance means a
+  new endpoint: the stale link is abandoned without a goodbye (one would
+  land on the newcomer) and the peer relinks. Within one server instance
+  `duplicate` decides the clash at identification time: `'replace'` hands
+  the id to the newer connection and tells the older one `replaced` — its
+  `WrpcPeer` abandons its links, emits `'replaced'` and closes — while
+  `'refuse'` answers the newcomer `409`. Cluster-wide uniqueness is the
+  strategy's business (claim the id in your store and throw `409` on a
+  loss); rosters collapse a duplicate to the newest.
+
+`context.client.data.rtc` holds the connection's `{ id, instance, since,
+rooms }`, which is what travels in cluster descriptors and builds the
+roster on any node.
+
+### Your own
+
+`WrpcPeer` takes anything with the shape:
+
+```ts
+interface Signaler {
+  readonly id: string | null;
+  readonly instance?: string | null;                 // this incarnation of the id (optional)
+  ready(): Promise<string>;                          // this peer's id
+  send(to, message, { room?, address? }): void | Promise<void>;
+  on('signal', ({ from, instance?, address?, room, message }) => void);   // an inbound one
+  off(event, handler);
+}
+interface RosterSignaler extends Signaler {          // what Mesh needs on top
+  join(room, data?): Promise<Array<{ id, instance?, address?, data }>>;   // the other members
+  leave(room): Promise<void>;
+  on('join' | 'leave' | 'reset' | 'replaced', handler);   // leave: { id, reason? }
+}
+```
+
+`instance`, `address` and `reason` are optional: a signaler that carries
+none of them still works, and a peer then never mistakes a reconnect for a
+new incarnation (or a dropped connection for a departure).
+
+A `message` is `{ type: 'description', description }`, `{ type: 'candidate',
+candidate }`, `{ type: 'close', reason? }` or `{ type: 'connect' }` — opaque to the
+signaler, which only moves it. `isSignaler` / `hasRoster` check the shape.
+A hand-rolled one over socket.io, a hosted signaling service, or a
+`MessagePort` between two tabs of one browser all qualify.
+
+## Your own connection
+
+Everything above sits on three levels, and you can enter at any of them:
+
+| Level | wRPC owns | You own |
+| --- | --- | --- |
+| `WrpcPeer` / `Mesh` | The peer connection, negotiation, ICE restart, redial, both directions, the roster | A router and a signaler |
+| `RtcLink` | One `RTCPeerConnection`, perfect negotiation, ICE restart, two channels | Signaling and the decision to redial |
+| **A data channel** | The wire: framing, packets, streams, heartbeat | The peer connection, signaling, recovery |
+
+The lowest level is the `event` transport's arrangement: you already have an
+`RTCDataChannel` — negotiated by your own signaling, perhaps next to your
+game's or media's channels on the same connection — and wRPC speaks on it.
+On the client, `channel` takes the place of `link`:
+
+```js
+import { connect } from '@alexify/wrpc';
+import '@alexify/wrpc/webrtc';                       // registers the transport
+
+const pc = new RTCPeerConnection(config);
+const dc = pc.createDataChannel('wrpc', { negotiated: true, id: 0 });
+// ... your offer/answer exchange ...
+const client = await connect('webrtc:server', { transport: 'webrtc', channel: dc, reconnect: false });
+```
+
+The other end is whoever holds the pair of that channel. A Node process
+attaches it to an ordinary `RpcServer` — sessions, rooms, cluster and all —
+the way it attaches a `MessagePort`:
+
+```js
+import { attachChannel } from '@alexify/wrpc/webrtc';
+attachChannel(rpc, dc, { peer: 'browser-7', headers, data });   // the attachPort of WebRTC
+```
+
+A browser answers with a `PeerHost` over the host half of the transport:
+
+```js
+import { PeerHost, RtcPeerTransport } from '@alexify/wrpc/webrtc';
+host.attach(new RtcPeerTransport(dc, { peer: 'other' }), { peer: 'other' });
+```
+
+What the level does **not** do is what a link would: no ICE restart, no
+redial. A static channel is one connection — when it closes, the client's
+`open()` refuses it, so pass `reconnect: false` and rebuild the client when
+you have a new one. To plug your own recovery into the client's reconnect
+cycle instead, hand over a **factory**: every (re)open asks it for the next
+channel, and subscriptions resume with their `lastEventId` as on any other
+transport.
+
+```js
+const client = await connect('webrtc:server', {
+  transport: 'webrtc',
+  channel: async () => {
+    const pc = await renegotiate();                  // your signaling, again
+    return pc.createDataChannel('wrpc', { negotiated: true, id: 0 });
+  },
+});
+```
+
+Two more differences from the link level. The transport cannot see the peer
+connection, so it fragments at the 16 KiB interop floor unless told
+otherwise — pass `maxMessageSize: negotiateMessageSize(pc.sctp)` (on the
+client through `connect()`'s options, on the server through
+`attachChannel()`'s) once the connection is up to use what it really allows;
+each side fragments independently, so the two need not agree. And a raw
+channel carries no request, so `attachChannel` starts the client
+with no session, exactly as `attachPort` does: the default `access:
+'session'` answers 403 until the application establishes one, and what it
+knows about the peer goes in `headers` / `data`, where handlers read it from
+`context.meta`. (A `PeerHost` keeps its `trust: 'link'` pseudo-session either
+way.)
+
+`RpcServer.attach(transport)` is the seam under `attachChannel`: any
+persistent transport that announces inbound text as `'packet'` and bytes as
+`'chunk'` events is a client, WebRTC or not. That is also why `attachChannel`
+lives in this subpath and not on the server — the core knows no framing;
+the function builds an `RtcPeerTransport` over the channel and hands it to
+`attach`.
+
+## Mesh
+
+`peer.join(room)` links this peer with everyone in a signaling room, as
+they come and go:
+
+```js
+const mesh = peer.join('lobby', { data: { name: 'ada' } });
+mesh.on('join', ({ id, data }) => {});    // once the link is open
+mesh.on('leave', ({ id }) => {});
+
+mesh.broadcast('chat/note', { text });    // one event to every open member
+const { answers, errors } = await mesh.ask('poll', { q }, { timeout: 2000 });
+mesh.respond('poll', async (data) => vote(data));   // members present and future
+await mesh.leave();
+```
+
+Every member link's host-side `Client` is kept in the room `mesh:<room>`
+on this peer's `PeerHost`, which is what makes `broadcast()` and `ask()` one
+`Broadcast` fan-out — the payload is serialized, UTF-8-encoded and (under
+compression) deflated **once** for every member, and only fragmented per
+link, to that link's message size: 2 µs a recipient for a 16 KB compressed
+event to 32 peers, where a deflate per link was 38 (`bench/rtc-fanout.js`) —
+and `ask` aggregates
+`{ answers, errors, expected, incomplete }` — rather than a loop over links.
+A link shared by two meshes (the same two peers in two rooms) survives
+leaving one of them.
+
+**An edge that is lost is made again.** A mesh remembers who the room holds,
+and a member's link that ends by itself — its redial budget spent, a path
+that never came back, a refusal — is dialled again while that member is
+still in the room. A link an application ended is not: a `link.close()` on
+either side is a goodbye, and neither end dials it again (the side that
+heard the goodbye used to, which undid the close within half a second). The
+goodbye travels through the signaling server and the channels close peer to
+peer, so the other side may see its link fail first and start a redial: for
+5 s the side that said goodbye ignores a knock or an offer from that
+incarnation of the peer, until the goodbye has ended that redial —
+`peer.connect(id)` from its own side is the way to dial it again sooner. The
+dial comes after a second, backing off to a minute, then once a minute for as long as
+it stays. There is no attempt count; a member that cannot be reached, or
+refuses, costs one dial a minute. When the pace reaches that floor the mesh
+says so once — `mesh.on('unreachable', ({ id, attempts }) => {})`, and
+`mesh.unreachable` in the log — and `'join'` fires again when the edge is
+back. `peer.join(room, { relink: { minDelay, maxDelay, jitter } })` sets the
+pace, `relink: false` leaves a lost edge lost. Nothing is dialled for a
+member that left the room, or one whose signaling had dropped (`away`) and
+whose link then went too.
+
+## Failure and recovery
+
+Three layers, each owning one kind of failure:
+
+- **ICE**: when a network changes underfoot, the link restarts ICE (only the
+  initiator does, so the two sides never race) and the channels survive it.
+  A restart that does not reconnect within `restartTimeout` fails the link.
+- **The link**: on `failed` the initiator redials with backoff and the
+  responder knocks with backoff — re-arming only once the initiator's
+  connect window has passed, so its `redial.retries` (5) are spent on real
+  attempts — after which the initiator's `PeerLink` closes with a goodbye
+  and a responder's gives up quietly (a goodbye from it would end the link
+  an initiator on a longer backoff was about to rebuild). A knock arriving
+  at an initiator whose link looks connected is the responder saying its
+  half is gone — a failure only one side saw — and rebuilds the link; so
+  does an offer under a new certificate arriving at a responder that never
+  noticed: a fresh `RTCPeerConnection` on one side is a fresh one on both. A redial is a fresh `RTCPeerConnection`: the host-side
+  `Client` is recreated, and the client-side `WrpcClient` runs its ordinary
+  reconnect cycle, whose `open()` simply waits for the link — so it
+  re-`load()`s its units and re-subscribes with `lastEventId` exactly as it
+  would on a WebSocket.
+- **The heartbeat**: a path can die silently, with ICE none the wiser for a
+  while. The app-level ping/pong is on by default; a heartbeat timeout asks
+  the link for an ICE restart, and from there the layers above take over.
+
+A link that has given up is over — `connect()` makes a new one. In a
+[mesh](#mesh) that is done for you: an edge to a member still in the room
+is dialled again.
+
+`link.close()` (or `peer.close()`) is a goodbye: the other side is told, both
+directions end, nobody redials. A goodbye says why — `{ type: 'close',
+reason }` on the wire: `goodbye`, `refused` (a failed assertion, a `false`
+from `accept()`) or `gave-up` — and both `PeerLink`s emit `'close'` with a
+`{ reason, remote }` closure, kept on `link.closure`: `remote` says whether
+the peer closed or this side did, and `reason` is the goodbye's, `abandoned`
+for a close this side never sent (a stale incarnation, a responder giving
+up), or `unknown` for one a newer peer named. `wrpc.rtc.closes` counts them
+by the same two labels.
+
+## Options
+
+```js
+new WrpcPeer({
+  router,                    // what others can call; null makes a client-only peer
+  signaler,                  // required
+  rtc: createW3cAdapter(),   // the RTC implementation (this is the default)
+  iceServers: [{ urls: 'stun:stun.l.google.com:19302' }],   // or a full `configuration`
+  channels: { initiator: 0, responder: 1, label: 'wrpc' },  // the same on both peers
+  client: { heartbeat: { interval: 30_000, timeout: 10_000 }, codec },   // every link's WrpcClient
+  host: { trust: 'link', maxCalls: 1000, highWaterMark: 1 << 20 },     // the PeerHost (its defaults), plus water marks
+  framing: { maxReassembly: 16 << 20, maxFragments: 16384 },   // per message: bytes, and fragments
+  compression: false,        // per-message deflate on every link — see below
+  connectTimeout: 30_000,
+  restartTimeout: 15_000,
+  redial: { retries: 5, minDelay: 500, maxDelay: 10_000 },
+  accept: async (from, room, { instance, claims }) => allowed(from),   // gates incoming links
+  assertions: { issuer: 'signaling.example' },   // verify and present server-signed tokens; see identity and trust
+  telemetry: { api: otel },   // the peer's server half and its links; see below
+});
+```
+
+The link's `write()` answers `false` above `highWaterMark` (1 MiB of
+`bufferedAmount`, the bytes a compression codec is still working on
+included) and `drain` fires at `lowWaterMark` (256 KiB), so a stream
+producer on either end sees the same backpressure it does on a socket — and
+every `false` is followed by exactly one `drain`, whether the bytes waited
+on the channel or in the codec. Both marks are positive integers, the low
+one no higher than the high one (a `TypeError` otherwise); a `highWaterMark`
+set below the default low mark pulls the low mark down with it. Behind the
+marks sits `maxBackpressure` (64 MiB, `0` to switch it off): a write onto a
+channel already past it — its buffer and the codec's pending bytes, as
+WebTransport and the WebSocket engine count it, so one message larger than
+the cap still goes on an empty channel — is refused and the channel closed,
+locally, so a peer that never drains cannot hold the process's memory. Over a link that
+is a redial; over a raw channel it is the end of the channel. A `send()` the
+channel itself refuses is never thrown into your code: refused mid-message
+it closes the channel too (the peer holds a message with no end, and nothing
+after it would parse — code `desync` on the error), refused before the
+first fragment it loses that one message and says so (code `send`).
+
+### Compression {#compression}
+
+Nothing compresses a data channel's payload for you — SCTP over DTLS
+carries the bytes as they are (TLS 1.3 dropped compression) — so a link
+carries exactly what wRPC hands it. Per-message compression is the answer,
+**off by default** like every compression knob in wRPC:
+
+```js
+new WrpcPeer({ router, signaler, compression: true });
+```
+
+Every description this peer sends then names its codecs (`caps: { enc:
+['deflate-raw'] }` in the signal, next to the assertion when there is one),
+and a link compresses only once the two [lists](./compression#list) share a
+codec, each direction with its sender's first choice — a peer without the
+option is served plain, and nothing hangs up. A packet or chunk
+at or over the threshold is compressed **before** fragmentation, the one
+place it exists whole, and every fragment carries the compressed bit;
+`{ compress: false }` on an emit sends that one plain. The threshold is the
+codec's own default — 1 KiB on Node, 4 KiB in a browser, where the only
+codec a page has is `CompressionStream`, ~6× the cost of zlib per call and
+without a dictionary — and `{ codec, threshold }` injects another codec or
+moves the line; the numbers are on the [WebTransport page](./wt#compression),
+which shares the seam (`bench/message-compression.js`). On Node the
+deflate is synchronous below 256 KB on purpose and `{ async }` hands
+larger messages to zlib's threadpool — a host answering megabyte results
+to many peers is the case; see [the compression guide](./compression#async).
+Inbound, no more than four inflates run at once; the rest of a burst start
+in their turn, in order.
+
+Over a [raw channel](#your-own-connection) there is no description to
+announce in: `compression` on `attachChannel`, on `connect(url, { channel,
+compression })` and on either transport is applied as given, so **both
+applications turn it on, or neither** — a plain peer closes the channel on
+the first flagged frame, exactly as it does on any reserved header bit.
+
+## Telemetry
+
+A peer is a server too, so it takes the same [telemetry](./telemetry)
+injection a server does and emits the same things: a SERVER span for every
+call, subscription and inbound event it answers (under `wrpc.transport:
+'webrtc'`), and `wrpc.server.connections` for its links. The calling peer's
+client half takes its own through `client.telemetry`, and with a propagator
+injected on both the client span parents the server span across the
+link — one trace end to end, exactly as between a client and a server.
+
+```js
+new WrpcPeer({
+  router,
+  signaler,
+  telemetry: { api: otel },            // the host half: spans, gauges, the rtc instruments
+  client: { telemetry: { api: otel } }, // each link's client half: CLIENT spans, reconnects
+});
+```
+
+Four instruments are the peer layer's own: `wrpc.rtc.links` (open links,
+by `wrpc.rtc.role`), `wrpc.rtc.redials` (redials and knocks after a failure,
+by role), `wrpc.rtc.ice_restarts` (by `wrpc.rtc.outcome`: `requested`,
+`recovered`, `failed`) and `wrpc.rtc.closes` (by `wrpc.rtc.reason` —
+`goodbye`, `refused`, `gave-up`, `abandoned`, `unknown` — and
+`wrpc.rtc.side`: `local` / `remote`). The rate of redials and restarts is
+what an operator alerts on; `refused` closes are the peers a trust policy
+turned away, `gave-up` ones the paths that never came back. A client-only
+peer (no router) still counts its links.
+
+## What it costs
+
+Measured end to end on loopback ([Across
+transports](./performance#across-transports) has the tables and the
+commands):
+
+- **wRPC adds little to the channel.** Over the same node-datachannel pair,
+  wRPC's calls run at 95–100% of a raw echo with no RPC layer, and its
+  streams at 90% of the bare channel. Opening a pair took 506 ms in
+  node-datachannel — its own ICE and DTLS; wRPC's share was under a
+  millisecond — and about 5 ms in Chrome.
+- **The channel is not a WebSocket.** From Chrome, with both peers in one
+  page, a data channel carried about 5,000 small calls a second and 14 MiB/s
+  of stream; in Node, between a third (small calls) and a sixteenth
+  (streams) of what the WebSocket carries. A
+  peer-to-peer link is worth it for what it removes — the server from the
+  data path — not for throughput.
+
+## What it cannot do
+
+- **Receive-side backpressure.** A data channel has no `pause()`: a fast
+  peer streaming a large file to a slow consumer accumulates in the
+  receiving `WrpcReadable`. Size uploads accordingly, or ask before sending.
+- **Real sessions.** A peer has no session store. `trust: 'link'` trusts
+  the relay's word, [trust assertions](./webrtc-trust) verify the server's
+  signed word about a peer at issue time — neither is revocable while a
+  link is open, other than by closing it.
+- **The worker proxy.** `WrpcClientProxy` connects to a URL (its `url`
+  option, or one built from the worker's location); a data channel cannot
+  be reached through it.
+
+## Bundle size
+
+A peer is a client **and** a server, so the webrtc browser entry is heavier
+than the main one: the client core plus the router, dispatcher, per-peer
+`Client`, rooms and `Broadcast`, the link, framing, peer, mesh and signaler
+halves, the server telemetry writer, and the assertion verifier over
+WebCrypto — see [the measured table](./browser#bundle-size) for what that costs against its budget in `pnpm size`. You
+pay it only when you import the subpath; the main entry is untouched.

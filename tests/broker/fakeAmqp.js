@@ -1,0 +1,446 @@
+'use strict';
+
+// A small in-process RabbitMQ for the AMQP adapter's unit tests: the
+// command surface src/broker/amqp/index.js uses, with the behaviours that
+// matter — per-channel prefetch, unacked messages returning to the queue
+// when a channel closes, `nack(requeue)` NOT counting a delivery (RabbitMQ
+// 4), per-message expiration dead-lettering through a queue's DLX, stream
+// queues with `x-stream-offset`, and `mandatory` + basic.return.
+//
+// Not a *.test.js: node --test must not run it.
+
+const { EventEmitter } = require('node:events');
+
+const now = () => Date.now();
+
+class Queue {
+  messages = []; // { content, properties, offset }
+  consumers = new Map(); // tag -> { channel, handler, noAck, streamOffset }
+  unacked = new Map(); // deliveryTag -> { message, channel }
+  offset = 0;
+  cursor = 0;
+
+  constructor(name, options = {}) {
+    this.name = name;
+    this.options = options;
+    this.arguments = options.arguments ?? {};
+    this.stream = this.arguments['x-queue-type'] === 'stream';
+  }
+
+  get count() {
+    return this.stream ? this.messages.length : this.messages.length;
+  }
+}
+
+const sameArguments = (a, b) => {
+  const left = Object.keys(a).sort();
+  const right = Object.keys(b).sort();
+  if (left.length !== right.length) return false;
+  return left.every((key, i) => key === right[i] && String(a[key]) === String(b[key]));
+};
+
+class FakeAmqpServer {
+  queues = new Map();
+  exchanges = new Map(); // name -> Map(routingKey -> Set(queueName))
+  // `failures.publish = { error, times }` makes the next confirm publishes
+  // fail with that error, that many times.
+  failures = { publish: null };
+  // A stream delivery that pauses: every `every`-th message of a stream is
+  // handed over `ms` later — the flow control and the network a real
+  // broker has, which a catch-up page must not mistake for the end.
+  streamStall = { every: 0, ms: 0 };
+  #tag = 0;
+  #delivery = 0;
+
+  nextTag(prefix) {
+    return `${prefix}-${++this.#tag}`;
+  }
+
+  /** The server closes a channel with a code, as a node going away (320) or an operator would. */
+  // basic.cancel: the server cancels a consumer (its queue was deleted, or
+  // the node it lived on went away) — the consumer's handler receives null,
+  // as amqplib delivers it, and the channel stays open.
+  cancelConsumer(tag) {
+    for (const queue of this.queues.values()) {
+      const consumer = queue.consumers.get(tag);
+      if (!consumer) continue;
+      queue.consumers.delete(tag);
+      queueMicrotask(() => consumer.handler(null));
+      return true;
+    }
+    return false;
+  }
+
+  killChannel(channel, code = 320) {
+    channel.fail(Object.assign(new Error(`CONNECTION_FORCED - channel closed by the server (${code})`), { code }));
+  }
+
+  nextDelivery() {
+    return ++this.#delivery;
+  }
+
+  queue(name) {
+    return this.queues.get(name);
+  }
+
+  deliver(queueName) {
+    const queue = this.queues.get(queueName);
+    if (!queue) return;
+    queueMicrotask(() => this.#pump(queue));
+  }
+
+  #pump(queue) {
+    if (queue.consumers.size === 0) return;
+    // A stream is read, not consumed: every consumer has its own cursor and
+    // sees every message.
+    if (queue.stream) {
+      for (const consumer of queue.consumers.values()) {
+        while (consumer.channel.inflight.size < consumer.channel.prefetchLimit) {
+          const from = consumer.streamCursor ?? 0;
+          const entry = queue.messages.find((message) => message.offset >= from);
+          if (!entry) break;
+          consumer.streamCursor = entry.offset + 1;
+          this.#hand(queue, consumer, entry, { keep: true });
+        }
+      }
+      return;
+    }
+    // A work queue: one message, one consumer, round-robin over whoever has
+    // room left under its channel's prefetch.
+    for (;;) {
+      const consumers = Array.from(queue.consumers.values()).filter(
+        (consumer) => consumer.channel.inflight.size < consumer.channel.prefetchLimit,
+      );
+      if (consumers.length === 0 || queue.messages.length === 0) return;
+      const consumer = consumers[queue.cursor++ % consumers.length];
+      this.#hand(queue, consumer, queue.messages.shift(), { keep: false });
+    }
+  }
+
+  #hand(queue, consumer, entry, { keep }) {
+    void keep;
+    const deliveryTag = this.nextDelivery();
+    const message = {
+      content: entry.content,
+      properties: { ...entry.properties, headers: { ...(entry.properties.headers ?? {}) } },
+      fields: {
+        deliveryTag,
+        redelivered: entry.redelivered === true,
+        consumerTag: consumer.tag,
+        routingKey: entry.routingKey ?? queue.name,
+      },
+    };
+    if (queue.stream) message.properties.headers['x-stream-offset'] = entry.offset;
+    if (!consumer.noAck) {
+      consumer.channel.inflight.set(deliveryTag, { message: entry, queue });
+      queue.unacked.set(deliveryTag, { message: entry, channel: consumer.channel });
+    }
+    const handler = consumer.handler;
+    const { every, ms } = this.streamStall;
+    const stall = queue.stream && every > 0 && entry.offset % every === every - 1 ? ms : 0;
+    // One consumer's deliveries stay in order through one chain, so a
+    // stall holds everything behind it — as a real channel's would. The
+    // handler's own promise is NOT awaited: deliveries to a work queue run
+    // concurrently up to the prefetch.
+    consumer.chain = (consumer.chain ?? Promise.resolve())
+      .then(() => {
+        if (stall === 0) return undefined;
+        return new Promise((resolve) => {
+          const timer = setTimeout(resolve, stall);
+          if (typeof timer.unref === 'function') timer.unref();
+        });
+      })
+      .then(() => {
+        try {
+          handler(message);
+        } catch {
+          // A handler that throws synchronously is the consumer's problem.
+        }
+      });
+  }
+
+  publish(exchange, routingKey, content, properties) {
+    const targets = [];
+    if (exchange === '') targets.push(routingKey);
+    else {
+      const bindings = this.exchanges.get(exchange);
+      for (const name of bindings?.get(routingKey) ?? []) targets.push(name);
+    }
+    if (targets.length === 0) return false;
+    let routed = false;
+    for (const name of targets) {
+      const queue = this.queues.get(name);
+      if (!queue) continue;
+      routed = true;
+      const entry = { content, properties: { ...properties }, offset: queue.offset++, routingKey };
+      if (properties.expiration) entry.expires = now() + Number(properties.expiration);
+      queue.messages.push(entry);
+      if (entry.expires) {
+        const timer = setTimeout(() => this.#expire(queue, entry), Number(properties.expiration));
+        if (typeof timer.unref === 'function') timer.unref();
+      }
+      this.deliver(name);
+    }
+    return routed;
+  }
+
+  #expire(queue, entry) {
+    const at = queue.messages.indexOf(entry);
+    if (at < 0) return;
+    queue.messages.splice(at, 1);
+    const exchange = queue.arguments['x-dead-letter-exchange'];
+    const routingKey = queue.arguments['x-dead-letter-routing-key'];
+    if (exchange === undefined || routingKey === undefined) return;
+    this.publish(exchange, routingKey, entry.content, entry.properties);
+  }
+}
+
+class FakeChannel extends EventEmitter {
+  inflight = new Map();
+  prefetchLimit = Infinity;
+  closed = false;
+
+  constructor(server, { confirm = false } = {}) {
+    super();
+    this.server = server;
+    this.confirm = confirm;
+  }
+
+  // amqplib refuses every operation on a closed channel — an ack and a nack
+  // included, which this fake used to take silently; a channel-level error
+  // is emitted, then the channel closes — the real order.
+  #open() {
+    if (this.closed) throw Object.assign(new Error('Channel closed'), { code: 504 });
+  }
+
+  fail(error) {
+    if (this.closed) return;
+    this.emit('error', error);
+    void this.close();
+  }
+
+  async assertExchange(name, type, options) {
+    this.#open();
+    if (!this.server.exchanges.has(name)) this.server.exchanges.set(name, new Map());
+    return { exchange: name, type, options };
+  }
+
+  async assertQueue(name, options = {}) {
+    this.#open();
+    const queueName = name === '' ? this.server.nextTag('amq.gen') : name;
+    let queue = this.server.queues.get(queueName);
+    if (!queue) {
+      queue = new Queue(queueName, options);
+      this.server.queues.set(queueName, queue);
+    } else if (!sameArguments(queue.arguments, options.arguments ?? {})) {
+      // A redeclaration with different arguments is a 406 that closes the
+      // channel — the way RabbitMQ answers a changed `streamMaxBytes`.
+      const error = Object.assign(new Error(`PRECONDITION_FAILED - inequivalent arg for queue '${queueName}'`), {
+        code: 406,
+      });
+      this.fail(error);
+      throw error;
+    }
+    return { queue: queueName, messageCount: queue.messages.length, consumerCount: queue.consumers.size };
+  }
+
+  async checkQueue(name) {
+    this.#open();
+    const queue = this.server.queues.get(name);
+    if (!queue) {
+      const error = Object.assign(new Error(`NOT_FOUND - no queue '${name}'`), { code: 404 });
+      this.fail(error);
+      throw error;
+    }
+    return { queue: name, messageCount: queue.messages.length, consumerCount: queue.consumers.size };
+  }
+
+  async deleteQueue(name) {
+    this.#open();
+    const queue = this.server.queues.get(name);
+    this.server.queues.delete(name);
+    // The server cancels every consumer of a deleted queue — basic.cancel
+    // from its side, which amqplib hands the consumer as a null delivery.
+    for (const consumer of queue?.consumers.values() ?? []) queueMicrotask(() => consumer.handler(null));
+    return { messageCount: 0 };
+  }
+
+  async bindQueue(queue, exchange, routingKey) {
+    this.#open();
+    const bindings = this.server.exchanges.get(exchange) ?? new Map();
+    this.server.exchanges.set(exchange, bindings);
+    const set = bindings.get(routingKey) ?? new Set();
+    set.add(queue);
+    bindings.set(routingKey, set);
+  }
+
+  async unbindQueue(queue, exchange, routingKey) {
+    this.#open();
+    const bindings = this.server.exchanges.get(exchange);
+    const set = bindings?.get(routingKey);
+    if (!set) return;
+    set.delete(queue);
+    if (set.size === 0) bindings.delete(routingKey);
+  }
+
+  async prefetch(count) {
+    this.#open();
+    this.prefetchLimit = count;
+  }
+
+  async consume(name, handler, options = {}) {
+    this.#open();
+    const queue = this.server.queues.get(name);
+    if (!queue) {
+      const error = Object.assign(new Error(`NOT_FOUND - no queue '${name}'`), { code: 404 });
+      this.fail(error);
+      throw error;
+    }
+    const tag = this.server.nextTag('ctag');
+    const consumer = { tag, channel: this, handler, noAck: options.noAck === true };
+    const from = options.arguments?.['x-stream-offset'];
+    if (queue.stream) {
+      if (from === 'first' || from === undefined) consumer.streamCursor = 0;
+      else if (from === 'last') consumer.streamCursor = Math.max(0, queue.offset - 1);
+      else if (from === 'next') consumer.streamCursor = queue.offset;
+      else consumer.streamCursor = Number(from);
+    }
+    queue.consumers.set(tag, consumer);
+    this.server.deliver(name);
+    return { consumerTag: tag };
+  }
+
+  async cancel(tag) {
+    for (const queue of this.server.queues.values()) {
+      if (queue.consumers.delete(tag)) break;
+    }
+  }
+
+  ack(message) {
+    this.#open();
+    const tag = message.fields.deliveryTag;
+    const held = this.inflight.get(tag);
+    if (!held) return;
+    this.inflight.delete(tag);
+    held.queue.unacked.delete(tag);
+    // The slot this delivery held is free: whatever is waiting can move.
+    this.server.deliver(held.queue.name);
+  }
+
+  nack(message, _all, requeue) {
+    this.#open();
+    const tag = message.fields.deliveryTag;
+    const held = this.inflight.get(tag);
+    if (!held) return;
+    this.inflight.delete(tag);
+    held.queue.unacked.delete(tag);
+    if (!requeue) {
+      // Dead-letter it where the queue says, or drop it.
+      const exchange = held.queue.arguments['x-dead-letter-exchange'];
+      const routingKey = held.queue.arguments['x-dead-letter-routing-key'];
+      if (exchange !== undefined && routingKey !== undefined) {
+        this.server.publish(exchange, routingKey, held.message.content, held.message.properties);
+      }
+      return;
+    }
+    // RabbitMQ 4: a requeue does NOT count a delivery attempt.
+    held.message.redelivered = true;
+    held.queue.messages.unshift(held.message);
+    this.server.deliver(held.queue.name);
+  }
+
+  // A no-op on this fake, but amqplib channels have it.
+  async recover() {}
+
+  publish(exchange, routingKey, content, properties = {}, callback) {
+    this.#open();
+    // Fault injection: the broker refuses the publish (a nack on the
+    // confirm channel), `times` in a row.
+    const refusal = this.server.failures.publish;
+    if (refusal !== null && this.confirm) {
+      if (refusal.times > 1) refusal.times--;
+      else this.server.failures.publish = null;
+      if (typeof callback === 'function') queueMicrotask(() => callback(refusal.error));
+      return true;
+    }
+    const routed = this.server.publish(exchange, routingKey, content, properties);
+    if (!routed && properties.mandatory) {
+      queueMicrotask(() => this.emit('return', { content, properties, fields: { replyText: 'NO_ROUTE' } }));
+    }
+    if (this.confirm && typeof callback === 'function') queueMicrotask(() => callback(null));
+    return true;
+  }
+
+  async close() {
+    if (this.closed) return;
+    this.closed = true;
+    // Unacked messages go back to their queues, as a real close does — a
+    // stream's never left it.
+    for (const [tag, held] of this.inflight) {
+      if (held.queue.stream) {
+        held.queue.unacked.delete(tag);
+        continue;
+      }
+      held.message.redelivered = true;
+      held.queue.messages.unshift(held.message);
+      held.queue.unacked.delete(tag);
+      this.server.deliver(held.queue.name);
+    }
+    this.inflight.clear();
+    for (const queue of this.server.queues.values()) {
+      for (const [tag, consumer] of queue.consumers) {
+        if (consumer.channel === this) queue.consumers.delete(tag);
+      }
+    }
+    this.emit('close');
+  }
+}
+
+class FakeAmqpConnection extends EventEmitter {
+  closed = false;
+
+  constructor(server = new FakeAmqpServer(), { channelMax = Infinity } = {}) {
+    super();
+    this.server = server;
+    this.channels = [];
+    this.channelMax = channelMax;
+  }
+
+  /** Channels open right now — what a server's channel_max counts. */
+  get openChannels() {
+    return this.channels.filter((channel) => !channel.closed).length;
+  }
+
+  #allocate(options) {
+    if (this.closed) throw new Error('Connection closed');
+    // amqplib's own wording when the negotiated channel_max is reached.
+    if (this.openChannels >= this.channelMax) throw new Error('No channels left to allocate');
+    const channel = new FakeChannel(this.server, options);
+    this.channels.push(channel);
+    return channel;
+  }
+
+  async createChannel() {
+    return this.#allocate({});
+  }
+
+  async createConfirmChannel() {
+    return this.#allocate({ confirm: true });
+  }
+
+  async close() {
+    if (this.closed) return;
+    this.closed = true;
+    for (const channel of this.channels) await channel.close();
+    this.emit('close');
+  }
+
+  /** The connection drops out from under the client: every channel goes, then the connection says so. */
+  kill() {
+    return this.close();
+  }
+}
+
+const createFakeAmqp = (options = {}) => new FakeAmqpConnection(new FakeAmqpServer(), options);
+
+module.exports = { createFakeAmqp, FakeAmqpConnection, FakeAmqpServer };

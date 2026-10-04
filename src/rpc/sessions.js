@@ -3,6 +3,7 @@
 const { generateUUID } = require('../runtime/node.js');
 const { createLoggerWriter } = require('../logging.js');
 const { parseCookies } = require('../transport.js');
+const { DISABLED: DISABLED_TELEMETRY } = require('../telemetry/shared.js');
 
 // TokenTransport — where the session token lives on the wire, injected like
 // a codec or a logger and checked structurally:
@@ -62,9 +63,23 @@ const createProxy = (data, save) =>
   });
 
 class Session {
-  constructor(token, data, save) {
+  #lifecycle;
+
+  constructor(token, data, save, lifecycle = { ended: false }) {
     this.token = token;
+    this.#lifecycle = lifecycle;
     this.state = createProxy(data, save);
+  }
+
+  /** True once the session was finalized: no save of its state lands after this. */
+  get ended() {
+    return this.#lifecycle.ended;
+  }
+
+  // Called by finalizeSession before the store delete: a save still queued
+  // for this session (the microtask below) must not resurrect it.
+  end() {
+    this.#lifecycle.ended = true;
   }
 }
 
@@ -80,15 +95,30 @@ const DEFAULT_SESSION_TTL = 24 * 60 * 60 * 1000; // 24h
 // so this store is bounded on both axes: entries expire after `ttl` and
 // the least-recently-used one is evicted past `maxSessions`. Production
 // deployments should inject a real store instead.
+// The options a save passes to store.set(): the row's creation, then
+// updates that must find it there.
+const CREATE = Object.freeze({ create: true });
+const UPDATE = Object.freeze({ create: false });
+
 class MemorySessionStore {
   #sessions = new Map(); // token -> { data, expires }
   #maxSessions;
   #ttl;
+  #log;
+  #otel;
 
-  constructor({ maxSessions = DEFAULT_MAX_SESSIONS, ttl = DEFAULT_SESSION_TTL, now = Date.now } = {}) {
+  constructor({
+    maxSessions = DEFAULT_MAX_SESSIONS,
+    ttl = DEFAULT_SESSION_TTL,
+    now = Date.now,
+    logger = false,
+    otel = null,
+  } = {}) {
     this.#maxSessions = maxSessions;
     this.#ttl = ttl;
     this.now = now;
+    this.#log = createLoggerWriter(logger);
+    this.#otel = otel ?? DISABLED_TELEMETRY;
   }
 
   get size() {
@@ -112,10 +142,20 @@ class MemorySessionStore {
     return entry.data;
   }
 
-  async set(token, data) {
+  // `create: false` (every write after the first): a row that is gone —
+  // deleted, or expired — is not brought back; false says so.
+  async set(token, data, { create = true } = {}) {
+    if (!create) {
+      const entry = this.#sessions.get(token);
+      if (!entry || this.#expired(entry)) {
+        if (entry) this.#sessions.delete(token);
+        return false;
+      }
+    }
     this.#sessions.delete(token);
     this.#sessions.set(token, { data, expires: this.now() + this.#ttl });
     this.#evict();
+    return true;
   }
 
   async delete(token) {
@@ -134,11 +174,23 @@ class MemorySessionStore {
       for (const [token, entry] of this.#sessions) {
         if (!this.#expired(entry)) break; // oldest first: stop at the first live one
         this.#sessions.delete(token);
+        this.#otel.recordSession('expire', 'ok');
       }
     }
+    // Capacity eviction, unlike the TTL sweep above, throws away sessions
+    // that are still LIVE — someone signed in is signed out, with no error
+    // anywhere and no way to tell it from an ordinary expiry. One line per
+    // sweep carrying a count, never one per session: a store pinned at its
+    // ceiling evicts on every create, and a line each would be the flood.
+    let evicted = 0;
     while (this.#maxSessions > 0 && this.#sessions.size > this.#maxSessions) {
       const oldest = this.#sessions.keys().next().value;
       this.#sessions.delete(oldest);
+      this.#otel.recordSession('evict', 'ok');
+      evicted++;
+    }
+    if (evicted > 0) {
+      this.#log.warn({ event: 'session.evict', evicted, max: this.#maxSessions });
     }
   }
 }
@@ -194,13 +246,18 @@ const buildCookie = (name, value, options) => {
 // by every Server in the process).
 class SessionManager {
   #log;
+  #otel;
 
-  constructor(options = {}, logger = globalThis.console) {
-    const { store = new MemorySessionStore(), generateToken = generateUUID, cookie = {}, transport } = options;
-    this.store = store;
+  constructor(options = {}, logger = globalThis.console, otel = null) {
+    const { store = null, generateToken = generateUUID, cookie = {}, transport } = options;
+    this.#log = createLoggerWriter(logger);
+    this.#otel = otel ?? DISABLED_TELEMETRY;
+    // The default store is built HERE so it inherits this writer: a store
+    // the application constructed is its own to configure, but the one wrpc
+    // makes on its behalf should report where everything else does.
+    this.store = store ?? new MemorySessionStore({ logger: this.#log, otel: this.#otel });
     this.generateToken = generateToken;
     this.cookie = { ...DEFAULT_COOKIE, ...cookie };
-    this.#log = createLoggerWriter(logger);
     // The injected token carrier; the cookie default keeps the behaviour
     // wrpc always had, byte for byte.
     if (transport !== undefined && !isTokenTransport(transport)) {
@@ -209,18 +266,60 @@ class SessionManager {
     this.transport = transport ?? cookieTokenTransport(this);
   }
 
-  #saver(token) {
-    return (state) => {
-      Promise.resolve(this.store.set(token, state)).catch((error) => {
-        this.#log.error({ err: error, event: 'session.save' });
-      });
+  // One store write per turn, not one per assignment: a handler that sets
+  // three fields on `session.state` used to cost three round trips to a
+  // shared store. The first write schedules the save on a microtask, the
+  // rest of the turn rides along, and a session ended meanwhile is not
+  // written back — that would resurrect what finalizeSession just deleted.
+  //
+  // Every write but the one that creates the row is CONDITIONAL —
+  // `set(token, state, { create: false })` — and a store answering `false`
+  // to it is saying the row is gone: a logout on another connection or
+  // instance landed first, and this write must not undo it (an
+  // unconditional SET used to resurrect the session, token and all). The
+  // session ends here then. A store may ignore the option and answer as
+  // before; only the three built-in ones refuse.
+  #saver(token, lifecycle, create) {
+    let pending = false;
+    let first = create;
+    const flush = (state) => {
+      pending = false;
+      if (lifecycle.ended) return;
+      const options = first ? CREATE : UPDATE;
+      first = false;
+      // A store whose set() throws instead of rejecting would otherwise
+      // throw out of a microtask — the process, not the session.
+      let saved;
+      try {
+        saved = Promise.resolve(this.store.set(token, state, options));
+      } catch (error) {
+        saved = Promise.reject(error);
+      }
+      saved.then(
+        (result) => {
+          if (result !== false || lifecycle.ended) return;
+          lifecycle.ended = true;
+          this.#log.warn({ event: 'session.save', reason: 'gone' });
+        },
+        (error) => {
+          this.#log.error({ err: error, event: 'session.save' });
+        },
+      );
+    };
+    return (state, now = false) => {
+      if (now) return void flush(state);
+      if (pending) return;
+      pending = true;
+      queueMicrotask(() => flush(state));
     };
   }
 
   create(token = this.generateToken(), data = {}) {
-    const save = this.#saver(token);
-    save(data); // persist the initial state so restore works immediately
-    return new Session(token, data, save);
+    const lifecycle = { ended: false };
+    const save = this.#saver(token, lifecycle, true);
+    save(data, true); // persist the initial state NOW so restore works immediately
+    this.#otel.recordSession('create', 'ok');
+    return new Session(token, data, save, lifecycle);
   }
 
   async restore(token) {
@@ -231,15 +330,32 @@ class SessionManager {
     // Optional and fire-and-forget — a store without touch() keeps absolute
     // TTLs, which is a valid policy too.
     if (typeof this.store.touch === 'function') {
-      Promise.resolve(this.store.touch(token)).catch((error) => {
-        this.#log.error({ err: error, event: 'session.touch' });
-      });
+      Promise.resolve(this.store.touch(token)).then(
+        () => this.#otel.recordSession('touch', 'ok'),
+        (error) => {
+          this.#otel.recordSession('touch', 'error');
+          this.#log.error({ err: error, event: 'session.touch' });
+        },
+      );
     }
-    return new Session(token, data, this.#saver(token));
+    const lifecycle = { ended: false };
+    return new Session(token, data, this.#saver(token, lifecycle, false), lifecycle);
   }
 
   async destroy(token) {
-    await this.store.delete(token);
+    // Guarded, and not only for tidiness: `initializeSession` calls
+    // finalizeSession() through `void`, so a store.delete that rejects had
+    // nowhere to land and took the process down with an unhandled rejection
+    // — a Redis blip ending the server rather than one session. Logged
+    // instead: the in-memory half of the session is already gone, and a
+    // stored row that outlives it expires on its own TTL.
+    try {
+      await this.store.delete(token);
+      this.#otel.recordSession('destroy', 'ok');
+    } catch (error) {
+      this.#otel.recordSession('destroy', 'error');
+      this.#log.error({ err: error, event: 'session.destroy' });
+    }
   }
 
   cookieHeader(token) {
