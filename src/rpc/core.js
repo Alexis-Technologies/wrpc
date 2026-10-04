@@ -32,6 +32,7 @@ const { splitChannelRef } = require('../sse/constants.js');
 const { isBackplane } = require('../scaling/index.js');
 const {
   handleMessage,
+  handleParsed,
   handleBinary,
   dispatchMessage,
   dispatchBinary,
@@ -848,7 +849,14 @@ class RpcServer extends Emitter {
       if (typeof stall.unref === 'function') stall.unref();
       void client.ready.then(() => clearTimeout(stall));
     }
-    transport.once('close', () => {
+    // `on` and a flag, not `once`: a transport may say 'close' twice (an
+    // HTTP answer, then its response's own close), and a once-listener
+    // sends every emit down the Emitter's snapshot path — ~315 against ~75
+    // ns, paid once per HTTP request (bench/http-call.js).
+    let closed = false;
+    transport.on('close', () => {
+      if (closed) return;
+      closed = true;
       // Snapshotted BEFORE destroy(): its first act is rooms.leaveAll(), so
       // by hook time the registry is empty — the payload is the only way a
       // disconnect hook learns which rooms the client was in. (client.rooms
@@ -1221,20 +1229,24 @@ class RpcServer extends Emitter {
 
   // Packet-mode bodies speak the codec when one is configured; REST-mode
   // bodies stay JSON on purpose (curl and browsers are that mode's
-  // audience). Malformed input answers null either way.
+  // audience). Malformed input answers null either way. The body is parsed
+  // ONCE, here, and the same value is dispatched (handleParsed) — so this
+  // reads it exactly as handleMessage would: the frame checked before the
+  // codec seam, refused when the server sends none.
   #decodeBody(body) {
-    if (!this.#codec) {
-      // A POST body that is an attachments frame parses to its packet.
-      if (typeof body !== 'string' && body !== null && isAttachmentsFrame(body)) {
-        if (!this.#attachments) return null;
-        try {
-          return decodeAttachments(body);
-        } catch {
-          return null;
-        }
+    const bytes = typeof body !== 'string' && body !== null && body !== undefined;
+    if (bytes && isAttachmentsFrame(body)) {
+      if (!this.#attachments) return null;
+      try {
+        return decodeAttachments(body);
+      } catch {
+        return null;
       }
-      return jsonParse(body);
     }
+    // The body's text handed over by hand: JSON.parse reaches a Buffer's
+    // toString() through ToPrimitive, ~100 ns slower on a call packet for
+    // the same string (bench/http-call.js).
+    if (!this.#codec) return jsonParse(bytes ? body.toString() : body);
     try {
       return this.#codec.decode(typeof body === 'string' ? body : String(body));
     } catch {
@@ -1245,8 +1257,7 @@ class RpcServer extends Emitter {
   // A batch frame needs to be recognized BEFORE the transport exists: the
   // transport has to know how many answers to collect and in which order to
   // emit them, which only the request's own id list can tell it.
-  #batchIds(body) {
-    const packet = this.#decodeBody(body);
+  #batchIds(packet) {
     if (!Array.isArray(packet)) return null;
     if (packet.length === 0 || packet.length > this.#limits.maxBatch) return null;
     const ids = new Array(packet.length);
@@ -1454,7 +1465,8 @@ class RpcServer extends Emitter {
   async #handlePacketPost(call, headers) {
     // Mode-aware: only packet-mode responses carry the packet codec's type.
     if (this.#codec?.contentType) headers['Content-Type'] = this.#codec.contentType;
-    const batch = call.method === 'POST' ? this.#batchIds(call.body) : null;
+    const packet = call.method === 'POST' ? this.#decodeBody(call.body) : null;
+    const batch = this.#batchIds(packet);
     const transport = new ServerHttpTransport(call, {
       headers,
       batch,
@@ -1479,7 +1491,7 @@ class RpcServer extends Emitter {
     // the transport only self-closes when it writes a response.
     if (typeof call.onAbort === 'function') call.onAbort(() => transport.emit('close'));
     await client.ready;
-    return void handleMessage(client, call.body, this.#router, this.#limits);
+    return void handleParsed(client, packet, call.body, this.#router, this.#limits);
   }
 
   // ANY {basePath}/unit/method?args — REST mode, args from query + body.
@@ -1559,7 +1571,8 @@ class RpcServer extends Emitter {
     const decodeBody = (fallback) => {
       const raw = call.body;
       if (raw === undefined || raw === null || raw.length === 0) return fallback;
-      if (!restCodec) return jsonParse(raw) ?? fallback;
+      // Converted by hand, as in #decodeBody (bench/http-call.js).
+      if (!restCodec) return jsonParse(typeof raw === 'string' ? raw : raw.toString()) ?? fallback;
       return restCodec.decode(raw);
     };
     const id = this.#generateId();
@@ -1600,6 +1613,10 @@ class RpcServer extends Emitter {
   // A malformed escape answers 400 rather than throwing into the host.
   #matchDeclaredRoute(method, rest) {
     const raw = rest.split('/');
+    // Nothing escaped: decodeURIComponent would hand every segment back
+    // unchanged, and never throws — ~380 -> ~35 ns on a three-segment path
+    // (bench/http-call.js).
+    if (!rest.includes('%')) return this.#router.matchRest(method, raw);
     const segments = new Array(raw.length);
     for (let i = 0; i < raw.length; i++) {
       try {

@@ -138,49 +138,49 @@
         "id": "wrpc-rest",
         "label": "wRPC — declared REST route",
         "kind": "wrpc",
-        "requests": 34988,
-        "latency": 28.1,
-        "p99": 57
+        "requests": 62236,
+        "latency": 15.5,
+        "p99": 29
       },
       {
         "id": "wrpc-packet",
         "label": "wRPC — packet mode",
         "kind": "wrpc",
-        "requests": 34410,
-        "latency": 28.5,
-        "p99": 57
+        "requests": 60927,
+        "latency": 15.9,
+        "p99": 32
       },
       {
         "id": "fastify",
         "label": "fastify",
         "kind": "other",
-        "requests": 60778,
-        "latency": 15.9,
-        "p99": 33
+        "requests": 69187,
+        "latency": 13.9,
+        "p99": 30
       },
       {
         "id": "express",
         "label": "express",
         "kind": "other",
-        "requests": 45479,
-        "latency": 21.5,
-        "p99": 42
+        "requests": 50567,
+        "latency": 19.3,
+        "p99": 36
       },
       {
         "id": "trpc",
         "label": "tRPC (standalone adapter)",
         "kind": "other",
-        "requests": 15470,
-        "latency": 64.0,
-        "p99": 99
+        "requests": 16523,
+        "latency": 59.9,
+        "p99": 85
       },
       {
         "id": "node-http",
         "label": "node:http — no framework",
         "kind": "other",
-        "requests": 93728,
-        "latency": 10.2,
-        "p99": 19
+        "requests": 104404,
+        "latency": 8.9,
+        "p99": 16
       }
     ]
   },

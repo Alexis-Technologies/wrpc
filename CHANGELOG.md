@@ -13,7 +13,7 @@ narrower promise — see
 
 ### Changed (breaking)
 
-## [2.0.0] - 2026-10-03
+## [2.0.0] - 2026-10-04
 
 ### Added
 
@@ -1491,8 +1491,31 @@ reference as one opaque string. What is left to do:
   new `bench/http-comparison.js` loads wRPC's two HTTP paths next to fastify,
   express, tRPC's standalone adapter and bare `node:http` with autocannon, as
   fastify/benchmarks does. Over a WebSocket wRPC leads the frameworks with
-  calls in flight and at 10 KB; over plain HTTP it answers 0.58× fastify's
-  requests and 0.77× express's — said on the page, with why.
+  calls in flight and at 10 KB; over plain HTTP it answers 0.9× fastify's
+  requests and 1.2× express's — said on the page, with why.
+- **An HTTP request costs wRPC about half what it did.** Under
+  `bench/http-comparison.js`'s load the two HTTP paths answered ~35,000
+  requests a second, 0.58× fastify; they now answer ~61,000, 0.9×. A profile
+  of that load put a fifth of the server's CPU in `Client#destroy`: the
+  HTTP transport closes as its answer is written, the dispatcher released the
+  call only after, so every request built an `Error('Client disconnected')`
+  — a captured stack — to abort the call that had just answered. A call is
+  now released the moment its answer is written, and the reason is built
+  only when something is still in flight. The rest, each measured: a
+  packet-mode body is parsed once, not twice; `receiveBody` listens on the
+  request instead of `for await` (node's own stream destroyer still answers
+  an oversized body with its 400); `meta.headers` is a fast-mode
+  null-prototype copy where a `__proto__: null` literal made a dictionary;
+  the per-client close listener is `on` and a flag, not `once`; a declared
+  route's path skips the per-segment decode when nothing is escaped, an
+  absent query string skips `URLSearchParams`, and a body is handed to
+  `JSON.parse` as text. Each cites `bench/http-call.js`, new: it drives
+  `handleHttpCall` with a stub where the socket would be, and the core went
+  from 85K to ~320K requests a second on it. `bench/http-headers.js`, also
+  new, prices the default headers at about a tenth of `node:http`'s own
+  ceiling — they stay on. One thing a handler can see: on HTTP, `ctx.signal`
+  is no longer aborted once the call has answered — as on a WebSocket; a
+  request that goes away before its answer still aborts it.
 - **What the AMQP adapter reads is checked against amqplib.** Every member
   the adapter reads off a channel or a connection must exist on amqplib's
   own `ConfirmChannel` / `ChannelModel` (a devDependency), not only on the
@@ -2040,6 +2063,13 @@ reference as one opaque string. What is left to do:
   `WrpcClient.transport.event` is now typed as that constructor.
 
 ### Fixed
+- **A cancel that arrives while `onResponse` hooks run no longer answers the
+  call a second time.** The call stayed registered until its hooks settled,
+  so a `cancel` in that window aborted it and sent a 499 after the result
+  had gone out; an answered call is now released as its answer is written.
+  And an empty packet-mode POST is a malformed packet — one
+  `packet.malformed` warning and the id-less 500 — where it used to throw
+  inside the router and be logged at error level as `http.failed`.
 - **A connection refused by `authenticate` no longer resets the reconnect
   backoff.** A hook that throws synchronously runs inside the transport's
   `'open'` emit, where the ws transport is still settling its open, so the

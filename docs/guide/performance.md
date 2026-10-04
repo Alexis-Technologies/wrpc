@@ -52,9 +52,9 @@ and which knobs are worth turning for your traffic shape.
   the raw echoes answer 1.25–1.48× as many. Paying that for real request
   handling is the trade for getting one, not a defect — see
   [Against other stacks](#against-other-stacks).
-- **Plain HTTP against fastify and express.** wRPC's HTTP paths answer
-  0.58× fastify's requests and 0.77× express's on a JSON echo — every request
-  pays the RPC path and wRPC's default headers. See [Over HTTP](#over-http).
+- **Plain HTTP against fastify.** wRPC's HTTP paths answer 0.88–0.90× of
+  fastify's requests on a JSON echo, and 1.2× express's. Every request pays for
+  the RPC path and for wRPC's default headers. See [Over HTTP](#over-http).
 - **One call at a time in the browser.** The client's deadline scheduler
   earns its keep once many calls are in flight; a lone awaited call
   doesn't exercise it either way.
@@ -172,12 +172,12 @@ node bench/http-comparison.js   # WRPC_BENCH_DURATION=30 for longer runs
 
 | Stack | requests/s | mean latency | p99 latency |
 | --- | ---: | ---: | ---: |
-| **wRPC** — declared REST route | 34,988 | 28.1 ms | 57 ms |
-| **wRPC** — packet mode | 34,410 | 28.5 ms | 57 ms |
-| fastify | 60,778 | 15.9 ms | 33 ms |
-| express | 45,479 | 21.5 ms | 42 ms |
-| tRPC — standalone HTTP adapter | 15,470 | 64.0 ms | 99 ms |
-| `node:http` — no framework | 93,728 | 10.2 ms | 19 ms |
+| **wRPC** — declared REST route | 62,236 | 15.5 ms | 29 ms |
+| **wRPC** — packet mode | 60,927 | 15.9 ms | 32 ms |
+| fastify | 69,187 | 13.9 ms | 30 ms |
+| express | 50,567 | 19.3 ms | 36 ms |
+| tRPC — standalone HTTP adapter | 16,523 | 59.9 ms | 85 ms |
+| `node:http` — no framework | 104,404 | 8.9 ms | 16 ms |
 
 One run, one machine (Node v24.14.1, Apple M3 Max), loopback — the load
 generator shares the machine with the server, as it does in
@@ -186,15 +186,25 @@ fastify/benchmarks.
 Read it honestly:
 
 - **Plain HTTP is not where wRPC is fastest.** Its two HTTP paths answer
-  about 35,000 requests a second: 0.58× fastify, 0.77× express, 2.3× tRPC's
-  adapter. Each request pays what a WebSocket call pays once per connection —
-  parsing, routing — on top of the RPC path itself (dispatcher, access check,
-  hooks, a `Context`), and every answer carries wRPC's default headers: CORS,
-  `strict-transport-security`, `x-content-type-options`, `wrpc-version`, a few
-  hundred bytes a bare fastify or express route does not send.
+  about 61,000 requests a second: 0.88–0.90× fastify, 1.2× express, 3.7×
+  tRPC's adapter. Each request pays what a WebSocket call pays once per
+  connection — parsing, routing, a server-side client with its id, its
+  metadata and its session restore — on top of the RPC path itself
+  (dispatcher, access check, hooks, a `Context`).
+- **The default headers are a tenth of the ceiling.** Every answer carries
+  CORS, `strict-transport-security`, `x-content-type-options` and
+  `wrpc-version` — 338 bytes a bare fastify or express route does not send.
+  Building them is ~20 ns (`bench/cors-headers.js`); `node:http` validating
+  and writing them on every answer costs it about a tenth of its requests
+  (`bench/http-headers.js`, the ceiling row answering with and without them).
+  They are security defaults and stay on.
+- **What the core costs on its own.** `bench/http-call.js` drives
+  `handleHttpCall` with a stub in place of the socket: about 320,000 requests
+  a second on either path, so ~3 µs of a request is wRPC's routing, client and
+  dispatch with node's HTTP parser, header writing and socket taken out.
 - **The two paths cost the same.** A declared REST route (plain JSON in and
   out) and packet mode (the call packet a WebSocket carries, as one POST)
-  are within 2% of each other: the REST bridge's trie is not where the time
+  are within 3% of each other: the REST bridge's trie is not where the time
   goes.
 - **Which to reach for.** For traffic that is mostly RPC, a persistent
   transport is the better carrier — the WebSocket rows above. For an

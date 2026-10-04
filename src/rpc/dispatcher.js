@@ -84,7 +84,10 @@ const split = (s, separator) => {
   return [s.slice(0, i), s.slice(i + separator.length)];
 };
 
-const parseParams = (params) => Object.fromEntries(new URLSearchParams(params));
+// No query string is the common REST call, and URLSearchParams + fromEntries
+// cost it ~58 ns to parse nothing, against ~6 (bench/http-call.js); the
+// answer is the same empty object either way.
+const parseParams = (params) => (params ? Object.fromEntries(new URLSearchParams(params)) : {});
 
 // 'unit/name', 'unit.vN/name' -> { unit, version, name }.
 // Split on the FIRST dot only: 'unit.v1.2/m' must look up version 'v1.2'
@@ -133,6 +136,19 @@ const refuseCall = (client, id, code, method, event) => {
   client.log[level]({ event, code, id: clip(id), method: shown }, `${client.source}\tCALL\t${shown}\t${code}`);
   client.otel.recordCall(method, 'error', code);
   client.error(code, { id, level: 'debug' });
+};
+
+// An answered call is no longer in flight: released the moment its answer
+// is written, not after. On HTTP the write IS the end of the connection —
+// the transport closes and Client#destroy aborts whatever is still in
+// `calls` — so a call still registered there was aborted after it had
+// answered, at the cost of a stack-captured Error per request: releasing
+// first took handleHttpCall from 85k to 235k requests/s on a declared REST
+// route (bench/http-call.js, with the lazy reason in Client#destroy). On a
+// socket it also stops a cancel that arrives while onResponse hooks run
+// from answering an already-answered call a second time, with a 499.
+const release = (client, id, controller) => {
+  if (client.calls.get(id) === controller) client.calls.delete(id);
 };
 
 const handleRpc = async (client, packet, router) => {
@@ -208,6 +224,7 @@ const handleRpc = async (client, packet, router) => {
       if (!hasSession(client) && proc.access !== 'public') {
         status = 'error';
         code = refusedFor(client);
+        release(client, id, controller);
         return void client.error(code, { id });
       }
       // The caller's per-call deadline, validated as a bounded positive
@@ -221,6 +238,7 @@ const handleRpc = async (client, packet, router) => {
         code = result.code;
         client.otel.recordError(handle, result, code);
         if (hooks.onError.length > 0) await runHooksSafe(hooks.onError, context, result, client.log, 'onError');
+        release(client, id, controller);
         return void client.error(code, { id, error: result });
       }
       const callback = { type: 'callback', id, result };
@@ -242,6 +260,7 @@ const handleRpc = async (client, packet, router) => {
         compiled?.serialize && hooks.onSend.length === 0 && (!client.attachments || !hasBytes(result))
           ? `{"type":"callback","id":${JSON.stringify(id)},"result":${compiled.serialize(result)}}`
           : undefined;
+      release(client, id, controller);
       client.send(callback, { method, text });
       if (hooks.onResponse.length > 0) {
         await runHooksSafe(hooks.onResponse, context, callback, client.log, 'onResponse');
@@ -256,9 +275,10 @@ const handleRpc = async (client, packet, router) => {
         await runHooksSafe(hooks.onTimeout, context, error, client.log, 'onTimeout');
       }
       if (hooks.onError.length > 0) await runHooksSafe(hooks.onError, context, error, client.log, 'onError');
+      release(client, id, controller);
       return void client.error(code, { id, error });
     } finally {
-      if (client.calls.get(id) === controller) client.calls.delete(id);
+      release(client, id, controller);
       if (enabled) {
         client.otel.endSpan(handle, { 'rpc.wrpc.status_code': code, 'wrpc.status': status });
         client.otel.recordCall(method, status, code, now() - started);
@@ -648,6 +668,15 @@ const handleMessage = (client, data, router, options = {}) => {
       : client.decodePacket
         ? client.decodePacket(data)
         : jsonParse(data);
+  handleParsed(client, parsed, data, router, options);
+};
+
+// handleMessage past its parse, for a caller that already parsed the
+// message — the HTTP packet path reads a batch's ids before the client
+// exists, and parsing the body a second time here held packet mode at 214k
+// requests/s against 245k parsed once (bench/http-call.js). `data` is the
+// raw message, for the log line.
+const handleParsed = (client, parsed, data, router, options = {}) => {
   // jsonParse answers null for both "malformed" and "the literal null", and
   // the `|| {}` below hides the difference. This is the single funnel every
   // unparseable packet in the system passes through, so it is worth a line
@@ -704,6 +733,7 @@ module.exports = {
   handleCancel,
   handlePacket,
   handleMessage,
+  handleParsed,
   isError,
   split,
   parseTarget,

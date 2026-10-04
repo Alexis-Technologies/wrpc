@@ -47,7 +47,12 @@ const EMPTY_META = Object.freeze({
 
 // The frozen snapshot of what the peer presented when the connection was
 // made. `headers` is copied, not adopted: the source object belongs to the
-// host request and other code may still be reading (or mutating) it.
+// host request and other code may still be reading (or mutating) it. The
+// copy is a plain spread whose prototype is dropped AFTER: a `__proto__:
+// null` literal is born in V8's dictionary mode, and with one built per HTTP
+// request and alive until its answer, leaving that mode took handleHttpCall
+// from 256k to 305k requests/s (bench/http-call.js). Null-prototyped and
+// frozen either way.
 // The names in `headers` a ws handshake DECLARED (a carrier token, the
 // query) rather than carried — what readDeclared answers; `[]` on every
 // other transport, so a handler reads `meta.declared.includes(name)` bare.
@@ -56,7 +61,7 @@ const NO_NAMES = Object.freeze([]);
 const buildMeta = ({ headers, url, remoteAddress, protocol, data, declared } = {}) =>
   Object.freeze({
     data: data ?? FROZEN_EMPTY,
-    headers: headers ? Object.freeze({ __proto__: null, ...headers }) : FROZEN_EMPTY,
+    headers: headers ? Object.freeze(Object.setPrototypeOf({ ...headers }, null)) : FROZEN_EMPTY,
     declared: declared ?? NO_NAMES,
     url: url ?? '',
     remoteAddress: remoteAddress ?? '',
@@ -643,12 +648,17 @@ class Client extends Emitter {
     this.#rooms.leaveAll(this);
     // A gone peer cannot receive an answer, so everything still running on
     // its behalf is told to stop — this is what runs a subscription
-    // handler's `finally`, releasing whatever it had open.
-    const disconnected = new Error('Client disconnected');
-    for (const controller of this.calls.values()) controller.abort(disconnected);
-    for (const controller of this.subscriptions.values()) controller.abort(disconnected);
-    this.calls.clear();
-    this.subscriptions.clear();
+    // handler's `finally`, releasing whatever it had open. The reason is
+    // built only when there is someone to give it to: an Error captures a
+    // stack, and an HTTP client is destroyed once per request with nothing
+    // left in flight (bench/http-call.js).
+    if (this.calls.size > 0 || this.subscriptions.size > 0) {
+      const disconnected = new Error('Client disconnected');
+      for (const controller of this.calls.values()) controller.abort(disconnected);
+      for (const controller of this.subscriptions.values()) controller.abort(disconnected);
+      this.calls.clear();
+      this.subscriptions.clear();
+    }
     // An answer can no longer arrive: whoever asked is settled NOW instead
     // of waiting out the ask timeout on a peer that is gone.
     if (this.#asks.size > 0) {
