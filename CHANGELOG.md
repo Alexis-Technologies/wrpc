@@ -13,6 +13,8 @@ narrower promise — see
 
 ### Changed (breaking)
 
+## [2.0.1] - 2026-10-08
+
 ### Fixed
 
 - **Binary streams cross a worker proxy.** Behind `WrpcClientProxy` (the
