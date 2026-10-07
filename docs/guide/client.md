@@ -485,7 +485,9 @@ The packets are identical on both hops, so nothing above the transport
 changes. Each `connect()` gets its own `MessageChannel` to the worker — two
 workers from one page are two independent clients; the
 proxy routes answers back to the port that asked and broadcasts events to
-every port, and lets go of a port when its page closes it.
+every port, sends a binary stream's chunks after its announcement, and lets
+go of a port when its page closes it, terminating any upload it left half
+sent.
 
 This is also how a purely local backend — one fronting `IndexedDB`, say —
 joins a client that otherwise talks to remote services over `ws`/`http`/`wt`;

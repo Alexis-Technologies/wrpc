@@ -13,6 +13,25 @@ narrower promise — see
 
 ### Changed (breaking)
 
+## [2.0.1] - 2026-10-08
+
+### Fixed
+
+- **Binary streams cross a worker proxy.** Behind `WrpcClientProxy` (the
+  `event` transport: a Service Worker or SharedWorker holding the
+  connection for every tab) both directions of a binary stream arrived
+  empty: the `stream` packets were forwarded, the chunks between them were
+  not. A tab's upload reached the server's handler as an announcement and
+  an end with no bytes, and a server stream (`ctx.client.createStream()`)
+  reached the tab the same way, the worker logging `Stream … is not
+  initialized` for every chunk. A chunk carries only its stream id, so the
+  proxy now routes it by the stream's announcement: an upload's chunks go
+  up only from the tab that announced it, a server stream's go down to
+  wherever its `stream` packet went. A tab that leaves mid-upload has its
+  stream terminated upstream, where the server waited for the rest of the
+  bytes forever. A lost upstream terminates the server streams the tabs were
+  reading, so their readables end instead of hanging.
+
 ## [2.0.0] - 2026-10-04
 
 ### Added

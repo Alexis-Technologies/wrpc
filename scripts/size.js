@@ -147,7 +147,15 @@ const ENTRIES = [
   // what it opened (+0.1 KB, measured 27,768 B against 27,648) is what crossed it.
   // 28 -> 29 with the main entry's revision-2 raise (measured 28,735 B
   // against 28,672).
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 29 },
+  // 29 -> 30 for binary streams through the worker proxy: a chunk carries
+  // only its stream id, so the proxy routes it by the stream's announcement
+  // — an upload's chunks up from the page that announced it, a server
+  // stream's down to where its announcement went — and terminates what a
+  // leaving page or a lost upstream leaves hanging. Before, both directions
+  // arrived empty. +0.2 KB in the shared client core (the main entry stays
+  // under its 28 KB, measured 28,636 B); this one crossed: 29,753 B against
+  // 29,696.
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 30 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and

@@ -73,14 +73,14 @@ the run — it is a ratchet, and it runs in CI's lint job.
 
 | Entry | min | min+gzip | budget |
 | --- | ---: | ---: | ---: |
-| `@alexify/wrpc` — browser | 82.3 KB | **27.7 KB** | 28.0 KB |
-| `@alexify/wrpc/sse` — browser | 85.5 KB | **28.8 KB** | 29.0 KB |
+| `@alexify/wrpc` — browser | 83.3 KB | **28.0 KB** | 28.0 KB |
+| `@alexify/wrpc/sse` — browser | 86.6 KB | **29.1 KB** | 30.0 KB |
 | `@alexify/wrpc/query` | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` | 3.9 KB | **1.8 KB** | 2.0 KB |
 | `@alexify/wrpc/deflate` | 10.7 KB | **4.4 KB** | 5.0 KB |
 | `@alexify/wrpc/encryption` — browser | 31.5 KB | **11.5 KB** | 12.0 KB |
-| `@alexify/wrpc/webrtc` — browser | 179.2 KB | **58.3 KB** | 59.0 KB |
-| `@alexify/wrpc` — node | 300.4 KB | 101.0 KB | — |
+| `@alexify/wrpc/webrtc` — browser | 179.6 KB | **58.4 KB** | 59.0 KB |
+| `@alexify/wrpc` — node | 302.2 KB | 101.6 KB | — |
 
 The Node-only entries carry no budget because their gzip size is not a shipping
 cost; they are measured so a regression is *visible*, not gated.
@@ -164,7 +164,11 @@ sequenceDiagram
 The packets are identical on both hops, so nothing above the transport changes
 — [binary attachments](./streams#attachments) included: a frame crosses the
 port as bytes and is routed by the packet inside it, an answer to the tab
-that asked, an event to every tab.
+that asked, an event to every tab. [Binary streams](./streams) cross too,
+although a chunk carries nothing but its stream id: the proxy routes it by
+the stream's announcement. An upload's chunks go up only from the tab that
+announced it, and a server stream's chunks go down wherever its `stream`
+packet went.
 Pick the worker by what you need from it: a **Service Worker** also serves the
 page offline and outlives a reload, at the price of registration and a
 lifecycle the browser controls; a **SharedWorker** is only the shared socket —
