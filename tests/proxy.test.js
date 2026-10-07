@@ -49,6 +49,7 @@ globalThis.WebSocket = MockWebSocket;
 
 const { WrpcClient, WrpcClientProxy } = require('../src/client.js');
 const { encodeAttachments, decodeAttachments } = require('../src/attachments.js');
+const { chunkEncode, chunkDecode } = require('../src/chunks.js');
 
 const { emitWarning } = process;
 process.emitWarning = (warning, type, ...args) => {
@@ -687,6 +688,163 @@ test('WrpcClientProxy', async (t) => {
         port2.close();
       }
       WrpcClient.connect = originalConnect;
+    }
+  });
+
+  // A binary stream is packets AND raw chunks: the `stream` packet announces
+  // it, the chunks carry its bytes, a `stream` packet with a status ends it.
+  // Both halves have to cross the worker, or a page's upload reaches the
+  // server empty and a server's download reaches the page empty.
+  const bytesOf = (data) => new Uint8Array(data instanceof ArrayBuffer ? data : (data.buffer ?? data));
+
+  await t.test('a server-opened stream reaches the pages: its chunks follow its announcement', async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const proxy = new WrpcClientProxy();
+    const pages = [new MessageChannel(), new MessageChannel()];
+    const got = pages.map(() => []);
+    try {
+      pages.forEach(({ port1, port2 }, i) => {
+        globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
+        port1.onmessage = (e) => got[i].push(e.data);
+        port1.start();
+      });
+      await proxy.open();
+      const upstream = MockWebSocket.last;
+      // The download's call, and its answer naming the stream.
+      pages[0].port1.postMessage(JSON.stringify({ type: 'call', id: 'd-1', method: 'media/download', args: {} }));
+      await until(() => upstream.sentData?.length === 1);
+      upstream.dispatchMessage(JSON.stringify({ type: 'callback', id: 'd-1', result: { id: 's-1' } }));
+      upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 's-1', name: 'report.csv', size: 3 }));
+      upstream.dispatchMessage(chunkEncode('s-1', new Uint8Array([1, 2, 3])).buffer);
+      upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 's-1', status: 'end' }));
+      // The callback to its caller; the stream — announcement, chunk, end —
+      // to every page, as the announcement always went.
+      await until(() => got[0].length === 4 && got[1].length === 3);
+      const chunk = got[0][2];
+      assert.ok(typeof chunk !== 'string', 'the chunk arrives as bytes');
+      const { id, payload } = chunkDecode(bytesOf(chunk));
+      assert.strictEqual(id, 's-1');
+      assert.deepStrictEqual([...payload], [1, 2, 3]);
+      assert.deepStrictEqual([...bytesOf(got[1][1])], [...bytesOf(chunk)]);
+      assert.deepStrictEqual(JSON.parse(got[0][3]), { type: 'stream', id: 's-1', status: 'end' });
+      // Ended: a late chunk of it, and one of a stream nobody announced, go nowhere.
+      upstream.dispatchMessage(chunkEncode('s-1', new Uint8Array([4])).buffer);
+      upstream.dispatchMessage(chunkEncode('nobody', new Uint8Array([5])).buffer);
+      await tick();
+      await tick();
+      assert.deepStrictEqual(
+        got.map((messages) => messages.length),
+        [4, 3],
+      );
+    } finally {
+      proxy.close();
+      for (const { port1, port2 } of pages) {
+        port1.close();
+        port2.close();
+      }
+    }
+  });
+
+  await t.test("a page's upload reaches the server: its chunks go up between its packets", async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const proxy = new WrpcClientProxy();
+    const page = new MessageChannel();
+    const other = new MessageChannel();
+    try {
+      globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [page.port2] });
+      globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [other.port2] });
+      page.port1.start();
+      other.port1.start();
+      await proxy.open();
+      const upstream = MockWebSocket.last;
+      page.port1.postMessage(JSON.stringify({ type: 'stream', id: 'u-1', name: 'video.mp4', size: 4 }));
+      page.port1.postMessage(chunkEncode('u-1', new Uint8Array([1, 2])));
+      page.port1.postMessage(chunkEncode('u-1', new Uint8Array([3, 4])));
+      // Another page cannot write into a stream it did not announce.
+      other.port1.postMessage(chunkEncode('u-1', new Uint8Array([9])));
+      page.port1.postMessage(JSON.stringify({ type: 'stream', id: 'u-1', status: 'end' }));
+      await until(() => upstream.sentData?.length === 4);
+      await tick();
+      const sent = upstream.sentData;
+      assert.strictEqual(sent.length, 4, 'nothing from the other page');
+      assert.deepStrictEqual(JSON.parse(sent[0]), { type: 'stream', id: 'u-1', name: 'video.mp4', size: 4 });
+      assert.deepStrictEqual(
+        sent.slice(1, 3).map((bytes) => {
+          const { id, payload } = chunkDecode(bytesOf(bytes));
+          return [id, ...payload];
+        }),
+        [
+          ['u-1', 1, 2],
+          ['u-1', 3, 4],
+        ],
+      );
+      assert.deepStrictEqual(JSON.parse(sent[3]), { type: 'stream', id: 'u-1', status: 'end' });
+      // Ended: a chunk after it is dropped, not forwarded.
+      page.port1.postMessage(chunkEncode('u-1', new Uint8Array([5])));
+      await tick();
+      await tick();
+      assert.strictEqual(upstream.sentData.length, 4);
+    } finally {
+      proxy.close();
+      for (const port of [page.port1, page.port2, other.port1, other.port2]) port.close();
+    }
+  });
+
+  await t.test('a page that leaves mid-upload terminates its stream upstream', async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const proxy = new WrpcClientProxy();
+    const page = new MessageChannel();
+    try {
+      globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [page.port2] });
+      page.port1.start();
+      await proxy.open();
+      const upstream = MockWebSocket.last;
+      page.port1.postMessage(JSON.stringify({ type: 'stream', id: 'u-2', name: 'big.bin', size: 1024 }));
+      page.port1.postMessage(chunkEncode('u-2', new Uint8Array([1])));
+      await until(() => upstream.sentData?.length === 2);
+      // The server would otherwise wait for the rest of the bytes forever.
+      page.port1.postMessage({ type: 'wrpc:close' });
+      await until(() => upstream.sentData.length === 3);
+      assert.deepStrictEqual(JSON.parse(upstream.sentData[2]), { type: 'stream', id: 'u-2', status: 'terminate' });
+    } finally {
+      proxy.close();
+      page.port1.close();
+      page.port2.close();
+    }
+  });
+
+  await t.test('a lost upstream ends the server streams the pages were reading', async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const proxy = new WrpcClientProxy({ reconnect: false });
+    const pages = [new MessageChannel(), new MessageChannel()];
+    const got = pages.map(() => []);
+    try {
+      pages.forEach(({ port1, port2 }, i) => {
+        globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
+        port1.onmessage = (e) => got[i].push(e.data);
+        port1.start();
+      });
+      await proxy.open();
+      const upstream = MockWebSocket.last;
+      upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 's-9', name: 'live.bin', size: 1024 }));
+      upstream.dispatchMessage(chunkEncode('s-9', new Uint8Array([1])).buffer);
+      await until(() => got.every((messages) => messages.length === 2));
+      // No `end` will come: each reader hears the stream is over now.
+      upstream.close();
+      await until(() => got.every((messages) => messages.length === 3));
+      for (const messages of got) {
+        assert.deepStrictEqual(JSON.parse(messages[2]), { type: 'stream', id: 's-9', status: 'terminate' });
+      }
+    } finally {
+      proxy.close();
+      for (const { port1, port2 } of pages) {
+        port1.close();
+        port2.close();
+      }
     }
   });
 });

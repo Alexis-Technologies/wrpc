@@ -971,6 +971,10 @@ class WrpcClient extends Emitter {
       if (view !== null && this.#attachments && isAttachmentsFrame(view)) {
         return void this.#handleFrame(view).catch(escalate);
       }
+      // Behind a worker proxy a chunk is a page's, like every packet: handed
+      // over here, synchronously, so it keeps its place between the stream
+      // packets the proxy routes it by.
+      if (view !== null && this.#proxyPacket) return void this.#proxyPacket(view, null, true);
       this.#handleBinary(data).catch(escalate);
     });
   }
