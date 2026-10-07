@@ -362,6 +362,12 @@ The semantics:
 - `reconnect.retries` applies **per candidate**. When one exhausts its
   budget, the next takes over with a fresh counter and an immediate first
   try — the backoff was guarding the old endpoint, not the new one.
+- **The default never exhausts.** `retries` defaults to `Infinity`, so once a
+  connection has been up, the client retries the candidate it is on forever
+  and never reaches the next one. Only the first connect walks the list
+  without a budget, because nothing was connected yet to recover. For the
+  list to matter after that, give it a finite budget:
+  `reconnect: { retries: 5 }`.
 - Each hand-over emits `'transport-fallback', { from, to }`; only the LAST
   candidate exhausting emits `'reconnect-failed'`. There is no wrap-around,
   and no automatic upgrade back — reconnect the client if you want `ws`
