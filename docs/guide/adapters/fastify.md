@@ -45,6 +45,16 @@ await app.register(wrpcFastify, { router });
 Detection is by feature, not by configuration. Pass `engine` explicitly to skip
 it.
 
+```mermaid
+flowchart TD
+  F["fastify.register(wrpcFastify, { router })"] --> RT["fastify routes under basePath<br>packet · /:unit/:method · /events · /encryption-key<br>→ rpc.handleHttpCall"]
+  F --> DR["procedures with an http mapping<br>→ native fastify routes"]
+  F --> D{"what fastify runs on"}
+  D -- "a real http.Server" --> NE["the node engine,<br>on its 'upgrade' event"]
+  D -- "a fastify-uws server factory" --> UE["the uWebSockets.js engine,<br>over the same uws app"]
+  NE & UE -- "'connection'" --> AS["rpc.attachSocket"]
+```
+
 ## Options
 
 Everything [`RpcServer`](../server#rpc-options) takes, plus:

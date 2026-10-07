@@ -26,6 +26,20 @@ See [Stability](../reference/stability#experimental-carve-outs).
 | `ws://` where no certificate can be had — a LAN device, two services on a private network | everything | [session encryption](#session) |
 | The server itself, for a payload it only relays | the payload | [end-to-end helpers](#end-to-end) |
 
+Each row is a hop where TLS has already ended, and each layer covers one of
+them:
+
+```mermaid
+flowchart TB
+  B["browser · app · device"] -- "TLS" --> T["TLS terminator<br>CDN · proxy · balancer"]
+  T -- "plaintext from here in" --> S["wRPC server"]
+  B == "session encryption<br>Noise on ws · wt, HPKE on http · sse" ==> S
+  S -- "rooms.encryption<br>cluster.encryption" --> BP[("backplane")]
+  S -- "a broker binding's<br>encryption" --> MQ[("broker log · queue")]
+  S -- "sealedStore()" --> ST[("session store")]
+  B -. "end-to-end helpers: the server<br>relays bytes it cannot open" .-> B2["another client"]
+```
+
 If none of those rows is yours — a browser talking `wss://` to a server you
 run — you do not need this, and it would only cost you: CPU per message, 16
 to 60 bytes of overhead, asynchronous WebCrypto in the page, and the shared
@@ -229,6 +243,49 @@ stream chunks, attachments, compressed frames alike.
 | HTTP, SSE | no connection to hold a session, so **each request** is sealed to the server key with HPKE, and the answer under a key exported from the same context (~0.2 ms). The real method, path, headers and status are inside — except `Cookie` and `Set-Cookie`, which stay on the outer request and response (script cannot set an HttpOnly cookie, so the browser has to see it) — and an observer sees `POST <endpoint>` and `200`. An SSE stream comes back sealed frame by frame, the channel id included. |
 | WebRTC | nothing to add — a data channel is already DTLS end to end, and [assertions](./webrtc-trust) bind identity to it |
 | worker (`event`) | nothing to add — the port never leaves the process; give `encryption` to the `WrpcClientProxy` in the worker |
+
+On a socket the handshake is the first thing on the connection, inside
+`open()`. Under `NK`, the default, it looks like this:
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as client
+  participant S as server
+  C->>S: upgrade — the connect URL carries wrpc_e=1
+  Note over S: the engine socket is wrapped in a<br>SealedSocket — nothing below it changes
+  C->>S: 00 05 · version · protocol name · kid · Noise e, es
+  S-->>C: 00 05 · Noise e, ee
+  Note over C,S: a key per direction, counted nonces —<br>open() resolves on the client
+  Note over S: authorize(), then flush what was held
+  S-->>C: 00 06 · sealed packets, chunks, frames
+  C->>S: 00 06 · sealed packets, chunks, frames
+```
+
+`XX` adds a third message, which the client sends only after it has checked
+the server's static key against its pin, and which carries the client's own.
+The prologue mixes the transport kind and that cleartext first header into
+the handshake hash, so neither can be altered on the way without the
+handshake failing. The
+byte layout is in the [protocol reference](../reference/protocol#session-encryption).
+
+HTTP and SSE have no connection to hold a key, so each request is its own
+HPKE exchange, and whatever sits in between sees one shape of request:
+
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as client — sealedFetch
+  participant T as TLS terminator
+  participant S as server
+  C->>T: POST endpoint, application/wrpc-sealed —<br>HPKE(method, path, headers, body)
+  T->>S: the same opaque body
+  Note over S: unwrap BEFORE routing: fresh, enc seen once →<br>the inner call, marked encrypted
+  Note over S: routed like any other request
+  S-->>T: 200 — the answer sealed under a key<br>exported from the same context
+  T-->>C: 200
+  Note over C: open → the real status, headers and body
+```
 
 ### Patterns
 

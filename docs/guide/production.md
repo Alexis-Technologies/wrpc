@@ -135,6 +135,19 @@ stream ids are re-checked every time one is minted.
 
 ## Behind a proxy
 
+The list below, in one picture:
+
+```mermaid
+flowchart TB
+  P["pages · apps"] -- "wss · https · SSE" --> LB["HTTP load balancer<br>forwards Upgrade · no buffering on /events<br>idle timeout above the heartbeat"]
+  P -- "WebTransport, over UDP" --> H3["QUIC listener<br>the HTTP/3 host"]
+  LB -- "SSE: sticky on the session" --> A["instance A"]
+  LB -- "everything else: any instance" --> B["instance B"]
+  H3 --> A & B
+  A & B <--> BP[("backplane")]
+  A & B <--> SS[("session store")]
+```
+
 - **TLS.** Either run `protocol: 'https'` with `key`/`cert`, or terminate TLS
   at the proxy and run `'http'` behind it. Both are normal. If the box that terminates
   it is not yours, see [session encryption](./encryption#session).

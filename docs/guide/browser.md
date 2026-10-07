@@ -141,6 +141,26 @@ const worker = new SharedWorker('/wrpc-worker.js', { name: 'wrpc' });
 const client = await WrpcClient.connect(url, { worker });
 ```
 
+```mermaid
+sequenceDiagram
+  participant A as tab A
+  participant B as tab B
+  participant P as worker — WrpcClientProxy
+  participant S as server
+  A->>P: wrpc:connect, with its own MessagePort
+  B->>P: wrpc:connect, with its own MessagePort
+  A->>P: call { id: 1 }
+  Note over P: ONE upstream WrpcClient (opened by<br>proxy.open() or this first packet),<br>shared by every tab
+  P->>S: call { id: 1 }
+  S-->>P: callback { id: 1 }
+  P-->>A: callback { id: 1 } — to the port that asked
+  S-->>P: event chat/message
+  P-->>A: event
+  P-->>B: event — every tab hears it
+  A->>P: wrpc:close (tab closed)
+  P->>S: unsubscribe / cancel what tab A had open
+```
+
 The packets are identical on both hops, so nothing above the transport changes
 — [binary attachments](./streams#attachments) included: a frame crosses the
 port as bytes and is routed by the packet inside it, an answer to the tab

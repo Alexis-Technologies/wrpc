@@ -20,6 +20,7 @@ Key facts:
 
 - [Getting Started](https://wrpc.vercel.app/guide/getting-started): Install, a first server and client, sessions, realtime and subscriptions, with an architecture diagram.
 - [Why wRPC?](https://wrpc.vercel.app/guide/why): One router over every transport, positioning against tRPC, Socket.IO, gRPC/Connect, Bytecode Alliance's wRPC and webrpc, what zero dependencies buys, and when NOT to use it.
+- [Architecture](https://wrpc.vercel.app/guide/architecture): How the pieces meet — the layers a call crosses, the four entry points into `RpcServer`, one connection's object model, the receive and send paths, the client's internals, the extension seams, and the topology across instances, as diagrams.
 
 ## Server
 

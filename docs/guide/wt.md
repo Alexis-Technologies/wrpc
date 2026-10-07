@@ -83,6 +83,22 @@ fallback be invisible. [Streams of their own](#streams-without-head-of-line-bloc
 for binary transfers and datagrams for [unreliable events](#unreliable-events)
 are additive capabilities on top, never a replacement of the packets.
 
+```mermaid
+flowchart LR
+  C["browser<br>ClientWtTransport"]
+  S["server<br>WtSocket → RpcServer"]
+  C <== "control stream: bidirectional, opened by the client<br>capabilities first, then every packet and chunk, in order" ==> S
+  C -- "one unidirectional stream per binary wRPC stream<br>once both ends announced streams" --> S
+  S -- "the same, in the other direction" --> C
+  C <-. "datagrams: unreliable events only" .-> S
+```
+
+Both ends run the same `WtChannel` underneath: the framing, the outbound
+queue and its water marks, the per-message codec, the stream mux and the
+datagrams. Under [session encryption](./encryption#session) everything rides
+the control stream, sealed: no side streams, no datagrams and no per-message
+compression.
+
 On the server, the session becomes a `WrpcSocket` — the engine port's socket
 contract — and is attached exactly the way a WebSocket connection is
 (`RpcServer.attachSocket`), so session restore, declared headers, receive-side
@@ -218,6 +234,17 @@ from whatever the application runs:
 | ------------------------------------------------------------------------------------------------------------------ | ---------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | [`@fails-components/webtransport`](https://github.com/fails-components/webtransport) (+ `-transport-http3-quiche`) | native, Google's libquiche; prebuilt binaries (its install script must be allowed — `pnpm.onlyBuiltDependencies` under pnpm) | sessions are W3C-shaped and attach as-is; `fromFails(session)` reads the `CONNECT` request off `session.header`; the server needs `setRequestCallback(failsRequestCallback)` — its `sessionStream(path)` matches the request path literally, query included, and a wRPC client declares its headers in the query |
 | [`quico`](https://github.com/colocohen/quico)                                                                      | pure JavaScript HTTP/3 stack, beta                                                                                           | `fromQuico(req, res)` in the request handler; quico reports no session end, so pass `idleTimeout` (the client pings on its heartbeat) — and give a pure-JS stack a heartbeat timeout of a second, not a hundred milliseconds                                                                                     |
+
+Whichever host it comes from, a session takes the same path into the core:
+
+```mermaid
+flowchart TB
+  F["@fails-components/webtransport<br>sessions already W3C-shaped"] -- "acceptSessions(server, stream)<br>meta read by fromFails" --> AS["acceptSessions<br>concurrent · maxPending"]
+  Q["quico request handler"] -- "fromQuico(req, res)<br>builds the W3C session" --> AT
+  AS --> AT["attachSession<br>isWtSession · verify · session.ready<br>· the first bidi stream<br>within acceptTimeout"]
+  AT --> WS["WtSocket<br>over a WtChannel"]
+  WS --> RS["RpcServer.attachSocket<br>kind 'wt' → ServerWtTransport"]
+```
 
 ```js
 // quico: the request handler is where a session appears.

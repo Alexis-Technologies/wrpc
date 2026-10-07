@@ -109,6 +109,34 @@ says not to retry one from a client: a queue's `500` is usually a dependency
 that fell over, and at-least-once delivery already demands an idempotent
 handler. Narrow `retryOn` where that is not true.
 
+The same table as one delivery's life, from the moment the adapter hands it
+over:
+
+```mermaid
+stateDiagram-v2
+  state decide <<choice>>
+  [*] --> received: delivery, attempt n
+  received --> released: binding stopped,<br>or the server draining
+  received --> opened: unsealed, or plaintext accepted
+  received --> decide: sealed under a key id<br>this service does not hold (503)
+  received --> dead: does not open, or<br>plaintext refused (400)
+  opened --> dead: args do not parse (400)
+  opened --> dispatched: a call packet<br>through handleRpc
+  dispatched --> decide: the outcome code
+  decide --> acked: success
+  decide --> retry: in retryOn,<br>attempts left
+  decide --> released: 503 while draining
+  decide --> dead: anything else,<br>or attempts used up
+  acked --> [*]
+  retry --> [*]: redelivered after the backoff,<br>attempt n + 1
+  released --> [*]: redelivered,<br>attempt not counted
+  dead --> [*]: onDeadLetter, then the<br>dead-letter queue
+```
+
+The attempt counter is the adapter's, carried in `x-wrpc-attempt` where the
+broker keeps none, and the first settlement wins: a delivery is never acked
+and dead-lettered both.
+
 A dead letter lands on the `deadLetter` queue with `x-wrpc-dead-reason`
 (`"<code> <message>"`, folded to one line of at most 512 characters — a
 header value on every broker) and `x-wrpc-attempt` headers, and

@@ -58,6 +58,30 @@ const reports = await connect('broker://reports', {
 for await (const row of reports.api.export.rows.iterate({ since })) handle(row);
 ```
 
+```mermaid
+sequenceDiagram
+  autonumber
+  participant C as client — its own inbox
+  participant SA as service address wrpc.billing
+  participant A as instance A
+  participant B as instance B
+  Note over C,B: stateless — any instance answers any request
+  C->>SA: request { correlationId, replyTo: the client's inbox }
+  SA->>A: one member of the group takes it
+  A-->>C: response { correlationId }
+  Note over C,B: session — one instance holds it
+  C->>SA: hello { correlationId: the session id }
+  SA->>B: one member of the group takes it
+  B-->>C: welcome { wrpc-inbox: B's own inbox }
+  C->>B: packet · chunk — wrpc-seq 1, 2, … straight to B
+  B-->>C: packet · chunk — wrpc-seq 1, 2, …
+  Note over C,B: a gap in wrpc-seq is a lost session: bye, then reconnect
+```
+
+Every instance listens on the service address as one competing group, so
+each `request` and each `hello` reaches exactly one of them. After the
+`welcome`, the broker's load balancing is out of the session's path.
+
 ## What happens when an instance goes away
 
 A session lives on one instance, so losing it is a lost connection, and the
@@ -75,8 +99,11 @@ client's ordinary [reconnect](../client#reconnecting) takes it from there:
   (default 90 s, three client heartbeats) ends it.
 
 Stateless requests have none of this: a request nobody took fails its calls
-with `503` when the broker can tell (NATS, the in-process broker), or with
-the call timeout otherwise.
+with `503` when the broker can tell (the in-process broker, Redis with
+neither a subscriber nor a live group member on the address, RabbitMQ
+returning the message unrouted), or with
+the call timeout otherwise — NATS core publishes without knowing whether
+anyone listens.
 
 ## What the broker's ACL is the boundary for
 

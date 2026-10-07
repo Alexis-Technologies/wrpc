@@ -168,7 +168,22 @@ descriptors can express.
 `system/introspect` round-trip, repeated on every reconnect. When the contract
 is generated anyway, the *runtime* shape can be generated too: the same CLI
 run emits the raw introspection as an importable module, and `client.use()`
-scaffolds from it with **no wire traffic at all**:
+scaffolds from it with **no wire traffic at all**. All three ways to type and
+build `client.api` start from the same description:
+
+```mermaid
+flowchart LR
+  R["the server's Router"] --> I["system/introspect"]
+  I -- "client.load('chat') —<br>at runtime, again on<br>every reconnect" --> API["client.api.chat<br>methods · subscriptions<br>· an event emitter"]
+  I -- "wrpc types<br>--out api.d.ts" --> DTS["api.d.ts<br>types only"]
+  I -- "wrpc types<br>--schema api.static.js" --> ST["api.static.js<br>the description,<br>as a module"]
+  ST -- "client.use(schema) —<br>offline, synchronous" --> API
+  DTS -. "connect&lt;Api&gt;(url) —<br>compile time only" .-> API
+  H["a hand-written<br>interface"] -. "connect&lt;Api&gt;(url)" .-> API
+```
+
+Solid arrows build something at runtime; dotted ones exist only for the
+type checker. One CLI run writes both artifacts:
 
 ```bash
 wrpc types http://localhost:8000/api --out api.d.ts --schema api.static.js

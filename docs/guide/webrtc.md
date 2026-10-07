@@ -157,6 +157,29 @@ router — its unit's reserved `on` map. `link.send('chat/note', data)` (and
 where a server's events reach a client. A peer that wants to *receive*
 broadcasts therefore listens on each link's `api`, not in its router.
 
+How those pieces nest inside one page:
+
+```mermaid
+flowchart TB
+  P["WrpcPeer — one per page"] --> SG["signaler<br>to the signaling unit"]
+  P --> HOST["PeerHost<br>your router · rooms"]
+  P --> MESH["Mesh<br>one per joined room"]
+  P --> L["PeerLink<br>one per connected peer"]
+  L --> RM["link.remote<br>a WrpcClient"]
+  L --> RL["RtcLink<br>one RTCPeerConnection"]
+  L --> CL["link.client<br>its Client in the PeerHost"]
+  RL --> CC["client channel"]
+  RL --> HC["host channel"]
+  RM -. "writes on" .-> CC
+  HC -. "reads into" .-> CL
+```
+
+The other peer holds the mirror image: its client channel is this peer's
+host channel. The signaler carries the descriptions, ICE candidates and
+`connect` knocks every `RtcLink` needs, and a `Mesh` is a set of
+`PeerLink`s, one per member of its room. Each box is also a level you can
+enter at, which [Your own connection](#your-own-connection) describes.
+
 Handlers run on a `PeerHost`: a router, the dispatcher and one `Client` per
 attached peer — the pieces of `RpcServer` a peer needs, with no sessions,
 cluster or HTTP, and browser-safe. It satisfies the same `ClientHost`

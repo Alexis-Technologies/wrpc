@@ -135,6 +135,22 @@ carry.**
 | `'protocol'` | subprotocol tokens | subprotocol tokens |
 | `'query'` | `wrpc_h` / `wrpc_meta` on the connect URL | the same |
 
+```mermaid
+flowchart TD
+  O["headers · meta options<br>re-resolved on every open"] --> K{"carrier"}
+  K -- "'auto' from Node" --> N["real handshake headers<br>meta as x-wrpc-meta"]
+  K -- "'auto' from a browser,<br>or 'protocol'" --> T["subprotocol tokens<br>wrpc.h.… · wrpc.m.…<br>one 2048-byte budget"]
+  K -- "'query', protocols: [ ],<br>or WebTransport" --> Q["the connect URL's query<br>wrpc_h · wrpc_meta"]
+  T -. "answered wrpc.v1:<br>redial once" .-> Q
+  N & T & Q --> S["server: readHandshake<br>sanitize · cap · deny list"]
+  S --> M["observed upgrade headers first;<br>a declaration only adds the names<br>they do not carry"]
+```
+
+Wherever the client sends subprotocol offers at all (every case but `'auto'`
+from Node and an empty `protocols` list, `'query'` included), a `Bearer`
+authorization is lifted into an offer of its own, `wrpc.bearer.<token>`,
+outside the budget.
+
 `'query'` is the escape hatch for an intermediary that strips or rewrites
 `Sec-WebSocket-Protocol`; it is also what happens under `protocols: []`,
 because a token needs a protocol the server can answer next to it (a client

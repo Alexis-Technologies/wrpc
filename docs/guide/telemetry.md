@@ -246,6 +246,24 @@ link the two sides — the caller is in another process. `call`, `subscribe` and
 With `{ api }` on both ends, a client span becomes the parent of the server
 span and one trace spans the network hop.
 
+One trace can then follow a call from a page, through the server, across a
+broker and into the service that consumes it:
+
+```mermaid
+sequenceDiagram
+  participant C as client
+  participant S as server
+  participant MQ as broker
+  participant W as consuming service
+  Note over C: span chat/send — CLIENT
+  C->>S: call { …, tp, ts }
+  Note over S: span chat/send — SERVER,<br>its parent the client's span
+  S->>MQ: publish, headers traceparent · tracestate
+  Note over S: span orders.created publish — PRODUCER
+  MQ->>W: delivery
+  Note over W: span billing.v1/… — CONSUMER,<br>its parent the producer's span
+```
+
 Both fields are optional in both directions. A peer that sends none leaves the
 receiver to start a root span; a peer that does not understand them ignores
 them like any other unknown field. The context is per **packet**, so each call
