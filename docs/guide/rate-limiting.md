@@ -127,6 +127,20 @@ differs sharply per transport**.
 | Worker port (`attachPort`) | No — a `MessagePort` inside one process | Nothing |
 | [Broker binding](./brokers/rpc) and [queue consumers](./brokers/consumers) | No — messages come off the broker, never through the host | Nothing |
 
+Put together, two layers see two different streams of traffic:
+
+```mermaid
+flowchart TB
+  http["HTTP · REST call"] --> FL["the host framework's limiter"]
+  ssep["SSE POST"] --> FL
+  up["WebSocket upgrade, once"] --> FL
+  FL --> OR
+  FL -. "lets the connection in" .-> wsf
+  wsf["WebSocket frames"] --> OR
+  oth["WebTransport · WebRTC<br>worker port · broker"] --> OR
+  OR["onRequest<br>every packet, on every transport"] --> PR["procedure"]
+```
+
 ### HTTP and declarative REST
 
 Both the generic RPC endpoint (`{basePath}/:unit/:method`) and procedures

@@ -192,6 +192,7 @@ export default withMermaid({
             items: [
               { text: 'Getting Started', link: '/guide/getting-started' },
               { text: 'Why wRPC?', link: '/guide/why' },
+              { text: 'Architecture', link: '/guide/architecture' },
             ],
           },
           {

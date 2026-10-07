@@ -23,6 +23,26 @@ minor release until every adapter has shipped. See
 [Stability](../reference/stability#experimental-carve-outs).
 :::
 
+Each capability is a separate contract, and each wRPC feature on top asks
+for exactly one or two of them:
+
+```mermaid
+flowchart LR
+  B["a broker<br>{ name, backplane?, log?,<br>queue?, direct?, close() }<br>memory · Redis · NATS<br>RabbitMQ · Kafka"]
+  B --> bp["backplane<br>at-most-once fan-out"]
+  B --> lg["log<br>ordered, replayable"]
+  B --> q["queue<br>at-least-once, competing"]
+  B --> d["direct<br>addressable inboxes"]
+  bp --> R["the RpcServer backplane option<br>rooms · cluster"]
+  lg --> F["brokerFeed<br>a subscription handler"]
+  lg & q --> P["createPublisher<br>the router's declared emits"]
+  q --> C["attachConsumers<br>→ RpcServer.attach, persistent: false"]
+  d --> RPC["attachBrokerRpc + the broker transport<br>→ handleHttpCall · RpcServer.attach"]
+```
+
+Pass the capability, not the broker, where a single one is asked for:
+`new RpcServer({ backplane: broker.backplane })`.
+
 ## No broker is a dependency
 
 Like the [Redis backplane](./scaling#redis), every adapter takes **your**

@@ -88,6 +88,31 @@ ANY  {basePath}/:unit/:method   REST mode: args from the query string and body
 GET  {basePath}/events   the SSE stream (see the SSE guide)
 ```
 
+Every HTTP request, whichever host received it, goes through the same
+`handleHttpCall` and is routed like this:
+
+```mermaid
+flowchart TD
+  R["handleHttpCall(call)"] --> O{"OPTIONS?"}
+  O -- "yes" --> PF["200, CORS headers"]
+  O -- "no" --> C{"origin allowed?"}
+  C -- "no" --> F403["403"]
+  C -- "yes" --> EN["encryption, when configured:<br>key discovery · unwrap a sealed request ·<br>426 for plaintext under required"]
+  EN --> P{"path and method"}
+  P -- "GET {basePath}/events" --> SSE["open or re-attach<br>an SSE channel"]
+  P -- "POST {basePath} with<br>x-wrpc-channel" --> CP["that channel's Client —<br>202, answer on the stream"]
+  P -- "POST {basePath}" --> PK["packet mode:<br>one packet or a batch"]
+  P -- "{basePath}/…" --> RT{"a declared<br>http route?"}
+  RT -- "yes" --> DR["declarative REST:<br>{ params, query, body }<br>→ the plain result"]
+  RT -- "no" --> CV["conventional REST:<br>/unit/method<br>→ a callback envelope"]
+  P -- "anything else" --> F404["404"]
+```
+
+A packet-mode or REST request gets a short-lived `Client` of its own, so
+sessions, hooks, validation and telemetry run exactly as they do on a socket.
+In packet mode, one response answers a whole batch. A channel POST is the
+exception: it belongs to the channel's long-lived `Client`.
+
 **Packet mode** is the wire protocol verbatim — the same JSON object a
 WebSocket frame carries, in an HTTP body. It is what the HTTP client transport
 and the `wrpc types` CLI use.

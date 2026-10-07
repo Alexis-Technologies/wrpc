@@ -106,7 +106,29 @@ The rules that keep this compatible in every direction:
   read, never selected.
 
 The other carriers have no subprotocol, and each says the revision where it
-can:
+can. Between two 2.x ends, the four that negotiate it look like this:
+
+```mermaid
+sequenceDiagram
+  participant C as client
+  participant S as server
+  Note over C,S: WebSocket — the subprotocol
+  C->>S: Sec-WebSocket-Protocol: wrpc.v2, wrpc.v1
+  S-->>C: Sec-WebSocket-Protocol: wrpc.v2
+  Note over C,S: HTTP — Accept one way, wrpc-version the other
+  C->>S: POST, JSON body, Accept: application/octet-stream, application/json
+  S-->>C: wrpc-version: 2 — a framed body only if the answer holds bytes
+  Note over C: request bodies may be frames from now on
+  Note over C,S: worker port — the first ping
+  C->>S: { "type": "ping", "v": 2 }
+  S-->>C: { "type": "pong", "v": 2 }
+  Note over C,S: WebTransport — each end's capabilities
+  C->>S: KIND 2 { "f": 1, … }
+  S-->>C: KIND 2 { "f": 1, … }
+```
+
+A 1.0 peer on the other end answers `wrpc.v1`, `wrpc-version: 1` or a plain
+`pong`, and the connection speaks revision 1 from then on.
 
 | Carrier | How the revision is said |
 | --- | --- |
@@ -318,6 +340,30 @@ them and the word boundary cannot be recovered afterwards.
 
 Every packet is a JSON object with a `type`. Unknown types are answered with
 a `callback` carrying code 500.
+
+On a persistent connection the packets pair up like this. The sections below
+take them one at a time:
+
+```mermaid
+sequenceDiagram
+  participant C as client
+  participant S as server
+  C->>S: call { id: 1, method, args }
+  S-->>C: callback { id: 1, result | error }
+  C->>S: subscribe { id: 2, method, args, lastEventId? }
+  S-->>C: data { id: 2, eventId?, data } — any number
+  C->>S: unsubscribe { id: 2 }
+  S-->>C: end { id: 2 } — always the last word
+  C->>S: call { id: 3 }, then cancel { id: 3 }
+  S-->>C: callback { id: 3, error: 499 }
+  S-->>C: event { name, data } — no answer
+  S-->>C: event { name, data, id: 4 } — an ask
+  C->>S: callback { id: 4, result }
+  C->>S: stream { id: "s", name, size }, then binary chunks of "s"
+  C->>S: stream { id: "s", status: "end" }
+  C->>S: ping
+  S-->>C: pong
+```
 
 ### `call` — client → server {#call-client-server}
 

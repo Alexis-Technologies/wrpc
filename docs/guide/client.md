@@ -205,22 +205,36 @@ delay = random(0, min(maxDelay, minDelay * factor ** attempt))
 
 ```mermaid
 stateDiagram-v2
-  [*] --> connecting
-  connecting --> authenticating: handshake ok
-  connecting --> waiting: failed
-  authenticating --> open: hook passed<br>(or none configured)
-  authenticating --> waiting: hook threw
-  open --> waiting: socket closed
-  waiting --> connecting: after the jittered delay
-  waiting --> failed: retries exhausted
-  open --> restoring: reconnected
-  restoring --> open: units re-loaded,<br>subscriptions re-opened
-  failed --> [*]
+  state next <<choice>>
+  [*] --> connecting: connect()
+  connecting --> authenticating: transport open,<br>authenticate hook set
+  connecting --> open: transport open,<br>no hook
+  authenticating --> open: hook resolved
+  open --> restoring: after a reconnect
+  restoring --> open: units re-loaded —<br>'reconnect'
+  connecting --> next: open failed<br>or connectTimeout
+  authenticating --> next: hook threw
+  restoring --> next: load() failed —<br>'restore-failed'
+  open --> next: closed, or<br>heartbeat timeout
+  next --> waiting: retries left
+  next --> connecting: retries exhausted, next candidate —<br>'transport-fallback'
+  next --> failed: last candidate exhausted —<br>'reconnect-failed'
+  waiting --> connecting: the jittered delay
+  failed --> connecting: 'online', or open()
 ```
 
-`waiting → failed` emits `reconnect-failed`; `restoring → open` emits
-`reconnect`. A `restore-failed` on the way through `restoring` means a unit or
-subscription could not be rebuilt, and is reported rather than swallowed.
+That is the cycle after the first connection. The **first** connect never
+waits: a candidate whose transport does not open hands over to the next one
+on the list at once, and when the last one fails, or the `authenticate` hook
+throws, `connect()` rejects and the client is closed.
+
+`restoring` re-sends every subscription's `subscribe` (with its
+`lastEventId`) first, then re-`load()`s the units, then emits `reconnect`. A
+`restore-failed` means the `load()` failed. The client terminates that
+connection and goes round again rather than staying half-restored. A
+subscription the server refuses on the way back ends on its own, with an
+`end` packet carrying the error. `failed` is not final either: the browser's
+`online` event or a manual `open()` starts the cycle again.
 
 Jittering the **whole window** rather than adding a small offset is what breaks
 up the thundering herd: after a server restart, a thousand clients that

@@ -24,6 +24,18 @@ pieces and you wire them where they belong:
 | `engine` / `wsServer` | The WebSocket [engine](../../reference/engine) and its connection source. |
 | `close()` | Closes the core and the engine. |
 
+The two halves meet the core at its usual entry points:
+
+```mermaid
+flowchart TB
+  L["your listener<br>express · node:http"] -- "request" --> H["wrpc.handler"]
+  H -- "inside basePath" --> HH["rpc.handleHttpCall"]
+  H -- "outside basePath" --> N["next() —<br>the rest of your app"]
+  L -- "'upgrade'" --> U["wrpc.upgrade"]
+  U --> E["engine.handleUpgrade<br>attached with no server<br>upgrade gate: origin, verifyClient"]
+  E -- "'connection'" --> AS["rpc.attachSocket"]
+```
+
 It works with **bare `node:http`** too — `handler` is plain
 `(req, res, next)`, with no express API involved:
 

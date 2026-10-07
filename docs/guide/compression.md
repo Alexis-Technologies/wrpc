@@ -51,6 +51,23 @@ zstd a browser that sends deflate, and `transport.compression` shows both
 list** and refused when it is the only thing asked for. Lists that share
 nothing leave the wire plain; nothing hangs up.
 
+```mermaid
+sequenceDiagram
+  participant S as server — ['zstd', 'deflate-raw']
+  participant B as browser — ['deflate-raw', 'zstd']
+  S->>B: announces zstd, deflate-raw
+  B->>S: announces deflate-raw, zstd
+  Note over S: the first of ITS list the browser holds → zstd
+  Note over B: the first of ITS list the server holds → deflate-raw
+  S->>B: frames compressed with zstd
+  B->>S: frames compressed with deflate-raw
+```
+
+Each end can work out what the other chose from the two announcements, so on
+WebTransport and WebRTC a compressed frame is marked by its kind or a flag
+bit, never by a codec id. The broker binding is the exception: each frame
+names its codec in a `wrpc-enc` header.
+
 The backplane negotiates nothing, so there the list means: **encode with the
 head, decode anything on it**. A change of codec is then a rollout without a
 lost envelope — every instance lists both (`['deflate-raw', 'zstd']`), then
