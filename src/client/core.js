@@ -18,7 +18,7 @@ const {
 const { generateUUID } = require('../runtime/node.js');
 const { chunkDecode } = require('../chunks.js');
 const { hasBytes, encodeAttachments, decodeAttachments, isAttachmentsFrame } = require('../attachments.js');
-const { WrpcReadable, WrpcWritable } = require('../streams.js');
+const { WrpcReadable, WrpcWritable, sweepStreams, STREAM_IDLE_TIMEOUT } = require('../streams.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createClientTelemetry } = require('../telemetry/client.js');
 const { META_HEADER, META_PREFIX, HEADERS_PARAM, META_PARAM, WRPC_V1, WRPC_V2 } = require('../wire.js');
@@ -448,6 +448,14 @@ class WrpcClient extends Emitter {
   #writables = new Map();
   // The last chunk that arrived as something other than bytes, converting.
   #converting = null;
+  // How long a stream of the server's may go without a reader and without a
+  // byte before it is failed and forgotten, and the timer of the next sweep
+  // (#watchStreams).
+  #streamIdleTimeout = STREAM_IDLE_TIMEOUT;
+  #sweeper = null;
+  // Behind a worker proxy this client is one page of several, and a server
+  // stream reaches every one of them (see #handleStream).
+  #shared = false;
   #callTimeout = CALL_TIMEOUT;
   #connectTimeout = CONNECT_TIMEOUT;
   #querystring = null;
@@ -631,6 +639,8 @@ class WrpcClient extends Emitter {
     this.#log = createLoggerWriter(logger);
     this.#otel = createClientTelemetry(telemetry);
     if (callTimeout) this.#callTimeout = callTimeout;
+    if (options.streamIdleTimeout !== undefined) this.#streamIdleTimeout = options.streamIdleTimeout;
+    this.#shared = Boolean(options.worker);
     const { connectTimeout } = options;
     // 0/false disables — for hosts that own their timeouts (tests, tooling).
     if (connectTimeout !== undefined) this.#connectTimeout = connectTimeout > 0 ? connectTimeout : 0;
@@ -854,6 +864,8 @@ class WrpcClient extends Emitter {
   // transfer is terminated so its consumer's `for await` ends instead of
   // parking forever on a connection that no longer exists.
   #failStreams() {
+    clearTimeout(this.#sweeper);
+    this.#sweeper = null;
     if (this.#streams.size === 0) return;
     const streams = Array.from(this.#streams.values());
     this.#streams.clear();
@@ -1790,11 +1802,17 @@ class WrpcClient extends Emitter {
       if (packet.cancel === true) {
         readableStream.onCancel = (error) => {
           if (readableStream.bytesReceived === size) return;
+          // Behind a worker the stream went to every page, and only the one
+          // that asked for it reads it. A copy nobody here ever read that
+          // FAILS — swept, or past a cap — speaks for this page alone: said
+          // to the server, it would end the stream for the page reading it.
+          if (this.#shared && readableStream.error !== null && !readableStream.consuming) return;
           const message = error ? error.message : `Stream ${name} is no longer read`;
           this.send({ type: 'callback', id, error: { message, code: error ? error.code : 499 } });
         };
       }
       this.#streams.set(id, readableStream);
+      this.#watchStreams();
       return;
     }
     if (!stream) throw new Error(`Stream ${id} is not initialized`);
@@ -1821,6 +1839,22 @@ class WrpcClient extends Emitter {
       await stream.close();
     }
     if (this.#streams.get(id) === stream) this.#streams.delete(id);
+  }
+
+  // Armed while this client holds streams of the server's: each tick ends
+  // what has had no reader and no byte since the tick before (sweepStreams)
+  // and arms the next while any are left. A download nobody asked for —
+  // behind a worker every page is sent every stream — used to be kept, whole,
+  // for as long as the connection lived.
+  #watchStreams() {
+    if (this.#sweeper !== null || !(this.#streamIdleTimeout <= 2 ** 31 - 1)) return;
+    this.#sweeper = setTimeout(() => {
+      this.#sweeper = null;
+      sweepStreams(this.#streams);
+      if (this.#streams.size > 0) this.#watchStreams();
+    }, this.#streamIdleTimeout);
+    // Node: not a reason to keep a process alive. A browser's timer has none.
+    this.#sweeper.unref?.();
   }
 
   // Bytes are pushed in the turn they arrived in (an async function runs

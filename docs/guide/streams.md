@@ -354,6 +354,23 @@ for on those carriers.
 A chunk counts as its bytes plus 256: holding one costs a view and a slot
 whatever it carries, and the size of a chunk is the peer's choice.
 
+And a stream **nobody comes to read** is not kept for the life of the
+connection. An upload whose call was refused before its handler looked at the
+stream — a `403`, a validation error, a quota — is on its way all the same;
+so is a stream a peer announced and left. Each used to hold its bytes and its
+slot until the connection closed, and enough of them took the room the next
+upload needed: three megabyte-sized uploads refused that way, and a 4 KiB one
+behind them was answered `413` until the client reconnected.
+[`streamIdleTimeout`](./server#rpc-options) (30 seconds by default) ends them:
+a stream that has had no reader and no byte for that long **fails** with `408`
+(`Stream … was never read`), lets go of what it held, and is forgotten once
+its sender has ended it. Its sender is told to stop, unless the stream had
+arrived whole; a reader that comes late, while the sender is still at it, is
+thrown the `408`. The sweep runs on a timer of that period, so a stream goes
+between one and two of them; one that is being read, however slowly, or still
+receiving bytes, is not idle. `Infinity` turns it off. A client sweeps the
+streams its server sends the same way — its own `streamIdleTimeout` option.
+
 So issue the call **before** the upload, as above. The other order — the
 whole upload first, then the call that reads it — works for as long as the
 upload fits under `maxStreamBuffer`, and holds all of it in memory until the

@@ -36,6 +36,7 @@ const {
   DEFAULT_MAX_CALLS,
   DEFAULT_MAX_STREAMS,
   DEFAULT_MAX_STREAM_BUFFER,
+  DEFAULT_STREAM_IDLE_TIMEOUT,
   buildMeta,
 } = require('../rpc/client.js');
 const { dispatchMessage, dispatchBinary } = require('../rpc/dispatcher.js');
@@ -72,6 +73,7 @@ class PeerHost extends Emitter {
     maxCalls = DEFAULT_MAX_CALLS,
     maxStreams = DEFAULT_MAX_STREAMS,
     maxStreamBuffer = DEFAULT_MAX_STREAM_BUFFER,
+    streamIdleTimeout = DEFAULT_STREAM_IDLE_TIMEOUT,
     metaMaxBytes = DEFAULT_META_MAX,
     trust = 'link',
     instanceId = null,
@@ -106,6 +108,7 @@ class PeerHost extends Emitter {
       maxCalls,
       maxStreams,
       maxStreamBuffer,
+      streamIdleTimeout,
       attachments: this.#attachments,
     };
     this.#trust = trust;
@@ -206,6 +209,7 @@ class PeerHost extends Emitter {
       maxCalls: this.#limits.maxCalls,
       maxStreams: this.#limits.maxStreams,
       maxStreamBuffer: this.#limits.maxStreamBuffer,
+      streamIdleTimeout: this.#limits.streamIdleTimeout,
       generateId: this.#generateId,
       meta: buildMeta({ data: about, remoteAddress: peer }),
       metaMax: this.#metaMax,

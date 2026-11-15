@@ -161,6 +161,12 @@ export class WrpcReadable extends Emitter {
   readonly queue: Array<ArrayBufferView>;
   /** How many chunks wait for the reader. */
   readonly queued: number;
+  /**
+   * Whether nothing happened to it since this was last asked — no reader
+   * came, no byte arrived. What the sweep behind `streamIdleTimeout` asks of
+   * a stream; asking moves its mark, so it is the feeder's to call.
+   */
+  idle(): boolean;
   /** False once the stream is over — closed, terminated or failed. Nothing pushed after that is kept. */
   streaming: boolean;
   /** `'active'`, `'closed'` (every announced byte was read) or `'terminated'` (cut short — see `error`). */
@@ -997,6 +1003,14 @@ export interface WrpcClientOptions {
    * 408 `WrpcError` ('Request timeout'); default 7000.
    */
   callTimeout?: number;
+  /**
+   * Milliseconds a stream from the server may go without a reader and
+   * without a byte before it is failed with `408` and forgotten — a
+   * download nobody asked for is not kept for the life of the connection.
+   * Swept on a timer of that period, so a stream goes between one and two
+   * of them. Default 30000; `Infinity` turns it off.
+   */
+  streamIdleTimeout?: number;
   /**
    * Cap (ms) on the transport handshake; default 30000, `0`/`false`
    * disables. Connection setup is the one phase with no liveness signal at

@@ -15,6 +15,27 @@ narrower promise — see
 
 ### Added
 
+- **`streamIdleTimeout` — a stream nobody comes to read is not kept for the
+  life of the connection.** An upload whose call is refused before its
+  handler looks at the stream (a `403`, a validation error) is on its way
+  all the same, and so is a stream a peer announced and left: each held its
+  bytes and its slot until the connection closed. With `maxStreamBuffer` in
+  place that became a connection that could not upload — three uploads of
+  341 KiB refused that way under a 1 MiB cap, and the 4 KiB upload behind
+  them was answered `413`, call first or upload first, until the client
+  reconnected; eight empty streams nobody read took all eight of
+  `maxStreams`. A stream that has had no reader and no byte for
+  `streamIdleTimeout` (30 s by default, swept on a timer of that period, so
+  between one and two of them) now **fails** with `408` (`Stream … was
+  never read`): what it held is let go of, its sender is told to stop —
+  unless it had arrived whole — and it is forgotten once its sender has
+  ended it. A reader that comes late is thrown the `408`. One that is being
+  read, however slowly, or still receiving bytes, is not idle. On
+  `RpcServer`, `PeerHost` (in `limits`, and on `client.streamIdleTimeout`)
+  and on the client, which sweeps the streams its server sends the same
+  way: a download nobody asked for was kept whole for as long as the page
+  was connected. `Infinity` turns it off. New on `WrpcReadable`: `idle()`;
+  on the server-side `Client`: `watchStreams()`.
 - **A receiver that lets go of a stream tells its sender.** After
   `readable.terminate()` — a handler refusing an upload, a page dropping a
   download — the sender sent the whole body all the same, to be dropped on
@@ -263,9 +284,11 @@ narrower promise — see
   upload sent whole ahead of the call that reads it now has to fit under
   the cap. Issue the call first, as the streams guide always showed, or
   raise the option (`Infinity` lifts it).
-- The main browser entry's budget is 29 KB (was 28) for the client half
-  of the above — the readable's checks are the same class on both ends —
-  and the webrtc entry's 60 KB (was 59) for `writeAll`.
+- The main browser entry's budget is 30 KB (was 28) for the client half
+  of the above — the readable's checks, its cursor queue and the sweep of
+  streams nobody reads are the same class on both ends — the sse entry's
+  31 KB (was 30) with it, and the webrtc entry's 61 KB (was 59) for those
+  and `writeAll`.
 
 ## [2.0.1] - 2026-10-08
 

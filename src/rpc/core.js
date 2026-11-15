@@ -52,6 +52,7 @@ const {
   DEFAULT_MAX_CALLS,
   DEFAULT_MAX_STREAMS,
   DEFAULT_MAX_STREAM_BUFFER,
+  DEFAULT_STREAM_IDLE_TIMEOUT,
   buildMeta,
 } = require('./client.js');
 const { DEFAULT_META_MAX, declaredData } = require('./meta.js');
@@ -115,6 +116,7 @@ const RPC_OPTION_KEYS = [
   'maxCalls',
   'maxStreams',
   'maxStreamBuffer',
+  'streamIdleTimeout',
   'sse',
   'http',
   'compression',
@@ -209,6 +211,7 @@ class RpcServer extends Emitter {
       maxCalls = DEFAULT_MAX_CALLS,
       maxStreams = DEFAULT_MAX_STREAMS,
       maxStreamBuffer = DEFAULT_MAX_STREAM_BUFFER,
+      streamIdleTimeout = DEFAULT_STREAM_IDLE_TIMEOUT,
       sse = {},
       http = {},
       compression = null,
@@ -328,6 +331,7 @@ class RpcServer extends Emitter {
       maxCalls,
       maxStreams,
       maxStreamBuffer,
+      streamIdleTimeout,
       compression: normalizeSyncCompression(compression, 'RpcServer: options'),
       attachments: this.#attachments,
     };
@@ -815,6 +819,7 @@ class RpcServer extends Emitter {
       maxCalls: this.#limits.maxCalls,
       maxStreams: this.#limits.maxStreams,
       maxStreamBuffer: this.#limits.maxStreamBuffer,
+      streamIdleTimeout: this.#limits.streamIdleTimeout,
       generateId: this.#generateId,
       meta,
       metaMax: this.#metaMax,

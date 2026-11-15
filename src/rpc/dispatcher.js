@@ -516,6 +516,8 @@ const handleStream = async (client, packet) => {
       const stream = new WrpcReadable(id, name, size);
       stream.onCancel = tellSender(client, stream, packet.cancel === true);
       client.streams.set(id, stream);
+      // What nobody comes to read is not kept for the connection's life.
+      client.watchStreams();
     }
   } catch (error) {
     client.error(400, { id, error });

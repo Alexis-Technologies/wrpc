@@ -149,7 +149,7 @@ are compared below.
 | | **wRPC** (`@alexify/wrpc`) | **tRPC** v11 | **Socket.IO** v4 |
 | --- | --- | --- | --- |
 | Transports | WebSocket, HTTP + REST, SSE (full duplex, resume), WebTransport, WebRTC, worker port, message broker | HTTP (batching, JSONL streaming), SSE (subscriptions), WebSocket | WebSocket, HTTP long-polling; WebTransport since 4.7, opt-in |
-| In the browser | official client, under 29 KB min+gzip (a CI budget) | official client | official client, 14.7 KB min+gzip (published) |
+| In the browser | official client, under 30 KB min+gzip (a CI budget) | official client | official client, 14.7 KB min+gzip (published) |
 | Peer to peer | WebRTC data channels: symmetric peers, mesh, signaling | — | — (`socket.io-p2p`, last released 2016) |
 | Types | contract-first + codegen, no build step; typed server→client events | inferred from the server's router | hand-written event-map generics |
 | Realtime | subscriptions with resume, events both ways, rooms, acks | subscriptions with resume (`tracked()`); no rooms, no acks | events, rooms, broadcast, acks; no subscription primitive |
@@ -177,7 +177,7 @@ are compared below.
 | Codegen | TypeScript `.d.ts` and OpenAPI from a running server (`wrpc types`) | gRPC: 13 languages; Connect: Go, TS/JS, Swift, Kotlin, Python, Dart | `wit-bindgen-wrpc` for Rust and Go | Go, TS, JS (client and server); Kotlin, Dart, Swift (clients); OpenAPI |
 | Wire encoding | JSON packets + binary frames; a pluggable codec | binary protobuf (JSON on Connect) | component-model value encoding | JSON |
 | Transports | WebSocket, HTTP + REST, SSE, WebTransport, WebRTC, worker port, message broker | gRPC: HTTP/2 (gRPC-Web through a proxy); Connect: HTTP/1.1, HTTP/2, HTTP/3 | TCP, Unix sockets, QUIC, WebTransport (release 0.17); WebSocket and HTTP on `main` | HTTP POST |
-| In the browser | official client, under 29 KB min+gzip | gRPC-Web, Connect-Web: unary and server-streaming | `@bytecodealliance/wrpc` 0.0.0 on npm, types written by hand | generated TS/JS client over `fetch` |
+| In the browser | official client, under 30 KB min+gzip | gRPC-Web, Connect-Web: unary and server-streaming | `@bytecodealliance/wrpc` 0.0.0 on npm, types written by hand | generated TS/JS client over `fetch` |
 | Streaming | subscriptions, events both ways, binary streams both ways | all four kinds; server-streaming only from a browser | `stream<T>` / `future<T>`, both directions | server-streaming (NDJSON), since v0.17 |
 | Server push beyond streams | events, rooms, acks, resume after reconnect | — | — | — |
 | Peer to peer | WebRTC data channels | — | — | — |

@@ -8,7 +8,7 @@
 const { Emitter, jsonParse } = require('../utils.js');
 const { STATUS_CODES } = require('../status.js');
 const { generateUUID } = require('../runtime/node.js');
-const { WrpcWritable } = require('../streams.js');
+const { WrpcWritable, sweepStreams, STREAM_IDLE_TIMEOUT: DEFAULT_STREAM_IDLE_TIMEOUT } = require('../streams.js');
 const { RoomRegistry } = require('./rooms.js');
 const { DEFAULT_META_MAX } = require('./meta.js');
 const { createLoggerWriter } = require('../logging.js');
@@ -36,6 +36,8 @@ const DEFAULT_MAX_STREAMS = 256;
 // call that reads it, and the same order as what the WebSocket engine
 // already lets one connection buffer for a message (`maxBuffer`, 100 MiB).
 const DEFAULT_MAX_STREAM_BUFFER = 64 * 1024 * 1024;
+// The longest delay a timer takes: past it Node fires after a millisecond.
+const MAX_TIMER = 2 ** 31 - 1;
 // How long client.ask() waits for the peer's answer. Mirrors the client's
 // default call timeout: an ask is a call travelling the other way.
 const DEFAULT_ASK_TIMEOUT = 7_000;
@@ -159,6 +161,8 @@ class Client extends Emitter {
   // holds what the peer announced. Where the peer's word on one finds its
   // writable (cancelStream); each takes itself out (WrpcWritable).
   #writables = new Map();
+  // The timer of the next sweep of `streams`, while there are any.
+  #sweeper = null;
   #ready = null;
   #isReady = false;
   /** The REST response seam (see Context.http); null except on a REST call. */
@@ -186,6 +190,7 @@ class Client extends Emitter {
       maxCalls = DEFAULT_MAX_CALLS,
       maxStreams = DEFAULT_MAX_STREAMS,
       maxStreamBuffer = DEFAULT_MAX_STREAM_BUFFER,
+      streamIdleTimeout = DEFAULT_STREAM_IDLE_TIMEOUT,
       generateId,
       codec = null,
       meta = null,
@@ -219,6 +224,9 @@ class Client extends Emitter {
     this.maxCalls = maxCalls;
     this.maxStreams = maxStreams;
     this.maxStreamBuffer = maxStreamBuffer;
+    // How long a stream of the peer's may go without a reader and without a
+    // byte before it is failed and forgotten (watchStreams).
+    this.streamIdleTimeout = streamIdleTimeout;
     // Whether this client's carrier can hold the peer back while a stream's
     // reader is behind (a socket with pause()): set by whoever attaches the
     // transport. Where it cannot, what a reader is behind by counts against
@@ -600,6 +608,25 @@ class Client extends Emitter {
   }
 
   /**
+   * Arms the sweep of the streams the peer announced — what whoever
+   * registers one calls. A timer per connection, and only while it holds
+   * streams: each tick ends what has had no reader and no byte since the
+   * tick before (sweepStreams), and arms the next while any are left.
+   * `streamIdleTimeout: Infinity` — or anything a timer cannot count — turns
+   * it off.
+   */
+  watchStreams() {
+    if (this.#sweeper !== null || !(this.streamIdleTimeout <= MAX_TIMER)) return;
+    this.#sweeper = setTimeout(() => {
+      this.#sweeper = null;
+      sweepStreams(this.streams);
+      if (this.streams.size > 0) this.watchStreams();
+    }, this.streamIdleTimeout);
+    // Not a reason to keep a process alive.
+    if (typeof this.#sweeper.unref === 'function') this.#sweeper.unref();
+  }
+
+  /**
    * The peer's word on a stream this end is sending: a `callback` error on
    * the stream's id — its reader let go of it (499), or it failed there.
    * The writable stops (WrpcWritable.cancel). Answers whether an open
@@ -726,6 +753,8 @@ class Client extends Emitter {
       stream.fail('Connection closed', 503);
     }
     this.streams.clear();
+    clearTimeout(this.#sweeper);
+    this.#sweeper = null;
     // Each writable leaves at the transport's 'close' by itself; a transport
     // that announces none is covered here.
     this.#writables.clear();
@@ -739,6 +768,7 @@ module.exports = {
   DEFAULT_MAX_CALLS,
   DEFAULT_MAX_STREAMS,
   DEFAULT_MAX_STREAM_BUFFER,
+  DEFAULT_STREAM_IDLE_TIMEOUT,
   FROZEN_EMPTY,
   EMPTY_META,
   buildMeta,

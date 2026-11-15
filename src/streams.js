@@ -20,6 +20,10 @@ const COMPACT_AT = 1024;
 // that a cap on what streams hold (heldBytes) is a cap on memory, not on
 // payload: 0.95 MiB of one-byte chunks used to pass under a 1 MiB cap.
 const CHUNK_COST = 256;
+// How long a stream may go without a reader and without a byte before it is
+// failed and forgotten (sweepStreams), on both ends, unless an option says
+// otherwise.
+const STREAM_IDLE_TIMEOUT = 30_000;
 
 class WrpcReadable extends Emitter {
   #consuming = false;
@@ -32,6 +36,8 @@ class WrpcReadable extends Emitter {
   // against 36 million at 65,536 queued (bench/stream-queue.js).
   #chunks = [];
   #head = 0;
+  // What `bytesReceived` read when idle() was last asked.
+  #mark = -1;
   streaming = true;
   status = 'active';
   bytesRead = 0;
@@ -66,6 +72,17 @@ class WrpcReadable extends Emitter {
   // `maxStreamBuffer`).
   get consuming() {
     return this.#consuming;
+  }
+
+  // Whether nothing happened to it since this was last asked: no reader
+  // came, no byte arrived. What a sweep asks of every stream it visits
+  // (sweepStreams) — so a stream is idle for one whole interval at least
+  // before it answers yes.
+  idle() {
+    if (this.#consuming) return false;
+    if (this.#mark === this.bytesReceived) return true;
+    this.#mark = this.bytesReceived;
+    return false;
   }
 
   // How many chunks wait for the reader.
@@ -481,4 +498,29 @@ const heldBytes = (streams, paced) => {
   return bytes;
 };
 
-module.exports = { WrpcReadable, WrpcWritable, heldBytes, CHUNK_COST };
+// Ends what nobody came to read: a stream that has had no reader and no
+// byte since the last sweep. An upload whose call was refused before its
+// handler read it, a download no page asked for, a stream its sender
+// announced and left — each held its bytes, and its slot, for as long as the
+// connection lived; enough of them and the connection's next upload was
+// refused for room they were never going to give back.
+//
+// The stream FAILS (408): what it held is let go of, and its sender is told
+// to stop — unless it arrived whole, when there is nothing left to stop.
+// Then the sweep reads it, as the reader that comes for a stream nobody came
+// for: a failed stream is kept until a reader has been told why, and it is
+// that wait — the one its sender's `end` is parked in — that forgets the
+// stream. One whose sender has not ended it yet stays, failed and empty,
+// until it does: what is still on its way is dropped, not answered.
+const sweepStreams = (streams) => {
+  for (const stream of streams.values()) {
+    if (!stream.idle()) continue;
+    if (stream.streaming) {
+      if (stream.bytesReceived === stream.size) stream.onCancel = null;
+      stream.fail(`Stream ${stream.name} was never read`, 408);
+    }
+    if (stream.error !== null) void stream.read();
+  }
+};
+
+module.exports = { WrpcReadable, WrpcWritable, heldBytes, sweepStreams, CHUNK_COST, STREAM_IDLE_TIMEOUT };
