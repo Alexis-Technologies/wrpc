@@ -425,7 +425,16 @@ class WrpcWritable extends Emitter {
   // false once the transport closed, or the stream was ended or terminated
   // under it (where a hand-rolled loop waits for a 'drain' that never
   // comes). The end is the caller's — several buffers make one stream.
+  //
+  // What it is handed is checked, because what it did with anything else
+  // was worse than throwing: an ArrayBuffer or a DataView has no `length`,
+  // so nothing was written and the answer was `true`; a `chunkSize` of zero
+  // never advanced, and wrote empty chunks until the process died.
   async writeAll(data, chunkSize = CHUNK_SIZE) {
+    if (!(data instanceof Uint8Array)) throw new TypeError('writeAll: data must be a Uint8Array');
+    if (!Number.isInteger(chunkSize) || chunkSize <= 0) {
+      throw new TypeError('writeAll: chunkSize must be a positive integer of bytes');
+    }
     for (let at = 0; at < data.length; at += chunkSize) {
       if (this.write(data.subarray(at, at + chunkSize))) continue;
       if (this.#closed || this.#ended) return false;

@@ -140,6 +140,12 @@ narrower promise — see
   a missing callback. `writable.cancel(error)` is the method behind it, for
   whoever routes answers to a writable of their own
   (`new WrpcWritable(id, name, size, transport, null, registry)`).
+- **`writeAll()` refuses what it cannot write.** It took whatever it was
+  handed: an `ArrayBuffer` or a `DataView` has no `length`, so nothing was
+  written and it answered `true`; a `chunkSize` of `0` or `-1` never
+  advanced, and wrote empty chunks, synchronously, until the process ran
+  out of memory. Both are a `TypeError` now — `data` must be a
+  `Uint8Array` (a `Buffer` is one), `chunkSize` a positive integer.
 - **`upload()` rejects with a refusal that arrives while its source is
   ending.** `createBlobUploader().upload()` looked at the stream after
   each write, and not after the wait for the source's own end — where the
