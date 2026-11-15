@@ -225,8 +225,18 @@ class WrpcWritable extends Emitter {
   #closed = false;
   #ended = false;
   #onClose = null;
+  #registry;
+  // Why the receiver ended the stream (see cancel()), or null: a transport
+  // that closed gives no reason.
+  error = null;
 
-  constructor(id, name, size, transport, otel = null) {
+  // `registry`: where the transport's owner looks a stream up by id when
+  // its receiver answers on that id (a client, a server-side Client). The
+  // stream puts itself in and takes itself out — at its end, its terminate,
+  // a cancel, the transport's close — so an owner that hands a Map over
+  // keeps nothing past a stream's life. Without one nobody routes an answer
+  // here, and cancel() is never called.
+  constructor(id, name, size, transport, otel = null, registry = null) {
     super();
     this.id = id;
     this.name = name;
@@ -238,6 +248,8 @@ class WrpcWritable extends Emitter {
     // direction — the attribute existed from the start with exactly one
     // value ever recorded, which made it a lie.
     this.otel = otel;
+    this.#registry = registry;
+    registry?.set(id, this);
     // Armed HERE, not lazily inside the backpressure branch: a stream that
     // never happened to stall used to learn nothing when the transport
     // closed — `closed` stayed false and a producer loop kept writing into
@@ -246,10 +258,7 @@ class WrpcWritable extends Emitter {
     if (typeof transport.once === 'function') {
       this.#onClose = () => {
         this.#onClose = null;
-        if (this.#closed) return;
-        this.#closed = true;
-        this.#releaseDrain();
-        this.emit('close');
+        this.#shut();
       };
       transport.once('close', this.#onClose);
     }
@@ -258,6 +267,16 @@ class WrpcWritable extends Emitter {
 
   get closed() {
     return this.#closed;
+  }
+
+  // Closed under its writer — by the transport, or by its receiver's word:
+  // nothing more is taken, and a producer parked on 'drain' is let go.
+  #shut() {
+    if (this.#closed) return;
+    this.#closed = true;
+    this.#registry?.delete(this.id);
+    this.#releaseDrain();
+    this.emit('close');
   }
 
   #releaseDrain() {
@@ -322,20 +341,37 @@ class WrpcWritable extends Emitter {
 
   // Idempotent, and a no-op on a dead transport: the peer that would have
   // read the status packet is gone.
-  end() {
+  #finish(status) {
     if (this.#closed || this.#ended) return;
     this.#ended = true;
-    const packet = { type: 'stream', id: this.id, status: 'end' };
-    this.transport.send(packet);
+    this.#registry?.delete(this.id);
+    this.transport.send({ type: 'stream', id: this.id, status });
     this.#detach();
   }
 
+  end() {
+    this.#finish('end');
+  }
+
   terminate() {
+    this.#finish('terminate');
+  }
+
+  // The receiver's word that the stream is over on its side — it refused
+  // the announcement, the stream failed there, or its reader let go of it —
+  // handed over by the owner of the transport, which found the stream by
+  // the id the answer came on. The writer stops: write() answers false and
+  // writeAll() resolves false, `closed` is true and 'close' is announced,
+  // as for a transport that went away — with `error` saying why, which a
+  // lost connection never does. The terminate that goes out is what lets
+  // the receiver forget the stream: it keeps a stream that is over until
+  // its sender ends it, to drop what was still on its way. A stream its
+  // writer already ended has nothing left to stop.
+  cancel(error) {
     if (this.#closed || this.#ended) return;
-    this.#ended = true;
-    const packet = { type: 'stream', id: this.id, status: 'terminate' };
-    this.transport.send(packet);
-    this.#detach();
+    this.error = error;
+    this.#finish('terminate');
+    this.#shut();
   }
 }
 

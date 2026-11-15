@@ -724,6 +724,11 @@ expectType<boolean>(writable.write(new Uint8Array(1)));
 expectType<boolean>(writable.closed);
 expectType<Promise<boolean>>(writable.writeAll(new Uint8Array(1)));
 expectType<Promise<boolean>>(writable.writeAll(Buffer.alloc(1), 16 * 1024));
+expectType<(Error & { code: number }) | null>(writable.error);
+expectType<void>(writable.cancel(Object.assign(new Error('refused'), { code: 413 })));
+expectType<WrpcWritable>(
+  new wrpc.WrpcWritable('id', 'blob', 1, writable.transport, null, new Map<string, WrpcWritable>()),
+);
 
 // error.details: optional wire field on WrpcError and ask errors
 declare const wrpcError: wrpc.WrpcError;

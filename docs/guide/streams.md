@@ -34,7 +34,9 @@ console.log(await receiving);
 the stream's `'drain'` — and rejects with a `503` `WrpcError` when the
 connection closes before the last chunk went, instead of resolving with the
 rest gone nowhere; a source that fails mid-way terminates the stream on the
-server, which stops waiting for its end.
+server, which stops waiting for its end. When it is the server that ends the
+stream under the upload, `upload()` rejects with
+[the server's reason](#ended-by-the-receiver).
 
 ```js
 // server
@@ -64,10 +66,11 @@ stream.end();
 
 `writeAll(bytes, chunkSize?)` is the loop you would otherwise write — a piece
 the transport did not accept waits for `'drain'` — and answers whether every
-byte went: `false` once the connection closed, or the stream was ended or
-terminated under it. It never rejects for a closed transport and never ends
-the stream, so several buffers make one stream. To feed it from a source of
-your own, the loop is under [Backpressure](#backpressure).
+byte went: `false` once the connection closed, the
+[receiver ended the stream](#ended-by-the-receiver), or the stream was ended
+or terminated under it. It never rejects for a closed transport and never
+ends the stream, so several buffers make one stream. To feed it from a source
+of your own, the loop is under [Backpressure](#backpressure).
 
 The `size` you announce is a promise the other end holds you to: write
 exactly that many bytes before `end()`, or `terminate()` — see
@@ -124,8 +127,9 @@ buffer is above its high-water mark. Wait for `'drain'` before writing more.
 A transport with no flow-control reporting (a browser `WebSocket`, HTTP)
 always reports accepted.
 
-`false` can also mean the transport closed, and no `'drain'` will ever follow —
-check `stream.closed`, or listen for `'close'`.
+`false` can also mean the stream was closed under you — the transport went
+away, or the [receiver ended the stream](#ended-by-the-receiver) — and no
+`'drain'` will ever follow: check `stream.closed`, or listen for `'close'`.
 
 On the receiving side, `WrpcReadable` applies its own high-water mark
 (`highWaterMark`, 32 chunks by default) once a consumer has attached, and the
@@ -176,6 +180,38 @@ refusing an upload — holds nothing more of it: the sender has not heard and
 goes on to its own `end`, and every chunk it still sends is dropped on
 arrival.
 
+### A stream the receiver ended {#ended-by-the-receiver}
+
+A receiver can end a stream before its sender does: the announcement refused
+(`429`, past [`maxStreams`](#limits)), a chunk past [the announced
+size](#size) (`400`), more than the server holds unread (`413`,
+[`maxStreamBuffer`](#limits)). A server says so once, on the stream's id, and
+the client hands that to the `WrpcWritable` it belongs to:
+
+```js
+const stream = client.createStream('report.csv', bytes.length);
+const receiving = client.api.media.receive({ id: stream.id });
+if (!(await stream.writeAll(bytes))) {
+  // Closed under the writer: `error` is the server's reason — a WrpcError
+  // with its code — and null when it was the connection that went away.
+  throw stream.error ?? new Error('Connection lost');
+}
+stream.end();
+```
+
+From that moment the writable is over: `write()` answers `false`,
+`writeAll()` resolves `false`, `closed` is `true`, `'close'` is announced —
+exactly what a lost connection does, so a loop that already watches `closed`
+stops without a change — and `stream.error` says why, which a lost connection
+never does. Nothing more of the stream is sent but a `terminate`, which lets
+the server forget it. `createBlobUploader().upload()` rejects with the same
+error.
+
+An answer that arrives after `end()` has nobody left to stop — a stream small
+enough to be written and ended in one turn is always answered late. It is
+raised on the client's `'error'` event instead: the server's own error, with
+its message and code.
+
 ### The announced size {#size}
 
 `size` is what the sender says it will send, in bytes, and the receiving end
@@ -202,10 +238,11 @@ receive: procedure({
 
 The error carries `code: 400`, so a handler that lets it through answers its
 caller `400` with the reason. On a server the sender is told as well, once:
-a `callback` error packet with the stream's id — `400` for the size, and
-whatever it still sends into that stream is dropped. A stream that failed
-before anybody read it is kept for its reader: `getStream(id)` still answers
-it, and reading it throws the reason.
+a `callback` error packet with the stream's id — `400` for the size — which
+[ends the sender's writable](#ended-by-the-receiver), and whatever it still
+sends into that stream is dropped. A stream that failed before anybody read
+it is kept for its reader: `getStream(id)` still answers it, and reading it
+throws the reason.
 
 `writable.terminate()` and a disconnect stay the quiet end — the reader's
 loop simply stops, with `status` `'terminated'` and `error` `null`. A loop

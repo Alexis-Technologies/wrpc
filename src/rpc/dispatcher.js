@@ -432,6 +432,12 @@ const handleStream = async (client, packet) => {
     if (!client.binary) throw new Error('Streams require a binary transport');
     const stream = client.streams.get(id);
     if (status) {
+      // A terminate promises nothing, so one for a stream this end does not
+      // hold has nothing to answer for: its announcement was refused, or
+      // the stream is long over. It is what a sender told that its stream
+      // is not wanted sends back (WrpcWritable.cancel) — answered, the
+      // refusal of one stream came back as two errors.
+      if (!stream && status === 'terminate') return;
       if (!stream) throw new Error(`Stream ${tag} is not initialized`);
       // A status the protocol does not have used to fall through to the
       // delete below: the stream forgotten, its reader left waiting where

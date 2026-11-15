@@ -442,6 +442,10 @@ class WrpcClient extends Emitter {
   #pendingBytes = 0;
   #flushTimer = null;
   #streams = new Map();
+  // The streams this client SENDS, by id, while they are open — #streams
+  // holds what the server announced. Where an answer on a stream's id finds
+  // its writable (#unmatched); each takes itself out (WrpcWritable).
+  #writables = new Map();
   // The last chunk that arrived as something other than bytes, converting.
   #converting = null;
   #callTimeout = CALL_TIMEOUT;
@@ -1495,7 +1499,7 @@ class WrpcClient extends Emitter {
     if (typeof id !== 'string' || id.length === 0 || id.length > 255) {
       throw new TypeError('createStream: generateId must return a string of at most 255 characters');
     }
-    return new WrpcWritable(id, name, size, this);
+    return new WrpcWritable(id, name, size, this, null, this.#writables);
   }
 
   createBlobUploader(blob) {
@@ -1517,7 +1521,9 @@ class WrpcClient extends Emitter {
           if (!consumer.write(chunk) && !consumer.closed) {
             await new Promise((resolve) => consumer.once('drain', resolve));
           }
-          if (consumer.closed) throw new WrpcError(CONNECTION_CLOSED_ERROR);
+          // Closed by the server's word on the stream (its reason), or
+          // with the connection.
+          if (consumer.closed) throw consumer.error ?? new WrpcError(CONNECTION_CLOSED_ERROR);
         }
       } catch (error) {
         consumer.terminate();
@@ -1606,13 +1612,30 @@ class WrpcClient extends Emitter {
   #settle(packet) {
     const { id } = packet;
     const call = this.#calls.get(id);
-    // The 499 acknowledging a cancel this client sent: the caller was
-    // rejected the moment it aborted, so the ack is expected, not an error.
-    if (!call && this.#cancelled.delete(id)) return;
-    if (!call) throw new Error(`Callback ${id} not found`);
+    if (!call) return void this.#unmatched(packet);
     this.#forget(call, id);
     if (packet.error) return void call.reject(new WrpcError(packet.error));
     call.resolve(packet.result);
+  }
+
+  // A callback that answers no call in flight.
+  #unmatched({ id, error }) {
+    // The 499 acknowledging a cancel this client sent: the caller was
+    // rejected the moment it aborted, so the ack is expected, not an error.
+    if (this.#cancelled.delete(id)) return;
+    if (!error) throw new Error(`Callback ${id} not found`);
+    // An error on an id that is no call's is the server's word on a STREAM
+    // this client sends — the announcement refused (429), a chunk past the
+    // announced size (400) or past what the server holds unread (413). It
+    // used to be reported as a callback nobody waited for, the reason gone
+    // and the writer still writing. An open stream is told, and its writer
+    // stops (WrpcWritable.cancel); one already ended — its last chunk and
+    // its end left in one turn, the answer behind them — has nobody left
+    // to tell but the error channel: the server's own error, with its code.
+    const refusal = new WrpcError(error);
+    const stream = this.#writables.get(id);
+    if (!stream) throw refusal;
+    stream.cancel(refusal);
   }
 
   // `data` carries one value of a subscription; `end` closes it, with an

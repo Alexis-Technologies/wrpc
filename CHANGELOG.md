@@ -44,6 +44,31 @@ narrower promise — see
 
 ### Fixed
 
+- **A stream the server refuses reaches its writer.** A server answers a
+  stream it refused or failed on the stream's id — `Too many open streams`
+  (`429`), `Stream … exceeds its announced size` (`400`), `Too many bytes
+  in streams nobody reads yet` (`413`) — and the client looked that id up
+  among its calls: `Callback <id> not found` on the `'error'` event, the
+  reason gone, and the writer still writing a body that was dropped on
+  arrival. The client now keeps the streams it is sending by id for as long
+  as they are open and hands the answer to the `WrpcWritable` it belongs
+  to: `write()` answers `false`, `writeAll()` resolves `false`, `closed` is
+  `true`, `'close'` is announced — what a lost connection does, so a loop
+  that watches `closed` already stops — and the new `writable.error` holds
+  the server's own error (a `WrpcError` with its code), where a lost
+  connection leaves `null`. `createBlobUploader().upload()` rejects with
+  it. The writable sends one `terminate` and nothing more, so the server
+  forgets the stream at once instead of at an `end` that was a megabyte
+  away. An answer that arrives after `end()` — a stream small enough to be
+  written and ended in one turn is always answered late — has nobody to
+  stop, and is raised on `'error'` as the server's own error rather than as
+  a missing callback. `writable.cancel(error)` is the method behind it, for
+  whoever routes answers to a writable of their own
+  (`new WrpcWritable(id, name, size, transport, null, registry)`).
+- **A `terminate` for a stream the server does not hold is not answered.**
+  It was answered `400` (`Stream … is not initialized`), so a sender
+  backing out of an announcement the server had refused was told it had
+  made a second mistake. An `end` for an unknown stream still is.
 - **An `end` short of the announced size no longer hangs the reader.**
   `close()` waited for `bytesRead === size`; a sender that ended after
   fewer bytes — or whose chunks overshot, so the two counts never met —

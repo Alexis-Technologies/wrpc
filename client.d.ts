@@ -233,12 +233,34 @@ export class WrpcWritable extends Emitter {
   size: number;
   transport: Transport;
   /**
-   * True once the transport closed under an unfinished stream: write() reports
-   * false, no 'drain' follows. A stream already ended (or terminated), with no
-   * 'drain' still owed, stops watching the transport and stays false.
+   * True once the stream was closed under its writer — the transport closed,
+   * or the receiver ended the stream (then `error` says why): write() reports
+   * false, no 'drain' follows, and `'close'` is announced. A stream already
+   * ended (or terminated), with no 'drain' still owed, stops watching the
+   * transport and stays false.
    */
   readonly closed: boolean;
-  constructor(id: string, name: string, size: number, transport: Transport);
+  /**
+   * Why the receiver ended the stream, or null: it refused the announcement
+   * (`code` 429), the stream went past its announced `size` (400) or past
+   * what the receiver holds unread (413). On a client it is the
+   * {@link WrpcError} the server answered. A transport that closed leaves it
+   * null.
+   */
+  error: (Error & { code: number }) | null;
+  /**
+   * @param registry Where the owner of the transport looks the stream up
+   *   when its receiver answers on its id — `createStream()` passes its own.
+   *   The stream puts itself in, and takes itself out when it is over.
+   */
+  constructor(
+    id: string,
+    name: string,
+    size: number,
+    transport: Transport,
+    otel?: unknown,
+    registry?: Map<string, WrpcWritable> | null,
+  );
   init(): void;
   write(data: ArrayBufferView): boolean;
   /**
@@ -252,11 +274,24 @@ export class WrpcWritable extends Emitter {
   writeAll(data: Uint8Array, chunkSize?: number): Promise<boolean>;
   end(): void;
   terminate(): void;
+  /**
+   * Ends the stream on its receiver's word: `closed` becomes true with
+   * `error` set, `'close'` is announced, a writer waiting for `'drain'` is
+   * released, and the `terminate` that lets the receiver forget the stream
+   * goes out. What a client and a server-side `Client` call when an answer
+   * arrives on the stream's id; a no-op on a stream that is already over.
+   */
+  cancel(error: Error & { code: number }): void;
 }
 
 export interface BlobUploader {
   id: string;
-  /** Feeds the blob into its stream. Once: a second call rejects — create another uploader. */
+  /**
+   * Feeds the blob into its stream. Rejects with the server's reason when it
+   * ends the stream under the upload (`WrpcError`, the code it answered),
+   * with a `503` when the connection closes first. Once: a second call
+   * rejects — create another uploader.
+   */
   upload(): Promise<void>;
 }
 

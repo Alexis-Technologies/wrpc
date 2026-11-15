@@ -642,13 +642,25 @@ zero is a stream with no chunks — and it is **binding**:
 - A receiver MAY cap the bytes it holds in streams nothing reads yet (a
   wRPC server's `maxStreamBuffer`, 64 MiB per connection by default) and
   fail the stream whose chunk goes past it the same way, with `413`.
+- A sender answered on a stream's id — the failures above, an announcement
+  refused with `429` — SHOULD stop: it sends nothing more into that stream
+  but one `terminate`, which is what lets the receiver forget it. The
+  answer is a `callback` whose id is no call's, and a sender tells the two
+  apart by looking the id up among its open streams; one that arrives for
+  a stream its sender has already ended stops nothing and is reported
+  locally. (2.0.1 and 1.0 clients do not look: they report every such
+  answer as a callback nobody waited for, and send the rest of the
+  stream.)
 - A chunk for a stream the receiver has already let go of is dropped, not
   answered: an `end` and a `terminate` from the receiving side do not exist,
   so a sender learns that its stream is no longer read only from the answer
   to the call that named it.
 - A `status` that is neither `end` nor `terminate`, a negative or
   non-integer `size`, and a second announcement of an open id are answered
-  `400` on the stream's id and change nothing.
+  `400` on the stream's id and change nothing. So is an `end` for a stream
+  the receiver does not hold; a `terminate` for one is not answered — it
+  promises nothing, and it is what a sender whose announcement was refused
+  sends back.
 
 None of this is a change to what travels: the packets and the chunk framing
 are revision 1's, and a peer that keeps its announcements — every wRPC

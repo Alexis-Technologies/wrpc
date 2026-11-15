@@ -17,7 +17,7 @@ const { WrpcReadable, WrpcWritable } = require('../src/streams.js');
 const { chunkEncode, chunkDecode } = require('../src/chunks.js');
 const { Client } = require('../src/rpc/client.js');
 const { WrpcClient } = require('../src/client.js');
-const { defineRouter, procedure } = require('../index.js');
+const { defineRouter, procedure, WrpcError } = require('../index.js');
 const { bootServer, connectClient, waitFor } = require('./helpers/server.js');
 const { recorder } = require('./helpers/recorder.js');
 
@@ -119,6 +119,36 @@ const fixture = () => {
           return stream.id;
         },
       }),
+      // Refuses an upload and says why: the reason its sender is to hear.
+      reject: procedure({
+        access: 'public',
+        handler: async (context, { id, message, code }) => {
+          const stream = context.client.getStream(id);
+          seen.set(id, stream);
+          stream.fail(message, code);
+          return 'rejected';
+        },
+      }),
+      // A download written a piece a turn for as long as its writable takes
+      // one: what a server sending a large file does.
+      pour: procedure({
+        access: 'public',
+        handler: async (context, { size, piece = 16 * KIB }) => {
+          const stream = context.client.createStream('pour', size);
+          const record = { stream, written: 0, done: false };
+          seen.set(stream.id, record);
+          const run = async () => {
+            while (record.written < size && (await stream.writeAll(bytes(piece, 3)))) {
+              record.written += piece;
+              await tick();
+            }
+            stream.end();
+            record.done = true;
+          };
+          queueMicrotask(run);
+          return stream.id;
+        },
+      }),
     },
   });
   return { router, seen };
@@ -170,17 +200,24 @@ test('WrpcReadable: a stream that is no longer streaming drops what is pushed in
 test('server: a handler that let go of an upload does not keep the rest of it', async (t) => {
   const { router, seen } = fixture();
   const { url } = await bootServer(t, { router });
-  const client = await connectClient(t, url);
-  await client.load('files');
-  const upload = client.createStream('big', 200 * 64 * KIB);
-  assert.strictEqual(await client.api.files.refuse({ id: upload.id }), 'refused');
-  // The sender has not heard: it goes on with the body.
-  for (let i = 0; i < 200; i++) upload.write(bytes(64 * KIB));
-  assert.strictEqual(await client.api.files.ping({}), 'pong');
-  assert.strictEqual(seen.get(upload.id).queue.length, 0, 'the refused upload was still held');
-  assert.deepStrictEqual(await client.api.files.held({}), { streams: 1, bytes: 0 });
-  upload.end();
-  await waitFor(async () => (await client.api.files.held({})).streams === 0, 'the end forgets the stream');
+  // A sender that does not ask to hear of it (a 1.0 client, 2.0.1): it is
+  // told nothing, and goes on with the body.
+  const peer = await rawPeer(t, url);
+  peer.announce('big', 200 * 64 * KIB);
+  peer.call('c', 'files/refuse', { id: 'big' });
+  await waitFor(() => peer.answer('c'), 'the handler refused');
+  for (let i = 0; i < 200; i++) peer.chunk('big', bytes(64 * KIB));
+  await peer.settle();
+  assert.strictEqual(seen.get('big').queue.length, 0, 'the refused upload was still held');
+  peer.call('h', 'files/held');
+  await waitFor(() => peer.answer('h'), 'held');
+  assert.deepStrictEqual(peer.answer('h').result, { streams: 1, bytes: 0 });
+  assert.strictEqual(peer.answer('big'), undefined, 'a sender that did not ask was answered');
+  peer.end('big');
+  await peer.settle();
+  peer.call('h2', 'files/held');
+  await waitFor(() => peer.answer('h2'), 'held after the end');
+  assert.deepStrictEqual(peer.answer('h2').result, { streams: 0, bytes: 0 }, 'the end forgets the stream');
 });
 
 // 2 ─ the announced size is a promise, and what nobody reads is bounded ──
@@ -779,4 +816,189 @@ test('writeAll carries a megabyte each way over one connection', async (t) => {
   for await (const chunk of client.getStream(await answered)) parts.push(chunk);
   assert.ok(parts.length >= 16, `${parts.length} chunks: the megabyte travelled as one message`);
   assert.deepStrictEqual(Buffer.concat(parts), Buffer.from(payload));
+});
+
+// 7 ─ a sender hears what became of its stream ───────────────────────────
+//
+// A server that refused or failed a stream said so on the stream's id, and
+// the client looked the id up among its CALLS: `Callback <id> not found`
+// on the error channel, the reason gone, the writer still writing.
+
+const CANCELLED = 499;
+const refusal = (message, code) => Object.assign(new Error(message), { code });
+
+test("WrpcWritable.cancel: the receiver's word ends the stream for its writer", async (t) => {
+  await t.test('nothing more is written, and the receiver is let go of with a terminate', async () => {
+    const transport = new PacedTransport();
+    const registry = new Map();
+    const stream = new WrpcWritable('s', 'blob', 10, transport, null, registry);
+    // Registered, so the answer finds it.
+    assert.strictEqual(registry.get('s'), stream);
+    assert.deepStrictEqual(transport.sent, [{ type: 'stream', id: 's', name: 'blob', size: 10 }]);
+    let closes = 0;
+    stream.on('close', () => closes++);
+    const error = refusal('Too many bytes in streams nobody reads yet', 413);
+    stream.cancel(error);
+    assert.strictEqual(stream.closed, true);
+    assert.strictEqual(stream.error, error);
+    assert.strictEqual(stream.write(bytes(1)), false);
+    assert.strictEqual(await stream.writeAll(bytes(4)), false);
+    assert.strictEqual(transport.chunks.length, 0, 'a cancelled stream went on writing');
+    assert.deepStrictEqual(transport.sent.at(-1), { type: 'stream', id: 's', status: 'terminate' });
+    assert.strictEqual(registry.size, 0, 'a cancelled stream stayed registered');
+    // Once: a second word, and the writer's own end, change nothing.
+    stream.cancel(refusal('again', 400));
+    stream.end();
+    stream.terminate();
+    await tick();
+    assert.strictEqual(stream.error, error);
+    assert.strictEqual(transport.sent.length, 2);
+    assert.strictEqual(closes, 1);
+  });
+
+  await t.test("a writer parked on 'drain' is released", async () => {
+    const transport = new PacedTransport();
+    const stream = new WrpcWritable('s', 'blob', 3, transport, null, new Map());
+    transport.accept = false;
+    const writing = stream.writeAll(Uint8Array.of(1, 2, 3), 1);
+    await tick();
+    stream.cancel(refusal('Stream blob is no longer read', CANCELLED));
+    assert.deepStrictEqual(await outcome(writing), { status: 'fulfilled', value: false });
+    assert.strictEqual(transport.chunks.length, 1);
+  });
+
+  await t.test('a stream its writer already ended has nothing left to stop', async () => {
+    const transport = new PacedTransport();
+    const stream = new WrpcWritable('s', 'blob', 0, transport, null, new Map());
+    stream.end();
+    stream.cancel(refusal('late', 400));
+    assert.strictEqual(stream.closed, false);
+    assert.strictEqual(stream.error, null);
+    assert.strictEqual(transport.sent.length, 2, 'a terminate behind its own end');
+  });
+
+  await t.test('the registry lets go of it at end(), terminate() and the close of the transport', async () => {
+    const transport = new PacedTransport();
+    const registry = new Map();
+    const make = (id) => new WrpcWritable(id, 'blob', 1, transport, null, registry);
+    make('a').end();
+    make('b').terminate();
+    const open = make('c');
+    assert.deepStrictEqual([...registry.keys()], ['c']);
+    void transport.emit('close');
+    assert.strictEqual(registry.size, 0, 'a writable outlived its transport in the registry');
+    assert.strictEqual(open.closed, true);
+    assert.strictEqual(open.error, null, 'a lost connection is not a reason the receiver gave');
+  });
+
+  await t.test('a writable nobody routes answers to does not ask for one', async () => {
+    const transport = new PacedTransport();
+    const stream = new WrpcWritable('s', 'blob', 1, transport);
+    assert.deepStrictEqual(transport.sent, [{ type: 'stream', id: 's', name: 'blob', size: 1 }]);
+    assert.strictEqual(stream.error, null);
+  });
+});
+
+// A client against a real server, its error channel recorded: what used to
+// arrive there as a missing callback.
+const uploader = async (t, options = {}) => {
+  const { router, seen } = fixture();
+  const { writer, loud } = recorder();
+  const { url } = await bootServer(t, { router, logger: writer, ...options });
+  const client = await connectClient(t, url);
+  await client.load('files');
+  const escalated = [];
+  client.on('error', (error) => escalated.push(error));
+  const held = async () => (await client.api.files.held({})).streams;
+  return { client, escalated, seen, held, loud };
+};
+
+const closedSoon = (stream, what) => waitFor(() => stream.closed, { message: what, timeout: 1500 });
+
+test("client: a chunk past the announced size closes the writable with the server's reason", async (t) => {
+  const { client, escalated, held } = await uploader(t);
+  const upload = client.createStream('big', 10);
+  upload.write(bytes(8));
+  upload.write(bytes(8));
+  await closedSoon(upload, 'the sender of an overshot stream was never told');
+  assert.ok(upload.error instanceof WrpcError, `the reason: ${upload.error}`);
+  assert.strictEqual(upload.error.code, 400);
+  assert.match(upload.error.message, /announced size/);
+  assert.strictEqual(upload.write(bytes(1)), false, 'the writer went on after the refusal');
+  // Its terminate went out with the refusal: the server forgot the stream
+  // without waiting for an end.
+  await waitFor(async () => (await held()) === 0, 'the server kept a stream its sender had given up');
+  assert.deepStrictEqual(escalated, [], 'the refusal of a stream was reported as a missing callback');
+});
+
+test('client: an upload past maxStreamBuffer stops at the 413, and writeAll says it did not all go', async (t) => {
+  const { client, escalated } = await uploader(t, { maxStreamBuffer: 64 * KIB });
+  const upload = client.createStream('ahead', 2 ** 30);
+  assert.strictEqual(await upload.writeAll(bytes(128 * KIB)), true);
+  await closedSoon(upload, 'the sender of an upload past the cap was never told');
+  assert.strictEqual(upload.error.code, 413);
+  assert.match(upload.error.message, /nobody reads yet/);
+  assert.strictEqual(await upload.writeAll(bytes(128 * KIB)), false);
+  await client.api.files.ping({});
+  assert.deepStrictEqual(escalated, []);
+});
+
+test('client: an announcement past maxStreams closes that writable with the 429', async (t) => {
+  const { client, escalated } = await uploader(t, { maxStreams: 1 });
+  const first = client.createStream('a', 10);
+  const second = client.createStream('b', 10);
+  await closedSoon(second, 'the sender of a stream that was never opened was never told');
+  assert.strictEqual(second.error.code, 429);
+  assert.match(second.error.message, /Too many open streams/);
+  assert.strictEqual(first.closed, false, 'the refusal of one stream closed another');
+  // The terminate of a stream the server never held is not an error of its
+  // own: nothing comes back for it.
+  await client.api.files.ping({});
+  assert.deepStrictEqual(escalated, []);
+});
+
+test("client: a refusal that arrives after end() is the server's own error, not a missing callback", async (t) => {
+  const { client, escalated } = await uploader(t);
+  const upload = client.createStream('short', 10);
+  upload.write(bytes(4));
+  upload.end();
+  await waitFor(() => escalated.length > 0, { message: 'a short upload went unreported', timeout: 1500 });
+  await client.api.files.ping({});
+  assert.strictEqual(escalated.length, 1);
+  assert.ok(escalated[0] instanceof WrpcError, `escalated: ${escalated[0]}`);
+  assert.strictEqual(escalated[0].code, 400);
+  assert.match(escalated[0].message, /4 of 10/);
+});
+
+test('client: a callback nobody waits for, with no error in it, is still a missing callback', async () => {
+  const transport = new BareTransport();
+  const client = new WrpcClient('fake://x', transport);
+  const escalated = [];
+  client.on('error', (error) => escalated.push(error));
+  void transport.emit('message', JSON.stringify({ type: 'callback', id: 'nobody', result: 1 }));
+  await tick();
+  assert.match(escalated[0].message, /Callback nobody not found/);
+});
+
+test('client: a Blob upload the server refuses rejects with its reason', async (t) => {
+  const { client, escalated } = await uploader(t, { maxStreamBuffer: 64 * KIB });
+  // What createBlobUploader reads of a Blob, a piece a turn — a file read
+  // from disk does not arrive in one tick.
+  const blob = {
+    name: 'big.bin',
+    size: 64 * 64 * KIB,
+    async *stream() {
+      for (let i = 0; i < 64; i++) {
+        yield bytes(64 * KIB);
+        await timers.setTimeout(5);
+      }
+    },
+  };
+  const { upload } = client.createBlobUploader(blob);
+  const result = await outcome(upload(), 3000);
+  assert.strictEqual(result.status, 'rejected', `the upload of a refused stream: ${result.status}`);
+  assert.ok(result.error instanceof WrpcError, `rejected with: ${result.error}`);
+  assert.strictEqual(result.error.code, 413);
+  await client.api.files.ping({});
+  assert.deepStrictEqual(escalated, []);
 });
