@@ -34,6 +34,15 @@ const STREAM_IDLE_TIMEOUT = 30_000;
 const MAX_STREAMS = 256;
 const MAX_STREAM_BUFFER = 64 * 1024 * 1024;
 
+// A stream's name as a message may carry it. The name is the SENDER's: a
+// megabyte of it, with a line break in the middle, was a megabyte in the
+// receiver's error log with a line of the sender's own writing in it. A
+// message takes sixty-four characters of it, and nothing that starts a line.
+const shown = (name) => {
+  const text = String(name);
+  return (text.length > 64 ? `${text.slice(0, 64)}…` : text).replace(/\p{Cc}|\u2028|\u2029/gu, ' ');
+};
+
 class WrpcReadable extends Emitter {
   #consuming = false;
   // What waits for the reader, read from `#head`: the chunks before it were
@@ -94,6 +103,11 @@ class WrpcReadable extends Emitter {
     return false;
   }
 
+  // The name, as a message may carry it (shown).
+  get label() {
+    return shown(this.name);
+  }
+
   // How many chunks wait for the reader.
   get queued() {
     return this.#chunks.length - this.#head;
@@ -124,7 +138,7 @@ class WrpcReadable extends Emitter {
     if (!this.streaming || data.length === 0) return;
     this.bytesReceived += data.length;
     if (this.bytesReceived > this.size) {
-      throw this.fail(`Stream ${this.name} exceeds its announced size of ${this.size} bytes`);
+      throw this.fail(`Stream ${this.label} exceeds its announced size of ${this.size} bytes`);
     }
     while (this.#consuming && this.queued > this.highWaterMark) {
       this.checkStreamLimits();
@@ -187,7 +201,7 @@ class WrpcReadable extends Emitter {
   // the sender; otherwise it resolves as close() does.
   async end() {
     if (this.streaming && this.bytesReceived !== this.size) {
-      throw this.fail(`Stream ${this.name} ended at ${this.bytesReceived} of ${this.size} bytes`);
+      throw this.fail(`Stream ${this.label} ended at ${this.bytesReceived} of ${this.size} bytes`);
     }
     await this.stop(false);
   }
@@ -302,7 +316,7 @@ class WrpcReadable extends Emitter {
       ++this.highWaterMark;
     }
     if (this.highWaterMark > MAX_HIGH_WATER_MARK) {
-      throw this.fail(`Stream ${this.name} is too far ahead of its reader`, 413);
+      throw this.fail(`Stream ${this.label} is too far ahead of its reader`, 413);
     }
   }
 
@@ -538,7 +552,9 @@ const overCap = (streams, stream, length, cap, paced) => {
   const unread = !stream.consuming;
   if (!stream.streaming || !(unread || (!paced && stream.queued > DEFAULT_HIGH_WATER_MARK))) return null;
   if (heldBytes(streams, paced) + length + CHUNK_COST <= cap) return null;
-  return unread ? 'Too many bytes in streams nobody reads yet' : `Stream ${stream.name} is too far ahead of its reader`;
+  return unread
+    ? 'Too many bytes in streams nobody reads yet'
+    : `Stream ${stream.label} is too far ahead of its reader`;
 };
 
 // Ends what nobody came to read: a stream that has had no reader and no
@@ -560,7 +576,7 @@ const sweepStreams = (streams) => {
     if (!stream.idle()) continue;
     if (stream.streaming) {
       if (stream.bytesReceived === stream.size) stream.onCancel = null;
-      stream.fail(`Stream ${stream.name} was never read`, 408);
+      stream.fail(`Stream ${stream.label} was never read`, 408);
     }
     if (stream.error !== null) void stream.read();
   }
@@ -569,6 +585,7 @@ const sweepStreams = (streams) => {
 module.exports = {
   WrpcReadable,
   WrpcWritable,
+  shown,
   heldBytes,
   overCap,
   sweepStreams,

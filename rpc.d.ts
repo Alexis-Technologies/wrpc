@@ -862,6 +862,8 @@ export class Client extends Emitter {
    * counts against `maxStreamBuffer` like an unread stream's.
    */
   paced: boolean;
+  /** True once this peer has broken the stream protocol on this connection: the first time is logged as a warning. */
+  violated: boolean;
   /** True when the session store could not be asked for this client's token: a session procedure answers 503, not 403. */
   sessionUnavailable: boolean;
   /** Context uuids and server-side stream ids; injectable via RpcServerOptions. */

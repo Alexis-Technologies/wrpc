@@ -21,6 +21,7 @@ const { hasBytes, encodeAttachments, decodeAttachments, isAttachmentsFrame } = r
 const {
   WrpcReadable,
   WrpcWritable,
+  shown,
   overCap,
   sweepStreams,
   STREAM_IDLE_TIMEOUT,
@@ -1812,7 +1813,7 @@ class WrpcClient extends Emitter {
     const stream = this.#streams.get(id);
     if (status === undefined) {
       if (stream) {
-        throw new Error(`Stream ${name} is already initialized`);
+        throw new Error(`Stream ${shown(name)} is already initialized`);
       }
       // Capped, as a server caps a client's: an announced stream holds its
       // readable — and what is sent into it — until somebody reads it, and
@@ -1842,7 +1843,7 @@ class WrpcClient extends Emitter {
           // FAILS — swept, or past a cap — speaks for this page alone: said
           // to the server, it would end the stream for the page reading it.
           if (this.#shared && readableStream.error !== null && !readableStream.consuming) return;
-          const message = error ? error.message : `Stream ${name} is no longer read`;
+          const message = error ? error.message : `Stream ${readableStream.label} is no longer read`;
           this.send({ type: 'callback', id, error: { message, code: error ? error.code : 499 } });
         };
       }
@@ -1863,7 +1864,7 @@ class WrpcClient extends Emitter {
       // may be right behind this packet. And a failure for its reader, not
       // an end — the sender took back the bytes it had promised.
       this.#streams.delete(id);
-      stream.fail(`Stream ${stream.name} was terminated by its sender`, 499);
+      stream.fail(`Stream ${stream.label} was terminated by its sender`, 499);
       return;
     }
     // A chunk still being turned into bytes (#handleBinary) is counted

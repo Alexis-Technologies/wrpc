@@ -230,6 +230,10 @@ class Client extends Emitter {
     // transport. Where it cannot, what a reader is behind by counts against
     // `maxStreamBuffer` (heldBytes in streams.js).
     this.paced = false;
+    // Whether this peer has broken the stream protocol on this connection:
+    // the first time is a warning, the rest are not (the dispatcher's
+    // `violation`).
+    this.violated = false;
     // Set when the session store could not be asked for this client's
     // token (core #restoreToken): a session procedure answers 503, not 403.
     this.sessionUnavailable = false;

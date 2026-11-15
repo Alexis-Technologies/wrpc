@@ -108,6 +108,7 @@ The first table is the request path and the engines; the ones after it are
 | `call.unknown` | warn | A call for a method this router does not have — a stale client, or a typo |
 | `call.duplicate` | warn | Two in-flight calls with one id: a `generateId` that repeats, or a retry that reused one |
 | `call.capacity` | debug | `maxCalls` reached on one connection |
+| `stream.violation` | warn | A peer broke the stream protocol on this connection (`code` 400, `id`, `message`): a chunk for a stream it never announced, an `end` short of the size it promised, a chunk past it, a `stream` packet that is none. **Once per connection** — the first time; every such answer is also an `rpc.error` at debug, because a peer can do it in a loop |
 | `stream.capacity` | debug | `maxStreams` reached on one connection: a `stream` packet answered `429` |
 | `stream.buffer` | debug | `maxStreamBuffer` reached on one connection (`max`): the stream whose chunk went past it failed, answered `413`. A peer sending into streams no handler reads — an upload that never had a reader, or one far ahead of the call that reads it |
 | `stream.cancelled` | debug | The peer ended a stream this end was sending to it (`id`, `code`): its reader let go of it (`499`), or it failed there. The writable closed with that reason |

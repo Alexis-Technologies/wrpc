@@ -1,7 +1,7 @@
 'use strict';
 
 const { jsonParse } = require('../utils.js');
-const { WrpcReadable, overCap } = require('../streams.js');
+const { WrpcReadable, overCap, shown } = require('../streams.js');
 const { chunkDecode } = require('../chunks.js');
 const { negotiate } = require('../compression/index.js');
 const { hasBytes, isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
@@ -442,7 +442,7 @@ const tellSender = (client, stream, asked) => (reason) => {
   if (stream.error === null) {
     if (!asked || stream.bytesReceived === stream.size) return;
     if (error === null) {
-      error = new Error(`Stream ${stream.name} is no longer read`);
+      error = new Error(`Stream ${stream.label} is no longer read`);
       error.code = CANCELLED;
     }
     // Written for the sender, whatever its code: a 5xx message is
@@ -450,13 +450,33 @@ const tellSender = (client, stream, asked) => (reason) => {
     error.expose = true;
   }
   const { code } = error;
-  client.error(code, { id: stream.id, error, level: code === 400 ? 'error' : 'debug' });
+  // A stream that broke its announcement is a peer breaking the protocol;
+  // the rest — a cap, a sweep, a reader that let go — is traffic.
+  if (code === 400) return void violation(client, stream.id, error);
+  client.error(code, { id: stream.id, error, level: 'debug' });
 };
+
+// A peer that breaks the stream protocol — a chunk for a stream it never
+// announced, an `end` short of the size it promised, a packet that is none —
+// is answered 400 every time, and can do it in a loop: each used to be an
+// error-level line with a stack, two hundred of them for 20 KB of frames.
+// The first one on a connection is a warning, so that somebody looking at
+// the log sees that a peer does it; the rest are said at debug, like the
+// 429 and the 413 any peer can drive.
+const violation = (client, id, error) => {
+  if (!client.violated) {
+    client.violated = true;
+    client.log.warn({ event: 'stream.violation', code: 400, id: clip(id), message: clip(error.message, 256) });
+  }
+  client.error(400, { id, error, level: 'debug' });
+};
+
+// A stream as an error names it: by its id, and by its name where the packet
+// had one — an `end` or a `terminate` has none. Both are the peer's text.
+const tagOf = (id, name) => (name === undefined ? clip(id) : `${clip(id)}/${shown(name)}`);
 
 const handleStream = async (client, packet) => {
   const { id, name, size, status } = packet;
-  // An `end` or a `terminate` names no stream: only its id.
-  const tag = name === undefined ? id : `${id}/${name}`;
   try {
     // Request/response transports cannot carry streams; without this the
     // call would register a stream and never answer, hanging the request
@@ -470,7 +490,7 @@ const handleStream = async (client, packet) => {
       // is not wanted sends back (WrpcWritable.cancel) — answered, the
       // refusal of one stream came back as two errors.
       if (!stream && status === 'terminate') return;
-      if (!stream) throw new Error(`Stream ${tag} is not initialized`);
+      if (!stream) throw new Error(`Stream ${tagOf(id, name)} is not initialized`);
       // A status the protocol does not have used to fall through to the
       // delete below: the stream forgotten, its reader left waiting where
       // not even the connection's close could reach it.
@@ -487,7 +507,7 @@ const handleStream = async (client, packet) => {
         // part that had arrived as if it were the whole.
         stream.onCancel = null;
         client.streams.delete(id);
-        stream.fail(`Stream ${stream.name} was terminated by its sender`, CANCELLED);
+        stream.fail(`Stream ${stream.label} was terminated by its sender`, CANCELLED);
         return;
       }
       try {
@@ -505,7 +525,7 @@ const handleStream = async (client, packet) => {
     // A size is a count of bytes: zero is a stream, minus one is not.
     const valid = typeof name === 'string' && Number.isSafeInteger(size) && size >= 0;
     if (!valid) throw new Error('Stream packet structure error');
-    if (stream) throw new Error(`Stream ${tag} is already initialized`);
+    if (stream) throw new Error(`Stream ${tagOf(id, name)} is already initialized`);
     // Capped like calls and subscriptions: an announced stream holds its
     // readable until a handler reads it, and the peer decides how many.
     if (client.streams.size >= client.maxStreams) {
@@ -520,7 +540,7 @@ const handleStream = async (client, packet) => {
       client.watchStreams();
     }
   } catch (error) {
-    client.error(400, { id, error });
+    violation(client, id, error);
   }
 };
 
@@ -534,7 +554,7 @@ const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS
   }
   const { id, payload } = chunkDecode(data);
   const upstream = client.streams.get(id);
-  if (!upstream) return void client.error(400, { id, error: new Error(`Stream ${id} is not initialized`) });
+  if (!upstream) return void violation(client, id, new Error(`Stream ${clip(id)} is not initialized`));
   try {
     // A readable applies its high-water mark only once somebody reads it
     // (it cannot hold the socket for a reader a later packet starts), so

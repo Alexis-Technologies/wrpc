@@ -162,6 +162,11 @@ export class WrpcReadable extends Emitter {
   /** How many chunks wait for the reader. */
   readonly queued: number;
   /**
+   * The name as a message may carry it: its first 64 characters, with
+   * nothing that starts a line — the name is the sender's text.
+   */
+  readonly label: string;
+  /**
    * Whether nothing happened to it since this was last asked — no reader
    * came, no byte arrived. What the sweep behind `streamIdleTimeout` asks of
    * a stream; asking moves its mark, so it is the feeder's to call.

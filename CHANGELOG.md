@@ -273,6 +273,20 @@ narrower promise — see
   (`bench/stream-queue.js`). `readable.queue` is therefore a **snapshot** —
   an array built when it is read, what it always looked like to a reader of
   it — and no longer the stream's own array; `readable.queued` is the count.
+- **A stream's name reaches a log bounded, and a broken stream is one
+  warning per connection.** The name of a stream is its sender's text, and
+  every message about a stream carries it: one frame with a 100 KB name and
+  a line break in it was one error-level line of 101,027 characters, with
+  a line of the peer's own writing inside. A message takes the first 64
+  characters of a name now, with nothing that starts a line
+  (`readable.label`); the id is clipped as everywhere else. And a peer that
+  breaks the stream protocol — a chunk for a stream it never announced, an
+  `end` short of the size it promised, a packet that is none — is answered
+  `400` every time and can do it in a loop: two hundred of them, 20 KB of
+  frames, were two hundred error-level lines with a stack each, next to a
+  `413` and a `429` deliberately said at debug. The first one on a
+  connection is a warning (`stream.violation`, with the id and the
+  message); the rest are `rpc.error` at debug.
 - **A client caps what its server may make it hold: `maxStreams` and
   `maxStreamBuffer` on the client.** A server bounded the streams a client
   could open on it and the bytes they held; a client took whatever it was
