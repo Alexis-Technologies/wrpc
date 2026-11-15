@@ -140,6 +140,14 @@ narrower promise — see
   a missing callback. `writable.cancel(error)` is the method behind it, for
   whoever routes answers to a writable of their own
   (`new WrpcWritable(id, name, size, transport, null, registry)`).
+- **`upload()` rejects with a refusal that arrives while its source is
+  ending.** `createBlobUploader().upload()` looked at the stream after
+  each write, and not after the wait for the source's own end — where the
+  server's answer to the last chunk arrives. `end()` on a closed stream is
+  a no-op, so the upload **resolved**: a handler that refused it with
+  `terminate('Quota exceeded', 413)` was heard by nobody, not even the
+  `'error'` event, and a connection that closed in that wait resolved the
+  upload too. It rejects now, with the server's reason or the `503`.
 - **A `terminate` frees its slot for the announcement right behind it.**
   The stream was forgotten only after its `terminate()` had been awaited,
   and two packets of one read are dispatched with no turn between them: at

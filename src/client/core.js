@@ -1540,6 +1540,12 @@ class WrpcClient extends Emitter {
           // with the connection.
           if (consumer.closed) throw consumer.error ?? new WrpcError(CONNECTION_CLOSED_ERROR);
         }
+        // And once more, for what happened while the source was asked for
+        // a chunk it did not have: its last chunk had gone, the stream was
+        // refused — or the connection lost — in the wait for its end, and
+        // `end()` on a closed stream is a no-op. The upload resolved, with
+        // nobody told that the server had it refused.
+        if (consumer.closed) throw consumer.error ?? new WrpcError(CONNECTION_CLOSED_ERROR);
       } catch (error) {
         consumer.terminate();
         throw error;
