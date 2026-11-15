@@ -149,6 +149,10 @@ export interface ReadableOptions {
   highWaterMark?: number;
 }
 
+/**
+ * Events: `'close'` — the stream is over, once, however that came about:
+ * `status` and `error` say how. `'end'` and `'error'` are `pipe()`'s.
+ */
 export class WrpcReadable extends Emitter {
   id: string;
   name: string;

@@ -529,12 +529,21 @@ const handleStream = async (client, packet) => {
     // Capped like calls and subscriptions: an announced stream holds its
     // readable until a handler reads it, and the peer decides how many.
     if (client.streams.size >= client.maxStreams) {
+      client.otel.recordStream('receive', 'refused', 429);
       client.log.debug({ event: 'stream.capacity', code: 429, max: client.maxStreams });
       return void client.error(429, { id, error: new Error('Too many open streams'), level: 'debug' });
     }
     {
       const stream = new WrpcReadable(id, name, size);
       stream.onCancel = tellSender(client, stream, packet.cancel === true);
+      // Counted when it is over, however that comes about: read to its end
+      // (closed), cut short or refused by a cap (failed, with its code), or
+      // let go of by its reader (terminated).
+      stream.once('close', () => {
+        const { error } = stream;
+        const outcome = error !== null ? 'failed' : stream.status;
+        client.otel.recordStream('receive', outcome, error === null ? undefined : error.code);
+      });
       client.streams.set(id, stream);
       // What nobody comes to read is not kept for the connection's life.
       client.watchStreams();
@@ -555,6 +564,11 @@ const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS
   const { id, payload } = chunkDecode(data);
   const upstream = client.streams.get(id);
   if (!upstream) return void violation(client, id, new Error(`Stream ${clip(id)} is not initialized`));
+  // What arrived for a stream this end holds, counted as it arrives — kept,
+  // refused by a cap, or dropped into a stream that is over: it used to be
+  // counted after the push, so the chunk a cap refused was the one chunk
+  // the counter never saw.
+  client.otel.recordStreamBytes('receive', payload.length);
   try {
     // A readable applies its high-water mark only once somebody reads it
     // (it cannot hold the socket for a reader a later packet starts), so
@@ -580,7 +594,6 @@ const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS
     // answered where it failed, once — the stream stays, failed, and drops
     // the rest until its sender ends it.
     await upstream.push(payload);
-    client.otel.recordStreamBytes('receive', payload?.byteLength ?? 0);
   } catch (error) {
     if (error !== upstream.error) client.error(400, { id, error });
   }

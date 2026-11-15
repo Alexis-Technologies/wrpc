@@ -262,6 +262,8 @@ class WrpcReadable extends Emitter {
     if (onCancel && status !== 'closed') onCancel(this.error ?? reason);
     this.emit(PUSH_EVENT, null);
     this.emit(PULL_EVENT);
+    // For whoever counts streams: it is over, `status` and `error` say how.
+    this.emit('close');
   }
 
   async read() {
@@ -398,6 +400,8 @@ class WrpcWritable extends Emitter {
   #shut() {
     if (this.#closed) return;
     this.#closed = true;
+    // Under a writer that had not ended it: the transport went away.
+    if (!this.#ended) this.otel?.recordStream('send', 'lost');
     this.#registry?.delete(this.id);
     this.#releaseDrain();
     this.emit('close');
@@ -479,9 +483,10 @@ class WrpcWritable extends Emitter {
 
   // Idempotent, and a no-op on a dead transport: the peer that would have
   // read the status packet is gone.
-  #finish(status) {
+  #finish(status, outcome = status === 'end' ? 'closed' : 'terminated', code = undefined) {
     if (this.#closed || this.#ended) return;
     this.#ended = true;
+    this.otel?.recordStream('send', outcome, code);
     this.#registry?.delete(this.id);
     this.transport.send({ type: 'stream', id: this.id, status });
     this.#detach();
@@ -508,7 +513,7 @@ class WrpcWritable extends Emitter {
   cancel(error) {
     if (this.#closed || this.#ended) return;
     this.error = error;
-    this.#finish('terminate');
+    this.#finish('terminate', 'cancelled', error.code);
     this.#shut();
   }
 }

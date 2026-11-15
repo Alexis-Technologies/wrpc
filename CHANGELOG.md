@@ -71,6 +71,19 @@ narrower promise — see
   - New: `readable.onCancel` (the hook the feeder of a readable sets to
     reach its sender) and `client.cancelStream(packet)` on the server-side
     `Client`, typed and documented for a host with a dispatch of its own.
+- **`wrpc.server.streams` — how every stream ended.** A `413`, a `429`
+  and a `499` are said at debug in the log, because any peer can drive
+  them, and were in no metric: the one stream instrument was
+  `wrpc.server.stream.bytes`. The new counter records each stream as it
+  ends, by `wrpc.stream.direction` (`receive`, `send`),
+  `wrpc.stream.outcome` (`closed`, `terminated`, `failed`, `refused`,
+  `cancelled`, `lost`) and `rpc.wrpc.status_code` where one went with it —
+  so `receive failed 413` is a `maxStreamBuffer` too small for the uploads
+  it meets, and `receive failed 408` uploads nobody read. A `WrpcReadable`
+  announces `'close'` when it is over. `wrpc.server.stream.bytes` now
+  counts what **arrived** for a stream: it was recorded after the push, so
+  the chunk a cap refused was the one chunk it never saw (524,288 of
+  589,824 bytes in one run).
 - **`writable.writeAll(bytes, chunkSize?)`** — every byte of a buffer
   written into a `WrpcWritable` in pieces (64 KiB by default), each when
   the transport takes it: a write it did not accept is waited out on

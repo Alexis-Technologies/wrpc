@@ -72,6 +72,7 @@ const createServerTelemetry = (telemetry) => {
   let broadcasts = null;
   let recipients = null;
   let streamBytes = null;
+  let streams = null;
   let backpressure = null;
   let backplaneGaps = null;
   let sessions = null;
@@ -126,6 +127,10 @@ const createServerTelemetry = (telemetry) => {
       streamBytes = meter.createCounter('wrpc.server.stream.bytes', {
         unit: 'By',
         description: 'Binary stream bytes, by direction',
+      });
+      streams = meter.createCounter('wrpc.server.streams', {
+        unit: '{stream}',
+        description: 'Binary streams that ended, by direction, outcome and status code',
       });
       backplaneGaps = meter.createCounter('wrpc.server.backplane.gaps', {
         unit: '{envelope}',
@@ -219,6 +224,7 @@ const createServerTelemetry = (telemetry) => {
       broadcasts = null;
       recipients = null;
       streamBytes = null;
+      streams = null;
       backpressure = null;
       backplaneGaps = null;
       sessions = null;
@@ -378,6 +384,18 @@ const createServerTelemetry = (telemetry) => {
     recordStreamBytes(direction, bytes) {
       try {
         streamBytes?.add(bytes, { 'wrpc.stream.direction': direction });
+      } catch {}
+    },
+
+    // How a stream ended. `outcome` is a closed set — closed, terminated,
+    // failed, cancelled, refused, lost — and `code` the status that went
+    // with it, when one did: a 413 or a 429 is said at debug in the log,
+    // because any peer can drive it, and was in no metric at all.
+    recordStream(direction, outcome, code) {
+      try {
+        const attributes = { 'wrpc.stream.direction': direction, 'wrpc.stream.outcome': outcome };
+        if (code !== undefined) attributes['rpc.wrpc.status_code'] = code;
+        streams?.add(1, attributes);
       } catch {}
     },
 

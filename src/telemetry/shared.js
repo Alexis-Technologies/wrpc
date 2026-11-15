@@ -188,6 +188,7 @@ const DISABLED = Object.freeze({
   recordSubscriptionValues: noop,
   recordBroadcast: noop,
   recordStreamBytes: noop,
+  recordStream: noop,
   recordBackpressure: noop,
   recordCompressionFailure: noop,
   recordBackplaneGap: noop,
