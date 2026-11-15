@@ -131,7 +131,7 @@ violation — as its `closeCode`.
 | `1006` | Abnormal closure | No close frame arrived. Never sent — it is what a local socket reports. |
 | `1007` | Invalid payload | A text frame that was not valid UTF-8. |
 | `1008` | Policy violation | With reason `encryption`: the session handshake was refused by policy — plaintext where encryption is required, an unlisted protocol or key id, `authorize` said no, the handshake timed out, or the server had too much to say before it finished. |
-| `1009` | Message too big | Over `maxPayload`. |
+| `1009` | Message too big | An inbound message over `maxBuffer` — or, under permessage-deflate, one that inflates past `maxPayload`. |
 | `1011` | Internal error | The engine could not continue. |
 
 Codes `3000`–`4999` are yours to use; the parser accepts them and rejects

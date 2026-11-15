@@ -70,6 +70,14 @@ narrower promise — see
   `end` waits for it.
 - **`read()` on a stream that is over answers `null`** instead of waiting
   for a push that cannot come.
+- **Docs: what `maxPayload` bounds.** The production and security guides
+  called the built-in engine's `maxPayload` the "largest inbound message
+  (16 MiB)". It caps the **inflated** size of a permessage-deflate
+  message; a message sent uncompressed is bounded by `maxBuffer`
+  (100 MiB), which is also what closes with `1009`. The tables say so now,
+  with `maxBuffer` as the option to lower for a cap on every message; the
+  engine is unchanged — enforcing the sentence would have refused
+  uncompressed messages between 16 and 100 MiB that 2.0 accepts.
 
 ### Security
 

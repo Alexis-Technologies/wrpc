@@ -124,9 +124,10 @@ spend on your behalf.
 | `maxBatch` | `128` | Packets in one [batch frame](./client#batching). |
 | `maxStreams` | `256` | Binary [streams](./streams#limits) a connection holds open — each is the peer's to announce. |
 | `maxStreamBuffer` | 64 MiB | Bytes a connection may have sent into streams no handler reads yet; the stream past it fails with `413`. |
-| `maxPayload` | 16 MiB | Largest inbound WebSocket message. |
+| `maxBuffer` | 100 MiB | Largest inbound WebSocket message — every message, compressed or not (the built-in engine; uWebSockets.js has one limit, `maxPayloadLength`, 16 MiB). |
+| `maxPayload` | 16 MiB | Largest **inflated** message under permessage-deflate: what a few kilobytes on the wire may become. It does not bound a message sent uncompressed — `maxBuffer` does. |
 | `maxBodySize` | 10 MiB | Largest HTTP body. |
-| `maxBuffer` / `maxBackpressure` | engine | Outbound buffering before a socket is dropped. |
+| `maxBackpressure` | `maxBuffer` | Outbound buffering before a socket is dropped. |
 | `queue: { concurrency, size }` | per procedure | Work admitted to one handler; overflow answers `503`. |
 | `timeout` | per procedure | A handler that never returns answers `408`. |
 

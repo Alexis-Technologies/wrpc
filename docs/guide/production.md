@@ -195,9 +195,9 @@ The engine limits decide when a slow peer stops being your problem:
 | Option | What it does |
 | --- | --- |
 | `maxBackpressure` | Outbound bytes buffered for one connection before it is dropped — the engine's for a socket, `attachSession`'s for a WebTransport session, a `WrpcPeer`'s `host` (or `attachChannel`) for a data channel. |
-| `maxBuffer` | Inbound assembly buffer per connection. |
+| `maxBuffer` | Largest inbound message, and the assembly buffer it is put together in (100 MiB default) — compressed or not. |
 | `fragmentThreshold` | Above this, an outbound message is sent fragmented. |
-| `maxPayload` | Largest inbound message (16 MiB default). |
+| `maxPayload` | Largest **inflated** message under permessage-deflate (16 MiB default). An uncompressed message is not bounded by it: `maxBuffer` is its limit, so lower `maxBuffer` to cap every inbound message. |
 | `maxStreamBuffer` | An `RpcServer` option, not an engine's: bytes a connection may have sent into [binary streams](./streams#limits) no handler reads yet (64 MiB default). |
 
 For streams, honour `write()`'s return value and `'drain'` — that is what

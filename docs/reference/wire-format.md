@@ -157,7 +157,8 @@ wss.on('connection', (connection, req) => {
 | `perMessageDeflate` | off | `true` or `{ threshold, filter, contextTakeover, level, memLevel, async }`. |
 | `coalesce` | `true` | Cork every write of one event-loop turn and flush on the next tick, one `writev` per burst. |
 | `pingInterval` | `10000` | Protocol-ping interval; a peer that misses one is terminated. |
-| `maxBuffer` | 100 MiB | Largest inbound message. |
+| `maxBuffer` | 100 MiB | Largest inbound message — the bytes that crossed the wire, compressed or not. Past it the connection is closed with `1009`. |
+| `maxPayload` | 16 MiB | Largest **inflated** message under [permessage-deflate](#permessage-deflate) — a cap on what a compressed message may become, separate from `maxBuffer` because a compression bomb is a few kilobytes on the wire. A message sent uncompressed is bounded by `maxBuffer` alone. |
 | `maxBackpressure` | `maxBuffer` (100 MiB) | Outbound cap; a connection past it is **terminated** (the peer observes `1006`). |
 | `fragmentThreshold` | `0` (off) | Fragment outbound messages above this size. |
 | `closeTimeout` | `1000` | How long to wait for the peer's close frame. |
