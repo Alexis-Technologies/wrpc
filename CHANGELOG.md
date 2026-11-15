@@ -277,6 +277,20 @@ narrower promise — see
 
 ### Security
 
+- **A WebSocket frame sent a byte at a time no longer stalls the server.**
+  The built-in engine keeps a connection's TCP segments in a list and
+  dropped each consumed one with `shift()` — and how many segments a frame
+  arrives in is the peer's choice. Past a few thousand elements every
+  `shift()` copies the rest of the array, so one frame of N segments cost
+  N² / 2 moves in a single synchronous call: a 300,000-byte frame written
+  one byte per segment — twelve megabytes of packets, two seconds to send,
+  **no authentication** — stalled the event loop for 12.8 seconds, and
+  512,000 one-byte segments took 118. `SegmentQueue` reads its list through
+  a head cursor now: 256,000 one-byte segments are consumed in 13 ms where
+  they took 5.9 s, and the ordinary shapes are unchanged
+  (`bench/segment-queue.js`). Found by reviewing with the project's skills
+  — the same `Array.shift` on a queue a peer sizes as the stream queue
+  below — and present since 1.0; uWebSockets.js was never affected.
 - **Reading a long queue back no longer stalls the event loop.** A
   readable took its chunks with `queue.shift()`, and how long that queue
   gets is the sender's choice: a stream nobody reads yet keeps every chunk,
