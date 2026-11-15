@@ -1016,6 +1016,22 @@ export interface WrpcClientOptions {
    */
   streamIdleTimeout?: number;
   /**
+   * Streams the server may have open on this client at once — announced and
+   * not yet ended. Past it an announcement is refused: answered `429` on the
+   * stream's id when the server asked to hear, dropped otherwise. Default
+   * 256, the server's own default for the other direction.
+   */
+  maxStreams?: number;
+  /**
+   * Bytes this client may be holding in streams whose reader has not taken
+   * them — streams nobody reads yet, and, because nothing here can hold a
+   * server back, what a reader that is behind is behind by. The stream that
+   * goes past it fails with `413`: its reader is thrown the error, and a
+   * server that asked is told and stops. A chunk counts as its bytes plus
+   * 256. Default 64 MiB; `Infinity` lifts it.
+   */
+  maxStreamBuffer?: number;
+  /**
    * Cap (ms) on the transport handshake; default 30000, `0`/`false`
    * disables. Connection setup is the one phase with no liveness signal at
    * all — the heartbeat starts after 'open', and nothing schedules the next

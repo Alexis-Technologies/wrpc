@@ -258,6 +258,21 @@ narrower promise — see
   (`bench/stream-queue.js`). `readable.queue` is therefore a **snapshot** —
   an array built when it is read, what it always looked like to a reader of
   it — and no longer the stream's own array; `readable.queued` is the count.
+- **A client caps what its server may make it hold: `maxStreams` and
+  `maxStreamBuffer` on the client.** A server bounded the streams a client
+  could open on it and the bytes they held; a client took whatever it was
+  sent. Two thousand downloads its server opened and nobody read were two
+  thousand readables and 125 MiB in the page — and what sends a client its
+  streams is not always a server it trusts: over WebRTC it is another
+  peer. The client has the server's two limits now, with the same defaults
+  (256 streams, 64 MiB). Past `maxStreams` an announcement is refused,
+  answered `429` when the sender asked to hear. And since nothing in a
+  browser can pause a WebSocket, `maxStreamBuffer` counts every byte the
+  client's streams hold for readers that have not taken it, reader or not:
+  the stream that goes past it fails with `413`, its reader thrown the
+  error, its sender told to stop. A `terminate` for a stream the client
+  does not hold is no longer an `'error'` — it is what a sender that was
+  refused sends back.
 - **On a carrier that cannot pause, a reader that is behind is held to
   `maxStreamBuffer`.** The cap counted the streams nobody reads; one that
   has a reader was left to its high-water mark — which holds the sender

@@ -368,8 +368,16 @@ its sender has ended it. Its sender is told to stop, unless the stream had
 arrived whole; a reader that comes late, while the sender is still at it, is
 thrown the `408`. The sweep runs on a timer of that period, so a stream goes
 between one and two of them; one that is being read, however slowly, or still
-receiving bytes, is not idle. `Infinity` turns it off. A client sweeps the
-streams its server sends the same way — its own `streamIdleTimeout` option.
+receiving bytes, is not idle. `Infinity` turns it off.
+
+**A client has the same three limits for the other direction** — its own
+`maxStreams`, `maxStreamBuffer` and `streamIdleTimeout` options, with the
+same defaults. What sends a client its streams is not always a server it
+trusts (a WebRTC peer is a stranger), and nothing in a browser can pause a
+WebSocket: so every byte a client's streams hold for readers that have not
+taken it counts, whether the stream has a reader or not. A download that
+runs more than `maxStreamBuffer` ahead of its reader fails with `413`, and
+the server — which asked to hear — stops sending it.
 
 So issue the call **before** the upload, as above. The other order — the
 whole upload first, then the call that reads it — works for as long as the

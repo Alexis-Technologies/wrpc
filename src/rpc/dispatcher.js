@@ -1,7 +1,7 @@
 'use strict';
 
 const { jsonParse } = require('../utils.js');
-const { WrpcReadable, heldBytes, CHUNK_COST } = require('../streams.js');
+const { WrpcReadable, overCap } = require('../streams.js');
 const { chunkDecode } = require('../chunks.js');
 const { negotiate } = require('../compression/index.js');
 const { hasBytes, isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
@@ -524,10 +524,6 @@ const handleStream = async (client, packet) => {
   }
 };
 
-// How many chunks a reader has waiting before it counts as behind: a
-// readable's default high-water mark.
-const BEHIND = 32;
-
 const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS) => {
   // A 0x00 first byte is never a chunk (an id is at least one byte): an
   // attachments frame is a packet with its bytes, dispatched as one.
@@ -554,19 +550,11 @@ const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS
     // pause (`client.paced`). Where it cannot, a reader that is behind is
     // held to the same cap — the alternative was a queue a thousand chunks
     // long, of chunks as large as the peer liked.
-    const unread = !upstream.consuming;
-    if (
-      upstream.streaming &&
-      (unread || (!client.paced && upstream.queued > BEHIND)) &&
-      heldBytes(client.streams, client.paced) + payload.length + CHUNK_COST > client.maxStreamBuffer
-    ) {
-      upstream.fail(
-        unread
-          ? 'Too many bytes in streams nobody reads yet'
-          : `Stream ${upstream.name} is too far ahead of its reader`,
-        413,
-      );
-      return void client.log.debug({ event: 'stream.buffer', code: 413, max: client.maxStreamBuffer, unread });
+    // The rule itself is overCap's (streams.js), one for both ends.
+    const refusal = overCap(client.streams, upstream, payload.length, client.maxStreamBuffer, client.paced);
+    if (refusal !== null) {
+      upstream.fail(refusal, 413);
+      return void client.log.debug({ event: 'stream.buffer', code: 413, max: client.maxStreamBuffer });
     }
     // Rejects for the chunk that takes a stream past its announced size:
     // answered where it failed, once — the stream stays, failed, and drops

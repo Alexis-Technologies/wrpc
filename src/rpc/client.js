@@ -8,7 +8,13 @@
 const { Emitter, jsonParse } = require('../utils.js');
 const { STATUS_CODES } = require('../status.js');
 const { generateUUID } = require('../runtime/node.js');
-const { WrpcWritable, sweepStreams, STREAM_IDLE_TIMEOUT: DEFAULT_STREAM_IDLE_TIMEOUT } = require('../streams.js');
+const {
+  WrpcWritable,
+  sweepStreams,
+  STREAM_IDLE_TIMEOUT: DEFAULT_STREAM_IDLE_TIMEOUT,
+  MAX_STREAMS: DEFAULT_MAX_STREAMS,
+  MAX_STREAM_BUFFER: DEFAULT_MAX_STREAM_BUFFER,
+} = require('../streams.js');
 const { RoomRegistry } = require('./rooms.js');
 const { DEFAULT_META_MAX } = require('./meta.js');
 const { createLoggerWriter } = require('../logging.js');
@@ -25,17 +31,9 @@ const DEFAULT_MAX_SUBSCRIPTIONS = 256;
 // Same reasoning for in-flight calls: each holds a controller, a context and
 // possibly a queue slot until it settles.
 const DEFAULT_MAX_CALLS = 1000;
-// And for the binary streams a peer announces: each holds a readable — and
-// every chunk the peer sends into it — until a handler reads it, and the
-// peer alone decides how many it opens.
-const DEFAULT_MAX_STREAMS = 256;
-// And for what those streams hold before a handler reads them: a readable
-// keeps every chunk until it has a reader (its high-water mark needs one),
-// and the size a stream announced is the peer's word. 64 MiB across one
-// connection's unread streams — room for an upload that runs ahead of the
-// call that reads it, and the same order as what the WebSocket engine
-// already lets one connection buffer for a message (`maxBuffer`, 100 MiB).
-const DEFAULT_MAX_STREAM_BUFFER = 64 * 1024 * 1024;
+// The binary streams a peer announces, and what they hold before a handler
+// reads them, are capped by defaults a client shares (MAX_STREAMS and
+// MAX_STREAM_BUFFER in streams.js, where the reasons are).
 // The longest delay a timer takes: past it Node fires after a millisecond.
 const MAX_TIMER = 2 ** 31 - 1;
 // How long client.ask() waits for the peer's answer. Mirrors the client's

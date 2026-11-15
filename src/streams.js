@@ -24,6 +24,15 @@ const CHUNK_COST = 256;
 // failed and forgotten (sweepStreams), on both ends, unless an option says
 // otherwise.
 const STREAM_IDLE_TIMEOUT = 30_000;
+// What a receiver lets one connection hold of its peer's streams, on both
+// ends, unless an option says otherwise: how many are open at once — each
+// holds a readable, and what was sent into it, until somebody reads it, and
+// the peer alone decides how many it opens — and the bytes of them that no
+// reader has taken yet (overCap). 64 MiB: room for an upload that runs ahead
+// of the call that reads it, and the same order as what the WebSocket engine
+// already lets one connection buffer for a message (`maxBuffer`, 100 MiB).
+const MAX_STREAMS = 256;
+const MAX_STREAM_BUFFER = 64 * 1024 * 1024;
 
 class WrpcReadable extends Emitter {
   #consuming = false;
@@ -517,6 +526,21 @@ const heldBytes = (streams, paced) => {
   return bytes;
 };
 
+// Why `stream` may not take one more chunk of `length` bytes under `cap` —
+// the message it fails with (413) — or null when it may. The one rule for
+// every feeder of readables: a server's dispatcher, a client.
+//
+// Asked for a chunk of a stream nobody reads (every one of them is kept),
+// and, where the carrier cannot pause, of one whose reader is behind by more
+// than a high-water mark of chunks. A reader that keeps up costs nothing
+// here: the sum is not taken.
+const overCap = (streams, stream, length, cap, paced) => {
+  const unread = !stream.consuming;
+  if (!stream.streaming || !(unread || (!paced && stream.queued > DEFAULT_HIGH_WATER_MARK))) return null;
+  if (heldBytes(streams, paced) + length + CHUNK_COST <= cap) return null;
+  return unread ? 'Too many bytes in streams nobody reads yet' : `Stream ${stream.name} is too far ahead of its reader`;
+};
+
 // Ends what nobody came to read: a stream that has had no reader and no
 // byte since the last sweep. An upload whose call was refused before its
 // handler read it, a download no page asked for, a stream its sender
@@ -542,4 +566,14 @@ const sweepStreams = (streams) => {
   }
 };
 
-module.exports = { WrpcReadable, WrpcWritable, heldBytes, sweepStreams, CHUNK_COST, STREAM_IDLE_TIMEOUT };
+module.exports = {
+  WrpcReadable,
+  WrpcWritable,
+  heldBytes,
+  overCap,
+  sweepStreams,
+  CHUNK_COST,
+  STREAM_IDLE_TIMEOUT,
+  MAX_STREAMS,
+  MAX_STREAM_BUFFER,
+};

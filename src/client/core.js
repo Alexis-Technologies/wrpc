@@ -18,7 +18,15 @@ const {
 const { generateUUID } = require('../runtime/node.js');
 const { chunkDecode } = require('../chunks.js');
 const { hasBytes, encodeAttachments, decodeAttachments, isAttachmentsFrame } = require('../attachments.js');
-const { WrpcReadable, WrpcWritable, sweepStreams, STREAM_IDLE_TIMEOUT } = require('../streams.js');
+const {
+  WrpcReadable,
+  WrpcWritable,
+  overCap,
+  sweepStreams,
+  STREAM_IDLE_TIMEOUT,
+  MAX_STREAMS,
+  MAX_STREAM_BUFFER,
+} = require('../streams.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createClientTelemetry } = require('../telemetry/client.js');
 const { META_HEADER, META_PREFIX, HEADERS_PARAM, META_PARAM, WRPC_V1, WRPC_V2 } = require('../wire.js');
@@ -453,6 +461,12 @@ class WrpcClient extends Emitter {
   // (#watchStreams).
   #streamIdleTimeout = STREAM_IDLE_TIMEOUT;
   #sweeper = null;
+  // What this client lets its server hold here: how many streams at once,
+  // and the bytes of them no reader has taken (see #handleStream and
+  // #handleBinary). A server's own limits, for the other direction — what
+  // sends the streams may be a peer nobody vouches for (a WebRTC mesh).
+  #maxStreams = MAX_STREAMS;
+  #maxStreamBuffer = MAX_STREAM_BUFFER;
   // Behind a worker proxy this client is one page of several, and a server
   // stream reaches every one of them (see #handleStream).
   #shared = false;
@@ -640,6 +654,8 @@ class WrpcClient extends Emitter {
     this.#otel = createClientTelemetry(telemetry);
     if (callTimeout) this.#callTimeout = callTimeout;
     if (options.streamIdleTimeout !== undefined) this.#streamIdleTimeout = options.streamIdleTimeout;
+    if (options.maxStreams !== undefined) this.#maxStreams = options.maxStreams;
+    if (options.maxStreamBuffer !== undefined) this.#maxStreamBuffer = options.maxStreamBuffer;
     this.#shared = Boolean(options.worker);
     const { connectTimeout } = options;
     // 0/false disables — for hosts that own their timeouts (tests, tooling).
@@ -1798,6 +1814,19 @@ class WrpcClient extends Emitter {
       if (stream) {
         throw new Error(`Stream ${name} is already initialized`);
       }
+      // Capped, as a server caps a client's: an announced stream holds its
+      // readable — and what is sent into it — until somebody reads it, and
+      // the other end decides how many it opens. Two thousand of them, read
+      // by nobody, were two thousand readables and 125 MiB here. A sender
+      // that asked to hear is answered as a server answers one (429); what
+      // it still sends into the stream it was refused is nobody's.
+      if (this.#streams.size >= this.#maxStreams) {
+        this.#log.debug({ event: 'stream.capacity', code: 429, max: this.#maxStreams });
+        if (packet.cancel === true) {
+          this.send({ type: 'callback', id, error: { message: 'Too many open streams', code: 429 } });
+        }
+        return;
+      }
       const readableStream = new WrpcReadable(id, name, size);
       // A server that asked to hear (`cancel` on its announcement) is told,
       // once, when the stream is over here before it arrived whole: its
@@ -1821,6 +1850,10 @@ class WrpcClient extends Emitter {
       this.#watchStreams();
       return;
     }
+    // A terminate promises nothing, so one for a stream this end does not
+    // hold is not an error: its announcement was refused here, or the stream
+    // is long over. It is what a sender told to stop sends back.
+    if (!stream && status === 'terminate') return;
     if (!stream) throw new Error(`Stream ${id} is not initialized`);
     if (status !== 'end' && status !== 'terminate') return;
     // Its sender ended it: nothing is left to stop.
@@ -1882,6 +1915,16 @@ class WrpcClient extends Emitter {
     const stream = this.#streams.get(id);
     if (!stream) {
       throw new Error(`Stream ${id} is not initialized`);
+    }
+    // Nothing here can hold the sender back — a browser's WebSocket has no
+    // pause, and no transport waits for this push — so what the streams
+    // hold for readers that have not taken it is capped as on a server
+    // whose carrier cannot pause (overCap): the stream that goes past it
+    // fails, its reader is thrown the 413, and a server that asked is told.
+    const refusal = overCap(this.#streams, stream, payload.length, this.#maxStreamBuffer, false);
+    if (refusal !== null) {
+      this.#log.debug({ event: 'stream.buffer', code: 413, max: this.#maxStreamBuffer });
+      return void stream.fail(refusal, 413);
     }
     await stream.push(payload);
   }
