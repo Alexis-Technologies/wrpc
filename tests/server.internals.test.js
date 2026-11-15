@@ -128,7 +128,11 @@ test('Client over WS transport', async (t) => {
   await t.test('createStream validates name and size', () => {
     const client = createClient(fakeWsTransport());
     assert.throws(() => client.createStream('', 10), /Stream name is not provided/);
-    assert.throws(() => client.createStream('name', 0), /Stream size is not provided/);
+    assert.throws(() => client.createStream('name'), /Stream size is not provided/);
+    // Zero is a size (tests/streams.hardening.test.js): what is refused is
+    // anything that is not a count of bytes.
+    assert.throws(() => client.createStream('name', -1), /Stream size is not provided/);
+    assert.doesNotThrow(() => client.createStream('name', 0));
   });
 
   await t.test('createStream sends the init packet and keeps the writable out of streams', () => {

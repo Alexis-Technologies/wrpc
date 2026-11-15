@@ -109,6 +109,7 @@ The first table is the request path and the engines; the ones after it are
 | `call.duplicate` | warn | Two in-flight calls with one id: a `generateId` that repeats, or a retry that reused one |
 | `call.capacity` | debug | `maxCalls` reached on one connection |
 | `stream.capacity` | debug | `maxStreams` reached on one connection: a `stream` packet answered `429` |
+| `stream.buffer` | debug | `maxStreamBuffer` reached on one connection (`max`): the stream whose chunk went past it failed, answered `413`. A peer sending into streams no handler reads — an upload that never had a reader, or one far ahead of the call that reads it |
 | `call.draining` | info | Refused because the server is shutting down |
 | `packet.malformed` | warn | A frame that would not parse — one line per frame, whatever it was |
 | `packet.unknown` | warn | Valid JSON that is not a packet — version skew, or somebody else's client |
@@ -328,6 +329,7 @@ An error the client has no caller to hand to is **escalated**: logged at
 | `heartbeat.ping`, `heartbeat.terminate` | Sending a ping, or terminating the connection after a missed pong, threw |
 | `reconnect.open`, `fallback.open`, `online.open` | An `open()` nobody awaits was rejected: a reconnect attempt, the next transport of the list, the re-open when the browser came back online |
 | `reconnect.restore`, `reconnect.afterOpen` | What runs after a reconnect — the re-`load()` and re-subscribe, the `authenticate` hook — failed |
+| `stream.failed` | A stream from the server ended short of the size it announced; its reader is thrown the same error |
 | `subscription.error` | A subscription ended with an error and had no `onError` to tell |
 | `subscription.listener` | A subscription's own `onEnd`/release callback threw |
 | `listener.open`, `listener.close`, `listener.drain`, `listener.reconnecting`, `listener.reconnect-failed`, `listener.heartbeat-timeout`, `listener.authenticate-failed`, `listener.refresh-failed`, `listener.restore-failed`, `listener.transport-fallback` | A listener of yours for that client event threw |

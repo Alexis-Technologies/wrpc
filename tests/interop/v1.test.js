@@ -51,6 +51,42 @@ for (const pair of PAIRS) {
   });
 }
 
+// The receiving half of a binary stream holds its sender to the size it
+// announced. Nothing changed on the wire, so a 1.0 sender — which
+// keeps its announcement like any other — is served as before, and a 1.0
+// receiver is sent what it always was.
+for (const pair of PAIRS) {
+  test(`interop ws: a binary stream up and down — ${pair.name}`, { skip }, async (t) => {
+    const { ws } = await boot(t, pair.server);
+    const client = await connect(t, pair.client, ws);
+    const pieces = 8;
+    const size = pieces * 64 * 1024;
+    const upload = client.createStream('up.bin', size);
+    const received = client.api.echo.upload({ id: upload.id });
+    for (let i = 0; i < pieces; i++) upload.write(new Uint8Array(size / pieces).fill(i + 1));
+    upload.end();
+    assert.deepStrictEqual(await received, { name: 'up.bin', size });
+    const id = await client.api.echo.download({ size, pieces });
+    const readable = client.getStream(id);
+    let downloaded = 0;
+    for await (const chunk of readable) downloaded += chunk.length;
+    assert.strictEqual(downloaded, size);
+    assert.strictEqual(readable.bytesRead, size);
+  });
+
+  // The whole upload on the wire before the call that reads it: what a
+  // readable has no reader for yet is held, under `maxStreamBuffer`.
+  test(`interop ws: an upload sent ahead of the call that reads it — ${pair.name}`, { skip }, async (t) => {
+    const { ws } = await boot(t, pair.server);
+    const client = await connect(t, pair.client, ws);
+    const size = 256 * 1024;
+    const upload = client.createStream('ahead.bin', size);
+    upload.write(new Uint8Array(size).fill(9));
+    upload.end();
+    assert.deepStrictEqual(await client.api.echo.upload({ id: upload.id }), { name: 'ahead.bin', size });
+  });
+}
+
 test('interop sse: this client against a 1.0 server — a call and an event', { skip }, async (t) => {
   const { http } = await boot(t, legacy);
   const client = await connect(t, next, http, { transport: 'sse' });

@@ -66,6 +66,10 @@ for (const chunk of chunks) {
 stream.end();
 ```
 
+The `size` you announce is a promise the other end holds you to: write
+exactly that many bytes before `end()`, or `terminate()` — see
+[the announced size](#size).
+
 ## Downloading
 
 The same machinery, mirrored:
@@ -123,7 +127,8 @@ On the receiving side, `WrpcReadable` applies its own high-water mark
 server pauses socket reads while chunks are being consumed. So a slow consumer
 pushes back through the queue, through the socket, and into TCP — the producer
 on the other end sees `write()` return `false`. Nothing between them buffers
-without bound.
+without bound — and what arrives before there is a consumer is bounded by
+[`maxStreamBuffer`](#limits).
 
 ```mermaid
 flowchart LR
@@ -152,20 +157,80 @@ fails if RSS grows with it.
 
 | Call | Effect |
 | --- | --- |
-| `writable.end()` | Normal end. The reader's iteration finishes. |
+| `writable.end()` | Normal end, after exactly `size` bytes. The reader's iteration finishes. |
 | `writable.terminate()` | Abnormal end — the reader stops where it is. |
-| `readable.close()` | Waits for the announced `size`, then closes. |
-| `readable.terminate()` | Stops now, discarding what is queued. |
+| `readable.close()` | Waits for the announced `size` to be read, then closes. |
+| `readable.terminate()` | Stops now, discarding what is queued — and whatever its sender still sends. |
 
 A disconnect terminates every stream the client held. `readable.status` is
-`'active'`, `'closed'` or `'terminated'`; `bytesRead` is what has been
-consumed so far, against the announced `size`.
+`'active'`, `'closed'` (every announced byte was read) or `'terminated'`;
+`bytesRead` is what has been consumed so far, against the announced `size`.
+
+A reader that lets go of a stream — `readable.terminate()`, a handler
+refusing an upload — holds nothing more of it: the sender has not heard and
+goes on to its own `end`, and every chunk it still sends is dropped on
+arrival.
+
+### The announced size {#size}
+
+`size` is what the sender says it will send, in bytes, and the receiving end
+holds it to that. Zero is a size: an empty file is a stream of no chunks,
+announced and ended, and its reader's iteration finishes without a turn —
+in both directions.
+
+A sender that does not keep its word **fails** the stream, in either of two
+ways: a chunk that takes it past the announced size, or an `end` that comes
+short of it. A failed stream is over — `status` is `'terminated'`, what was
+queued is let go of — and its reader is told why: `readable.error` holds the
+reason, the `for await` over it **throws** it, `toBlob()` rejects with it,
+and `pipe()` destroys its sink with it.
+
+```js
+receive: procedure({
+  handler: async (context, { id }) => {
+    const stream = context.client.getStream(id);
+    for await (const chunk of stream) await sink.write(chunk); // throws: "Stream … ended at 4 of 10 bytes"
+    return { size: stream.bytesRead };
+  },
+}),
+```
+
+The error carries `code: 400`, so a handler that lets it through answers its
+caller `400` with the reason. On a server the sender is told as well, once:
+a `callback` error packet with the stream's id — `400` for the size, and
+whatever it still sends into that stream is dropped. A stream that failed
+before anybody read it is kept for its reader: `getStream(id)` still answers
+it, and reading it throws the reason.
+
+`writable.terminate()` and a disconnect stay the quiet end — the reader's
+loop simply stops, with `status` `'terminated'` and `error` `null`. A loop
+that ended is therefore not yet a file that arrived: check
+`readable.status === 'closed'` (or `bytesRead === size`) before trusting it.
+
+### Limits {#limits}
 
 A connection holds at most [`maxStreams`](./server#rpc-options) streams at
 once (256 by default): a stream is announced by the peer, and holds a
 readable — with what was sent into it — until a handler reads it, so the
 number is the peer's to choose and the cap the server's. Past it the
 `stream` packet answers `429` (`stream.capacity` in the log, at debug).
+
+What those streams hold is capped too. The high-water mark of the
+[backpressure](#backpressure) above needs a reader — a readable cannot hold
+the socket back for a handler that a later packet on that same socket
+starts — so until one attaches every chunk is kept, and the announced size
+bounds nothing: it is the peer's word. [`maxStreamBuffer`](./server#rpc-options)
+(64 MiB by default) is the most one connection may have sent into streams
+nobody reads yet. The stream whose chunk goes past it fails — its bytes let
+go of, its sender answered `413` (`stream.buffer` in the log, at debug), its
+reader, if one comes, thrown the same — and the connection's other streams
+keep what they had. A stream being read is not counted, however large: it is
+paced, not held.
+
+So issue the call **before** the upload, as above. The other order — the
+whole upload first, then the call that reads it — works for as long as the
+upload fits under `maxStreamBuffer`, and holds all of it in memory until the
+handler starts.
 
 ## Bytes inside a call, not as a stream {#attachments}
 

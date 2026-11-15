@@ -198,6 +198,7 @@ The engine limits decide when a slow peer stops being your problem:
 | `maxBuffer` | Inbound assembly buffer per connection. |
 | `fragmentThreshold` | Above this, an outbound message is sent fragmented. |
 | `maxPayload` | Largest inbound message (16 MiB default). |
+| `maxStreamBuffer` | An `RpcServer` option, not an engine's: bytes a connection may have sent into [binary streams](./streams#limits) no handler reads yet (64 MiB default). |
 
 For streams, honour `write()`'s return value and `'drain'` — that is what
 carries backpressure all the way into TCP; see [Binary streams](./streams#backpressure).

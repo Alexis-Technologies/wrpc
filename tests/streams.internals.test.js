@@ -103,7 +103,8 @@ test('WrpcReadable.push applies backpressure once a consumer attached and the hi
 });
 
 test('WrpcReadable.push buffers freely before any consumer attaches', async () => {
-  const readable = new WrpcReadable('id', 'name', 10, { highWaterMark: 1 });
+  // 70 bytes below, so a size they fit in: past it the stream fails.
+  const readable = new WrpcReadable('id', 'name', 100, { highWaterMark: 1 });
   // No consumer yet: pushes far beyond the high-water mark must resolve
   // immediately — blocking here would deadlock the upload-then-call wire
   // pattern (chunks arrive before the call that starts the consumer).

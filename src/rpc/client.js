@@ -29,6 +29,13 @@ const DEFAULT_MAX_CALLS = 1000;
 // every chunk the peer sends into it — until a handler reads it, and the
 // peer alone decides how many it opens.
 const DEFAULT_MAX_STREAMS = 256;
+// And for what those streams hold before a handler reads them: a readable
+// keeps every chunk until it has a reader (its high-water mark needs one),
+// and the size a stream announced is the peer's word. 64 MiB across one
+// connection's unread streams — room for an upload that runs ahead of the
+// call that reads it, and the same order as what the WebSocket engine
+// already lets one connection buffer for a message (`maxBuffer`, 100 MiB).
+const DEFAULT_MAX_STREAM_BUFFER = 64 * 1024 * 1024;
 // How long client.ask() waits for the peer's answer. Mirrors the client's
 // default call timeout: an ask is a call travelling the other way.
 const DEFAULT_ASK_TIMEOUT = 7_000;
@@ -174,6 +181,7 @@ class Client extends Emitter {
       maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
       maxCalls = DEFAULT_MAX_CALLS,
       maxStreams = DEFAULT_MAX_STREAMS,
+      maxStreamBuffer = DEFAULT_MAX_STREAM_BUFFER,
       generateId,
       codec = null,
       meta = null,
@@ -206,6 +214,7 @@ class Client extends Emitter {
     this.maxSubscriptions = maxSubscriptions;
     this.maxCalls = maxCalls;
     this.maxStreams = maxStreams;
+    this.maxStreamBuffer = maxStreamBuffer;
     // Set when the session store could not be asked for this client's
     // token (core #restoreToken): a session procedure answers 503, not 403.
     this.sessionUnavailable = false;
@@ -562,7 +571,11 @@ class Client extends Emitter {
     }
     if (!this.binary) throw refusal(`Can't send wrpc streams over a text-only transport`);
     if (!name) throw new Error('Stream name is not provided');
-    if (!size) throw new Error('Stream size is not provided');
+    // Zero is a size — an empty file is a file — and what the receiving
+    // half has always accepted; `!size` refused it on this end only.
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new Error('Stream size is not provided: a non-negative integer of bytes');
+    }
     const id = this.generateId();
     if (typeof id !== 'string' || id.length === 0 || id.length > 255) {
       throw new TypeError('createStream: generateId must return a string of at most 255 characters');
@@ -691,6 +704,7 @@ module.exports = {
   DEFAULT_MAX_SUBSCRIPTIONS,
   DEFAULT_MAX_CALLS,
   DEFAULT_MAX_STREAMS,
+  DEFAULT_MAX_STREAM_BUFFER,
   FROZEN_EMPTY,
   EMPTY_META,
   buildMeta,

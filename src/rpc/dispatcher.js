@@ -433,11 +433,29 @@ const handleStream = async (client, packet) => {
     const stream = client.streams.get(id);
     if (status) {
       if (!stream) throw new Error(`Stream ${tag} is not initialized`);
-      if (status === 'end') await stream.close();
-      if (status === 'terminate') await stream.terminate();
-      return void client.streams.delete(id);
+      // A status the protocol does not have used to fall through to the
+      // delete below: the stream forgotten, its reader left waiting where
+      // not even the connection's close could reach it.
+      if (status !== 'end' && status !== 'terminate') throw new Error('Stream packet structure error');
+      if (status === 'terminate') {
+        await stream.terminate();
+      } else {
+        try {
+          await stream.end();
+        } catch (error) {
+          // Short of its announced size (WrpcReadable.end): the sender is
+          // told now, and the stream kept until its reader has come to be
+          // told too — close() waits for one — where it used to be kept
+          // for good, its reader waiting for the missing bytes.
+          client.error(400, { id, error });
+          await stream.close();
+        }
+      }
+      if (client.streams.get(id) === stream) client.streams.delete(id);
+      return;
     }
-    const valid = typeof name === 'string' && Number.isSafeInteger(size);
+    // A size is a count of bytes: zero is a stream, minus one is not.
+    const valid = typeof name === 'string' && Number.isSafeInteger(size) && size >= 0;
     if (!valid) throw new Error('Stream packet structure error');
     if (stream) throw new Error(`Stream ${tag} is already initialized`);
     // Capped like calls and subscriptions: an announced stream holds its
@@ -455,6 +473,19 @@ const handleStream = async (client, packet) => {
   }
 };
 
+// What a connection holds in streams nobody reads yet. Summed when asked,
+// over at most `maxStreams` readables and only for a chunk of a stream that
+// has no reader: a count kept in step would need every readable to report
+// its first read and its end back, for a sum that is one addition per open
+// stream.
+const unreadBytes = (client) => {
+  let bytes = 0;
+  for (const stream of client.streams.values()) {
+    if (stream.streaming && !stream.consuming) bytes += stream.bytesReceived;
+  }
+  return bytes;
+};
+
 const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS) => {
   // A 0x00 first byte is never a chunk (an id is at least one byte): an
   // attachments frame is a packet with its bytes, dispatched as one.
@@ -467,6 +498,22 @@ const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS
   try {
     const upstream = client.streams.get(id);
     if (upstream) {
+      // A readable applies its high-water mark only once somebody reads it
+      // (it cannot hold the socket for a reader a later packet starts), so
+      // until then every chunk is kept — and the peer decides how many. The
+      // announced size bounds nothing: it is the peer's word too. Past
+      // `maxStreamBuffer` across the connection's unread streams, the one
+      // this chunk is for fails: let go of, its sender answered 413, its
+      // reader — if one ever comes — told why. Debug, like the 429 of
+      // `maxStreams`: any peer can drive it in a loop.
+      if (!upstream.consuming && upstream.streaming && unreadBytes(client) + payload.length > client.maxStreamBuffer) {
+        const error = upstream.fail('Too many bytes in streams nobody reads yet', 413);
+        client.log.debug({ event: 'stream.buffer', code: 413, max: client.maxStreamBuffer });
+        return void client.error(413, { id, error, level: 'debug' });
+      }
+      // Rejects for the chunk that takes a stream past its announced size
+      // (answered below, once: the stream stays, failed, and drops the rest
+      // until its sender ends it).
       await upstream.push(payload);
       client.otel.recordStreamBytes('receive', payload?.byteLength ?? 0);
       return;

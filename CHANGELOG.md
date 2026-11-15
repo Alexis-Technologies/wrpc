@@ -13,6 +13,95 @@ narrower promise — see
 
 ### Changed (breaking)
 
+### Added
+
+- **A stream of no bytes.** `context.client.createStream(name, 0)` threw
+  `Stream size is not provided` on the server, while the client's
+  `createStream` took a zero and the dispatcher accepted one. An empty
+  file is a stream now, in both directions — announced, ended, and its
+  reader's iteration over without a turn. The readable of an empty stream
+  waits for its reader before it is forgotten: ended at once, as 2.0.1
+  ended it, it was gone before the handler — or the caller of a download —
+  could ask for it. A size that is not a non-negative integer is refused
+  on both ends (`createStream`, and a `stream` packet announcing one
+  answers `400`).
+- `readable.error`, `readable.bytesReceived`, `readable.consuming`,
+  `readable.fail(message, code?)` and `readable.end()` on `WrpcReadable`
+  — what the fixes below stand on, typed and documented for whoever feeds
+  a readable of their own.
+
+### Fixed
+
+- **An `end` short of the announced size no longer hangs the reader.**
+  `close()` waited for `bytesRead === size`; a sender that ended after
+  fewer bytes — or whose chunks overshot, so the two counts never met —
+  left it pending and the consumer's `for await` waiting for a push that
+  never came: the handler hung until the connection closed. The receiving
+  half now holds its sender to the `size` it announced. A chunk past it,
+  or an `end` short of it, **fails** the stream: `readable.error` says why
+  (`code: 400`), the reader's iteration **throws** it, `toBlob()` rejects
+  with it, and `pipe()` destroys its sink with it — announcing `'error'`
+  on the readable only to someone listening, so a peer's broken
+  announcement is never an unhandled `'error'`. A handler that lets the
+  error through answers its caller `400` with the reason; on a server the
+  sender is told too, once, with a `callback` error on the stream's id,
+  and what it still sends into that stream is dropped. A stream that
+  failed before anybody read it is kept for its reader, so
+  `getStream(id)` answers it and reading it throws the reason, rather than
+  `Stream … is not initialized`. On the client the failure is escalated as
+  `stream.failed`. `writable.terminate()` and a disconnect stay the quiet
+  end — the loop stops, `status` is `'terminated'`, `error` is `null`.
+  Nothing changed on the wire, and `tests/interop/` now streams both ways
+  against the published 1.0.
+- **`readable.status` is decided by the first end.** A `close()` after a
+  `terminate()` — what `pipe()` did on its way out — renamed a terminated
+  stream `'closed'`.
+- **A `stream` packet with a status the protocol does not have** used to
+  forget the stream without ending it: its reader waited where not even
+  the connection's close could reach it. It answers `400` and changes
+  nothing.
+- **The client counts a chunk in the turn it arrived in.** Every chunk
+  was held back by an awaited conversion, so the `end` behind it — two
+  messages of one read are dispatched with no turn between them — was
+  handled first. Harmless while `close()` waited for the bytes to be
+  read; a readable that checks what it was sent would have called such a
+  stream empty. A chunk that arrives as a `Blob` (a transport that did not
+  ask for ArrayBuffers) is converted in arrival order, and its stream's
+  `end` waits for it.
+- **`read()` on a stream that is over answers `null`** instead of waiting
+  for a push that cannot come.
+
+### Security
+
+- **A readable that is over keeps nothing.** `WrpcReadable.push()` never
+  looked at `streaming`: after `terminate()` (or `close()`) every chunk
+  the peer still sent was queued until its `end` deleted the stream — a
+  thousand 64 KiB pushes after a `terminate()` left a thousand chunks in
+  the queue. A handler that refused an upload and let go of the stream
+  still held the rest of it. Chunks for a stream that is no longer
+  streaming are dropped on arrival, a chunk that was waiting for room when
+  the stream ended included.
+- **`maxStreamBuffer` caps what a connection's unread streams hold.** A
+  readable applies its high-water mark only once it has a reader — it
+  cannot hold the socket back for a handler that a later packet on that
+  socket starts — so a stream nobody read yet kept every chunk, and
+  `maxStreams` bounded them in count only: a peer that announced ten
+  bytes and sent 65 MB into a stream no handler ever read had all of it
+  held. The announced size now bounds a stream (above), but it is the
+  peer's word, so the bytes one connection may have sent into streams
+  nobody reads yet are capped as well: `maxStreamBuffer`, 64 MiB by
+  default, on `RpcServer` and `PeerHost`, in `limits`, and on
+  `client.maxStreamBuffer`. The stream whose chunk goes past it fails —
+  its bytes let go of, its sender answered `413` (`stream.buffer`, at
+  debug, like the `429` of `maxStreams`), its reader thrown the same —
+  and the connection's other streams keep what they had. A stream being
+  read is paced, not counted. **This can refuse what 2.0.1 buffered:** an
+  upload sent whole ahead of the call that reads it now has to fit under
+  the cap. Issue the call first, as the streams guide always showed, or
+  raise the option (`Infinity` lifts it).
+- The main browser entry's budget is 29 KB (was 28) for the client half
+  of the above — the readable's checks are the same class on both ends.
+
 ## [2.0.1] - 2026-10-08
 
 ### Fixed

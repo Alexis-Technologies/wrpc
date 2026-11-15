@@ -75,12 +75,13 @@ A code above `599` is reported as `500`.
 
 | Code | Meaning | Where it comes from |
 | --- | --- | --- |
-| `400` | Malformed packet, unparseable frame, duplicate in-flight call id, invalid arguments, `{type:'call'}` against a subscription | dispatcher, [validators](../guide/router#validators) |
+| `400` | Malformed packet, unparseable frame, duplicate in-flight call id, invalid arguments, `{type:'call'}` against a subscription; a [binary stream](../guide/streams#size) that went past its announced size or ended short of it — answered on the stream's id, and thrown to its reader | dispatcher, [validators](../guide/router#validators), streams |
 | `403` | No [session](../guide/sessions) for `access: 'session'`; an SSE channel presented without its cookie identity; a cross-site `GET` | core, [SSE](../guide/sse) |
 | `404` | No such unit, version or procedure | router lookup |
 | `408` | Procedure `timeout` elapsed, or an [ask](../guide/rooms#asking-a-room) went unanswered | router, `expectAnswer` |
 | `409` | Unknown SSE channel — the server no longer holds that id | SSE |
-| `429` | `maxCalls` in flight on this connection, or `maxChannelsPerAddress` for SSE | dispatcher, SSE |
+| `413` | More bytes in [streams nobody reads yet](../guide/streams#limits) than `maxStreamBuffer` allows one connection — answered on the id of the stream that went past it | dispatcher |
+| `429` | `maxCalls` in flight on this connection, `maxStreams` open on it, or `maxChannelsPerAddress` for SSE | dispatcher, SSE |
 | `499` | Cancelled by the caller — `{type:'cancel'}`, or an aborted `signal` | dispatcher, client |
 | `500` | Handler threw without a code; a subscription handler returned a non-iterable; an `output` validator rejected the result | router |
 | `501` | No responder registered for an [ask](../guide/rooms#asking-a-room); a binary stream attempted over [SSE](../guide/sse#what-it-cannot-do) | client, SSE |

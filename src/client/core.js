@@ -442,6 +442,8 @@ class WrpcClient extends Emitter {
   #pendingBytes = 0;
   #flushTimer = null;
   #streams = new Map();
+  // The last chunk that arrived as something other than bytes, converting.
+  #converting = null;
   #callTimeout = CALL_TIMEOUT;
   #connectTimeout = CONNECT_TIMEOUT;
   #querystring = null;
@@ -975,7 +977,7 @@ class WrpcClient extends Emitter {
       // over here, synchronously, so it keeps its place between the stream
       // packets the proxy routes it by.
       if (view !== null && this.#proxyPacket) return void this.#proxyPacket(view, null, true);
-      this.#handleBinary(data).catch(escalate);
+      this.#handleBinary(view ?? data).catch(escalate);
     });
   }
 
@@ -1754,18 +1756,41 @@ class WrpcClient extends Emitter {
       return;
     }
     if (!stream) throw new Error(`Stream ${id} is not initialized`);
-    if (status === 'end') {
-      await stream.close();
-      this.#streams.delete(id);
-    } else if (status === 'terminate') {
+    if (status !== 'end' && status !== 'terminate') return;
+    // A chunk still being turned into bytes (#handleBinary) is counted
+    // before its stream's end is.
+    if (this.#converting) await this.#converting;
+    if (status === 'terminate') {
       await stream.terminate();
-      this.#streams.delete(id);
+    } else {
+      try {
+        await stream.end();
+      } catch (error) {
+        // Short of its announced size (WrpcReadable.end): said now, and
+        // the stream kept until its reader has come to be told too.
+        this.#escalate(error, 'stream.failed');
+        await stream.close();
+      }
     }
+    if (this.#streams.get(id) === stream) this.#streams.delete(id);
   }
 
+  // Bytes are pushed in the turn they arrived in (an async function runs
+  // synchronously up to its first await): a readable holds its sender to
+  // the announced size, so the `end` behind the last chunk has to find that
+  // chunk counted — and two messages of one read are dispatched with no
+  // turn between them. Awaited unconditionally, the conversion below let
+  // every `end` overtake the chunks before it. What is NOT bytes yet (a
+  // Blob, from a transport that did not ask for ArrayBuffers) is converted
+  // in arrival order, and #handleStream waits for the last of it.
   async #handleBinary(input) {
-    const byteView = await toByteView(input);
-    const { id, payload } = chunkDecode(byteView);
+    let view = input;
+    if (!(view instanceof Uint8Array)) {
+      const converted = Promise.resolve(this.#converting).then(() => toByteView(input));
+      this.#converting = converted.catch(() => {});
+      view = await converted;
+    }
+    const { id, payload } = chunkDecode(view);
     const stream = this.#streams.get(id);
     if (!stream) {
       throw new Error(`Stream ${id} is not initialized`);

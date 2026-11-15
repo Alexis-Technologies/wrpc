@@ -53,6 +53,28 @@ const routerOf = (lib) =>
           return true;
         },
       }),
+      // A binary stream each way: an upload read to its end, a download
+      // of `size` bytes written a microtask after the id is answered.
+      upload: lib.procedure({
+        access: 'public',
+        handler: async (context, { id }) => {
+          const stream = context.client.getStream(id);
+          let size = 0;
+          for await (const chunk of stream) size += chunk.length;
+          return { name: stream.name, size };
+        },
+      }),
+      download: lib.procedure({
+        access: 'public',
+        handler: async (context, { size, pieces = 1 }) => {
+          const stream = context.client.createStream('down', size);
+          queueMicrotask(() => {
+            for (let i = 0; i < pieces; i++) stream.write(new Uint8Array(size / pieces).fill(i + 1));
+            stream.end();
+          });
+          return stream.id;
+        },
+      }),
       // Bytes MADE on the server, in a result and in an event — what a 1.0
       // client's own bytes never are: they reach the server as 1.0 JSON.
       make: lib.procedure({ access: 'public', handler: async () => ({ blob: Uint8Array.of(1, 2, 3) }) }),

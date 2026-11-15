@@ -249,6 +249,7 @@ expectError(rpc.attach(inbound, { meta: 'x-tenant: t1' }));
 // compression and whether attachments are on.
 expectType<number>(rpc.limits.maxBatch);
 expectType<number>(rpc.limits.maxCalls);
+expectType<number>(rpc.limits.maxStreamBuffer);
 expectType<boolean>(rpc.limits.attachments);
 expectType<import('../index.js').NormalizedCompression | null>(rpc.limits.compression);
 expectType<ReadonlyArray<string> | undefined>(rpc.limits.compression?.ids);
@@ -353,6 +354,7 @@ expectAssignable<wrpc.WrpcClientOptions>({ generateId: () => 'id-1', protocols: 
 expectAssignable<wrpc.WrpcClientOptions>({ protocols: [] });
 expectAssignable<wrpc.RpcServerOptions>({ router, generateId: () => 'id-1' });
 expectAssignable<wrpc.RpcServerOptions>({ router, introspection: 'session', maxCalls: 64 });
+expectAssignable<wrpc.RpcServerOptions>({ router, maxStreams: 16, maxStreamBuffer: 8 * 1024 * 1024 });
 // http.compression: off unless asked for; every field optional, the filter sees the abstract call
 expectAssignable<wrpc.RpcServerOptions>({ router, http: { compression: true } });
 expectAssignable<wrpc.RpcServerOptions>({ router, http: {} });
@@ -711,6 +713,12 @@ expectType<void>(withOn.api.chat.on('typing', () => {}));
 declare const readable: WrpcReadable;
 expectType<Promise<void>>(readable.stop());
 expectType<ArrayBufferView | undefined>(readable.pull());
+expectType<Promise<ArrayBufferView | undefined>>(readable.push(new Uint8Array(1)));
+expectType<Promise<void>>(readable.end());
+expectType<number>(readable.bytesReceived);
+expectType<boolean>(readable.consuming);
+expectType<(Error & { code: number }) | null>(readable.error);
+expectType<Error & { code: number }>(readable.fail('refused', 413));
 declare const writable: WrpcWritable;
 expectType<boolean>(writable.write(new Uint8Array(1)));
 expectType<boolean>(writable.closed);

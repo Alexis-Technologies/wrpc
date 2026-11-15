@@ -204,6 +204,7 @@ has the upgrade order.
 | The `wrpc-bin:` **rooms and cluster envelope** — an event (or a node-to-node question or answer) whose data holds bytes, as an attachments frame | [Rooms](#rooms), [Cluster channels](#cluster-channels) | **Not additive.** A backplane is a broadcast with no handshake: a 1.0 instance cannot parse the envelope and drops the event, without a log line. | `attachments: false` on the 2.0 instances keeps the envelope JSON, as in 1.0 |
 | The `wrpc-enc:` and `wrpc-sealed:` **rooms and cluster envelopes** — compressed, encrypted | [Rooms](#rooms) | Opt-in on the publisher; a 1.0 instance drops what it cannot read. | turn `rooms.compression`, `cluster.compression` and the `encryption` options on only once every instance is 2.0 — the two-step rollout the section describes |
 | `seq`, `ch` and `at` on a **signed cluster envelope** — the sender's counter, channel and clock, under `cluster.secret` | [Cluster channels](#cluster-channels) | **Not additive** one way. A 1.0 instance verifies a 2.0 envelope as before (the fields are inside the signed bytes) and applies it; a 2.0 instance refuses a 1.0 instance's envelope, which has no counter — the two halves of a mixed cluster stop seeing each other. Accepting one unasked would be a replay hole. Clusters without `secret` are unaffected. | `cluster: { replay: 'accept' }` on the 2.0 instances while a 1.0 instance is left |
+| A stream's announced **`size` is binding** on the receiving end — a chunk past it or an `end` short of it fails the stream (`400` to the sender, an error for the reader) — and a **stream of zero bytes** is one (2.0.1 and earlier checked neither) | [`stream`](#stream-both-directions) | Nothing travels differently. A 1.0 sender that keeps its announcement is served as before; one that does not is answered `400` where its reader was left waiting. A 1.0 receiver checks nothing: against a sender that breaks its announcement its reader waits until the connection closes, as it always did. A 1.0 server refuses to open an empty stream (`createStream(name, 0)` throws), and a 1.0 receiver forgets one at its `end` — a reader that asks for it afterwards is told it was never announced. | nothing; do not send an empty stream to a 1.0 receiver |
 | `headers` and `cache` on a procedure's `http` descriptor in **introspection** | [Introspection](#introspection) | Additive: unknown keys of a descriptor are ignored. | nothing |
 | **WebRTC**: the data-channel framing, the signaling messages, the trust assertions | [WebRTC](#webrtc) | A new carrier: a 1.0 peer has no WebRTC transport and never meets it. | nothing |
 | The **compression rule** — `enc` lists, a sender compresses with the first codec of its own list the peer announced | [Compression](#compression) | Governs only what two 2.0 ends negotiate. | nothing |
@@ -612,7 +613,7 @@ instrumentations do. Since a hostile peer can forge trace ids, a server that
 faces untrusted clients can refuse them with `telemetry.trustRemoteContext:
 false` and start every trace itself.
 
-### `stream` — both directions
+### `stream` — both directions {#stream-both-directions}
 
 ```json
 { "type": "stream", "id": "9a2c…", "name": "video.mp4", "size": 104857600 }
@@ -624,6 +625,36 @@ false` and start every trace itself.
 
 The opening packet announces a stream; `status` is `end` or `terminate` and
 closes it. The payload travels as binary chunks in between.
+
+`size` is the number of bytes the sender will send — a non-negative integer;
+zero is a stream with no chunks — and it is **binding**:
+
+- A sender MUST send exactly `size` bytes before `end`. One that cannot —
+  its source failed, it changed its mind — sends `terminate`, which ends the
+  stream at any point and promises nothing.
+- A receiver holds the sender to it. The chunk that takes a stream past its
+  announced size, and an `end` that arrives short of it, **fail** the
+  stream: its reader is told, not left waiting for bytes that never come. A
+  server answers the sender once, with a `callback` error packet whose `id`
+  is the stream's — `400` — and drops whatever chunks still follow until
+  the sender's own `end` or `terminate`, which it does not answer again. A
+  client has nothing to answer on; it reports the failure locally.
+- A receiver MAY cap the bytes it holds in streams nothing reads yet (a
+  wRPC server's `maxStreamBuffer`, 64 MiB per connection by default) and
+  fail the stream whose chunk goes past it the same way, with `413`.
+- A chunk for a stream the receiver has already let go of is dropped, not
+  answered: an `end` and a `terminate` from the receiving side do not exist,
+  so a sender learns that its stream is no longer read only from the answer
+  to the call that named it.
+- A `status` that is neither `end` nor `terminate`, a negative or
+  non-integer `size`, and a second announcement of an open id are answered
+  `400` on the stream's id and change nothing.
+
+None of this is a change to what travels: the packets and the chunk framing
+are revision 1's, and a peer that keeps its announcements — every wRPC
+sender does, a 1.0 one included — is served as before. What a 1.0 receiver
+does with a sender that does not is under
+[Changes since 1.0](#changes-since-1-0).
 
 ### Binary chunks
 

@@ -108,7 +108,15 @@ const ENTRIES = [
   // and the `wrpc-version` that says it may be sent one, the worker port's
   // revision on its first ping — what lets a 2.x client talk to a 1.0 peer
   // without a flag (the http leg crossed it: 27,692 B against 27,648).
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 28 },
+  // 28 -> 29 for the receiving half of a binary stream, which believed
+  // whatever its sender did: a readable now drops what is pushed into it
+  // once it is over, counts what it was sent against the announced size and
+  // FAILS — an error its reader's iteration throws — on a chunk past it or
+  // an `end` short of it (the reader hung until the connection closed), an
+  // empty stream waits for its reader, and the client pushes a chunk in the
+  // turn it arrived in so the `end` behind it finds it counted. Measured
+  // 28,913 B against 28,672 (it stood at 28,636: 36 B of room).
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 29 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },

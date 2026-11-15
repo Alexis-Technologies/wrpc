@@ -15,6 +15,10 @@ class WrpcReadable extends Emitter {
   streaming = true;
   status = 'active';
   bytesRead = 0;
+  // What the sender put in so far, read or not: held against `size`.
+  bytesReceived = 0;
+  // Why the stream failed (see fail()): what its reader's iteration throws.
+  error = null;
   highWaterMark = DEFAULT_HIGH_WATER_MARK;
 
   constructor(id, name, size, options = {}) {
@@ -26,15 +30,36 @@ class WrpcReadable extends Emitter {
     if (highWaterMark) this.highWaterMark = highWaterMark;
   }
 
+  // Whether anybody reads it yet. Until then nothing below holds a chunk
+  // back, so whoever feeds the stream bounds what it holds (the server's
+  // `maxStreamBuffer`).
+  get consuming() {
+    return this.#consuming;
+  }
+
   // The high-water mark applies only once a consumer attached: before that
   // nobody emits PULL_EVENT, so blocking here would deadlock producers whose
   // consumer starts from a later packet on the same paused socket (the
   // upload-then-call wire pattern).
+  //
+  // A stream that is no longer streaming takes nothing: its reader let go
+  // of it, or it failed, and the sender — who has not heard, or does not
+  // care — goes on until its own `end`. Those chunks used to be queued, a
+  // whole upload of them. And the announced size is a promise: the chunk
+  // that breaks it fails the stream and rejects here, once, for whoever
+  // feeds it to tell the sender.
   async push(data) {
+    if (!this.streaming) return;
+    this.bytesReceived += data.length;
+    if (this.bytesReceived > this.size) {
+      throw this.fail(`Stream ${this.name} exceeds its announced size of ${this.size} bytes`);
+    }
     while (this.#consuming && this.queue.length > this.highWaterMark) {
       this.checkStreamLimits();
       await this.waitEvent(PULL_EVENT);
     }
+    // Ended while this chunk waited for room.
+    if (!this.streaming) return;
     this.queue.push(data);
     if (this.queue.length === 1) this.emit(PUSH_EVENT);
     return data;
@@ -60,8 +85,19 @@ class WrpcReadable extends Emitter {
     writable.removeListener('error', onError);
   }
 
+  // A stream that failed takes its sink with it — the node way; the 'error'
+  // a node sink then emits is heard by the listener finalize() left on it.
+  // On the readable it is announced only to someone listening: a sender
+  // that broke its announcement must not be able to make an unhandled
+  // 'error' of it.
   pipe(writable) {
-    this.finalize(writable).catch((error) => this.emit('error', error));
+    this.finalize(writable).catch((error) => {
+      if (error === this.error) {
+        writable.destroy?.(error);
+        if (this.listenerCount('error') === 0) return;
+      }
+      return this.emit('error', error);
+    });
     return writable;
   }
 
@@ -73,31 +109,74 @@ class WrpcReadable extends Emitter {
     return new Blob(chunks, { type });
   }
 
+  // The sender's `end`. Short of the announced size the stream FAILS — its
+  // reader used to wait for the missing bytes for as long as the connection
+  // lived — and this rejects, at once, for whoever feeds the stream to tell
+  // the sender; otherwise it resolves as close() does.
+  async end() {
+    if (this.streaming && this.bytesReceived !== this.size) {
+      throw this.fail(`Stream ${this.name} ended at ${this.bytesReceived} of ${this.size} bytes`);
+    }
+    await this.stop(false);
+  }
+
+  // Resolves once the reader has all of it: every announced byte — of an
+  // empty stream, once it has a reader at all, so the stream is still there
+  // when its reader comes for it — and of a failed one, once a reader came
+  // to be told why. A terminated stream has nothing left to wait for.
   async close() {
     await this.stop(false);
-    this.status = 'closed';
   }
 
   async terminate() {
     await this.stop(true);
-    this.status = 'terminated';
   }
 
+  // Ends the stream for its reader with an error it can see: the iteration
+  // throws it, toBlob() rejects with it, pipe() destroys its sink with it.
+  // For a sender that did not keep its announcement; terminate() is the
+  // quiet end — the reader stops where it is. Answers the error.
+  fail(message, code = 400) {
+    const error = new Error(message);
+    error.code = code;
+    if (this.streaming) {
+      this.error = error;
+      this.#finish('terminated');
+    }
+    return error;
+  }
+
+  // Forced, now; otherwise once the reader has all of it (see close()).
   async stop(force = false) {
     if (!force) {
-      while (this.streaming && this.bytesRead !== this.size) {
+      while (this.streaming ? !(this.#consuming && this.bytesRead === this.size) : this.error && !this.#consuming) {
         await this.waitEvent(PULL_EVENT);
       }
     }
+    this.#finish(force ? 'terminated' : 'closed');
+  }
+
+  // Once: the first end decides the status. What is queued is let go of,
+  // and whoever is parked — a reader, a chunk waiting for room, a close()
+  // waiting for the last byte — wakes to find the stream over.
+  #finish(status) {
+    if (!this.streaming) return;
     this.streaming = false;
+    this.status = status;
     this.queue.length = 0;
     this.emit(PUSH_EVENT, null);
     this.emit(PULL_EVENT);
   }
 
   async read() {
-    this.#consuming = true;
     if (this.queue.length > 0) return this.pull();
+    // A reader with nothing to read is a reader all the same, and a close()
+    // may be waiting for one: an empty stream's, a failed stream's.
+    if (!this.#consuming) {
+      this.#consuming = true;
+      this.emit(PULL_EVENT);
+    }
+    if (!this.streaming) return null;
     const finisher = await this.waitEvent(PUSH_EVENT);
     if (finisher === null) return null;
     return this.pull();
@@ -129,11 +208,12 @@ class WrpcReadable extends Emitter {
   }
 
   async *[Symbol.asyncIterator]() {
-    while (this.streaming) {
+    for (;;) {
       const chunk = await this.read();
-      if (!chunk) return;
+      if (!chunk) break;
       yield chunk;
     }
+    if (this.error) throw this.error;
   }
 }
 

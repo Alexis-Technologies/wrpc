@@ -180,7 +180,8 @@ classDiagram
 - **A `Client` keeps what a peer can take back.** `calls` holds an
   `AbortController` per call in flight, which `cancel` and a disconnect both
   reach (it is `ctx.signal`). `subscriptions` and `streams` are capped by
-  `maxSubscriptions` and `maxStreams`.
+  `maxSubscriptions` and `maxStreams`, and what the streams hold before a
+  handler reads them by `maxStreamBuffer`.
 - **`ServerTransport` is the only piece that knows the wire.** There is one
   subclass per kind: `http`, `ws` (WebTransport extends it), `event`, `sse`,
   WebRTC's `RtcPeerTransport` and the broker's session transport. The

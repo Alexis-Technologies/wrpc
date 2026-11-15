@@ -18,7 +18,7 @@ See [SECURITY.md](https://github.com/Alexis-Technologies/wrpc/blob/main/SECURITY
 | Set `sessions.cookie.secure` / `sameSite` | Defaults suit `http://localhost`, not the public internet. |
 | Replace `MemorySessionStore` | It is a bounded in-process map; sessions vanish on restart and do not span instances. |
 | Decide on `introspection` | `true` publishes your method list to anyone. `'session'` or `false` narrows it. |
-| Lower `maxCalls` / `maxSubscriptions` / `maxBatch` if a connection is untrusted | The defaults are generous. |
+| Lower `maxCalls` / `maxSubscriptions` / `maxBatch` / `maxStreams` / `maxStreamBuffer` if a connection is untrusted | The defaults are generous. |
 
 ## The trust boundary
 
@@ -122,6 +122,8 @@ spend on your behalf.
 | `maxCalls` | `1000` | In-flight calls per connection — each holds a controller, a context and possibly a queue slot. |
 | `maxSubscriptions` | `256` | Live subscriptions per connection. |
 | `maxBatch` | `128` | Packets in one [batch frame](./client#batching). |
+| `maxStreams` | `256` | Binary [streams](./streams#limits) a connection holds open — each is the peer's to announce. |
+| `maxStreamBuffer` | 64 MiB | Bytes a connection may have sent into streams no handler reads yet; the stream past it fails with `413`. |
 | `maxPayload` | 16 MiB | Largest inbound WebSocket message. |
 | `maxBodySize` | 10 MiB | Largest HTTP body. |
 | `maxBuffer` / `maxBackpressure` | engine | Outbound buffering before a socket is dropped. |

@@ -35,6 +35,7 @@ const {
   DEFAULT_MAX_SUBSCRIPTIONS,
   DEFAULT_MAX_CALLS,
   DEFAULT_MAX_STREAMS,
+  DEFAULT_MAX_STREAM_BUFFER,
   buildMeta,
 } = require('../rpc/client.js');
 const { dispatchMessage, dispatchBinary } = require('../rpc/dispatcher.js');
@@ -70,6 +71,7 @@ class PeerHost extends Emitter {
     maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
     maxCalls = DEFAULT_MAX_CALLS,
     maxStreams = DEFAULT_MAX_STREAMS,
+    maxStreamBuffer = DEFAULT_MAX_STREAM_BUFFER,
     metaMaxBytes = DEFAULT_META_MAX,
     trust = 'link',
     instanceId = null,
@@ -98,7 +100,14 @@ class PeerHost extends Emitter {
     this.#metaMax = Number.isInteger(metaMaxBytes) && metaMaxBytes > 0 ? metaMaxBytes : DEFAULT_META_MAX;
     // Binary attachments, off under a packet codec (which owns the wire).
     this.#attachments = attachments !== false && !(codec && typeof codec.encode === 'function');
-    this.#limits = { maxBatch, maxSubscriptions, maxCalls, maxStreams, attachments: this.#attachments };
+    this.#limits = {
+      maxBatch,
+      maxSubscriptions,
+      maxCalls,
+      maxStreams,
+      maxStreamBuffer,
+      attachments: this.#attachments,
+    };
     this.#trust = trust;
     // The prefix of every client id here; a uuid has no '.', so the id
     // parses like a server's would (instanceOfClientId). Minted by the
@@ -196,6 +205,7 @@ class PeerHost extends Emitter {
       maxSubscriptions: this.#limits.maxSubscriptions,
       maxCalls: this.#limits.maxCalls,
       maxStreams: this.#limits.maxStreams,
+      maxStreamBuffer: this.#limits.maxStreamBuffer,
       generateId: this.#generateId,
       meta: buildMeta({ data: about, remoteAddress: peer }),
       metaMax: this.#metaMax,

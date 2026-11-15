@@ -154,9 +154,24 @@ export class WrpcReadable extends Emitter {
   name: string;
   size: number;
   queue: Array<ArrayBufferView>;
+  /** False once the stream is over — closed, terminated or failed. Nothing pushed after that is kept. */
   streaming: boolean;
+  /** `'active'`, `'closed'` (every announced byte was read) or `'terminated'` (cut short — see `error`). */
   status: string;
+  /** Bytes its reader has taken so far. */
   bytesRead: number;
+  /** Bytes its sender put in so far, read or not: held against `size`. */
+  bytesReceived: number;
+  /**
+   * Why the stream failed, or null: its sender went past the announced
+   * `size`, ended short of it, or — on a server — sent more into streams
+   * nobody reads yet than `maxStreamBuffer` allows (`code` 413; 400
+   * otherwise). The reader's iteration throws it and `toBlob()` rejects
+   * with it.
+   */
+  error: (Error & { code: number }) | null;
+  /** True once anybody read from it: from then on its high-water mark holds the sender back. */
+  readonly consuming: boolean;
   highWaterMark: number;
   constructor(
     id: string,
@@ -164,13 +179,41 @@ export class WrpcReadable extends Emitter {
     size: number,
     options?: ReadableOptions,
   );
-  push(data: ArrayBufferView): Promise<ArrayBufferView>;
+  /**
+   * The feeding side. A chunk for a stream that is over is dropped
+   * (`undefined`); the chunk that takes it past the announced `size` fails
+   * the stream and rejects.
+   */
+  push(data: ArrayBufferView): Promise<ArrayBufferView | undefined>;
   finalize(writable: WritableLike): Promise<void>;
+  /**
+   * Feeds a node-style sink. A stream that fails destroys the sink with its
+   * `error` (when the sink has a `destroy`), and emits `'error'` here only
+   * for someone listening.
+   */
   pipe<T extends WritableLike>(writable: T): T;
   toBlob(type?: string): Promise<Blob>;
+  /**
+   * The feeding side: the sender's `end`. Short of the announced `size`
+   * the stream fails and this rejects at once; otherwise it resolves as
+   * `close()` does.
+   */
+  end(): Promise<void>;
+  /**
+   * Resolves once the reader has all of it: every announced byte, an empty
+   * stream once it has a reader at all, a failed one once a reader came to
+   * be told why.
+   */
   close(): Promise<void>;
+  /** Ends it now and quietly: the reader stops where it is, what is queued is let go of. */
   terminate(): Promise<void>;
+  /**
+   * Ends it for its reader with an error it can see (`error`), `code` 400
+   * unless given. Answers the error; a stream already over is left as it is.
+   */
+  fail(message: string, code?: number): Error & { code: number };
   stop(force?: boolean): Promise<void>;
+  /** The next chunk, or null once the stream is over. */
   read(): Promise<ArrayBufferView | null>;
   pull(): ArrayBufferView | undefined;
   checkStreamLimits(): void;
