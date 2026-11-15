@@ -13,8 +13,8 @@ const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
 const { Emitter } = require('../src/utils.js');
-const { WrpcReadable } = require('../src/streams.js');
-const { chunkEncode } = require('../src/chunks.js');
+const { WrpcReadable, WrpcWritable } = require('../src/streams.js');
+const { chunkEncode, chunkDecode } = require('../src/chunks.js');
 const { Client } = require('../src/rpc/client.js');
 const { WrpcClient } = require('../src/client.js');
 const { defineRouter, procedure } = require('../index.js');
@@ -653,4 +653,130 @@ test('a stream of no bytes travels both ways', async (t) => {
   await t.test('nothing is left behind on either end', async () => {
     await waitFor(async () => (await client.api.files.held({})).streams === 0, 'the server forgot them');
   });
+});
+
+// 6 ─ every byte of a buffer, written as the transport takes it ──────────
+
+class PacedTransport extends Emitter {
+  connection = {};
+  accept = true;
+  sent = [];
+  chunks = [];
+
+  send(packet) {
+    this.sent.push(packet);
+  }
+
+  write(chunk) {
+    this.chunks.push(chunkDecode(chunk).payload);
+    return this.accept;
+  }
+}
+
+test('WrpcWritable.writeAll: a buffer in pieces, each when the transport takes it', async (t) => {
+  await t.test('64 KiB at a time, in order, and the end left to the caller', async () => {
+    const transport = new PacedTransport();
+    const stream = new WrpcWritable('s', 'blob', 150 * KIB, transport);
+    const data = new Uint8Array(150 * KIB);
+    for (let i = 0; i < data.length; i++) data[i] = i % 251;
+    assert.strictEqual(await stream.writeAll(data), true);
+    assert.deepStrictEqual(
+      transport.chunks.map((chunk) => chunk.length),
+      [64 * KIB, 64 * KIB, 22 * KIB],
+    );
+    assert.deepStrictEqual(Buffer.concat(transport.chunks), Buffer.from(data));
+    assert.deepStrictEqual(transport.sent, [{ type: 'stream', id: 's', name: 'blob', size: 150 * KIB }]);
+    // Several buffers make one stream.
+    assert.strictEqual(await stream.writeAll(Buffer.from('tail'), 2), true);
+    assert.deepStrictEqual(
+      transport.chunks.slice(3).map((chunk) => Buffer.from(chunk).toString()),
+      ['ta', 'il'],
+    );
+    stream.end();
+    assert.strictEqual(transport.sent.at(-1).status, 'end');
+  });
+
+  await t.test("a piece the transport did not accept is waited out on 'drain'", async () => {
+    const transport = new PacedTransport();
+    const stream = new WrpcWritable('s', 'blob', 3, transport);
+    transport.accept = false;
+    const writing = stream.writeAll(Uint8Array.of(1, 2, 3), 1);
+    await tick();
+    assert.strictEqual(transport.chunks.length, 1, 'wrote past a transport that said to wait');
+    void transport.emit('drain');
+    await tick();
+    assert.strictEqual(transport.chunks.length, 2);
+    transport.accept = true;
+    void transport.emit('drain');
+    assert.strictEqual(await writing, true);
+    assert.strictEqual(transport.chunks.length, 3);
+  });
+
+  await t.test('a transport that closes mid-way answers false, and nothing more is written', async () => {
+    const transport = new PacedTransport();
+    const stream = new WrpcWritable('s', 'blob', 3, transport);
+    transport.accept = false;
+    const writing = stream.writeAll(Uint8Array.of(1, 2, 3), 1);
+    await tick();
+    void transport.emit('close');
+    assert.deepStrictEqual(await outcome(writing), { status: 'fulfilled', value: false });
+    assert.strictEqual(transport.chunks.length, 1);
+    assert.strictEqual(await stream.writeAll(Uint8Array.of(4)), false, 'a closed stream takes nothing');
+  });
+
+  await t.test("a stream ended under it answers false instead of waiting for a 'drain' that never comes", async () => {
+    const transport = new PacedTransport();
+    const stream = new WrpcWritable('s', 'blob', 3, transport);
+    stream.end();
+    assert.deepStrictEqual(await outcome(stream.writeAll(Uint8Array.of(1, 2, 3))), {
+      status: 'fulfilled',
+      value: false,
+    });
+    assert.strictEqual(transport.chunks.length, 0);
+  });
+
+  await t.test('nothing to write is written', async () => {
+    const transport = new PacedTransport();
+    const stream = new WrpcWritable('s', 'empty', 0, transport);
+    assert.strictEqual(await stream.writeAll(new Uint8Array(0)), true);
+    assert.strictEqual(transport.chunks.length, 0);
+  });
+});
+
+test('writeAll carries a megabyte each way over one connection', async (t) => {
+  const size = 1024 * KIB + 123;
+  const payload = new Uint8Array(size);
+  for (let i = 0; i < size; i++) payload[i] = (i * 31) % 256;
+  const { router: base } = fixture();
+  const router = base.merge(
+    defineRouter({
+      blobs: {
+        echo: procedure({
+          access: 'public',
+          handler: async (context, { id }) => {
+            const parts = [];
+            for await (const chunk of context.client.getStream(id)) parts.push(chunk);
+            const body = Buffer.concat(parts);
+            const down = context.client.createStream('echo', body.length);
+            queueMicrotask(async () => {
+              await down.writeAll(body);
+              down.end();
+            });
+            return down.id;
+          },
+        }),
+      },
+    }),
+  );
+  const { url } = await bootServer(t, { router });
+  const client = await connectClient(t, url);
+  await client.load('blobs');
+  const up = client.createStream('up', size);
+  const answered = client.api.blobs.echo({ id: up.id });
+  assert.strictEqual(await up.writeAll(payload), true);
+  up.end();
+  const parts = [];
+  for await (const chunk of client.getStream(await answered)) parts.push(chunk);
+  assert.ok(parts.length >= 16, `${parts.length} chunks: the megabyte travelled as one message`);
+  assert.deepStrictEqual(Buffer.concat(parts), Buffer.from(payload));
 });

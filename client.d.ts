@@ -241,6 +241,15 @@ export class WrpcWritable extends Emitter {
   constructor(id: string, name: string, size: number, transport: Transport);
   init(): void;
   write(data: ArrayBufferView): boolean;
+  /**
+   * Writes every byte of `data` in pieces of `chunkSize` (64 KiB by
+   * default), each when the transport takes it — a refused write waits for
+   * `'drain'`. Resolves to whether all of it went: `false` once the
+   * transport closed, or the stream was ended or terminated meanwhile.
+   * Never rejects for a closed transport, and does not end the stream:
+   * call `end()` after the last buffer.
+   */
+  writeAll(data: Uint8Array, chunkSize?: number): Promise<boolean>;
   end(): void;
   terminate(): void;
 }

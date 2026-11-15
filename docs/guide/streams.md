@@ -53,18 +53,21 @@ Note the order: the call is issued **before** the upload finishes. The handler
 gets the stream as soon as its opening packet has arrived and consumes chunks
 as they land — the call's promise resolves when the handler returns.
 
-Without a `Blob`, drive a `WrpcWritable` yourself:
+Without a `Blob`, hand a `WrpcWritable` the bytes:
 
 ```js
-const drained = (stream) => new Promise((resolve) => stream.once('drain', resolve));
-
 const stream = client.createStream('report.csv', bytes.length);
 const receiving = client.api.media.receive({ id: stream.id });
-for (const chunk of chunks) {
-  if (!stream.write(chunk)) await drained(stream);
-}
+await stream.writeAll(bytes); // 64 KiB at a time, each when the transport takes it
 stream.end();
 ```
+
+`writeAll(bytes, chunkSize?)` is the loop you would otherwise write — a piece
+the transport did not accept waits for `'drain'` — and answers whether every
+byte went: `false` once the connection closed, or the stream was ended or
+terminated under it. It never rejects for a closed transport and never ends
+the stream, so several buffers make one stream. To feed it from a source of
+your own, the loop is under [Backpressure](#backpressure).
 
 The `size` you announce is a promise the other end holds you to: write
 exactly that many bytes before `end()`, or `terminate()` — see
@@ -80,8 +83,8 @@ download: procedure({
   handler: async (context, { name }) => {
     const payload = await load(name);
     const stream = context.client.createStream(name, payload.length);
-    queueMicrotask(() => {
-      stream.write(payload);
+    queueMicrotask(async () => {
+      await stream.writeAll(payload);
       stream.end();
     });
     return { id: stream.id };
@@ -101,7 +104,9 @@ for await (const chunk of readable) { /* ... */ }  // either
 
 `createStream()` sends the opening packet immediately, so writing from inside
 the same tick as the `return` would race the caller's chance to register a
-consumer — hence the `queueMicrotask`.
+consumer — hence the `queueMicrotask`. And `writeAll`, not one `write` of the
+whole payload: written whole it is a single message, which nothing paces and
+an engine's message limit refuses once the payload is large enough.
 
 ## Backpressure
 

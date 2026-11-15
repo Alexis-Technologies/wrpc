@@ -722,6 +722,8 @@ expectType<Error & { code: number }>(readable.fail('refused', 413));
 declare const writable: WrpcWritable;
 expectType<boolean>(writable.write(new Uint8Array(1)));
 expectType<boolean>(writable.closed);
+expectType<Promise<boolean>>(writable.writeAll(new Uint8Array(1)));
+expectType<Promise<boolean>>(writable.writeAll(Buffer.alloc(1), 16 * 1024));
 
 // error.details: optional wire field on WrpcError and ask errors
 declare const wrpcError: wrpc.WrpcError;

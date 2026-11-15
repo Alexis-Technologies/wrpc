@@ -118,10 +118,7 @@
       if (!link.open) continue;
       const stream = link.remote.createStream('blob', size);
       const receiving = link.api.chat.receive({ id: stream.id, size });
-      const drained = () => new Promise((resolve) => stream.once('drain', resolve));
-      for (let offset = 0; offset < size; offset += 64 * 1024) {
-        if (!stream.write(payload.subarray(offset, offset + 64 * 1024))) await drained();
-      }
+      await stream.writeAll(payload); // 64 KiB at a time, each when the channel takes it
       stream.end();
       const { bytes } = await receiving;
       say(`${link.id} confirmed ${bytes} bytes`);

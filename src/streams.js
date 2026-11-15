@@ -8,6 +8,9 @@ const PULL_EVENT = Symbol('pull');
 const DEFAULT_HIGH_WATER_MARK = 32;
 const MAX_LISTENERS = 10;
 const MAX_HIGH_WATER_MARK = 1000;
+// What writeAll() writes at a time: what a browser's blob.stream() hands the
+// Blob uploader, and under every carrier's message limit.
+const CHUNK_SIZE = 64 * 1024;
 
 class WrpcReadable extends Emitter {
   #consuming = false;
@@ -297,6 +300,24 @@ class WrpcWritable extends Emitter {
       this.transport.once('drain', () => this.#releaseDrain());
     }
     return accepted;
+  }
+
+  // Every byte of `data`, in pieces of `chunkSize`, each handed over when
+  // the transport takes it — a write it did not accept is waited out on
+  // 'drain'. The loop every application writing a buffer hand-rolled, or
+  // did not: written whole, a payload is ONE message that nothing paces and
+  // an engine's message limit refuses. Answers whether all of it went:
+  // false once the transport closed, or the stream was ended or terminated
+  // under it (where a hand-rolled loop waits for a 'drain' that never
+  // comes). The end is the caller's — several buffers make one stream.
+  async writeAll(data, chunkSize = CHUNK_SIZE) {
+    for (let at = 0; at < data.length; at += chunkSize) {
+      if (this.write(data.subarray(at, at + chunkSize))) continue;
+      if (this.#closed || this.#ended) return false;
+      await new Promise((resolve) => this.once('drain', resolve));
+      if (this.#closed) return false;
+    }
+    return true;
   }
 
   // Idempotent, and a no-op on a dead transport: the peer that would have

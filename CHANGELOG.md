@@ -15,6 +15,18 @@ narrower promise — see
 
 ### Added
 
+- **`writable.writeAll(bytes, chunkSize?)`** — every byte of a buffer
+  written into a `WrpcWritable` in pieces (64 KiB by default), each when
+  the transport takes it: a write it did not accept is waited out on
+  `'drain'`. The loop every application writing a `Buffer` hand-rolled —
+  the client had `createBlobUploader` for a `Blob` only — or did not, and
+  wrote the payload as one message that nothing paces and an engine's
+  message limit refuses. It resolves to whether all of it went (`false`
+  once the transport closed, or the stream was ended or terminated under
+  it — where a hand-rolled loop waits for a `'drain'` that never comes),
+  never rejects for a closed transport, and leaves `end()` to the caller,
+  so several buffers make one stream. On both ends: a client's
+  `createStream()` and a server's `context.client.createStream()`.
 - **A stream of no bytes.** `context.client.createStream(name, 0)` threw
   `Stream size is not provided` on the server, while the client's
   `createStream` took a zero and the dispatcher accepted one. An empty
@@ -108,7 +120,8 @@ narrower promise — see
   the cap. Issue the call first, as the streams guide always showed, or
   raise the option (`Infinity` lifts it).
 - The main browser entry's budget is 29 KB (was 28) for the client half
-  of the above — the readable's checks are the same class on both ends.
+  of the above — the readable's checks are the same class on both ends —
+  and the webrtc entry's 60 KB (was 59) for `writeAll`.
 
 ## [2.0.1] - 2026-10-08
 

@@ -115,7 +115,8 @@ const ENTRIES = [
   // an `end` short of it (the reader hung until the connection closed), an
   // empty stream waits for its reader, and the client pushes a chunk in the
   // turn it arrived in so the `end` behind it finds it counted. Measured
-  // 28,913 B against 28,672 (it stood at 28,636: 36 B of room).
+  // 28,913 B against 28,672 (it stood at 28,636: 36 B of room). The
+  // writable's paced `writeAll` is the last 60 B of it — 28,973.
   { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 29 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
@@ -267,7 +268,12 @@ const ENTRIES = [
   // dispatcher's gates, `maxStreams` in the host, and the assertion
   // verifier's backoff after a failed key load and `maxAge` for a revoked
   // key. Measured 59,436 B against 59,392.
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 59 },
+  // 59 -> 60 for `WrpcWritable.writeAll` — a buffer written in 64 KiB
+  // pieces, each when the transport takes it: the loop every application
+  // hand-rolled. The hardening of the receiving half (the dispatcher's
+  // `maxStreamBuffer`, the readable's size checks — see the main entry)
+  // had fitted, by 13 B: 60,403 against 60,416. This crossed it by 51.
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 60 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never
