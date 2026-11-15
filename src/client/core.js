@@ -14,6 +14,7 @@ const {
   backoffDelay,
   createEventStream,
   resolveGenerateId,
+  checkLimit,
 } = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { chunkDecode } = require('../chunks.js');
@@ -654,9 +655,14 @@ class WrpcClient extends Emitter {
     this.#log = createLoggerWriter(logger);
     this.#otel = createClientTelemetry(telemetry);
     if (callTimeout) this.#callTimeout = callTimeout;
-    if (options.streamIdleTimeout !== undefined) this.#streamIdleTimeout = options.streamIdleTimeout;
-    if (options.maxStreams !== undefined) this.#maxStreams = options.maxStreams;
-    if (options.maxStreamBuffer !== undefined) this.#maxStreamBuffer = options.maxStreamBuffer;
+    const { streamIdleTimeout, maxStreams, maxStreamBuffer } = options;
+    if (streamIdleTimeout !== undefined) {
+      this.#streamIdleTimeout = checkLimit('WrpcClient', 'streamIdleTimeout', streamIdleTimeout);
+    }
+    if (maxStreams !== undefined) this.#maxStreams = checkLimit('WrpcClient', 'maxStreams', maxStreams);
+    if (maxStreamBuffer !== undefined) {
+      this.#maxStreamBuffer = checkLimit('WrpcClient', 'maxStreamBuffer', maxStreamBuffer);
+    }
     this.#shared = Boolean(options.worker);
     const { connectTimeout } = options;
     // 0/false disables — for hosts that own their timeouts (tests, tooling).

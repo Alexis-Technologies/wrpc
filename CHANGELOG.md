@@ -273,6 +273,16 @@ narrower promise — see
   (`bench/stream-queue.js`). `readable.queue` is therefore a **snapshot** —
   an array built when it is read, what it always looked like to a reader of
   it — and no longer the stream's own array; `readable.queued` is the count.
+- **A limit that is none is refused, where it used to lift the limit.**
+  Every limit is one comparison, and a comparison with a string or with
+  `NaN` is always false: `maxStreamBuffer: '64mb'` (or `maxStreams:
+  'many'`, or `NaN` out of a mis-parsed environment variable) was accepted
+  and lifted the cap in silence, while `null` and `-1` refused everything.
+  `RpcServer` and `PeerHost` check `maxBatch`, `maxSubscriptions`,
+  `maxCalls`, `maxStreams`, `maxStreamBuffer` and `streamIdleTimeout` when
+  they are constructed, and the client its three stream limits: a
+  non-negative integer or `Infinity`, else a `TypeError` that names the
+  option.
 - **A stream's name reaches a log bounded, and a broken stream is one
   warning per connection.** The name of a stream is its sender's text, and
   every message about a stream carries it: one frame with a 100 KB name and

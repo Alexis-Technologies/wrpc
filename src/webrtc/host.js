@@ -25,7 +25,7 @@
 // access 'public' procedures answer, and authorization is the
 // application's, in hooks, from `context.meta.data.peer`.
 
-const { Emitter, isCodec, resolveGenerateId } = require('../utils.js');
+const { Emitter, isCodec, resolveGenerateId, checkLimit } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createServerTelemetry } = require('../telemetry/server.js');
 const { defineRouter, procedure, runHooksSafe } = require('../rpc/router.js');
@@ -103,12 +103,13 @@ class PeerHost extends Emitter {
     // Binary attachments, off under a packet codec (which owns the wire).
     this.#attachments = attachments !== false && !(codec && typeof codec.encode === 'function');
     this.#limits = {
-      maxBatch,
-      maxSubscriptions,
-      maxCalls,
-      maxStreams,
-      maxStreamBuffer,
-      streamIdleTimeout,
+      // Left to the dispatcher's own default when it is not given.
+      maxBatch: maxBatch === undefined ? undefined : checkLimit('PeerHost', 'maxBatch', maxBatch),
+      maxSubscriptions: checkLimit('PeerHost', 'maxSubscriptions', maxSubscriptions),
+      maxCalls: checkLimit('PeerHost', 'maxCalls', maxCalls),
+      maxStreams: checkLimit('PeerHost', 'maxStreams', maxStreams),
+      maxStreamBuffer: checkLimit('PeerHost', 'maxStreamBuffer', maxStreamBuffer),
+      streamIdleTimeout: checkLimit('PeerHost', 'streamIdleTimeout', streamIdleTimeout),
       attachments: this.#attachments,
     };
     this.#trust = trust;

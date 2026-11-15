@@ -1,6 +1,6 @@
 'use strict';
 
-const { Emitter, jsonParse, isCodec, resolveGenerateId } = require('../utils.js');
+const { Emitter, jsonParse, isCodec, resolveGenerateId, checkLimit } = require('../utils.js');
 const { ServerTransport, buildHeaders, isOriginAllowed, readsFrames } = require('../transport.js');
 const { hasTransportShape, isInboundTransport } = require('./serverTransport.js');
 const { SessionManager } = require('./sessions.js');
@@ -326,12 +326,12 @@ class RpcServer extends Emitter {
     // A packet codec owns the wire: attachments are its business, not ours.
     if (this.#codec) this.#attachments = false;
     this.#limits = {
-      maxBatch,
-      maxSubscriptions,
-      maxCalls,
-      maxStreams,
-      maxStreamBuffer,
-      streamIdleTimeout,
+      maxBatch: checkLimit('RpcServer', 'maxBatch', maxBatch),
+      maxSubscriptions: checkLimit('RpcServer', 'maxSubscriptions', maxSubscriptions),
+      maxCalls: checkLimit('RpcServer', 'maxCalls', maxCalls),
+      maxStreams: checkLimit('RpcServer', 'maxStreams', maxStreams),
+      maxStreamBuffer: checkLimit('RpcServer', 'maxStreamBuffer', maxStreamBuffer),
+      streamIdleTimeout: checkLimit('RpcServer', 'streamIdleTimeout', streamIdleTimeout),
       compression: normalizeSyncCompression(compression, 'RpcServer: options'),
       attachments: this.#attachments,
     };
