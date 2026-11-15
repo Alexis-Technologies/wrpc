@@ -9,7 +9,9 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { WrpcReadable, heldBytes, CHUNK_COST } = require('../src/streams.js');
-const { defineRouter, procedure } = require('../index.js');
+const { defineRouter, procedure, RpcServer } = require('../index.js');
+const { ServerTransport } = require('../src/rpc/serverTransport.js');
+const { chunkEncode } = require('../src/chunks.js');
 const { bootServer, waitFor } = require('./helpers/server.js');
 const { KIB, MIB, rawPeer } = require('./helpers/streams.js');
 
@@ -184,4 +186,123 @@ test('heldBytes sums the streams nobody reads, each chunk with its cost', async 
   // Two chunks of thirty bytes: the one being read is paced by its reader,
   // the one that is over holds nothing.
   assert.strictEqual(heldBytes(streams), 30 + 2 * CHUNK_COST);
+});
+
+// A carrier `RpcServer.attach` binds — a WebRTC channel, a broker session —
+// has no socket to pause: what the peer sends arrives, whatever the reader does.
+class Attached extends ServerTransport {
+  sent = [];
+
+  constructor() {
+    super();
+    this.connection = {};
+  }
+
+  write(data) {
+    this.sent.push(data);
+    return true;
+  }
+
+  close() {
+    this.emit('close');
+  }
+
+  answer(id) {
+    for (const data of this.sent) {
+      if (typeof data !== 'string') continue;
+      const packet = JSON.parse(data);
+      if (packet.id === id) return packet;
+    }
+    return undefined;
+  }
+}
+
+// A readable whose reader fell a thousand chunks behind threw a plain error
+// for the chunk it could not take — a chunk push() had already counted. The
+// stream went on, short of bytes it had "received": its `end` passed the size
+// check and its reader waited for the dropped chunks for as long as the
+// connection lived. On uWebSockets.js a 100 MiB upload into a sink that
+// stalled once was read to 75.2 MiB and never answered.
+test('a reader that falls too far behind fails the stream; nothing is dropped in silence', async (t) => {
+  // Every other chunk raises the high-water mark by one and waits, the one
+  // behind it is queued: some two thousand of them reach the limit.
+  const chunks = 2600;
+  const readable = new WrpcReadable('s', 'behind', chunks);
+  const first = Uint8Array.of(1);
+  await readable.push(first);
+  assert.strictEqual(await readable.read(), first); // it has a reader, which now stalls
+  const warned = [];
+  t.mock.method(console, 'warn', (...args) => warned.push(args));
+  const settle = (push) =>
+    push.then(
+      () => null,
+      (error) => error,
+    );
+  const pushes = [];
+  for (let i = 1; i < chunks; i++) pushes.push(settle(readable.push(Uint8Array.of(1))));
+  const outcomes = await Promise.all(pushes);
+  // A chunk waiting for room is no leak: a line on the console for each was
+  // a thousand lines a peer could have a server print.
+  assert.deepStrictEqual(warned, []);
+  const rejected = outcomes.filter((error) => error !== null);
+  assert.strictEqual(rejected.length, 1, 'the stream fails once, for the chunk that went too far');
+  assert.strictEqual(rejected[0], readable.error);
+  assert.strictEqual(readable.error.code, 413);
+  assert.deepStrictEqual([readable.streaming, readable.status, readable.queued], [false, 'terminated', 0]);
+  // Its sender's end is not short of anything — and does not hang.
+  await readable.end();
+  // Its reader is told why, where it used to wait for the missing chunks.
+  await assert.rejects(
+    readable
+      .read()
+      .then((chunk) => assert.strictEqual(chunk, null))
+      .then(async () => {
+        for await (const chunk of readable) assert.fail(`read ${chunk.length} bytes of a failed stream`);
+      }),
+    (error) => error === readable.error,
+  );
+});
+
+test('a carrier with no socket to pause: a stalled handler is answered, not left waiting', async () => {
+  let release;
+  const stalled = new Promise((resolve) => {
+    release = resolve;
+  });
+  const rpc = new RpcServer({
+    logger: false,
+    router: defineRouter({
+      files: {
+        store: procedure({
+          access: 'public',
+          handler: async (context, { id }) => {
+            let stored = 0;
+            for await (const chunk of context.client.getStream(id)) {
+              stored += chunk.length;
+              if (stored === chunk.length) await stalled; // the sink stalls once, then catches up
+            }
+            return stored;
+          },
+        }),
+      },
+    }),
+  });
+  const transport = new Attached();
+  rpc.attach(transport, { session: {} });
+  const chunks = 1600;
+  transport.emit('packet', JSON.stringify({ type: 'stream', id: 'up', name: 'big', size: chunks * KIB }));
+  transport.emit('packet', JSON.stringify({ type: 'call', id: 'c', method: 'files/store', args: { id: 'up' } }));
+  for (let i = 0; i < chunks; i++) {
+    transport.emit('chunk', chunkEncode('up', new Uint8Array(KIB)));
+    if (i % 100 === 99) await new Promise((resolve) => setImmediate(resolve));
+  }
+  transport.emit('packet', JSON.stringify({ type: 'stream', id: 'up', status: 'end' }));
+  release();
+  await waitFor(() => transport.answer('c'), 'the handler of a stream that lost chunks was never answered');
+  assert.strictEqual(transport.answer('c').error.code, 413);
+  // The sender heard once, on the stream's id — not once per dropped chunk.
+  const told = transport.sent.filter((data) => typeof data === 'string' && JSON.parse(data).id === 'up');
+  assert.strictEqual(told.length, 1);
+  assert.strictEqual(JSON.parse(told[0]).error.code, 413);
+  transport.close();
+  await rpc.close();
 });

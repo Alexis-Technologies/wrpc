@@ -137,9 +137,10 @@ test('WrpcReadable.checkStreamLimits grows the high water mark under listener pr
   }
   await new Promise((resolve) => setImmediate(resolve));
 
-  // An 11th waiter trips checkStreamLimits' threshold (raising highWaterMark).
-  // Since F2 the Emitter's listener cap only warns instead of throwing, so
-  // the push stalls like the others rather than rejecting.
+  // An 11th waiter trips checkStreamLimits' threshold (raising highWaterMark)
+  // and stalls like the others. It prints nothing: a chunk waiting for room
+  // is bounded by the readable itself, and the Emitter's leak warning was a
+  // console line per waiting chunk — a peer's to print.
   const warnings = [];
   const originalWarn = globalThis.console.warn;
   globalThis.console.warn = (message) => warnings.push(message);
@@ -148,7 +149,7 @@ test('WrpcReadable.checkStreamLimits grows the high water mark under listener pr
   globalThis.console.warn = originalWarn;
 
   assert.strictEqual(readable.highWaterMark, 2);
-  assert.ok(warnings.some((message) => /MaxListenersExceededWarning/.test(message)));
+  assert.deepStrictEqual(warnings, []);
 
   for (let i = 0; i < 13; i++) await readable.read();
   await Promise.all([...stalled, eleventh]);

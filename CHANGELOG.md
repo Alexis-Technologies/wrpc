@@ -104,6 +104,23 @@ narrower promise — see
   It was answered `400` (`Stream … is not initialized`), so a sender
   backing out of an announcement the server had refused was told it had
   made a second mistake. An `end` for an unknown stream still is.
+- **A reader that falls too far behind fails the stream, where chunks
+  were dropped in silence.** A readable lets a slow reader fall a thousand
+  chunks behind and then refuses the next one. It refused with a plain
+  error for that chunk alone — a chunk it had already counted as received.
+  The stream went on with a hole in it, its `end` found every announced
+  byte "received" and passed, and the reader waited for the dropped chunks
+  for as long as the connection lived. A carrier that cannot hold its peer
+  back gets there in a second or two: on uWebSockets.js a 100 MiB upload
+  into a sink that stalled once was read to 75.2 MiB and its call never
+  answered, the client collecting 397 `Stream overflow occurred` errors;
+  the same over a broker session (68.6 MiB) and a WebRTC channel. The
+  stream **fails** now — `413`, `Stream … is too far ahead of its reader` —
+  like any other: its reader's iteration throws, its sender is answered
+  once on the stream's id and stops, and nothing is read with a hole in it.
+  And a chunk waiting for room no longer prints
+  `MaxListenersExceededWarning` to the console — it was a line per waiting
+  chunk, a thousand of them for one slow reader.
 - **An `end` short of the announced size no longer hangs the reader.**
   `close()` waited for `bytesRead === size`; a sender that ended after
   fewer bytes — or whose chunks overshot, so the two counts never met —

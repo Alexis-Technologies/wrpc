@@ -50,7 +50,10 @@ class WrpcReadable extends Emitter {
   highWaterMark = DEFAULT_HIGH_WATER_MARK;
 
   constructor(id, name, size, options = {}) {
-    super();
+    // Its waiters are chunks waiting for room, bounded by checkStreamLimits:
+    // the Emitter's leak warning would be a console line per waiting chunk —
+    // a thousand of them for one slow reader, and a peer's to print.
+    super({ maxListeners: Infinity });
     this.id = id;
     this.name = name;
     this.size = size;
@@ -260,15 +263,21 @@ class WrpcReadable extends Emitter {
     return data;
   }
 
+  // A reader that has ten chunks waiting for room behind it is given a
+  // longer queue rather than more waiters — and one that falls a thousand
+  // chunks behind FAILS the stream: on a carrier that cannot hold its peer
+  // back (uWebSockets.js, a WebRTC channel, a broker session, a browser's
+  // WebSocket) a slow reader gets here in a second or two. It used to throw
+  // a plain error for the chunk alone — which push() had already counted, so
+  // the `end` behind it found every announced byte "received" and the reader
+  // waited for the dropped ones for as long as the connection lived.
   checkStreamLimits() {
     if (this.listenerCount(PULL_EVENT) >= MAX_LISTENERS) {
       ++this.highWaterMark;
     }
-    /* c8 ignore start -- defensive guard; needs 1000+ concurrent stalled backpressure waiters to reach */
     if (this.highWaterMark > MAX_HIGH_WATER_MARK) {
-      throw new Error('Stream overflow occurred');
+      throw this.fail(`Stream ${this.name} is too far ahead of its reader`, 413);
     }
-    /* c8 ignore stop */
   }
 
   waitEvent(event) {
