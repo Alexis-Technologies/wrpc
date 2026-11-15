@@ -168,7 +168,10 @@ that asked, an event to every tab. [Binary streams](./streams) cross too,
 although a chunk carries nothing but its stream id: the proxy routes it by
 the stream's announcement. An upload's chunks go up only from the tab that
 announced it, and a server stream's chunks go down wherever its `stream`
-packet went.
+packet went. The receiver's word that a stream is
+[no longer wanted](./streams#ended-by-the-receiver) is routed the same way:
+the server's reaches the tab that announced the upload, a tab's goes up, and
+the stream's end comes back to every tab that was handed it.
 Pick the worker by what you need from it: a **Service Worker** also serves the
 page offline and outlives a reload, at the price of registration and a
 lifecycle the browser controls; a **SharedWorker** is only the shared socket —

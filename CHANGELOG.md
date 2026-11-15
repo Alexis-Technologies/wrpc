@@ -15,6 +15,41 @@ narrower promise — see
 
 ### Added
 
+- **A receiver that lets go of a stream tells its sender.** After
+  `readable.terminate()` — a handler refusing an upload, a page dropping a
+  download — the sender sent the whole body all the same, to be dropped on
+  arrival: nothing travelled from the receiving side of a stream. Now the
+  receiver says so, once, and the sender's `WrpcWritable` closes as it
+  does for a refused stream (below): `write()` answers `false`,
+  `writeAll()` resolves `false`, `closed` is `true`, and `writable.error`
+  carries code `499` (`Stream … is no longer read`). It works in both
+  directions — a server's handler stops a client's upload, a client's
+  reader stops a server's download, where `context.client.createStream()`
+  now hears what a client's `createStream()` hears — and over every
+  carrier of streams: WebSocket, a worker port (the proxy routes it like
+  the stream it is about), WebRTC, and WebTransport, where the sender
+  answers by resetting the stream's own WebTransport stream.
+  `readable.terminate(message, code)` does the same **with a reason** —
+  the message and code the sender finds on `writable.error`: how a handler
+  refuses an upload with something the uploader can show.
+  - **On the wire** it is an additive field and no new packet: a stream's
+    announcement carries `cancel: true` when its sender listens, and the
+    receiver's word is the `callback` error on the stream's id that a
+    server has always answered a refused stream with — now in both
+    directions. It is sent only for a stream announced that way, and only
+    while bytes of the stream are still to come.
+  - **Against 1.0 and 2.0.1** nothing changes: such a sender never sets
+    the field and is never told (it would report a callback nobody waited
+    for), such a receiver ignores the field and never tells — the stream
+    is sent whole and dropped on arrival, as before. That is why it is an
+    opt-in per stream rather than something behind the protocol revision:
+    revision 2 is also what 2.0.0 and 2.0.1 speak. `tests/interop/` runs
+    both directions against the published 1.0.
+  - A `499` that crossed the end of its stream on the wire is dropped on
+    both ends — not an error on the client, not a warning on the server.
+  - New: `readable.onCancel` (the hook the feeder of a readable sets to
+    reach its sender) and `client.cancelStream(packet)` on the server-side
+    `Client`, typed and documented for a host with a dispatch of its own.
 - **`writable.writeAll(bytes, chunkSize?)`** — every byte of a buffer
   written into a `WrpcWritable` in pieces (64 KiB by default), each when
   the transport takes it: a write it did not accept is waited out on

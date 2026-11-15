@@ -169,34 +169,52 @@ fails if RSS grows with it.
 | `writable.end()` | Normal end, after exactly `size` bytes. The reader's iteration finishes. |
 | `writable.terminate()` | Abnormal end — the reader stops where it is. |
 | `readable.close()` | Waits for the announced `size` to be read, then closes. |
-| `readable.terminate()` | Stops now, discarding what is queued — and whatever its sender still sends. |
+| `readable.terminate()` | Stops now, discarding what is queued — and [tells the sender](#ended-by-the-receiver), which stops sending. |
+| `readable.terminate(message, code?)` | The same, with a reason the sender's writable closes with. |
 
 A disconnect terminates every stream the client held. `readable.status` is
 `'active'`, `'closed'` (every announced byte was read) or `'terminated'`;
 `bytesRead` is what has been consumed so far, against the announced `size`.
 
-A reader that lets go of a stream — `readable.terminate()`, a handler
-refusing an upload — holds nothing more of it: the sender has not heard and
-goes on to its own `end`, and every chunk it still sends is dropped on
-arrival.
-
 ### A stream the receiver ended {#ended-by-the-receiver}
 
-A receiver can end a stream before its sender does: the announcement refused
-(`429`, past [`maxStreams`](#limits)), a chunk past [the announced
-size](#size) (`400`), more than the server holds unread (`413`,
-[`maxStreamBuffer`](#limits)). A server says so once, on the stream's id, and
-the client hands that to the `WrpcWritable` it belongs to:
+A receiver can end a stream before its sender does, and says so — once, on
+the stream's id — so the sender stops instead of sending a body that is
+dropped on arrival:
+
+| The receiver… | The sender's `writable.error` |
+| --- | --- |
+| let go of it: `readable.terminate()` — a handler refusing an upload, a page dropping a download | `499`, `Stream … is no longer read` |
+| let go of it with a reason: `readable.terminate(message, code)` | that message and code (`499` unless given) |
+| was sent more than [the announced size](#size) | `400` |
+| holds more unread than [`maxStreamBuffer`](#limits) allows (a server) | `413` |
+| has too many streams open ([`maxStreams`](#limits), a server): the announcement itself is refused | `429` |
+
+The word reaches the `WrpcWritable` the stream belongs to, on either end:
 
 ```js
+// client — an upload
 const stream = client.createStream('report.csv', bytes.length);
 const receiving = client.api.media.receive({ id: stream.id });
 if (!(await stream.writeAll(bytes))) {
-  // Closed under the writer: `error` is the server's reason — a WrpcError
-  // with its code — and null when it was the connection that went away.
+  // Closed under the writer: `error` is the receiver's reason — on a client
+  // a WrpcError with the server's code — and null when it was the
+  // connection that went away.
   throw stream.error ?? new Error('Connection lost');
 }
 stream.end();
+```
+
+```js
+// server — a download the page may drop half-way
+const stream = context.client.createStream(name, size);
+queueMicrotask(async () => {
+  for await (const piece of source) {
+    if (!(await stream.writeAll(piece))) break; // the page let go (499), or left
+  }
+  stream.end(); // a no-op on a stream that is already over
+  source.destroy?.();
+});
 ```
 
 From that moment the writable is over: `write()` answers `false`,
@@ -204,13 +222,54 @@ From that moment the writable is over: `write()` answers `false`,
 exactly what a lost connection does, so a loop that already watches `closed`
 stops without a change — and `stream.error` says why, which a lost connection
 never does. Nothing more of the stream is sent but a `terminate`, which lets
-the server forget it. `createBlobUploader().upload()` rejects with the same
+the receiver forget it. `createBlobUploader().upload()` rejects with the same
 error.
 
-An answer that arrives after `end()` has nobody left to stop — a stream small
-enough to be written and ended in one turn is always answered late. It is
-raised on the client's `'error'` event instead: the server's own error, with
-its message and code.
+To refuse an upload with something the uploader can show, give the reason
+as you let go:
+
+```js
+receive: procedure({
+  handler: async (context, { id }) => {
+    const stream = context.client.getStream(id);
+    if (stream.size > quota) {
+      await stream.terminate('This file is larger than your plan allows', 413);
+      return { stored: false };
+    }
+    // …
+  },
+}),
+```
+
+It is still the quiet end on this side — the reader's loop stops, `error`
+stays `null` — and the uploader finds the message and the code on
+`stream.error`.
+
+Three things are worth knowing about it:
+
+- **The word is for bytes still to come.** A reader that lets go of a stream
+  that has arrived whole tells nobody, reason or not: there is nothing left
+  to stop, and what the reader made of the stream is the answer of the call
+  that named it. A small upload has usually arrived whole by the time its
+  handler runs.
+- **An answer that arrives after `end()` has nobody to stop** — a stream
+  small enough to be written and ended in one turn is always answered late.
+  A failure is then raised on the client's `'error'` event (the server's
+  own error, with its message and code) or logged by the server; a `499`
+  that crossed the end of its stream is nobody's error and is dropped.
+- **A reader's letting go is said only to a sender that asked.** A stream's
+  announcement carries `cancel: true` when its sender listens — every
+  `createStream()` newer than 2.0.1 does. A 1.0 or 2.0.1 peer does not ask and
+  is not told (it would report a callback nobody waited for): it goes on to
+  its own `end`, and every chunk it still sends is dropped on arrival, as
+  before. Nor does a 1.0 or 2.0.1 receiver ever say it. Nothing needs
+  setting, and the [protocol page](../reference/protocol#stream-both-directions)
+  has the packets.
+
+Behind a [worker proxy](./browser) the word crosses the worker both ways,
+routed like the stream it is about. Over [WebTransport](./wt) it
+travels on the control stream, and the sender answers by resetting the
+stream's own WebTransport stream.
 
 ### The announced size {#size}
 

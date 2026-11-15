@@ -140,7 +140,7 @@ test('Client over WS transport', async (t) => {
     const client = createClient(transport);
     const stream = client.createStream('upload', 10);
     assert.ok(stream instanceof WrpcWritable);
-    assert.deepStrictEqual(transport.sent, [{ type: 'stream', id: stream.id, name: 'upload', size: 10 }]);
+    assert.deepStrictEqual(transport.sent, [{ type: 'stream', id: stream.id, name: 'upload', size: 10, cancel: true }]);
     // `streams` is what the peer announced: getStream() is never handed
     // this end's own writable, and `maxStreams` never counts it.
     assert.strictEqual(client.streams.size, 0);

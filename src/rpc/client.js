@@ -155,6 +155,10 @@ class Client extends Emitter {
   // id -> { resolve, reject, timer }: answers this client owes to asks the
   // server sent it. See ask()/expectAnswer()/settleAnswer().
   #asks = new Map();
+  // The streams this end SENDS, by id, while they are open — `streams`
+  // holds what the peer announced. Where the peer's word on one finds its
+  // writable (cancelStream); each takes itself out (WrpcWritable).
+  #writables = new Map();
   #ready = null;
   #isReady = false;
   /** The REST response seam (see Context.http); null except on a REST call. */
@@ -585,8 +589,27 @@ class Client extends Emitter {
     // A writable kept there was never removed, so every download stayed for
     // the connection's life and, past `maxStreams` of them, the peer's
     // uploads were answered 429. It watches the transport's 'close' itself
-    // until it finishes.
-    return new WrpcWritable(id, name, size, this.#transport, this.#otel);
+    // until it finishes, and is in `#writables` — its own registry, which
+    // it leaves by itself — only while it is open.
+    return new WrpcWritable(id, name, size, this.#transport, this.#otel, this.#writables);
+  }
+
+  /**
+   * The peer's word on a stream this end is sending: a `callback` error on
+   * the stream's id — its reader let go of it (499), or it failed there.
+   * The writable stops (WrpcWritable.cancel). Answers whether an open
+   * stream was told. The error is the peer's: its message is kept bounded
+   * and as text, its code as an integer, and nothing else of it.
+   */
+  cancelStream({ id, error }) {
+    const stream = this.#writables.get(id);
+    if (!stream) return false;
+    const { message, code } = error;
+    const reason = new Error(typeof message === 'string' ? clip(message, 255) : 'Stream refused');
+    reason.code = Number.isInteger(code) ? code : 400;
+    this.#log.debug({ event: 'stream.cancelled', id: clip(id), code: reason.code });
+    stream.cancel(reason);
+    return true;
   }
 
   // A host with no session manager (a browser-side peer host, a standalone
@@ -690,11 +713,16 @@ class Client extends Emitter {
     });
     for (const stream of this.streams.values()) {
       if (typeof stream.terminate !== 'function') continue;
+      // Nobody is left to tell that its reader is gone.
+      stream.onCancel = null;
       Promise.resolve(stream.terminate()).catch((error) => {
         log.error({ err: error, event: 'stream.terminate', stream: stream.id });
       });
     }
     this.streams.clear();
+    // Each writable leaves at the transport's 'close' by itself; a transport
+    // that announces none is covered here.
+    this.#writables.clear();
   }
 }
 

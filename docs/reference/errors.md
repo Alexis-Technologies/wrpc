@@ -82,7 +82,7 @@ A code above `599` is reported as `500`.
 | `409` | Unknown SSE channel — the server no longer holds that id | SSE |
 | `413` | More bytes in [streams nobody reads yet](../guide/streams#limits) than `maxStreamBuffer` allows one connection — answered on the id of the stream that went past it | dispatcher |
 | `429` | `maxCalls` in flight on this connection, `maxStreams` open on it, or `maxChannelsPerAddress` for SSE | dispatcher, SSE |
-| `499` | Cancelled by the caller — `{type:'cancel'}`, or an aborted `signal` | dispatcher, client |
+| `499` | Cancelled by the caller — `{type:'cancel'}`, or an aborted `signal`; a [binary stream its reader let go of](../guide/streams#ended-by-the-receiver) — said to the stream's sender, on the stream's id, and found on `writable.error` | dispatcher, client, streams |
 | `500` | Handler threw without a code; a subscription handler returned a non-iterable; an `output` validator rejected the result | router |
 | `501` | No responder registered for an [ask](../guide/rooms#asking-a-room); a binary stream attempted over [SSE](../guide/sse#what-it-cannot-do) | client, SSE |
 | `503` | Queue full, server [draining](../guide/production#graceful-shutdown), transport closed under an in-flight call, `maxChannels` reached | router, core, SSE |

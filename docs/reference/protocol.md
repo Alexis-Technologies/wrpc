@@ -205,6 +205,7 @@ has the upgrade order.
 | The `wrpc-enc:` and `wrpc-sealed:` **rooms and cluster envelopes** — compressed, encrypted | [Rooms](#rooms) | Opt-in on the publisher; a 1.0 instance drops what it cannot read. | turn `rooms.compression`, `cluster.compression` and the `encryption` options on only once every instance is 2.0 — the two-step rollout the section describes |
 | `seq`, `ch` and `at` on a **signed cluster envelope** — the sender's counter, channel and clock, under `cluster.secret` | [Cluster channels](#cluster-channels) | **Not additive** one way. A 1.0 instance verifies a 2.0 envelope as before (the fields are inside the signed bytes) and applies it; a 2.0 instance refuses a 1.0 instance's envelope, which has no counter — the two halves of a mixed cluster stop seeing each other. Accepting one unasked would be a replay hole. Clusters without `secret` are unaffected. | `cluster: { replay: 'accept' }` on the 2.0 instances while a 1.0 instance is left |
 | A stream's announced **`size` is binding** on the receiving end — a chunk past it or an `end` short of it fails the stream (`400` to the sender, an error for the reader) — and a **stream of zero bytes** is one (2.0.1 and earlier checked neither) | [`stream`](#stream-both-directions) | Nothing travels differently. A 1.0 sender that keeps its announcement is served as before; one that does not is answered `400` where its reader was left waiting. A 1.0 receiver checks nothing: against a sender that breaks its announcement its reader waits until the connection closes, as it always did. A 1.0 server refuses to open an empty stream (`createStream(name, 0)` throws), and a 1.0 receiver forgets one at its `end` — a reader that asks for it afterwards is told it was never announced. | nothing; do not send an empty stream to a 1.0 receiver |
+| **`cancel`** on a `stream` announcement, and the `callback` error on the stream's id it asks for — `499`, a reader that let go — in both directions (newer than 2.0.1); and a sender that **stops** when its stream is answered | [`stream`](#stream-both-directions) | Opt-in per stream. A 1.0 or 2.0.1 sender never sets the field, so it is never told that a reader let go: it sends the whole stream, which is dropped on arrival, as before. A 1.0 or 2.0.1 receiver ignores the field and never says it: its sender writes to the end. A failed stream is answered as 1.0 answered its own stream errors — on the stream's id — and an older client reports that as a callback nobody waited for. | nothing |
 | `headers` and `cache` on a procedure's `http` descriptor in **introspection** | [Introspection](#introspection) | Additive: unknown keys of a descriptor are ignored. | nothing |
 | **WebRTC**: the data-channel framing, the signaling messages, the trust assertions | [WebRTC](#webrtc) | A new carrier: a 1.0 peer has no WebRTC transport and never meets it. | nothing |
 | The **compression rule** — `enc` lists, a sender compresses with the first codec of its own list the peer announced | [Compression](#compression) | Governs only what two 2.0 ends negotiate. | nothing |
@@ -626,6 +627,18 @@ false` and start every trace itself.
 The opening packet announces a stream; `status` is `end` or `terminate` and
 closes it. The payload travels as binary chunks in between.
 
+The opening packet MAY carry one more field:
+
+```json
+{ "type": "stream", "id": "9a2c…", "name": "video.mp4", "size": 104857600, "cancel": true }
+```
+
+`cancel: true` says that the sender **listens for its receiver's word** on
+this stream — the `callback` error on the stream's id described below — and
+stops when it hears it. It is what lets a receiver say that its reader let
+go of the stream, to that sender and to no other. Absent, or anything but
+`true`, it is the stream 1.0 announced.
+
 `size` is the number of bytes the sender will send — a non-negative integer;
 zero is a stream with no chunks — and it is **binding**:
 
@@ -638,23 +651,41 @@ zero is a stream with no chunks — and it is **binding**:
   server answers the sender once, with a `callback` error packet whose `id`
   is the stream's — `400` — and drops whatever chunks still follow until
   the sender's own `end` or `terminate`, which it does not answer again. A
-  client has nothing to answer on; it reports the failure locally.
+  client reports the failure locally, and answers a chunk past the size the
+  same way where the server's announcement carried `cancel`.
 - A receiver MAY cap the bytes it holds in streams nothing reads yet (a
   wRPC server's `maxStreamBuffer`, 64 MiB per connection by default) and
   fail the stream whose chunk goes past it the same way, with `413`.
 - A sender answered on a stream's id — the failures above, an announcement
-  refused with `429` — SHOULD stop: it sends nothing more into that stream
-  but one `terminate`, which is what lets the receiver forget it. The
-  answer is a `callback` whose id is no call's, and a sender tells the two
-  apart by looking the id up among its open streams; one that arrives for
-  a stream its sender has already ended stops nothing and is reported
-  locally. (2.0.1 and 1.0 clients do not look: they report every such
-  answer as a callback nobody waited for, and send the rest of the
-  stream.)
+  refused with `429`, a reader that let go — SHOULD stop: it sends nothing
+  more into that stream but one `terminate`, which is what lets the
+  receiver forget it. The answer is a `callback` whose id is no call's (and
+  no ask's), and a sender tells them apart by looking the id up among its
+  open streams. One that arrives for a stream its sender has already ended
+  stops nothing: a failure is reported locally, and a `499` — which only
+  crossed the stream's end on the wire — is dropped. (2.0.1 and 1.0 do not
+  look: a client reports every such answer as a callback nobody waited for
+  and sends the rest of the stream, a server logs an answer to no ask.
+  Neither announces `cancel`, so neither is sent the `499`.)
+- **A receiver whose reader let go of a stream** — it will read no more of
+  it — tells a sender that asked, once:
+
+  ```json
+  { "type": "callback", "id": "9a2c…", "error": { "message": "Stream video.mp4 is no longer read", "code": 499 } }
+  ```
+
+  The `id` is the stream's, the packet the one a failed stream is answered
+  with, and it travels in whichever direction the stream's receiver is: a
+  server says it of an upload, a client of a download. It is sent only for a
+  stream announced with `cancel: true`, and only while bytes of the stream
+  are still to come — a stream that arrived whole has nothing left to stop.
+  A reader MAY give a reason of its own — a message and a code in place of
+  these (a wRPC handler's `readable.terminate(message, code)`) — under the
+  same two conditions.
 - A chunk for a stream the receiver has already let go of is dropped, not
-  answered: an `end` and a `terminate` from the receiving side do not exist,
-  so a sender learns that its stream is no longer read only from the answer
-  to the call that named it.
+  answered again. The receiver keeps the id until the sender's `end` or
+  `terminate`, so what was still on its way is dropped quietly rather than
+  answered "not initialized" chunk by chunk.
 - A `status` that is neither `end` nor `terminate`, a negative or
   non-integer `size`, and a second announcement of an open id are answered
   `400` on the stream's id and change nothing. So is an `end` for a stream
@@ -662,10 +693,14 @@ zero is a stream with no chunks — and it is **binding**:
   promises nothing, and it is what a sender whose announcement was refused
   sends back.
 
-None of this is a change to what travels: the packets and the chunk framing
-are revision 1's, and a peer that keeps its announcements — every wRPC
-sender does, a 1.0 one included — is served as before. What a 1.0 receiver
-does with a sender that does not is under
+The size rules are no change to what travels: the packets and the chunk
+framing are revision 1's, and a peer that keeps its announcements — every
+wRPC sender does, a 1.0 one included — is served as before. `cancel` is an
+additive field under the rule of [Stability](#stability), and what it asks
+for is sent to nobody that did not set it — so it is negotiated per stream,
+not by the [revision](#versioning): revision 2 is also what 2.0.0 and 2.0.1
+speak, and they know neither the field nor the answer. What an older peer
+does on either side of a stream is under
 [Changes since 1.0](#changes-since-1-0).
 
 ### Binary chunks
@@ -1268,6 +1303,12 @@ instead of the control stream:
   with no per-chunk header. Its FIN is the stream's `end`; a RESET (an
   aborted stream) is its `terminate`. The sender MUST NOT also send the
   `end` or `terminate` packet for such a stream on the control stream.
+- A receiver's word on a stream — the `callback` error on its id
+  ([`stream`](#stream-both-directions)) — is a packet like any other and
+  travels on the control stream. The sender answers it by resetting the
+  stream's own unidirectional stream, which is the `terminate` its
+  receiver waits for. A receiver does not send STOP_SENDING for it: the
+  reset is one round trip away on a stream nothing else waits behind.
 - A QUIC stream is ordered only against itself. A receiver MUST therefore
   hold chunks that arrive before their `stream` packet has been read from
   the control stream, and MUST deliver the synthesized `end` or `terminate`

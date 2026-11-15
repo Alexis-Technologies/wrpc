@@ -858,6 +858,8 @@ class WrpcClient extends Emitter {
     const streams = Array.from(this.#streams.values());
     this.#streams.clear();
     for (const stream of streams) {
+      // Nobody is left to tell that its reader is gone.
+      stream.onCancel = null;
       Promise.resolve(stream.terminate()).catch(() => {});
     }
   }
@@ -1626,7 +1628,8 @@ class WrpcClient extends Emitter {
     if (!error) throw new Error(`Callback ${id} not found`);
     // An error on an id that is no call's is the server's word on a STREAM
     // this client sends — the announcement refused (429), a chunk past the
-    // announced size (400) or past what the server holds unread (413). It
+    // announced size (400) or past what the server holds unread (413), a
+    // handler that let go of it (499) or refused it with a reason. It
     // used to be reported as a callback nobody waited for, the reason gone
     // and the writer still writing. An open stream is told, and its writer
     // stops (WrpcWritable.cancel); one already ended — its last chunk and
@@ -1634,8 +1637,10 @@ class WrpcClient extends Emitter {
     // to tell but the error channel: the server's own error, with its code.
     const refusal = new WrpcError(error);
     const stream = this.#writables.get(id);
-    if (!stream) throw refusal;
-    stream.cancel(refusal);
+    if (stream) return void stream.cancel(refusal);
+    // A 499 is a reader that let go, not a failure: one that crossed the
+    // end of its stream on the wire is nobody's error.
+    if (error.code !== 499) throw refusal;
   }
 
   // `data` carries one value of a subscription; `end` closes it, with an
@@ -1775,11 +1780,26 @@ class WrpcClient extends Emitter {
         throw new Error(`Stream ${name} is already initialized`);
       }
       const readableStream = new WrpcReadable(id, name, size);
+      // A server that asked to hear (`cancel` on its announcement) is told,
+      // once, when the stream is over here before it arrived whole: its
+      // reader let go of it (499), or it failed (its error). On the
+      // stream's id, as a server answers an upload — and never to a server
+      // that did not ask: 1.0 and 2.0.1 log the packet as an answer nobody
+      // waited for.
+      if (packet.cancel === true) {
+        readableStream.onCancel = (error) => {
+          if (readableStream.bytesReceived === size) return;
+          const message = error ? error.message : `Stream ${name} is no longer read`;
+          this.send({ type: 'callback', id, error: { message, code: error ? error.code : 499 } });
+        };
+      }
       this.#streams.set(id, readableStream);
       return;
     }
     if (!stream) throw new Error(`Stream ${id} is not initialized`);
     if (status !== 'end' && status !== 'terminate') return;
+    // Its sender ended it: nothing is left to stop.
+    stream.onCancel = null;
     // A chunk still being turned into bytes (#handleBinary) is counted
     // before its stream's end is.
     if (this.#converting) await this.#converting;

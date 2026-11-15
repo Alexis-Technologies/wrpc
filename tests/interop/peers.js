@@ -75,6 +75,29 @@ const routerOf = (lib) =>
           return stream.id;
         },
       }),
+      // A reader that lets go of an upload, and a download written a piece
+      // a turn for as long as the writable takes one (`closed` is in 1.0).
+      refuse: lib.procedure({
+        access: 'public',
+        handler: async (context, { id }) => {
+          await context.client.getStream(id).terminate();
+          return true;
+        },
+      }),
+      pour: lib.procedure({
+        access: 'public',
+        handler: async (context, { size, piece = 16 * 1024 }) => {
+          const stream = context.client.createStream('pour', size);
+          queueMicrotask(async () => {
+            for (let sent = 0; sent < size && !stream.closed; sent += piece) {
+              stream.write(new Uint8Array(piece));
+              await new Promise((resolve) => setImmediate(resolve));
+            }
+            stream.end();
+          });
+          return stream.id;
+        },
+      }),
       // Bytes MADE on the server, in a result and in an event — what a 1.0
       // client's own bytes never are: they reach the server as 1.0 JSON.
       make: lib.procedure({ access: 'public', handler: async () => ({ blob: Uint8Array.of(1, 2, 3) }) }),

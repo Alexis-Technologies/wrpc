@@ -110,6 +110,7 @@ The first table is the request path and the engines; the ones after it are
 | `call.capacity` | debug | `maxCalls` reached on one connection |
 | `stream.capacity` | debug | `maxStreams` reached on one connection: a `stream` packet answered `429` |
 | `stream.buffer` | debug | `maxStreamBuffer` reached on one connection (`max`): the stream whose chunk went past it failed, answered `413`. A peer sending into streams no handler reads — an upload that never had a reader, or one far ahead of the call that reads it |
+| `stream.cancelled` | debug | The peer ended a stream this end was sending to it (`id`, `code`): its reader let go of it (`499`), or it failed there. The writable closed with that reason |
 | `call.draining` | info | Refused because the server is shutting down |
 | `packet.malformed` | warn | A frame that would not parse — one line per frame, whatever it was |
 | `packet.unknown` | warn | Valid JSON that is not a packet — version skew, or somebody else's client |
@@ -324,7 +325,7 @@ An error the client has no caller to hand to is **escalated**: logged at
 | `event` | Means |
 | ------- | ----- |
 | `transport.error` | The transport itself raised an error |
-| `message` | Handling an inbound message threw — a malformed frame, a handler of yours behind it |
+| `message` | Handling an inbound message threw — a malformed frame, a handler of yours behind it — or the server refused a [binary stream](./streams#ended-by-the-receiver) this client had already ended: the error is the server's own, with its code |
 | `batch.flush`, `batch.dispatch` | Writing a batch of calls threw (its calls are failed, not left pending); handling one answer of a batch threw |
 | `heartbeat.ping`, `heartbeat.terminate` | Sending a ping, or terminating the connection after a missed pong, threw |
 | `reconnect.open`, `fallback.open`, `online.open` | An `open()` nobody awaits was rejected: a reconnect attempt, the next transport of the list, the re-open when the browser came back online |

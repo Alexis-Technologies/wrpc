@@ -22,6 +22,14 @@ class WrpcReadable extends Emitter {
   bytesReceived = 0;
   // Why the stream failed (see fail()): what its reader's iteration throws.
   error = null;
+  // Who hears that the stream is over on this side before its sender ended
+  // it: set by whoever feeds the stream and can reach its sender, called
+  // once and dropped with the stream — with the error of a stream that
+  // failed (`error` is set), or what its reader let go of it with
+  // (terminate(): its reason, null when it gave none). A feeder that ends
+  // the stream itself (the sender's own terminate, a connection that
+  // closed) takes it off first.
+  onCancel = null;
   highWaterMark = DEFAULT_HIGH_WATER_MARK;
 
   constructor(id, name, size, options = {}) {
@@ -131,8 +139,14 @@ class WrpcReadable extends Emitter {
     await this.stop(false);
   }
 
-  async terminate() {
-    await this.stop(true);
+  // The reader's own end, now and quietly: its loop stops where it is,
+  // with no error. Whoever feeds the stream tells its sender (onCancel) —
+  // `message`, with `code` (499 unless given), is what the sender hears in
+  // place of the plain "no longer read": a handler refusing an upload with
+  // something its uploader can show. Only a string is a reason: terminate
+  // is also handed over as a listener, and called with whatever that emits.
+  async terminate(message, code = 499) {
+    this.#finish('terminated', typeof message === 'string' ? Object.assign(new Error(message), { code }) : null);
   }
 
   // Ends the stream for its reader with an error it can see: the iteration
@@ -162,11 +176,14 @@ class WrpcReadable extends Emitter {
   // Once: the first end decides the status. What is queued is let go of,
   // and whoever is parked — a reader, a chunk waiting for room, a close()
   // waiting for the last byte — wakes to find the stream over.
-  #finish(status) {
+  #finish(status, reason = null) {
     if (!this.streaming) return;
     this.streaming = false;
     this.status = status;
     this.queue.length = 0;
+    const { onCancel } = this;
+    this.onCancel = null;
+    if (onCancel && status !== 'closed') onCancel(this.error ?? reason);
     this.emit(PUSH_EVENT, null);
     this.emit(PULL_EVENT);
   }
@@ -297,9 +314,14 @@ class WrpcWritable extends Emitter {
     this.#onClose = null;
   }
 
+  // `cancel`: this end listens for its receiver's word on the stream (see
+  // cancel()), which only an owner that routes answers by id can deliver.
+  // A receiver tells a sender that its READER let go only where it asked —
+  // one that does not know the answer reports a callback nobody waited for.
   init() {
     const { id, name, size } = this;
     const packet = { type: 'stream', id, name, size };
+    if (this.#registry) packet.cancel = true;
     this.transport.send(packet);
   }
 

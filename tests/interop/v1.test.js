@@ -87,6 +87,59 @@ for (const pair of PAIRS) {
   });
 }
 
+// A receiver tells a sender that its stream is no longer read only where
+// the sender asked to hear (`cancel` on its announcement). A 1.0 sender
+// never asks, so it is never told — it would report a callback nobody
+// waited for — and a 1.0 receiver ignores the field and never tells: the
+// stream is sent whole, and dropped on arrival, as it always was.
+for (const pair of PAIRS) {
+  test(`interop ws: an upload its handler lets go of is sent whole — ${pair.name}`, { skip }, async (t) => {
+    const { ws } = await boot(t, pair.server);
+    const client = await connect(t, pair.client, ws);
+    const escalated = [];
+    client.on('error', (error) => escalated.push(error));
+    const pieces = 8;
+    const size = pieces * 16 * 1024;
+    const upload = client.createStream('refused.bin', size);
+    upload.write(new Uint8Array(size / pieces));
+    assert.strictEqual(await client.api.echo.refuse({ id: upload.id }), true);
+    // A round trip later the sender still has heard nothing.
+    assert.deepStrictEqual(await client.api.echo.say({ at: 1 }), { at: 1 });
+    assert.strictEqual(upload.closed, false, 'a sender facing 1.0 was told to stop');
+    for (let i = 1; i < pieces; i++) assert.notStrictEqual(upload.write(new Uint8Array(size / pieces)), false);
+    upload.end();
+    assert.deepStrictEqual(await client.api.echo.say({ at: 2 }), { at: 2 });
+    assert.deepStrictEqual(escalated, [], 'a reader letting go surfaced as an error on a 1.0 pairing');
+  });
+
+  test(`interop ws: a download its reader lets go of is sent whole — ${pair.name}`, { skip }, async (t) => {
+    const warned = [];
+    const quiet = () => {};
+    const logger = { log: quiet, debug: quiet, info: quiet, warn: (...args) => warned.push(args), error: quiet };
+    const { ws } = await boot(t, pair.server, { logger });
+    const client = await connect(t, pair.client, ws);
+    const escalated = [];
+    client.on('error', (error) => escalated.push(error));
+    const size = 8 * 16 * 1024;
+    const id = await client.api.echo.pour({ size });
+    const readable = client.getStream(id);
+    await readable.terminate();
+    // The server writes all of it and ends the stream — which is what
+    // makes the client forget it.
+    await waitFor(() => {
+      try {
+        client.getStream(id);
+        return false;
+      } catch {
+        return true;
+      }
+    }, 'the whole download, to its end');
+    assert.deepStrictEqual(await client.api.echo.say({ at: 3 }), { at: 3 });
+    assert.deepStrictEqual(escalated, []);
+    assert.deepStrictEqual(warned, [], 'the server logged an answer nobody waited for');
+  });
+}
+
 test('interop sse: this client against a 1.0 server — a call and an event', { skip }, async (t) => {
   const { http } = await boot(t, legacy);
   const client = await connect(t, next, http, { transport: 'sse' });

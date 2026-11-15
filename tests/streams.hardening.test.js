@@ -125,7 +125,7 @@ const fixture = () => {
         handler: async (context, { id, message, code }) => {
           const stream = context.client.getStream(id);
           seen.set(id, stream);
-          stream.fail(message, code);
+          await stream.terminate(message, code);
           return 'rejected';
         },
       }),
@@ -300,6 +300,22 @@ test('server: streams nobody reads yet are capped in bytes per connection (maxSt
   peer.call('rb', 'files/read', { id: 'b' });
   await waitFor(() => peer.answer('rb'), 'the reader of the refused stream');
   assert.strictEqual(peer.answer('rb').error.code, 413);
+});
+
+test('server: a stream that failed is answered even when every announced byte had arrived', async (t) => {
+  const { router } = fixture();
+  const { url } = await bootServer(t, { router, maxStreamBuffer: 4 });
+  const peer = await rawPeer(t, url);
+  // Whole, unread, exactly at the cap — and then one byte more: past the
+  // cap before it is past the size. Nothing is "left to stop" by the count,
+  // but the sender broke its word and is told.
+  peer.announce('s', 4);
+  peer.chunk('s', bytes(4));
+  await peer.settle();
+  assert.strictEqual(peer.answer('s'), undefined);
+  peer.chunk('s', bytes(1));
+  await waitFor(() => peer.answer('s'), 'the sender of a failed stream was told nothing');
+  assert.strictEqual(peer.answer('s').error.code, 413);
 });
 
 test('server: a stream being read is not counted against maxStreamBuffer', async (t) => {
@@ -650,7 +666,8 @@ test('server Client.createStream: a stream of no bytes is a stream', () => {
   const stream = client.createStream('empty', 0);
   stream.end();
   assert.deepStrictEqual(sent, [
-    { type: 'stream', id: stream.id, name: 'empty', size: 0 },
+    // `cancel`: this end hears a receiver that no longer wants the stream.
+    { type: 'stream', id: stream.id, name: 'empty', size: 0, cancel: true },
     { type: 'stream', id: stream.id, status: 'end' },
   ]);
   assert.throws(() => client.createStream('name'), /Stream size/);
@@ -832,9 +849,9 @@ test("WrpcWritable.cancel: the receiver's word ends the stream for its writer", 
     const transport = new PacedTransport();
     const registry = new Map();
     const stream = new WrpcWritable('s', 'blob', 10, transport, null, registry);
-    // Registered, so the answer finds it.
+    // Registered, so the answer finds it — and announced as listening.
     assert.strictEqual(registry.get('s'), stream);
-    assert.deepStrictEqual(transport.sent, [{ type: 'stream', id: 's', name: 'blob', size: 10 }]);
+    assert.deepStrictEqual(transport.sent, [{ type: 'stream', id: 's', name: 'blob', size: 10, cancel: true }]);
     let closes = 0;
     stream.on('close', () => closes++);
     const error = refusal('Too many bytes in streams nobody reads yet', 413);
@@ -1001,4 +1018,354 @@ test('client: a Blob upload the server refuses rejects with its reason', async (
   assert.strictEqual(result.error.code, 413);
   await client.api.files.ping({});
   assert.deepStrictEqual(escalated, []);
+});
+
+// 8 ─ a receiver that lets go says so to a sender that asked ─────────────
+//
+// After readable.terminate() — a handler refusing an upload, a page
+// dropping a download — the sender sent the whole body all the same, to be
+// dropped on arrival.
+
+test('WrpcReadable.onCancel: whoever feeds a stream hears, once, that it is over before its sender ended it', async (t) => {
+  const watched = (size = 10) => {
+    const readable = new WrpcReadable('id', 'blob', size);
+    const heard = [];
+    readable.onCancel = (error) => heard.push(error);
+    return { readable, heard };
+  };
+
+  await t.test('terminate(): the quiet end, no reason', async () => {
+    const { readable, heard } = watched();
+    await readable.push(bytes(4));
+    await readable.terminate();
+    await readable.terminate();
+    assert.deepStrictEqual(heard, [null]);
+    assert.strictEqual(readable.onCancel, null, 'the hook outlived the stream');
+  });
+
+  await t.test("terminate(message, code): the reader's reason, and still the quiet end for the reader", async () => {
+    const { readable, heard } = watched();
+    const reading = drain(readable);
+    await readable.push(bytes(4));
+    await tick();
+    await readable.terminate('Not this one', 422);
+    assert.strictEqual(heard.length, 1);
+    assert.strictEqual(heard[0].message, 'Not this one');
+    assert.strictEqual(heard[0].code, 422);
+    assert.strictEqual(await reading, 4, 'the loop of a reader that let go threw');
+    assert.strictEqual(readable.error, null);
+    // The code is the plain one unless given.
+    const other = watched();
+    await other.readable.terminate('Changed my mind');
+    assert.strictEqual(other.heard[0].code, CANCELLED);
+    // terminate handed over as a listener is called with what that emits:
+    // not a reason.
+    const listened = watched();
+    await listened.readable.terminate({ type: 'abort' });
+    assert.deepStrictEqual(listened.heard, [null]);
+  });
+
+  await t.test('fail(): the error of the stream', async () => {
+    const { readable, heard } = watched();
+    const error = readable.fail('Too many bytes in streams nobody reads yet', 413);
+    await readable.terminate('ignored: the stream was over');
+    assert.deepStrictEqual(heard, [error]);
+    assert.strictEqual(error.code, 413);
+  });
+
+  await t.test('a chunk past the announced size: with the reason', async () => {
+    const { readable, heard } = watched();
+    await assert.rejects(() => readable.push(bytes(11)), /announced size/);
+    assert.deepStrictEqual(heard, [readable.error]);
+  });
+
+  await t.test('a stream read to its end: never', async () => {
+    const { readable, heard } = watched(4);
+    await readable.push(bytes(4));
+    const ending = readable.end();
+    assert.strictEqual(await drain(readable), 4);
+    await ending;
+    await readable.terminate();
+    assert.deepStrictEqual(heard, []);
+    assert.strictEqual(readable.onCancel, null);
+  });
+});
+
+test('server: a handler that lets go of an upload stops a sender that asked to hear', async (t) => {
+  const { client, escalated, held, loud } = await uploader(t);
+  const upload = client.createStream('big', 200 * 64 * KIB);
+  upload.write(bytes(64 * KIB));
+  assert.strictEqual(await client.api.files.refuse({ id: upload.id }), 'refused');
+  await closedSoon(upload, 'the sender of a refused upload was never told');
+  assert.ok(upload.error instanceof WrpcError);
+  assert.strictEqual(upload.error.code, CANCELLED);
+  assert.strictEqual(upload.write(bytes(64 * KIB)), false, 'the rest of a refused upload was sent');
+  assert.strictEqual(await upload.writeAll(bytes(64 * KIB)), false);
+  // The writable's terminate is what lets the server forget the stream.
+  await waitFor(async () => (await held()) === 0, 'the server kept a stream both ends had given up');
+  assert.deepStrictEqual(escalated, [], 'a reader letting go is not an error');
+  assert.deepStrictEqual(loud(), [], 'nor a line an operator is paged for');
+});
+
+test('server: a handler that refuses an upload with a reason is heard by its sender', async (t) => {
+  const { client, escalated, held } = await uploader(t);
+  const upload = client.createStream('big', 200 * 64 * KIB);
+  const args = { id: upload.id, message: 'Files over 1 MiB need a plan', code: 402 };
+  assert.strictEqual(await client.api.files.reject(args), 'rejected');
+  await closedSoon(upload, 'the sender of a rejected upload was never told');
+  assert.strictEqual(upload.error.code, 402);
+  assert.strictEqual(upload.error.message, 'Files over 1 MiB need a plan');
+  await waitFor(async () => (await held()) === 0, 'the server kept the rejected stream');
+  // A reason is written for the sender, whatever its code: a 5xx is not
+  // replaced by its status line, as a handler's own exception would be.
+  const full = client.createStream('big', 200 * 64 * KIB);
+  await client.api.files.reject({ id: full.id, message: 'The disk for uploads is full', code: 507 });
+  await closedSoon(full, 'the sender of a rejected upload was never told');
+  assert.strictEqual(full.error.code, 507);
+  assert.strictEqual(full.error.message, 'The disk for uploads is full');
+  assert.deepStrictEqual(escalated, []);
+});
+
+test('server: the word goes out once, only to a sender that asked, only while bytes are outstanding', async (t) => {
+  const { router } = fixture();
+  const { writer, loud } = recorder();
+  const { url } = await bootServer(t, { router, logger: writer });
+  const peer = await rawPeer(t, url);
+  const asked = (id, size) => peer.send({ type: 'stream', id, name: 'blob', size, cancel: true });
+  const refuse = async (id) => {
+    peer.call(`refuse-${id}`, 'files/refuse', { id });
+    await waitFor(() => peer.answer(`refuse-${id}`), `the handler refused ${id}`);
+    await peer.settle();
+  };
+
+  await t.test('asked: one callback on the stream id, code 499', async () => {
+    asked('a', 100);
+    await refuse('a');
+    for (let i = 0; i < 3; i++) peer.chunk('a', bytes(8));
+    await peer.settle();
+    const answers = peer.answers.filter((packet) => packet.id === 'a');
+    assert.strictEqual(answers.length, 1, `${answers.length} answers for one cancelled stream`);
+    assert.strictEqual(answers[0].type, 'callback');
+    assert.strictEqual(answers[0].error.code, CANCELLED);
+    assert.match(answers[0].error.message, /no longer read/);
+    // The sender's terminate is the end of it, and is not answered.
+    peer.end('a', 'terminate');
+    await peer.settle();
+    assert.strictEqual(peer.answers.filter((packet) => packet.id === 'a').length, 1);
+  });
+
+  await t.test('every byte already here: there is nothing left to stop', async () => {
+    asked('b', 4);
+    peer.chunk('b', bytes(4));
+    await refuse('b');
+    assert.strictEqual(peer.answer('b'), undefined, 'a cancel for a stream that had fully arrived');
+    peer.end('b');
+    // Nor when its reader refuses it with a reason: that is the answer of
+    // the call that named the stream.
+    asked('b2', 4);
+    peer.chunk('b2', bytes(4));
+    peer.call('reject-b2', 'files/reject', { id: 'b2', message: 'Not this one', code: 422 });
+    await waitFor(() => peer.answer('reject-b2'), 'the handler rejected b2');
+    await peer.settle();
+    assert.strictEqual(peer.answer('b2'), undefined, 'the refusal of a stream that had fully arrived');
+    peer.end('b2');
+  });
+
+  await t.test("a reader's reason is still a reader letting go: not said to a sender that did not ask", async () => {
+    peer.announce('c', 100);
+    peer.call('reject-c', 'files/reject', { id: 'c', message: 'Not this one', code: 422 });
+    await waitFor(() => peer.answer('reject-c'), 'the handler rejected c');
+    await peer.settle();
+    assert.strictEqual(peer.answer('c'), undefined, 'a sender that did not ask was answered');
+    peer.end('c', 'terminate');
+  });
+
+  await t.test('the terminate of a stream this end does not hold is not answered', async () => {
+    peer.end('never-announced', 'terminate');
+    await peer.settle();
+    assert.strictEqual(peer.answer('never-announced'), undefined);
+    // An end is: it promises bytes this end never saw.
+    peer.end('never-announced');
+    await waitFor(() => peer.answer('never-announced'), 'the end of an unknown stream');
+    assert.strictEqual(peer.answer('never-announced').error.code, 400);
+  });
+
+  await t.test('nothing of it is a warning', async () => {
+    peer.call('h', 'files/held');
+    await waitFor(() => peer.answer('h'), 'held');
+    assert.strictEqual(peer.answer('h').result.streams, 0);
+    assert.deepStrictEqual(
+      loud().filter((entry) => entry.code !== 400),
+      [],
+    );
+  });
+});
+
+test('client: a reader that lets go of a download stops the server that sent it', async (t) => {
+  const { client, escalated, seen, loud } = await uploader(t);
+  const size = 64 * 1024 * KIB;
+  const id = await client.api.files.pour({ size });
+  const readable = client.getStream(id);
+  assert.ok((await readable.read()).length > 0);
+  await readable.terminate();
+  const record = seen.get(id);
+  await waitFor(() => record.stream.closed, {
+    message: 'the server went on with a download nobody reads',
+    timeout: 1500,
+  });
+  assert.strictEqual(record.stream.error.code, CANCELLED);
+  assert.match(record.stream.error.message, /no longer read/);
+  await waitFor(() => record.done, 'the writing loop stopped');
+  assert.ok(record.written < size, `all ${size} bytes of a dropped download were written`);
+  // The server's terminate answers it: the client forgets the stream.
+  await waitFor(() => {
+    try {
+      client.getStream(id);
+      return false;
+    } catch {
+      return true;
+    }
+  }, 'the client kept a stream both ends had given up');
+  await client.api.files.ping({});
+  assert.deepStrictEqual(escalated, []);
+  assert.deepStrictEqual(loud(), []);
+});
+
+// What a client says to the sender of a download, packet by packet.
+class RecordingTransport extends BareTransport {
+  sent = [];
+  send(packet) {
+    this.sent.push(packet);
+  }
+}
+
+test('client: the word goes out once, only to a server that asked, only while bytes are outstanding', async (t) => {
+  const bare = () => {
+    const transport = new RecordingTransport();
+    const client = new WrpcClient('fake://x', transport);
+    client.on('error', () => {});
+    const message = (packet) => transport.emit('message', JSON.stringify(packet));
+    const announce = (id, size, cancel) => message({ type: 'stream', id, name: 'down', size, cancel });
+    const chunk = (id, length) => transport.emit('message', chunkEncode(id, bytes(length)).buffer);
+    return { transport, client, message, announce, chunk };
+  };
+
+  await t.test('asked: one callback on the stream id, code 499', async () => {
+    const { transport, client, announce, chunk } = bare();
+    announce('s', 100, true);
+    chunk('s', 8);
+    await client.getStream('s').terminate();
+    await client.getStream('s').terminate();
+    assert.deepStrictEqual(transport.sent, [
+      { type: 'callback', id: 's', error: { message: 'Stream down is no longer read', code: CANCELLED } },
+    ]);
+  });
+
+  await t.test('not asked (a 1.0 server, 2.0.1): nothing', async () => {
+    const { transport, client, announce } = bare();
+    announce('s', 100);
+    await client.getStream('s').terminate();
+    assert.deepStrictEqual(transport.sent, []);
+  });
+
+  await t.test("the server's own terminate, and its end: nothing", async () => {
+    const { transport, client, message, announce, chunk } = bare();
+    announce('s', 100, true);
+    message({ type: 'stream', id: 's', status: 'terminate' });
+    announce('short', 100, true);
+    chunk('short', 8);
+    message({ type: 'stream', id: 'short', status: 'end' });
+    await tick();
+    assert.throws(() => client.getStream('s'), /not initialized/);
+    assert.deepStrictEqual(transport.sent, []);
+  });
+
+  await t.test('every byte already here: nothing', async () => {
+    const { transport, client, announce, chunk } = bare();
+    announce('s', 8, true);
+    chunk('s', 8);
+    await client.getStream('s').terminate();
+    announce('t', 8, true);
+    chunk('t', 8);
+    await client.getStream('t').terminate('Not this one', 422);
+    assert.deepStrictEqual(transport.sent, []);
+  });
+
+  await t.test("a reader's own reason, while bytes are still to come: the server is told it", async () => {
+    const { transport, client, announce, chunk } = bare();
+    announce('s', 8, true);
+    chunk('s', 4);
+    await client.getStream('s').terminate('Not this one', 422);
+    assert.deepStrictEqual(transport.sent, [
+      { type: 'callback', id: 's', error: { message: 'Not this one', code: 422 } },
+    ]);
+  });
+
+  await t.test('a chunk past the announced size: the server is told why', async () => {
+    const { transport, announce, chunk } = bare();
+    announce('s', 4, true);
+    chunk('s', 8);
+    chunk('s', 8);
+    await tick();
+    assert.strictEqual(transport.sent.length, 1);
+    assert.strictEqual(transport.sent[0].error.code, 400);
+    assert.match(transport.sent[0].error.message, /announced size/);
+  });
+
+  await t.test('a connection that closed: nobody is left to tell', async () => {
+    const { transport, client, announce } = bare();
+    announce('s', 100, true);
+    const readable = client.getStream('s');
+    void transport.emit('close');
+    await tick();
+    assert.strictEqual(readable.status, 'terminated');
+    assert.deepStrictEqual(transport.sent, []);
+  });
+
+  await t.test('a cancel that crossed the end of its stream is nobody’s error', async () => {
+    const { transport, message } = bare();
+    const escalated = [];
+    const client = new WrpcClient('fake://y', transport);
+    client.on('error', (error) => escalated.push(error));
+    void client;
+    message({ type: 'callback', id: 'ended-long-ago', error: { message: 'Stream up is no longer read', code: 499 } });
+    await tick();
+    assert.deepStrictEqual(escalated, []);
+  });
+});
+
+test('server: a client that lets go of a download it was sent closes the writable; one that crossed its end is quiet', async (t) => {
+  const { router, seen } = fixture();
+  const { writer, loud, entries } = recorder();
+  const { url } = await bootServer(t, { router, logger: writer });
+  const peer = await rawPeer(t, url);
+  peer.call('p', 'files/pour', { size: 64 * 1024 * KIB });
+  await waitFor(() => peer.answer('p'), 'the download was opened');
+  const id = peer.answer('p').result;
+  const announced = peer.answers.find((packet) => packet.type === 'stream' && packet.id === id);
+  assert.strictEqual(announced.cancel, true, 'the server did not ask to hear of a cancel');
+  // The peer is the sender of what it answers: only the message and code
+  // of its error are kept, and the message is bounded.
+  const error = { message: 'x'.repeat(4096), code: 499, details: { nested: true }, stack: 'forged' };
+  peer.send({ type: 'callback', id, error });
+  const record = seen.get(id);
+  await waitFor(() => record.stream.closed, { message: 'the writable went on', timeout: 1500 });
+  assert.strictEqual(record.stream.error.code, 499);
+  assert.ok(record.stream.error.message.length <= 256, 'a peer chose the length of a server-side message');
+  assert.strictEqual(record.stream.error.details, undefined);
+  await peer.settle();
+  const ended = peer.answers.filter((packet) => packet.type === 'stream' && packet.id === id && packet.status);
+  assert.deepStrictEqual(
+    ended.map((packet) => packet.status),
+    ['terminate'],
+  );
+  // Again, for a stream that is over by now: the cancel that crossed its
+  // end. Not an ask's answer gone astray, and not a line to be paged for.
+  peer.send({ type: 'callback', id, error: { message: 'late', code: 499 } });
+  await peer.settle();
+  assert.deepStrictEqual(loud(), []);
+  // Anything else nothing waits for still is one.
+  peer.send({ type: 'callback', id: 'never-asked', error: { message: 'what', code: 400 } });
+  await peer.settle();
+  assert.strictEqual(entries.filter((entry) => entry.level === 'warn').length, 1);
 });

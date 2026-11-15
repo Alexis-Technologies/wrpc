@@ -941,6 +941,14 @@ export class Client extends Emitter {
   readonly rooms: Set<string>;
   getStream(id: string): WrpcReadable;
   createStream(name: string, size: number): WrpcWritable;
+  /**
+   * The peer's word on a stream this end is sending — a `callback` error
+   * packet on the stream's id: its reader let go of it (`499`), or it
+   * failed there. The writable closes with that error
+   * (`WrpcWritable.cancel`). Answers whether an open stream was told. What
+   * the dispatcher calls; a host with a dispatch of its own calls it too.
+   */
+  cancelStream(packet: { id: string; error: { message?: unknown; code?: unknown } }): boolean;
   initializeSession(token?: string, data?: State): boolean;
   finalizeSession(): Promise<boolean>;
   startSession(token?: string, data?: State): boolean;

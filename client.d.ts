@@ -172,6 +172,15 @@ export class WrpcReadable extends Emitter {
   error: (Error & { code: number }) | null;
   /** True once anybody read from it: from then on its high-water mark holds the sender back. */
   readonly consuming: boolean;
+  /**
+   * Who hears that the stream is over on this side before its sender ended
+   * it — set by whoever feeds the stream and can reach its sender (a
+   * client, a server), called once and dropped with the stream: with the
+   * error of a stream that failed (`error` is set), or with what its reader
+   * let go of it with — the reason given to `terminate()`, `null` for none.
+   * Never called for a stream read to its end.
+   */
+  onCancel: ((error: (Error & { code: number }) | null) => void) | null;
   highWaterMark: number;
   constructor(
     id: string,
@@ -205,11 +214,22 @@ export class WrpcReadable extends Emitter {
    * be told why.
    */
   close(): Promise<void>;
-  /** Ends it now and quietly: the reader stops where it is, what is queued is let go of. */
-  terminate(): Promise<void>;
+  /**
+   * Ends it now and quietly: the reader stops where it is, what is queued is
+   * let go of, `error` stays null. A sender that asked to hear (a wRPC peer
+   * newer than 2.0.1) is told, while bytes of the stream are still to come,
+   * and stops sending: its writable closes with `message` and `code` — a
+   * handler refusing an upload with something its uploader can show — or
+   * with a plain `499` when none is given. Any other sender goes on to its
+   * own end, and what it sends is dropped.
+   */
+  terminate(message?: string, code?: number): Promise<void>;
   /**
    * Ends it for its reader with an error it can see (`error`), `code` 400
-   * unless given. Answers the error; a stream already over is left as it is.
+   * unless given: what whoever FEEDS the stream calls for a sender that
+   * broke its announcement, and the sender is answered that error. A reader
+   * that wants to refuse a stream calls `terminate(message, code)`. Answers
+   * the error; a stream already over is left as it is.
    */
   fail(message: string, code?: number): Error & { code: number };
   stop(force?: boolean): Promise<void>;
@@ -243,7 +263,9 @@ export class WrpcWritable extends Emitter {
   /**
    * Why the receiver ended the stream, or null: it refused the announcement
    * (`code` 429), the stream went past its announced `size` (400) or past
-   * what the receiver holds unread (413). On a client it is the
+   * what the receiver holds unread (413), its reader let go of it (499,
+   * `readable.terminate()`) or refused it with a reason of its own
+   * (`readable.terminate(message, code)`). On a client it is the
    * {@link WrpcError} the server answered. A transport that closed leaves it
    * null.
    */
@@ -251,7 +273,9 @@ export class WrpcWritable extends Emitter {
   /**
    * @param registry Where the owner of the transport looks the stream up
    *   when its receiver answers on its id — `createStream()` passes its own.
-   *   The stream puts itself in, and takes itself out when it is over.
+   *   The stream puts itself in, takes itself out when it is over, and
+   *   announces itself with `cancel: true`: a receiver tells only a sender
+   *   that asked that its reader let go.
    */
   constructor(
     id: string,

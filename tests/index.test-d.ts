@@ -657,6 +657,9 @@ expectType<string>(serverClient.meta.url);
 expectType<string>(serverClient.meta.protocol);
 expectType<wrpc.ClientMeta>(serverContext.meta);
 expectType<Promise<unknown>>(serverClient.ready);
+expectType<boolean>(
+  serverClient.cancelStream({ id: 's', error: { message: 'Stream blob is no longer read', code: 499 } }),
+);
 
 // context.callMeta: the per-call metadata bag, frozen-empty by default
 expectType<Readonly<Record<string, unknown>>>(serverContext.callMeta);
@@ -719,6 +722,10 @@ expectType<number>(readable.bytesReceived);
 expectType<boolean>(readable.consuming);
 expectType<(Error & { code: number }) | null>(readable.error);
 expectType<Error & { code: number }>(readable.fail('refused', 413));
+expectType<((error: (Error & { code: number }) | null) => void) | null>(readable.onCancel);
+readable.onCancel = (error) => void error?.code;
+expectType<Promise<void>>(readable.terminate());
+expectType<Promise<void>>(readable.terminate('Larger than your plan allows', 413));
 declare const writable: WrpcWritable;
 expectType<boolean>(writable.write(new Uint8Array(1)));
 expectType<boolean>(writable.closed);

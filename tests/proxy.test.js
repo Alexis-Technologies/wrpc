@@ -816,6 +816,102 @@ test('WrpcClientProxy', async (t) => {
     }
   });
 
+  // The receiver's word on a stream — a `callback` error on the stream's
+  // id — crosses the worker both ways: down to the page that announced the
+  // upload, up from the page that let go of a download.
+  await t.test("the server's word on an upload reaches the page that announced it, and no other", async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const proxy = new WrpcClientProxy();
+    const page = new MessageChannel();
+    const other = new MessageChannel();
+    const got = { page: [], other: [] };
+    try {
+      globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [page.port2] });
+      globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [other.port2] });
+      page.port1.onmessage = (e) => got.page.push(e.data);
+      other.port1.onmessage = (e) => got.other.push(e.data);
+      page.port1.start();
+      other.port1.start();
+      await proxy.open();
+      const upstream = MockWebSocket.last;
+      page.port1.postMessage(JSON.stringify({ type: 'stream', id: 'u-3', name: 'big.bin', size: 1024, cancel: true }));
+      page.port1.postMessage(chunkEncode('u-3', new Uint8Array([1])));
+      await until(() => upstream.sentData?.length === 2);
+      // The announcement went up as the page wrote it, the flag included.
+      assert.strictEqual(JSON.parse(upstream.sentData[0]).cancel, true);
+      const refusal = {
+        type: 'callback',
+        id: 'u-3',
+        error: { message: 'Stream big.bin is no longer read', code: 499 },
+      };
+      upstream.dispatchMessage(JSON.stringify(refusal));
+      await until(() => got.page.length === 1);
+      assert.deepStrictEqual(JSON.parse(got.page[0]), refusal);
+      // What the page's writable answers with: the terminate goes up, and
+      // the upload is over — a chunk behind it is dropped.
+      page.port1.postMessage(JSON.stringify({ type: 'stream', id: 'u-3', status: 'terminate' }));
+      await until(() => upstream.sentData.length === 3);
+      assert.deepStrictEqual(JSON.parse(upstream.sentData[2]), { type: 'stream', id: 'u-3', status: 'terminate' });
+      page.port1.postMessage(chunkEncode('u-3', new Uint8Array([2])));
+      await tick();
+      await tick();
+      assert.strictEqual(upstream.sentData.length, 3);
+      assert.deepStrictEqual(got.other, [], 'another page heard of an upload that was not its own');
+    } finally {
+      proxy.close();
+      for (const port of [page.port1, page.port2, other.port1, other.port2]) port.close();
+    }
+  });
+
+  await t.test(
+    "a page that lets go of a server stream says so upstream, and the stream's terminate reaches every page",
+    async () => {
+      savedSelf = globalThis.self;
+      globalThis.self = createSwEnv();
+      const proxy = new WrpcClientProxy();
+      const pages = [new MessageChannel(), new MessageChannel()];
+      const got = pages.map(() => []);
+      try {
+        pages.forEach(({ port1, port2 }, i) => {
+          globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
+          port1.onmessage = (e) => got[i].push(e.data);
+          port1.start();
+        });
+        await proxy.open();
+        const upstream = MockWebSocket.last;
+        upstream.dispatchMessage(
+          JSON.stringify({ type: 'stream', id: 's-3', name: 'live.bin', size: 1024, cancel: true }),
+        );
+        await until(() => got.every((messages) => messages.length === 1));
+        // Every page was handed the announcement as the server wrote it.
+        for (const messages of got) assert.strictEqual(JSON.parse(messages[0]).cancel, true);
+        const cancel = {
+          type: 'callback',
+          id: 's-3',
+          error: { message: 'Stream live.bin is no longer read', code: 499 },
+        };
+        pages[0].port1.postMessage(JSON.stringify(cancel));
+        await until(() => upstream.sentData?.length === 1);
+        assert.deepStrictEqual(JSON.parse(upstream.sentData[0]), cancel);
+        // The server's answer is the stream's terminate — for every page that
+        // holds the stream, not for the one that spoke: its callback took no
+        // slot for the id.
+        upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 's-3', status: 'terminate' }));
+        await until(() => got.every((messages) => messages.length === 2));
+        for (const messages of got) {
+          assert.deepStrictEqual(JSON.parse(messages[1]), { type: 'stream', id: 's-3', status: 'terminate' });
+        }
+      } finally {
+        proxy.close();
+        for (const { port1, port2 } of pages) {
+          port1.close();
+          port2.close();
+        }
+      }
+    },
+  );
+
   await t.test('a lost upstream ends the server streams the pages were reading', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();

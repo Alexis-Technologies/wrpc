@@ -231,9 +231,12 @@ class WrpcClientProxy extends Emitter {
     } else if (packet.type === 'stream') this.#uploads.set(packet.id, port);
     await this.#upstream();
     // A stream's end is answered by nothing: the slot its announcement took
-    // goes with it.
+    // goes with it. Neither is a callback — the page's answer to an ask, or
+    // its word that it no longer reads a server stream: a slot taken for
+    // that id would send the stream's terminate to this page alone, when
+    // the stream went to every page.
     if (ending) this.#pending.delete(packet.id);
-    else this.#pending.set(packet.id, port);
+    else if (packet.type !== 'callback') this.#pending.set(packet.id, port);
     if (packet.type === 'subscribe') this.#feeds.add(packet.id);
     else if (packet.type === 'call') this.#calls.add(packet.id);
     // What the page wrote goes upstream as it is: a frame stays a frame —
