@@ -133,21 +133,21 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 88.5 KB | **29.7 KB** | 30.0 KB |
-| `@alexify/wrpc` — node (client + server) | 310.0 KB | 104.2 KB | — |
-| `@alexify/wrpc/ws` (WebSocket engine) | 32.9 KB | 11.6 KB | — |
-| `@alexify/wrpc/engine` (engine port) | 33.5 KB | 11.8 KB | — |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 88.6 KB | **29.8 KB** | 30.0 KB |
+| `@alexify/wrpc` — node (client + server) | 310.3 KB | 104.4 KB | — |
+| `@alexify/wrpc/ws` (WebSocket engine) | 33.1 KB | 11.7 KB | — |
+| `@alexify/wrpc/engine` (engine port) | 33.7 KB | 11.9 KB | — |
 | `@alexify/wrpc/uws` (uWebSockets.js adapter) | 44.7 KB | 16.6 KB | — |
-| `@alexify/wrpc/fastify` | 251.5 KB | 86.3 KB | — |
-| `@alexify/wrpc/express` | 237.9 KB | 81.1 KB | — |
+| `@alexify/wrpc/fastify` | 251.7 KB | 86.4 KB | — |
+| `@alexify/wrpc/express` | 238.1 KB | 81.2 KB | — |
 | `@alexify/wrpc/scaling` (rooms backplane) | 5.5 KB | 2.2 KB | — |
 | `@alexify/wrpc/broker` (broker core, memory broker) | 173.1 KB | 59.7 KB | — |
 | `@alexify/wrpc/broker/redis` | 31.8 KB | 11.9 KB | — |
 | `@alexify/wrpc/broker/nats` | 30.3 KB | 11.3 KB | — |
 | `@alexify/wrpc/broker/amqp` | 34.2 KB | 12.4 KB | — |
 | `@alexify/wrpc/broker/kafka` | 28.7 KB | 10.6 KB | — |
-| `@alexify/wrpc/sse` — browser (client transport) | 91.8 KB | **30.9 KB** | 31.0 KB |
-| `@alexify/wrpc/sse` — node | 153.6 KB | 51.7 KB | — |
+| `@alexify/wrpc/sse` — browser (client transport) | 91.9 KB | **30.9 KB** | 31.0 KB |
+| `@alexify/wrpc/sse` — node | 153.7 KB | 51.7 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` (token strategies) | 3.9 KB | **1.8 KB** | 2.0 KB |
 | `@alexify/wrpc/deflate` (pure-JS DEFLATE codec) | 10.7 KB | **4.4 KB** | 5.0 KB |
