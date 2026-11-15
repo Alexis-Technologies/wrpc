@@ -552,7 +552,12 @@ const heldBytes = (streams, paced) => {
 // Asked for a chunk of a stream nobody reads (every one of them is kept),
 // and, where the carrier cannot pause, of one whose reader is behind by more
 // than a high-water mark of chunks. A reader that keeps up costs nothing
-// here: the sum is not taken.
+// here: the sum is not taken — 15 million a second whether 1 or 256 streams
+// are open. The sum is an addition per open stream: 14 million a second for
+// a chunk of the one stream nobody reads, 1.1 million with 256 of them
+// (bench/stream-buffer.js) — the cost of a peer that opened every stream it
+// may and read none, and not worth a count kept in step on every chunk of
+// every stream.
 const overCap = (streams, stream, length, cap, paced) => {
   const unread = !stream.consuming;
   if (!stream.streaming || !(unread || (!paced && stream.queued > DEFAULT_HIGH_WATER_MARK))) return null;
