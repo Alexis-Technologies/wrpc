@@ -100,6 +100,12 @@ narrower promise — see
   a missing callback. `writable.cancel(error)` is the method behind it, for
   whoever routes answers to a writable of their own
   (`new WrpcWritable(id, name, size, transport, null, registry)`).
+- **A `terminate` frees its slot for the announcement right behind it.**
+  The stream was forgotten only after its `terminate()` had been awaited,
+  and two packets of one read are dispatched with no turn between them: at
+  `maxStreams` a sender that gave one stream up to open another was
+  answered `429` for a slot it had just freed. A sender that is told to
+  stop does exactly that — it terminates and tries again.
 - **A `terminate` for a stream the server does not hold is not answered.**
   It was answered `400` (`Stream … is not initialized`), so a sender
   backing out of an announcement the server had refused was told it had

@@ -1800,20 +1800,23 @@ class WrpcClient extends Emitter {
     if (status !== 'end' && status !== 'terminate') return;
     // Its sender ended it: nothing is left to stop.
     stream.onCancel = null;
+    if (status === 'terminate') {
+      // Forgotten before anything is awaited: an announcement that reuses
+      // the id may be right behind this packet.
+      this.#streams.delete(id);
+      await stream.terminate();
+      return;
+    }
     // A chunk still being turned into bytes (#handleBinary) is counted
     // before its stream's end is.
     if (this.#converting) await this.#converting;
-    if (status === 'terminate') {
-      await stream.terminate();
-    } else {
-      try {
-        await stream.end();
-      } catch (error) {
-        // Short of its announced size (WrpcReadable.end): said now, and
-        // the stream kept until its reader has come to be told too.
-        this.#escalate(error, 'stream.failed');
-        await stream.close();
-      }
+    try {
+      await stream.end();
+    } catch (error) {
+      // Short of its announced size (WrpcReadable.end): said now, and
+      // the stream kept until its reader has come to be told too.
+      this.#escalate(error, 'stream.failed');
+      await stream.close();
     }
     if (this.#streams.get(id) === stream) this.#streams.delete(id);
   }

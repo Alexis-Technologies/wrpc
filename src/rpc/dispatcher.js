@@ -476,19 +476,23 @@ const handleStream = async (client, packet) => {
       // not even the connection's close could reach it.
       if (status !== 'end' && status !== 'terminate') throw new Error('Stream packet structure error');
       if (status === 'terminate') {
-        // The sender's own end: nobody to tell.
+        // The sender's own end: nobody to tell. Forgotten before anything is
+        // awaited — an announcement right behind this packet is dispatched
+        // in the same turn, and found the slot still taken: at `maxStreams`
+        // a sender that gave one stream up to open another was answered 429.
         stream.onCancel = null;
+        client.streams.delete(id);
         await stream.terminate();
-      } else {
-        try {
-          await stream.end();
-        } catch {
-          // Short of its announced size (WrpcReadable.end): the sender is
-          // told now (tellSender), and the stream kept until its reader has
-          // come to be told too — close() waits for one — where it used to
-          // be kept for good, its reader waiting for the missing bytes.
-          await stream.close();
-        }
+        return;
+      }
+      try {
+        await stream.end();
+      } catch {
+        // Short of its announced size (WrpcReadable.end): the sender is
+        // told now (tellSender), and the stream kept until its reader has
+        // come to be told too — close() waits for one — where it used to
+        // be kept for good, its reader waiting for the missing bytes.
+        await stream.close();
       }
       if (client.streams.get(id) === stream) client.streams.delete(id);
       return;

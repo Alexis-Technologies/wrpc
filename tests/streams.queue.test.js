@@ -356,3 +356,26 @@ test('a carrier with no socket to pause: a reader that is behind is held to maxS
   transport.close();
   await rpc.close();
 });
+
+// The terminate of a stream was awaited before the stream was forgotten, and
+// the packet behind it is dispatched in the same turn: at `maxStreams` a
+// sender that gave one stream up to open another was answered 429 for a
+// slot it had just freed. A sender told to stop does exactly that.
+test('a terminate frees its slot for the announcement right behind it', async (t) => {
+  const { url } = await bootServer(t, { router: router(), maxStreams: 2 });
+  const peer = await rawPeer(t, url);
+  peer.announce('one', 10);
+  peer.announce('two', 10);
+  await peer.settle();
+  // Two frames written back to back.
+  peer.end('one', 'terminate');
+  peer.announce('three', 10);
+  await peer.settle();
+  assert.strictEqual(peer.answer('three'), undefined, 'the slot a terminate freed was still counted');
+  peer.call('h', 'files/held');
+  await waitFor(() => peer.answer('h'), 'held');
+  assert.deepStrictEqual(
+    peer.answer('h').result.map((stream) => stream.id),
+    ['two', 'three'],
+  );
+});
