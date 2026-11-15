@@ -11,10 +11,21 @@ const MAX_HIGH_WATER_MARK = 1000;
 // What writeAll() writes at a time: what a browser's blob.stream() hands the
 // Blob uploader, and under every carrier's message limit.
 const CHUNK_SIZE = 64 * 1024;
+// How far the head of a readable's queue runs before what is left is moved
+// down to the front of its array (see pull()).
+const COMPACT_AT = 1024;
 
 class WrpcReadable extends Emitter {
   #consuming = false;
-  queue = [];
+  // What waits for the reader, read from `#head`: the chunks before it were
+  // taken. A cursor, not `shift()` — how long this gets is the SENDER's
+  // choice (a stream nobody reads yet keeps every chunk, and a megabyte a
+  // byte at a time is a million of them), and past a few thousand elements
+  // every `shift()` copies the rest: a million queued chunks read back that
+  // way stalled the event loop for 350 seconds. 229 thousand chunks a second
+  // against 36 million at 65,536 queued (bench/stream-queue.js).
+  #chunks = [];
+  #head = 0;
   streaming = true;
   status = 'active';
   bytesRead = 0;
@@ -48,6 +59,17 @@ class WrpcReadable extends Emitter {
     return this.#consuming;
   }
 
+  // How many chunks wait for the reader.
+  get queued() {
+    return this.#chunks.length - this.#head;
+  }
+
+  // The chunks that wait, as an array of their own: a snapshot, built when
+  // asked — what the stream holds is not reachable through it.
+  get queue() {
+    return this.#chunks.slice(this.#head);
+  }
+
   // The high-water mark applies only once a consumer attached: before that
   // nobody emits PULL_EVENT, so blocking here would deadlock producers whose
   // consumer starts from a later packet on the same paused socket (the
@@ -65,14 +87,14 @@ class WrpcReadable extends Emitter {
     if (this.bytesReceived > this.size) {
       throw this.fail(`Stream ${this.name} exceeds its announced size of ${this.size} bytes`);
     }
-    while (this.#consuming && this.queue.length > this.highWaterMark) {
+    while (this.#consuming && this.queued > this.highWaterMark) {
       this.checkStreamLimits();
       await this.waitEvent(PULL_EVENT);
     }
     // Ended while this chunk waited for room.
     if (!this.streaming) return;
-    this.queue.push(data);
-    if (this.queue.length === 1) this.emit(PUSH_EVENT);
+    this.#chunks.push(data);
+    if (this.queued === 1) this.emit(PUSH_EVENT);
     return data;
   }
 
@@ -180,7 +202,8 @@ class WrpcReadable extends Emitter {
     if (!this.streaming) return;
     this.streaming = false;
     this.status = status;
-    this.queue.length = 0;
+    this.#chunks.length = 0;
+    this.#head = 0;
     const { onCancel } = this;
     this.onCancel = null;
     if (onCancel && status !== 'closed') onCancel(this.error ?? reason);
@@ -189,7 +212,7 @@ class WrpcReadable extends Emitter {
   }
 
   async read() {
-    if (this.queue.length > 0) return this.pull();
+    if (this.queued > 0) return this.pull();
     // A reader with nothing to read is a reader all the same, and a close()
     // may be waiting for one: an empty stream's, a failed stream's.
     if (!this.#consuming) {
@@ -202,11 +225,26 @@ class WrpcReadable extends Emitter {
     return this.pull();
   }
 
+  // The slot is let go of as it is read. The array is emptied when the head
+  // reaches its end — what a stream that is being read does every few
+  // chunks — and what is left is moved down once the head has passed half of
+  // a long one, so a queue that never runs dry does not grow by what was
+  // read.
   pull() {
     this.#consuming = true;
-    const data = this.queue.shift();
+    const chunks = this.#chunks;
     /* c8 ignore next -- read()/waitEvent(PUSH_EVENT) callers already guard against an empty queue */
-    if (!data) return data;
+    if (this.#head === chunks.length) return undefined;
+    const data = chunks[this.#head];
+    chunks[this.#head++] = undefined;
+    if (this.#head === chunks.length) {
+      chunks.length = 0;
+      this.#head = 0;
+    } else if (this.#head >= COMPACT_AT && this.#head * 2 >= chunks.length) {
+      chunks.copyWithin(0, this.#head);
+      chunks.length -= this.#head;
+      this.#head = 0;
+    }
     this.bytesRead += data.length;
     this.emit(PULL_EVENT);
     return data;

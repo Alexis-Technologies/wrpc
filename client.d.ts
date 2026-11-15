@@ -153,7 +153,14 @@ export class WrpcReadable extends Emitter {
   id: string;
   name: string;
   size: number;
-  queue: Array<ArrayBufferView>;
+  /**
+   * The chunks that wait for the reader, oldest first: a **snapshot**, built
+   * when read — the stream's own queue is not reachable through it. Use
+   * `queued` for the count.
+   */
+  readonly queue: Array<ArrayBufferView>;
+  /** How many chunks wait for the reader. */
+  readonly queued: number;
   /** False once the stream is over — closed, terminated or failed. Nothing pushed after that is kept. */
   streaming: boolean;
   /** `'active'`, `'closed'` (every announced byte was read) or `'terminated'` (cut short — see `error`). */

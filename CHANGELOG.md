@@ -153,6 +153,21 @@ narrower promise — see
 
 ### Security
 
+- **Reading a long queue back no longer stalls the event loop.** A
+  readable took its chunks with `queue.shift()`, and how long that queue
+  gets is the sender's choice: a stream nobody reads yet keeps every chunk,
+  and a megabyte sent a byte at a time is a million of them. Past a few
+  thousand elements every `shift()` copies the rest of the array, so
+  reading N queued chunks cost N² / 2 moves — on microtasks, with no turn
+  of the event loop in between. A peer that sent a million one-byte chunks
+  (9 MiB on the wire, 0.95 MiB as `maxStreamBuffer` counted it) into a
+  stream and then called a handler that reads it stalled the whole server
+  for 350 seconds; a server could do the same to a page. The queue is read
+  through a head cursor now: 2 million chunks a second whether 32 or
+  262,144 are queued, where 262,144 used to read back at 11,748 a second
+  (`bench/stream-queue.js`). `readable.queue` is therefore a **snapshot** —
+  an array built when it is read, what it always looked like to a reader of
+  it — and no longer the stream's own array; `readable.queued` is the count.
 - **A readable that is over keeps nothing.** `WrpcReadable.push()` never
   looked at `streaming`: after `terminate()` (or `close()`) every chunk
   the peer still sent was queued until its `end` deleted the stream — a
