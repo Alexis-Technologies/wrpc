@@ -435,4 +435,19 @@ class WrpcWritable extends Emitter {
   }
 }
 
-module.exports = { WrpcReadable, WrpcWritable };
+// What a set of readables holds for readers that have not come yet: the
+// bytes sent into the streams nobody reads. Summed when asked, over a
+// connection's open streams (`maxStreams` of them at most) and only for a
+// chunk of a stream that has no reader — a count kept in step would need
+// every readable to report its first read and its end back, for a sum that
+// is one addition per open stream. One function for whoever feeds readables
+// and caps what they hold: the server's dispatcher, a client.
+const heldBytes = (streams) => {
+  let bytes = 0;
+  for (const stream of streams.values()) {
+    if (stream.streaming && !stream.consuming) bytes += stream.bytesReceived;
+  }
+  return bytes;
+};
+
+module.exports = { WrpcReadable, WrpcWritable, heldBytes };

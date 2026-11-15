@@ -20,59 +20,7 @@ const { WrpcClient } = require('../src/client.js');
 const { defineRouter, procedure, WrpcError } = require('../index.js');
 const { bootServer, connectClient, waitFor } = require('./helpers/server.js');
 const { recorder } = require('./helpers/recorder.js');
-
-const KIB = 1024;
-const bytes = (length, fill = 1) => new Uint8Array(length).fill(fill);
-const tick = () => new Promise((resolve) => setImmediate(resolve));
-
-// What a promise did within `ms`. A hang is an answer here — 'pending' —
-// instead of a test that times out with nothing to read.
-const outcome = async (promise, ms = 500) => {
-  const controller = new AbortController();
-  const result = await Promise.race([
-    Promise.resolve(promise).then(
-      (value) => ({ status: 'fulfilled', value }),
-      (error) => ({ status: 'rejected', error }),
-    ),
-    timers.setTimeout(ms, { status: 'pending' }, { signal: controller.signal }).catch(() => null),
-  ]);
-  controller.abort();
-  return result;
-};
-
-const drain = async (readable) => {
-  let size = 0;
-  for await (const chunk of readable) size += chunk.length;
-  return size;
-};
-
-// A raw protocol peer: what a sender that does not keep its word looks like.
-const rawPeer = async (t, url) => {
-  const socket = new WebSocket(url, ['wrpc.v2']);
-  socket.binaryType = 'arraybuffer';
-  t.after(() => socket.close());
-  const answers = [];
-  socket.addEventListener('message', ({ data }) => {
-    if (typeof data === 'string') answers.push(JSON.parse(data));
-  });
-  await new Promise((resolve) => socket.addEventListener('open', resolve, { once: true }));
-  const send = (packet) => socket.send(JSON.stringify(packet));
-  return {
-    answers,
-    send,
-    announce: (id, size, name = 'blob') => send({ type: 'stream', id, name, size }),
-    chunk: (id, payload) => socket.send(chunkEncode(id, payload)),
-    end: (id, status = 'end') => send({ type: 'stream', id, status }),
-    call: (id, method, args = {}) => send({ type: 'call', id, method, args }),
-    answer: (id) => answers.find((packet) => packet.id === id),
-    // A round trip: everything sent before it was dispatched by the server.
-    async settle() {
-      const id = `ping-${answers.length}-${Math.random()}`;
-      send({ type: 'call', id, method: 'files/ping', args: {} });
-      await waitFor(() => answers.some((packet) => packet.id === id), 'the round trip');
-    },
-  };
-};
+const { KIB, bytes, tick, outcome, drain, rawPeer } = require('./helpers/streams.js');
 
 // The streams a handler was handed, kept by the test: a stream is forgotten
 // by its connection at its end, and what it still holds then is the point.
@@ -1188,6 +1136,9 @@ test('server: the word goes out once, only to a sender that asked, only while by
     peer.end('never-announced');
     await waitFor(() => peer.answer('never-announced'), 'the end of an unknown stream');
     assert.strictEqual(peer.answer('never-announced').error.code, 400);
+    // Named by its id alone: an `end` carries no name, and the message used
+    // to read "Stream never-announced/undefined is not initialized".
+    assert.strictEqual(peer.answer('never-announced').error.message, 'Stream never-announced is not initialized');
   });
 
   await t.test('nothing of it is a warning', async () => {

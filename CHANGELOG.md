@@ -140,6 +140,9 @@ narrower promise — see
   stream empty. A chunk that arrives as a `Blob` (a transport that did not
   ask for ArrayBuffers) is converted in arrival order, and its stream's
   `end` waits for it.
+- **An `end` for a stream the server does not hold is named by its id.**
+  The answer read `Stream <id>/undefined is not initialized`: an `end`
+  carries no name.
 - **`read()` on a stream that is over answers `null`** instead of waiting
   for a push that cannot come.
 - **Docs: what `maxPayload` bounds.** The production and security guides

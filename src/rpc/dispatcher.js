@@ -1,7 +1,7 @@
 'use strict';
 
 const { jsonParse } = require('../utils.js');
-const { WrpcReadable } = require('../streams.js');
+const { WrpcReadable, heldBytes } = require('../streams.js');
 const { chunkDecode } = require('../chunks.js');
 const { negotiate } = require('../compression/index.js');
 const { hasBytes, isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
@@ -455,7 +455,8 @@ const tellSender = (client, stream, asked) => (reason) => {
 
 const handleStream = async (client, packet) => {
   const { id, name, size, status } = packet;
-  const tag = `${id}/${name}`;
+  // An `end` or a `terminate` names no stream: only its id.
+  const tag = name === undefined ? id : `${id}/${name}`;
   try {
     // Request/response transports cannot carry streams; without this the
     // call would register a stream and never answer, hanging the request
@@ -512,19 +513,6 @@ const handleStream = async (client, packet) => {
   }
 };
 
-// What a connection holds in streams nobody reads yet. Summed when asked,
-// over at most `maxStreams` readables and only for a chunk of a stream that
-// has no reader: a count kept in step would need every readable to report
-// its first read and its end back, for a sum that is one addition per open
-// stream.
-const unreadBytes = (client) => {
-  let bytes = 0;
-  for (const stream of client.streams.values()) {
-    if (stream.streaming && !stream.consuming) bytes += stream.bytesReceived;
-  }
-  return bytes;
-};
-
 const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS) => {
   // A 0x00 first byte is never a chunk (an id is at least one byte): an
   // attachments frame is a packet with its bytes, dispatched as one.
@@ -544,7 +532,11 @@ const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS
     // `maxStreamBuffer` across the connection's unread streams, the one
     // this chunk is for fails: let go of, its sender answered 413
     // (tellSender), its reader — if one ever comes — told why.
-    if (!upstream.consuming && upstream.streaming && unreadBytes(client) + payload.length > client.maxStreamBuffer) {
+    if (
+      !upstream.consuming &&
+      upstream.streaming &&
+      heldBytes(client.streams) + payload.length > client.maxStreamBuffer
+    ) {
       upstream.fail('Too many bytes in streams nobody reads yet', 413);
       return void client.log.debug({ event: 'stream.buffer', code: 413, max: client.maxStreamBuffer });
     }
