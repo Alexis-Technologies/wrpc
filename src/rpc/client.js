@@ -219,6 +219,11 @@ class Client extends Emitter {
     this.maxCalls = maxCalls;
     this.maxStreams = maxStreams;
     this.maxStreamBuffer = maxStreamBuffer;
+    // Whether this client's carrier can hold the peer back while a stream's
+    // reader is behind (a socket with pause()): set by whoever attaches the
+    // transport. Where it cannot, what a reader is behind by counts against
+    // `maxStreamBuffer` (heldBytes in streams.js).
+    this.paced = false;
     // Set when the session store could not be asked for this client's
     // token (core #restoreToken): a session procedure answers 503, not 403.
     this.sessionUnavailable = false;

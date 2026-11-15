@@ -454,18 +454,29 @@ class WrpcWritable extends Emitter {
   }
 }
 
-// What a set of readables holds for readers that have not come yet: the
-// bytes sent into the streams nobody reads, and what each chunk of them
-// costs to keep (CHUNK_COST). Summed when asked, over a
-// connection's open streams (`maxStreams` of them at most) and only for a
-// chunk of a stream that has no reader — a count kept in step would need
-// every readable to report its first read and its end back, for a sum that
-// is one addition per open stream. One function for whoever feeds readables
-// and caps what they hold: the server's dispatcher, a client.
-const heldBytes = (streams) => {
+// What a set of readables holds for readers that have not taken it: the
+// bytes sent into them and not read yet, and what each queued chunk costs
+// to keep (CHUNK_COST).
+//
+// `paced` says that the carrier can hold its peer back — a socket that is
+// paused while a chunk waits for room. A stream that has a reader is then
+// bounded by its high-water mark and is not counted: it is paced, not held.
+// Where the carrier cannot (uWebSockets.js, a WebRTC channel, a broker
+// session, a browser's WebSocket) whatever the peer sends arrives, reader or
+// not, so what a stream's reader is behind by counts like an unread
+// stream's — it used to be bounded by nothing but a thousand chunks.
+//
+// Summed when asked, over a connection's open streams (`maxStreams` of them
+// at most) and only for a chunk of a stream whose reader is not keeping up —
+// a count kept in step would need every readable to report its reads and
+// its end back, for a sum that is one addition per open stream. One function
+// for whoever feeds readables and caps what they hold: the server's
+// dispatcher, a client.
+const heldBytes = (streams, paced) => {
   let bytes = 0;
   for (const stream of streams.values()) {
-    if (stream.streaming && !stream.consuming) bytes += stream.bytesReceived + stream.queued * CHUNK_COST;
+    if (!stream.streaming || (paced && stream.consuming)) continue;
+    bytes += stream.bytesReceived - stream.bytesRead + stream.queued * CHUNK_COST;
   }
   return bytes;
 };

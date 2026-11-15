@@ -513,6 +513,10 @@ const handleStream = async (client, packet) => {
   }
 };
 
+// How many chunks a reader has waiting before it counts as behind: a
+// readable's default high-water mark.
+const BEHIND = 32;
+
 const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS) => {
   // A 0x00 first byte is never a chunk (an id is at least one byte): an
   // attachments frame is a packet with its bytes, dispatched as one.
@@ -534,13 +538,24 @@ const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS
     // `maxStreamBuffer` across the connection's unread streams, the one
     // this chunk is for fails: let go of, its sender answered 413
     // (tellSender), its reader — if one ever comes — told why.
+    //
+    // A stream that HAS a reader is held back by it where the carrier can
+    // pause (`client.paced`). Where it cannot, a reader that is behind is
+    // held to the same cap — the alternative was a queue a thousand chunks
+    // long, of chunks as large as the peer liked.
+    const unread = !upstream.consuming;
     if (
-      !upstream.consuming &&
       upstream.streaming &&
-      heldBytes(client.streams) + payload.length + CHUNK_COST > client.maxStreamBuffer
+      (unread || (!client.paced && upstream.queued > BEHIND)) &&
+      heldBytes(client.streams, client.paced) + payload.length + CHUNK_COST > client.maxStreamBuffer
     ) {
-      upstream.fail('Too many bytes in streams nobody reads yet', 413);
-      return void client.log.debug({ event: 'stream.buffer', code: 413, max: client.maxStreamBuffer });
+      upstream.fail(
+        unread
+          ? 'Too many bytes in streams nobody reads yet'
+          : `Stream ${upstream.name} is too far ahead of its reader`,
+        413,
+      );
+      return void client.log.debug({ event: 'stream.buffer', code: 413, max: client.maxStreamBuffer, unread });
     }
     // Rejects for the chunk that takes a stream past its announced size:
     // answered where it failed, once — the stream stays, failed, and drops

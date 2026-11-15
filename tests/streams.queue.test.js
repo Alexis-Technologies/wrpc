@@ -170,7 +170,7 @@ test('what a chunk costs to hold counts against maxStreamBuffer, not its bytes a
   assert.strictEqual(peer.answer('plain'), undefined, 'fifteen 64 KiB chunks did not fit under a megabyte');
 });
 
-test('heldBytes sums the streams nobody reads, each chunk with its cost', async () => {
+test('heldBytes sums what readers have not taken, each queued chunk with its cost', async () => {
   const streams = new Map();
   const unread = new WrpcReadable('a', 'unread', 100);
   const read = new WrpcReadable('b', 'read', 100);
@@ -183,9 +183,11 @@ test('heldBytes sums the streams nobody reads, each chunk with its cost', async 
   await read.push(new Uint8Array(40));
   await over.push(new Uint8Array(50));
   await over.terminate();
-  // Two chunks of thirty bytes: the one being read is paced by its reader,
-  // the one that is over holds nothing.
-  assert.strictEqual(heldBytes(streams), 30 + 2 * CHUNK_COST);
+  // Where the carrier paces a stream that has a reader, only the unread one
+  // counts: two chunks of thirty bytes. The one that is over holds nothing.
+  assert.strictEqual(heldBytes(streams, true), 30 + 2 * CHUNK_COST);
+  // Where it cannot, what the reader is behind by counts as well.
+  assert.strictEqual(heldBytes(streams, false), 30 + 2 * CHUNK_COST + 40 + CHUNK_COST);
 });
 
 // A carrier `RpcServer.attach` binds — a WebRTC channel, a broker session —
@@ -303,6 +305,54 @@ test('a carrier with no socket to pause: a stalled handler is answered, not left
   const told = transport.sent.filter((data) => typeof data === 'string' && JSON.parse(data).id === 'up');
   assert.strictEqual(told.length, 1);
   assert.strictEqual(JSON.parse(told[0]).error.code, 413);
+  transport.close();
+  await rpc.close();
+});
+
+// `maxStreamBuffer` counted the streams nobody reads. One that HAS a reader
+// was left to its high-water mark — which holds the sender back only where
+// the carrier can be paused. Over `attach()` (and on uWebSockets.js) a
+// handler that read one chunk and stalled held 116 MiB past a 64 MiB cap.
+test('a carrier with no socket to pause: a reader that is behind is held to maxStreamBuffer', async () => {
+  let reading;
+  const started = new Promise((resolve) => {
+    reading = resolve;
+  });
+  const rpc = new RpcServer({
+    logger: false,
+    maxStreamBuffer: 1 * MIB,
+    router: defineRouter({
+      files: {
+        stall: procedure({
+          access: 'public',
+          handler: async (context, { id }) => {
+            const stream = context.client.getStream(id);
+            await stream.read();
+            reading(stream);
+            await new Promise(() => {}); // one chunk, and the sink never comes back
+          },
+        }),
+      },
+    }),
+  });
+  const transport = new Attached();
+  const peer = rpc.attach(transport, { session: {} });
+  assert.strictEqual(peer.paced, false);
+  transport.emit('packet', JSON.stringify({ type: 'stream', id: 'up', name: 'big', size: 64 * MIB }));
+  transport.emit('chunk', chunkEncode('up', new Uint8Array(64 * KIB)));
+  transport.emit('packet', JSON.stringify({ type: 'call', id: 'c', method: 'files/stall', args: { id: 'up' } }));
+  const stream = await started;
+  let sent = 0;
+  while (stream.streaming && sent < 200) {
+    transport.emit('chunk', chunkEncode('up', new Uint8Array(64 * KIB)));
+    sent++;
+  }
+  // Refused once what its reader is behind by passed a megabyte: some
+  // sixteen chunks of 64 KiB, not the thousand its queue would have taken.
+  assert.ok(sent <= 40, `${sent} chunks of 64 KiB were taken under a 1 MiB cap`);
+  assert.deepStrictEqual([stream.error.code, stream.queued], [413, 0]);
+  assert.match(stream.error.message, /too far ahead of its reader/);
+  assert.strictEqual(transport.answer('up').error.code, 413);
   transport.close();
   await rpc.close();
 });

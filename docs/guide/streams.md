@@ -326,7 +326,18 @@ nobody reads yet. The stream whose chunk goes past it fails — its bytes let
 go of, its sender answered `413` (`stream.buffer` in the log, at debug), its
 reader, if one comes, thrown the same — and the connection's other streams
 keep what they had. A stream being read is not counted, however large: it is
-paced, not held.
+paced, not held — **where the carrier can hold the sender back**. The built-in
+WebSocket engine and WebTransport pause the socket while a chunk waits for
+room. uWebSockets.js has no such pause, and neither has a WebRTC data channel
+or a broker session: there, whatever the peer sends arrives, reader or not, so
+what a stream's reader is behind by counts against `maxStreamBuffer` too, and
+the stream that goes past it fails with `413` (`Stream … is too far ahead of
+its reader`) — on both ends, instead of being read with a hole in it. A
+handler that writes each chunk to a slow sink is the case to size the option
+for on those carriers.
+
+A chunk counts as its bytes plus 256: holding one costs a view and a slot
+whatever it carries, and the size of a chunk is the peer's choice.
 
 So issue the call **before** the upload, as above. The other order — the
 whole upload first, then the call that reads it — works for as long as the

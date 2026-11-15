@@ -852,6 +852,14 @@ export class Client extends Emitter {
   maxStreams: number;
   /** Bytes the peer may have sent into streams nobody reads yet; past it the stream fails with 413. */
   maxStreamBuffer: number;
+  /**
+   * True when the carrier can hold the peer back while a stream's reader is
+   * behind — a socket that is paused (the built-in WebSocket engine,
+   * WebTransport). False on uWebSockets.js and on whatever `attach()` binds
+   * (a WebRTC channel, a broker session): there, what a reader is behind by
+   * counts against `maxStreamBuffer` like an unread stream's.
+   */
+  paced: boolean;
   /** True when the session store could not be asked for this client's token: a session procedure answers 503, not 403. */
   sessionUnavailable: boolean;
   /** Context uuids and server-side stream ids; injectable via RpcServerOptions. */

@@ -975,6 +975,8 @@ class RpcServer extends Emitter {
     // refusal: a client configured to encrypt never accepts plaintext, and
     // under `required` neither does this server.
     const raw = socket;
+    // Asked of the engine's own socket: a SealedSocket always has a pause().
+    const paced = typeof socket.pause === 'function';
     const sealed = this.#sealSocket(socket, meta);
     if (sealed !== null) socket = sealed;
     const transport = new (socketTransportFor(meta.kind))(socket, meta);
@@ -1050,7 +1052,10 @@ class RpcServer extends Emitter {
 
     // Receive-side flow control: while binary chunks are being consumed
     // (WrpcReadable.push applies its high-water mark), stop reading from
-    // the socket so the pressure reaches the peer through TCP.
+    // the socket so the pressure reaches the peer through TCP. An engine
+    // whose socket has no pause() (uWebSockets.js) cannot: there a reader
+    // that is behind is held to `maxStreamBuffer` instead (handleBinary).
+    client.paced = paced;
     let inflight = 0;
     const done = () => {
       inflight--;

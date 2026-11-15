@@ -188,6 +188,21 @@ narrower promise — see
   (`bench/stream-queue.js`). `readable.queue` is therefore a **snapshot** —
   an array built when it is read, what it always looked like to a reader of
   it — and no longer the stream's own array; `readable.queued` is the count.
+- **On a carrier that cannot pause, a reader that is behind is held to
+  `maxStreamBuffer`.** The cap counted the streams nobody reads; one that
+  has a reader was left to its high-water mark — which holds the sender
+  back only where the socket can be paused. uWebSockets.js has no pause,
+  and neither has a WebRTC data channel or a broker session
+  (`RpcServer.attach`): there a handler that read one chunk and stalled had
+  everything the peer sent queued behind it — 50.7 MiB on uws, 116 MiB past
+  a 64 MiB cap over `attach()`, bounded by nothing but a thousand chunks of
+  whatever size the peer chose. What a stream's reader is behind by now
+  counts against the cap on those carriers, and the stream that goes past
+  it fails with `413` (`Stream … is too far ahead of its reader`), handler
+  and sender both told. Where the carrier can pause — the built-in
+  WebSocket engine, WebTransport — nothing changes: a stream being read is
+  paced, not counted. New: `client.paced` on the server-side `Client` says
+  which it is.
 - **`maxStreamBuffer` counts what a chunk costs to hold, not its bytes
   alone — and a chunk of no bytes is not kept.** The cap summed payload
   bytes, and the size of a chunk is the peer's choice. Under a 1 MiB cap, a

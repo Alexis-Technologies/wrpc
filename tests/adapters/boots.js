@@ -68,6 +68,7 @@ const rpcOptions = (options) => ({
   http: options.http,
   encryption: options.encryption,
   querystring: options.querystring,
+  maxStreamBuffer: options.maxStreamBuffer,
   logger: false,
 });
 
