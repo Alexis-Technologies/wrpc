@@ -140,6 +140,21 @@ narrower promise — see
   a missing callback. `writable.cancel(error)` is the method behind it, for
   whoever routes answers to a writable of their own
   (`new WrpcWritable(id, name, size, transport, null, registry)`).
+- **Behind a worker, a server stream nobody is left to read is stopped —
+  and one tab's copy is that tab's alone.** `WrpcClientProxy` hands a
+  server-opened stream to every tab (it cannot know which one asked), and
+  kept doing so with nobody there: the tab that was reading closed, or
+  every tab did, and the worker went on taking the whole download from the
+  server and dropping it chunk by chunk. It tracks the tabs that hold each
+  stream now. When the last of them leaves — or a stream is announced with
+  no tab open — it tells the server what a tab's own reader would
+  (`callback` `499` on the stream's id, to a sender that asked), once. A
+  tab that connects after the announcement is sent none of the stream: its
+  chunks and its end were errors there. A stream's end for an id no tab
+  holds or waits for goes to nobody, where it went to every tab. And a tab
+  that never read its copy drops it without a word to the server — swept
+  after `streamIdleTimeout`, or at its `maxStreamBuffer` — so one tab's
+  housekeeping does not end the download another tab is reading.
 - **`createStream()` refuses a name or a size that is none — on both
   ends, where the mistake is made.** A server-side
   `context.client.createStream()` threw a plain `Error` (`Stream size is

@@ -172,6 +172,16 @@ packet went. The receiver's word that a stream is
 [no longer wanted](./streams#ended-by-the-receiver) is routed the same way:
 the server's reaches the tab that announced the upload, a tab's goes up, and
 the stream's end comes back to every tab that was handed it.
+
+A server-opened stream is handed to **every tab that was open when it was
+announced** — the worker cannot know which of them asked for it — so each has
+a copy until it reads it or drops it. A tab that never reads its copy lets it
+go by itself: after [`streamIdleTimeout`](./streams#limits), or at its
+`maxStreamBuffer`, and without a word to the server — the tab that is reading
+goes on. A tab that opens later is sent none of a stream it never heard
+announced. And once **no** tab that held the stream is left, the worker tells
+the server to stop sending it, as a tab's own reader would.
+
 Pick the worker by what you need from it: a **Service Worker** also serves the
 page offline and outlives a reload, at the price of registration and a
 lifecycle the browser controls; a **SharedWorker** is only the shared socket —
@@ -190,7 +200,8 @@ either, on an engine that never fires the event, keeps its entry until the
 worker goes — as it always has for a Service Worker. A release cancels what
 the tab was still waiting for upstream (its calls, its subscriptions), and
 an answer arriving for a tab that left is dropped, never handed to the
-others; events and server-opened streams still reach every tab.
+others; events still reach every tab, and a server-opened stream every tab
+that was there when it was announced.
 :::
 
 The client also listens to `online`/`offline`: going offline stops the

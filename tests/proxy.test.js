@@ -250,9 +250,12 @@ test('WrpcClientProxy', async (t) => {
     await new Promise((resolve) => setImmediate(resolve));
     assert.deepStrictEqual(JSON.parse(received.at(-1)), { type: 'event', name: 'unit/name', data: 1 });
 
+    // The end of a stream no page holds and no page waits for is nobody's:
+    // it used to go to every page, each of which had never heard of it.
+    const before = received.length;
     MockWebSocket.last.dispatchMessage(JSON.stringify({ type: 'stream', id: 'no-such-call', status: 'end' }));
     await new Promise((resolve) => setImmediate(resolve));
-    assert.deepStrictEqual(JSON.parse(received.at(-1)), { type: 'stream', id: 'no-such-call', status: 'end' });
+    assert.strictEqual(received.length, before);
 
     proxy.close();
     port1.close();
@@ -911,6 +914,169 @@ test('WrpcClientProxy', async (t) => {
       }
     },
   );
+
+  // A server stream goes to the pages that were there when it was announced,
+  // and the worker knows which of them are left. It forwarded every chunk to
+  // nobody, for as long as the server liked to send, once its pages had gone.
+  await t.test('a server stream nobody is left to read is cancelled upstream, once, by the worker', async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const proxy = new WrpcClientProxy();
+    const pages = [new MessageChannel(), new MessageChannel()];
+    const got = pages.map(() => []);
+    try {
+      pages.forEach(({ port1, port2 }, i) => {
+        globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
+        port1.onmessage = (e) => got[i].push(e.data);
+        port1.start();
+      });
+      await proxy.open();
+      const upstream = MockWebSocket.last;
+      const sentUp = () => (upstream.sentData ?? []).filter((data) => typeof data === 'string').map(JSON.parse);
+      upstream.dispatchMessage(
+        JSON.stringify({ type: 'stream', id: 'd-1', name: 'big.bin', size: 1024, cancel: true }),
+      );
+      upstream.dispatchMessage(chunkEncode('d-1', new Uint8Array([1])).buffer);
+      await until(() => got.every((messages) => messages.length === 2));
+      // One page leaves: the other still holds the stream.
+      pages[0].port1.postMessage({ type: 'wrpc:close' });
+      await tick();
+      await tick();
+      assert.deepStrictEqual(sentUp(), [], 'a download one page still held was cancelled');
+      upstream.dispatchMessage(chunkEncode('d-1', new Uint8Array([2])).buffer);
+      await until(() => got[1].length === 3);
+      assert.strictEqual(got[0].length, 2, 'a page that left was sent more of the stream');
+      // The last one leaves: the server is told, as a page tells it.
+      pages[1].port1.postMessage({ type: 'wrpc:close' });
+      await until(() => sentUp().length === 1);
+      assert.deepStrictEqual(sentUp()[0], {
+        type: 'callback',
+        id: 'd-1',
+        error: { message: 'Stream is no longer read', code: 499 },
+      });
+      // What is still on its way goes nowhere, and is not answered again.
+      upstream.dispatchMessage(chunkEncode('d-1', new Uint8Array([3])).buffer);
+      upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 'd-1', status: 'terminate' }));
+      await tick();
+      await tick();
+      assert.strictEqual(sentUp().length, 1);
+      assert.strictEqual(got[1].length, 3);
+    } finally {
+      proxy.close();
+      for (const { port1, port2 } of pages) {
+        port1.close();
+        port2.close();
+      }
+    }
+  });
+
+  await t.test(
+    'a server stream announced to no page is cancelled at once; a sender that did not ask hears nothing',
+    async () => {
+      savedSelf = globalThis.self;
+      globalThis.self = createSwEnv();
+      const proxy = new WrpcClientProxy();
+      try {
+        await proxy.open();
+        const upstream = MockWebSocket.last;
+        const sentUp = () => (upstream.sentData ?? []).filter((data) => typeof data === 'string').map(JSON.parse);
+        upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 'd-2', name: 'a.bin', size: 8, cancel: true }));
+        await until(() => sentUp().length === 1);
+        assert.deepStrictEqual(sentUp()[0].error, { message: 'Stream is no longer read', code: 499 });
+        assert.strictEqual(sentUp()[0].id, 'd-2');
+        // 2.0.1 and 1.0 announce without `cancel`: they would log an answer nobody waited for.
+        upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 'd-3', name: 'b.bin', size: 8 }));
+        await tick();
+        await tick();
+        assert.strictEqual(sentUp().length, 1);
+      } finally {
+        proxy.close();
+      }
+    },
+  );
+
+  await t.test('a page that connects after a stream was announced is sent none of it', async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const proxy = new WrpcClientProxy();
+    const early = new MessageChannel();
+    const late = new MessageChannel();
+    const got = { early: [], late: [] };
+    try {
+      globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [early.port2] });
+      early.port1.onmessage = (e) => got.early.push(e.data);
+      early.port1.start();
+      await proxy.open();
+      const upstream = MockWebSocket.last;
+      upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 'd-4', name: 'c.bin', size: 2, cancel: true }));
+      await until(() => got.early.length === 1);
+      globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [late.port2] });
+      late.port1.onmessage = (e) => got.late.push(e.data);
+      late.port1.start();
+      upstream.dispatchMessage(chunkEncode('d-4', new Uint8Array([1, 2])).buffer);
+      upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 'd-4', status: 'end' }));
+      await until(() => got.early.length === 3);
+      await tick();
+      // It never heard of the stream: a chunk and an end of it were two errors there.
+      assert.deepStrictEqual(got.late, []);
+    } finally {
+      proxy.close();
+      for (const port of [early.port1, early.port2, late.port1, late.port2]) port.close();
+    }
+  });
+
+  // Behind a worker every page is sent a server stream, and only the page
+  // that asked reads it. The copy on another page is that page's to drop —
+  // swept, or past its cap — and its drop is nobody else's business: said to
+  // the server, it ended the stream for the page that was reading it.
+  await t.test('a page that drops a copy it never read does not end the stream for the page reading it', async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const proxy = new WrpcClientProxy();
+    // A ServiceWorker as a page sees it: postMessage reaches the worker's `self`.
+    const worker = { postMessage: (data, transfer = []) => globalThis.self.dispatch({ data, ports: transfer }) };
+    const connect = (options) =>
+      WrpcClient.connect('ws://unused', { worker, heartbeat: false, reconnect: false, ...options });
+    const reader = await connect({});
+    const bystander = await connect({ streamIdleTimeout: 20 });
+    const escalated = [];
+    bystander.on('error', (error) => escalated.push(error));
+    try {
+      await proxy.open();
+      const upstream = MockWebSocket.last;
+      const sentUp = () => (upstream.sentData ?? []).filter((data) => typeof data === 'string').map(JSON.parse);
+      upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 'd-5', name: 'd.bin', size: 6, cancel: true }));
+      upstream.dispatchMessage(chunkEncode('d-5', new Uint8Array([1, 2])).buffer);
+      const held = (client) => {
+        try {
+          return client.getStream('d-5');
+        } catch {
+          return null;
+        }
+      };
+      await until(() => held(reader) !== null && held(bystander) !== null);
+      const readable = held(reader);
+      const copy = held(bystander);
+      assert.deepStrictEqual(Array.from(await readable.read()), [1, 2]);
+      // The bystander's copy is swept: failed, on that page alone.
+      const swept = Date.now() + 2000;
+      while (copy.error === null && Date.now() < swept) await new Promise((resolve) => setTimeout(resolve, 10));
+      assert.strictEqual(copy.error.code, 408);
+      await tick();
+      assert.deepStrictEqual(sentUp(), [], 'a page that never read the stream spoke for the one reading it');
+      // And the stream goes on for its reader.
+      upstream.dispatchMessage(chunkEncode('d-5', new Uint8Array([3, 4, 5, 6])).buffer);
+      upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 'd-5', status: 'end' }));
+      assert.deepStrictEqual(Array.from(await readable.read()), [3, 4, 5, 6]);
+      assert.strictEqual(await readable.read(), null);
+      assert.deepStrictEqual([readable.status, readable.error], ['closed', null]);
+      assert.deepStrictEqual(escalated, []);
+    } finally {
+      reader.close();
+      bystander.close();
+      proxy.close();
+    }
+  });
 
   await t.test('a lost upstream ends the server streams the pages were reading', async () => {
     savedSelf = globalThis.self;
