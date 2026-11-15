@@ -717,12 +717,13 @@ class Client extends Emitter {
       log.error({ err: error, event: 'listener.close' });
     });
     for (const stream of this.streams.values()) {
-      if (typeof stream.terminate !== 'function') continue;
-      // Nobody is left to tell that its reader is gone.
+      if (typeof stream.fail !== 'function') continue;
+      // Nobody is left to tell that its reader is gone — and its reader is
+      // told that the rest is not coming: a handler in the middle of an
+      // upload is thrown a 503, where its loop used to stop as if the
+      // stream had ended.
       stream.onCancel = null;
-      Promise.resolve(stream.terminate()).catch((error) => {
-        log.error({ err: error, event: 'stream.terminate', stream: stream.id });
-      });
+      stream.fail('Connection closed', 503);
     }
     this.streams.clear();
     // Each writable leaves at the transport's 'close' by itself; a transport

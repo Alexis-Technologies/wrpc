@@ -476,13 +476,18 @@ const handleStream = async (client, packet) => {
       // not even the connection's close could reach it.
       if (status !== 'end' && status !== 'terminate') throw new Error('Stream packet structure error');
       if (status === 'terminate') {
-        // The sender's own end: nobody to tell. Forgotten before anything is
-        // awaited — an announcement right behind this packet is dispatched
-        // in the same turn, and found the slot still taken: at `maxStreams`
-        // a sender that gave one stream up to open another was answered 429.
+        // The sender's own end: nobody to tell. Forgotten before anything
+        // else — an announcement right behind this packet is dispatched in
+        // the same turn, and found the slot still taken: at `maxStreams` a
+        // sender that gave one stream up to open another was answered 429.
+        //
+        // For its reader it is a FAILURE, not an end: the sender promised
+        // `size` bytes and took the promise back (its source failed, it was
+        // told to stop). A loop that simply stopped let a handler store the
+        // part that had arrived as if it were the whole.
         stream.onCancel = null;
         client.streams.delete(id);
-        await stream.terminate();
+        stream.fail(`Stream ${stream.name} was terminated by its sender`, CANCELLED);
         return;
       }
       try {

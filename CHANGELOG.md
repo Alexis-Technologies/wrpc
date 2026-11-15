@@ -77,6 +77,25 @@ narrower promise — see
   — what the fixes below stand on, typed and documented for whoever feeds
   a readable of their own.
 
+### Changed
+
+- **A stream that is cut short fails for its reader.** `writable.terminate()`
+  and a lost connection were the quiet end: the reader's `for await` simply
+  stopped, with `status` `'terminated'` and nothing thrown. A handler
+  written the way the guide showed it — loop, write each chunk, return —
+  stored the 300 KiB that had arrived of a 1 MiB upload and answered its
+  caller as if it had the file; `pipe()` ended its sink. Both are failures
+  now, like an `end` short of the announced size: the iteration **throws**
+  — `499` (`Stream … was terminated by its sender`) for the sender's
+  `terminate`, `503` (`Connection closed`) for a connection that closed —
+  `toBlob()` rejects, and `pipe()` destroys its sink instead of ending it.
+  On both ends: a handler reading an upload, a page reading a download. The
+  reader's **own** `readable.terminate()` stays quiet — it knows that it
+  stopped. A handler that tolerated a partial stream on purpose now has to
+  catch the error; `readable.bytesRead` is what it got. Nothing changed on
+  the wire. The guide's upload example returns `stream.bytesRead` instead of
+  the announced `stream.size`.
+
 ### Fixed
 
 - **A stream the server refuses reaches its writer.** A server answers a
@@ -144,10 +163,8 @@ narrower promise — see
   failed before anybody read it is kept for its reader, so
   `getStream(id)` answers it and reading it throws the reason, rather than
   `Stream … is not initialized`. On the client the failure is escalated as
-  `stream.failed`. `writable.terminate()` and a disconnect stay the quiet
-  end — the loop stops, `status` is `'terminated'`, `error` is `null`.
-  Nothing changed on the wire, and `tests/interop/` now streams both ways
-  against the published 1.0.
+  `stream.failed`. Nothing changed on the wire, and `tests/interop/` now
+  streams both ways against the published 1.0.
 - **`readable.status` is decided by the first end.** A `close()` after a
   `terminate()` — what `pipe()` did on its way out — renamed a terminated
   stream `'closed'`.

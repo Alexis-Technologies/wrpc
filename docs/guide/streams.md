@@ -44,9 +44,9 @@ receive: procedure({
   handler: async (context, { id }) => {
     const stream = context.client.getStream(id);
     for await (const chunk of stream) {
-      await sink.write(chunk);
+      await sink.write(chunk);          // throws if the stream is cut short
     }
-    return { name: stream.name, size: stream.size };
+    return { name: stream.name, size: stream.bytesRead };
   },
 }),
 ```
@@ -167,14 +167,16 @@ fails if RSS grows with it.
 | Call | Effect |
 | --- | --- |
 | `writable.end()` | Normal end, after exactly `size` bytes. The reader's iteration finishes. |
-| `writable.terminate()` | Abnormal end — the reader stops where it is. |
+| `writable.terminate()` | Abnormal end — the stream **fails** for its reader: the iteration throws `499`. |
 | `readable.close()` | Waits for the announced `size` to be read, then closes. |
 | `readable.terminate()` | Stops now, discarding what is queued — and [tells the sender](#ended-by-the-receiver), which stops sending. |
 | `readable.terminate(message, code?)` | The same, with a reason the sender's writable closes with. |
 
-A disconnect terminates every stream the client held. `readable.status` is
-`'active'`, `'closed'` (every announced byte was read) or `'terminated'`;
-`bytesRead` is what has been consumed so far, against the announced `size`.
+A disconnect fails every stream the connection held — its reader is thrown a
+`503`, as a call in flight is. `readable.status` is `'active'`, `'closed'`
+(every announced byte was read) or `'terminated'` (cut short: `readable.error`
+says why, or is `null` when the reader itself let go); `bytesRead` is what has
+been consumed so far, against the announced `size`.
 
 ### A stream the receiver ended {#ended-by-the-receiver}
 
@@ -303,10 +305,23 @@ sends into that stream is dropped. A stream that failed before anybody read
 it is kept for its reader: `getStream(id)` still answers it, and reading it
 throws the reason.
 
-`writable.terminate()` and a disconnect stay the quiet end — the reader's
-loop simply stops, with `status` `'terminated'` and `error` `null`. A loop
-that ended is therefore not yet a file that arrived: check
-`readable.status === 'closed'` (or `bytesRead === size`) before trusting it.
+A stream that is **cut short** fails the same way, so a loop that ended is a
+stream that arrived whole:
+
+| What happened | The reader's iteration |
+| --- | --- |
+| The sender ended after exactly `size` bytes | finishes |
+| The sender's `end` came short, or a chunk went past `size` | throws `400` |
+| The sender called `writable.terminate()` — its source failed, it was told to stop | throws `499` (`Stream … was terminated by its sender`) |
+| The connection closed | throws `503` (`Connection closed`) |
+| The receiver held too much of it ([limits](#limits)) | throws `413` |
+| Nobody read it within [`streamIdleTimeout`](#limits) | throws `408` |
+| The reader's own `readable.terminate()` | stops, with no error |
+
+Until 2.0.1 a terminated stream and a lost connection were the quiet end —
+the loop simply stopped, and a handler that did not compare `bytesRead` to
+`size` stored the part that had arrived as if it were the file. Only the
+reader's own `terminate()` is quiet now: it knows that it stopped.
 
 ### Limits {#limits}
 

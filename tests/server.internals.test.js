@@ -193,7 +193,7 @@ test('Client over WS transport', async (t) => {
     assert.deepStrictEqual(await store.get(token), { role: 'admin' });
   });
 
-  await t.test('destroy terminates open streams but keeps the stored session', async () => {
+  await t.test('destroy fails open streams but keeps the stored session', async () => {
     const errors = [];
     const log = { ...quiet, error: (error) => errors.push(error) };
     const sessions = new SessionManager({}, quiet);
@@ -201,19 +201,21 @@ test('Client over WS transport', async (t) => {
     const token = randomUUID();
     client.initializeSession(token, {});
 
-    let terminated = false;
-    client.streams.set('a', { terminate: async () => void (terminated = true) });
-    client.streams.set('b', { terminate: async () => Promise.reject(new Error('boom')) });
+    // A reader in the middle of a stream is told that the rest is not
+    // coming — a 503, as a call in flight is — and nobody is told for it.
+    const failed = [];
+    const stream = { onCancel: () => failed.push('told'), fail: (message, code) => failed.push([message, code]) };
+    client.streams.set('a', stream);
     client.streams.set('c', { notAStream: true });
 
     client.destroy();
     await timers.setImmediate();
     await timers.setImmediate();
 
-    assert.strictEqual(terminated, true);
+    assert.deepStrictEqual(failed, [['Connection closed', 503]]);
+    assert.strictEqual(stream.onCancel, null);
     assert.strictEqual(client.streams.size, 0);
-    assert.strictEqual(errors.length, 1);
-    assert.match(errors[0].message, /boom/);
+    assert.deepStrictEqual(errors, []);
     // NEW semantics: a dropped connection does not delete the session from
     // the store — a reconnecting client can restore it.
     const survivor = createClient(fakeWsTransport(), sessions);

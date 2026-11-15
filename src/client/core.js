@@ -858,9 +858,10 @@ class WrpcClient extends Emitter {
     const streams = Array.from(this.#streams.values());
     this.#streams.clear();
     for (const stream of streams) {
-      // Nobody is left to tell that its reader is gone.
+      // Nobody is left to tell that its reader is gone — and its reader is
+      // told that the rest is not coming, as a call in flight is.
       stream.onCancel = null;
-      Promise.resolve(stream.terminate()).catch(() => {});
+      stream.fail(CONNECTION_CLOSED_ERROR.message, CONNECTION_CLOSED_ERROR.code);
     }
   }
 
@@ -1801,10 +1802,11 @@ class WrpcClient extends Emitter {
     // Its sender ended it: nothing is left to stop.
     stream.onCancel = null;
     if (status === 'terminate') {
-      // Forgotten before anything is awaited: an announcement that reuses
-      // the id may be right behind this packet.
+      // Forgotten before anything else: an announcement that reuses the id
+      // may be right behind this packet. And a failure for its reader, not
+      // an end — the sender took back the bytes it had promised.
       this.#streams.delete(id);
-      await stream.terminate();
+      stream.fail(`Stream ${stream.name} was terminated by its sender`, 499);
       return;
     }
     // A chunk still being turned into bytes (#handleBinary) is counted

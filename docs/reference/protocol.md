@@ -644,7 +644,10 @@ zero is a stream with no chunks — and it is **binding**:
 
 - A sender MUST send exactly `size` bytes before `end`. One that cannot —
   its source failed, it changed its mind — sends `terminate`, which ends the
-  stream at any point and promises nothing.
+  stream at any point and promises nothing. A receiver treats it as a
+  stream that was cut short: its reader is told (a wRPC readable's
+  iteration throws `499`), not left with the bytes that had arrived as if
+  they were the whole.
 - A receiver holds the sender to it. The chunk that takes a stream past its
   announced size, and an `end` that arrives short of it, **fail** the
   stream: its reader is told, not left waiting for bytes that never come. A

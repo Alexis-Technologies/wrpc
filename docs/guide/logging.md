@@ -188,7 +188,6 @@ The first table is the request path and the engines; the ones after it are
 | `subscribe.end` | warn/debug | A subscription ended (`id`, `method`): `warn` with the `code` when it died on the server's side, `debug` for a completion or an unsubscribe |
 | `subscription.return` | warn | A subscription handler's own cleanup (`finally`, `return()`) threw after the stream had ended |
 | `subscription.aborted` | debug | A subscription handler threw after the peer had already unsubscribed or gone; the error reaches nobody else |
-| `stream.terminate` | error | A stream's `terminate()` threw while a closing client's streams were being torn down |
 | `call.ok` | debug | A call answered without an error (`method`, `id`) — the narration line, built only when a logger takes debug |
 | `rpc.warn` | warn | A warning about one connection that has no name of its own — what `client.warn(message)` writes when it is given no `event` |
 | `encryption.handshake` | debug | A sealed socket's handshake step failed inside the library; the refusal that follows (`encryption.refused`) is the line to alert on |

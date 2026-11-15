@@ -555,19 +555,24 @@ test('client: a chunk and the end behind it are counted in the order they arrive
     assert.strictEqual(await drain(client.getStream('s')), 4);
   });
 
-  await t.test("the server's terminate is the quiet end", async () => {
+  // It was the quiet end: the reader's loop stopped at four of eight bytes
+  // as if the stream were over, and whoever read it had to compare counts
+  // to know. The sender took its promise back — the reader is told.
+  await t.test("the server's terminate fails the stream for its reader", async () => {
     const { transport, client, escalated, announce, end } = bare();
     announce('s', 8);
     const readable = client.getStream('s');
-    const reading = drain(readable);
+    const reading = outcome(drain(readable));
     transport.emit('message', chunkEncode('s', bytes(4)).buffer);
     await tick();
     end('s', 'terminate');
-    assert.strictEqual(await reading, 4);
-    assert.strictEqual(readable.status, 'terminated');
-    assert.strictEqual(readable.error, null);
+    const read = await reading;
+    assert.strictEqual(read.status, 'rejected', 'half a stream read as a whole one');
+    assert.strictEqual(read.error, readable.error);
+    assert.deepStrictEqual([readable.error.code, readable.status], [499, 'terminated']);
+    assert.match(readable.error.message, /terminated by its sender/);
+    // The reader's to handle, like a call that failed: not the client's 'error'.
     assert.deepStrictEqual(escalated, []);
-    await tick();
     assert.throws(() => client.getStream('s'), /not initialized/);
   });
 });
