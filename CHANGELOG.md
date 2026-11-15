@@ -48,8 +48,9 @@ narrower promise — see
   reader stops a server's download, where `context.client.createStream()`
   now hears what a client's `createStream()` hears — and over every
   carrier of streams: WebSocket, a worker port (the proxy routes it like
-  the stream it is about), WebRTC, and WebTransport, where the sender
-  answers by resetting the stream's own WebTransport stream.
+  the stream it is about), WebRTC, a broker session, and WebTransport,
+  where the sender answers by resetting the stream's own WebTransport
+  stream.
   `readable.terminate(message, code)` does the same **with a reason** —
   the message and code the sender finds on `writable.error`: how a handler
   refuses an upload with something the uploader can show.

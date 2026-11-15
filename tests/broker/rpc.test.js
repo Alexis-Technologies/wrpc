@@ -748,3 +748,61 @@ test('broker rpc: the revision is negotiated — a frame only to a side that sai
     else assert.deepStrictEqual(answer.blob, { 0: 7, 1: 8 }, label);
   }
 });
+
+// A broker session is a carrier of binary streams like the others, and what
+// a receiver says of a stream crosses it like any packet. It has no socket
+// to pause either: a reader that falls behind is held to `maxStreamBuffer`.
+test('session: a stream its reader lets go of stops on the sender; one too far ahead of its reader fails', async (t) => {
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(() => broker.close());
+  let release;
+  const stalled = new Promise((resolve) => {
+    release = resolve;
+  });
+  const router = defineRouter({
+    calc: {
+      refuse: procedure({
+        access: 'public',
+        handler: async (ctx, { id }) => {
+          await ctx.client.getStream(id).terminate('Quota exceeded', 413);
+          return ctx.client.paced;
+        },
+      }),
+      held: procedure({ access: 'public', handler: async (ctx) => ctx.client.streams.size }),
+      stall: procedure({
+        access: 'public',
+        handler: async (ctx, { id }) => {
+          let stored = 0;
+          for await (const chunk of ctx.client.getStream(id)) {
+            stored += chunk.length;
+            if (stored === chunk.length) await stalled;
+          }
+          return stored;
+        },
+      }),
+    },
+  });
+  await instance(t, broker, { router }, { rpc: { maxStreamBuffer: 1024 * 1024 } });
+  const client = await connect(t, broker, { mode: 'session' });
+  client.on('error', () => {});
+
+  const refused = client.createStream('blob', 8 * 1024 * 1024);
+  refused.write(new Uint8Array(64 * 1024));
+  // Nothing under a broker session can hold its peer back.
+  assert.strictEqual(await client.api.calc.refuse({ id: refused.id }), false);
+  await waitFor(() => refused.closed, 'the sender of a refused upload was never told');
+  assert.deepStrictEqual([refused.error.code, refused.error.message], [413, 'Quota exceeded']);
+  await waitFor(async () => (await client.api.calc.held({})) === 0, 'the server kept a stream both ends gave up');
+
+  const upload = client.createStream('big', 4 * 1024 * 1024);
+  const answer = client.api.calc.stall({ id: upload.id }).then(
+    (value) => ({ value }),
+    (error) => ({ code: error.code }),
+  );
+  await upload.writeAll(new Uint8Array(4 * 1024 * 1024));
+  upload.end();
+  // A round trip: every frame of the upload has been dispatched by now.
+  await client.api.calc.held({});
+  release();
+  assert.deepStrictEqual(await answer, { code: 413 }, 'four megabytes ran past a one-megabyte cap, or went missing');
+});
