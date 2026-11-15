@@ -123,6 +123,9 @@ await WrpcClient.connect(url, {
 | `reconnect` | see below | `false` disables reconnection entirely. |
 | `reconnectTimeout` | — | Shorthand for `reconnect.minDelay`. |
 | `heartbeat` | `{ interval: 30000, timeout: 10000 }` | `false` disables it. |
+| `maxStreams` | `256` | [Binary streams](./streams#limits) the server may have open on this client at once; past it an announcement is refused (`429` to a server that asked to hear). |
+| `maxStreamBuffer` | 64 MiB | Bytes this client holds in streams for readers that have not taken them — nothing in a browser can pause a WebSocket, so a reader that is behind counts too. The stream past it fails with `413`. |
+| `streamIdleTimeout` | `30000` | Milliseconds a stream from the server may go without a reader and without a byte before it fails with `408` and is forgotten. `Infinity` turns it off. |
 | `batch` | off | `true` takes the defaults. |
 | `retry` | off | Opt-in per-call retry: `{ attempts, on: [503], minDelay, maxDelay, factor, jitter }`, `true` for the defaults. Coded failures re-issue with a fresh packet id after a jittered backoff — never a silent offline buffer. |
 | `transport` | from the URL | `'ws'`, `'http'`, `'sse'`, `'wt'`, `'webrtc'`, `'broker'` or anything registered — or an ordered fallback list such as `['wt', 'ws']`. See [Transports](#transports). |

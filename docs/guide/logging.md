@@ -331,6 +331,7 @@ An error the client has no caller to hand to is **escalated**: logged at
 | `reconnect.open`, `fallback.open`, `online.open` | An `open()` nobody awaits was rejected: a reconnect attempt, the next transport of the list, the re-open when the browser came back online |
 | `reconnect.restore`, `reconnect.afterOpen` | What runs after a reconnect — the re-`load()` and re-subscribe, the `authenticate` hook — failed |
 | `stream.failed` | A stream from the server ended short of the size it announced; its reader is thrown the same error |
+| `stream.capacity`, `stream.buffer` | Not an `'error'`: the client's own debug lines when it refuses a stream its server announced past `maxStreams` (`429`), or fails one past `maxStreamBuffer` (`413`) — the server's rows of the same names, for the other direction |
 | `subscription.error` | A subscription ended with an error and had no `onError` to tell |
 | `subscription.listener` | A subscription's own `onEnd`/release callback threw |
 | `listener.open`, `listener.close`, `listener.drain`, `listener.reconnecting`, `listener.reconnect-failed`, `listener.heartbeat-timeout`, `listener.authenticate-failed`, `listener.refresh-failed`, `listener.restore-failed`, `listener.transport-fallback` | A listener of yours for that client event threw |

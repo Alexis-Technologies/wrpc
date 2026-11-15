@@ -78,14 +78,14 @@ A code above `599` is reported as `500`.
 | `400` | Malformed packet, unparseable frame, duplicate in-flight call id, invalid arguments, `{type:'call'}` against a subscription; a [binary stream](../guide/streams#size) that went past its announced size or ended short of it — answered on the stream's id, and thrown to its reader | dispatcher, [validators](../guide/router#validators), streams |
 | `403` | No [session](../guide/sessions) for `access: 'session'`; an SSE channel presented without its cookie identity; a cross-site `GET` | core, [SSE](../guide/sse) |
 | `404` | No such unit, version or procedure | router lookup |
-| `408` | Procedure `timeout` elapsed, or an [ask](../guide/rooms#asking-a-room) went unanswered | router, `expectAnswer` |
+| `408` | Procedure `timeout` elapsed, or an [ask](../guide/rooms#asking-a-room) went unanswered; a [binary stream nobody read](../guide/streams#limits) within `streamIdleTimeout` — said to its sender, and thrown to a reader that comes late | router, `expectAnswer`, dispatcher |
 | `409` | Unknown SSE channel — the server no longer holds that id | SSE |
-| `413` | More bytes in [streams nobody reads yet](../guide/streams#limits) than `maxStreamBuffer` allows one connection — answered on the id of the stream that went past it | dispatcher |
+| `413` | More bytes in [streams nobody reads yet](../guide/streams#limits) than `maxStreamBuffer` allows one connection, or — where the carrier cannot pause — a stream too far ahead of its reader; answered on the id of the stream that went past it, and thrown to its reader | dispatcher, client |
 | `429` | `maxCalls` in flight on this connection, `maxStreams` open on it, or `maxChannelsPerAddress` for SSE | dispatcher, SSE |
-| `499` | Cancelled by the caller — `{type:'cancel'}`, or an aborted `signal`; a [binary stream its reader let go of](../guide/streams#ended-by-the-receiver) — said to the stream's sender, on the stream's id, and found on `writable.error` | dispatcher, client, streams |
+| `499` | Cancelled by the caller — `{type:'cancel'}`, or an aborted `signal`; a [binary stream its reader let go of](../guide/streams#ended-by-the-receiver) — said to the stream's sender, on the stream's id, and found on `writable.error`; a stream its **sender** terminated — thrown to its reader, which was promised more | dispatcher, client, streams |
 | `500` | Handler threw without a code; a subscription handler returned a non-iterable; an `output` validator rejected the result | router |
 | `501` | No responder registered for an [ask](../guide/rooms#asking-a-room); a binary stream attempted over [SSE](../guide/sse#what-it-cannot-do) | client, SSE |
-| `503` | Queue full, server [draining](../guide/production#graceful-shutdown), transport closed under an in-flight call, `maxChannels` reached | router, core, SSE |
+| `503` | Queue full, server [draining](../guide/production#graceful-shutdown), transport closed under an in-flight call — or under a [binary stream](../guide/streams#size) being read, whose reader is thrown it — `maxChannels` reached | router, core, SSE, streams |
 | `400`, `409`, `426` (sealed) | A [sealed request](../guide/encryption#session) refused before it was read: not accepted (the pinned key may be retired), stale or replayed (a clock), or plaintext where encryption is `required`. Bare statuses, no body — the calls the request carried fail with the same code on the client, and the client emits `EncryptionRefusedError` (`code: 'ENCRYPTION_REFUSED'`, `status`); any other plaintext answer to a sealed request is a `503` | encryption |
 
 ::: tip 499 is not a failure

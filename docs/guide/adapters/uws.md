@@ -88,8 +88,14 @@ engine.capabilities;
   equivalent seam; mapping rooms onto it is future work.
 - **`pause: false`** — uws exposes no socket-level pause, so receive-side flow
   control is missing: a fast uploader is not throttled by a slow
-  [stream](../streams) consumer the way it is on the built-in engine. Outbound
-  backpressure works normally.
+  [stream](../streams) consumer the way it is on the built-in engine. What it
+  gets instead is a bound: the bytes a stream's reader is behind by count
+  against [`maxStreamBuffer`](../streams#limits) (64 MiB a connection by
+  default), and the stream that goes past it **fails** with `413` — handler
+  and uploader both told — where it used to be read with a hole in it. A
+  handler that writes each chunk to a sink slower than the network (object
+  storage, a transcoder) is the case to size that option for, or to put on
+  the built-in engine. Outbound backpressure works normally.
 
 See [the engine reference](../../reference/engine) for the full contract.
 
