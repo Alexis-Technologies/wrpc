@@ -284,6 +284,10 @@ export class WrpcWritable extends Emitter {
    */
   error: (Error & { code: number }) | null;
   /**
+   * Throws a `TypeError` for a `name` that is not a non-empty string or a
+   * `size` that is not a non-negative integer of bytes — what
+   * `createStream()` throws on both ends, before anything is announced.
+   *
    * @param registry Where the owner of the transport looks the stream up
    *   when its receiver answers on its id — `createStream()` passes its own.
    *   The stream puts itself in, takes itself out when it is over, and

@@ -327,7 +327,17 @@ class WrpcWritable extends Emitter {
   // a cancel, the transport's close — so an owner that hands a Map over
   // keeps nothing past a stream's life. Without one nobody routes an answer
   // here, and cancel() is never called.
+  //
+  // What a stream is announced with is checked HERE, for both ends: a
+  // server-side createStream() used to throw a plain Error for a size that
+  // was none (and take a number for a name), a client's threw for nothing —
+  // it announced whatever it was given and was closed by the server's 400 a
+  // round trip later. A mistake in a program is told where it is made.
   constructor(id, name, size, transport, otel = null, registry = null) {
+    if (typeof name !== 'string' || name === '') throw new TypeError('createStream: name must be a non-empty string');
+    if (!Number.isSafeInteger(size) || size < 0) {
+      throw new TypeError('createStream: size must be a non-negative integer of bytes');
+    }
     super();
     this.id = id;
     this.name = name;

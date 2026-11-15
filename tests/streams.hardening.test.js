@@ -626,10 +626,10 @@ test('server Client.createStream: a stream of no bytes is a stream', () => {
     { type: 'stream', id: stream.id, name: 'empty', size: 0, cancel: true },
     { type: 'stream', id: stream.id, status: 'end' },
   ]);
-  assert.throws(() => client.createStream('name'), /Stream size/);
-  assert.throws(() => client.createStream('name', -1), /Stream size/);
-  assert.throws(() => client.createStream('name', 1.5), /Stream size/);
-  assert.throws(() => client.createStream('name', '10'), /Stream size/);
+  const size = { name: 'TypeError', message: 'createStream: size must be a non-negative integer of bytes' };
+  for (const wrong of [undefined, -1, 1.5, '10']) assert.throws(() => client.createStream('name', wrong), size);
+  // Nothing of a stream that was refused is left behind: not an announcement, not an entry.
+  assert.strictEqual(sent.length, 2);
 });
 
 test('a stream of no bytes travels both ways', async (t) => {

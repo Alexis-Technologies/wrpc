@@ -97,3 +97,59 @@ test('writeAll() refuses what it cannot write, instead of writing nothing or for
   assert.strictEqual(await writable.writeAll(bytes(4), 1), true);
   writable.end();
 });
+
+// createStream() was checked on one end only, and there with a plain Error
+// (next to a TypeError two lines below it) and a name that could be a
+// number. A client checked nothing: it announced whatever it was given and
+// was closed by the server's 400 a round trip later — a mistake in a program
+// told through the network.
+test('createStream() refuses a name or a size that is none, on both ends, where the mistake is made', async (t) => {
+  const router = defineRouter({
+    files: {
+      ping: procedure({ access: 'public', handler: async () => 'pong' }),
+      make: procedure({
+        access: 'public',
+        handler: async (context, { name, size }) => {
+          try {
+            context.client.createStream(name, size).terminate();
+            return 'created';
+          } catch (error) {
+            return `${error.name}: ${error.message}`;
+          }
+        },
+      }),
+    },
+  });
+  const { url } = await bootServer(t, { router });
+  const client = await connectClient(t, url);
+  const escalated = [];
+  client.on('error', (error) => escalated.push(error));
+  await client.load('files');
+  const nameError = 'TypeError: createStream: name must be a non-empty string';
+  const sizeError = 'TypeError: createStream: size must be a non-negative integer of bytes';
+  const cases = [
+    ['x', -1, sizeError],
+    ['x', '10', sizeError],
+    ['x', 1.5, sizeError],
+    ['x', undefined, sizeError],
+    [undefined, 10, nameError],
+    ['', 10, nameError],
+    [42, 10, nameError],
+  ];
+  for (const [name, size, expected] of cases) {
+    // A client throws at once — and announces nothing.
+    assert.throws(
+      () => client.createStream(name, size),
+      (error) => `${error.name}: ${error.message}` === expected,
+      `client.createStream(${JSON.stringify(name)}, ${JSON.stringify(size)})`,
+    );
+    // A server-side Client throws the same thing.
+    assert.strictEqual(await client.api.files.make({ name, size }), expected);
+  }
+  assert.strictEqual(await client.api.files.make({ name: 'fine', size: 0 }), 'created');
+  await client.api.files.ping({});
+  assert.deepStrictEqual(escalated, [], 'a refused createStream still reached the server');
+  // A Blob has no name: its uploader gives it one.
+  const { upload } = client.createBlobUploader(new Blob([bytes(4)]));
+  await upload();
+});

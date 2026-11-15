@@ -1518,8 +1518,8 @@ class WrpcClient extends Emitter {
   }
 
   createBlobUploader(blob) {
-    const { name = 'blob', size } = blob;
-    const consumer = this.createStream(name, size);
+    // A Blob has no name, and a File's may be empty.
+    const consumer = this.createStream(blob.name || 'blob', blob.size);
     const { id } = consumer;
     // Paced by the transport — a chunk it did not accept waits for the
     // stream's 'drain' — and a connection that closes mid-way is the 503 a

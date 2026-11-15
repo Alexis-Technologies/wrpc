@@ -587,12 +587,9 @@ class Client extends Emitter {
       throw refusal(`Can't send wrpc streams to http transport`);
     }
     if (!this.binary) throw refusal(`Can't send wrpc streams over a text-only transport`);
-    if (!name) throw new Error('Stream name is not provided');
-    // Zero is a size — an empty file is a file — and what the receiving
-    // half has always accepted; `!size` refused it on this end only.
-    if (!Number.isSafeInteger(size) || size < 0) {
-      throw new Error('Stream size is not provided: a non-negative integer of bytes');
-    }
+    // The name and the size are the writable's to check (WrpcWritable): one
+    // check for this end and for a client's. Zero is a size — an empty file
+    // is a file.
     const id = this.generateId();
     if (typeof id !== 'string' || id.length === 0 || id.length > 255) {
       throw new TypeError('createStream: generateId must return a string of at most 255 characters');

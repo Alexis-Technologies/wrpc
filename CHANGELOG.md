@@ -140,6 +140,18 @@ narrower promise — see
   a missing callback. `writable.cancel(error)` is the method behind it, for
   whoever routes answers to a writable of their own
   (`new WrpcWritable(id, name, size, transport, null, registry)`).
+- **`createStream()` refuses a name or a size that is none — on both
+  ends, where the mistake is made.** A server-side
+  `context.client.createStream()` threw a plain `Error` (`Stream size is
+  not provided`) two lines above a `TypeError`, and took a number for a
+  name. A client's `createStream()` checked nothing: it announced whatever
+  it was given and was closed a round trip later by the server's `400`
+  (`Stream packet structure error`). Both throw the same `TypeError` now,
+  from the one place both go through, before anything is announced:
+  `createStream: name must be a non-empty string`, `createStream: size must
+  be a non-negative integer of bytes`. **The class and the text of the
+  server-side error changed**; `createBlobUploader()` names a `Blob` with
+  no name (or an empty one) `blob`, as before.
 - **`writeAll()` refuses what it cannot write.** It took whatever it was
   handed: an `ArrayBuffer` or a `DataView` has no `length`, so nothing was
   written and it answered `true`; a `chunkSize` of `0` or `-1` never
