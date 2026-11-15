@@ -1,10 +1,15 @@
 'use strict';
 
-// The two packages a mixed deployment runs side by side: this tree, and the
-// PUBLISHED 1.0 (the `wrpc-v1` devDependency alias — `npm:@alexify/wrpc@1.0.0`,
-// test-only like every other devDependency). Not a *.test.js: node --test
-// must not run helpers. A machine without the alias installed skips the
-// interop suite, the way the adapter suites skip a missing framework.
+// The packages a mixed deployment runs side by side: this tree, the
+// PUBLISHED 1.0 (the `wrpc-v1` devDependency alias — `npm:@alexify/wrpc@1.0.0`)
+// and the PUBLISHED 2.0.1 (`wrpc-v2` — `npm:@alexify/wrpc@2.0.1`), test-only
+// like every other devDependency. 2.0.1 is here because the revision cannot
+// tell it from this tree — both speak `wrpc.v2` — so what was added after
+// it is asked for by a field it does not know (`cancel` on a stream's
+// announcement), and "an older 2.x peer is spoken to as before" is a claim
+// about a package that shipped. Not a *.test.js: node --test must not run
+// helpers. A machine without an alias installed skips its suite, the way the
+// adapter suites skip a missing framework.
 
 const path = require('node:path');
 const vm = require('node:vm');
@@ -22,12 +27,18 @@ const optional = (name) => {
 
 const legacy = optional('wrpc-v1');
 if (legacy) optional('wrpc-v1/sse');
+const previous = optional('wrpc-v2');
 // A skip is a broken environment where the alias IS expected — CI installs
 // every devDependency — and used to pass green with every case skipped, the
 // guard of the alias included (tests/broker/support.js has the same rule).
 if (!legacy && process.env.WRPC_INTEGRATION_STRICT) {
   throw new Error(
     'wrpc-v1 (the published 1.0) is not installed — WRPC_INTEGRATION_STRICT is set: a skip would hide a broken environment',
+  );
+}
+if (!previous && process.env.WRPC_INTEGRATION_STRICT) {
+  throw new Error(
+    'wrpc-v2 (the published 2.0.1) is not installed — WRPC_INTEGRATION_STRICT is set: a skip would hide a broken environment',
   );
 }
 
@@ -166,4 +177,4 @@ const browserBuild = () => {
   return bundled;
 };
 
-module.exports = { next, legacy, boot, connect, routerOf, browserBuild };
+module.exports = { next, legacy, previous, boot, connect, routerOf, browserBuild };

@@ -250,6 +250,7 @@
     "vitepress": "^1.6.4",
     "vitepress-plugin-mermaid": "^2.0.17",
     "wrpc-v1": "npm:@alexify/wrpc@1.0.0",
+    "wrpc-v2": "npm:@alexify/wrpc@2.0.1",
     "ws": "^8.21.3"
   },
   "engines": {

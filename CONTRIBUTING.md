@@ -34,8 +34,9 @@ with `--test-name-pattern`. `node --test` takes **files**, not directories — a
 targeted run of a folder needs a glob (`node --test tests/adapters/*.test.js`).
 
 The `wrpc` command of this tree is `node bin/wrpc.js`. Inside the repository
-`npx wrpc` and `node_modules/.bin/wrpc` run the **published 1.0** CLI: the
-interop suite's `wrpc-v1` alias installs `@alexify/wrpc@1.0.0`, bin included.
+`npx wrpc` and `node_modules/.bin/wrpc` run a **published** CLI, not this
+tree's: the interop suite's aliases install `@alexify/wrpc@1.0.0` (`wrpc-v1`)
+and `@alexify/wrpc@2.0.1` (`wrpc-v2`), bins included.
 
 ## House rules
 

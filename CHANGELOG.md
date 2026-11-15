@@ -65,7 +65,12 @@ narrower promise — see
     is sent whole and dropped on arrival, as before. That is why it is an
     opt-in per stream rather than something behind the protocol revision:
     revision 2 is also what 2.0.0 and 2.0.1 speak. `tests/interop/` runs
-    both directions against the published 1.0.
+    both directions against the published 1.0 **and the published 2.0.1**
+    (a second devDependency alias, `wrpc-v2`): the peer this field exists
+    for was described here, and never run. One difference it found is in
+    the protocol page now — a 2.0.1 or 1.0 server that refused a stream
+    answers the `terminate` a newer sender then sends with `400`, one more
+    error on the client for a stream that was refused anyway.
   - A `499` that crossed the end of its stream on the wire is dropped on
     both ends — not an error on the client, not a warning on the server.
   - New: `readable.onCancel` (the hook the feeder of a readable sets to

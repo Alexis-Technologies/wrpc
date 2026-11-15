@@ -137,6 +137,9 @@ importers:
       wrpc-v1:
         specifier: npm:@alexify/wrpc@1.0.0
         version: '@alexify/wrpc@1.0.0'
+      wrpc-v2:
+        specifier: npm:@alexify/wrpc@2.0.1
+        version: '@alexify/wrpc@2.0.1'
       ws:
         specifier: ^8.21.3
         version: 8.21.3
@@ -145,6 +148,11 @@ packages:
 
   '@alexify/wrpc@1.0.0':
     resolution: {integrity: sha512-aFfPWCVgui1i8RPjxZLNFj3v3bUvymcvge2TSIFn+bL4CiSsC6aGFtXcitU+OBTKZ+4+tv+7Ve8rgSkI6+KQxA==}
+    engines: {node: '>=22'}
+    hasBin: true
+
+  '@alexify/wrpc@2.0.1':
+    resolution: {integrity: sha512-XRCrt8PgjTXzf4Utu9pMPGccTNNs5NylyiYCiCvGTEYlHPnszfgi9oJQ/ge6KZ00aMyo+K57J1x2V5L4bp+soA==}
     engines: {node: '>=22'}
     hasBin: true
 
@@ -3741,6 +3749,8 @@ packages:
 snapshots:
 
   '@alexify/wrpc@1.0.0': {}
+
+  '@alexify/wrpc@2.0.1': {}
 
   '@algolia/abtesting@1.22.0':
     dependencies:
