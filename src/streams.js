@@ -431,9 +431,9 @@ class WrpcWritable extends Emitter {
   // one that does not know the answer reports a callback nobody waited for.
   init() {
     const { id, name, size } = this;
-    const packet = { type: 'stream', id, name, size };
-    if (this.#registry) packet.cancel = true;
-    this.transport.send(packet);
+    // One shape or the other, never one grown into the other.
+    const type = 'stream';
+    this.transport.send(this.#registry ? { type, id, name, size, cancel: true } : { type, id, name, size });
   }
 
   // Reports the transport's real acceptance: false means the socket buffer
@@ -559,12 +559,11 @@ const heldBytes = (streams, paced) => {
 // may and read none, and not worth a count kept in step on every chunk of
 // every stream.
 const overCap = (streams, stream, length, cap, paced) => {
-  const unread = !stream.consuming;
-  if (!stream.streaming || !(unread || (!paced && stream.queued > DEFAULT_HIGH_WATER_MARK))) return null;
+  const isUnread = !stream.consuming;
+  if (!stream.streaming || !(isUnread || (!paced && stream.queued > DEFAULT_HIGH_WATER_MARK))) return null;
   if (heldBytes(streams, paced) + length + CHUNK_COST <= cap) return null;
-  return unread
-    ? 'Too many bytes in streams nobody reads yet'
-    : `Stream ${stream.label} is too far ahead of its reader`;
+  if (isUnread) return 'Too many bytes in streams nobody reads yet';
+  return `Stream ${stream.label} is too far ahead of its reader`;
 };
 
 // Ends what nobody came to read: a stream that has had no reader and no

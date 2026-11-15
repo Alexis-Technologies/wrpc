@@ -9,6 +9,7 @@ const { Emitter, jsonParse } = require('../utils.js');
 const { WrpcClient, CALL_TIMEOUT, normalizeReconnect } = require('./core.js');
 const { isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
 const { chunkDecode } = require('../chunks.js');
+const { MAX_STREAMS } = require('../streams.js');
 
 // What a port posted, as bytes; null for anything that is not.
 const viewOf = (data) =>
@@ -189,10 +190,15 @@ class WrpcClientProxy extends Emitter {
   // its reader let go of, from the worker, for the pages that are gone.
   #drop(id) {
     this.#downloads.delete(id);
-    if (!this.#askers.delete(id)) return;
+    if (this.#askers.delete(id)) this.#answer(id, 'Stream is no longer read', 499);
+  }
+
+  // The worker's own word on a server stream, said as a page says it: a
+  // `callback` error on the stream's id.
+  #answer(id, message, code) {
     const connection = this.#connection;
     if (connection === null || !connection.active) return;
-    connection.send({ type: 'callback', id, error: { message: 'Stream is no longer read', code: 499 } });
+    connection.send({ type: 'callback', id, error: { message, code } });
   }
 
   close() {
@@ -337,6 +343,16 @@ class WrpcClientProxy extends Emitter {
       this.#askers.delete(id);
       if (holders !== null) for (const each of holders) this.#post(each, data, parsed);
       if (port && (status === 'end' || status === 'terminate')) this.#pending.delete(id);
+      return;
+    }
+    // Capped, as a page caps what its server opens on it: every stream the
+    // server announces and does not end is an entry here, and the server
+    // alone decides how many — two hundred thousand of them were 48 MiB in
+    // the worker, each posted to every page. Past the cap an announcement
+    // is handed to nobody, and a sender that asked to hear is answered as a
+    // page would answer it.
+    if (this.#downloads.size >= MAX_STREAMS) {
+      if (parsed.cancel === true) this.#answer(id, 'Too many open streams', 429);
       return;
     }
     const holders = new Set(port ? [port] : this.#ports);

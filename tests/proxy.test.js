@@ -1078,6 +1078,55 @@ test('WrpcClientProxy', async (t) => {
     }
   });
 
+  // Every stream the server announces and does not end is an entry in the
+  // worker, and a message to every page: two hundred thousand of them were
+  // 48 MiB there. The worker holds as many as a page does, and no more.
+  await t.test('the server streams the worker holds open are capped, and the rest refused upstream', async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const proxy = new WrpcClientProxy();
+    const page = new MessageChannel();
+    const got = [];
+    try {
+      globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [page.port2] });
+      page.port1.onmessage = (e) => got.push(JSON.parse(e.data));
+      page.port1.start();
+      await proxy.open();
+      const upstream = MockWebSocket.last;
+      const sentUp = () => (upstream.sentData ?? []).filter((data) => typeof data === 'string').map(JSON.parse);
+      const announce = (id, cancel = true) =>
+        upstream.dispatchMessage(
+          JSON.stringify({ type: 'stream', id, name: 'x', size: 8, ...(cancel ? { cancel } : {}) }),
+        );
+      for (let i = 0; i < 300; i++) announce(`s${i}`);
+      await until(() => got.length === 256);
+      await tick();
+      await tick();
+      assert.strictEqual(got.length, 256, 'a page was handed every stream a server cared to announce');
+      // The 44 past the cap: their sender asked to hear, and was told.
+      assert.strictEqual(sentUp().length, 44);
+      assert.deepStrictEqual(sentUp()[0], {
+        type: 'callback',
+        id: 's256',
+        error: { message: 'Too many open streams', code: 429 },
+      });
+      // One that did not ask hears nothing — and is still not handed over.
+      announce('quiet', false);
+      await tick();
+      await tick();
+      assert.deepStrictEqual([got.length, sentUp().length], [256, 44]);
+      // A stream that ends gives its place back.
+      upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 's0', status: 'end' }));
+      announce('next');
+      await until(() => got.length === 258);
+      assert.deepStrictEqual(got.at(-1).id, 'next');
+    } finally {
+      proxy.close();
+      page.port1.close();
+      page.port2.close();
+    }
+  });
+
   await t.test('a lost upstream ends the server streams the pages were reading', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();

@@ -173,7 +173,11 @@ narrower promise — see
   holds or waits for goes to nobody, where it went to every tab. And a tab
   that never read its copy drops it without a word to the server — swept
   after `streamIdleTimeout`, or at its `maxStreamBuffer` — so one tab's
-  housekeeping does not end the download another tab is reading.
+  housekeeping does not end the download another tab is reading. The
+  worker holds at most 256 server streams open, as a page does: every
+  stream a server announced and did not end was an entry there and a
+  message to every tab — two hundred thousand of them, 48 MiB — and past
+  the cap an announcement is handed to nobody and answered `429`.
 - **`createStream()` refuses a name or a size that is none — on both
   ends, where the mistake is made.** A server-side
   `context.client.createStream()` threw a plain `Error` (`Stream size is
