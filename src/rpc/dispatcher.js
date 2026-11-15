@@ -1,7 +1,7 @@
 'use strict';
 
 const { jsonParse } = require('../utils.js');
-const { WrpcReadable, heldBytes } = require('../streams.js');
+const { WrpcReadable, heldBytes, CHUNK_COST } = require('../streams.js');
 const { chunkDecode } = require('../chunks.js');
 const { negotiate } = require('../compression/index.js');
 const { hasBytes, isAttachmentsFrame, decodeAttachments } = require('../attachments.js');
@@ -528,14 +528,16 @@ const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS
     // A readable applies its high-water mark only once somebody reads it
     // (it cannot hold the socket for a reader a later packet starts), so
     // until then every chunk is kept — and the peer decides how many. The
-    // announced size bounds nothing: it is the peer's word too. Past
+    // announced size bounds nothing: it is the peer's word too — and so is
+    // the size of a chunk, which is why each is counted with what it costs
+    // to hold (CHUNK_COST), not by its bytes alone. Past
     // `maxStreamBuffer` across the connection's unread streams, the one
     // this chunk is for fails: let go of, its sender answered 413
     // (tellSender), its reader — if one ever comes — told why.
     if (
       !upstream.consuming &&
       upstream.streaming &&
-      heldBytes(client.streams) + payload.length > client.maxStreamBuffer
+      heldBytes(client.streams) + payload.length + CHUNK_COST > client.maxStreamBuffer
     ) {
       upstream.fail('Too many bytes in streams nobody reads yet', 413);
       return void client.log.debug({ event: 'stream.buffer', code: 413, max: client.maxStreamBuffer });

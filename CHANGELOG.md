@@ -171,6 +171,17 @@ narrower promise — see
   (`bench/stream-queue.js`). `readable.queue` is therefore a **snapshot** —
   an array built when it is read, what it always looked like to a reader of
   it — and no longer the stream's own array; `readable.queued` is the count.
+- **`maxStreamBuffer` counts what a chunk costs to hold, not its bytes
+  alone — and a chunk of no bytes is not kept.** The cap summed payload
+  bytes, and the size of a chunk is the peer's choice. Under a 1 MiB cap, a
+  million one-byte chunks counted as 0.95 MiB and grew the server by
+  204 MiB; a million and a half **empty** chunks counted as nothing at all,
+  were never refused, and grew it by 305 MiB — each chunk is a view and a
+  slot, about 200 bytes of them. A chunk now counts as its bytes plus 256,
+  so the cap bounds memory: the same one-byte stream is answered `413`
+  after some four thousand chunks. An upload in 64 KiB pieces pays 0.4 %
+  for it. A chunk of no bytes is dropped on arrival by the readable, on
+  both ends.
 - **A readable that is over keeps nothing.** `WrpcReadable.push()` never
   looked at `streaming`: after `terminate()` (or `close()`) every chunk
   the peer still sent was queued until its `end` deleted the stream — a

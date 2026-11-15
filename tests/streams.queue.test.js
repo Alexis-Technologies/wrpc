@@ -8,7 +8,41 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { WrpcReadable } = require('../src/streams.js');
+const { WrpcReadable, heldBytes, CHUNK_COST } = require('../src/streams.js');
+const { defineRouter, procedure } = require('../index.js');
+const { bootServer, waitFor } = require('./helpers/server.js');
+const { KIB, MIB, rawPeer } = require('./helpers/streams.js');
+
+// What a connection holds of the peer's streams, as the server sees it.
+const router = () =>
+  defineRouter({
+    files: {
+      ping: procedure({ access: 'public', handler: async () => 'pong' }),
+      held: procedure({
+        access: 'public',
+        handler: async (context) => {
+          const streams = [];
+          for (const stream of context.client.streams.values()) {
+            streams.push({
+              id: stream.id,
+              queued: stream.queued,
+              received: stream.bytesReceived,
+              status: stream.status,
+              code: stream.error === null ? null : stream.error.code,
+            });
+          }
+          return streams;
+        },
+      }),
+    },
+  });
+
+const held = async (peer, id) => {
+  const call = `held-${peer.answers.length}-${Math.random()}`;
+  peer.call(call, 'files/held');
+  await waitFor(() => peer.answer(call), 'what the server holds');
+  return peer.answer(call).result.find((stream) => stream.id === id);
+};
 
 const numbered = (value) => Uint8Array.of(value & 0xff, (value >> 8) & 0xff, (value >> 16) & 0xff);
 const valueOf = (chunk) => chunk[0] | (chunk[1] << 8) | (chunk[2] << 16);
@@ -83,4 +117,71 @@ test('readable.queue is a snapshot of what waits, readable.queued its count', as
   await readable.terminate();
   assert.strictEqual(readable.queued, 0);
   assert.deepStrictEqual(readable.queue, []);
+});
+
+// A chunk of no bytes counted for nothing — not against the announced size,
+// not against `maxStreamBuffer` — and each one took a slot in the queue: a
+// million and a half of them grew a server by 305 MiB under a 1 MiB cap.
+test('a chunk of no bytes is not kept', async (t) => {
+  const readable = new WrpcReadable('s', 'empty', 4);
+  assert.strictEqual(await readable.push(new Uint8Array(0)), undefined);
+  assert.strictEqual(readable.queued, 0);
+  await readable.push(Uint8Array.of(1, 2, 3, 4));
+  assert.strictEqual(readable.queued, 1);
+
+  const { url } = await bootServer(t, { router: router(), maxStreamBuffer: 1 * MIB });
+  const peer = await rawPeer(t, url);
+  peer.announce('void', 1 * MIB);
+  for (let i = 0; i < 20_000; i++) peer.chunk('void', new Uint8Array(0));
+  await peer.settle();
+  assert.deepStrictEqual(await held(peer, 'void'), {
+    id: 'void',
+    queued: 0,
+    received: 0,
+    status: 'active',
+    code: null,
+  });
+  assert.strictEqual(peer.answer('void'), undefined, 'a chunk of no bytes was answered');
+});
+
+// `maxStreamBuffer` counted the bytes of a chunk and nothing of what holding
+// one costs: 0.95 MiB of one-byte chunks passed under a 1 MiB cap and grew
+// the server by 204 MiB. A chunk is counted as its bytes plus CHUNK_COST.
+test('what a chunk costs to hold counts against maxStreamBuffer, not its bytes alone', async (t) => {
+  const { url } = await bootServer(t, { router: router(), maxStreamBuffer: 1 * MIB });
+  const peer = await rawPeer(t, url);
+  peer.announce('drip', 1 * MIB);
+  const one = new Uint8Array(1);
+  for (let i = 0; i < 6000; i++) peer.chunk('drip', one);
+  await waitFor(() => peer.answer('drip'), 'the stream that went past the cap was never refused');
+  assert.strictEqual(peer.answer('drip').error.code, 413);
+  const stream = await held(peer, 'drip');
+  // It failed where the cap was reached — a megabyte in chunks that cost
+  // 257 bytes each — and let go of what it held.
+  assert.ok(stream.received <= Math.ceil((1 * MIB) / (1 + CHUNK_COST)), `${stream.received} one-byte chunks were held`);
+  assert.deepStrictEqual([stream.queued, stream.status, stream.code], [0, 'terminated', 413]);
+  // A stream of ordinary chunks still has the whole megabyte, less a chunk's cost each.
+  peer.end('drip', 'terminate');
+  peer.announce('plain', 1 * MIB);
+  for (let i = 0; i < 15; i++) peer.chunk('plain', new Uint8Array(64 * KIB));
+  await peer.settle();
+  assert.strictEqual(peer.answer('plain'), undefined, 'fifteen 64 KiB chunks did not fit under a megabyte');
+});
+
+test('heldBytes sums the streams nobody reads, each chunk with its cost', async () => {
+  const streams = new Map();
+  const unread = new WrpcReadable('a', 'unread', 100);
+  const read = new WrpcReadable('b', 'read', 100);
+  const over = new WrpcReadable('c', 'over', 100);
+  streams.set('a', unread).set('b', read).set('c', over);
+  await unread.push(new Uint8Array(10));
+  await unread.push(new Uint8Array(20));
+  await read.push(new Uint8Array(40));
+  await read.read();
+  await read.push(new Uint8Array(40));
+  await over.push(new Uint8Array(50));
+  await over.terminate();
+  // Two chunks of thirty bytes: the one being read is paced by its reader,
+  // the one that is over holds nothing.
+  assert.strictEqual(heldBytes(streams), 30 + 2 * CHUNK_COST);
 });

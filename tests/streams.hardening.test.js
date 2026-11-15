@@ -13,7 +13,7 @@ const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
 const { Emitter } = require('../src/utils.js');
-const { WrpcReadable, WrpcWritable } = require('../src/streams.js');
+const { WrpcReadable, WrpcWritable, CHUNK_COST } = require('../src/streams.js');
 const { chunkEncode, chunkDecode } = require('../src/chunks.js');
 const { Client } = require('../src/rpc/client.js');
 const { WrpcClient } = require('../src/client.js');
@@ -222,7 +222,10 @@ test('server: a chunk past the announced size answers 400 once, and the reader s
 test('server: streams nobody reads yet are capped in bytes per connection (maxStreamBuffer)', async (t) => {
   const { router } = fixture();
   const { writer, find, loud } = recorder();
-  const { url } = await bootServer(t, { router, logger: writer, maxStreamBuffer: 64 * KIB });
+  // Room for 64 KiB in four chunks: a chunk counts as its bytes and what it
+  // costs to hold.
+  const cap = 64 * KIB + 4 * CHUNK_COST;
+  const { url } = await bootServer(t, { router, logger: writer, maxStreamBuffer: cap });
   const peer = await rawPeer(t, url);
   // Ten bytes announced, a megabyte sent would be caught by the size; a
   // terabyte announced is caught by nothing but the cap.
@@ -238,7 +241,7 @@ test('server: streams nobody reads yet are capped in bytes per connection (maxSt
   await waitFor(() => peer.answer('b'), 'the stream past the cap was held');
   assert.strictEqual(peer.answer('b').error.code, 413);
   assert.strictEqual(find('stream.buffer').level, 'debug', 'any peer can drive it: not a warning');
-  assert.strictEqual(find('stream.buffer').max, 64 * KIB);
+  assert.strictEqual(find('stream.buffer').max, cap);
   assert.deepStrictEqual(loud(), []);
   // The one that tipped it is let go of; the other keeps what it had.
   peer.call('h', 'files/held');
@@ -252,7 +255,7 @@ test('server: streams nobody reads yet are capped in bytes per connection (maxSt
 
 test('server: a stream that failed is answered even when every announced byte had arrived', async (t) => {
   const { router } = fixture();
-  const { url } = await bootServer(t, { router, maxStreamBuffer: 4 });
+  const { url } = await bootServer(t, { router, maxStreamBuffer: 4 + CHUNK_COST });
   const peer = await rawPeer(t, url);
   // Whole, unread, exactly at the cap — and then one byte more: past the
   // cap before it is past the size. Nothing is "left to stop" by the count,

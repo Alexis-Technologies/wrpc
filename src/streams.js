@@ -14,6 +14,12 @@ const CHUNK_SIZE = 64 * 1024;
 // How far the head of a readable's queue runs before what is left is moved
 // down to the front of its array (see pull()).
 const COMPACT_AT = 1024;
+// What a queued chunk costs to hold besides its bytes: the views over it and
+// its slot. Measured at about 200 bytes a chunk on a server — a million
+// one-byte chunks grew the heap by 201 MiB — and counted with a margin, so
+// that a cap on what streams hold (heldBytes) is a cap on memory, not on
+// payload: 0.95 MiB of one-byte chunks used to pass under a 1 MiB cap.
+const CHUNK_COST = 256;
 
 class WrpcReadable extends Emitter {
   #consuming = false;
@@ -81,8 +87,12 @@ class WrpcReadable extends Emitter {
   // whole upload of them. And the announced size is a promise: the chunk
   // that breaks it fails the stream and rejects here, once, for whoever
   // feeds it to tell the sender.
+  //
+  // A chunk of no bytes is nothing to read and is not kept: it counted for
+  // nothing against the size or against a cap, and each one took a slot —
+  // a million and a half of them grew a server by 305 MiB.
   async push(data) {
-    if (!this.streaming) return;
+    if (!this.streaming || data.length === 0) return;
     this.bytesReceived += data.length;
     if (this.bytesReceived > this.size) {
       throw this.fail(`Stream ${this.name} exceeds its announced size of ${this.size} bytes`);
@@ -436,7 +446,8 @@ class WrpcWritable extends Emitter {
 }
 
 // What a set of readables holds for readers that have not come yet: the
-// bytes sent into the streams nobody reads. Summed when asked, over a
+// bytes sent into the streams nobody reads, and what each chunk of them
+// costs to keep (CHUNK_COST). Summed when asked, over a
 // connection's open streams (`maxStreams` of them at most) and only for a
 // chunk of a stream that has no reader — a count kept in step would need
 // every readable to report its first read and its end back, for a sum that
@@ -445,9 +456,9 @@ class WrpcWritable extends Emitter {
 const heldBytes = (streams) => {
   let bytes = 0;
   for (const stream of streams.values()) {
-    if (stream.streaming && !stream.consuming) bytes += stream.bytesReceived;
+    if (stream.streaming && !stream.consuming) bytes += stream.bytesReceived + stream.queued * CHUNK_COST;
   }
   return bytes;
 };
 
-module.exports = { WrpcReadable, WrpcWritable, heldBytes };
+module.exports = { WrpcReadable, WrpcWritable, heldBytes, CHUNK_COST };
