@@ -93,6 +93,19 @@ narrower promise — see
   0.6 MiB held. A close that finds the queue held also takes up what the
   hold left unread, where the peer's own Close could wait for a `'data'`
   event that never came. Neither option is on by default.
+- **A call or a subscription whose `meta` cannot be measured is answered,
+  and gives its slot back.** A per-call `meta` nested 20,000 levels deep is
+  a 40 KB packet that `JSON.parse` reads and `JSON.stringify` overflows the
+  stack on — and the size check serialized it after the call had taken its
+  slot of `maxCalls` and before anything that answers. Over HTTP **the
+  request was never answered**; on a socket the id stayed in flight for the
+  life of the connection, so `maxCalls` such packets left it answering `429`
+  to every call after them, and the same for `maxSubscriptions`. Such a bag
+  is now what one over `metaMaxBytes` has always been — dropped, the call
+  runs unlabelled — and whatever else throws between taking a slot and the
+  code that answers (the context, a tracer's attributes, the connection's
+  own gate for a subscription) releases the slot and answers `500`, or ends
+  the subscription with the error's code.
 
 ## [2.1.0] - 2026-11-16
 

@@ -51,6 +51,20 @@ const metaUpperBound = (value) => {
   return bound;
 };
 
+// The exact measure, for a bag the one-pass bound could not clear. A bag
+// that does not serialize at all is over the limit like any other: nested
+// deep enough that JSON.stringify overflows the stack (20,000 levels fit in
+// a 40 KB packet, and JSON.parse reads them), or holding what a packet
+// codec decoded and JSON has no spelling for. It used to throw from here —
+// after the call had taken its slot and before anything that answers it.
+const overLimit = (value, limit) => {
+  try {
+    return JSON.stringify(value).length > limit;
+  } catch {
+    return true;
+  }
+};
+
 const sanitizeMeta = (value, limit) => {
   if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
   // The cap measures the SERIALIZED size, but serializing every bag to
@@ -61,7 +75,7 @@ const sanitizeMeta = (value, limit) => {
   // bags near the limit or with nested values. Never admits an over-limit
   // bag — the bound only overestimates.
   const bound = metaUpperBound(value);
-  if ((bound < 0 || bound > limit) && JSON.stringify(value).length > limit) return null;
+  if ((bound < 0 || bound > limit) && overLimit(value, limit)) return null;
   // An own data property here (JSON.parse never pollutes by itself), dropped
   // for the sake of application code that would spread the bag into a config.
   if (Object.hasOwn(value, PROTO_KEY)) delete value[PROTO_KEY];
@@ -195,101 +209,112 @@ const handleRpc = async (client, packet, router) => {
   // nothing to cancel.
   const controller = new AbortController();
   client.calls.set(id, controller);
-  // The disabled writer's recorders are no-ops, but the OPTIONS OBJECTS and
-  // the timestamp fed to them were still built per call — with telemetry
-  // off, the guards below skip the allocations, not just the calls.
-  const enabled = client.otel.enabled;
-  const started = enabled ? now() : 0;
-  const hooks = router.hooksFor(proc);
-  const compiled = router.compiledFor(proc);
-  // Created before the first phase so onRequest can already enrich
-  // ctx.state — the context is what ties the phases of one call together.
-  const context = client.createContext(controller.signal, {
-    method,
-    procedure: proc,
-    callMeta: packet.meta === undefined ? null : sanitizeMeta(packet.meta, client.metaMax),
-  });
-  // The span covers the whole invocation including session wait, access
-  // check, validation and the timeout race — an argument error deserves an
-  // error span and a duration sample exactly as much as a slow handler does.
-  const run = async (handle) => {
-    let status = 'ok';
-    let code;
-    try {
-      if (hooks.onRequest.length > 0) await runHooks(hooks.onRequest, context, packet);
-      // One microtask hop per call skipped once the connection is ready —
-      // which is every call after the first (bench/bench.js).
-      if (!client.isReady) await client.ready;
-      if (controller.signal.aborted) return void (status = 'cancelled');
-      if (!hasSession(client) && proc.access !== 'public') {
-        status = 'error';
-        code = refusedFor(client);
+  // From here the call holds a slot of `maxCalls`, and whatever throws before
+  // `run` has a try of its own around it gives the slot back and answers:
+  // an unanswered call is a request that hangs on HTTP and, on a socket, a
+  // slot nothing ever frees — `maxCalls` of them and the connection answers
+  // 429 for good. Synchronous on purpose: no await is added to the path
+  // (bench/bench.js).
+  try {
+    // The disabled writer's recorders are no-ops, but the OPTIONS OBJECTS and
+    // the timestamp fed to them were still built per call — with telemetry
+    // off, the guards below skip the allocations, not just the calls.
+    const enabled = client.otel.enabled;
+    const started = enabled ? now() : 0;
+    const hooks = router.hooksFor(proc);
+    const compiled = router.compiledFor(proc);
+    // Created before the first phase so onRequest can already enrich
+    // ctx.state — the context is what ties the phases of one call together.
+    const context = client.createContext(controller.signal, {
+      method,
+      procedure: proc,
+      callMeta: packet.meta === undefined ? null : sanitizeMeta(packet.meta, client.metaMax),
+    });
+    // The span covers the whole invocation including session wait, access
+    // check, validation and the timeout race — an argument error deserves an
+    // error span and a duration sample exactly as much as a slow handler does.
+    const run = async (handle) => {
+      let status = 'ok';
+      let code;
+      try {
+        if (hooks.onRequest.length > 0) await runHooks(hooks.onRequest, context, packet);
+        // One microtask hop per call skipped once the connection is ready —
+        // which is every call after the first (bench/bench.js).
+        if (!client.isReady) await client.ready;
+        if (controller.signal.aborted) return void (status = 'cancelled');
+        if (!hasSession(client) && proc.access !== 'public') {
+          status = 'error';
+          code = refusedFor(client);
+          release(client, id, controller);
+          return void client.error(code, { id });
+        }
+        // The caller's per-call deadline, validated as a bounded positive
+        // number — an additive packet field, absent on every packet that
+        // never set CallOptions.timeout.
+        const budget = typeof packet.timeout === 'number' && packet.timeout > 0 ? packet.timeout : 0;
+        const result = await proc.invoke(context, args, hooks, compiled, budget);
+        if (controller.signal.aborted) return void (status = 'cancelled');
+        if (isError(result)) {
+          status = 'error';
+          code = result.code;
+          client.otel.recordError(handle, result, code);
+          if (hooks.onError.length > 0) await runHooksSafe(hooks.onError, context, result, client.log, 'onError');
+          release(client, id, controller);
+          return void client.error(code, { id, error: result });
+        }
+        const callback = { type: 'callback', id, result };
+        // onSend sees (and may mutate) the exact packet about to be written —
+        // the last chance to redact or reshape a response.
+        if (hooks.onSend.length > 0) await runHooks(hooks.onSend, context, callback);
+        // The compiled-serializer fast path: the envelope is assembled around
+        // the schema-compiled result text instead of JSON.stringify walking
+        // the whole packet (~1.16x for the seam alone, more with a real
+        // fast-json-stringify — bench/serialize-callback.js). Correctness
+        // gates: an onSend hook may have mutated the packet after the shape
+        // the serializer was compiled for, so hooks win over the fast path.
+        // A result holding bytes leaves as an attachments frame, which the
+        // serializer's JSON cannot be: the walk runs only under a serializer,
+        // and only where a frame could leave at all (`attachments: false`, a
+        // packet codec) — the walk on a 400-row result costs about what the
+        // envelope surgery saves (bench/serialize-callback.js).
+        const text =
+          compiled?.serialize && hooks.onSend.length === 0 && (!client.attachments || !hasBytes(result))
+            ? `{"type":"callback","id":${JSON.stringify(id)},"result":${compiled.serialize(result)}}`
+            : undefined;
         release(client, id, controller);
-        return void client.error(code, { id });
-      }
-      // The caller's per-call deadline, validated as a bounded positive
-      // number — an additive packet field, absent on every packet that
-      // never set CallOptions.timeout.
-      const budget = typeof packet.timeout === 'number' && packet.timeout > 0 ? packet.timeout : 0;
-      const result = await proc.invoke(context, args, hooks, compiled, budget);
-      if (controller.signal.aborted) return void (status = 'cancelled');
-      if (isError(result)) {
-        status = 'error';
-        code = result.code;
-        client.otel.recordError(handle, result, code);
-        if (hooks.onError.length > 0) await runHooksSafe(hooks.onError, context, result, client.log, 'onError');
+        client.send(callback, { method, text });
+        if (hooks.onResponse.length > 0) {
+          await runHooksSafe(hooks.onResponse, context, callback, client.log, 'onResponse');
+        }
+      } catch (error) {
+        if (controller.signal.aborted) return void (status = 'cancelled');
+        code = error.code === 'ETIMEOUT' ? 408 : 500;
+        if (typeof error.code === 'number') code = error.code;
+        status = code === 408 ? 'timeout' : 'error';
+        client.otel.recordError(handle, error, code);
+        if (code === 408 && hooks.onTimeout.length > 0) {
+          await runHooksSafe(hooks.onTimeout, context, error, client.log, 'onTimeout');
+        }
+        if (hooks.onError.length > 0) await runHooksSafe(hooks.onError, context, error, client.log, 'onError');
         release(client, id, controller);
-        return void client.error(code, { id, error: result });
+        return void client.error(code, { id, error });
+      } finally {
+        release(client, id, controller);
+        if (enabled) {
+          client.otel.endSpan(handle, { 'rpc.wrpc.status_code': code, 'wrpc.status': status });
+          client.otel.recordCall(method, status, code, now() - started);
+        }
       }
-      const callback = { type: 'callback', id, result };
-      // onSend sees (and may mutate) the exact packet about to be written —
-      // the last chance to redact or reshape a response.
-      if (hooks.onSend.length > 0) await runHooks(hooks.onSend, context, callback);
-      // The compiled-serializer fast path: the envelope is assembled around
-      // the schema-compiled result text instead of JSON.stringify walking
-      // the whole packet (~1.16x for the seam alone, more with a real
-      // fast-json-stringify — bench/serialize-callback.js). Correctness
-      // gates: an onSend hook may have mutated the packet after the shape
-      // the serializer was compiled for, so hooks win over the fast path.
-      // A result holding bytes leaves as an attachments frame, which the
-      // serializer's JSON cannot be: the walk runs only under a serializer,
-      // and only where a frame could leave at all (`attachments: false`, a
-      // packet codec) — the walk on a 400-row result costs about what the
-      // envelope surgery saves (bench/serialize-callback.js).
-      const text =
-        compiled?.serialize && hooks.onSend.length === 0 && (!client.attachments || !hasBytes(result))
-          ? `{"type":"callback","id":${JSON.stringify(id)},"result":${compiled.serialize(result)}}`
-          : undefined;
-      release(client, id, controller);
-      client.send(callback, { method, text });
-      if (hooks.onResponse.length > 0) {
-        await runHooksSafe(hooks.onResponse, context, callback, client.log, 'onResponse');
-      }
-    } catch (error) {
-      if (controller.signal.aborted) return void (status = 'cancelled');
-      code = error.code === 'ETIMEOUT' ? 408 : 500;
-      if (typeof error.code === 'number') code = error.code;
-      status = code === 408 ? 'timeout' : 'error';
-      client.otel.recordError(handle, error, code);
-      if (code === 408 && hooks.onTimeout.length > 0) {
-        await runHooksSafe(hooks.onTimeout, context, error, client.log, 'onTimeout');
-      }
-      if (hooks.onError.length > 0) await runHooksSafe(hooks.onError, context, error, client.log, 'onError');
-      release(client, id, controller);
-      return void client.error(code, { id, error });
-    } finally {
-      release(client, id, controller);
-      if (enabled) {
-        client.otel.endSpan(handle, { 'rpc.wrpc.status_code': code, 'wrpc.status': status });
-        client.otel.recordCall(method, status, code, now() - started);
-      }
-    }
-  };
-  // With telemetry off the span options object and the writer's own wrapper
-  // are skipped, not just the no-op recorders — the client side guards its
-  // span the same way.
-  if (!enabled) return run(null);
-  return client.otel.withSpan({ client, packet, target: method }, run);
+    };
+    // With telemetry off the span options object and the writer's own wrapper
+    // are skipped, not just the no-op recorders — the client side guards its
+    // span the same way.
+    if (!enabled) return run(null);
+    return client.otel.withSpan({ client, packet, target: method }, run);
+  } catch (error) {
+    release(client, id, controller);
+    return void client.error(500, { id, error });
+  }
 };
 
 // Cancellation is best-effort by nature: a handler that never looks at
@@ -342,31 +367,37 @@ const handleSubscribe = async (client, packet, router) => {
   // same turn has something to find.
   const controller = new AbortController();
   client.subscriptions.set(id, controller);
-  if (!client.isReady) await client.ready;
-  if (controller.signal.aborted) {
-    client.subscriptions.delete(id);
-    return;
-  }
-  if (!hasSession(client) && proc.access !== 'public') {
-    client.subscriptions.delete(id);
-    const code = refusedFor(client);
-    return void refuse(client, id, code, code === 503 ? 'Session store unavailable' : 'Forbidden', method);
-  }
-  const hooks = router.hooksFor(proc);
-  const compiled = router.compiledFor(proc);
-  const context = client.createContext(controller.signal, {
-    method,
-    procedure: proc,
-    callMeta: packet.meta === undefined ? null : sanitizeMeta(packet.meta, client.metaMax),
-  });
-  if (hooks.onSubscribe.length > 0) {
-    try {
-      await runHooks(hooks.onSubscribe, context, packet);
-    } catch (error) {
+  // The subscription holds a slot of `maxSubscriptions` from here: whatever
+  // fails before the pump takes over — the connection's own gate, the
+  // context, an onSubscribe hook — gives it back and ends the subscription
+  // for the peer, instead of leaving a slot nothing frees and a subscriber
+  // nobody answers.
+  let hooks = null;
+  let compiled = null;
+  let context = null;
+  try {
+    if (!client.isReady) await client.ready;
+    if (controller.signal.aborted) {
       client.subscriptions.delete(id);
-      const code = typeof error.code === 'number' ? error.code : 500;
-      return void refuse(client, id, code, publicErrorMessage(code, error), method, publicErrorDetails(code, error));
+      return;
     }
+    if (!hasSession(client) && proc.access !== 'public') {
+      client.subscriptions.delete(id);
+      const code = refusedFor(client);
+      return void refuse(client, id, code, code === 503 ? 'Session store unavailable' : 'Forbidden', method);
+    }
+    hooks = router.hooksFor(proc);
+    compiled = router.compiledFor(proc);
+    context = client.createContext(controller.signal, {
+      method,
+      procedure: proc,
+      callMeta: packet.meta === undefined ? null : sanitizeMeta(packet.meta, client.metaMax),
+    });
+    if (hooks.onSubscribe.length > 0) await runHooks(hooks.onSubscribe, context, packet);
+  } catch (error) {
+    if (client.subscriptions.get(id) === controller) client.subscriptions.delete(id);
+    const code = typeof error.code === 'number' ? error.code : 500;
+    return void refuse(client, id, code, publicErrorMessage(code, error), method, publicErrorDetails(code, error));
   }
   const options = { id, procedure: proc, context, args, lastEventId, signal: controller.signal, hooks, compiled };
   // The span covers the subscription's whole life, not just its setup: the
