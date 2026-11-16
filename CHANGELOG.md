@@ -148,6 +148,15 @@ narrower promise — see
   a `count()` of 0 everywhere else. `cluster: { rooms: /^chat:/g }` — or
   `/y` — kept `lastIndex` between calls, so the same room answered `true`,
   `false`, `true` and every second presence delta of it was dropped.
+- **`wrpcFastify` registers on a fastify that terminates TLS.** The plugin
+  chose its WebSocket engine by `server instanceof http.Server`, and an
+  `https.Server` is not one — it extends `tls.Server` — so
+  `fastify({ https: { key, cert } })` failed at registration with `could not
+  detect a WebSocket backend for this fastify instance`, as did
+  `fastify({ http2: true })`. The server is recognized by what it does (it
+  announces upgrades and listens), after the uWebSockets.js backend was
+  ruled out. Over HTTP/2 the HTTP side works as on any host; WebSocket
+  upgrades need `allowHTTP1`, HTTP/2 having none.
 
 
 ### Security

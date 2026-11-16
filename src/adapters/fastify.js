@@ -1,6 +1,5 @@
 'use strict';
 
-const http = require('node:http');
 const { performance } = require('node:perf_hooks');
 
 const { RpcServer, rpcOptions } = require('../rpc/core.js');
@@ -16,8 +15,9 @@ const { setupMirror } = require('./mirror.js');
 // Fastify plugin. One plugin, two backends, picked by looking at what
 // fastify is actually running on:
 //
-//   fastify()                     -> a real node http.Server -> node engine,
-//                                    attached to its 'upgrade' event
+//   fastify()                     -> a real node server (http, https, http2)
+//                                    -> node engine, attached to its
+//                                    'upgrade' event
 //   fastify({ serverFactory })    -> a uws-backed fake server (fastify-uws)
 //                                    -> uws engine over the same uws app
 //
@@ -43,9 +43,18 @@ const resolveEngine = (fastify, options) => {
     return engine;
   }
   const { server } = fastify;
-  if (server instanceof http.Server) return createNodeEngine(options.ws);
   const app = findUwsApp(server);
   if (app) return createUwsEngine({ ...options.ws, app });
+  // A node server by what it does, not by its class: it announces upgrades
+  // to listeners and it listens. `instanceof http.Server` was the test, and
+  // an `https.Server` is not one (it extends tls.Server) — so
+  // `fastify({ https })`, TLS terminated in the process, could not register
+  // the plugin at all. An HTTP/2 server passes too: with `allowHTTP1` its
+  // HTTP/1.1 clients upgrade as usual, and without it nobody can — HTTP/2
+  // has no upgrade for the engine to answer — while the HTTP side works.
+  if (server && typeof server.on === 'function' && typeof server.listen === 'function') {
+    return createNodeEngine(options.ws);
+  }
   throw new TypeError(
     'wrpcFastify: could not detect a WebSocket backend for this fastify instance — ' +
       'pass one explicitly via options.engine',

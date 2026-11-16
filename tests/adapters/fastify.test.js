@@ -915,3 +915,18 @@ test('mirror: a naming collision throws at onReady with a hint', { skip: noFasti
   app.get('/other/things/special', async () => ({}));
   await assert.rejects(app.ready(), /things\/findAllSpecial.*config\.wrpc\.name/s);
 });
+
+test('wrpcFastify: registers over a TLS-terminating fastify and over HTTP/2', { skip: noFastify }, async (t) => {
+  const router = defineRouter({ own: { ping: procedure({ access: 'public', handler: async () => 'pong' }) } });
+  // No certificate is needed to see the engine chosen and attached: an
+  // https.Server is a tls.Server, not an http.Server, and the plugin used to
+  // answer "could not detect a WebSocket backend" for it.
+  for (const options of [{ https: {} }, { http2: true }, { http2: true, https: { allowHTTP1: true } }]) {
+    const app = fastify({ logger: false, ...options });
+    t.after(() => app.close());
+    await app.register(wrpcFastify, { router, logger: false });
+    await app.ready();
+    assert.ok(app.wrpc, `the server is decorated (${JSON.stringify(options)})`);
+    assert.ok(app.server.listenerCount('upgrade') > 0, 'the engine listens for upgrades on it');
+  }
+});
