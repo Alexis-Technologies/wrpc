@@ -8,6 +8,7 @@ const { mkdtemp, readFile, rm } = require('node:fs/promises');
 
 const {
   CliError,
+  MAX_ANSWER,
   MAX_DEPTH,
   USAGE,
   fetchIntrospection,
@@ -776,4 +777,173 @@ test('CLI parseArgs: --openapi rides along, one stdout at most', () => {
   const options = parseArgs(['types', 'http://x/api', '--out', 'api.d.ts', '--openapi', 'openapi.json']);
   assert.strictEqual(options.openapi, 'openapi.json');
   assert.throws(() => parseArgs(['types', 'http://x/api', '--out', '-', '--openapi', '-']), /one of/);
+});
+
+// ---------------------------------------------------------------------------
+// what the server chose, on the user's terminal
+
+test('CLI main: text from the wire reaches the terminal with its control characters escaped', async () => {
+  const ESC = String.fromCharCode(27);
+  const BEL = String.fromCharCode(7);
+  const hostile = `chat${ESC}]0;owned${BEL}${ESC}[2J\nwrpc types: wrote api.d.ts`;
+  const error = collect();
+  const code = await main(['types', 'http://h/api', '--out', '-'], {
+    log: collect(),
+    error,
+    fetch: async () => answer({ type: 'callback', id: '1', result: { [hostile]: 'not a unit', ok: { ping: {} } } }),
+  });
+  assert.strictEqual(code, 0);
+  assert.strictEqual(error.lines.length, 1, 'one warning is one line');
+  assert.ok(!error.text().includes(ESC) && !error.text().includes(BEL) && !error.text().includes('\n'));
+  assert.match(error.text(), /chat\\u001b\]0;owned\\u0007\\u001b\[2J\\u000awrpc types: wrote/);
+
+  // The refusal's message is the server's text too.
+  const refused = collect();
+  const failed = await main(['types', 'http://h/api', '--out', '-'], {
+    log: collect(),
+    error: refused,
+    fetch: async () => answer({ type: 'callback', id: '1', error: { code: 403, message: `no${ESC}[31m\r\nnext` } }),
+  });
+  assert.strictEqual(failed, 1);
+  assert.deepStrictEqual(refused.lines, [
+    'wrpc types: system/introspect was refused with 403: no\\u001b[31m\\u000d\\u000anext',
+  ]);
+
+  // And one message is bounded, whatever was put in it.
+  const long = collect();
+  await main(['types', 'http://h/api', '--out', '-'], {
+    log: collect(),
+    error: long,
+    fetch: async () => answer({ type: 'callback', id: '1', result: { ['u'.repeat(100_000)]: 1, ok: { ping: {} } } }),
+  });
+  assert.ok(long.lines[0].length < 2200, `a warning of ${long.lines[0].length} characters`);
+  assert.ok(long.lines[0].endsWith('…'));
+});
+
+test('CLI main: an unexpected failure keeps the lines of its stack and escapes the rest', async () => {
+  const ESC = String.fromCharCode(27);
+  const error = collect();
+  const code = await main(['types', 'http://h/api', '--out', '-'], {
+    error,
+    fetch: async () => answer({ type: 'callback', id: '1', result: { chat: { ping: {} } } }),
+    log: () => {
+      throw new TypeError(`EPIPE${ESC}[2J`);
+    },
+  });
+  assert.strictEqual(code, 1);
+  assert.ok(!error.text().includes(ESC));
+  assert.match(error.text(), /TypeError: EPIPE\\u001b\[2J\n\s+at /);
+});
+
+test('CLI parseArgs: --timeout is a whole number of milliseconds', () => {
+  const base = ['types', 'http://h/api', '--out', 'x'];
+  assert.strictEqual(parseArgs(base).timeout, 30_000);
+  assert.strictEqual(parseArgs([...base, '--timeout', '1500']).timeout, 1500);
+  for (const bad of ['0', '1.5', 'soon', '1e400', String(2 ** 31)]) {
+    assert.throws(() => parseArgs([...base, '--timeout', bad]), /--timeout must be a whole number/, bad);
+  }
+  assert.throws(() => parseArgs([...base, '--timeout']), /--timeout requires a value/);
+  assert.match(USAGE, /--timeout <ms>/);
+});
+
+test('CLI main: a server that accepts and never answers is given up on', async () => {
+  const signals = [];
+  const silent = (_url, init) =>
+    new Promise((resolve, reject) => {
+      signals.push(init.signal);
+      init.signal.addEventListener('abort', () => reject(init.signal.reason));
+    });
+  const error = collect();
+  const started = Date.now();
+  const code = await main(['types', 'http://h/api', '--out', 'x', '--timeout', '50'], {
+    log: collect(),
+    error,
+    fetch: silent,
+  });
+  assert.strictEqual(code, 1);
+  assert.ok(Date.now() - started < 5000);
+  assert.deepStrictEqual(error.lines, ['wrpc types: http://h/api did not answer within 50 ms']);
+  assert.ok(signals[0] instanceof AbortSignal, 'the fetch is handed the deadline');
+});
+
+test('CLI main: the deadline covers a body that stops arriving', async () => {
+  const stalled = async (_url, init) =>
+    answer(
+      {},
+      {
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"type":"callback",'));
+            init.signal.addEventListener('abort', () => controller.error(init.signal.reason));
+          },
+        }),
+      },
+    );
+  const error = collect();
+  const code = await main(['types', 'http://h/api', '--out', 'x', '--timeout', '50'], {
+    log: collect(),
+    error,
+    fetch: stalled,
+  });
+  assert.strictEqual(code, 1);
+  assert.deepStrictEqual(error.lines, ['wrpc types: http://h/api did not answer within 50 ms']);
+});
+
+test('CLI fetchIntrospection: an answer is read under a cap, and a streamed one decodes whole', async () => {
+  // Split inside a multi-byte character: what a real body does.
+  const bytes = new TextEncoder().encode(JSON.stringify({ type: 'callback', id: '1', result: { чат: {} } }));
+  const split = bytes.indexOf(0xd1) + 1;
+  const streamed = async () =>
+    answer(
+      {},
+      {
+        body: new ReadableStream({
+          start(controller) {
+            controller.enqueue(bytes.subarray(0, split));
+            controller.enqueue(bytes.subarray(split));
+            controller.close();
+          },
+        }),
+      },
+    );
+  assert.deepStrictEqual(await fetchIntrospection('http://h/api', [], streamed), { чат: {} });
+
+  let cancelled = false;
+  let pulled = 0;
+  const chunk = new Uint8Array(8 * 1024 * 1024);
+  const endless = async () =>
+    answer(
+      {},
+      {
+        body: new ReadableStream({
+          pull(controller) {
+            pulled++;
+            controller.enqueue(chunk);
+          },
+          cancel() {
+            cancelled = true;
+          },
+        }),
+      },
+    );
+  await assert.rejects(fetchIntrospection('http://h/api', [], endless), (error) => {
+    assert.ok(error instanceof CliError);
+    assert.match(error.message, new RegExp(`answered more than ${MAX_ANSWER} bytes`));
+    return true;
+  });
+  assert.ok(cancelled, 'the rest of the body is let go of');
+  assert.ok(pulled <= MAX_ANSWER / chunk.length + 3, `${pulled} chunks were read`);
+});
+
+test('CLI renderTypes: a unit may declare more events than a call takes arguments', () => {
+  // 200,000 entries used to be spread into one push(): a RangeError.
+  const emits = {};
+  const on = {};
+  for (let i = 0; i < 200_000; i++) {
+    emits[`e${i}`] = { data: 'string' };
+    on[`h${i}`] = {};
+  }
+  const text = renderTypes({ feed: { emits, on } });
+  assert.ok(text.includes('e199999'));
+  assert.ok(text.includes('h199999'));
 });
