@@ -226,6 +226,12 @@ narrower promise — see
   request/response uplink) each goes to its own page, where the frame used
   to be broadcast to every page. A page on this release behind a worker
   still running an older one keeps the old behaviour: update the worker.
+- **An `'error'` nobody listens for keeps what went wrong.** Emitting
+  `'error'` on a client, a stream or a transport with no listener threw
+  `Error('Unhandled error')` and dropped the error that was emitted — so a
+  sink that failed under `readable.pipe()`, say, surfaced as an unhandled
+  rejection whose message was those two words and nothing else. The error
+  thrown is the same; what was emitted is its `cause`.
 
 
 ### Security

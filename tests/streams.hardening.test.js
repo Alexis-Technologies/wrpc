@@ -1361,3 +1361,12 @@ test('many uploads in flight add one close listener to their transport, and all 
   await transport.emit('close');
   assert.strictEqual(later.closed, true);
 });
+
+test("an 'error' nobody listens for carries what was emitted as its cause", () => {
+  const emitter = new Emitter();
+  const original = new Error('disk full: /var/data');
+  assert.throws(
+    () => emitter.emit('error', original),
+    (thrown) => thrown.message === 'Unhandled error' && thrown.cause === original,
+  );
+});
