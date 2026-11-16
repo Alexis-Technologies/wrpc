@@ -422,9 +422,22 @@ class Connection extends EventEmitter {
 
   // A message decoded synchronously while others are still inflating off
   // the loop waits behind them: the inbox is what keeps arrival order.
+  //
+  // It waits COUNTED, and under the same marks as an inflating one. The hold
+  // used to be looked at only where a message starts to inflate, so a peer
+  // that sent one compressed frame and any number of plain ones behind it —
+  // 300,000 of two bytes in a segment of 2.5 MiB — had every one of them
+  // queued here: 70 MiB held with the socket never paused, and then taken
+  // from the head of an array one shift() at a time, 44 seconds of one
+  // synchronous loop. Held at the mark, the frame loop stops and what is
+  // left waits in the segment queue, under maxBuffer; the inbox stays at
+  // INBOX_HIGH + 1 messages, which is what keeps its shift() cheap.
   #emitMessage(data, isBinary) {
     if (this.#inbox.length > 0) {
-      this.#inbox.push({ done: true, error: null, data, isBinary, isText: false, size: 0 });
+      const size = data.length;
+      this.#inbox.push({ done: true, error: null, data, isBinary, isText: false, size });
+      this.#inboxBytes += size;
+      if (this.#inbox.length >= INBOX_HIGH || this.#inboxBytes >= this.#maxPayload) this.#holdInbox();
       return;
     }
     this.emit('message', data, isBinary);
@@ -702,7 +715,15 @@ class Connection extends EventEmitter {
     // The socket the hold paused reads again (unless the application paused
     // it): the peer's Close, answering ours, is on it — left unread, the
     // close waited out closeTimeout and ended as 1006.
-    if (held && !this.#paused && !this.#socket.destroyed) this.#socket.resume();
+    if (!held || this.#socket.destroyed) return;
+    if (!this.#paused) this.#socket.resume();
+    // And what the hold left in the segment queue is taken up: no 'data'
+    // event comes for bytes already read, and the peer's Close may be among
+    // them. On the next tick — this runs from inside the frame loop when a
+    // frame is what ended the connection.
+    process.nextTick(() => {
+      if (!this.#socket.destroyed) this.#processFrames();
+    });
   }
 
   // Both directions, and the takeover context with them: every way out but

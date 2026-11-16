@@ -25,6 +25,25 @@ narrower promise — see
   read a lagging subscriber back one `Array.shift()` at a time, each of
   them a copy of what was left.
 
+### Security
+
+- **The WebSocket engine: frames behind an inflate that runs off the loop
+  are held at the mark like the inflating ones.** With
+  `perMessageDeflate: { async }` or `contextTakeover: 'client' | true`, a
+  message that is still inflating keeps the ones behind it in a queue, to
+  deliver them in order — and only a message that itself inflates was
+  counted against that queue's marks. A peer that sent one compressed frame
+  and plain ones behind it had every one of them queued: 300,000 frames of
+  two bytes, 2.5 MiB in one segment, held 70 MiB with the socket never
+  paused and were then taken from the head of an array, one `shift()` each —
+  **the event loop stood for 44 seconds**, before any call was
+  authenticated. A queued message now counts as its bytes and as one of the
+  32, the frame loop stops at the mark and the rest waits in the segment
+  queue under `maxBuffer`: the same segment is delivered in 55 ms with
+  0.6 MiB held. A close that finds the queue held also takes up what the
+  hold left unread, where the peer's own Close could wait for a `'data'`
+  event that never came. Neither option is on by default.
+
 ## [2.1.0] - 2026-11-16
 
 ### Added

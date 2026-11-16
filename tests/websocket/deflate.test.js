@@ -794,6 +794,87 @@ test('takeover: a burst of compressed frames pauses the socket at the inflate ma
   conn.terminate();
 });
 
+// Plain frames behind a frame that is still inflating: queued in arrival
+// order, and counted — the hold applies to them as to an inflating one.
+const behindOneInflate = async (config, count) => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { deflate: config, maxPayload: 1 << 20 });
+  const messages = [];
+  conn.on('message', (data) => messages.push(data.toString()));
+  const deflate = config.clientTakeover ? liveDeflater() : async (payload) => compress(payload);
+  const big = `first:${require('node:crypto').randomBytes(600).toString('base64')}`;
+  const head = new Frame(true, OPCODES.TEXT, false, await deflate(Buffer.from(big)), null, RSV1);
+  head.maskPayload();
+  const frames = [head.toBuffer()];
+  const texts = [big];
+  for (let i = 0; i < count; i++) {
+    const text = `p${i}`;
+    texts.push(text);
+    const frame = new Frame(true, OPCODES.TEXT, false, Buffer.from(text), null, 0);
+    frame.maskPayload();
+    frames.push(frame.toBuffer());
+  }
+  return { socket, conn, messages, texts, frames };
+};
+
+for (const [label, config] of [
+  ['takeover', TAKEOVER],
+  ['async inflate', ASYNC],
+]) {
+  test(`${label}: plain frames behind one inflate are held at the mark too, and arrive in order`, async () => {
+    const { socket, conn, messages, texts, frames } = await behindOneInflate(config, 5000);
+    const ping = Frame.ping(Buffer.from('behind'));
+    ping.maskPayload();
+    socket.emit('data', Buffer.concat([...frames, ping.toBuffer()]));
+    // Nothing has landed: the first message is still inflating. The frame
+    // loop stopped at the mark — it used to queue all five thousand.
+    assert.strictEqual(messages.length, 0);
+    assert.strictEqual(socket.paused, true, 'paused for the queue behind the inflate');
+    assert.strictEqual(conn.isPaused, true);
+    assert.strictEqual(socket.writtenData.length, 0, 'the ping behind the mark waits its turn');
+    await waitUntil(() => messages.length === texts.length, 5000);
+    assert.deepStrictEqual(messages, texts);
+    assert.strictEqual(socket.paused, false, 'taken up again once it drained');
+    await waitUntil(() => socket.writtenData.length === 1, 1000);
+    assert.strictEqual(FrameParser.parse(socket.writtenData[0]).value.frame.opcode, OPCODES.PONG);
+    conn.terminate();
+  });
+}
+
+test('async inflate: a long run of plain frames behind one inflate is delivered in linear time', async () => {
+  // 2.5 MiB of two-byte frames behind one inflate held the event loop for 44
+  // seconds: all of them in the inbox, taken one shift() at a time. A ratio.
+  const time = async (count) => {
+    const { socket, conn, messages, texts, frames } = await behindOneInflate(ASYNC, count);
+    const started = process.hrtime.bigint();
+    socket.emit('data', Buffer.concat(frames));
+    await waitUntil(() => messages.length === texts.length, 20_000);
+    const elapsed = Number(process.hrtime.bigint() - started);
+    conn.terminate();
+    return elapsed;
+  };
+  await time(4_000);
+  const small = Math.max(await time(4_000), 1);
+  const large = await time(128_000);
+  assert.ok(large / small < 200, `128k took ${(large / small).toFixed(0)}× the time of 4k`);
+});
+
+test('a close while the inflate queue is held takes up what the hold left unread', async () => {
+  const { socket, conn, frames } = await behindOneInflate(ASYNC, 200);
+  const closes = [];
+  conn.on('close', (code) => closes.push(code));
+  const peerClose = Frame.close(1000, '');
+  peerClose.maskPayload();
+  socket.emit('data', Buffer.concat([...frames, peerClose.toBuffer()]));
+  assert.strictEqual(socket.paused, true);
+  // A protocol failure on this side while the peer's Close sits behind the
+  // mark: the Close is read on the next tick, not at the next 'data' —
+  // which never comes for bytes already read.
+  conn.sendClose(1000, '');
+  await waitUntil(() => socket.ended === true || socket.destroyed === true, 1000);
+  conn.terminate();
+});
+
 test("async inflate: the threadpool path holds at four in flight; the application's pause() outlives the hold", async () => {
   const { socket, conn, messages, texts, segment } = await burst(ASYNC, 200, 300);
   socket.emit('data', segment);
