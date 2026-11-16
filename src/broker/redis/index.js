@@ -194,29 +194,62 @@ const createRedisBroker = (options = {}) => {
     return entries;
   };
 
-  // One blocking XREAD loop per instance, multiplexed over every topic with
-  // a live reader. A blocked read cannot be interrupted, so a topic added or
-  // dropped takes effect within `blockMs` — which is why the default is a
-  // second rather than the minutes a single-topic reader could afford.
-  const tail = {
-    connection: null,
+  // A blocking XREAD loop multiplexed over the topics with a live reader. A
+  // blocked read cannot be interrupted, so a topic added or dropped takes
+  // effect within `blockMs` — which is why the default is a second rather
+  // than the minutes a single-topic reader could afford.
+  //
+  // One loop reads at most TAIL_TOPICS topics, on a connection of its own:
+  // every topic is two arguments of the one XREAD, and the command used to
+  // be built from ALL of them — past some sixty thousand live topics the
+  // call itself threw a RangeError (an engine's argument limit), was logged
+  // and retried a second later, for good: every feed of the instance dead.
+  // The stream a row belongs to is looked up in a Map, where it was an
+  // indexOf over every key for every stream returned.
+  const TAIL_TOPICS = 8192;
+  const tailers = [];
+  const createTailer = () => ({
+    connection: spawn(),
     cursors: new Map(), // topic -> last id read
     handlers: new Map(), // topic -> onEntry
     running: false,
+  });
+  // The loop a new topic joins: the first with room, else a new one.
+  const tailerFor = () => {
+    for (let i = 0; i < tailers.length; i++) {
+      if (tailers[i].handlers.size < TAIL_TOPICS) return tailers[i];
+    }
+    const created = createTailer();
+    tailers.push(created);
+    return created;
   };
 
-  const pump = async () => {
+  const pump = async (tail) => {
     if (tail.running) return;
     tail.running = true;
     try {
       for (;;) {
         if (closed || tail.handlers.size === 0) return;
-        const topics = Array.from(tail.handlers.keys());
-        const keys = topics.map(streamKey);
-        const ids = topics.map((topic) => tail.cursors.get(topic) ?? '$');
+        const count = tail.handlers.size;
+        const args = new Array(5 + count * 2);
+        args[0] = 'COUNT';
+        args[1] = 512;
+        args[2] = 'BLOCK';
+        args[3] = blockMs;
+        args[4] = 'STREAMS';
+        const byKey = new Map();
+        let at = 0;
+        for (const topic of tail.handlers.keys()) {
+          const name = streamKey(topic);
+          byKey.set(name, topic);
+          args[5 + at] = name;
+          args[5 + count + at] = tail.cursors.get(topic) ?? '$';
+          at++;
+        }
         let rows;
         try {
-          rows = await tail.connection.xread('COUNT', 512, 'BLOCK', blockMs, 'STREAMS', ...keys, ...ids);
+          // Bounded by TAIL_TOPICS: 16,389 arguments at most.
+          rows = await tail.connection.xread(...args);
         } catch (error) {
           if (closed) return;
           report('broker.redis.tail', error);
@@ -225,7 +258,7 @@ const createRedisBroker = (options = {}) => {
         }
         if (!rows) continue;
         for (const [name, entries] of rows) {
-          const topic = topics[keys.indexOf(name)];
+          const topic = byKey.get(name);
           const onEntry = tail.handlers.get(topic);
           for (const [id, fields] of entries) {
             tail.cursors.set(topic, id);
@@ -243,8 +276,8 @@ const createRedisBroker = (options = {}) => {
     // info, not a fault — but the first thing to look at when a feed is slow.
     onLag: (topic, readers) => log.info({ event: 'broker.tail.lag', topic, readers }),
     live: async (topic, { signal, onEntry }) => {
-      if (!tail.connection) tail.connection = spawn();
       const from = (await tip(topic)) ?? '0-0';
+      const tail = tailerFor();
       tail.cursors.set(topic, from);
       tail.handlers.set(topic, onEntry);
       signal.addEventListener(
@@ -255,7 +288,7 @@ const createRedisBroker = (options = {}) => {
         },
         { once: true },
       );
-      void pump();
+      void pump(tail);
       return from === '0-0' ? null : from;
     },
     range,
@@ -773,7 +806,12 @@ const createRedisBroker = (options = {}) => {
     if (closed) return;
     closed = true;
     tails.close();
-    tail.handlers.clear();
+    // The loops' connections sit in a blocking read: closed without waiting.
+    const blocked = new Set();
+    for (const tail of tailers) {
+      tail.handlers.clear();
+      blocked.add(tail.connection);
+    }
     backplane.close();
     plain.clear();
     // Heartbeats, leases and sweep timers go with the broker: they used to
@@ -781,7 +819,7 @@ const createRedisBroker = (options = {}) => {
     for (const stop of Array.from(stops)) await stop();
     for (const connection of Array.from(owned)) {
       owned.delete(connection);
-      await quit(connection, { force: connection === tail.connection });
+      await quit(connection, { force: blocked.has(connection) });
     }
   };
 

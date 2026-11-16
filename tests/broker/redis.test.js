@@ -522,3 +522,45 @@ test('redis broker: numeric options are refused at construction, deadLetter at c
   );
   await broker.close();
 });
+
+test('redis broker (fake): live topics are read by loops of a bounded number of topics each', async (t) => {
+  const { client, broker, close } = open();
+  t.after(close);
+  // What the tail's blocking read is given: every topic is two arguments of
+  // one command, and it used to be ALL the topics of the instance — past
+  // some sixty thousand the call itself threw, once a second, for good.
+  const calls = [];
+  const spawned = [];
+  const duplicate = client.duplicate.bind(client);
+  client.duplicate = (...args) => {
+    const connection = duplicate(...args);
+    const xread = connection.xread.bind(connection);
+    connection.xread = (...argv) => {
+      calls.push(argv.length);
+      return xread(...argv);
+    };
+    spawned.push(connection);
+    return connection;
+  };
+  const controller = new AbortController();
+  t.after(() => controller.abort());
+  const TOPICS = 8192 + 40;
+  const iterators = [];
+  for (let i = 0; i < TOPICS; i++) {
+    const iterator = broker.log.read(`t${i}`, { after: null, signal: controller.signal })[Symbol.asyncIterator]();
+    iterators.push(iterator);
+    void iterator.next().catch(() => {});
+  }
+  await waitFor(() => calls.some((length) => length === 5 + 40 * 2), {
+    message: 'a second loop took the overflow',
+    timeout: 10_000,
+  });
+  assert.ok(Math.max(...calls) <= 5 + 8192 * 2, `one read was given ${Math.max(...calls)} arguments`);
+  // And an entry still reaches the reader of a topic in the second loop.
+  const last = TOPICS - 1;
+  const fresh = broker.log.read(`t${last}`, { after: null, signal: controller.signal })[Symbol.asyncIterator]();
+  const next = fresh.next();
+  await timers.setTimeout(60);
+  await broker.log.append(`t${last}`, 'hello');
+  assert.strictEqual((await next).value.value, 'hello');
+});

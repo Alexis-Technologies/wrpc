@@ -287,6 +287,15 @@ narrower promise — see
   arrived with a gap in front of it and the peer ended the session for it;
   and `write()` answered `false` from then on, with nothing in flight. A
   frame is numbered, and counted, once it exists.
+- **Redis broker: an instance with tens of thousands of live topics keeps
+  its feeds.** The log tail read every topic with a live reader through one
+  blocking `XREAD`, each topic two arguments of it, spread into the call —
+  and past some sixty thousand topics the call itself threw a `RangeError`
+  (the engine's limit on arguments), was logged as `broker.redis.tail` and
+  tried again a second later, for good: every feed of the instance was dead.
+  One loop now reads at most 8,192 topics, on a connection of its own, and
+  a busier instance runs more loops. The stream a returned row belongs to
+  is found through a map, where it was a scan of every key for every row.
 
 
 ### Security

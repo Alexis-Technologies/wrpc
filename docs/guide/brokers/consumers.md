@@ -72,6 +72,8 @@ missing target, a subscription target or a `prefetch` above the server's
 | `prefetch` | `16` | Messages held at once, processed concurrently; at most `maxCalls` |
 | `retry` | 5 attempts, 1 s → 60 s full-jitter backoff | `{ attempts, backoff: { base, max, factor, jitter }, retryOn }`, or `false`. On RabbitMQ the delays are a lower bound — see [its sharp edges](./amqp#sharp-edges) |
 | `deadLetter` | `'<queue>.dlq'` | Where exhausted and refused messages go; `false` drops them |
+| `timeout` | `0` | Milliseconds one delivery may take before it is a `408` (retried like any other, its slot given back). `0`: as long as the procedure's own `timeout` allows — and a procedure without one allows forever |
+| `stallAfter` | `60000` | How long every slot of `prefetch` may stay taken before the binding stops answering `healthy` |
 | `identity` | `{ trust: 'none' }` | Who the procedure runs as — see below |
 | `meta` | `[]` | Message headers copied into `ctx.callMeta` |
 | `args` | `JSON.parse(body)` | `(body, headers, delivery) => args` |
