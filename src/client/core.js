@@ -27,6 +27,9 @@ const timeoutOf = (name, value) => {
   throw new TypeError(`WrpcClient: ${name} must be a number of milliseconds from 1 to 2^31 - 1`);
 };
 
+// How many cancelled calls a client remembers the ids of (see #cancel).
+const MAX_CANCELLED = 1024;
+
 // The Emitter's own methods, for the one place that must not read them off a
 // unit (see #handleEvent).
 const UNIT = Emitter.prototype;
@@ -1560,7 +1563,7 @@ class WrpcClient extends Emitter {
   getStream(id) {
     const stream = this.#streams.get(id);
     if (stream) return stream;
-    throw new Error(`Stream ${id} is not initialized`);
+    throw new Error(`Stream ${shown(id)} is not initialized`);
   }
 
   createStream(name, size) {
@@ -1701,7 +1704,7 @@ class WrpcClient extends Emitter {
     // The 499 acknowledging a cancel this client sent: the caller was
     // rejected the moment it aborted, so the ack is expected, not an error.
     if (this.#cancelled.delete(id)) return;
-    if (!error) throw new Error(`Callback ${id} not found`);
+    if (!error) throw new Error(`Callback ${shown(id)} not found`);
     // An error on an id that is no call's is the server's word on a STREAM
     // this client sends — the announcement refused (429), a chunk past the
     // announced size (400) or past what the server holds unread (413), a
@@ -1901,7 +1904,7 @@ class WrpcClient extends Emitter {
     // hold is not an error: its announcement was refused here, or the stream
     // is long over. It is what a sender told to stop sends back.
     if (!stream && status === 'terminate') return;
-    if (!stream) throw new Error(`Stream ${id} is not initialized`);
+    if (!stream) throw new Error(`Stream ${shown(id)} is not initialized`);
     if (status !== 'end' && status !== 'terminate') return;
     // Its sender ended it: nothing is left to stop.
     stream.onCancel = null;
@@ -1961,7 +1964,7 @@ class WrpcClient extends Emitter {
     const { id, payload } = chunkDecode(view);
     const stream = this.#streams.get(id);
     if (!stream) {
-      throw new Error(`Stream ${id} is not initialized`);
+      throw new Error(`Stream ${shown(id)} is not initialized`);
     }
     // Nothing here can hold the sender back — a browser's WebSocket has no
     // pause, and no transport waits for this push — so what the streams
@@ -2342,10 +2345,7 @@ class WrpcClient extends Emitter {
           // Still queued: drop it instead of racing a cancel ahead of the
           // call. And a request/response transport cannot carry a cancel at
           // all — sending one there only earns a 400 nobody can route.
-          if (!this.#unqueue(id) && this.active && this.#transport.persistent !== false) {
-            this.#cancelled.add(id);
-            this.send({ type: 'cancel', id });
-          }
+          if (!this.#unqueue(id)) this.#cancel(id);
           reject(new WrpcError(CANCELLED_ERROR));
         };
         release = () => signal.removeEventListener('abort', onAbort);
@@ -2427,9 +2427,34 @@ class WrpcClient extends Emitter {
     const call = this.#calls.get(id);
     if (!call) return;
     this.#calls.delete(id);
-    this.#unqueue(id);
+    const queued = this.#unqueue(id);
     call.release?.();
     call.reject(new WrpcError(REQUEST_TIMEOUT_ERROR));
+    // The caller is gone, and the server is told so — as it is for an abort.
+    // It used to go on with the call, and its answer, when it came, was a
+    // callback nobody waited for: an 'error' for every call that had timed
+    // out (`Callback <id> not found`).
+    if (!queued) this.#cancel(id);
+  }
+
+  // Tells the server a call has no caller any more, where the connection can
+  // carry that (a request/response transport cannot: a cancel there only
+  // earns a 400 nobody can route), and remembers the id so that whatever
+  // still comes back for it — the 499 that acknowledges the cancel, or the
+  // answer that crossed it on the wire — is expected, not an error. The ids
+  // remembered are bounded: one a server never answers at all stays until
+  // the connection closes, and how many of those there are is not this
+  // side's to say.
+  #cancel(id) {
+    if (!this.active || this.#transport.persistent === false) return;
+    const cancelled = this.#cancelled;
+    cancelled.add(id);
+    if (cancelled.size > MAX_CANCELLED) cancelled.delete(cancelled.values().next().value);
+    try {
+      this.send({ type: 'cancel', id });
+    } catch {
+      // The connection died meanwhile: there is nobody to tell.
+    }
   }
 
   // Drops a call's bookkeeping: its map entry, its deadline bucket (and the

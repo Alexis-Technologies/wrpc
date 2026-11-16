@@ -2001,3 +2001,40 @@ test('callTimeout and a call\'s timeout are refused unless a timer can hold them
   assert.throws(() => client.call('test/hang', {}, { timeout: Infinity }), /timeout must be a number of milliseconds/);
   await assert.rejects(client.call('test/hang', {}, { timeout: 30 }), (error) => error.code === 408);
 });
+
+// --- A call that timed out is cancelled on the server ---------------------------
+
+test('a call that times out tells the server, and its late answer is nobody\'s error', async (t) => {
+  let aborted = 0;
+  const { server, port } = await createServer(
+    router({
+      slow: procedure({
+        access: 'public',
+        handler: (context) =>
+          new Promise((resolve) => {
+            context.signal.addEventListener('abort', () => aborted++);
+            setTimeout(() => resolve('late'), 150);
+          }),
+      }),
+    }),
+  );
+  t.after(() => server.close());
+  const errors = [];
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    reconnect: false,
+    logger: false,
+    callTimeout: 40,
+  });
+  t.after(() => void client.close());
+  client.on('error', (error) => errors.push(error.message));
+  await assert.rejects(client.call('test/slow', {}), (error) => error.code === 408);
+  // The server used to go on with the call: its handler never heard, and the
+  // answer came back as `Callback <id> not found` on the 'error' event.
+  await waitFor(() => aborted === 1, 'the handler hears the cancel');
+  const [peer] = server.rpc.clients;
+  assert.strictEqual(peer.calls.size, 0, 'the server holds no call for a caller that left');
+  await timers.setTimeout(200);
+  assert.deepStrictEqual(errors, []);
+  assert.strictEqual(await client.call('test/hello', {}), 'hi', 'the connection is fine');
+});

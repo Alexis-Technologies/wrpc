@@ -202,6 +202,17 @@ narrower promise — see
   stay callable as they were. A method named `__proto__` in an introspection
   (a hostile server, a mesh peer) is skipped instead of replacing the unit's
   prototype.
+- **A call that times out on the client is cancelled on the server.** When
+  `callTimeout` (or a call's own `timeout`) expired, the caller got its
+  `408` and the server was told nothing: the handler ran on for a caller
+  that had left, its `context.signal` never fired, and the answer — when it
+  came — reached the client as a callback nobody waited for, an `'error'`
+  event (`Callback <id> not found`) for every call that had timed out. The
+  client now sends the `cancel` an aborted call sends, where the connection
+  can carry one, and what still comes back for that id is expected. The ids
+  it remembers that way are bounded (1,024), and an id in one of these error
+  messages — it is the server's text — is bounded and stripped of control
+  characters like a stream's name.
 
 
 ### Security
