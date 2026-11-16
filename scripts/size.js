@@ -127,7 +127,16 @@ const ENTRIES = [
   // `streamIdleTimeout` (a download nobody asked for was kept for the life of
   // the connection) with the timer the client arms for it. Measured 29,694 B
   // against 29,696 before the client's own limits, which take it over.
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 30 },
+  // 30 -> 31 for what a review of the whole client found it owed its caller:
+  // the `authenticate`, `headers()` and `refresh` hooks held to
+  // `connectTimeout` (an `open()` that never settled), a timeout option that
+  // is checked (a string switched timeouts off), a call that timed out here
+  // cancelled on the server, the worker proxy routing a page's events and
+  // batches (it dropped both), an `ask` answer that no longer carries an
+  // internal error's text, one 'close' listener per transport for every
+  // upload, and the cap on stream announcements nobody claimed in the
+  // WebTransport mux. Measured 30,984 B against 30,720 (it stood at 30,474).
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 31 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
@@ -176,7 +185,12 @@ const ENTRIES = [
   // 29,696.
   // 30 -> 31 with the main entry's own raise for the readable's queue and the
   // stream sweep (see there): 30,828 B against 30,720.
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 31 },
+  // 31 -> 32 with the main entry's 30 -> 31 (see there), and for the event
+  // parser's own share: it scans each chunk once and keeps an unfinished
+  // line as pieces — one line of 2 MiB fed in 1 KiB chunks took 6.4 s, each
+  // doubling four times the time — and caps the event it is putting together
+  // (`maxMessage`). Measured 32,288 B against 31,744.
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 32 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and
@@ -291,7 +305,14 @@ const ENTRIES = [
   // a reader that is behind held to `maxStreamBuffer` on a channel nothing
   // can pause, and the per-connection sweep of streams nobody reads.
   // Measured 61,602 B against 61,440.
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 61 },
+  // 61 -> 62 for the same review as the main entry's 30 -> 31 — the client
+  // half a peer carries — and for the server half in a peer host: a call or
+  // subscription slot released on every path out of the dispatcher (a
+  // `meta` too deep to measure used to hold one for good), a caller's
+  // `timeout` bounded, peer text escaped before it reaches a log line, the
+  // lines a peer can cause said once and then at debug, and the signaling
+  // lookups counted per connection. Measured 63,308 B against 62,464.
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 62 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never
@@ -349,7 +370,9 @@ async function main() {
     // accidental bloat, not a target: raise it deliberately, in the same
     // change that earns the bytes.
     if (budget !== undefined && gzip > budget * 1024) {
-      over.push(`${entry}: ${kb(gzip)} min+gzip is over its ${budget} KB budget`);
+      // The bytes too: a raise is written down to the byte (see the comments
+      // over ENTRIES), and a rounded figure cannot say by how much it crossed.
+      over.push(`${entry}: ${kb(gzip)} min+gzip (${gzip} B) is over its ${budget} KB budget (${budget * 1024} B)`);
     }
     rows.push({
       label,

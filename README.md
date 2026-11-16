@@ -17,7 +17,7 @@ WebSocket, HTTP and REST, Server-Sent Events, WebTransport and WebRTC — and
 between services over Redis, NATS, RabbitMQ or Kafka. Subscriptions that
 resume, rooms that scale across processes, binary streams with backpressure
 that reaches all the way into TCP, compression and encryption where you want
-them — [under 30 KB min+gzip](#bundle-size) in a browser bundle, a budget CI
+them — [under 31 KB min+gzip](#bundle-size) in a browser bundle, a budget CI
 enforces, and nothing at all in your lockfile.
 
 ```javascript
@@ -133,29 +133,29 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 88.6 KB | **29.8 KB** | 30.0 KB |
-| `@alexify/wrpc` — node (client + server) | 310.3 KB | 104.4 KB | — |
-| `@alexify/wrpc/ws` (WebSocket engine) | 33.1 KB | 11.7 KB | — |
-| `@alexify/wrpc/engine` (engine port) | 33.7 KB | 11.9 KB | — |
-| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 44.7 KB | 16.6 KB | — |
-| `@alexify/wrpc/fastify` | 251.7 KB | 86.4 KB | — |
-| `@alexify/wrpc/express` | 238.1 KB | 81.2 KB | — |
-| `@alexify/wrpc/scaling` (rooms backplane) | 5.5 KB | 2.2 KB | — |
-| `@alexify/wrpc/broker` (broker core, memory broker) | 173.7 KB | 59.9 KB | — |
-| `@alexify/wrpc/broker/redis` | 31.8 KB | 11.9 KB | — |
-| `@alexify/wrpc/broker/nats` | 30.3 KB | 11.3 KB | — |
-| `@alexify/wrpc/broker/amqp` | 34.2 KB | 12.4 KB | — |
-| `@alexify/wrpc/broker/kafka` | 28.7 KB | 10.6 KB | — |
-| `@alexify/wrpc/sse` — browser (client transport) | 91.9 KB | **30.9 KB** | 31.0 KB |
-| `@alexify/wrpc/sse` — node | 153.7 KB | 51.7 KB | — |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 90.0 KB | **30.3 KB** | 31.0 KB |
+| `@alexify/wrpc` — node (client + server) | 316.8 KB | 106.7 KB | — |
+| `@alexify/wrpc/ws` (WebSocket engine) | 35.4 KB | 12.4 KB | — |
+| `@alexify/wrpc/engine` (engine port) | 35.9 KB | 12.6 KB | — |
+| `@alexify/wrpc/uws` (uWebSockets.js adapter) | 45.5 KB | 17.0 KB | — |
+| `@alexify/wrpc/fastify` | 257.6 KB | 88.5 KB | — |
+| `@alexify/wrpc/express` | 243.8 KB | 83.1 KB | — |
+| `@alexify/wrpc/scaling` (rooms backplane) | 5.8 KB | 2.3 KB | — |
+| `@alexify/wrpc/broker` (broker core, memory broker) | 178.0 KB | 61.6 KB | — |
+| `@alexify/wrpc/broker/redis` | 36.1 KB | 13.7 KB | — |
+| `@alexify/wrpc/broker/nats` | 34.4 KB | 13.0 KB | — |
+| `@alexify/wrpc/broker/amqp` | 38.2 KB | 14.1 KB | — |
+| `@alexify/wrpc/broker/kafka` | 32.5 KB | 12.2 KB | — |
+| `@alexify/wrpc/sse` — browser (client transport) | 93.7 KB | **31.5 KB** | 32.0 KB |
+| `@alexify/wrpc/sse` — node | 156.7 KB | 52.9 KB | — |
 | `@alexify/wrpc/query` (TanStack bindings) | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` (token strategies) | 3.9 KB | **1.8 KB** | 2.0 KB |
 | `@alexify/wrpc/deflate` (pure-JS DEFLATE codec) | 10.7 KB | **4.4 KB** | 5.0 KB |
-| `@alexify/wrpc/encryption` — browser (primitives, sessions, HPKE, E2EE) | 31.5 KB | **11.5 KB** | 12.0 KB |
-| `@alexify/wrpc/encryption` — node | 45.1 KB | 16.5 KB | — |
-| `@alexify/wrpc/webrtc` — browser (peer, link, mesh, assertions) | 186.9 KB | **60.9 KB** | 61.0 KB |
-| `@alexify/wrpc/webrtc` — node | 200.9 KB | 65.5 KB | — |
-| `@alexify/wrpc/wt` (WebTransport server half) | 63.7 KB | 22.6 KB | — |
+| `@alexify/wrpc/encryption` — browser (primitives, sessions, HPKE, E2EE) | 31.8 KB | **11.6 KB** | 12.0 KB |
+| `@alexify/wrpc/encryption` — node | 45.3 KB | 16.6 KB | — |
+| `@alexify/wrpc/webrtc` — browser (peer, link, mesh, assertions) | 189.3 KB | **61.8 KB** | 62.0 KB |
+| `@alexify/wrpc/webrtc` — node | 203.3 KB | 66.4 KB | — |
+| `@alexify/wrpc/wt` (WebTransport server half) | 64.3 KB | 22.8 KB | — |
 
 The Node-only rows are reported for visibility into what each subpath pulls in
 — they never ship to a browser, and the adapter rows include the whole core
