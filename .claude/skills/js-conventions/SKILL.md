@@ -9,7 +9,7 @@ description: Apply the Alexis JavaScript style (Metarhia-derived, linted by oxli
      Where upstream (and the sibling projects) ban array methods from src/ outright, wRPC draws the
      line between HOT and COLD paths — and on a hot path it preallocates where they build packed.
      The wRPC-specific rules (the protocol revision, no runtime dependencies, byte budgets, the
-     benchmark a hand-optimization cites) live in CLAUDE.md, which wins if the two ever disagree. -->
+     benchmark a hand-optimization cites) live in the CLAUDE.md files (the root one, `src/CLAUDE.md`, `bench/CLAUDE.md`), which win if the two ever disagree. -->
 
 # JavaScript Code Style
 
@@ -109,7 +109,7 @@ Use following conventions for JavaScript and TypeScript code.
 - Avoid nested ternaries and deep callback nesting
 - Self-documented and self-descriptive code; a comment explains why (an invariant, a trap, a
   decision), never what the next line does
-- A reference in a comment or in CLAUDE.md names a symbol in a file, never a line number
+- A reference in a comment or in a CLAUDE.md names a symbol in a file, never a line number
 - Throw a `TypeError` for a bad argument or option, prefixed with the thing being configured
   (`RpcServer.attach: options.session must be an object`); give an error a peer may be told a
   numeric HTTP-like `code` (and `expose = true` when a 5xx message is written for the peer); never

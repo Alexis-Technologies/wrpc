@@ -100,6 +100,8 @@ test('the bin shim exists, ships, and requires a shipped file', () => {
 
 test('every file the allowlist names exists', () => {
   for (const entry of pkg.files) {
+    // A negation takes files OUT of the list (the CLAUDE.md guard below).
+    if (entry.startsWith('!')) continue;
     assert.ok(existsSync(path.join(ROOT, entry.replace(/\/$/, ''))), `files entry ${entry} does not exist`);
   }
 });
@@ -421,7 +423,8 @@ test('every number a benchmark chart draws is in its page, and every chart names
   }
   const docs = require('node:fs')
     .readdirSync(path.join(ROOT, 'docs'), { recursive: true })
-    .filter((file) => file.endsWith('.md') && !file.includes('.vitepress'));
+    // Not CLAUDE.md: it is the agents' file about the site, never a page of it.
+    .filter((file) => file.endsWith('.md') && !file.includes('.vitepress') && !file.endsWith('CLAUDE.md'));
   for (const file of docs) {
     for (const [tag] of read(`docs/${file}`).matchAll(/<BenchChart\b[^>]*>/g)) {
       const name = tag.match(/\bset="([^"]+)"/)?.[1];
@@ -943,56 +946,104 @@ test('the scanner behind that guard tells a call from a parameter list, an objec
   assert.deepStrictEqual(found('const f = (a, ...rest) => concat(a, ...rest);'), ['...rest);']);
 });
 
-// CLAUDE.md is loaded into every agent session as binding instructions, so a
-// reference in it that points nowhere is an instruction to look at the wrong
-// code. Three things are held: no line numbers (they drift within days —
-// eleven of twenty-two were wrong when they were removed), every path it
-// names exists, and every "`symbol` in `file`" is still true.
-test('CLAUDE.md names symbols, not line numbers; its paths exist; its symbols are where it says', () => {
-  const { readFileSync } = require('node:fs');
-  const guide = read('CLAUDE.md');
-
-  const numbered = Array.from(guide.matchAll(/`((?:src|bench|tests|scripts)\/[\w/.-]+:\d+)`/g), (match) => match[1]);
-  assert.deepStrictEqual(numbered, [], 'file:line references in CLAUDE.md — name the symbol instead');
-
-  // A backticked path: starts in a tracked directory, has an extension or a
-  // trailing slash, and is not a pattern ({a,b}, *, <placeholder>, …).
-  const missing = [];
-  for (const match of guide.matchAll(/`((?:src|bench|tests|scripts|docs|bin|examples)\/[^`\s]*)`/g)) {
-    const mentioned = match[1];
-    if (/[{}*<>$|]|\.\.\./.test(mentioned)) continue;
-    const clean = mentioned.replace(/[),.:;]+$/, '');
-    if (!existsSync(path.join(ROOT, clean))) missing.push(mentioned);
-  }
-  assert.deepStrictEqual(missing, [], 'paths CLAUDE.md names that do not exist');
-
-  // "`symbol` in `path`": the symbol's text occurs in that file.
-  const adrift = [];
-  let pairs = 0;
-  for (const match of guide.matchAll(/`([^`\n]+)` in `((?:src|bench|tests|scripts)\/[\w/.-]+\.js)`/g)) {
-    const [, symbol, file] = match;
-    if (!existsSync(path.join(ROOT, file))) continue; // reported above
-    pairs++;
-    // A function may be written as a call — `nodeStream()` — in prose.
-    const name = symbol.replace(/\(\)$/, '');
-    if (!readFileSync(path.join(ROOT, file), 'utf8').includes(name)) adrift.push(`${symbol} in ${file}`);
-  }
-  assert.deepStrictEqual(adrift, [], 'symbols CLAUDE.md places in a file that no longer has them');
-  assert.ok(pairs >= 15, `only ${pairs} symbol-in-file references were found — the pattern stopped matching`);
-});
-
-test('no CLAUDE.md ships in the tarball', () => {
-  assert.ok(!shipped('CLAUDE.md'), 'CLAUDE.md is in the files allowlist');
+// The CLAUDE.md files are binding instructions for an agent — the root one in
+// every session, a folder's when a file of that folder is read — so a
+// reference in one that points nowhere is an instruction to look at the wrong
+// code. Three things are held in every one of them: no line numbers (they
+// drift within days — eleven of twenty-two were wrong when they were
+// removed), every path named exists, and every "`symbol` in `file`" is still
+// true. Paths are written from the repository root in all of them.
+const guidanceFiles = () => {
   const { readdirSync } = require('node:fs');
+  const SKIP = new Set(['node_modules', '.git', 'coverage', '.vitepress', 'dist']);
   const walk = (dir, out = []) => {
     for (const entry of readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
-      const relative = `${dir}/${entry.name}`;
-      if (entry.isDirectory()) walk(relative, out);
-      else if (entry.name === 'CLAUDE.md') out.push(relative);
+      const relative = dir === '.' ? entry.name : `${dir}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (!SKIP.has(entry.name)) walk(relative, out);
+      } else if (entry.name === 'CLAUDE.md') out.push(relative);
     }
     return out;
   };
-  // `files` ships src/ and bin/ whole: agent instructions placed there
-  // would be published with the package.
-  assert.deepStrictEqual([...walk('src'), ...walk('bin')], []);
+  return walk('.').sort();
+};
+
+test('every CLAUDE.md names symbols, not line numbers; its paths exist; its symbols are where it says', () => {
+  const { readFileSync } = require('node:fs');
+  const files = guidanceFiles();
+  assert.ok(files.includes('CLAUDE.md') && files.includes('src/CLAUDE.md'), 'the root and src/ files are there');
+  assert.ok(files.length >= 15, `only ${files.length} CLAUDE.md files were found`);
+
+  const numbered = [];
+  const missing = [];
+  const adrift = [];
+  let pairs = 0;
+  for (const file of files) {
+    const guide = read(file);
+    for (const match of guide.matchAll(/`((?:src|bench|tests|scripts)\/[\w/.-]+:\d+)`/g)) {
+      numbered.push(`${file}: ${match[1]}`);
+    }
+    // A backticked path: starts in a tracked directory, has an extension or a
+    // trailing slash, and is not a pattern ({a,b}, *, <placeholder>, …).
+    for (const match of guide.matchAll(/`((?:src|bench|tests|scripts|docs|bin|examples)\/[^`\s]*)`/g)) {
+      const mentioned = match[1];
+      if (/[{}*<>$|]|\.\.\./.test(mentioned)) continue;
+      const clean = mentioned.replace(/[),.:;]+$/, '');
+      if (!existsSync(path.join(ROOT, clean))) missing.push(`${file}: ${mentioned}`);
+    }
+    // "`symbol` in `path`": the symbol's text occurs in that file.
+    for (const match of guide.matchAll(/`([^`\n]+)` in `((?:src|bench|tests|scripts)\/[\w/.-]+\.js)`/g)) {
+      const [, symbol, target] = match;
+      if (!existsSync(path.join(ROOT, target))) continue; // reported above
+      pairs++;
+      // A function may be written as a call — `nodeStream()` — in prose.
+      const name = symbol.replace(/\(\)$/, '');
+      if (!readFileSync(path.join(ROOT, target), 'utf8').includes(name)) adrift.push(`${file}: ${symbol} in ${target}`);
+    }
+  }
+  assert.deepStrictEqual(numbered, [], 'file:line references in a CLAUDE.md — name the symbol instead');
+  assert.deepStrictEqual(missing, [], 'paths a CLAUDE.md names that do not exist');
+  assert.deepStrictEqual(adrift, [], 'symbols a CLAUDE.md places in a file that no longer has them');
+  assert.ok(pairs >= 15, `only ${pairs} symbol-in-file references were found — the pattern stopped matching`);
+});
+
+// The split exists to keep what EVERY task reads small: the root file is in
+// every session, src/CLAUDE.md in every one that touches the source. One
+// file held 85 KB — a single bullet of it 15 — before it was split by
+// folder. New detail goes into the folder's own file; these two only shrink
+// or stay.
+test('the two CLAUDE.md files every task reads stay small, and every source folder that needs one has one', () => {
+  const { statSync } = require('node:fs');
+  const size = (file) => statSync(path.join(ROOT, file)).size;
+  assert.ok(
+    size('CLAUDE.md') <= 17 * 1024,
+    `CLAUDE.md is ${size('CLAUDE.md')} bytes — move detail into a folder's file`,
+  );
+  assert.ok(size('src/CLAUDE.md') <= 10 * 1024, `src/CLAUDE.md is ${size('src/CLAUDE.md')} bytes`);
+  const root = read('CLAUDE.md');
+  for (const file of guidanceFiles()) {
+    if (file === 'CLAUDE.md') continue;
+    const folder = `${path.dirname(file)}/`;
+    assert.ok(root.includes(`\`${folder}\``), `${file} is not in the root CLAUDE.md's table`);
+  }
+});
+
+// `files` ships src/ and bin/ whole, and the guidance lives next to the code
+// it is about: what keeps it out of the tarball is the `!**/CLAUDE.md` entry.
+// Asked of npm itself — the packing list — not of the pattern.
+test('no CLAUDE.md ships in the tarball', () => {
+  const { spawnSync } = require('node:child_process');
+  assert.ok(pkg.files.includes('!**/CLAUDE.md'), 'the files allowlist ends with the CLAUDE.md exclusion');
+  assert.ok(
+    guidanceFiles().some((file) => file.startsWith('src/')),
+    'there are CLAUDE.md files under src/ to keep out',
+  );
+  const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: ROOT, encoding: 'utf8' });
+  assert.strictEqual(packed.status, 0, packed.stderr);
+  const shippedFiles = JSON.parse(packed.stdout)[0].files.map((entry) => entry.path);
+  assert.ok(shippedFiles.length > 150, `npm lists only ${shippedFiles.length} files`);
+  assert.deepStrictEqual(
+    shippedFiles.filter((file) => /(^|\/)CLAUDE\.md$/i.test(file) || file.startsWith('.claude/')),
+    [],
+  );
 });

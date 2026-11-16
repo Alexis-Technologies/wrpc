@@ -93,6 +93,8 @@ export default withMermaid({
     lang: 'en-US',
     base,
     cleanUrls: true,
+    // docs/CLAUDE.md is the agents' file about this site, not a page of it.
+    srcExclude: ['**/CLAUDE.md'],
     lastUpdated: true,
     sitemap: { hostname },
 

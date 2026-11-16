@@ -308,6 +308,7 @@
     "README.md",
     "CHANGELOG.md",
     "SECURITY.md",
-    "package.json"
+    "package.json",
+    "!**/CLAUDE.md"
   ]
 }
