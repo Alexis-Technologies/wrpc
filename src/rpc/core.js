@@ -558,7 +558,10 @@ class RpcServer extends Emitter {
     return {
       count: (room) => this.#rooms.count(room),
       snapshot: () => {
-        const rooms = {};
+        // No prototype: a room is named by whoever joins it, and on a plain
+        // object `rooms['__proto__'] = 1` sets nothing — the room was missing
+        // from every other node's count.
+        const rooms = { __proto__: null };
         for (const room of this.#rooms.list()) rooms[room] = this.#rooms.count(room);
         let clients = 0;
         for (const client of this.#clients) if (client.persistent) clients++;

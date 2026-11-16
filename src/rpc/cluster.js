@@ -59,7 +59,15 @@ const normalizeRoomsFilter = (rooms) => {
     const set = new Set(rooms);
     return (room) => set.has(room);
   }
-  if (rooms instanceof RegExp) return (room) => rooms.test(room);
+  // A /g or /y expression remembers where its last match ended: tested
+  // again from there, the same room answered true, false, true — and every
+  // other presence delta of that room was dropped.
+  if (rooms instanceof RegExp) {
+    return (room) => {
+      rooms.lastIndex = 0;
+      return rooms.test(room);
+    };
+  }
   return null;
 };
 
@@ -318,7 +326,7 @@ class Cluster extends Emitter {
   #snapshot() {
     const snapshot = this.#local.snapshot();
     if (!this.#roomsFilter) return snapshot;
-    const rooms = {};
+    const rooms = { __proto__: null };
     for (const room in snapshot.rooms) {
       if (this.#roomsFilter(room)) rooms[room] = snapshot.rooms[room];
     }

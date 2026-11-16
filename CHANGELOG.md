@@ -141,6 +141,13 @@ narrower promise — see
   fleet do not come back in step after an outage; and `RoomsBackplane.close()`
   disarms a retry it had armed, which used to fire after shutdown and
   subscribe on a backplane already closed.
+- **Cluster presence: a room named `__proto__` is counted, and a rooms
+  filter with the `g` flag answers the same twice.** A node's room table was
+  built on a plain object for the wire, where assigning the key `__proto__`
+  sets nothing: such a room had its members on the node that held them and
+  a `count()` of 0 everywhere else. `cluster: { rooms: /^chat:/g }` — or
+  `/y` — kept `lastIndex` between calls, so the same room answered `true`,
+  `false`, `true` and every second presence delta of it was dropped.
 
 
 ### Security

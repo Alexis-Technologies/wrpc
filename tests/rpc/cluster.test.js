@@ -1260,3 +1260,35 @@ test('cluster: a malformed or unsigned event command never runs', async (t) => {
   assert.deepStrictEqual(peer.socket.events, [], 'nothing reached the client');
   assert.strictEqual(a.cluster.instances().includes('b'), true);
 });
+
+test('cluster: a room named __proto__ is counted on every node like any other', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const a = boot(t, backplane, { instanceId: 'a' });
+  const { client } = attach(a);
+  const name = '__pro' + 'to__';
+  client.join(name);
+  client.join('chat');
+  await settle();
+  // Learned from a's full state — which was built on a plain object, where
+  // assigning that key sets nothing.
+  const b = boot(t, backplane, { instanceId: 'b' });
+  await settle();
+  assert.strictEqual(b.cluster.count('chat'), 1);
+  assert.strictEqual(b.cluster.count(name), 1);
+  assert.deepStrictEqual(b.cluster.presence(name).instances, { a: 1 });
+});
+
+test('cluster: a rooms filter with the g flag answers the same for the same room', async (t) => {
+  const backplane = new MemoryBackplane();
+  t.after(() => backplane.close());
+  const filter = /^chat:/g;
+  const a = boot(t, backplane, { instanceId: 'a', cluster: { rooms: filter } });
+  const b = boot(t, backplane, { instanceId: 'b', cluster: { rooms: filter } });
+  await settle();
+  // Each join is a delta the filter is asked about: with lastIndex carried
+  // over, every second one was dropped.
+  for (let i = 0; i < 4; i++) attach(a).client.join('chat:1');
+  await settle();
+  assert.strictEqual(b.cluster.count('chat:1'), 4);
+});
