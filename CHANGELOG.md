@@ -105,6 +105,20 @@ narrower promise — see
   `405` for a path another verb declares is found the same way, where some
   of those were a `404`. `bench/http-call.js`: a declared route costs what
   it did.
+- **`connectTimeout` covers the hooks a connection waits on, not only the
+  handshake.** `headers()`, `meta()`, `authenticate` and `refresh` ran
+  outside it. One that never settled — a token read from a store that
+  hangs, a sign-in call with no deadline of its own — left `connect()`
+  pending for good; on a **reconnect** it left the cycle with nothing to
+  schedule the next attempt, which is what the timeout exists to prevent;
+  and a `refresh` that hung parked every later refused call behind it. Each
+  hook is now raced against `connectTimeout` (30 s by default) like the
+  handshake between them: `headers()`/`meta()` reject the open with `408`
+  and the backoff continues, `authenticate` takes the path of a hook that
+  failed (`authenticate-failed`, the connection closed, the next attempt
+  scheduled), `refresh` the path of a refresh that failed — the call gets
+  the refusal it received. A hook that legitimately takes longer (it waits
+  for a person) needs `connectTimeout` raised or turned off.
 
 
 ### Fixed

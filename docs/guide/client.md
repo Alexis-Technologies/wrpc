@@ -119,7 +119,7 @@ await WrpcClient.connect(url, {
 | Option | Default | Meaning |
 | --- | --- | --- |
 | `callTimeout` | `7000` | Milliseconds a call waits for its answer; expiry rejects with a coded **408** `WrpcError`. |
-| `connectTimeout` | `30000` | Cap on the transport handshake; expiry rejects with a coded **408** and the normal backoff continues. `false`/`0` disables. |
+| `connectTimeout` | `30000` | Cap on the transport handshake **and on each hook the connection waits on** — `headers()`, `meta()`, `authenticate`, `refresh`; expiry rejects with a coded **408** and the normal backoff continues. `false`/`0` disables. A hook that waits for a person (a sign-in prompt) needs it raised, or belongs in an `authenticate-failed` listener. |
 | `reconnect` | see below | `false` disables reconnection entirely. |
 | `reconnectTimeout` | — | Shorthand for `reconnect.minDelay`. |
 | `heartbeat` | `{ interval: 30000, timeout: 10000 }` | `false` disables it. |

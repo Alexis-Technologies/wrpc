@@ -1052,7 +1052,7 @@ class WrpcClient extends Emitter {
       // The guard keeps a refresh from running inside the hook that would
       // itself be re-run by it (see #maybeRefresh).
       this.#authenticating = true;
-      await this.#authenticate(this, { reconnected, attempts });
+      await this.#within(this.#authenticate(this, { reconnected, attempts }));
     } catch (error) {
       this.#log.warn({ event: 'authenticate.failed', err: error, attempts, url: this.url });
       void this.emit('authenticate-failed', { error, attempts, reconnected }).catch((e) =>
@@ -1283,6 +1283,24 @@ class WrpcClient extends Emitter {
     }
   }
 
+  // A hook of the application's that the connection waits on — `headers()`,
+  // `meta()`, `authenticate`, `refresh` — raced against `connectTimeout`,
+  // like the handshake between them. They ran outside it: one that never
+  // settled (a token read from a store that hangs, a sign-in call with no
+  // deadline of its own) left `connect()` pending for good, and on a
+  // reconnect left the cycle with nothing to schedule the next attempt —
+  // the very thing connectTimeout is there to prevent. Expiry is the 408 the
+  // handshake's own expiry is, and takes the path a failed hook takes.
+  #within(pending) {
+    const ms = this.#connectTimeout;
+    if (!(ms > 0)) return pending;
+    let timer = null;
+    const expired = new Promise((resolve, reject) => {
+      timer = unref(setTimeout(() => reject(new WrpcError(CONNECT_TIMEOUT_ERROR)), ms));
+    });
+    return Promise.race([pending, expired]).finally(() => clearTimeout(timer));
+  }
+
   // Re-evaluated on EVERY open, the function form included: a version bump,
   // a rotated device id or a fresh bearer token is picked up by the
   // reconnect that follows, not frozen at construction.
@@ -1305,7 +1323,8 @@ class WrpcClient extends Emitter {
       // string map), so the two transports quietly disagreed. Meta keeps its
       // JSON types here — only the prefixed carrier flattens them.
       if (this.#headers) {
-        options.headers = normalizeDeclared(await this.#resolveDeclared(this.#headers), true, this.#log);
+        const declared = await this.#within(this.#resolveDeclared(this.#headers));
+        options.headers = normalizeDeclared(declared, true, this.#log);
       }
       if (this.#meta) {
         // The prefixed carrier makes every value a header value, so it
@@ -1314,7 +1333,8 @@ class WrpcClient extends Emitter {
         // is about the bag the SERVER observes, not about the wire, and a
         // bag whose shape changed with the transport would break it.
         const prefixed = this.#metaFormat === 'prefixed';
-        options.meta = normalizeDeclared(await this.#resolveDeclared(this.#meta), prefixed, this.#log);
+        const declared = await this.#within(this.#resolveDeclared(this.#meta));
+        options.meta = normalizeDeclared(declared, prefixed, this.#log);
         if (prefixed) options.metaPrefixed = true;
       }
     }
@@ -2101,7 +2121,7 @@ class WrpcClient extends Emitter {
     // assigned — or that call would join the run that is awaiting it.
     if (this.#refreshing) return this.#refreshing;
     this.#refreshing = Promise.resolve()
-      .then(() => this.#refresh(this, error))
+      .then(() => this.#within(this.#refresh(this, error)))
       .then(
         (value) => {
           this.#otel.recordRefresh('ok');

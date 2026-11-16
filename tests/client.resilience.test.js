@@ -1893,3 +1893,77 @@ test('retry: listed codes are re-issued with fresh packet ids; others surface as
   state.hits = -10; // 503 forever
   await assert.rejects(client.api.flaky.get(), (error) => error.code === 503);
 });
+
+// --- The connection's hooks are under connectTimeout ---------------------------
+
+test('connectTimeout covers the hooks the connection waits on', async (t) => {
+  const { server, port } = await createServer(router());
+  t.after(() => server.close());
+  const url = `ws://127.0.0.1:${port}/api`;
+  const never = () => new Promise(noop);
+
+  await t.test('a headers() that never settles rejects connect() with 408', async () => {
+    const started = Date.now();
+    await assert.rejects(
+      WrpcClient.connect(url, { heartbeat: false, reconnect: false, logger: false, connectTimeout: 100, headers: never }),
+      (error) => error.code === 408,
+    );
+    assert.ok(Date.now() - started < 2000, 'and does so at the deadline');
+  });
+
+  await t.test('an authenticate() that never settles rejects connect() and closes the connection', async () => {
+    await assert.rejects(
+      WrpcClient.connect(url, {
+        heartbeat: false,
+        reconnect: false,
+        logger: false,
+        connectTimeout: 100,
+        authenticate: never,
+      }),
+      (error) => error.code === 408,
+    );
+    await waitFor(() => server.rpc.clients.size === 0, 'the half-open connection is let go of');
+  });
+
+  await t.test('a reconnect whose authenticate() hangs is not the last one', async () => {
+    let hang = false;
+    let hooks = 0;
+    const client = await WrpcClient.connect(url, {
+      heartbeat: false,
+      logger: false,
+      connectTimeout: 100,
+      reconnect: { minDelay: 10, maxDelay: 20, jitter: false },
+      authenticate: () => {
+        hooks++;
+        return hang ? never() : undefined;
+      },
+    });
+    t.after(() => void client.close());
+    client.on('error', noop);
+    hang = true;
+    for (const peer of server.rpc.clients) peer.close();
+    // It used to stop here for good: the hook of the first reconnect never
+    // settled, and nothing was left to schedule a second.
+    await waitFor(() => hooks >= 3, { message: 'the cycle goes on past a hung hook', timeout: 5000 });
+    hang = false;
+    await waitFor(() => client.active && server.rpc.clients.size === 1, 'and a later attempt connects');
+  });
+
+  await t.test('a refresh() that never settles gives the call its own refusal back', async () => {
+    const guarded = defineRouter({
+      unit: { secret: procedure({ handler: async () => 'never' }) },
+    });
+    const second = await createServer(guarded);
+    t.after(() => second.server.close());
+    const client = await WrpcClient.connect(`ws://127.0.0.1:${second.port}/api`, {
+      heartbeat: false,
+      reconnect: false,
+      logger: false,
+      connectTimeout: 100,
+      refresh: never,
+    });
+    t.after(() => void client.close());
+    client.on('error', noop);
+    await assert.rejects(client.call('unit/secret', {}), (error) => error.code === 403);
+  });
+});
