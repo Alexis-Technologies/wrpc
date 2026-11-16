@@ -51,6 +51,14 @@ const DEFAULT_HOLD_TIMEOUT = 10_000;
 // the promise until the peer grants stream credit, forever against a host
 // that never does; the chunks held for it were the only bound.
 const DEFAULT_OPEN_TIMEOUT = 5_000;
+// How many streams a peer may have ANNOUNCED and not ended, as far as this
+// mux remembers them: every announcement left a record here until its end
+// passed, and an end is the peer's to send — 200,000 announcements nobody
+// ended were 36 MiB kept for the life of the session, whatever `maxStreams`
+// the receiver refused them under. Sixteen times the receiver's own default:
+// past it an announcement is still delivered, and a stream of its own for
+// that id is one nobody named — held, then refused, like any such stream.
+const MAX_ANNOUNCED = 4096;
 
 // The chunk header a unidirectional stream opens with — chunkEncode's,
 // without the payload.
@@ -336,7 +344,7 @@ class StreamMux {
     }
     const entry = this.#in.get(id);
     if (!entry) {
-      this.#in.set(id, this.#entry(true));
+      if (this.#in.size < MAX_ANNOUNCED) this.#in.set(id, this.#entry(true));
       return false;
     }
     entry.opened = true;
@@ -531,6 +539,7 @@ module.exports = {
   StreamMux,
   STREAM_PREFIX,
   CAPS_STREAMS,
+  MAX_ANNOUNCED,
   DEFAULT_MAX_HELD_STREAMS,
   DEFAULT_HOLD_TIMEOUT,
   DEFAULT_OPEN_TIMEOUT,

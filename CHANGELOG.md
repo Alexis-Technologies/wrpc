@@ -232,6 +232,16 @@ narrower promise — see
   sink that failed under `readable.pipe()`, say, surfaced as an unhandled
   rejection whose message was those two words and nothing else. The error
   thrown is the same; what was emitted is its `cause`.
+- **WebTransport: the streams a peer announces and never ends are
+  remembered up to a cap.** The stream multiplexer kept a record for every
+  binary stream announced on a session until that stream's end passed — and
+  the end is the peer's to send. The receiver refusing the announcement
+  under `maxStreams`, or sweeping the stream as idle, did not touch the
+  record: 200,000 announcements nobody ended held 36 MiB for the life of the
+  session, on either end. The multiplexer now remembers at most 4,096
+  streams in that state (sixteen times the receiver's default `maxStreams`);
+  an announcement past that is delivered as before, and a WebTransport
+  stream of its own opened for it is treated as one nobody named.
 
 
 ### Security
