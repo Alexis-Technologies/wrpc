@@ -41,6 +41,7 @@ const {
   parseParams,
   DEFAULT_MAX_BATCH,
   UNKNOWN_TARGET,
+  levelFor,
 } = require('./dispatcher.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createServerTelemetry } = require('../telemetry/server.js');
@@ -1099,7 +1100,7 @@ class RpcServer extends Emitter {
     const kind = bytes[1];
     const active = client.compression;
     if (active === null || (kind !== FRAME_PACKET_COMPRESSED && kind !== FRAME_CHUNK_COMPRESSED)) {
-      client.log.warn({ event: 'frame.refused', kind, negotiated: active !== null });
+      client.log[levelFor(client, 'frame.refused')]({ event: 'frame.refused', kind, negotiated: active !== null });
       client.error(400, { error: new Error('Unexpected framed message'), level: 'debug' });
       return null;
     }
@@ -1110,7 +1111,8 @@ class RpcServer extends Emitter {
     const out = decodeOrNull(active, bytes.subarray(2), this.#maxMessage, (error) => void (cause = error));
     if (out === null) {
       this.#otel.recordCompressionFailure(client.transportKind, 'decode');
-      client.log.warn({ event: 'frame.refused', kind, reason: 'inflate', codec: active.id, code: cause?.code });
+      const level = levelFor(client, 'frame.refused');
+      client.log[level]({ event: 'frame.refused', kind, reason: 'inflate', codec: active.id, code: cause?.code });
       client.error(400, { error: new Error('Framed message does not inflate'), level: 'debug' });
       return null;
     }

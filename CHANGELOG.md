@@ -58,6 +58,20 @@ narrower promise — see
   `Connection` from `@alexify/wrpc/ws` keeps it off unless asked;
   `connection.isPaused` is true while a connection waits for its turn. The
   uWebSockets.js engine dispatches natively and has no such budget.
+- **What a peer can do in a loop is one warning, then `debug`.** A call for a
+  method that does not exist, a frame that is no packet, a framed message
+  nobody negotiated and an event without a handler were each a `warn` for
+  every packet; a call without the session it needs and a `408` produced by
+  the caller's own `timeout` were an `error`, the second with a stack — so a
+  peer wrote the server's log at the speed it could send. The first of a
+  kind on a server is still a warning; for ten seconds after it the same
+  kind is written at `debug` (`call.unknown`, `packet.malformed`,
+  `packet.unknown`, `frame.refused`, the `rpc.warn` of a dropped event, the
+  `rpc.error` of those `403` and `408`). A procedure that outran its own
+  `timeout`, a session store that could not be asked and a handler that
+  threw are this side's and stay at `error`. An alert built on one of these
+  events fires on the first occurrence as before; one built on their rate
+  needs the `debug` level.
 
 
 ### Fixed

@@ -141,9 +141,12 @@ test('events: a client event reaches its router handler', async (t) => {
     warnings.length = 0;
     client.sendEvent('chat/nothing', {});
     client.sendEvent('nowhere/typing', {});
-    await waitFor(() => warnings.length === 2, 'the unknown events were not reported');
+    await waitFor(() => warnings.length === 1, 'the unknown event was not reported');
     assert.match(warnings[0], /chat\/nothing\tno handler/);
     assert.strictEqual(await client.api.chat.ping(), 'pong', 'the connection survives');
+    // The first of a kind is the warning: a peer can send these in a loop,
+    // so the one right behind it is said at debug (silent-paths.test.js).
+    assert.strictEqual(warnings.length, 1);
   });
 
   await t.test('a session-only event without a session is dropped', async () => {

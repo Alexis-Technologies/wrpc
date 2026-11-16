@@ -386,3 +386,52 @@ test('clip: bounds a string, turns every control character into a space, and pas
   assert.strictEqual(clip(42), 42);
   assert.strictEqual(clip(undefined), undefined);
 });
+
+// --- What a peer can do in a loop is one warning, then debug --------------------
+
+test('dispatcher: the first refusal of a kind is a warning, the ones behind it are debug', async (t) => {
+  const { writer, all } = recorder();
+  const slow = defineRouter({
+    unit: {
+      ping: procedure({ access: 'public', handler: async () => 'pong' }),
+      slow: procedure({ access: 'public', handler: () => new Promise((resolve) => setTimeout(resolve, 200)) }),
+      locked: procedure({ handler: async () => 'never' }),
+      capped: procedure({ access: 'public', timeout: 20, handler: () => new Promise(() => {}) }),
+    },
+  });
+  const { url } = await bootServer(t, { router: slow, logger: writer });
+  const socket = new WebSocket(url);
+  t.after(() => socket.close());
+  const answers = [];
+  socket.addEventListener('message', (event) => answers.push(JSON.parse(String(event.data))));
+  await new Promise((resolve) => socket.addEventListener('open', resolve));
+  const call = (id, method, extra = {}) => socket.send(JSON.stringify({ type: 'call', id, method, args: {}, ...extra }));
+  for (let i = 0; i < 3; i++) call(`u${i}`, 'unit/nope');
+  for (let i = 0; i < 3; i++) call(`f${i}`, 'unit/locked');
+  // A deadline of the caller's own, shorter than anything the procedure set.
+  for (let i = 0; i < 3; i++) call(`d${i}`, 'unit/slow', { timeout: 5 });
+  for (let i = 0; i < 3; i++) socket.send('{not json');
+  call('own', 'unit/capped');
+  await waitFor(() => answers.length === 13, 'every packet is answered');
+  assert.deepStrictEqual(
+    all('call.unknown').map((entry) => entry.level),
+    ['warn', 'debug', 'debug'],
+  );
+  assert.deepStrictEqual(
+    all('packet.malformed').map((entry) => entry.level),
+    ['warn', 'debug', 'debug'],
+  );
+  const answersOf = (code) => all('rpc.error').filter((entry) => entry.code === code);
+  // 403: the calls that needed a session. 408: the caller's deadlines — and
+  // the one the PROCEDURE's own timeout cut, which stays an error.
+  assert.deepStrictEqual(
+    answersOf(403).map((entry) => entry.level),
+    ['warn', 'debug', 'debug'],
+  );
+  const timeouts = answersOf(408);
+  assert.deepStrictEqual(
+    timeouts.filter((entry) => entry.id !== 'own').map((entry) => entry.level),
+    ['warn', 'debug', 'debug'],
+  );
+  assert.strictEqual(timeouts.find((entry) => entry.id === 'own').level, 'error');
+});

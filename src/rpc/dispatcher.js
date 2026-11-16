@@ -84,6 +84,28 @@ const sanitizeMeta = (value, limit) => {
   return Object.freeze(value);
 };
 
+// The level of a line about something a PEER did, and can do in a loop: a
+// method that does not exist, a call without the session it needs, a frame
+// that is no packet, a deadline of its own choosing that passed. The first
+// of a kind on a server is a warning — a stale client, a typo and a scanner
+// all start like that, and somebody reading the log should see it — and
+// for LOUD_INTERVAL after it the same kind is said at debug: each used to
+// be a warn (or an error with a stack) for every packet, so a peer wrote
+// the log at the speed it could send. Per host and per kind, not per
+// connection: on HTTP every request is a connection of its own. The kinds
+// are this file's own names — a closed set — so the table cannot grow.
+const LOUD_INTERVAL = 10_000;
+const spoken = new WeakMap();
+const levelFor = (client, kind) => {
+  const host = client.server ?? client;
+  let last = spoken.get(host);
+  if (last === undefined) spoken.set(host, (last = new Map()));
+  const now = Date.now();
+  if (now - (last.get(kind) ?? -LOUD_INTERVAL) < LOUD_INTERVAL) return 'debug';
+  last.set(kind, now);
+  return 'warn';
+};
+
 // What unresolved method/event names become in metric series and span
 // names. The raw string is peer-controlled: a scanner spraying random
 // method names used to mint a new time series per guess.
@@ -176,7 +198,7 @@ const handleRpc = async (client, packet, router) => {
     // be a cardinality bomb) but present in the log, where it is the whole
     // point: this is what a stale client or a typo looks like.
     const shown = clip(method);
-    client.log.warn(
+    client.log[levelFor(client, 'call.unknown')](
       { event: 'call.unknown', code: 404, id: clip(id), method: shown },
       `${client.source}\tCALL\t${shown}\t404`,
     );
@@ -238,6 +260,7 @@ const handleRpc = async (client, packet, router) => {
     const run = async (handle) => {
       let status = 'ok';
       let code;
+      let budget = 0;
       try {
         if (hooks.onRequest.length > 0) await runHooks(hooks.onRequest, context, packet);
         // One microtask hop per call skipped once the connection is ready —
@@ -248,7 +271,9 @@ const handleRpc = async (client, packet, router) => {
           status = 'error';
           code = refusedFor(client);
           release(client, id, controller);
-          return void client.error(code, { id });
+          // A call without the session it needs is the peer's doing; a store
+          // that could not be asked (503) is this side's, and stays an error.
+          return void client.error(code, { id, level: code === 403 ? levelFor(client, 'call.forbidden') : 'error' });
         }
         // The caller's per-call deadline — an additive packet field, absent on
         // every packet that never set CallOptions.timeout — and a number a
@@ -257,7 +282,7 @@ const handleRpc = async (client, packet, router) => {
         // for every call, and a 408 nobody asked for. Out of range is no
         // deadline of the caller's; the procedure's own still applies.
         const asked = packet.timeout;
-        const budget = typeof asked === 'number' && asked > 0 && asked < MAX_TIMEOUT ? asked : 0;
+        budget = typeof asked === 'number' && asked > 0 && asked < MAX_TIMEOUT ? asked : 0;
         const result = await proc.invoke(context, args, hooks, compiled, budget);
         if (controller.signal.aborted) return void (status = 'cancelled');
         if (isError(result)) {
@@ -303,7 +328,11 @@ const handleRpc = async (client, packet, router) => {
         }
         if (hooks.onError.length > 0) await runHooksSafe(hooks.onError, context, error, client.log, 'onError');
         release(client, id, controller);
-        return void client.error(code, { id, error });
+        // A deadline the CALLER set, shorter than the procedure's own, is its
+        // to choose and to miss: not an error-level line with a stack for
+        // each. A procedure that outran its own timeout still is.
+        const callers = code === 408 && budget > 0 && (proc.timeout === 0 || budget < proc.timeout);
+        return void client.error(code, { id, error, level: callers ? levelFor(client, 'call.deadline') : 'error' });
       } finally {
         release(client, id, controller);
         if (enabled) {
@@ -322,6 +351,11 @@ const handleRpc = async (client, packet, router) => {
     return void client.error(500, { id, error });
   }
 };
+
+// A line about a packet that carries no id to answer on, at the level its
+// kind has earned (levelFor): what `client.warn` writes, when it is a warning.
+const said = (client, kind, message) =>
+  void client.log[levelFor(client, kind)]({ event: 'rpc.warn' }, `${client.source}\t${message}`);
 
 // Cancellation is best-effort by nature: a handler that never looks at
 // ctx.signal keeps running. What IS guaranteed is that the caller gets its
@@ -597,7 +631,7 @@ const handleBinary = async (client, data, router = null, options = EMPTY_OPTIONS
   // attachments frame is a packet with its bytes, dispatched as one.
   if (data.length > 1 && data[0] === FRAME_MARK) {
     if (router !== null && isAttachmentsFrame(data)) return void handleMessage(client, data, router, options);
-    client.log.warn({ event: 'frame.refused', kind: data[1] });
+    client.log[levelFor(client, 'frame.refused')]({ event: 'frame.refused', kind: data[1] });
     return void client.error(400, { error: new Error('Unexpected framed message'), level: 'debug' });
   }
   const { id, payload } = chunkDecode(data);
@@ -658,10 +692,10 @@ const handleEvent = async (client, packet, router) => {
   }
   const { unit, version, name } = parseTarget(target);
   const handler = router.getEventHandler(unit, version, name);
-  if (!handler) return void client.warn(`EVENT\t${clip(target)}\tno handler`);
+  if (!handler) return void said(client, 'event.unknown', `EVENT\t${clip(target)}\tno handler`);
   if (!client.isReady) await client.ready;
   if (!hasSession(client) && handler.access !== 'public') {
-    return void client.warn(`EVENT\t${clip(target)}\tsession required`);
+    return void said(client, 'event.forbidden', `EVENT\t${clip(target)}\tsession required`);
   }
   // Events run the invocation phases (preValidation/preHandler/onError);
   // onRequest/onSend do not apply — there is no packet to answer with.
@@ -809,7 +843,8 @@ const handlePacket = (client, packet, router, options = EMPTY_OPTIONS) => {
   // pointed at this port. `handleMessage` already logs frames that do not
   // parse; this is the other half of the same funnel, and was silent.
   const error = new Error('Packet structure error');
-  client.log.warn({ event: 'packet.unknown', code: 500, type: typeof type === 'string' ? clip(type) : null });
+  const level = levelFor(client, 'packet.unknown');
+  client.log[level]({ event: 'packet.unknown', code: 500, type: typeof type === 'string' ? clip(type) : null });
   client.error(500, { id: hasId && typeof id === 'string' ? id : '', error, level: 'debug' });
 };
 
@@ -852,7 +887,7 @@ const handleParsed = (client, parsed, data, router, options = {}) => {
   // reported again as `packet.unknown`, and then a third time as the
   // error-level answer. The answer is the same id-less 500.
   if (parsed === null) {
-    client.log.warn({ event: 'packet.malformed', bytes: data?.length ?? 0 });
+    client.log[levelFor(client, 'packet.malformed')]({ event: 'packet.malformed', bytes: data?.length ?? 0 });
     return void client.error(500, { error: new Error('Packet structure error'), level: 'debug' });
   }
   const packet = parsed || {};
@@ -888,6 +923,7 @@ const dispatchBinary = (client, bytes, router, options) =>
   void handleBinary(client, bytes, router, options).catch(contain(client, 'CHUNK'));
 
 module.exports = {
+  levelFor,
   sanitizeMeta,
   UNKNOWN_TARGET,
   handleRpc,
