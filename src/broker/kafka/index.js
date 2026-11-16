@@ -22,7 +22,7 @@
 const { createLoggerWriter } = require('../../logging.js');
 const { backoffDelay } = require('../../utils.js');
 const { TopicTails } = require('../tail.js');
-const { codedError, toText, toHeaders, reasonText, encodeToken } = require('../ids.js');
+const { codedError, toText, toHeaders, reasonText, tokenEncoder } = require('../ids.js');
 const { crashDelay } = require('../retry.js');
 const { Deque } = require('../../deque.js');
 const {
@@ -67,8 +67,8 @@ const VECTOR = /^k1:(\d{1,5}=\d{1,19})(,\d{1,5}=\d{1,19})*$/;
 const isFunction = (value) => typeof value === 'function';
 
 // A Kafka topic name: letters, digits, dot, underscore and dash only.
-const topicName = (prefix, kind, value) =>
-  `${prefix}.${kind}.${encodeToken(value, { safe: /[A-Za-z0-9_-]/, escape: '_', maxLength: 120 })}`;
+const token = tokenEncoder({ safe: /[A-Za-z0-9_-]/, escape: '_', maxLength: 120 });
+const topicName = (prefix, kind, value) => `${prefix}.${kind}.${token(value)}`;
 
 // The resume token: every partition this reader has passed, sorted.
 const encodeVector = (cursor) => {
@@ -644,7 +644,7 @@ const createKafkaBroker = (options = {}) => {
     checkConsume('kafka queue.consume', onDelivery, prefetch, deadLetter);
     const topic = await ensureTopic(queueTopic(queue));
     if (deadLetter) await ensureTopic(queueTopic(deadLetter));
-    const groupId = encodeToken(group, { safe: /[A-Za-z0-9_-]/, escape: '_', maxLength: 120 });
+    const groupId = token(group);
     const consumer = await openConsumer(groupId, { fromBeginning: true });
     await consumer.subscribe(subscribeArgs(flavor, [topic], true));
     const state = { running: true, paused: false, healthy: true };

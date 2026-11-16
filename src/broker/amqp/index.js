@@ -29,7 +29,7 @@
 const { createLoggerWriter } = require('../../logging.js');
 const { backoffDelay } = require('../../utils.js');
 const { TopicTails } = require('../tail.js');
-const { codedError, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
+const { codedError, toBytes, toHeaders, reasonText, encodeToken, tokenEncoder } = require('../ids.js');
 const { positiveInteger } = require('../retry.js');
 const { withHealth } = require('../port.js');
 const {
@@ -60,7 +60,8 @@ const OFFSET = /^\d{1,19}$/;
 const STREAM_OFFSET = 'x-stream-offset';
 
 const isFunction = (value) => typeof value === 'function';
-const name = (prefix, kind, value) => `${prefix}.${kind}.${encodeToken(value, { maxLength: 180 })}`;
+const token = tokenEncoder({ maxLength: 180 });
+const name = (prefix, kind, value) => `${prefix}.${kind}.${token(value)}`;
 // A consumer's channel is re-opened on this schedule after the server
 // closed it; a lost CONNECTION stops the loop (nothing to re-open on).
 const REOPEN_BACKOFF = Object.freeze({ minDelay: 200, maxDelay: 5000, factor: 2, jitter: true });
@@ -338,7 +339,7 @@ const createAmqpBroker = (options = {}) => {
       void (async () => {
         try {
           await ensureExchange(exchange, 'direct');
-          await confirmPublish(exchange, encodeToken(channel, { maxLength: 180 }), message, {
+          await confirmPublish(exchange, token(channel), message, {
             contentType: 'application/json',
           });
         } catch (error) {
@@ -348,7 +349,7 @@ const createAmqpBroker = (options = {}) => {
     },
     subscribe(channel, handler) {
       if (!isFunction(handler)) throw new TypeError('amqp backplane.subscribe: handler must be a function');
-      const key = encodeToken(channel, { maxLength: 180 });
+      const key = token(channel);
       let set = handlers.get(key);
       if (set === undefined) {
         set = new Set();
@@ -899,7 +900,7 @@ const createAmqpBroker = (options = {}) => {
   // away with its last binding, after which a publish to it is a
   // channel-level 404 on the shared confirm channel, not a basic.return.
   const directExchange = `${prefix}.direct`;
-  const routingKeyOf = (address) => encodeToken(address, { maxLength: 180 });
+  const routingKeyOf = (address) => token(address);
   const groupQueue = (address, group) => `${name(prefix, 'direct', address)}.${encodeToken(group, { maxLength: 60 })}`;
 
   const returned = new Set();

@@ -100,6 +100,32 @@ const encodeToken = (name, { safe = /[A-Za-z0-9_-]/, escape = '~', maxLength = 2
   return `${out.slice(0, keep)}${escape}${escape}${digest}`.slice(0, maxLength);
 };
 
+// encodeToken for the names an adapter is asked about on every message — a
+// channel, a topic, a queue, an address — remembered. The encoding walks the
+// name a character at a time and builds the token by concatenation: 0.2 µs
+// for `orders`, 1.7 µs for `wrpc:rooms:tenant-42:chat/general`, 3 µs for a
+// name outside ASCII, on every publish and every append; remembered, it is a
+// Map lookup (bench/broker-token.js — a Redis log append over an in-process
+// server went from 450,000 to 1.3 M a second on the second of those names).
+// The names are the application's, and a room can be a peer's to name: the
+// memo holds TOKEN_MEMO of them and starts over when it is full, and a name
+// longer than TOKEN_MEMO_NAME is encoded every time.
+const TOKEN_MEMO = 1024;
+const TOKEN_MEMO_NAME = 256;
+
+const tokenEncoder = (options) => {
+  let memo = new Map();
+  return (name) => {
+    if (typeof name !== 'string' || name.length > TOKEN_MEMO_NAME) return encodeToken(name, options);
+    let token = memo.get(name);
+    if (token !== undefined) return token;
+    token = encodeToken(name, options);
+    if (memo.size >= TOKEN_MEMO) memo = new Map();
+    memo.set(name, token);
+    return token;
+  };
+};
+
 // Signed ids: `<id>!<mac>`. The mac is base64url (no `!`), so the split on
 // the LAST `!` is unambiguous whatever the id itself contains.
 const SIGN_SEPARATOR = '!';
@@ -132,4 +158,16 @@ const openId = (secret, signed, scope = '') => {
 // fingerprint of it — enough to correlate, useless to replay.
 const fingerprint = (id) => createHash('sha256').update(String(id)).digest('hex').slice(0, 12);
 
-module.exports = { codedError, toText, toBytes, toHeaders, reasonText, encodeToken, signId, openId, fingerprint };
+module.exports = {
+  codedError,
+  toText,
+  toBytes,
+  toHeaders,
+  reasonText,
+  encodeToken,
+  tokenEncoder,
+  TOKEN_MEMO,
+  signId,
+  openId,
+  fingerprint,
+};

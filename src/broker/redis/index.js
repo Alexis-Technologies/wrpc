@@ -28,7 +28,7 @@
 const { createRedisAdapter } = require('../../scaling/redis.js');
 const { createLoggerWriter } = require('../../logging.js');
 const { TopicTails } = require('../tail.js');
-const { codedError, toText, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
+const { codedError, toText, toBytes, toHeaders, reasonText, tokenEncoder } = require('../ids.js');
 const { positiveInteger } = require('../retry.js');
 const { withHealth } = require('../port.js');
 const { Deque } = require('../../deque.js');
@@ -49,6 +49,7 @@ const {
 } = require('../adapter.js');
 
 const DEFAULT_PREFIX = 'wrpc';
+const token = tokenEncoder({ maxLength: 200 });
 const DEFAULT_BLOCK_MS = 1000;
 const DEFAULT_CLAIM_IDLE_MS = 60_000;
 const DEFAULT_INBOX_TTL_MS = 60_000;
@@ -163,7 +164,7 @@ const createRedisBroker = (options = {}) => {
     return created;
   };
 
-  const key = (kind, name) => `${prefix}:${kind}:${encodeToken(name, { maxLength: 200 })}`;
+  const key = (kind, name) => `${prefix}:${kind}:${token(name)}`;
   const report = reporter(log);
 
   // ---------------------------------------------------------------------
@@ -337,7 +338,7 @@ const createRedisBroker = (options = {}) => {
   // A queue's stream and its delayed set live under ONE hash tag — the
   // braces are what Redis Cluster hashes on — so the promotion of a delayed
   // retry (a Lua script over both keys) runs on a cluster too.
-  const queueKey = (name) => `${prefix}:q:{${encodeToken(name, { maxLength: 200 })}}`;
+  const queueKey = (name) => `${prefix}:q:{${token(name)}}`;
   const delayedKey = (name) => `${queueKey(name)}:delayed`;
   // ZREM then XADD in one step: a delayed retry either leaves the set and
   // lands on the stream, or does neither. Without EVAL (an injected client

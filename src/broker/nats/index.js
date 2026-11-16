@@ -27,7 +27,7 @@
 
 const { createLoggerWriter } = require('../../logging.js');
 const { TopicTails } = require('../tail.js');
-const { codedError, toText, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
+const { codedError, toText, toBytes, toHeaders, reasonText, tokenEncoder } = require('../ids.js');
 const { positiveInteger } = require('../retry.js');
 const { withHealth } = require('../port.js');
 const {
@@ -62,7 +62,7 @@ const MILLIS = 1_000_000; // JetStream durations are nanoseconds
 const isFunction = (value) => typeof value === 'function';
 
 // One subject token, always: see the header comment.
-const token = (name) => encodeToken(name, { safe: /[A-Za-z0-9_-]/, escape: '~', maxLength: 120 });
+const token = tokenEncoder({ safe: /[A-Za-z0-9_-]/, escape: '~', maxLength: 120 });
 // A stream NAME may not contain `.`, spaces or wildcards either.
 const streamName = (prefix, kind, name) => `${prefix}_${kind}_${token(name)}`.replace(/~/g, '_');
 

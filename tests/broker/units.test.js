@@ -18,6 +18,8 @@ const {
   toHeaders,
   reasonText,
   encodeToken,
+  tokenEncoder,
+  TOKEN_MEMO,
   signId,
   openId,
 } = require('../../src/broker/ids.js');
@@ -172,4 +174,20 @@ test('retry: the decision table', () => {
   assert.strictEqual(capped.delay, 60_000);
   const jittered = decide({ code: 500, attempt: 2, random: () => 0.5 });
   assert.strictEqual(jittered.delay, 1000);
+});
+
+test('tokenEncoder: the same token as encodeToken, for a name seen once or a thousand times', () => {
+  for (const options of [{ maxLength: 200 }, { safe: /[A-Za-z0-9_-]/, escape: '_', maxLength: 120 }]) {
+    const token = tokenEncoder(options);
+    const names = ['orders', 'room:general', 'користувач:42', '', '~', 'a'.repeat(300), 'b:'.repeat(200)];
+    // More names than the memo holds, so it starts over at least twice, and
+    // the early ones are asked again after it has.
+    for (let i = 0; i < 2 * TOKEN_MEMO + 10; i++) names.push(`tenant-${i}:chat/general`);
+    for (let pass = 0; pass < 2; pass++) {
+      for (const name of names) assert.strictEqual(token(name), encodeToken(name, options), name.slice(0, 40));
+    }
+    // What is not a string is encoded as its text, as before.
+    assert.strictEqual(token(42), encodeToken(42, options));
+    assert.strictEqual(token(null), encodeToken(null, options));
+  }
 });
