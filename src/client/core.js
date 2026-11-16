@@ -1820,10 +1820,14 @@ class WrpcClient extends Emitter {
       this.send({ type: 'callback', id, result });
     } catch (error) {
       const code = typeof error?.code === 'number' ? error.code : 500;
-      const wire = { message: error?.message ?? 'Responder failed', code };
-      // Same exposure rule the server applies: 4xx details are part of the
-      // conversation, a 5xx's internals stay here unless the error opts in.
-      if (error?.details !== undefined && (code < 500 || error.expose === true)) wire.details = error.details;
+      // Same exposure rule the server applies, to the message as to the
+      // details: a 4xx is part of the conversation, a 5xx's internals stay
+      // here unless the error opts in. The message used to travel whatever
+      // the code — `Cannot read properties of null (reading 'secretField')`
+      // to whoever asked, which over a mesh is another peer.
+      const said = code < 500 || error?.expose === true;
+      const wire = { message: (said && error?.message) || 'Responder failed', code };
+      if (said && error?.details !== undefined) wire.details = error.details;
       this.send({ type: 'callback', id, error: wire });
     }
   }

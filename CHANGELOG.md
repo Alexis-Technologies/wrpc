@@ -328,6 +328,14 @@ narrower promise — see
   WebTransport and broker transports already read, and a constructor option
   of the exported `SseParser`); past it the stream is an error, its body is
   cancelled and the connection reconnects.
+- **A client's `respond()` handler that throws does not send its internals
+  to whoever asked.** The answer to a failed ask carried the error's message
+  whatever its code — only `details` followed the server's rule — so a bug
+  in a responder told the asking side `Cannot read properties of null
+  (reading 'secretField')`; over a WebRTC mesh the asking side is another
+  peer. The message now follows the rule the server applies to a handler: a
+  4xx is written for the asker and travels, a 5xx is answered `Responder
+  failed` unless the error says `expose = true`.
 
 ## [2.1.0] - 2026-11-16
 

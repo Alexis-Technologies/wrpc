@@ -995,59 +995,59 @@ test('WrpcClientProxy', async (t) => {
     },
   );
 
-  await t.test("a page's events and its batched calls go upstream, and each answer of a batch to its own page", async () => {
-    savedSelf = globalThis.self;
-    globalThis.self = createSwEnv();
-    const proxy = new WrpcClientProxy();
-    const ch1 = new MessageChannel();
-    const ch2 = new MessageChannel();
-    for (const { port2 } of [ch1, ch2]) globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
-    const received = [];
-    ch1.port1.onmessage = (e) => received.push({ port: 1, data: e.data });
-    ch2.port1.onmessage = (e) => received.push({ port: 2, data: e.data });
-    ch1.port1.start();
-    ch2.port1.start();
-    await proxy.open();
-    const upstream = MockWebSocket.last;
-    upstream.sentData = [];
-    // An event has no id, by protocol; a batch is an array. Both stopped at
-    // the proxy's id check: the event never reached the server, and every
-    // call of the batch waited out its callTimeout.
-    const event = JSON.stringify({ type: 'event', name: 'chat/typing', data: { on: true } });
-    const batch = JSON.stringify([
-      { type: 'call', id: 'b1', method: 'x/y', args: {} },
-      { type: 'call', id: 'b2', method: 'x/y', args: {} },
-    ]);
-    ch1.port1.postMessage(event);
-    ch1.port1.postMessage(batch);
-    ch2.port1.postMessage(JSON.stringify({ type: 'call', id: 'other', method: 'x/y', args: {} }));
-    await until(() => upstream.sentData.length === 3);
-    assert.deepStrictEqual(upstream.sentData.slice(0, 2), [event, batch], 'forwarded as the page wrote them');
-    // The answers, alone or in one frame (a request/response uplink sends the
-    // batch's back as an array): each to the page that asked.
-    upstream.dispatchMessage(JSON.stringify({ type: 'callback', id: 'b1', result: 1 }));
-    upstream.dispatchMessage(
-      JSON.stringify([
-        { type: 'callback', id: 'b2', result: 2 },
-        { type: 'callback', id: 'other', result: 3 },
-      ]),
-    );
-    await until(() => received.length === 3);
-    await tick();
-    assert.deepStrictEqual(
-      received.map((r) => [r.port, JSON.parse(r.data).id]).sort(),
-      [
+  await t.test(
+    "a page's events and its batched calls go upstream, and each answer of a batch to its own page",
+    async () => {
+      savedSelf = globalThis.self;
+      globalThis.self = createSwEnv();
+      const proxy = new WrpcClientProxy();
+      const ch1 = new MessageChannel();
+      const ch2 = new MessageChannel();
+      for (const { port2 } of [ch1, ch2]) globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
+      const received = [];
+      ch1.port1.onmessage = (e) => received.push({ port: 1, data: e.data });
+      ch2.port1.onmessage = (e) => received.push({ port: 2, data: e.data });
+      ch1.port1.start();
+      ch2.port1.start();
+      await proxy.open();
+      const upstream = MockWebSocket.last;
+      upstream.sentData = [];
+      // An event has no id, by protocol; a batch is an array. Both stopped at
+      // the proxy's id check: the event never reached the server, and every
+      // call of the batch waited out its callTimeout.
+      const event = JSON.stringify({ type: 'event', name: 'chat/typing', data: { on: true } });
+      const batch = JSON.stringify([
+        { type: 'call', id: 'b1', method: 'x/y', args: {} },
+        { type: 'call', id: 'b2', method: 'x/y', args: {} },
+      ]);
+      ch1.port1.postMessage(event);
+      ch1.port1.postMessage(batch);
+      ch2.port1.postMessage(JSON.stringify({ type: 'call', id: 'other', method: 'x/y', args: {} }));
+      await until(() => upstream.sentData.length === 3);
+      assert.deepStrictEqual(upstream.sentData.slice(0, 2), [event, batch], 'forwarded as the page wrote them');
+      // The answers, alone or in one frame (a request/response uplink sends the
+      // batch's back as an array): each to the page that asked.
+      upstream.dispatchMessage(JSON.stringify({ type: 'callback', id: 'b1', result: 1 }));
+      upstream.dispatchMessage(
+        JSON.stringify([
+          { type: 'callback', id: 'b2', result: 2 },
+          { type: 'callback', id: 'other', result: 3 },
+        ]),
+      );
+      await until(() => received.length === 3);
+      await tick();
+      assert.deepStrictEqual(received.map((r) => [r.port, JSON.parse(r.data).id]).sort(), [
         [1, 'b1'],
         [1, 'b2'],
         [2, 'other'],
-      ],
-    );
-    proxy.close();
-    for (const { port1, port2 } of [ch1, ch2]) {
-      port1.close();
-      port2.close();
-    }
-  });
+      ]);
+      proxy.close();
+      for (const { port1, port2 } of [ch1, ch2]) {
+        port1.close();
+        port2.close();
+      }
+    },
+  );
 
   await t.test('a batch the proxy cannot forward answers each of its calls', async () => {
     savedSelf = globalThis.self;

@@ -1905,7 +1905,13 @@ test('connectTimeout covers the hooks the connection waits on', async (t) => {
   await t.test('a headers() that never settles rejects connect() with 408', async () => {
     const started = Date.now();
     await assert.rejects(
-      WrpcClient.connect(url, { heartbeat: false, reconnect: false, logger: false, connectTimeout: 100, headers: never }),
+      WrpcClient.connect(url, {
+        heartbeat: false,
+        reconnect: false,
+        logger: false,
+        connectTimeout: 100,
+        headers: never,
+      }),
       (error) => error.code === 408,
     );
     assert.ok(Date.now() - started < 2000, 'and does so at the deadline');
@@ -1970,7 +1976,7 @@ test('connectTimeout covers the hooks the connection waits on', async (t) => {
 
 // --- A timeout is a number a timer can hold -------------------------------------
 
-test('callTimeout and a call\'s timeout are refused unless a timer can hold them', async (t) => {
+test("callTimeout and a call's timeout are refused unless a timer can hold them", async (t) => {
   const { server, port } = await createServer(
     router({ hang: procedure({ access: 'public', handler: () => new Promise(noop) }) }),
   );
@@ -2004,7 +2010,7 @@ test('callTimeout and a call\'s timeout are refused unless a timer can hold them
 
 // --- A call that timed out is cancelled on the server ---------------------------
 
-test('a call that times out tells the server, and its late answer is nobody\'s error', async (t) => {
+test("a call that times out tells the server, and its late answer is nobody's error", async (t) => {
   let aborted = 0;
   const { server, port } = await createServer(
     router({
@@ -2037,4 +2043,50 @@ test('a call that times out tells the server, and its late answer is nobody\'s e
   await timers.setTimeout(200);
   assert.deepStrictEqual(errors, []);
   assert.strictEqual(await client.call('test/hello', {}), 'hi', 'the connection is fine');
+});
+
+// --- An ask responder's failure is not the asker's to read ----------------------
+
+test('a responder that throws answers its ask without its internals', async (t) => {
+  const { server, port } = await createServer(
+    router({
+      ask: procedure({
+        access: 'public',
+        handler: async (context, { name }) => {
+          try {
+            return await context.client.ask(name, {}, { timeout: 1000 });
+          } catch (error) {
+            return { failed: { message: error.message, code: error.code, details: error.details ?? null } };
+          }
+        },
+      }),
+    }),
+  );
+  t.after(() => server.close());
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    reconnect: false,
+    logger: false,
+  });
+  t.after(() => void client.close());
+  client.on('error', noop);
+  client.respond('bug', async () => {
+    const config = null;
+    return config.secretField;
+  });
+  client.respond('refusal', async () => {
+    throw Object.assign(new Error('Not for you'), { code: 403, details: { why: 'role' } });
+  });
+  client.respond('exposed', async () => {
+    throw Object.assign(new Error('Upstream is down'), { code: 502, expose: true });
+  });
+  // The TypeError's text used to travel to whoever asked.
+  assert.deepStrictEqual(await client.call('test/ask', { name: 'bug' }), {
+    failed: { message: 'Responder failed', code: 500, details: null },
+  });
+  // A 4xx is written for the asker; a 5xx that opts in is too.
+  assert.deepStrictEqual(await client.call('test/ask', { name: 'refusal' }), {
+    failed: { message: 'Not for you', code: 403, details: { why: 'role' } },
+  });
+  assert.strictEqual((await client.call('test/ask', { name: 'exposed' })).failed.message, 'Upstream is down');
 });
