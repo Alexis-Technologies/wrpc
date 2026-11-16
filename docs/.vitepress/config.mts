@@ -175,7 +175,7 @@ export default withMermaid({
         { text: 'Reference', link: '/reference/protocol', activeMatch: '/reference/' },
         {
           // Hand-synced with package.json "version" — part of the release checklist.
-          text: 'v2.0.1',
+          text: 'v2.1.0',
           items: [
             { text: 'Changelog', link: `${repo}/blob/main/CHANGELOG.md` },
             { text: 'npm', link: 'https://www.npmjs.com/package/@alexify/wrpc' },

@@ -13,6 +13,8 @@ narrower promise — see
 
 ### Changed (breaking)
 
+## [2.1.0] - 2026-11-16
+
 ### Added
 
 - **`streamIdleTimeout` — a stream nobody comes to read is not kept for the

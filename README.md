@@ -141,7 +141,7 @@ then gzipped):
 | `@alexify/wrpc/fastify` | 251.7 KB | 86.4 KB | — |
 | `@alexify/wrpc/express` | 238.1 KB | 81.2 KB | — |
 | `@alexify/wrpc/scaling` (rooms backplane) | 5.5 KB | 2.2 KB | — |
-| `@alexify/wrpc/broker` (broker core, memory broker) | 173.1 KB | 59.7 KB | — |
+| `@alexify/wrpc/broker` (broker core, memory broker) | 173.7 KB | 59.9 KB | — |
 | `@alexify/wrpc/broker/redis` | 31.8 KB | 11.9 KB | — |
 | `@alexify/wrpc/broker/nats` | 30.3 KB | 11.3 KB | — |
 | `@alexify/wrpc/broker/amqp` | 34.2 KB | 12.4 KB | — |
