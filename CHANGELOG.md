@@ -242,6 +242,14 @@ narrower promise — see
   streams in that state (sixteen times the receiver's default `maxStreams`);
   an announcement past that is delivered as before, and a WebTransport
   stream of its own opened for it is treated as one nobody named.
+- **WebRTC signaling: `limits.maxResolves` is one connection's ceiling, as
+  documented.** The room lookups in flight were counted for the whole
+  signaling unit: four by default, shared by everybody. One client that
+  kept signalling into four rooms whose peers had left held all four, and
+  every other client's signal to a peer held by another instance was
+  answered `503 too many lookups in flight` for as long as it went on. The
+  count is each connection's own now; the unit as a whole runs at most 256
+  lookups at once.
 
 
 ### Security

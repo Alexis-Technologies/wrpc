@@ -884,6 +884,15 @@ test('signaling: limits — rooms, join data and signal size are ceilings; looku
   a.signaler.send('nobody', { type: 'connect' }, { room: 'r2' });
   await timers.setTimeout(120);
   assert.strictEqual(fetches, 1, 'the second room waited for nothing: refused');
+  // The ceiling is the connection's own: while `a` has its one lookup in
+  // flight, `b` still gets one — it used to be answered 503 for a's.
+  await b.signaler.join('r2');
+  await timers.setTimeout(120);
+  fetches = 0;
+  a.signaler.send('nobody', { type: 'connect' }, { room: 'r1' });
+  b.signaler.send('nobody', { type: 'connect' }, { room: 'r2' });
+  await timers.setTimeout(120);
+  assert.strictEqual(fetches, 2, "another connection's lookup is not counted against this one");
   assert.throws(() => createSignalingUnit({ limits: { maxRooms: 0 } }), /limits.maxRooms/);
   assert.throws(() => createSignalingUnit({ limits: { maxSignalBytes: 1.5 } }), /limits.maxSignalBytes/);
   assert.throws(() => createSignalingUnit({ limits: 'none' }), /limits must be an object/);

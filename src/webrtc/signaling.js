@@ -129,6 +129,8 @@ const inputAssert = (args) => {
 // and the room lookups in flight for signals to peers this instance does
 // not hold. `false` switches one off.
 const DEFAULT_LIMITS = { maxRooms: 32, maxDataBytes: 4096, maxSignalBytes: 65536, maxResolves: 4 };
+// The room lookups one unit may have in flight, whoever started them.
+const MAX_LOOKUPS = 256;
 
 const normalizeLimits = (limits) => {
   if (limits === null || limits === undefined) return { ...DEFAULT_LIMITS };
@@ -375,25 +377,40 @@ const createSignalingUnit = (options = {}) => {
   // The room lookups in flight, one per room: every signal to a peer this
   // instance does not hold used to be a cluster-wide fetch of its own — a
   // burst of them to a peer that left was a burst of fetches on every node.
+  //
+  // `maxResolves` is what ONE connection may have started and not seen
+  // answered — counted per connection (`resolving`, beside this map and not
+  // in `client.data`, which is replicated), as the option and the guide say. It used to be the size of this map: four lookups in
+  // flight for the whole unit, so one client signalling into four rooms
+  // whose peers had left held all four, and every other client's signal to
+  // a peer on another instance was answered 503. What the unit as a whole
+  // may have in flight is MAX_LOOKUPS, far enough above one connection's
+  // share that no single one can take it.
   const lookups = new Map();
-  const fetchRoom = (server, room) => {
+  const resolving = new WeakMap();
+  const fetchRoom = (server, room, client) => {
     const key = roomOf(room);
     const shared = lookups.get(key);
     if (shared) return shared;
-    if (limits.maxResolves !== false && lookups.size >= limits.maxResolves) {
+    const mine = resolving.get(client) ?? 0;
+    if ((limits.maxResolves !== false && mine >= limits.maxResolves) || lookups.size >= MAX_LOOKUPS) {
       throw refusal(`${name}: too many lookups in flight`, 503);
     }
-    const pending = server.cluster.fetchClients({ room: key }).finally(() => lookups.delete(key));
+    resolving.set(client, mine + 1);
+    const pending = server.cluster.fetchClients({ room: key }).finally(() => {
+      lookups.delete(key);
+      resolving.set(client, resolving.get(client) - 1);
+    });
     lookups.set(key, pending);
     return pending;
   };
 
-  const resolve = async (server, to, address, room) => {
+  const resolve = async (server, to, address, room, client) => {
     const local = registry.get(to);
     if (local) return { address: local.id, instance: rtcOf(local).instance };
     if (address !== null && !server.getClient(address)) return { address, instance: null };
     if (relay !== 'room') return null;
-    const descriptors = await fetchRoom(server, room);
+    const descriptors = await fetchRoom(server, room, client);
     let found = null;
     for (let i = 0; i < descriptors.length; i++) {
       const rtc = rtcOf(descriptors[i]);
@@ -513,7 +530,7 @@ const createSignalingUnit = (options = {}) => {
           }
           await allow(context, { action: 'signal', room, to, message });
           owns(client, rtc);
-          const target = await resolve(server, to, address, room);
+          const target = await resolve(server, to, address, room, client);
           owns(client, rtc);
           const bounded = relay === 'room' ? { room: roomOf(room) } : {};
           const payload = {
