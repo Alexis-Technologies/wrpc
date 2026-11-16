@@ -25,6 +25,21 @@ narrower promise — see
   read a lagging subscriber back one `Array.shift()` at a time, each of
   them a copy of what was left.
 
+### Fixed
+
+- **The WebSocket engine: frames waiting behind a deflate leave in constant
+  time each.** Under `contextTakeover` (for what the server sends) and under
+  `async`, every send issued while a compress is in flight waits behind it
+  in a queue that `maxBackpressure` bounds in bytes only — and it was an
+  array read with `shift()`. A burst of small messages to one connection — a
+  log replayed to a client, the answers to a pipelined run of calls — paid
+  for its own length: 8,000 messages of 40 bytes left at 27–38 µs each,
+  64,000 at 52–62, and 256,000 at 141–150, 34 seconds of CPU where the
+  first rate makes 7. The queue is a ring now (`src/deque.js`), created only
+  on a connection that negotiated one of the two modes: every burst size
+  sends at the same rate (`bench/ws-outbox.js`).
+
+
 ### Security
 
 - **The WebSocket engine: frames behind an inflate that runs off the loop

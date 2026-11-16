@@ -12,6 +12,7 @@ const { SegmentQueue } = require('./segments.js');
 const { PreparedFrames } = require('./prepared.js');
 const { DeflateContext } = require('./deflateContext.js');
 const permessageDeflate = require('./permessageDeflate.js');
+const { Deque } = require('../deque.js');
 
 // The write-queue pressure signal when a socket does not say (a test
 // double): net.Socket's own default.
@@ -89,7 +90,14 @@ class Connection extends EventEmitter {
   // order; `#outboxBytes` counts them into bufferedAmount so backpressure
   // stays honest while they wait. Inbound: a message decoded off the loop
   // is delivered in arrival order, the ones behind it held until it lands.
-  #outbox = [];
+  //
+  // The outbox is a ring, not an array: how long it gets is the bytes
+  // `maxBackpressure` admits over the size of a frame, and it is read from
+  // its head — over an array a burst of 256,000 small frames waiting behind
+  // deflates cost 150 µs each to send, against 30 (bench/ws-outbox.js). It
+  // exists only on a connection that can queue at all (context takeover for
+  // what we send, or `async`): null elsewhere, where nothing ever waits.
+  #outbox = null;
   #outboxBytes = 0;
   #draining = false;
   // The Close frame of a graceful close() that found writes still waiting
@@ -146,6 +154,7 @@ class Connection extends EventEmitter {
     this.#maxBackpressure = maxBackpressure;
     this.#fragmentThreshold = fragmentThreshold;
     this.#deflate = deflate;
+    if (deflate && (deflate.serverTakeover || deflate.async)) this.#outbox = new Deque();
     if (deflate && (deflate.serverTakeover || deflate.clientTakeover)) {
       this.#context = new DeflateContext({
         windowBits: deflate.windowBits,
@@ -575,7 +584,8 @@ class Connection extends EventEmitter {
   #write(buffer) {
     // Behind an in-flight compress every write waits its turn (the pump
     // writes with #draining set, so its own frames pass through).
-    if (this.#outbox.length > 0 && !this.#draining) {
+    const outbox = this.#outbox;
+    if (outbox !== null && outbox.length > 0 && !this.#draining) {
       return this.#enqueue({ buffer, payload: null, shared: null, opcode: 0, started: false });
     }
     if (this.#coalesce && !this.#corked) {
@@ -649,7 +659,7 @@ class Connection extends EventEmitter {
   #pump() {
     const outbox = this.#outbox;
     while (outbox.length > 0) {
-      const head = outbox[0];
+      const head = outbox.peek();
       if (head.buffer !== null) {
         outbox.shift();
         this.#outboxBytes -= head.buffer.length;
@@ -676,7 +686,7 @@ class Connection extends EventEmitter {
   #startCompress(job) {
     const finish = (error, compressed, frame) => {
       // The connection went away meanwhile: the queue was dropped with it.
-      if (this.#outbox[0] !== job) return;
+      if (this.#outbox.peek() !== job) return;
       if (error) {
         // The mirror of ws.inflate: a deflate that failed on the way out is
         // a line, not only an 'error' nobody may be listening to.
@@ -729,7 +739,7 @@ class Connection extends EventEmitter {
   // Both directions, and the takeover context with them: every way out but
   // a graceful close whose accepted writes are still on their way.
   #dropQueues() {
-    this.#outbox.length = 0;
+    if (this.#outbox !== null) this.#outbox.clear();
     this.#outboxBytes = 0;
     this.#pendingClose = null;
     this.#dropInbound();
@@ -907,7 +917,7 @@ class Connection extends EventEmitter {
     const frame = Frame.close(code, reason);
     if (this.#isClient) frame.maskPayload();
     const buffer = frame.toBuffer();
-    if (this.#closing || this.#outbox.length === 0) return void this.#close(buffer);
+    if (this.#closing || this.#outbox === null || this.#outbox.length === 0) return void this.#close(buffer);
     this.#closing = true;
     this.#fragments = null;
     this.#dropInbound();
