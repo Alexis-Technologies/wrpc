@@ -20,6 +20,13 @@ const {
   renderOpenApi,
   renderTypes,
 } = require('../../src/cli/types.js');
+const { keepAlive } = require('../helpers/wait.js');
+
+// The deadline of the fetch is AbortSignal.timeout — an unref'd timer — and
+// the fetches here are fakes that hold nothing open: without this, a test
+// that waits for the deadline leaves the loop empty and Node 22's runner
+// cancels it and the rest of the file.
+keepAlive();
 
 const collect = () => {
   const lines = [];
