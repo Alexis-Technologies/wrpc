@@ -164,6 +164,8 @@ class ClientBrokerTransport extends ClientTransport {
         ? { ...this.#headers, [HEADER_KIND]: KIND.HELLO, [HEADER_VERSION]: '2' }
         : { ...this.#headers, [HEADER_KIND]: KIND.HELLO },
       '',
+      Date.now,
+      this.#inbox,
     );
     await this.#direct.send(this.#address, hello.body, {
       headers: hello.headers,
@@ -310,6 +312,8 @@ class ClientBrokerTransport extends ClientTransport {
       correlationId,
       { ...this.#headers, [HEADER_KIND]: KIND.REQUEST },
       data,
+      Date.now,
+      this.#inbox,
     );
     this.#direct
       .send(this.#address, request.body, {

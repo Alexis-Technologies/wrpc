@@ -404,6 +404,20 @@ narrower promise — see
   is dropped, and a welcome with no inbox in it no longer leaves the
   handshake waiting forever. Affects clients running `encryption: { keys,
   acceptPlaintext: true }` on the `broker` transport.
+- **Broker RPC: a sealed request is answered where its sender said, not
+  where a re-sender says.** Sealing binds a frame to its address, kind,
+  correlation id and sequence number — and not to the address the answer
+  goes to, which is the carrier's own field, outside the seal. A sealed
+  request captured from the broker and sent again with another reply address
+  was answered **there**. A `request` and a `hello` now carry their reply
+  address inside the seal as well (`wrpc-reply`), and the service refuses a
+  frame that arrives with a different one (`broker.rpc.refused`, reason
+  `reply`). Additive on the wire: a 2.1 client writes none and is answered
+  where the carrier says, and a 2.1 service ignores the header. A carrier
+  that rewrites reply addresses itself (a NATS service import) needs
+  `attachBrokerRpc(..., { encryption: { reply: 'carrier' } })`. Re-running a
+  replayed request on ANOTHER instance of the service is still what a shared
+  `encryption.replay` memory is for.
 
 ## [2.1.0] - 2026-11-16
 

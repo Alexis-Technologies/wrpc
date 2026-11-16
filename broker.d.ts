@@ -474,8 +474,21 @@ export interface BrokerRpcOptions {
    * as `createReplayCache()` of `@alexify/wrpc/encryption` answers it
    * (`SET id 1 NX PX ttl` in Redis) — which refuses a frame another
    * instance already took; one that cannot be asked serves nothing.
+   *
+   * `reply`: `'sealed'` (the default) refuses a sealed `request`/`hello`
+   * that arrives with a reply address other than the one its sender sealed
+   * — a captured frame re-sent to be answered elsewhere; `'carrier'` answers
+   * where the carrier says, for one that rewrites reply addresses itself (a
+   * NATS service import).
    */
-  encryption?: (EnvelopeEncryptionOptions & { maxSkew?: number; replay?: BrokerReplayMemory | null }) | false | null;
+  encryption?:
+    | (EnvelopeEncryptionOptions & {
+        maxSkew?: number;
+        replay?: BrokerReplayMemory | null;
+        reply?: 'sealed' | 'carrier';
+      })
+    | false
+    | null;
   /** The largest inflated frame accepted (default 16 MiB); past it the session ends. */
   maxMessage?: number;
 }

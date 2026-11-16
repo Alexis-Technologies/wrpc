@@ -35,6 +35,13 @@ const HEADER_ENC = 'wrpc-enc';
 // whose window never saw it. The clock bounds how long that stays possible
 // (the receiver's `maxSkew`); a shared replay memory closes the rest.
 const HEADER_TIME = 'wrpc-t';
+// Where the answer goes, INSIDE the seal of a `request` and a `hello` — the
+// two frames that carry a reply address. The carrier's own `replyTo` is an
+// outer field: a captured frame re-sent with another one made the service
+// answer there. The receiver compares the two and refuses a frame whose
+// carrier address is not the sealed one. Additive: a peer that does not
+// write it is answered where the carrier says, as before.
+const HEADER_REPLY = 'wrpc-reply';
 // The protocol revision of a session (protocol.md#versioning): `2` on a
 // `hello` when the client reads framed messages, on a `welcome` when the
 // service does, and a frame goes only where the other side said 2 — two ends
@@ -102,14 +109,17 @@ const seqOf = (headers) => {
 const contextOf = (address, kind, correlationId, seq) =>
   `${address}\0${kind ?? ''}\0${correlationId ?? ''}\0${seq ?? ''}`;
 
-const sealFrame = (sealing, address, correlationId, headers, body, now = Date.now) => {
+const sealFrame = (sealing, address, correlationId, headers, body, now = Date.now, replyTo = null) => {
   if (sealing === null) return { headers, body };
   const inner = { ...headers };
   const kind = inner[HEADER_KIND];
   const seq = inner[HEADER_SEQ];
   delete inner[HEADER_KIND];
   delete inner[HEADER_SEQ];
-  if (kind === KIND.REQUEST || kind === KIND.HELLO) inner[HEADER_TIME] = String(now());
+  if (kind === KIND.REQUEST || kind === KIND.HELLO) {
+    inner[HEADER_TIME] = String(now());
+    if (replyTo !== null) inner[HEADER_REPLY] = replyTo;
+  }
   const outer = seq === undefined ? { [HEADER_KIND]: kind } : { [HEADER_KIND]: kind, [HEADER_SEQ]: seq };
   return sealing.seal(contextOf(address, kind, correlationId, seq), inner, body, outer);
 };
@@ -123,7 +133,16 @@ const openFrame = (sealing, address, message) => {
   if (result.refused !== undefined || result.sealed === false) return result.refused === undefined ? message : result;
   const headers = { ...result.headers, [HEADER_KIND]: kind };
   if (seq !== undefined) headers[HEADER_SEQ] = seq;
-  return { headers, body: result.body, correlationId: message.correlationId, replyTo: message.replyTo, sealed: true };
+  return {
+    headers,
+    body: result.body,
+    correlationId: message.correlationId,
+    replyTo: message.replyTo,
+    // What the sender sealed as its reply address, or undefined: the
+    // receiver's to compare with the carrier's (HEADER_REPLY).
+    sealedReply: result.headers[HEADER_REPLY],
+    sealed: true,
+  };
 };
 
 // A packet frame's body is text, a chunk frame's bytes — normalized here so
@@ -172,6 +191,7 @@ module.exports = {
   HEADER_REASON,
   HEADER_ENC,
   HEADER_TIME,
+  HEADER_REPLY,
   HEADER_VERSION,
   KIND,
   serviceAddress,

@@ -540,3 +540,90 @@ test('broker encryption: a shared replay memory refuses a request replayed to an
   await timers.setTimeout(30);
   assert.strictEqual(replies.length, 1, 'not served on a memory that failed');
 });
+
+test('broker encryption: a sealed request re-sent with another reply address is refused, not answered there', async (t) => {
+  const keys = generateKey();
+  const real = new MemoryBroker({ logger: quiet });
+  t.after(() => real.close());
+  const { carried, broker } = spied(real);
+  let ran = 0;
+  const pay = defineRouter({
+    calc: {
+      pay: procedure({
+        access: 'public',
+        handler: async (_ctx, args) => {
+          ran++;
+          return { charged: args.amount };
+        },
+      }),
+    },
+  });
+  // Two instances of one service: a replayed frame reaches the one whose
+  // replay window never saw it (a documented limit) — the reply address is
+  // what this is about.
+  const refusals = [];
+  const logger = {
+    log() {},
+    info() {},
+    debug() {},
+    error() {},
+    warn: (entry) => refusals.push(entry.reason ?? entry.event),
+    child: () => logger,
+  };
+  for (let i = 0; i < 2; i++) {
+    const server = new RpcServer({ router: pay, logger: quiet, sse: false });
+    const handle = await attachBrokerRpc(server, real, { service: 'calc', logger, encryption: { keys } });
+    t.after(async () => {
+      await handle.stop();
+      await server.close();
+    });
+  }
+  const client = await WrpcClient.connect('broker://calc', {
+    transport: 'broker',
+    broker,
+    mode: 'stateless',
+    heartbeat: false,
+    reconnect: false,
+    callTimeout: 1000,
+    logger: false,
+    encryption: { keys },
+  });
+  t.after(() => client.close());
+  assert.deepStrictEqual(await client.call('calc/pay', { amount: 100 }), { charged: 100 });
+  const request = carried.find((frame) => frame.headers[HEADER_KIND] === KIND.REQUEST);
+  const elsewhere = real.direct.inbox();
+  const got = [];
+  const stop = await real.direct.listen(elsewhere, (message) => got.push(message.headers?.[HEADER_KIND]));
+  t.after(stop);
+  for (let i = 0; i < 4; i++) {
+    await real.direct.send(request.address, Buffer.from(request.text, 'latin1'), {
+      headers: request.headers,
+      correlationId: request.correlationId,
+      replyTo: elsewhere,
+    });
+  }
+  await timers.setTimeout(150);
+  // It used to run the handler again on the other instance and answer the
+  // rewritten address.
+  assert.strictEqual(ran, 1, 'the handler ran for the real request alone');
+  assert.deepStrictEqual(got, []);
+  assert.ok(refusals.includes('reply'), `refused for its reply address: ${JSON.stringify(refusals)}`);
+});
+
+test("broker encryption: reply: 'carrier' answers where the carrier says; anything else is a TypeError", async (t) => {
+  const keys = generateKey();
+  const server = new RpcServer({ router, logger: quiet, sse: false });
+  t.after(() => server.close());
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(() => broker.close());
+  await assert.rejects(
+    attachBrokerRpc(server, broker, { service: 'x', logger: quiet, encryption: { keys, reply: 'anywhere' } }),
+    /encryption\.reply must be 'sealed' or 'carrier'/,
+  );
+  const handle = await attachBrokerRpc(server, broker, {
+    service: 'calc',
+    logger: quiet,
+    encryption: { keys, reply: 'carrier' },
+  });
+  t.after(() => handle.stop());
+});

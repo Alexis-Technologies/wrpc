@@ -1446,7 +1446,13 @@ so a bearer token no longer rests in the broker. An RPC frame is bound to
 `address ‖ 0 ‖ kind ‖ 0 ‖ correlation id ‖ 0 ‖ seq` (label
 `"wrpc broker-rpc v1"`): the readable `wrpc-kind` and `wrpc-seq` cannot be
 rewritten, a frame does not open in another conversation, and a per-sender
-window drops a replay. A published event is bound to its **topic** (label
+window drops a replay. A `request` and a `hello` also carry the address their
+answer goes to **inside** the seal, as `wrpc-reply`: the carrier's own reply
+field is outside it, and the receiver refuses a frame whose carrier address
+is not the sealed one (reason `reply`) — unless it runs
+`encryption.reply: 'carrier'`, for a carrier that rewrites reply addresses
+itself. A peer that writes no `wrpc-reply` (2.1 and older) is answered where
+the carrier says. A published event is bound to its **topic** (label
 `"wrpc broker-log v1"`), carried as base64 text — a log is only promised to
 keep a string — and has no replay window: a log is read again and a delivery
 redelivered, by design. The partition `key` stays readable; the broker

@@ -207,6 +207,13 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
   // binding only; the log and queue layers are re-read by design.
   const maxSkew = encryption?.maxSkew ?? DEFAULT_MAX_SKEW;
   const replay = encryption?.replay ?? null;
+  // `reply`: 'sealed' (the default) holds a frame to the reply address its
+  // sender sealed; 'carrier' answers where the carrier says.
+  const replyMode = encryption?.reply ?? 'sealed';
+  if (replyMode !== 'sealed' && replyMode !== 'carrier') {
+    throw new TypeError("attachBrokerRpc: encryption.reply must be 'sealed' or 'carrier'");
+  }
+  const sealedReplies = replyMode === 'sealed';
   if (sealing !== null && !(Number.isFinite(maxSkew) && maxSkew > 0)) {
     throw new TypeError('attachBrokerRpc: encryption.maxSkew must be a positive number of milliseconds');
   }
@@ -253,9 +260,19 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
   // sender of a frame that does not open is not the peer anyway).
   const opened = (at, message) => {
     const frame = openFrame(sealing, at, message);
-    if (frame.refused === undefined) return frame;
-    log.warn({ event: 'broker.rpc.refused', reason: frame.refused, kind: message.headers?.[HEADER_KIND] });
-    return null;
+    if (frame.refused !== undefined) {
+      log.warn({ event: 'broker.rpc.refused', reason: frame.refused, kind: message.headers?.[HEADER_KIND] });
+      return null;
+    }
+    // The reply address the sender sealed, against the one the carrier
+    // delivered: a frame captured and re-sent with another `replyTo` used to
+    // be answered there. `encryption.reply: 'carrier'` is for a carrier that
+    // rewrites reply addresses itself (a NATS service import).
+    if (sealedReplies && frame.sealedReply !== undefined && frame.sealedReply !== frame.replyTo) {
+      log.warn({ event: 'broker.rpc.refused', reason: 'reply', kind: message.headers?.[HEADER_KIND] });
+      return null;
+    }
+    return frame;
   };
 
   // Stateless: a packet-mode POST in all but carrier. The request itself
