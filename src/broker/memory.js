@@ -41,6 +41,65 @@ const requireName = (value, what, label) => {
 
 const copyBody = (body) => (body instanceof Uint8Array ? body.slice() : typeof body === 'string' ? body : toText(body));
 
+const MIN_CAPACITY = 16;
+
+// The ready messages of a queue: appended by a produce or a retry, taken
+// from the head by `#pump`, and put back AT the head by a release or by a
+// consumer that stopped — which is why the head index that is enough for a
+// topic's entries (`#compact`) is not enough here. A ring whose capacity is
+// a power of two, indexed through a mask: both ends are O(1), and it doubles
+// when full and halves at a quarter, so a backlog that was drained does not
+// keep its slots.
+//
+// It used to be an array, read with `shift()` and written with `unshift()`,
+// and past a few thousand elements each of those moves the rest of it: a
+// backlog of 160,000 was produced and consumed at 10,621 messages a second,
+// against 2.1 million over the ring — which makes 2.9 million of a backlog
+// of 1,024, where the array made 2.7 (bench/broker-backlog.js).
+class Deque {
+  #slots = new Array(MIN_CAPACITY);
+  #mask = MIN_CAPACITY - 1;
+  #head = 0;
+  #length = 0;
+
+  get length() {
+    return this.#length;
+  }
+
+  push(value) {
+    if (this.#length > this.#mask) this.#resize(this.#slots.length * 2);
+    this.#slots[(this.#head + this.#length) & this.#mask] = value;
+    this.#length++;
+  }
+
+  unshift(value) {
+    if (this.#length > this.#mask) this.#resize(this.#slots.length * 2);
+    this.#head = (this.#head - 1) & this.#mask;
+    this.#slots[this.#head] = value;
+    this.#length++;
+  }
+
+  shift() {
+    if (this.#length === 0) return undefined;
+    const value = this.#slots[this.#head];
+    this.#slots[this.#head] = undefined;
+    this.#head = (this.#head + 1) & this.#mask;
+    this.#length--;
+    if (this.#mask >= MIN_CAPACITY && this.#length * 4 <= this.#mask) this.#resize(this.#slots.length / 2);
+    return value;
+  }
+
+  // Into a fresh array, from its start: what wrapped around the end of the
+  // old one is in order again.
+  #resize(capacity) {
+    const slots = new Array(capacity);
+    for (let i = 0; i < this.#length; i++) slots[i] = this.#slots[(this.#head + i) & this.#mask];
+    this.#slots = slots;
+    this.#mask = capacity - 1;
+    this.#head = 0;
+  }
+}
+
 class MemoryBroker {
   #closed = false;
   #epoch;
@@ -232,7 +291,7 @@ class MemoryBroker {
   #queueState(queue) {
     let state = this.#queues.get(queue);
     if (!state) {
-      state = { ready: [], consumers: [], cursor: 0, timers: new Set() };
+      state = { ready: new Deque(), consumers: [], cursor: 0, timers: new Set() };
       this.#queues.set(queue, state);
     }
     return state;

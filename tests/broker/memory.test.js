@@ -237,3 +237,130 @@ test('MemoryBroker: trim() compacts the dead prefix and readers stay consistent 
     ['2999', '3000'],
   );
 });
+
+// ---------------------------------------------------------------------------
+// The ready messages of a queue. How many wait is up to whoever produces;
+// what taking one costs, and the order they are taken in, must not depend on
+// it. The first test below failed over the array the queue used to be.
+
+// Nanoseconds per message to consume a backlog of `count` that was produced
+// with nobody listening.
+const drainBacklog = async (count) => {
+  const broker = new MemoryBroker({ logger: quiet });
+  for (let i = 0; i < count; i++) await broker.queue.produce('q', 'x');
+  let left = count;
+  const started = process.hrtime.bigint();
+  await new Promise((resolve, reject) => {
+    const onDelivery = (delivery) => {
+      if (--left === 0) resolve();
+      return delivery.ack();
+    };
+    broker.queue.consume('q', onDelivery, { prefetch: 64 }).catch(reject);
+  });
+  const elapsed = Number(process.hrtime.bigint() - started);
+  broker.close();
+  return elapsed / count;
+};
+
+// `ready.shift()` moved the rest of the array on every delivery: 0.6 µs a
+// message with 8,000 waiting, 73 µs with 160,000 — twelve seconds for what
+// takes a twentieth of one. A ratio, not a time: both sizes run on the same
+// machine under the same load, and the quadratic drain was at least forty
+// times slower per message at the larger one, where the ring is no slower.
+test('MemoryBroker: a backlog is consumed in linear time', async () => {
+  await drainBacklog(2000);
+  const short = await drainBacklog(8000);
+  const long = await drainBacklog(160_000);
+  assert.ok(
+    long < short * 8,
+    `${long.toFixed(0)} ns a message with 160,000 waiting against ${short.toFixed(0)} with 8,000`,
+  );
+});
+
+// The queue as a plain array is still the plainest statement of its order:
+// taken from the head, released to the head, retried and produced to the
+// tail. One consumer with a prefetch of one makes the next delivery a
+// function of the settlements alone, so each is checked against that array
+// as it arrives — through the backlog growing under the consumer, wrapping
+// around the ring it is kept in, and shrinking to nothing.
+test('MemoryBroker: a released message is the next one delivered, a retried one the last, at any backlog', async (t) => {
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(() => broker.close());
+  const model = [];
+  let next = 0;
+  const produce = () => {
+    model.push(next);
+    return broker.queue.produce('q', String(next++));
+  };
+  const initial = 3000;
+  for (let i = 0; i < initial; i++) await produce();
+  const wrong = [];
+  const counts = { delivered: 0, released: 0, retried: 0 };
+  await new Promise((resolve, reject) => {
+    const onDelivery = (delivery) => {
+      const n = Number(delivery.body);
+      const expected = model.shift();
+      counts.delivered++;
+      if (n !== expected && wrong.length < 5) wrong.push(`delivery ${counts.delivered}: ${n}, not ${expected}`);
+      if (delivery.redelivered) {
+        if (model.length === 0) resolve();
+        return delivery.ack();
+      }
+      // Two more behind every third of the first three thousand: the tail
+      // keeps moving while the head does.
+      if (n < initial && n % 3 === 0) {
+        void produce();
+        void produce();
+      }
+      if (n % 5 === 0) {
+        counts.released++;
+        model.unshift(n);
+        return delivery.release();
+      }
+      if (n % 7 === 0) {
+        counts.retried++;
+        model.push(n);
+        return delivery.retry();
+      }
+      if (model.length === 0) resolve();
+      return delivery.ack();
+    };
+    broker.queue.consume('q', onDelivery, { prefetch: 1 }).catch(reject);
+  });
+  assert.deepStrictEqual(wrong, []);
+  assert.strictEqual(next, 5000);
+  // Every fifth of the five thousand came twice, and so did every seventh
+  // that is not also a fifth.
+  assert.deepStrictEqual(counts, { delivered: 5000 + 1000 + 572, released: 1000, retried: 572 });
+});
+
+test('MemoryBroker: what a stopped consumer held goes back to the front, in its order, ahead of the backlog', async (t) => {
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(() => broker.close());
+  for (let n = 0; n < 16; n++) await broker.queue.produce('q', String(n));
+  const held = [];
+  const first = await broker.queue.consume('q', (delivery) => void held.push(delivery), { prefetch: 8 });
+  await waitFor(() => held.length === 8);
+  // Sixteen ready again, the eight new ones behind the eight that were left:
+  // what comes back has no room in front of them until the queue makes it.
+  for (let n = 16; n < 24; n++) await broker.queue.produce('q', String(n));
+  await first.stop();
+  const seen = [];
+  await broker.queue.consume(
+    'q',
+    (delivery) => {
+      seen.push([Number(delivery.body), delivery.redelivered]);
+      return delivery.ack();
+    },
+    { prefetch: 1 },
+  );
+  await waitFor(() => seen.length === 24);
+  assert.deepStrictEqual(
+    seen,
+    Array.from({ length: 24 }, (_, n) => [n, n < 8]),
+  );
+  // A late settlement from the consumer that stopped changes nothing.
+  await held[0].release();
+  await timers.setTimeout(20);
+  assert.strictEqual(seen.length, 24);
+});

@@ -278,6 +278,22 @@ narrower promise — see
   with `maxBuffer` as the option to lower for a cap on every message; the
   engine is unchanged — enforcing the sentence would have refused
   uncompressed messages between 16 and 100 MiB that 2.0 accepts.
+- **A `MemoryBroker` queue with a backlog is consumed in linear time.** A
+  queue kept its ready messages in an array, took them with `shift()` and
+  put back with `unshift()` what a consumer released or held when it
+  stopped — and past a few thousand elements each of the two moves the rest
+  of the array. A consumer that started late, or came back after a deploy,
+  paid for the whole backlog on every message: 20,000 waiting messages were
+  consumed at 8.5 µs each, 80,000 at 30 µs and 160,000 at 67 µs — 10.7
+  seconds, and under a handler that settles at once all of it on
+  microtasks, with no turn of the event loop in between — and 80,000 that
+  were each released once took 6. The ready messages are a ring now, both
+  of its ends O(1), that halves as it empties: 160,000 are consumed in 0.05
+  seconds — 0.3 µs a message, no more than 2,000 cost — and the order is
+  what it was: first in first out, a released message next, a retried one
+  last (`bench/broker-backlog.js`). How long that queue gets is up to the
+  application's own producers, never a peer, which is why this is not under
+  Security with the two queues below.
 
 ### Security
 
