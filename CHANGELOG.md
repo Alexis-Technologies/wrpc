@@ -148,6 +148,14 @@ narrower promise — see
   lines that carried one raw go through the same helper: a subscription's
   refusal and its end, an event with no handler or no session, a duplicate
   call id, a subscription's failed `return()`.
+- **A cookie that comes twice is read as its first value.** `Cookie: token=A;
+  token=B` was read as `B` — and `B` is what a sibling subdomain puts there:
+  a cookie set for the parent domain (`Domain=.example.com`) is sent beside
+  the site's own, behind it, so a page on `evil.example.com` could have its
+  own session token read in place of the visitor's (cookie tossing, a
+  session fixation). The first value wins now, which is the site's own by
+  the order RFC 6265 gives a browser. Nothing changes for a request that
+  names each cookie once.
 
 ## [2.1.0] - 2026-11-16
 

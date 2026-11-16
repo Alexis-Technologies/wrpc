@@ -14,10 +14,19 @@ const { hasBytes, encodeAttachments, isAttachmentsFrame } = require('./attachmen
 
 // RFC 6265 permits '=' inside cookie values (base64, JWT) — split each
 // pair on the FIRST '=' only, or the value gets silently truncated.
+//
+// A name that comes twice keeps its FIRST value. A browser sends the cookies
+// of a name most specific path first (RFC 6265 5.4), so the first one is the
+// site's own; the one behind it is what a sibling subdomain set for the
+// parent domain — `token=theirs; Domain=.example.com` — to have its own
+// session token read in place of the user's (cookie tossing). The last one
+// used to win. Read back to front, so that fromEntries — kept for the own
+// `__proto__` it creates where an assignment would not — leaves the first.
 const parseCookies = (cookie) => {
   const values = [];
   const items = cookie.split(';');
-  for (const item of items) {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
     const eq = item.indexOf('=');
     const key = (eq < 0 ? item : item.slice(0, eq)).trim();
     const val = eq < 0 ? '' : item.slice(eq + 1).trim();

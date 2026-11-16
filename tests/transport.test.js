@@ -353,6 +353,15 @@ test('ServerEventTransport', async (t) => {
 });
 
 test('parseCookies', async (t) => {
+  await t.test('a name that comes twice keeps its first value', () => {
+    // What a browser sends when a sibling subdomain set `token` for the
+    // parent domain: the site's own cookie first, the tossed one behind it.
+    const cookies = parseCookies('token=victim; other=1; token=attacker');
+    assert.strictEqual(cookies.token, 'victim');
+    assert.strictEqual(cookies.other, '1');
+    assert.strictEqual(Object.hasOwn(parseCookies('__proto__=x; a=1'), '__proto__'), true);
+  });
+
   await t.test('splits pairs on the first "=" only — values may contain "="', () => {
     const cookies = parseCookies('token=YWJjZGVm==; other=1');
     assert.strictEqual(cookies.token, 'YWJjZGVm==');
