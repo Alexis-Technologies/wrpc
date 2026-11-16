@@ -16,6 +16,10 @@ const {
   resolveGenerateId,
   checkLimit,
 } = require('../utils.js');
+
+// The Emitter's own methods, for the one place that must not read them off a
+// unit (see #handleEvent).
+const UNIT = Emitter.prototype;
 const { generateUUID } = require('../runtime/node.js');
 const { chunkDecode } = require('../chunks.js');
 const { hasBytes, encodeAttachments, decodeAttachments, isAttachmentsFrame } = require('../attachments.js');
@@ -1806,8 +1810,14 @@ class WrpcClient extends Emitter {
         // client put there itself is a real unit — anything else is an event
         // nobody is listening for.
         const apiUnit = this.api[unit];
-        if (eventName && apiUnit instanceof Emitter && apiUnit.listenerCount(eventName) > 0) {
-          return void (await apiUnit.emit(eventName, data));
+        // The Emitter's own methods, never the unit's: a unit also carries
+        // the server's procedures by name, and one named `listenerCount` or
+        // `emit` is a property of this very object. Read off the unit, the
+        // first answered a Promise — never greater than 0, so every event
+        // of that unit was unhandled — and the second CALLED the server's
+        // `emit` procedure with each event that arrived.
+        if (eventName && apiUnit instanceof Emitter && UNIT.listenerCount.call(apiUnit, eventName) > 0) {
+          return void (await UNIT.emit.call(apiUnit, eventName, data));
         }
       }
     }
@@ -1995,7 +2005,9 @@ class WrpcClient extends Emitter {
     // methods — scaffolding them would SHADOW the unit Emitter's own `on`.
     const methodNames = [];
     for (const name of Object.keys(instance)) {
-      if (name !== 'on' && name !== 'emits') methodNames.push(name);
+      // `__proto__` is no method either: assigned, it would replace the
+      // unit's prototype, and the unit would stop being an Emitter.
+      if (name !== 'on' && name !== 'emits' && name !== '__proto__') methodNames.push(name);
     }
     const previous = this.#unitMethods.get(unit);
     if (previous) {

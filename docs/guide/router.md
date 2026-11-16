@@ -253,6 +253,18 @@ Event handlers are procedures too, so `access`, `input` and `queue` all apply.
 An event never answers, though — a rejected one is logged, not reported. See
 [the protocol reference](../reference/protocol#event-both-directions).
 
+### Procedure names and the client's unit
+
+On the client a unit is one object: its procedures by name, and the event
+emitter its server-sent events arrive on (`client.api.chat.on('message', …)`).
+`on` and `emits` are reserved for that — a procedure cannot be called either.
+Any other name is yours, including the ones an emitter has: a procedure named
+`once`, `off`, `emit`, `clear` or `listenerCount` **is** `client.api.unit.once()`
+on the client, and the emitter's method of that name is no longer reachable on
+that unit (`Emitter.prototype.off.call(client.api.unit, name, listener)` still
+is). Events are delivered all the same: the client never reads those methods
+off a unit.
+
 ## Composing routers
 
 `merge()` returns a **new** router; on a collision the other router's procedure

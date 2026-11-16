@@ -560,3 +560,57 @@ test('createBlobUploader: upload() runs once — a second call rejects at once i
   const ends = transport.sent.filter((data) => typeof data === 'string' && JSON.parse(data).status === 'end');
   assert.strictEqual(ends.length, 1, 'one end packet');
 });
+
+// --- A procedure named like an Emitter member ---------------------------------
+
+test('a unit whose procedures are named like Emitter members still delivers its events', async (t) => {
+  const { Server, defineRouter, procedure, WrpcClient: Client } = require('../index.js');
+  const router = defineRouter({
+    chat: {
+      send: procedure({
+        access: 'public',
+        handler: async (context) => {
+          context.client.sendEvent('chat/message', { text: 'hi' });
+          return 'sent';
+        },
+      }),
+      // Honest names for procedures — and members of the unit's Emitter.
+      listenerCount: procedure({ access: 'public', handler: async () => 7 }),
+      emit: procedure({ access: 'public', handler: async () => 'the procedure' }),
+      clear: procedure({ access: 'public', handler: async () => 'cleared on the server' }),
+    },
+  });
+  const server = new Server({ host: '127.0.0.1', port: 0, protocol: 'http', logger: false, router });
+  await server.listen();
+  t.after(() => server.close());
+  const { port } = server.address();
+  const client = await Client.connect(`ws://127.0.0.1:${port}${server.rpc.basePath}`, {
+    heartbeat: false,
+    reconnect: false,
+    logger: false,
+  });
+  t.after(() => void client.close());
+  const unhandled = [];
+  client.on('unhandled-event', (event) => unhandled.push(event.name));
+  await client.load('chat');
+  const heard = [];
+  client.api.chat.on('message', (data) => heard.push(data));
+  assert.strictEqual(await client.api.chat.send({}), 'sent');
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  // With `listenerCount` the event was unhandled; with `emit` the client
+  // called the server's procedure for every event that arrived.
+  assert.deepStrictEqual(heard, [{ text: 'hi' }]);
+  assert.deepStrictEqual(unhandled, []);
+  // And the procedures are still the procedures.
+  assert.strictEqual(await client.api.chat.emit({}), 'the procedure');
+  assert.strictEqual(await client.api.chat.listenerCount({}), 7);
+  assert.strictEqual(await client.api.chat.clear({}), 'cleared on the server');
+});
+
+test('use(): a method named __proto__ does not replace the prototype of its unit', () => {
+  const { Emitter } = require('../index.js');
+  const { client } = makeClient();
+  client.use(JSON.parse('{"evil":{"__proto__":{"signature":{}},"ping":{"signature":{}}}}'));
+  assert.ok(client.api.evil instanceof Emitter, 'still an Emitter');
+  assert.strictEqual(typeof client.api.evil.ping, 'function');
+});

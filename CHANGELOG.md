@@ -166,6 +166,19 @@ narrower promise — see
   announces upgrades and listens), after the uWebSockets.js backend was
   ruled out. Over HTTP/2 the HTTP side works as on any host; WebSocket
   upgrades need `allowHTTP1`, HTTP/2 having none.
+- **A procedure named like an emitter method no longer breaks its unit's
+  events on the client.** A unit of `client.api` is one object — the
+  server's procedures by name, on the emitter its events arrive on — and the
+  client read `listenerCount` and `emit` off that object to deliver an
+  event. With a procedure named `listenerCount` in the unit, the answer was
+  a Promise, never greater than zero, and **every event of the unit became
+  `unhandled-event`**; with one named `emit`, no listener heard anything and
+  the client **called the server's `emit` procedure** with each event that
+  arrived. `defineRouter` accepts both names, as it should. The client now
+  uses the emitter's own methods, whatever the unit carries; the procedures
+  stay callable as they were. A method named `__proto__` in an introspection
+  (a hostile server, a mesh peer) is skipped instead of replacing the unit's
+  prototype.
 
 
 ### Security
