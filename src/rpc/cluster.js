@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 
-const { Emitter, jsonParse } = require('../utils.js');
+const { Emitter, jsonParse, backoffDelay } = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { createLoggerWriter } = require('../logging.js');
 const { DISABLED, SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
@@ -290,7 +290,8 @@ class Cluster extends Emitter {
               this.#log.error({ err: e, event: 'cluster.listener', name: 'degraded' }),
             );
           }
-          const delay = Math.min(30_000, 500 * 2 ** attempt);
+          // Jittered, as the rooms backplane's is: no two instances retry in step.
+          const delay = backoffDelay({ attempt, minDelay: 500, maxDelay: 30_000 });
           const timer = setTimeout(() => {
             if (!this.#closed) this.#subscribeTo(channel, attempt + 1);
           }, delay);

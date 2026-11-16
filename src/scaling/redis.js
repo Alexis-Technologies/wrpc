@@ -60,6 +60,8 @@ const createRedisAdapter = (options = {}) => {
   // `event` is on every other entry in the package and is the field the
   // logging guide tells operators to filter on; without it these lines
   // could not be alerted on alongside the rest.
+  // Channels whose SUBSCRIBE has been sent and not answered yet.
+  const subscribing = new Map();
   const report = (error) => void log.error({ err: error, event: 'backplane.redis', component: 'redis' });
   const settle = (result) => {
     if (result && isFunction(result.catch)) result.catch(report);
@@ -132,24 +134,57 @@ const createRedisAdapter = (options = {}) => {
       }
       if (closed) return () => {};
       const name = key(channel);
-      let set = handlers.get(name);
-      if (!set) {
-        set = new Set();
-        handlers.set(name, set);
-        try {
-          settle(subscriber.subscribe(name));
-        } catch (error) {
-          report(error);
-        }
-      }
-      set.add(handler);
-      return () => {
+      const off = () => {
         const current = handlers.get(name);
         if (!current || !current.delete(handler)) return;
         if (current.size > 0) return;
         handlers.delete(name);
         unsubscribe(name);
       };
+      const existing = handlers.get(name);
+      if (existing) {
+        existing.add(handler);
+        // The channel's SUBSCRIBE is still on its way: this handler stands
+        // or falls with it, like the one that issued it.
+        const issued = subscribing.get(name);
+        if (issued === undefined) return off;
+        const joined = issued.then(() => off);
+        joined.catch(() => {});
+        return joined;
+      }
+      const set = new Set([handler]);
+      handlers.set(name, set);
+      // The SUBSCRIBE's own answer is what this answers with. It used to be
+      // logged and dropped — the unsubscribe function came back at once,
+      // whatever Redis said — so a refused SUBSCRIBE (an ACL without the
+      // channel, a connection in the wrong state) looked like a subscription
+      // to everything above: the retry of RoomsBackplane and of the cluster
+      // never ran, and the server reported itself healthy while deaf.
+      let issued = null;
+      try {
+        issued = Promise.resolve(subscriber.subscribe(name));
+      } catch (error) {
+        issued = Promise.reject(error);
+      }
+      const subscribed = issued.then(
+        () => {
+          subscribing.delete(name);
+          return off;
+        },
+        (error) => {
+          subscribing.delete(name);
+          // Nothing is subscribed: the handlers of this attempt go with it,
+          // or a retry would deliver every message twice once it succeeds.
+          if (handlers.get(name) === set) handlers.delete(name);
+          report(error);
+          throw error;
+        },
+      );
+      // Handled from its birth: a caller that takes the answer and never
+      // looks at it must not get an unhandled rejection for a Redis refusal.
+      subscribed.catch(() => {});
+      subscribing.set(name, subscribed);
+      return subscribed;
     },
 
     // Releases what this adapter owns — its subscriptions, its listener, and
@@ -160,6 +195,7 @@ const createRedisAdapter = (options = {}) => {
       closed = true;
       for (const name of Array.from(handlers.keys())) unsubscribe(name);
       handlers.clear();
+      subscribing.clear();
       detach(subscriber, 'message', onMessage);
       detach(subscriber, 'error', onError);
       detach(subscriber, 'ready', onReady);

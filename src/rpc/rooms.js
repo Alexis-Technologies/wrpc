@@ -1,6 +1,6 @@
 'use strict';
 
-const { jsonParse } = require('../utils.js');
+const { jsonParse, backoffDelay } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
 const { hasBytes, encodeAttachments } = require('../attachments.js');
 
@@ -561,7 +561,10 @@ class RoomsBackplane {
             return void this.#channels.delete(channel);
           }
           if (attempt === 0) this.#pending++;
-          const delay = Math.min(30_000, 500 * 2 ** attempt);
+          // Jittered over the whole window: after a backplane outage every
+          // instance used to retry in the same millisecond, attempt after
+          // attempt.
+          const delay = backoffDelay({ attempt, minDelay: 500, maxDelay: 30_000 });
           record.timer = setTimeout(() => {
             record.timer = null;
             this.#subscribe(channel, record, attempt + 1);
@@ -780,11 +783,20 @@ class RoomsBackplane {
     this.#seq.clear();
     this.#seqOld.clear();
     for (const [channel, record] of Array.from(this.#channels)) {
-      if (!record.off) {
-        record.stale = true;
+      if (record.off) {
+        this.#dispose(channel, record);
         continue;
       }
-      this.#dispose(channel, record);
+      // Not subscribed. Either its subscribe is in flight — it disposes of
+      // itself on arrival — or it failed and a retry is armed: that timer
+      // used to fire after close, subscribe on a backplane the owner had
+      // already shut, and log its outcome into a finished shutdown.
+      record.stale = true;
+      if (record.timer === null) continue;
+      clearTimeout(record.timer);
+      record.timer = null;
+      this.#pending--;
+      this.#channels.delete(channel);
     }
   }
 }

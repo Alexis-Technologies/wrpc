@@ -125,6 +125,22 @@ narrower promise — see
   connection, or the same one after a reconnect, had the key back from the
   store. A removal is written like an assignment now, coalesced with the
   rest of the turn.
+- **A SUBSCRIBE that Redis refuses is no longer taken for a subscription.**
+  `createRedisAdapter().subscribe()` logged the rejection of its `SUBSCRIBE`
+  and answered an unsubscribe function at once, whatever Redis had said — so
+  the retry `RoomsBackplane` and the cluster keep for exactly that never
+  ran: an ACL without the channel, or a subscriber connection in the wrong
+  state, left the instance deaf on every channel while `server.healthy`
+  answered `true`. `subscribe()` now answers the `SUBSCRIBE`'s own promise —
+  the unsubscribe function once Redis acknowledged it, a rejection when it
+  did not, with the handler of the failed attempt removed so that a retry
+  does not deliver twice. **Changed for a direct caller**: the answer is a
+  promise where it was a function (the backplane contract always allowed
+  both — `await` it). The retries themselves are jittered over their whole
+  window now, in `RoomsBackplane` and in the cluster, so the instances of a
+  fleet do not come back in step after an outage; and `RoomsBackplane.close()`
+  disarms a retry it had armed, which used to fire after shutdown and
+  subscribe on a backplane already closed.
 
 
 ### Security
