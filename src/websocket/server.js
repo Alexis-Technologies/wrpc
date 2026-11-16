@@ -116,6 +116,26 @@ class WebsocketServer extends EventEmitter {
     }
   }
 
+  // An upgrade that was not accepted, said before it is answered. The
+  // handshake is where "it just does not connect" starts, and a refusal used
+  // to leave nothing behind: no line and no count, where the HTTP path says
+  // `cors.refused` and `http.refused` for the same request. 403 is the
+  // application's gate — `verifyClient`, which is the origin allowlist under
+  // the shells — and reads like `cors.refused` does; the rest is a handshake
+  // no WebSocket client sends, which a scanner produces by the thousand.
+  #refuse(req, socket, status, reason, options) {
+    const pathname = getPathname(req.url);
+    const entry = {
+      event: 'ws.refused',
+      status,
+      reason,
+      path: pathname.length > 128 ? pathname.slice(0, 128) : pathname,
+    };
+    if (status === 403) this.#log.warn(entry);
+    else this.#log.debug(entry);
+    abort(socket, status, reason, options);
+  }
+
   #startHeartbeat() {
     const { pingInterval } = this.#options;
     this.#pingTimer = setInterval(() => {
@@ -125,6 +145,11 @@ class WebsocketServer extends EventEmitter {
         if (ws.isPaused) continue;
         const heartbeat = this.#heartbeats.get(ws);
         if (!heartbeat || heartbeat.awaiting) {
+          // Debug: a peer that went away without a Close — a laptop lid, a
+          // phone in a tunnel — is the ordinary end of a connection, and a
+          // fleet of them is not a warning. But it is the one end the peer's
+          // own Close never explains, so it is said somewhere.
+          this.#log.debug({ event: 'ws.heartbeat', peer: ws.remoteAddress ?? '' });
           ws.terminate();
           this.#connections.delete(ws);
           this.#heartbeats.delete(ws);
@@ -183,7 +208,7 @@ class WebsocketServer extends EventEmitter {
     if (handleProtocols) {
       const selected = handleProtocols(offered, req);
       if (selected === false) {
-        abort(socket, 400, 'Subprotocol negotiation failed');
+        this.#refuse(req, socket, 400, 'Subprotocol negotiation failed');
         return null;
       }
       return { protocol: typeof selected === 'string' && !CARRIER_PROTOCOL.test(selected) ? selected : '' };
@@ -203,44 +228,44 @@ class WebsocketServer extends EventEmitter {
 
   #handleUpgrade(req, socket, head) {
     if (this.#closed) {
-      return void abort(socket, 503, 'Service Unavailable');
+      return void this.#refuse(req, socket, 503, 'Service Unavailable');
     }
     const { path, verifyClient, perMessageDeflate } = this.#options;
     const pathname = getPathname(req.url);
     if (path !== undefined && pathname !== path) {
-      return void abort(socket, 404, 'Not Found');
+      return void this.#refuse(req, socket, 404, 'Not Found');
     }
     if (verifyClient) {
       const accepted = verifyClient({ req, socket, head });
-      if (!accepted) return void abort(socket, 403, 'Forbidden');
+      if (!accepted) return void this.#refuse(req, socket, 403, 'Forbidden');
     }
     // Enforce HTTP/1.1 per RFC 6455
     if (req.httpVersion !== '1.1') {
-      return void abort(socket, 505, 'HTTP Version Not Supported');
+      return void this.#refuse(req, socket, 505, 'HTTP Version Not Supported');
     }
     // HTTP/1.1 requires Host header (RFC 7230 / RFC 9110)
     if (!req.headers.host) {
-      return void abort(socket, 400, 'Missing Host header');
+      return void this.#refuse(req, socket, 400, 'Missing Host header');
     }
     if (req.method !== 'GET') {
-      return void abort(socket, 405, 'Method Not Allowed');
+      return void this.#refuse(req, socket, 405, 'Method Not Allowed');
     }
     const upgrade = req.headers['upgrade'];
     if (!upgrade || upgrade.toLowerCase() !== 'websocket') {
-      return void abort(socket, 400, 'Invalid Upgrade header');
+      return void this.#refuse(req, socket, 400, 'Invalid Upgrade header');
     }
     if (!hasToken(req.headers['connection'], 'upgrade')) {
-      return void abort(socket, 400, 'Invalid Connection header');
+      return void this.#refuse(req, socket, 400, 'Invalid Connection header');
     }
     const version = req.headers['sec-websocket-version'];
     if (version !== '13') {
       const options = { extraHeaders: ['Sec-WebSocket-Version: 13'] };
-      return void abort(socket, 426, 'Upgrade Required', options);
+      return void this.#refuse(req, socket, 426, 'Upgrade Required', options);
     }
     const key = req.headers['sec-websocket-key'];
-    if (!key) return void abort(socket, 400, 'Missing Sec-WebSocket-Key');
+    if (!key) return void this.#refuse(req, socket, 400, 'Missing Sec-WebSocket-Key');
     if (!isValidSecWebSocketKey(key)) {
-      return void abort(socket, 400, 'Invalid Sec-WebSocket-Key');
+      return void this.#refuse(req, socket, 400, 'Invalid Sec-WebSocket-Key');
     }
 
     const negotiated = this.#negotiateProtocol(req, socket);
@@ -252,7 +277,7 @@ class WebsocketServer extends EventEmitter {
       const deflateOptions = perMessageDeflate === true ? {} : perMessageDeflate;
       deflate = permessageDeflate.negotiate(req.headers['sec-websocket-extensions'], deflateOptions);
       if (deflate && deflate.malformed) {
-        return void abort(socket, 400, 'Invalid Sec-WebSocket-Extensions header');
+        return void this.#refuse(req, socket, 400, 'Invalid Sec-WebSocket-Extensions header');
       }
       // Per-connection selection: `filter(req)` decides whether THIS peer
       // gets compression at all — a browser on a slow link yes, a service

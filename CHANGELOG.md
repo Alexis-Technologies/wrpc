@@ -13,6 +13,20 @@ narrower promise — see
 
 ### Changed (breaking)
 
+### Added
+
+- **A refused WebSocket upgrade and a heartbeat's kill are in the log.** An
+  upgrade the engine did not accept — a path that is not the server's, a
+  handshake no WebSocket client sends, the `verifyClient` gate — was
+  answered and forgotten: no line, where the HTTP path writes `cors.refused`
+  and `http.refused` for the same request, and "it just does not connect"
+  had nothing to start from. Both engines now write `ws.refused` (`status`,
+  the request `path`, and on the node engine the `reason`) — at **warn**
+  for a `403`, the gate that under the shells is the origin allowlist, and
+  at **debug** for the rest. A connection the node engine terminates for a
+  missed protocol ping writes `ws.heartbeat` (debug, `peer`).
+
+
 ### Changed
 
 - **`TopicTails` refuses a `highWaterMark` or a `page` that is not a

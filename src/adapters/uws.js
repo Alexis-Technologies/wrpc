@@ -240,6 +240,10 @@ const createUwsEngine = (engineOptions = {}) => {
 
         const request = createUpgradeRequest(path, query, headers, remoteAddress);
         const reject = (status) => {
+          // What the node engine says for the same refusal (`ws.refused`).
+          const entry = { event: 'ws.refused', status, path: path.length > 128 ? path.slice(0, 128) : path };
+          if (status === 403) log.warn(entry);
+          else log.debug(entry);
           if (aborted) return;
           res.cork(() => {
             res.writeStatus(statusLine(status));

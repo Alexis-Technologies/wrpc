@@ -121,6 +121,8 @@ The first table is the request path and the engines; the ones after it are
 | `subscribe.refused` | warn | A subscription refused before it started (`code`; the peer's `id`, clipped to 128 characters) |
 | `ws.frame`, `ws.protocol`, `ws.invalid-utf8` | warn | A peer's frame violated the protocol; the connection was closed |
 | `ws.upgrade` | error | The node engine's upgrade handling threw (`err`) — a `verifyClient`, `handleProtocols` or deflate `filter` of the application, or a `'connection'` listener; the socket was answered `500`. Emitted as `'error'` on the `WebsocketServer` too, when something listens |
+| `ws.refused` | warn, debug | A WebSocket upgrade that was not accepted (`status`, the request `path` clipped to 128 characters; on the node engine the `reason` it was answered with). **warn** for `403` — the `verifyClient` gate, which under the shells is the [origin allowlist](./security#origin-on-the-upgrade); **debug** for the rest (a wrong path, a handshake no WebSocket client sends) |
+| `ws.heartbeat` | debug | The node engine terminated a connection that did not answer its protocol ping within `pingInterval` (`peer`) — the one end of a connection the peer's own Close never explains |
 | `ws.too-big`, `ws.overflow`, `ws.backpressure` | warn | A configured limit closed the connection — the entry names the limit |
 | `ws.inflate`, `ws.deflate` | warn | permessage-deflate failed on the way in (or the inflated message was too big), or on the way out; the connection was closed |
 | `ws.close.dropped` | warn | A graceful `close()` waited `closeTimeout` for messages still queued behind a compress in flight (context takeover, `async`) and gave up: `frames` and `bytes` never left, the Close frame did |
