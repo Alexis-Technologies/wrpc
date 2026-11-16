@@ -135,7 +135,11 @@ Checks deliberately **not** in CI — run them by hand:
   and `INFORMATIONAL` do not — and so does a run the fuzzing client cut
   short (it gives up on the suite when one connect times out). Run it on an
   otherwise idle Docker: with the four broker containers up, the emulated
-  client image loses the server half-way.
+  client image loses the server half-way. Where it still does — an emulated
+  amd64 image on an arm64 host — `node scripts/autobahn/run.js --slices` runs
+  the suite a case group at a time, one container each, and repeats a group
+  whose client lost the server instead of failing the whole run; the verdict
+  is the sum and fails if the groups add up to fewer than the 517 cases.
 - `pnpm test:perf` — the 1 GiB stream memory guard.
 - `WRPC_RTC=node-datachannel node --test tests/webrtc/node-datachannel.integration.test.js`
   — the WebRTC port contract against a real implementation (the fake in
@@ -191,10 +195,18 @@ tree to keep that true.
 Releases are **manual**. Nothing in the tooling bumps a version, tags, or
 publishes.
 
-1. **Green everything** on the release commit:
+1. **Green everything** on the release commit — what CI's three always-on
+   jobs run, chained so a gate that fails stops the chain:
    ```bash
-   pnpm lint && pnpm format:check && pnpm test:coverage && pnpm test:types && pnpm size && pnpm docs:build
+   pnpm lint && pnpm format:check && pnpm test:ci && pnpm test:coverage:floors && pnpm test:types && pnpm size && pnpm docs:build
    ```
+   `test:coverage:floors` reads what `test:ci` left in `coverage/tmp`, so it
+   runs right after it. CI's `test` job is a matrix of Node 22, 24 and 26, and
+   they differ (Node 22's runner cancels a file whose event loop goes empty):
+   run the suite on each before calling it green. Then the suites CI
+   deliberately does not run — the list under [Tests](#tests): Autobahn in
+   both modes, `pnpm test:perf`, the WebRTC and WebTransport integration
+   suites, the four broker ones.
    `tests/package/consistency.test.js` already fails this step if
    `docs/.vitepress/config.mts`'s keywords or nav version label drift from
    `package.json` — there is no separate manual sync step for either.
@@ -236,9 +248,14 @@ publishes.
    `.d.ts` files (`tsd` only ever checks `tests/`, never the installed
    tarball):
    ```bash
-   printf "import { connect } from '@alexify/wrpc';\nvoid connect;\n" > /tmp/wrpc-esm-smoke.ts
-   npx tsc --moduleResolution bundler --module esnext --noEmit /tmp/wrpc-esm-smoke.ts
+   npm install typescript @types/node
+   printf "import { connect } from '@alexify/wrpc';\nvoid connect;\n" > smoke.ts
+   npx tsc --moduleResolution bundler --module esnext --types node --noEmit smoke.ts
    ```
+   `--types node` is not optional: the typings import `node:http` and name
+   `Buffer`, and since TypeScript 6 a compiler run with no `tsconfig.json`
+   includes no `@types` package unless told to — without the flag the smoke
+   fails on the first line of `engine.d.ts`, whatever the tarball holds.
 6. **Commit, tag, push**: `git tag v<version> && git push --follow-tags`.
 7. **Publish**: `npm publish` (`publishConfig.access` is already `public`).
 8. **Release notes** on GitHub from the CHANGELOG entry.

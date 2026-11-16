@@ -48,7 +48,8 @@ The suites CI deliberately does not run — run them by hand for a release:
 
 ```bash
 pnpm test:perf                                                                   # the 1 GiB stream memory guard
-node scripts/autobahn/run.js                                                     # Autobahn, both modes; on an otherwise idle Docker
+node scripts/autobahn/run.js --slices                                            # Autobahn a case group at a time (a lost connect repeats the group, not the run)
+AUTOBAHN_DEFLATE=takeover node scripts/autobahn/run.js --slices                  # …and its second mode: context takeover + async deflate
 WRPC_RTC=node-datachannel node --test tests/webrtc/node-datachannel.integration.test.js
 node scripts/wt-cert.js certs                                                    # the certificate lives 14 days at most
 WRPC_WT=fails node --test tests/wt/fails.integration.test.js
@@ -138,7 +139,7 @@ Scan for staleness:
 4. **docs/**: guide and reference pages for anything the release changed; a new page needs its sidebar entry in `docs/.vitepress/config.mts`. `pnpm docs:build` must pass
 5. **Benchmark charts**: a re-run benchmark updates both the table on its page and `docs/.vitepress/theme/benchmarks.json`
 6. **docs keywords**: the `keywords` array in `docs/.vitepress/config.mts` mirrors `package.json#keywords` (the consistency test checks it)
-7. **docs/public/llms.txt** and **CLAUDE.md**: key facts (exports, Node.js version, sizes, the paths and symbols CLAUDE.md names — its guard refuses a path that does not exist)
+7. **docs/public/llms.txt** and the **CLAUDE.md** files (the root one, and the one of each folder the release touched): key facts (exports, Node.js version, sizes, the paths and symbols they name — their guard refuses a path that does not exist)
 8. **SECURITY.md**: the supported-versions table, on a major release
 
 Only edit if something is factually wrong or outdated. Don't rewrite style or add unsolicited content.
@@ -179,10 +180,11 @@ npm install ./alexify-wrpc-<version>.tgz
 node -e "require('@alexify/wrpc'); require('@alexify/wrpc/engine'); require('@alexify/wrpc/query')"
 node --input-type=module -e "import { Server, connect } from '@alexify/wrpc'; import { createNodeEngine } from '@alexify/wrpc/engine'; void Server; void connect; void createNodeEngine;"
 npx wrpc --version
-npx tsc --moduleResolution bundler --module esnext --noEmit <a file that imports { connect } from '@alexify/wrpc'>
+npm install typescript @types/node
+npx tsc --moduleResolution bundler --module esnext --types node --noEmit <a file that imports { connect } from '@alexify/wrpc'>
 ```
 
-(`tsd` only ever checks `tests/`, never the installed tarball.) Report the file count and the bundle sizes from `pnpm size` to the user.
+(`tsd` only ever checks `tests/`, never the installed tarball. `--types node` is required since TypeScript 6: with no `tsconfig.json` no `@types` package is included unless named, and the typings import `node:http`.) Report the file count and the bundle sizes from `pnpm size` to the user.
 
 ## Step 7: Final Verification
 

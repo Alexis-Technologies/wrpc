@@ -33,6 +33,17 @@
  * --network host flag is dropped; on Linux it keeps ws://127.0.0.1:<port>
  * with --network host. No manual edit of fuzzingclient.json is needed.
  *
+ * `--slices` runs the suite as its case groups, one container each
+ * (`1.*` … `13.7.*`, a report directory per group under reports/), and a
+ * group whose client lost the server is run again, up to SLICE_ATTEMPTS
+ * times. One lost connect costs that group's minutes instead of the whole
+ * run: on an emulated image the suite in one go did not finish in four
+ * tries, and in slices it does. The verdict is the sum, and it fails when
+ * the groups add up to fewer cases than the whole suite has.
+ *
+ * `AUTOBAHN_DEFLATE=takeover` (read by echo-server.js) is the second mode a
+ * release runs: context takeover both ways and asynchronous deflate.
+ *
  * Note: reports/ is generated output — do not commit it.
  */
 
@@ -47,16 +58,43 @@ const GENERATED_CONFIG = 'fuzzingclient.generated.json';
 const IMAGE = 'crossbario/autobahn-testsuite';
 const PORT = Number(process.env.PORT ?? 9001);
 const FAIL_BEHAVIORS = new Set(['FAILED', 'WRONG CODE']);
+// The suite's case groups (there is no 8 and no 11), the big ones — limits,
+// and the two compression sections — a subgroup at a time.
+const SLICES = [
+  '1.*',
+  '2.*',
+  '3.*',
+  '4.*',
+  '5.*',
+  '6.*',
+  '7.*',
+  ...[1, 2, 3, 4, 5, 6, 7, 8].map((n) => `9.${n}.*`),
+  '10.*',
+  ...[1, 2, 3, 4, 5].map((n) => `12.${n}.*`),
+  ...[1, 2, 3, 4, 5, 6, 7].map((n) => `13.${n}.*`),
+];
+const SLICE_ATTEMPTS = 3;
+// What `cases: ['*']` runs: the floor the slices have to add up to.
+const SUITE_CASES = 517;
 
 const isDarwin = process.platform === 'darwin';
 
-const writeEffectiveConfig = () => {
+// `slice` is a case pattern with a report directory of its own, or null for
+// the whole suite into reports/.
+const sliceDir = (slice) => (slice === null ? '' : `slice-${slice.replace('.*', '')}`);
+
+const writeEffectiveConfig = (slice = null) => {
   const base = JSON.parse(fs.readFileSync(BASE_CONFIG, 'utf8'));
   const host = isDarwin ? 'host.docker.internal' : '127.0.0.1';
   const config = {
     ...base,
     servers: base.servers.map((server) => ({ ...server, url: `ws://${host}:${PORT}` })),
   };
+  if (slice !== null) {
+    config.cases = [slice];
+    config.outdir = `/reports/${sliceDir(slice)}`;
+    fs.mkdirSync(path.join(REPORTS_DIR, sliceDir(slice)), { recursive: true });
+  }
   const generatedPath = path.join(REPORTS_DIR, GENERATED_CONFIG);
   fs.writeFileSync(generatedPath, `${JSON.stringify(config, null, 2)}\n`);
 };
@@ -120,16 +158,18 @@ const runDocker = () =>
     child.once('exit', (code) => {
       if (code !== 0) return void reject(new Error(`docker exited with code ${code}`));
       if (lost !== null) {
-        return void reject(
-          new Error(`the fuzzing client stopped after ${started} cases — ${lost} The report is PARTIAL; run it again.`),
+        const error = new Error(
+          `the fuzzing client stopped after ${started} cases — ${lost} The report is PARTIAL; run it again.`,
         );
+        error.partial = true;
+        return void reject(error);
       }
       resolve(started);
     });
   });
 
-const collectFailures = () => {
-  const indexPath = path.join(REPORTS_DIR, 'index.json');
+const collectFailures = (slice = null) => {
+  const indexPath = path.join(REPORTS_DIR, sliceDir(slice), 'index.json');
   if (!fs.existsSync(indexPath)) {
     throw new Error(`missing ${indexPath} — wstest produced no report`);
   }
@@ -147,23 +187,63 @@ const collectFailures = () => {
   return { failures, graded };
 };
 
+// One run of the client — the whole suite, or one slice — graded.
+const runOnce = async (slice = null) => {
+  writeEffectiveConfig(slice);
+  const started = await runDocker();
+  const { failures, graded } = collectFailures(slice);
+  if (graded === 0 || graded < started) {
+    throw new Error(`the report holds ${graded} cases of the ${started} that were started`);
+  }
+  return { failures, graded };
+};
+
+// A slice, again when the client lost the server on the way: a partial
+// report is thrown away with its directory, never added up.
+const runSlice = async (slice) => {
+  for (let attempt = 1; ; attempt++) {
+    console.log(`\n=== cases ${slice} (attempt ${attempt} of ${SLICE_ATTEMPTS}) ===`);
+    try {
+      return await runOnce(slice);
+    } catch (error) {
+      if (error.partial !== true || attempt === SLICE_ATTEMPTS) throw error;
+      console.error(`${error.message}\nRunning ${slice} again.`);
+      fs.rmSync(path.join(REPORTS_DIR, sliceDir(slice)), { recursive: true, force: true });
+    }
+  }
+};
+
+const runSlices = async () => {
+  const failures = [];
+  let graded = 0;
+  for (const slice of SLICES) {
+    const result = await runSlice(slice);
+    graded += result.graded;
+    for (const failure of result.failures) failures.push(failure);
+    console.log(`=== ${slice}: ${result.graded} cases, ${result.failures.length} failing (${graded} so far) ===`);
+  }
+  if (graded < SUITE_CASES) {
+    throw new Error(
+      `the slices add up to ${graded} cases; the suite has ${SUITE_CASES} — a group is missing from SLICES`,
+    );
+  }
+  return { failures, graded };
+};
+
 const main = async () => {
+  const slices = process.argv.includes('--slices');
   fs.rmSync(REPORTS_DIR, { recursive: true, force: true });
   fs.mkdirSync(REPORTS_DIR, { recursive: true });
-  writeEffectiveConfig();
   const echo = await startEchoServer();
   try {
-    const started = await runDocker();
-    const { failures, graded } = collectFailures();
-    if (graded === 0 || graded < started) {
-      throw new Error(`the report holds ${graded} cases of the ${started} that were started`);
-    }
+    const { failures, graded } = slices ? await runSlices() : await runOnce();
+    const where = slices ? `${REPORTS_DIR}/slice-*/index.html` : path.join(REPORTS_DIR, 'index.html');
     if (failures.length > 0) {
       console.error(`Autobahn: ${failures.length} of ${graded} cases failing:`);
       for (const failure of failures) console.error(`  ${failure}`);
       process.exitCode = 1;
     } else {
-      console.log(`Autobahn: all ${graded} cases passed (report: ${path.join(REPORTS_DIR, 'index.html')})`);
+      console.log(`Autobahn: all ${graded} cases passed (report: ${where})`);
     }
   } finally {
     echo.kill('SIGTERM');
