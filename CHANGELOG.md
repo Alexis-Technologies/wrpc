@@ -167,6 +167,17 @@ narrower promise — see
   session fixation). The first value wins now, which is the site's own by
   the order RFC 6265 gives a browser. Nothing changes for a request that
   names each cookie once.
+- **A mistyped `cors` option no longer leaves the origin gate open in
+  silence.** The allowlist is `cors.origins`, and a key nothing reads was
+  just that: `cors: { origin: 'https://app.example' }` — the spelling of the
+  `cors` package and of `@fastify/cors` — built a server with no allowlist,
+  and a WebSocket upgrade from any origin was answered `101`, cookies and
+  all. `cors.origin` is now a `TypeError` at construction that names
+  `origins`; any other key the option does not know is a `cors.option`
+  warning; `origins` that is not an origin, an array of them or a function
+  is a `TypeError`. And **`origins` given as one string is compared whole**:
+  it used to reach `String.prototype.includes`, a substring test, so
+  `origins: 'https://app.example.com'` admitted `https://app.example.co`.
 
 ## [2.1.0] - 2026-11-16
 

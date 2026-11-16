@@ -101,6 +101,32 @@ const DEFAULT_BASE_PATH = '/api';
 // bag through here, so adding a core option cannot be silently dropped by
 // one of the four places that construct an RpcServer.
 // The keys `options.rooms` knows; anything else is a warning (see #initRooms).
+// The keys `options.cors` knows. One of them is the origin allowlist, the
+// only thing between a page anywhere and a WebSocket with the visitor's
+// cookies on it — and a key this list does not hold is read by nothing:
+// `cors: { origin: 'https://app.example' }`, the spelling of the `cors`
+// package and of @fastify/cors, left the allowlist empty without a word.
+const CORS_OPTION_KEYS = ['origins', 'credentials', 'headers', 'metaHeaders', 'methods'];
+const checkCors = (cors, log) => {
+  if (cors === null || cors === undefined) return null;
+  if (typeof cors !== 'object') throw new TypeError('RpcServer: options.cors must be an object');
+  if (Object.hasOwn(cors, 'origin')) {
+    throw new TypeError('RpcServer: options.cors.origin is not an option — the allowlist is `origins`');
+  }
+  const { origins } = cors;
+  const valid =
+    origins === undefined ||
+    origins === null ||
+    typeof origins === 'function' ||
+    typeof origins === 'string' ||
+    (Array.isArray(origins) && origins.every((origin) => typeof origin === 'string'));
+  if (!valid) throw new TypeError('RpcServer: options.cors.origins must be an origin, an array of them or a function');
+  for (const key of Object.keys(cors)) {
+    if (!CORS_OPTION_KEYS.includes(key)) log.warn({ event: 'cors.option', key });
+  }
+  return cors;
+};
+
 const ROOMS_OPTION_KEYS = ['epoch', 'linger', 'maxTracked', 'compression', 'encryption', 'maxMessage'];
 const RPC_OPTION_KEYS = [
   'router',
@@ -294,7 +320,7 @@ class RpcServer extends Emitter {
     if (this.#encryption !== null && this.#sessions.transport.ambient === true) {
       this.#log.warn({ event: 'encryption.ambient-session' });
     }
-    this.#cors = cors;
+    this.#cors = checkCors(cors, this.#log);
     this.#basePath = normalizeBasePath(basePath);
     // Resolved before #instance, because an omitted instanceId is minted BY
     // the generator: a user who injected one gets it used for every id the

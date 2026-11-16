@@ -329,7 +329,14 @@ export declare class Cluster extends Emitter {
 // Server core
 
 export interface CorsOptions {
-  origins?: Array<string> | ((origin: string) => boolean);
+  /**
+   * The origin allowlist: one origin, an array of them, or a predicate.
+   * Compared whole. It is `origins` — a `cors.origin` key is refused with a
+   * TypeError, and any other key this interface does not name is a
+   * `cors.option` warning: read by nothing, it would leave the allowlist
+   * empty.
+   */
+  origins?: string | Array<string> | ((origin: string) => boolean);
   credentials?: boolean;
   /**
    * `Access-Control-Allow-Headers`. Replaces the default,

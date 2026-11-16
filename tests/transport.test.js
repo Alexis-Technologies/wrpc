@@ -419,3 +419,16 @@ test('buildHeaders: HSTS is for the answering host by default, and the applicati
   assert.strictEqual(Object.hasOwn(buildHeaders(null, undefined, 1, false), name), false);
   assert.strictEqual(buildHeaders(null, undefined, 1, false)['X-Content-Type-Options'], 'nosniff');
 });
+
+test('cors.origins as one string is that origin, compared whole', () => {
+  const { buildHeaders, isOriginAllowed } = require('../src/transport.js');
+  const cors = { origins: 'https://app.example.com' };
+  assert.strictEqual(isOriginAllowed(cors, 'https://app.example.com'), true);
+  // A substring of the configured origin — and a domain anybody can buy.
+  assert.strictEqual(isOriginAllowed(cors, 'https://app.example.co'), false);
+  assert.strictEqual(buildHeaders(cors, 'https://app.example.co')['Access-Control-Allow-Origin'], undefined);
+  assert.strictEqual(
+    buildHeaders(cors, 'https://app.example.com')['Access-Control-Allow-Origin'],
+    'https://app.example.com',
+  );
+});

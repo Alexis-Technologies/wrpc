@@ -118,6 +118,13 @@ const allowedHeaders = (cors) => {
 // `revision` is the newest protocol revision the server speaks (RpcServer's
 // `revision`); the marker is exposed because script on another origin reads
 // only the response headers named so.
+// Whether `origin` is on the allowlist, when the allowlist is not a function.
+// A string is ONE origin, compared whole. It used to reach `.includes()` as
+// it was, and on a string that is a substring test: `origins:
+// 'https://app.example.com'` admitted `https://app.example.co`, a domain
+// anybody can register.
+const listed = (origins, origin) => (typeof origins === 'string' ? origins === origin : origins.includes(origin));
+
 // `hsts`: the `http.hsts` option — a header value of the application's, or
 // false for none; left out, the default above.
 const buildHeaders = (cors, origin, revision = 1, hsts = undefined) => {
@@ -135,7 +142,7 @@ const buildHeaders = (cors, origin, revision = 1, hsts = undefined) => {
   }
   headers['Vary'] = 'Origin';
   const allowed =
-    typeof cors.origins === 'function' ? Boolean(origin && cors.origins(origin)) : cors.origins.includes(origin);
+    typeof cors.origins === 'function' ? Boolean(origin && cors.origins(origin)) : listed(cors.origins, origin);
   if (allowed) {
     headers['Access-Control-Allow-Origin'] = origin;
     if (cors.credentials) headers['Access-Control-Allow-Credentials'] = 'true';
@@ -147,7 +154,7 @@ const isOriginAllowed = (cors, origin) => {
   if (!cors || !cors.origins) return true;
   if (!origin) return true; // non-browser peers send no Origin header
   if (typeof cors.origins === 'function') return Boolean(cors.origins(origin));
-  return cors.origins.includes(origin);
+  return listed(cors.origins, origin);
 };
 
 // If-None-Match: a list of entity tags, weak or strong, or `*`.

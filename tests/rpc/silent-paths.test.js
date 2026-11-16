@@ -436,3 +436,26 @@ test('dispatcher: the first refusal of a kind is a warning, the ones behind it a
   );
   assert.strictEqual(timeouts.find((entry) => entry.id === 'own').level, 'error');
 });
+
+// --- A mistyped cors option is said, not ignored ------------------------------
+
+test('RpcServer: cors.origin is refused, an unknown cors key is a warning, a bad origins is a TypeError', () => {
+  const { RpcServer } = require('../../src/rpc/core.js');
+  const build = (cors, logger = false) => new RpcServer({ router, logger, cors });
+  // The spelling of the `cors` package: it left the allowlist empty, and an
+  // upgrade from any origin was accepted.
+  assert.throws(() => build({ origin: 'https://app.example' }), /cors\.origin is not an option.*origins/);
+  assert.throws(() => build({ origins: 42 }), /cors\.origins must be/);
+  assert.throws(() => build({ origins: ['https://a.example', 7] }), /cors\.origins must be/);
+  assert.throws(() => build('https://app.example'), /cors must be an object/);
+  const { writer, all } = recorder();
+  build({ origins: ['https://app.example'], credential: true, methods: 'POST' }, writer);
+  assert.deepStrictEqual(
+    all('cors.option').map((entry) => [entry.level, entry.key]),
+    [['warn', 'credential']],
+  );
+  assert.doesNotThrow(() =>
+    build({ origins: () => true, credentials: true, headers: 'Content-Type', metaHeaders: [] }),
+  );
+  assert.doesNotThrow(() => build(null));
+});
