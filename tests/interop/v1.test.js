@@ -135,7 +135,22 @@ for (const pair of PAIRS) {
       }
     }, 'the whole download, to its end');
     assert.deepStrictEqual(await client.api.echo.say({ at: 3 }), { at: 3 });
-    assert.deepStrictEqual(escalated, []);
+    // A 1.0 client has a race of its own here, which this server cannot
+    // close: Node's WebSocket hands it every binary message as a Blob (1.0
+    // never set `binaryType`), each chunk is read with an awaited
+    // `blob.arrayBuffer()`, and the `end` behind it is handled without
+    // waiting — once the reader terminated, that `end` forgets the stream at
+    // once, and a chunk still being read finds it gone: `Stream <id> is not
+    // initialized`. One CI run on a busy runner got one; a Blob read 5 ms
+    // slower gets one for every chunk. It is the stream ending, not the
+    // server telling a 1.0 client anything — which would be `Callback <id>
+    // not found`, and stays an error. This tree's client counts a chunk in
+    // the turn it arrived in, so the other direction keeps the strict check.
+    const late = pair.client === legacy ? `Stream ${id} is not initialized` : null;
+    assert.deepStrictEqual(
+      escalated.filter((error) => error.message !== late),
+      [],
+    );
     assert.deepStrictEqual(warned, [], 'the server logged an answer nobody waited for');
   });
 }
