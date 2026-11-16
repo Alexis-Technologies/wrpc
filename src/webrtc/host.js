@@ -25,7 +25,7 @@
 // access 'public' procedures answer, and authorization is the
 // application's, in hooks, from `context.meta.data.peer`.
 
-const { Emitter, isCodec, resolveGenerateId } = require('../utils.js');
+const { Emitter, isCodec, resolveGenerateId, checkLimit } = require('../utils.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createServerTelemetry } = require('../telemetry/server.js');
 const { defineRouter, procedure, runHooksSafe } = require('../rpc/router.js');
@@ -35,6 +35,8 @@ const {
   DEFAULT_MAX_SUBSCRIPTIONS,
   DEFAULT_MAX_CALLS,
   DEFAULT_MAX_STREAMS,
+  DEFAULT_MAX_STREAM_BUFFER,
+  DEFAULT_STREAM_IDLE_TIMEOUT,
   buildMeta,
 } = require('../rpc/client.js');
 const { dispatchMessage, dispatchBinary } = require('../rpc/dispatcher.js');
@@ -70,6 +72,8 @@ class PeerHost extends Emitter {
     maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
     maxCalls = DEFAULT_MAX_CALLS,
     maxStreams = DEFAULT_MAX_STREAMS,
+    maxStreamBuffer = DEFAULT_MAX_STREAM_BUFFER,
+    streamIdleTimeout = DEFAULT_STREAM_IDLE_TIMEOUT,
     metaMaxBytes = DEFAULT_META_MAX,
     trust = 'link',
     instanceId = null,
@@ -98,7 +102,16 @@ class PeerHost extends Emitter {
     this.#metaMax = Number.isInteger(metaMaxBytes) && metaMaxBytes > 0 ? metaMaxBytes : DEFAULT_META_MAX;
     // Binary attachments, off under a packet codec (which owns the wire).
     this.#attachments = attachments !== false && !(codec && typeof codec.encode === 'function');
-    this.#limits = { maxBatch, maxSubscriptions, maxCalls, maxStreams, attachments: this.#attachments };
+    this.#limits = {
+      // Left to the dispatcher's own default when it is not given.
+      maxBatch: maxBatch === undefined ? undefined : checkLimit('PeerHost', 'maxBatch', maxBatch),
+      maxSubscriptions: checkLimit('PeerHost', 'maxSubscriptions', maxSubscriptions),
+      maxCalls: checkLimit('PeerHost', 'maxCalls', maxCalls),
+      maxStreams: checkLimit('PeerHost', 'maxStreams', maxStreams),
+      maxStreamBuffer: checkLimit('PeerHost', 'maxStreamBuffer', maxStreamBuffer),
+      streamIdleTimeout: checkLimit('PeerHost', 'streamIdleTimeout', streamIdleTimeout),
+      attachments: this.#attachments,
+    };
     this.#trust = trust;
     // The prefix of every client id here; a uuid has no '.', so the id
     // parses like a server's would (instanceOfClientId). Minted by the
@@ -196,6 +209,8 @@ class PeerHost extends Emitter {
       maxSubscriptions: this.#limits.maxSubscriptions,
       maxCalls: this.#limits.maxCalls,
       maxStreams: this.#limits.maxStreams,
+      maxStreamBuffer: this.#limits.maxStreamBuffer,
+      streamIdleTimeout: this.#limits.streamIdleTimeout,
       generateId: this.#generateId,
       meta: buildMeta({ data: about, remoteAddress: peer }),
       metaMax: this.#metaMax,

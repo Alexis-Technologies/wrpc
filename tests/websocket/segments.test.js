@@ -89,3 +89,67 @@ test('SegmentQueue: clear resets state', () => {
   queue.push(Buffer.from('xy'));
   assert.strictEqual(queue.consume(2).toString(), 'xy');
 });
+
+// How many segments a frame arrives in is the peer's choice — it may write
+// its payload a byte at a time — and the queue dropped each consumed segment
+// with `shift()`, which copies the rest of a long array: one consume() of
+// 256,000 one-byte segments took 5.9 seconds, synchronously. A ratio, not a
+// time: both sizes run on the same machine under the same load, and the
+// quadratic consume was twenty times slower per segment at the larger one.
+test('SegmentQueue: a frame in many tiny segments is consumed in linear time', () => {
+  const one = Buffer.alloc(1);
+  const perSegment = (count) => {
+    const queue = new SegmentQueue();
+    for (let i = 0; i < count; i++) queue.push(one);
+    const started = process.hrtime.bigint();
+    assert.strictEqual(queue.consume(count).length, count);
+    const elapsed = Number(process.hrtime.bigint() - started);
+    assert.strictEqual(queue.length, 0);
+    return elapsed / count;
+  };
+  perSegment(4000);
+  const short = perSegment(8000);
+  const long = perSegment(256_000);
+  assert.ok(long < short * 8, `${long.toFixed(0)} ns a segment at 256,000 against ${short.toFixed(0)} at 8,000`);
+});
+
+test('SegmentQueue: bytes keep their order across the moves that keep the list short', () => {
+  const queue = new SegmentQueue();
+  const expected = [];
+  let value = 0;
+  const push = (count, size) => {
+    for (let i = 0; i < count; i++) {
+      const segment = Buffer.alloc(size);
+      for (let at = 0; at < size; at++) {
+        segment[at] = value & 0xff;
+        expected.push(value & 0xff);
+        value++;
+      }
+      queue.push(segment);
+    }
+  };
+  const read = [];
+  const take = (size) => {
+    for (const byte of queue.consume(size)) read.push(byte);
+  };
+  push(5000, 3);
+  // Whole segments, parts of one, and ranges that span many — past the
+  // head's run and past half of the list, so what is left moves down.
+  take(3);
+  take(2);
+  take(1);
+  take(4000);
+  take(7);
+  // A peek across segments from a head that has moved, with an offset.
+  const ahead = queue.peek(10);
+  assert.deepStrictEqual(Array.from(ahead), expected.slice(read.length, read.length + 10));
+  take(6000);
+  push(3000, 2);
+  take(queue.length - 5);
+  take(5);
+  assert.strictEqual(queue.length, 0);
+  assert.deepStrictEqual(read, expected);
+  // And it starts again from empty.
+  queue.push(Buffer.from('xy'));
+  assert.strictEqual(queue.consume(2).toString(), 'xy');
+});

@@ -100,6 +100,7 @@ credential, not an identity, and the two do not share a switch.
 | `wrpc.server.broadcasts` | Counter | `{event}` |
 | `wrpc.server.broadcast.recipients` | Histogram | `{client}` |
 | `wrpc.server.stream.bytes` | Counter | `By` |
+| `wrpc.server.streams` | Counter | `{stream}` — binary streams that ended, by `wrpc.stream.direction`, `wrpc.stream.outcome` and, where one went with it, `rpc.wrpc.status_code` |
 | `wrpc.server.backpressure` | Counter | `{event}` |
 | `wrpc.server.backplane.gaps` | Counter | `{envelope}` — envelopes a publisher sent that this instance never received, by `wrpc.channel.kind` (`room` or `broadcast`; the room's name is on the `backplane.gap` log line, never a label — a room name is unbounded); see [scaling](./scaling#loss-detection) |
 | `wrpc.server.sessions` | Counter | `{operation}` |
@@ -177,7 +178,27 @@ stay under `maxSessions`.
 
 `wrpc.stream.direction` finally has both values. `send` is recorded only by
 the server: on the client the counter has nothing to feed and the bytes
-would only cost the browser bundle.
+would only cost the browser bundle. `receive` counts what **arrived** for a
+stream the server holds — kept, refused by a cap, or dropped into a stream
+that was already over — so it is the peer's traffic, not the handler's diet.
+
+`wrpc.server.streams` is how each stream ended, and the one place a refusal
+shows without debug logs — a `413`, a `429` and a `499` are said at debug,
+because any peer can drive them:
+
+| `wrpc.stream.direction` | `wrpc.stream.outcome` | Means |
+| --- | --- | --- |
+| `receive` | `closed` | Read to its end. |
+| `receive` | `failed` + code | Cut short for its reader: `400` (the sender broke its announced size), `413` ([`maxStreamBuffer`](./streams#limits), or a reader too far behind), `408` (nobody read it within `streamIdleTimeout`), `499` (its sender terminated it), `503` (the connection closed). |
+| `receive` | `terminated` | Its reader let go of it. |
+| `receive` | `refused` + `429` | Announced past `maxStreams`. |
+| `send` | `closed` / `terminated` | The handler ended it, or terminated it. |
+| `send` | `cancelled` + code | The receiver ended it: `499` (its reader let go), or the code it failed or was refused with there. |
+| `send` | `lost` | The connection closed under it. |
+
+A rising `receive failed 413` is a `maxStreamBuffer` too small for the uploads
+that run ahead of their calls — or, on uWebSockets.js, for a sink slower than
+its network; `receive failed 408` is uploads whose handlers never read them.
 
 `wrpc.broker.delivery.attempts` is recorded when a message SETTLES — on an
 ack or a dead-letter, never on a retry — so it is the distribution of how

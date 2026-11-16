@@ -433,6 +433,22 @@ export interface RpcServerOptions {
   maxCalls?: number;
   /** Binary streams a peer may hold open on one connection; past it a `stream` packet answers 429. Default 256. */
   maxStreams?: number;
+  /**
+   * Bytes one connection may have sent into streams no handler reads yet
+   * (a readable holds everything until it has a reader); the stream whose
+   * chunk goes past it fails and is answered 413. Default 64 MiB;
+   * `Infinity` lifts it.
+   */
+  maxStreamBuffer?: number;
+  /**
+   * Milliseconds a stream a peer announced may go without a reader and
+   * without a byte before it is failed with `408` and forgotten: an upload
+   * whose call was refused before its handler read it gives its bytes and
+   * its slot back, instead of holding them for the life of the connection.
+   * Swept on a timer of that period, so a stream goes between one and two
+   * of them. Default 30000; `Infinity` turns it off.
+   */
+  streamIdleTimeout?: number;
   /** SSE channel options, or `false` to remove the events endpoint. */
   sse?: import('./sse.js').SseOptions | false;
   /** The HTTP side's own options: `compression`, off by default. */
@@ -604,6 +620,8 @@ export declare class RpcServer extends Emitter {
     maxSubscriptions: number;
     maxCalls: number;
     maxStreams: number;
+    maxStreamBuffer: number;
+    streamIdleTimeout: number;
     compression: NormalizedCompression | null;
     attachments: boolean;
   }>;

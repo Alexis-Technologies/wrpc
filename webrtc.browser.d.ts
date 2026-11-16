@@ -391,6 +391,10 @@ export interface PeerHostOptions {
   maxCalls?: number;
   /** Binary streams a peer may hold open; past it a `stream` packet answers 429. Default 256. */
   maxStreams?: number;
+  /** Bytes a peer may have sent into streams nobody reads yet; past it the stream fails with 413. Default 64 MiB. */
+  maxStreamBuffer?: number;
+  /** Milliseconds a peer's stream may go without a reader and without a byte before it fails with 408. Default 30000. */
+  streamIdleTimeout?: number;
   metaMaxBytes?: number;
   /**
    * 'link' (default): every attached Client gets a frozen pseudo-session

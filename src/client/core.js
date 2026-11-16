@@ -14,11 +14,21 @@ const {
   backoffDelay,
   createEventStream,
   resolveGenerateId,
+  checkLimit,
 } = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { chunkDecode } = require('../chunks.js');
 const { hasBytes, encodeAttachments, decodeAttachments, isAttachmentsFrame } = require('../attachments.js');
-const { WrpcReadable, WrpcWritable } = require('../streams.js');
+const {
+  WrpcReadable,
+  WrpcWritable,
+  shown,
+  overCap,
+  sweepStreams,
+  STREAM_IDLE_TIMEOUT,
+  MAX_STREAMS,
+  MAX_STREAM_BUFFER,
+} = require('../streams.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createClientTelemetry } = require('../telemetry/client.js');
 const { META_HEADER, META_PREFIX, HEADERS_PARAM, META_PARAM, WRPC_V1, WRPC_V2 } = require('../wire.js');
@@ -442,6 +452,26 @@ class WrpcClient extends Emitter {
   #pendingBytes = 0;
   #flushTimer = null;
   #streams = new Map();
+  // The streams this client SENDS, by id, while they are open — #streams
+  // holds what the server announced. Where an answer on a stream's id finds
+  // its writable (#unmatched); each takes itself out (WrpcWritable).
+  #writables = new Map();
+  // The last chunk that arrived as something other than bytes, converting.
+  #converting = null;
+  // How long a stream of the server's may go without a reader and without a
+  // byte before it is failed and forgotten, and the timer of the next sweep
+  // (#watchStreams).
+  #streamIdleTimeout = STREAM_IDLE_TIMEOUT;
+  #sweeper = null;
+  // What this client lets its server hold here: how many streams at once,
+  // and the bytes of them no reader has taken (see #handleStream and
+  // #handleBinary). A server's own limits, for the other direction — what
+  // sends the streams may be a peer nobody vouches for (a WebRTC mesh).
+  #maxStreams = MAX_STREAMS;
+  #maxStreamBuffer = MAX_STREAM_BUFFER;
+  // Behind a worker proxy this client is one page of several, and a server
+  // stream reaches every one of them (see #handleStream).
+  #shared = false;
   #callTimeout = CALL_TIMEOUT;
   #connectTimeout = CONNECT_TIMEOUT;
   #querystring = null;
@@ -625,6 +655,15 @@ class WrpcClient extends Emitter {
     this.#log = createLoggerWriter(logger);
     this.#otel = createClientTelemetry(telemetry);
     if (callTimeout) this.#callTimeout = callTimeout;
+    const { streamIdleTimeout, maxStreams, maxStreamBuffer } = options;
+    if (streamIdleTimeout !== undefined) {
+      this.#streamIdleTimeout = checkLimit('WrpcClient', 'streamIdleTimeout', streamIdleTimeout);
+    }
+    if (maxStreams !== undefined) this.#maxStreams = checkLimit('WrpcClient', 'maxStreams', maxStreams);
+    if (maxStreamBuffer !== undefined) {
+      this.#maxStreamBuffer = checkLimit('WrpcClient', 'maxStreamBuffer', maxStreamBuffer);
+    }
+    this.#shared = Boolean(options.worker);
     const { connectTimeout } = options;
     // 0/false disables — for hosts that own their timeouts (tests, tooling).
     if (connectTimeout !== undefined) this.#connectTimeout = connectTimeout > 0 ? connectTimeout : 0;
@@ -848,11 +887,16 @@ class WrpcClient extends Emitter {
   // transfer is terminated so its consumer's `for await` ends instead of
   // parking forever on a connection that no longer exists.
   #failStreams() {
+    clearTimeout(this.#sweeper);
+    this.#sweeper = null;
     if (this.#streams.size === 0) return;
     const streams = Array.from(this.#streams.values());
     this.#streams.clear();
     for (const stream of streams) {
-      Promise.resolve(stream.terminate()).catch(() => {});
+      // Nobody is left to tell that its reader is gone — and its reader is
+      // told that the rest is not coming, as a call in flight is.
+      stream.onCancel = null;
+      stream.fail(CONNECTION_CLOSED_ERROR.message, CONNECTION_CLOSED_ERROR.code);
     }
   }
 
@@ -975,7 +1019,7 @@ class WrpcClient extends Emitter {
       // over here, synchronously, so it keeps its place between the stream
       // packets the proxy routes it by.
       if (view !== null && this.#proxyPacket) return void this.#proxyPacket(view, null, true);
-      this.#handleBinary(data).catch(escalate);
+      this.#handleBinary(view ?? data).catch(escalate);
     });
   }
 
@@ -1493,12 +1537,12 @@ class WrpcClient extends Emitter {
     if (typeof id !== 'string' || id.length === 0 || id.length > 255) {
       throw new TypeError('createStream: generateId must return a string of at most 255 characters');
     }
-    return new WrpcWritable(id, name, size, this);
+    return new WrpcWritable(id, name, size, this, null, this.#writables);
   }
 
   createBlobUploader(blob) {
-    const { name = 'blob', size } = blob;
-    const consumer = this.createStream(name, size);
+    // A Blob has no name, and a File's may be empty.
+    const consumer = this.createStream(blob.name || 'blob', blob.size);
     const { id } = consumer;
     // Paced by the transport — a chunk it did not accept waits for the
     // stream's 'drain' — and a connection that closes mid-way is the 503 a
@@ -1515,8 +1559,16 @@ class WrpcClient extends Emitter {
           if (!consumer.write(chunk) && !consumer.closed) {
             await new Promise((resolve) => consumer.once('drain', resolve));
           }
-          if (consumer.closed) throw new WrpcError(CONNECTION_CLOSED_ERROR);
+          // Closed by the server's word on the stream (its reason), or
+          // with the connection.
+          if (consumer.closed) throw consumer.error ?? new WrpcError(CONNECTION_CLOSED_ERROR);
         }
+        // And once more, for what happened while the source was asked for
+        // a chunk it did not have: its last chunk had gone, the stream was
+        // refused — or the connection lost — in the wait for its end, and
+        // `end()` on a closed stream is a no-op. The upload resolved, with
+        // nobody told that the server had it refused.
+        if (consumer.closed) throw consumer.error ?? new WrpcError(CONNECTION_CLOSED_ERROR);
       } catch (error) {
         consumer.terminate();
         throw error;
@@ -1604,13 +1656,33 @@ class WrpcClient extends Emitter {
   #settle(packet) {
     const { id } = packet;
     const call = this.#calls.get(id);
-    // The 499 acknowledging a cancel this client sent: the caller was
-    // rejected the moment it aborted, so the ack is expected, not an error.
-    if (!call && this.#cancelled.delete(id)) return;
-    if (!call) throw new Error(`Callback ${id} not found`);
+    if (!call) return void this.#unmatched(packet);
     this.#forget(call, id);
     if (packet.error) return void call.reject(new WrpcError(packet.error));
     call.resolve(packet.result);
+  }
+
+  // A callback that answers no call in flight.
+  #unmatched({ id, error }) {
+    // The 499 acknowledging a cancel this client sent: the caller was
+    // rejected the moment it aborted, so the ack is expected, not an error.
+    if (this.#cancelled.delete(id)) return;
+    if (!error) throw new Error(`Callback ${id} not found`);
+    // An error on an id that is no call's is the server's word on a STREAM
+    // this client sends — the announcement refused (429), a chunk past the
+    // announced size (400) or past what the server holds unread (413), a
+    // handler that let go of it (499) or refused it with a reason. It
+    // used to be reported as a callback nobody waited for, the reason gone
+    // and the writer still writing. An open stream is told, and its writer
+    // stops (WrpcWritable.cancel); one already ended — its last chunk and
+    // its end left in one turn, the answer behind them — has nobody left
+    // to tell but the error channel: the server's own error, with its code.
+    const refusal = new WrpcError(error);
+    const stream = this.#writables.get(id);
+    if (stream) return void stream.cancel(refusal);
+    // A 499 is a reader that let go, not a failure: one that crossed the
+    // end of its stream on the wire is nobody's error.
+    if (error.code !== 499) throw refusal;
   }
 
   // `data` carries one value of a subscription; `end` closes it, with an
@@ -1747,28 +1819,119 @@ class WrpcClient extends Emitter {
     const stream = this.#streams.get(id);
     if (status === undefined) {
       if (stream) {
-        throw new Error(`Stream ${name} is already initialized`);
+        throw new Error(`Stream ${shown(name)} is already initialized`);
+      }
+      // Capped, as a server caps a client's: an announced stream holds its
+      // readable — and what is sent into it — until somebody reads it, and
+      // the other end decides how many it opens. Two thousand of them, read
+      // by nobody, were two thousand readables and 125 MiB here. A sender
+      // that asked to hear is answered as a server answers one (429); what
+      // it still sends into the stream it was refused is nobody's.
+      if (this.#streams.size >= this.#maxStreams) {
+        this.#log.debug({ event: 'stream.capacity', code: 429, max: this.#maxStreams });
+        if (packet.cancel === true) {
+          this.send({ type: 'callback', id, error: { message: 'Too many open streams', code: 429 } });
+        }
+        return;
       }
       const readableStream = new WrpcReadable(id, name, size);
+      // A server that asked to hear (`cancel` on its announcement) is told,
+      // once, when the stream is over here before it arrived whole: its
+      // reader let go of it (499), or it failed (its error). On the
+      // stream's id, as a server answers an upload — and never to a server
+      // that did not ask: 1.0 and 2.0.1 log the packet as an answer nobody
+      // waited for.
+      if (packet.cancel === true) {
+        readableStream.onCancel = (error) => {
+          if (readableStream.bytesReceived === size) return;
+          // Behind a worker the stream went to every page, and only the one
+          // that asked for it reads it. A copy nobody here ever read that
+          // FAILS — swept, or past a cap — speaks for this page alone: said
+          // to the server, it would end the stream for the page reading it.
+          if (this.#shared && readableStream.error !== null && !readableStream.consuming) return;
+          const message = error ? error.message : `Stream ${readableStream.label} is no longer read`;
+          this.send({ type: 'callback', id, error: { message, code: error ? error.code : 499 } });
+        };
+      }
       this.#streams.set(id, readableStream);
+      this.#watchStreams();
       return;
     }
+    // A terminate promises nothing, so one for a stream this end does not
+    // hold is not an error: its announcement was refused here, or the stream
+    // is long over. It is what a sender told to stop sends back.
+    if (!stream && status === 'terminate') return;
     if (!stream) throw new Error(`Stream ${id} is not initialized`);
-    if (status === 'end') {
-      await stream.close();
+    if (status !== 'end' && status !== 'terminate') return;
+    // Its sender ended it: nothing is left to stop.
+    stream.onCancel = null;
+    if (status === 'terminate') {
+      // Forgotten before anything else: an announcement that reuses the id
+      // may be right behind this packet. And a failure for its reader, not
+      // an end — the sender took back the bytes it had promised.
       this.#streams.delete(id);
-    } else if (status === 'terminate') {
-      await stream.terminate();
-      this.#streams.delete(id);
+      stream.fail(`Stream ${stream.label} was terminated by its sender`, 499);
+      return;
     }
+    // A chunk still being turned into bytes (#handleBinary) is counted
+    // before its stream's end is.
+    if (this.#converting) await this.#converting;
+    try {
+      await stream.end();
+    } catch (error) {
+      // Short of its announced size (WrpcReadable.end): said now, and
+      // the stream kept until its reader has come to be told too.
+      this.#escalate(error, 'stream.failed');
+      await stream.close();
+    }
+    if (this.#streams.get(id) === stream) this.#streams.delete(id);
   }
 
+  // Armed while this client holds streams of the server's: each tick ends
+  // what has had no reader and no byte since the tick before (sweepStreams)
+  // and arms the next while any are left. A download nobody asked for —
+  // behind a worker every page is sent every stream — used to be kept, whole,
+  // for as long as the connection lived.
+  #watchStreams() {
+    if (this.#sweeper !== null || !(this.#streamIdleTimeout <= 2 ** 31 - 1)) return;
+    this.#sweeper = setTimeout(() => {
+      this.#sweeper = null;
+      sweepStreams(this.#streams);
+      if (this.#streams.size > 0) this.#watchStreams();
+    }, this.#streamIdleTimeout);
+    // Node: not a reason to keep a process alive. A browser's timer has none.
+    this.#sweeper.unref?.();
+  }
+
+  // Bytes are pushed in the turn they arrived in (an async function runs
+  // synchronously up to its first await): a readable holds its sender to
+  // the announced size, so the `end` behind the last chunk has to find that
+  // chunk counted — and two messages of one read are dispatched with no
+  // turn between them. Awaited unconditionally, the conversion below let
+  // every `end` overtake the chunks before it. What is NOT bytes yet (a
+  // Blob, from a transport that did not ask for ArrayBuffers) is converted
+  // in arrival order, and #handleStream waits for the last of it.
   async #handleBinary(input) {
-    const byteView = await toByteView(input);
-    const { id, payload } = chunkDecode(byteView);
+    let view = input;
+    if (!(view instanceof Uint8Array)) {
+      const converted = Promise.resolve(this.#converting).then(() => toByteView(input));
+      this.#converting = converted.catch(() => {});
+      view = await converted;
+    }
+    const { id, payload } = chunkDecode(view);
     const stream = this.#streams.get(id);
     if (!stream) {
       throw new Error(`Stream ${id} is not initialized`);
+    }
+    // Nothing here can hold the sender back — a browser's WebSocket has no
+    // pause, and no transport waits for this push — so what the streams
+    // hold for readers that have not taken it is capped as on a server
+    // whose carrier cannot pause (overCap): the stream that goes past it
+    // fails, its reader is thrown the 413, and a server that asked is told.
+    const refusal = overCap(this.#streams, stream, payload.length, this.#maxStreamBuffer, false);
+    if (refusal !== null) {
+      this.#log.debug({ event: 'stream.buffer', code: 413, max: this.#maxStreamBuffer });
+      return void stream.fail(refusal, 413);
     }
     await stream.push(payload);
   }

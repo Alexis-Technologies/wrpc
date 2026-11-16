@@ -73,14 +73,14 @@ the run — it is a ratchet, and it runs in CI's lint job.
 
 | Entry | min | min+gzip | budget |
 | --- | ---: | ---: | ---: |
-| `@alexify/wrpc` — browser | 83.3 KB | **28.0 KB** | 28.0 KB |
-| `@alexify/wrpc/sse` — browser | 86.6 KB | **29.1 KB** | 30.0 KB |
+| `@alexify/wrpc` — browser | 88.6 KB | **29.8 KB** | 30.0 KB |
+| `@alexify/wrpc/sse` — browser | 91.9 KB | **30.9 KB** | 31.0 KB |
 | `@alexify/wrpc/query` | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` | 3.9 KB | **1.8 KB** | 2.0 KB |
 | `@alexify/wrpc/deflate` | 10.7 KB | **4.4 KB** | 5.0 KB |
 | `@alexify/wrpc/encryption` — browser | 31.5 KB | **11.5 KB** | 12.0 KB |
-| `@alexify/wrpc/webrtc` — browser | 179.6 KB | **58.4 KB** | 59.0 KB |
-| `@alexify/wrpc` — node | 302.2 KB | 101.6 KB | — |
+| `@alexify/wrpc/webrtc` — browser | 186.9 KB | **60.9 KB** | 61.0 KB |
+| `@alexify/wrpc` — node | 310.3 KB | 104.4 KB | — |
 
 The Node-only entries carry no budget because their gzip size is not a shipping
 cost; they are measured so a regression is *visible*, not gated.
@@ -168,7 +168,20 @@ that asked, an event to every tab. [Binary streams](./streams) cross too,
 although a chunk carries nothing but its stream id: the proxy routes it by
 the stream's announcement. An upload's chunks go up only from the tab that
 announced it, and a server stream's chunks go down wherever its `stream`
-packet went.
+packet went. The receiver's word that a stream is
+[no longer wanted](./streams#ended-by-the-receiver) is routed the same way:
+the server's reaches the tab that announced the upload, a tab's goes up, and
+the stream's end comes back to every tab that was handed it.
+
+A server-opened stream is handed to **every tab that was open when it was
+announced** — the worker cannot know which of them asked for it — so each has
+a copy until it reads it or drops it. A tab that never reads its copy lets it
+go by itself: after [`streamIdleTimeout`](./streams#limits), or at its
+`maxStreamBuffer`, and without a word to the server — the tab that is reading
+goes on. A tab that opens later is sent none of a stream it never heard
+announced. And once **no** tab that held the stream is left, the worker tells
+the server to stop sending it, as a tab's own reader would.
+
 Pick the worker by what you need from it: a **Service Worker** also serves the
 page offline and outlives a reload, at the price of registration and a
 lifecycle the browser controls; a **SharedWorker** is only the shared socket —
@@ -187,7 +200,8 @@ either, on an engine that never fires the event, keeps its entry until the
 worker goes — as it always has for a Service Worker. A release cancels what
 the tab was still waiting for upstream (its calls, its subscriptions), and
 an answer arriving for a tab that left is dropped, never handed to the
-others; events and server-opened streams still reach every tab.
+others; events still reach every tab, and a server-opened stream every tab
+that was there when it was announced.
 :::
 
 The client also listens to `online`/`offline`: going offline stops the

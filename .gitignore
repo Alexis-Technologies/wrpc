@@ -124,6 +124,7 @@ dist
 docs/.vitepress/dist
 docs/.vitepress/cache
 /.claude/launch.json
+/.claude/worktrees/
 
 # Autobahn testsuite output
 scripts/autobahn/reports/

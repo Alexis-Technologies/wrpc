@@ -103,7 +103,8 @@ test('WrpcReadable.push applies backpressure once a consumer attached and the hi
 });
 
 test('WrpcReadable.push buffers freely before any consumer attaches', async () => {
-  const readable = new WrpcReadable('id', 'name', 10, { highWaterMark: 1 });
+  // 70 bytes below, so a size they fit in: past it the stream fails.
+  const readable = new WrpcReadable('id', 'name', 100, { highWaterMark: 1 });
   // No consumer yet: pushes far beyond the high-water mark must resolve
   // immediately — blocking here would deadlock the upload-then-call wire
   // pattern (chunks arrive before the call that starts the consumer).
@@ -136,9 +137,10 @@ test('WrpcReadable.checkStreamLimits grows the high water mark under listener pr
   }
   await new Promise((resolve) => setImmediate(resolve));
 
-  // An 11th waiter trips checkStreamLimits' threshold (raising highWaterMark).
-  // Since F2 the Emitter's listener cap only warns instead of throwing, so
-  // the push stalls like the others rather than rejecting.
+  // An 11th waiter trips checkStreamLimits' threshold (raising highWaterMark)
+  // and stalls like the others. It prints nothing: a chunk waiting for room
+  // is bounded by the readable itself, and the Emitter's leak warning was a
+  // console line per waiting chunk — a peer's to print.
   const warnings = [];
   const originalWarn = globalThis.console.warn;
   globalThis.console.warn = (message) => warnings.push(message);
@@ -147,7 +149,7 @@ test('WrpcReadable.checkStreamLimits grows the high water mark under listener pr
   globalThis.console.warn = originalWarn;
 
   assert.strictEqual(readable.highWaterMark, 2);
-  assert.ok(warnings.some((message) => /MaxListenersExceededWarning/.test(message)));
+  assert.deepStrictEqual(warnings, []);
 
   for (let i = 0; i < 13; i++) await readable.read();
   await Promise.all([...stalled, eleventh]);

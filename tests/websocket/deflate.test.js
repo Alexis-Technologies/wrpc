@@ -381,6 +381,8 @@ const TAKEOVER = { ...DEFLATE, serverTakeover: true, clientTakeover: true, async
 const ASYNC = { ...DEFLATE, serverTakeover: false, clientTakeover: false, async: { threshold: 64 } };
 
 const once = (emitter, event) => new Promise((resolve) => emitter.once(event, resolve));
+// For a condition the event loop alone bounds — a few turns, under any load.
+// Two hundred of them are about 10 ms: never enough for zlib.
 const tickUntil = async (check, tries = 200) => {
   for (let i = 0; i < tries; i++) {
     if (check()) return;
@@ -507,7 +509,7 @@ test('takeover: outbound frames use the context, stay ordered, and the peer infl
   conn.sendText('tiny'); // under no threshold here (threshold 1) — also compressed, queued behind
   conn.sendBinary(Buffer.from('bytes'), { compress: false }); // plain, must still wait its turn
   assert.strictEqual(socket.writtenData.length, 0, 'nothing leaves before the first deflate lands');
-  await tickUntil(() => socket.writtenData.length === 3);
+  await waitUntil(() => socket.writtenData.length === 3, 5000);
   const frames = socket.writtenData.map((buf) => FrameParser.parse(buf, { allowedRsv: RSV1 }).value.frame);
   assert.deepStrictEqual(
     frames.map((f) => [f.opcode, f.rsv & RSV1]),
@@ -523,7 +525,7 @@ test('takeover: outbound frames use the context, stay ordered, and the peer infl
   assert.strictEqual(frames[2].payload.toString(), 'bytes');
   // The context is live: a repeat of the first message is far smaller.
   conn.sendText(big);
-  await tickUntil(() => socket.writtenData.length === 4);
+  await waitUntil(() => socket.writtenData.length === 4, 5000);
   const repeat = FrameParser.parse(socket.writtenData[3], { allowedRsv: RSV1 }).value.frame;
   assert.ok(repeat.payload.length < frames[0].payload.length / 4);
   conn.terminate();
@@ -548,7 +550,7 @@ test('takeover: inbound messages inflate through the live context, in arrival or
   const plain = Frame.text('plain after');
   plain.maskPayload();
   socket.emit('data', plain.toBuffer());
-  await tickUntil(() => messages.length === 3);
+  await waitUntil(() => messages.length === 3, 5000);
   assert.deepStrictEqual(messages, [text, text, 'plain after']);
   conn.terminate();
 });
@@ -561,7 +563,7 @@ test('takeover: a compression bomb through the context closes with 1009', async 
   const frame = new Frame(true, OPCODES.TEXT, false, bomb, null, RSV1);
   frame.maskPayload();
   socket.emit('data', frame.toBuffer());
-  await tickUntil(() => socket.writtenData.length > 0);
+  await waitUntil(() => socket.writtenData.length > 0, 5000);
   const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
   assert.strictEqual(close.opcode, OPCODES.CLOSE);
   assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.MESSAGE_TOO_BIG);
@@ -608,7 +610,7 @@ test('takeover: close() after send() delivers the message, then the Close frame'
   // Accepted, and nothing new is: the connection is closing.
   assert.strictEqual(conn.sendText('too late'), false);
   assert.strictEqual(socket.writtenData.length, 0, 'the Close did not overtake the message');
-  await tickUntil(() => closed(socket));
+  await waitUntil(() => closed(socket), 5000);
   const written = socket.writtenData.length;
   const [data, close] = parsed(socket);
   assert.strictEqual(data.opcode, OPCODES.TEXT);
@@ -633,7 +635,7 @@ test('async: everything accepted before close() leaves in send order, the Close 
   conn.close(1000, '');
   // A pong asked for now would leave after the Close: it is not sent.
   assert.strictEqual(conn.sendPong(Buffer.from('late')), false);
-  await tickUntil(() => closed(socket));
+  await waitUntil(() => closed(socket), 5000);
   const frames = parsed(socket);
   assert.deepStrictEqual(
     frames.map((frame) => frame.opcode),
@@ -703,7 +705,7 @@ test('async: a message over the threshold deflates off the loop, smaller ones st
   conn.sendText('a'.repeat(4096)); // >= 64: async
   conn.sendText('b'); // < 64: sync deflate, but queued behind the async one
   assert.strictEqual(socket.writtenData.length, 0);
-  await tickUntil(() => socket.writtenData.length === 2);
+  await waitUntil(() => socket.writtenData.length === 2, 5000);
   const frames = socket.writtenData.map((buf) => FrameParser.parse(buf, { allowedRsv: RSV1 }).value.frame);
   assert.strictEqual(decompress(frames[0].payload, 1 << 20).toString(), 'a'.repeat(4096));
   assert.strictEqual(decompress(frames[1].payload, 1 << 20).toString(), 'b');
@@ -724,7 +726,7 @@ test('async: inbound over the threshold inflates off the loop, in order with the
     frame.maskPayload();
     socket.emit('data', frame.toBuffer());
   }
-  await tickUntil(() => messages.length === 2);
+  await waitUntil(() => messages.length === 2, 5000);
   assert.deepStrictEqual(messages, [bigText, 'small']);
   conn.terminate();
 });
@@ -734,7 +736,7 @@ test('async: a fan-out over the threshold deflates once and every recipient writ
   const conns = sockets.map((socket) => new Connection(socket, Buffer.alloc(0), { deflate: ASYNC }));
   const message = sharedMessage('fan-out '.repeat(1000));
   for (const conn of conns) assert.strictEqual(typeof conn.sendPrepared(message), 'boolean');
-  await tickUntil(() => sockets.every((socket) => socket.writtenData.length === 1));
+  await waitUntil(() => sockets.every((socket) => socket.writtenData.length === 1), 5000);
   assert.ok(Buffer.isBuffer(message.frames.deflated(15)), 'the slot holds the one deflated frame');
   assert.strictEqual(sockets[0].writtenData[0], sockets[1].writtenData[0], 'the SAME buffer, not a copy');
   assert.strictEqual(sockets[1].writtenData[0], sockets[2].writtenData[0]);
@@ -873,14 +875,14 @@ test('level and memLevel apply on the one-shot, fan-out and async paths, and are
   const socketAsync = new MockSocket();
   const connAsync = new Connection(socketAsync, Buffer.alloc(0), { deflate: asyncSmall });
   connAsync.sendText(text);
-  await tickUntil(() => socketAsync.writtenData.length === 1);
+  await waitUntil(() => socketAsync.writtenData.length === 1, 5000);
   assert.deepStrictEqual(socketAsync.writtenData[0], frameSmall);
   connAsync.terminate();
   const sharedAsync = sharedMessage(text);
   const socketShared = new MockSocket();
   const connShared = new Connection(socketShared, Buffer.alloc(0), { deflate: asyncSmall });
   connShared.sendPrepared(sharedAsync);
-  await tickUntil(() => socketShared.writtenData.length === 1);
+  await waitUntil(() => socketShared.writtenData.length === 1, 5000);
   assert.deepStrictEqual(socketShared.writtenData[0], frameSmall);
   connShared.terminate();
   // Validated where the option is given, not by zlib at the first message.

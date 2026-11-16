@@ -108,7 +108,10 @@ The first table is the request path and the engines; the ones after it are
 | `call.unknown` | warn | A call for a method this router does not have — a stale client, or a typo |
 | `call.duplicate` | warn | Two in-flight calls with one id: a `generateId` that repeats, or a retry that reused one |
 | `call.capacity` | debug | `maxCalls` reached on one connection |
+| `stream.violation` | warn | A peer broke the stream protocol on this connection (`code` 400, `id`, `message`): a chunk for a stream it never announced, an `end` short of the size it promised, a chunk past it, a `stream` packet that is none. **Once per connection** — the first time; every such answer is also an `rpc.error` at debug, because a peer can do it in a loop |
 | `stream.capacity` | debug | `maxStreams` reached on one connection: a `stream` packet answered `429` |
+| `stream.buffer` | debug | `maxStreamBuffer` reached on one connection (`max`): the stream whose chunk went past it failed, answered `413`. A peer sending into streams no handler reads — an upload that never had a reader, or one far ahead of the call that reads it |
+| `stream.cancelled` | debug | The peer ended a stream this end was sending to it (`id`, `code`): its reader let go of it (`499`), or it failed there. The writable closed with that reason |
 | `call.draining` | info | Refused because the server is shutting down |
 | `packet.malformed` | warn | A frame that would not parse — one line per frame, whatever it was |
 | `packet.unknown` | warn | Valid JSON that is not a packet — version skew, or somebody else's client |
@@ -186,7 +189,6 @@ The first table is the request path and the engines; the ones after it are
 | `subscribe.end` | warn/debug | A subscription ended (`id`, `method`): `warn` with the `code` when it died on the server's side, `debug` for a completion or an unsubscribe |
 | `subscription.return` | warn | A subscription handler's own cleanup (`finally`, `return()`) threw after the stream had ended |
 | `subscription.aborted` | debug | A subscription handler threw after the peer had already unsubscribed or gone; the error reaches nobody else |
-| `stream.terminate` | error | A stream's `terminate()` threw while a closing client's streams were being torn down |
 | `call.ok` | debug | A call answered without an error (`method`, `id`) — the narration line, built only when a logger takes debug |
 | `rpc.warn` | warn | A warning about one connection that has no name of its own — what `client.warn(message)` writes when it is given no `event` |
 | `encryption.handshake` | debug | A sealed socket's handshake step failed inside the library; the refusal that follows (`encryption.refused`) is the line to alert on |
@@ -323,11 +325,13 @@ An error the client has no caller to hand to is **escalated**: logged at
 | `event` | Means |
 | ------- | ----- |
 | `transport.error` | The transport itself raised an error |
-| `message` | Handling an inbound message threw — a malformed frame, a handler of yours behind it |
+| `message` | Handling an inbound message threw — a malformed frame, a handler of yours behind it — or the server refused a [binary stream](./streams#ended-by-the-receiver) this client had already ended: the error is the server's own, with its code |
 | `batch.flush`, `batch.dispatch` | Writing a batch of calls threw (its calls are failed, not left pending); handling one answer of a batch threw |
 | `heartbeat.ping`, `heartbeat.terminate` | Sending a ping, or terminating the connection after a missed pong, threw |
 | `reconnect.open`, `fallback.open`, `online.open` | An `open()` nobody awaits was rejected: a reconnect attempt, the next transport of the list, the re-open when the browser came back online |
 | `reconnect.restore`, `reconnect.afterOpen` | What runs after a reconnect — the re-`load()` and re-subscribe, the `authenticate` hook — failed |
+| `stream.failed` | A stream from the server ended short of the size it announced; its reader is thrown the same error |
+| `stream.capacity`, `stream.buffer` | Not an `'error'`: the client's own debug lines when it refuses a stream its server announced past `maxStreams` (`429`), or fails one past `maxStreamBuffer` (`413`) — the server's rows of the same names, for the other direction |
 | `subscription.error` | A subscription ended with an error and had no `onError` to tell |
 | `subscription.listener` | A subscription's own `onEnd`/release callback threw |
 | `listener.open`, `listener.close`, `listener.drain`, `listener.reconnecting`, `listener.reconnect-failed`, `listener.heartbeat-timeout`, `listener.authenticate-failed`, `listener.refresh-failed`, `listener.restore-failed`, `listener.transport-fallback` | A listener of yours for that client event threw |

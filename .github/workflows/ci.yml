@@ -35,7 +35,9 @@ jobs:
     timeout-minutes: 20
     strategy:
       matrix:
-        node-version: [22, 24]
+        # Every LTS line `engines` admits: 22 and 24, and 26 since it went
+        # LTS — the one Vercel and `>=22` pick by default now.
+        node-version: [22, 24, 26]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -43,7 +45,13 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      # No build scripts: nothing this job loads needs one. The scripts pnpm
+      # would run belong to the clients of the manual and broker suites (the
+      # Kafka job installs its own), and @confluentinc/kafka-javascript has no
+      # prebuilt binary for Node 26 — it would compile librdkafka from source
+      # on every run. uWebSockets.js ships its binaries inside the package, and
+      # esbuild runs from its platform package without its postinstall.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       # test:coverage with a guard: a file that outlives its tests (a leaked
       # listen socket, a timer nobody cleared) is cut off and FAILS here in
       # minutes, where it used to hang until the job's own timeout with no
@@ -188,6 +196,12 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      # The install vercel.json runs for the deploy, so a docs build that
+      # passes here passes there. The site builds from JavaScript alone; the
+      # build scripts belong to native devDependencies of the test suites,
+      # and one of them (@confluentinc/kafka-javascript) has no prebuilt
+      # binary for the Node Vercel picks from `engines` — it compiles
+      # librdkafka from source, for longer than a deploy waits.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       # A broken docs build (including dead links) should fail the PR, not the deploy.
       - run: pnpm run docs:build

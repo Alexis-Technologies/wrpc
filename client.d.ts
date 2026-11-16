@@ -149,14 +149,60 @@ export interface ReadableOptions {
   highWaterMark?: number;
 }
 
+/**
+ * Events: `'close'` — the stream is over, once, however that came about:
+ * `status` and `error` say how. `'end'` and `'error'` are `pipe()`'s.
+ */
 export class WrpcReadable extends Emitter {
   id: string;
   name: string;
   size: number;
-  queue: Array<ArrayBufferView>;
+  /**
+   * The chunks that wait for the reader, oldest first: a **snapshot**, built
+   * when read — the stream's own queue is not reachable through it. Use
+   * `queued` for the count.
+   */
+  readonly queue: Array<ArrayBufferView>;
+  /** How many chunks wait for the reader. */
+  readonly queued: number;
+  /**
+   * The name as a message may carry it: its first 64 characters, with
+   * nothing that starts a line — the name is the sender's text.
+   */
+  readonly label: string;
+  /**
+   * Whether nothing happened to it since this was last asked — no reader
+   * came, no byte arrived. What the sweep behind `streamIdleTimeout` asks of
+   * a stream; asking moves its mark, so it is the feeder's to call.
+   */
+  idle(): boolean;
+  /** False once the stream is over — closed, terminated or failed. Nothing pushed after that is kept. */
   streaming: boolean;
+  /** `'active'`, `'closed'` (every announced byte was read) or `'terminated'` (cut short — see `error`). */
   status: string;
+  /** Bytes its reader has taken so far. */
   bytesRead: number;
+  /** Bytes its sender put in so far, read or not: held against `size`. */
+  bytesReceived: number;
+  /**
+   * Why the stream failed, or null: its sender went past the announced
+   * `size`, ended short of it, or — on a server — sent more into streams
+   * nobody reads yet than `maxStreamBuffer` allows (`code` 413; 400
+   * otherwise). The reader's iteration throws it and `toBlob()` rejects
+   * with it.
+   */
+  error: (Error & { code: number }) | null;
+  /** True once anybody read from it: from then on its high-water mark holds the sender back. */
+  readonly consuming: boolean;
+  /**
+   * Who hears that the stream is over on this side before its sender ended
+   * it — set by whoever feeds the stream and can reach its sender (a
+   * client, a server), called once and dropped with the stream: with the
+   * error of a stream that failed (`error` is set), or with what its reader
+   * let go of it with — the reason given to `terminate()`, `null` for none.
+   * Never called for a stream read to its end.
+   */
+  onCancel: ((error: (Error & { code: number }) | null) => void) | null;
   highWaterMark: number;
   constructor(
     id: string,
@@ -164,13 +210,52 @@ export class WrpcReadable extends Emitter {
     size: number,
     options?: ReadableOptions,
   );
-  push(data: ArrayBufferView): Promise<ArrayBufferView>;
+  /**
+   * The feeding side. A chunk for a stream that is over is dropped
+   * (`undefined`); the chunk that takes it past the announced `size` fails
+   * the stream and rejects.
+   */
+  push(data: ArrayBufferView): Promise<ArrayBufferView | undefined>;
   finalize(writable: WritableLike): Promise<void>;
+  /**
+   * Feeds a node-style sink. A stream that fails destroys the sink with its
+   * `error` (when the sink has a `destroy`), and emits `'error'` here only
+   * for someone listening.
+   */
   pipe<T extends WritableLike>(writable: T): T;
   toBlob(type?: string): Promise<Blob>;
+  /**
+   * The feeding side: the sender's `end`. Short of the announced `size`
+   * the stream fails and this rejects at once; otherwise it resolves as
+   * `close()` does.
+   */
+  end(): Promise<void>;
+  /**
+   * Resolves once the reader has all of it: every announced byte, an empty
+   * stream once it has a reader at all, a failed one once a reader came to
+   * be told why.
+   */
   close(): Promise<void>;
-  terminate(): Promise<void>;
+  /**
+   * Ends it now and quietly: the reader stops where it is, what is queued is
+   * let go of, `error` stays null. A sender that asked to hear (a wRPC peer
+   * newer than 2.0.1) is told, while bytes of the stream are still to come,
+   * and stops sending: its writable closes with `message` and `code` — a
+   * handler refusing an upload with something its uploader can show — or
+   * with a plain `499` when none is given. Any other sender goes on to its
+   * own end, and what it sends is dropped.
+   */
+  terminate(message?: string, code?: number): Promise<void>;
+  /**
+   * Ends it for its reader with an error it can see (`error`), `code` 400
+   * unless given: what whoever FEEDS the stream calls for a sender that
+   * broke its announcement, and the sender is answered that error. A reader
+   * that wants to refuse a stream calls `terminate(message, code)`. Answers
+   * the error; a stream already over is left as it is.
+   */
+  fail(message: string, code?: number): Error & { code: number };
   stop(force?: boolean): Promise<void>;
+  /** The next chunk, or null once the stream is over. */
   read(): Promise<ArrayBufferView | null>;
   pull(): ArrayBufferView | undefined;
   checkStreamLimits(): void;
@@ -190,21 +275,73 @@ export class WrpcWritable extends Emitter {
   size: number;
   transport: Transport;
   /**
-   * True once the transport closed under an unfinished stream: write() reports
-   * false, no 'drain' follows. A stream already ended (or terminated), with no
-   * 'drain' still owed, stops watching the transport and stays false.
+   * True once the stream was closed under its writer — the transport closed,
+   * or the receiver ended the stream (then `error` says why): write() reports
+   * false, no 'drain' follows, and `'close'` is announced. A stream already
+   * ended (or terminated), with no 'drain' still owed, stops watching the
+   * transport and stays false.
    */
   readonly closed: boolean;
-  constructor(id: string, name: string, size: number, transport: Transport);
+  /**
+   * Why the receiver ended the stream, or null: it refused the announcement
+   * (`code` 429), the stream went past its announced `size` (400) or past
+   * what the receiver holds unread (413), its reader let go of it (499,
+   * `readable.terminate()`) or refused it with a reason of its own
+   * (`readable.terminate(message, code)`). On a client it is the
+   * {@link WrpcError} the server answered. A transport that closed leaves it
+   * null.
+   */
+  error: (Error & { code: number }) | null;
+  /**
+   * Throws a `TypeError` for a `name` that is not a non-empty string or a
+   * `size` that is not a non-negative integer of bytes — what
+   * `createStream()` throws on both ends, before anything is announced.
+   *
+   * @param registry Where the owner of the transport looks the stream up
+   *   when its receiver answers on its id — `createStream()` passes its own.
+   *   The stream puts itself in, takes itself out when it is over, and
+   *   announces itself with `cancel: true`: a receiver tells only a sender
+   *   that asked that its reader let go.
+   */
+  constructor(
+    id: string,
+    name: string,
+    size: number,
+    transport: Transport,
+    otel?: unknown,
+    registry?: Map<string, WrpcWritable> | null,
+  );
   init(): void;
   write(data: ArrayBufferView): boolean;
+  /**
+   * Writes every byte of `data` in pieces of `chunkSize` (64 KiB by
+   * default), each when the transport takes it — a refused write waits for
+   * `'drain'`. Resolves to whether all of it went: `false` once the
+   * transport closed, or the stream was ended or terminated meanwhile.
+   * Never rejects for a closed transport, and does not end the stream:
+   * call `end()` after the last buffer.
+   */
+  writeAll(data: Uint8Array, chunkSize?: number): Promise<boolean>;
   end(): void;
   terminate(): void;
+  /**
+   * Ends the stream on its receiver's word: `closed` becomes true with
+   * `error` set, `'close'` is announced, a writer waiting for `'drain'` is
+   * released, and the `terminate` that lets the receiver forget the stream
+   * goes out. What a client and a server-side `Client` call when an answer
+   * arrives on the stream's id; a no-op on a stream that is already over.
+   */
+  cancel(error: Error & { code: number }): void;
 }
 
 export interface BlobUploader {
   id: string;
-  /** Feeds the blob into its stream. Once: a second call rejects — create another uploader. */
+  /**
+   * Feeds the blob into its stream. Rejects with the server's reason when it
+   * ends the stream under the upload (`WrpcError`, the code it answered),
+   * with a `503` when the connection closes first. Once: a second call
+   * rejects — create another uploader.
+   */
   upload(): Promise<void>;
 }
 
@@ -879,6 +1016,30 @@ export interface WrpcClientOptions {
    * 408 `WrpcError` ('Request timeout'); default 7000.
    */
   callTimeout?: number;
+  /**
+   * Milliseconds a stream from the server may go without a reader and
+   * without a byte before it is failed with `408` and forgotten — a
+   * download nobody asked for is not kept for the life of the connection.
+   * Swept on a timer of that period, so a stream goes between one and two
+   * of them. Default 30000; `Infinity` turns it off.
+   */
+  streamIdleTimeout?: number;
+  /**
+   * Streams the server may have open on this client at once — announced and
+   * not yet ended. Past it an announcement is refused: answered `429` on the
+   * stream's id when the server asked to hear, dropped otherwise. Default
+   * 256, the server's own default for the other direction.
+   */
+  maxStreams?: number;
+  /**
+   * Bytes this client may be holding in streams whose reader has not taken
+   * them — streams nobody reads yet, and, because nothing here can hold a
+   * server back, what a reader that is behind is behind by. The stream that
+   * goes past it fails with `413`: its reader is thrown the error, and a
+   * server that asked is told and stops. A chunk counts as its bytes plus
+   * 256. Default 64 MiB; `Infinity` lifts it.
+   */
+  maxStreamBuffer?: number;
   /**
    * Cap (ms) on the transport handshake; default 30000, `0`/`false`
    * disables. Connection setup is the one phase with no liveness signal at

@@ -431,9 +431,21 @@ const resolveGenerateId = (value, label) => {
   return { generate: value, first };
 };
 
+// A limit an option sets — a count, a number of bytes, of milliseconds: a
+// non-negative integer, or Infinity for none. Checked where the option is
+// taken, because what a limit that is none of these did was worse than a
+// throw: every limit is one comparison, and a comparison with '64mb' or NaN
+// is always false — the limit was silently lifted — while `null` and -1
+// refused everything.
+const checkLimit = (label, name, value) => {
+  if ((Number.isInteger(value) && value >= 0) || value === Infinity) return value;
+  throw new TypeError(`${label}: ${name} must be a non-negative integer or Infinity`);
+};
+
 module.exports = {
   Emitter,
   jsonParse,
+  checkLimit,
   isCodec,
   toKebab,
   Semaphore,

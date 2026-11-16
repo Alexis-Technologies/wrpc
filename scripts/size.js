@@ -108,7 +108,26 @@ const ENTRIES = [
   // and the `wrpc-version` that says it may be sent one, the worker port's
   // revision on its first ping — what lets a 2.x client talk to a 1.0 peer
   // without a flag (the http leg crossed it: 27,692 B against 27,648).
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 28 },
+  // 28 -> 29 for the receiving half of a binary stream, which believed
+  // whatever its sender did: a readable now drops what is pushed into it
+  // once it is over, counts what it was sent against the announced size and
+  // FAILS — an error its reader's iteration throws — on a chunk past it or
+  // an `end` short of it (the reader hung until the connection closed), an
+  // empty stream waits for its reader, and the client pushes a chunk in the
+  // turn it arrived in so the `end` behind it finds it counted. Measured
+  // 28,913 B against 28,672 (it stood at 28,636: 36 B of room). The
+  // writable's paced `writeAll` is the last 60 B of it — 28,973.
+  // 29 -> 30 for what a review of that hardening found the readable still
+  // owed its receiver, and what a receiver owes a stream nobody reads. A
+  // queue read through a head cursor instead of `shift()` — a million queued
+  // chunks read back stalled the event loop for 350 s (bench/stream-queue.js)
+  // — a chunk counted with what it costs to hold and an empty one not kept,
+  // a reader too far behind FAILING the stream where chunks were dropped in
+  // silence, a stream cut short thrown to its reader, and the sweep behind
+  // `streamIdleTimeout` (a download nobody asked for was kept for the life of
+  // the connection) with the timer the client arms for it. Measured 29,694 B
+  // against 29,696 before the client's own limits, which take it over.
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 30 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
   { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
   { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
@@ -155,7 +174,9 @@ const ENTRIES = [
   // arrived empty. +0.2 KB in the shared client core (the main entry stays
   // under its 28 KB, measured 28,636 B); this one crossed: 29,753 B against
   // 29,696.
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 30 },
+  // 30 -> 31 with the main entry's own raise for the readable's queue and the
+  // stream sweep (see there): 30,828 B against 30,720.
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 31 },
   { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
   { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and
@@ -259,7 +280,18 @@ const ENTRIES = [
   // dispatcher's gates, `maxStreams` in the host, and the assertion
   // verifier's backoff after a failed key load and `maxAge` for a revoked
   // key. Measured 59,436 B against 59,392.
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 59 },
+  // 59 -> 60 for `WrpcWritable.writeAll` — a buffer written in 64 KiB
+  // pieces, each when the transport takes it: the loop every application
+  // hand-rolled. The hardening of the receiving half (the dispatcher's
+  // `maxStreamBuffer`, the readable's size checks — see the main entry)
+  // had fitted, by 13 B: 60,403 against 60,416. This crossed it by 51.
+  // 60 -> 61 for the same review as the main entry's 29 -> 30 — the
+  // readable's cursor queue, the cost of a chunk, the stream that fails
+  // instead of losing chunks — and for the server half a peer host carries:
+  // a reader that is behind held to `maxStreamBuffer` on a channel nothing
+  // can pause, and the per-connection sweep of streams nobody reads.
+  // Measured 61,602 B against 61,440.
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 61 },
   { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never

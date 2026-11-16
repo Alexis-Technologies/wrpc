@@ -850,6 +850,20 @@ export class Client extends Emitter {
   maxCalls: number;
   /** Binary streams the peer may hold open here; past it a `stream` packet answers 429. */
   maxStreams: number;
+  /** Bytes the peer may have sent into streams nobody reads yet; past it the stream fails with 413. */
+  maxStreamBuffer: number;
+  /** Milliseconds a stream of the peer's may go without a reader and without a byte before it fails with 408. */
+  streamIdleTimeout: number;
+  /**
+   * True when the carrier can hold the peer back while a stream's reader is
+   * behind — a socket that is paused (the built-in WebSocket engine,
+   * WebTransport). False on uWebSockets.js and on whatever `attach()` binds
+   * (a WebRTC channel, a broker session): there, what a reader is behind by
+   * counts against `maxStreamBuffer` like an unread stream's.
+   */
+  paced: boolean;
+  /** True once this peer has broken the stream protocol on this connection: the first time is logged as a warning. */
+  violated: boolean;
   /** True when the session store could not be asked for this client's token: a session procedure answers 503, not 403. */
   sessionUnavailable: boolean;
   /** Context uuids and server-side stream ids; injectable via RpcServerOptions. */
@@ -939,6 +953,20 @@ export class Client extends Emitter {
   readonly rooms: Set<string>;
   getStream(id: string): WrpcReadable;
   createStream(name: string, size: number): WrpcWritable;
+  /**
+   * Arms the sweep behind `streamIdleTimeout`, while this client holds
+   * streams of the peer's. What the dispatcher calls when it registers one;
+   * a host with a dispatch of its own calls it too.
+   */
+  watchStreams(): void;
+  /**
+   * The peer's word on a stream this end is sending — a `callback` error
+   * packet on the stream's id: its reader let go of it (`499`), or it
+   * failed there. The writable closes with that error
+   * (`WrpcWritable.cancel`). Answers whether an open stream was told. What
+   * the dispatcher calls; a host with a dispatch of its own calls it too.
+   */
+  cancelStream(packet: { id: string; error: { message?: unknown; code?: unknown } }): boolean;
   initializeSession(token?: string, data?: State): boolean;
   finalizeSession(): Promise<boolean>;
   startSession(token?: string, data?: State): boolean;

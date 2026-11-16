@@ -8,7 +8,13 @@
 const { Emitter, jsonParse } = require('../utils.js');
 const { STATUS_CODES } = require('../status.js');
 const { generateUUID } = require('../runtime/node.js');
-const { WrpcWritable } = require('../streams.js');
+const {
+  WrpcWritable,
+  sweepStreams,
+  STREAM_IDLE_TIMEOUT: DEFAULT_STREAM_IDLE_TIMEOUT,
+  MAX_STREAMS: DEFAULT_MAX_STREAMS,
+  MAX_STREAM_BUFFER: DEFAULT_MAX_STREAM_BUFFER,
+} = require('../streams.js');
 const { RoomRegistry } = require('./rooms.js');
 const { DEFAULT_META_MAX } = require('./meta.js');
 const { createLoggerWriter } = require('../logging.js');
@@ -25,10 +31,11 @@ const DEFAULT_MAX_SUBSCRIPTIONS = 256;
 // Same reasoning for in-flight calls: each holds a controller, a context and
 // possibly a queue slot until it settles.
 const DEFAULT_MAX_CALLS = 1000;
-// And for the binary streams a peer announces: each holds a readable — and
-// every chunk the peer sends into it — until a handler reads it, and the
-// peer alone decides how many it opens.
-const DEFAULT_MAX_STREAMS = 256;
+// The binary streams a peer announces, and what they hold before a handler
+// reads them, are capped by defaults a client shares (MAX_STREAMS and
+// MAX_STREAM_BUFFER in streams.js, where the reasons are).
+// The longest delay a timer takes: past it Node fires after a millisecond.
+const MAX_TIMER = 2 ** 31 - 1;
 // How long client.ask() waits for the peer's answer. Mirrors the client's
 // default call timeout: an ask is a call travelling the other way.
 const DEFAULT_ASK_TIMEOUT = 7_000;
@@ -148,6 +155,12 @@ class Client extends Emitter {
   // id -> { resolve, reject, timer }: answers this client owes to asks the
   // server sent it. See ask()/expectAnswer()/settleAnswer().
   #asks = new Map();
+  // The streams this end SENDS, by id, while they are open — `streams`
+  // holds what the peer announced. Where the peer's word on one finds its
+  // writable (cancelStream); each takes itself out (WrpcWritable).
+  #writables = new Map();
+  // The timer of the next sweep of `streams`, while there are any.
+  #sweeper = null;
   #ready = null;
   #isReady = false;
   /** The REST response seam (see Context.http); null except on a REST call. */
@@ -174,6 +187,8 @@ class Client extends Emitter {
       maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
       maxCalls = DEFAULT_MAX_CALLS,
       maxStreams = DEFAULT_MAX_STREAMS,
+      maxStreamBuffer = DEFAULT_MAX_STREAM_BUFFER,
+      streamIdleTimeout = DEFAULT_STREAM_IDLE_TIMEOUT,
       generateId,
       codec = null,
       meta = null,
@@ -206,6 +221,19 @@ class Client extends Emitter {
     this.maxSubscriptions = maxSubscriptions;
     this.maxCalls = maxCalls;
     this.maxStreams = maxStreams;
+    this.maxStreamBuffer = maxStreamBuffer;
+    // How long a stream of the peer's may go without a reader and without a
+    // byte before it is failed and forgotten (watchStreams).
+    this.streamIdleTimeout = streamIdleTimeout;
+    // Whether this client's carrier can hold the peer back while a stream's
+    // reader is behind (a socket with pause()): set by whoever attaches the
+    // transport. Where it cannot, what a reader is behind by counts against
+    // `maxStreamBuffer` (heldBytes in streams.js).
+    this.paced = false;
+    // Whether this peer has broken the stream protocol on this connection:
+    // the first time is a warning, the rest are not (the dispatcher's
+    // `violation`).
+    this.violated = false;
     // Set when the session store could not be asked for this client's
     // token (core #restoreToken): a session procedure answers 503, not 403.
     this.sessionUnavailable = false;
@@ -561,8 +589,9 @@ class Client extends Emitter {
       throw refusal(`Can't send wrpc streams to http transport`);
     }
     if (!this.binary) throw refusal(`Can't send wrpc streams over a text-only transport`);
-    if (!name) throw new Error('Stream name is not provided');
-    if (!size) throw new Error('Stream size is not provided');
+    // The name and the size are the writable's to check (WrpcWritable): one
+    // check for this end and for a client's. Zero is a size — an empty file
+    // is a file.
     const id = this.generateId();
     if (typeof id !== 'string' || id.length === 0 || id.length > 255) {
       throw new TypeError('createStream: generateId must return a string of at most 255 characters');
@@ -572,8 +601,46 @@ class Client extends Emitter {
     // A writable kept there was never removed, so every download stayed for
     // the connection's life and, past `maxStreams` of them, the peer's
     // uploads were answered 429. It watches the transport's 'close' itself
-    // until it finishes.
-    return new WrpcWritable(id, name, size, this.#transport, this.#otel);
+    // until it finishes, and is in `#writables` — its own registry, which
+    // it leaves by itself — only while it is open.
+    return new WrpcWritable(id, name, size, this.#transport, this.#otel, this.#writables);
+  }
+
+  /**
+   * Arms the sweep of the streams the peer announced — what whoever
+   * registers one calls. A timer per connection, and only while it holds
+   * streams: each tick ends what has had no reader and no byte since the
+   * tick before (sweepStreams), and arms the next while any are left.
+   * `streamIdleTimeout: Infinity` — or anything a timer cannot count — turns
+   * it off.
+   */
+  watchStreams() {
+    if (this.#sweeper !== null || !(this.streamIdleTimeout <= MAX_TIMER)) return;
+    this.#sweeper = setTimeout(() => {
+      this.#sweeper = null;
+      sweepStreams(this.streams);
+      if (this.streams.size > 0) this.watchStreams();
+    }, this.streamIdleTimeout);
+    // Not a reason to keep a process alive.
+    if (typeof this.#sweeper.unref === 'function') this.#sweeper.unref();
+  }
+
+  /**
+   * The peer's word on a stream this end is sending: a `callback` error on
+   * the stream's id — its reader let go of it (499), or it failed there.
+   * The writable stops (WrpcWritable.cancel). Answers whether an open
+   * stream was told. The error is the peer's: its message is kept bounded
+   * and as text, its code as an integer, and nothing else of it.
+   */
+  cancelStream({ id, error }) {
+    const stream = this.#writables.get(id);
+    if (!stream) return false;
+    const { message, code } = error;
+    const reason = new Error(typeof message === 'string' ? clip(message, 255) : 'Stream refused');
+    reason.code = Number.isInteger(code) ? code : 400;
+    this.#log.debug({ event: 'stream.cancelled', id: clip(id), code: reason.code });
+    stream.cancel(reason);
+    return true;
   }
 
   // A host with no session manager (a browser-side peer host, a standalone
@@ -676,12 +743,20 @@ class Client extends Emitter {
       log.error({ err: error, event: 'listener.close' });
     });
     for (const stream of this.streams.values()) {
-      if (typeof stream.terminate !== 'function') continue;
-      Promise.resolve(stream.terminate()).catch((error) => {
-        log.error({ err: error, event: 'stream.terminate', stream: stream.id });
-      });
+      if (typeof stream.fail !== 'function') continue;
+      // Nobody is left to tell that its reader is gone — and its reader is
+      // told that the rest is not coming: a handler in the middle of an
+      // upload is thrown a 503, where its loop used to stop as if the
+      // stream had ended.
+      stream.onCancel = null;
+      stream.fail('Connection closed', 503);
     }
     this.streams.clear();
+    clearTimeout(this.#sweeper);
+    this.#sweeper = null;
+    // Each writable leaves at the transport's 'close' by itself; a transport
+    // that announces none is covered here.
+    this.#writables.clear();
   }
 }
 
@@ -691,6 +766,8 @@ module.exports = {
   DEFAULT_MAX_SUBSCRIPTIONS,
   DEFAULT_MAX_CALLS,
   DEFAULT_MAX_STREAMS,
+  DEFAULT_MAX_STREAM_BUFFER,
+  DEFAULT_STREAM_IDLE_TIMEOUT,
   FROZEN_EMPTY,
   EMPTY_META,
   buildMeta,

@@ -50,8 +50,33 @@ const router = () =>
         },
       }),
       ping: procedure({ access: 'public', handler: async () => 'pong' }),
+      // A reader that lets go of an upload, and what the connection still
+      // holds of the peer's streams.
+      refuse: procedure({
+        access: 'public',
+        handler: async (ctx, { stream }) => {
+          await ctx.client.getStream(stream).terminate();
+          return 'refused';
+        },
+      }),
+      held: procedure({ access: 'public', handler: async (ctx) => ctx.client.streams.size }),
+      // A download written a piece a turn, for as long as it is taken.
+      pour: procedure({
+        access: 'public',
+        handler: async (ctx, { size }) => {
+          const stream = ctx.client.createStream('pour', size);
+          poured.set(stream.id, stream);
+          queueMicrotask(async () => {
+            while (await stream.writeAll(new Uint8Array(16_384))) await timers.setTimeout(1);
+          });
+          return stream.id;
+        },
+      }),
     },
   });
+
+// The server's writables of `pour`, by stream id.
+const poured = new Map();
 
 const boot = async (t, options = {}) => {
   const { server, url } = await bootServer(t, { router: router() });
@@ -98,6 +123,42 @@ test('wt streams: a download rides the server-opened stream; a terminated one ar
   }
   assert.strictEqual(received, 50_000);
   assert.strictEqual(session.uniOpened, 2);
+});
+
+// The receiver's word travels as a packet on the control stream; what ends
+// the stream's own WebTransport stream is the sender's RESET, which the
+// receiver reads as the stream's terminate.
+test('wt streams: an upload its reader let go of stops, and its own stream is reset', async (t) => {
+  const { client } = await boot(t);
+  const upload = client.createStream('data', 64 * 1024 * 1024);
+  upload.write(new Uint8Array(100_000));
+  assert.strictEqual(await client.api.files.refuse({ stream: upload.id }), 'refused');
+  await waitFor(() => upload.closed, 'the sender of a refused upload was never told');
+  assert.strictEqual(upload.error.code, 499);
+  assert.strictEqual(upload.write(new Uint8Array(100_000)), false);
+  await waitFor(
+    async () => (await client.api.files.held({})) === 0,
+    'the reset never reached the server as a terminate',
+  );
+});
+
+test('wt streams: a download its reader let go of stops on the server, and is forgotten on the client', async (t) => {
+  const { client } = await boot(t);
+  const id = await client.api.files.pour({ size: 64 * 1024 * 1024 });
+  const readable = client.getStream(id);
+  assert.ok((await readable.read()).length > 0);
+  await readable.terminate();
+  const writable = poured.get(id);
+  await waitFor(() => writable.closed, 'the server went on with a download nobody reads');
+  assert.strictEqual(writable.error.code, 499);
+  await waitFor(() => {
+    try {
+      client.getStream(id);
+      return false;
+    } catch {
+      return true;
+    }
+  }, 'the reset never reached the client as a terminate');
 });
 
 test('wt streams: chunks in flight do not sit in front of calls on the control stream', async (t) => {

@@ -1,6 +1,6 @@
 {
   "name": "@alexify/wrpc",
-  "version": "2.0.1",
+  "version": "2.1.0",
   "description": "wRPC (Web RPC): a fast, zero-dependency RPC protocol for Node.js and browsers - one router over WebSocket, HTTP, SSE, REST, WebTransport and WebRTC, plus message brokers - typed client, subscriptions, rooms, cluster, binary streams, compression and encryption",
   "main": "index.js",
   "browser": {
@@ -250,6 +250,7 @@
     "vitepress": "^1.6.4",
     "vitepress-plugin-mermaid": "^2.0.17",
     "wrpc-v1": "npm:@alexify/wrpc@1.0.0",
+    "wrpc-v2": "npm:@alexify/wrpc@2.0.1",
     "ws": "^8.21.3"
   },
   "engines": {

@@ -51,6 +51,110 @@ for (const pair of PAIRS) {
   });
 }
 
+// The receiving half of a binary stream holds its sender to the size it
+// announced. Nothing changed on the wire, so a 1.0 sender — which
+// keeps its announcement like any other — is served as before, and a 1.0
+// receiver is sent what it always was.
+for (const pair of PAIRS) {
+  test(`interop ws: a binary stream up and down — ${pair.name}`, { skip }, async (t) => {
+    const { ws } = await boot(t, pair.server);
+    const client = await connect(t, pair.client, ws);
+    const pieces = 8;
+    const size = pieces * 64 * 1024;
+    const upload = client.createStream('up.bin', size);
+    const received = client.api.echo.upload({ id: upload.id });
+    for (let i = 0; i < pieces; i++) upload.write(new Uint8Array(size / pieces).fill(i + 1));
+    upload.end();
+    assert.deepStrictEqual(await received, { name: 'up.bin', size });
+    const id = await client.api.echo.download({ size, pieces });
+    const readable = client.getStream(id);
+    let downloaded = 0;
+    for await (const chunk of readable) downloaded += chunk.length;
+    assert.strictEqual(downloaded, size);
+    assert.strictEqual(readable.bytesRead, size);
+  });
+
+  // The whole upload on the wire before the call that reads it: what a
+  // readable has no reader for yet is held, under `maxStreamBuffer`.
+  test(`interop ws: an upload sent ahead of the call that reads it — ${pair.name}`, { skip }, async (t) => {
+    const { ws } = await boot(t, pair.server);
+    const client = await connect(t, pair.client, ws);
+    const size = 256 * 1024;
+    const upload = client.createStream('ahead.bin', size);
+    upload.write(new Uint8Array(size).fill(9));
+    upload.end();
+    assert.deepStrictEqual(await client.api.echo.upload({ id: upload.id }), { name: 'ahead.bin', size });
+  });
+}
+
+// A receiver tells a sender that its stream is no longer read only where
+// the sender asked to hear (`cancel` on its announcement). A 1.0 sender
+// never asks, so it is never told — it would report a callback nobody
+// waited for — and a 1.0 receiver ignores the field and never tells: the
+// stream is sent whole, and dropped on arrival, as it always was.
+for (const pair of PAIRS) {
+  test(`interop ws: an upload its handler lets go of is sent whole — ${pair.name}`, { skip }, async (t) => {
+    const { ws } = await boot(t, pair.server);
+    const client = await connect(t, pair.client, ws);
+    const escalated = [];
+    client.on('error', (error) => escalated.push(error));
+    const pieces = 8;
+    const size = pieces * 16 * 1024;
+    const upload = client.createStream('refused.bin', size);
+    upload.write(new Uint8Array(size / pieces));
+    assert.strictEqual(await client.api.echo.refuse({ id: upload.id }), true);
+    // A round trip later the sender still has heard nothing.
+    assert.deepStrictEqual(await client.api.echo.say({ at: 1 }), { at: 1 });
+    assert.strictEqual(upload.closed, false, 'a sender facing 1.0 was told to stop');
+    for (let i = 1; i < pieces; i++) assert.notStrictEqual(upload.write(new Uint8Array(size / pieces)), false);
+    upload.end();
+    assert.deepStrictEqual(await client.api.echo.say({ at: 2 }), { at: 2 });
+    assert.deepStrictEqual(escalated, [], 'a reader letting go surfaced as an error on a 1.0 pairing');
+  });
+
+  test(`interop ws: a download its reader lets go of is sent whole — ${pair.name}`, { skip }, async (t) => {
+    const warned = [];
+    const quiet = () => {};
+    const logger = { log: quiet, debug: quiet, info: quiet, warn: (...args) => warned.push(args), error: quiet };
+    const { ws } = await boot(t, pair.server, { logger });
+    const client = await connect(t, pair.client, ws);
+    const escalated = [];
+    client.on('error', (error) => escalated.push(error));
+    const size = 8 * 16 * 1024;
+    const id = await client.api.echo.pour({ size });
+    const readable = client.getStream(id);
+    await readable.terminate();
+    // The server writes all of it and ends the stream — which is what
+    // makes the client forget it.
+    await waitFor(() => {
+      try {
+        client.getStream(id);
+        return false;
+      } catch {
+        return true;
+      }
+    }, 'the whole download, to its end');
+    assert.deepStrictEqual(await client.api.echo.say({ at: 3 }), { at: 3 });
+    // A 1.0 client has a race of its own here, which this server cannot
+    // close: Node's WebSocket hands it every binary message as a Blob (1.0
+    // never set `binaryType`), each chunk is read with an awaited
+    // `blob.arrayBuffer()`, and the `end` behind it is handled without
+    // waiting — once the reader terminated, that `end` forgets the stream at
+    // once, and a chunk still being read finds it gone: `Stream <id> is not
+    // initialized`. One CI run on a busy runner got one; a Blob read 5 ms
+    // slower gets one for every chunk. It is the stream ending, not the
+    // server telling a 1.0 client anything — which would be `Callback <id>
+    // not found`, and stays an error. This tree's client counts a chunk in
+    // the turn it arrived in, so the other direction keeps the strict check.
+    const late = pair.client === legacy ? `Stream ${id} is not initialized` : null;
+    assert.deepStrictEqual(
+      escalated.filter((error) => error.message !== late),
+      [],
+    );
+    assert.deepStrictEqual(warned, [], 'the server logged an answer nobody waited for');
+  });
+}
+
 test('interop sse: this client against a 1.0 server — a call and an event', { skip }, async (t) => {
   const { http } = await boot(t, legacy);
   const client = await connect(t, next, http, { transport: 'sse' });

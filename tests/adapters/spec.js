@@ -33,6 +33,11 @@ const typedEvents = [];
 // Open `chat/forever` subscriptions, so a spec can watch one being released.
 const liveSubscriptions = new Set();
 
+// What lets the sink of `test/stalledUpload` go on, once it has stalled, and
+// the stream it is reading.
+let releaseSink = null;
+let stalledStream = null;
+
 // The single router definition every boot shares.
 const router = defineRouter({
   test: {
@@ -115,6 +120,42 @@ const router = defineRouter({
         return { name: stream.name, size: stream.size, data: Buffer.concat(chunks).toString('utf8') };
       },
     }),
+    // A sink that stalls after its first chunk, until `test/releaseSink` —
+    // called over another connection: this one may be paused.
+    stalledUpload: procedure({
+      access: 'public',
+      handler: async (context, { id }) => {
+        const stalled = new Promise((resolve) => {
+          releaseSink = resolve;
+        });
+        stalledStream = context.client.getStream(id);
+        let stored = 0;
+        for await (const chunk of stalledStream) {
+          stored += chunk.length;
+          if (stored === chunk.length) await stalled;
+        }
+        return { stored };
+      },
+    }),
+    // What the stalled sink's stream has been sent so far, and whether it failed.
+    sinkState: procedure({
+      access: 'public',
+      handler: async () => ({
+        stalled: releaseSink !== null,
+        received: stalledStream === null ? 0 : stalledStream.bytesReceived,
+        failed: stalledStream !== null && stalledStream.error !== null,
+      }),
+    }),
+    releaseSink: procedure({
+      access: 'public',
+      handler: async () => {
+        releaseSink();
+        releaseSink = null;
+        stalledStream = null;
+        return true;
+      },
+    }),
+    paced: procedure({ access: 'public', handler: async (context) => context.client.paced }),
     download: procedure({
       access: 'public',
       handler: async (context, { name }) => {
@@ -588,6 +629,53 @@ const runAdapterSpec = async (entry, t) => {
     const readable = client.getStream(id);
     const downloaded = await readable.toBlob();
     assert.strictEqual(await downloaded.text(), 'payload from the server');
+  });
+
+  // A handler whose sink stalls while the upload keeps coming. An engine
+  // that can pause its socket holds the sender back and every byte arrives;
+  // one that cannot (uWebSockets.js) has nothing to hold it with, so the
+  // stream FAILS at `maxStreamBuffer` — the handler and the sender both told.
+  // What no boot may do is what uws did: read 75 of 100 MiB and never answer.
+  await t.test('streams: a sink that stalls gets every byte or a failed stream, never a hole', async (sub) => {
+    if (!entry.streams) return;
+    const MIB = 1024 * 1024;
+    const small = await boot({ maxStreamBuffer: MIB });
+    const url = `ws://127.0.0.1:${small.port}/api`;
+    const [client, other] = await Promise.all([WrpcClient.connect(url), WrpcClient.connect(url)]);
+    sub.after(() => {
+      client.close();
+      other.close();
+    });
+    const escalated = [];
+    client.on('error', (error) => escalated.push(error));
+    await Promise.all([client.load('test'), other.load('test')]);
+    const paced = await client.api.test.paced();
+    const size = 4 * MIB;
+    const upload = client.createStream('stalled', size);
+    const answer = client.api.test.stalledUpload({ id: upload.id }).then(
+      (value) => ({ value }),
+      (error) => ({ code: error.code }),
+    );
+    await upload.writeAll(new Uint8Array(size));
+    upload.end();
+    // The sink goes on once the whole upload is at the server — or as much
+    // of it as a paused socket lets through, or the stream has failed.
+    await waitFor(async () => {
+      const state = await other.api.test.sinkState();
+      return state.stalled && (paced || state.failed || state.received === size);
+    }, 'the upload never reached a stalled sink');
+    await other.api.test.releaseSink();
+    const outcome = await answer;
+    if (paced) {
+      assert.deepStrictEqual(outcome, { value: { stored: size } }, 'a paced upload lost bytes');
+      assert.deepStrictEqual(escalated, []);
+    } else {
+      assert.deepStrictEqual(outcome, { code: 413 }, 'an upload nothing could pace was neither whole nor refused');
+      await waitFor(
+        () => upload.error?.code === 413 || escalated.some((error) => error.code === 413),
+        'the sender was not told',
+      );
+    }
   });
 
   await t.test('rooms and inbound events over two connections', async (sub) => {

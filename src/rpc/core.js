@@ -1,6 +1,6 @@
 'use strict';
 
-const { Emitter, jsonParse, isCodec, resolveGenerateId } = require('../utils.js');
+const { Emitter, jsonParse, isCodec, resolveGenerateId, checkLimit } = require('../utils.js');
 const { ServerTransport, buildHeaders, isOriginAllowed, readsFrames } = require('../transport.js');
 const { hasTransportShape, isInboundTransport } = require('./serverTransport.js');
 const { SessionManager } = require('./sessions.js');
@@ -51,6 +51,8 @@ const {
   DEFAULT_MAX_SUBSCRIPTIONS,
   DEFAULT_MAX_CALLS,
   DEFAULT_MAX_STREAMS,
+  DEFAULT_MAX_STREAM_BUFFER,
+  DEFAULT_STREAM_IDLE_TIMEOUT,
   buildMeta,
 } = require('./client.js');
 const { DEFAULT_META_MAX, declaredData } = require('./meta.js');
@@ -113,6 +115,8 @@ const RPC_OPTION_KEYS = [
   'maxSubscriptions',
   'maxCalls',
   'maxStreams',
+  'maxStreamBuffer',
+  'streamIdleTimeout',
   'sse',
   'http',
   'compression',
@@ -206,6 +210,8 @@ class RpcServer extends Emitter {
       maxSubscriptions = DEFAULT_MAX_SUBSCRIPTIONS,
       maxCalls = DEFAULT_MAX_CALLS,
       maxStreams = DEFAULT_MAX_STREAMS,
+      maxStreamBuffer = DEFAULT_MAX_STREAM_BUFFER,
+      streamIdleTimeout = DEFAULT_STREAM_IDLE_TIMEOUT,
       sse = {},
       http = {},
       compression = null,
@@ -320,10 +326,12 @@ class RpcServer extends Emitter {
     // A packet codec owns the wire: attachments are its business, not ours.
     if (this.#codec) this.#attachments = false;
     this.#limits = {
-      maxBatch,
-      maxSubscriptions,
-      maxCalls,
-      maxStreams,
+      maxBatch: checkLimit('RpcServer', 'maxBatch', maxBatch),
+      maxSubscriptions: checkLimit('RpcServer', 'maxSubscriptions', maxSubscriptions),
+      maxCalls: checkLimit('RpcServer', 'maxCalls', maxCalls),
+      maxStreams: checkLimit('RpcServer', 'maxStreams', maxStreams),
+      maxStreamBuffer: checkLimit('RpcServer', 'maxStreamBuffer', maxStreamBuffer),
+      streamIdleTimeout: checkLimit('RpcServer', 'streamIdleTimeout', streamIdleTimeout),
       compression: normalizeSyncCompression(compression, 'RpcServer: options'),
       attachments: this.#attachments,
     };
@@ -810,6 +818,8 @@ class RpcServer extends Emitter {
       maxSubscriptions: this.#limits.maxSubscriptions,
       maxCalls: this.#limits.maxCalls,
       maxStreams: this.#limits.maxStreams,
+      maxStreamBuffer: this.#limits.maxStreamBuffer,
+      streamIdleTimeout: this.#limits.streamIdleTimeout,
       generateId: this.#generateId,
       meta,
       metaMax: this.#metaMax,
@@ -970,6 +980,8 @@ class RpcServer extends Emitter {
     // refusal: a client configured to encrypt never accepts plaintext, and
     // under `required` neither does this server.
     const raw = socket;
+    // Asked of the engine's own socket: a SealedSocket always has a pause().
+    const paced = typeof socket.pause === 'function';
     const sealed = this.#sealSocket(socket, meta);
     if (sealed !== null) socket = sealed;
     const transport = new (socketTransportFor(meta.kind))(socket, meta);
@@ -1045,7 +1057,10 @@ class RpcServer extends Emitter {
 
     // Receive-side flow control: while binary chunks are being consumed
     // (WrpcReadable.push applies its high-water mark), stop reading from
-    // the socket so the pressure reaches the peer through TCP.
+    // the socket so the pressure reaches the peer through TCP. An engine
+    // whose socket has no pause() (uWebSockets.js) cannot: there a reader
+    // that is behind is held to `maxStreamBuffer` instead (handleBinary).
+    client.paced = paced;
     let inflight = 0;
     const done = () => {
       inflight--;

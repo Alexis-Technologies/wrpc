@@ -18,7 +18,7 @@ See [SECURITY.md](https://github.com/Alexis-Technologies/wrpc/blob/main/SECURITY
 | Set `sessions.cookie.secure` / `sameSite` | Defaults suit `http://localhost`, not the public internet. |
 | Replace `MemorySessionStore` | It is a bounded in-process map; sessions vanish on restart and do not span instances. |
 | Decide on `introspection` | `true` publishes your method list to anyone. `'session'` or `false` narrows it. |
-| Lower `maxCalls` / `maxSubscriptions` / `maxBatch` if a connection is untrusted | The defaults are generous. |
+| Lower `maxCalls` / `maxSubscriptions` / `maxBatch` / `maxStreams` / `maxStreamBuffer` / `streamIdleTimeout` if a connection is untrusted | The defaults are generous. |
 
 ## The trust boundary
 
@@ -122,9 +122,13 @@ spend on your behalf.
 | `maxCalls` | `1000` | In-flight calls per connection — each holds a controller, a context and possibly a queue slot. |
 | `maxSubscriptions` | `256` | Live subscriptions per connection. |
 | `maxBatch` | `128` | Packets in one [batch frame](./client#batching). |
-| `maxPayload` | 16 MiB | Largest inbound WebSocket message. |
+| `maxStreams` | `256` | Binary [streams](./streams#limits) a connection holds open — each is the peer's to announce. |
+| `maxStreamBuffer` | 64 MiB | Bytes a connection may have sent into streams no handler reads yet — a chunk counted with what it costs to hold, not by its bytes alone; the stream past it fails with `413`. On a carrier that cannot pause (uWebSockets.js, a WebRTC channel, a broker session) what a reader is behind by counts too. |
+| `streamIdleTimeout` | 30 s | How long a stream nobody reads keeps its bytes and its slot before it fails with `408`. |
+| `maxBuffer` | 100 MiB | Largest inbound WebSocket message — every message, compressed or not (the built-in engine; uWebSockets.js has one limit, `maxPayloadLength`, 16 MiB). |
+| `maxPayload` | 16 MiB | Largest **inflated** message under permessage-deflate: what a few kilobytes on the wire may become. It does not bound a message sent uncompressed — `maxBuffer` does. |
 | `maxBodySize` | 10 MiB | Largest HTTP body. |
-| `maxBuffer` / `maxBackpressure` | engine | Outbound buffering before a socket is dropped. |
+| `maxBackpressure` | `maxBuffer` | Outbound buffering before a socket is dropped. |
 | `queue: { concurrency, size }` | per procedure | Work admitted to one handler; overflow answers `503`. |
 | `timeout` | per procedure | A handler that never returns answers `408`. |
 

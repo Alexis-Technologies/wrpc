@@ -34,7 +34,9 @@ console.log(await receiving);
 the stream's `'drain'` — and rejects with a `503` `WrpcError` when the
 connection closes before the last chunk went, instead of resolving with the
 rest gone nowhere; a source that fails mid-way terminates the stream on the
-server, which stops waiting for its end.
+server, which stops waiting for its end. When it is the server that ends the
+stream under the upload, `upload()` rejects with
+[the server's reason](#ended-by-the-receiver).
 
 ```js
 // server
@@ -42,9 +44,9 @@ receive: procedure({
   handler: async (context, { id }) => {
     const stream = context.client.getStream(id);
     for await (const chunk of stream) {
-      await sink.write(chunk);
+      await sink.write(chunk);          // throws if the stream is cut short
     }
-    return { name: stream.name, size: stream.size };
+    return { name: stream.name, size: stream.bytesRead };
   },
 }),
 ```
@@ -53,18 +55,26 @@ Note the order: the call is issued **before** the upload finishes. The handler
 gets the stream as soon as its opening packet has arrived and consumes chunks
 as they land — the call's promise resolves when the handler returns.
 
-Without a `Blob`, drive a `WrpcWritable` yourself:
+Without a `Blob`, hand a `WrpcWritable` the bytes:
 
 ```js
-const drained = (stream) => new Promise((resolve) => stream.once('drain', resolve));
-
 const stream = client.createStream('report.csv', bytes.length);
 const receiving = client.api.media.receive({ id: stream.id });
-for (const chunk of chunks) {
-  if (!stream.write(chunk)) await drained(stream);
-}
+await stream.writeAll(bytes); // 64 KiB at a time, each when the transport takes it
 stream.end();
 ```
+
+`writeAll(bytes, chunkSize?)` is the loop you would otherwise write — a piece
+the transport did not accept waits for `'drain'` — and answers whether every
+byte went: `false` once the connection closed, the
+[receiver ended the stream](#ended-by-the-receiver), or the stream was ended
+or terminated under it. It never rejects for a closed transport and never
+ends the stream, so several buffers make one stream. To feed it from a source
+of your own, the loop is under [Backpressure](#backpressure).
+
+The `size` you announce is a promise the other end holds you to: write
+exactly that many bytes before `end()`, or `terminate()` — see
+[the announced size](#size).
 
 ## Downloading
 
@@ -76,8 +86,8 @@ download: procedure({
   handler: async (context, { name }) => {
     const payload = await load(name);
     const stream = context.client.createStream(name, payload.length);
-    queueMicrotask(() => {
-      stream.write(payload);
+    queueMicrotask(async () => {
+      await stream.writeAll(payload);
       stream.end();
     });
     return { id: stream.id };
@@ -97,7 +107,9 @@ for await (const chunk of readable) { /* ... */ }  // either
 
 `createStream()` sends the opening packet immediately, so writing from inside
 the same tick as the `return` would race the caller's chance to register a
-consumer — hence the `queueMicrotask`.
+consumer — hence the `queueMicrotask`. And `writeAll`, not one `write` of the
+whole payload: written whole it is a single message, which nothing paces and
+an engine's message limit refuses once the payload is large enough.
 
 ## Backpressure
 
@@ -115,15 +127,17 @@ buffer is above its high-water mark. Wait for `'drain'` before writing more.
 A transport with no flow-control reporting (a browser `WebSocket`, HTTP)
 always reports accepted.
 
-`false` can also mean the transport closed, and no `'drain'` will ever follow —
-check `stream.closed`, or listen for `'close'`.
+`false` can also mean the stream was closed under you — the transport went
+away, or the [receiver ended the stream](#ended-by-the-receiver) — and no
+`'drain'` will ever follow: check `stream.closed`, or listen for `'close'`.
 
 On the receiving side, `WrpcReadable` applies its own high-water mark
 (`highWaterMark`, 32 chunks by default) once a consumer has attached, and the
 server pauses socket reads while chunks are being consumed. So a slow consumer
 pushes back through the queue, through the socket, and into TCP — the producer
 on the other end sees `write()` return `false`. Nothing between them buffers
-without bound.
+without bound — and what arrives before there is a consumer is bounded by
+[`maxStreamBuffer`](#limits).
 
 ```mermaid
 flowchart LR
@@ -152,20 +166,223 @@ fails if RSS grows with it.
 
 | Call | Effect |
 | --- | --- |
-| `writable.end()` | Normal end. The reader's iteration finishes. |
-| `writable.terminate()` | Abnormal end — the reader stops where it is. |
-| `readable.close()` | Waits for the announced `size`, then closes. |
-| `readable.terminate()` | Stops now, discarding what is queued. |
+| `writable.end()` | Normal end, after exactly `size` bytes. The reader's iteration finishes. |
+| `writable.terminate()` | Abnormal end — the stream **fails** for its reader: the iteration throws `499`. |
+| `readable.close()` | Waits for the announced `size` to be read, then closes. |
+| `readable.terminate()` | Stops now, discarding what is queued — and [tells the sender](#ended-by-the-receiver), which stops sending. |
+| `readable.terminate(message, code?)` | The same, with a reason the sender's writable closes with. |
 
-A disconnect terminates every stream the client held. `readable.status` is
-`'active'`, `'closed'` or `'terminated'`; `bytesRead` is what has been
-consumed so far, against the announced `size`.
+A disconnect fails every stream the connection held — its reader is thrown a
+`503`, as a call in flight is. `readable.status` is `'active'`, `'closed'`
+(every announced byte was read) or `'terminated'` (cut short: `readable.error`
+says why, or is `null` when the reader itself let go); `bytesRead` is what has
+been consumed so far, against the announced `size`.
+
+### A stream the receiver ended {#ended-by-the-receiver}
+
+A receiver can end a stream before its sender does, and says so — once, on
+the stream's id — so the sender stops instead of sending a body that is
+dropped on arrival:
+
+| The receiver… | The sender's `writable.error` |
+| --- | --- |
+| let go of it: `readable.terminate()` — a handler refusing an upload, a page dropping a download | `499`, `Stream … is no longer read` |
+| let go of it with a reason: `readable.terminate(message, code)` | that message and code (`499` unless given) |
+| was sent more than [the announced size](#size) | `400` |
+| holds more unread than [`maxStreamBuffer`](#limits) allows (a server) | `413` |
+| has too many streams open ([`maxStreams`](#limits), a server): the announcement itself is refused | `429` |
+
+The word reaches the `WrpcWritable` the stream belongs to, on either end:
+
+```js
+// client — an upload
+const stream = client.createStream('report.csv', bytes.length);
+const receiving = client.api.media.receive({ id: stream.id });
+if (!(await stream.writeAll(bytes))) {
+  // Closed under the writer: `error` is the receiver's reason — on a client
+  // a WrpcError with the server's code — and null when it was the
+  // connection that went away.
+  throw stream.error ?? new Error('Connection lost');
+}
+stream.end();
+```
+
+```js
+// server — a download the page may drop half-way
+const stream = context.client.createStream(name, size);
+queueMicrotask(async () => {
+  for await (const piece of source) {
+    if (!(await stream.writeAll(piece))) break; // the page let go (499), or left
+  }
+  stream.end(); // a no-op on a stream that is already over
+  source.destroy?.();
+});
+```
+
+From that moment the writable is over: `write()` answers `false`,
+`writeAll()` resolves `false`, `closed` is `true`, `'close'` is announced —
+exactly what a lost connection does, so a loop that already watches `closed`
+stops without a change — and `stream.error` says why, which a lost connection
+never does. Nothing more of the stream is sent but a `terminate`, which lets
+the receiver forget it. `createBlobUploader().upload()` rejects with the same
+error.
+
+To refuse an upload with something the uploader can show, give the reason
+as you let go:
+
+```js
+receive: procedure({
+  handler: async (context, { id }) => {
+    const stream = context.client.getStream(id);
+    if (stream.size > quota) {
+      await stream.terminate('This file is larger than your plan allows', 413);
+      return { stored: false };
+    }
+    // …
+  },
+}),
+```
+
+It is still the quiet end on this side — the reader's loop stops, `error`
+stays `null` — and the uploader finds the message and the code on
+`stream.error`.
+
+Three things are worth knowing about it:
+
+- **The word is for bytes still to come.** A reader that lets go of a stream
+  that has arrived whole tells nobody, reason or not: there is nothing left
+  to stop, and what the reader made of the stream is the answer of the call
+  that named it. A small upload has usually arrived whole by the time its
+  handler runs.
+- **An answer that arrives after `end()` has nobody to stop** — a stream
+  small enough to be written and ended in one turn is always answered late.
+  A failure is then raised on the client's `'error'` event (the server's
+  own error, with its message and code) or logged by the server; a `499`
+  that crossed the end of its stream is nobody's error and is dropped.
+- **A reader's letting go is said only to a sender that asked.** A stream's
+  announcement carries `cancel: true` when its sender listens — every
+  `createStream()` newer than 2.0.1 does. A 1.0 or 2.0.1 peer does not ask and
+  is not told (it would report a callback nobody waited for): it goes on to
+  its own `end`, and every chunk it still sends is dropped on arrival, as
+  before. Nor does a 1.0 or 2.0.1 receiver ever say it. Nothing needs
+  setting, and the [protocol page](../reference/protocol#stream-both-directions)
+  has the packets.
+
+Behind a [worker proxy](./browser) the word crosses the worker both ways,
+routed like the stream it is about. Over [WebTransport](./wt) it
+travels on the control stream, and the sender answers by resetting the
+stream's own WebTransport stream.
+
+### The announced size {#size}
+
+`size` is what the sender says it will send, in bytes, and the receiving end
+holds it to that. Zero is a size: an empty file is a stream of no chunks,
+announced and ended, and its reader's iteration finishes without a turn —
+in both directions.
+
+A sender that does not keep its word **fails** the stream, in either of two
+ways: a chunk that takes it past the announced size, or an `end` that comes
+short of it. A failed stream is over — `status` is `'terminated'`, what was
+queued is let go of — and its reader is told why: `readable.error` holds the
+reason, the `for await` over it **throws** it, `toBlob()` rejects with it,
+and `pipe()` destroys its sink with it.
+
+```js
+receive: procedure({
+  handler: async (context, { id }) => {
+    const stream = context.client.getStream(id);
+    for await (const chunk of stream) await sink.write(chunk); // throws: "Stream … ended at 4 of 10 bytes"
+    return { size: stream.bytesRead };
+  },
+}),
+```
+
+The error carries `code: 400`, so a handler that lets it through answers its
+caller `400` with the reason. On a server the sender is told as well, once:
+a `callback` error packet with the stream's id — `400` for the size — which
+[ends the sender's writable](#ended-by-the-receiver), and whatever it still
+sends into that stream is dropped. A stream that failed before anybody read
+it is kept for its reader: `getStream(id)` still answers it, and reading it
+throws the reason.
+
+A stream that is **cut short** fails the same way, so a loop that ended is a
+stream that arrived whole:
+
+| What happened | The reader's iteration |
+| --- | --- |
+| The sender ended after exactly `size` bytes | finishes |
+| The sender's `end` came short, or a chunk went past `size` | throws `400` |
+| The sender called `writable.terminate()` — its source failed, it was told to stop | throws `499` (`Stream … was terminated by its sender`) |
+| The connection closed | throws `503` (`Connection closed`) |
+| The receiver held too much of it ([limits](#limits)) | throws `413` |
+| Nobody read it within [`streamIdleTimeout`](#limits) | throws `408` |
+| The reader's own `readable.terminate()` | stops, with no error |
+
+Until 2.0.1 a terminated stream and a lost connection were the quiet end —
+the loop simply stopped, and a handler that did not compare `bytesRead` to
+`size` stored the part that had arrived as if it were the file. Only the
+reader's own `terminate()` is quiet now: it knows that it stopped.
+
+### Limits {#limits}
 
 A connection holds at most [`maxStreams`](./server#rpc-options) streams at
 once (256 by default): a stream is announced by the peer, and holds a
 readable — with what was sent into it — until a handler reads it, so the
 number is the peer's to choose and the cap the server's. Past it the
 `stream` packet answers `429` (`stream.capacity` in the log, at debug).
+
+What those streams hold is capped too. The high-water mark of the
+[backpressure](#backpressure) above needs a reader — a readable cannot hold
+the socket back for a handler that a later packet on that same socket
+starts — so until one attaches every chunk is kept, and the announced size
+bounds nothing: it is the peer's word. [`maxStreamBuffer`](./server#rpc-options)
+(64 MiB by default) is the most one connection may have sent into streams
+nobody reads yet. The stream whose chunk goes past it fails — its bytes let
+go of, its sender answered `413` (`stream.buffer` in the log, at debug), its
+reader, if one comes, thrown the same — and the connection's other streams
+keep what they had. A stream being read is not counted, however large: it is
+paced, not held — **where the carrier can hold the sender back**. The built-in
+WebSocket engine and WebTransport pause the socket while a chunk waits for
+room. uWebSockets.js has no such pause, and neither has a WebRTC data channel
+or a broker session: there, whatever the peer sends arrives, reader or not, so
+what a stream's reader is behind by counts against `maxStreamBuffer` too, and
+the stream that goes past it fails with `413` (`Stream … is too far ahead of
+its reader`) — on both ends, instead of being read with a hole in it. A
+handler that writes each chunk to a slow sink is the case to size the option
+for on those carriers.
+
+A chunk counts as its bytes plus 256: holding one costs a view and a slot
+whatever it carries, and the size of a chunk is the peer's choice.
+
+And a stream **nobody comes to read** is not kept for the life of the
+connection. An upload whose call was refused before its handler looked at the
+stream — a `403`, a validation error, a quota — is on its way all the same;
+so is a stream a peer announced and left. Each used to hold its bytes and its
+slot until the connection closed, and enough of them took the room the next
+upload needed: three megabyte-sized uploads refused that way, and a 4 KiB one
+behind them was answered `413` until the client reconnected.
+[`streamIdleTimeout`](./server#rpc-options) (30 seconds by default) ends them:
+a stream that has had no reader and no byte for that long **fails** with `408`
+(`Stream … was never read`), lets go of what it held, and is forgotten once
+its sender has ended it. Its sender is told to stop, unless the stream had
+arrived whole; a reader that comes late, while the sender is still at it, is
+thrown the `408`. The sweep runs on a timer of that period, so a stream goes
+between one and two of them; one that is being read, however slowly, or still
+receiving bytes, is not idle. `Infinity` turns it off.
+
+**A client has the same three limits for the other direction** — its own
+`maxStreams`, `maxStreamBuffer` and `streamIdleTimeout` options, with the
+same defaults. What sends a client its streams is not always a server it
+trusts (a WebRTC peer is a stranger), and nothing in a browser can pause a
+WebSocket: so every byte a client's streams hold for readers that have not
+taken it counts, whether the stream has a reader or not. A download that
+runs more than `maxStreamBuffer` ahead of its reader fails with `413`, and
+the server — which asked to hear — stops sending it.
+
+So issue the call **before** the upload, as above. The other order — the
+whole upload first, then the call that reads it — works for as long as the
+upload fits under `maxStreamBuffer`, and holds all of it in memory until the
+handler starts.
 
 ## Bytes inside a call, not as a stream {#attachments}
 

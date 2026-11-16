@@ -83,6 +83,13 @@ const routerOf = (name, seen = []) => {
           return { id: stream.id };
         },
       }),
+      refuseUpload: procedure({
+        handler: async (ctx, { id }) => {
+          await ctx.client.getStream(id).terminate();
+          return ctx.client.streams.size;
+        },
+      }),
+      held: procedure({ handler: async (ctx) => ctx.client.streams.size }),
       on: {
         ping: procedure({ handler: async (ctx, data) => void seen.push([ctx.session.data.peer, data]) }),
       },
@@ -337,6 +344,24 @@ test('peer: uploads and downloads cross the fragmenting channel', async (t) => {
   let got = 0;
   for await (const chunk of readable) got += chunk.length;
   assert.strictEqual(got, 100 * 1024);
+});
+
+// A peer host is a server-side Client behind a data channel: its reader's
+// word reaches the other peer's writable the way a server's reaches a
+// client's.
+test('peer: an upload the host lets go of stops on the peer that was sending it', async (t) => {
+  const { peer } = world(t, { fake: { maxMessageSize: 16 * 1024 } });
+  const a = peer('a');
+  peer('b');
+  const ab = await within(a.connect('b'), 'open');
+  await ab.load('calc');
+  const stream = ab.remote.createStream('blob', 8 * 1024 * 1024);
+  stream.write(new Uint8Array(64 * 1024));
+  assert.strictEqual(await within(ab.api.calc.refuseUpload({ id: stream.id }), 'refused'), 1);
+  await waitFor(() => stream.closed, 'the sending peer was never told');
+  assert.strictEqual(stream.error.code, 499);
+  assert.strictEqual(stream.write(new Uint8Array(64 * 1024)), false);
+  await waitFor(async () => (await ab.api.calc.held({})) === 0, 'the host kept a stream both peers had given up');
 });
 
 test('peer: ICE failure → redial → the client reconnects and a subscription resumes', async (t) => {
