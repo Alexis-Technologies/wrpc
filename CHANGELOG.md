@@ -83,6 +83,19 @@ narrower promise — see
   preload is what you want — and `http: { hsts: false }` sends none (a proxy
   in front that already adds it). A deployment that relied on the old header
   for its preload submission has to set it explicitly.
+- **A REST path a static segment starts and no route finishes is matched by
+  the parameter at that place.** The route tree committed to a segment's own
+  name: with `GET /users/me/settings` and `GET /users/:id` declared,
+  `GET /users/me` walked into `me`, found no route ending there and answered
+  "no such path" — so the request fell through to the conventional
+  `/:unit/:method` mode and ran the procedure `users/me` if the router had
+  one, a different procedure from the one the path was declared for, or was
+  a `404` for a path `:id` covers. The walk now goes back to the parameter,
+  as find-my-way does (and so as the same routes behave under the fastify
+  adapter); a static segment still wins wherever a route ends under it. The
+  `405` for a path another verb declares is found the same way, where some
+  of those were a `404`. `bench/http-call.js`: a declared route costs what
+  it did.
 
 
 ### Fixed
