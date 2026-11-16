@@ -404,7 +404,10 @@ class SealedSocket extends EventEmitter {
         // 'handshake' at debug, which is where it used to land.
         return void this.#end(CLOSE_POLICY, 'hook', { err: error }, 'error');
       }
-      if (allowed === false) return void this.#end(CLOSE_POLICY, 'authorize');
+      // Only a yes is a yes, as the client's verifyServer reads its own
+      // hook: a hook that forgot its return, or answered null for "not
+      // found", has not let anyone in.
+      if (allowed !== true) return void this.#end(CLOSE_POLICY, 'authorize');
     }
     if (this.#dead) return;
     clearTimeout(this.#timer);

@@ -157,6 +157,7 @@ narrower promise — see
   reason is still a warning; for ten seconds after it that reason is written
   at `debug`. The `kind` in the line, and the address in `broker.rpc.reply`,
   are bounded to 128 characters with their control characters replaced.
+- **`encryption.authorize` admits a connection only by answering `true`.** It used to refuse only on `false`, so a hook that forgot its `return`, answered `null` for "not found" or resolved `undefined` let every client in — the opposite of what the client's own `verifyServer` does with the same answers. Anything but `true` now closes the connection (1008, `encryption.refused` with `reason: 'authorize'`). A hook that already returns a boolean is unaffected; one that relied on "no answer means yes" has to return `true`. The option's type is `boolean | Promise<boolean>`.
 
 
 ### Fixed

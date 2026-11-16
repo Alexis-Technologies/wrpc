@@ -131,11 +131,12 @@ export interface ServerEncryptionOptions {
   /** NNpsk0: the pre-shared key. */
   psk?: Bytes | string | null;
   /**
-   * Runs once the handshake is done, before any call: answer `false` to
-   * close the connection (1008). Under XX `peer.remoteStatic` is the
-   * client's authenticated public key.
+   * Runs once the handshake is done, before any call: only `true` lets the
+   * connection in — anything else (`false`, `undefined`, `null`, a truthy
+   * value that is not `true`) closes it (1008). Under XX `peer.remoteStatic`
+   * is the client's authenticated public key.
    */
-  authorize?: ((peer: EncryptionInfo) => boolean | void | Promise<boolean | void>) | null;
+  authorize?: ((peer: EncryptionInfo) => boolean | Promise<boolean>) | null;
   /** Default 10000 ms. */
   handshakeTimeout?: number;
   /**

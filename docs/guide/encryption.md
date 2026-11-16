@@ -302,6 +302,10 @@ createEncryption({ pattern: 'XX', staticKey: deviceSeed, serverKey });
 new Server({ router, encryption: { keys, authorize: (peer) => allowed.has(hex(peer.remoteStatic)) } });
 ```
 
+`authorize` lets a connection in by answering `true`, and only `true`: a hook
+that returns nothing, `null` or a truthy value of another kind closes it
+(1008), the way the client's `verifyServer` reads its own answer.
+
 A client names its protocol and the server holds it or closes the
 connection. **Nothing is negotiated down** — a reply of "try this instead"
 would be the downgrade.

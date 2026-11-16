@@ -419,6 +419,24 @@ test('ws encryption: XX — the server learns who, and authorize decides', async
   assert.ok(await refused(url, xx({ serverKey: elsewhere.serverKey })));
 });
 
+test('ws encryption: authorize lets a connection in by answering true, and nothing else', async (t) => {
+  // A hook that forgot its return, one that answers null for "not found",
+  // one that answers the record it found: none of them said yes.
+  const answers = [undefined, null, 0, 1, 'yes', {}, false];
+  for (const answer of answers) {
+    const { url, serverKey } = await secure(t, {
+      encryption: { keys: generateKey(), authorize: async () => answer },
+    });
+    const options = { encryption: createEncryption({ pattern: 'XX', staticKey: generateKey(), serverKey }) };
+    assert.ok(await refused(url, options), `authorize answered ${JSON.stringify(answer) ?? 'undefined'}`);
+  }
+  const { url, serverKey } = await secure(t, { encryption: { keys: generateKey(), authorize: () => true } });
+  const client = await connectClient(t, url, {
+    encryption: createEncryption({ pattern: 'XX', staticKey: generateKey(), serverKey }),
+  });
+  assert.strictEqual(client.encryption.pattern, 'XX');
+});
+
 test('ws encryption: NN and NNpsk0 are opted into by name, on both sides', async (t) => {
   const psk = generateKey();
   const { url } = await secure(t, { encryption: { keys: generateKey(), patterns: ['NK', 'NNpsk0'], psk } });
