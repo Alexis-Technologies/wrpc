@@ -158,6 +158,7 @@ narrower promise — see
   at `debug`. The `kind` in the line, and the address in `broker.rpc.reply`,
   are bounded to 128 characters with their control characters replaced.
 - **`encryption.authorize` admits a connection only by answering `true`.** It used to refuse only on `false`, so a hook that forgot its `return`, answered `null` for "not found" or resolved `undefined` let every client in — the opposite of what the client's own `verifyServer` does with the same answers. Anything but `true` now closes the connection (1008, `encryption.refused` with `reason: 'authorize'`). A hook that already returns a boolean is unaffected; one that relied on "no answer means yes" has to return `true`. The option's type is `boolean | Promise<boolean>`.
+- **A page reads a stream chunk about a quarter faster.** The browser half of the chunk codec built a `TextDecoder` for every chunk it read (and a `TextEncoder` for every one it wrote); it keeps one of each. Reading a chunk back went from 4.1 M to 5.2 M ops/s (`bench/chunk-codec.js`); writing one costs the copy of its payload and is unchanged.
 
 
 ### Fixed
