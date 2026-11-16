@@ -22,6 +22,8 @@ const { createLoggerWriter } = require('../../logging.js');
 const { capabilityOf, brokerName } = require('../port.js');
 const { toBytes, fingerprint } = require('../ids.js');
 const { rpcOf } = require('../host.js');
+const { refusalLevels } = require('../adapter.js');
+const { clip } = require('../../rpc/errors.js');
 const {
   HEADER_KIND,
   HEADER_INBOX,
@@ -258,17 +260,24 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     return direct
       .send(message.replyTo, frame.body, { headers: frame.headers, correlationId: message.correlationId })
       .catch((error) => {
-        log.warn({ event: 'broker.rpc.reply', err: error, to: message.replyTo });
+        log[levelOf('reply-failed')]({ event: 'broker.rpc.reply', err: error, to: clip(message.replyTo) });
       });
   };
 
   // One inbound frame, opened — or null for one that was refused: logged
   // with its reason, never answered (an answer would be an oracle, and the
   // sender of a frame that does not open is not the peer anyway).
+  // One line for a frame that was not taken: the first of a reason is a
+  // warning, the ones behind it debug (refusalLevels), and the `kind` — a
+  // header of the peer's — is bounded and stripped like any peer text.
+  const levelOf = refusalLevels();
+  const refuse = (reason, kind, extra = null) =>
+    void log[levelOf(reason)]({ ...extra, event: 'broker.rpc.refused', reason, kind: clip(kind) });
+
   const opened = (at, message) => {
     const frame = openFrame(sealing, at, message);
     if (frame.refused !== undefined) {
-      log.warn({ event: 'broker.rpc.refused', reason: frame.refused, kind: message.headers?.[HEADER_KIND] });
+      refuse(frame.refused, message.headers?.[HEADER_KIND]);
       return null;
     }
     // The reply address the sender sealed, against the one the carrier
@@ -276,7 +285,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     // be answered there. `encryption.reply: 'carrier'` is for a carrier that
     // rewrites reply addresses itself (a NATS service import).
     if (sealedReplies && frame.sealedReply !== undefined && frame.sealedReply !== frame.replyTo) {
-      log.warn({ event: 'broker.rpc.refused', reason: 'reply', kind: message.headers?.[HEADER_KIND] });
+      refuse('reply', message.headers?.[HEADER_KIND]);
       return null;
     }
     return frame;
@@ -389,7 +398,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     } catch (error) {
       // `encryption.required` on the server, and a hello that was not sealed.
       sessions.delete(id);
-      log.warn({ event: 'broker.rpc.refused', reason: 'plaintext', err: error });
+      refuse('plaintext', undefined, { err: error });
       return void reply(message, { [HEADER_KIND]: KIND.BYE, [HEADER_REASON]: 'encryption required' }, '');
     }
     const welcome = { [HEADER_KIND]: KIND.WELCOME, [HEADER_INBOX]: inbox };
@@ -421,7 +430,7 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     // Dropped and named; the sequence is not consumed, so the real frame
     // is still served.
     if (session.sealed && message.sealed !== true) {
-      return void log.warn({ event: 'broker.rpc.refused', reason: 'downgrade', kind });
+      return void refuse('downgrade', kind);
     }
     if (kind === KIND.BYE) {
       // The client left because IT saw a gap in what this side sent — the
@@ -469,14 +478,14 @@ const attachBrokerRpc = async (server, broker, options = {}) => {
     const kind = message.headers?.[HEADER_KIND];
     const sent = Number(message.headers?.[HEADER_TIME]);
     if (!(Number.isFinite(sent) && Math.abs(Date.now() - sent) <= maxSkew)) {
-      return void log.warn({ event: 'broker.rpc.refused', reason: 'stale', kind });
+      return void refuse('stale', kind);
     }
     if (replay === null) return void dispatch(message);
     Promise.resolve()
       .then(() => replay.seen(replayId(raw), 2 * maxSkew))
       .then(
         (seen) => {
-          if (seen) log.warn({ event: 'broker.rpc.refused', reason: 'replay', kind });
+          if (seen) refuse('replay', kind);
           else dispatch(message);
         },
         (error) => {

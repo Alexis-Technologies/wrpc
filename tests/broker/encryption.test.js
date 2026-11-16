@@ -74,7 +74,9 @@ const logs = () => {
   const logger = {
     log() {},
     info() {},
-    debug() {},
+    // A refusal is a warning the first time and debug for a while after
+    // (refusalLevels): both are refusals, and both are counted here.
+    debug: (entry) => void (entry?.event === 'broker.rpc.refused' && warnings.push({ ...entry, level: 'debug' })),
     error() {},
     warn: (entry) => warnings.push(entry),
     child: () => logger,
@@ -655,4 +657,25 @@ test('broker encryption: a frame that could not be sealed takes no sequence numb
   assert.deepStrictEqual(await client.api.calc.echo({ n: 3 }), { n: 3 });
   assert.strictEqual(handle.sessions, 1, 'the same session');
   assert.strictEqual(client.active, true);
+});
+
+test('broker encryption: refusals are one warning per reason, then debug — and a peer header is bounded in the line', async (t) => {
+  const keys = generateKey();
+  const broker = new MemoryBroker({ logger: quiet });
+  const { logger, warnings } = logs();
+  const { handle } = await boot(t, { broker, attach: { encryption: { keys }, logger } });
+  // Plaintext frames to a service that takes none: anybody on the broker can
+  // send them, and each used to be a warning with the peer's own header in it.
+  const kind = `request\n${'x'.repeat(400)}`;
+  for (let i = 0; i < 5; i++) {
+    await broker.direct.send(handle.address, '{}', { headers: { [HEADER_KIND]: kind }, replyTo: 'nowhere' });
+  }
+  await waitFor(() => warnings.filter((w) => w.event === 'broker.rpc.refused').length === 5);
+  const lines = warnings.filter((w) => w.event === 'broker.rpc.refused');
+  assert.deepStrictEqual(
+    lines.map((line) => line.level ?? 'warn'),
+    ['warn', 'debug', 'debug', 'debug', 'debug'],
+  );
+  assert.ok(lines[0].kind.length < 140, `${lines[0].kind.length} characters of a peer header in one line`);
+  assert.ok(!lines[0].kind.includes('\n'));
 });

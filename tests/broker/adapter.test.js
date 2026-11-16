@@ -232,3 +232,11 @@ test('attemptOf: a positive integer as written, anything else the fallback', () 
   );
   assert.strictEqual(producerHeaders(null), null);
 });
+
+test('refusalLevels: a reason is a warning the first time, debug for a while after', () => {
+  const { refusalLevels } = require('../../src/broker/adapter.js');
+  const levelOf = refusalLevels();
+  assert.deepStrictEqual([levelOf('open'), levelOf('open'), levelOf('open')], ['warn', 'debug', 'debug']);
+  assert.strictEqual(levelOf('replay'), 'warn', 'each reason on its own');
+  assert.strictEqual(refusalLevels()('open'), 'warn', 'and each binding on its own');
+});

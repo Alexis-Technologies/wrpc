@@ -148,6 +148,15 @@ narrower promise — see
   (`codec: ['zstd', 'deflate-raw']`), which is what a configuration shared
   by Node and browsers wants, and `compression: true` on a platform with no
   `CompressionStream` at all still means off until a codec is injected.
+- **Broker RPC: a refused frame is one warning per reason, then `debug`.**
+  A frame the binding did not take — unsealed where sealing is required, one
+  that does not open, a replay, a stale one — was a `broker.rpc.refused`
+  warning each, on the service and on the client, carrying the frame's own
+  `wrpc-kind` header as it came: 313 characters with a line break in it,
+  from an inbox anybody on the broker can write to. The first refusal of a
+  reason is still a warning; for ten seconds after it that reason is written
+  at `debug`. The `kind` in the line, and the address in `broker.rpc.reply`,
+  are bounded to 128 characters with their control characters replaced.
 
 
 ### Fixed

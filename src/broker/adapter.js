@@ -57,6 +57,23 @@ const producerHeaders = (headers) => {
   return own;
 };
 
+// The level of a refusal's line, by its reason: a warning the first time,
+// debug for REFUSAL_INTERVAL after it. A refusal is something a peer does —
+// to an inbox anybody on the broker can write to — and each used to be a
+// warning of its own, one per frame. The reasons are this package's (a
+// closed set), so the table holds a handful of entries.
+const REFUSAL_INTERVAL = 10_000;
+const refusalLevels = () => {
+  const said = new Map();
+  return (reason) => {
+    const now = Date.now();
+    const last = said.get(reason);
+    if (last !== undefined && now - last < REFUSAL_INTERVAL) return 'debug';
+    said.set(reason, now);
+    return 'warn';
+  };
+};
+
 // A direct message's body was a string ('1') or bytes ('0'), where the
 // broker itself carries bytes only.
 const TEXT_HEADER = 'wrpc-text';
@@ -178,6 +195,7 @@ module.exports = {
   DEAD_REASON_HEADER,
   attemptOf,
   producerHeaders,
+  refusalLevels,
   TEXT_HEADER,
   DEFAULT_PREFETCH,
   idFactory,
