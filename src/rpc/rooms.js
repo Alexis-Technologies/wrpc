@@ -48,8 +48,10 @@ class RoomRegistry {
   // onSubscribe/onUnsubscribe fire when a room gains its first member and
   // loses its last one: that is exactly when a backplane has to (un)subscribe
   // the room's channel. onJoin/onLeave fire on EVERY membership change: the
-  // cluster's presence deltas. Plain callbacks rather than events —
-  // join/leave is a hot path and Emitter.emit allocates a promise per call.
+  // cluster's presence deltas. Plain callbacks rather than events: a
+  // membership change happens per join and per leave of every client, and
+  // Emitter.emit answers a promise for each call (bench/emitter.js has what
+  // an emit costs; a callback is a call).
   constructor({ onSubscribe = null, onUnsubscribe = null, onJoin = null, onLeave = null } = {}) {
     this.#onSubscribe = onSubscribe;
     this.#onUnsubscribe = onUnsubscribe;

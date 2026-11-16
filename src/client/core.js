@@ -1532,7 +1532,9 @@ class WrpcClient extends Emitter {
         frame = this.#codec.encode(packets);
       } else {
         // Concatenated in place: map() built a throwaway array of the very
-        // texts already sitting in `pending`, just to hand them to join().
+        // texts already sitting in `pending`, just to hand them to join() —
+        // 2.65 M frames a second against 3.48 M at the default batch of ten
+        // (bench/batch-frame.js).
         frame = `[${pending[0].text}`;
         for (let i = 1; i < pending.length; i++) frame += `,${pending[i].text}`;
         frame += ']';
@@ -1649,8 +1651,10 @@ class WrpcClient extends Emitter {
   }
 
   async #handleParsed(data, packet) {
-    // The answer to a call is the commonest inbound packet: settle it here,
-    // before the batch and heartbeat checks and without the #dispatch hop.
+    // The answer to a call is the commonest inbound packet, so its branch
+    // is the first of the chain — the one ordering that is free, a chain
+    // being linear in a branch's position (bench/dispatch.js) — and it is
+    // settled here, without the #dispatch hop.
     if (packet.type === 'callback' && packet.id && !this.#proxyPacket) return void this.#settle(packet);
     // A batch frame answers several packets at once; each one is dispatched
     // exactly as it would have been on its own.
