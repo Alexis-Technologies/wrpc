@@ -309,6 +309,7 @@ narrower promise — see
   a busier instance runs more loops. The stream a returned row belongs to
   is found through a map, where it was a scan of every key for every row.
 - **`wrpc.cluster.messages` is labelled with a closed set of envelope types.** Its `wrpc.cluster.type` attribute was the `t` of whatever was published to the cluster channel, so on a backplane without `cluster.secret` each made-up type was a metric series of its own — 200 envelopes, 200 series. Anything outside the ten types the cluster speaks is counted under `<unknown>`. The telemetry guide now tables every metric and span attribute with its values (ten keys were written and documented nowhere), and a guard keeps the guide and the source the same list in both directions.
+- **`wrpc types` no longer fails on an introspection with more units than a call takes arguments.** The interface's units were spread into one `push()` — a `RangeError` past about 120,000 of them — like the event lists fixed with it. Found by a new guard: every `.shift()` on a queue and every spread into a call's arguments in `src/` is now listed with its bound in `tests/package/consistency.test.js`, and a new one fails the suite.
 
 
 ### Security

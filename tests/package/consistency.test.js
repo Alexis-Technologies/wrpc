@@ -803,6 +803,146 @@ test('the telemetry guide names every instrument and attribute the source writes
   assert.deepStrictEqual(stale, [], 'names in the telemetry guide that the source no longer writes');
 });
 
+// Two rules of the project skills that a review keeps finding broken, made
+// executable. "A queue read from its head is never an Array with shift()":
+// past a few thousand elements every take moves the rest (found three times
+// — a stream's queue, the ws receive buffer, the ws inbox). "Never spread a
+// data array into a call's arguments": it is Function.prototype.apply, and a
+// RangeError once the array passes the engine's argument limit.
+//
+// Every `.shift()` / `.unshift(` and every spread into a call in src/ is on
+// one of these lists with the reason it is safe — what it is called on, or
+// what bounds the array. A new one fails here: use a Deque (src/deque.js) or
+// a head cursor, an indexed loop instead of the spread, or add the line with
+// its bound. A line that is gone fails too, so the lists stay the code's.
+const HEAD_READS = {
+  'src/broker/kafka/index.js': {
+    'const next = waiting.shift();': 'a Deque',
+    'for (let next = waiting.shift(); next !== undefined; next = waiting.shift()) next();': 'a Deque',
+  },
+  'src/broker/memory.js': {
+    'state.ready.unshift(delivery.message);': 'a Deque',
+    'this.#dispatch(state, consumer, state.ready.shift());': 'a Deque',
+    'state.ready.unshift(message);': 'a Deque',
+  },
+  'src/broker/redis/index.js': { 'const [id, fields] = buffered.shift();': 'a Deque' },
+  'src/broker/tail.js': { 'const entry = reader.queue.shift();': 'a Deque' },
+  'src/transport.js': {
+    'const index = bucket.shift();': 'the answers of ONE batch that share an id: at most maxBatch (128)',
+  },
+  'src/utils.js': {
+    'this.#queue.shift();': 'EventStream, at its highWaterMark (1,024 by default); utils.js is on the browser budget',
+    'return Promise.resolve({ value: this.#queue.shift(), done: false });': 'the same queue',
+    'const waiter = this.#queue.shift();': 'Semaphore waiters, capped by its `size`',
+  },
+  'src/websocket/connection.js': {
+    "if (typeof this.#socket.unshift === 'function') this.#socket.unshift(head);": 'a stream method, not an array',
+    'const item = inbox.shift();': 'the inflate inbox, held at INBOX_HIGH + 1 messages',
+    'outbox.shift();': 'a Deque',
+    'this.#outbox.shift();': 'a Deque',
+  },
+  'src/websocket/deflateContext.js': { 'ops.shift();': 'at most 33 operations wait on one context' },
+};
+
+const CALL_SPREADS = {
+  'src/broker/redis/index.js': {
+    'rows = await tail.connection.xread(...args);': 'a tail reads at most TAIL_TOPICS (8,192) topics',
+    "if (maxLen > 0) return client.xadd(streamKey(topic), 'MAXLEN', '~', String(maxLen), '*', ...fields);":
+      'two fields per header of one message this process produced',
+    "return client.xadd(streamKey(topic), '*', ...fields);": 'the same fields',
+    "await client.xadd(queueKey(name), '*', ...encodeFields(body, producerHeaders(headers)));": 'the same fields',
+    "await client.xadd(stream, '*', ...encodeFields(message.body, headers));": 'the same fields',
+    "await client.xadd(queueKey(deadLetter), '*', ...encodeFields(message.body, headers));": 'the same fields',
+    'await client.eval(PROMOTE, 2, delayedKey(name), stream, item, ...fields);': 'the same fields',
+    "await client.xadd(stream, '*', ...fields);": 'the same fields',
+  },
+  'src/client/core.js': { 'if (units.length > 0) await this.load(...units);': 'the units the application loaded' },
+  'src/client/wsHandshake.browser.js': {
+    'btoa(String.fromCharCode(...new TextEncoder().encode(text)))': 'the caller refuses a text past META_MAX first',
+  },
+  'src/encryption/noise.js': {
+    'const message = concat(...parts);': 'the parts of one handshake message: five at most',
+  },
+  'src/encryption/server.js': { "this.emit('close', ...args);": "the engine's own (code, reason)" },
+  'src/encryption/session.js': {
+    'const frame = (kind, ...parts) => concat(Uint8Array.of(FRAME_MARK, kind), ...parts);': 'its own rest parameter',
+  },
+  'src/rpc/core.js': {
+    'const target = rooms ? this.#target().to(...rooms) : this.#target();':
+      "an envelope's rooms: another instance's to(...rooms), and the caller catches what this throws",
+    'const target = Array.isArray(rooms) ? this.#target().to(...rooms) : this.#target();': 'the same rooms',
+    'return this.#target().to(...rooms);': 'its own rest parameter',
+    'return this.#target().except(...clients);': 'its own rest parameter',
+  },
+  'src/scaling/sessions.js': {
+    'const result = await client.set(key(token), value, ...args);': 'three options at most, built two lines above',
+  },
+  'src/server.js': {
+    'return this.rpc.to(...rooms);': 'its own rest parameter',
+    'return this.rpc.except(...clients);': 'its own rest parameter',
+  },
+  'src/webrtc/host.js': {
+    'return this.#target().to(...rooms);': 'its own rest parameter',
+    'return this.#target().except(...clients);': 'its own rest parameter',
+  },
+  'src/webrtc/peerLink.js': { 'return this.#remote.load(...units);': 'its own rest parameter' },
+};
+
+test('src/ reads no queue with shift() and spreads no array into a call, except where a bound is written down', () => {
+  const { readdirSync, readFileSync } = require('node:fs');
+  const { codeOf, callSpreads } = require('./scan.js');
+  const walk = (dir, out = []) => {
+    for (const entry of readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+      const relative = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) walk(relative, out);
+      else if (entry.name.endsWith('.js')) out.push(relative);
+    }
+    return out;
+  };
+  const flatten = (lists) => {
+    const keys = [];
+    for (const file of Object.keys(lists)) for (const line of Object.keys(lists[file])) keys.push(`${file} :: ${line}`);
+    return keys.sort();
+  };
+  const heads = new Set();
+  const spreads = new Set();
+  for (const file of walk('src')) {
+    const text = readFileSync(path.join(ROOT, file), 'utf8');
+    const code = codeOf(text);
+    const lines = text.split('\n');
+    const lineAt = (at) => lines[code.slice(0, at).split('\n').length - 1].trim();
+    for (const match of code.matchAll(/\.(?:shift|unshift)\(/g)) heads.add(`${file} :: ${lineAt(match.index)}`);
+    for (const at of callSpreads(code)) spreads.add(`${file} :: ${lineAt(at)}`);
+  }
+  assert.deepStrictEqual(Array.from(heads).sort(), flatten(HEAD_READS), 'shift() / unshift() sites against HEAD_READS');
+  assert.deepStrictEqual(Array.from(spreads).sort(), flatten(CALL_SPREADS), 'spreads into a call against CALL_SPREADS');
+});
+
+test('the scanner behind that guard tells a call from a parameter list, an object and a string', () => {
+  const { codeOf, callSpreads } = require('./scan.js');
+  const found = (source) => {
+    const code = codeOf(source);
+    return callSpreads(code).map((at) =>
+      source.slice(at, source.indexOf('\n', at) === -1 ? undefined : source.indexOf('\n', at)),
+    );
+  };
+  assert.deepStrictEqual(found('f(...a);'), ['...a);']);
+  assert.deepStrictEqual(found('new F(a, ...b);'), ['...b);']);
+  assert.deepStrictEqual(found('f(\n  a,\n  ...b,\n);').length, 1);
+  assert.deepStrictEqual(found('const f = (...args) => g(1);'), []);
+  assert.deepStrictEqual(found('class A { to(...rooms) { return 1; } }'), []);
+  assert.deepStrictEqual(found('function f(...args) { return args; }'), []);
+  assert.deepStrictEqual(found('f({ ...a }); f([...a]); const b = { ...a }; const c = [...a];'), []);
+  // A template's placeholder, spelled so that this file's own strings hold none.
+  const OPEN = '$' + '{';
+  assert.deepStrictEqual(
+    found(`f('(...a)'); f(\`(...a) ${OPEN}x} (...b)\`); // g(...c)\n/* h(...d) */ const r = /\\(\\.\\.\\.e\\)/;`),
+    [],
+  );
+  assert.deepStrictEqual(found(`f(\`${OPEN}g(...a)}\`);`), ['...a)}`);']);
+  assert.deepStrictEqual(found('const f = (a, ...rest) => concat(a, ...rest);'), ['...rest);']);
+});
+
 // CLAUDE.md is loaded into every agent session as binding instructions, so a
 // reference in it that points nowhere is an instruction to look at the wrong
 // code. Three things are held: no line numbers (they drift within days —

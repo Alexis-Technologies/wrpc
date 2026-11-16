@@ -407,7 +407,9 @@ const renderTypes = (introspection, options = {}) => {
   // Only imported when something needs it: an unused import is noise in a
   // file the user is told not to edit.
   if (subscriptions > 0) lines.push(`import type { ${MARKER} } from '${packageName}';`, '');
-  lines.push(`export interface ${interfaceName} {`, ...units, '}', '');
+  lines.push(`export interface ${interfaceName} {`);
+  append(lines, units);
+  lines.push('}', '');
   return lines.join('\n');
 };
 

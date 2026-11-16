@@ -946,4 +946,8 @@ test('CLI renderTypes: a unit may declare more events than a call takes argument
   const text = renderTypes({ feed: { emits, on } });
   assert.ok(text.includes('e199999'));
   assert.ok(text.includes('h199999'));
+  // …and a server more units than that.
+  const units = {};
+  for (let i = 0; i < 200_000; i++) units[`u${i}`] = {};
+  assert.ok(renderTypes(units).includes('u199999'));
 });

@@ -87,6 +87,10 @@ Use following conventions for JavaScript and TypeScript code.
 - A queue that is read from its head is never an `Array` with `shift()`: past a few thousand
   elements every `shift` is a copy of the rest, and a peer decides how long the queue is — keep an
   index cursor or a ring
+- Both rules are executable: every `.shift()` / `.unshift(` and every spread into a call in `src/`
+  is listed with its bound in `HEAD_READS` / `CALL_SPREADS` (`tests/package/consistency.test.js`).
+  A new one fails the suite — use the `Deque` of `src/deque.js` or an indexed loop, or add the
+  line with the reason it is bounded
 - A collection a peer can grow has a cap (a count, bytes, a TTL), and the cap counts what holding
   an element costs, not only its payload
 - Fire-and-forget is `return void fn()` (the Metarhia spelling; `no-void` is deliberately off)
