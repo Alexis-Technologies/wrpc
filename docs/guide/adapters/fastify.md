@@ -253,6 +253,9 @@ fastify.get('/internal/health', { config: { wrpc: false } }, handler);  // opt o
 
 `fastify.close()` is enough: the plugin closes the core and the engine on
 fastify's `preClose` hook.
+Calls in flight get the plugin's `drain` option (milliseconds, 0 by default) to
+finish in first — [`Server#close({ drain })`](../production#graceful-shutdown)
+under fastify: `register(wrpcFastify, { router, drain: 10_000 })`.
 
 ## Types
 

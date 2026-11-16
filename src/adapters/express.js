@@ -8,6 +8,7 @@ const {
   nodeStream,
   getPathname,
   createUpgradeGate,
+  shutdown,
   revisionProtocols,
   respondBodyError,
   MAX_BODY_SIZE,
@@ -97,10 +98,9 @@ const createWrpc = (options = {}) => {
     source.handleUpgrade(req, socket, head);
   };
 
-  const close = async () => {
-    await rpc.close();
-    engine.close();
-  };
+  // `close({ drain })`: milliseconds calls in flight get to finish first —
+  // what `Server#close` takes, and the same sequence (shutdown in common.js).
+  const close = (closing = {}) => shutdown(rpc, engine, closing.drain ?? 0);
 
   return { rpc, engine, wsServer: source, handler, upgrade, close };
 };

@@ -10,6 +10,7 @@ const {
   receiveBody,
   nodeStream,
   createUpgradeGate,
+  shutdown,
   revisionProtocols,
   respondBodyError,
   MAX_BODY_SIZE,
@@ -235,11 +236,9 @@ class Server extends Emitter {
       // connections while the in-flight work drains, instead of accepting
       // calls it will immediately 503.
       if (typeof this.#engine.stopListening === 'function') this.#engine.stopListening();
-      await this.rpc.drain(drain);
       // Standalone engines own the whole stack: their close() both stops
       // the listener and says goodbye to the peers.
-      this.#engine.close();
-      return void (await this.rpc.close());
+      return void (await shutdown(this.rpc, this.#engine, drain));
     }
     // Stop intake first, so a load balancer's next health check fails while
     // the in-flight work is still being finished.
@@ -249,12 +248,9 @@ class Server extends Emitter {
         resolve();
       });
     });
-    await this.rpc.drain(drain);
-    // The engine's close sends 1001 to every open socket BEFORE the core
-    // evicts the clients — the reverse order used to terminate everyone and
-    // then say goodbye to nobody.
-    this.#engine.close();
-    await this.rpc.close();
+    // Drain, then the engine's 1001 to every open socket, then the core's
+    // eviction — one sequence for every host (shutdown in adapters/common.js).
+    await shutdown(this.rpc, this.#engine, drain);
     this.httpServer.closeAllConnections();
     await closed;
   }

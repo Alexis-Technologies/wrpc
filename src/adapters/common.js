@@ -54,6 +54,19 @@ const createUpgradeGate = ({ rpc, cors = null, ws = {} }) => {
   };
 };
 
+// The shutdown every host runs: what is in flight gets up to `drain` ms to
+// finish (new calls answer 503 meanwhile), then the engine closes — its
+// goodbye to every open socket — and the core evicts its clients. One
+// sequence in one place: the Server shell had it with a drain, the fastify
+// plugin and the express middleware had a copy without one, so a deploy
+// under either cut every call in flight where `server.close({ drain })`
+// would have let it finish.
+const shutdown = async (rpc, engine, drain = 0) => {
+  await rpc.drain(drain);
+  engine.close();
+  await rpc.close();
+};
+
 // The shared 400 for a body that could not be received (too big, aborted):
 // an id-less callback packet, same shape on every host.
 const respondBodyError = (respond, error) => {
@@ -176,6 +189,7 @@ module.exports = {
   nodeStream,
   getPathname,
   createUpgradeGate,
+  shutdown,
   revisionProtocols,
   respondBodyError,
 };

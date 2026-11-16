@@ -8,7 +8,14 @@ const { effectiveSchema } = require('../rpc/router.js');
 const { publicErrorMessage, publicErrorDetails } = require('../transport.js');
 const { createNodeEngine, isEngine } = require('../engine/index.js');
 const { createUwsEngine } = require('./uws.js');
-const { normalizeBody, eachHeader, nodeStream, createUpgradeGate, revisionProtocols } = require('./common.js');
+const {
+  normalizeBody,
+  eachHeader,
+  nodeStream,
+  createUpgradeGate,
+  shutdown,
+  revisionProtocols,
+} = require('./common.js');
 const { cacheHeadersFor, RESERVED_HEADERS, checkHeader } = require('../rpc/rest.js');
 const { setupMirror } = require('./mirror.js');
 
@@ -444,10 +451,10 @@ const wrpcFastify = async (fastify, options = {}) => {
   });
 
   fastify.decorate('wrpc', rpc);
-  fastify.addHook('preClose', async () => {
-    await rpc.close();
-    engine.close();
-  });
+  // `drain` (ms, a plugin option): what calls in flight get to finish in
+  // when fastify closes — the sequence of `Server#close` (shutdown in
+  // common.js).
+  fastify.addHook('preClose', () => shutdown(rpc, engine, options.drain ?? 0));
 };
 
 // Escape fastify's encapsulation the way fastify-plugin does, without taking

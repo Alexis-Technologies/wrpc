@@ -930,3 +930,30 @@ test('wrpcFastify: registers over a TLS-terminating fastify and over HTTP/2', { 
     assert.ok(app.server.listenerCount('upgrade') > 0, 'the engine listens for upgrades on it');
   }
 });
+
+test(
+  'wrpcFastify: the drain option lets a call in flight finish when fastify closes',
+  { skip: noFastify },
+  async () => {
+    const router = defineRouter({
+      probe: {
+        slow: procedure({
+          access: 'public',
+          handler: () => new Promise((resolve) => setTimeout(() => resolve('done'), 80)),
+        }),
+      },
+    });
+    const app = fastify({ logger: false });
+    await app.register(wrpcFastify, { router, logger: false, drain: 1000 });
+    await app.listen({ host: '127.0.0.1', port: 0 });
+    const client = await WrpcClient.connect(`ws://127.0.0.1:${app.server.address().port}/api`, {
+      heartbeat: false,
+      reconnect: false,
+    });
+    const answer = client.call('probe/slow', {});
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    await app.close();
+    assert.strictEqual(await answer, 'done');
+    await client.close();
+  },
+);

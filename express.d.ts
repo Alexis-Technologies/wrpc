@@ -25,7 +25,13 @@ export interface WrpcMiddleware {
   handler(req: IncomingMessage, res: ServerResponse, next: () => void): void;
   /** Wire to `httpServer.on('upgrade', wrpc.upgrade)`. */
   upgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
-  close(): Promise<void>;
+  /**
+   * Shuts the middleware's side down, like `Server#close`: calls in flight
+   * get up to `drain` ms to finish (new ones answer 503), every open socket
+   * is told 1001 "going away", then the clients are evicted. The listener is
+   * yours to close.
+   */
+  close(options?: { drain?: number }): Promise<void>;
 }
 
 /**

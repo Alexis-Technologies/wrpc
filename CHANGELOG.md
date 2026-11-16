@@ -25,6 +25,15 @@ narrower promise — see
   for a `403`, the gate that under the shells is the origin allowlist, and
   at **debug** for the rest. A connection the node engine terminates for a
   missed protocol ping writes `ws.heartbeat` (debug, `peer`).
+- **A graceful shutdown under fastify and express** (`drain`). The `Server`
+  shell's `close({ drain })` lets the calls in flight finish before it
+  closes anything; the fastify plugin and the express middleware closed at
+  once, with no way to ask for more — a deploy under either cut every call
+  that was running. `register(wrpcFastify, { drain: 10_000 })` and
+  `createWrpc(...).close({ drain: 10_000 })` now run the same sequence as
+  the shell (one function for all three): new calls answer `503`, calls in
+  flight get up to `drain` ms, then every socket is told `1001` and the
+  clients are evicted.
 
 
 ### Changed

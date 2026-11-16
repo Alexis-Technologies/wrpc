@@ -678,6 +678,26 @@ const runAdapterSpec = async (entry, t) => {
     }
   });
 
+  await t.test('closing the host tells an open socket it is going away (1001), not an abnormal close', async () => {
+    const instance = await entry.boot({ router });
+    let closed = false;
+    const close = async () => {
+      if (closed) return;
+      closed = true;
+      await instance.close();
+    };
+    t.after(close);
+    const socket = new WebSocket(`ws://127.0.0.1:${instance.port}/api`);
+    await new Promise((resolve, reject) => {
+      socket.addEventListener('open', resolve);
+      socket.addEventListener('error', reject);
+    });
+    const ended = new Promise((resolve) => socket.addEventListener('close', (event) => resolve(event.code)));
+    await close();
+    // Whatever the host: a peer can tell a deploy from a crash.
+    assert.strictEqual(await ended, 1001);
+  });
+
   await t.test('rooms and inbound events over two connections', async (sub) => {
     const url = `ws://127.0.0.1:${main.port}/api`;
     const [ada, grace] = await Promise.all([WrpcClient.connect(url), WrpcClient.connect(url)]);

@@ -32,6 +32,12 @@ export interface WrpcFastifyOptions extends Partial<RpcServerOptions> {
   rpc?: RpcServer;
   /** Skips backend detection. */
   engine?: Engine;
+  /**
+   * Milliseconds calls in flight get to finish in when fastify closes (new
+   * ones answer 503 meanwhile), before every open socket is told 1001 and
+   * the clients are evicted — `Server#close({ drain })`. Default 0.
+   */
+  drain?: number;
   /** Forwarded to the engine's attach() (path, protocols, verifyClient, ...). */
   ws?: Omit<EngineAttachOptions, 'server'>;
   /**
