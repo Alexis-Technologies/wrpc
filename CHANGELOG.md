@@ -34,6 +34,16 @@ narrower promise — see
   the shell (one function for all three): new calls answer `503`, calls in
   flight get up to `drain` ms, then every socket is told `1001` and the
   clients are evicted.
+- **Broker consumers: a deadline for a delivery, and a `healthy` that sees
+  a binding that stopped.** A consumer's handler that never settles holds
+  one of the binding's `prefetch` slots for as long as the process lives —
+  a procedure has no timeout unless it sets one — and `prefetch` of them
+  left a binding that took nothing more from its queue while
+  `consumers.healthy` answered `true`. `consume: { timeout }` is that
+  binding's deadline for one delivery: past it the call is a `408`, which
+  the retry table takes like any other, and the slot comes back. And a
+  binding whose every slot has been taken for longer than `stallAfter`
+  (60 s by default) no longer calls itself healthy.
 
 
 ### Changed

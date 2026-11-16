@@ -295,6 +295,19 @@ export interface ConsumerBinding extends ConsumePolicy {
    * re-drive opens them. Default: the bound queue itself.
    */
   sealedFor?: string | null;
+  /**
+   * Milliseconds one delivery may take before it is a `408` — retried by the
+   * binding's `retry`, its slot given back. Default 0: as long as the
+   * procedure's own `timeout` allows, and a procedure without one allows
+   * forever — `prefetch` handlers that never settle and the binding takes
+   * nothing more.
+   */
+  timeout?: number;
+  /**
+   * How long every slot of `prefetch` may stay taken before the binding
+   * stops answering `healthy` (default 60000).
+   */
+  stallAfter?: number;
 }
 
 export interface DeadLetterInfo {

@@ -111,6 +111,9 @@ const labelOf = (unitKey, name) => `${unitKey}/${name}`;
 
 const parseJson = (body) => JSON.parse(body);
 
+// How long every slot of a binding may be taken before it is not healthy.
+const DEFAULT_STALL_AFTER = 60_000;
+
 const normalizePolicy = (policy, { label, queue: defaultQueue, maxCalls }) => {
   if (policy !== undefined && policy !== null && (typeof policy !== 'object' || Array.isArray(policy))) {
     throw new TypeError(`${label}: the binding must be an object`);
@@ -120,6 +123,8 @@ const normalizePolicy = (policy, { label, queue: defaultQueue, maxCalls }) => {
     group = null,
     prefetch = DEFAULT_PREFETCH,
     retry,
+    timeout = 0,
+    stallAfter = DEFAULT_STALL_AFTER,
     deadLetter,
     sealedFor = null,
     identity = { trust: 'none' },
@@ -139,6 +144,16 @@ const normalizePolicy = (policy, { label, queue: defaultQueue, maxCalls }) => {
   // dispatcher would answer 429 to messages the broker handed us.
   if (prefetch > maxCalls) {
     throw new TypeError(`${label}: prefetch ${prefetch} exceeds the server's maxCalls ${maxCalls}`);
+  }
+  // How long one delivery may take (0: as long as its procedure allows — and
+  // a procedure with no `timeout` of its own allows forever), and how long
+  // every slot of the binding may stay taken before it stops calling itself
+  // healthy.
+  if (!(typeof timeout === 'number' && timeout >= 0 && timeout < 2 ** 31)) {
+    throw new TypeError(`${label}: timeout must be a number of milliseconds from 0 to 2^31 - 1`);
+  }
+  if (!(typeof stallAfter === 'number' && stallAfter > 0)) {
+    throw new TypeError(`${label}: stallAfter must be a positive number of milliseconds`);
   }
   const dead = deadLetter === undefined ? `${queue}.dlq` : deadLetter;
   if (dead !== false && dead !== null && (typeof dead !== 'string' || dead.length === 0)) {
@@ -162,6 +177,8 @@ const normalizePolicy = (policy, { label, queue: defaultQueue, maxCalls }) => {
     group: group ?? queue,
     prefetch,
     retry: normalizeRetry(retry, label),
+    timeout,
+    stallAfter,
     deadLetter: dead || null,
     sealedFor,
     identity: { trust: identity.trust, session: identity.session ?? null, header: identity.header ?? 'authorization' },
@@ -484,6 +501,11 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     return delivery.deadLetter(reason);
   };
 
+  // The deliveries whose call is running, and since when ALL the binding's
+  // slots have been taken (0: they are not).
+  let running = 0;
+  let fullSince = 0;
+
   const onDelivery = async (delivery) => {
     if (stopped || rpc.draining) return void (await settle(delivery, { action: 'release', delay: 0 }));
     let { body, headers } = delivery;
@@ -560,6 +582,12 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
       if (value !== undefined) meta[name] = value;
     }
     const packet = { type: 'call', id, method, args, meta };
+    // The binding's own deadline for a delivery, as a caller's deadline is
+    // (handleRpc): past it the call is a 408, which the retry table takes —
+    // and the slot it held comes back. Without one a handler that never
+    // settles holds its slot for good; `prefetch` of them and the binding
+    // takes nothing more.
+    if (policy.timeout > 0) packet.timeout = policy.timeout;
     // The W3C header names first — what a producer that is not wrpc, and
     // wrpc's publisher, write — then the packet field names a message from
     // an earlier publisher carried. `trustRemoteContext: false` still cuts
@@ -569,6 +597,7 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
     if (typeof traceparent === 'string') packet[TRACEPARENT] = traceparent;
     if (typeof tracestate === 'string') packet[TRACESTATE] = tracestate;
     const outcome = transport.expect(id);
+    if (++running === policy.prefetch) fullSince = Date.now();
     handleRpc(client, packet, view).catch((error) => {
       // The dispatcher itself threw, not the handler: settled as a 500 so
       // the delivery is not stuck, but the throw was going nowhere. The
@@ -577,6 +606,8 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
       transport.settle(id, { code: 500, error });
     });
     const { code, error, closed } = await outcome;
+    running--;
+    fullSince = 0;
     try {
       const decision = closed
         ? { action: 'release', delay: 0 }
@@ -590,6 +621,15 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
       if (attached.retired && transport.pending === 0) transport.close();
     }
   };
+
+  // Reading and settling, and not wedged: every slot of `prefetch` taken for
+  // longer than `stallAfter` means nothing new can be taken — handlers that
+  // never settle, with no deadline to stop them. It used to answer healthy.
+  const healthy = () =>
+    !stopped &&
+    consumer !== null &&
+    consumer.healthy &&
+    !(fullSince !== 0 && Date.now() - fullSince > policy.stallAfter);
 
   const start = async () => {
     consumer = await queue.consume(
@@ -625,14 +665,14 @@ const bindConsumer = ({ rpc, queue, system, binding, log, onDeadLetter, tokenCli
       if (consumer && !stopped) await consumer.resume();
     },
     get healthy() {
-      return !stopped && consumer !== null && consumer.healthy;
+      return healthy();
     },
     describe: () => ({
       key: binding.key,
       queue: policy.queue,
       group: policy.group,
       method,
-      healthy: !stopped && consumer !== null && consumer.healthy,
+      healthy: healthy(),
     }),
   };
 };
