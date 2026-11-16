@@ -4,7 +4,7 @@ const crypto = require('node:crypto');
 const { createLoggerWriter } = require('../logging.js');
 const { EventEmitter } = require('node:events');
 
-const { Connection } = require('./connection.js');
+const { Connection, turnBudgetOf } = require('./connection.js');
 const permessageDeflate = require('./permessageDeflate.js');
 
 const MAGIC = '258EAFA5-E914-47DA-95CA-C5AB0DC85B11';
@@ -80,8 +80,14 @@ class WebsocketServer extends EventEmitter {
       // Server connections coalesce the writes of one event-loop turn into
       // one flush (Connection's `coalesce`); `coalesce: false` opts out.
       coalesce: true,
+      // And they share the event loop: what one of them hands over in one
+      // turn is bounded (Connection's `turnBudget`); `turnBudget: false`
+      // opts out, `{ messages, bytes }` sets the marks.
+      turnBudget: true,
       ...opts,
     };
+    // Refused here, not at the first connection it would be applied to.
+    turnBudgetOf(this.#options.turnBudget);
     this.#startHeartbeat();
     if (server) this.#bind(server);
   }

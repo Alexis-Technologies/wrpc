@@ -323,3 +323,54 @@ test('WebsocketServer: does not forward http server errors already handled elsew
 
   await new Promise((resolve) => httpServer.close(resolve));
 });
+
+// --- The turn budget ---------------------------------------------------------
+
+// The most messages one connection was handed between two turns of the loop,
+// for `count` frames written in one go.
+const busiestTurn = async (t, options, count) => {
+  const { wsServer, port } = await bootBound(t, options);
+  let turn = 0;
+  let stopped = false;
+  const tick = () => {
+    turn++;
+    if (!stopped) setImmediate(tick);
+  };
+  const perTurn = new Map();
+  let seen = 0;
+  wsServer.on('connection', (ws) => {
+    ws.on('message', () => {
+      seen++;
+      perTurn.set(turn, (perTurn.get(turn) ?? 0) + 1);
+    });
+  });
+  const frames = [];
+  for (let i = 0; i < count; i++) frames.push(maskedFrame(0x81, 'x'));
+  const socket = net.connect(port, '127.0.0.1');
+  socket.on('error', () => {});
+  t.after(() => socket.destroy());
+  const key = crypto.randomBytes(16).toString('base64');
+  socket.write(
+    `GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+      `Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${key}\r\n\r\n`,
+  );
+  await new Promise((resolve) => socket.once('data', resolve));
+  tick();
+  socket.write(Buffer.concat(frames));
+  await waitFor(() => seen === count, 'every frame is delivered');
+  stopped = true;
+  return Math.max(...perTurn.values());
+};
+
+test('WebsocketServer: one connection is handed a bounded number of messages a turn by default', async (t) => {
+  // 4,000 frames arrive in one read. They used to be dispatched in the turn
+  // that read them, whatever else was waiting on the loop.
+  const busiest = await busiestTurn(t, {}, 4000);
+  assert.ok(busiest <= 512, `${busiest} messages in one turn`);
+});
+
+test('WebsocketServer: turnBudget sets the marks, and false turns the budget off', async (t) => {
+  assert.ok((await busiestTurn(t, { turnBudget: { messages: 64 } }, 2000)) <= 64);
+  assert.ok((await busiestTurn(t, { turnBudget: false }, 4000)) > 512, 'no budget: one turn takes what it read');
+  assert.throws(() => new WebsocketServer({ logger: false, turnBudget: { messages: 0 } }), /turnBudget must be/);
+});

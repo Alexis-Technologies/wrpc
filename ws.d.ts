@@ -146,6 +146,20 @@ export interface WebsocketServerOptions {
   perMessageDeflate?: boolean | PerMessageDeflateOptions;
   /** Coalesce every write of one event-loop turn into one flush. Default true for server connections. */
   coalesce?: boolean;
+  /**
+   * What one connection may hand its listeners in one turn of the event
+   * loop — 512 messages or 256 KiB of them (after inflation) by default —
+   * before the frame loop stops and the socket is paused until the next
+   * turn. `{ messages, bytes }` sets the marks, `false` turns it off.
+   * Default true for server connections.
+   */
+  turnBudget?: boolean | TurnBudget;
+}
+
+/** The marks of `turnBudget`: positive integers, either left out for its default. */
+export interface TurnBudget {
+  messages?: number;
+  bytes?: number;
 }
 
 export declare class WebsocketServer extends EventEmitter {
@@ -187,6 +201,13 @@ export interface ConnectionOptions {
    * enables it for the connections it creates.
    */
   coalesce?: boolean;
+  /**
+   * Bounds what this connection hands its listeners in one turn of the event
+   * loop (see `WebsocketServerOptions.turnBudget`). Off for a bare
+   * Connection, where a message is delivered inside the `'data'` event that
+   * carried it; the server enables it for the connections it creates.
+   */
+  turnBudget?: boolean | TurnBudget;
 }
 
 export declare class Connection extends EventEmitter {

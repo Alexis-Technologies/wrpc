@@ -101,6 +101,13 @@ export interface EngineAttachOptions {
   /** Coalesce every write of one event-loop turn into one flush (built-in engine). Default true. */
   coalesce?: boolean;
   /**
+   * What one connection may hand over in one turn of the event loop before
+   * the rest of what it sent waits for the next (built-in engine): `true`
+   * for 512 messages or 256 KiB of them, `{ messages, bytes }` to set the
+   * marks, `false` for none. Default true.
+   */
+  turnBudget?: boolean | { messages?: number; bytes?: number };
+  /**
    * The structured logger the engine and its connections report through
    * (framing faults, dropped frames) — what the `Server` shell and the
    * adapters pass. An engine built with its own `logger` keeps it.

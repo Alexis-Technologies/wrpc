@@ -102,3 +102,8 @@ expectType<FrameHeader | null>(headerResult.value);
 expectType<ParseError | null>(headerResult.error);
 const parseResult = ws.FrameParser.parse(buffer, { allowedRsv: 0 });
 expectType<{ frame: Frame; bytesUsed: number } | null>(parseResult.value);
+
+// The turn budget: a boolean or its marks, on the server and on a connection.
+expectAssignable<WebsocketServerOptions>({ turnBudget: false });
+expectAssignable<WebsocketServerOptions>({ turnBudget: { messages: 256, bytes: 64 * 1024 } });
+expectError<WebsocketServerOptions>({ turnBudget: 512 });

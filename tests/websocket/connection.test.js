@@ -392,3 +392,88 @@ test('Connection: a ping after an app-initiated close is still answered', () => 
   assert.deepStrictEqual(frames, [OPCODES.CLOSE, OPCODES.PONG]);
   conn.terminate();
 });
+
+// --- The turn budget ---------------------------------------------------------
+
+const textFrames = (texts) =>
+  Buffer.concat(
+    texts.map((text) => {
+      const frame = Frame.text(text);
+      frame.maskPayload();
+      return frame.toBuffer();
+    }),
+  );
+const nextTurn = () => new Promise((resolve) => setImmediate(resolve));
+
+test('Connection: turnBudget hands over that many messages a turn, in order, and holds the socket meanwhile', async () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { turnBudget: { messages: 4 } });
+  const seen = [];
+  conn.on('message', (data) => seen.push(data.toString()));
+  const texts = Array.from({ length: 10 }, (_, i) => `m${i}`);
+  socket.emit('data', textFrames(texts));
+  assert.deepStrictEqual(seen, texts.slice(0, 4), 'the budget of one turn');
+  assert.strictEqual(socket.paused, true, 'reads no more this turn');
+  assert.strictEqual(conn.isPaused, true, 'a heartbeat must not take a held connection for dead');
+  await nextTurn();
+  assert.deepStrictEqual(seen, texts.slice(0, 8));
+  await nextTurn();
+  assert.deepStrictEqual(seen, texts);
+  await nextTurn();
+  assert.strictEqual(socket.paused, false, 'taken up again');
+  assert.strictEqual(conn.isPaused, false);
+  conn.terminate();
+});
+
+test('Connection: turnBudget counts bytes beside messages', async () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { turnBudget: { messages: 1000, bytes: 100 } });
+  const seen = [];
+  conn.on('message', (data) => seen.push(data.length));
+  socket.emit('data', textFrames(Array.from({ length: 6 }, () => 'x'.repeat(60))));
+  assert.strictEqual(seen.length, 2, 'the message that crosses the mark is the last of its turn');
+  await nextTurn();
+  assert.strictEqual(seen.length, 4);
+  await nextTurn();
+  assert.strictEqual(seen.length, 6);
+  conn.terminate();
+});
+
+test("Connection: the application's pause() outlives the turn hold, and a Close behind it is still read", async () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0), { turnBudget: { messages: 2 } });
+  const seen = [];
+  conn.on('message', (data) => seen.push(data.toString()));
+  const close = Frame.close(1000, '');
+  close.maskPayload();
+  socket.emit('data', Buffer.concat([textFrames(['a', 'b', 'c']), close.toBuffer()]));
+  assert.deepStrictEqual(seen, ['a', 'b']);
+  conn.pause();
+  conn.resume();
+  assert.strictEqual(socket.paused, true, 'held for the turn, not for the application');
+  conn.pause();
+  await nextTurn();
+  // Frames already read are taken up whatever the socket's state: the third
+  // message and the peer's Close arrive, the Close is answered.
+  assert.deepStrictEqual(seen, ['a', 'b', 'c']);
+  assert.strictEqual(socket.ended, true, 'the Close behind the hold was answered');
+  conn.terminate();
+});
+
+test('Connection: no turnBudget by default — a bare connection delivers inside the data event', () => {
+  const socket = new MockSocket();
+  const conn = new Connection(socket, Buffer.alloc(0));
+  let seen = 0;
+  conn.on('message', () => seen++);
+  socket.emit('data', textFrames(Array.from({ length: 2000 }, () => 'x')));
+  assert.strictEqual(seen, 2000);
+  assert.strictEqual(socket.paused, false);
+  conn.terminate();
+});
+
+test('Connection: a turnBudget that is not a boolean or positive marks is refused', () => {
+  for (const turnBudget of [0, 'on', { messages: 0 }, { bytes: -1 }, { messages: 1.5 }]) {
+    assert.throws(() => new Connection(new MockSocket(), Buffer.alloc(0), { turnBudget }), /turnBudget must be/);
+  }
+  assert.doesNotThrow(() => new Connection(new MockSocket(), Buffer.alloc(0), { turnBudget: true }).terminate());
+});

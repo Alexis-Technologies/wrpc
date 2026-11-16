@@ -24,6 +24,27 @@ narrower promise — see
   hand-built `TopicTails` with a `highWaterMark` in the tens of thousands
   read a lagging subscriber back one `Array.shift()` at a time, each of
   them a copy of what was left.
+- **The WebSocket engine: one connection no longer holds the event loop for
+  as long as it has frames to read** (`turnBudget`, on by default for the
+  connections a server creates). Node reads a socket up to 32 times in one
+  iteration of the loop, 64 KiB each, and every frame in those two megabytes
+  was dispatched before a timer fired or another connection had a turn. One
+  peer writing 40,000 small calls in one go (2.4 MiB) made a timer 567 ms
+  late with `perMessageDeflate` on — every answer over the threshold is
+  deflated synchronously — and 100 frames of 16 KiB that inflate to 16 MiB
+  each made it 229 ms late, whatever `async` said: its threshold is the
+  compressed size. Once a connection has handed its listeners 512 messages,
+  or 256 KiB of them (counted after inflation), in one turn, its frame loop
+  stops and its socket is paused until the next turn; what it had read waits
+  in the receive buffer, nothing is dropped and the order is the same. The
+  same two bursts now make the timer 14 ms and 2 ms late and are served as
+  fast as before (`bench/ws-fairness.js`); a call round trip costs what it
+  did (`bench/bench.js`). `ws: { turnBudget: { messages, bytes } }` sets the
+  marks and `turnBudget: false` restores the old dispatch. A bare
+  `Connection` from `@alexify/wrpc/ws` keeps it off unless asked;
+  `connection.isPaused` is true while a connection waits for its turn. The
+  uWebSockets.js engine dispatches natively and has no such budget.
+
 
 ### Fixed
 
