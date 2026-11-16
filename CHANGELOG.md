@@ -13,6 +13,8 @@ narrower promise — see
 
 ### Changed (breaking)
 
+## [2.2.0] - 2026-11-16
+
 ### Added
 
 - **A refused WebSocket upgrade and a heartbeat's kill are in the log.** An
@@ -44,7 +46,6 @@ narrower promise — see
   the retry table takes like any other, and the slot comes back. And a
   binding whose every slot has been taken for longer than `stallAfter`
   (60 s by default) no longer calls itself healthy.
-
 
 ### Changed
 
@@ -102,6 +103,14 @@ narrower promise — see
   preload is what you want — and `http: { hsts: false }` sends none (a proxy
   in front that already adds it). A deployment that relied on the old header
   for its preload submission has to set it explicitly.
+- **A cookie that comes twice is read as its first value.** `Cookie: token=A;
+  token=B` was read as `B` — and `B` is what a sibling subdomain puts there:
+  a cookie set for the parent domain (`Domain=.example.com`) is sent beside
+  the site's own, behind it, so a page on `evil.example.com` could have its
+  own session token read in place of the visitor's (cookie tossing, a
+  session fixation). The first value wins now, which is the site's own by
+  the order RFC 6265 gives a browser. Nothing changes for a request that
+  names each cookie once.
 - **A REST path a static segment starts and no route finishes is matched by
   the parameter at that place.** The route tree committed to a segment's own
   name: with `GET /users/me/settings` and `GET /users/:id` declared,
@@ -157,11 +166,35 @@ narrower promise — see
   reason is still a warning; for ten seconds after it that reason is written
   at `debug`. The `kind` in the line, and the address in `broker.rpc.reply`,
   are bounded to 128 characters with their control characters replaced.
-- **`encryption.authorize` admits a connection only by answering `true`.** It used to refuse only on `false`, so a hook that forgot its `return`, answered `null` for "not found" or resolved `undefined` let every client in — the opposite of what the client's own `verifyServer` does with the same answers. Anything but `true` now closes the connection (1008, `encryption.refused` with `reason: 'authorize'`). A hook that already returns a boolean is unaffected; one that relied on "no answer means yes" has to return `true`. The option's type is `boolean | Promise<boolean>`.
-- **A page reads a stream chunk about a quarter faster.** The browser half of the chunk codec built a `TextDecoder` for every chunk it read (and a `TextEncoder` for every one it wrote); it keeps one of each. Reading a chunk back went from 4.1 M to 5.2 M ops/s (`bench/chunk-codec.js`); writing one costs the copy of its payload and is unchanged.
-- **The broker adapters remember the token of a name.** A channel, topic, queue or address is encoded into the broker's alphabet on every message published or appended — a walk over the name's characters that costs 0.2 µs for `orders` and 1.7 µs for `wrpc:rooms:tenant-42:chat/general`. The four adapters keep the last 1,024 names (the memo starts over when it is full; a name past 256 characters is encoded every time): a Redis log append over an in-process server went from 446,000 to 1.6 M a second on the second name (`bench/broker-token.js`). `encodeToken` itself is unchanged.
-- The main browser entry's budget is 31 KB (was 30) for what the client took on above — hooks held to `connectTimeout`, checked timeouts, a timed-out call cancelled on the server, the worker proxy routing a page's events and batches — measured 30,984 B; the sse entry's is 32 KB (was 31) with it and for the event parser that scans each chunk once (32,288 B); the webrtc entry's is 62 KB (was 61) for those and the dispatcher's share a peer host carries (63,308 B). The README and the docs say "under 31 KB" where they said 30.
-
+- **`encryption.authorize` admits a connection only by answering `true`.** It
+  used to refuse only on `false`, so a hook that forgot its `return`, answered
+  `null` for "not found" or resolved `undefined` let every client in — the
+  opposite of what the client's own `verifyServer` does with the same answers.
+  Anything but `true` now closes the connection (1008, `encryption.refused`
+  with `reason: 'authorize'`). A hook that already returns a boolean is
+  unaffected; one that relied on "no answer means yes" has to return `true`.
+  The option's type is `boolean | Promise<boolean>`.
+- **A page reads a stream chunk about a quarter faster.** The browser half of
+  the chunk codec built a `TextDecoder` for every chunk it read (and a
+  `TextEncoder` for every one it wrote); it keeps one of each. Reading a chunk
+  back went from 4.1 M to 5.2 M ops/s (`bench/chunk-codec.js`); writing one
+  costs the copy of its payload and is unchanged.
+- **The broker adapters remember the token of a name.** A channel, topic,
+  queue or address is encoded into the broker's alphabet on every message
+  published or appended — a walk over the name's characters that costs 0.2 µs
+  for `orders` and 1.7 µs for `wrpc:rooms:tenant-42:chat/general`. The four
+  adapters keep the last 1,024 names (the memo starts over when it is full; a
+  name past 256 characters is encoded every time): a Redis log append over an
+  in-process server went from 446,000 to 1.6 M a second on the second name
+  (`bench/broker-token.js`). `encodeToken` itself is unchanged.
+- The main browser entry's budget is 31 KB (was 30) for what the client took
+  on above — hooks held to `connectTimeout`, checked timeouts, a timed-out
+  call cancelled on the server, the worker proxy routing a page's events and
+  batches — measured 30,984 B; the sse entry's is 32 KB (was 31) with it and
+  for the event parser that scans each chunk once (32,288 B); the webrtc
+  entry's is 62 KB (was 61) for those and the dispatcher's share a peer host
+  carries (63,308 B). The README and the docs say "under 31 KB" where they
+  said 30.
 
 ### Fixed
 
@@ -309,9 +342,26 @@ narrower promise — see
   One loop now reads at most 8,192 topics, on a connection of its own, and
   a busier instance runs more loops. The stream a returned row belongs to
   is found through a map, where it was a scan of every key for every row.
-- **`wrpc.cluster.messages` is labelled with a closed set of envelope types.** Its `wrpc.cluster.type` attribute was the `t` of whatever was published to the cluster channel, so on a backplane without `cluster.secret` each made-up type was a metric series of its own — 200 envelopes, 200 series. Anything outside the ten types the cluster speaks is counted under `<unknown>`. The telemetry guide now tables every metric and span attribute with its values (ten keys were written and documented nowhere), and a guard keeps the guide and the source the same list in both directions.
-- **`wrpc types` no longer fails on an introspection with more units than a call takes arguments.** The interface's units were spread into one `push()` — a `RangeError` past about 120,000 of them — like the event lists fixed with it. Found by a new guard: every `.shift()` on a queue and every spread into a call's arguments in `src/` is now listed with its bound in `tests/package/consistency.test.js`, and a new one fails the suite.
-
+- **`wrpc.cluster.messages` is labelled with a closed set of envelope types.**
+  Its `wrpc.cluster.type` attribute was the `t` of whatever was published to
+  the cluster channel, so on a backplane without `cluster.secret` each made-up
+  type was a metric series of its own — 200 envelopes, 200 series. Anything
+  outside the ten types the cluster speaks is counted under `<unknown>`. The
+  telemetry guide now tables every metric and span attribute with its values
+  (ten keys were written and documented nowhere), and a guard keeps the guide
+  and the source the same list in both directions.
+- **`wrpc types` no longer fails on an introspection with more units than a
+  call takes arguments.** The interface's units were spread into one `push()`
+  — a `RangeError` past about 120,000 of them — like the event lists fixed
+  with it. Found by a new guard: every `.shift()` on a queue and every spread
+  into a call's arguments in `src/` is now listed with its bound in
+  `tests/package/consistency.test.js`, and a new one fails the suite.
+- **The eleventh upload at once no longer prints
+  `MaxListenersExceededWarning`.** Every `WrpcWritable` added a `'close'`
+  listener of its own to its transport, so a dozen `createStream()` uploads in
+  flight on one connection crossed Node's default of ten and the process
+  printed a leak warning that was not one. A transport now carries one
+  listener for all its writables, and drops it once none of them is waiting.
 
 ### Security
 
@@ -364,14 +414,6 @@ narrower promise — see
   lines that carried one raw go through the same helper: a subscription's
   refusal and its end, an event with no handler or no session, a duplicate
   call id, a subscription's failed `return()`.
-- **A cookie that comes twice is read as its first value.** `Cookie: token=A;
-  token=B` was read as `B` — and `B` is what a sibling subdomain puts there:
-  a cookie set for the parent domain (`Domain=.example.com`) is sent beside
-  the site's own, behind it, so a page on `evil.example.com` could have its
-  own session token read in place of the visitor's (cookie tossing, a
-  session fixation). The first value wins now, which is the site's own by
-  the order RFC 6265 gives a browser. Nothing changes for a request that
-  names each cookie once.
 - **A mistyped `cors` option no longer leaves the origin gate open in
   silence.** The allowlist is `cors.origins`, and a key nothing reads was
   just that: `cors: { origin: 'https://app.example' }` — the spelling of the
@@ -385,20 +427,20 @@ narrower promise — see
   `origins: 'https://app.example.com'` admitted `https://app.example.co`.
 - **Fastify route mirroring: a caller cannot replace the headers the
   application sets, nor leave the route it called.** A mirrored procedure
-  built its injected request from `{ ...mirror.headers(context), ...args.headers }`
-  — the caller's spread last. Any procedure argument overrode the header the
-  route trusts for identity (`mirror.headers` returning `x-user-id` from the
-  session; the caller sending `headers: { 'x-user-id': '1' }`), and any
-  header at all — a forged `authorization`, `x-forwarded-for` — reached a
-  request that arrives from inside the process, past whatever strips those
-  at the edge. The application's headers now always win, and of a caller's
-  only the names listed in the new `mirror.allowHeaders` pass (none by
-  default; `cookie`, `host`, `x-forwarded-*` and the rest of the handshake's
-  deny list never). And a path parameter of `..` — which the URL parser
-  resolved, turning `/admin/users/:id` into `/admin/`, **another route** —
-  is answered `400`, as are `.` and an empty value. **Changed** for a caller
-  that passed `args.headers` to a mirrored procedure: list the names it may
-  send.
+  built its injected request from `{ ...mirror.headers(context),
+  ...args.headers }` — the caller's spread last. Any procedure argument
+  overrode the header the route trusts for identity (`mirror.headers`
+  returning `x-user-id` from the session; the caller sending `headers: {
+  'x-user-id': '1' }`), and any header at all — a forged `authorization`,
+  `x-forwarded-for` — reached a request that arrives from inside the process,
+  past whatever strips those at the edge. The application's headers now always
+  win, and of a caller's only the names listed in the new
+  `mirror.allowHeaders` pass (none by default; `cookie`, `host`,
+  `x-forwarded-*` and the rest of the handshake's deny list never). And a path
+  parameter of `..` — which the URL parser resolved, turning
+  `/admin/users/:id` into `/admin/`, **another route** — is answered `400`, as
+  are `.` and an empty value. **Changed** for a caller that passed
+  `args.headers` to a mirrored procedure: list the names it may send.
 - **The SSE client reads its event stream in linear time, and an event has
   a size.** The parser appended every chunk to one string, scanned that
   string again from its start for a line end, and cut the string — so a
@@ -460,8 +502,28 @@ narrower promise — see
   `attachBrokerRpc(..., { encryption: { reply: 'carrier' } })`. Re-running a
   replayed request on ANOTHER instance of the service is still what a shared
   `encryption.replay` memory is for.
-- **Session encryption: what a peer sends while this end's handshake is still running is bounded.** A peer can be established before the other end is — a client while the server still awaits its key provider or `authorize` hook, a server while the client's `verifyServer` is asking — and its frames waited behind the hook in a chain nothing counted: 2,000 frames of 64 KiB held 40 MiB on one connection until the handshake timeout. They are held up to 4,096 frames or 4 MiB now; past that the server closes the connection (`1008`, `encryption.refused` with `reason: 'held'`) and the client fails its `open()`. What a connection says when it opens is far inside the bound.
-- **`wrpc types` prints what the server said with its control characters escaped, and bounds the exchange.** A warning or a failure quotes text from the wire — a unit name, a type name, the message of a refusal — and it went to the terminal as it was: an escape sequence could retitle or clear the screen, and a line break could write a line the command never did (`wrpc types: wrote api.d.ts`). Control characters are printed as `\u001b`-style escapes now and one message is cut at 2,048 characters. The request has a deadline over headers and body — `--timeout <ms>`, 30 seconds by default, where a server that accepted and said nothing used to hold the command (and its CI job) for as long as the socket lived — and an answer past 64 MiB is refused. A unit that declares more events than a call takes arguments (about 120,000) no longer fails with `RangeError: Maximum call stack size exceeded`.
+- **Session encryption: what a peer sends while this end's handshake is still
+  running is bounded.** A peer can be established before the other end is — a
+  client while the server still awaits its key provider or `authorize` hook, a
+  server while the client's `verifyServer` is asking — and its frames waited
+  behind the hook in a chain nothing counted: 2,000 frames of 64 KiB held 40
+  MiB on one connection until the handshake timeout. They are held up to 4,096
+  frames or 4 MiB now; past that the server closes the connection (`1008`,
+  `encryption.refused` with `reason: 'held'`) and the client fails its
+  `open()`. What a connection says when it opens is far inside the bound.
+- **`wrpc types` prints what the server said with its control characters
+  escaped, and bounds the exchange.** A warning or a failure quotes text from
+  the wire — a unit name, a type name, the message of a refusal — and it went
+  to the terminal as it was: an escape sequence could retitle or clear the
+  screen, and a line break could write a line the command never did (`wrpc
+  types: wrote api.d.ts`). Control characters are printed as `\u001b`-style
+  escapes now and one message is cut at 2,048 characters. The request has a
+  deadline over headers and body — `--timeout <ms>`, 30 seconds by default,
+  where a server that accepted and said nothing used to hold the command (and
+  its CI job) for as long as the socket lived — and an answer past 64 MiB is
+  refused. A unit that declares more events than a call takes arguments (about
+  120,000) no longer fails with `RangeError: Maximum call stack size
+  exceeded`.
 
 ## [2.1.0] - 2026-11-16
 

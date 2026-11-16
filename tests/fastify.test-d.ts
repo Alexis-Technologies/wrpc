@@ -52,6 +52,10 @@ expectError(adapter.findUwsApp());
 
 // Mirror: existing routes as wrpc procedures
 expectAssignable<WrpcFastifyOptions>({ router, mirror: true });
+// The caller's headers pass by name only, and fastify's close drains
+expectAssignable<WrpcFastifyOptions>({ router, drain: 5000, mirror: { allowHeaders: ['x-request-id'] } });
+expectError<WrpcFastifyOptions>({ router, mirror: { allowHeaders: 'x-request-id' } });
+expectError<WrpcFastifyOptions>({ router, drain: '5s' });
 expectAssignable<WrpcFastifyOptions>({
   router,
   restErrors: 'app',

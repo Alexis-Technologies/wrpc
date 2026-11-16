@@ -129,6 +129,9 @@ declare const server: Server;
   expectType<Promise<string | undefined>>(publisher.publish('orders.v1/created', { id: 'o-1' }));
 })();
 expectError(broker.attachConsumers(server, memory, { q: { prefetch: 'many' } }));
+// A delivery's deadline, and how long a full prefetch may stall before `healthy` says no
+broker.attachConsumers(server, memory, { 'billing.v1/orders.created': { timeout: 30_000, stallAfter: 60_000 } });
+expectError(broker.attachConsumers(server, memory, { q: { stallAfter: 'a minute' } }));
 
 // RPC over a broker.
 (async () => {
@@ -159,6 +162,11 @@ expectAssignable<BrokerRpcOptions>({ service: 'x', compression: { codec: ['zstd'
 declare const sealedServer: import('../index.js').RpcServer;
 declare const sealedBroker: import('../broker.js').Broker;
 broker.attachBrokerRpc(sealedServer, sealedBroker, { service: 'calc', encryption: { keys: 'k' } });
+// The reply address: the sealed one (default), or the carrier's for a broker that rewrites it
+broker.attachBrokerRpc(sealedServer, sealedBroker, { service: 'calc', encryption: { keys: 'k', reply: 'carrier' } });
+expectError(
+  broker.attachBrokerRpc(sealedServer, sealedBroker, { service: 'calc', encryption: { keys: 'k', reply: 'none' } }),
+);
 broker.createPublisher(
   sealedServer,
   sealedBroker,

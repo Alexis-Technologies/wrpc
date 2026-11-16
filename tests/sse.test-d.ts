@@ -11,6 +11,9 @@ expectType<Record<string, string>>(sse.SSE_HEADERS);
 
 // The parser is incremental: a chunk yields the events it completed
 const parser = new sse.SseParser();
+// One event is capped while it is put together (16 MiB by default)
+expectType<SseParser>(new sse.SseParser({ maxMessage: 1024 * 1024 }));
+expectError(new sse.SseParser({ maxMessage: '1MiB' }));
 expectType<Array<SseEvent>>(parser.push('data: hi\n\n'));
 const [event] = parser.push('');
 expectType<string | null>(event.id);

@@ -25,6 +25,8 @@ expectType<RpcServer>(wrpc.rpc);
 expectType<Engine>(wrpc.engine);
 expectType<EngineConnectionSource>(wrpc.wsServer);
 expectType<Promise<void>>(wrpc.close());
+expectType<Promise<void>>(wrpc.close({ drain: 5000 }));
+expectError(wrpc.close({ drain: '5s' }));
 
 // handler: express/connect middleware, (req, res, next) => void
 expectType<void>(wrpc.handler(req, res, () => {}));
