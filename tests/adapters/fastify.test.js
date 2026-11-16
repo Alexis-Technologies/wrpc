@@ -833,6 +833,63 @@ test('mirror: app routes become callable wrpc procedures', { skip: noFastify }, 
     assert.deepStrictEqual(stamped, ['ctx-string']);
   });
 
+  await t.test("the caller's headers never override the application's, and only listed names pass", async () => {
+    const app3 = fastify({ logger: false });
+    t.after(() => app3.close());
+    await app3.register(wrpcFastify, {
+      router: defineRouter({}),
+      logger: false,
+      mirror: {
+        access: 'public',
+        allowHeaders: ['X-Request-Id', 'x-user-id', 'x-forwarded-for'],
+        headers: () => ({ 'X-User-Id': 'from-session', Authorization: 'Bearer internal' }),
+      },
+    });
+    app3.get('/admin/users/:id', async (req) => ({
+      user: req.headers['x-user-id'],
+      auth: req.headers.authorization,
+      forwarded: req.headers['x-forwarded-for'] ?? null,
+      request: req.headers['x-request-id'] ?? null,
+      url: req.url,
+    }));
+    app3.get('/admin', async () => ({ reached: 'another route' }));
+    await app3.listen({ host: '127.0.0.1', port: 0 });
+    const client3 = await WrpcClient.connect(`ws://127.0.0.1:${app3.server.address().port}/api`, {
+      heartbeat: false,
+      reconnect: false,
+    });
+    t.after(() => void client3.close());
+    await client3.load('users');
+    const forged = {
+      'x-user-id': '1',
+      authorization: 'Bearer forged',
+      'x-forwarded-for': '10.0.0.1',
+      'x-request-id': 'r-7',
+    };
+    // It used to see user '1', the forged bearer and the forged address.
+    assert.deepStrictEqual(await client3.api.users.findById({ params: { id: '5' }, headers: forged }), {
+      user: 'from-session',
+      auth: 'Bearer internal',
+      forwarded: null, // listed by the application, refused all the same: never a client's to declare
+      request: 'r-7',
+      url: '/admin/users/5',
+    });
+    // A param that is a path of its own never leaves its route.
+    for (const id of ['..', '.', '']) {
+      await assert.rejects(client3.api.users.findById({ params: { id } }), (error) => {
+        assert.strictEqual(error.code, 400);
+        assert.match(error.message, /Invalid path param 'id'/);
+        return true;
+      });
+    }
+  });
+
+  await t.test('without allowHeaders no header of the caller reaches the route', async () => {
+    seenAuth.length = 0;
+    await client.api.projects.findAll({ headers: { 'x-auth': 'mine' } });
+    assert.deepStrictEqual(seenAuth, [null]);
+  });
+
   await t.test('mirrored signatures reach introspection', async () => {
     const res = await fetch(`http://127.0.0.1:${port}/api/system/introspect`);
     const packet = await res.json();

@@ -21,6 +21,7 @@
 // `signature` so `wrpc types` still types the mirrored methods.
 
 const { procedure } = require('../rpc/router.js');
+const { sanitizeDeclared } = require('../rpc/handshake.js');
 
 const HTTP_METHODS = new Set(['GET', 'HEAD', 'POST', 'PUT', 'PATCH', 'DELETE']);
 
@@ -153,7 +154,20 @@ const buildUrl = (url, params, query, stringify) => {
       error.expose = true;
       throw error;
     }
-    parts[i] = encodeURIComponent(String(value));
+    const text = String(value);
+    // A value that is a path of its own. `encodeURIComponent` leaves dots
+    // alone, and the URL the injected request is parsed as resolves them:
+    // `id: '..'` turned `/admin/users/:id` into `/admin/` — ANOTHER route,
+    // reached through a procedure named after this one. An empty value does
+    // the same one level down (`/users/`). Percent-encoding the dots would
+    // not help: a URL parser normalizes `%2e%2e` as well.
+    if (text === '' || text === '.' || text === '..') {
+      const error = new Error(`Invalid path param '${name}' for ${url}`);
+      error.code = 400;
+      error.expose = true;
+      throw error;
+    }
+    parts[i] = encodeURIComponent(text);
   }
   let built = parts.join('/');
   if (query && Object.keys(query).length > 0) {
@@ -163,14 +177,46 @@ const buildUrl = (url, params, query, stringify) => {
   return built;
 };
 
-const mirrorHandler = (fastify, route, mirror, stringify) => {
+// The headers of the injected request. What the application derives from the
+// context (`mirror.headers` — the session's token, a user id) always wins,
+// and of what the CALLER sent in `args.headers` only the names the
+// application listed pass (`mirror.allowHeaders`), through the sanitizer the
+// handshake's declared headers go through — none by default.
+//
+// It used to be `{ ...mirror.headers(context), ...headers }`: the caller's
+// spread last, so any procedure argument overrode the header the route
+// trusts for identity, and any header at all — `x-forwarded-for`, a proxy's
+// own `x-user-id` — reached a request that arrives from inside the process,
+// past whatever strips those at the edge. Names are compared lowercased, as
+// the injected request lowercases them anyway.
+const injectedHeaders = async (mirror, allow, context, headers) => {
+  const merged = {};
+  const passed = allow === null ? null : sanitizeDeclared(headers, allow);
+  if (passed !== null) for (const name in passed) merged[name] = passed[name];
+  if (mirror.headers) {
+    const own = await mirror.headers(context);
+    if (own) for (const name of Object.keys(own)) merged[name.toLowerCase()] = own[name];
+  }
+  return merged;
+};
+
+// `mirror.allowHeaders` → a Set of lowercase names, or null for none.
+const allowedNames = (value) => {
+  if (value === undefined || value === null) return null;
+  if (!Array.isArray(value) || !value.every((name) => typeof name === 'string' && name.length > 0)) {
+    throw new TypeError('wrpcFastify mirror: allowHeaders must be an array of header names');
+  }
+  return new Set(value.map((name) => name.toLowerCase()));
+};
+
+const mirrorHandler = (fastify, route, mirror, stringify, allow) => {
   const { method, url } = route;
   return async (context, { params = {}, query = {}, body, headers } = {}) => {
     const response = await fastify.inject({
       method,
       url: buildUrl(url, params, query, stringify),
       ...(body === undefined ? {} : { payload: body }),
-      headers: { ...(mirror.headers ? await mirror.headers(context) : {}), ...headers },
+      headers: await injectedHeaders(mirror, allow, context, headers),
     });
     const json = (response.headers['content-type'] ?? '').includes('json');
     const parsed = json ? response.json() : response.body;
@@ -191,6 +237,9 @@ const mirrorHandler = (fastify, route, mirror, stringify) => {
 const setupMirror = (fastify, rpc, options) => {
   const mirror = options.mirror === true ? {} : options.mirror;
   const stringify = options.querystring?.stringify ?? null;
+  // The caller-supplied header names a mirrored call may carry, or null for
+  // none (the default).
+  const allow = allowedNames(mirror.allowHeaders);
   const collected = [];
 
   fastify.addHook('onRoute', (route) => {
@@ -244,7 +293,7 @@ const setupMirror = (fastify, rpc, options) => {
           access: mirror.access ?? 'session',
           meta: { mirrored: { method: route.method, path: route.url } },
           ...(signature ? { signature } : {}),
-          handler: mirrorHandler(fastify, route, mirror, stringify),
+          handler: mirrorHandler(fastify, route, mirror, stringify, allow),
         }),
         enumerable: true,
         writable: true,

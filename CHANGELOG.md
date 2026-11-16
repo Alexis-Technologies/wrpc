@@ -220,6 +220,22 @@ narrower promise — see
   is a `TypeError`. And **`origins` given as one string is compared whole**:
   it used to reach `String.prototype.includes`, a substring test, so
   `origins: 'https://app.example.com'` admitted `https://app.example.co`.
+- **Fastify route mirroring: a caller cannot replace the headers the
+  application sets, nor leave the route it called.** A mirrored procedure
+  built its injected request from `{ ...mirror.headers(context), ...args.headers }`
+  — the caller's spread last. Any procedure argument overrode the header the
+  route trusts for identity (`mirror.headers` returning `x-user-id` from the
+  session; the caller sending `headers: { 'x-user-id': '1' }`), and any
+  header at all — a forged `authorization`, `x-forwarded-for` — reached a
+  request that arrives from inside the process, past whatever strips those
+  at the edge. The application's headers now always win, and of a caller's
+  only the names listed in the new `mirror.allowHeaders` pass (none by
+  default; `cookie`, `host`, `x-forwarded-*` and the rest of the handshake's
+  deny list never). And a path parameter of `..` — which the URL parser
+  resolved, turning `/admin/users/:id` into `/admin/`, **another route** —
+  is answered `400`, as are `.` and an empty value. **Changed** for a caller
+  that passed `args.headers` to a mirrored procedure: list the names it may
+  send.
 
 ## [2.1.0] - 2026-11-16
 

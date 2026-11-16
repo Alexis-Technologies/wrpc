@@ -88,8 +88,20 @@ export interface MirrorOptions {
   unit?(route: MirroredRoute): string | undefined;
   /** Overrides the reverse-REST default name (create/findAll/findById/...). */
   name?(route: MirroredRoute): string | undefined;
-  /** Maps the wrpc context into headers for the injected request (auth). */
+  /**
+   * Maps the wrpc context into headers for the injected request (auth).
+   * These always win over a header the caller sent under the same name.
+   */
   headers?(context: Context): Record<string, string> | Promise<Record<string, string>>;
+  /**
+   * The header names a caller may pass to a mirrored procedure in
+   * `args.headers` (`['x-request-id', 'accept-language']`). None by default:
+   * the injected request arrives from inside the process, past whatever
+   * strips client-supplied headers at the edge. Names the handshake never
+   * lets a client declare (`cookie`, `host`, `x-forwarded-*`, …) are refused
+   * here as well, listed or not.
+   */
+  allowHeaders?: Array<string>;
   /** Access level of the generated procedures. Default 'session'. */
   access?: 'public' | 'session';
 }
