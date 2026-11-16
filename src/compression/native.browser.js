@@ -5,9 +5,10 @@
 // flush control, no preset dictionary (a dictionary needs the codec of
 // @alexify/wrpc/deflate, injected). 'deflate-raw' is in every one of them;
 // 'brotli' and 'zstd' only in some, which the constructor answers — so a
-// format this browser lacks is null, never a throw, and a preference list
-// moves on to the next. Where the globals are missing the platform has no
-// codec at all and compression stays off unless one is injected.
+// format this browser lacks is null in a preference list, which moves on to
+// the next, and a TypeError when it is the only one asked for. Where the
+// globals are missing the platform has no codec at all and compression
+// stays off unless one is injected.
 //
 // The threshold is higher than Node's 1 KiB: a CompressionStream costs
 // ~46 µs per message against zlib's 7.5 µs, and without a dictionary a
@@ -46,7 +47,15 @@ const through = async (stream, bytes, maxOutput) => {
   return out;
 };
 
-const nativeCompressor = ({ algorithm = ID } = {}) => {
+// `optional`: the entry of a preference list — a format this browser lacks
+// answers null there, and the list moves on. Asked for ALONE, a format that
+// is not here is a TypeError, as on Node (native.js): it used to answer null
+// whatever was asked, so `codec: 'zstd'` in a browser without it built a
+// client that compressed nothing and said nothing. The default format is
+// the one exception, and stays null: with no CompressionStream at all the
+// platform has no codec, and `compression: true` is off until one is
+// injected.
+const nativeCompressor = ({ algorithm = ID, optional = false } = {}) => {
   if (algorithm !== ID && algorithm !== 'brotli' && algorithm !== 'zstd') {
     throw new TypeError(`compression: unknown algorithm ${JSON.stringify(algorithm)} — deflate-raw, brotli or zstd`);
   }
@@ -54,7 +63,8 @@ const nativeCompressor = ({ algorithm = ID } = {}) => {
     void new CompressionStream(algorithm);
     void new DecompressionStream(algorithm);
   } catch {
-    return null;
+    if (optional || algorithm === ID) return null;
+    throw new TypeError(`compression: this platform's CompressionStream has no ${algorithm}`);
   }
   return {
     id: algorithm,

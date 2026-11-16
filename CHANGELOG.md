@@ -128,6 +128,16 @@ narrower promise — see
   arithmetic. Both options now take a number from 1 to 2³¹ − 1 and throw a
   `TypeError` for anything else; leaving `callTimeout` out, or passing
   `0`/`false`/`null`, still means the default.
+- **In a browser, a compression format asked for alone and not available is
+  refused**, as it is on Node. The two halves of the platform codec had
+  drifted: `compression: { codec: 'zstd' }` (or `'brotli'`) on Node without
+  that format is a `TypeError`; in a browser whose `CompressionStream` lacks
+  it — most of them, today — the same option built a client that compressed
+  nothing and said nothing. It is a `TypeError` there too now. A format the
+  platform lacks is still skipped in a preference list
+  (`codec: ['zstd', 'deflate-raw']`), which is what a configuration shared
+  by Node and browsers wants, and `compression: true` on a platform with no
+  `CompressionStream` at all still means off until a codec is injected.
 
 
 ### Fixed

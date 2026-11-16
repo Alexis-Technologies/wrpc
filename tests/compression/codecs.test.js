@@ -150,7 +150,6 @@ test('native (browser): a format by name, null for one this CompressionStream la
   const input = text(300);
   const decoders = { brotli: zlib.brotliDecompressSync, zstd: zlib.zstdDecompressSync };
   for (const algorithm of ['brotli', 'zstd']) {
-    const codec = browser.nativeCompressor({ algorithm });
     let supported = true;
     try {
       void new CompressionStream(algorithm);
@@ -158,9 +157,13 @@ test('native (browser): a format by name, null for one this CompressionStream la
       supported = false;
     }
     if (!supported) {
-      assert.strictEqual(codec, null, `${algorithm}: not a format here, so no codec — never a throw`);
+      // Not a format here: no codec in a list, which moves on — and a
+      // TypeError when it is the only thing asked for, as on Node.
+      assert.strictEqual(browser.nativeCompressor({ algorithm, optional: true }), null);
+      assert.throws(() => browser.nativeCompressor({ algorithm }), /CompressionStream has no/);
       continue;
     }
+    const codec = browser.nativeCompressor({ algorithm });
     assert.strictEqual(codec.id, algorithm, 'the same id as the node half');
     const encoded = await codec.encode(input);
     assert.deepStrictEqual(new Uint8Array(await codec.decode(encoded, input.length)), input);
