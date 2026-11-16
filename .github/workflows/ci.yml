@@ -188,6 +188,12 @@ jobs:
         with:
           node-version: 22
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      # The install vercel.json runs for the deploy, so a docs build that
+      # passes here passes there. The site builds from JavaScript alone; the
+      # build scripts belong to native devDependencies of the test suites,
+      # and one of them (@confluentinc/kafka-javascript) has no prebuilt
+      # binary for the Node Vercel picks from `engines` — it compiles
+      # librdkafka from source, for longer than a deploy waits.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       # A broken docs build (including dead links) should fail the PR, not the deploy.
       - run: pnpm run docs:build

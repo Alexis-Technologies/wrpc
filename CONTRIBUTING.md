@@ -108,7 +108,9 @@ Three always-on jobs and four service jobs (`.github/workflows/ci.yml`):
   `--test-timeout=300000 --test-force-exit`: a file that outlives its tests
   fails in minutes instead of hanging to the job's timeout),
   `test:coverage:floors`, `test:types`
-- **docs** (Node 22) — `docs:build`, which fails on dead links
+- **docs** (Node 22) — `docs:build`, which fails on dead links, after the
+  install `vercel.json` runs for the deploy (`--ignore-scripts`: the site
+  needs no native build)
 - **redis**, **nats**, **rabbitmq**, **kafka** — the integration suites
   against a real server each (Redis 7.4, NATS 2.11 with JetStream — started
   through `compose.yaml`, since a GitHub service container cannot be given
