@@ -87,6 +87,14 @@ narrower promise — see
   first rate makes 7. The queue is a ring now (`src/deque.js`), created only
   on a connection that negotiated one of the two modes: every burst size
   sends at the same rate (`bench/ws-outbox.js`).
+- **A request whose session token could not be read leaves no client
+  behind.** An injected `sessions.transport` whose `read()` throws — on a
+  header it cannot parse — answered the request `500` and left its
+  server-side `Client` in `rpc.clients` for the life of the process: it was
+  registered before the token was read, and nothing listened for its close
+  yet. One per such request; they also counted into the cluster's presence
+  snapshot. The client is now unregistered and destroyed before the error
+  goes on to the caller.
 
 
 ### Security

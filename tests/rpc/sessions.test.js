@@ -526,3 +526,26 @@ test('sessions: a logout on one connection ends the session on the others of thi
   const late = await tab();
   await assert.rejects(late.api.auth.whoami(), (error) => error.code === 403);
 });
+
+test('a token transport whose read() throws answers 500 and leaves no client behind', async (t) => {
+  const { bootServer } = require('../helpers/server.js');
+  const router = defineRouter({ u: { q: procedure({ access: 'public', handler: async () => 'ok' }) } });
+  const transport = {
+    read: ({ headers }) => {
+      if (headers?.authorization === 'Bearer %%%') throw new Error('malformed token');
+      return null;
+    },
+    write: () => null,
+  };
+  const { server, origin } = await bootServer(t, { router, sessions: { transport } });
+  const call = (authorization) =>
+    fetch(origin + server.rpc.basePath, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(authorization ? { authorization } : {}) },
+      body: '{"type":"call","id":"1","method":"u/q","args":{}}',
+    });
+  for (let i = 0; i < 5; i++) assert.strictEqual((await call('Bearer %%%')).status, 500);
+  // Each of them used to stay registered for the life of the process.
+  assert.strictEqual(server.rpc.clients.size, 0);
+  assert.strictEqual((await call()).status, 200, 'the server still answers');
+});

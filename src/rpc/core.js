@@ -840,7 +840,24 @@ class RpcServer extends Emitter {
     // a hook that ran ahead of this assignment awaited the constructor's
     // resolved default and saw session === null. A thunk, not a promise —
     // the restore needs the client this method is what creates.
-    if (restore) client.sessionReady = restore(client);
+    if (restore) {
+      try {
+        client.sessionReady = restore(client);
+      } catch (error) {
+        // The thunk reads the request's token synchronously, through a
+        // transport the application may have injected (`sessions.transport`),
+        // and its `read` threw — on a header it could not parse, say. The
+        // request is answered by whoever called this (a 500), but the client
+        // was registered three lines up and nothing has subscribed to its
+        // transport's 'close' yet: it used to stay in `clients` for the life
+        // of the process, one for every such request.
+        this.#clients.delete(client);
+        this.#byId.delete(client.id);
+        this.#otel.recordConnection(-1, transport.kind, transport.revision);
+        client.destroy();
+        throw error;
+      }
+    }
     // Router-level connection lifecycle hooks. Contained (a throwing hook is
     // logged, never fatal — refusing a connection is verifyClient's job) but
     // ORDERED for dispatch: `client.ready` is session restore plus settled
