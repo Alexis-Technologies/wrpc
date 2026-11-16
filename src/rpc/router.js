@@ -269,6 +269,11 @@ class Procedure {
     this.access = access;
     this.input = input;
     this.output = output;
+    // Milliseconds a timer can hold, or 0 for none: anything else became a
+    // deadline of NaN (never) or of one millisecond with a warning per call.
+    if (!(typeof timeout === 'number' && timeout >= 0 && timeout < 2 ** 31)) {
+      throw new TypeError('procedure: timeout must be a number of milliseconds from 0 to 2^31 - 1');
+    }
     this.timeout = timeout;
     this.meta = meta;
     this.signature = signature;

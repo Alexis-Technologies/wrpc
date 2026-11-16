@@ -23,6 +23,8 @@ const CANCELLED = 499;
 // for unbounded work — the cap is what keeps a single message from being a
 // denial of service.
 const DEFAULT_MAX_BATCH = 128;
+// One past the longest delay a timer takes (2^31 - 1 ms, about 24.8 days).
+const MAX_TIMEOUT = 2 ** 31;
 
 // Peer-declared metadata: the optional `meta` field on call/subscribe/event
 // packets, and its connection-phase twin decoded in rpc/core. A plain
@@ -248,10 +250,14 @@ const handleRpc = async (client, packet, router) => {
           release(client, id, controller);
           return void client.error(code, { id });
         }
-        // The caller's per-call deadline, validated as a bounded positive
-        // number — an additive packet field, absent on every packet that
-        // never set CallOptions.timeout.
-        const budget = typeof packet.timeout === 'number' && packet.timeout > 0 ? packet.timeout : 0;
+        // The caller's per-call deadline — an additive packet field, absent on
+        // every packet that never set CallOptions.timeout — and a number a
+        // timer can hold. `1e400` parses to Infinity: a setTimeout that node
+        // clamps to one millisecond with a TimeoutOverflowWarning on stderr
+        // for every call, and a 408 nobody asked for. Out of range is no
+        // deadline of the caller's; the procedure's own still applies.
+        const asked = packet.timeout;
+        const budget = typeof asked === 'number' && asked > 0 && asked < MAX_TIMEOUT ? asked : 0;
         const result = await proc.invoke(context, args, hooks, compiled, budget);
         if (controller.signal.aborted) return void (status = 'cancelled');
         if (isError(result)) {

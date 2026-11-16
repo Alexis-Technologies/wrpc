@@ -102,3 +102,32 @@ test('a connection gate that rejects ends the subscription and frees its slot', 
   assert.strictEqual(received.find((packet) => packet.id === 's1').error.code, 503);
   assert.strictEqual(client.subscriptions.size, 0, 'the slot is given back');
 });
+
+test('a caller timeout no timer can hold is no deadline at all', async (t) => {
+  const { url } = await bootServer(t, { router });
+  const { socket, received } = await rawSocket(t, url);
+  const warnings = [];
+  const onWarning = (warning) => warnings.push(warning.name);
+  process.on('warning', onWarning);
+  t.after(() => process.off('warning', onWarning));
+  // 1e400 is Infinity once parsed; it used to arm a one-millisecond timer
+  // (with a TimeoutOverflowWarning) and answer 408.
+  socket.send('{"type":"call","id":"inf","method":"u/echo","args":{},"timeout":1e400}');
+  socket.send('{"type":"call","id":"big","method":"u/echo","args":{},"timeout":4294967296}');
+  socket.send('{"type":"call","id":"neg","method":"u/echo","args":{},"timeout":-5}');
+  await waitFor(() => received.length === 3);
+  assert.ok(
+    received.every((packet) => packet.error === undefined),
+    'every call ran to its answer',
+  );
+  await new Promise((resolve) => setImmediate(resolve));
+  assert.deepStrictEqual(warnings, []);
+});
+
+test('procedure: a timeout that is not a delay a timer can hold is refused at definition', () => {
+  for (const timeout of [Infinity, NaN, -1, 2 ** 31, '300']) {
+    assert.throws(() => procedure({ timeout, handler: async () => 1 }), /timeout must be a number of milliseconds/);
+  }
+  assert.doesNotThrow(() => procedure({ timeout: 0, handler: async () => 1 }));
+  assert.doesNotThrow(() => procedure({ timeout: 2 ** 31 - 1, handler: async () => 1 }));
+});

@@ -106,6 +106,16 @@ narrower promise — see
   code that answers (the context, a tracer's attributes, the connection's
   own gate for a subscription) releases the slot and answers `500`, or ends
   the subscription with the error's code.
+- **A call's `timeout` is a delay a timer can hold, or it is no deadline.**
+  The packet field was taken as it parsed: `"timeout":1e400` is `Infinity`,
+  and anything from 2³¹ up overflows a timer the same way — node arms it for
+  one millisecond and prints a `TimeoutOverflowWarning` to stderr, so every
+  such call wrote a warning and was answered `408` a millisecond later, as
+  fast as a peer cared to send them. A value outside `0 < timeout < 2³¹` is
+  now no caller deadline at all (the procedure's own still applies).
+  `procedure({ timeout })` refuses the same range at definition with a
+  `TypeError` — `Infinity`, `NaN`, a string, a negative number — where it
+  used to give a procedure that never timed out, or timed out at once.
 
 ## [2.1.0] - 2026-11-16
 
