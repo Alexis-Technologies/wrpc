@@ -111,8 +111,13 @@ class BrokerSessionTransport extends ServerTransport {
 
   #send(data, options) {
     if (this.#closed) return false;
-    const seq = ++this.#seq;
-    this.#unconfirmed++;
+    // Numbered once it exists. Building the frame can throw — sealing asks a
+    // key provider, and a provider is a network call somewhere — and the
+    // number used to be taken first: the frame that failed was never sent,
+    // the next one left with a gap in front of it and the peer dropped the
+    // session for it; the count below was never given back either, so
+    // write() answered false for good.
+    const seq = this.#seq + 1;
     const frame = sessionFrame(
       this.#sealing,
       this.#peer,
@@ -123,6 +128,8 @@ class BrokerSessionTransport extends ServerTransport {
       options,
       this.#failed,
     );
+    this.#seq = seq;
+    this.#unconfirmed++;
     this.#direct.send(this.#peer, frame.body, { headers: frame.headers, correlationId: this.#session }).then(
       () => this.#confirmed(),
       (error) => {

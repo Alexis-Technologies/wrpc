@@ -627,3 +627,32 @@ test("broker encryption: reply: 'carrier' answers where the carrier says; anythi
   });
   t.after(() => handle.stop());
 });
+
+test('broker encryption: a frame that could not be sealed takes no sequence number — the session goes on', async (t) => {
+  const master = generateKey();
+  let down = false;
+  // Asked which key is current on every seal: that is where it fails.
+  const flaky = {
+    current: () => {
+      if (down) throw new Error('vault unreachable');
+      return 'a';
+    },
+    get: (kid) => (kid === 'a' ? master : null),
+  };
+  const { handle, connect } = await boot(t, {
+    attach: { encryption: { keys: { current: () => 'a', get: () => master } } },
+  });
+  const client = await connect({ mode: 'session', encryption: { keys: flaky } });
+  client.on('error', () => {});
+  await client.load('calc');
+  assert.deepStrictEqual(await client.api.calc.echo({ n: 1 }), { n: 1 });
+  // The provider fails for one frame: that call is lost, and says so.
+  down = true;
+  await assert.rejects(async () => client.api.calc.echo({ n: 2 }));
+  down = false;
+  // It used to leave a gap in the numbering: the service dropped the session
+  // on the next frame, and write() answered "not drained" for good.
+  assert.deepStrictEqual(await client.api.calc.echo({ n: 3 }), { n: 3 });
+  assert.strictEqual(handle.sessions, 1, 'the same session');
+  assert.strictEqual(client.active, true);
+});

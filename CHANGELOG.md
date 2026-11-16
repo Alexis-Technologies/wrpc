@@ -269,6 +269,14 @@ narrower promise — see
   and the link was abandoned about 400 ms after it failed, while the
   initiator's own dial had thirty seconds to succeed. The wait is the
   link's default connect timeout (30 s) unless the peer sets its own.
+- **Broker RPC: a frame that could not be sealed does not cost the
+  session.** Both ends of a session took a frame's sequence number, and its
+  place in the backpressure count, before building it — and building it
+  asks the key provider, which may be a network call. A provider that threw
+  once left a hole in the numbering: the frame was never sent, the next one
+  arrived with a gap in front of it and the peer ended the session for it;
+  and `write()` answered `false` from then on, with nothing in flight. A
+  frame is numbered, and counted, once it exists.
 
 
 ### Security

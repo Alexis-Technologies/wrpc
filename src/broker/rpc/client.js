@@ -279,10 +279,14 @@ class ClientBrokerTransport extends ClientTransport {
   write(data, options = null) {
     if (!this.active) throw new Error('Not connected');
     if (this.mode === 'stateless') return this.#request(data);
-    const seq = ++this.#seq;
-    this.#unconfirmed++;
+    // Numbered once it exists: a frame that could not be built (a key
+    // provider that threw) takes no sequence number and no place in the
+    // backpressure count — see BrokerSessionTransport#send.
+    const seq = this.#seq + 1;
     const generation = this.#generation;
     const frame = sessionFrame(this.#sealing, this.#remote, this.#session, seq, data, this.#active, options);
+    this.#seq = seq;
+    this.#unconfirmed++;
     this.#direct
       .send(this.#remote, frame.body, {
         headers: frame.headers,
