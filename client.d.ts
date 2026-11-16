@@ -1263,7 +1263,12 @@ export interface WrpcClientOptions {
   address?: string;
   /** With `transport: 'broker'`: how long the broker may hold a request nobody took (ms). */
   requestTimeout?: number;
-  /** @experimental With `transport: 'broker'`: the largest inflated frame accepted (default 16 MiB). */
+  /**
+   * @experimental With `transport: 'broker'`: the largest inflated frame
+   * accepted (default 16 MiB). With `transport: 'sse'`: the characters one
+   * event of the stream may hold while it is put together (default 16 MiB)
+   * — past it the stream is an error and the connection reconnects.
+   */
   maxMessage?: number;
   /**
    * Off by default, unlike the server: a client that printed on every

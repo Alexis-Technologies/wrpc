@@ -314,6 +314,20 @@ narrower promise — see
   is answered `400`, as are `.` and an empty value. **Changed** for a caller
   that passed `args.headers` to a mirrored procedure: list the names it may
   send.
+- **The SSE client reads its event stream in linear time, and an event has
+  a size.** The parser appended every chunk to one string, scanned that
+  string again from its start for a line end, and cut the string — so a
+  line that did not end cost the square of its length: 250 KiB in 1 KiB
+  chunks took 0.1 s, 1 MiB 1.65 s, 2 MiB 6.4 s, all of it a page's main
+  thread, and nothing bounded what was kept. A server, or a proxy in front
+  of it that mangles the stream, could freeze the page with a few megabytes.
+  A chunk is scanned once now and an open line is kept as the pieces it
+  arrived in (2 MiB: 6 ms; 8 MiB: 15 ms). What one event may hold while it
+  is put together — its `data:` lines and the line still open — is
+  `maxMessage` characters (16 MiB by default, the client option the
+  WebTransport and broker transports already read, and a constructor option
+  of the exported `SseParser`); past it the stream is an error, its body is
+  cancelled and the connection reconnects.
 
 ## [2.1.0] - 2026-11-16
 

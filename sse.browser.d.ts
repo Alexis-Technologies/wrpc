@@ -21,6 +21,14 @@ export interface SseEvent {
  * multi-line data.
  */
 export declare class SseParser {
+  /**
+   * `maxMessage`: the characters one event may hold while it is being put
+   * together — its `data:` lines and the line still open (default 16 MiB).
+   * Past it `push()` throws: an event stream that never ends a line, or an
+   * event, would otherwise be kept whole.
+   */
+  constructor(options?: { maxMessage?: number });
+  /** Feeds a chunk and returns the events it completed. */
   push(chunk: string): Array<SseEvent>;
 }
 
