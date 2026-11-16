@@ -828,6 +828,22 @@ test('cluster replay: an envelope outside the clock window is refused; maxSkew s
   );
 });
 
+test('cluster: an envelope type nobody defined is one metric series, however many are made up', async (t) => {
+  const backplane = new MemoryBackplane();
+  const metrics = createMetrics();
+  boot(t, backplane, { instanceId: 'a', telemetry: { meter: metrics.meter } });
+  await settle(20);
+  for (let i = 0; i < 200; i++) {
+    backplane.publish('cluster', JSON.stringify({ v: 1, from: 'stranger', epoch: 'e1', t: `made-up-${i}` }));
+  }
+  backplane.publish('cluster', JSON.stringify({ v: 1, from: 'stranger', epoch: 'e1', t: 42 }));
+  await settle(20);
+  const series = (await metrics.collect())
+    .find((metric) => metric.descriptor.name === 'wrpc.cluster.messages')
+    .dataPoints.map((entry) => [entry.attributes['wrpc.cluster.type'], entry.value]);
+  assert.deepStrictEqual(series, [['<unknown>', 201]]);
+});
+
 test("cluster replay: what replay: 'accept' lets through is counted and said — the way to know the option can go", async (t) => {
   const backplane = new MemoryBackplane();
   const log = recorder();

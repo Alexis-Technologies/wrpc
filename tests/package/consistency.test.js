@@ -731,6 +731,78 @@ test('the logging guide catalogues every log event the source writes, and nothin
   assert.deepStrictEqual(stale, [], 'catalogue rows for events the source no longer writes');
 });
 
+// docs/guide/telemetry.md is the catalogue of what the telemetry writers emit
+// — the instrument names dashboards are built on, and the attribute keys
+// their series are split by. Ten keys were in the source and nowhere in the
+// docs; this keeps the two lists one, in both directions.
+test('the telemetry guide names every instrument and attribute the source writes, and nothing it does not', () => {
+  const { readdirSync, readFileSync } = require('node:fs');
+  const walk = (dir, out = []) => {
+    for (const entry of readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+      const relative = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) walk(relative, out);
+      else if (entry.name.endsWith('.js')) out.push(relative);
+    }
+    return out;
+  };
+  const NAME = "'((?:wrpc|rpc|messaging|network|error)\\.[a-z0-9_.]+)'";
+  // How a name becomes telemetry in src/: an instrument is created by name,
+  // an attribute is a key of an object literal, a key assigned by index, or
+  // the first argument of setAttribute.
+  const INSTRUMENT = new RegExp(`\\bcreate(?:Counter|Histogram|UpDownCounter)\\(\\s*${NAME}`, 'g');
+  const ATTRIBUTES = [
+    new RegExp(`${NAME}\\s*:`, 'g'),
+    new RegExp(`\\[${NAME}\\]\\s*=`, 'g'),
+    new RegExp(`setAttribute\\??\\.?\\(\\s*${NAME}`, 'g'),
+  ];
+  const instruments = new Map();
+  const attributes = new Map();
+  for (const file of walk('src')) {
+    const text = readFileSync(path.join(ROOT, file), 'utf8');
+    for (const match of text.matchAll(INSTRUMENT)) instruments.set(match[1], file);
+    for (const pattern of ATTRIBUTES) {
+      for (const match of text.matchAll(pattern)) if (!attributes.has(match[1])) attributes.set(match[1], file);
+    }
+  }
+  assert.ok(instruments.size >= 39, `found only ${instruments.size} instruments — a pattern stopped matching`);
+  assert.ok(attributes.size >= 40, `found only ${attributes.size} attribute keys — a pattern stopped matching`);
+
+  const guide = read('docs/guide/telemetry.md');
+  const mentioned = new Set(Array.from(guide.matchAll(/`([a-z][a-z0-9_.]*)`/g), (match) => match[1]));
+  const missing = (names) =>
+    Array.from(names)
+      .filter(([name]) => !mentioned.has(name))
+      .map(([name, file]) => `${name} (${file})`);
+  assert.deepStrictEqual(missing(attributes), [], 'attribute keys with no mention in docs/guide/telemetry.md');
+
+  // Instruments: the first cell of every row of the Metrics table — the
+  // block right under the heading — both ways.
+  const table = guide.slice(guide.indexOf('## Metrics')).split('\n\n')[1];
+  const rows = new Set(Array.from(table.matchAll(/^\| `([^`]+)` \|/gm), (match) => match[1]));
+  assert.deepStrictEqual(
+    Array.from(instruments.keys()).filter((name) => !rows.has(name)),
+    [],
+    'instruments with no row in the Metrics table',
+  );
+  assert.deepStrictEqual(
+    Array.from(rows).filter((name) => !instruments.has(name)),
+    [],
+    'Metrics rows for instruments the source no longer creates',
+  );
+
+  // And the other direction for everything else the guide names in these
+  // namespaces: an attribute that was renamed or removed leaves its mention
+  // behind. `wrpc.rtc.*` and `wrpc.broker.*` are how the prose names a family.
+  const stale = Array.from(mentioned).filter(
+    (name) =>
+      /^(?:wrpc|rpc|messaging|network)\.[a-z0-9_.]+$/.test(name) &&
+      !name.endsWith('.') &&
+      !instruments.has(name) &&
+      !attributes.has(name),
+  );
+  assert.deepStrictEqual(stale, [], 'names in the telemetry guide that the source no longer writes');
+});
+
 // CLAUDE.md is loaded into every agent session as binding instructions, so a
 // reference in it that points nowhere is an instruction to look at the wrong
 // code. Three things are held: no line numbers (they drift within days —

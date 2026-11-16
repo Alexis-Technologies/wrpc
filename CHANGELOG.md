@@ -308,6 +308,7 @@ narrower promise — see
   One loop now reads at most 8,192 topics, on a connection of its own, and
   a busier instance runs more loops. The stream a returned row belongs to
   is found through a map, where it was a scan of every key for every row.
+- **`wrpc.cluster.messages` is labelled with a closed set of envelope types.** Its `wrpc.cluster.type` attribute was the `t` of whatever was published to the cluster channel, so on a backplane without `cluster.secret` each made-up type was a metric series of its own — 200 envelopes, 200 series. Anything outside the ten types the cluster speaks is counted under `<unknown>`. The telemetry guide now tables every metric and span attribute with its values (ten keys were written and documented nowhere), and a guard keeps the guide and the source the same list in both directions.
 
 
 ### Security

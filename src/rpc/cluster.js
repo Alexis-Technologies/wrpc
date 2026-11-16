@@ -94,6 +94,10 @@ const instanceOfClientId = (id) => {
   return dot > 0 ? id.slice(0, dot) : null;
 };
 
+// What an envelope's `t` may be. The metric that counts envelopes is labelled
+// with it, and the value is whatever was published to the channel: anything
+// outside this set is one `<unknown>` series, not a series of its own.
+const ENVELOPE_TYPES = new Set(['hello', 'state', 'digest', 'sync', 'delta', 'bye', 'e', 'q', 'a', 'cmd']);
 // Refusal keys remembered for rate-limiting their lines at once (#loud).
 const MAX_REFUSED_KEYS = 1024;
 // Refusals in a row for a sender's clock before it is called 'degraded'.
@@ -1048,7 +1052,7 @@ class Cluster extends Emitter {
     const { from, epoch, t } = envelope;
     if (from === this.#instance || typeof from !== 'string' || from.length === 0) return;
     if (this.#secret && !(this.#verify(envelope, from, binary) && this.#admit(envelope, from, channel))) return;
-    this.#otel.recordClusterMessage(typeof t === 'string' ? t : '<unknown>');
+    this.#otel.recordClusterMessage(ENVELOPE_TYPES.has(t) ? t : '<unknown>');
     if (t === 'bye') {
       // Only the life we actually track may say goodbye: a bye from a
       // PREVIOUS epoch, arriving late while the restarted process is
