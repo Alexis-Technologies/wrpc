@@ -82,6 +82,10 @@ const socketTransportFor = (kind) => {
   return ServerWsTransport;
 };
 
+// The REST leg's trace context arrives as REAL HTTP headers (the client's
+// #restCall injects traceparent/tracestate — there is no packet on the wire
+// to carry tp/ts). Mapped onto the synthetic packet's tp/ts fields, the
+// ordinary extract path in the telemetry writer picks them up, so a REST
 // call joins the caller's trace exactly like a packet call does.
 const copyTraceHeaders = (headers, packet) => {
   const parent = headers?.traceparent;

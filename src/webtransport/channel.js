@@ -551,7 +551,6 @@ class WtChannel {
 
   // --- the end --------------------------------------------------------
 
-  /** This end is over: nothing more is delivered, sent or counted. Says nothing to the peer. */
   /**
    * What an end awaits between the session's graceful end and its own:
    * resolves once the messages an asynchronous codec is still inflating
@@ -569,6 +568,7 @@ class WtChannel {
     });
   }
 
+  /** This end is over: nothing more is delivered, sent or counted. Says nothing to the peer. */
   shut() {
     if (this.#closed) return;
     this.#closed = true;
