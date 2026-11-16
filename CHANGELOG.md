@@ -213,6 +213,19 @@ narrower promise — see
   it remembers that way are bounded (1,024), and an id in one of these error
   messages — it is the server's text — is bounded and stripped of control
   characters like a stream's name.
+- **Behind a worker, a page's events and its batched calls reach the
+  server.** `WrpcClientProxy` required an `id` of everything a page sent
+  that was not a ping — and an event has none, by protocol, and a batch
+  (the page's `batch: true`) is an array. Both were dropped at the proxy
+  with nothing said to anybody: `client.sendEvent()` from a page behind a
+  SharedWorker or a ServiceWorker never arrived, and every batched call
+  waited out its `callTimeout` and failed `408`. An event is forwarded now;
+  a batch goes up whole, each of its calls tracked to the page that sent
+  it, and a batch the proxy cannot forward answers each call with the coded
+  error at once. Where the answers to a batch come back in one frame (a
+  request/response uplink) each goes to its own page, where the frame used
+  to be broadcast to every page. A page on this release behind a worker
+  still running an older one keeps the old behaviour: update the worker.
 
 
 ### Security
