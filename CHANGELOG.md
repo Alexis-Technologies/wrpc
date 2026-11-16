@@ -119,6 +119,12 @@ narrower promise — see
   yet. One per such request; they also counted into the cluster's presence
   snapshot. The client is now unregistered and destroyed before the error
   goes on to the caller.
+- **`delete session.state.key` is saved.** Assigning to `session.state`
+  reaches the session store; removing a key changed the object in memory and
+  nothing else — the proxy had no trap for it — so the session's next
+  connection, or the same one after a reconnect, had the key back from the
+  store. A removal is written like an assignment now, coalesced with the
+  rest of the turn.
 
 
 ### Security

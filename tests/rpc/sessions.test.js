@@ -549,3 +549,23 @@ test('a token transport whose read() throws answers 500 and leaves no client beh
   assert.strictEqual(server.rpc.clients.size, 0);
   assert.strictEqual((await call()).status, 200, 'the server still answers');
 });
+
+test('session state: deleting a key is saved, like setting one', async () => {
+  const { createProxy } = require('../../src/rpc/sessions.js');
+  const writes = [];
+  const state = createProxy({ a: 1, b: 2 }, (target) => writes.push(JSON.stringify(target)));
+  delete state.a;
+  assert.deepStrictEqual(writes, ['{"b":2}'], 'the removal reached the store');
+  // Nothing to remove, nothing to save.
+  delete state.never;
+  assert.strictEqual(writes.length, 1);
+  assert.strictEqual('a' in state, false);
+
+  const store = new MemorySessionStore();
+  const manager = new SessionManager({ store });
+  const session = manager.create(undefined, { cart: ['x'], user: 'ada' });
+  await settle();
+  delete session.state.cart;
+  await settle();
+  assert.deepStrictEqual(await store.get(session.token), { user: 'ada' });
+});
