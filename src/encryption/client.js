@@ -37,6 +37,8 @@ const {
   FRAME_HANDSHAKE,
   DEFAULT_REKEY_AFTER,
   DEFAULT_HANDSHAKE_TIMEOUT,
+  MAX_HELD,
+  MAX_HELD_BYTES,
 } = require('./session.js');
 
 const resolveCipher = (value) => {
@@ -200,6 +202,7 @@ const createEncryption = (options = {}) => {
     };
 
     let queued = 0;
+    let held = 0;
     let chain = begin();
     chain.catch(abort);
 
@@ -229,8 +232,18 @@ const createEncryption = (options = {}) => {
         if (typeof data === 'string') return void abort(new Error('encryption: plaintext on an encrypted connection'));
         const bytes = asBytes(data);
         if (channel !== null && queued === 0) return void open(bytes);
+        // What waits behind this end's handshake is the server's to grow.
         queued++;
-        chain = chain.then(() => step(bytes)).then(() => void queued--);
+        held += bytes.length;
+        if (queued > MAX_HELD || held > MAX_HELD_BYTES) {
+          return void abort(new Error('encryption: too much sent before the handshake finished'));
+        }
+        chain = chain
+          .then(() => step(bytes))
+          .then(() => {
+            queued--;
+            held -= bytes.length;
+          });
         chain.catch(abort);
       },
     };

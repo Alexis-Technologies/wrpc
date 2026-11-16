@@ -39,6 +39,8 @@ const {
   FRAME_HANDSHAKE,
   DEFAULT_REKEY_AFTER,
   DEFAULT_HANDSHAKE_TIMEOUT,
+  MAX_HELD,
+  MAX_HELD_BYTES,
 } = require('./session.js');
 
 const DEFAULT_PATTERNS = Object.freeze(['NK', 'XX']);
@@ -229,6 +231,7 @@ class SealedSocket extends EventEmitter {
   #queuedShared = 0;
   #droppedShared = 0;
   #pending = 0;
+  #held = 0;
   #chain = Promise.resolve();
   #dead = false;
   #record;
@@ -302,11 +305,19 @@ class SealedSocket extends EventEmitter {
     const bytes = asBuffer(data);
     // Established and nothing of the handshake still in flight: the hot path.
     if (this.#channel !== null && this.#pending === 0) return void this.#open(bytes);
+    // Behind a handshake still in flight — a key provider, an authorize
+    // hook that asks someone — the peer's frames wait in order, and what
+    // waits is the peer's to grow: counted, in frames and in bytes.
     this.#pending++;
+    this.#held += bytes.length;
+    if (this.#pending > MAX_HELD || this.#held > MAX_HELD_BYTES) return void this.#end(CLOSE_POLICY, 'held');
     this.#chain = this.#chain
       .then(() => this.#step(bytes))
       .then(
-        () => void this.#pending--,
+        () => {
+          this.#pending--;
+          this.#held -= bytes.length;
+        },
         (error) => {
           this.#log.debug?.({ event: 'encryption.handshake', err: error });
           this.#end(CLOSE_PROTOCOL, 'handshake');

@@ -337,6 +337,15 @@ counted, and said once when its handshake completes
 client its connection. A client is a member of nothing before `open()`
 resolves anyway — a broadcast during its handshake is best effort.
 
+The other direction is bounded too. A peer can be established before this
+end is — a client the moment it read the server's message, while the server
+is still asking its `authorize` hook; a server while the client's
+`verifyServer` is — and what it sends meanwhile waits, in order, behind the
+hook: up to 4,096 frames or 4 MiB, past which the connection is closed
+(`1008`, reason `held`, on the server; a failed `open()` on the client).
+What a connection says when it opens — its subscriptions again, a first
+call — is far inside that; a hook that takes seconds is the thing to fix.
+
 ### `required`
 
 ```js

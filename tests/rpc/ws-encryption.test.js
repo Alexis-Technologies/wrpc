@@ -6,7 +6,7 @@ const timers = require('node:timers/promises');
 
 const { defineRouter, procedure, WrpcClient } = require('../../index.js');
 const { createEncryption, generateKey } = require('../../encryption.js');
-const { DEFAULT_REKEY_AFTER } = require('../../src/encryption/session.js');
+const { DEFAULT_REKEY_AFTER, MAX_HELD, MAX_HELD_BYTES } = require('../../src/encryption/session.js');
 const { normalizeServerEncryption } = require('../../src/encryption/server.js');
 const { createUwsEngine } = require('../../uws.js');
 const { FRAME_MARK, FRAME_HANDSHAKE, FRAME_SEALED } = require('../../src/wire.js');
@@ -780,6 +780,108 @@ test('ws encryption: a server that sends without bound before the handshake is c
   };
   const booted = await bootServer(t, { router: routerWith(hooks), encryption: { keys: generateKey() } });
   assert.strictEqual((await rawClose(`${booted.url}?wrpc_e=1`)).code, 1008);
+});
+
+// A peer that finished ITS handshake while the server is still asking its
+// authorize hook: what it sends meanwhile waits behind the hook.
+const heldBehindAuthorize = async (t, act) => {
+  const entries = [];
+  const writer = { level: 'debug', child: () => writer };
+  for (const level of ['debug', 'info', 'warn', 'error']) {
+    writer[level] = (entry) => entries.push({ level, ...entry });
+  }
+  let admit;
+  const asked = new Promise((resolve) => {
+    admit = resolve;
+  });
+  const booted = await bootServer(t, {
+    router,
+    logger: writer,
+    encryption: { keys: generateKey(), authorize: () => asked },
+  });
+  t.after(() => admit(false));
+  const serverKey = await booted.server.rpc.encryptionKey();
+  const close = await rawClose(`${booted.url}?wrpc_e=1`, (raw) => {
+    const session = createEncryption({ serverKey }).secure({
+      kind: 'ws',
+      write: (bytes) => raw.sendBinary(Buffer.from(bytes)),
+      deliver() {},
+      fail() {},
+    });
+    raw.on('frame', (opcode, payload) => {
+      if (opcode === 0x2) session.receive(payload);
+    });
+    session.ready.then(
+      () => act(raw, session),
+      () => {},
+    );
+  });
+  return { close, refusals: entries.filter((e) => e.event === 'encryption.refused').map((e) => e.reason) };
+};
+
+test('ws encryption: frames sent while the handshake is still running are held to a count', async (t) => {
+  const { close, refusals } = await heldBehindAuthorize(t, (raw) => {
+    for (let i = 0; i <= MAX_HELD; i++) raw.sendBinary(Buffer.from([0, 6]));
+  });
+  assert.deepStrictEqual(close, { code: 1008, reason: 'encryption' });
+  assert.deepStrictEqual(refusals, ['held']);
+});
+
+test('ws encryption: frames sent while the handshake is still running are held to their bytes', async (t) => {
+  const frame = Buffer.alloc(512 * 1024);
+  frame[1] = 6;
+  const { close, refusals } = await heldBehindAuthorize(t, (raw) => {
+    for (let sent = 0; sent <= MAX_HELD_BYTES; sent += frame.length) raw.sendBinary(frame);
+  });
+  assert.deepStrictEqual(close, { code: 1008, reason: 'encryption' });
+  assert.deepStrictEqual(refusals, ['held']);
+});
+
+test('ws encryption: what a client says while the server is still authorizing it is answered, in order', async (t) => {
+  let admit;
+  const asked = new Promise((resolve) => {
+    admit = resolve;
+  });
+  const { url, serverKey } = await secure(t, { encryption: { keys: generateKey(), authorize: () => asked } });
+  const client = await connectClient(t, url, {
+    encryption: createEncryption({ pattern: 'XX', staticKey: generateKey(), serverKey }),
+  });
+  const calls = [];
+  for (let i = 0; i < 300; i++) calls.push(client.call('data/echo', { i }));
+  await timers.setTimeout(50);
+  admit(true);
+  const answers = await Promise.all(calls);
+  assert.deepStrictEqual(
+    answers.map((answer) => answer.i),
+    Array.from({ length: 300 }, (_, i) => i),
+  );
+});
+
+test('ws encryption: a client holds what a server sends before the handshake finished to a bound', async () => {
+  // XX with a verifyServer that is still asking: the server's frames wait.
+  for (const [frames, size] of [
+    [MAX_HELD + 1, 2],
+    [MAX_HELD_BYTES / (512 * 1024) + 1, 512 * 1024],
+  ]) {
+    const failures = [];
+    const session = createEncryption({
+      pattern: 'XX',
+      staticKey: generateKey(),
+      verifyServer: async () => true,
+    }).secure({
+      kind: 'ws',
+      write() {},
+      deliver() {},
+      fail: (error) => failures.push(error.message),
+    });
+    session.ready.catch(() => {});
+    const bytes = new Uint8Array(size);
+    for (let i = 0; i < frames - 1; i++) session.receive(bytes);
+    assert.deepStrictEqual(failures, [], 'within the bound nothing is refused yet');
+    session.receive(bytes);
+    assert.deepStrictEqual(failures, ['encryption: too much sent before the handshake finished']);
+    await assert.rejects(session.ready, /too much sent/);
+  }
 });
 
 test('ws encryption: the option is validated where the server is built', async (t) => {

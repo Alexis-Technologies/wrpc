@@ -455,6 +455,7 @@ narrower promise — see
   `attachBrokerRpc(..., { encryption: { reply: 'carrier' } })`. Re-running a
   replayed request on ANOTHER instance of the service is still what a shared
   `encryption.replay` memory is for.
+- **Session encryption: what a peer sends while this end's handshake is still running is bounded.** A peer can be established before the other end is — a client while the server still awaits its key provider or `authorize` hook, a server while the client's `verifyServer` is asking — and its frames waited behind the hook in a chain nothing counted: 2,000 frames of 64 KiB held 40 MiB on one connection until the handshake timeout. They are held up to 4,096 frames or 4 MiB now; past that the server closes the connection (`1008`, `encryption.refused` with `reason: 'held'`) and the client fails its `open()`. What a connection says when it opens is far inside the bound.
 
 ## [2.1.0] - 2026-11-16
 

@@ -31,6 +31,14 @@ const INNER_TEXT = 0;
 const INNER_BYTES = 1;
 const DEFAULT_REKEY_AFTER = 1 << 20;
 const DEFAULT_HANDSHAKE_TIMEOUT = 10000;
+// What a peer may send while this end's handshake is still running: its
+// frames wait, in order, behind the steps that are asynchronous — a key
+// provider, an authorize or verifyServer hook that asks someone. A peer that
+// is itself established says what a connection says when it opens (its
+// subscriptions again, a first call); one that says more than this is held
+// to it rather than to the handshake timeout times its bandwidth.
+const MAX_HELD = 4096;
+const MAX_HELD_BYTES = 4 * 1024 * 1024;
 
 const decoder = new TextDecoder('utf-8', { fatal: true });
 const encoder = new TextEncoder();
@@ -168,4 +176,6 @@ module.exports = {
   FRAME_SEALED,
   DEFAULT_REKEY_AFTER,
   DEFAULT_HANDSHAKE_TIMEOUT,
+  MAX_HELD,
+  MAX_HELD_BYTES,
 };
