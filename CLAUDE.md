@@ -51,7 +51,7 @@ node --test tests/adapters/*.test.js       # adapter suites (node --test takes f
 pnpm test:types        # type-check tests/*.test-d.ts against index.d.ts via tsd
 pnpm test:coverage     # c8 coverage over src/ (thresholds: 95% lines/statements, 90% branches, 95% functions)
 pnpm test:ci           # test:coverage + --test-timeout=300000 --test-force-exit — what CI's test job runs; never the local default (a leak must stay visible)
-pnpm test:coverage:floors  # per-FILE floors for the directories new in 2.0 (scripts/coverage-floors.js); reads coverage/tmp, so run it right after test:coverage. A floor only moves up
+pnpm test:coverage:floors  # per-FILE floors, a directory at a time (scripts/coverage-floors.js); reads coverage/tmp, so run it right after test:coverage. A floor only moves up
 pnpm test:perf         # 1 GiB stream memory guard (tests/perf/, non-.test.js so node --test skips it)
 WRPC_RTC=node-datachannel node --test tests/webrtc/node-datachannel.integration.test.js   # WebRTC port contract against a real implementation (manual, like Redis)
 WRPC_WT=fails node --test tests/wt/fails.integration.test.js   # WebTransport over @fails-components/webtransport (native binary) — manual, not in CI

@@ -1,6 +1,6 @@
 'use strict';
 
-// Per-file coverage floors for the directories that are new in 2.0.
+// Per-file coverage floors, a directory at a time.
 //
 // `pnpm test:coverage` checks the GLOBAL thresholds (95 lines, 90 branches,
 // 95 functions), and a global threshold is an average: a new adapter at 80%
@@ -8,12 +8,15 @@
 // below are held per FILE instead — each file in them must stay at or above
 // its directory's floor.
 //
-// Only the new directories: the 1.0 files that sit below these numbers
-// (client/proxy.js, adapters/express.js, …) predate the rule, and a floor
-// low enough to admit them would hold nothing. The floors start a little
-// under what each directory's weakest file measured when they were set
-// (the margin is run-to-run noise in timing-dependent branches) and move
-// one way: UP, as the weakest file improves — never down to let a change in.
+// It began with the directories that were new in 2.0; the ones 1.0 already
+// had were left out because a few of their files sat below those numbers,
+// and one floor low enough to admit them would have held nothing. So each
+// directory has its OWN floor: the client's SSE transport was at 87 % lines
+// with its 409, gap and refused-POST branches run by no test, and nothing
+// said so. The floors start a little under what each directory's weakest
+// file measured when they were set (the margin is run-to-run noise in
+// timing-dependent branches) and move one way: UP, as the weakest file
+// improves — never down to let a change in.
 //
 // Reads the coverage the last c8 run left in coverage/tmp and reruns
 // nothing, so it goes right after test:coverage / test:ci:
@@ -29,7 +32,19 @@ const { spawnSync } = require('node:child_process');
 //   webrtc        96.7 / 89.2 / 94.4   (host.js, mesh.js)
 //   compression   99.0 / 94.7 / 100    (index.js, dictionary.js)
 //   deflate       98.8 / 91.0 / 94.1   (inflate.js, deflate.js)
+//
+// Measured 2026-11-16, the directories 1.0 already had:
+//   sse           94.9 / 88.9 / 95.8   (server.js, constants.js, client.js)
+//   client        97.6 / 89.7 / 95.5   (transports.js, proxy.js, webtransport.js)
+//   rpc           92.6 / 87.8 / 84.6   (subscriptions.js, client.js)
+//   websocket     98.2 / 86.4 / 92.9   (connection.js, prepared.js, deflateContext.js)
+//   adapters      96.3 / 78.6 / 90.5   (fastify.js, express.js)
 const FLOORS = [
+  { include: 'src/sse/**', lines: 94, branches: 88, functions: 95 },
+  { include: 'src/client/**', lines: 96, branches: 88, functions: 94 },
+  { include: 'src/rpc/**', lines: 92, branches: 87, functions: 84 },
+  { include: 'src/websocket/**', lines: 97, branches: 85, functions: 92 },
+  { include: 'src/adapters/**', lines: 95, branches: 78, functions: 89 },
   { include: 'src/broker/**', lines: 95, branches: 80, functions: 85 },
   {
     include: 'src/webtransport/**',

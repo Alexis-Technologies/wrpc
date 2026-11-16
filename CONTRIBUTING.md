@@ -19,7 +19,7 @@ There is no build step: `src/` ships as-is.
 pnpm test              # node --test, recursive over tests/
 pnpm test:coverage     # c8 over src/ — thresholds 95 lines / 95 statements / 90 branches / 95 functions
 pnpm test:ci           # test:coverage as CI runs it: a 5 min per-test timeout and a forced exit, so a leak fails instead of hanging
-pnpm test:coverage:floors  # per-file floors for the directories new in 2.0 — run right after test:coverage, it reads what that left
+pnpm test:coverage:floors  # per-file floors, a directory at a time — run right after test:coverage, it reads what that left
 pnpm test:types        # tsd against the .d.ts files
 pnpm test:perf         # the 1 GiB stream memory guard
 pnpm lint              # oxlint
@@ -84,14 +84,14 @@ without a working `uWebSockets.js` binary can still run the suite. CI has them
 all.
 
 Coverage has two gates. `test:coverage` checks the global thresholds — an
-average, behind which one thin new file hides. So the directories that are
-new in 2.0 (`src/broker`, `src/webtransport`, `src/encryption`, `src/webrtc`,
-`src/compression`, `src/deflate`) are also held **per file** by
-`test:coverage:floors` (`scripts/coverage-floors.js` has the numbers and the
-one exception). Only those: the 1.0 files below these floors predate the rule,
-and a floor low enough to admit them would hold nothing. A floor moves up when
-its directory's weakest file improves — never down to let a change in; cover
-the new branch instead.
+average, behind which one thin file hides. So every file of the source
+directories — `src/rpc`, `src/client`, `src/websocket`, `src/sse`,
+`src/adapters`, and the ones new in 2.0: `src/broker`, `src/webtransport`,
+`src/encryption`, `src/webrtc`, `src/compression`, `src/deflate` — is also
+held **per file** by `test:coverage:floors`, each directory to a floor of its
+own (`scripts/coverage-floors.js` has the numbers and the one exception). A
+floor moves up when its directory's weakest file improves — never down to let
+a change in; cover the new branch instead.
 
 > **A leaked uws engine hangs `node --test` forever.** A standalone engine holds
 > a native listen socket; if a test fails an assertion before its cleanup line
