@@ -853,3 +853,25 @@ test('cors.metaHeaders: the preflight names each prefixed meta header', async (t
   // The defaults survive: replacing them would disable cross-origin SSE.
   assert.ok(allow.includes('x-wrpc-channel') && allow.includes('last-event-id'), allow);
 });
+
+test('http.hsts: the default header, a value of the application, or none', async (t) => {
+  const { bootServer } = require('../helpers/server.js');
+  const { defineRouter: define, procedure: proc } = require('../../index.js');
+  const hstsRouter = define({ u: { q: proc({ access: 'public', handler: async () => 'ok' }) } });
+  const answer = async (http) => {
+    const { server, origin } = await bootServer(t, { router: hstsRouter, ...(http ? { http } : {}) });
+    const response = await fetch(origin + server.rpc.basePath, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: '{"type":"call","id":"1","method":"u/q","args":{}}',
+    });
+    await response.text();
+    return response.headers.get('strict-transport-security');
+  };
+  assert.strictEqual(await answer(null), 'max-age=31536000');
+  assert.strictEqual(await answer({ hsts: 'max-age=600; includeSubDomains' }), 'max-age=600; includeSubDomains');
+  assert.strictEqual(await answer({ hsts: false }), null);
+  const { RpcServer } = require('../../src/rpc/core.js');
+  assert.throws(() => new RpcServer({ router: hstsRouter, logger: false, http: { hsts: 'x\r\ny' } }), /http\.hsts/);
+  assert.throws(() => new RpcServer({ router: hstsRouter, logger: false, http: { hsts: true } }), /http\.hsts/);
+});

@@ -451,8 +451,14 @@ export interface RpcServerOptions {
   streamIdleTimeout?: number;
   /** SSE channel options, or `false` to remove the events endpoint. */
   sse?: import('./sse.js').SseOptions | false;
-  /** The HTTP side's own options: `compression`, off by default. */
-  http?: { compression?: boolean | HttpCompressionOptions };
+  /**
+   * The HTTP side's own options: `compression`, off by default, and `hsts` —
+   * the `Strict-Transport-Security` value every HTTP answer carries
+   * (`max-age=31536000` by default, for the answering host alone), or
+   * `false` to send none. `includeSubDomains` and `preload` are the domain
+   * owner's to add.
+   */
+  http?: { compression?: boolean | HttpCompressionOptions; hsts?: string | false };
   /**
    * Accept per-message compressed frames from a Node WebSocket client that
    * negotiated them (its own `compression` option, agreed over the first
@@ -934,4 +940,9 @@ export type { ServerEventTransport };
  * Per-request response headers: security defaults + CORS for `origin`, and
  * `wrpc-version: 2` when `revision` (the server's newest, default 1) is 2.
  */
-export function buildHeaders(cors?: CorsOptions | null, origin?: string, revision?: 1 | 2): Record<string, string>;
+export function buildHeaders(
+  cors?: CorsOptions | null,
+  origin?: string,
+  revision?: 1 | 2,
+  hsts?: string | false,
+): Record<string, string>;

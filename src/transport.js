@@ -35,9 +35,15 @@ const parseCookies = (cookie) => {
   return Object.fromEntries(values);
 };
 
+// HSTS for the host that answered, and no more than that: this used to say
+// `includeSubdomains; preload` on every response — a commitment for the whole
+// domain tree, and consent to a browser preload list that takes months to
+// leave, made by a library on behalf of whoever owns the domain. That
+// decision is theirs: `http.hsts` takes the header they want, or `false`.
+const HSTS = 'Strict-Transport-Security';
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
-  'Strict-Transport-Security': 'max-age=31536000; includeSubdomains; preload',
+  [HSTS]: 'max-age=31536000',
   'Content-Type': 'application/json',
   // The HTTP side's version marker, on every response — the ws subprotocol
   // ladder's counterpart (protocol.md#versioning): the newest revision the
@@ -46,6 +52,10 @@ const SECURITY_HEADERS = {
   // client learns it may send one.
   'wrpc-version': '1',
 };
+
+// The same without HSTS, for `http: { hsts: false }` — built once, so a
+// response under that option is a spread like any other, never a `delete`.
+const PLAIN_HEADERS = Object.fromEntries(Object.entries(SECURITY_HEADERS).filter(([name]) => name !== HSTS));
 
 // What an HTTP client that reads framed messages asks for, and what a
 // server looks for before it answers with one. `Accept` rather than a
@@ -108,13 +118,16 @@ const allowedHeaders = (cors) => {
 // `revision` is the newest protocol revision the server speaks (RpcServer's
 // `revision`); the marker is exposed because script on another origin reads
 // only the response headers named so.
-const buildHeaders = (cors, origin, revision = 1) => {
+// `hsts`: the `http.hsts` option — a header value of the application's, or
+// false for none; left out, the default above.
+const buildHeaders = (cors, origin, revision = 1, hsts = undefined) => {
   const headers = {
-    ...SECURITY_HEADERS,
+    ...(hsts === false ? PLAIN_HEADERS : SECURITY_HEADERS),
     'Access-Control-Allow-Methods': cors?.methods ?? DEFAULT_CORS_METHODS,
     'Access-Control-Allow-Headers': allowedHeaders(cors),
     'Access-Control-Expose-Headers': 'wrpc-version',
   };
+  if (typeof hsts === 'string') headers[HSTS] = hsts;
   if (revision === 2) headers['wrpc-version'] = '2';
   if (!cors || !cors.origins) {
     headers['Access-Control-Allow-Origin'] = '*';

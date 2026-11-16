@@ -72,6 +72,17 @@ narrower promise — see
   threw are this side's and stay at `error`. An alert built on one of these
   events fires on the first occurrence as before; one built on their rate
   needs the `debug` level.
+- **The HSTS header of an HTTP answer covers the answering host, and is
+  yours to set** (`http.hsts`). Every HTTP response carried
+  `Strict-Transport-Security: max-age=31536000; includeSubdomains; preload`:
+  a commitment to HTTPS for every subdomain of the domain the API happens to
+  live on, and consent to a browser preload list that takes months to leave
+  — said by a library on its adopter's behalf. The default is now
+  `max-age=31536000`, for the host that answered. `http: { hsts: '…' }`
+  sends the value you choose — the old one included, if a domain-wide
+  preload is what you want — and `http: { hsts: false }` sends none (a proxy
+  in front that already adds it). A deployment that relied on the old header
+  for its preload submission has to set it explicitly.
 
 
 ### Fixed

@@ -405,3 +405,17 @@ test('buildHeaders: cors.metaHeaders names the per-key meta headers CORS cannot 
   // Absent or empty changes nothing.
   assert.strictEqual(allow({ metaHeaders: [] }), 'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta');
 });
+
+test('buildHeaders: HSTS is for the answering host by default, and the application may replace or drop it', () => {
+  const { buildHeaders } = require('../src/transport.js');
+  const name = 'Strict-Transport-Security';
+  // Not `includeSubDomains; preload`: that commits a whole domain tree, and
+  // it is not a library's to say.
+  assert.strictEqual(buildHeaders()[name], 'max-age=31536000');
+  assert.strictEqual(
+    buildHeaders(null, undefined, 1, 'max-age=63072000; includeSubDomains; preload')[name].includes('preload'),
+    true,
+  );
+  assert.strictEqual(Object.hasOwn(buildHeaders(null, undefined, 1, false), name), false);
+  assert.strictEqual(buildHeaders(null, undefined, 1, false)['X-Content-Type-Options'], 'nosniff');
+});

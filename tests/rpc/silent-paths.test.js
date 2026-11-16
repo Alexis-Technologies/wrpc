@@ -405,7 +405,8 @@ test('dispatcher: the first refusal of a kind is a warning, the ones behind it a
   const answers = [];
   socket.addEventListener('message', (event) => answers.push(JSON.parse(String(event.data))));
   await new Promise((resolve) => socket.addEventListener('open', resolve));
-  const call = (id, method, extra = {}) => socket.send(JSON.stringify({ type: 'call', id, method, args: {}, ...extra }));
+  const call = (id, method, extra = {}) =>
+    socket.send(JSON.stringify({ type: 'call', id, method, args: {}, ...extra }));
   for (let i = 0; i < 3; i++) call(`u${i}`, 'unit/nope');
   for (let i = 0; i < 3; i++) call(`f${i}`, 'unit/locked');
   // A deadline of the caller's own, shorter than anything the procedure set.

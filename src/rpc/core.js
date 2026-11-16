@@ -43,6 +43,7 @@ const {
   UNKNOWN_TARGET,
   levelFor,
 } = require('./dispatcher.js');
+const { checkHeader } = require('./rest.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createServerTelemetry } = require('../telemetry/server.js');
 const { TRACEPARENT, TRACESTATE } = require('../telemetry/shared.js');
@@ -169,6 +170,9 @@ class RpcServer extends Emitter {
   #sse = null;
   // The normalized `http.compression` option, or null (off, the default).
   #compression = null;
+  // `http.hsts`: undefined (the default header), a value of the
+  // application's, or false for none — passed to buildHeaders as it is.
+  #hsts = undefined;
   #compressionFailed;
   #httpFailed;
   // The largest inflated client frame accepted on a socket (the Node ws
@@ -313,6 +317,10 @@ class RpcServer extends Emitter {
     // gzip on packet-mode and REST answers for peers that ask for it — off
     // unless the app turns it on; the SSE half has its own under `sse`.
     this.#compression = normalizeCompression(http.compression, 'RpcServer: options.http');
+    if (http.hsts !== undefined && http.hsts !== false) {
+      checkHeader('Strict-Transport-Security', http.hsts, 'RpcServer: options.http.hsts');
+    }
+    this.#hsts = http.hsts;
     // Two halves, two fields: #codec is the PACKET codec (ws/http/sse/worker
     // frames — a rest-only codec leaves packet mode JSON), #restCodec the
     // REST body codec. The raw option survives for the public getter.
@@ -1398,7 +1406,8 @@ class RpcServer extends Emitter {
       this.#otel.recordCall(UNKNOWN_TARGET, 'error', 500);
       if (answered) return;
       try {
-        new ServerHttpTransport(guarded, { headers: buildHeaders(this.#cors, call.headers?.origin) }).error(500);
+        const headers = buildHeaders(this.#cors, call.headers?.origin, 1, this.#hsts);
+        new ServerHttpTransport(guarded, { headers }).error(500);
       } catch {
         // The host cannot write either: nothing more to say.
       }
@@ -1406,7 +1415,7 @@ class RpcServer extends Emitter {
   }
 
   async #routeHttpCall(call) {
-    const headers = buildHeaders(this.#cors, call.headers?.origin, this.revision);
+    const headers = buildHeaders(this.#cors, call.headers?.origin, this.revision, this.#hsts);
     if (call.method === 'OPTIONS') {
       return void call.respond({ status: 200, headers });
     }
