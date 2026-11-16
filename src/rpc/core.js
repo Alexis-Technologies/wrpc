@@ -1783,4 +1783,12 @@ const httpReply = (call, method, transport) => ({
   status: (code) => transport.setStatus(code),
 });
 
-module.exports = { RpcServer, Client, Context, rpcOptions, DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_CALLS };
+module.exports = {
+  RpcServer,
+  Client,
+  Context,
+  rpcOptions,
+  copyTraceHeaders,
+  DEFAULT_MAX_SUBSCRIPTIONS,
+  DEFAULT_MAX_CALLS,
+};

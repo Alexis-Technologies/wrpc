@@ -58,4 +58,24 @@ const clip = (text, max = 128) => {
   return (text.length > max ? `${text.slice(0, max)}…` : text).replace(CONTROL, ' ');
 };
 
-module.exports = { publicErrorMessage, publicErrorDetails, wireError, clip };
+// The level of a line about something a PEER did and can do in a loop — a
+// refusal, a malformed frame, an envelope that does not open: a warning the
+// first time a key is seen, debug for `interval` after it. Whoever can send
+// one can send it as fast as the link takes it, and a line per message made
+// the log the thing that fell over. `max` bounds the keys where a peer has a
+// say in them (a channel, a sender): past it the table starts over, which
+// costs a repeated warning, never memory. One table per call.
+const LOUD_INTERVAL = 10_000;
+const lineLevels = (interval = LOUD_INTERVAL, max = 0) => {
+  const said = new Map();
+  return (key) => {
+    const now = Date.now();
+    const last = said.get(key);
+    if (last !== undefined && now - last < interval) return 'debug';
+    if (max > 0 && last === undefined && said.size >= max) said.clear();
+    said.set(key, now);
+    return 'warn';
+  };
+};
+
+module.exports = { publicErrorMessage, publicErrorDetails, wireError, clip, lineLevels, LOUD_INTERVAL };

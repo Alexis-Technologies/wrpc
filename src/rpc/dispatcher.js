@@ -10,7 +10,7 @@ const { FRAME_MARK } = require('../wire.js');
 const EMPTY_OPTIONS = Object.freeze({});
 const { runSubscription } = require('./subscriptions.js');
 const { runHooks, runHooksSafe } = require('./router.js');
-const { publicErrorMessage, publicErrorDetails, wireError, clip } = require('./errors.js');
+const { publicErrorMessage, publicErrorDetails, wireError, clip, lineLevels } = require('./errors.js');
 const { SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
 
 const DEFAULT_VERSION = '*';
@@ -89,21 +89,17 @@ const sanitizeMeta = (value, limit) => {
 // that is no packet, a deadline of its own choosing that passed. The first
 // of a kind on a server is a warning — a stale client, a typo and a scanner
 // all start like that, and somebody reading the log should see it — and
-// for LOUD_INTERVAL after it the same kind is said at debug: each used to
+// for ten seconds after it the same kind is said at debug (lineLevels): each used to
 // be a warn (or an error with a stack) for every packet, so a peer wrote
 // the log at the speed it could send. Per host and per kind, not per
 // connection: on HTTP every request is a connection of its own. The kinds
 // are this file's own names — a closed set — so the table cannot grow.
-const LOUD_INTERVAL = 10_000;
 const spoken = new WeakMap();
 const levelFor = (client, kind) => {
   const host = client.server ?? client;
-  let last = spoken.get(host);
-  if (last === undefined) spoken.set(host, (last = new Map()));
-  const now = Date.now();
-  if (now - (last.get(kind) ?? -LOUD_INTERVAL) < LOUD_INTERVAL) return 'debug';
-  last.set(kind, now);
-  return 'warn';
+  let levels = spoken.get(host);
+  if (levels === undefined) spoken.set(host, (levels = lineLevels()));
+  return levels(kind);
 };
 
 // What unresolved method/event names become in metric series and span

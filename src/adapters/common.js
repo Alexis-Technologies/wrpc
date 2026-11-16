@@ -36,7 +36,7 @@ const { STATUS_CODES } = require('../status.js');
 
 const MAX_BODY_SIZE = 10 * 1024 * 1024;
 
-const getPathname = (url) => (url ? url.split('?')[0] : '/');
+const { getPathname } = require('../websocket/upgrade.js');
 
 // The one upgrade gate every host shares. With an explicit ws.path the
 // engine already gates the pathname, and the default RPC-path gate would

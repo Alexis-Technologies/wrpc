@@ -2,8 +2,7 @@
 
 const { performance } = require('node:perf_hooks');
 
-const { RpcServer, rpcOptions } = require('../rpc/core.js');
-const { TRACEPARENT, TRACESTATE } = require('../telemetry/shared.js');
+const { RpcServer, rpcOptions, copyTraceHeaders } = require('../rpc/core.js');
 const { effectiveSchema } = require('../rpc/router.js');
 const { publicErrorMessage, publicErrorDetails } = require('../transport.js');
 const { createNodeEngine, isEngine } = require('../engine/index.js');
@@ -257,12 +256,7 @@ const registerRestRoutes = (fastify, rpc, options) => {
         // Trace context arrives as real headers; mapped onto the synthetic
         // packet's tp/ts, the writer's ordinary extract picks it up.
         const packet = { type: 'call' };
-        const parent = request.headers.traceparent;
-        if (typeof parent === 'string' && parent.length > 0) {
-          packet[TRACEPARENT] = parent;
-          const state = request.headers.tracestate;
-          if (typeof state === 'string' && state.length > 0) packet[TRACESTATE] = state;
-        }
+        copyTraceHeaders(request.headers, packet);
         const started = otel.enabled ? performance.now() : 0;
         return otel.withSpan({ client, packet, target: rpcTarget.method }, async (handle) => {
           let result;

@@ -25,7 +25,7 @@ const hasToken = (value, token) => !!value && value.toLowerCase().includes(token
 // echoes it back, which is what stamps the wire with a version both sides
 // can rely on. A peer that offers nothing gets no subprotocol and speaks
 // 1.0 — additive, nothing breaks. Re-exported below, as it always was.
-const { WRPC_V1, WRPC_V2, CARRIER_PROTOCOL } = require('../wire.js');
+const { getPathname, negotiateProtocol } = require('./upgrade.js');
 
 const writeResponse = (socket, headerLines) => {
   socket.cork();
@@ -51,8 +51,6 @@ const abort = (socket, code, message, { extraHeaders = [] } = {}) => {
 
 const isValidSecWebSocketKey = (key) =>
   typeof key === 'string' && key.length === 24 && Buffer.from(key, 'base64').length === 16;
-
-const getPathname = (url) => (url ? url.split('?')[0] : '/');
 
 class WebsocketServer extends EventEmitter {
   #options;
@@ -193,37 +191,16 @@ class WebsocketServer extends EventEmitter {
     this.emit('close');
   }
 
+  // The subprotocol this upgrade is answered with (negotiateProtocol in
+  // ./upgrade.js, shared with the uWebSockets.js engine), or null once the
+  // application's handleProtocols refused the handshake.
   #negotiateProtocol(req, socket) {
-    const header = req.headers['sec-websocket-protocol'];
-    if (!header) return { protocol: '' };
-    // Carrier tokens (wire.js) are DATA riding the offer, never a protocol to
-    // select: they leave the list before the application sees it, and one
-    // that comes back anyway is not echoed — `(offered) => offered.at(-1)`
-    // would otherwise reflect a Bearer credential into the response headers.
-    const offered = header
-      .split(',')
-      .map((token) => token.trim())
-      .filter((token) => token.length > 0 && !CARRIER_PROTOCOL.test(token));
-    const { protocols, handleProtocols } = this.#options;
-    if (handleProtocols) {
-      const selected = handleProtocols(offered, req);
-      if (selected === false) {
-        this.#refuse(req, socket, 400, 'Subprotocol negotiation failed');
-        return null;
-      }
-      return { protocol: typeof selected === 'string' && !CARRIER_PROTOCOL.test(selected) ? selected : '' };
+    const protocol = negotiateProtocol(req.headers['sec-websocket-protocol'], this.#options, req);
+    if (protocol === false) {
+      this.#refuse(req, socket, 400, 'Subprotocol negotiation failed');
+      return null;
     }
-    if (protocols) {
-      const selected = offered.find((name) => protocols.includes(name));
-      return { protocol: selected ?? '' };
-    }
-    // No app configuration: answer the newest wrpc revision that was offered
-    // — a 2.x client offers both, a 1.0 client `wrpc.v1` alone. Required, not
-    // a nicety — a browser fails the whole connection when it offered
-    // subprotocols and the server selected none.
-    if (offered.includes(WRPC_V2)) return { protocol: WRPC_V2 };
-    if (offered.includes(WRPC_V1)) return { protocol: WRPC_V1 };
-    return { protocol: '' };
+    return { protocol };
   }
 
   #handleUpgrade(req, socket, head) {
