@@ -29,6 +29,8 @@ const {
   ATTEMPT_HEADER,
   REDELIVERED_HEADER,
   DEAD_REASON_HEADER,
+  attemptOf,
+  producerHeaders,
   DEFAULT_PREFETCH,
   idFactory,
   failedRead,
@@ -632,7 +634,7 @@ const createKafkaBroker = (options = {}) => {
   const produce = async (queue, body, { headers = null, key = null } = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
     const topic = await ensureTopic(queueTopic(queue));
-    await send(topic, body, { headers, key });
+    await send(topic, body, { headers: producerHeaders(headers), key });
   };
 
   const consume = async (queue, onDelivery, options = {}) => {
@@ -667,7 +669,7 @@ const createKafkaBroker = (options = {}) => {
     const handle = async ({ partition, message, heartbeat }) => {
       if (!state.running) return;
       const headers = headersOf(message);
-      const attempt = Number(headers[ATTEMPT_HEADER] ?? '1') || 1;
+      const attempt = attemptOf(headers);
       const body = message.value === null ? '' : message.value.toString();
       const id = `${partition}:${message.offset}`;
       let settled = false;

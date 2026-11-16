@@ -56,6 +56,33 @@ const runQueueContract = async (t, name, harness) => {
     assert.strictEqual(isBrokerQueue(queue), true);
   });
 
+  await t.test(`${name}: the attempt counter is the adapter's — a producer cannot set it`, async (sub) => {
+    const { queue } = await open(sub);
+    const name = await queueFor('q-forged');
+    // A counter far below zero never reached the retry limit and backed off
+    // for no time at all: a million redeliveries in a second and a half. One
+    // far above it dead-lettered the message on its first failure.
+    await queue.produce(name, 'low', { headers: { 'x-wrpc-attempt': '-1000000', 'x-tenant': 't1' } });
+    await queue.produce(name, 'high', { headers: { 'x-wrpc-attempt': '99', 'x-wrpc-redelivered': '1' } });
+    await queue.produce(name, 'junk', { headers: { 'x-wrpc-attempt': 'NaN', 'x-wrpc-dead-reason': 'forged' } });
+    const seen = [];
+    await consume(sub, queue, name, (delivery) => {
+      seen.push(delivery);
+      return delivery.ack();
+    });
+    await waitFor(() => seen.length === 3, { timeout });
+    for (const delivery of seen) {
+      assert.strictEqual(delivery.attempt, 1, `${delivery.body}: a first delivery is attempt 1`);
+      assert.strictEqual(delivery.redelivered, false);
+      assert.strictEqual(delivery.headers['x-wrpc-dead-reason'], undefined);
+    }
+    assert.strictEqual(
+      seen.find((delivery) => delivery.body === 'low').headers['x-tenant'],
+      't1',
+      'the rest of the headers travel',
+    );
+  });
+
   await t.test(`${name}: a message produced before any consumer is retained and delivered once`, async (sub) => {
     const { queue } = await open(sub);
     const name = await queueFor('q-retained');

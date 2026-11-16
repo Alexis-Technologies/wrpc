@@ -211,3 +211,24 @@ test('adapter: runDelivery — a handler that throws or rejects is reported and 
     [3, 200],
   ]);
 });
+
+test('attemptOf: a positive integer as written, anything else the fallback', () => {
+  const { attemptOf, producerHeaders, ATTEMPT_HEADER } = require('../../src/broker/adapter.js');
+  const of = (value, fallback) => attemptOf({ [ATTEMPT_HEADER]: value }, fallback);
+  assert.strictEqual(of('3'), 3);
+  assert.strictEqual(of('1'), 1);
+  for (const forged of ['-1000000', '0', '1.5', 'NaN', 'Infinity', '', 'abc']) {
+    assert.strictEqual(of(forged), 1, forged);
+  }
+  assert.strictEqual(attemptOf({}), 1);
+  assert.strictEqual(attemptOf({}, 0), 0, 'NATS counts from the broker when the header is not there');
+  assert.strictEqual(of('-5', 0), 0);
+  // What a producer passes, without the adapter's own three.
+  const own = { 'x-tenant': 't1' };
+  assert.strictEqual(producerHeaders(own), own, 'untouched when there is nothing to drop');
+  assert.deepStrictEqual(
+    producerHeaders({ 'x-tenant': 't1', 'x-wrpc-attempt': '9', 'x-wrpc-redelivered': '1', 'x-wrpc-dead-reason': 'x' }),
+    { 'x-tenant': 't1' },
+  );
+  assert.strictEqual(producerHeaders(null), null);
+});

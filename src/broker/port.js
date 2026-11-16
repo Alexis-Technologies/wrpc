@@ -56,7 +56,10 @@
 //     - the first settlement wins; later ones are no-ops.
 //     - retry: redelivered no sooner than `delay` ms, attempt + 1. The
 //       attempt counter is the ADAPTER's (RabbitMQ 4 does not count a
-//       requeue), carried in `x-wrpc-attempt` where the broker has none.
+//       requeue), carried in `x-wrpc-attempt` where the broker has none —
+//       and nobody else's: `produce` drops that header, `x-wrpc-redelivered`
+//       and `x-wrpc-dead-reason` from what a producer passes, and a value
+//       that is not a positive integer reads as a first attempt.
 //     - release: back to the queue, attempt unchanged (a draining node
 //       handing work to a healthy one).
 //     - a handler that throws or rejects has settled nothing: the adapter

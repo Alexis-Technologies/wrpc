@@ -27,6 +27,36 @@ const { crashDelay, positiveInteger } = require('./retry.js');
 const ATTEMPT_HEADER = 'x-wrpc-attempt';
 const REDELIVERED_HEADER = 'x-wrpc-redelivered';
 const DEAD_REASON_HEADER = 'x-wrpc-dead-reason';
+
+// The attempt a delivery is on, read back from the header an adapter wrote
+// when it re-published the message: a positive integer, or `fallback` for
+// anything else. It used to be `Number(header ?? '1') || 1`, which believes
+// whatever is there — and what is there on a first delivery is the
+// PRODUCER's: `x-wrpc-attempt: -1000000` gave a counter that never reached
+// the retry limit and a backoff of zero (a negative exponent), 999,994
+// redeliveries in a second and a half; `99` dead-lettered a message on its
+// first failure.
+const attemptOf = (headers, fallback = 1) => {
+  const attempt = Number(headers[ATTEMPT_HEADER]);
+  return Number.isInteger(attempt) && attempt >= 1 ? attempt : fallback;
+};
+
+// A producer's headers without the three an adapter keeps for itself: what a
+// public `produce` sends. The retry paths write them through their own
+// sends, never through `produce`.
+const producerHeaders = (headers) => {
+  if (!headers || typeof headers !== 'object') return headers;
+  if (!(ATTEMPT_HEADER in headers) && !(REDELIVERED_HEADER in headers) && !(DEAD_REASON_HEADER in headers)) {
+    return headers;
+  }
+  const own = {};
+  for (const name of Object.keys(headers)) {
+    if (name === ATTEMPT_HEADER || name === REDELIVERED_HEADER || name === DEAD_REASON_HEADER) continue;
+    own[name] = headers[name];
+  }
+  return own;
+};
+
 // A direct message's body was a string ('1') or bytes ('0'), where the
 // broker itself carries bytes only.
 const TEXT_HEADER = 'wrpc-text';
@@ -146,6 +176,8 @@ module.exports = {
   ATTEMPT_HEADER,
   REDELIVERED_HEADER,
   DEAD_REASON_HEADER,
+  attemptOf,
+  producerHeaders,
   TEXT_HEADER,
   DEFAULT_PREFETCH,
   idFactory,

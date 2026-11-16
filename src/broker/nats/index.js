@@ -34,6 +34,8 @@ const {
   ATTEMPT_HEADER,
   REDELIVERED_HEADER,
   DEAD_REASON_HEADER,
+  attemptOf,
+  producerHeaders,
   TEXT_HEADER,
   DEFAULT_PREFETCH,
   idFactory,
@@ -376,7 +378,7 @@ const createNatsBroker = (options = {}) => {
     const { js: stream } = await managers();
     const { name: streamId, subject, config } = queueStream(name);
     await ensureStream(streamId, subject, config);
-    await stream.publish(subject, toText(body), { headers: encodeHeaders(headers) });
+    await stream.publish(subject, toText(body), { headers: encodeHeaders(producerHeaders(headers)) });
   };
 
   const consume = async (name, onDelivery, options = {}) => {
@@ -435,7 +437,7 @@ const createNatsBroker = (options = {}) => {
     const dispatch = (message) => {
       state.inflight++;
       const headers = decodeHeaders(message.headers);
-      const base = Number(headers[ATTEMPT_HEADER] ?? '0');
+      const base = attemptOf(headers, 0);
       const deliveries = Number(message.info?.deliveryCount ?? 1);
       // A message this adapter re-published carries its attempt; further
       // naks of the SAME message add JetStream's own redeliveries.

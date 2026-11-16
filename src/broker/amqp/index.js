@@ -36,6 +36,8 @@ const {
   ATTEMPT_HEADER,
   REDELIVERED_HEADER,
   DEAD_REASON_HEADER,
+  attemptOf,
+  producerHeaders,
   TEXT_HEADER,
   DEFAULT_PREFETCH,
   idFactory,
@@ -672,7 +674,7 @@ const createAmqpBroker = (options = {}) => {
   const produce = async (queue, body, { headers = null } = {}) => {
     if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
     const main = await ensureQueue(queue);
-    await confirmPublish('', main, body, { persistent: true, headers: toHeaders(headers) });
+    await confirmPublish('', main, body, { persistent: true, headers: toHeaders(producerHeaders(headers)) });
   };
 
   const consume = async (queue, onDelivery, options = {}) => {
@@ -715,7 +717,7 @@ const createAmqpBroker = (options = {}) => {
         return;
       }
       const headers = headersOf(message);
-      const attempt = Number(headers[ATTEMPT_HEADER] ?? '1') || 1;
+      const attempt = attemptOf(headers);
       let settled = false;
       // `publish`: the copy a settlement writes before it acks (a retry, a
       // dead letter). A refused publish used to be swallowed after one log

@@ -379,6 +379,19 @@ narrower promise — see
   peer. The message now follows the rule the server applies to a handler: a
   4xx is written for the asker and travels, a 5xx is answered `Responder
   failed` unless the error says `expose = true`.
+- **Brokers: the retry counter of a delivery cannot be set by whoever
+  produced the message.** An adapter counts a delivery's attempts in the
+  header `x-wrpc-attempt` (the brokers themselves do not), and the Redis,
+  RabbitMQ and Kafka adapters read it back as whatever number was there —
+  which on a first delivery is whatever the producer put there. With
+  `x-wrpc-attempt: -1000000` the counter never reached the retry limit and
+  the backoff was no time at all: **999,994 redeliveries of one message in
+  1.5 seconds**, on every consumer of the queue. With `99` a message was
+  dead-lettered on its first transient failure. The header is now read as a
+  positive integer or not at all, in all four adapters, and `queue.produce`
+  — of every adapter and of `MemoryBroker` — drops `x-wrpc-attempt`,
+  `x-wrpc-redelivered` and `x-wrpc-dead-reason` from what a producer
+  passes. A delivery always starts at attempt 1.
 
 ## [2.1.0] - 2026-11-16
 

@@ -36,6 +36,8 @@ const {
   ATTEMPT_HEADER,
   REDELIVERED_HEADER,
   DEAD_REASON_HEADER,
+  attemptOf,
+  producerHeaders,
   DEFAULT_PREFETCH,
   idFactory,
   failedRead,
@@ -322,7 +324,7 @@ const createRedisBroker = (options = {}) => {
 
   const produce = async (name, body, { headers = null } = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    await client.xadd(queueKey(name), '*', ...encodeFields(body, headers));
+    await client.xadd(queueKey(name), '*', ...encodeFields(body, producerHeaders(headers)));
   };
 
   const consume = async (name, onDelivery, options = {}) => {
@@ -356,7 +358,7 @@ const createRedisBroker = (options = {}) => {
 
     const dispatch = (id, fields, { claimed = false } = {}) => {
       const entry = decodeEntry(id, fields);
-      const attempt = Number(entry.headers[ATTEMPT_HEADER] ?? '1') || 1;
+      const attempt = attemptOf(entry.headers);
       const message = { id, body: entry.value, headers: entry.headers };
       let settled = false;
       const finish = async (work) => {

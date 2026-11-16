@@ -27,7 +27,7 @@ const { resolveGenerateId } = require('../utils.js');
 const shortId = () => generateUUID().replace(/-/g, '').slice(0, 12);
 const { codedError, toText, toHeaders, reasonText } = require('./ids.js');
 const { crashDelay } = require('./retry.js');
-const { ATTEMPT_HEADER, DEAD_REASON_HEADER, DEFAULT_PREFETCH, checkConsume } = require('./adapter.js');
+const { ATTEMPT_HEADER, DEAD_REASON_HEADER, DEFAULT_PREFETCH, checkConsume, producerHeaders } = require('./adapter.js');
 // The ready messages of a queue: appended by a produce or a retry, taken from
 // the head by `#pump`, and put back AT the head by a release or by a consumer
 // that stopped — which is why the head index that is enough for a topic's
@@ -258,7 +258,7 @@ class MemoryBroker {
   #produce(queue, body, { headers = null } = {}) {
     requireName(queue, 'queue', 'MemoryBroker.queue.produce');
     if (this.#closed) return Promise.reject(codedError('Broker is closed', 503));
-    this.#enqueue(queue, body, headers);
+    this.#enqueue(queue, body, producerHeaders(headers));
     return Promise.resolve();
   }
 
