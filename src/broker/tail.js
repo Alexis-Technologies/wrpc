@@ -254,6 +254,7 @@ class TopicTails {
               // one is asked again on a backoff; then the read fails.
               for (let attempt = 0; ; attempt++) {
                 tail = tails.#join(topic, reader);
+                // Why it failed is in tail.failure, read on the next line.
                 await tail.ready.catch(() => {});
                 if (tail.failure === null) break;
                 if (reader.failure === tail.failure) reader.failure = null;

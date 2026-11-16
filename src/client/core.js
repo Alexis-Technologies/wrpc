@@ -801,6 +801,7 @@ class WrpcClient extends Emitter {
     }
     this.#resetSession();
     this.#opened = Promise.reject(new TypeError('The transport opened a session it did not encrypt'));
+    // Handled from birth: it is whoever awaits open() that is told.
     this.#opened.catch(() => {});
     return true;
   }
@@ -1962,6 +1963,8 @@ class WrpcClient extends Emitter {
     let view = input;
     if (!(view instanceof Uint8Array)) {
       const converted = Promise.resolve(this.#converting).then(() => toByteView(input));
+      // `converted` is awaited below, where a failure is thrown; the chain only
+      // keeps the order for the chunk behind this one.
       this.#converting = converted.catch(() => {});
       view = await converted;
     }

@@ -23,6 +23,8 @@ const through = async (stream, bytes, maxOutput) => {
   const writer = stream.writable.getWriter();
   const reader = stream.readable.getReader();
   const written = writer.write(bytes).then(() => writer.close());
+  // A write that fails errors the readable too: the read loop below is
+  // where that is thrown, once.
   written.catch(() => {});
   const chunks = [];
   let total = 0;
@@ -31,6 +33,7 @@ const through = async (stream, bytes, maxOutput) => {
     if (done) break;
     total += value.length;
     if (total > maxOutput) {
+      // The cap is what is thrown; a cancel that fails changes nothing.
       reader.cancel().catch(() => {});
       throw new RangeError('inflated message exceeds the cap');
     }

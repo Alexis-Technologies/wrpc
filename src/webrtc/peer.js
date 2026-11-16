@@ -418,6 +418,7 @@ class WrpcPeer extends Emitter {
 
   /** A link (or mesh) with nobody listening for its error: the peer's 'error', or a log line. */
   escalate(error, source = null) {
+    // A listener that throws from 'error' has nowhere further to be reported.
     if (this.listenerCount('error') > 0) return void this.emit('error', error, source).catch(() => {});
     this.#log.error({ err: error, event: 'rtc.peer.unhandled' });
   }
@@ -461,6 +462,8 @@ class WrpcPeer extends Emitter {
     let chain = Promise.resolve();
     const stamped = (message) => {
       const next = chain.then(() => this.#stamp(message)).then(relay);
+      // The caller has `next` and its rejection; the chain only keeps the order,
+      // and one message that failed must not stop the ones behind it.
       chain = next.catch(() => {});
       return next;
     };

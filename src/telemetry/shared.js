@@ -170,7 +170,9 @@ const endSpanHandle = (handle, attributes) => {
       }
     }
     span.end();
-  } catch {}
+  } catch {
+    // An SDK that throws must not break the call it measures.
+  }
 };
 
 const DISABLED = Object.freeze({

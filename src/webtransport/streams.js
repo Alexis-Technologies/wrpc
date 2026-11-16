@@ -224,6 +224,8 @@ class StreamMux {
 
   #finishOut(entry, status) {
     if (status === 'end') {
+      // A close or an abort that fails is a stream the peer or the session
+      // already ended: the stream packet on the control stream is the report.
       entry.chain = entry.chain.then(() => entry.writer.close()).catch(() => {});
     } else {
       entry.chain.then(() => entry.writer.abort()).catch(() => {});
@@ -249,6 +251,8 @@ class StreamMux {
           return;
         }
         entry.writer = writable.getWriter();
+        // A header that cannot be written leaves the chain settled all the same:
+        // the writes queued behind it fail on their own and fall back.
         entry.chain = entry.writer.write(idHeader(id)).catch(() => {});
         const pending = entry.pending;
         entry.pending = null;
@@ -385,6 +389,7 @@ class StreamMux {
     if (!this.#peerStreams) {
       try {
         const cancelled = readable.cancel();
+        // Refused unread; a cancel that fails changes nothing about that.
         if (cancelled && typeof cancelled.catch === 'function') cancelled.catch(() => {});
       } catch {
         // Not cancellable: nothing is read from it either way.
@@ -431,12 +436,14 @@ class StreamMux {
             break;
           }
           entry = claimed;
+          // Letting go of a stream: one the peer already reset has nothing to cancel.
           entry.cancel = () => reader.cancel().catch(() => {});
           if (bytes.length === 0) continue;
         }
         this.#inbound(id, entry, bytes);
       }
       if (refused !== null) {
+        // The refusal is what is reported; a cancel that fails changes nothing.
         await reader.cancel().catch(() => {});
         this.#onRefused?.(refused, id);
         return;
@@ -519,6 +526,7 @@ class StreamMux {
   close() {
     this.#closed = true;
     for (const entry of this.#out.values()) {
+      // The session is closing: a stream it already took down cannot be aborted.
       entry.chain.then(() => entry.writer?.abort()).catch(() => {});
       entry.pending = null;
     }

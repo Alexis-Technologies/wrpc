@@ -229,6 +229,8 @@ class WtChannel {
       },
     });
     this.#parser = parser;
+    // A control stream that refuses its first frame is a session that is over,
+    // and the read below is what reports that; this write has nobody to tell.
     this.#writer.write(frameCaps(this.#caps())).catch(() => {});
     void this.#read(stream.readable, onEnd);
     if (this.#mux !== null && typeof session.incomingUnidirectionalStreams?.getReader === 'function') {

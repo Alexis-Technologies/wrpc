@@ -321,6 +321,7 @@ const createRedisBroker = (options = {}) => {
         throw codedError('Event history was trimmed past this id', 410);
       }
     })();
+    // Surfaced through the read it guards (guardedRead); never unhandled.
     checked.catch(() => {});
     return guardedRead(tails.read(topic, { after, signal }), { guard: checked });
   };
@@ -678,6 +679,8 @@ const createRedisBroker = (options = {}) => {
       const current = plain.get(channel);
       if (!current || !current.delete(onMessage) || current.size > 0) return;
       plain.delete(channel);
+      // The handler is gone already; a connection that cannot unsubscribe is one
+      // that is closing, and takes its subscriptions with it.
       if (isFunction(connection.unsubscribe)) await connection.unsubscribe(channel).catch(() => {});
     };
     // An inbox is a subscription: as alive as the connection it is on.
@@ -755,6 +758,7 @@ const createRedisBroker = (options = {}) => {
       running = false;
       stops.delete(stop);
       clearInterval(beat);
+      // Best effort: a member that cannot be removed now expires with its score.
       await client.zrem(members, member).catch(() => {});
       if (owned.delete(connection)) await quit(connection, { force: true });
     };

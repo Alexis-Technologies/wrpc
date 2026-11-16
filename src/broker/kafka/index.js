@@ -615,6 +615,7 @@ const createKafkaBroker = (options = {}) => {
         }
       }
     })();
+    // Surfaced through the read it guards (encodeIds); never unhandled.
     guard.catch(() => {});
     return encodeIds(tails.read(topic, { after: cursor, signal }), guard);
   };

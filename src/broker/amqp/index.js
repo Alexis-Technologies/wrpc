@@ -301,6 +301,7 @@ const createAmqpBroker = (options = {}) => {
       .finally(() => {
         if (chains.get(key) === next) chains.delete(key);
       })
+      // The caller has `next` and its rejection; this branch only tidies the map.
       .catch(() => {});
     return next;
   };
@@ -1023,6 +1024,7 @@ const createAmqpBroker = (options = {}) => {
       // An inbox's own queue is unbound FIRST, so a publish racing this stop
       // gets a basic.return (nobody there) rather than a nack from a queue
       // being deleted under it. A group's queue is shared and stays bound.
+      // A channel that cannot unbind is closing, and its bindings go with it.
       if (!grouped) await live.channel.unbindQueue(live.queue, exchangeName, routingKeyOf(address)).catch(() => {});
       try {
         await live.channel.cancel(live.tag);

@@ -156,6 +156,7 @@ class BrokerSessionTransport extends ServerTransport {
     // that is over.
     const headers = { [HEADER_KIND]: KIND.BYE, [HEADER_REASON]: reason };
     const frame = sealFrame(this.#sealing, this.#peer, this.#session, headers, '');
+    // Best effort, like every goodbye: a peer it does not reach times out.
     this.#direct.send(this.#peer, frame.body, { headers: frame.headers, correlationId: this.#session }).catch(() => {});
   }
 

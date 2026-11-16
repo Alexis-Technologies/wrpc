@@ -125,7 +125,9 @@ const createClientTelemetry = (telemetry) => {
       try {
         const active = propagator.context?.active?.();
         propagator.propagation.inject(active, packet, SETTER);
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     /**
@@ -139,7 +141,9 @@ const createClientTelemetry = (telemetry) => {
       try {
         const active = propagator.context?.active?.();
         propagator.propagation.inject(active, carrier);
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordError(handle, error) {
@@ -154,11 +158,15 @@ const createClientTelemetry = (telemetry) => {
       const attributes = { 'rpc.system': 'wrpc', ...targetAttributes(target), 'wrpc.status': status };
       try {
         calls?.add(1, attributes);
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
       if (elapsed === undefined) return;
       try {
         duration?.record(elapsed, attributes);
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     // `outcome` is 'ok' for a pong that answered our ping, 'timeout' for one
@@ -167,7 +175,9 @@ const createClientTelemetry = (telemetry) => {
     recordHeartbeat(outcome, rtt) {
       try {
         if (outcome === 'ok') heartbeat?.record(rtt);
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordReconnect(outcome, attempt) {
@@ -180,19 +190,25 @@ const createClientTelemetry = (telemetry) => {
         // storm that keeps recovering is no longer invisible.
         void attempt;
         reconnects?.add(1, { 'wrpc.reconnect.outcome': outcome });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordRefresh(outcome) {
       try {
         refreshes?.add(1, { 'wrpc.refresh.outcome': outcome });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordConnection(delta) {
       try {
         connections?.add(delta);
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
   };
 };

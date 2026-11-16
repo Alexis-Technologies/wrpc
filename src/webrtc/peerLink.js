@@ -500,6 +500,7 @@ class PeerLink extends Emitter {
 
   #error(error) {
     this.#log.error({ err: error, event: 'rtc.peer.error', peer: this.#id });
+    // Logged above; a listener that throws from 'error' goes no further.
     if (this.listenerCount('error') > 0) return void this.emit('error', error).catch(() => {});
     this.#port.escalate(error, this);
   }

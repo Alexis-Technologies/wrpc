@@ -163,6 +163,8 @@ const createNatsBroker = (options = {}) => {
       // this is delivered, which is what the backplane's start() needs.
       return nc.flush().then(() => async () => {
         subscription.unsubscribe();
+        // The unsubscribe is local and already done; a flush that fails is a
+        // connection that is closing, which needs no telling.
         await nc.flush().catch(() => {});
       });
     },
@@ -273,6 +275,7 @@ const createNatsBroker = (options = {}) => {
         () => {
           void messages
             .close()
+            // An iterator that is already closed: the consumer is discarded either way.
             .catch(() => {})
             .then(() => discard(consumer));
         },
@@ -343,6 +346,7 @@ const createNatsBroker = (options = {}) => {
         const state = await streamState(topic);
         return Math.max(0, state.first - 1);
       })();
+      // Surfaced through the read it guards (wrapRead); never unhandled.
       earliest.catch(() => {});
       return wrapRead(
         tails.read(topic, { after: 0, signal }),
@@ -358,6 +362,7 @@ const createNatsBroker = (options = {}) => {
         throw codedError('Event history was trimmed past this id', 410);
       }
     })();
+    // Surfaced through the read it guards (wrapRead); never unhandled.
     checked.catch(() => {});
     return wrapRead(tails.read(topic, { after: position, signal }), checked);
   };
@@ -567,6 +572,7 @@ const createNatsBroker = (options = {}) => {
       const wake = state.wake;
       state.wake = null;
       wake?.();
+      // Stopping: an iterator the connection already closed is closed.
       if (messages) await messages.close().catch(() => {});
     };
     const stop = async () => {
@@ -639,6 +645,8 @@ const createNatsBroker = (options = {}) => {
     const stop = async () => {
       listening = false;
       subscription.unsubscribe();
+      // The unsubscribe is local and already done; a flush that fails is a
+      // connection that is closing, which needs no telling.
       await nc.flush().catch(() => {});
     };
     return withHealth(stop, () => listening && !closed && !nc.isClosed?.());

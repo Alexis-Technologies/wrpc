@@ -251,6 +251,7 @@ class ClientBrokerTransport extends ClientTransport {
 
   #escalate(error) {
     if (this.listenerCount('error') === 0) return;
+    // A listener that throws from 'error' has nowhere further to be reported.
     void this.emit('error', error).catch(() => {});
   }
 
@@ -277,6 +278,8 @@ class ClientBrokerTransport extends ClientTransport {
     const headers =
       reason === null ? { [HEADER_KIND]: KIND.BYE } : { [HEADER_KIND]: KIND.BYE, [HEADER_REASON]: reason };
     const bye = sealFrame(this.#sealing, this.#remote, this.#session, headers, '');
+    // A goodbye is a courtesy: a server it does not reach ends the session on
+    // its own idle timer.
     this.#direct.send(this.#remote, bye.body, { headers: bye.headers, correlationId: this.#session }).catch(() => {});
   }
 
@@ -284,6 +287,7 @@ class ClientBrokerTransport extends ClientTransport {
     const stop = this.#stopInbox;
     this.#stopInbox = null;
     this.#remote = null;
+    // Closing: an inbox the broker already dropped needs no stopping.
     if (stop) await stop().catch(() => {});
   }
 

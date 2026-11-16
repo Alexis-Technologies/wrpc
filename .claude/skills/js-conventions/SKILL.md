@@ -59,6 +59,7 @@ Use following conventions for JavaScript and TypeScript code.
 - Use `UPPER_SNAKE_CASE` for constants
 - Use `new` with capitalized constructor names
 - Use `error` in catch blocks, not `err`
+- A `catch` that does nothing says why, in a comment inside it (`no-empty` with `allowEmptyCatch: false` enforces it); so does a `.catch(() => {})`, on the line above
 - Use short names (`e`, `i`) only in short one-line callbacks
 - Use descriptive names in multiline callbacks (`event`, `index`, `item`)
 - Use boolean prefixes (`is`, `has`, `can`, `should`) for new locals and functions; a public

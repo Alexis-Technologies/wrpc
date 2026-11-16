@@ -696,6 +696,7 @@ class ClientRtcTransport extends ClientTransport {
     // transport used bare (tests) may have no listener, and Emitter throws
     // on an unheard 'error'.
     if (this.listenerCount('error') === 0) return;
+    // A listener that throws from 'error' has nowhere further to be reported.
     void this.emit('error', error).catch(() => {});
   }
 }

@@ -351,7 +351,9 @@ const createServerTelemetry = (telemetry) => {
         if (code !== undefined) attributes['rpc.wrpc.status_code'] = code;
         calls?.add(1, attributes);
         if (elapsed !== undefined) duration?.record(elapsed, attributes);
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     // `revision` is the protocol revision the connection speaks (1 | 2): who
@@ -359,32 +361,42 @@ const createServerTelemetry = (telemetry) => {
     recordConnection(delta, transport, revision) {
       try {
         connections?.add(delta, { 'wrpc.transport': transport, 'wrpc.revision': revision });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordSubscription(delta, target) {
       try {
         subscriptions?.add(delta, targetAttributes(target));
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordSubscriptionValues(count, target) {
       try {
         if (count > 0) subscriptionValues?.add(count, targetAttributes(target));
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordBroadcast(name, local, published) {
       try {
         broadcasts?.add(1, { 'wrpc.event.name': name, 'wrpc.published': Boolean(published) });
         recipients?.record(local, { 'wrpc.event.name': name });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordStreamBytes(direction, bytes) {
       try {
         streamBytes?.add(bytes, { 'wrpc.stream.direction': direction });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     // How a stream ended. `outcome` is a closed set — closed, terminated,
@@ -396,7 +408,9 @@ const createServerTelemetry = (telemetry) => {
         const attributes = { 'wrpc.stream.direction': direction, 'wrpc.stream.outcome': outcome };
         if (code !== undefined) attributes['rpc.wrpc.status_code'] = code;
         streams?.add(1, attributes);
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     // `kind` is 'room' or 'broadcast' — a closed set; the channel NAME is a
@@ -404,13 +418,17 @@ const createServerTelemetry = (telemetry) => {
     recordBackplaneGap(kind, missed) {
       try {
         backplaneGaps?.add(missed, { 'wrpc.channel.kind': kind });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordBackpressure(transport) {
       try {
         backpressure?.add(1, { 'wrpc.transport': transport });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     // A codec that threw — the message left plain, or the frame was refused.
@@ -418,19 +436,25 @@ const createServerTelemetry = (telemetry) => {
     recordCompressionFailure(carrier, direction) {
       try {
         compressionFailures?.add(1, { 'wrpc.compression.carrier': carrier, 'wrpc.compression.direction': direction });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordSession(operation, result) {
       try {
         sessions?.add(1, { 'wrpc.session.op': operation, 'wrpc.session.result': result });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordSseChannel(delta) {
       try {
         sseChannels?.add(delta);
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordSseEvent(kind) {
@@ -439,7 +463,9 @@ const createServerTelemetry = (telemetry) => {
         // gap and expired series are REAL event loss — what replay sizing
         // is tuned from.
         sseEvents?.add(1, { 'wrpc.sse.event': kind });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordClusterMessage(type) {
@@ -447,7 +473,9 @@ const createServerTelemetry = (telemetry) => {
         // The envelope type set is closed (hello/state/delta/bye/e/cmd/q/a)
         // — a bounded label, unlike anything peer-named.
         clusterMessages?.add(1, { 'wrpc.cluster.type': type });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     // The WebRTC peer layer. `role` is 'initiator' or 'responder', an
@@ -455,19 +483,25 @@ const createServerTelemetry = (telemetry) => {
     recordRtcLink(delta, role) {
       try {
         rtcLinks?.add(delta, { 'wrpc.rtc.role': role });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordRtcRedial(role) {
       try {
         rtcRedials?.add(1, { 'wrpc.rtc.role': role });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordRtcRestart(outcome) {
       try {
         rtcRestarts?.add(1, { 'wrpc.rtc.outcome': outcome });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     // A link's end. `reason` is what a goodbye may name (goodbye, refused,
@@ -476,7 +510,9 @@ const createServerTelemetry = (telemetry) => {
     recordRtcClose(reason, remote) {
       try {
         rtcCloses?.add(1, { 'wrpc.rtc.reason': reason, 'wrpc.rtc.side': remote ? 'remote' : 'local' });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     // `outcome` is a closed set: ack | retry | release | dead (consumed) and
@@ -485,7 +521,9 @@ const createServerTelemetry = (telemetry) => {
     recordBrokerDelivery(system, outcome) {
       try {
         brokerDeliveries?.add(1, { 'messaging.system': system, 'wrpc.broker.outcome': outcome });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     // `reason` is a closed set (src/broker/rpc/server.js): the sequence
@@ -493,38 +531,50 @@ const createServerTelemetry = (telemetry) => {
     recordBrokerSessionEnd(reason) {
       try {
         brokerSessionEnds?.add(1, { 'wrpc.broker.reason': reason });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordBrokerAttempts(system, attempts) {
       try {
         brokerAttempts?.record(attempts, { 'messaging.system': system });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordQueue(delta, waited) {
       try {
         queueDepth?.add(delta);
         if (waited !== undefined) queueWait?.record(waited);
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordRooms(delta) {
       try {
         rooms?.add(delta);
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordClusterVerification(outcome) {
       try {
         clusterVerifications?.add(1, { 'wrpc.cluster.outcome': outcome });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordRtcAssertion(outcome) {
       try {
         rtcAssertions?.add(1, { 'wrpc.rtc.outcome': outcome });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     // `outcome` is 'established' or a refusal reason — a closed set the
@@ -534,13 +584,17 @@ const createServerTelemetry = (telemetry) => {
     recordEncryption(outcome, kind) {
       try {
         encryption?.add(1, { 'wrpc.kind': kind, 'wrpc.outcome': outcome });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordBrokerPublish(system, outcome) {
       try {
         brokerPublished?.add(1, { 'messaging.system': system, 'wrpc.broker.outcome': outcome });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     // `reason` is the sealer's closed set (unsealed | kid | open | format |
@@ -548,19 +602,25 @@ const createServerTelemetry = (telemetry) => {
     recordBrokerRefusal(system, reason) {
       try {
         brokerRefused?.add(1, { 'messaging.system': system, 'wrpc.reason': reason });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordClusterRequest(op, complete) {
       try {
         clusterRequests?.add(1, { 'wrpc.cluster.op': op, 'wrpc.cluster.complete': complete === true });
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     recordClusterInstances(delta) {
       try {
         clusterInstances?.add(delta);
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
 
     /**
@@ -573,7 +633,9 @@ const createServerTelemetry = (telemetry) => {
       try {
         const active = propagator.context?.active?.();
         propagator.propagation.inject(active, carrier, SETTER);
-      } catch {}
+      } catch {
+        // An SDK that throws must not break the call it measures.
+      }
     },
   };
 };

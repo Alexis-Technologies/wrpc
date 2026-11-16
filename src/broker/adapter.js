@@ -127,6 +127,7 @@ const idFactory = (generateId, label) => {
  */
 const failedRead = (error) => {
   const rejected = Promise.reject(error);
+  // Handled from birth (see above).
   rejected.catch(() => {});
   return {
     ready: rejected,

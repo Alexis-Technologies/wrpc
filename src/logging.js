@@ -101,7 +101,9 @@ const createConsoleWriter = (sink) => {
           // guard lives here — once — instead of at every call site.
           try {
             method(message ?? entry?.err ?? entry);
-          } catch {}
+          } catch {
+            // A logger that throws must not break the path that logs.
+          }
         }
       : noop;
   }
@@ -128,7 +130,9 @@ const createStructuredWriter = (sink) => {
       ? (entry, message) => {
           try {
             method(entry, message);
-          } catch {}
+          } catch {
+            // A logger that throws must not break the path that logs.
+          }
         }
       : noop;
   }

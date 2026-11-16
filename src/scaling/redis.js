@@ -149,6 +149,7 @@ const createRedisAdapter = (options = {}) => {
         const issued = subscribing.get(name);
         if (issued === undefined) return off;
         const joined = issued.then(() => off);
+        // Handled from its birth, like the SUBSCRIBE it follows (below).
         joined.catch(() => {});
         return joined;
       }
