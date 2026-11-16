@@ -17,6 +17,16 @@ const {
   checkLimit,
 } = require('../utils.js');
 
+// A timeout as a timer takes it: a number of milliseconds, up to 2^31 - 1.
+// `callTimeout: '300'` — a value straight out of an environment variable —
+// used to be added to Date.now() as a string: a deadline a quadrillion
+// milliseconds away, so no call ever timed out, and a one-millisecond timer
+// re-armed eight hundred times a second with a TimeoutOverflowWarning each.
+const timeoutOf = (name, value) => {
+  if (typeof value === 'number' && value > 0 && value < 2 ** 31) return value;
+  throw new TypeError(`WrpcClient: ${name} must be a number of milliseconds from 1 to 2^31 - 1`);
+};
+
 // The Emitter's own methods, for the one place that must not read them off a
 // unit (see #handleEvent).
 const UNIT = Emitter.prototype;
@@ -658,7 +668,7 @@ class WrpcClient extends Emitter {
     // reconnect would be noise in a browser console nobody asked for.
     this.#log = createLoggerWriter(logger);
     this.#otel = createClientTelemetry(telemetry);
-    if (callTimeout) this.#callTimeout = callTimeout;
+    if (callTimeout) this.#callTimeout = timeoutOf('callTimeout', callTimeout);
     const { streamIdleTimeout, maxStreams, maxStreamBuffer } = options;
     if (streamIdleTimeout !== undefined) {
       this.#streamIdleTimeout = checkLimit('WrpcClient', 'streamIdleTimeout', streamIdleTimeout);
@@ -2185,14 +2195,16 @@ class WrpcClient extends Emitter {
     // uses it, and it RIDES THE PACKET so the server shortens the
     // procedure's own budget to match — no point finishing work whose
     // caller already gave up. Additive field; absent unless set.
-    if (options.timeout > 0) packet.timeout = options.timeout;
-    if (!this.#otel.enabled) return this.#dispatchCall(target, packet, id, signal, options.timeout);
+    // Checked like `callTimeout`: nothing, or a delay a timer can hold.
+    const timeout = options.timeout ? timeoutOf('timeout', options.timeout) : 0;
+    if (timeout > 0) packet.timeout = timeout;
+    if (!this.#otel.enabled) return this.#dispatchCall(target, packet, id, signal, timeout);
     const started = now();
     return this.#otel.withSpan({ packet, target }, (handle) => {
       // Injected INSIDE the span so the traceparent names this call's span,
       // which is what the server will pick up as its parent.
       this.#otel.inject(packet);
-      return this.#dispatchCall(target, packet, id, signal, options.timeout).then(
+      return this.#dispatchCall(target, packet, id, signal, timeout).then(
         (result) => {
           this.#otel.endSpan(handle, { 'wrpc.status': 'ok' });
           this.#otel.recordCall(target, 'ok', now() - started);

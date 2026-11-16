@@ -1967,3 +1967,37 @@ test('connectTimeout covers the hooks the connection waits on', async (t) => {
     await assert.rejects(client.call('unit/secret', {}), (error) => error.code === 403);
   });
 });
+
+// --- A timeout is a number a timer can hold -------------------------------------
+
+test('callTimeout and a call\'s timeout are refused unless a timer can hold them', async (t) => {
+  const { server, port } = await createServer(
+    router({ hang: procedure({ access: 'public', handler: () => new Promise(noop) }) }),
+  );
+  t.after(() => server.close());
+  const url = `ws://127.0.0.1:${port}/api`;
+  // `'300'` is what an environment variable holds. It used to be added to
+  // Date.now() as a string: the call never timed out, and a one-millisecond
+  // timer was re-armed about eight hundred times a second.
+  const quiet = { heartbeat: false, reconnect: false, logger: false };
+  for (const callTimeout of ['300', Infinity, -5, 2 ** 31, {}]) {
+    await assert.rejects(
+      async () => WrpcClient.connect(url, { ...quiet, callTimeout }),
+      /callTimeout must be a number of milliseconds/,
+      `callTimeout: ${String(callTimeout)}`,
+    );
+  }
+  // Nothing set: the default, as before.
+  for (const callTimeout of [undefined, null, 0, false]) {
+    const plain = await WrpcClient.connect(url, { ...quiet, callTimeout });
+    await plain.close();
+  }
+  const client = await WrpcClient.connect(url, { heartbeat: false, reconnect: false, logger: false, callTimeout: 60 });
+  t.after(() => void client.close());
+  client.on('error', noop);
+  await assert.rejects(client.call('test/hang', {}), (error) => error.code === 408);
+  // A bad argument, thrown where the call is made.
+  assert.throws(() => client.call('test/hang', {}, { timeout: '50' }), /timeout must be a number of milliseconds/);
+  assert.throws(() => client.call('test/hang', {}, { timeout: Infinity }), /timeout must be a number of milliseconds/);
+  await assert.rejects(client.call('test/hang', {}, { timeout: 30 }), (error) => error.code === 408);
+});

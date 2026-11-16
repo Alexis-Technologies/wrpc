@@ -119,6 +119,15 @@ narrower promise — see
   scheduled), `refresh` the path of a refresh that failed — the call gets
   the refusal it received. A hook that legitimately takes longer (it waits
   for a person) needs `connectTimeout` raised or turned off.
+- **`callTimeout` and a call's `timeout` must be numbers a timer can hold.**
+  `callTimeout: '300'` — what an environment variable gives — was added to
+  `Date.now()` as a string: a deadline a quadrillion milliseconds away, so
+  **no call ever timed out**, while a one-millisecond timer re-armed itself
+  about eight hundred times a second, each with a `TimeoutOverflowWarning`.
+  `Infinity` and anything from 2³¹ up did the same to the deadline
+  arithmetic. Both options now take a number from 1 to 2³¹ − 1 and throw a
+  `TypeError` for anything else; leaving `callTimeout` out, or passing
+  `0`/`false`/`null`, still means the default.
 
 
 ### Fixed
