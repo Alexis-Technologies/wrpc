@@ -402,6 +402,24 @@ test('broker encryption: a sealed session takes no plaintext frame — acceptPla
     downgrades().map((w) => w.kind),
     [KIND.PACKET, KIND.BYE, KIND.BYE, KIND.PACKET],
   );
+  // And a welcome is not a way around it. A plaintext one, mid-session, used
+  // to reset the client's "sealed only" — the packet behind it then reached
+  // the application.
+  const events = [];
+  client.on('unhandled-event', (event) => events.push(event.name));
+  const toClient = carried.filter((f) => f.address === clientInbox && f.headers['wrpc-seq'] !== undefined);
+  const next = Math.max(0, ...toClient.map((f) => Number(f.headers['wrpc-seq']))) + 1;
+  await broker.direct.send(clientInbox, '', {
+    headers: { [HEADER_KIND]: KIND.WELCOME, 'wrpc-inbox': handle.inbox },
+    correlationId: session,
+  });
+  await broker.direct.send(clientInbox, JSON.stringify({ type: 'event', name: 'calc/forged', data: {} }), {
+    headers: { [HEADER_KIND]: KIND.PACKET, 'wrpc-seq': String(next) },
+    correlationId: session,
+  });
+  await waitFor(() => downgrades().length === 5);
+  assert.deepStrictEqual(events, [], 'the forged packet was refused, not delivered');
+  assert.deepStrictEqual(await client.api.calc.echo({ n: 4 }), { n: 4 }, 'and the session goes on, sealed');
 });
 
 test('broker encryption: a sealed request older than maxSkew, or without a clock, is refused as stale', async (t) => {

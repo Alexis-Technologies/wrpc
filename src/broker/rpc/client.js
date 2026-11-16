@@ -194,14 +194,23 @@ class ClientBrokerTransport extends ClientTransport {
     }
     if (message.correlationId !== this.#session) return;
     if (kind === KIND.WELCOME) {
-      const remote = message.headers?.[HEADER_INBOX];
+      // The ONE welcome a session has: the answer to its hello, while the
+      // handshake waits for it. This branch sits above the downgrade check
+      // and used to run for any welcome at any time — so a PLAINTEXT one,
+      // sent mid-session by whoever can write to the inbox (the session id
+      // and the inbox are outer fields, for anyone who reads the broker),
+      // reset `#sealedSession` under a client that still accepts plaintext
+      // for a rollout, and the plaintext packets behind it were delivered
+      // to the application. A welcome nobody waits for is dropped, and one
+      // without an inbox does not use the handshake up.
       const pending = this.#welcome;
+      const remote = message.headers?.[HEADER_INBOX];
+      if (pending === null || typeof remote !== 'string' || remote.length === 0) return;
       this.#welcome = null;
       this.#active = headerNegotiator(this.#compression)(message.headers?.[HEADER_ENC]);
       this.#sealedSession = message.sealed === true;
       this.revision = this.#frames && message.headers?.[HEADER_VERSION] === '2' ? 2 : 1;
-      if (pending && typeof remote === 'string' && remote.length > 0) pending.resolve(remote);
-      return;
+      return void pending.resolve(remote);
     }
     if (this.#sealedSession && message.sealed !== true) {
       return void this.log?.warn({ event: 'broker.rpc.refused', reason: 'downgrade', kind });

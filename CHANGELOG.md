@@ -392,6 +392,18 @@ narrower promise — see
   — of every adapter and of `MemoryBroker` — drops `x-wrpc-attempt`,
   `x-wrpc-redelivered` and `x-wrpc-dead-reason` from what a producer
   passes. A delivery always starts at attempt 1.
+- **Broker RPC: a sealed session cannot be talked back into plaintext.** A
+  client whose session opened sealed takes sealed frames only, whatever
+  `acceptPlaintext` says — that option exists for the rollout, not for a
+  session already under way. But the client honoured a `welcome` at any
+  time, before that check: a **plaintext** one sent mid-session — by anyone
+  who can write to the client's inbox, and the session id and the inbox are
+  outer fields any reader of the broker sees — reset the rule, and the
+  plaintext packets behind it were delivered to the application. Only the
+  welcome that answers the session's own hello is honoured now; a later one
+  is dropped, and a welcome with no inbox in it no longer leaves the
+  handshake waiting forever. Affects clients running `encryption: { keys,
+  acceptPlaintext: true }` on the `broker` transport.
 
 ## [2.1.0] - 2026-11-16
 
