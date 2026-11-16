@@ -250,6 +250,15 @@ narrower promise — see
   answered `503 too many lookups in flight` for as long as it went on. The
   count is each connection's own now; the unit as a whole runs at most 256
   lookups at once.
+- **WebRTC: a responder whose link failed no longer gives up within a
+  fraction of a second.** The side that cannot dial knocks for the other to
+  redial, and waits the connect timeout before it knocks again. That wait
+  was taken from the peer's `connectTimeout` option with a fallback of
+  **zero** — and a peer that sets none is every peer by default — so all
+  the knocks of the redial budget (five) went out inside one backoff step
+  and the link was abandoned about 400 ms after it failed, while the
+  initiator's own dial had thirty seconds to succeed. The wait is the
+  link's default connect timeout (30 s) unless the peer sets its own.
 
 
 ### Security
