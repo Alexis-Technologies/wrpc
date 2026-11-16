@@ -38,6 +38,10 @@ const {
   DEAD_REASON_HEADER,
   attemptOf,
   producerHeaders,
+  SETTLE_ATTEMPTS,
+  SETTLE_BACKOFF,
+  sleep,
+  reporter,
   TEXT_HEADER,
   DEFAULT_PREFETCH,
   idFactory,
@@ -57,21 +61,14 @@ const STREAM_OFFSET = 'x-stream-offset';
 
 const isFunction = (value) => typeof value === 'function';
 const name = (prefix, kind, value) => `${prefix}.${kind}.${encodeToken(value, { maxLength: 180 })}`;
-const sleep = (ms) =>
-  new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    if (isFunction(timer.unref)) timer.unref();
-  });
 // A consumer's channel is re-opened on this schedule after the server
 // closed it; a lost CONNECTION stops the loop (nothing to re-open on).
 const REOPEN_BACKOFF = Object.freeze({ minDelay: 200, maxDelay: 5000, factor: 2, jitter: true });
 // A settlement that has to PUBLISH (a retry's copy, a dead letter) and was
-// refused is tried again on this schedule; when it still fails, the
-// message goes back to the queue with a requeue — at least once, attempt
-// untouched — rather than being acked away or left unacked on a channel
-// that may close later.
-const SETTLE_ATTEMPTS = 3;
-const SETTLE_BACKOFF = Object.freeze({ minDelay: 100, maxDelay: 1000, factor: 2, jitter: false });
+// refused is tried again (SETTLE_ATTEMPTS in ../adapter.js); when it still
+// fails, the message goes back to the queue with a requeue — at least once,
+// attempt untouched — rather than being acked away or left unacked on a
+// channel that may close later.
 // A catch-up page over a stream queue: a stream reader has no "end", so a
 // page is complete when it reaches the tip read BEFORE the reader started
 // — never when the deliveries merely paused. `RANGE_IDLE` is how long a
@@ -112,7 +109,7 @@ const createAmqpBroker = (options = {}) => {
     throw new TypeError('createAmqpBroker: options.streamMaxBytes must be a non-negative integer (0 for unbounded)');
   }
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'amqp' });
-  const report = (event, error, extra = {}) => log.error({ err: error, event, ...extra });
+  const report = reporter(log);
   let closed = false;
   // The injected connection went away: every channel with it, and nothing
   // here can open another — the connection is the caller's to reopen, with

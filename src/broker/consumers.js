@@ -32,6 +32,7 @@ const { normalizeRetry, decide } = require('./retry.js');
 const { rpcOf } = require('./host.js');
 const { toText, reasonText } = require('./ids.js');
 const { createBrokerSealing } = require('./sealing.js');
+const { DEFAULT_PREFETCH } = require('./adapter.js');
 
 // The binding's own refusals: fixed text, safe on a dead letter's outer
 // header under sealing — unlike a handler's message (settle).
@@ -42,7 +43,6 @@ const refusal = (message) => {
   return error;
 };
 
-const DEFAULT_PREFETCH = 16;
 const DEFAULT_TOKEN_CLIENTS = 128;
 const DEFAULT_TOKEN_TTL = 60_000;
 const DEFAULT_VERSION = '*';

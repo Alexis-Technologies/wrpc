@@ -31,6 +31,9 @@ const {
   DEAD_REASON_HEADER,
   attemptOf,
   producerHeaders,
+  SETTLE_ATTEMPTS,
+  SETTLE_BACKOFF,
+  reporter,
   DEFAULT_PREFETCH,
   idFactory,
   failedRead,
@@ -53,12 +56,10 @@ const DEFAULT_PARTITIONS = 3;
 const DEFAULT_MAX_RETRY_DELAY = 60_000;
 const DEFAULT_MAX_CATCH_UP = 4;
 // A settlement the broker refused (a leader election, a producer that
-// cannot reach it) is tried again on this schedule before the consumer
-// gives the message back; and a retry's in-process delay is cut into
-// steps of this length, each ending in a heartbeat, so a long wait does
+// cannot reach it) is tried again (SETTLE_ATTEMPTS in ../adapter.js) before
+// the consumer gives the message back; and a retry's in-process delay is cut
+// into steps of this length, each ending in a heartbeat, so a long wait does
 // not look like a dead member to the group coordinator.
-const SETTLE_ATTEMPTS = 3;
-const SETTLE_BACKOFF = Object.freeze({ minDelay: 100, maxDelay: 1000, factor: 2, jitter: false });
 const HEARTBEAT_STEP = 3000;
 const CHANNEL_HEADER = 'wrpc-channel';
 const VECTOR = /^k1:(\d{1,5}=\d{1,19})(,\d{1,5}=\d{1,19})*$/;
@@ -150,7 +151,7 @@ const createKafkaBroker = (options = {}) => {
   }
   const flavor = flavorOption ?? detectFlavor(kafka);
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'kafka' });
-  const report = (event, error, extra = {}) => log.error({ err: error, event, ...extra });
+  const report = reporter(log);
   let closed = false;
   const consumers = new Set();
   // The groups this broker made for ITSELF — a backplane instance's, a

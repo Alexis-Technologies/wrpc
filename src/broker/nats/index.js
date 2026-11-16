@@ -36,6 +36,7 @@ const {
   DEAD_REASON_HEADER,
   attemptOf,
   producerHeaders,
+  reporter,
   TEXT_HEADER,
   DEFAULT_PREFETCH,
   idFactory,
@@ -108,7 +109,7 @@ const createNatsBroker = (options = {}) => {
     throw new TypeError('createNatsBroker: options.maxAckPending must be a positive integer or null');
   }
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'nats' });
-  const report = (event, error, extra = {}) => log.error({ err: error, event, ...extra });
+  const report = reporter(log);
   let closed = false;
   // The queue consumers alive on this broker, so close() stops them: a
   // consumer left pulling on a closed broker kept its keepalives and its

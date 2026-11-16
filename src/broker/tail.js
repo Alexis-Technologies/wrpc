@@ -51,6 +51,7 @@ const { backoffDelay } = require('../utils.js');
 const { codedError } = require('./ids.js');
 const { positiveInteger } = require('./retry.js');
 const { Deque } = require('../deque.js');
+const { sleep } = require('./adapter.js');
 
 const DEFAULT_HIGH_WATER_MARK = 1024;
 const DEFAULT_PAGE = 256;
@@ -66,12 +67,6 @@ const REJOIN_BACKOFF = Object.freeze({ minDelay: 200, maxDelay: 5000, factor: 2,
 // again after this pause, this many times, before the read fails 503.
 const STALL_DELAY = 50;
 const MAX_STALLS = 10;
-
-const sleep = (ms) =>
-  new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    if (typeof timer.unref === 'function') timer.unref();
-  });
 
 class TopicTails {
   #live;

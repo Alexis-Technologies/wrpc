@@ -38,6 +38,7 @@ const {
   DEAD_REASON_HEADER,
   attemptOf,
   producerHeaders,
+  reporter,
   DEFAULT_PREFETCH,
   idFactory,
   failedRead,
@@ -163,7 +164,7 @@ const createRedisBroker = (options = {}) => {
   };
 
   const key = (kind, name) => `${prefix}:${kind}:${encodeToken(name, { maxLength: 200 })}`;
-  const report = (event, error, extra = {}) => log.error({ err: error, event, ...extra });
+  const report = reporter(log);
 
   // ---------------------------------------------------------------------
   // log

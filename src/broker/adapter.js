@@ -80,6 +80,26 @@ const TEXT_HEADER = 'wrpc-text';
 
 const DEFAULT_PREFETCH = 16;
 
+// A settlement that has to PUBLISH — a retry's copy, a dead letter — and was
+// refused is tried again on this schedule by the adapters that settle that
+// way (AMQP, Kafka), before the message is handed back to the broker as it
+// was: at least once, attempt untouched.
+const SETTLE_ATTEMPTS = 3;
+const SETTLE_BACKOFF = Object.freeze({ minDelay: 100, maxDelay: 1000, factor: 2, jitter: false });
+
+// A pause that does not keep the process alive.
+const sleep = (ms) =>
+  new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+
+// An adapter's error line: the event it is, the error, what locates it.
+const reporter =
+  (log) =>
+  (event, error, extra = {}) =>
+    log.error({ err: error, event, ...extra });
+
 /**
  * The id factory of an adapter. An injected `generateId` is used VERBATIM
  * for every id the adapter mints — never truncated. Trimming a user's id
@@ -196,6 +216,10 @@ module.exports = {
   attemptOf,
   producerHeaders,
   refusalLevels,
+  SETTLE_ATTEMPTS,
+  SETTLE_BACKOFF,
+  sleep,
+  reporter,
   TEXT_HEADER,
   DEFAULT_PREFETCH,
   idFactory,
