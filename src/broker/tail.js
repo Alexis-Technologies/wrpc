@@ -49,6 +49,8 @@
 
 const { backoffDelay } = require('../utils.js');
 const { codedError } = require('./ids.js');
+const { positiveInteger } = require('./retry.js');
+const { Deque } = require('../deque.js');
 
 const DEFAULT_HIGH_WATER_MARK = 1024;
 const DEFAULT_PAGE = 256;
@@ -106,6 +108,10 @@ class TopicTails {
     if (onLag !== null && typeof onLag !== 'function') {
       throw new TypeError('TopicTails: onLag must be a function or null');
     }
+    // A mark that is not a count never lags a reader (NaN, Infinity) or lags
+    // it on every entry (null), and a page of nothing never ends a catch-up.
+    if (!positiveInteger(highWaterMark)) throw new TypeError('TopicTails: highWaterMark must be a positive integer');
+    if (!positiveInteger(page)) throw new TypeError('TopicTails: page must be a positive integer');
     this.#onLag = onLag;
     this.#live = live;
     this.#range = range;
@@ -196,7 +202,7 @@ class TopicTails {
     const tails = this;
     let wake = null;
     const reader = {
-      queue: [],
+      queue: new Deque(),
       lagging: false,
       failure: null,
       // Where a 'latest' read starts: the tail's cursor as of ready (#join).
@@ -206,7 +212,7 @@ class TopicTails {
         const lagged = reader.queue.length >= tails.#highWaterMark;
         if (lagged) {
           reader.lagging = true;
-          reader.queue.length = 0;
+          reader.queue.clear();
         } else reader.queue.push(entry);
         wake?.();
         return lagged;

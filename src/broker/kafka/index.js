@@ -24,6 +24,7 @@ const { backoffDelay } = require('../../utils.js');
 const { TopicTails } = require('../tail.js');
 const { codedError, toText, toHeaders, reasonText, encodeToken } = require('../ids.js');
 const { crashDelay } = require('../retry.js');
+const { Deque } = require('../../deque.js');
 const {
   ATTEMPT_HEADER,
   REDELIVERED_HEADER,
@@ -489,7 +490,7 @@ const createKafkaBroker = (options = {}) => {
   // Pages in flight, by what they read; and the turnstile in front of them.
   const pages = new Map();
   let catching = 0;
-  const waiting = [];
+  const waiting = new Deque();
   const catchUp = async (read) => {
     if (catching < maxCatchUp) catching++;
     else await new Promise((resolve) => waiting.push(resolve));
@@ -822,7 +823,7 @@ const createKafkaBroker = (options = {}) => {
     closed = true;
     tails.close();
     // Pages waiting for their turn are let through, to fail as closed.
-    for (const next of waiting.splice(0)) next();
+    for (let next = waiting.shift(); next !== undefined; next = waiting.shift()) next();
     handlers.clear();
     ensured.clear();
     for (const consumer of Array.from(consumers)) await closeConsumer(consumer);

@@ -13,6 +13,18 @@ narrower promise — see
 
 ### Changed (breaking)
 
+### Changed
+
+- **`TopicTails` refuses a `highWaterMark` or a `page` that is not a
+  positive integer** (`TypeError` at construction). `NaN` and `Infinity`
+  meant a reader that never lagged, with a queue of any length; `null`
+  lagged it on every entry; a `page` of `0` stalled a catch-up until its
+  `503`. A reader's queue is also a ring now (`src/deque.js`, the one the
+  `MemoryBroker` already had, shared with the Redis and Kafka adapters): a
+  hand-built `TopicTails` with a `highWaterMark` in the tens of thousands
+  read a lagging subscriber back one `Array.shift()` at a time, each of
+  them a copy of what was left.
+
 ## [2.1.0] - 2026-11-16
 
 ### Added

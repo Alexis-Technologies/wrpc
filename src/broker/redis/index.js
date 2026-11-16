@@ -31,6 +31,7 @@ const { TopicTails } = require('../tail.js');
 const { codedError, toText, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
 const { positiveInteger } = require('../retry.js');
 const { withHealth } = require('../port.js');
+const { Deque } = require('../../deque.js');
 const {
   ATTEMPT_HEADER,
   REDELIVERED_HEADER,
@@ -339,7 +340,7 @@ const createRedisBroker = (options = {}) => {
     // Entries XREADGROUP already moved into the pending list when a pause
     // landed: holding them here (rather than dropping them for XAUTOCLAIM)
     // is what makes resume() immediate.
-    const buffered = [];
+    const buffered = new Deque();
 
     const settleDone = (id) => {
       held.delete(id);
