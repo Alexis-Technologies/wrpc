@@ -42,7 +42,7 @@ pnpm size                        # the bundle report; a browser budget that is e
 pnpm docs:build                  # the docs site; a dead link fails it
 ```
 
-These are CI's three always-on jobs (lint, test, docs). CI's `test` job runs on Node 22 **and** 24, and the two differ (Node 22's runner cancels a file whose event loop goes empty): run the suite on both before calling it green. Do not lower a coverage threshold or a floor, and do not raise a size budget to get green; a budget is a ratchet raised deliberately in `scripts/size.js`, in the change that earns the bytes, with the reason in a comment next to the number.
+These are CI's three always-on jobs (lint, test, docs). CI's `test` job runs on Node 22, 24 **and** 26, and they differ (Node 22's runner cancels a file whose event loop goes empty): run the suite on all three before calling it green. Do not lower a coverage threshold or a floor, and do not raise a size budget to get green; a budget is a ratchet raised deliberately in `scripts/size.js`, in the change that earns the bytes, with the reason in a comment next to the number.
 
 The suites CI deliberately does not run — run them by hand for a release:
 
@@ -202,7 +202,7 @@ Present a summary to the user:
 Release preparation complete:
   Package:  <name>
   Version:  <old> → <new>
-  Tests:    ✓ passing on Node 22 and 24 (coverage gate and floors met)
+  Tests:    ✓ passing on Node 22, 24 and 26 (coverage gate and floors met)
   Types:    ✓ valid
   Packed:   <N> files, <min+gzip of the browser entries>
 ```

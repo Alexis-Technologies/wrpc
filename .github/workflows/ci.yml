@@ -35,7 +35,9 @@ jobs:
     timeout-minutes: 20
     strategy:
       matrix:
-        node-version: [22, 24]
+        # Every LTS line `engines` admits: 22 and 24, and 26 since it went
+        # LTS — the one Vercel and `>=22` pick by default now.
+        node-version: [22, 24, 26]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -43,7 +45,13 @@ jobs:
         with:
           node-version: ${{ matrix.node-version }}
           cache: pnpm
-      - run: pnpm install --frozen-lockfile
+      # No build scripts: nothing this job loads needs one. The scripts pnpm
+      # would run belong to the clients of the manual and broker suites (the
+      # Kafka job installs its own), and @confluentinc/kafka-javascript has no
+      # prebuilt binary for Node 26 — it would compile librdkafka from source
+      # on every run. uWebSockets.js ships its binaries inside the package, and
+      # esbuild runs from its platform package without its postinstall.
+      - run: pnpm install --frozen-lockfile --ignore-scripts
       # test:coverage with a guard: a file that outlives its tests (a leaked
       # listen socket, a timer nobody cleared) is cut off and FAILS here in
       # minutes, where it used to hang until the job's own timeout with no

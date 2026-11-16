@@ -104,7 +104,8 @@ the new branch instead.
 Three always-on jobs and four service jobs (`.github/workflows/ci.yml`):
 
 - **lint** (Node 22) — `lint`, `format:check`, `size`
-- **test** (Node 22 and 24) — `test:ci` (`test:coverage` with
+- **test** (Node 22, 24 and 26, installed without build scripts) —
+  `test:ci` (`test:coverage` with
   `--test-timeout=300000 --test-force-exit`: a file that outlives its tests
   fails in minutes instead of hanging to the job's timeout),
   `test:coverage:floors`, `test:types`
