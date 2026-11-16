@@ -1328,3 +1328,36 @@ test('server: a client that lets go of a download it was sent closes the writabl
   await peer.settle();
   assert.strictEqual(entries.filter((entry) => entry.level === 'warn').length, 1);
 });
+
+test('many uploads in flight add one close listener to their transport, and all hear it close', async () => {
+  const transport = new Emitter(); // ten listeners before it warns, like a client
+  transport.send = () => true;
+  transport.write = () => true;
+  const warnings = [];
+  const { warn } = console;
+  console.warn = (message) => warnings.push(String(message));
+  const writables = [];
+  try {
+    // Each used to add a listener of its own: the eleventh printed
+    // `MaxListenersExceededWarning: Possible close memory leak`.
+    for (let i = 0; i < 40; i++) writables.push(new WrpcWritable(`s${i}`, `f${i}`, 10, transport));
+  } finally {
+    console.warn = warn;
+  }
+  assert.deepStrictEqual(warnings, []);
+  assert.strictEqual(transport.listenerCount('close'), 1);
+  // One that finished lets go; the rest hear the transport close.
+  writables[0].write(new Uint8Array(10));
+  writables[0].end();
+  await transport.emit('close');
+  assert.ok(
+    writables.slice(1).every((writable) => writable.closed),
+    'every open writable was shut',
+  );
+  // And the transport is left as it was found: it outlives its streams.
+  assert.strictEqual(transport.listenerCount('close'), 0);
+  const later = new WrpcWritable('later', 'f', 10, transport);
+  assert.strictEqual(transport.listenerCount('close'), 1, 'the next stream waits again');
+  await transport.emit('close');
+  assert.strictEqual(later.closed, true);
+});
