@@ -351,3 +351,38 @@ test('dispatcher: past maxStreams a stream packet answers 429, and says so at de
   await waitFor(() => answers.some((answer) => answer.id === 'c1'), 'the call after the fourth');
   assert.ok(!answers.some((answer) => answer.id === 's4'), 'the fourth fits once one ended');
 });
+
+// --- A peer's text never ends or splits a log line ----------------------------
+
+test('dispatcher: a line break or a tab in a peer string does not reach a log line, and a long one is bounded', async (t) => {
+  // A Console-shaped logger: what prints the tab-separated message as it is.
+  const printed = [];
+  const print = (...parts) => void printed.push(parts.map(String).join(' '));
+  const logger = { debug: print, info: print, log: print, warn: print, error: print };
+  const { url } = await bootServer(t, { router, logger });
+  const socket = new WebSocket(url);
+  t.after(() => socket.close());
+  await new Promise((resolve) => socket.addEventListener('open', resolve));
+  const forged = 'unit/nope\n2026-11-16 ERROR admin logged in\tfrom 10.0.0.1';
+  socket.send(JSON.stringify({ type: 'call', id: 'c\n1', method: forged, args: {} }));
+  socket.send(JSON.stringify({ type: 'subscribe', id: 's\n1', method: forged, args: {} }));
+  socket.send(JSON.stringify({ type: 'event', name: `unit/${'e'.repeat(5000)}\nforged`, data: {} }));
+  const fromPeer = () => printed.filter((text) => text.includes('admin logged in') || text.includes('eeee'));
+  await waitFor(() => fromPeer().length >= 3, 'the three refusals were written');
+  for (const text of fromPeer()) {
+    // The line's own tabs are its columns; none of them may come from the
+    // peer, so the forged text sits in one column, on one line.
+    assert.ok(!text.includes('\n'), `a line break reached the log: ${JSON.stringify(text.slice(0, 80))}`);
+    assert.ok(!text.includes('ERROR admin logged in\tfrom'), 'a tab of the peer moved a column');
+    assert.ok(text.length < 400, `${text.length} characters of a peer's text in one line`);
+  }
+});
+
+test('clip: bounds a string, turns every control character into a space, and passes anything else through', () => {
+  const { clip } = require('../../src/rpc/errors.js');
+  assert.strictEqual(clip('a\nb\tc\r\u0000d\u2028e\u2029f'), 'a b c  d e f');
+  assert.strictEqual(clip('x'.repeat(200)).length, 129);
+  assert.strictEqual(clip('x\ny', 2), 'x …');
+  assert.strictEqual(clip(42), 42);
+  assert.strictEqual(clip(undefined), undefined);
+});

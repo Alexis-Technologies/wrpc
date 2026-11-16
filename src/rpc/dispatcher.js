@@ -186,7 +186,7 @@ const handleRpc = async (client, packet, router) => {
   if (client.calls.has(id)) {
     // Two calls with one id: a generateId that repeats, or a client that
     // retried without minting a fresh one. Either is a bug worth seeing.
-    const error = new Error(`Call ${id} is already in flight`);
+    const error = new Error(`Call ${clip(id)} is already in flight`);
     client.log.warn({ event: 'call.duplicate', code: 400, id: clip(id), method: clip(method), err: error });
     client.otel.recordCall(method, 'error', 400);
     return void client.error(400, { id, error, level: 'debug' });
@@ -353,9 +353,10 @@ const handleSubscribe = async (client, packet, router) => {
   const { id, method, args, lastEventId } = packet;
   const { unit, version, name: methodName } = parseTarget(method);
   const proc = router.getProcedure(unit, version, methodName);
-  if (!proc) return void refuse(client, id, 404, `${method} not found`, UNKNOWN_TARGET);
+  // The method is the peer's text and the message is a log line too (refuse).
+  if (!proc) return void refuse(client, id, 404, `${clip(method)} not found`, UNKNOWN_TARGET);
   if (!proc.subscription) {
-    return void refuse(client, id, 400, `${method} is not a subscription`, method);
+    return void refuse(client, id, 400, `${clip(method)} is not a subscription`, method);
   }
   // Re-subscribing an id this client already holds is a RESUME, not a
   // collision: an SSE channel outlives its stream, so a reconnecting peer
@@ -426,8 +427,9 @@ const handleSubscribe = async (client, packet, router) => {
     }
     // The peer is told, but nobody was: a subscription that dies server-side
     // used to leave no trace at all on this side of the wire.
-    const entry = { event: 'subscribe.end', id, method, code: terminal.error?.code };
-    if (terminal.error) client.log.warn(entry, `${client.source}\tSUBSCRIBE\t${id}\t${terminal.error.code}`);
+    const said = clip(id);
+    const entry = { event: 'subscribe.end', id: said, method: clip(method), code: terminal.error?.code };
+    if (terminal.error) client.log.warn(entry, `${client.source}\tSUBSCRIBE\t${said}\t${terminal.error.code}`);
     else client.log.debug(entry);
     let outcome = 'complete';
     if (terminal.error) outcome = 'error';
@@ -656,10 +658,10 @@ const handleEvent = async (client, packet, router) => {
   }
   const { unit, version, name } = parseTarget(target);
   const handler = router.getEventHandler(unit, version, name);
-  if (!handler) return void client.warn(`EVENT\t${target}\tno handler`);
+  if (!handler) return void client.warn(`EVENT\t${clip(target)}\tno handler`);
   if (!client.isReady) await client.ready;
   if (!hasSession(client) && handler.access !== 'public') {
-    return void client.warn(`EVENT\t${target}\tsession required`);
+    return void client.warn(`EVENT\t${clip(target)}\tsession required`);
   }
   // Events run the invocation phases (preValidation/preHandler/onError);
   // onRequest/onSend do not apply — there is no packet to answer with.
@@ -676,7 +678,7 @@ const handleEvent = async (client, packet, router) => {
     } catch (error) {
       client.otel.recordError(handle, error);
       if (hooks.onError.length > 0) await runHooksSafe(hooks.onError, context, error, client.log, 'onError');
-      client.warn(`EVENT\t${target}\t${error.stack ?? error.message}`);
+      client.warn(`EVENT\t${clip(target)}\t${error.stack ?? error.message}`);
     }
   };
   // Telemetry off: no span closure, no options object — just the work.

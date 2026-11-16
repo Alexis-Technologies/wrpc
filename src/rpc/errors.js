@@ -45,8 +45,17 @@ const wireError = (code, error) => {
 
 // A peer-controlled string on its way into a log line — a method, an id,
 // a packet type: bounded before it becomes a record, because the line is
-// the one place where "as long as maxPayload allows" is too long. Anything
-// that is not a string passes through as it is.
-const clip = (text, max = 128) => (typeof text === 'string' && text.length > max ? `${text.slice(0, max)}…` : text);
+// the one place where "as long as maxPayload allows" is too long, and with
+// nothing in it that ends or splits a line. A method named
+// `x\n2026-11-16 ERROR admin logged in` used to be TWO lines of a console
+// log, the second one the peer's own; a tab moved the columns of the line it
+// was in. Every control character becomes a space (as `shown` does for a
+// stream's name in src/streams.js). Anything that is not a string passes
+// through as it is.
+const CONTROL = /\p{Cc}|\u2028|\u2029/gu;
+const clip = (text, max = 128) => {
+  if (typeof text !== 'string') return text;
+  return (text.length > max ? `${text.slice(0, max)}…` : text).replace(CONTROL, ' ');
+};
 
 module.exports = { publicErrorMessage, publicErrorDetails, wireError, clip };

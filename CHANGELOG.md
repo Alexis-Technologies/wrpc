@@ -116,6 +116,16 @@ narrower promise — see
   `procedure({ timeout })` refuses the same range at definition with a
   `TypeError` — `Infinity`, `NaN`, a string, a negative number — where it
   used to give a procedure that never timed out, or timed out at once.
+- **A peer's text cannot end or split a log line.** The helper every
+  peer-supplied string passes on its way into a log line bounded it and did
+  nothing else, and several lines did not pass through it at all. A call
+  for the method `unit/x\n2026-11-16 ERROR admin logged in` was two lines of
+  a console log, the second written by the caller; an event name of 5,000
+  characters was logged whole. Control characters — line breaks, tabs, the
+  Unicode line separators — now become spaces in every such string, and the
+  lines that carried one raw go through the same helper: a subscription's
+  refusal and its end, an event with no handler or no session, a duplicate
+  call id, a subscription's failed `return()`.
 
 ## [2.1.0] - 2026-11-16
 
