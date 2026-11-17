@@ -224,7 +224,16 @@ test('peer telemetry: spans on both ends of a link, joined by the traceparent', 
     hub.mute('b');
     ab.link.pc.failIce();
     await waitFor(() => ab.link.state === 'failed', 'the restart failed');
-    let exported = await metrics.collect();
+    // Each end gives up on its own restart timer, and the responder's can
+    // land after the initiator's link reads `failed` — on a slow runner it
+    // did, and the count read 1. The count is waited for, not read once.
+    let exported = null;
+    const failedRestarts = () =>
+      point(exported, 'wrpc.rtc.ice_restarts', (attrs) => attrs['wrpc.rtc.outcome'] === 'failed')?.value;
+    await waitFor(async () => {
+      exported = await metrics.collect();
+      return failedRestarts() === 2;
+    }, 'both ends counted their failed restart');
     assert.strictEqual(point(exported, 'wrpc.rtc.links', (attrs) => attrs['wrpc.rtc.role'] === 'initiator').value, 0);
     assert.strictEqual(
       point(exported, 'wrpc.rtc.ice_restarts', (attrs) => attrs['wrpc.rtc.outcome'] === 'requested').value,
