@@ -497,6 +497,52 @@ test('redis broker: closing refuses further work', async (t) => {
   await assert.rejects(broker.direct.send('a', 'x'), (error) => error.code === 503);
 });
 
+// A read that reached the log tail just before close() was still waiting
+// for the stream's tip when close() quit every connection the broker owned;
+// the loop it joined then opened a connection of its own that nobody quit,
+// and a process holding one never exits (CI's redis job ran into its
+// ten-minute limit). A consumer had the same gap across its XGROUP CREATE.
+test('redis broker: a read or a consumer still opening when close() runs opens no connection after it', async () => {
+  const client = createFakeRedis();
+  const broker = createRedisBroker({ client, logger: quiet, blockMs: 20 });
+  const opened = [];
+  const duplicate = client.duplicate.bind(client);
+  client.duplicate = (...args) => {
+    const connection = duplicate(...args);
+    opened.push(connection);
+    return connection;
+  };
+  // The two round trips held open: the tip a tail reads first, the group a
+  // consumer creates.
+  let release = null;
+  const held = new Promise((resolve) => {
+    release = resolve;
+  });
+  const waiting = [];
+  for (const command of ['xrevrange', 'xgroup']) {
+    const original = client[command].bind(client);
+    client[command] = async (...args) => {
+      waiting.push(command);
+      await held;
+      return original(...args);
+    };
+  }
+  const read = broker.log.read(unique('feed'), { from: 'latest' });
+  read.ready.catch(() => {});
+  const consuming = broker.queue.consume(unique('jobs'), (delivery) => delivery.ack());
+  await waitFor(() => waiting.length === 2, { message: 'both round trips are in flight' });
+
+  await broker.close();
+  release();
+  await assert.rejects(consuming, (error) => error.code === 503);
+  await timers.setTimeout(50);
+  assert.deepStrictEqual(
+    opened.filter((connection) => !connection.ended).length,
+    0,
+    'every connection the broker opened is quit',
+  );
+});
+
 test('redis broker: numeric options are refused at construction, deadLetter at consume', async () => {
   const client = createFakeRedis();
   // A string from the environment used to compare as a number and do the

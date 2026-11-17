@@ -357,6 +357,15 @@ narrower promise — see
   One loop now reads at most 8,192 topics, on a connection of its own, and
   a busier instance runs more loops. The stream a returned row belongs to
   is found through a map, where it was a scan of every key for every row.
+- **Redis broker: a consumer still opening when `close()` runs leaves no
+  connection behind.** `queue.consume()` checked that the broker was open,
+  created its group — a round trip — and only then opened the connection
+  its blocking read sits on; a `close()` that ran in between had already
+  quit every connection the broker owned, so the new one stayed open, and a
+  process holding it never exited. A broker connection is now refused once
+  `close()` has run: the consumer rejects with the `503` of a closed broker,
+  and a log read starting the same way (it reads the stream's tip first) is
+  refused with it too.
 - **`wrpc.cluster.messages` is labelled with a closed set of envelope types.**
   Its `wrpc.cluster.type` attribute was the `t` of whatever was published to
   the cluster channel, so on a backplane without `cluster.secret` each made-up

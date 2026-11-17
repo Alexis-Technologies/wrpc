@@ -158,7 +158,14 @@ const createRedisBroker = (options = {}) => {
   // Every blocking read and every subscription needs a connection of its
   // own; they are opened on demand and quit by close() — an INJECTED client
   // never is, its lifetime is the caller's.
+  //
+  // Refused once close() has run. A caller that checked `closed` and then
+  // awaited a round trip — live() reading the tip, consume() creating its
+  // group — reaches here after a close() that has already quit every owned
+  // connection, and a connection opened then was never quit: the process
+  // stayed up on it for good (a test run that never exited).
   const spawn = () => {
+    if (closed) throw codedError('Broker is closed', 503);
     const created = connect ? connect() : client.duplicate();
     owned.add(created);
     return created;
