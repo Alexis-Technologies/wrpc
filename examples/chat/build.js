@@ -7,7 +7,10 @@ const path = require('node:path');
 const esbuild = require(require.resolve('esbuild', { paths: [path.join(__dirname, '..', '..')] }));
 
 esbuild.buildSync({
-  entryPoints: [path.join(__dirname, '..', '..', 'browser.js')],
+  // The package's own name, resolved through its exports' `browser`
+  // condition — what a page of your own would bundle.
+  entryPoints: ['@alexify/wrpc'],
+  absWorkingDir: __dirname,
   bundle: true,
   format: 'esm',
   platform: 'browser',

@@ -49,8 +49,10 @@ an imported class. Nothing under `src/` may `require()` a framework.
 
 **A `.d.ts` change and its `tsd` test land together.** The declarations are
 hand-maintained, one file per subpath, and they drift silently otherwise. Every
-new subpath brings a root shim, a root `.d.ts`, an `exports` entry, a `files`
-entry and a `tests/<name>.test-d.ts`.
+new subpath brings its entry under `src/` with a `.d.ts` beside it, an
+`exports` entry (`types` first), its `typesVersions` line, a `scripts/size.js`
+row and a `tests/<name>.test-d.ts` — the package root holds the main entry
+(`index.js`, `index.d.ts`) and nothing else.
 
 **`tsd` type-checks with `@tsd/typescript` (5.9), not the repo's own
 `typescript`.** A type relying on newer inference has to be checked against
@@ -227,14 +229,15 @@ publishes.
    included) — publishing an already-used version is a rejected
    `npm publish`, not a warning.
 4. **Check what would ship.** `files` in `package.json` is an explicit
-   allowlist, so a new root shim or `.d.ts` that was not added to it silently
-   disappears from the tarball:
+   allowlist — the main entry, `bin/`, `src/` and the four documents — so a
+   root file that was not added to it silently disappears from the tarball:
    ```bash
    npm publish --dry-run
    ```
-   Verify the file list contains every root shim, every `.d.ts`, `bin/`, `src/`,
-   and **not** `docs/`, `tests/`, `bench/`, `scripts/`, `examples/` or
-   `coverage/`.
+   Verify the file list contains `index.js`, `index.d.ts`, `bin/` and `src/`
+   with every `.d.ts` in it, **no** `CLAUDE.md` (`!**/CLAUDE.md` keeps the
+   agents' files out; a test asks npm's own packing list), and **not**
+   `docs/`, `tests/`, `bench/`, `scripts/`, `examples/` or `coverage/`.
 5. **Verify the tarball resolves**, CommonJS and ESM alike. In a scratch
    directory:
    ```bash
@@ -255,7 +258,10 @@ publishes.
    `--types node` is not optional: the typings import `node:http` and name
    `Buffer`, and since TypeScript 6 a compiler run with no `tsconfig.json`
    includes no `@types` package unless told to — without the flag the smoke
-   fails on the first line of `engine.d.ts`, whatever the tarball holds.
+   fails on the first line of `src/engine/index.d.ts`, whatever the tarball
+   holds. TypeScript 7 has no `moduleResolution: node10` any more; the
+   `typesVersions` that serves it on TypeScript ≤ 6 is checked in every mode
+   by `tests/package/resolution.test.js`, with tsd's TypeScript (5.9).
 6. **Commit, tag, push**: `git tag v<version> && git push --follow-tags`.
 7. **Publish**: `npm publish` (`publishConfig.access` is already `public`).
 8. **Release notes** on GitHub from the CHANGELOG entry.

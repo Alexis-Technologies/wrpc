@@ -3,11 +3,11 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { createIdentity, createSealer, createOpener, OpenError } = require('../../encryption.js');
+const { createIdentity, createSealer, createOpener, OpenError } = require('../../src/encryption/index.js');
 const browserAead = require('../../src/encryption/aead.browser.js');
 const browserDh = require('../../src/encryption/dh.browser.js');
 const { defineRouter, procedure } = require('../../index.js');
-const { MemoryBackplane } = require('../../scaling.js');
+const { MemoryBackplane } = require('../../src/scaling/index.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 
 const text = (bytes) => Buffer.from(bytes).toString();

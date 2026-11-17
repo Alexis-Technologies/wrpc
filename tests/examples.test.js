@@ -1,14 +1,18 @@
 'use strict';
 
 // The examples are what a reader copies first, and nothing ran them: a
-// rename in a root entry (`webrtc.js`, `wt.js`, `auth.js` — all three were
-// reshaped on the way to 2.0) left an example that throws at its first line,
+// rename in an entry (`webrtc`, `wt`, `auth` — all three were reshaped on
+// the way to 2.0) left an example that throws at its first line,
 // found by whoever tried it. They need servers, ports and a browser, so they
 // are not EXECUTED here either; two cheap checks catch what a rename breaks:
 //
 //   - every example script compiles (a syntax error, a stray await);
-//   - every name an example destructures from a root entry of this package
-//     is one that entry really exports.
+//   - every name an example destructures from an entry of this package is
+//     one that entry really exports.
+//
+// An example reaches the package by its NAME, the way a reader's own code
+// does (`require('@alexify/wrpc/wt')`); here that name resolves to this
+// tree through the package's exports — a self-reference.
 //
 // `public/` is skipped: it holds the page and the bundle build.js writes.
 
@@ -48,24 +52,27 @@ test('examples: every script compiles', () => {
   }
 });
 
-// `const { a, b: c, d = 1 } = require('../../<entry>.js')` and
-// `...require('../../<entry>.js')`: the two ways an example reaches the
-// package. A relative path that leaves examples/ is a root entry.
-const DESTRUCTURED = /const\s*\{([^}]*)\}\s*=\s*require\('(\.\.\/\.\.\/[^']+)'\)/g;
-const REQUIRED = /require\('(\.\.\/\.\.\/[^']+)'\)/g;
+// `const { a, b: c, d = 1 } = require('@alexify/wrpc/<entry>')` and
+// `...require('@alexify/wrpc/<entry>')`: the two ways an example reaches
+// the package. An example may not reach into the tree by a relative path.
+const NAME = String.raw`@alexify\/wrpc(?:\/[\w/]+)?`;
+const DESTRUCTURED = new RegExp(String.raw`const\s*\{([^}]*)\}\s*=\s*require\('(${NAME})'\)`, 'g');
+const REQUIRED = new RegExp(String.raw`require\('(${NAME})'\)`, 'g');
+const RELATIVE = /require\('(\.\.\/[^']+)'\)/g;
 
-test('examples: every root entry an example requires exists, and exports the names taken from it', () => {
+test('examples: every entry an example requires exists, and exports the names taken from it', () => {
   let checked = 0;
   for (const file of files) {
     const source = fs.readFileSync(file, 'utf8');
     const label = path.relative(ROOT, file);
+    for (const match of source.matchAll(RELATIVE)) {
+      assert.fail(`${label} requires ${match[1]}; an example reaches the package by its name`);
+    }
     for (const match of source.matchAll(REQUIRED)) {
-      const target = path.resolve(path.dirname(file), match[1]);
-      assert.ok(fs.existsSync(target), `${label} requires ${match[1]}, which does not exist`);
+      assert.doesNotThrow(() => require.resolve(match[1]), `${label} requires ${match[1]}, which does not resolve`);
     }
     for (const match of source.matchAll(DESTRUCTURED)) {
-      const target = path.resolve(path.dirname(file), match[2]);
-      const entry = require(target);
+      const entry = require(match[2]);
       for (const part of match[1].split(',')) {
         const name = part.split(/[:=]/)[0].trim();
         if (name === '' || name.startsWith('...')) continue;

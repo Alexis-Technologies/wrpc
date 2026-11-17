@@ -14,7 +14,7 @@ const {
 } = require('../../index.js');
 const { MAX_DICTIONARY } = require('../../src/rpc/dictionary.js');
 const { dictionaryId, nativeCompressor, isCompressor } = require('../../src/compression/index.js');
-const { MemoryBroker, attachBrokerRpc } = require('../../broker.js');
+const { MemoryBroker, attachBrokerRpc } = require('../../src/broker/index.js');
 const { HEADER_ENC, HEADER_KIND, KIND } = require('../../src/broker/rpc/frames.js');
 const { quiet } = require('../broker/support.js');
 

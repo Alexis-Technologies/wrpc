@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { FakeRedis } = require('./fakeRedis.js');
 
-const { createRedisAdapter, isBackplane } = require('../../scaling.js');
+const { createRedisAdapter, isBackplane } = require('../../src/scaling/index.js');
 
 const noop = () => {};
 const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };

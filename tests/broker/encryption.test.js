@@ -6,9 +6,9 @@ const timers = require('node:timers/promises');
 
 const { RpcServer } = require('../../src/rpc/core.js');
 const { defineRouter, procedure, WrpcClient } = require('../../index.js');
-const { MemoryBroker, attachBrokerRpc } = require('../../broker.js');
-const { bearerTransport } = require('../../auth.js');
-const { generateKey } = require('../../encryption.js');
+const { MemoryBroker, attachBrokerRpc } = require('../../src/broker/index.js');
+const { bearerTransport } = require('../../src/auth/index.js');
+const { generateKey } = require('../../src/encryption/index.js');
 const { createBrokerSealing, HEADER_SEALED } = require('../../src/broker/sealing.js');
 const { KIND, HEADER_KIND } = require('../../src/broker/rpc/frames.js');
 const { quiet, waitFor } = require('./support.js');
@@ -477,7 +477,7 @@ test('broker encryption: a sealed request older than maxSkew, or without a clock
 });
 
 test('broker encryption: a shared replay memory refuses a request replayed to another instance', async (t) => {
-  const { createReplayCache } = require('../../encryption.js');
+  const { createReplayCache } = require('../../src/encryption/index.js');
   const keys = generateKey();
   const broker = new MemoryBroker({ logger: quiet });
   const replay = createReplayCache();

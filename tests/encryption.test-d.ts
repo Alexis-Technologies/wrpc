@@ -1,5 +1,5 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as encryption from '../encryption.js';
+import * as encryption from '../src/encryption/index.js';
 import type {
   Cipher,
   CipherKey,
@@ -13,7 +13,7 @@ import type {
   KeyProvider,
   Keyring,
   KeysOption,
-} from '../encryption.js';
+} from '../src/encryption/index.js';
 import type { RpcServerOptions, Router, SessionStore } from '../index.js';
 import { MemorySessionStore, RpcServer, WrpcClient } from '../index.js';
 import type { Client, WrpcClientOptions } from '../index.js';

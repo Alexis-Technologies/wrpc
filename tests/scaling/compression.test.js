@@ -6,7 +6,7 @@ const zlib = require('node:zlib');
 const timers = require('node:timers/promises');
 
 const { RpcServer, defineRouter, procedure } = require('../../index.js');
-const { MemoryBackplane } = require('../../scaling.js');
+const { MemoryBackplane } = require('../../src/scaling/index.js');
 const { createEnvelopeCodec, ENVELOPE_PREFIX, isEncodedEnvelope } = require('../../src/compression/sync.js');
 const { waitFor } = require('../helpers/server.js');
 
@@ -193,8 +193,8 @@ test('rooms backplane: a change of codec is a rollout without a lost message', a
 
 test('rooms: compression and encryption are validated without a backplane; rooms.backplane is refused; an unknown key warns', () => {
   const { recorder } = require('../helpers/recorder.js');
-  const { generateKey } = require('../../encryption.js');
-  const { MemoryBackplane } = require('../../scaling.js');
+  const { generateKey } = require('../../src/encryption/index.js');
+  const { MemoryBackplane } = require('../../src/scaling/index.js');
   assert.throws(
     () => new RpcServer({ router, logger: false, sse: false, rooms: { compression: { codec: 'nope' } } }),
     /unknown algorithm/,

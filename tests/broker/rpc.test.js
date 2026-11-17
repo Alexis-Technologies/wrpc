@@ -6,8 +6,8 @@ const timers = require('node:timers/promises');
 
 const { RpcServer } = require('../../src/rpc/core.js');
 const { defineRouter, procedure, WrpcClient, tracked, createEventLog, createEventStream } = require('../../index.js');
-const { MemoryBroker, attachBrokerRpc, ClientBrokerTransport } = require('../../broker.js');
-const { bearerTransport } = require('../../auth.js');
+const { MemoryBroker, attachBrokerRpc, ClientBrokerTransport } = require('../../src/broker/index.js');
+const { bearerTransport } = require('../../src/auth/index.js');
 const { runTransportContract } = require('../client/transportContract.js');
 const { quiet, waitFor } = require('./support.js');
 const { recorder } = require('../helpers/recorder.js');

@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { Emitter } = require('../../src/utils.js');
-const { createQueryUtils } = require('../../query.js');
+const { createQueryUtils } = require('../../src/query/index.js');
 
 // A stand-in for a loaded client: `api` holds unit Emitters carrying OWN
 // method properties, which is exactly the shape `WrpcClient.load()` builds.

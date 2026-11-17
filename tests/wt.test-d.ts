@@ -1,6 +1,12 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as wt from '../wt.js';
-import type { AttachSessionOptions, SessionAcceptor, WtSession, WtSocket, WtStream } from '../wt.js';
+import * as wt from '../src/webtransport/index.js';
+import type {
+  AttachSessionOptions,
+  SessionAcceptor,
+  WtSession,
+  WtSocket,
+  WtStream,
+} from '../src/webtransport/index.js';
 import type { Client, Server, WrpcClientOptions } from '../index.js';
 
 expectType<typeof WtSocket>(wt.WtSocket);

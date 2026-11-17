@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
 const { defineRouter, procedure } = require('../../index.js');
-const { acceptSessions, StreamParser, frameCaps, KIND_CAPS, KIND_TEXT } = require('../../wt.js');
+const { acceptSessions, StreamParser, frameCaps, KIND_CAPS, KIND_TEXT } = require('../../src/webtransport/index.js');
 const { StreamMux, idHeader } = require('../../src/webtransport/streams.js');
 const { ClientWtTransport } = require('../../src/client/webtransport.js');
 const { chunkEncode, chunkDecode } = require('../../src/chunks.js');

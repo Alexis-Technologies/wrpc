@@ -17,8 +17,8 @@ const assert = require('node:assert');
 const { RpcServer, defineRouter, procedure, WrpcClient, Emitter } = require('../../index.js');
 const { ClientTransport } = require('../../src/client/core.js');
 const { SseChannels } = require('../../src/sse/server.js');
-const { MemoryBroker } = require('../../broker.js');
-const { PeerHost, wrpcSignaler } = require('../../webrtc.js');
+const { MemoryBroker } = require('../../src/broker/index.js');
+const { PeerHost, wrpcSignaler } = require('../../src/webrtc/index.js');
 const { bootServer, connectClient } = require('../helpers/server.js');
 
 const router = defineRouter({
@@ -146,7 +146,7 @@ test('generateId: an instance id may not contain a dot, whoever produced it', ()
 });
 
 test('generateId: a broker transport mints its session id with the client generator', () => {
-  const { ClientBrokerTransport } = require('../../broker.js');
+  const { ClientBrokerTransport } = require('../../src/broker/index.js');
   const transport = new ClientBrokerTransport('broker://billing');
   // Assigned by the owning client the way `codec` and `log` are, so one
   // option covers packet ids and the broker session id alike.

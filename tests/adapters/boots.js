@@ -9,10 +9,10 @@ const path = require('node:path');
 const Module = require('node:module');
 
 const { Server } = require('../../index.js');
-const { createNodeEngine } = require('../../engine.js');
-const { createUwsEngine } = require('../../uws.js');
-const { wrpcFastify } = require('../../fastify.js');
-const { createWrpc } = require('../../express.js');
+const { createNodeEngine } = require('../../src/engine/index.js');
+const { createUwsEngine } = require('../../src/adapters/uws.js');
+const { wrpcFastify } = require('../../src/adapters/fastify.js');
+const { createWrpc } = require('../../src/adapters/express.js');
 
 const noop = () => {};
 const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };

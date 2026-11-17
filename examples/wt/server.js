@@ -17,9 +17,9 @@ const fs = require('node:fs');
 const http = require('node:http');
 const path = require('node:path');
 
-const { Server, defineRouter, procedure } = require('../../index.js');
-const { acceptSessions, failsRequestCallback } = require('../../wt.js');
-const { bearerTransport } = require('../../auth.js');
+const { Server, defineRouter, procedure } = require('@alexify/wrpc');
+const { acceptSessions, failsRequestCallback } = require('@alexify/wrpc/wt');
+const { bearerTransport } = require('@alexify/wrpc/auth');
 
 const certsDir = path.resolve(process.env.WRPC_WT_CERTS ?? 'certs');
 const cert = fs.readFileSync(path.join(certsDir, 'wt-cert.pem'), 'utf8');

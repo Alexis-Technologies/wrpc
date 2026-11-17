@@ -1,7 +1,7 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as amqp from '../../broker/amqp.js';
-import type { Broker } from '../../broker.js';
-import type { AmqpBrokerOptions, AmqpConnection } from '../../broker/amqp.js';
+import * as amqp from '../../src/broker/amqp/index.js';
+import type { Broker } from '../../src/broker/index.js';
+import type { AmqpBrokerOptions, AmqpConnection } from '../../src/broker/amqp/index.js';
 
 // The real connection type (amqplib ships its own), a devDependency used only here.
 import type { ChannelModel } from 'amqplib';

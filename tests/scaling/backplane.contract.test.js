@@ -7,7 +7,7 @@
 
 const { test } = require('node:test');
 
-const { MemoryBackplane, createRedisAdapter } = require('../../scaling.js');
+const { MemoryBackplane, createRedisAdapter } = require('../../src/scaling/index.js');
 const { runBackplaneContract } = require('../broker/backplaneContract.js');
 const { quiet } = require('../broker/support.js');
 const { FakeRedis } = require('./fakeRedis.js');

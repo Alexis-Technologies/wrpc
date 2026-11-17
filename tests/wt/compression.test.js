@@ -6,7 +6,7 @@ const zlib = require('node:zlib');
 const timers = require('node:timers/promises');
 
 const { defineRouter, procedure, tracked } = require('../../index.js');
-const { attachSession, acceptSessions } = require('../../wt.js');
+const { attachSession, acceptSessions } = require('../../src/webtransport/index.js');
 const { WtSocket } = require('../../src/webtransport/socket.js');
 const { ClientWtTransport } = require('../../src/client/webtransport.js');
 const {

@@ -1,8 +1,8 @@
 import { IncomingMessage, Server as HttpServer, ServerResponse } from 'node:http';
-import type { Connection } from './ws.js';
-import type { Engine, EngineConnectionSource, WrpcSocket, EngineAttachOptions } from './engine.js';
-import type { Backplane } from './scaling.js';
-import type { EnvelopeEncryptionOptions, ServerEncryptionOptions } from './encryption.js';
+import type { Connection } from './src/websocket/ws.js';
+import type { Engine, EngineConnectionSource, WrpcSocket, EngineAttachOptions } from './src/engine/index.js';
+import type { Backplane } from './src/scaling/index.js';
+import type { EnvelopeEncryptionOptions, ServerEncryptionOptions } from './src/encryption/index.js';
 import type {
   Broadcast,
   Client,
@@ -16,7 +16,7 @@ import type {
   SessionManager,
   SessionsOptions,
   procedure,
-} from './rpc.js';
+} from './src/rpc.js';
 import {
   Emitter,
   WrpcError,
@@ -28,14 +28,14 @@ import {
   WrpcCodec,
   CompressionOptions,
   Compressor,
-} from './client.js';
+} from './src/client.js';
 
-// The browser-safe half of the surface lives in client.d.ts (which is what
-// the `browser` types condition serves); the engine-agnostic server core
-// (routers, sessions, rooms, Client, Context) in rpc.d.ts, shared with the
+// The browser-safe half of the surface lives in src/client.d.ts (which is
+// what the `browser` types condition serves); the engine-agnostic server core
+// (routers, sessions, rooms, Client, Context) in src/rpc.d.ts, shared with the
 // WebRTC peer types; this file is both plus the Node server.
-export * from './client.js';
-export * from './rpc.js';
+export * from './src/client.js';
+export * from './src/rpc.js';
 
 /**
  * The dictionary codec (raw deflate through node:zlib with a preset
@@ -384,7 +384,7 @@ export interface HttpCall {
   stream?(response: {
     status: number;
     headers: Record<string, string | number | Array<string>>;
-  }): import('./sse.js').SseWriter | null;
+  }): import('./src/sse/index.js').SseWriter | null;
 }
 
 // ---------------------------------------------------------------------------
@@ -457,7 +457,7 @@ export interface RpcServerOptions {
    */
   streamIdleTimeout?: number;
   /** SSE channel options, or `false` to remove the events endpoint. */
-  sse?: import('./sse.js').SseOptions | false;
+  sse?: import('./src/sse/index.js').SseOptions | false;
   /**
    * The HTTP side's own options: `compression`, off by default, and `hsts` —
    * the `Strict-Transport-Security` value every HTTP answer carries
@@ -532,7 +532,7 @@ export interface RpcServerOptions {
 }
 
 // The codec types (WrpcCodec, WrpcPacketCodec, WrpcRestCodec) and the
-// isCodec predicate live in client.d.ts — the client accepts the same
+// isCodec predicate live in src/client.d.ts — the client accepts the same
 // shape — and arrive here through the `export *`. One declaration: the
 // browser and node entries used to present DIFFERENT signatures for the
 // same runtime function.
@@ -548,7 +548,7 @@ export declare class RpcServer extends Emitter {
   /** Where the SSE stream lives: `${basePath}/events`. */
   readonly eventsPath: string;
   /** The SSE channel registry, or null when `sse: false`. */
-  readonly sse: import('./sse.js').SseChannels | null;
+  readonly sse: import('./src/sse/index.js').SseChannels | null;
   readonly clients: Set<Client>;
   /**
    * A host-delegated REST route runs its procedure outside handleHttpCall:

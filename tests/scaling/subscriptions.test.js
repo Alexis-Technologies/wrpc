@@ -13,7 +13,7 @@ const {
   createEventLog,
   tracked,
 } = require('../../index.js');
-const { MemoryBackplane } = require('../../scaling.js');
+const { MemoryBackplane } = require('../../src/scaling/index.js');
 const { waitFor } = require('../helpers/wait.js');
 
 // Two instances, one backplane, one logical feed. wrpc supplies the pieces —

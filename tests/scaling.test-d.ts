@@ -1,6 +1,12 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as scaling from '../scaling.js';
-import type { Backplane, BackplaneHandler, MemoryBackplane, RedisAdapterOptions, Unsubscribe } from '../scaling.js';
+import * as scaling from '../src/scaling/index.js';
+import type {
+  Backplane,
+  BackplaneHandler,
+  MemoryBackplane,
+  RedisAdapterOptions,
+  Unsubscribe,
+} from '../src/scaling/index.js';
 import type { RpcServerOptions, ServerOptions, Router } from '../index.js';
 
 expectType<typeof MemoryBackplane>(scaling.MemoryBackplane);

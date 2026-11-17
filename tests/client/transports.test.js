@@ -5,9 +5,9 @@ const assert = require('node:assert');
 
 const { WrpcClient, ClientTransport, isClientTransport } = require('../../src/client.js');
 const { defineRouter, procedure } = require('../../index.js');
-require('../../sse.js'); // registers the sse transport
-require('../../webrtc.js'); // registers the webrtc transport
-require('../../broker.js'); // registers the broker transport
+require('../../src/sse/index.js'); // registers the sse transport
+require('../../src/webrtc/index.js'); // registers the webrtc transport
+require('../../src/broker/index.js'); // registers the broker transport
 const { runTransportContract } = require('./transportContract.js');
 const { bootServer, connectClient } = require('../helpers/server.js');
 

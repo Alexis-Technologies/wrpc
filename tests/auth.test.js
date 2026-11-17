@@ -13,7 +13,7 @@ const {
   bearerAuth,
   bearerTransport,
   payloadTransport,
-} = require('../auth.js');
+} = require('../src/auth/index.js');
 const { waitFor } = require('./helpers/wait.js');
 
 // ---------------------------------------------------------------------------
@@ -254,7 +254,7 @@ test('bearerAuth: a THROWING refresh clears the store like a falsy return does',
 // meta spellings — the drift this matrix exists to catch is a token that
 // restores on ws but silently 403s on http/sse under metaFormat 'prefixed'.
 
-require('../sse.js'); // registers the 'sse' client transport
+require('../src/sse/index.js'); // registers the 'sse' client transport
 
 const payloadBoot = async (t) => {
   const definition = defineRouter({

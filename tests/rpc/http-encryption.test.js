@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { defineRouter, procedure, WrpcClient } = require('../../index.js');
-const { createEncryption, generateKey, fetchServerKey, createReplayCache } = require('../../encryption.js');
+const { createEncryption, generateKey, fetchServerKey, createReplayCache } = require('../../src/encryption/index.js');
 const { pack, unpack, isSealedType, sealedFetch, CONTENT_TYPE } = require('../../src/encryption/http.js');
 const { createHpke, dhKem } = require('../../src/encryption/hpke.js');
 const { aead } = require('../../src/encryption/aead.js');
@@ -14,7 +14,7 @@ const { parseBundle } = require('../../src/encryption/statics.js');
 const { OpenError } = require('../../src/encryption/contracts.js');
 const { buildBoots } = require('../adapters/boots.js');
 const { bootServer } = require('../helpers/server.js');
-const { bearerTransport } = require('../../auth.js');
+const { bearerTransport } = require('../../src/auth/index.js');
 const { AMBIENT_HEADERS, RESERVED_DECLARED } = require('../../src/rpc/reserved.js');
 
 // One name or one prefix of each identity-aware proxy (reserved.js).
@@ -178,7 +178,7 @@ test('http encryption: required refuses plaintext; without it both are served', 
 });
 
 test('http encryption: a refusal the client can act on is typed, and its status reaches the call', async (t) => {
-  const { EncryptionRefusedError } = require('../../encryption.js');
+  const { EncryptionRefusedError } = require('../../src/encryption/index.js');
   // A skew window of one millisecond: every request is stale by the time
   // the server reads its timestamp.
   const { connect } = await secure(t, { maxSkew: 1 });

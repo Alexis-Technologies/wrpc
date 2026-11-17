@@ -1,9 +1,9 @@
 'use strict';
 
 // The machine-checked version of the release checklist's "check what would
-// ship" step. `files` is an explicit allowlist, so a new root shim or .d.ts
-// that was not added to it silently disappears from the tarball; an exports
-// entry whose file does not exist fails only at a consumer's first import.
+// ship" step. `files` is an explicit allowlist, so a root file that was not
+// added to it silently disappears from the tarball; an exports entry whose
+// file does not exist fails only at a consumer's first import.
 // This suite makes every one of those a red test instead.
 
 const path = require('node:path');
@@ -54,17 +54,43 @@ test('every subpath has a types condition wherever it has a runtime one', () => 
   }
 });
 
-test('every root shim requires a file that exists', () => {
+// A subpath resolves straight to its entry under src/, the d.ts beside it
+// (the layout of the sibling mailer): the root holds the main entry and
+// nothing else of the package — no shim of one line per subpath, no root
+// d.ts per subpath. bin/ is the CLI, not an entry.
+const ROOT_FILES = ['index.js', 'index.d.ts'];
+
+test('every subpath resolves into src/, and the root holds only the main entry', () => {
   for (const [key, value] of Object.entries(pkg.exports)) {
+    if (key === '.' || key === './package.json') continue;
     for (const target of exportTargets(value)) {
-      if (!target.endsWith('.js')) continue;
-      const source = require('node:fs').readFileSync(path.join(ROOT, target), 'utf8');
-      const match = source.match(/require\('([^']+)'\)/);
-      if (!match) continue; // not a shim
-      const required = path.join(ROOT, path.dirname(target), match[1]);
-      assert.ok(existsSync(required), `${key} shim ${target} requires missing ${match[1]}`);
+      assert.ok(target.startsWith('./src/'), `${key} -> ${target} is not an entry under src/`);
     }
   }
+  const named = pkg.files.filter((entry) => !entry.startsWith('!') && !entry.endsWith('/'));
+  const code = named.filter((entry) => /\.(?:js|ts)$/.test(entry));
+  assert.deepStrictEqual(code, ROOT_FILES, 'the files allowlist names no root code but the main entry');
+  const stray = require('node:fs')
+    .readdirSync(ROOT)
+    .filter((name) => /\.(?:c?js|d\.ts)$/.test(name) && !ROOT_FILES.includes(name));
+  assert.deepStrictEqual(stray, [], 'a root shim or d.ts is back; its entry belongs under src/');
+  assert.ok(!existsSync(path.join(ROOT, 'broker')), 'the broker/ shims are back; they live in src/broker/<name>/');
+});
+
+// TypeScript under `moduleResolution: node10` (the default for
+// `module: commonjs`) never reads `exports`; `typesVersions` is what tells it
+// where a subpath's types are, now that no root d.ts carries the subpath's
+// name. It must name exactly the d.ts each subpath's `types` condition
+// names — the two are one fact written twice.
+test('typesVersions mirrors the types condition of every subpath', () => {
+  const map = pkg.typesVersions?.['*'];
+  assert.ok(map, 'package.json has typesVersions["*"]');
+  const expected = {};
+  for (const [key, value] of Object.entries(pkg.exports)) {
+    if (key === '.' || key === './package.json') continue;
+    expected[key.slice(2)] = [value.types];
+  }
+  assert.deepStrictEqual(map, expected);
 });
 
 test('every published subpath has a tsd file', () => {
@@ -152,7 +178,7 @@ test('every exports subpath has a bundle-size row in scripts/size.js', () => {
   }
 });
 
-// The value declarations of a root d.ts — class, function, const, let —
+// The value declarations of a d.ts — class, function, const, let —
 // with its re-exports followed (`export * from './x.js'` brings x's values;
 // `export { a, b } from './x.js'` the named ones x declares as values).
 // Interfaces and `export type` are not values and are not counted.
@@ -164,11 +190,13 @@ const declaredValues = (file, seen = new Set()) => {
   for (const match of text.matchAll(/^export (?:declare )?(?:abstract )?(?:class|function|const|let)\s+(\w+)/gm)) {
     names.add(match[1]);
   }
-  for (const match of text.matchAll(/^export \* from '\.\/([\w./-]+)\.js';/gm)) {
-    for (const name of declaredValues(`${match[1]}.d.ts`, seen)) names.add(name);
+  // A reference is relative to the d.ts that makes it.
+  const near = (ref) => path.posix.join(path.posix.dirname(file), `${ref}.d.ts`);
+  for (const match of text.matchAll(/^export \* from '(\.{1,2}\/[\w./-]+)\.js';/gm)) {
+    for (const name of declaredValues(near(match[1]), seen)) names.add(name);
   }
-  for (const match of text.matchAll(/^export \{([^}]*)\} from '\.\/([\w./-]+)\.js';/gm)) {
-    const target = declaredValues(`${match[2]}.d.ts`, seen);
+  for (const match of text.matchAll(/^export \{([^}]*)\} from '(\.{1,2}\/[\w./-]+)\.js';/gm)) {
+    const target = declaredValues(near(match[2]), seen);
     for (const entry of match[1].split(',')) {
       const name = entry
         .trim()
@@ -238,7 +266,7 @@ test('every public member of a runtime class is declared on its d.ts class', () 
   const { EventEmitter } = require('node:events');
   const ts = require(require.resolve('@tsd/typescript', { paths: [path.dirname(require.resolve('tsd'))] }));
   const declared = new Map();
-  for (const file of ['index.d.ts', 'rpc.d.ts', 'client.d.ts']) {
+  for (const file of ['index.d.ts', 'src/rpc.d.ts', 'src/client.d.ts']) {
     const source = ts.createSourceFile(file, read(file), ts.ScriptTarget.Latest, true);
     const visit = (node) => {
       if (ts.isClassDeclaration(node) && node.name) {
@@ -294,17 +322,15 @@ test('every public member of a runtime class is declared on its d.ts class', () 
 // script's, and every budgeted entry of the script must be in README's.
 test('the budget column of the size tables in README and the browser guide matches scripts/size.js', () => {
   // scripts/size.js: every budgeted entry, as (subpath, half) -> budget,
-  // from the entry FILE (browser.js is the main entry's browser half,
-  // sse.browser.js the sse subpath's, query.js the query subpath's, ...).
+  // the subpath read from the row's label (`… (@alexify/wrpc/sse)`).
   const script = read('scripts/size.js');
   const budgets = new Map();
-  for (const match of script.matchAll(/entry: '([\w.]+)\.js',\s*platform: 'browser',\s*budget: (\d+)/g)) {
+  const row = /label: '[^']*\(@alexify\/wrpc(\/[\w/]+)?\)',\s*entry: '[^']+',\s*platform: 'browser',\s*budget: (\d+)/g;
+  for (const match of script.matchAll(row)) {
     // A budgeted entry IS a browser half (only browser-reachable entries carry
-    // a budget), whatever the file is called: query.js, auth.js and
-    // deflate.js are one file for both platforms.
-    const [name] = match[1].split('.');
-    const subpath = name === 'browser' ? '' : `/${name}`;
-    budgets.set(`${subpath}|browser`, Number(match[2]));
+    // a budget), whatever the file is called: query, auth and deflate are one
+    // file for both platforms.
+    budgets.set(`${match[1] ?? ''}|browser`, Number(match[2]));
   }
   assert.ok(budgets.size >= 7, `budgeted entries in scripts/size.js: ${budgets.size}`);
   // A table row that shows a budget: its subpath is the first backticked
@@ -469,18 +495,22 @@ test('SECURITY.md names the supported major, no pre-publish placeholder, and eve
   assert.ok(text.includes('what-it-does-not-protect'), 'the documented limits are linked');
 });
 
-test('every ./x.js reference inside a shipped root d.ts resolves to a shipped x.d.ts', () => {
-  const roots = pkg.files.filter((entry) => entry.endsWith('.d.ts'));
-  for (const file of roots) {
+test('every relative x.js reference inside a shipped d.ts resolves to a shipped x.d.ts', () => {
+  const { readdirSync } = require('node:fs');
+  const typings = readdirSync(path.join(ROOT, 'src'), { recursive: true })
+    .filter((name) => name.endsWith('.d.ts'))
+    .map((name) => `src/${name.split(path.sep).join('/')}`);
+  assert.ok(typings.length >= 24, `only ${typings.length} d.ts under src/`);
+  for (const file of [...ROOT_FILES.filter((name) => name.endsWith('.d.ts')), ...typings]) {
     const text = read(file);
     const refs = [
-      ...[...text.matchAll(/from '\.\/([\w.-]+)\.js'/g)].map((m) => m[1]),
-      ...[...text.matchAll(/import\('\.\/([\w.-]+)\.js'\)/g)].map((m) => m[1]),
+      ...[...text.matchAll(/from '(\.{1,2}\/[\w./-]+)\.js'/g)].map((m) => m[1]),
+      ...[...text.matchAll(/import\('(\.{1,2}\/[\w./-]+)\.js'\)/g)].map((m) => m[1]),
     ];
     for (const ref of refs) {
-      const dts = `${ref}.d.ts`;
-      assert.ok(existsSync(path.join(ROOT, dts)), `${file} references ./${ref}.js but ${dts} does not exist`);
-      assert.ok(shipped(dts), `${file} references ./${ref}.js but ${dts} is not in the files allowlist`);
+      const dts = path.posix.join(path.posix.dirname(file), `${ref}.d.ts`);
+      assert.ok(existsSync(path.join(ROOT, dts)), `${file} references ${ref}.js but ${dts} does not exist`);
+      assert.ok(shipped(dts), `${file} references ${ref}.js but ${dts} is not in the files allowlist`);
     }
   }
 });

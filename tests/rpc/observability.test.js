@@ -6,7 +6,7 @@ const assert = require('node:assert');
 const { RpcServer, WrpcClient, defineRouter, procedure } = require('../../index.js');
 const { bootServer } = require('../helpers/server.js');
 const { Server } = require('../../index.js');
-const { MemoryBackplane } = require('../../scaling.js');
+const { MemoryBackplane } = require('../../src/scaling/index.js');
 
 // A pino-shaped collector: `child` and `level` are what mark a sink
 // structured, and the merged bindings are what this file is really testing —

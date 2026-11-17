@@ -3,7 +3,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { MemoryBackplane, createMemoryBackplane, isBackplane } = require('../../scaling.js');
+const { MemoryBackplane, createMemoryBackplane, isBackplane } = require('../../src/scaling/index.js');
 
 const tick = () => new Promise((resolve) => queueMicrotask(resolve));
 

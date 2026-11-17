@@ -25,15 +25,19 @@ Two mechanisms, both declared in `package.json`:
 
 | Node file | Browser file | Why |
 | --- | --- | --- |
-| `index.js` | `browser.js` | The browser barrel excludes the server half entirely. |
-| `sse.js` | `sse.browser.js` | A browser needs the [SSE](./sse) client transport, never the channel registry. |
-| `webrtc.js` | `webrtc.browser.js` | A browser peer needs the [WebRTC](./webrtc) peer, link and signaler client, never the server-side signaling unit. |
+| `index.js` | `src/index.browser.js` | The browser barrel excludes the server half entirely. |
+| `src/sse/index.js` | `src/sse/client.js` | A browser needs the [SSE](./sse) client transport, never the channel registry. |
+| `src/webrtc/index.js` | `src/webrtc/browser.js` | A browser peer needs the [WebRTC](./webrtc) peer, link and signaler client, never the server-side signaling unit. |
+| `src/encryption/index.js` | `src/encryption/browser.js` | The [encryption](./encryption) primitives over `crypto.subtle`, without the Node-only sealed store and replay cache. |
 | `src/chunks.js` | `src/chunks.browser.js` | `Buffer` vs `TextEncoder`/`TextDecoder` for [binary framing](./streams). |
 | `src/runtime/node.js` | `src/runtime/browser.js` | `node:crypto` vs `globalThis.crypto` for id generation. |
 
-The `exports` map carries the same choices under the `browser` condition, so
-resolvers that read `exports` and ignore the legacy `browser` field get the
-identical result.
+The first four are the `browser` condition of each entry in `exports` — every
+subpath resolves straight to its file under `src/`, nothing at the package root
+but the main entry. The legacy `browser` field carries the main entry and the
+halves inside `src/` that a file requires (which `exports` cannot reach), so a
+resolver gets the browser build whichever of the two it reads; the subpaths
+themselves need one that reads `exports`, as every bundler named above does.
 
 ## What is in the browser entry
 
@@ -56,9 +60,10 @@ which is the point of splitting the barrels rather than tree-shaking one.
 
 ### Types without `@types/node`
 
-`browser.d.ts` re-exports `client.d.ts` and nothing else, so browser consumers
-never inherit the Node type dependencies that `index.d.ts` carries. That split
-is why a front-end `tsconfig` with no `"types": ["node"]` type-checks cleanly
+`src/index.browser.d.ts` (the `browser` types condition) re-exports
+`src/client.d.ts` and nothing else, so browser consumers never inherit the
+Node type dependencies that `index.d.ts` carries. That split is why a
+front-end `tsconfig` with no `"types": ["node"]` type-checks cleanly
 against `@alexify/wrpc`.
 
 Note the asymmetry: the browser *types* include wire-packet interfaces and

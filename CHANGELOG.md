@@ -13,7 +13,7 @@ narrower promise — see
 
 ### Changed (breaking)
 
-## [2.2.0] - 2026-11-16
+## [2.2.0] - 2026-11-17
 
 ### Added
 
@@ -195,6 +195,21 @@ narrower promise — see
   entry's is 62 KB (was 61) for those and the dispatcher's share a peer host
   carries (63,308 B). The README and the docs say "under 31 KB" where they
   said 30.
+- **Every subpath resolves straight to its entry under `src/`, its types
+  beside it.** The package root held a one-line `require()` shim and a
+  `.d.ts` for every subpath and browser half — 38 files and a `broker/`
+  folder; it now holds the main entry (`index.js`, `index.d.ts`) and `bin/`,
+  and `exports` points into `src/`: `./ws` at `src/websocket/ws.js` with
+  `src/websocket/ws.d.ts` beside it, `./sse` in a browser at
+  `src/sse/client.js`, `./broker/redis` at `src/broker/redis/index.js`.
+  An import through `exports` resolves the same module as before — Node,
+  webpack 5, Vite, esbuild, Rollup, Parcel and Bun all read it — and
+  TypeScript under `moduleResolution: node10` (the default for
+  `module: commonjs`), which never reads `exports`, finds a subpath's types
+  through the new `typesVersions`; a test resolves every subpath under
+  node10, node16 and bundler. What no longer resolves is a path to a root
+  file (`@alexify/wrpc/ws.js`), which `exports` refused already, and a
+  subpath through a resolver that ignores `exports` (webpack 4, browserify).
 
 ### Fixed
 

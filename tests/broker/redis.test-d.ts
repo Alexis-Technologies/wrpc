@@ -1,7 +1,7 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as redis from '../../broker/redis.js';
-import type { Broker } from '../../broker.js';
-import type { RedisBrokerClient, RedisBrokerOptions } from '../../broker/redis.js';
+import * as redis from '../../src/broker/redis/index.js';
+import type { Broker } from '../../src/broker/index.js';
+import type { RedisBrokerClient, RedisBrokerOptions } from '../../src/broker/redis/index.js';
 
 // The real thing, a devDependency used only here: the interface is what
 // ioredis IS, not a lookalike of it — the overloaded commands made

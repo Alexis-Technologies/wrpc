@@ -1,6 +1,6 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as wrpcQuery from '../query.js';
-import type { QueryUtils, WrpcMutationOptions, WrpcQueryOptions } from '../query.js';
+import * as wrpcQuery from '../src/query/index.js';
+import type { QueryUtils, WrpcMutationOptions, WrpcQueryOptions } from '../src/query/index.js';
 import type { Subscription, SubscriptionContract, WrpcClient } from '../index.js';
 // The real thing, a devDependency used only here: an option object that is not
 // assignable to TanStack's own types is not a binding, it is a lookalike.
@@ -119,7 +119,7 @@ expectType<{ room: string }>(null as unknown as wrpcQuery.SubscriptionArgs<Api, 
 expectType<{ text: string }>(null as unknown as wrpcQuery.SubscriptionData<Api, ['chat', 'onMessage']>);
 
 // infiniteQueryOptions: typed like queryOptions, cursor rides as an args field
-import type { WrpcInfiniteQueryOptions } from '../query.js';
+import type { WrpcInfiniteQueryOptions } from '../src/query/index.js';
 expectAssignable<WrpcInfiniteQueryOptions<{ id: string }>>(
   wq.infiniteQueryOptions(['chat', 'send'], { text: 'x' }, { initialPageParam: null, cursorKey: 'after' }),
 );

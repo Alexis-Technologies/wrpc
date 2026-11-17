@@ -168,10 +168,10 @@ Injected packages (uWebSockets.js, ioredis, fastify, express,
 
 ### Browser usage
 
-The package ships a browser entry (`browser.js`), resolved automatically by any
-bundler that honours the `package.json` `browser` field and the `browser`
-condition in `exports` — webpack 5, Vite, esbuild (`platform: 'browser'`),
-Parcel, Bun. Rollup users need
+The package ships a browser entry (`src/index.browser.js`), resolved
+automatically by any bundler that honours the `package.json` `browser` field
+and the `browser` condition in `exports` — webpack 5, Vite, esbuild
+(`platform: 'browser'`), Parcel, Bun. Rollup users need
 [`@rollup/plugin-node-resolve`](https://github.com/rollup/plugins/tree/master/packages/node-resolve)
 with `browser: true`.
 

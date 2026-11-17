@@ -12,7 +12,7 @@ const assert = require('node:assert');
 
 const { Server, WrpcClient, defineRouter, procedure } = require('../../index.js');
 const { waitFor } = require('../helpers/wait.js');
-require('../../sse.js'); // registers the sse transport
+require('../../src/sse/index.js'); // registers the sse transport
 
 test('cancellation over SSE: an AbortSignal takes a call back through the POST leg', async (t) => {
   const state = { started: 0, aborted: 0, finished: 0, lastSignal: null };

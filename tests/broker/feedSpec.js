@@ -19,7 +19,7 @@ const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
 const { defineRouter, procedure } = require('../../index.js');
-const { brokerFeed } = require('../../broker.js');
+const { brokerFeed } = require('../../src/broker/index.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 
 const TOPIC = 'orders';

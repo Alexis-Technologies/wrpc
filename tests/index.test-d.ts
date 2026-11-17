@@ -28,7 +28,7 @@ import type {
   SessionStore,
   HttpCall,
 } from '../index.js';
-import type { Engine, EngineConnectionSource } from '../engine.js';
+import type { Engine, EngineConnectionSource } from '../src/engine/index.js';
 
 expectType<typeof Emitter>(wrpc.Emitter);
 expectType<typeof WrpcClient>(wrpc.WrpcClient);

@@ -17,8 +17,8 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { RpcServer, defineRouter, procedure } = require('../../index.js');
-const { createRedisAdapter, createRedisSessionStore } = require('../../scaling.js');
-const { sealedStore, generateKey } = require('../../encryption.js');
+const { createRedisAdapter, createRedisSessionStore } = require('../../src/scaling/index.js');
+const { sealedStore, generateKey } = require('../../src/encryption/index.js');
 const { decodeAttachments } = require('../../src/attachments.js');
 const { WRPC_V2 } = require('../../src/wire.js');
 const { waitFor: sharedWaitFor } = require('../helpers/wait.js');

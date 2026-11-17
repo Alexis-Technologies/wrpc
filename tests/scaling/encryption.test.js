@@ -5,8 +5,8 @@ const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
 const { RpcServer, defineRouter, procedure } = require('../../index.js');
-const { MemoryBackplane, createRedisAdapter } = require('../../scaling.js');
-const { generateKey } = require('../../encryption.js');
+const { MemoryBackplane, createRedisAdapter } = require('../../src/scaling/index.js');
+const { generateKey } = require('../../src/encryption/index.js');
 const { createEnvelope, isSealedEnvelope, SEALED_PREFIX } = require('../../src/rpc/envelope.js');
 const {
   normalizeEnvelopeEncryption,

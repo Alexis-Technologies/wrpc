@@ -6,8 +6,8 @@ const http = require('node:http');
 const { EventEmitter } = require('node:events');
 
 const { WrpcClient, defineRouter, procedure } = require('../../index.js');
-const { createWrpc } = require('../../express.js');
-const { createUwsEngine } = require('../../uws.js');
+const { createWrpc } = require('../../src/adapters/express.js');
+const { createUwsEngine } = require('../../src/adapters/uws.js');
 const { optional, requireUws } = require('./boots.js');
 
 const express = optional('express');

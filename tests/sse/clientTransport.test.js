@@ -8,7 +8,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { ClientSseTransport, CHANNEL_HEADER } = require('../../sse.js');
+const { ClientSseTransport, CHANNEL_HEADER } = require('../../src/sse/index.js');
 const { waitFor } = require('../helpers/wait.js');
 
 const encoder = new TextEncoder();

@@ -224,7 +224,7 @@ test('logging: every entry the server writes carries an event', async (t) => {
 });
 
 test('scaling: a corrupt stored session is reported, and never logs the token', async () => {
-  const { createRedisSessionStore } = require('../../scaling.js');
+  const { createRedisSessionStore } = require('../../src/scaling/index.js');
   const { writer, find } = recorder();
   const client = {
     async get() {
@@ -243,7 +243,7 @@ test('scaling: a corrupt stored session is reported, and never logs the token', 
 });
 
 test('broker: a resume token that fails its signature is warned about, by reason', async () => {
-  const { MemoryBroker, brokerFeed } = require('../../broker.js');
+  const { MemoryBroker, brokerFeed } = require('../../src/broker/index.js');
   const broker = new MemoryBroker({ logger: false });
   const { writer, find } = recorder();
   const feed = brokerFeed(broker, 'topic', { secret: 'shhh' });

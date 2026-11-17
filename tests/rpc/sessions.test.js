@@ -489,7 +489,7 @@ test('SessionManager: a write after a logout elsewhere does not resurrect the se
 });
 
 test('sessions: a logout on one connection ends the session on the others of this instance', async (t) => {
-  const { bearerTransport } = require('../../auth.js');
+  const { bearerTransport } = require('../../src/auth/index.js');
   const { bootServer, connectClient } = require('../helpers/server.js');
   const router = defineRouter({
     auth: {

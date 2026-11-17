@@ -67,7 +67,10 @@ const c8 = require.resolve('c8/bin/c8.js');
 let failed = false;
 for (const { include, exclude = [], lines, branches, functions } of FLOORS) {
   const args = [c8, 'check-coverage', '--per-file', '--all', '--include', include];
-  for (const pattern of exclude) args.push('--exclude', pattern);
+  // An --exclude REPLACES c8's default list rather than adding to it, and
+  // that list is what keeps the d.ts beside each entry (`src/**/*.d.ts`, no
+  // code) from counting as a file at 0 %: it is named again with the rest.
+  for (const pattern of ['**/*.d.ts', ...exclude]) args.push('--exclude', pattern);
   // Statements follow lines in this codebase (one statement per line, by
   // the formatter), so they share a floor.
   args.push('--lines', String(lines), '--statements', String(lines));

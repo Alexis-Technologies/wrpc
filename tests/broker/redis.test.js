@@ -8,8 +8,8 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
-const { createRedisBroker } = require('../../broker/redis.js');
-const { isBroker } = require('../../broker.js');
+const { createRedisBroker } = require('../../src/broker/redis/index.js');
+const { isBroker } = require('../../src/broker/index.js');
 const { createFakeRedis } = require('./fakeRedisServer.js');
 const { runBackplaneContract } = require('./backplaneContract.js');
 const { runLogContract } = require('./logContract.js');

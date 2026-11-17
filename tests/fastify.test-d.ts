@@ -1,9 +1,9 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as adapter from '../fastify.js';
-import type { FastifyLike, WrpcFastifyOptions } from '../fastify.js';
-import type { Engine } from '../engine.js';
+import * as adapter from '../src/adapters/fastify.js';
+import type { FastifyLike, WrpcFastifyOptions } from '../src/adapters/fastify.js';
+import type { Engine } from '../src/engine/index.js';
 import type { RpcServer, Router } from '../index.js';
-import type { UwsApp } from '../uws.js';
+import type { UwsApp } from '../src/adapters/uws.js';
 
 declare const fastify: FastifyLike;
 declare const router: Router;

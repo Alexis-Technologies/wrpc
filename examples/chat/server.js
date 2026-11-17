@@ -1,6 +1,6 @@
 'use strict';
 
-const { Server, defineRouter, procedure } = require('../../index.js');
+const { Server, defineRouter, procedure } = require('@alexify/wrpc');
 
 const router = defineRouter({
   chat: {

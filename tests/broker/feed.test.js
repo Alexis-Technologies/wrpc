@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
 const { defineRouter, procedure } = require('../../index.js');
-const { MemoryBroker, brokerFeed } = require('../../broker.js');
+const { MemoryBroker, brokerFeed } = require('../../src/broker/index.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 const { quiet } = require('./support.js');
 const { runFeedSpec } = require('./feedSpec.js');

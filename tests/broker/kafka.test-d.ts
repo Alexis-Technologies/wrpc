@@ -1,7 +1,7 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as kafka from '../../broker/kafka.js';
-import type { Broker } from '../../broker.js';
-import type { KafkaBrokerOptions, KafkaClient } from '../../broker/kafka.js';
+import * as kafka from '../../src/broker/kafka/index.js';
+import type { Broker } from '../../src/broker/index.js';
+import type { KafkaBrokerOptions, KafkaClient } from '../../src/broker/kafka/index.js';
 
 // Both real clients, devDependencies used only here.
 import type { Kafka } from 'kafkajs';

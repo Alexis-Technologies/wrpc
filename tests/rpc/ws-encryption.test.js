@@ -5,10 +5,10 @@ const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
 const { defineRouter, procedure, WrpcClient } = require('../../index.js');
-const { createEncryption, generateKey } = require('../../encryption.js');
+const { createEncryption, generateKey } = require('../../src/encryption/index.js');
 const { DEFAULT_REKEY_AFTER, MAX_HELD, MAX_HELD_BYTES } = require('../../src/encryption/session.js');
 const { normalizeServerEncryption } = require('../../src/encryption/server.js');
-const { createUwsEngine } = require('../../uws.js');
+const { createUwsEngine } = require('../../src/adapters/uws.js');
 const { FRAME_MARK, FRAME_HANDSHAKE, FRAME_SEALED } = require('../../src/wire.js');
 const { MAX_QUEUED } = require('../../src/encryption/server.js');
 const { aead: browserAead } = require('../../src/encryption/aead.browser.js');

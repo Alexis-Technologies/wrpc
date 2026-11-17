@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
-const { TopicTails } = require('../../broker.js');
+const { TopicTails } = require('../../src/broker/index.js');
 const { collect, waitFor } = require('./support.js');
 
 // A toy single-sequence log: entries { seq, value, headers }, cursor = seq.

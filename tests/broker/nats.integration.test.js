@@ -11,7 +11,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
-const { createNatsBroker } = require('../../broker/nats.js');
+const { createNatsBroker } = require('../../src/broker/nats/index.js');
 const { runBackplaneContract } = require('./backplaneContract.js');
 const { runLogContract } = require('./logContract.js');
 const { runQueueContract } = require('./queueContract.js');

@@ -9,8 +9,8 @@ const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
 const { WrpcClient, defineRouter, procedure, tracked, createEventLog } = require('../../index.js');
-const { bearerAuth, bearerTransport, memoryStore } = require('../../auth.js');
-const { attachSession, acceptSessions, fromFails, isWtSession } = require('../../wt.js');
+const { bearerAuth, bearerTransport, memoryStore } = require('../../src/auth/index.js');
+const { attachSession, acceptSessions, fromFails, isWtSession } = require('../../src/webtransport/index.js');
 const { createFakeWt } = require('./fakeWebTransport.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 

@@ -120,7 +120,7 @@ Turn `[Unreleased]` into the release and open a fresh one above it, with its emp
 
 ## Step 4: TypeScript Declarations
 
-The types are hand-written, never generated: `index.d.ts` (the Node surface), `client.d.ts` and `rpc.d.ts` (the node-free halves `index.d.ts` re-exports — neither has a `.js` at runtime), `browser.d.ts`, and one root `.d.ts` per published subpath (`*.browser.d.ts` for the subpaths with a `browser` condition):
+The types are hand-written, never generated: `index.d.ts` at the root (the Node surface), `src/client.d.ts` and `src/rpc.d.ts` (the node-free halves `index.d.ts` re-exports), `src/index.browser.d.ts`, and one `.d.ts` beside each subpath's entry under `src/` (and beside its browser half, for the subpaths with a `browser` condition) — the root holds no d.ts but `index.d.ts`:
 
 1. `pnpm test:types` (tsd, `tests/*.test-d.ts` and `tests/broker/*.test-d.ts`) must pass with no errors
 2. Read `src/index.js`, `src/index.browser.js` and every subpath's entry (`package.json#exports`) and confirm every exported class, function, type and method is declared, and no private (`#`) field leaks into the declarations
@@ -150,15 +150,15 @@ Only edit if something is factually wrong or outdated. Don't rewrite style or ad
 
 Check these fields are correct:
 
-- `"main"` / `"exports"` / `"browser"` / `"bin"` — point to existing files; every subpath lists `types` first, the subpaths with a `browser` condition resolve to their `*.browser.js` half, and the `browser` map covers every platform pair
-- `"types"` — points to `index.d.ts`
-- `"files"` — the explicit allowlist includes every root shim, every root `.d.ts`, `bin/`, `src/`, `LICENSE`, `README.md`, `CHANGELOG.md`, `SECURITY.md` — and nothing else. A new shim or `.d.ts` that is missing from it silently disappears from the tarball
+- `"main"` / `"exports"` / `"browser"` / `"bin"` — point to existing files; every subpath lists `types` first and resolves into `src/`, the subpaths with a `browser` condition resolve to their browser half, and the `browser` map covers the main entry and every platform pair
+- `"types"` — points to `index.d.ts`; `"typesVersions"` names, for every subpath, the d.ts its `types` condition names (TypeScript under `moduleResolution: node10` reads it instead of `exports`)
+- `"files"` — the explicit allowlist is `index.js`, `index.d.ts`, `bin/`, `src/`, `LICENSE`, `README.md`, `CHANGELOG.md`, `SECURITY.md` and the closing `!**/CLAUDE.md` — and nothing else: an entry and its `.d.ts` live under `src/`, which ships whole
 - `"engines"` — `node >=22`, matches the CI matrix (`.github/workflows/ci.yml`)
 - `"dependencies"`, `"peerDependencies"`, `"optionalDependencies"` — absent, all three; every entry of `devDependencies` is test-, bench- or docs-only
 - `"keywords"` — no typos, relevant terms
 - `"license"`, `"repository"`, `"homepage"`, `"bugs"`, `"publishConfig"` (`access: public`) — valid
 
-`tests/package/consistency.test.js` is the machine-checked half of this list. If it goes red after a change to an entry point, update `exports`, `files`, the `browser` map, `scripts/size.js` `ENTRIES` and the docs keywords; the test is right.
+`tests/package/consistency.test.js` is the machine-checked half of this list. If it goes red after a change to an entry point, update `exports`, `typesVersions`, the `browser` map, `scripts/size.js` `ENTRIES` and the docs keywords; the test is right.
 
 ### 6b: Dry-run pack
 
@@ -168,7 +168,7 @@ npm publish --dry-run
 
 Review the file list:
 
-- Every root shim, every `.d.ts`, `bin/` and `src/` are included
+- `index.js`, `index.d.ts`, `bin/` and `src/` (every `.d.ts` in it) are included, and no `CLAUDE.md`
 - `docs/`, `tests/`, `bench/`, `scripts/`, `examples/`, `coverage/`, `certs/`, `.claude/` and CI files are excluded
 - No unexpected large files
 

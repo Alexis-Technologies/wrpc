@@ -1,5 +1,5 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as ws from '../ws.js';
+import * as ws from '../src/websocket/ws.js';
 import type {
   WebsocketServer,
   Connection,
@@ -8,7 +8,7 @@ import type {
   FrameHeader,
   ParseError,
   WebsocketServerOptions,
-} from '../ws.js';
+} from '../src/websocket/ws.js';
 
 expectType<typeof WebsocketServer>(ws.WebsocketServer);
 expectType<typeof Connection>(ws.Connection);

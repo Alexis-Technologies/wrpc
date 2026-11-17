@@ -48,8 +48,9 @@ Use following conventions for JavaScript and TypeScript code.
   **injected** and checked structurally (duck typing, never `instanceof` against an imported class);
   anything reused from another package is copied in, not installed
 - A platform split is a matched pair — `name.js` and `name.browser.js` (dot, not dash) — swapped
-  through `package.json#browser`; a new subpath is a root shim, a hand-written root `.d.ts`, an
-  `exports` entry, `files` additions and a `tests/<name>.test-d.ts`, all in one change
+  through `package.json#browser`; a new subpath is an entry under `src/` with a hand-written
+  `.d.ts` beside it, an `exports` entry, its `typesVersions` line, a `scripts/size.js` row and a
+  `tests/<name>.test-d.ts`, all in one change — the package root holds the main entry only
 - Layers do not reach up: `src/rpc/` never requires `src/websocket/`, `src/webrtc/` or `src/broker/`
 
 ## Naming

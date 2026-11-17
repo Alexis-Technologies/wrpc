@@ -501,10 +501,10 @@ targets from one page.
 
 ## In a browser bundle
 
-The package ships a browser entry (`browser.js`), resolved automatically by any
-bundler that honours the `browser` field — webpack, Vite, esbuild with
-`platform: 'browser'`, Rollup (with `@rollup/plugin-node-resolve` and
-`browser: true`), Parcel, Bun. It contains the client, the streams and the
+The package ships a browser entry (`src/index.browser.js`), resolved
+automatically by any bundler that honours the `browser` field — webpack,
+Vite, esbuild with `platform: 'browser'`, Rollup (with
+`@rollup/plugin-node-resolve` and `browser: true`), Parcel, Bun. It contains the client, the streams and the
 chunk helpers, and **no Node builtins** — the server half is not in it.
 
 The main entry is ~30 KB min+gzip in that build; `scripts/size.js` enforces a

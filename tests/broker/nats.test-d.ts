@@ -1,7 +1,7 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as nats from '../../broker/nats.js';
-import type { Broker } from '../../broker.js';
-import type { NatsBrokerOptions, NatsConnection } from '../../broker/nats.js';
+import * as nats from '../../src/broker/nats/index.js';
+import type { Broker } from '../../src/broker/index.js';
+import type { NatsBrokerOptions, NatsConnection } from '../../src/broker/nats/index.js';
 
 // The real connection type — what the transport's connect() resolves to —
 // a devDependency used only here.

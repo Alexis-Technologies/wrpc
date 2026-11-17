@@ -1,6 +1,6 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as sse from '../sse.js';
-import type { ClientSseTransport, SseChannels, SseEvent, SseOptions, SseParser, SseWriter } from '../sse.js';
+import * as sse from '../src/sse/index.js';
+import type { ClientSseTransport, SseChannels, SseEvent, SseOptions, SseParser, SseWriter } from '../src/sse/index.js';
 import type { HttpCall, RpcServerOptions, Router } from '../index.js';
 
 expectType<typeof SseParser>(sse.SseParser);

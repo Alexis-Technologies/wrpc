@@ -6,8 +6,8 @@ const timers = require('node:timers/promises');
 
 const { RpcServer } = require('../../src/rpc/core.js');
 const { defineRouter, procedure } = require('../../index.js');
-const { MemoryBroker, attachConsumers } = require('../../broker.js');
-const { bearerTransport } = require('../../auth.js');
+const { MemoryBroker, attachConsumers } = require('../../src/broker/index.js');
+const { bearerTransport } = require('../../src/auth/index.js');
 const { bootServer, connectClient } = require('../helpers/server.js');
 const { quiet, waitFor } = require('./support.js');
 
@@ -493,7 +493,7 @@ test('attachConsumers: a start failure stops whatever already started', async (t
 });
 
 test('attachConsumers: under encryption.required a binding that does not seal is refused, a plaintext delivery is dead', async (t) => {
-  const { generateKey } = require('../../encryption.js');
+  const { generateKey } = require('../../src/encryption/index.js');
   const { createBrokerSealing } = require('../../src/broker/sealing.js');
   const keys = generateKey();
   const handled = [];

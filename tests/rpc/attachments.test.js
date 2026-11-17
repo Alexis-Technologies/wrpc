@@ -5,7 +5,7 @@ const assert = require('node:assert');
 const { MessageChannel } = require('node:worker_threads');
 
 const { RpcServer, Server, defineRouter, procedure } = require('../../index.js');
-require('../../sse.js');
+require('../../src/sse/index.js');
 const { hasBytes, encodeAttachments, decodeAttachments, isAttachmentsFrame } = require('../../src/attachments.js');
 const { FRAME_MARK, FRAME_ATTACHMENTS } = require('../../src/wire.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');

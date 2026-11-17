@@ -5,7 +5,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { Server, WrpcClient, defineRouter, procedure, createEventStream, tracked } = require('../../index.js');
-const { SseParser, CHANNEL_HEADER } = require('../../sse.js');
+const { SseParser, CHANNEL_HEADER } = require('../../src/sse/index.js');
 const { waitFor } = require('../helpers/wait.js');
 const { splitChannelRef } = require('../../src/sse/constants.js');
 
