@@ -13,7 +13,7 @@ narrower promise — see
 
 ### Changed (breaking)
 
-## [2.2.0] - 2026-11-17
+## [2.2.0] - 2026-11-18
 
 ### Added
 
