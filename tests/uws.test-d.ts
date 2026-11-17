@@ -1,5 +1,5 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as uws from '../uws.js';
+import * as uws from '../src/adapters/uws.js';
 import type {
   UwsApp,
   UwsAttachOptions,
@@ -9,8 +9,8 @@ import type {
   UwsModule,
   UwsSocket,
   UpgradeRequest,
-} from '../uws.js';
-import type { Engine, WrpcSocket } from '../engine.js';
+} from '../src/adapters/uws.js';
+import type { Engine, WrpcSocket } from '../src/engine/index.js';
 
 declare const uwsModule: UwsModule;
 declare const uwsApp: UwsApp;

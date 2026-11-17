@@ -9,7 +9,7 @@ const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
 const { defineRouter, procedure } = require('../../index.js');
-const { acceptSessions, StreamParser, frameCaps, KIND_CAPS, KIND_TEXT } = require('../../wt.js');
+const { acceptSessions, StreamParser, frameCaps, KIND_CAPS, KIND_TEXT } = require('../../src/webtransport/index.js');
 const { StreamMux, idHeader } = require('../../src/webtransport/streams.js');
 const { ClientWtTransport } = require('../../src/client/webtransport.js');
 const { chunkEncode, chunkDecode } = require('../../src/chunks.js');
@@ -513,4 +513,24 @@ test('wt streams: gate() holds every inbound read while it answers a promise; on
   assert.ok(out.length <= 5, `${out.length} delivered`);
   assert.ok(!out.some((chunk) => chunk[0] === 6), 'nothing after the close');
   a.close();
+});
+
+test('wt streams: announcements a peer never ends are remembered up to a cap, and every one is still delivered', async () => {
+  const { MAX_ANNOUNCED } = require('../../src/webtransport/streams.js');
+  const { b } = await muxPair();
+  const open = (i) => JSON.stringify({ type: 'stream', id: `s${i}`, name: 'f', size: 1 });
+  // What a peer does that announces streams and ends none: each used to
+  // leave a record for the life of the session — 36 MiB for 200,000.
+  for (let i = 0; i < MAX_ANNOUNCED + 2000; i++) {
+    assert.strictEqual(b.mux.packet(open(i)), false, 'the announcement goes on to the receiver as usual');
+  }
+  // A record is what makes the mux deliver a later packet for that id
+  // itself: within the cap it does, past it the stream is one it never
+  // heard named — and the announcement is the receiver's to refuse.
+  assert.strictEqual(b.mux.packet(open(0)), true, 'remembered');
+  assert.strictEqual(b.mux.packet(open(MAX_ANNOUNCED + 1000)), false, 'past the cap: not remembered');
+  // An end gives its record back.
+  assert.strictEqual(b.mux.packet(JSON.stringify({ type: 'stream', id: 's1', status: 'end' })), false);
+  assert.strictEqual(b.mux.packet(open(MAX_ANNOUNCED + 1500)), false);
+  assert.strictEqual(b.mux.packet(open(MAX_ANNOUNCED + 1500)), true, 'the freed place was taken');
 });

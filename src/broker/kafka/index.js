@@ -22,12 +22,18 @@
 const { createLoggerWriter } = require('../../logging.js');
 const { backoffDelay } = require('../../utils.js');
 const { TopicTails } = require('../tail.js');
-const { codedError, toText, toHeaders, reasonText, encodeToken } = require('../ids.js');
+const { codedError, toText, toHeaders, reasonText, tokenEncoder } = require('../ids.js');
 const { crashDelay } = require('../retry.js');
+const { Deque } = require('../../deque.js');
 const {
   ATTEMPT_HEADER,
   REDELIVERED_HEADER,
   DEAD_REASON_HEADER,
+  attemptOf,
+  producerHeaders,
+  SETTLE_ATTEMPTS,
+  SETTLE_BACKOFF,
+  reporter,
   DEFAULT_PREFETCH,
   idFactory,
   failedRead,
@@ -50,12 +56,10 @@ const DEFAULT_PARTITIONS = 3;
 const DEFAULT_MAX_RETRY_DELAY = 60_000;
 const DEFAULT_MAX_CATCH_UP = 4;
 // A settlement the broker refused (a leader election, a producer that
-// cannot reach it) is tried again on this schedule before the consumer
-// gives the message back; and a retry's in-process delay is cut into
-// steps of this length, each ending in a heartbeat, so a long wait does
+// cannot reach it) is tried again (SETTLE_ATTEMPTS in ../adapter.js) before
+// the consumer gives the message back; and a retry's in-process delay is cut
+// into steps of this length, each ending in a heartbeat, so a long wait does
 // not look like a dead member to the group coordinator.
-const SETTLE_ATTEMPTS = 3;
-const SETTLE_BACKOFF = Object.freeze({ minDelay: 100, maxDelay: 1000, factor: 2, jitter: false });
 const HEARTBEAT_STEP = 3000;
 const CHANNEL_HEADER = 'wrpc-channel';
 const VECTOR = /^k1:(\d{1,5}=\d{1,19})(,\d{1,5}=\d{1,19})*$/;
@@ -63,8 +67,8 @@ const VECTOR = /^k1:(\d{1,5}=\d{1,19})(,\d{1,5}=\d{1,19})*$/;
 const isFunction = (value) => typeof value === 'function';
 
 // A Kafka topic name: letters, digits, dot, underscore and dash only.
-const topicName = (prefix, kind, value) =>
-  `${prefix}.${kind}.${encodeToken(value, { safe: /[A-Za-z0-9_-]/, escape: '_', maxLength: 120 })}`;
+const token = tokenEncoder({ safe: /[A-Za-z0-9_-]/, escape: '_', maxLength: 120 });
+const topicName = (prefix, kind, value) => `${prefix}.${kind}.${token(value)}`;
 
 // The resume token: every partition this reader has passed, sorted.
 const encodeVector = (cursor) => {
@@ -147,7 +151,7 @@ const createKafkaBroker = (options = {}) => {
   }
   const flavor = flavorOption ?? detectFlavor(kafka);
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'kafka' });
-  const report = (event, error, extra = {}) => log.error({ err: error, event, ...extra });
+  const report = reporter(log);
   let closed = false;
   const consumers = new Set();
   // The groups this broker made for ITSELF — a backplane instance's, a
@@ -489,7 +493,7 @@ const createKafkaBroker = (options = {}) => {
   // Pages in flight, by what they read; and the turnstile in front of them.
   const pages = new Map();
   let catching = 0;
-  const waiting = [];
+  const waiting = new Deque();
   const catchUp = async (read) => {
     if (catching < maxCatchUp) catching++;
     else await new Promise((resolve) => waiting.push(resolve));
@@ -611,6 +615,7 @@ const createKafkaBroker = (options = {}) => {
         }
       }
     })();
+    // Surfaced through the read it guards (encodeIds); never unhandled.
     guard.catch(() => {});
     return encodeIds(tails.read(topic, { after: cursor, signal }), guard);
   };
@@ -631,7 +636,7 @@ const createKafkaBroker = (options = {}) => {
   const produce = async (queue, body, { headers = null, key = null } = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
     const topic = await ensureTopic(queueTopic(queue));
-    await send(topic, body, { headers, key });
+    await send(topic, body, { headers: producerHeaders(headers), key });
   };
 
   const consume = async (queue, onDelivery, options = {}) => {
@@ -640,7 +645,7 @@ const createKafkaBroker = (options = {}) => {
     checkConsume('kafka queue.consume', onDelivery, prefetch, deadLetter);
     const topic = await ensureTopic(queueTopic(queue));
     if (deadLetter) await ensureTopic(queueTopic(deadLetter));
-    const groupId = encodeToken(group, { safe: /[A-Za-z0-9_-]/, escape: '_', maxLength: 120 });
+    const groupId = token(group);
     const consumer = await openConsumer(groupId, { fromBeginning: true });
     await consumer.subscribe(subscribeArgs(flavor, [topic], true));
     const state = { running: true, paused: false, healthy: true };
@@ -666,7 +671,7 @@ const createKafkaBroker = (options = {}) => {
     const handle = async ({ partition, message, heartbeat }) => {
       if (!state.running) return;
       const headers = headersOf(message);
-      const attempt = Number(headers[ATTEMPT_HEADER] ?? '1') || 1;
+      const attempt = attemptOf(headers);
       const body = message.value === null ? '' : message.value.toString();
       const id = `${partition}:${message.offset}`;
       let settled = false;
@@ -822,7 +827,7 @@ const createKafkaBroker = (options = {}) => {
     closed = true;
     tails.close();
     // Pages waiting for their turn are let through, to fail as closed.
-    for (const next of waiting.splice(0)) next();
+    for (let next = waiting.shift(); next !== undefined; next = waiting.shift()) next();
     handlers.clear();
     ensured.clear();
     for (const consumer of Array.from(consumers)) await closeConsumer(consumer);

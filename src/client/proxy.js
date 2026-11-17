@@ -249,26 +249,51 @@ class WrpcClientProxy extends Emitter {
       return void port.postMessage('{"type":"pong","v":2}');
     }
     if (packet.type === 'pong') return;
+    // A batch — the page's `batch: true` — is its calls in one frame: each
+    // is this page's like a call sent alone, and the frame goes up whole.
+    // And an event carries no id, by protocol: it is forwarded, answered by
+    // nothing. Both used to stop at the id check below and vanish: a page's
+    // sendEvent() never reached the server, and every batched call waited
+    // out its callTimeout.
+    if (Array.isArray(packet)) {
+      await this.#upstream();
+      for (const element of packet) if (element?.id) this.#track(element, port);
+      return void this.#forward(data, packet);
+    }
+    if (packet.type === 'event') {
+      await this.#upstream();
+      return void this.#forward(data, packet);
+    }
     if (!packet.id) throw new Error('Invalid JSON packet');
     // An upload is this page's from its announcement to its end — said
     // before the await, so a chunk posted right behind it finds it.
-    const ending = packet.type === 'stream' && packet.status;
-    if (ending) {
-      if (this.#uploads.get(packet.id) === port) this.#uploads.delete(packet.id);
-    } else if (packet.type === 'stream') this.#uploads.set(packet.id, port);
+    if (packet.type === 'stream') {
+      if (!packet.status) this.#uploads.set(packet.id, port);
+      else if (this.#uploads.get(packet.id) === port) this.#uploads.delete(packet.id);
+    }
     await this.#upstream();
+    this.#track(packet, port);
+    this.#forward(data, packet);
+  }
+
+  // Whose answer the packet's id is from now on.
+  #track(packet, port) {
+    const { id, type } = packet;
     // A stream's end is answered by nothing: the slot its announcement took
     // goes with it. Neither is a callback — the page's answer to an ask, or
     // its word that it no longer reads a server stream: a slot taken for
     // that id would send the stream's terminate to this page alone, when
     // the stream went to every page.
-    if (ending) this.#pending.delete(packet.id);
-    else if (packet.type !== 'callback') this.#pending.set(packet.id, port);
-    if (packet.type === 'subscribe') this.#feeds.add(packet.id);
-    else if (packet.type === 'call') this.#calls.add(packet.id);
-    // What the page wrote goes upstream as it is: a frame stays a frame —
-    // unless the server speaks revision 1 and reads none, where it leaves
-    // as the JSON of the packet it carries.
+    if (type === 'stream' && packet.status) this.#pending.delete(id);
+    else if (type !== 'callback') this.#pending.set(id, port);
+    if (type === 'subscribe') this.#feeds.add(id);
+    else if (type === 'call') this.#calls.add(id);
+  }
+
+  // What the page wrote goes upstream as it is: a frame stays a frame —
+  // unless the server speaks revision 1 and reads none, where it leaves as
+  // the JSON of the packet it carries.
+  #forward(data, packet) {
     if (typeof data === 'string') return void this.#connection.write(data);
     if (this.#connection.revision !== 2) return void this.#connection.write(JSON.stringify(packet));
     this.#connection.write(data instanceof ArrayBuffer ? new Uint8Array(data) : data);
@@ -294,19 +319,29 @@ class WrpcClientProxy extends Emitter {
   // The page's call could not be forwarded: it hears a coded error now
   // rather than its callTimeout later. Anything without a caller is dropped.
   #refuse(data, port, error) {
-    const packet = parsePacket(data);
-    if (!packet || packet.type !== 'call' || typeof packet.id !== 'string') return;
+    const parsed = parsePacket(data);
     const code = Number.isInteger(error?.code) ? error.code : 503;
     const message = typeof error?.message === 'string' ? error.message : 'Proxy could not forward the call';
-    port.postMessage(JSON.stringify({ type: 'callback', id: packet.id, error: { message, code } }));
+    // Every call of a batch is a call that could not be forwarded.
+    for (const packet of Array.isArray(parsed) ? parsed : [parsed]) {
+      if (!packet || packet.type !== 'call' || typeof packet.id !== 'string') continue;
+      port.postMessage(JSON.stringify({ type: 'callback', id: packet.id, error: { message, code } }));
+    }
   }
 
   // `packet` is the already-parsed form of `data` (the client parses once —
   // for an attachments frame `data` is the frame and `packet` the packet it
   // carries, routed exactly like its JSON twin); it is null when the frame
-  // was no packet at all, and a batch array is broadcast as it always was.
+  // was no packet at all.
   #proxyPacket(data, packet) {
     const parsed = packet ?? (typeof data === 'string' ? jsonParse(data) : null);
+    // An array is the answers to a batch, which only a request/response
+    // uplink sends back in one frame: each is its own page's, like an answer
+    // that came alone — broadcast, every page got every other page's.
+    if (typeof data === 'string' && Array.isArray(parsed)) {
+      for (const element of parsed) if (element) this.#proxyPacket(JSON.stringify(element), element);
+      return;
+    }
     if (!parsed || Array.isArray(parsed)) return void this.#broadcast(data, parsed);
     const { type, id } = parsed;
     if (type === 'event') return void this.#broadcast(data, parsed);

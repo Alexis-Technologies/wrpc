@@ -5,8 +5,8 @@ const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
 const { defineRouter, procedure } = require('../../index.js');
-const { acceptSessions } = require('../../wt.js');
-const { createEncryption, generateKey } = require('../../encryption.js');
+const { acceptSessions } = require('../../src/webtransport/index.js');
+const { createEncryption, generateKey } = require('../../src/encryption/index.js');
 const { FRAME_MARK, FRAME_HANDSHAKE, FRAME_SEALED } = require('../../src/wire.js');
 const { createFakeWt } = require('./fakeWebTransport.js');
 const { ClientWtTransport } = require('../../src/client/webtransport.js');

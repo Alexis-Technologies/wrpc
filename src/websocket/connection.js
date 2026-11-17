@@ -12,6 +12,7 @@ const { SegmentQueue } = require('./segments.js');
 const { PreparedFrames } = require('./prepared.js');
 const { DeflateContext } = require('./deflateContext.js');
 const permessageDeflate = require('./permessageDeflate.js');
+const { Deque } = require('../deque.js');
 
 // The write-queue pressure signal when a socket does not say (a test
 // double): net.Socket's own default.
@@ -46,6 +47,32 @@ const INBOX_HIGH = 32;
 const INBOX_ASYNC_HIGH = 4;
 const INBOX_LOW = 8;
 
+// What ONE connection may hand to its listeners in one turn of the event
+// loop before the rest of what it sent waits for the next: this many
+// messages, or this many of their bytes (after inflation — what a listener
+// is given, not what crossed the wire). libuv reads a socket up to 32 times
+// in one iteration, 64 KiB each, and every frame in those two megabytes was
+// dispatched before a timer or another connection had a turn: 40,000
+// pipelined calls made a timer 567 ms late with permessage-deflate on (a
+// synchronous deflate per answer), and 100 frames of 16 KiB that inflate to
+// 16 MiB each made it 229 ms late — 14 ms and 2 ms under these marks, the
+// bursts themselves served as fast as before (bench/ws-fairness.js). A batch frame carries up to 128 calls, which is
+// why bytes count beside messages.
+const TURN_BUDGET = Object.freeze({ messages: 512, bytes: 256 * 1024 });
+
+// `turnBudget`: false (or absent) for none, true for TURN_BUDGET, or
+// `{ messages, bytes }` — each a positive integer, either left out to keep
+// its default.
+const turnBudgetOf = (value) => {
+  if (value === undefined || value === null || value === false) return null;
+  if (value === true) return TURN_BUDGET;
+  const valid = (mark) => mark === undefined || (Number.isInteger(mark) && mark > 0);
+  if (typeof value !== 'object' || !valid(value.messages) || !valid(value.bytes)) {
+    throw new TypeError('Connection: turnBudget must be a boolean or { messages, bytes } of positive integers');
+  }
+  return { messages: value.messages ?? TURN_BUDGET.messages, bytes: value.bytes ?? TURN_BUDGET.bytes };
+};
+
 class Connection extends EventEmitter {
   #socket;
   #log;
@@ -74,6 +101,27 @@ class Connection extends EventEmitter {
   // have every one of them inflating at once, each holding its output.
   #inboxBytes = 0;
   #inboxHeld = false;
+  // The turn budget (TURN_BUDGET): what this connection has handed over
+  // since the last reset, and whether the frame loop is held for it. A hold
+  // of its own beside #inboxHeld — the two are lifted by different things
+  // (the next turn; a drained inflate queue), and either keeps the socket
+  // paused. The counts are reset only where a hold is lifted, so a
+  // connection under its budget pays an increment a message and one spare
+  // turn per budget, never a timer per turn.
+  #turnBudget = null;
+  #turnCount = 0;
+  #turnBytes = 0;
+  #turnHeld = false;
+  #nextTurn = () => {
+    this.#turnHeld = false;
+    this.#turnCount = 0;
+    this.#turnBytes = 0;
+    if (this.#socket.destroyed) return;
+    if (!this.#paused && !this.#inboxHeld) this.#socket.resume();
+    // Unconditionally: no 'data' event comes for what is already read, and
+    // a close meanwhile left the peer's own Close among it.
+    this.#processFrames();
+  };
   #closeCode = CLOSE_CODES.CONNECTION_CLOSED_ABNORMALLY;
   #closeReason = '';
   // Set when WE failed the connection (a protocol error, an oversized or
@@ -89,7 +137,14 @@ class Connection extends EventEmitter {
   // order; `#outboxBytes` counts them into bufferedAmount so backpressure
   // stays honest while they wait. Inbound: a message decoded off the loop
   // is delivered in arrival order, the ones behind it held until it lands.
-  #outbox = [];
+  //
+  // The outbox is a ring, not an array: how long it gets is the bytes
+  // `maxBackpressure` admits over the size of a frame, and it is read from
+  // its head — over an array a burst of 256,000 small frames waiting behind
+  // deflates cost 150 µs each to send, against 30 (bench/ws-outbox.js). It
+  // exists only on a connection that can queue at all (context takeover for
+  // what we send, or `async`): null elsewhere, where nothing ever waits.
+  #outbox = null;
   #outboxBytes = 0;
   #draining = false;
   // The Close frame of a graceful close() that found writes still waiting
@@ -132,6 +187,11 @@ class Connection extends EventEmitter {
       // send() returns; WebsocketServer turns it on for the connections it
       // creates (a server answering many peers is where bursts happen).
       coalesce = false,
+      // Off for a bare Connection too — its owner drives it, and a message
+      // is delivered inside the 'data' event that carried it; on for the
+      // connections WebsocketServer creates, where one peer must not hold
+      // the loop every other peer waits on.
+      turnBudget = false,
       // The writer WebsocketServer hands down, already childed with this
       // connection's peer. A bare Connection gets the disabled one, whose
       // methods are frozen no-ops — so the guarded paths below cost nothing
@@ -145,7 +205,9 @@ class Connection extends EventEmitter {
     this.#closeTimeout = closeTimeout;
     this.#maxBackpressure = maxBackpressure;
     this.#fragmentThreshold = fragmentThreshold;
+    this.#turnBudget = turnBudgetOf(turnBudget);
     this.#deflate = deflate;
+    if (deflate && (deflate.serverTakeover || deflate.async)) this.#outbox = new Deque();
     if (deflate && (deflate.serverTakeover || deflate.clientTakeover)) {
       this.#context = new DeflateContext({
         windowBits: deflate.windowBits,
@@ -211,7 +273,7 @@ class Connection extends EventEmitter {
   // paused, inbound pongs are not read either — liveness checks must not
   // treat a paused connection as dead (see the heartbeat's isPaused skip).
   get isPaused() {
-    return this.#paused || this.#inboxHeld;
+    return this.#paused || this.#inboxHeld || this.#turnHeld;
   }
 
   pause() {
@@ -223,8 +285,9 @@ class Connection extends EventEmitter {
   resume() {
     if (this.#socket.destroyed) return;
     this.#paused = false;
-    // Held for the inflate queue: the socket stays paused until it drains.
-    if (!this.#inboxHeld) this.#socket.resume();
+    // Held for the inflate queue or for the turn: the socket stays paused
+    // until that hold is lifted.
+    if (!this.#inboxHeld && !this.#turnHeld) this.#socket.resume();
   }
 
   #holdInbox() {
@@ -239,8 +302,28 @@ class Connection extends EventEmitter {
   #releaseInbox() {
     this.#inboxHeld = false;
     if (this.#socket.destroyed) return;
-    if (!this.#paused) this.#socket.resume();
+    if (!this.#paused && !this.#turnHeld) this.#socket.resume();
     this.#processFrames();
+  }
+
+  // Hands a message to the listeners, and counts it against the turn: past
+  // the budget the frame loop stops after this message and the socket reads
+  // no more until the next turn of the loop takes both up again (#nextTurn).
+  // Every delivery goes through here — the frame loop's and the inflate
+  // queue's — but only the frame loop is held: what #deliver hands over has
+  // been counted against its own marks already.
+  #announce(data, isBinary) {
+    const budget = this.#turnBudget;
+    if (budget !== null && !this.#turnHeld) {
+      this.#turnCount++;
+      this.#turnBytes += data.length;
+      if (this.#turnCount >= budget.messages || this.#turnBytes >= budget.bytes) {
+        this.#turnHeld = true;
+        if (!this.#socket.destroyed) this.#socket.pause();
+        setImmediate(this.#nextTurn);
+      }
+    }
+    this.emit('message', data, isBinary);
   }
 
   #receive(data) {
@@ -269,9 +352,10 @@ class Connection extends EventEmitter {
       // so anything pipelined behind the peer's Close in the same segment is
       // not just pointless to handle, it would write past end().
       if (this.#closeReceived) break;
-      // The inflate queue is full: what is left waits in the segment queue
-      // (under maxBuffer) until it drains — see #releaseInbox.
-      if (this.#inboxHeld) break;
+      // The inflate queue is full, or this connection has had its turn: what
+      // is left waits in the segment queue (under maxBuffer) until the queue
+      // drains or the next turn comes — see #releaseInbox and #nextTurn.
+      if (this.#inboxHeld || this.#turnHeld) break;
       if (!this.#pendingHeader) {
         const headerBytes = this.#queue.peek(MAX_HEADER_SIZE);
         const result = FrameParser.parseHeader(headerBytes, { allowedRsv: this.#allowedRsv });
@@ -422,12 +506,25 @@ class Connection extends EventEmitter {
 
   // A message decoded synchronously while others are still inflating off
   // the loop waits behind them: the inbox is what keeps arrival order.
+  //
+  // It waits COUNTED, and under the same marks as an inflating one. The hold
+  // used to be looked at only where a message starts to inflate, so a peer
+  // that sent one compressed frame and any number of plain ones behind it —
+  // 300,000 of two bytes in a segment of 2.5 MiB — had every one of them
+  // queued here: 70 MiB held with the socket never paused, and then taken
+  // from the head of an array one shift() at a time, 44 seconds of one
+  // synchronous loop. Held at the mark, the frame loop stops and what is
+  // left waits in the segment queue, under maxBuffer; the inbox stays at
+  // INBOX_HIGH + 1 messages, which is what keeps its shift() cheap.
   #emitMessage(data, isBinary) {
     if (this.#inbox.length > 0) {
-      this.#inbox.push({ done: true, error: null, data, isBinary, isText: false, size: 0 });
+      const size = data.length;
+      this.#inbox.push({ done: true, error: null, data, isBinary, isText: false, size });
+      this.#inboxBytes += size;
+      if (this.#inbox.length >= INBOX_HIGH || this.#inboxBytes >= this.#maxPayload) this.#holdInbox();
       return;
     }
-    this.emit('message', data, isBinary);
+    this.#announce(data, isBinary);
   }
 
   #emitInflated(opcode, payload) {
@@ -512,7 +609,7 @@ class Connection extends EventEmitter {
         this.#fault('ws.invalid-utf8', error);
         return void this.#fail(Frame.errorClose('INVALID_PAYLOAD', this.#isClient));
       }
-      this.emit('message', item.data, item.isBinary);
+      this.#announce(item.data, item.isBinary);
     }
     if (this.#inboxHeld && inbox.length <= INBOX_LOW && this.#inboxBytes <= this.#maxPayload / 2) {
       this.#releaseInbox();
@@ -562,7 +659,8 @@ class Connection extends EventEmitter {
   #write(buffer) {
     // Behind an in-flight compress every write waits its turn (the pump
     // writes with #draining set, so its own frames pass through).
-    if (this.#outbox.length > 0 && !this.#draining) {
+    const outbox = this.#outbox;
+    if (outbox !== null && outbox.length > 0 && !this.#draining) {
       return this.#enqueue({ buffer, payload: null, shared: null, opcode: 0, started: false });
     }
     if (this.#coalesce && !this.#corked) {
@@ -636,7 +734,7 @@ class Connection extends EventEmitter {
   #pump() {
     const outbox = this.#outbox;
     while (outbox.length > 0) {
-      const head = outbox[0];
+      const head = outbox.peek();
       if (head.buffer !== null) {
         outbox.shift();
         this.#outboxBytes -= head.buffer.length;
@@ -663,7 +761,7 @@ class Connection extends EventEmitter {
   #startCompress(job) {
     const finish = (error, compressed, frame) => {
       // The connection went away meanwhile: the queue was dropped with it.
-      if (this.#outbox[0] !== job) return;
+      if (this.#outbox.peek() !== job) return;
       if (error) {
         // The mirror of ws.inflate: a deflate that failed on the way out is
         // a line, not only an 'error' nobody may be listening to.
@@ -702,13 +800,21 @@ class Connection extends EventEmitter {
     // The socket the hold paused reads again (unless the application paused
     // it): the peer's Close, answering ours, is on it — left unread, the
     // close waited out closeTimeout and ended as 1006.
-    if (held && !this.#paused && !this.#socket.destroyed) this.#socket.resume();
+    if (!held || this.#socket.destroyed) return;
+    if (!this.#paused && !this.#turnHeld) this.#socket.resume();
+    // And what the hold left in the segment queue is taken up: no 'data'
+    // event comes for bytes already read, and the peer's Close may be among
+    // them. On the next tick — this runs from inside the frame loop when a
+    // frame is what ended the connection.
+    process.nextTick(() => {
+      if (!this.#socket.destroyed) this.#processFrames();
+    });
   }
 
   // Both directions, and the takeover context with them: every way out but
   // a graceful close whose accepted writes are still on their way.
   #dropQueues() {
-    this.#outbox.length = 0;
+    if (this.#outbox !== null) this.#outbox.clear();
     this.#outboxBytes = 0;
     this.#pendingClose = null;
     this.#dropInbound();
@@ -886,7 +992,7 @@ class Connection extends EventEmitter {
     const frame = Frame.close(code, reason);
     if (this.#isClient) frame.maskPayload();
     const buffer = frame.toBuffer();
-    if (this.#closing || this.#outbox.length === 0) return void this.#close(buffer);
+    if (this.#closing || this.#outbox === null || this.#outbox.length === 0) return void this.#close(buffer);
     this.#closing = true;
     this.#fragments = null;
     this.#dropInbound();
@@ -923,4 +1029,4 @@ class Connection extends EventEmitter {
   }
 }
 
-module.exports = { Connection, CLOSE_TIMEOUT, MAX_PAYLOAD };
+module.exports = { Connection, CLOSE_TIMEOUT, MAX_PAYLOAD, TURN_BUDGET, turnBudgetOf };

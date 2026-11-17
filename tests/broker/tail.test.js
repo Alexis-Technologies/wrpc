@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
-const { TopicTails } = require('../../broker.js');
+const { TopicTails } = require('../../src/broker/index.js');
 const { collect, waitFor } = require('./support.js');
 
 // A toy single-sequence log: entries { seq, value, headers }, cursor = seq.
@@ -525,4 +525,40 @@ test('TopicTails: a live tail that ends under its readers is replaced, and the r
     world.tails.close();
     await assert.rejects(next, (error) => error.code === 503 && /closed/.test(error.message));
   });
+});
+
+test('TopicTails: a highWaterMark or a page that is not a count is refused at construction', () => {
+  const seams = { live: async () => null, range: async () => [], covered: () => false, advance: (_c, e) => e.seq };
+  for (const highWaterMark of [NaN, Infinity, null, 0, -1, 1.5, '64']) {
+    assert.throws(() => new TopicTails({ ...seams, highWaterMark }), /highWaterMark must be a positive integer/);
+  }
+  for (const page of [NaN, Infinity, null, 0, -1, '8']) {
+    assert.throws(() => new TopicTails({ ...seams, page }), /page must be a positive integer/);
+  }
+  assert.doesNotThrow(() => new TopicTails({ ...seams, highWaterMark: 1, page: 1 }));
+});
+
+test('TopicTails: a reader that is far behind is read back in linear time', async () => {
+  // The reader's queue is read from its head, and how long it gets is the
+  // application's highWaterMark: over an array each take moved the rest.
+  const read = async (n) => {
+    const log = createLog();
+    const tails = log.tails({ highWaterMark: n + 1 });
+    const controller = new AbortController();
+    const iterator = tails.read('t', { after: null, signal: controller.signal })[Symbol.asyncIterator]();
+    const first = iterator.next();
+    await waitFor(() => log.stats.live === 1);
+    for (let i = 0; i < n; i++) log.append('t', i);
+    await first;
+    const started = process.hrtime.bigint();
+    for (let i = 1; i < n; i++) await iterator.next();
+    const elapsed = Number(process.hrtime.bigint() - started);
+    controller.abort();
+    tails.close();
+    return elapsed;
+  };
+  await read(2_000);
+  const small = Math.max(await read(2_000), 1);
+  const large = await read(64_000);
+  assert.ok(large / small < 200, `64k took ${(large / small).toFixed(0)}× the time of 2k`);
 });

@@ -87,6 +87,20 @@ to your server with the user's cookies attached. Configure `cors.origins` and
 the default `verifyClient` refuses a mismatched `Origin` outright. See
 [Server → CORS](./server#cors).
 
+### Headers on every HTTP answer
+
+Every HTTP answer carries `X-Content-Type-Options: nosniff` and
+`Strict-Transport-Security: max-age=31536000` — HSTS for the host that
+answered, and nothing wider. `includeSubDomains` commits every subdomain you
+have to HTTPS, and `preload` is consent to a list compiled into browsers that
+takes months to leave; both are the domain owner's to say, not a library's.
+Say them with [`http.hsts`](./server#options):
+
+```js
+new Server({ router, http: { hsts: 'max-age=63072000; includeSubDomains; preload' } });
+new Server({ router, http: { hsts: false } }); // a proxy in front already sends it
+```
+
 ## Prototype pollution
 
 Peer-controlled strings become object keys in three places, and each one is

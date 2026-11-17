@@ -8,8 +8,8 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
-const { createAmqpBroker } = require('../../broker/amqp.js');
-const { isBroker } = require('../../broker.js');
+const { createAmqpBroker } = require('../../src/broker/amqp/index.js');
+const { isBroker } = require('../../src/broker/index.js');
 const { createFakeAmqp } = require('./fakeAmqp.js');
 const { runBackplaneContract } = require('./backplaneContract.js');
 const { runLogContract } = require('./logContract.js');

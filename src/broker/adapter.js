@@ -19,6 +19,7 @@
 const { generateUUID } = require('../runtime/node.js');
 const { resolveGenerateId } = require('../utils.js');
 const { crashDelay, positiveInteger } = require('./retry.js');
+const { lineLevels } = require('../rpc/errors.js');
 
 // Carried by a delivery an adapter re-published: the attempt it is on (the
 // counter is the ADAPTER's — RabbitMQ 4 does not count a requeue, Kafka has
@@ -27,11 +28,68 @@ const { crashDelay, positiveInteger } = require('./retry.js');
 const ATTEMPT_HEADER = 'x-wrpc-attempt';
 const REDELIVERED_HEADER = 'x-wrpc-redelivered';
 const DEAD_REASON_HEADER = 'x-wrpc-dead-reason';
+
+// The attempt a delivery is on, read back from the header an adapter wrote
+// when it re-published the message: a positive integer, or `fallback` for
+// anything else. It used to be `Number(header ?? '1') || 1`, which believes
+// whatever is there — and what is there on a first delivery is the
+// PRODUCER's: `x-wrpc-attempt: -1000000` gave a counter that never reached
+// the retry limit and a backoff of zero (a negative exponent), 999,994
+// redeliveries in a second and a half; `99` dead-lettered a message on its
+// first failure.
+const attemptOf = (headers, fallback = 1) => {
+  const attempt = Number(headers[ATTEMPT_HEADER]);
+  return Number.isInteger(attempt) && attempt >= 1 ? attempt : fallback;
+};
+
+// A producer's headers without the three an adapter keeps for itself: what a
+// public `produce` sends. The retry paths write them through their own
+// sends, never through `produce`.
+const producerHeaders = (headers) => {
+  if (!headers || typeof headers !== 'object') return headers;
+  if (!(ATTEMPT_HEADER in headers) && !(REDELIVERED_HEADER in headers) && !(DEAD_REASON_HEADER in headers)) {
+    return headers;
+  }
+  const own = {};
+  for (const name of Object.keys(headers)) {
+    if (name === ATTEMPT_HEADER || name === REDELIVERED_HEADER || name === DEAD_REASON_HEADER) continue;
+    own[name] = headers[name];
+  }
+  return own;
+};
+
+// The level of a refusal's line, by its reason: a warning the first time,
+// debug for ten seconds after it (lineLevels in ../rpc/errors.js). A refusal is something a peer does —
+// to an inbox anybody on the broker can write to — and each used to be a
+// warning of its own, one per frame. The reasons are this package's (a
+// closed set), so the table holds a handful of entries.
+const refusalLevels = () => lineLevels();
+
 // A direct message's body was a string ('1') or bytes ('0'), where the
 // broker itself carries bytes only.
 const TEXT_HEADER = 'wrpc-text';
 
 const DEFAULT_PREFETCH = 16;
+
+// A settlement that has to PUBLISH — a retry's copy, a dead letter — and was
+// refused is tried again on this schedule by the adapters that settle that
+// way (AMQP, Kafka), before the message is handed back to the broker as it
+// was: at least once, attempt untouched.
+const SETTLE_ATTEMPTS = 3;
+const SETTLE_BACKOFF = Object.freeze({ minDelay: 100, maxDelay: 1000, factor: 2, jitter: false });
+
+// A pause that does not keep the process alive.
+const sleep = (ms) =>
+  new Promise((resolve) => {
+    const timer = setTimeout(resolve, ms);
+    if (typeof timer.unref === 'function') timer.unref();
+  });
+
+// An adapter's error line: the event it is, the error, what locates it.
+const reporter =
+  (log) =>
+  (event, error, extra = {}) =>
+    log.error({ err: error, event, ...extra });
 
 /**
  * The id factory of an adapter. An injected `generateId` is used VERBATIM
@@ -60,6 +118,7 @@ const idFactory = (generateId, label) => {
  */
 const failedRead = (error) => {
   const rejected = Promise.reject(error);
+  // Handled from birth (see above).
   rejected.catch(() => {});
   return {
     ready: rejected,
@@ -146,6 +205,13 @@ module.exports = {
   ATTEMPT_HEADER,
   REDELIVERED_HEADER,
   DEAD_REASON_HEADER,
+  attemptOf,
+  producerHeaders,
+  refusalLevels,
+  SETTLE_ATTEMPTS,
+  SETTLE_BACKOFF,
+  sleep,
+  reporter,
   TEXT_HEADER,
   DEFAULT_PREFETCH,
   idFactory,

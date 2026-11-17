@@ -6,9 +6,9 @@ const timers = require('node:timers/promises');
 
 const { RpcServer } = require('../../src/rpc/core.js');
 const { defineRouter, procedure, WrpcClient } = require('../../index.js');
-const { MemoryBroker, attachBrokerRpc } = require('../../broker.js');
-const { bearerTransport } = require('../../auth.js');
-const { generateKey } = require('../../encryption.js');
+const { MemoryBroker, attachBrokerRpc } = require('../../src/broker/index.js');
+const { bearerTransport } = require('../../src/auth/index.js');
+const { generateKey } = require('../../src/encryption/index.js');
 const { createBrokerSealing, HEADER_SEALED } = require('../../src/broker/sealing.js');
 const { KIND, HEADER_KIND } = require('../../src/broker/rpc/frames.js');
 const { quiet, waitFor } = require('./support.js');
@@ -74,7 +74,9 @@ const logs = () => {
   const logger = {
     log() {},
     info() {},
-    debug() {},
+    // A refusal is a warning the first time and debug for a while after
+    // (refusalLevels): both are refusals, and both are counted here.
+    debug: (entry) => void (entry?.event === 'broker.rpc.refused' && warnings.push({ ...entry, level: 'debug' })),
     error() {},
     warn: (entry) => warnings.push(entry),
     child: () => logger,
@@ -402,6 +404,24 @@ test('broker encryption: a sealed session takes no plaintext frame — acceptPla
     downgrades().map((w) => w.kind),
     [KIND.PACKET, KIND.BYE, KIND.BYE, KIND.PACKET],
   );
+  // And a welcome is not a way around it. A plaintext one, mid-session, used
+  // to reset the client's "sealed only" — the packet behind it then reached
+  // the application.
+  const events = [];
+  client.on('unhandled-event', (event) => events.push(event.name));
+  const toClient = carried.filter((f) => f.address === clientInbox && f.headers['wrpc-seq'] !== undefined);
+  const next = Math.max(0, ...toClient.map((f) => Number(f.headers['wrpc-seq']))) + 1;
+  await broker.direct.send(clientInbox, '', {
+    headers: { [HEADER_KIND]: KIND.WELCOME, 'wrpc-inbox': handle.inbox },
+    correlationId: session,
+  });
+  await broker.direct.send(clientInbox, JSON.stringify({ type: 'event', name: 'calc/forged', data: {} }), {
+    headers: { [HEADER_KIND]: KIND.PACKET, 'wrpc-seq': String(next) },
+    correlationId: session,
+  });
+  await waitFor(() => downgrades().length === 5);
+  assert.deepStrictEqual(events, [], 'the forged packet was refused, not delivered');
+  assert.deepStrictEqual(await client.api.calc.echo({ n: 4 }), { n: 4 }, 'and the session goes on, sealed');
 });
 
 test('broker encryption: a sealed request older than maxSkew, or without a clock, is refused as stale', async (t) => {
@@ -457,7 +477,7 @@ test('broker encryption: a sealed request older than maxSkew, or without a clock
 });
 
 test('broker encryption: a shared replay memory refuses a request replayed to another instance', async (t) => {
-  const { createReplayCache } = require('../../encryption.js');
+  const { createReplayCache } = require('../../src/encryption/index.js');
   const keys = generateKey();
   const broker = new MemoryBroker({ logger: quiet });
   const replay = createReplayCache();
@@ -521,4 +541,141 @@ test('broker encryption: a shared replay memory refuses a request replayed to an
   await waitFor(() => errors.some((entry) => entry.event === 'broker.rpc.replay'));
   await timers.setTimeout(30);
   assert.strictEqual(replies.length, 1, 'not served on a memory that failed');
+});
+
+test('broker encryption: a sealed request re-sent with another reply address is refused, not answered there', async (t) => {
+  const keys = generateKey();
+  const real = new MemoryBroker({ logger: quiet });
+  t.after(() => real.close());
+  const { carried, broker } = spied(real);
+  let ran = 0;
+  const pay = defineRouter({
+    calc: {
+      pay: procedure({
+        access: 'public',
+        handler: async (_ctx, args) => {
+          ran++;
+          return { charged: args.amount };
+        },
+      }),
+    },
+  });
+  // Two instances of one service: a replayed frame reaches the one whose
+  // replay window never saw it (a documented limit) — the reply address is
+  // what this is about.
+  const refusals = [];
+  const logger = {
+    log() {},
+    info() {},
+    debug() {},
+    error() {},
+    warn: (entry) => refusals.push(entry.reason ?? entry.event),
+    child: () => logger,
+  };
+  for (let i = 0; i < 2; i++) {
+    const server = new RpcServer({ router: pay, logger: quiet, sse: false });
+    const handle = await attachBrokerRpc(server, real, { service: 'calc', logger, encryption: { keys } });
+    t.after(async () => {
+      await handle.stop();
+      await server.close();
+    });
+  }
+  const client = await WrpcClient.connect('broker://calc', {
+    transport: 'broker',
+    broker,
+    mode: 'stateless',
+    heartbeat: false,
+    reconnect: false,
+    callTimeout: 1000,
+    logger: false,
+    encryption: { keys },
+  });
+  t.after(() => client.close());
+  assert.deepStrictEqual(await client.call('calc/pay', { amount: 100 }), { charged: 100 });
+  const request = carried.find((frame) => frame.headers[HEADER_KIND] === KIND.REQUEST);
+  const elsewhere = real.direct.inbox();
+  const got = [];
+  const stop = await real.direct.listen(elsewhere, (message) => got.push(message.headers?.[HEADER_KIND]));
+  t.after(stop);
+  for (let i = 0; i < 4; i++) {
+    await real.direct.send(request.address, Buffer.from(request.text, 'latin1'), {
+      headers: request.headers,
+      correlationId: request.correlationId,
+      replyTo: elsewhere,
+    });
+  }
+  await timers.setTimeout(150);
+  // It used to run the handler again on the other instance and answer the
+  // rewritten address.
+  assert.strictEqual(ran, 1, 'the handler ran for the real request alone');
+  assert.deepStrictEqual(got, []);
+  assert.ok(refusals.includes('reply'), `refused for its reply address: ${JSON.stringify(refusals)}`);
+});
+
+test("broker encryption: reply: 'carrier' answers where the carrier says; anything else is a TypeError", async (t) => {
+  const keys = generateKey();
+  const server = new RpcServer({ router, logger: quiet, sse: false });
+  t.after(() => server.close());
+  const broker = new MemoryBroker({ logger: quiet });
+  t.after(() => broker.close());
+  await assert.rejects(
+    attachBrokerRpc(server, broker, { service: 'x', logger: quiet, encryption: { keys, reply: 'anywhere' } }),
+    /encryption\.reply must be 'sealed' or 'carrier'/,
+  );
+  const handle = await attachBrokerRpc(server, broker, {
+    service: 'calc',
+    logger: quiet,
+    encryption: { keys, reply: 'carrier' },
+  });
+  t.after(() => handle.stop());
+});
+
+test('broker encryption: a frame that could not be sealed takes no sequence number — the session goes on', async (t) => {
+  const master = generateKey();
+  let down = false;
+  // Asked which key is current on every seal: that is where it fails.
+  const flaky = {
+    current: () => {
+      if (down) throw new Error('vault unreachable');
+      return 'a';
+    },
+    get: (kid) => (kid === 'a' ? master : null),
+  };
+  const { handle, connect } = await boot(t, {
+    attach: { encryption: { keys: { current: () => 'a', get: () => master } } },
+  });
+  const client = await connect({ mode: 'session', encryption: { keys: flaky } });
+  client.on('error', () => {});
+  await client.load('calc');
+  assert.deepStrictEqual(await client.api.calc.echo({ n: 1 }), { n: 1 });
+  // The provider fails for one frame: that call is lost, and says so.
+  down = true;
+  await assert.rejects(async () => client.api.calc.echo({ n: 2 }));
+  down = false;
+  // It used to leave a gap in the numbering: the service dropped the session
+  // on the next frame, and write() answered "not drained" for good.
+  assert.deepStrictEqual(await client.api.calc.echo({ n: 3 }), { n: 3 });
+  assert.strictEqual(handle.sessions, 1, 'the same session');
+  assert.strictEqual(client.active, true);
+});
+
+test('broker encryption: refusals are one warning per reason, then debug — and a peer header is bounded in the line', async (t) => {
+  const keys = generateKey();
+  const broker = new MemoryBroker({ logger: quiet });
+  const { logger, warnings } = logs();
+  const { handle } = await boot(t, { broker, attach: { encryption: { keys }, logger } });
+  // Plaintext frames to a service that takes none: anybody on the broker can
+  // send them, and each used to be a warning with the peer's own header in it.
+  const kind = `request\n${'x'.repeat(400)}`;
+  for (let i = 0; i < 5; i++) {
+    await broker.direct.send(handle.address, '{}', { headers: { [HEADER_KIND]: kind }, replyTo: 'nowhere' });
+  }
+  await waitFor(() => warnings.filter((w) => w.event === 'broker.rpc.refused').length === 5);
+  const lines = warnings.filter((w) => w.event === 'broker.rpc.refused');
+  assert.deepStrictEqual(
+    lines.map((line) => line.level ?? 'warn'),
+    ['warn', 'debug', 'debug', 'debug', 'debug'],
+  );
+  assert.ok(lines[0].kind.length < 140, `${lines[0].kind.length} characters of a peer header in one line`);
+  assert.ok(!lines[0].kind.includes('\n'));
 });

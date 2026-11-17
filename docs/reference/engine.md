@@ -88,6 +88,7 @@ is `null` and `server.address()` is the only way to read the bound address.
 | `protocols` / `handleProtocols(offered, req)` | Subprotocol negotiation; `false` rejects the handshake. `offered` never holds wRPC's [carrier tokens](./protocol#connection-metadata) (`wrpc.h.`, `wrpc.m.`, `wrpc.bearer.`), and an engine must not echo one. |
 | `perMessageDeflate` | `true`, or `{ threshold, filter, contextTakeover, async, … }`. See [wire format](./wire-format#permessage-deflate). |
 | `coalesce` | Built-in engine: cork the writes of one event-loop turn into one flush. Default `true`. |
+| `turnBudget` | Built-in engine: what one connection may hand over in one turn of the event loop — `true` (512 messages or 256 KiB), `{ messages, bytes }`, or `false`. Default `true`. See [wire format](./wire-format#turn-budget). |
 | `pingInterval` | Protocol-ping interval for engines that own liveness. |
 | `maxBuffer` / `maxBackpressure` / `fragmentThreshold` / `closeTimeout` | Engine limits. |
 | `onHttpCall(call)` | Standalone engines only: the core's HTTP entry point. |

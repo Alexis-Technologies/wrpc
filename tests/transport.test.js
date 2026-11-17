@@ -353,6 +353,15 @@ test('ServerEventTransport', async (t) => {
 });
 
 test('parseCookies', async (t) => {
+  await t.test('a name that comes twice keeps its first value', () => {
+    // What a browser sends when a sibling subdomain set `token` for the
+    // parent domain: the site's own cookie first, the tossed one behind it.
+    const cookies = parseCookies('token=victim; other=1; token=attacker');
+    assert.strictEqual(cookies.token, 'victim');
+    assert.strictEqual(cookies.other, '1');
+    assert.strictEqual(Object.hasOwn(parseCookies('__proto__=x; a=1'), '__proto__'), true);
+  });
+
   await t.test('splits pairs on the first "=" only — values may contain "="', () => {
     const cookies = parseCookies('token=YWJjZGVm==; other=1');
     assert.strictEqual(cookies.token, 'YWJjZGVm==');
@@ -395,4 +404,31 @@ test('buildHeaders: cors.metaHeaders names the per-key meta headers CORS cannot 
 
   // Absent or empty changes nothing.
   assert.strictEqual(allow({ metaHeaders: [] }), 'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta');
+});
+
+test('buildHeaders: HSTS is for the answering host by default, and the application may replace or drop it', () => {
+  const { buildHeaders } = require('../src/transport.js');
+  const name = 'Strict-Transport-Security';
+  // Not `includeSubDomains; preload`: that commits a whole domain tree, and
+  // it is not a library's to say.
+  assert.strictEqual(buildHeaders()[name], 'max-age=31536000');
+  assert.strictEqual(
+    buildHeaders(null, undefined, 1, 'max-age=63072000; includeSubDomains; preload')[name].includes('preload'),
+    true,
+  );
+  assert.strictEqual(Object.hasOwn(buildHeaders(null, undefined, 1, false), name), false);
+  assert.strictEqual(buildHeaders(null, undefined, 1, false)['X-Content-Type-Options'], 'nosniff');
+});
+
+test('cors.origins as one string is that origin, compared whole', () => {
+  const { buildHeaders, isOriginAllowed } = require('../src/transport.js');
+  const cors = { origins: 'https://app.example.com' };
+  assert.strictEqual(isOriginAllowed(cors, 'https://app.example.com'), true);
+  // A substring of the configured origin — and a domain anybody can buy.
+  assert.strictEqual(isOriginAllowed(cors, 'https://app.example.co'), false);
+  assert.strictEqual(buildHeaders(cors, 'https://app.example.co')['Access-Control-Allow-Origin'], undefined);
+  assert.strictEqual(
+    buildHeaders(cors, 'https://app.example.com')['Access-Control-Allow-Origin'],
+    'https://app.example.com',
+  );
 });

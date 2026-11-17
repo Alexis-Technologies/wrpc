@@ -6,8 +6,8 @@ const timers = require('node:timers/promises');
 
 const { RpcServer } = require('../../src/rpc/core.js');
 const { defineRouter, procedure } = require('../../index.js');
-const { MemoryBroker, attachConsumers } = require('../../broker.js');
-const { bearerTransport } = require('../../auth.js');
+const { MemoryBroker, attachConsumers } = require('../../src/broker/index.js');
+const { bearerTransport } = require('../../src/auth/index.js');
 const { bootServer, connectClient } = require('../helpers/server.js');
 const { quiet, waitFor } = require('./support.js');
 
@@ -493,7 +493,7 @@ test('attachConsumers: a start failure stops whatever already started', async (t
 });
 
 test('attachConsumers: under encryption.required a binding that does not seal is refused, a plaintext delivery is dead', async (t) => {
-  const { generateKey } = require('../../encryption.js');
+  const { generateKey } = require('../../src/encryption/index.js');
   const { createBrokerSealing } = require('../../src/broker/sealing.js');
   const keys = generateKey();
   const handled = [];
@@ -758,4 +758,50 @@ test('attachConsumers: forget(token) drops the cached client at once', async (t)
   await waitFor(() => seen.length === 2);
   assert.strictEqual(store.gets, 2, 'the next delivery restored the session afresh');
   assert.throws(() => consumers.forget(42), /must be a string/);
+});
+
+test('attachConsumers: handlers that never settle stop the binding from calling itself healthy; a timeout gives the slots back', async (t) => {
+  let started = 0;
+  const never = () => {
+    started++;
+    return new Promise(() => {});
+  };
+  const { broker, rpc } = boot(t, {
+    jobs: {
+      consumes: {
+        stuck: procedure({
+          access: 'public',
+          consume: { prefetch: 2, stallAfter: 60, retry: fastRetry },
+          handler: never,
+        }),
+        bounded: procedure({
+          access: 'public',
+          consume: { prefetch: 2, timeout: 40, retry: { attempts: 1 }, deadLetter: false },
+          handler: never,
+        }),
+      },
+    },
+  });
+  const handles = await attachConsumers(rpc, broker, {}, { logger: quiet });
+  t.after(() => handles.stop());
+  const [stuck, bounded] = ['stuck', 'bounded'];
+  for (let i = 0; i < 5; i++) await broker.queue.produce(stuck, '{}');
+  await waitFor(() => started === 2, 'the two slots are taken');
+  assert.strictEqual(handles.healthy, true, 'busy is not stalled');
+  // Both slots held by handlers that never answer: nothing more is taken,
+  // and the binding used to say `healthy: true` for as long as it lasted.
+  await timers.setTimeout(120);
+  assert.strictEqual(started, 2);
+  assert.strictEqual(handles.healthy, false, 'every slot taken for longer than stallAfter');
+  // With a timeout a delivery is a 408 at its deadline, and its slot comes back.
+  started = 0;
+  for (let i = 0; i < 5; i++) await broker.queue.produce(bounded, '{}');
+  await waitFor(() => started === 5, 'all five were taken, two at a time');
+  const bad = boot(t, {
+    jobs: { consumes: { x: procedure({ access: 'public', consume: { timeout: -1 }, handler: never }) } },
+  });
+  await assert.rejects(
+    async () => attachConsumers(bad.rpc, bad.broker, {}, { logger: quiet }),
+    /timeout must be a number/,
+  );
 });

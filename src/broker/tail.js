@@ -49,6 +49,9 @@
 
 const { backoffDelay } = require('../utils.js');
 const { codedError } = require('./ids.js');
+const { positiveInteger } = require('./retry.js');
+const { Deque } = require('../deque.js');
+const { sleep } = require('./adapter.js');
 
 const DEFAULT_HIGH_WATER_MARK = 1024;
 const DEFAULT_PAGE = 256;
@@ -64,12 +67,6 @@ const REJOIN_BACKOFF = Object.freeze({ minDelay: 200, maxDelay: 5000, factor: 2,
 // again after this pause, this many times, before the read fails 503.
 const STALL_DELAY = 50;
 const MAX_STALLS = 10;
-
-const sleep = (ms) =>
-  new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    if (typeof timer.unref === 'function') timer.unref();
-  });
 
 class TopicTails {
   #live;
@@ -106,6 +103,10 @@ class TopicTails {
     if (onLag !== null && typeof onLag !== 'function') {
       throw new TypeError('TopicTails: onLag must be a function or null');
     }
+    // A mark that is not a count never lags a reader (NaN, Infinity) or lags
+    // it on every entry (null), and a page of nothing never ends a catch-up.
+    if (!positiveInteger(highWaterMark)) throw new TypeError('TopicTails: highWaterMark must be a positive integer');
+    if (!positiveInteger(page)) throw new TypeError('TopicTails: page must be a positive integer');
     this.#onLag = onLag;
     this.#live = live;
     this.#range = range;
@@ -196,7 +197,7 @@ class TopicTails {
     const tails = this;
     let wake = null;
     const reader = {
-      queue: [],
+      queue: new Deque(),
       lagging: false,
       failure: null,
       // Where a 'latest' read starts: the tail's cursor as of ready (#join).
@@ -206,7 +207,7 @@ class TopicTails {
         const lagged = reader.queue.length >= tails.#highWaterMark;
         if (lagged) {
           reader.lagging = true;
-          reader.queue.length = 0;
+          reader.queue.clear();
         } else reader.queue.push(entry);
         wake?.();
         return lagged;
@@ -253,6 +254,7 @@ class TopicTails {
               // one is asked again on a backoff; then the read fails.
               for (let attempt = 0; ; attempt++) {
                 tail = tails.#join(topic, reader);
+                // Why it failed is in tail.failure, read on the next line.
                 await tail.ready.catch(() => {});
                 if (tail.failure === null) break;
                 if (reader.failure === tail.failure) reader.failure = null;

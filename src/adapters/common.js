@@ -36,7 +36,7 @@ const { STATUS_CODES } = require('../status.js');
 
 const MAX_BODY_SIZE = 10 * 1024 * 1024;
 
-const getPathname = (url) => (url ? url.split('?')[0] : '/');
+const { getPathname } = require('../websocket/upgrade.js');
 
 // The one upgrade gate every host shares. With an explicit ws.path the
 // engine already gates the pathname, and the default RPC-path gate would
@@ -52,6 +52,19 @@ const createUpgradeGate = ({ rpc, cors = null, ws = {} }) => {
     }
     return isOriginAllowed(cors, req.headers.origin);
   };
+};
+
+// The shutdown every host runs: what is in flight gets up to `drain` ms to
+// finish (new calls answer 503 meanwhile), then the engine closes — its
+// goodbye to every open socket — and the core evicts its clients. One
+// sequence in one place: the Server shell had it with a drain, the fastify
+// plugin and the express middleware had a copy without one, so a deploy
+// under either cut every call in flight where `server.close({ drain })`
+// would have let it finish.
+const shutdown = async (rpc, engine, drain = 0) => {
+  await rpc.drain(drain);
+  engine.close();
+  await rpc.close();
 };
 
 // The shared 400 for a body that could not be received (too big, aborted):
@@ -146,7 +159,8 @@ const statusLine = (code) => `${code} ${STATUS_CODES[code] ?? 'Unknown'}`;
 // number; frameworks want strings and repeated header lines.
 const eachHeader = (headers, visit) => {
   // for...in over the core's own header literal: Object.entries allocated an
-  // array plus a [name, value] pair per header, per HTTP response.
+  // array plus a [name, value] pair per header, per HTTP response — 5.5 M
+  // walks a second against 7.9 M (bench/object-walk.js).
   for (const name in headers) {
     const value = headers[name];
     if (Array.isArray(value)) {
@@ -176,6 +190,7 @@ module.exports = {
   nodeStream,
   getPathname,
   createUpgradeGate,
+  shutdown,
   revisionProtocols,
   respondBodyError,
 };

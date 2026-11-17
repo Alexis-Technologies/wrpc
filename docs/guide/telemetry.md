@@ -73,7 +73,11 @@ span and a duration sample exactly as a slow handler does.
 | `wrpc.persistent` | whether the connection stays open |
 | `wrpc.subscription.values` | values yielded |
 | `wrpc.subscription.terminal` | `complete`, `error`, `unsubscribed` |
+| `wrpc.subscription.resumed` | whether the subscribe carried a `lastEventId` — a resume, not a first open |
 | `network.peer.address` | the peer's address — see below |
+| `messaging.system`, `messaging.destination.name`, `messaging.operation.type` | a [broker](./brokers) span: the broker's name, the queue or topic, `process` (a consumed message) or `send` (a published one) |
+| `messaging.consumer.group.name` | a consumed message's span: the consumer group |
+| `wrpc.event.name` | a published message's span: the `unit/event` it carries |
 
 ## Privacy
 
@@ -204,6 +208,45 @@ its network; `receive failed 408` is uploads whose handlers never read them.
 ack or a dead-letter, never on a retry — so it is the distribution of how
 many deliveries each message took, not a triangle counting the same message
 once per attempt.
+
+### Metric attributes
+
+Every label a series can carry, and what it may say. Each value set is closed
+— chosen by this package, never by a peer — except the two that name your own
+declarations: the `rpc.service` / `rpc.method` of a procedure and the
+`wrpc.event.name` of an event, both from the router (a name that resolves to
+nothing is `<unknown>`).
+
+| Attribute | On | Values |
+| --------- | -- | ------ |
+| `rpc.service`, `rpc.method` | `rpc.server.duration`, `rpc.client.duration`, `wrpc.server.calls`, `wrpc.client.calls`, `wrpc.server.subscriptions`, `wrpc.server.subscription.values` | the procedure; the four call instruments also say `rpc.system` (`wrpc`) |
+| `wrpc.status` | the four call instruments | `ok`, `error`, `cancelled`, `timeout` |
+| `rpc.wrpc.status_code` | `wrpc.server.calls`, `rpc.server.duration`, `wrpc.server.streams` | the code a call or a stream failed with |
+| `wrpc.transport` | `wrpc.server.connections`, `wrpc.server.backpressure` | `ws`, `http`, `sse`, `event`, `webrtc`, `wt`, `broker` |
+| `wrpc.revision` | `wrpc.server.connections` | `1`, `2` |
+| `wrpc.event.name` | `wrpc.server.broadcasts`, `wrpc.server.broadcast.recipients` | the `unit/event` that was emitted |
+| `wrpc.published` | `wrpc.server.broadcasts` | `true` when the emit also went to the backplane |
+| `wrpc.stream.direction`, `wrpc.stream.outcome` | `wrpc.server.stream.bytes` (direction only), `wrpc.server.streams` | the table below |
+| `wrpc.channel.kind` | `wrpc.server.backplane.gaps` | `room`, `broadcast` |
+| `wrpc.compression.carrier`, `wrpc.compression.direction` | `wrpc.compression.failures` | the carrier; `encode`, `decode` |
+| `wrpc.session.op` | `wrpc.server.sessions` | `create`, `restore`, `touch`, `destroy`, `evict`, `expire` |
+| `wrpc.session.result` | `wrpc.server.sessions` | `ok`, `error`; for a `restore`, `hit`, `miss`, `error` |
+| `wrpc.sse.event` | `wrpc.server.sse.events` | `open`, `reattach`, `replay`, `gap`, `expired` |
+| `wrpc.kind`, `wrpc.outcome` | `wrpc.server.encryption` | `ws`, `wt`, `http`; `established` or the refusal's reason |
+| `wrpc.cluster.type` | `wrpc.cluster.messages` | the envelope's type — `hello`, `state`, `digest`, `sync`, `delta`, `bye` (presence), `e`, `q`, `a`, `cmd` (events, asks, answers, commands) — or `<unknown>` for anything else published to the channel |
+| `wrpc.cluster.op`, `wrpc.cluster.complete` | `wrpc.cluster.requests` | `fetch`, `emit`, `bask`; `false` when a node did not answer in time |
+| `wrpc.cluster.outcome` | `wrpc.cluster.verifications` | `unsigned`, `badsig`, `error`, `replay`, `unsequenced` |
+| `wrpc.rtc.role`, `wrpc.rtc.outcome`, `wrpc.rtc.reason`, `wrpc.rtc.side` | the `wrpc.rtc.*` instruments | above |
+| `messaging.system` | the `wrpc.broker.*` instruments | the broker's `name` |
+| `wrpc.broker.outcome` | `wrpc.broker.deliveries`, `wrpc.broker.published` | `ack`, `retry`, `release`, `dead`; `ok`, `error` |
+| `wrpc.broker.reason` | `wrpc.broker.rpc.session.ends` | the reason the session ended |
+| `wrpc.reason` | `wrpc.broker.refused` | `unsealed`, `kid`, `open`, `format`, `replay` |
+| `wrpc.reconnect.outcome` | `wrpc.client.reconnects` | `attempted`, `recovered`, `exhausted` |
+| `wrpc.refresh.outcome` | `wrpc.client.refreshes` | `ok`, `failed` |
+
+`wrpc.server.sse.channels`, `wrpc.server.rooms`, `wrpc.cluster.instances`,
+`wrpc.client.connections`, `wrpc.client.heartbeat.rtt`,
+`wrpc.server.queue.depth` and `wrpc.server.queue.wait` carry no attribute.
 
 Metric attributes deliberately stay low-cardinality: the method, the status,
 the transport. Packet ids and peer addresses go on spans, never on a metric

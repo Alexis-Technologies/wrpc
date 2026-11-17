@@ -4,7 +4,7 @@ description: Choose and use native JavaScript collections for Big-O, readability
 ---
 
 <!-- metaskills v1.0.5 (skills/js-data-structures), as it is. Two of its hints are measured the
-     other way round in wRPC, on hot paths only — CLAUDE.md ("Performance conventions") wins there:
+     other way round in wRPC, on hot paths only — `bench/CLAUDE.md` (the performance conventions) wins there:
      a hot path preallocates with `new Array(len)` and truncates (the once-sweep of `emit`,
      bench/emitter.js), and walks an object this package built with `for…in`. -->
 

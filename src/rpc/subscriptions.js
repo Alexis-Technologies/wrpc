@@ -26,7 +26,7 @@
 // needs the same primitive to back `subscription.iterate()`, and it is no
 // more subscription-specific than Emitter is.
 const { EventStream, createEventStream } = require('../utils.js');
-const { publicErrorMessage } = require('./errors.js');
+const { publicErrorMessage, clip } = require('./errors.js');
 
 const TRACKED = Symbol.for('wrpc.tracked');
 
@@ -194,7 +194,11 @@ const runSubscription = async (
   void Promise.resolve()
     .then(() => iterator.return?.())
     .catch((error) =>
-      client.warn(`SUBSCRIPTION\t${id}\t${error?.stack ?? error}`, { event: 'subscription.return', id, err: error }),
+      client.warn(`SUBSCRIPTION\t${clip(id)}\t${error?.stack ?? error}`, {
+        event: 'subscription.return',
+        id: clip(id),
+        err: error,
+      }),
     );
   return terminal;
 };

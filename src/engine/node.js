@@ -25,7 +25,7 @@ const createNodeEngine = (engineOptions = {}) => {
     // attachOptions: { server, path, verifyClient, protocols,
     //   handleProtocols, perMessageDeflate, pingInterval, maxBuffer,
     //   maxPayload, maxBackpressure, fragmentThreshold, closeTimeout,
-    //   coalesce, logger }
+    //   coalesce, turnBudget, logger }
     // `logger` rides the same spread as the rest: the Server shell passes
     // its own writer, so framing failures report where the app expects.
     // Returns an EventEmitter with 'connection'(socket, req) events.

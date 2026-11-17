@@ -2,7 +2,7 @@
 
 const { EventEmitter } = require('node:events');
 const { createLoggerWriter } = require('../logging.js');
-const { WRPC_V1, WRPC_V2, CARRIER_PROTOCOL } = require('../wire.js');
+const { negotiateProtocol } = require('../websocket/upgrade.js');
 
 const { MAX_BODY_SIZE, statusLine, eachHeader } = require('./common.js');
 
@@ -46,28 +46,6 @@ const createUpgradeRequest = (path, query, headers, remoteAddress) => ({
   headers,
   socket: { remoteAddress },
 });
-
-// Mirrors WebsocketServer's negotiation: `false` from handleProtocols
-// rejects the handshake, anything else selects (or declines) a subprotocol,
-// and with no app configuration the newest wrpc revision offered is echoed.
-// Carrier tokens (wire.js) are data riding the offer: removed before the
-// application sees the list, and never echoed back.
-const negotiateProtocol = (header, { protocols, handleProtocols }, request) => {
-  if (!header) return '';
-  const offered = header
-    .split(',')
-    .map((token) => token.trim())
-    .filter((token) => token.length > 0 && !CARRIER_PROTOCOL.test(token));
-  if (handleProtocols) {
-    const selected = handleProtocols(offered, request);
-    if (selected === false) return false;
-    return typeof selected === 'string' && !CARRIER_PROTOCOL.test(selected) ? selected : '';
-  }
-  if (protocols) return offered.find((name) => protocols.includes(name)) ?? '';
-  if (offered.includes(WRPC_V2)) return WRPC_V2;
-  if (offered.includes(WRPC_V1)) return WRPC_V1;
-  return '';
-};
 
 /**
  * WrpcSocket over a uws WebSocket.
@@ -240,6 +218,10 @@ const createUwsEngine = (engineOptions = {}) => {
 
         const request = createUpgradeRequest(path, query, headers, remoteAddress);
         const reject = (status) => {
+          // What the node engine says for the same refusal (`ws.refused`).
+          const entry = { event: 'ws.refused', status, path: path.length > 128 ? path.slice(0, 128) : path };
+          if (status === 403) log.warn(entry);
+          else log.debug(entry);
           if (aborted) return;
           res.cork(() => {
             res.writeStatus(statusLine(status));

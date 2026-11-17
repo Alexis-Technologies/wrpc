@@ -28,7 +28,7 @@ import type {
   SessionStore,
   HttpCall,
 } from '../index.js';
-import type { Engine, EngineConnectionSource } from '../engine.js';
+import type { Engine, EngineConnectionSource } from '../src/engine/index.js';
 
 expectType<typeof Emitter>(wrpc.Emitter);
 expectType<typeof WrpcClient>(wrpc.WrpcClient);
@@ -358,6 +358,10 @@ expectAssignable<wrpc.RpcServerOptions>({ router, maxStreams: 16, maxStreamBuffe
 // http.compression: off unless asked for; every field optional, the filter sees the abstract call
 expectAssignable<wrpc.RpcServerOptions>({ router, http: { compression: true } });
 expectAssignable<wrpc.RpcServerOptions>({ router, http: {} });
+// http.hsts: the Strict-Transport-Security value, or false for none
+expectAssignable<wrpc.RpcServerOptions>({ router, http: { hsts: 'max-age=63072000; includeSubDomains' } });
+expectAssignable<wrpc.RpcServerOptions>({ router, http: { hsts: false } });
+expectError<wrpc.RpcServerOptions>({ router, http: { hsts: true } });
 expectAssignable<wrpc.RpcServerOptions>({
   router,
   http: {

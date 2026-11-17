@@ -1,6 +1,6 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as auth from '../auth.js';
-import type { TokenStore } from '../auth.js';
+import * as auth from '../src/auth/index.js';
+import type { TokenStore } from '../src/auth/index.js';
 import type { WrpcClientOptions } from '../index.js';
 import { connect } from '../index.js';
 

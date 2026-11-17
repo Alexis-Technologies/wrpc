@@ -188,3 +188,43 @@ test('Server / calls', async (t) => {
     await custom.close();
   });
 });
+
+test("Server: rooms, clients, to/except/broadcast, cluster, getClient and sendTo are the core's, forwarded", async (t) => {
+  const { bootServer, connectClient, waitFor } = require('./helpers/server.js');
+  const { defineRouter: define, procedure: proc } = require('../index.js');
+  const shellRouter = define({
+    chat: {
+      whoami: proc({ access: 'public', handler: async (context) => ({ id: context.client.id }) }),
+      join: proc({ access: 'public', handler: async (context) => void context.client.join('lobby') }),
+      emits: { note: { data: 'string' } },
+    },
+  });
+  const { server, url } = await bootServer(t, { router: shellRouter });
+  const first = await connectClient(t, url);
+  const second = await connectClient(t, url);
+  await first.load('chat');
+  await second.load('chat');
+  const { id } = await first.api.chat.whoami();
+  await first.api.chat.join();
+  const heard = { first: [], second: [] };
+  first.api.chat.on('note', (data) => heard.first.push(data));
+  second.api.chat.on('note', (data) => heard.second.push(data));
+
+  assert.strictEqual(server.rooms, server.rpc.rooms);
+  assert.strictEqual(server.cluster, server.rpc.cluster);
+  // `clients` is a snapshot of the core's set each time it is read.
+  assert.strictEqual(server.clients.size, 2);
+  assert.deepStrictEqual(Array.from(server.clients), Array.from(server.rpc.clients));
+  const local = server.getClient(id);
+  assert.strictEqual(local.id, id);
+  assert.strictEqual(server.getClient('nobody'), undefined);
+
+  server.to('lobby').emit('chat/note', 'to the room');
+  server.except(local).emit('chat/note', 'to everyone else');
+  server.broadcast('chat/note', 'to all');
+  assert.strictEqual(server.sendTo(id, 'chat/note', 'to one'), true);
+  assert.strictEqual(server.sendTo(id, 'chat/note', 'not in that room', { room: 'elsewhere' }), false);
+  await waitFor(() => heard.first.length === 3 && heard.second.length === 2, 'every event arrived');
+  assert.deepStrictEqual(heard.first, ['to the room', 'to all', 'to one']);
+  assert.deepStrictEqual(heard.second, ['to everyone else', 'to all']);
+});

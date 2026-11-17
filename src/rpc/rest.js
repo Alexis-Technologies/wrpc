@@ -220,23 +220,35 @@ const buildRestTrees = (units, restOptions) => {
   return trees;
 };
 
+// Depth first, a segment's own name before the parameter at that place — and
+// BACK to the parameter when the name led nowhere. It used to commit to the
+// name: with `/users/me/settings` and `/users/:id` declared, `GET /users/me`
+// walked into `me`, found no route there, and answered "no such path" — so
+// the request fell through to the conventional `/:unit/:method` mode and ran
+// whatever procedure `users/me` named, or was a 404 for a path `:id` covers.
+// A branch is entered once per request and the depth is that of the routes
+// the application declared, not of the URL: a path longer than every route
+// stops at the first place nothing continues it.
+const descend = (node, segments, index, values) => {
+  if (index === segments.length) return node.terminal;
+  const segment = segments[index];
+  const named = node.static.get(segment);
+  if (named !== undefined) {
+    const route = descend(named, segments, index + 1, values);
+    if (route !== null) return route;
+  }
+  if (node.param === null) return null;
+  values.push(segment);
+  const route = descend(node.param.node, segments, index + 1, values);
+  if (route === null) values.pop();
+  return route;
+};
+
 const walk = (node, segments) => {
   if (!node) return null;
   const values = [];
-  for (const segment of segments) {
-    const next = node.static.get(segment);
-    if (next) {
-      node = next;
-      continue;
-    }
-    if (node.param) {
-      values.push(segment);
-      node = node.param.node;
-      continue;
-    }
-    return null;
-  }
-  return node.terminal ? { route: node.terminal, values } : null;
+  const route = descend(node, segments, 0, values);
+  return route === null ? null : { route, values };
 };
 
 /**

@@ -14,10 +14,19 @@ const { hasBytes, encodeAttachments, isAttachmentsFrame } = require('./attachmen
 
 // RFC 6265 permits '=' inside cookie values (base64, JWT) — split each
 // pair on the FIRST '=' only, or the value gets silently truncated.
+//
+// A name that comes twice keeps its FIRST value. A browser sends the cookies
+// of a name most specific path first (RFC 6265 5.4), so the first one is the
+// site's own; the one behind it is what a sibling subdomain set for the
+// parent domain — `token=theirs; Domain=.example.com` — to have its own
+// session token read in place of the user's (cookie tossing). The last one
+// used to win. Read back to front, so that fromEntries — kept for the own
+// `__proto__` it creates where an assignment would not — leaves the first.
 const parseCookies = (cookie) => {
   const values = [];
   const items = cookie.split(';');
-  for (const item of items) {
+  for (let i = items.length - 1; i >= 0; i--) {
+    const item = items[i];
     const eq = item.indexOf('=');
     const key = (eq < 0 ? item : item.slice(0, eq)).trim();
     const val = eq < 0 ? '' : item.slice(eq + 1).trim();
@@ -26,9 +35,15 @@ const parseCookies = (cookie) => {
   return Object.fromEntries(values);
 };
 
+// HSTS for the host that answered, and no more than that: this used to say
+// `includeSubdomains; preload` on every response — a commitment for the whole
+// domain tree, and consent to a browser preload list that takes months to
+// leave, made by a library on behalf of whoever owns the domain. That
+// decision is theirs: `http.hsts` takes the header they want, or `false`.
+const HSTS = 'Strict-Transport-Security';
 const SECURITY_HEADERS = {
   'X-Content-Type-Options': 'nosniff',
-  'Strict-Transport-Security': 'max-age=31536000; includeSubdomains; preload',
+  [HSTS]: 'max-age=31536000',
   'Content-Type': 'application/json',
   // The HTTP side's version marker, on every response — the ws subprotocol
   // ladder's counterpart (protocol.md#versioning): the newest revision the
@@ -37,6 +52,10 @@ const SECURITY_HEADERS = {
   // client learns it may send one.
   'wrpc-version': '1',
 };
+
+// The same without HSTS, for `http: { hsts: false }` — built once, so a
+// response under that option is a spread like any other, never a `delete`.
+const PLAIN_HEADERS = Object.fromEntries(Object.entries(SECURITY_HEADERS).filter(([name]) => name !== HSTS));
 
 // What an HTTP client that reads framed messages asks for, and what a
 // server looks for before it answers with one. `Accept` rather than a
@@ -99,13 +118,23 @@ const allowedHeaders = (cors) => {
 // `revision` is the newest protocol revision the server speaks (RpcServer's
 // `revision`); the marker is exposed because script on another origin reads
 // only the response headers named so.
-const buildHeaders = (cors, origin, revision = 1) => {
+// Whether `origin` is on the allowlist, when the allowlist is not a function.
+// A string is ONE origin, compared whole. It used to reach `.includes()` as
+// it was, and on a string that is a substring test: `origins:
+// 'https://app.example.com'` admitted `https://app.example.co`, a domain
+// anybody can register.
+const listed = (origins, origin) => (typeof origins === 'string' ? origins === origin : origins.includes(origin));
+
+// `hsts`: the `http.hsts` option — a header value of the application's, or
+// false for none; left out, the default above.
+const buildHeaders = (cors, origin, revision = 1, hsts = undefined) => {
   const headers = {
-    ...SECURITY_HEADERS,
+    ...(hsts === false ? PLAIN_HEADERS : SECURITY_HEADERS),
     'Access-Control-Allow-Methods': cors?.methods ?? DEFAULT_CORS_METHODS,
     'Access-Control-Allow-Headers': allowedHeaders(cors),
     'Access-Control-Expose-Headers': 'wrpc-version',
   };
+  if (typeof hsts === 'string') headers[HSTS] = hsts;
   if (revision === 2) headers['wrpc-version'] = '2';
   if (!cors || !cors.origins) {
     headers['Access-Control-Allow-Origin'] = '*';
@@ -113,7 +142,7 @@ const buildHeaders = (cors, origin, revision = 1) => {
   }
   headers['Vary'] = 'Origin';
   const allowed =
-    typeof cors.origins === 'function' ? Boolean(origin && cors.origins(origin)) : cors.origins.includes(origin);
+    typeof cors.origins === 'function' ? Boolean(origin && cors.origins(origin)) : listed(cors.origins, origin);
   if (allowed) {
     headers['Access-Control-Allow-Origin'] = origin;
     if (cors.credentials) headers['Access-Control-Allow-Credentials'] = 'true';
@@ -125,7 +154,7 @@ const isOriginAllowed = (cors, origin) => {
   if (!cors || !cors.origins) return true;
   if (!origin) return true; // non-browser peers send no Origin header
   if (typeof cors.origins === 'function') return Boolean(cors.origins(origin));
-  return cors.origins.includes(origin);
+  return listed(cors.origins, origin);
 };
 
 // If-None-Match: a list of entity tags, weak or strong, or `*`.

@@ -45,6 +45,8 @@ const nativeEncode = async (bytes) => {
   const writer = stream.writable.getWriter();
   const reader = stream.readable.getReader();
   const written = writer.write(bytes).then(() => writer.close());
+  // A write that fails errors the readable too: the read loop below is
+  // where that is thrown, once.
   written.catch(() => {});
   const chunks = [];
   let total = 0;

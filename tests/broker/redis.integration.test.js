@@ -35,7 +35,7 @@ if (url) {
   }
 }
 
-const { createRedisBroker } = require('../../broker/redis.js');
+const { createRedisBroker } = require('../../src/broker/redis/index.js');
 
 const clients = [];
 const client = () => {

@@ -13,6 +13,542 @@ narrower promise — see
 
 ### Changed (breaking)
 
+## [2.2.0] - 2026-11-18
+
+### Added
+
+- **A refused WebSocket upgrade and a heartbeat's kill are in the log.** An
+  upgrade the engine did not accept — a path that is not the server's, a
+  handshake no WebSocket client sends, the `verifyClient` gate — was
+  answered and forgotten: no line, where the HTTP path writes `cors.refused`
+  and `http.refused` for the same request, and "it just does not connect"
+  had nothing to start from. Both engines now write `ws.refused` (`status`,
+  the request `path`, and on the node engine the `reason`) — at **warn**
+  for a `403`, the gate that under the shells is the origin allowlist, and
+  at **debug** for the rest. A connection the node engine terminates for a
+  missed protocol ping writes `ws.heartbeat` (debug, `peer`).
+- **A graceful shutdown under fastify and express** (`drain`). The `Server`
+  shell's `close({ drain })` lets the calls in flight finish before it
+  closes anything; the fastify plugin and the express middleware closed at
+  once, with no way to ask for more — a deploy under either cut every call
+  that was running. `register(wrpcFastify, { drain: 10_000 })` and
+  `createWrpc(...).close({ drain: 10_000 })` now run the same sequence as
+  the shell (one function for all three): new calls answer `503`, calls in
+  flight get up to `drain` ms, then every socket is told `1001` and the
+  clients are evicted.
+- **Broker consumers: a deadline for a delivery, and a `healthy` that sees
+  a binding that stopped.** A consumer's handler that never settles holds
+  one of the binding's `prefetch` slots for as long as the process lives —
+  a procedure has no timeout unless it sets one — and `prefetch` of them
+  left a binding that took nothing more from its queue while
+  `consumers.healthy` answered `true`. `consume: { timeout }` is that
+  binding's deadline for one delivery: past it the call is a `408`, which
+  the retry table takes like any other, and the slot comes back. And a
+  binding whose every slot has been taken for longer than `stallAfter`
+  (60 s by default) no longer calls itself healthy.
+
+### Changed
+
+- **`TopicTails` refuses a `highWaterMark` or a `page` that is not a
+  positive integer** (`TypeError` at construction). `NaN` and `Infinity`
+  meant a reader that never lagged, with a queue of any length; `null`
+  lagged it on every entry; a `page` of `0` stalled a catch-up until its
+  `503`. A reader's queue is also a ring now (`src/deque.js`, the one the
+  `MemoryBroker` already had, shared with the Redis and Kafka adapters): a
+  hand-built `TopicTails` with a `highWaterMark` in the tens of thousands
+  read a lagging subscriber back one `Array.shift()` at a time, each of
+  them a copy of what was left.
+- **The WebSocket engine: one connection no longer holds the event loop for
+  as long as it has frames to read** (`turnBudget`, on by default for the
+  connections a server creates). Node reads a socket up to 32 times in one
+  iteration of the loop, 64 KiB each, and every frame in those two megabytes
+  was dispatched before a timer fired or another connection had a turn. One
+  peer writing 40,000 small calls in one go (2.4 MiB) made a timer 567 ms
+  late with `perMessageDeflate` on — every answer over the threshold is
+  deflated synchronously — and 100 frames of 16 KiB that inflate to 16 MiB
+  each made it 229 ms late, whatever `async` said: its threshold is the
+  compressed size. Once a connection has handed its listeners 512 messages,
+  or 256 KiB of them (counted after inflation), in one turn, its frame loop
+  stops and its socket is paused until the next turn; what it had read waits
+  in the receive buffer, nothing is dropped and the order is the same. The
+  same two bursts now make the timer 14 ms and 2 ms late and are served as
+  fast as before (`bench/ws-fairness.js`); a call round trip costs what it
+  did (`bench/bench.js`). `ws: { turnBudget: { messages, bytes } }` sets the
+  marks and `turnBudget: false` restores the old dispatch. A bare
+  `Connection` from `@alexify/wrpc/ws` keeps it off unless asked;
+  `connection.isPaused` is true while a connection waits for its turn. The
+  uWebSockets.js engine dispatches natively and has no such budget.
+- **What a peer can do in a loop is one warning, then `debug`.** A call for a
+  method that does not exist, a frame that is no packet, a framed message
+  nobody negotiated and an event without a handler were each a `warn` for
+  every packet; a call without the session it needs and a `408` produced by
+  the caller's own `timeout` were an `error`, the second with a stack — so a
+  peer wrote the server's log at the speed it could send. The first of a
+  kind on a server is still a warning; for ten seconds after it the same
+  kind is written at `debug` (`call.unknown`, `packet.malformed`,
+  `packet.unknown`, `frame.refused`, the `rpc.warn` of a dropped event, the
+  `rpc.error` of those `403` and `408`). A procedure that outran its own
+  `timeout`, a session store that could not be asked and a handler that
+  threw are this side's and stay at `error`. An alert built on one of these
+  events fires on the first occurrence as before; one built on their rate
+  needs the `debug` level.
+- **The HSTS header of an HTTP answer covers the answering host, and is
+  yours to set** (`http.hsts`). Every HTTP response carried
+  `Strict-Transport-Security: max-age=31536000; includeSubdomains; preload`:
+  a commitment to HTTPS for every subdomain of the domain the API happens to
+  live on, and consent to a browser preload list that takes months to leave
+  — said by a library on its adopter's behalf. The default is now
+  `max-age=31536000`, for the host that answered. `http: { hsts: '…' }`
+  sends the value you choose — the old one included, if a domain-wide
+  preload is what you want — and `http: { hsts: false }` sends none (a proxy
+  in front that already adds it). A deployment that relied on the old header
+  for its preload submission has to set it explicitly.
+- **A cookie that comes twice is read as its first value.** `Cookie: token=A;
+  token=B` was read as `B` — and `B` is what a sibling subdomain puts there:
+  a cookie set for the parent domain (`Domain=.example.com`) is sent beside
+  the site's own, behind it, so a page on `evil.example.com` could have its
+  own session token read in place of the visitor's (cookie tossing, a
+  session fixation). The first value wins now, which is the site's own by
+  the order RFC 6265 gives a browser. Nothing changes for a request that
+  names each cookie once.
+- **A REST path a static segment starts and no route finishes is matched by
+  the parameter at that place.** The route tree committed to a segment's own
+  name: with `GET /users/me/settings` and `GET /users/:id` declared,
+  `GET /users/me` walked into `me`, found no route ending there and answered
+  "no such path" — so the request fell through to the conventional
+  `/:unit/:method` mode and ran the procedure `users/me` if the router had
+  one, a different procedure from the one the path was declared for, or was
+  a `404` for a path `:id` covers. The walk now goes back to the parameter,
+  as find-my-way does (and so as the same routes behave under the fastify
+  adapter); a static segment still wins wherever a route ends under it. The
+  `405` for a path another verb declares is found the same way, where some
+  of those were a `404`. `bench/http-call.js`: a declared route costs what
+  it did.
+- **`connectTimeout` covers the hooks a connection waits on, not only the
+  handshake.** `headers()`, `meta()`, `authenticate` and `refresh` ran
+  outside it. One that never settled — a token read from a store that
+  hangs, a sign-in call with no deadline of its own — left `connect()`
+  pending for good; on a **reconnect** it left the cycle with nothing to
+  schedule the next attempt, which is what the timeout exists to prevent;
+  and a `refresh` that hung parked every later refused call behind it. Each
+  hook is now raced against `connectTimeout` (30 s by default) like the
+  handshake between them: `headers()`/`meta()` reject the open with `408`
+  and the backoff continues, `authenticate` takes the path of a hook that
+  failed (`authenticate-failed`, the connection closed, the next attempt
+  scheduled), `refresh` the path of a refresh that failed — the call gets
+  the refusal it received. A hook that legitimately takes longer (it waits
+  for a person) needs `connectTimeout` raised or turned off.
+- **`callTimeout` and a call's `timeout` must be numbers a timer can hold.**
+  `callTimeout: '300'` — what an environment variable gives — was added to
+  `Date.now()` as a string: a deadline a quadrillion milliseconds away, so
+  **no call ever timed out**, while a one-millisecond timer re-armed itself
+  about eight hundred times a second, each with a `TimeoutOverflowWarning`.
+  `Infinity` and anything from 2³¹ up did the same to the deadline
+  arithmetic. Both options now take a number from 1 to 2³¹ − 1 and throw a
+  `TypeError` for anything else; leaving `callTimeout` out, or passing
+  `0`/`false`/`null`, still means the default.
+- **In a browser, a compression format asked for alone and not available is
+  refused**, as it is on Node. The two halves of the platform codec had
+  drifted: `compression: { codec: 'zstd' }` (or `'brotli'`) on Node without
+  that format is a `TypeError`; in a browser whose `CompressionStream` lacks
+  it — most of them, today — the same option built a client that compressed
+  nothing and said nothing. It is a `TypeError` there too now. A format the
+  platform lacks is still skipped in a preference list
+  (`codec: ['zstd', 'deflate-raw']`), which is what a configuration shared
+  by Node and browsers wants, and `compression: true` on a platform with no
+  `CompressionStream` at all still means off until a codec is injected.
+- **Broker RPC: a refused frame is one warning per reason, then `debug`.**
+  A frame the binding did not take — unsealed where sealing is required, one
+  that does not open, a replay, a stale one — was a `broker.rpc.refused`
+  warning each, on the service and on the client, carrying the frame's own
+  `wrpc-kind` header as it came: 313 characters with a line break in it,
+  from an inbox anybody on the broker can write to. The first refusal of a
+  reason is still a warning; for ten seconds after it that reason is written
+  at `debug`. The `kind` in the line, and the address in `broker.rpc.reply`,
+  are bounded to 128 characters with their control characters replaced.
+- **`encryption.authorize` admits a connection only by answering `true`.** It
+  used to refuse only on `false`, so a hook that forgot its `return`, answered
+  `null` for "not found" or resolved `undefined` let every client in — the
+  opposite of what the client's own `verifyServer` does with the same answers.
+  Anything but `true` now closes the connection (1008, `encryption.refused`
+  with `reason: 'authorize'`). A hook that already returns a boolean is
+  unaffected; one that relied on "no answer means yes" has to return `true`.
+  The option's type is `boolean | Promise<boolean>`.
+- **A page reads a stream chunk about a quarter faster.** The browser half of
+  the chunk codec built a `TextDecoder` for every chunk it read (and a
+  `TextEncoder` for every one it wrote); it keeps one of each. Reading a chunk
+  back went from 4.1 M to 5.2 M ops/s (`bench/chunk-codec.js`); writing one
+  costs the copy of its payload and is unchanged.
+- **The broker adapters remember the token of a name.** A channel, topic,
+  queue or address is encoded into the broker's alphabet on every message
+  published or appended — a walk over the name's characters that costs 0.2 µs
+  for `orders` and 1.7 µs for `wrpc:rooms:tenant-42:chat/general`. The four
+  adapters keep the last 1,024 names (the memo starts over when it is full; a
+  name past 256 characters is encoded every time): a Redis log append over an
+  in-process server went from 446,000 to 1.6 M a second on the second name
+  (`bench/broker-token.js`). `encodeToken` itself is unchanged.
+- The main browser entry's budget is 31 KB (was 30) for what the client took
+  on above — hooks held to `connectTimeout`, checked timeouts, a timed-out
+  call cancelled on the server, the worker proxy routing a page's events and
+  batches — measured 30,984 B; the sse entry's is 32 KB (was 31) with it and
+  for the event parser that scans each chunk once (32,288 B); the webrtc
+  entry's is 62 KB (was 61) for those and the dispatcher's share a peer host
+  carries (63,308 B). The README and the docs say "under 31 KB" where they
+  said 30.
+- **Every subpath resolves straight to its entry under `src/`, its types
+  beside it.** The package root held a one-line `require()` shim and a
+  `.d.ts` for every subpath and browser half — 38 files and a `broker/`
+  folder; it now holds the main entry (`index.js`, `index.d.ts`) and `bin/`,
+  and `exports` points into `src/`: `./ws` at `src/websocket/ws.js` with
+  `src/websocket/ws.d.ts` beside it, `./sse` in a browser at
+  `src/sse/client.js`, `./broker/redis` at `src/broker/redis/index.js`.
+  An import through `exports` resolves the same module as before — Node,
+  webpack 5, Vite, esbuild, Rollup, Parcel and Bun all read it — and
+  TypeScript under `moduleResolution: node10` (the default for
+  `module: commonjs`), which never reads `exports`, finds a subpath's types
+  through the new `typesVersions`; a test resolves every subpath under
+  node10, node16 and bundler. What no longer resolves is a path to a root
+  file (`@alexify/wrpc/ws.js`), which `exports` refused already, and a
+  subpath through a resolver that ignores `exports` (webpack 4, browserify).
+
+### Fixed
+
+- **The WebSocket engine: frames waiting behind a deflate leave in constant
+  time each.** Under `contextTakeover` (for what the server sends) and under
+  `async`, every send issued while a compress is in flight waits behind it
+  in a queue that `maxBackpressure` bounds in bytes only — and it was an
+  array read with `shift()`. A burst of small messages to one connection — a
+  log replayed to a client, the answers to a pipelined run of calls — paid
+  for its own length: 8,000 messages of 40 bytes left at 27–38 µs each,
+  64,000 at 52–62, and 256,000 at 141–150, 34 seconds of CPU where the
+  first rate makes 7. The queue is a ring now (`src/deque.js`), created only
+  on a connection that negotiated one of the two modes: every burst size
+  sends at the same rate (`bench/ws-outbox.js`).
+- **A request whose session token could not be read leaves no client
+  behind.** An injected `sessions.transport` whose `read()` throws — on a
+  header it cannot parse — answered the request `500` and left its
+  server-side `Client` in `rpc.clients` for the life of the process: it was
+  registered before the token was read, and nothing listened for its close
+  yet. One per such request; they also counted into the cluster's presence
+  snapshot. The client is now unregistered and destroyed before the error
+  goes on to the caller.
+- **`delete session.state.key` is saved.** Assigning to `session.state`
+  reaches the session store; removing a key changed the object in memory and
+  nothing else — the proxy had no trap for it — so the session's next
+  connection, or the same one after a reconnect, had the key back from the
+  store. A removal is written like an assignment now, coalesced with the
+  rest of the turn.
+- **A SUBSCRIBE that Redis refuses is no longer taken for a subscription.**
+  `createRedisAdapter().subscribe()` logged the rejection of its `SUBSCRIBE`
+  and answered an unsubscribe function at once, whatever Redis had said — so
+  the retry `RoomsBackplane` and the cluster keep for exactly that never
+  ran: an ACL without the channel, or a subscriber connection in the wrong
+  state, left the instance deaf on every channel while `server.healthy`
+  answered `true`. `subscribe()` now answers the `SUBSCRIBE`'s own promise —
+  the unsubscribe function once Redis acknowledged it, a rejection when it
+  did not, with the handler of the failed attempt removed so that a retry
+  does not deliver twice. **Changed for a direct caller**: the answer is a
+  promise where it was a function (the backplane contract always allowed
+  both — `await` it). The retries themselves are jittered over their whole
+  window now, in `RoomsBackplane` and in the cluster, so the instances of a
+  fleet do not come back in step after an outage; and `RoomsBackplane.close()`
+  disarms a retry it had armed, which used to fire after shutdown and
+  subscribe on a backplane already closed.
+- **Cluster presence: a room named `__proto__` is counted, and a rooms
+  filter with the `g` flag answers the same twice.** A node's room table was
+  built on a plain object for the wire, where assigning the key `__proto__`
+  sets nothing: such a room had its members on the node that held them and
+  a `count()` of 0 everywhere else. `cluster: { rooms: /^chat:/g }` — or
+  `/y` — kept `lastIndex` between calls, so the same room answered `true`,
+  `false`, `true` and every second presence delta of it was dropped.
+- **`wrpcFastify` registers on a fastify that terminates TLS.** The plugin
+  chose its WebSocket engine by `server instanceof http.Server`, and an
+  `https.Server` is not one — it extends `tls.Server` — so
+  `fastify({ https: { key, cert } })` failed at registration with `could not
+  detect a WebSocket backend for this fastify instance`, as did
+  `fastify({ http2: true })`. The server is recognized by what it does (it
+  announces upgrades and listens), after the uWebSockets.js backend was
+  ruled out. Over HTTP/2 the HTTP side works as on any host; WebSocket
+  upgrades need `allowHTTP1`, HTTP/2 having none.
+- **A procedure named like an emitter method no longer breaks its unit's
+  events on the client.** A unit of `client.api` is one object — the
+  server's procedures by name, on the emitter its events arrive on — and the
+  client read `listenerCount` and `emit` off that object to deliver an
+  event. With a procedure named `listenerCount` in the unit, the answer was
+  a Promise, never greater than zero, and **every event of the unit became
+  `unhandled-event`**; with one named `emit`, no listener heard anything and
+  the client **called the server's `emit` procedure** with each event that
+  arrived. `defineRouter` accepts both names, as it should. The client now
+  uses the emitter's own methods, whatever the unit carries; the procedures
+  stay callable as they were. A method named `__proto__` in an introspection
+  (a hostile server, a mesh peer) is skipped instead of replacing the unit's
+  prototype.
+- **A call that times out on the client is cancelled on the server.** When
+  `callTimeout` (or a call's own `timeout`) expired, the caller got its
+  `408` and the server was told nothing: the handler ran on for a caller
+  that had left, its `context.signal` never fired, and the answer — when it
+  came — reached the client as a callback nobody waited for, an `'error'`
+  event (`Callback <id> not found`) for every call that had timed out. The
+  client now sends the `cancel` an aborted call sends, where the connection
+  can carry one, and what still comes back for that id is expected. The ids
+  it remembers that way are bounded (1,024), and an id in one of these error
+  messages — it is the server's text — is bounded and stripped of control
+  characters like a stream's name.
+- **Behind a worker, a page's events and its batched calls reach the
+  server.** `WrpcClientProxy` required an `id` of everything a page sent
+  that was not a ping — and an event has none, by protocol, and a batch
+  (the page's `batch: true`) is an array. Both were dropped at the proxy
+  with nothing said to anybody: `client.sendEvent()` from a page behind a
+  SharedWorker or a ServiceWorker never arrived, and every batched call
+  waited out its `callTimeout` and failed `408`. An event is forwarded now;
+  a batch goes up whole, each of its calls tracked to the page that sent
+  it, and a batch the proxy cannot forward answers each call with the coded
+  error at once. Where the answers to a batch come back in one frame (a
+  request/response uplink) each goes to its own page, where the frame used
+  to be broadcast to every page. A page on this release behind a worker
+  still running an older one keeps the old behaviour: update the worker.
+- **An `'error'` nobody listens for keeps what went wrong.** Emitting
+  `'error'` on a client, a stream or a transport with no listener threw
+  `Error('Unhandled error')` and dropped the error that was emitted — so a
+  sink that failed under `readable.pipe()`, say, surfaced as an unhandled
+  rejection whose message was those two words and nothing else. The error
+  thrown is the same; what was emitted is its `cause`.
+- **WebTransport: the streams a peer announces and never ends are
+  remembered up to a cap.** The stream multiplexer kept a record for every
+  binary stream announced on a session until that stream's end passed — and
+  the end is the peer's to send. The receiver refusing the announcement
+  under `maxStreams`, or sweeping the stream as idle, did not touch the
+  record: 200,000 announcements nobody ended held 36 MiB for the life of the
+  session, on either end. The multiplexer now remembers at most 4,096
+  streams in that state (sixteen times the receiver's default `maxStreams`);
+  an announcement past that is delivered as before, and a WebTransport
+  stream of its own opened for it is treated as one nobody named.
+- **WebRTC signaling: `limits.maxResolves` is one connection's ceiling, as
+  documented.** The room lookups in flight were counted for the whole
+  signaling unit: four by default, shared by everybody. One client that
+  kept signalling into four rooms whose peers had left held all four, and
+  every other client's signal to a peer held by another instance was
+  answered `503 too many lookups in flight` for as long as it went on. The
+  count is each connection's own now; the unit as a whole runs at most 256
+  lookups at once.
+- **WebRTC: a responder whose link failed no longer gives up within a
+  fraction of a second.** The side that cannot dial knocks for the other to
+  redial, and waits the connect timeout before it knocks again. That wait
+  was taken from the peer's `connectTimeout` option with a fallback of
+  **zero** — and a peer that sets none is every peer by default — so all
+  the knocks of the redial budget (five) went out inside one backoff step
+  and the link was abandoned about 400 ms after it failed, while the
+  initiator's own dial had thirty seconds to succeed. The wait is the
+  link's default connect timeout (30 s) unless the peer sets its own.
+- **Broker RPC: a frame that could not be sealed does not cost the
+  session.** Both ends of a session took a frame's sequence number, and its
+  place in the backpressure count, before building it — and building it
+  asks the key provider, which may be a network call. A provider that threw
+  once left a hole in the numbering: the frame was never sent, the next one
+  arrived with a gap in front of it and the peer ended the session for it;
+  and `write()` answered `false` from then on, with nothing in flight. A
+  frame is numbered, and counted, once it exists.
+- **Redis broker: an instance with tens of thousands of live topics keeps
+  its feeds.** The log tail read every topic with a live reader through one
+  blocking `XREAD`, each topic two arguments of it, spread into the call —
+  and past some sixty thousand topics the call itself threw a `RangeError`
+  (the engine's limit on arguments), was logged as `broker.redis.tail` and
+  tried again a second later, for good: every feed of the instance was dead.
+  One loop now reads at most 8,192 topics, on a connection of its own, and
+  a busier instance runs more loops. The stream a returned row belongs to
+  is found through a map, where it was a scan of every key for every row.
+- **Redis broker: a consumer still opening when `close()` runs leaves no
+  connection behind.** `queue.consume()` checked that the broker was open,
+  created its group — a round trip — and only then opened the connection
+  its blocking read sits on; a `close()` that ran in between had already
+  quit every connection the broker owned, so the new one stayed open, and a
+  process holding it never exited. A broker connection is now refused once
+  `close()` has run: the consumer rejects with the `503` of a closed broker,
+  and a log read starting the same way (it reads the stream's tip first) is
+  refused with it too.
+- **`wrpc.cluster.messages` is labelled with a closed set of envelope types.**
+  Its `wrpc.cluster.type` attribute was the `t` of whatever was published to
+  the cluster channel, so on a backplane without `cluster.secret` each made-up
+  type was a metric series of its own — 200 envelopes, 200 series. Anything
+  outside the ten types the cluster speaks is counted under `<unknown>`. The
+  telemetry guide now tables every metric and span attribute with its values
+  (ten keys were written and documented nowhere), and a guard keeps the guide
+  and the source the same list in both directions.
+- **`wrpc types` no longer fails on an introspection with more units than a
+  call takes arguments.** The interface's units were spread into one `push()`
+  — a `RangeError` past about 120,000 of them — like the event lists fixed
+  with it. Found by a new guard: every `.shift()` on a queue and every spread
+  into a call's arguments in `src/` is now listed with its bound in
+  `tests/package/consistency.test.js`, and a new one fails the suite.
+- **The eleventh upload at once no longer prints
+  `MaxListenersExceededWarning`.** Every `WrpcWritable` added a `'close'`
+  listener of its own to its transport, so a dozen `createStream()` uploads in
+  flight on one connection crossed Node's default of ten and the process
+  printed a leak warning that was not one. A transport now carries one
+  listener for all its writables, and drops it once none of them is waiting.
+
+### Security
+
+- **The WebSocket engine: frames behind an inflate that runs off the loop
+  are held at the mark like the inflating ones.** With
+  `perMessageDeflate: { async }` or `contextTakeover: 'client' | true`, a
+  message that is still inflating keeps the ones behind it in a queue, to
+  deliver them in order — and only a message that itself inflates was
+  counted against that queue's marks. A peer that sent one compressed frame
+  and plain ones behind it had every one of them queued: 300,000 frames of
+  two bytes, 2.5 MiB in one segment, held 70 MiB with the socket never
+  paused and were then taken from the head of an array, one `shift()` each —
+  **the event loop stood for 44 seconds**, before any call was
+  authenticated. A queued message now counts as its bytes and as one of the
+  32, the frame loop stops at the mark and the rest waits in the segment
+  queue under `maxBuffer`: the same segment is delivered in 55 ms with
+  0.6 MiB held. A close that finds the queue held also takes up what the
+  hold left unread, where the peer's own Close could wait for a `'data'`
+  event that never came. Neither option is on by default.
+- **A call or a subscription whose `meta` cannot be measured is answered,
+  and gives its slot back.** A per-call `meta` nested 20,000 levels deep is
+  a 40 KB packet that `JSON.parse` reads and `JSON.stringify` overflows the
+  stack on — and the size check serialized it after the call had taken its
+  slot of `maxCalls` and before anything that answers. Over HTTP **the
+  request was never answered**; on a socket the id stayed in flight for the
+  life of the connection, so `maxCalls` such packets left it answering `429`
+  to every call after them, and the same for `maxSubscriptions`. Such a bag
+  is now what one over `metaMaxBytes` has always been — dropped, the call
+  runs unlabelled — and whatever else throws between taking a slot and the
+  code that answers (the context, a tracer's attributes, the connection's
+  own gate for a subscription) releases the slot and answers `500`, or ends
+  the subscription with the error's code.
+- **A call's `timeout` is a delay a timer can hold, or it is no deadline.**
+  The packet field was taken as it parsed: `"timeout":1e400` is `Infinity`,
+  and anything from 2³¹ up overflows a timer the same way — node arms it for
+  one millisecond and prints a `TimeoutOverflowWarning` to stderr, so every
+  such call wrote a warning and was answered `408` a millisecond later, as
+  fast as a peer cared to send them. A value outside `0 < timeout < 2³¹` is
+  now no caller deadline at all (the procedure's own still applies).
+  `procedure({ timeout })` refuses the same range at definition with a
+  `TypeError` — `Infinity`, `NaN`, a string, a negative number — where it
+  used to give a procedure that never timed out, or timed out at once.
+- **A peer's text cannot end or split a log line.** The helper every
+  peer-supplied string passes on its way into a log line bounded it and did
+  nothing else, and several lines did not pass through it at all. A call
+  for the method `unit/x\n2026-11-16 ERROR admin logged in` was two lines of
+  a console log, the second written by the caller; an event name of 5,000
+  characters was logged whole. Control characters — line breaks, tabs, the
+  Unicode line separators — now become spaces in every such string, and the
+  lines that carried one raw go through the same helper: a subscription's
+  refusal and its end, an event with no handler or no session, a duplicate
+  call id, a subscription's failed `return()`.
+- **A mistyped `cors` option no longer leaves the origin gate open in
+  silence.** The allowlist is `cors.origins`, and a key nothing reads was
+  just that: `cors: { origin: 'https://app.example' }` — the spelling of the
+  `cors` package and of `@fastify/cors` — built a server with no allowlist,
+  and a WebSocket upgrade from any origin was answered `101`, cookies and
+  all. `cors.origin` is now a `TypeError` at construction that names
+  `origins`; any other key the option does not know is a `cors.option`
+  warning; `origins` that is not an origin, an array of them or a function
+  is a `TypeError`. And **`origins` given as one string is compared whole**:
+  it used to reach `String.prototype.includes`, a substring test, so
+  `origins: 'https://app.example.com'` admitted `https://app.example.co`.
+- **Fastify route mirroring: a caller cannot replace the headers the
+  application sets, nor leave the route it called.** A mirrored procedure
+  built its injected request from `{ ...mirror.headers(context),
+  ...args.headers }` — the caller's spread last. Any procedure argument
+  overrode the header the route trusts for identity (`mirror.headers`
+  returning `x-user-id` from the session; the caller sending `headers: {
+  'x-user-id': '1' }`), and any header at all — a forged `authorization`,
+  `x-forwarded-for` — reached a request that arrives from inside the process,
+  past whatever strips those at the edge. The application's headers now always
+  win, and of a caller's only the names listed in the new
+  `mirror.allowHeaders` pass (none by default; `cookie`, `host`,
+  `x-forwarded-*` and the rest of the handshake's deny list never). And a path
+  parameter of `..` — which the URL parser resolved, turning
+  `/admin/users/:id` into `/admin/`, **another route** — is answered `400`, as
+  are `.` and an empty value. **Changed** for a caller that passed
+  `args.headers` to a mirrored procedure: list the names it may send.
+- **The SSE client reads its event stream in linear time, and an event has
+  a size.** The parser appended every chunk to one string, scanned that
+  string again from its start for a line end, and cut the string — so a
+  line that did not end cost the square of its length: 250 KiB in 1 KiB
+  chunks took 0.1 s, 1 MiB 1.65 s, 2 MiB 6.4 s, all of it a page's main
+  thread, and nothing bounded what was kept. A server, or a proxy in front
+  of it that mangles the stream, could freeze the page with a few megabytes.
+  A chunk is scanned once now and an open line is kept as the pieces it
+  arrived in (2 MiB: 6 ms; 8 MiB: 15 ms). What one event may hold while it
+  is put together — its `data:` lines and the line still open — is
+  `maxMessage` characters (16 MiB by default, the client option the
+  WebTransport and broker transports already read, and a constructor option
+  of the exported `SseParser`); past it the stream is an error, its body is
+  cancelled and the connection reconnects.
+- **A client's `respond()` handler that throws does not send its internals
+  to whoever asked.** The answer to a failed ask carried the error's message
+  whatever its code — only `details` followed the server's rule — so a bug
+  in a responder told the asking side `Cannot read properties of null
+  (reading 'secretField')`; over a WebRTC mesh the asking side is another
+  peer. The message now follows the rule the server applies to a handler: a
+  4xx is written for the asker and travels, a 5xx is answered `Responder
+  failed` unless the error says `expose = true`.
+- **Brokers: the retry counter of a delivery cannot be set by whoever
+  produced the message.** An adapter counts a delivery's attempts in the
+  header `x-wrpc-attempt` (the brokers themselves do not), and the Redis,
+  RabbitMQ and Kafka adapters read it back as whatever number was there —
+  which on a first delivery is whatever the producer put there. With
+  `x-wrpc-attempt: -1000000` the counter never reached the retry limit and
+  the backoff was no time at all: **999,994 redeliveries of one message in
+  1.5 seconds**, on every consumer of the queue. With `99` a message was
+  dead-lettered on its first transient failure. The header is now read as a
+  positive integer or not at all, in all four adapters, and `queue.produce`
+  — of every adapter and of `MemoryBroker` — drops `x-wrpc-attempt`,
+  `x-wrpc-redelivered` and `x-wrpc-dead-reason` from what a producer
+  passes. A delivery always starts at attempt 1.
+- **Broker RPC: a sealed session cannot be talked back into plaintext.** A
+  client whose session opened sealed takes sealed frames only, whatever
+  `acceptPlaintext` says — that option exists for the rollout, not for a
+  session already under way. But the client honoured a `welcome` at any
+  time, before that check: a **plaintext** one sent mid-session — by anyone
+  who can write to the client's inbox, and the session id and the inbox are
+  outer fields any reader of the broker sees — reset the rule, and the
+  plaintext packets behind it were delivered to the application. Only the
+  welcome that answers the session's own hello is honoured now; a later one
+  is dropped, and a welcome with no inbox in it no longer leaves the
+  handshake waiting forever. Affects clients running `encryption: { keys,
+  acceptPlaintext: true }` on the `broker` transport.
+- **Broker RPC: a sealed request is answered where its sender said, not
+  where a re-sender says.** Sealing binds a frame to its address, kind,
+  correlation id and sequence number — and not to the address the answer
+  goes to, which is the carrier's own field, outside the seal. A sealed
+  request captured from the broker and sent again with another reply address
+  was answered **there**. A `request` and a `hello` now carry their reply
+  address inside the seal as well (`wrpc-reply`), and the service refuses a
+  frame that arrives with a different one (`broker.rpc.refused`, reason
+  `reply`). Additive on the wire: a 2.1 client writes none and is answered
+  where the carrier says, and a 2.1 service ignores the header. A carrier
+  that rewrites reply addresses itself (a NATS service import) needs
+  `attachBrokerRpc(..., { encryption: { reply: 'carrier' } })`. Re-running a
+  replayed request on ANOTHER instance of the service is still what a shared
+  `encryption.replay` memory is for.
+- **Session encryption: what a peer sends while this end's handshake is still
+  running is bounded.** A peer can be established before the other end is — a
+  client while the server still awaits its key provider or `authorize` hook, a
+  server while the client's `verifyServer` is asking — and its frames waited
+  behind the hook in a chain nothing counted: 2,000 frames of 64 KiB held 40
+  MiB on one connection until the handshake timeout. They are held up to 4,096
+  frames or 4 MiB now; past that the server closes the connection (`1008`,
+  `encryption.refused` with `reason: 'held'`) and the client fails its
+  `open()`. What a connection says when it opens is far inside the bound.
+- **`wrpc types` prints what the server said with its control characters
+  escaped, and bounds the exchange.** A warning or a failure quotes text from
+  the wire — a unit name, a type name, the message of a refusal — and it went
+  to the terminal as it was: an escape sequence could retitle or clear the
+  screen, and a line break could write a line the command never did (`wrpc
+  types: wrote api.d.ts`). Control characters are printed as `\u001b`-style
+  escapes now and one message is cut at 2,048 characters. The request has a
+  deadline over headers and body — `--timeout <ms>`, 30 seconds by default,
+  where a server that accepted and said nothing used to hold the command (and
+  its CI job) for as long as the socket lived — and an answer past 64 MiB is
+  refused. A unit that declares more events than a call takes arguments (about
+  120,000) no longer fails with `RangeError: Maximum call stack size
+  exceeded`.
+
 ## [2.1.0] - 2026-11-16
 
 ### Added

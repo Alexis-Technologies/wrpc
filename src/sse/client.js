@@ -24,40 +24,73 @@ const { CHANNEL_HEADER } = require('./constants.js');
 // Incremental SSE parser (WHATWG "event stream" rules): fields are
 // `field: value` lines, a blank line dispatches, `data:` lines accumulate
 // with newlines between them, and a leading colon is a comment.
+//
+// A chunk is scanned ONCE, where it arrives, and a line still open at its
+// end is kept as the pieces it came in — joined when the line ends. It used
+// to be `buffer += chunk`, the whole buffer scanned again from its start,
+// then `buffer = buffer.slice(…)`: a line that did not end cost the square
+// of its length — 250 KiB in 1 KiB chunks 0.1 s, 1 MiB 1.65 s, 2 MiB 6.4 s
+// of a page's main thread — and nothing bounded it. What an event may hold
+// while it is being put together is `maxMessage` characters now (16 MiB,
+// the default of the other carriers): past it the stream is an error.
+const MAX_MESSAGE = 16 * 1024 * 1024;
+
 class SseParser {
-  #buffer = '';
+  #pieces = [];
+  #open = 0;
+  #held = 0;
+  #cr = false;
+  #max;
   #data = [];
   #event = '';
   #id = null;
 
+  constructor({ maxMessage = MAX_MESSAGE } = {}) {
+    this.#max = maxMessage;
+  }
+
   /** Feeds a chunk and returns the events it completed. */
   push(chunk) {
-    this.#buffer += chunk;
     const events = [];
-    while (true) {
-      const end = this.#lineEnd();
-      if (end < 0) break;
-      const [line, next] = end;
-      const raw = this.#buffer.slice(0, line);
-      this.#buffer = this.#buffer.slice(next);
-      const event = this.#line(raw);
+    let start = 0;
+    // The chunk before ended on a \r, which ended its line there and then:
+    // a \n that opens this one is the second half of that \r\n.
+    if (this.#cr) {
+      this.#cr = false;
+      if (chunk.charCodeAt(0) === 10) start = 1;
+    }
+    for (let i = start; i < chunk.length; i++) {
+      const code = chunk.charCodeAt(i);
+      if (code !== 10 && code !== 13) continue;
+      const event = this.#line(this.#take(chunk, start, i));
       if (event) events.push(event);
+      if (code === 13) {
+        if (i + 1 === chunk.length) this.#cr = true;
+        else if (chunk.charCodeAt(i + 1) === 10) i++;
+      }
+      start = i + 1;
+    }
+    if (start < chunk.length) {
+      this.#pieces.push(start === 0 ? chunk : chunk.slice(start));
+      this.#open += chunk.length - start;
+      this.#bound();
     }
     return events;
   }
 
-  // Returns [lineLength, consumed] for the first complete line, honouring
-  // \n, \r and \r\n — and refusing to split a \r that might still be the
-  // first half of a \r\n in the next chunk.
-  #lineEnd() {
-    for (let i = 0; i < this.#buffer.length; i++) {
-      const char = this.#buffer[i];
-      if (char === '\n') return [i, i + 1];
-      if (char !== '\r') continue;
-      if (i + 1 === this.#buffer.length) return -1; // might be \r\n, wait
-      return [i, this.#buffer[i + 1] === '\n' ? i + 2 : i + 1];
-    }
-    return -1;
+  // The line that ends at `end` of this chunk: what earlier chunks left
+  // open, and this chunk's part of it.
+  #take(chunk, start, end) {
+    if (this.#open === 0) return chunk.slice(start, end);
+    this.#pieces.push(chunk.slice(start, end));
+    const line = this.#pieces.join('');
+    this.#pieces = [];
+    this.#open = 0;
+    return line;
+  }
+
+  #bound() {
+    if (this.#held + this.#open > this.#max) throw new Error('SSE event exceeds maxMessage');
   }
 
   #line(line) {
@@ -67,8 +100,11 @@ class SseParser {
     const field = colon < 0 ? line : line.slice(0, colon);
     let value = colon < 0 ? '' : line.slice(colon + 1);
     if (value.startsWith(' ')) value = value.slice(1);
-    if (field === 'data') this.#data.push(value);
-    else if (field === 'event') this.#event = value;
+    if (field === 'data') {
+      this.#data.push(value);
+      this.#held += value.length;
+      this.#bound();
+    } else if (field === 'event') this.#event = value;
     // Per the spec an id containing U+0000 is ignored. Written as an
     // escape on purpose: a literal NUL in a source file turns it into a
     // binary blob for grep and most editors.
@@ -84,6 +120,7 @@ class SseParser {
     }
     const event = { id: this.#id, event: this.#event || 'message', data: this.#data.join('\n') };
     this.#data = [];
+    this.#held = 0;
     this.#event = '';
     return event;
   }
@@ -123,12 +160,16 @@ class ClientSseTransport extends ClientTransport {
   // throws "Illegal invocation" in browsers when invoked with a receiver
   // other than the global object, which a plain method call would hand it.
   #fetch = null;
+  // What one event of the stream may hold while it is put together
+  // (`maxMessage`; the parser's own default when the option is not set).
+  #maxMessage = undefined;
 
   get eventsUrl() {
     return joinUrl(this.url, '/events');
   }
 
   async open(options = {}) {
+    if (options.maxMessage > 0) this.#maxMessage = options.maxMessage;
     this.#headers = options.headers ?? null;
     // A header BLOCK, not one encoded value: the client's metaFormat picks
     // the spelling, both legs below just spread the result.
@@ -158,7 +199,7 @@ class ClientSseTransport extends ClientTransport {
   async #open(retryOnGone) {
     const controller = new AbortController();
     this.#controller = controller;
-    this.#parser = new SseParser();
+    this.#parser = new SseParser({ maxMessage: this.#maxMessage });
     // Declared first, wire headers after: the protocol's own always win.
     const headers = { ...this.#headers, ...this.#meta, accept: 'text/event-stream' };
     // A reconnect presents the channel and where it stopped; the server
@@ -217,6 +258,11 @@ class ClientSseTransport extends ClientTransport {
           this.#receive(event);
         }
       }
+    } catch (error) {
+      // A stream that is an error is let go of: the server stops sending
+      // into a body nobody reads. Best effort — it may be gone already.
+      void reader.cancel().catch(() => {});
+      throw error;
     } finally {
       this.#down();
     }

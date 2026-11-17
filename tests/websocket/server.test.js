@@ -323,3 +323,111 @@ test('WebsocketServer: does not forward http server errors already handled elsew
 
   await new Promise((resolve) => httpServer.close(resolve));
 });
+
+// --- The turn budget ---------------------------------------------------------
+
+// The most messages one connection was handed between two turns of the loop,
+// for `count` frames written in one go.
+const busiestTurn = async (t, options, count) => {
+  const { wsServer, port } = await bootBound(t, options);
+  let turn = 0;
+  let stopped = false;
+  const tick = () => {
+    turn++;
+    if (!stopped) setImmediate(tick);
+  };
+  const perTurn = new Map();
+  let seen = 0;
+  wsServer.on('connection', (ws) => {
+    ws.on('message', () => {
+      seen++;
+      perTurn.set(turn, (perTurn.get(turn) ?? 0) + 1);
+    });
+  });
+  const frames = [];
+  for (let i = 0; i < count; i++) frames.push(maskedFrame(0x81, 'x'));
+  const socket = net.connect(port, '127.0.0.1');
+  socket.on('error', () => {});
+  t.after(() => socket.destroy());
+  const key = crypto.randomBytes(16).toString('base64');
+  socket.write(
+    `GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+      `Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${key}\r\n\r\n`,
+  );
+  await new Promise((resolve) => socket.once('data', resolve));
+  tick();
+  socket.write(Buffer.concat(frames));
+  await waitFor(() => seen === count, 'every frame is delivered');
+  stopped = true;
+  return Math.max(...perTurn.values());
+};
+
+test('WebsocketServer: one connection is handed a bounded number of messages a turn by default', async (t) => {
+  // 4,000 frames arrive in one read. They used to be dispatched in the turn
+  // that read them, whatever else was waiting on the loop.
+  const busiest = await busiestTurn(t, {}, 4000);
+  assert.ok(busiest <= 512, `${busiest} messages in one turn`);
+});
+
+test('WebsocketServer: turnBudget sets the marks, and false turns the budget off', async (t) => {
+  assert.ok((await busiestTurn(t, { turnBudget: { messages: 64 } }, 2000)) <= 64);
+  assert.ok((await busiestTurn(t, { turnBudget: false }, 4000)) > 512, 'no budget: one turn takes what it read');
+  assert.throws(() => new WebsocketServer({ logger: false, turnBudget: { messages: 0 } }), /turnBudget must be/);
+});
+
+// --- Refusals and heartbeat ends are said --------------------------------------
+
+const rawRequest = (port, head) =>
+  new Promise((resolve) => {
+    const socket = net.connect(port, '127.0.0.1', () => socket.write(head));
+    let answer = '';
+    socket.on('data', (chunk) => (answer += chunk));
+    socket.on('error', () => resolve(answer));
+    socket.on('close', () => resolve(answer.split('\r\n')[0]));
+  });
+
+test('WebsocketServer: an upgrade that is refused leaves a ws.refused line — warn for the gate, debug for the rest', async (t) => {
+  const log = recorder();
+  const { port } = await bootBound(t, {
+    logger: log.writer,
+    path: '/rpc',
+    verifyClient: ({ req }) => req.headers.origin !== 'https://evil.example',
+  });
+  const head = (path, extra) =>
+    `GET ${path} HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+    `Sec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\n${extra}\r\n`;
+  assert.match(await rawRequest(port, head('/nope', 'Sec-WebSocket-Version: 13\r\n')), / 404 /);
+  assert.match(await rawRequest(port, head('/rpc', 'Sec-WebSocket-Version: 8\r\n')), / 426 /);
+  const evil = 'Sec-WebSocket-Version: 13\r\nOrigin: https://evil.example\r\n';
+  assert.match(await rawRequest(port, head(`/rpc?${'x'.repeat(300)}`, evil)), / 403 /);
+  const lines = log.entries.filter((entry) => entry.event === 'ws.refused');
+  assert.deepStrictEqual(
+    lines.map((entry) => [entry.level, entry.status, entry.path]),
+    [
+      ['debug', 404, '/nope'],
+      ['debug', 426, '/rpc'],
+      ['warn', 403, '/rpc'],
+    ],
+  );
+  assert.strictEqual(lines[1].reason, 'Upgrade Required');
+});
+
+test('WebsocketServer: a connection the heartbeat gives up on leaves a ws.heartbeat line', async (t) => {
+  const log = recorder();
+  const { wsServer, port } = await bootBound(t, { logger: log.writer, pingInterval: 20 });
+  const closed = [];
+  wsServer.on('connection', (ws) => ws.on('close', () => closed.push(ws)));
+  // A peer that completes the handshake and then answers nothing.
+  const socket = net.connect(port, '127.0.0.1');
+  socket.on('error', () => {});
+  t.after(() => socket.destroy());
+  socket.write(
+    `GET / HTTP/1.1\r\nHost: 127.0.0.1\r\nUpgrade: websocket\r\nConnection: Upgrade\r\n` +
+      `Sec-WebSocket-Version: 13\r\nSec-WebSocket-Key: ${crypto.randomBytes(16).toString('base64')}\r\n\r\n`,
+  );
+  await waitFor(() => closed.length === 1, 'the silent peer is terminated');
+  const line = log.find('ws.heartbeat');
+  assert.ok(line, 'and that is said');
+  assert.strictEqual(line.level, 'debug');
+  assert.strictEqual(typeof line.peer, 'string');
+});

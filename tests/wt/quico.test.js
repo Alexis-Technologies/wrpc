@@ -7,7 +7,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { Duplex, Writable } = require('node:stream');
 
-const { fromQuico, isWtSession } = require('../../wt.js');
+const { fromQuico, isWtSession } = require('../../src/webtransport/index.js');
 
 const fakeQuico = () => {
   const listeners = {};

@@ -13,7 +13,7 @@
  *
  * The first rows are that array, filled to N and taken from the head, in
  * messages per second: it falls off a cliff. The rest are the broker itself
- * over a ring (`Deque` in src/broker/memory.js) — a backlog produced with
+ * over a ring (`Deque` in src/deque.js) — a backlog produced with
  * nobody listening, then consumed by one consumer that acks each delivery,
  * and the same with every delivery released once first, which is the write
  * at the head. Over the array those rows read, in one run on the machine

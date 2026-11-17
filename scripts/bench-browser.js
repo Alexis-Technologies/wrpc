@@ -37,7 +37,7 @@ const bundle = async (stdin) => {
   const result = await esbuild.build({
     ...(stdin
       ? { stdin: { contents: stdin, resolveDir: ROOT, sourcefile: 'bench-entry.js' } }
-      : { entryPoints: [path.join(ROOT, 'browser.js')] }),
+      : { entryPoints: [path.join(ROOT, 'src', 'index.browser.js')] }),
     bundle: true,
     platform: 'browser',
     conditions: ['browser'],
@@ -84,7 +84,7 @@ const transports = async () => {
   // One bundle, so the WebRTC barrel registers its transport into the same
   // WrpcClient the page connects with.
   const library = await bundle(
-    "module.exports = { ...require('./browser.js'), webrtc: require('./webrtc.browser.js') };",
+    "module.exports = { ...require('./src/index.browser.js'), webrtc: require('./src/webrtc/browser.js') };",
   );
   const page = fs.readFileSync(path.join(HERE, 'bench', 'browser', 'transports.js'), 'utf8');
 

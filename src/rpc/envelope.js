@@ -37,6 +37,7 @@ const {
 } = require('../compression/sync.js');
 const { normalizeEnvelopeEncryption, createEnvelopeSealer } = require('../encryption/envelope.js');
 const { isKid } = require('../encryption/keyring.js');
+const { lineLevels, LOUD_INTERVAL } = require('./errors.js');
 const { encodeAttachments, decodeAttachments, ENVELOPE_DEPTH } = require('../attachments.js');
 
 const SEALED_PREFIX = 'wrpc-sealed:';
@@ -94,19 +95,10 @@ const withBytes = (inner) => ({
 // between: whoever can publish one envelope can publish it in a loop, and a
 // line per message made the log the thing that fell over. Capped, as the
 // channels are many.
-const REFUSAL_INTERVAL = 10_000;
 const MAX_REFUSAL_KEYS = 1024;
 
 const createEnvelope = ({ compression, encryption, maxMessage, name, layer, event, log, failed = null }) => {
-  const said = new Map();
-  const level = (key) => {
-    const now = Date.now();
-    const last = said.get(key);
-    if (last !== undefined && now - last < REFUSAL_INTERVAL) return 'debug';
-    if (last === undefined && said.size >= MAX_REFUSAL_KEYS) said.clear();
-    said.set(key, now);
-    return 'warn';
-  };
+  const level = lineLevels(LOUD_INTERVAL, MAX_REFUSAL_KEYS);
   const sealing = normalizeEnvelopeEncryption(encryption, name);
   if (sealing === null) return withBytes(createEnvelopeCodec(compression, name, maxMessage, failed));
   const codecs = normalizeSyncCompression(compression, name);

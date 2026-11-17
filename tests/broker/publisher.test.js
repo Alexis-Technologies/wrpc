@@ -16,7 +16,7 @@ const {
 
 const { RpcServer } = require('../../src/rpc/core.js');
 const { defineRouter, procedure } = require('../../index.js');
-const { MemoryBroker, createPublisher, attachConsumers, brokerFeed } = require('../../broker.js');
+const { MemoryBroker, createPublisher, attachConsumers, brokerFeed } = require('../../src/broker/index.js');
 const { SCOPE_NAME } = require('../../src/telemetry/index.js');
 const { quiet, waitFor, collect } = require('./support.js');
 const { bootServer, connectClient } = require('../helpers/server.js');

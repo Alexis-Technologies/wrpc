@@ -1,10 +1,11 @@
 'use strict';
 
 // The browser types condition has one job: a browser TS project WITHOUT
-// @types/node must compile against browser.d.ts / sse.browser.d.ts, and a
-// server name imported there must be a compile error instead of an
-// `undefined` at runtime. tsd cannot check the first half (its run always
-// has node types available), so this test drives the repo's own tsc with
+// @types/node must compile against src/index.browser.d.ts and
+// src/sse/client.d.ts, and a server name imported there must be a compile
+// error instead of an `undefined` at runtime. tsd cannot check the first
+// half (its run always has node types available), so this test drives the
+// repo's own tsc with
 // `types: []` over a fixture that uses the browser surface — and expects
 // exactly the server-name errors the fixture marks.
 
@@ -39,10 +40,10 @@ import {
   createEventStream,
   chunkEncode,
   chunkDecode,
-} from '${ROOT}/browser.js';
-import { ClientSseTransport, SseParser, CHANNEL_HEADER } from '${ROOT}/sse.browser.js';
-import { WrpcPeer, wrpcSignaler, createW3cAdapter, defineRouter, procedure } from '${ROOT}/webrtc.browser.js';
-import { createSealer, createOpener, createIdentity, aead } from '${ROOT}/encryption.browser.js';
+} from '${ROOT}/src/index.browser.js';
+import { ClientSseTransport, SseParser, CHANNEL_HEADER } from '${ROOT}/src/sse/client.js';
+import { WrpcPeer, wrpcSignaler, createW3cAdapter, defineRouter, procedure } from '${ROOT}/src/webrtc/browser.js';
+import { createSealer, createOpener, createIdentity, aead } from '${ROOT}/src/encryption/browser.js';
 
 interface Api {
   chat: { send: (args: { text: string }) => Promise<{ ok: boolean }> };
@@ -83,11 +84,11 @@ void main;
 // The server surface must NOT exist here: each of these is the compile
 // error that replaces an \`undefined\` at runtime in a browser bundle.
 // @ts-expect-error Server is not part of the browser types
-import { Server } from '${ROOT}/browser.js';
+import { Server } from '${ROOT}/src/index.browser.js';
 // @ts-expect-error the channel registry is server machinery
-import { SseChannels } from '${ROOT}/sse.browser.js';
+import { SseChannels } from '${ROOT}/src/sse/client.js';
 // @ts-expect-error the signaling unit is server machinery
-import { createSignalingUnit } from '${ROOT}/webrtc.browser.js';
+import { createSignalingUnit } from '${ROOT}/src/webrtc/browser.js';
 void Server;
 void SseChannels;
 void createSignalingUnit;
@@ -109,7 +110,7 @@ const TSCONFIG = {
   include: ['./browser-types.fixture.ts'],
 };
 
-test('browser.d.ts compiles without @types/node and hides the server surface', async (t) => {
+test('the browser d.ts compiles without @types/node and hides the server surface', async (t) => {
   if (!existsSync(TSC)) return void t.skip('typescript is not installed');
   const dir = await mkdtemp(path.join(tmpdir(), 'wrpc-browser-types-'));
   await writeFile(path.join(dir, 'browser-types.fixture.ts'), FIXTURE);

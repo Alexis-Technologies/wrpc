@@ -6,7 +6,7 @@ const zlib = require('node:zlib');
 
 const { RpcServer } = require('../../src/rpc/core.js');
 const { defineRouter, procedure, WrpcClient, tracked } = require('../../index.js');
-const { MemoryBroker, attachBrokerRpc } = require('../../broker.js');
+const { MemoryBroker, attachBrokerRpc } = require('../../src/broker/index.js');
 const { HEADER_ENC, HEADER_KIND, KIND } = require('../../src/broker/rpc/frames.js');
 const { quiet, waitFor } = require('./support.js');
 

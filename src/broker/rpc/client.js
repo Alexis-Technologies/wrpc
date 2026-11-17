@@ -20,6 +20,8 @@ const { WrpcClient, ClientTransport } = require('../../client/core.js');
 const { generateUUID } = require('../../runtime/node.js');
 const { capabilityOf } = require('../port.js');
 const { toBytes } = require('../ids.js');
+const { refusalLevels } = require('../adapter.js');
+const { clip } = require('../../rpc/errors.js');
 const {
   HEADER_KIND,
   HEADER_INBOX,
@@ -72,6 +74,7 @@ class ClientBrokerTransport extends ClientTransport {
   #expectSeq = 1;
   #unconfirmed = 0;
   #welcome = null;
+  #levelOf = refusalLevels();
   #generation = 0;
   // Per-message compression: the option, and what the server agreed to on
   // welcome (a session) — stateless answers are decided per request.
@@ -164,6 +167,8 @@ class ClientBrokerTransport extends ClientTransport {
         ? { ...this.#headers, [HEADER_KIND]: KIND.HELLO, [HEADER_VERSION]: '2' }
         : { ...this.#headers, [HEADER_KIND]: KIND.HELLO },
       '',
+      Date.now,
+      this.#inbox,
     );
     await this.#direct.send(this.#address, hello.body, {
       headers: hello.headers,
@@ -182,7 +187,7 @@ class ClientBrokerTransport extends ClientTransport {
     const message = openFrame(this.#sealing, this.#inbox, raw);
     // A frame that does not open is not the service's: dropped, and said so.
     if (message.refused !== undefined) {
-      return void this.log?.warn({ event: 'broker.rpc.refused', reason: message.refused });
+      return void this.#refused(message.refused);
     }
     const kind = message.headers?.[HEADER_KIND];
     if (this.mode === 'stateless') {
@@ -194,17 +199,26 @@ class ClientBrokerTransport extends ClientTransport {
     }
     if (message.correlationId !== this.#session) return;
     if (kind === KIND.WELCOME) {
-      const remote = message.headers?.[HEADER_INBOX];
+      // The ONE welcome a session has: the answer to its hello, while the
+      // handshake waits for it. This branch sits above the downgrade check
+      // and used to run for any welcome at any time — so a PLAINTEXT one,
+      // sent mid-session by whoever can write to the inbox (the session id
+      // and the inbox are outer fields, for anyone who reads the broker),
+      // reset `#sealedSession` under a client that still accepts plaintext
+      // for a rollout, and the plaintext packets behind it were delivered
+      // to the application. A welcome nobody waits for is dropped, and one
+      // without an inbox does not use the handshake up.
       const pending = this.#welcome;
+      const remote = message.headers?.[HEADER_INBOX];
+      if (pending === null || typeof remote !== 'string' || remote.length === 0) return;
       this.#welcome = null;
       this.#active = headerNegotiator(this.#compression)(message.headers?.[HEADER_ENC]);
       this.#sealedSession = message.sealed === true;
       this.revision = this.#frames && message.headers?.[HEADER_VERSION] === '2' ? 2 : 1;
-      if (pending && typeof remote === 'string' && remote.length > 0) pending.resolve(remote);
-      return;
+      return void pending.resolve(remote);
     }
     if (this.#sealedSession && message.sealed !== true) {
-      return void this.log?.warn({ event: 'broker.rpc.refused', reason: 'downgrade', kind });
+      return void this.#refused('downgrade', kind);
     }
     if (kind === KIND.BYE) {
       return void this.#lost(new Error(`Session ended: ${message.headers?.['wrpc-reason'] ?? 'bye'}`));
@@ -221,6 +235,14 @@ class ClientBrokerTransport extends ClientTransport {
     else this.emit('message', packetBody(body));
   }
 
+  // A frame that was not taken, said at the level its reason has earned
+  // (refusalLevels): anybody on the broker can write to this inbox.
+  #refused(reason, kind) {
+    const entry = { event: 'broker.rpc.refused', reason };
+    if (kind !== undefined) entry.kind = clip(kind);
+    this.log?.[this.#levelOf(reason)]?.(entry);
+  }
+
   /** The codec ids in effect on the session — `{ encode, decode }` — or null. */
   get compression() {
     const active = this.#active;
@@ -229,6 +251,7 @@ class ClientBrokerTransport extends ClientTransport {
 
   #escalate(error) {
     if (this.listenerCount('error') === 0) return;
+    // A listener that throws from 'error' has nowhere further to be reported.
     void this.emit('error', error).catch(() => {});
   }
 
@@ -255,6 +278,8 @@ class ClientBrokerTransport extends ClientTransport {
     const headers =
       reason === null ? { [HEADER_KIND]: KIND.BYE } : { [HEADER_KIND]: KIND.BYE, [HEADER_REASON]: reason };
     const bye = sealFrame(this.#sealing, this.#remote, this.#session, headers, '');
+    // A goodbye is a courtesy: a server it does not reach ends the session on
+    // its own idle timer.
     this.#direct.send(this.#remote, bye.body, { headers: bye.headers, correlationId: this.#session }).catch(() => {});
   }
 
@@ -262,16 +287,21 @@ class ClientBrokerTransport extends ClientTransport {
     const stop = this.#stopInbox;
     this.#stopInbox = null;
     this.#remote = null;
+    // Closing: an inbox the broker already dropped needs no stopping.
     if (stop) await stop().catch(() => {});
   }
 
   write(data, options = null) {
     if (!this.active) throw new Error('Not connected');
     if (this.mode === 'stateless') return this.#request(data);
-    const seq = ++this.#seq;
-    this.#unconfirmed++;
+    // Numbered once it exists: a frame that could not be built (a key
+    // provider that threw) takes no sequence number and no place in the
+    // backpressure count — see BrokerSessionTransport#send.
+    const seq = this.#seq + 1;
     const generation = this.#generation;
     const frame = sessionFrame(this.#sealing, this.#remote, this.#session, seq, data, this.#active, options);
+    this.#seq = seq;
+    this.#unconfirmed++;
     this.#direct
       .send(this.#remote, frame.body, {
         headers: frame.headers,
@@ -301,6 +331,8 @@ class ClientBrokerTransport extends ClientTransport {
       correlationId,
       { ...this.#headers, [HEADER_KIND]: KIND.REQUEST },
       data,
+      Date.now,
+      this.#inbox,
     );
     this.#direct
       .send(this.#address, request.body, {

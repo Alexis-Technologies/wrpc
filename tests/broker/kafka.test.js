@@ -9,8 +9,8 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
-const { createKafkaBroker, encodeVector, decodeVector } = require('../../broker/kafka.js');
-const { isBroker, isBrokerDirect } = require('../../broker.js');
+const { createKafkaBroker, encodeVector, decodeVector } = require('../../src/broker/kafka/index.js');
+const { isBroker, isBrokerDirect } = require('../../src/broker/index.js');
 const { createFakeKafka } = require('./fakeKafka.js');
 const { runBackplaneContract } = require('./backplaneContract.js');
 const { runLogContract } = require('./logContract.js');
@@ -128,7 +128,7 @@ test('kafka broker: no direct capability — and it says so', async (t) => {
   assert.strictEqual(isBroker(broker), true);
   assert.strictEqual(broker.direct, undefined);
   assert.strictEqual(isBrokerDirect(broker.direct), false);
-  const { attachBrokerRpc } = require('../../broker.js');
+  const { attachBrokerRpc } = require('../../src/broker/index.js');
   await assert.rejects(attachBrokerRpc({ rpc: null }, broker, { service: 'x' }), /Server or an RpcServer/);
 });
 

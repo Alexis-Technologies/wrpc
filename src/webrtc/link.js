@@ -720,8 +720,17 @@ class RtcLink extends Emitter {
   #error(error, origin) {
     this.#log.error({ event: 'rtc.link.error', origin, err: error });
     if (this.listenerCount('error') === 0) return;
+    // Logged above; a listener that throws from 'error' goes no further.
     void this.emit('error', error).catch(() => {});
   }
 }
 
-module.exports = { RtcLink, normalizeChannels, DEFAULT_CHANNELS, MAX_CHANNEL_ID, STATES, CLOSE_REASONS };
+module.exports = {
+  RtcLink,
+  normalizeChannels,
+  DEFAULT_CHANNELS,
+  DEFAULT_CONNECT_TIMEOUT,
+  MAX_CHANNEL_ID,
+  STATES,
+  CLOSE_REASONS,
+};

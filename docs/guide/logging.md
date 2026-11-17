@@ -105,7 +105,7 @@ The first table is the request path and the engines; the ones after it are
 | `event` | Level | Means |
 | ------- | ----- | ----- |
 | `rpc.error` | error/debug | An error answer went out. `error` when nothing else said why — a handler that threw (`err` carries the stack), a stream or chunk that could not be taken; `debug` under every refusal that has its own line above, so one refusal is one alert |
-| `call.unknown` | warn | A call for a method this router does not have — a stale client, or a typo |
+| `call.unknown` | warn, then debug | A call for a method this router does not have — a stale client, or a typo. [The first is a warning](#what-a-peer-can-do-in-a-loop), the ones behind it debug |
 | `call.duplicate` | warn | Two in-flight calls with one id: a `generateId` that repeats, or a retry that reused one |
 | `call.capacity` | debug | `maxCalls` reached on one connection |
 | `stream.violation` | warn | A peer broke the stream protocol on this connection (`code` 400, `id`, `message`): a chunk for a stream it never announced, an `end` short of the size it promised, a chunk past it, a `stream` packet that is none. **Once per connection** — the first time; every such answer is also an `rpc.error` at debug, because a peer can do it in a loop |
@@ -113,19 +113,22 @@ The first table is the request path and the engines; the ones after it are
 | `stream.buffer` | debug | `maxStreamBuffer` reached on one connection (`max`): the stream whose chunk went past it failed, answered `413`. A peer sending into streams no handler reads — an upload that never had a reader, or one far ahead of the call that reads it |
 | `stream.cancelled` | debug | The peer ended a stream this end was sending to it (`id`, `code`): its reader let go of it (`499`), or it failed there. The writable closed with that reason |
 | `call.draining` | info | Refused because the server is shutting down |
-| `packet.malformed` | warn | A frame that would not parse — one line per frame, whatever it was |
-| `packet.unknown` | warn | Valid JSON that is not a packet — version skew, or somebody else's client |
+| `packet.malformed` | warn, then debug | A frame that would not parse — one line per frame, whatever it was; [the first is a warning](#what-a-peer-can-do-in-a-loop) |
+| `packet.unknown` | warn, then debug | Valid JSON that is not a packet — version skew, or somebody else's client; [the first is a warning](#what-a-peer-can-do-in-a-loop) |
 | `revision.peer` | debug | A connection settled on [revision 1](../reference/protocol#versioning) — a 1.0 peer, or one that reads no frames (`transport`; on a WebSocket the selected `protocol`, on a worker port the revision the page `named`). Per connection, so debug: the count is `wrpc.server.connections` by `wrpc.revision` |
 | `revision.mismatch` | warn, then debug | A WebSocket engine composed by hand selected `wrpc.v2` (`protocol`) for a server that sends and reads no framed messages (`attachments: false`, a packet codec): the client will send a frame this server refuses. The built-in shells narrow their engine to `wrpc.v1` themselves — pass `protocols: ['wrpc.v1']` to yours. A warn for the first connection, debug for every one after it |
 | `batch.refused` | debug | A batch outside `1..maxBatch` |
 | `subscribe.refused` | warn | A subscription refused before it started (`code`; the peer's `id`, clipped to 128 characters) |
 | `ws.frame`, `ws.protocol`, `ws.invalid-utf8` | warn | A peer's frame violated the protocol; the connection was closed |
 | `ws.upgrade` | error | The node engine's upgrade handling threw (`err`) — a `verifyClient`, `handleProtocols` or deflate `filter` of the application, or a `'connection'` listener; the socket was answered `500`. Emitted as `'error'` on the `WebsocketServer` too, when something listens |
+| `cors.option` | warn | `options.cors` holds a `key` nothing reads (the allowlist is `origins`; a `cors.origin` key is a `TypeError`) — at construction, so a mistyped option does not leave the origin gate open in silence |
+| `ws.refused` | warn, debug | A WebSocket upgrade that was not accepted (`status`, the request `path` clipped to 128 characters; on the node engine the `reason` it was answered with). **warn** for `403` — the `verifyClient` gate, which under the shells is the [origin allowlist](./security#origin-on-the-upgrade); **debug** for the rest (a wrong path, a handshake no WebSocket client sends) |
+| `ws.heartbeat` | debug | The node engine terminated a connection that did not answer its protocol ping within `pingInterval` (`peer`) — the one end of a connection the peer's own Close never explains |
 | `ws.too-big`, `ws.overflow`, `ws.backpressure` | warn | A configured limit closed the connection — the entry names the limit |
 | `ws.inflate`, `ws.deflate` | warn | permessage-deflate failed on the way in (or the inflated message was too big), or on the way out; the connection was closed |
 | `ws.close.dropped` | warn | A graceful `close()` waited `closeTimeout` for messages still queued behind a compress in flight (context takeover, `async`) and gave up: `frames` and `bytes` never left, the Close frame did |
 | `compression.failed` | warn | A per-message or HTTP/SSE codec threw (`carrier`: `http`, `sse`, `wt`, `rooms`, `cluster`, `broker`; `direction`: `encode` — the message left plain — or `decode` — the frame was refused; `codec`, `code`, `err`). **Once** per carrier, direction and codec for the life of the server; every failure is counted in `wrpc.compression.failures` |
-| `frame.refused` | warn | A framed message from a socket peer that was not taken: a kind nobody negotiated (`kind`, `negotiated`), or one that did not inflate (`reason: 'inflate'`, the `codec`, and the `code` — `ERR_BUFFER_TOO_LARGE` is `maxMessage`, anything else the bytes). Answered with an id-less `400`; the connection lives |
+| `frame.refused` | warn, then debug | A framed message from a socket peer that was not taken ([the first is a warning](#what-a-peer-can-do-in-a-loop)): a kind nobody negotiated (`kind`, `negotiated`), or one that did not inflate (`reason: 'inflate'`, the `codec`, and the `code` — `ERR_BUFFER_TOO_LARGE` is `maxMessage`, anything else the bytes). Answered with an id-less `400`; the connection lives |
 | `socket.error` | debug | The engine socket under a client raised `error`; the connection is closed. The engine's own line (`ws.*`, `uws.dropped`) already said what happened |
 | `uws.dropped` | error | uWebSockets.js discarded an outbound frame: a hole in the stream |
 | `session.destroy`, `session.save`, `session.touch` | error | The session store rejected an operation |
@@ -140,7 +143,7 @@ The first table is the request path and the engines; the ones after it are
 | `cluster.replay` | warn, then debug | A correctly signed envelope refused all the same (`from`, `channel`, `reason`): `seq` — a counter already accepted, `channel` — signed for another channel, `stale` — outside `maxSkew` (with the `skew` in ms), or a previous life of a restarted sender, `unsequenced` — no counter at all, a 1.x node (`replay: 'accept'` during the upgrade). One warn per sender and reason each `presenceTimeout`, debug in between |
 | `cluster.unsequenced` | info, then debug | An envelope with no counter — a 1.x node's — accepted under `cluster: { replay: 'accept' }` (`from`): once per sender each `presenceTimeout`. When no line has come for a while, every node is 2.x and the option can go |
 | `cluster.bytes` | warn | Bytes in what a `Cluster` constructed by hand — without the envelope an `RpcServer` injects — was asked to send to another instance (`type`, `name`): nothing left, rather than the object JSON makes of bytes. Never logged by a server's own cluster, which carries them as a binary envelope |
-| `encryption.refused` | warn/error | A session handshake or a sealed request refused — ONE line, with `kind` (`ws`, `wt`, `http`), `reason` and, on a socket, the `peer`. A peer's doing is warn: `plaintext`, `handshake`, `protocol` (with the name when it is shaped like one, else `nameLength`), `kid` (the kid when it is one, else `kidLength`), `authorize`, `timeout`, `queue`, `crypto`; on http `format`, `open`, `stale`, `replay`. This side's failure is error, with `err`: `keys` (the key provider threw), `hook` (`authorize` threw), `replay-store` |
+| `encryption.refused` | warn/error | A session handshake or a sealed request refused — ONE line, with `kind` (`ws`, `wt`, `http`), `reason` and, on a socket, the `peer`. A peer's doing is warn: `plaintext`, `handshake`, `protocol` (with the name when it is shaped like one, else `nameLength`), `kid` (the kid when it is one, else `kidLength`), `authorize`, `timeout`, `queue`, `held` (more than 4,096 frames or 4 MiB sent while the handshake was still running), `crypto`; on http `format`, `open`, `stale`, `replay`. This side's failure is error, with `err`: `keys` (the key provider threw), `hook` (`authorize` threw), `replay-store` |
 | `encryption.established` | debug | A session handshake completed (`protocol`, `kind`, `peer`) |
 | `encryption.replay`, `encryption.unwrap` | error | The shared replay store could not be asked (the request was refused `503`); a primitive threw while unwrapping a sealed request (`500`) |
 | `encryption.ambient-session` | warn | The server has `encryption` and the cookie session transport: a cookie stays on the outer request, readable by the terminator the encryption keeps out — use `bearerTransport()`/`payloadTransport()`. Once, at construction |
@@ -158,7 +161,7 @@ The first table is the request path and the engines; the ones after it are
 | `broker.kafka.crash` | error | A kafkajs consumer's fetch loop died (`restart` says whether it rejoins by itself); the binding is unhealthy until it rejoins |
 | `broker.kafka.join-timeout` | info | A queue consumer got no partition within the join window — more instances than partitions, most likely; it stays healthy |
 | `broker.amqp.connection` | error | The injected RabbitMQ connection closed: every binding on this broker is unhealthy and stays so — open a new connection and a new broker on it |
-| `broker.rpc.refused` | warn | A sealed RPC frame that did not open (`reason`: `unsealed`, `kid`, `open`, `format`, `replay`), one older than `maxSkew` (`stale`), or a plaintext frame on a session a sealed hello opened (`downgrade`) — dropped, never answered |
+| `broker.rpc.refused` | warn, then debug | A sealed RPC frame that did not open (`reason`: `unsealed`, `kid`, `open`, `format`, `replay`), one older than `maxSkew` (`stale`), a plaintext frame on a session a sealed hello opened (`downgrade`), or a sealed `request`/`hello` that arrived with a reply address other than the one it sealed (`reply`) — dropped, never answered. The first of each `reason` is a warning, the rest of them debug |
 | `broker.rpc.replay` | error | The shared replay memory could not be asked; the frame was not served |
 | `broker.rpc.session.end` | warn/info/debug | A broker RPC session ended (`session` is a fingerprint, `reason`): `warn` when the broker lost or mangled a frame — `sequence gap: expected N, got M` seen here, `the client saw a gap` when the frame was lost on this side's way out and the client's goodbye said so, `undecodable frame` — `info` for `idle`, `debug` for a routine `bye`, `replaced`, `send failed` or `server closing`. The same ends are counted, by a closed set of reasons, in `wrpc.broker.rpc.session.ends` |
 | `broker.rpc.session.unknown` | debug | A frame for a session this instance does not hold (it restarted, or the session idled out); the client was told to reconnect. Debug: any participant can send these in a loop |
@@ -351,7 +354,25 @@ The `rpc.error` line that follows a refusal — the answer going out — is
 level chosen for it, and a second one at `error` would have put every 429
 back on the pager. And the strings a peer chose — a method, a packet id, a
 packet type — are clipped to 128 characters before they become a field, so
-a log line is never as long as `maxPayload` allows a packet to be.
+a log line is never as long as `maxPayload` allows a packet to be, and their
+control characters become spaces, so a line break in a method name cannot
+start a line of its own.
+
+### What a peer can do in a loop {#what-a-peer-can-do-in-a-loop}
+
+A method that does not exist, a frame that is no packet, a call without the
+session it needs, an event nobody handles, a deadline of the caller's own
+choosing that passed: each is a line an operator wants to see **once** — it is
+what a stale client, a typo and a scanner all start with — and none is a line
+to write at the speed a peer can send packets. The first of a kind on a server
+is a `warn`; for ten seconds after it the same kind is said at `debug`. That
+covers `call.unknown`, `packet.malformed`, `packet.unknown`, `frame.refused`,
+the `rpc.warn` of an event that was dropped, and the `rpc.error` of a `403`
+and of a `408` the caller's own `timeout` produced. It is per server and not
+per connection, because on HTTP every request is a connection of its own. A
+`408` from a procedure's own `timeout`, a `503` from a session store that
+could not be asked and a handler that threw stay at `error`: those are this
+side's, and each one is worth its line.
 
 ## What is deliberately not logged
 

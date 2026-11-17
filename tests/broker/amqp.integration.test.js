@@ -9,7 +9,7 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const { createAmqpBroker } = require('../../broker/amqp.js');
+const { createAmqpBroker } = require('../../src/broker/amqp/index.js');
 const { runBackplaneContract } = require('./backplaneContract.js');
 const { runLogContract } = require('./logContract.js');
 const { runQueueContract } = require('./queueContract.js');

@@ -5,8 +5,8 @@ const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
 const { defineRouter, procedure } = require('../../index.js');
-const { MemoryBackplane } = require('../../scaling.js');
-const { generateKey } = require('../../encryption.js');
+const { MemoryBackplane } = require('../../src/scaling/index.js');
+const { generateKey } = require('../../src/encryption/index.js');
 const { createEnvelope, BINARY_PREFIX } = require('../../src/rpc/envelope.js');
 const { RoomsBackplane } = require('../../src/rpc/rooms.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');

@@ -1,5 +1,5 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as ws from '../ws.js';
+import * as ws from '../src/websocket/ws.js';
 import type {
   WebsocketServer,
   Connection,
@@ -8,7 +8,7 @@ import type {
   FrameHeader,
   ParseError,
   WebsocketServerOptions,
-} from '../ws.js';
+} from '../src/websocket/ws.js';
 
 expectType<typeof WebsocketServer>(ws.WebsocketServer);
 expectType<typeof Connection>(ws.Connection);
@@ -102,3 +102,8 @@ expectType<FrameHeader | null>(headerResult.value);
 expectType<ParseError | null>(headerResult.error);
 const parseResult = ws.FrameParser.parse(buffer, { allowedRsv: 0 });
 expectType<{ frame: Frame; bytesUsed: number } | null>(parseResult.value);
+
+// The turn budget: a boolean or its marks, on the server and on a connection.
+expectAssignable<WebsocketServerOptions>({ turnBudget: false });
+expectAssignable<WebsocketServerOptions>({ turnBudget: { messages: 256, bytes: 64 * 1024 } });
+expectError<WebsocketServerOptions>({ turnBudget: 512 });

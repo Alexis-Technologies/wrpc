@@ -1,9 +1,9 @@
 'use strict';
 
 // The machine-checked version of the release checklist's "check what would
-// ship" step. `files` is an explicit allowlist, so a new root shim or .d.ts
-// that was not added to it silently disappears from the tarball; an exports
-// entry whose file does not exist fails only at a consumer's first import.
+// ship" step. `files` is an explicit allowlist, so a root file that was not
+// added to it silently disappears from the tarball; an exports entry whose
+// file does not exist fails only at a consumer's first import.
 // This suite makes every one of those a red test instead.
 
 const path = require('node:path');
@@ -54,17 +54,43 @@ test('every subpath has a types condition wherever it has a runtime one', () => 
   }
 });
 
-test('every root shim requires a file that exists', () => {
+// A subpath resolves straight to its entry under src/, the d.ts beside it
+// (the layout of the sibling mailer): the root holds the main entry and
+// nothing else of the package — no shim of one line per subpath, no root
+// d.ts per subpath. bin/ is the CLI, not an entry.
+const ROOT_FILES = ['index.js', 'index.d.ts'];
+
+test('every subpath resolves into src/, and the root holds only the main entry', () => {
   for (const [key, value] of Object.entries(pkg.exports)) {
+    if (key === '.' || key === './package.json') continue;
     for (const target of exportTargets(value)) {
-      if (!target.endsWith('.js')) continue;
-      const source = require('node:fs').readFileSync(path.join(ROOT, target), 'utf8');
-      const match = source.match(/require\('([^']+)'\)/);
-      if (!match) continue; // not a shim
-      const required = path.join(ROOT, path.dirname(target), match[1]);
-      assert.ok(existsSync(required), `${key} shim ${target} requires missing ${match[1]}`);
+      assert.ok(target.startsWith('./src/'), `${key} -> ${target} is not an entry under src/`);
     }
   }
+  const named = pkg.files.filter((entry) => !entry.startsWith('!') && !entry.endsWith('/'));
+  const code = named.filter((entry) => /\.(?:js|ts)$/.test(entry));
+  assert.deepStrictEqual(code, ROOT_FILES, 'the files allowlist names no root code but the main entry');
+  const stray = require('node:fs')
+    .readdirSync(ROOT)
+    .filter((name) => /\.(?:c?js|d\.ts)$/.test(name) && !ROOT_FILES.includes(name));
+  assert.deepStrictEqual(stray, [], 'a root shim or d.ts is back; its entry belongs under src/');
+  assert.ok(!existsSync(path.join(ROOT, 'broker')), 'the broker/ shims are back; they live in src/broker/<name>/');
+});
+
+// TypeScript under `moduleResolution: node10` (the default for
+// `module: commonjs`) never reads `exports`; `typesVersions` is what tells it
+// where a subpath's types are, now that no root d.ts carries the subpath's
+// name. It must name exactly the d.ts each subpath's `types` condition
+// names — the two are one fact written twice.
+test('typesVersions mirrors the types condition of every subpath', () => {
+  const map = pkg.typesVersions?.['*'];
+  assert.ok(map, 'package.json has typesVersions["*"]');
+  const expected = {};
+  for (const [key, value] of Object.entries(pkg.exports)) {
+    if (key === '.' || key === './package.json') continue;
+    expected[key.slice(2)] = [value.types];
+  }
+  assert.deepStrictEqual(map, expected);
 });
 
 test('every published subpath has a tsd file', () => {
@@ -100,6 +126,8 @@ test('the bin shim exists, ships, and requires a shipped file', () => {
 
 test('every file the allowlist names exists', () => {
   for (const entry of pkg.files) {
+    // A negation takes files OUT of the list (the CLAUDE.md guard below).
+    if (entry.startsWith('!')) continue;
     assert.ok(existsSync(path.join(ROOT, entry.replace(/\/$/, ''))), `files entry ${entry} does not exist`);
   }
 });
@@ -150,7 +178,7 @@ test('every exports subpath has a bundle-size row in scripts/size.js', () => {
   }
 });
 
-// The value declarations of a root d.ts — class, function, const, let —
+// The value declarations of a d.ts — class, function, const, let —
 // with its re-exports followed (`export * from './x.js'` brings x's values;
 // `export { a, b } from './x.js'` the named ones x declares as values).
 // Interfaces and `export type` are not values and are not counted.
@@ -162,11 +190,13 @@ const declaredValues = (file, seen = new Set()) => {
   for (const match of text.matchAll(/^export (?:declare )?(?:abstract )?(?:class|function|const|let)\s+(\w+)/gm)) {
     names.add(match[1]);
   }
-  for (const match of text.matchAll(/^export \* from '\.\/([\w./-]+)\.js';/gm)) {
-    for (const name of declaredValues(`${match[1]}.d.ts`, seen)) names.add(name);
+  // A reference is relative to the d.ts that makes it.
+  const near = (ref) => path.posix.join(path.posix.dirname(file), `${ref}.d.ts`);
+  for (const match of text.matchAll(/^export \* from '(\.{1,2}\/[\w./-]+)\.js';/gm)) {
+    for (const name of declaredValues(near(match[1]), seen)) names.add(name);
   }
-  for (const match of text.matchAll(/^export \{([^}]*)\} from '\.\/([\w./-]+)\.js';/gm)) {
-    const target = declaredValues(`${match[2]}.d.ts`, seen);
+  for (const match of text.matchAll(/^export \{([^}]*)\} from '(\.{1,2}\/[\w./-]+)\.js';/gm)) {
+    const target = declaredValues(near(match[2]), seen);
     for (const entry of match[1].split(',')) {
       const name = entry
         .trim()
@@ -236,7 +266,7 @@ test('every public member of a runtime class is declared on its d.ts class', () 
   const { EventEmitter } = require('node:events');
   const ts = require(require.resolve('@tsd/typescript', { paths: [path.dirname(require.resolve('tsd'))] }));
   const declared = new Map();
-  for (const file of ['index.d.ts', 'rpc.d.ts', 'client.d.ts']) {
+  for (const file of ['index.d.ts', 'src/rpc.d.ts', 'src/client.d.ts']) {
     const source = ts.createSourceFile(file, read(file), ts.ScriptTarget.Latest, true);
     const visit = (node) => {
       if (ts.isClassDeclaration(node) && node.name) {
@@ -292,17 +322,15 @@ test('every public member of a runtime class is declared on its d.ts class', () 
 // script's, and every budgeted entry of the script must be in README's.
 test('the budget column of the size tables in README and the browser guide matches scripts/size.js', () => {
   // scripts/size.js: every budgeted entry, as (subpath, half) -> budget,
-  // from the entry FILE (browser.js is the main entry's browser half,
-  // sse.browser.js the sse subpath's, query.js the query subpath's, ...).
+  // the subpath read from the row's label (`… (@alexify/wrpc/sse)`).
   const script = read('scripts/size.js');
   const budgets = new Map();
-  for (const match of script.matchAll(/entry: '([\w.]+)\.js',\s*platform: 'browser',\s*budget: (\d+)/g)) {
+  const row = /label: '[^']*\(@alexify\/wrpc(\/[\w/]+)?\)',\s*entry: '[^']+',\s*platform: 'browser',\s*budget: (\d+)/g;
+  for (const match of script.matchAll(row)) {
     // A budgeted entry IS a browser half (only browser-reachable entries carry
-    // a budget), whatever the file is called: query.js, auth.js and
-    // deflate.js are one file for both platforms.
-    const [name] = match[1].split('.');
-    const subpath = name === 'browser' ? '' : `/${name}`;
-    budgets.set(`${subpath}|browser`, Number(match[2]));
+    // a budget), whatever the file is called: query, auth and deflate are one
+    // file for both platforms.
+    budgets.set(`${match[1] ?? ''}|browser`, Number(match[2]));
   }
   assert.ok(budgets.size >= 7, `budgeted entries in scripts/size.js: ${budgets.size}`);
   // A table row that shows a budget: its subpath is the first backticked
@@ -421,7 +449,8 @@ test('every number a benchmark chart draws is in its page, and every chart names
   }
   const docs = require('node:fs')
     .readdirSync(path.join(ROOT, 'docs'), { recursive: true })
-    .filter((file) => file.endsWith('.md') && !file.includes('.vitepress'));
+    // Not CLAUDE.md: it is the agents' file about the site, never a page of it.
+    .filter((file) => file.endsWith('.md') && !file.includes('.vitepress') && !file.endsWith('CLAUDE.md'));
   for (const file of docs) {
     for (const [tag] of read(`docs/${file}`).matchAll(/<BenchChart\b[^>]*>/g)) {
       const name = tag.match(/\bset="([^"]+)"/)?.[1];
@@ -466,18 +495,22 @@ test('SECURITY.md names the supported major, no pre-publish placeholder, and eve
   assert.ok(text.includes('what-it-does-not-protect'), 'the documented limits are linked');
 });
 
-test('every ./x.js reference inside a shipped root d.ts resolves to a shipped x.d.ts', () => {
-  const roots = pkg.files.filter((entry) => entry.endsWith('.d.ts'));
-  for (const file of roots) {
+test('every relative x.js reference inside a shipped d.ts resolves to a shipped x.d.ts', () => {
+  const { readdirSync } = require('node:fs');
+  const typings = readdirSync(path.join(ROOT, 'src'), { recursive: true })
+    .filter((name) => name.endsWith('.d.ts'))
+    .map((name) => `src/${name.split(path.sep).join('/')}`);
+  assert.ok(typings.length >= 24, `only ${typings.length} d.ts under src/`);
+  for (const file of [...ROOT_FILES.filter((name) => name.endsWith('.d.ts')), ...typings]) {
     const text = read(file);
     const refs = [
-      ...[...text.matchAll(/from '\.\/([\w.-]+)\.js'/g)].map((m) => m[1]),
-      ...[...text.matchAll(/import\('\.\/([\w.-]+)\.js'\)/g)].map((m) => m[1]),
+      ...[...text.matchAll(/from '(\.{1,2}\/[\w./-]+)\.js'/g)].map((m) => m[1]),
+      ...[...text.matchAll(/import\('(\.{1,2}\/[\w./-]+)\.js'\)/g)].map((m) => m[1]),
     ];
     for (const ref of refs) {
-      const dts = `${ref}.d.ts`;
-      assert.ok(existsSync(path.join(ROOT, dts)), `${file} references ./${ref}.js but ${dts} does not exist`);
-      assert.ok(shipped(dts), `${file} references ./${ref}.js but ${dts} is not in the files allowlist`);
+      const dts = path.posix.join(path.posix.dirname(file), `${ref}.d.ts`);
+      assert.ok(existsSync(path.join(ROOT, dts)), `${file} references ${ref}.js but ${dts} does not exist`);
+      assert.ok(shipped(dts), `${file} references ${ref}.js but ${dts} is not in the files allowlist`);
     }
   }
 });
@@ -731,56 +764,316 @@ test('the logging guide catalogues every log event the source writes, and nothin
   assert.deepStrictEqual(stale, [], 'catalogue rows for events the source no longer writes');
 });
 
-// CLAUDE.md is loaded into every agent session as binding instructions, so a
-// reference in it that points nowhere is an instruction to look at the wrong
-// code. Three things are held: no line numbers (they drift within days —
-// eleven of twenty-two were wrong when they were removed), every path it
-// names exists, and every "`symbol` in `file`" is still true.
-test('CLAUDE.md names symbols, not line numbers; its paths exist; its symbols are where it says', () => {
-  const { readFileSync } = require('node:fs');
-  const guide = read('CLAUDE.md');
-
-  const numbered = Array.from(guide.matchAll(/`((?:src|bench|tests|scripts)\/[\w/.-]+:\d+)`/g), (match) => match[1]);
-  assert.deepStrictEqual(numbered, [], 'file:line references in CLAUDE.md — name the symbol instead');
-
-  // A backticked path: starts in a tracked directory, has an extension or a
-  // trailing slash, and is not a pattern ({a,b}, *, <placeholder>, …).
-  const missing = [];
-  for (const match of guide.matchAll(/`((?:src|bench|tests|scripts|docs|bin|examples)\/[^`\s]*)`/g)) {
-    const mentioned = match[1];
-    if (/[{}*<>$|]|\.\.\./.test(mentioned)) continue;
-    const clean = mentioned.replace(/[),.:;]+$/, '');
-    if (!existsSync(path.join(ROOT, clean))) missing.push(mentioned);
-  }
-  assert.deepStrictEqual(missing, [], 'paths CLAUDE.md names that do not exist');
-
-  // "`symbol` in `path`": the symbol's text occurs in that file.
-  const adrift = [];
-  let pairs = 0;
-  for (const match of guide.matchAll(/`([^`\n]+)` in `((?:src|bench|tests|scripts)\/[\w/.-]+\.js)`/g)) {
-    const [, symbol, file] = match;
-    if (!existsSync(path.join(ROOT, file))) continue; // reported above
-    pairs++;
-    // A function may be written as a call — `nodeStream()` — in prose.
-    const name = symbol.replace(/\(\)$/, '');
-    if (!readFileSync(path.join(ROOT, file), 'utf8').includes(name)) adrift.push(`${symbol} in ${file}`);
-  }
-  assert.deepStrictEqual(adrift, [], 'symbols CLAUDE.md places in a file that no longer has them');
-  assert.ok(pairs >= 15, `only ${pairs} symbol-in-file references were found — the pattern stopped matching`);
-});
-
-test('no CLAUDE.md ships in the tarball', () => {
-  assert.ok(!shipped('CLAUDE.md'), 'CLAUDE.md is in the files allowlist');
-  const { readdirSync } = require('node:fs');
+// docs/guide/telemetry.md is the catalogue of what the telemetry writers emit
+// — the instrument names dashboards are built on, and the attribute keys
+// their series are split by. Ten keys were in the source and nowhere in the
+// docs; this keeps the two lists one, in both directions.
+test('the telemetry guide names every instrument and attribute the source writes, and nothing it does not', () => {
+  const { readdirSync, readFileSync } = require('node:fs');
   const walk = (dir, out = []) => {
     for (const entry of readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
       const relative = `${dir}/${entry.name}`;
       if (entry.isDirectory()) walk(relative, out);
-      else if (entry.name === 'CLAUDE.md') out.push(relative);
+      else if (entry.name.endsWith('.js')) out.push(relative);
     }
     return out;
   };
-  // `files` ships src/ and bin/ whole: agent instructions placed there
-  // would be published with the package.
-  assert.deepStrictEqual([...walk('src'), ...walk('bin')], []);
+  const NAME = "'((?:wrpc|rpc|messaging|network|error)\\.[a-z0-9_.]+)'";
+  // How a name becomes telemetry in src/: an instrument is created by name,
+  // an attribute is a key of an object literal, a key assigned by index, or
+  // the first argument of setAttribute.
+  const INSTRUMENT = new RegExp(`\\bcreate(?:Counter|Histogram|UpDownCounter)\\(\\s*${NAME}`, 'g');
+  const ATTRIBUTES = [
+    new RegExp(`${NAME}\\s*:`, 'g'),
+    new RegExp(`\\[${NAME}\\]\\s*=`, 'g'),
+    new RegExp(`setAttribute\\??\\.?\\(\\s*${NAME}`, 'g'),
+  ];
+  const instruments = new Map();
+  const attributes = new Map();
+  for (const file of walk('src')) {
+    const text = readFileSync(path.join(ROOT, file), 'utf8');
+    for (const match of text.matchAll(INSTRUMENT)) instruments.set(match[1], file);
+    for (const pattern of ATTRIBUTES) {
+      for (const match of text.matchAll(pattern)) if (!attributes.has(match[1])) attributes.set(match[1], file);
+    }
+  }
+  assert.ok(instruments.size >= 39, `found only ${instruments.size} instruments — a pattern stopped matching`);
+  assert.ok(attributes.size >= 40, `found only ${attributes.size} attribute keys — a pattern stopped matching`);
+
+  const guide = read('docs/guide/telemetry.md');
+  const mentioned = new Set(Array.from(guide.matchAll(/`([a-z][a-z0-9_.]*)`/g), (match) => match[1]));
+  const missing = (names) =>
+    Array.from(names)
+      .filter(([name]) => !mentioned.has(name))
+      .map(([name, file]) => `${name} (${file})`);
+  assert.deepStrictEqual(missing(attributes), [], 'attribute keys with no mention in docs/guide/telemetry.md');
+
+  // Instruments: the first cell of every row of the Metrics table — the
+  // block right under the heading — both ways.
+  const table = guide.slice(guide.indexOf('## Metrics')).split('\n\n')[1];
+  const rows = new Set(Array.from(table.matchAll(/^\| `([^`]+)` \|/gm), (match) => match[1]));
+  assert.deepStrictEqual(
+    Array.from(instruments.keys()).filter((name) => !rows.has(name)),
+    [],
+    'instruments with no row in the Metrics table',
+  );
+  assert.deepStrictEqual(
+    Array.from(rows).filter((name) => !instruments.has(name)),
+    [],
+    'Metrics rows for instruments the source no longer creates',
+  );
+
+  // And the other direction for everything else the guide names in these
+  // namespaces: an attribute that was renamed or removed leaves its mention
+  // behind. `wrpc.rtc.*` and `wrpc.broker.*` are how the prose names a family.
+  const stale = Array.from(mentioned).filter(
+    (name) =>
+      /^(?:wrpc|rpc|messaging|network)\.[a-z0-9_.]+$/.test(name) &&
+      !name.endsWith('.') &&
+      !instruments.has(name) &&
+      !attributes.has(name),
+  );
+  assert.deepStrictEqual(stale, [], 'names in the telemetry guide that the source no longer writes');
+});
+
+// Two rules of the project skills that a review keeps finding broken, made
+// executable. "A queue read from its head is never an Array with shift()":
+// past a few thousand elements every take moves the rest (found three times
+// — a stream's queue, the ws receive buffer, the ws inbox). "Never spread a
+// data array into a call's arguments": it is Function.prototype.apply, and a
+// RangeError once the array passes the engine's argument limit.
+//
+// Every `.shift()` / `.unshift(` and every spread into a call in src/ is on
+// one of these lists with the reason it is safe — what it is called on, or
+// what bounds the array. A new one fails here: use a Deque (src/deque.js) or
+// a head cursor, an indexed loop instead of the spread, or add the line with
+// its bound. A line that is gone fails too, so the lists stay the code's.
+const HEAD_READS = {
+  'src/broker/kafka/index.js': {
+    'const next = waiting.shift();': 'a Deque',
+    'for (let next = waiting.shift(); next !== undefined; next = waiting.shift()) next();': 'a Deque',
+  },
+  'src/broker/memory.js': {
+    'state.ready.unshift(delivery.message);': 'a Deque',
+    'this.#dispatch(state, consumer, state.ready.shift());': 'a Deque',
+    'state.ready.unshift(message);': 'a Deque',
+  },
+  'src/broker/redis/index.js': { 'const [id, fields] = buffered.shift();': 'a Deque' },
+  'src/broker/tail.js': { 'const entry = reader.queue.shift();': 'a Deque' },
+  'src/transport.js': {
+    'const index = bucket.shift();': 'the answers of ONE batch that share an id: at most maxBatch (128)',
+  },
+  'src/utils.js': {
+    'this.#queue.shift();': 'EventStream, at its highWaterMark (1,024 by default); utils.js is on the browser budget',
+    'return Promise.resolve({ value: this.#queue.shift(), done: false });': 'the same queue',
+    'const waiter = this.#queue.shift();': 'Semaphore waiters, capped by its `size`',
+  },
+  'src/websocket/connection.js': {
+    "if (typeof this.#socket.unshift === 'function') this.#socket.unshift(head);": 'a stream method, not an array',
+    'const item = inbox.shift();': 'the inflate inbox, held at INBOX_HIGH + 1 messages',
+    'outbox.shift();': 'a Deque',
+    'this.#outbox.shift();': 'a Deque',
+  },
+  'src/websocket/deflateContext.js': { 'ops.shift();': 'at most 33 operations wait on one context' },
+};
+
+const CALL_SPREADS = {
+  'src/broker/redis/index.js': {
+    'rows = await tail.connection.xread(...args);': 'a tail reads at most TAIL_TOPICS (8,192) topics',
+    "if (maxLen > 0) return client.xadd(streamKey(topic), 'MAXLEN', '~', String(maxLen), '*', ...fields);":
+      'two fields per header of one message this process produced',
+    "return client.xadd(streamKey(topic), '*', ...fields);": 'the same fields',
+    "await client.xadd(queueKey(name), '*', ...encodeFields(body, producerHeaders(headers)));": 'the same fields',
+    "await client.xadd(stream, '*', ...encodeFields(message.body, headers));": 'the same fields',
+    "await client.xadd(queueKey(deadLetter), '*', ...encodeFields(message.body, headers));": 'the same fields',
+    'await client.eval(PROMOTE, 2, delayedKey(name), stream, item, ...fields);': 'the same fields',
+    "await client.xadd(stream, '*', ...fields);": 'the same fields',
+  },
+  'src/client/core.js': { 'if (units.length > 0) await this.load(...units);': 'the units the application loaded' },
+  'src/client/wsHandshake.browser.js': {
+    'btoa(String.fromCharCode(...new TextEncoder().encode(text)))': 'the caller refuses a text past META_MAX first',
+  },
+  'src/encryption/noise.js': {
+    'const message = concat(...parts);': 'the parts of one handshake message: five at most',
+  },
+  'src/encryption/server.js': { "this.emit('close', ...args);": "the engine's own (code, reason)" },
+  'src/encryption/session.js': {
+    'const frame = (kind, ...parts) => concat(Uint8Array.of(FRAME_MARK, kind), ...parts);': 'its own rest parameter',
+  },
+  'src/rpc/core.js': {
+    'const target = rooms ? this.#target().to(...rooms) : this.#target();':
+      "an envelope's rooms: another instance's to(...rooms), and the caller catches what this throws",
+    'const target = Array.isArray(rooms) ? this.#target().to(...rooms) : this.#target();': 'the same rooms',
+    'return this.#target().to(...rooms);': 'its own rest parameter',
+    'return this.#target().except(...clients);': 'its own rest parameter',
+  },
+  'src/scaling/sessions.js': {
+    'const result = await client.set(key(token), value, ...args);': 'three options at most, built two lines above',
+  },
+  'src/server.js': {
+    'return this.rpc.to(...rooms);': 'its own rest parameter',
+    'return this.rpc.except(...clients);': 'its own rest parameter',
+  },
+  'src/webrtc/host.js': {
+    'return this.#target().to(...rooms);': 'its own rest parameter',
+    'return this.#target().except(...clients);': 'its own rest parameter',
+  },
+  'src/webrtc/peerLink.js': { 'return this.#remote.load(...units);': 'its own rest parameter' },
+};
+
+test('src/ reads no queue with shift() and spreads no array into a call, except where a bound is written down', () => {
+  const { readdirSync, readFileSync } = require('node:fs');
+  const { codeOf, callSpreads } = require('./scan.js');
+  const walk = (dir, out = []) => {
+    for (const entry of readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+      const relative = `${dir}/${entry.name}`;
+      if (entry.isDirectory()) walk(relative, out);
+      else if (entry.name.endsWith('.js')) out.push(relative);
+    }
+    return out;
+  };
+  const flatten = (lists) => {
+    const keys = [];
+    for (const file of Object.keys(lists)) for (const line of Object.keys(lists[file])) keys.push(`${file} :: ${line}`);
+    return keys.sort();
+  };
+  const heads = new Set();
+  const spreads = new Set();
+  for (const file of walk('src')) {
+    const text = readFileSync(path.join(ROOT, file), 'utf8');
+    const code = codeOf(text);
+    const lines = text.split('\n');
+    const lineAt = (at) => lines[code.slice(0, at).split('\n').length - 1].trim();
+    for (const match of code.matchAll(/\.(?:shift|unshift)\(/g)) heads.add(`${file} :: ${lineAt(match.index)}`);
+    for (const at of callSpreads(code)) spreads.add(`${file} :: ${lineAt(at)}`);
+  }
+  assert.deepStrictEqual(Array.from(heads).sort(), flatten(HEAD_READS), 'shift() / unshift() sites against HEAD_READS');
+  assert.deepStrictEqual(Array.from(spreads).sort(), flatten(CALL_SPREADS), 'spreads into a call against CALL_SPREADS');
+});
+
+test('the scanner behind that guard tells a call from a parameter list, an object and a string', () => {
+  const { codeOf, callSpreads } = require('./scan.js');
+  const found = (source) => {
+    const code = codeOf(source);
+    return callSpreads(code).map((at) =>
+      source.slice(at, source.indexOf('\n', at) === -1 ? undefined : source.indexOf('\n', at)),
+    );
+  };
+  assert.deepStrictEqual(found('f(...a);'), ['...a);']);
+  assert.deepStrictEqual(found('new F(a, ...b);'), ['...b);']);
+  assert.deepStrictEqual(found('f(\n  a,\n  ...b,\n);').length, 1);
+  assert.deepStrictEqual(found('const f = (...args) => g(1);'), []);
+  assert.deepStrictEqual(found('class A { to(...rooms) { return 1; } }'), []);
+  assert.deepStrictEqual(found('function f(...args) { return args; }'), []);
+  assert.deepStrictEqual(found('f({ ...a }); f([...a]); const b = { ...a }; const c = [...a];'), []);
+  // A template's placeholder, spelled so that this file's own strings hold none.
+  const OPEN = '$' + '{';
+  assert.deepStrictEqual(
+    found(`f('(...a)'); f(\`(...a) ${OPEN}x} (...b)\`); // g(...c)\n/* h(...d) */ const r = /\\(\\.\\.\\.e\\)/;`),
+    [],
+  );
+  assert.deepStrictEqual(found(`f(\`${OPEN}g(...a)}\`);`), ['...a)}`);']);
+  assert.deepStrictEqual(found('const f = (a, ...rest) => concat(a, ...rest);'), ['...rest);']);
+});
+
+// The CLAUDE.md files are binding instructions for an agent — the root one in
+// every session, a folder's when a file of that folder is read — so a
+// reference in one that points nowhere is an instruction to look at the wrong
+// code. Three things are held in every one of them: no line numbers (they
+// drift within days — eleven of twenty-two were wrong when they were
+// removed), every path named exists, and every "`symbol` in `file`" is still
+// true. Paths are written from the repository root in all of them.
+const guidanceFiles = () => {
+  const { readdirSync } = require('node:fs');
+  const SKIP = new Set(['node_modules', '.git', 'coverage', '.vitepress', 'dist']);
+  const walk = (dir, out = []) => {
+    for (const entry of readdirSync(path.join(ROOT, dir), { withFileTypes: true })) {
+      const relative = dir === '.' ? entry.name : `${dir}/${entry.name}`;
+      if (entry.isDirectory()) {
+        if (!SKIP.has(entry.name)) walk(relative, out);
+      } else if (entry.name === 'CLAUDE.md') out.push(relative);
+    }
+    return out;
+  };
+  return walk('.').sort();
+};
+
+test('every CLAUDE.md names symbols, not line numbers; its paths exist; its symbols are where it says', () => {
+  const { readFileSync } = require('node:fs');
+  const files = guidanceFiles();
+  assert.ok(files.includes('CLAUDE.md') && files.includes('src/CLAUDE.md'), 'the root and src/ files are there');
+  assert.ok(files.length >= 15, `only ${files.length} CLAUDE.md files were found`);
+
+  const numbered = [];
+  const missing = [];
+  const adrift = [];
+  let pairs = 0;
+  for (const file of files) {
+    const guide = read(file);
+    for (const match of guide.matchAll(/`((?:src|bench|tests|scripts)\/[\w/.-]+:\d+)`/g)) {
+      numbered.push(`${file}: ${match[1]}`);
+    }
+    // A backticked path: starts in a tracked directory, has an extension or a
+    // trailing slash, and is not a pattern ({a,b}, *, <placeholder>, …).
+    for (const match of guide.matchAll(/`((?:src|bench|tests|scripts|docs|bin|examples)\/[^`\s]*)`/g)) {
+      const mentioned = match[1];
+      if (/[{}*<>$|]|\.\.\./.test(mentioned)) continue;
+      const clean = mentioned.replace(/[),.:;]+$/, '');
+      if (!existsSync(path.join(ROOT, clean))) missing.push(`${file}: ${mentioned}`);
+    }
+    // "`symbol` in `path`": the symbol's text occurs in that file.
+    for (const match of guide.matchAll(/`([^`\n]+)` in `((?:src|bench|tests|scripts)\/[\w/.-]+\.js)`/g)) {
+      const [, symbol, target] = match;
+      if (!existsSync(path.join(ROOT, target))) continue; // reported above
+      pairs++;
+      // A function may be written as a call — `nodeStream()` — in prose.
+      const name = symbol.replace(/\(\)$/, '');
+      if (!readFileSync(path.join(ROOT, target), 'utf8').includes(name)) adrift.push(`${file}: ${symbol} in ${target}`);
+    }
+  }
+  assert.deepStrictEqual(numbered, [], 'file:line references in a CLAUDE.md — name the symbol instead');
+  assert.deepStrictEqual(missing, [], 'paths a CLAUDE.md names that do not exist');
+  assert.deepStrictEqual(adrift, [], 'symbols a CLAUDE.md places in a file that no longer has them');
+  assert.ok(pairs >= 15, `only ${pairs} symbol-in-file references were found — the pattern stopped matching`);
+});
+
+// The split exists to keep what EVERY task reads small: the root file is in
+// every session, src/CLAUDE.md in every one that touches the source. One
+// file held 85 KB — a single bullet of it 15 — before it was split by
+// folder. New detail goes into the folder's own file; these two only shrink
+// or stay.
+test('the two CLAUDE.md files every task reads stay small, and every source folder that needs one has one', () => {
+  const { statSync } = require('node:fs');
+  const size = (file) => statSync(path.join(ROOT, file)).size;
+  assert.ok(
+    size('CLAUDE.md') <= 17 * 1024,
+    `CLAUDE.md is ${size('CLAUDE.md')} bytes — move detail into a folder's file`,
+  );
+  assert.ok(size('src/CLAUDE.md') <= 10 * 1024, `src/CLAUDE.md is ${size('src/CLAUDE.md')} bytes`);
+  const root = read('CLAUDE.md');
+  for (const file of guidanceFiles()) {
+    if (file === 'CLAUDE.md') continue;
+    const folder = `${path.dirname(file)}/`;
+    assert.ok(root.includes(`\`${folder}\``), `${file} is not in the root CLAUDE.md's table`);
+  }
+});
+
+// `files` ships src/ and bin/ whole, and the guidance lives next to the code
+// it is about: what keeps it out of the tarball is the `!**/CLAUDE.md` entry.
+// Asked of npm itself — the packing list — not of the pattern.
+test('no CLAUDE.md ships in the tarball', () => {
+  const { spawnSync } = require('node:child_process');
+  assert.ok(pkg.files.includes('!**/CLAUDE.md'), 'the files allowlist ends with the CLAUDE.md exclusion');
+  assert.ok(
+    guidanceFiles().some((file) => file.startsWith('src/')),
+    'there are CLAUDE.md files under src/ to keep out',
+  );
+  const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: ROOT, encoding: 'utf8' });
+  assert.strictEqual(packed.status, 0, packed.stderr);
+  const shippedFiles = JSON.parse(packed.stdout)[0].files.map((entry) => entry.path);
+  assert.ok(shippedFiles.length > 150, `npm lists only ${shippedFiles.length} files`);
+  assert.deepStrictEqual(
+    shippedFiles.filter((file) => /(^|\/)CLAUDE\.md$/i.test(file) || file.startsWith('.claude/')),
+    [],
+  );
 });

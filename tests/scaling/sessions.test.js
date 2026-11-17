@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { setImmediate: settle } = require('node:timers/promises');
 
-const { createRedisSessionStore } = require('../../scaling.js');
+const { createRedisSessionStore } = require('../../src/scaling/index.js');
 const { SessionManager } = require('../../src/rpc/sessions.js');
 
 // An in-repo fake shaped like ioredis for the commands the store uses:

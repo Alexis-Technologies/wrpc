@@ -28,13 +28,17 @@
 const { createRedisAdapter } = require('../../scaling/redis.js');
 const { createLoggerWriter } = require('../../logging.js');
 const { TopicTails } = require('../tail.js');
-const { codedError, toText, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
+const { codedError, toText, toBytes, toHeaders, reasonText, tokenEncoder } = require('../ids.js');
 const { positiveInteger } = require('../retry.js');
 const { withHealth } = require('../port.js');
+const { Deque } = require('../../deque.js');
 const {
   ATTEMPT_HEADER,
   REDELIVERED_HEADER,
   DEAD_REASON_HEADER,
+  attemptOf,
+  producerHeaders,
+  reporter,
   DEFAULT_PREFETCH,
   idFactory,
   failedRead,
@@ -45,6 +49,7 @@ const {
 } = require('../adapter.js');
 
 const DEFAULT_PREFIX = 'wrpc';
+const token = tokenEncoder({ maxLength: 200 });
 const DEFAULT_BLOCK_MS = 1000;
 const DEFAULT_CLAIM_IDLE_MS = 60_000;
 const DEFAULT_INBOX_TTL_MS = 60_000;
@@ -153,14 +158,21 @@ const createRedisBroker = (options = {}) => {
   // Every blocking read and every subscription needs a connection of its
   // own; they are opened on demand and quit by close() — an INJECTED client
   // never is, its lifetime is the caller's.
+  //
+  // Refused once close() has run. A caller that checked `closed` and then
+  // awaited a round trip — live() reading the tip, consume() creating its
+  // group — reaches here after a close() that has already quit every owned
+  // connection, and a connection opened then was never quit: the process
+  // stayed up on it for good (a test run that never exited).
   const spawn = () => {
+    if (closed) throw codedError('Broker is closed', 503);
     const created = connect ? connect() : client.duplicate();
     owned.add(created);
     return created;
   };
 
-  const key = (kind, name) => `${prefix}:${kind}:${encodeToken(name, { maxLength: 200 })}`;
-  const report = (event, error, extra = {}) => log.error({ err: error, event, ...extra });
+  const key = (kind, name) => `${prefix}:${kind}:${token(name)}`;
+  const report = reporter(log);
 
   // ---------------------------------------------------------------------
   // log
@@ -191,29 +203,62 @@ const createRedisBroker = (options = {}) => {
     return entries;
   };
 
-  // One blocking XREAD loop per instance, multiplexed over every topic with
-  // a live reader. A blocked read cannot be interrupted, so a topic added or
-  // dropped takes effect within `blockMs` — which is why the default is a
-  // second rather than the minutes a single-topic reader could afford.
-  const tail = {
-    connection: null,
+  // A blocking XREAD loop multiplexed over the topics with a live reader. A
+  // blocked read cannot be interrupted, so a topic added or dropped takes
+  // effect within `blockMs` — which is why the default is a second rather
+  // than the minutes a single-topic reader could afford.
+  //
+  // One loop reads at most TAIL_TOPICS topics, on a connection of its own:
+  // every topic is two arguments of the one XREAD, and the command used to
+  // be built from ALL of them — past some sixty thousand live topics the
+  // call itself threw a RangeError (an engine's argument limit), was logged
+  // and retried a second later, for good: every feed of the instance dead.
+  // The stream a row belongs to is looked up in a Map, where it was an
+  // indexOf over every key for every stream returned.
+  const TAIL_TOPICS = 8192;
+  const tailers = [];
+  const createTailer = () => ({
+    connection: spawn(),
     cursors: new Map(), // topic -> last id read
     handlers: new Map(), // topic -> onEntry
     running: false,
+  });
+  // The loop a new topic joins: the first with room, else a new one.
+  const tailerFor = () => {
+    for (let i = 0; i < tailers.length; i++) {
+      if (tailers[i].handlers.size < TAIL_TOPICS) return tailers[i];
+    }
+    const created = createTailer();
+    tailers.push(created);
+    return created;
   };
 
-  const pump = async () => {
+  const pump = async (tail) => {
     if (tail.running) return;
     tail.running = true;
     try {
       for (;;) {
         if (closed || tail.handlers.size === 0) return;
-        const topics = Array.from(tail.handlers.keys());
-        const keys = topics.map(streamKey);
-        const ids = topics.map((topic) => tail.cursors.get(topic) ?? '$');
+        const count = tail.handlers.size;
+        const args = new Array(5 + count * 2);
+        args[0] = 'COUNT';
+        args[1] = 512;
+        args[2] = 'BLOCK';
+        args[3] = blockMs;
+        args[4] = 'STREAMS';
+        const byKey = new Map();
+        let at = 0;
+        for (const topic of tail.handlers.keys()) {
+          const name = streamKey(topic);
+          byKey.set(name, topic);
+          args[5 + at] = name;
+          args[5 + count + at] = tail.cursors.get(topic) ?? '$';
+          at++;
+        }
         let rows;
         try {
-          rows = await tail.connection.xread('COUNT', 512, 'BLOCK', blockMs, 'STREAMS', ...keys, ...ids);
+          // Bounded by TAIL_TOPICS: 16,389 arguments at most.
+          rows = await tail.connection.xread(...args);
         } catch (error) {
           if (closed) return;
           report('broker.redis.tail', error);
@@ -222,7 +267,7 @@ const createRedisBroker = (options = {}) => {
         }
         if (!rows) continue;
         for (const [name, entries] of rows) {
-          const topic = topics[keys.indexOf(name)];
+          const topic = byKey.get(name);
           const onEntry = tail.handlers.get(topic);
           for (const [id, fields] of entries) {
             tail.cursors.set(topic, id);
@@ -240,8 +285,8 @@ const createRedisBroker = (options = {}) => {
     // info, not a fault — but the first thing to look at when a feed is slow.
     onLag: (topic, readers) => log.info({ event: 'broker.tail.lag', topic, readers }),
     live: async (topic, { signal, onEntry }) => {
-      if (!tail.connection) tail.connection = spawn();
       const from = (await tip(topic)) ?? '0-0';
+      const tail = tailerFor();
       tail.cursors.set(topic, from);
       tail.handlers.set(topic, onEntry);
       signal.addEventListener(
@@ -252,7 +297,7 @@ const createRedisBroker = (options = {}) => {
         },
         { once: true },
       );
-      void pump();
+      void pump(tail);
       return from === '0-0' ? null : from;
     },
     range,
@@ -283,6 +328,7 @@ const createRedisBroker = (options = {}) => {
         throw codedError('Event history was trimmed past this id', 410);
       }
     })();
+    // Surfaced through the read it guards (guardedRead); never unhandled.
     checked.catch(() => {});
     return guardedRead(tails.read(topic, { after, signal }), { guard: checked });
   };
@@ -300,7 +346,7 @@ const createRedisBroker = (options = {}) => {
   // A queue's stream and its delayed set live under ONE hash tag — the
   // braces are what Redis Cluster hashes on — so the promotion of a delayed
   // retry (a Lua script over both keys) runs on a cluster too.
-  const queueKey = (name) => `${prefix}:q:{${encodeToken(name, { maxLength: 200 })}}`;
+  const queueKey = (name) => `${prefix}:q:{${token(name)}}`;
   const delayedKey = (name) => `${queueKey(name)}:delayed`;
   // ZREM then XADD in one step: a delayed retry either leaves the set and
   // lands on the stream, or does neither. Without EVAL (an injected client
@@ -321,7 +367,7 @@ const createRedisBroker = (options = {}) => {
 
   const produce = async (name, body, { headers = null } = {}) => {
     if (closed) throw codedError('Broker is closed', 503);
-    await client.xadd(queueKey(name), '*', ...encodeFields(body, headers));
+    await client.xadd(queueKey(name), '*', ...encodeFields(body, producerHeaders(headers)));
   };
 
   const consume = async (name, onDelivery, options = {}) => {
@@ -339,7 +385,7 @@ const createRedisBroker = (options = {}) => {
     // Entries XREADGROUP already moved into the pending list when a pause
     // landed: holding them here (rather than dropping them for XAUTOCLAIM)
     // is what makes resume() immediate.
-    const buffered = [];
+    const buffered = new Deque();
 
     const settleDone = (id) => {
       held.delete(id);
@@ -355,7 +401,7 @@ const createRedisBroker = (options = {}) => {
 
     const dispatch = (id, fields, { claimed = false } = {}) => {
       const entry = decodeEntry(id, fields);
-      const attempt = Number(entry.headers[ATTEMPT_HEADER] ?? '1') || 1;
+      const attempt = attemptOf(entry.headers);
       const message = { id, body: entry.value, headers: entry.headers };
       let settled = false;
       const finish = async (work) => {
@@ -640,6 +686,8 @@ const createRedisBroker = (options = {}) => {
       const current = plain.get(channel);
       if (!current || !current.delete(onMessage) || current.size > 0) return;
       plain.delete(channel);
+      // The handler is gone already; a connection that cannot unsubscribe is one
+      // that is closing, and takes its subscriptions with it.
       if (isFunction(connection.unsubscribe)) await connection.unsubscribe(channel).catch(() => {});
     };
     // An inbox is a subscription: as alive as the connection it is on.
@@ -717,6 +765,7 @@ const createRedisBroker = (options = {}) => {
       running = false;
       stops.delete(stop);
       clearInterval(beat);
+      // Best effort: a member that cannot be removed now expires with its score.
       await client.zrem(members, member).catch(() => {});
       if (owned.delete(connection)) await quit(connection, { force: true });
     };
@@ -770,7 +819,12 @@ const createRedisBroker = (options = {}) => {
     if (closed) return;
     closed = true;
     tails.close();
-    tail.handlers.clear();
+    // The loops' connections sit in a blocking read: closed without waiting.
+    const blocked = new Set();
+    for (const tail of tailers) {
+      tail.handlers.clear();
+      blocked.add(tail.connection);
+    }
     backplane.close();
     plain.clear();
     // Heartbeats, leases and sweep timers go with the broker: they used to
@@ -778,7 +832,7 @@ const createRedisBroker = (options = {}) => {
     for (const stop of Array.from(stops)) await stop();
     for (const connection of Array.from(owned)) {
       owned.delete(connection);
-      await quit(connection, { force: connection === tail.connection });
+      await quit(connection, { force: blocked.has(connection) });
     }
   };
 

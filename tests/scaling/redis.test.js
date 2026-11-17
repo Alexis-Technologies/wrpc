@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { FakeRedis } = require('./fakeRedis.js');
 
-const { createRedisAdapter, isBackplane } = require('../../scaling.js');
+const { createRedisAdapter, isBackplane } = require('../../src/scaling/index.js');
 
 const noop = () => {};
 const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };
@@ -86,8 +86,9 @@ test('createRedisAdapter: unsubscribe releases the upstream channel last', async
   const sub = pub.duplicate();
   const adapter = createRedisAdapter({ pub, sub });
   const seen = [];
-  const off = adapter.subscribe('room:chat', (m) => seen.push(m));
-  const other = adapter.subscribe('room:chat', noop);
+  // The SUBSCRIBE's own answer: an unsubscribe once Redis acknowledged it.
+  const off = await adapter.subscribe('room:chat', (m) => seen.push(m));
+  const other = await adapter.subscribe('room:chat', noop);
 
   off();
   assert.ok(sub.channels.has('wrpc:room:chat'), 'a channel with handlers left stays subscribed');
@@ -147,7 +148,7 @@ test('createRedisAdapter: tolerates the thinner ends of the client contract', as
     sub.unsubscribe = undefined;
     const adapter = createRedisAdapter({ pub, sub });
     const seen = [];
-    const off = adapter.subscribe('room:chat', (m) => seen.push(m));
+    const off = await adapter.subscribe('room:chat', (m) => seen.push(m));
     off();
     adapter.publish('room:chat', 'x');
     await null;
@@ -173,13 +174,30 @@ test('createRedisAdapter: tolerates the thinner ends of the client contract', as
       },
     };
     const adapter = createRedisAdapter({ pub, sub, logger });
-    const off = adapter.subscribe('room:chat', noop);
+    // Never thrown at the caller — and never hidden from it: the answer is
+    // the SUBSCRIBE's, so a subscribe that failed is a rejection.
+    let subscribed = null;
+    assert.doesNotThrow(() => {
+      subscribed = adapter.subscribe('room:chat', noop);
+    });
+    await assert.rejects(subscribed, /subscribe blew up/);
     assert.strictEqual(errors.length, 1, 'the failed subscribe is reported');
     adapter.publish('room:chat', 'x');
     assert.strictEqual(errors.length, 2, 'the failed publish is reported');
-    off();
-    assert.strictEqual(errors.length, 3, 'the failed unsubscribe is reported');
     assert.doesNotThrow(() => adapter.close());
+  });
+
+  await t.test('an unsubscribe that throws is reported, not propagated', async () => {
+    const errors = [];
+    const logger = { ...quiet, error: (error) => errors.push(error) };
+    const sub = new FakeRedis();
+    sub.unsubscribe = () => {
+      throw new Error('unsubscribe blew up');
+    };
+    const adapter = createRedisAdapter({ pub: new FakeRedis(), sub, logger });
+    const off = await adapter.subscribe('room:chat', noop);
+    assert.doesNotThrow(off);
+    assert.strictEqual(errors.length, 1, 'the failed unsubscribe is reported');
   });
 
   await t.test('a non-function handler is rejected', () => {
@@ -267,4 +285,61 @@ test('createRedisAdapter: close releases subscriptions but not the injected clie
   assert.deepStrictEqual(pub.published, [], 'the injected clients are still usable');
   assert.strictEqual(typeof adapter.subscribe('room:chat', noop), 'function');
   adapter.close(); // idempotent
+});
+
+test('createRedisAdapter: a SUBSCRIBE that Redis refuses is the answer of subscribe(), and leaves no handler behind', async () => {
+  const errors = [];
+  const logger = { ...quiet, error: (error) => errors.push(error) };
+  const pub = new FakeRedis();
+  const sub = pub.duplicate();
+  const real = sub.subscribe.bind(sub);
+  let refuse = true;
+  sub.subscribe = async (name) => {
+    if (refuse) throw new Error('NOPERM this user has no permissions to access one of the channels');
+    return real(name);
+  };
+  const adapter = createRedisAdapter({ pub, sub, logger });
+  const seen = [];
+  const handler = (message) => seen.push(message);
+  // It used to answer an unsubscribe function at once, whatever Redis said:
+  // the retry of everything above the adapter never ran.
+  const first = adapter.subscribe('room:chat', handler);
+  // A second handler that joins while the SUBSCRIBE is in flight fails with it.
+  const joined = adapter.subscribe('room:chat', noop);
+  await assert.rejects(first, /NOPERM/);
+  await assert.rejects(joined, /NOPERM/);
+  assert.strictEqual(errors.length, 1, 'said once');
+  // The retry succeeds: one handler, one delivery — not the failed attempt's too.
+  refuse = false;
+  const off = await adapter.subscribe('room:chat', handler);
+  adapter.publish('room:chat', 'once');
+  await null;
+  await null;
+  assert.deepStrictEqual(seen, ['once']);
+  off();
+  adapter.close();
+});
+
+test('RpcServer over the redis adapter: a refused SUBSCRIBE is retried, and the server is not healthy meanwhile', async (t) => {
+  const { RpcServer } = require('../../src/rpc/core.js');
+  const { defineRouter } = require('../../src/rpc/router.js');
+  const { waitFor } = require('../helpers/wait.js');
+  const pub = new FakeRedis();
+  const sub = pub.duplicate();
+  const real = sub.subscribe.bind(sub);
+  let refuse = true;
+  let attempts = 0;
+  sub.subscribe = async (name) => {
+    attempts++;
+    if (refuse) throw new Error('NOPERM');
+    return real(name);
+  };
+  const backplane = createRedisAdapter({ pub, sub, logger: quiet });
+  const rpc = new RpcServer({ router: defineRouter({}), logger: false, backplane });
+  t.after(() => rpc.close());
+  await waitFor(() => attempts >= 2, 'the first subscribes were attempted');
+  // Deaf on its channels, and it says so: it used to answer `true` here.
+  assert.strictEqual(rpc.healthy, false);
+  refuse = false;
+  await waitFor(() => rpc.healthy === true, { message: 'the retry subscribed', timeout: 5000 });
 });

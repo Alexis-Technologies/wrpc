@@ -370,8 +370,10 @@ The factories (`deflateCompressor({ level })`, `brotliCompressor({ quality })`,
 ends on different levels still negotiate. The defaults are measured
 (`bench/algorithms.js`), not zlib's — and for Brotli that matters: zlib's own
 default is quality 11, which takes **33 ms** on a 27 KB answer where
-quality 4 takes 93 µs. In a browser a format the platform lacks leaves
-compression off rather than throwing. The dictionary codec above is another
+quality 4 takes 93 µs. In a browser a format the platform lacks is skipped
+in a list and a `TypeError` when it is the only one asked for, as on Node;
+with no `CompressionStream` at all, `compression: true` stays off until a
+codec is injected. The dictionary codec above is another
 injection; yours is another still.
 Either method may answer a promise on the socket transports (a
 `CompressionStream` can only), and the transport keeps messages in order

@@ -9,7 +9,7 @@ description: Apply the Alexis JavaScript style (Metarhia-derived, linted by oxli
      Where upstream (and the sibling projects) ban array methods from src/ outright, wRPC draws the
      line between HOT and COLD paths — and on a hot path it preallocates where they build packed.
      The wRPC-specific rules (the protocol revision, no runtime dependencies, byte budgets, the
-     benchmark a hand-optimization cites) live in CLAUDE.md, which wins if the two ever disagree. -->
+     benchmark a hand-optimization cites) live in the CLAUDE.md files (the root one, `src/CLAUDE.md`, `bench/CLAUDE.md`), which win if the two ever disagree. -->
 
 # JavaScript Code Style
 
@@ -48,8 +48,9 @@ Use following conventions for JavaScript and TypeScript code.
   **injected** and checked structurally (duck typing, never `instanceof` against an imported class);
   anything reused from another package is copied in, not installed
 - A platform split is a matched pair — `name.js` and `name.browser.js` (dot, not dash) — swapped
-  through `package.json#browser`; a new subpath is a root shim, a hand-written root `.d.ts`, an
-  `exports` entry, `files` additions and a `tests/<name>.test-d.ts`, all in one change
+  through `package.json#browser`; a new subpath is an entry under `src/` with a hand-written
+  `.d.ts` beside it, an `exports` entry, its `typesVersions` line, a `scripts/size.js` row and a
+  `tests/<name>.test-d.ts`, all in one change — the package root holds the main entry only
 - Layers do not reach up: `src/rpc/` never requires `src/websocket/`, `src/webrtc/` or `src/broker/`
 
 ## Naming
@@ -59,6 +60,7 @@ Use following conventions for JavaScript and TypeScript code.
 - Use `UPPER_SNAKE_CASE` for constants
 - Use `new` with capitalized constructor names
 - Use `error` in catch blocks, not `err`
+- A `catch` that does nothing says why, in a comment inside it (`no-empty` with `allowEmptyCatch: false` enforces it); so does a `.catch(() => {})`, on the line above
 - Use short names (`e`, `i`) only in short one-line callbacks
 - Use descriptive names in multiline callbacks (`event`, `index`, `item`)
 - Use boolean prefixes (`is`, `has`, `can`, `should`) for new locals and functions; a public
@@ -86,6 +88,10 @@ Use following conventions for JavaScript and TypeScript code.
 - A queue that is read from its head is never an `Array` with `shift()`: past a few thousand
   elements every `shift` is a copy of the rest, and a peer decides how long the queue is — keep an
   index cursor or a ring
+- Both rules are executable: every `.shift()` / `.unshift(` and every spread into a call in `src/`
+  is listed with its bound in `HEAD_READS` / `CALL_SPREADS` (`tests/package/consistency.test.js`).
+  A new one fails the suite — use the `Deque` of `src/deque.js` or an indexed loop, or add the
+  line with the reason it is bounded
 - A collection a peer can grow has a cap (a count, bytes, a TTL), and the cap counts what holding
   an element costs, not only its payload
 - Fire-and-forget is `return void fn()` (the Metarhia spelling; `no-void` is deliberately off)
@@ -104,7 +110,7 @@ Use following conventions for JavaScript and TypeScript code.
 - Avoid nested ternaries and deep callback nesting
 - Self-documented and self-descriptive code; a comment explains why (an invariant, a trap, a
   decision), never what the next line does
-- A reference in a comment or in CLAUDE.md names a symbol in a file, never a line number
+- A reference in a comment or in a CLAUDE.md names a symbol in a file, never a line number
 - Throw a `TypeError` for a bad argument or option, prefixed with the thing being configured
   (`RpcServer.attach: options.session must be an object`); give an error a peer may be told a
   numeric HTTP-like `code` (and `expose = true` when a 5xx message is written for the peer); never

@@ -25,15 +25,19 @@ Two mechanisms, both declared in `package.json`:
 
 | Node file | Browser file | Why |
 | --- | --- | --- |
-| `index.js` | `browser.js` | The browser barrel excludes the server half entirely. |
-| `sse.js` | `sse.browser.js` | A browser needs the [SSE](./sse) client transport, never the channel registry. |
-| `webrtc.js` | `webrtc.browser.js` | A browser peer needs the [WebRTC](./webrtc) peer, link and signaler client, never the server-side signaling unit. |
+| `index.js` | `src/index.browser.js` | The browser barrel excludes the server half entirely. |
+| `src/sse/index.js` | `src/sse/client.js` | A browser needs the [SSE](./sse) client transport, never the channel registry. |
+| `src/webrtc/index.js` | `src/webrtc/browser.js` | A browser peer needs the [WebRTC](./webrtc) peer, link and signaler client, never the server-side signaling unit. |
+| `src/encryption/index.js` | `src/encryption/browser.js` | The [encryption](./encryption) primitives over `crypto.subtle`, without the Node-only sealed store and replay cache. |
 | `src/chunks.js` | `src/chunks.browser.js` | `Buffer` vs `TextEncoder`/`TextDecoder` for [binary framing](./streams). |
 | `src/runtime/node.js` | `src/runtime/browser.js` | `node:crypto` vs `globalThis.crypto` for id generation. |
 
-The `exports` map carries the same choices under the `browser` condition, so
-resolvers that read `exports` and ignore the legacy `browser` field get the
-identical result.
+The first four are the `browser` condition of each entry in `exports` — every
+subpath resolves straight to its file under `src/`, nothing at the package root
+but the main entry. The legacy `browser` field carries the main entry and the
+halves inside `src/` that a file requires (which `exports` cannot reach), so a
+resolver gets the browser build whichever of the two it reads; the subpaths
+themselves need one that reads `exports`, as every bundler named above does.
 
 ## What is in the browser entry
 
@@ -56,9 +60,10 @@ which is the point of splitting the barrels rather than tree-shaking one.
 
 ### Types without `@types/node`
 
-`browser.d.ts` re-exports `client.d.ts` and nothing else, so browser consumers
-never inherit the Node type dependencies that `index.d.ts` carries. That split
-is why a front-end `tsconfig` with no `"types": ["node"]` type-checks cleanly
+`src/index.browser.d.ts` (the `browser` types condition) re-exports
+`src/client.d.ts` and nothing else, so browser consumers never inherit the
+Node type dependencies that `index.d.ts` carries. That split is why a
+front-end `tsconfig` with no `"types": ["node"]` type-checks cleanly
 against `@alexify/wrpc`.
 
 Note the asymmetry: the browser *types* include wire-packet interfaces and
@@ -73,14 +78,14 @@ the run — it is a ratchet, and it runs in CI's lint job.
 
 | Entry | min | min+gzip | budget |
 | --- | ---: | ---: | ---: |
-| `@alexify/wrpc` — browser | 88.6 KB | **29.8 KB** | 30.0 KB |
-| `@alexify/wrpc/sse` — browser | 91.9 KB | **30.9 KB** | 31.0 KB |
+| `@alexify/wrpc` — browser | 90.0 KB | **30.3 KB** | 31.0 KB |
+| `@alexify/wrpc/sse` — browser | 93.7 KB | **31.5 KB** | 32.0 KB |
 | `@alexify/wrpc/query` | 2.7 KB | **1.1 KB** | 2.0 KB |
 | `@alexify/wrpc/auth` | 3.9 KB | **1.8 KB** | 2.0 KB |
 | `@alexify/wrpc/deflate` | 10.7 KB | **4.4 KB** | 5.0 KB |
-| `@alexify/wrpc/encryption` — browser | 31.5 KB | **11.5 KB** | 12.0 KB |
-| `@alexify/wrpc/webrtc` — browser | 186.9 KB | **60.9 KB** | 61.0 KB |
-| `@alexify/wrpc` — node | 310.3 KB | 104.4 KB | — |
+| `@alexify/wrpc/encryption` — browser | 31.8 KB | **11.6 KB** | 12.0 KB |
+| `@alexify/wrpc/webrtc` — browser | 189.3 KB | **61.8 KB** | 62.0 KB |
+| `@alexify/wrpc` — node | 316.8 KB | 106.7 KB | — |
 
 The Node-only entries carry no budget because their gzip size is not a shipping
 cost; they are measured so a regression is *visible*, not gated.

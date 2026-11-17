@@ -8,7 +8,10 @@ const esbuild = require('esbuild');
 
 esbuild
   .build({
-    entryPoints: [path.join(__dirname, '../../browser.js')],
+    // The package's own name, resolved through its exports' `browser`
+    // condition — what a page of your own would bundle.
+    entryPoints: ['@alexify/wrpc'],
+    absWorkingDir: __dirname,
     bundle: true,
     format: 'iife',
     globalName: 'wrpc',

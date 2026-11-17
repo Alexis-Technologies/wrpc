@@ -8,8 +8,8 @@
 // assertion for the certificate it dials with, and the other peers verify
 // it against the server's public key before they let the link in.
 
-const { Server, defineRouter } = require('../../index.js');
-const { createSignalingUnit, createSignalingHooks, generateAssertionKeys } = require('../../webrtc.js');
+const { Server, defineRouter } = require('@alexify/wrpc');
+const { createSignalingUnit, createSignalingHooks, generateAssertionKeys } = require('@alexify/wrpc/webrtc');
 
 const main = async () => {
   // A fresh key pair per boot is fine for a demo; a deployment loads a

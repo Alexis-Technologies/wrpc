@@ -18,7 +18,7 @@ const {
 } = require('../../src/webtransport/framing.js');
 const { chunkEncode } = require('../../src/chunks.js');
 const { createFakeWt } = require('./fakeWebTransport.js');
-const { acceptSessions } = require('../../wt.js');
+const { acceptSessions } = require('../../src/webtransport/index.js');
 const { runChannelContract, peerEnd } = require('./channelContract.js');
 const { runTransportContract } = require('../client/transportContract.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');

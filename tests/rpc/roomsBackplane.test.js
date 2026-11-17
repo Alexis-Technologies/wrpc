@@ -552,3 +552,27 @@ test('RoomsBackplane: loss detection through epoch and seq', async (t) => {
 
   binder.close();
 });
+
+test('RoomsBackplane: close() disarms a subscribe retry, and nothing subscribes after it', async () => {
+  let attempts = 0;
+  const backplane = createBackplane({
+    subscribe() {
+      attempts++;
+      return Promise.reject(new Error('backplane down'));
+    },
+  });
+  const { binder, errors } = createBinder(backplane);
+  binder.start();
+  await settle();
+  assert.strictEqual(attempts, 1);
+  assert.strictEqual(binder.healthy, false, 'a channel is pending');
+  binder.close();
+  const said = errors.length;
+  // The retry was armed for up to half a second after the failure. It used
+  // to fire after close: a subscribe on a backplane already shut, and its
+  // outcome logged into a finished shutdown.
+  await timers.setTimeout(700);
+  assert.strictEqual(attempts, 1, 'no retry after close');
+  assert.strictEqual(errors.length, said, 'and nothing more is logged');
+  assert.strictEqual(binder.healthy, true, 'nothing is left pending');
+});

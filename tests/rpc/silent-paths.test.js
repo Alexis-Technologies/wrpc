@@ -224,7 +224,7 @@ test('logging: every entry the server writes carries an event', async (t) => {
 });
 
 test('scaling: a corrupt stored session is reported, and never logs the token', async () => {
-  const { createRedisSessionStore } = require('../../scaling.js');
+  const { createRedisSessionStore } = require('../../src/scaling/index.js');
   const { writer, find } = recorder();
   const client = {
     async get() {
@@ -243,7 +243,7 @@ test('scaling: a corrupt stored session is reported, and never logs the token', 
 });
 
 test('broker: a resume token that fails its signature is warned about, by reason', async () => {
-  const { MemoryBroker, brokerFeed } = require('../../broker.js');
+  const { MemoryBroker, brokerFeed } = require('../../src/broker/index.js');
   const broker = new MemoryBroker({ logger: false });
   const { writer, find } = recorder();
   const feed = brokerFeed(broker, 'topic', { secret: 'shhh' });
@@ -350,4 +350,112 @@ test('dispatcher: past maxStreams a stream packet answers 429, and says so at de
   socket.send(JSON.stringify({ type: 'call', id: 'c1', method: 'unit/ping', args: {} }));
   await waitFor(() => answers.some((answer) => answer.id === 'c1'), 'the call after the fourth');
   assert.ok(!answers.some((answer) => answer.id === 's4'), 'the fourth fits once one ended');
+});
+
+// --- A peer's text never ends or splits a log line ----------------------------
+
+test('dispatcher: a line break or a tab in a peer string does not reach a log line, and a long one is bounded', async (t) => {
+  // A Console-shaped logger: what prints the tab-separated message as it is.
+  const printed = [];
+  const print = (...parts) => void printed.push(parts.map(String).join(' '));
+  const logger = { debug: print, info: print, log: print, warn: print, error: print };
+  const { url } = await bootServer(t, { router, logger });
+  const socket = new WebSocket(url);
+  t.after(() => socket.close());
+  await new Promise((resolve) => socket.addEventListener('open', resolve));
+  const forged = 'unit/nope\n2026-11-16 ERROR admin logged in\tfrom 10.0.0.1';
+  socket.send(JSON.stringify({ type: 'call', id: 'c\n1', method: forged, args: {} }));
+  socket.send(JSON.stringify({ type: 'subscribe', id: 's\n1', method: forged, args: {} }));
+  socket.send(JSON.stringify({ type: 'event', name: `unit/${'e'.repeat(5000)}\nforged`, data: {} }));
+  const fromPeer = () => printed.filter((text) => text.includes('admin logged in') || text.includes('eeee'));
+  await waitFor(() => fromPeer().length >= 3, 'the three refusals were written');
+  for (const text of fromPeer()) {
+    // The line's own tabs are its columns; none of them may come from the
+    // peer, so the forged text sits in one column, on one line.
+    assert.ok(!text.includes('\n'), `a line break reached the log: ${JSON.stringify(text.slice(0, 80))}`);
+    assert.ok(!text.includes('ERROR admin logged in\tfrom'), 'a tab of the peer moved a column');
+    assert.ok(text.length < 400, `${text.length} characters of a peer's text in one line`);
+  }
+});
+
+test('clip: bounds a string, turns every control character into a space, and passes anything else through', () => {
+  const { clip } = require('../../src/rpc/errors.js');
+  assert.strictEqual(clip('a\nb\tc\r\u0000d\u2028e\u2029f'), 'a b c  d e f');
+  assert.strictEqual(clip('x'.repeat(200)).length, 129);
+  assert.strictEqual(clip('x\ny', 2), 'x …');
+  assert.strictEqual(clip(42), 42);
+  assert.strictEqual(clip(undefined), undefined);
+});
+
+// --- What a peer can do in a loop is one warning, then debug --------------------
+
+test('dispatcher: the first refusal of a kind is a warning, the ones behind it are debug', async (t) => {
+  const { writer, all } = recorder();
+  const slow = defineRouter({
+    unit: {
+      ping: procedure({ access: 'public', handler: async () => 'pong' }),
+      slow: procedure({ access: 'public', handler: () => new Promise((resolve) => setTimeout(resolve, 200)) }),
+      locked: procedure({ handler: async () => 'never' }),
+      capped: procedure({ access: 'public', timeout: 20, handler: () => new Promise(() => {}) }),
+    },
+  });
+  const { url } = await bootServer(t, { router: slow, logger: writer });
+  const socket = new WebSocket(url);
+  t.after(() => socket.close());
+  const answers = [];
+  socket.addEventListener('message', (event) => answers.push(JSON.parse(String(event.data))));
+  await new Promise((resolve) => socket.addEventListener('open', resolve));
+  const call = (id, method, extra = {}) =>
+    socket.send(JSON.stringify({ type: 'call', id, method, args: {}, ...extra }));
+  for (let i = 0; i < 3; i++) call(`u${i}`, 'unit/nope');
+  for (let i = 0; i < 3; i++) call(`f${i}`, 'unit/locked');
+  // A deadline of the caller's own, shorter than anything the procedure set.
+  for (let i = 0; i < 3; i++) call(`d${i}`, 'unit/slow', { timeout: 5 });
+  for (let i = 0; i < 3; i++) socket.send('{not json');
+  call('own', 'unit/capped');
+  await waitFor(() => answers.length === 13, 'every packet is answered');
+  assert.deepStrictEqual(
+    all('call.unknown').map((entry) => entry.level),
+    ['warn', 'debug', 'debug'],
+  );
+  assert.deepStrictEqual(
+    all('packet.malformed').map((entry) => entry.level),
+    ['warn', 'debug', 'debug'],
+  );
+  const answersOf = (code) => all('rpc.error').filter((entry) => entry.code === code);
+  // 403: the calls that needed a session. 408: the caller's deadlines — and
+  // the one the PROCEDURE's own timeout cut, which stays an error.
+  assert.deepStrictEqual(
+    answersOf(403).map((entry) => entry.level),
+    ['warn', 'debug', 'debug'],
+  );
+  const timeouts = answersOf(408);
+  assert.deepStrictEqual(
+    timeouts.filter((entry) => entry.id !== 'own').map((entry) => entry.level),
+    ['warn', 'debug', 'debug'],
+  );
+  assert.strictEqual(timeouts.find((entry) => entry.id === 'own').level, 'error');
+});
+
+// --- A mistyped cors option is said, not ignored ------------------------------
+
+test('RpcServer: cors.origin is refused, an unknown cors key is a warning, a bad origins is a TypeError', () => {
+  const { RpcServer } = require('../../src/rpc/core.js');
+  const build = (cors, logger = false) => new RpcServer({ router, logger, cors });
+  // The spelling of the `cors` package: it left the allowlist empty, and an
+  // upgrade from any origin was accepted.
+  assert.throws(() => build({ origin: 'https://app.example' }), /cors\.origin is not an option.*origins/);
+  assert.throws(() => build({ origins: 42 }), /cors\.origins must be/);
+  assert.throws(() => build({ origins: ['https://a.example', 7] }), /cors\.origins must be/);
+  assert.throws(() => build('https://app.example'), /cors must be an object/);
+  const { writer, all } = recorder();
+  build({ origins: ['https://app.example'], credential: true, methods: 'POST' }, writer);
+  assert.deepStrictEqual(
+    all('cors.option').map((entry) => [entry.level, entry.key]),
+    [['warn', 'credential']],
+  );
+  assert.doesNotThrow(() =>
+    build({ origins: () => true, credentials: true, headers: 'Content-Type', metaHeaders: [] }),
+  );
+  assert.doesNotThrow(() => build(null));
 });

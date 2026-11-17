@@ -48,7 +48,9 @@ a status outside 200–599 throws immediately. Subscriptions cannot carry a
 mapping — they are already refused on plain HTTP.
 
 Routing rules match find-my-way's: one tree per verb, a static segment beats
-a parameter, and within one verb a duplicate path or two different parameter
+a parameter — and gives way to it when no route ends under the static one
+(with `/users/me/settings` and `/users/:id` declared, `GET /users/me` is
+`:id`) — and within one verb a duplicate path or two different parameter
 names at the same position **throw when the router is built**, naming both
 procedures. A known path hit with the wrong verb answers **405** with an
 `Allow` header. Errors on a mapped route answer the wire error object —

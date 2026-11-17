@@ -2,7 +2,7 @@
 
 const crypto = require('node:crypto');
 
-const { Emitter, jsonParse } = require('../utils.js');
+const { Emitter, jsonParse, backoffDelay } = require('../utils.js');
 const { generateUUID } = require('../runtime/node.js');
 const { createLoggerWriter } = require('../logging.js');
 const { DISABLED, SPAN_KIND_CONSUMER } = require('../telemetry/shared.js');
@@ -59,7 +59,15 @@ const normalizeRoomsFilter = (rooms) => {
     const set = new Set(rooms);
     return (room) => set.has(room);
   }
-  if (rooms instanceof RegExp) return (room) => rooms.test(room);
+  // A /g or /y expression remembers where its last match ended: tested
+  // again from there, the same room answered true, false, true — and every
+  // other presence delta of that room was dropped.
+  if (rooms instanceof RegExp) {
+    return (room) => {
+      rooms.lastIndex = 0;
+      return rooms.test(room);
+    };
+  }
   return null;
 };
 
@@ -86,6 +94,10 @@ const instanceOfClientId = (id) => {
   return dot > 0 ? id.slice(0, dot) : null;
 };
 
+// What an envelope's `t` may be. The metric that counts envelopes is labelled
+// with it, and the value is whatever was published to the channel: anything
+// outside this set is one `<unknown>` series, not a series of its own.
+const ENVELOPE_TYPES = new Set(['hello', 'state', 'digest', 'sync', 'delta', 'bye', 'e', 'q', 'a', 'cmd']);
 // Refusal keys remembered for rate-limiting their lines at once (#loud).
 const MAX_REFUSED_KEYS = 1024;
 // Refusals in a row for a sender's clock before it is called 'degraded'.
@@ -290,7 +302,8 @@ class Cluster extends Emitter {
               this.#log.error({ err: e, event: 'cluster.listener', name: 'degraded' }),
             );
           }
-          const delay = Math.min(30_000, 500 * 2 ** attempt);
+          // Jittered, as the rooms backplane's is: no two instances retry in step.
+          const delay = backoffDelay({ attempt, minDelay: 500, maxDelay: 30_000 });
           const timer = setTimeout(() => {
             if (!this.#closed) this.#subscribeTo(channel, attempt + 1);
           }, delay);
@@ -317,7 +330,7 @@ class Cluster extends Emitter {
   #snapshot() {
     const snapshot = this.#local.snapshot();
     if (!this.#roomsFilter) return snapshot;
-    const rooms = {};
+    const rooms = { __proto__: null };
     for (const room in snapshot.rooms) {
       if (this.#roomsFilter(room)) rooms[room] = snapshot.rooms[room];
     }
@@ -648,7 +661,8 @@ class Cluster extends Emitter {
     node.rooms = new Map();
     if (rooms && typeof rooms === 'object') {
       // for...in, not Object.entries: this runs per presence snapshot per peer,
-      // and entries allocated an array plus a pair object for every room.
+      // and entries allocated an array plus a pair object for every room —
+      // 2.4× the time on a thousand rooms (bench/object-walk.js).
       for (const room in rooms) {
         const count = rooms[room];
         if (typeof count === 'number' && count > 0) node.rooms.set(room, count);
@@ -1039,7 +1053,7 @@ class Cluster extends Emitter {
     const { from, epoch, t } = envelope;
     if (from === this.#instance || typeof from !== 'string' || from.length === 0) return;
     if (this.#secret && !(this.#verify(envelope, from, binary) && this.#admit(envelope, from, channel))) return;
-    this.#otel.recordClusterMessage(typeof t === 'string' ? t : '<unknown>');
+    this.#otel.recordClusterMessage(ENVELOPE_TYPES.has(t) ? t : '<unknown>');
     if (t === 'bye') {
       // Only the life we actually track may say goodbye: a bye from a
       // PREVIOUS epoch, arriving late while the restarted process is

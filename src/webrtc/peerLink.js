@@ -32,6 +32,7 @@ const { Emitter, backoffDelay } = require('../utils.js');
 const { WrpcClient } = require('../client/core.js');
 const { ClientRtcTransport, RtcPeerTransport } = require('./transport.js');
 const { deferred } = require('./ids.js');
+const { DEFAULT_CONNECT_TIMEOUT } = require('./link.js');
 
 const REDIAL = { retries: 5, minDelay: 500, maxDelay: 10_000, factor: 2, jitter: true };
 // The remote WrpcClient's reconnect: quick, since the link itself carries
@@ -80,7 +81,13 @@ class PeerLink extends Emitter {
     super();
     const { id, instance, room, data, link, host, hostOptions, client, framing, redial, log, otel } = options;
     const { compression } = hostOptions;
-    this.#connectTimeout = options.connectTimeout ?? 0;
+    // The window a responder waits between its knocks: what the initiator's
+    // own dial is given — the link's default when the peer set none. It was
+    // `?? 0`, and a peer that sets none is every peer by default: the
+    // re-arm below fired at once, so all the knocks of the redial budget
+    // went out inside one backoff step and the link was abandoned while
+    // the initiator's first dial had not had time to fail.
+    this.#connectTimeout = options.connectTimeout > 0 ? options.connectTimeout : DEFAULT_CONNECT_TIMEOUT;
     this.#port = port;
     this.#id = id;
     this.#instance = instance;
@@ -493,6 +500,7 @@ class PeerLink extends Emitter {
 
   #error(error) {
     this.#log.error({ err: error, event: 'rtc.peer.error', peer: this.#id });
+    // Logged above; a listener that throws from 'error' goes no further.
     if (this.listenerCount('error') > 0) return void this.emit('error', error).catch(() => {});
     this.#port.escalate(error, this);
   }

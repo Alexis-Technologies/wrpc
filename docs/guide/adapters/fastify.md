@@ -198,6 +198,23 @@ onRequest hooks, auth, schema validation, serialization — runs exactly as
 for a real request. Route errors flow back with their status, message and
 `details`.
 
+The injected request arrives from inside the process — past the proxy that
+strips client-supplied headers at your edge. So its headers are yours:
+`mirror.headers(context)` derives them from the session, and nothing a caller
+passes can replace one of them. A caller's own `args.headers` reach the route
+only for the names you list, and never for the ones a client may not declare
+on a handshake either (`cookie`, `host`, `x-forwarded-*`, …):
+
+```js
+mirror: {
+  headers: (context) => ({ 'x-user-id': context.session.state.userId }),
+  allowHeaders: ['x-request-id', 'accept-language'], // none by default
+}
+```
+
+A path parameter that is a path of its own — `''`, `.` or `..` — is answered
+`400`: resolved by the URL parser, it would have reached another route.
+
 Rules of the collection:
 
 - Register the plugin **before** the routes it should mirror — collection
@@ -236,6 +253,9 @@ fastify.get('/internal/health', { config: { wrpc: false } }, handler);  // opt o
 
 `fastify.close()` is enough: the plugin closes the core and the engine on
 fastify's `preClose` hook.
+Calls in flight get the plugin's `drain` option (milliseconds, 0 by default) to
+finish in first — [`Server#close({ drain })`](../production#graceful-shutdown)
+under fastify: `register(wrpcFastify, { router, drain: 10_000 })`.
 
 ## Types
 

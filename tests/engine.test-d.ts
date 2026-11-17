@@ -1,5 +1,5 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as engine from '../engine.js';
+import * as engine from '../src/engine/index.js';
 import type {
   Engine,
   EngineAttachOptions,
@@ -7,8 +7,8 @@ import type {
   EngineRequest,
   EngineVerifyClientInfo,
   WrpcSocket,
-} from '../engine.js';
-import type { Connection } from '../ws.js';
+} from '../src/engine/index.js';
+import type { Connection } from '../src/websocket/ws.js';
 
 const nodeEngine = engine.createNodeEngine();
 expectType<Engine>(nodeEngine);

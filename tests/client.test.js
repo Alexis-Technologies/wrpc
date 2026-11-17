@@ -63,8 +63,9 @@ test('Client / calls', async (t) => {
     ws.on('message', async (raw) => {
       const packet = jsonParse(raw.toString()) || {};
       const { type, id, method } = packet;
-      const [unit, name] = method.split('/');
+      // Calls only: a client also says `cancel` for a call that timed out.
       if (type !== 'call') return;
+      const [unit, name] = method.split('/');
       try {
         const result = await api[unit][name].handler();
         ws.send(JSON.stringify({ type: 'callback', id, result }));
@@ -332,8 +333,9 @@ test('Client / stream', async (t) => {
       }
       if (packet.type === 'stream') return void handleIncomingStream(packet);
       const { type, id, method, args } = packet;
-      const [unit, name] = method.split('/');
+      // Calls only: a client also says `cancel` for a call that timed out.
       if (type !== 'call') return;
+      const [unit, name] = method.split('/');
       const result = await api[unit][name].handler(args, ws);
       ws.send(JSON.stringify({ type: 'callback', id, result }));
     });
@@ -395,8 +397,9 @@ test('Client / different ID generation strategies', async (t) => {
     ws.on('message', async (raw) => {
       const packet = jsonParse(raw.toString()) || {};
       const { type, id, method } = packet;
-      const [unit, name] = method.split('/');
+      // Calls only: a client also says `cancel` for a call that timed out.
       if (type !== 'call') return;
+      const [unit, name] = method.split('/');
       try {
         const result = await api[unit][name].handler();
         ws.send(JSON.stringify({ type: 'callback', id, result }));

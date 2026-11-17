@@ -3,8 +3,8 @@
 const { test } = require('node:test');
 const assert = require('node:assert');
 
-const node = require('../../encryption.js');
-const browser = require('../../encryption.browser.js');
+const node = require('../../src/encryption/index.js');
+const browser = require('../../src/encryption/browser.js');
 
 test('./encryption: the Node entry is a superset of the browser one', () => {
   for (const name of Object.keys(browser)) assert.ok(name in node, name);

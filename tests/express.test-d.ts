@@ -1,7 +1,7 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as adapter from '../express.js';
-import type { CreateWrpcOptions, WrpcMiddleware } from '../express.js';
-import type { Engine, EngineConnectionSource } from '../engine.js';
+import * as adapter from '../src/adapters/express.js';
+import type { CreateWrpcOptions, WrpcMiddleware } from '../src/adapters/express.js';
+import type { Engine, EngineConnectionSource } from '../src/engine/index.js';
 import type { RpcServer, Router } from '../index.js';
 
 type IncomingMessage = import('node:http').IncomingMessage;
@@ -25,6 +25,8 @@ expectType<RpcServer>(wrpc.rpc);
 expectType<Engine>(wrpc.engine);
 expectType<EngineConnectionSource>(wrpc.wsServer);
 expectType<Promise<void>>(wrpc.close());
+expectType<Promise<void>>(wrpc.close({ drain: 5000 }));
+expectError(wrpc.close({ drain: '5s' }));
 
 // handler: express/connect middleware, (req, res, next) => void
 expectType<void>(wrpc.handler(req, res, () => {}));

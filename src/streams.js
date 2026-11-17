@@ -336,11 +336,47 @@ class WrpcReadable extends Emitter {
   }
 }
 
+// The writables waiting to hear that their transport closed, by transport,
+// behind ONE 'close' listener on it. Each writable used to add its own: the
+// eleventh upload in flight on a client printed a MaxListenersExceededWarning
+// (a client is an Emitter of ten), and every listener added was compared with
+// all the others first. The listener is there while a writable waits and no
+// longer: a transport outlives its streams — a client's for every reconnect —
+// and is left as it was found.
+const closing = new WeakMap();
+const awaitClose = (transport, shut) => {
+  let hub = closing.get(transport);
+  if (hub === undefined) {
+    const waiting = new Set();
+    const listener = () => {
+      closing.delete(transport);
+      transport.off?.('close', listener);
+      // A copy: each of them lets go of its own entry as it shuts.
+      const shuts = Array.from(waiting);
+      for (let i = 0; i < shuts.length; i++) shuts[i]();
+    };
+    hub = { waiting, listener };
+    closing.set(transport, hub);
+    transport.on('close', listener);
+  }
+  hub.waiting.add(shut);
+  return hub;
+};
+// A writable that finished is not waiting any more; the last one out takes
+// the listener with it.
+const forgetClose = (transport, hub, shut) => {
+  if (!hub.waiting.delete(shut) || hub.waiting.size > 0 || closing.get(transport) !== hub) return;
+  closing.delete(transport);
+  transport.off?.('close', hub.listener);
+};
+
 class WrpcWritable extends Emitter {
   #waitingDrain = false;
   #closed = false;
   #ended = false;
   #onClose = null;
+  // Where #onClose waits for the transport's close (awaitClose).
+  #closing = null;
   #registry;
   // Why the receiver ended the stream (see cancel()), or null: a transport
   // that closed gives no reason.
@@ -381,12 +417,12 @@ class WrpcWritable extends Emitter {
     // closed — `closed` stayed false and a producer loop kept writing into
     // the void. Now every writable notices the disconnect, backpressured
     // or not — and lets go of the transport once finished (#detach).
-    if (typeof transport.once === 'function') {
+    if (typeof transport.on === 'function') {
       this.#onClose = () => {
         this.#onClose = null;
         this.#shut();
       };
-      transport.once('close', this.#onClose);
+      this.#closing = awaitClose(transport, this.#onClose);
     }
     this.init();
   }
@@ -421,7 +457,7 @@ class WrpcWritable extends Emitter {
   // transport that dies first.
   #detach() {
     if (!this.#ended || this.#waitingDrain || this.#onClose === null) return;
-    this.transport.off?.('close', this.#onClose);
+    forgetClose(this.transport, this.#closing, this.#onClose);
     this.#onClose = null;
   }
 

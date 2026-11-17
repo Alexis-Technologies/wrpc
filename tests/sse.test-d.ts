@@ -1,6 +1,6 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as sse from '../sse.js';
-import type { ClientSseTransport, SseChannels, SseEvent, SseOptions, SseParser, SseWriter } from '../sse.js';
+import * as sse from '../src/sse/index.js';
+import type { ClientSseTransport, SseChannels, SseEvent, SseOptions, SseParser, SseWriter } from '../src/sse/index.js';
 import type { HttpCall, RpcServerOptions, Router } from '../index.js';
 
 expectType<typeof SseParser>(sse.SseParser);
@@ -11,6 +11,9 @@ expectType<Record<string, string>>(sse.SSE_HEADERS);
 
 // The parser is incremental: a chunk yields the events it completed
 const parser = new sse.SseParser();
+// One event is capped while it is put together (16 MiB by default)
+expectType<SseParser>(new sse.SseParser({ maxMessage: 1024 * 1024 }));
+expectError(new sse.SseParser({ maxMessage: '1MiB' }));
 expectType<Array<SseEvent>>(parser.push('data: hi\n\n'));
 const [event] = parser.push('');
 expectType<string | null>(event.id);

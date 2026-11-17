@@ -16,6 +16,23 @@ const {
   resolveGenerateId,
   checkLimit,
 } = require('../utils.js');
+
+// A timeout as a timer takes it: a number of milliseconds, up to 2^31 - 1.
+// `callTimeout: '300'` — a value straight out of an environment variable —
+// used to be added to Date.now() as a string: a deadline a quadrillion
+// milliseconds away, so no call ever timed out, and a one-millisecond timer
+// re-armed eight hundred times a second with a TimeoutOverflowWarning each.
+const timeoutOf = (name, value) => {
+  if (typeof value === 'number' && value > 0 && value < 2 ** 31) return value;
+  throw new TypeError(`WrpcClient: ${name} must be a number of milliseconds from 1 to 2^31 - 1`);
+};
+
+// How many cancelled calls a client remembers the ids of (see #cancel).
+const MAX_CANCELLED = 1024;
+
+// The Emitter's own methods, for the one place that must not read them off a
+// unit (see #handleEvent).
+const UNIT = Emitter.prototype;
 const { generateUUID } = require('../runtime/node.js');
 const { chunkDecode } = require('../chunks.js');
 const { hasBytes, encodeAttachments, decodeAttachments, isAttachmentsFrame } = require('../attachments.js');
@@ -654,7 +671,7 @@ class WrpcClient extends Emitter {
     // reconnect would be noise in a browser console nobody asked for.
     this.#log = createLoggerWriter(logger);
     this.#otel = createClientTelemetry(telemetry);
-    if (callTimeout) this.#callTimeout = callTimeout;
+    if (callTimeout) this.#callTimeout = timeoutOf('callTimeout', callTimeout);
     const { streamIdleTimeout, maxStreams, maxStreamBuffer } = options;
     if (streamIdleTimeout !== undefined) {
       this.#streamIdleTimeout = checkLimit('WrpcClient', 'streamIdleTimeout', streamIdleTimeout);
@@ -784,6 +801,7 @@ class WrpcClient extends Emitter {
     }
     this.#resetSession();
     this.#opened = Promise.reject(new TypeError('The transport opened a session it did not encrypt'));
+    // Handled from birth: it is whoever awaits open() that is told.
     this.#opened.catch(() => {});
     return true;
   }
@@ -1048,7 +1066,7 @@ class WrpcClient extends Emitter {
       // The guard keeps a refresh from running inside the hook that would
       // itself be re-run by it (see #maybeRefresh).
       this.#authenticating = true;
-      await this.#authenticate(this, { reconnected, attempts });
+      await this.#within(this.#authenticate(this, { reconnected, attempts }));
     } catch (error) {
       this.#log.warn({ event: 'authenticate.failed', err: error, attempts, url: this.url });
       void this.emit('authenticate-failed', { error, attempts, reconnected }).catch((e) =>
@@ -1279,6 +1297,24 @@ class WrpcClient extends Emitter {
     }
   }
 
+  // A hook of the application's that the connection waits on — `headers()`,
+  // `meta()`, `authenticate`, `refresh` — raced against `connectTimeout`,
+  // like the handshake between them. They ran outside it: one that never
+  // settled (a token read from a store that hangs, a sign-in call with no
+  // deadline of its own) left `connect()` pending for good, and on a
+  // reconnect left the cycle with nothing to schedule the next attempt —
+  // the very thing connectTimeout is there to prevent. Expiry is the 408 the
+  // handshake's own expiry is, and takes the path a failed hook takes.
+  #within(pending) {
+    const ms = this.#connectTimeout;
+    if (!(ms > 0)) return pending;
+    let timer = null;
+    const expired = new Promise((resolve, reject) => {
+      timer = unref(setTimeout(() => reject(new WrpcError(CONNECT_TIMEOUT_ERROR)), ms));
+    });
+    return Promise.race([pending, expired]).finally(() => clearTimeout(timer));
+  }
+
   // Re-evaluated on EVERY open, the function form included: a version bump,
   // a rotated device id or a fresh bearer token is picked up by the
   // reconnect that follows, not frozen at construction.
@@ -1301,7 +1337,8 @@ class WrpcClient extends Emitter {
       // string map), so the two transports quietly disagreed. Meta keeps its
       // JSON types here — only the prefixed carrier flattens them.
       if (this.#headers) {
-        options.headers = normalizeDeclared(await this.#resolveDeclared(this.#headers), true, this.#log);
+        const declared = await this.#within(this.#resolveDeclared(this.#headers));
+        options.headers = normalizeDeclared(declared, true, this.#log);
       }
       if (this.#meta) {
         // The prefixed carrier makes every value a header value, so it
@@ -1310,7 +1347,8 @@ class WrpcClient extends Emitter {
         // is about the bag the SERVER observes, not about the wire, and a
         // bag whose shape changed with the transport would break it.
         const prefixed = this.#metaFormat === 'prefixed';
-        options.meta = normalizeDeclared(await this.#resolveDeclared(this.#meta), prefixed, this.#log);
+        const declared = await this.#within(this.#resolveDeclared(this.#meta));
+        options.meta = normalizeDeclared(declared, prefixed, this.#log);
         if (prefixed) options.metaPrefixed = true;
       }
     }
@@ -1494,7 +1532,9 @@ class WrpcClient extends Emitter {
         frame = this.#codec.encode(packets);
       } else {
         // Concatenated in place: map() built a throwaway array of the very
-        // texts already sitting in `pending`, just to hand them to join().
+        // texts already sitting in `pending`, just to hand them to join() —
+        // 2.65 M frames a second against 3.48 M at the default batch of ten
+        // (bench/batch-frame.js).
         frame = `[${pending[0].text}`;
         for (let i = 1; i < pending.length; i++) frame += `,${pending[i].text}`;
         frame += ']';
@@ -1526,7 +1566,7 @@ class WrpcClient extends Emitter {
   getStream(id) {
     const stream = this.#streams.get(id);
     if (stream) return stream;
-    throw new Error(`Stream ${id} is not initialized`);
+    throw new Error(`Stream ${shown(id)} is not initialized`);
   }
 
   createStream(name, size) {
@@ -1611,8 +1651,10 @@ class WrpcClient extends Emitter {
   }
 
   async #handleParsed(data, packet) {
-    // The answer to a call is the commonest inbound packet: settle it here,
-    // before the batch and heartbeat checks and without the #dispatch hop.
+    // The answer to a call is the commonest inbound packet, so its branch
+    // is the first of the chain — the one ordering that is free, a chain
+    // being linear in a branch's position (bench/dispatch.js) — and it is
+    // settled here, without the #dispatch hop.
     if (packet.type === 'callback' && packet.id && !this.#proxyPacket) return void this.#settle(packet);
     // A batch frame answers several packets at once; each one is dispatched
     // exactly as it would have been on its own.
@@ -1667,7 +1709,7 @@ class WrpcClient extends Emitter {
     // The 499 acknowledging a cancel this client sent: the caller was
     // rejected the moment it aborted, so the ack is expected, not an error.
     if (this.#cancelled.delete(id)) return;
-    if (!error) throw new Error(`Callback ${id} not found`);
+    if (!error) throw new Error(`Callback ${shown(id)} not found`);
     // An error on an id that is no call's is the server's word on a STREAM
     // this client sends — the announcement refused (429), a chunk past the
     // announced size (400) or past what the server holds unread (413), a
@@ -1783,10 +1825,14 @@ class WrpcClient extends Emitter {
       this.send({ type: 'callback', id, result });
     } catch (error) {
       const code = typeof error?.code === 'number' ? error.code : 500;
-      const wire = { message: error?.message ?? 'Responder failed', code };
-      // Same exposure rule the server applies: 4xx details are part of the
-      // conversation, a 5xx's internals stay here unless the error opts in.
-      if (error?.details !== undefined && (code < 500 || error.expose === true)) wire.details = error.details;
+      // Same exposure rule the server applies, to the message as to the
+      // details: a 4xx is part of the conversation, a 5xx's internals stay
+      // here unless the error opts in. The message used to travel whatever
+      // the code — `Cannot read properties of null (reading 'secretField')`
+      // to whoever asked, which over a mesh is another peer.
+      const said = code < 500 || error?.expose === true;
+      const wire = { message: (said && error?.message) || 'Responder failed', code };
+      if (said && error?.details !== undefined) wire.details = error.details;
       this.send({ type: 'callback', id, error: wire });
     }
   }
@@ -1806,8 +1852,14 @@ class WrpcClient extends Emitter {
         // client put there itself is a real unit — anything else is an event
         // nobody is listening for.
         const apiUnit = this.api[unit];
-        if (eventName && apiUnit instanceof Emitter && apiUnit.listenerCount(eventName) > 0) {
-          return void (await apiUnit.emit(eventName, data));
+        // The Emitter's own methods, never the unit's: a unit also carries
+        // the server's procedures by name, and one named `listenerCount` or
+        // `emit` is a property of this very object. Read off the unit, the
+        // first answered a Promise — never greater than 0, so every event
+        // of that unit was unhandled — and the second CALLED the server's
+        // `emit` procedure with each event that arrived.
+        if (eventName && apiUnit instanceof Emitter && UNIT.listenerCount.call(apiUnit, eventName) > 0) {
+          return void (await UNIT.emit.call(apiUnit, eventName, data));
         }
       }
     }
@@ -1861,7 +1913,7 @@ class WrpcClient extends Emitter {
     // hold is not an error: its announcement was refused here, or the stream
     // is long over. It is what a sender told to stop sends back.
     if (!stream && status === 'terminate') return;
-    if (!stream) throw new Error(`Stream ${id} is not initialized`);
+    if (!stream) throw new Error(`Stream ${shown(id)} is not initialized`);
     if (status !== 'end' && status !== 'terminate') return;
     // Its sender ended it: nothing is left to stop.
     stream.onCancel = null;
@@ -1915,13 +1967,15 @@ class WrpcClient extends Emitter {
     let view = input;
     if (!(view instanceof Uint8Array)) {
       const converted = Promise.resolve(this.#converting).then(() => toByteView(input));
+      // `converted` is awaited below, where a failure is thrown; the chain only
+      // keeps the order for the chunk behind this one.
       this.#converting = converted.catch(() => {});
       view = await converted;
     }
     const { id, payload } = chunkDecode(view);
     const stream = this.#streams.get(id);
     if (!stream) {
-      throw new Error(`Stream ${id} is not initialized`);
+      throw new Error(`Stream ${shown(id)} is not initialized`);
     }
     // Nothing here can hold the sender back — a browser's WebSocket has no
     // pause, and no transport waits for this push — so what the streams
@@ -1995,7 +2049,9 @@ class WrpcClient extends Emitter {
     // methods — scaffolding them would SHADOW the unit Emitter's own `on`.
     const methodNames = [];
     for (const name of Object.keys(instance)) {
-      if (name !== 'on' && name !== 'emits') methodNames.push(name);
+      // `__proto__` is no method either: assigned, it would replace the
+      // unit's prototype, and the unit would stop being an Emitter.
+      if (name !== 'on' && name !== 'emits' && name !== '__proto__') methodNames.push(name);
     }
     const previous = this.#unitMethods.get(unit);
     if (previous) {
@@ -2089,7 +2145,7 @@ class WrpcClient extends Emitter {
     // assigned — or that call would join the run that is awaiting it.
     if (this.#refreshing) return this.#refreshing;
     this.#refreshing = Promise.resolve()
-      .then(() => this.#refresh(this, error))
+      .then(() => this.#within(this.#refresh(this, error)))
       .then(
         (value) => {
           this.#otel.recordRefresh('ok');
@@ -2153,14 +2209,16 @@ class WrpcClient extends Emitter {
     // uses it, and it RIDES THE PACKET so the server shortens the
     // procedure's own budget to match — no point finishing work whose
     // caller already gave up. Additive field; absent unless set.
-    if (options.timeout > 0) packet.timeout = options.timeout;
-    if (!this.#otel.enabled) return this.#dispatchCall(target, packet, id, signal, options.timeout);
+    // Checked like `callTimeout`: nothing, or a delay a timer can hold.
+    const timeout = options.timeout ? timeoutOf('timeout', options.timeout) : 0;
+    if (timeout > 0) packet.timeout = timeout;
+    if (!this.#otel.enabled) return this.#dispatchCall(target, packet, id, signal, timeout);
     const started = now();
     return this.#otel.withSpan({ packet, target }, (handle) => {
       // Injected INSIDE the span so the traceparent names this call's span,
       // which is what the server will pick up as its parent.
       this.#otel.inject(packet);
-      return this.#dispatchCall(target, packet, id, signal, options.timeout).then(
+      return this.#dispatchCall(target, packet, id, signal, timeout).then(
         (result) => {
           this.#otel.endSpan(handle, { 'wrpc.status': 'ok' });
           this.#otel.recordCall(target, 'ok', now() - started);
@@ -2298,10 +2356,7 @@ class WrpcClient extends Emitter {
           // Still queued: drop it instead of racing a cancel ahead of the
           // call. And a request/response transport cannot carry a cancel at
           // all — sending one there only earns a 400 nobody can route.
-          if (!this.#unqueue(id) && this.active && this.#transport.persistent !== false) {
-            this.#cancelled.add(id);
-            this.send({ type: 'cancel', id });
-          }
+          if (!this.#unqueue(id)) this.#cancel(id);
           reject(new WrpcError(CANCELLED_ERROR));
         };
         release = () => signal.removeEventListener('abort', onAbort);
@@ -2383,9 +2438,34 @@ class WrpcClient extends Emitter {
     const call = this.#calls.get(id);
     if (!call) return;
     this.#calls.delete(id);
-    this.#unqueue(id);
+    const queued = this.#unqueue(id);
     call.release?.();
     call.reject(new WrpcError(REQUEST_TIMEOUT_ERROR));
+    // The caller is gone, and the server is told so — as it is for an abort.
+    // It used to go on with the call, and its answer, when it came, was a
+    // callback nobody waited for: an 'error' for every call that had timed
+    // out (`Callback <id> not found`).
+    if (!queued) this.#cancel(id);
+  }
+
+  // Tells the server a call has no caller any more, where the connection can
+  // carry that (a request/response transport cannot: a cancel there only
+  // earns a 400 nobody can route), and remembers the id so that whatever
+  // still comes back for it — the 499 that acknowledges the cancel, or the
+  // answer that crossed it on the wire — is expected, not an error. The ids
+  // remembered are bounded: one a server never answers at all stays until
+  // the connection closes, and how many of those there are is not this
+  // side's to say.
+  #cancel(id) {
+    if (!this.active || this.#transport.persistent === false) return;
+    const cancelled = this.#cancelled;
+    cancelled.add(id);
+    if (cancelled.size > MAX_CANCELLED) cancelled.delete(cancelled.values().next().value);
+    try {
+      this.send({ type: 'cancel', id });
+    } catch {
+      // The connection died meanwhile: there is nobody to tell.
+    }
   }
 
   // Drops a call's bookkeeping: its map entry, its deadline bucket (and the

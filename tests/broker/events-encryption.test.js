@@ -5,8 +5,8 @@ const assert = require('node:assert');
 
 const { RpcServer } = require('../../src/rpc/core.js');
 const { defineRouter, procedure } = require('../../index.js');
-const { MemoryBroker, createPublisher, attachConsumers, brokerFeed } = require('../../broker.js');
-const { generateKey } = require('../../encryption.js');
+const { MemoryBroker, createPublisher, attachConsumers, brokerFeed } = require('../../src/broker/index.js');
+const { generateKey } = require('../../src/encryption/index.js');
 const { HEADER_SEALED } = require('../../src/broker/sealing.js');
 const { quiet, waitFor, collect } = require('./support.js');
 const { bootServer, connectClient } = require('../helpers/server.js');
@@ -414,7 +414,7 @@ test('events encryption: headers are strings whether the message was sealed or n
 });
 
 test('events encryption: a dead letter stays sealed on the queue, opens for onDeadLetter, a re-drive and by hand', async (t) => {
-  const { openSealedMessage } = require('../../broker.js');
+  const { openSealedMessage } = require('../../src/broker/index.js');
   const broker = new MemoryBroker({ logger: quiet });
   t.after(() => broker.close());
   const keys = generateKey();

@@ -389,3 +389,28 @@ test('Sequencer: idle settles once everything pushed has been delivered', async 
   assert.deepStrictEqual(seen, ['a', 'b']);
   assert.strictEqual(queue.pending, 0);
 });
+
+test('native (browser): a format the platform lacks is refused alone and skipped in a list, as on Node', (t) => {
+  const saved = { c: globalThis.CompressionStream, d: globalThis.DecompressionStream };
+  t.after(() => {
+    globalThis.CompressionStream = saved.c;
+    globalThis.DecompressionStream = saved.d;
+  });
+  // A browser whose streams know deflate-raw and nothing else.
+  class OnlyDeflate {
+    constructor(format) {
+      if (format !== 'deflate-raw') throw new TypeError(`Unsupported compression format: '${format}'`);
+    }
+  }
+  globalThis.CompressionStream = OnlyDeflate;
+  globalThis.DecompressionStream = OnlyDeflate;
+  // It answered null whatever was asked: `codec: 'zstd'` compressed nothing, in silence.
+  assert.throws(() => browser.nativeCompressor({ algorithm: 'zstd' }), /CompressionStream has no zstd/);
+  assert.throws(() => browser.nativeCompressor({ algorithm: 'brotli' }), /CompressionStream has no brotli/);
+  assert.strictEqual(browser.nativeCompressor({ algorithm: 'zstd', optional: true }), null, 'a list moves on');
+  assert.strictEqual(browser.nativeCompressor({ algorithm: 'deflate-raw' }).id, 'deflate-raw');
+  // No streams at all: the platform has no codec, and the default stays off.
+  globalThis.CompressionStream = undefined;
+  globalThis.DecompressionStream = undefined;
+  assert.strictEqual(browser.nativeCompressor(), null);
+});

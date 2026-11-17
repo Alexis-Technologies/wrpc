@@ -27,13 +27,16 @@
 
 const { createLoggerWriter } = require('../../logging.js');
 const { TopicTails } = require('../tail.js');
-const { codedError, toText, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
+const { codedError, toText, toBytes, toHeaders, reasonText, tokenEncoder } = require('../ids.js');
 const { positiveInteger } = require('../retry.js');
 const { withHealth } = require('../port.js');
 const {
   ATTEMPT_HEADER,
   REDELIVERED_HEADER,
   DEAD_REASON_HEADER,
+  attemptOf,
+  producerHeaders,
+  reporter,
   TEXT_HEADER,
   DEFAULT_PREFETCH,
   idFactory,
@@ -59,7 +62,7 @@ const MILLIS = 1_000_000; // JetStream durations are nanoseconds
 const isFunction = (value) => typeof value === 'function';
 
 // One subject token, always: see the header comment.
-const token = (name) => encodeToken(name, { safe: /[A-Za-z0-9_-]/, escape: '~', maxLength: 120 });
+const token = tokenEncoder({ safe: /[A-Za-z0-9_-]/, escape: '~', maxLength: 120 });
 // A stream NAME may not contain `.`, spaces or wildcards either.
 const streamName = (prefix, kind, name) => `${prefix}_${kind}_${token(name)}`.replace(/~/g, '_');
 
@@ -106,7 +109,7 @@ const createNatsBroker = (options = {}) => {
     throw new TypeError('createNatsBroker: options.maxAckPending must be a positive integer or null');
   }
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'nats' });
-  const report = (event, error, extra = {}) => log.error({ err: error, event, ...extra });
+  const report = reporter(log);
   let closed = false;
   // The queue consumers alive on this broker, so close() stops them: a
   // consumer left pulling on a closed broker kept its keepalives and its
@@ -160,6 +163,8 @@ const createNatsBroker = (options = {}) => {
       // this is delivered, which is what the backplane's start() needs.
       return nc.flush().then(() => async () => {
         subscription.unsubscribe();
+        // The unsubscribe is local and already done; a flush that fails is a
+        // connection that is closing, which needs no telling.
         await nc.flush().catch(() => {});
       });
     },
@@ -270,6 +275,7 @@ const createNatsBroker = (options = {}) => {
         () => {
           void messages
             .close()
+            // An iterator that is already closed: the consumer is discarded either way.
             .catch(() => {})
             .then(() => discard(consumer));
         },
@@ -340,6 +346,7 @@ const createNatsBroker = (options = {}) => {
         const state = await streamState(topic);
         return Math.max(0, state.first - 1);
       })();
+      // Surfaced through the read it guards (wrapRead); never unhandled.
       earliest.catch(() => {});
       return wrapRead(
         tails.read(topic, { after: 0, signal }),
@@ -355,6 +362,7 @@ const createNatsBroker = (options = {}) => {
         throw codedError('Event history was trimmed past this id', 410);
       }
     })();
+    // Surfaced through the read it guards (wrapRead); never unhandled.
     checked.catch(() => {});
     return wrapRead(tails.read(topic, { after: position, signal }), checked);
   };
@@ -376,7 +384,7 @@ const createNatsBroker = (options = {}) => {
     const { js: stream } = await managers();
     const { name: streamId, subject, config } = queueStream(name);
     await ensureStream(streamId, subject, config);
-    await stream.publish(subject, toText(body), { headers: encodeHeaders(headers) });
+    await stream.publish(subject, toText(body), { headers: encodeHeaders(producerHeaders(headers)) });
   };
 
   const consume = async (name, onDelivery, options = {}) => {
@@ -435,7 +443,7 @@ const createNatsBroker = (options = {}) => {
     const dispatch = (message) => {
       state.inflight++;
       const headers = decodeHeaders(message.headers);
-      const base = Number(headers[ATTEMPT_HEADER] ?? '0');
+      const base = attemptOf(headers, 0);
       const deliveries = Number(message.info?.deliveryCount ?? 1);
       // A message this adapter re-published carries its attempt; further
       // naks of the SAME message add JetStream's own redeliveries.
@@ -564,6 +572,7 @@ const createNatsBroker = (options = {}) => {
       const wake = state.wake;
       state.wake = null;
       wake?.();
+      // Stopping: an iterator the connection already closed is closed.
       if (messages) await messages.close().catch(() => {});
     };
     const stop = async () => {
@@ -636,6 +645,8 @@ const createNatsBroker = (options = {}) => {
     const stop = async () => {
       listening = false;
       subscription.unsubscribe();
+      // The unsubscribe is local and already done; a flush that fails is a
+      // connection that is closing, which needs no telling.
       await nc.flush().catch(() => {});
     };
     return withHealth(stop, () => listening && !closed && !nc.isClosed?.());

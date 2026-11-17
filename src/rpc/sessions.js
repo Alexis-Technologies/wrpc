@@ -47,10 +47,6 @@ const cookieTokenTransport = (manager) => ({
 
 const createProxy = (data, save) =>
   new Proxy(data, {
-    get: (target, key) => {
-      const value = Reflect.get(target, key);
-      return value;
-    },
     set: (target, key, value) => {
       // defineProperty rather than assignment: session state can carry keys
       // that came off the wire, and a plain `state['__proto__'] = x` would
@@ -59,6 +55,17 @@ const createProxy = (data, save) =>
       Object.defineProperty(target, key, { value, enumerable: true, writable: true, configurable: true });
       if (save) save(target);
       return true;
+    },
+    // Removing a key is a write as much as setting one, and it had no trap:
+    // `delete session.state.cart` changed the object in memory and never
+    // reached the store, so the next connection of the session — or this
+    // one after a reconnect — had the key back. Saved only when there was
+    // something to remove.
+    deleteProperty: (target, key) => {
+      if (!Object.hasOwn(target, key)) return true;
+      const removed = Reflect.deleteProperty(target, key);
+      if (removed && save) save(target);
+      return removed;
     },
   });
 

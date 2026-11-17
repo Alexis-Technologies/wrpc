@@ -130,7 +130,7 @@ violation — as its `closeCode`.
 | `1002` | Protocol error | A frame violated RFC 6455 — bad opcode, bad continuation, reserved bit set. With reason `encryption`: a [session handshake](../guide/encryption#session) frame that did not verify or parse, or a sealed frame that did not open. |
 | `1006` | Abnormal closure | No close frame arrived. Never sent — it is what a local socket reports. |
 | `1007` | Invalid payload | A text frame that was not valid UTF-8. |
-| `1008` | Policy violation | With reason `encryption`: the session handshake was refused by policy — plaintext where encryption is required, an unlisted protocol or key id, `authorize` said no, the handshake timed out, or the server had too much to say before it finished. |
+| `1008` | Policy violation | With reason `encryption`: the session handshake was refused by policy — plaintext where encryption is required, an unlisted protocol or key id, `authorize` said no, the handshake timed out, the server had too much to say before it finished, or the peer sent more than the handshake holds (4,096 frames, 4 MiB) while it was still running. |
 | `1009` | Message too big | An inbound message over `maxBuffer` — or, under permessage-deflate, one that inflates past `maxPayload`. |
 | `1011` | Internal error | The engine could not continue. |
 

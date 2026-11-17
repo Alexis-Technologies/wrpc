@@ -10,7 +10,7 @@ const { test, before } = require('node:test');
 const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
-const { createKafkaBroker, decodeVector, encodeVector } = require('../../broker/kafka.js');
+const { createKafkaBroker, decodeVector, encodeVector } = require('../../src/broker/kafka/index.js');
 const { runBackplaneContract } = require('./backplaneContract.js');
 const { runLogContract } = require('./logContract.js');
 const { runQueueContract } = require('./queueContract.js');

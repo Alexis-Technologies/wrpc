@@ -127,21 +127,30 @@ const ENTRIES = [
   // `streamIdleTimeout` (a download nobody asked for was kept for the life of
   // the connection) with the timer the client arms for it. Measured 29,694 B
   // against 29,696 before the client's own limits, which take it over.
-  { label: 'main entry — browser (@alexify/wrpc)', entry: 'browser.js', platform: 'browser', budget: 30 },
+  // 30 -> 31 for what a review of the whole client found it owed its caller:
+  // the `authenticate`, `headers()` and `refresh` hooks held to
+  // `connectTimeout` (an `open()` that never settled), a timeout option that
+  // is checked (a string switched timeouts off), a call that timed out here
+  // cancelled on the server, the worker proxy routing a page's events and
+  // batches (it dropped both), an `ask` answer that no longer carries an
+  // internal error's text, one 'close' listener per transport for every
+  // upload, and the cap on stream announcements nobody claimed in the
+  // WebTransport mux. Measured 30,984 B against 30,720 (it stood at 30,474).
+  { label: 'main entry — browser (@alexify/wrpc)', entry: 'src/index.browser.js', platform: 'browser', budget: 31 },
   { label: 'main entry — node (@alexify/wrpc)', entry: 'index.js', platform: 'node' },
-  { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'ws.js', platform: 'node' },
-  { label: 'engine port (@alexify/wrpc/engine)', entry: 'engine.js', platform: 'node' },
-  { label: 'uWebSockets.js adapter (@alexify/wrpc/uws)', entry: 'uws.js', platform: 'node' },
-  { label: 'fastify adapter (@alexify/wrpc/fastify)', entry: 'fastify.js', platform: 'node' },
-  { label: 'express adapter (@alexify/wrpc/express)', entry: 'express.js', platform: 'node' },
-  { label: 'rooms backplane (@alexify/wrpc/scaling)', entry: 'scaling.js', platform: 'node' },
+  { label: 'websocket engine (@alexify/wrpc/ws)', entry: 'src/websocket/ws.js', platform: 'node' },
+  { label: 'engine port (@alexify/wrpc/engine)', entry: 'src/engine/index.js', platform: 'node' },
+  { label: 'uWebSockets.js adapter (@alexify/wrpc/uws)', entry: 'src/adapters/uws.js', platform: 'node' },
+  { label: 'fastify adapter (@alexify/wrpc/fastify)', entry: 'src/adapters/fastify.js', platform: 'node' },
+  { label: 'express adapter (@alexify/wrpc/express)', entry: 'src/adapters/express.js', platform: 'node' },
+  { label: 'rooms backplane (@alexify/wrpc/scaling)', entry: 'src/scaling/index.js', platform: 'node' },
   // The broker family is Node-only: brokers are reached from servers, never
   // from a browser bundle.
-  { label: 'broker core (@alexify/wrpc/broker)', entry: 'broker.js', platform: 'node' },
-  { label: 'redis broker (@alexify/wrpc/broker/redis)', entry: 'broker/redis.js', platform: 'node' },
-  { label: 'nats broker (@alexify/wrpc/broker/nats)', entry: 'broker/nats.js', platform: 'node' },
-  { label: 'amqp broker (@alexify/wrpc/broker/amqp)', entry: 'broker/amqp.js', platform: 'node' },
-  { label: 'kafka broker (@alexify/wrpc/broker/kafka)', entry: 'broker/kafka.js', platform: 'node' },
+  { label: 'broker core (@alexify/wrpc/broker)', entry: 'src/broker/index.js', platform: 'node' },
+  { label: 'redis broker (@alexify/wrpc/broker/redis)', entry: 'src/broker/redis/index.js', platform: 'node' },
+  { label: 'nats broker (@alexify/wrpc/broker/nats)', entry: 'src/broker/nats/index.js', platform: 'node' },
+  { label: 'amqp broker (@alexify/wrpc/broker/amqp)', entry: 'src/broker/amqp/index.js', platform: 'node' },
+  { label: 'kafka broker (@alexify/wrpc/broker/kafka)', entry: 'src/broker/kafka/index.js', platform: 'node' },
   // 12 -> 13 alongside the main-entry raise: the sse entry bundles the same
   // client core, so the REST-bridge bytes land here too. 13 -> 14 with the
   // main entry's static-introspection raise, for the same reason; 14 -> 15
@@ -176,13 +185,18 @@ const ENTRIES = [
   // 29,696.
   // 30 -> 31 with the main entry's own raise for the readable's queue and the
   // stream sweep (see there): 30,828 B against 30,720.
-  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'sse.browser.js', platform: 'browser', budget: 31 },
-  { label: 'sse — node (@alexify/wrpc/sse)', entry: 'sse.js', platform: 'node' },
-  { label: 'query bindings (@alexify/wrpc/query)', entry: 'query.js', platform: 'browser', budget: 2 },
+  // 31 -> 32 with the main entry's 30 -> 31 (see there), and for the event
+  // parser's own share: it scans each chunk once and keeps an unfinished
+  // line as pieces — one line of 2 MiB fed in 1 KiB chunks took 6.4 s, each
+  // doubling four times the time — and caps the event it is putting together
+  // (`maxMessage`). Measured 32,288 B against 31,744.
+  { label: 'sse — browser (@alexify/wrpc/sse)', entry: 'src/sse/client.js', platform: 'browser', budget: 32 },
+  { label: 'sse — node (@alexify/wrpc/sse)', entry: 'src/sse/index.js', platform: 'node' },
+  { label: 'query bindings (@alexify/wrpc/query)', entry: 'src/query/index.js', platform: 'browser', budget: 2 },
   // Browser-reachable like query (stores + bearerAuth ship to pages), and
   // deliberately OUTSIDE the main entry so only apps that opt into the
   // strategies pay for them.
-  { label: 'auth strategies (@alexify/wrpc/auth)', entry: 'auth.js', platform: 'browser', budget: 2 },
+  { label: 'auth strategies (@alexify/wrpc/auth)', entry: 'src/auth/index.js', platform: 'browser', budget: 2 },
   // The pure-JS DEFLATE codec: inflate (stored, fixed, dynamic) and a
   // fixed-Huffman encoder against a preset dictionary — browser-reachable
   // by design, and deliberately OUTSIDE every other entry so only a page
@@ -191,7 +205,7 @@ const ENTRIES = [
   // (measured 3.8 against 4.5) — the ratchet, turned the other way.
   // deflate: 4 → 5 for the two-level decoding table (the root's width no
   // longer follows the longest code a block declares) — ~100 B of bound.
-  { label: 'deflate codec (@alexify/wrpc/deflate)', entry: 'deflate.js', platform: 'browser', budget: 5 },
+  { label: 'deflate codec (@alexify/wrpc/deflate)', entry: 'src/deflate/index.js', platform: 'browser', budget: 5 },
   // Encryption: the AEAD, X25519, HKDF and keyring primitives over
   // crypto.subtle — browser-reachable, and OUTSIDE every other entry like the
   // deflate codec: the base entry carries an injection seam, the page that
@@ -203,11 +217,11 @@ const ENTRIES = [
   // (sse), HPKE's auth modes and the end-to-end helpers — measured 10.8.
   {
     label: 'encryption — browser (@alexify/wrpc/encryption)',
-    entry: 'encryption.browser.js',
+    entry: 'src/encryption/browser.js',
     platform: 'browser',
     budget: 12,
   },
-  { label: 'encryption — node (@alexify/wrpc/encryption)', entry: 'encryption.js', platform: 'node' },
+  { label: 'encryption — node (@alexify/wrpc/encryption)', entry: 'src/encryption/index.js', platform: 'node' },
   // A peer is a client AND a server: the webrtc browser entry bundles the
   // client core plus the router, dispatcher, per-peer Client, rooms and
   // Broadcast (what makes a mesh broadcast/ask one fan-out: serialized,
@@ -291,12 +305,19 @@ const ENTRIES = [
   // a reader that is behind held to `maxStreamBuffer` on a channel nothing
   // can pause, and the per-connection sweep of streams nobody reads.
   // Measured 61,602 B against 61,440.
-  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'webrtc.browser.js', platform: 'browser', budget: 61 },
-  { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'webrtc.js', platform: 'node' },
+  // 61 -> 62 for the same review as the main entry's 30 -> 31 — the client
+  // half a peer carries — and for the server half in a peer host: a call or
+  // subscription slot released on every path out of the dispatcher (a
+  // `meta` too deep to measure used to hold one for good), a caller's
+  // `timeout` bounded, peer text escaped before it reaches a log line, the
+  // lines a peer can cause said once and then at debug, and the signaling
+  // lookups counted per connection. Measured 63,308 B against 62,464.
+  { label: 'webrtc — browser (@alexify/wrpc/webrtc)', entry: 'src/webrtc/browser.js', platform: 'browser', budget: 62 },
+  { label: 'webrtc — node (@alexify/wrpc/webrtc)', entry: 'src/webrtc/index.js', platform: 'node' },
   // The server half of WebTransport (session contract, socket shim, host
   // adapters); the client transport is in the main entry, so this never
   // reaches a browser.
-  { label: 'webtransport — node (@alexify/wrpc/wt)', entry: 'wt.js', platform: 'node' },
+  { label: 'webtransport — node (@alexify/wrpc/wt)', entry: 'src/webtransport/index.js', platform: 'node' },
 ];
 
 // A browser entry has to be self-contained: no node builtins, and no packages
@@ -349,7 +370,9 @@ async function main() {
     // accidental bloat, not a target: raise it deliberately, in the same
     // change that earns the bytes.
     if (budget !== undefined && gzip > budget * 1024) {
-      over.push(`${entry}: ${kb(gzip)} min+gzip is over its ${budget} KB budget`);
+      // The bytes too: a raise is written down to the byte (see the comments
+      // over ENTRIES), and a rounded figure cannot say by how much it crossed.
+      over.push(`${entry}: ${kb(gzip)} min+gzip (${gzip} B) is over its ${budget} KB budget (${budget * 1024} B)`);
     }
     rows.push({
       label,

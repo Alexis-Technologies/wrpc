@@ -7,8 +7,8 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
-const { createNatsBroker } = require('../../broker/nats.js');
-const { isBroker } = require('../../broker.js');
+const { createNatsBroker } = require('../../src/broker/nats/index.js');
+const { isBroker } = require('../../src/broker/index.js');
 const { createFakeNats } = require('./fakeNats.js');
 const { runBackplaneContract } = require('./backplaneContract.js');
 const { runLogContract } = require('./logContract.js');

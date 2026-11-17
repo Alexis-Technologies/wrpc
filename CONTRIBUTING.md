@@ -19,7 +19,7 @@ There is no build step: `src/` ships as-is.
 pnpm test              # node --test, recursive over tests/
 pnpm test:coverage     # c8 over src/ — thresholds 95 lines / 95 statements / 90 branches / 95 functions
 pnpm test:ci           # test:coverage as CI runs it: a 5 min per-test timeout and a forced exit, so a leak fails instead of hanging
-pnpm test:coverage:floors  # per-file floors for the directories new in 2.0 — run right after test:coverage, it reads what that left
+pnpm test:coverage:floors  # per-file floors, a directory at a time — run right after test:coverage, it reads what that left
 pnpm test:types        # tsd against the .d.ts files
 pnpm test:perf         # the 1 GiB stream memory guard
 pnpm lint              # oxlint
@@ -49,8 +49,10 @@ an imported class. Nothing under `src/` may `require()` a framework.
 
 **A `.d.ts` change and its `tsd` test land together.** The declarations are
 hand-maintained, one file per subpath, and they drift silently otherwise. Every
-new subpath brings a root shim, a root `.d.ts`, an `exports` entry, a `files`
-entry and a `tests/<name>.test-d.ts`.
+new subpath brings its entry under `src/` with a `.d.ts` beside it, an
+`exports` entry (`types` first), its `typesVersions` line, a `scripts/size.js`
+row and a `tests/<name>.test-d.ts` — the package root holds the main entry
+(`index.js`, `index.d.ts`) and nothing else.
 
 **`tsd` type-checks with `@tsd/typescript` (5.9), not the repo's own
 `typescript`.** A type relying on newer inference has to be checked against
@@ -84,14 +86,14 @@ without a working `uWebSockets.js` binary can still run the suite. CI has them
 all.
 
 Coverage has two gates. `test:coverage` checks the global thresholds — an
-average, behind which one thin new file hides. So the directories that are
-new in 2.0 (`src/broker`, `src/webtransport`, `src/encryption`, `src/webrtc`,
-`src/compression`, `src/deflate`) are also held **per file** by
-`test:coverage:floors` (`scripts/coverage-floors.js` has the numbers and the
-one exception). Only those: the 1.0 files below these floors predate the rule,
-and a floor low enough to admit them would hold nothing. A floor moves up when
-its directory's weakest file improves — never down to let a change in; cover
-the new branch instead.
+average, behind which one thin file hides. So every file of the source
+directories — `src/rpc`, `src/client`, `src/websocket`, `src/sse`,
+`src/adapters`, and the ones new in 2.0: `src/broker`, `src/webtransport`,
+`src/encryption`, `src/webrtc`, `src/compression`, `src/deflate` — is also
+held **per file** by `test:coverage:floors`, each directory to a floor of its
+own (`scripts/coverage-floors.js` has the numbers and the one exception). A
+floor moves up when its directory's weakest file improves — never down to let
+a change in; cover the new branch instead.
 
 > **A leaked uws engine hangs `node --test` forever.** A standalone engine holds
 > a native listen socket; if a test fails an assertion before its cleanup line
@@ -135,7 +137,11 @@ Checks deliberately **not** in CI — run them by hand:
   and `INFORMATIONAL` do not — and so does a run the fuzzing client cut
   short (it gives up on the suite when one connect times out). Run it on an
   otherwise idle Docker: with the four broker containers up, the emulated
-  client image loses the server half-way.
+  client image loses the server half-way. Where it still does — an emulated
+  amd64 image on an arm64 host — `node scripts/autobahn/run.js --slices` runs
+  the suite a case group at a time, one container each, and repeats a group
+  whose client lost the server instead of failing the whole run; the verdict
+  is the sum and fails if the groups add up to fewer than the 517 cases.
 - `pnpm test:perf` — the 1 GiB stream memory guard.
 - `WRPC_RTC=node-datachannel node --test tests/webrtc/node-datachannel.integration.test.js`
   — the WebRTC port contract against a real implementation (the fake in
@@ -191,10 +197,18 @@ tree to keep that true.
 Releases are **manual**. Nothing in the tooling bumps a version, tags, or
 publishes.
 
-1. **Green everything** on the release commit:
+1. **Green everything** on the release commit — what CI's three always-on
+   jobs run, chained so a gate that fails stops the chain:
    ```bash
-   pnpm lint && pnpm format:check && pnpm test:coverage && pnpm test:types && pnpm size && pnpm docs:build
+   pnpm lint && pnpm format:check && pnpm test:ci && pnpm test:coverage:floors && pnpm test:types && pnpm size && pnpm docs:build
    ```
+   `test:coverage:floors` reads what `test:ci` left in `coverage/tmp`, so it
+   runs right after it. CI's `test` job is a matrix of Node 22, 24 and 26, and
+   they differ (Node 22's runner cancels a file whose event loop goes empty):
+   run the suite on each before calling it green. Then the suites CI
+   deliberately does not run — the list under [Tests](#tests): Autobahn in
+   both modes, `pnpm test:perf`, the WebRTC and WebTransport integration
+   suites, the four broker ones.
    `tests/package/consistency.test.js` already fails this step if
    `docs/.vitepress/config.mts`'s keywords or nav version label drift from
    `package.json` — there is no separate manual sync step for either.
@@ -215,14 +229,15 @@ publishes.
    included) — publishing an already-used version is a rejected
    `npm publish`, not a warning.
 4. **Check what would ship.** `files` in `package.json` is an explicit
-   allowlist, so a new root shim or `.d.ts` that was not added to it silently
-   disappears from the tarball:
+   allowlist — the main entry, `bin/`, `src/` and the four documents — so a
+   root file that was not added to it silently disappears from the tarball:
    ```bash
    npm publish --dry-run
    ```
-   Verify the file list contains every root shim, every `.d.ts`, `bin/`, `src/`,
-   and **not** `docs/`, `tests/`, `bench/`, `scripts/`, `examples/` or
-   `coverage/`.
+   Verify the file list contains `index.js`, `index.d.ts`, `bin/` and `src/`
+   with every `.d.ts` in it, **no** `CLAUDE.md` (`!**/CLAUDE.md` keeps the
+   agents' files out; a test asks npm's own packing list), and **not**
+   `docs/`, `tests/`, `bench/`, `scripts/`, `examples/` or `coverage/`.
 5. **Verify the tarball resolves**, CommonJS and ESM alike. In a scratch
    directory:
    ```bash
@@ -236,9 +251,17 @@ publishes.
    `.d.ts` files (`tsd` only ever checks `tests/`, never the installed
    tarball):
    ```bash
-   printf "import { connect } from '@alexify/wrpc';\nvoid connect;\n" > /tmp/wrpc-esm-smoke.ts
-   npx tsc --moduleResolution bundler --module esnext --noEmit /tmp/wrpc-esm-smoke.ts
+   npm install typescript @types/node
+   printf "import { connect } from '@alexify/wrpc';\nvoid connect;\n" > smoke.ts
+   npx tsc --moduleResolution bundler --module esnext --types node --noEmit smoke.ts
    ```
+   `--types node` is not optional: the typings import `node:http` and name
+   `Buffer`, and since TypeScript 6 a compiler run with no `tsconfig.json`
+   includes no `@types` package unless told to — without the flag the smoke
+   fails on the first line of `src/engine/index.d.ts`, whatever the tarball
+   holds. TypeScript 7 has no `moduleResolution: node10` any more; the
+   `typesVersions` that serves it on TypeScript ≤ 6 is checked in every mode
+   by `tests/package/resolution.test.js`, with tsd's TypeScript (5.9).
 6. **Commit, tag, push**: `git tag v<version> && git push --follow-tags`.
 7. **Publish**: `npm publish` (`publishConfig.access` is already `public`).
 8. **Release notes** on GitHub from the CHANGELOG entry.

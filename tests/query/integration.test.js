@@ -10,7 +10,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { Server, connect, defineRouter, procedure, tracked } = require('../../index.js');
-const { createQueryUtils } = require('../../query.js');
+const { createQueryUtils } = require('../../src/query/index.js');
 
 // The two methods of QueryClient this needs, with real hashing semantics: keys
 // are compared by value, so a write and a read of the same path meet.

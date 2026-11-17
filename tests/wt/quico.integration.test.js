@@ -19,7 +19,7 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { defineRouter, procedure } = require('../../index.js');
-const { attachSession, fromQuico } = require('../../wt.js');
+const { attachSession, fromQuico } = require('../../src/webtransport/index.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 
 const enabled = process.env.WRPC_WT === 'quico';

@@ -11,7 +11,7 @@ const assert = require('node:assert');
 const zlib = require('node:zlib');
 const crypto = require('node:crypto');
 
-const { createDeflateCodec, inflateRaw, deflateRaw, DeflateError } = require('../../deflate.js');
+const { createDeflateCodec, inflateRaw, deflateRaw, DeflateError } = require('../../src/deflate/index.js');
 const { buildTable } = require('../../src/deflate/inflate.js');
 const { buildDictionary, dictionaryCompressor, defineRouter, procedure, isCompressor } = require('../../index.js');
 const { nativeCompressor } = require('../../src/compression/index.js');

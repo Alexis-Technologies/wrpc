@@ -1,23 +1,29 @@
 'use strict';
 
-const http = require('node:http');
 const { performance } = require('node:perf_hooks');
 
-const { RpcServer, rpcOptions } = require('../rpc/core.js');
-const { TRACEPARENT, TRACESTATE } = require('../telemetry/shared.js');
+const { RpcServer, rpcOptions, copyTraceHeaders } = require('../rpc/core.js');
 const { effectiveSchema } = require('../rpc/router.js');
 const { publicErrorMessage, publicErrorDetails } = require('../transport.js');
 const { createNodeEngine, isEngine } = require('../engine/index.js');
 const { createUwsEngine } = require('./uws.js');
-const { normalizeBody, eachHeader, nodeStream, createUpgradeGate, revisionProtocols } = require('./common.js');
+const {
+  normalizeBody,
+  eachHeader,
+  nodeStream,
+  createUpgradeGate,
+  shutdown,
+  revisionProtocols,
+} = require('./common.js');
 const { cacheHeadersFor, RESERVED_HEADERS, checkHeader } = require('../rpc/rest.js');
 const { setupMirror } = require('./mirror.js');
 
 // Fastify plugin. One plugin, two backends, picked by looking at what
 // fastify is actually running on:
 //
-//   fastify()                     -> a real node http.Server -> node engine,
-//                                    attached to its 'upgrade' event
+//   fastify()                     -> a real node server (http, https, http2)
+//                                    -> node engine, attached to its
+//                                    'upgrade' event
 //   fastify({ serverFactory })    -> a uws-backed fake server (fastify-uws)
 //                                    -> uws engine over the same uws app
 //
@@ -43,9 +49,18 @@ const resolveEngine = (fastify, options) => {
     return engine;
   }
   const { server } = fastify;
-  if (server instanceof http.Server) return createNodeEngine(options.ws);
   const app = findUwsApp(server);
   if (app) return createUwsEngine({ ...options.ws, app });
+  // A node server by what it does, not by its class: it announces upgrades
+  // to listeners and it listens. `instanceof http.Server` was the test, and
+  // an `https.Server` is not one (it extends tls.Server) — so
+  // `fastify({ https })`, TLS terminated in the process, could not register
+  // the plugin at all. An HTTP/2 server passes too: with `allowHTTP1` its
+  // HTTP/1.1 clients upgrade as usual, and without it nobody can — HTTP/2
+  // has no upgrade for the engine to answer — while the HTTP side works.
+  if (server && typeof server.on === 'function' && typeof server.listen === 'function') {
+    return createNodeEngine(options.ws);
+  }
   throw new TypeError(
     'wrpcFastify: could not detect a WebSocket backend for this fastify instance — ' +
       'pass one explicitly via options.engine',
@@ -241,12 +256,7 @@ const registerRestRoutes = (fastify, rpc, options) => {
         // Trace context arrives as real headers; mapped onto the synthetic
         // packet's tp/ts, the writer's ordinary extract picks it up.
         const packet = { type: 'call' };
-        const parent = request.headers.traceparent;
-        if (typeof parent === 'string' && parent.length > 0) {
-          packet[TRACEPARENT] = parent;
-          const state = request.headers.tracestate;
-          if (typeof state === 'string' && state.length > 0) packet[TRACESTATE] = state;
-        }
+        copyTraceHeaders(request.headers, packet);
         const started = otel.enabled ? performance.now() : 0;
         return otel.withSpan({ client, packet, target: rpcTarget.method }, async (handle) => {
           let result;
@@ -435,10 +445,10 @@ const wrpcFastify = async (fastify, options = {}) => {
   });
 
   fastify.decorate('wrpc', rpc);
-  fastify.addHook('preClose', async () => {
-    await rpc.close();
-    engine.close();
-  });
+  // `drain` (ms, a plugin option): what calls in flight get to finish in
+  // when fastify closes — the sequence of `Server#close` (shutdown in
+  // common.js).
+  fastify.addHook('preClose', () => shutdown(rpc, engine, options.drain ?? 0));
 };
 
 // Escape fastify's encapsulation the way fastify-plugin does, without taking

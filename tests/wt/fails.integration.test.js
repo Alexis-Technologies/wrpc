@@ -18,8 +18,8 @@ const fs = require('node:fs');
 const path = require('node:path');
 
 const { defineRouter, procedure, tracked, createEventLog } = require('../../index.js');
-const { acceptSessions, failsRequestCallback } = require('../../wt.js');
-const { bearerAuth, bearerTransport, memoryStore } = require('../../auth.js');
+const { acceptSessions, failsRequestCallback } = require('../../src/webtransport/index.js');
+const { bearerAuth, bearerTransport, memoryStore } = require('../../src/auth/index.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 
 const enabled = process.env.WRPC_WT === 'fails';

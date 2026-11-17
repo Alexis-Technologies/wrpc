@@ -4,8 +4,8 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { defineRouter, procedure, WrpcClient } = require('../../index.js');
-require('../../sse.js');
-const { createEncryption, generateKey } = require('../../encryption.js');
+require('../../src/sse/index.js');
+const { createEncryption, generateKey } = require('../../src/encryption/index.js');
 const {
   openSealedStream,
   isSealedStream,
@@ -253,7 +253,7 @@ test('sse encryption: the http content coding is not applied to a sealed stream 
 });
 
 test('sse encryption: a stale open is a typed refusal, not a reconnect loop', async (t) => {
-  const { EncryptionRefusedError } = require('../../encryption.js');
+  const { EncryptionRefusedError } = require('../../src/encryption/index.js');
   const booted = await bootServer(t, { router, encryption: { keys: generateKey(), required: true, maxSkew: 1 } });
   const serverKey = await booted.server.rpc.encryptionKey();
   // Stamped, then held for 5 ms before it leaves: stale on arrival.

@@ -1,0 +1,5 @@
+# `src/engine/` — the server-side engine port
+
+Cross-cutting rules — the protocol revision, no runtime dependencies, commands, the package layout — are in the root `CLAUDE.md`; the layering of `src/` and the hot-path conventions are in `src/CLAUDE.md`. A rule lives in ONE file: add to the file of the folder it is about.
+
+`src/engine/` — the replaceable server-side engine port (`WrpcSocket` contract + `createNodeEngine` + `isEngine`), published as the `@alexify/wrpc/engine` subpath; the shared contract test suite lives in `tests/engine/engineContract.js`. Two engine kinds satisfy the port: **hosted** (`standalone` falsy) attaches to a listener someone else owns — `attach({ server, ... })` — and MAY expose `handleUpgrade(req, socket, head)` on its source for manual driving; **standalone** (`standalone: true`, uWebSockets.js) owns the whole network stack including `node:http`, is attached with no server — `attach({ path, verifyClient, onHttpCall, ... })` — and must implement `listen({ host, port }) -> Promise<address>`.

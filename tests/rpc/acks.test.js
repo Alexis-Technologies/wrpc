@@ -8,7 +8,7 @@ const test = require('node:test');
 const assert = require('node:assert');
 
 const { defineRouter, procedure } = require('../../index.js');
-const { MemoryBackplane } = require('../../scaling.js');
+const { MemoryBackplane } = require('../../src/scaling/index.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 
 const api = () =>

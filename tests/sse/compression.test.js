@@ -8,7 +8,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { WrpcClient, defineRouter, procedure, tracked } = require('../../index.js');
-const { SseParser, CHANNEL_HEADER } = require('../../sse.js');
+const { SseParser, CHANNEL_HEADER } = require('../../src/sse/index.js');
 const { bootServer, waitFor } = require('../helpers/server.js');
 
 const bigEvent = { rows: Array.from({ length: 40 }, (_, i) => ({ id: i, name: `row-${i}` })) };
@@ -293,7 +293,7 @@ test('sse compression: an encoder stream that fails ends the response, and the f
 });
 
 test('sse compression: the option is validated', async () => {
-  const { SseChannels } = require('../../sse.js');
+  const { SseChannels } = require('../../src/sse/index.js');
   assert.throws(
     () => new SseChannels({ addClient: () => ({}), compression: 'gzip' }),
     /must be true, false or an options/,

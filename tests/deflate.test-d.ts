@@ -1,6 +1,6 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as deflate from '../deflate.js';
-import type { DeflateCodecOptions, DeflateError } from '../deflate.js';
+import * as deflate from '../src/deflate/index.js';
+import type { DeflateCodecOptions, DeflateError } from '../src/deflate/index.js';
 import type { Compressor, RpcServerOptions, Router } from '../index.js';
 import { buildDictionary } from '../index.js';
 

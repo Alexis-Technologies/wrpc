@@ -45,8 +45,37 @@ const wireError = (code, error) => {
 
 // A peer-controlled string on its way into a log line — a method, an id,
 // a packet type: bounded before it becomes a record, because the line is
-// the one place where "as long as maxPayload allows" is too long. Anything
-// that is not a string passes through as it is.
-const clip = (text, max = 128) => (typeof text === 'string' && text.length > max ? `${text.slice(0, max)}…` : text);
+// the one place where "as long as maxPayload allows" is too long, and with
+// nothing in it that ends or splits a line. A method named
+// `x\n2026-11-16 ERROR admin logged in` used to be TWO lines of a console
+// log, the second one the peer's own; a tab moved the columns of the line it
+// was in. Every control character becomes a space (as `shown` does for a
+// stream's name in src/streams.js). Anything that is not a string passes
+// through as it is.
+const CONTROL = /\p{Cc}|\u2028|\u2029/gu;
+const clip = (text, max = 128) => {
+  if (typeof text !== 'string') return text;
+  return (text.length > max ? `${text.slice(0, max)}…` : text).replace(CONTROL, ' ');
+};
 
-module.exports = { publicErrorMessage, publicErrorDetails, wireError, clip };
+// The level of a line about something a PEER did and can do in a loop — a
+// refusal, a malformed frame, an envelope that does not open: a warning the
+// first time a key is seen, debug for `interval` after it. Whoever can send
+// one can send it as fast as the link takes it, and a line per message made
+// the log the thing that fell over. `max` bounds the keys where a peer has a
+// say in them (a channel, a sender): past it the table starts over, which
+// costs a repeated warning, never memory. One table per call.
+const LOUD_INTERVAL = 10_000;
+const lineLevels = (interval = LOUD_INTERVAL, max = 0) => {
+  const said = new Map();
+  return (key) => {
+    const now = Date.now();
+    const last = said.get(key);
+    if (last !== undefined && now - last < interval) return 'debug';
+    if (max > 0 && last === undefined && said.size >= max) said.clear();
+    said.set(key, now);
+    return 'warn';
+  };
+};
+
+module.exports = { publicErrorMessage, publicErrorDetails, wireError, clip, lineLevels, LOUD_INTERVAL };

@@ -1,0 +1,328 @@
+import { EventEmitter } from 'node:events';
+import { IncomingMessage, Server as HttpServer } from 'node:http';
+import { Server as HttpsServer } from 'node:https';
+import { Socket } from 'node:net';
+import type { Duplex } from 'node:stream';
+import type { WrpcLogger } from '../../index.js';
+
+export declare const MAGIC: string;
+export declare const CLOSE_TIMEOUT: number;
+export declare const RSV1: number;
+
+export declare const OPCODES: {
+  readonly CONTINUATION: 0x00;
+  readonly TEXT: 0x01;
+  readonly BINARY: 0x02;
+  readonly CLOSE: 0x08;
+  readonly PING: 0x09;
+  readonly PONG: 0x0a;
+};
+
+export declare const CLOSE_CODES: {
+  readonly NORMAL_CLOSE: 1000;
+  readonly GOING_AWAY: 1001;
+  readonly PROTOCOL_ERROR: 1002;
+  readonly UNSUPPORTED_DATA: 1003;
+  readonly RESERVED: 1004;
+  readonly NO_CODE_RECEIVED: 1005;
+  readonly CONNECTION_CLOSED_ABNORMALLY: 1006;
+  readonly INVALID_PAYLOAD: 1007;
+  readonly POLICY_VIOLATED: 1008;
+  readonly MESSAGE_TOO_BIG: 1009;
+  readonly MANDATORY_EXTENSION: 1010;
+  readonly INTERNAL_SERVER_ERROR: 1011;
+  readonly TLS_HANDSHAKE: 1015;
+};
+
+export interface VerifyClientInfo {
+  req: IncomingMessage;
+  socket: Socket;
+  head: Buffer;
+}
+
+export interface DeflateParams {
+  response: string;
+  threshold: number;
+  windowBits: number;
+  /** A live deflate context for what this side sends (contextTakeover 'server' | true, and the peer allowed it). */
+  serverTakeover?: boolean;
+  /** A live inflate context for what the peer sends (contextTakeover 'client' | true, and the peer keeps its context). */
+  clientTakeover?: boolean;
+  level?: number;
+  memLevel?: number;
+  /** The zlib knobs of every one-shot deflate — `{ level?, memLevel? }` — or null when neither is set. */
+  zlibOptions?: { level?: number; memLevel?: number } | null;
+  /** Messages at or over `threshold` bytes deflate/inflate off the event loop; null keeps everything synchronous. */
+  async?: { threshold: number } | null;
+}
+
+export interface PerMessageDeflateOptions {
+  /** Messages below this many bytes are sent uncompressed. Default 1024. */
+  threshold?: number;
+  /**
+   * Per-connection selection: return false to decline the peer's offer —
+   * compression for a browser on a slow link, none for a service in the
+   * same datacenter — decided on the upgrade request.
+   */
+  filter?: (req: IncomingMessage) => boolean;
+  /**
+   * Keep a zlib context across messages: 'server' for what this side
+   * sends, 'client' for what the peer sends, true for both. Better ratio
+   * on repetitive traffic at the price of a live zlib stream per direction
+   * per connection (a 32 KiB window plus ~128 KiB of deflate state at the
+   * defaults) and an asynchronous, queued write path. A peer's own
+   * `*_no_context_takeover` request is always honoured. Default false —
+   * every message a self-contained stream, which is what lets a fan-out
+   * share one deflated frame.
+   */
+  contextTakeover?: boolean | 'server' | 'client';
+  /**
+   * zlib's level for every deflate this side makes — one-shot, fan-out,
+   * threadpool and context alike; −1..9, −1 (the default) being zlib's 6.
+   * A TypeError at construction otherwise.
+   */
+  level?: number;
+  /** zlib's memLevel, 1..9; a TypeError at construction otherwise. */
+  memLevel?: number;
+  /**
+   * Deflate and inflate messages at or over `threshold` bytes off the
+   * event loop (zlib's threadpool API), in order behind whatever is
+   * already queued. Default threshold 256 KiB; `{}` takes it. Off by default.
+   */
+  async?: { threshold?: number };
+}
+
+/**
+ * One message shared by every recipient of a fan-out (see
+ * Connection.sendPrepared): the text plus an engine-owned cache slot.
+ */
+export interface SharedMessage {
+  /** The serialized packet: text, or the bytes of an attachments frame (a BINARY frame). */
+  text: string | Uint8Array;
+  frames: unknown | null;
+  compress: boolean;
+}
+
+/** Per-message send options. */
+export interface SendOptions {
+  /** Send uncompressed even when permessage-deflate was negotiated. */
+  compress?: boolean;
+}
+
+export interface WebsocketServerOptions {
+  /**
+   * Where framing failures report — a peer sending invalid UTF-8, a message
+   * past `maxBuffer`, a backpressure limit hit. These close the connection
+   * and used to emit only an `'error'` that a server rarely listens for.
+   * The `Server` shell passes its own writer down, so this is the knob for
+   * driving `WebsocketServer` directly. Defaults to the global console;
+   * `false` is silent.
+   */
+  logger?: WrpcLogger | boolean;
+  /**
+   * Binds to this server's 'upgrade' event. Omit it to drive handshakes by
+   * hand through handleUpgrade() — how middleware adapters (express) attach
+   * to a listener they do not own.
+   */
+  server?: HttpServer | HttpsServer;
+  pingInterval?: number;
+  maxBuffer?: number;
+  /** Inflated-size cap for permessage-deflate messages. Default 16 MiB. */
+  maxPayload?: number;
+  closeTimeout?: number;
+  /** Outbound-buffer cap; past it the connection is terminated. Defaults to maxBuffer; 0 = unbounded. */
+  maxBackpressure?: number;
+  fragmentThreshold?: number;
+  path?: string;
+  verifyClient?: (info: VerifyClientInfo) => boolean;
+  protocols?: Array<string>;
+  /**
+   * Selects a subprotocol from the offer, `''` for none, `false` to reject
+   * the handshake. `offered` never holds wrpc's carrier tokens (`wrpc.h.`,
+   * `wrpc.m.`, `wrpc.bearer.` — data riding the offer, read from
+   * `req.headers`), and a carrier token returned anyway is not echoed.
+   */
+  handleProtocols?: (offered: Array<string>, req: IncomingMessage) => string | false;
+  perMessageDeflate?: boolean | PerMessageDeflateOptions;
+  /** Coalesce every write of one event-loop turn into one flush. Default true for server connections. */
+  coalesce?: boolean;
+  /**
+   * What one connection may hand its listeners in one turn of the event
+   * loop — 512 messages or 256 KiB of them (after inflation) by default —
+   * before the frame loop stops and the socket is paused until the next
+   * turn. `{ messages, bytes }` sets the marks, `false` turns it off.
+   * Default true for server connections.
+   */
+  turnBudget?: boolean | TurnBudget;
+}
+
+/** The marks of `turnBudget`: positive integers, either left out for its default. */
+export interface TurnBudget {
+  messages?: number;
+  bytes?: number;
+}
+
+export declare class WebsocketServer extends EventEmitter {
+  constructor(options?: WebsocketServerOptions);
+
+  /** Snapshot of the live connections (mutations do not affect the server). */
+  readonly connections: Set<Connection>;
+
+  /**
+   * Performs one handshake on a raw socket. Use it from your own 'upgrade'
+   * listener when the server was constructed without `options.server`.
+   */
+  handleUpgrade(req: IncomingMessage, socket: Duplex, head: Buffer): void;
+
+  close(options?: { code?: number; reason?: string }): void;
+
+  on(event: 'connection', listener: (ws: Connection, req: IncomingMessage) => void): this;
+
+  on(event: 'error', listener: (error: Error) => void): this;
+  on(event: 'close', listener: () => void): this;
+  on(event: string | symbol, listener: (...args: unknown[]) => void): this;
+}
+
+export interface ConnectionOptions {
+  isClient?: boolean;
+  maxBuffer?: number;
+  /** Inflated-size cap for permessage-deflate messages. Default 16 MiB. */
+  maxPayload?: number;
+  closeTimeout?: number;
+  /** Outbound-buffer cap; past it the connection is terminated. Defaults to maxBuffer; 0 = unbounded. */
+  maxBackpressure?: number;
+  fragmentThreshold?: number;
+  protocol?: string;
+  deflate?: DeflateParams | null;
+  /**
+   * Cork the socket on the first write of a turn and uncork on the next
+   * tick, so every frame of that turn leaves in one flush. Off for a bare
+   * Connection (a write is on the socket when send() returns); the server
+   * enables it for the connections it creates.
+   */
+  coalesce?: boolean;
+  /**
+   * Bounds what this connection hands its listeners in one turn of the event
+   * loop (see `WebsocketServerOptions.turnBudget`). Off for a bare
+   * Connection, where a message is delivered inside the `'data'` event that
+   * carried it; the server enables it for the connections it creates.
+   */
+  turnBudget?: boolean | TurnBudget;
+}
+
+export declare class Connection extends EventEmitter {
+  constructor(socket: Socket, head: Buffer, options?: ConnectionOptions);
+
+  /** Subprotocol selected during the handshake, '' when none. */
+  protocol: string;
+  /** Bytes queued in the socket's writable buffer, not yet flushed. */
+  readonly bufferedAmount: number;
+  /** True while socket reads are paused via pause(). */
+  readonly isPaused: boolean;
+  readonly remoteAddress: string | undefined;
+
+  send(data: string | Buffer, options?: SendOptions | null): boolean;
+  sendText(message: string, options?: SendOptions | null): boolean;
+  sendBinary(buffer: Buffer, options?: SendOptions | null): boolean;
+  /**
+   * The fan-out path: writes one message shared by every recipient of a
+   * broadcast. Claims `message.frames` with this engine's cache (the frame,
+   * plus one deflated frame per negotiated window, built lazily and once)
+   * or reuses it; a slot another engine claimed, a client connection and a
+   * fragmenting one fall back to sendText. Same boolean as send().
+   */
+  sendPrepared(message: SharedMessage): boolean;
+  sendPing(payload?: Buffer | string): boolean;
+  sendPong(payload?: Buffer | string): boolean;
+  sendClose(code?: number, reason?: string): void;
+  /** WrpcSocket engine-contract alias for sendClose. */
+  close(code?: number, reason?: string): void;
+  terminate(): void;
+  pause(): void;
+  resume(): void;
+
+  /**
+   * Received payloads may share memory with the socket receive buffer;
+   * copy them when retaining beyond the listener call.
+   */
+  on(event: 'message', listener: (data: Buffer, isBinary: boolean) => void): this;
+  on(event: 'error', listener: (error: Error) => void): this;
+  on(event: 'close', listener: (code: number, reason: string) => void): this;
+  on(event: 'ping', listener: (payload: Buffer) => void): this;
+  on(event: 'pong', listener: (payload: Buffer) => void): this;
+  on(event: 'drain', listener: () => void): this;
+}
+
+export declare class Frame {
+  fin: boolean;
+  rsv: number;
+  opcode: number;
+  masked: boolean;
+  payload: Buffer;
+  mask: Buffer | null;
+  constructor(fin: boolean, opcode: number, masked: boolean, payload: Buffer, mask: Buffer | null, rsv?: number);
+  static text(message: string, fin?: boolean, masked?: boolean): Frame;
+  static binary(buffer: Buffer, fin?: boolean, masked?: boolean): Frame;
+  static ping(payload?: Buffer | string): Frame;
+  static pong(payload?: Buffer | string): Frame;
+  static close(code?: number | null, reason?: string): Frame;
+  unmaskPayload(): void;
+  maskPayload(): void;
+  toString(): string | null;
+  toBuffer(): Buffer;
+  readonly header: Buffer;
+  readonly isControlFrame: boolean;
+}
+
+export declare class ParseError extends Error {
+  code: string;
+  constructor(code: string, message: string);
+}
+
+export declare const PARSE_ERR_CODES: {
+  readonly MESSAGE_TOO_BIG: 'MESSAGE_TOO_BIG';
+  readonly PROTOCOL_ERROR_COMMON: 'PROTOCOL_ERROR-COMMON';
+  readonly PROTOCOL_ERROR_RSV: 'PROTOCOL_ERROR-RSV';
+  readonly PROTOCOL_ERROR_CTRL_TOO_LONG: 'PROTOCOL_ERROR-CTRL_TOO_LONG';
+  readonly INVALID_PAYLOAD: 'INVALID_PAYLOAD';
+};
+
+export interface FrameHeader {
+  fin: boolean;
+  rsv: number;
+  opcode: number;
+  masked: boolean;
+  mask: Buffer | null;
+  length: number;
+  headerSize: number;
+}
+
+export interface FrameParserOptions {
+  /** Bitmask of RSV bits negotiated via extensions (RFC 6455 5.2). */
+  allowedRsv?: number;
+}
+
+export declare class FrameParser {
+  static parseHeader(
+    buffer: Buffer,
+    options?: FrameParserOptions,
+  ): {
+    value: FrameHeader | null;
+    error: ParseError | null;
+  };
+  static parse(
+    buffer: Buffer,
+    options?: FrameParserOptions,
+  ): {
+    value: { frame: Frame; bytesUsed: number } | null;
+    error: ParseError | null;
+  };
+  static checkControlFrame(frame: Frame): {
+    value: boolean | null;
+    error: ParseError | null;
+  };
+  static checkDataFrame(frame: Frame): {
+    value: boolean | null;
+    error: ParseError | null;
+  };
+}

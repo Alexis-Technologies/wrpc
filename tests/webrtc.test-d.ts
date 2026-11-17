@@ -1,5 +1,5 @@
 import { expectAssignable, expectError, expectType } from 'tsd';
-import * as webrtc from '../webrtc.js';
+import * as webrtc from '../src/webrtc/index.js';
 import type {
   AssertionClaims,
   AssertionVerifier,
@@ -21,7 +21,7 @@ import type {
   Signaler,
   WrpcPeer,
   WrpcSignaler,
-} from '../webrtc.js';
+} from '../src/webrtc/index.js';
 import type {
   AskResult,
   Client,

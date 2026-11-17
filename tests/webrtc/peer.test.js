@@ -471,6 +471,27 @@ test('peer: a responder whose initiator vanished knocks, then gives up', async (
   assert.throws(() => ba.createStream('x', 1), /not open/);
 });
 
+test('peer: a responder with no connectTimeout of its own does not spend its knocks in one backoff step', async (t) => {
+  const { peer, hub } = world(t);
+  const a = peer('a');
+  // No connectTimeout: the default of every peer.
+  const b = peer('b', { redial: { retries: 5, minDelay: 5, maxDelay: 5, jitter: false } });
+  await within(a.connect('b'), 'open');
+  const ba = b.link('a');
+  await within(ba.ready(), 'open');
+  hub.mute('a');
+  hub.mute('b');
+  a.close();
+  ba.link.pc.failIce();
+  // The wait between knocks was `connectTimeout ?? 0`: five knocks and a
+  // closed link within a few hundred milliseconds, where the initiator's
+  // dial is given thirty seconds to fail.
+  await new Promise((resolve) => setTimeout(resolve, 400));
+  assert.strictEqual(hub.sent.filter((e) => e.from === 'b' && e.type === 'connect').length, 1, 'one knock so far');
+  assert.notStrictEqual(ba.state, 'closed');
+  b.close();
+});
+
 test('peer: an initiator that cannot reach its peer redials with backoff and gives up', async (t) => {
   const { peer, hub } = world(t);
   const a = peer('a', { redial: { retries: 2, minDelay: 5, maxDelay: 5, jitter: false }, connectTimeout: 30 });

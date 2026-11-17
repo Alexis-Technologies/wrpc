@@ -23,7 +23,10 @@ class Emitter {
     const event = this.#events.get(eventName);
     if (!event) {
       if (eventName !== 'error') return RESOLVED;
-      throw new Error('Unhandled error');
+      // With what was emitted as its cause: an 'error' nobody listens for
+      // used to surface as this message and nothing else — the error itself
+      // gone, in an unhandled rejection that said only "Unhandled error".
+      throw new Error('Unhandled error', { cause: value });
     }
     const on = event.on;
     // Gated on once.size because the sweep below may delete the whole record,

@@ -22,7 +22,7 @@ pieces and you wire them where they belong:
 | `upgrade(req, socket, head)` | Wire to `httpServer.on('upgrade', …)`. |
 | `rpc` | The `RpcServer` — rooms, clients, broadcast. |
 | `engine` / `wsServer` | The WebSocket [engine](../../reference/engine) and its connection source. |
-| `close()` | Closes the core and the engine. |
+| `close({ drain })` | Closes the core and the engine. `drain` (ms) is what calls in flight get to finish in first, as for [`Server#close`](../production#graceful-shutdown). |
 
 The two halves meet the core at its usual entry points:
 

@@ -276,7 +276,7 @@ test('attachChannel: a static channel cannot come back — reconnect: false ends
 });
 
 test('attachChannel: under encryption.required a data channel is served as DTLS — unless told it is not', async (t) => {
-  const { generateKey } = require('../../encryption.js');
+  const { generateKey } = require('../../src/encryption/index.js');
   const served = routerOf({});
   const rpc = new RpcServer({
     router: served.router,

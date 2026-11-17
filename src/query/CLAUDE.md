@@ -1,0 +1,5 @@
+# `src/query/` — the TanStack Query bindings
+
+Cross-cutting rules — the protocol revision, no runtime dependencies, commands, the package layout — are in the root `CLAUDE.md`; the layering of `src/` and the hot-path conventions are in `src/CLAUDE.md`. A rule lives in ONE file: add to the file of the folder it is about.
+
+`src/query/index.js` — the TanStack Query bindings behind the `@alexify/wrpc/query` subpath: `createQueryUtils(client, { prefix, queryClient })` returning `queryKey`/`queryOptions`/`mutationOptions`/`subscriptionHandler`. Option **factories**, in the style of tRPC v11 — never hooks — so one file serves React/Solid/Svelte/Vue Query and query-core alike. It `require()`s **nothing** (that is what keeps it at ~1 KB min+gzip and browser-safe), takes the client and the `QueryClient` by injection with structural validation, and resolves `['unit','method']` paths _lazily_ inside `queryFn` because `client.api` only exists after `load()` and is rebuilt on every reconnect. Path lookups use `Object.hasOwn` on both hops: a unit object is an `Emitter`, so `['chat','on']` would otherwise resolve to `Emitter.prototype.on`.

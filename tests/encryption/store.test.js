@@ -4,8 +4,8 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const { setImmediate: settle } = require('node:timers/promises');
 
-const { sealedStore, generateKey } = require('../../encryption.js');
-const { createRedisSessionStore } = require('../../scaling.js');
+const { sealedStore, generateKey } = require('../../src/encryption/index.js');
+const { createRedisSessionStore } = require('../../src/scaling/index.js');
 const { MemorySessionStore } = require('../../index.js');
 const { SessionManager } = require('../../src/rpc/sessions.js');
 const { normalizeEnvelopeEncryption, createEnvelopeSealer } = require('../../src/encryption/envelope.js');

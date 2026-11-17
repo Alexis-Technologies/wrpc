@@ -1893,3 +1893,200 @@ test('retry: listed codes are re-issued with fresh packet ids; others surface as
   state.hits = -10; // 503 forever
   await assert.rejects(client.api.flaky.get(), (error) => error.code === 503);
 });
+
+// --- The connection's hooks are under connectTimeout ---------------------------
+
+test('connectTimeout covers the hooks the connection waits on', async (t) => {
+  const { server, port } = await createServer(router());
+  t.after(() => server.close());
+  const url = `ws://127.0.0.1:${port}/api`;
+  const never = () => new Promise(noop);
+
+  await t.test('a headers() that never settles rejects connect() with 408', async () => {
+    const started = Date.now();
+    await assert.rejects(
+      WrpcClient.connect(url, {
+        heartbeat: false,
+        reconnect: false,
+        logger: false,
+        connectTimeout: 100,
+        headers: never,
+      }),
+      (error) => error.code === 408,
+    );
+    assert.ok(Date.now() - started < 2000, 'and does so at the deadline');
+  });
+
+  await t.test('an authenticate() that never settles rejects connect() and closes the connection', async () => {
+    await assert.rejects(
+      WrpcClient.connect(url, {
+        heartbeat: false,
+        reconnect: false,
+        logger: false,
+        connectTimeout: 100,
+        authenticate: never,
+      }),
+      (error) => error.code === 408,
+    );
+    await waitFor(() => server.rpc.clients.size === 0, 'the half-open connection is let go of');
+  });
+
+  await t.test('a reconnect whose authenticate() hangs is not the last one', async () => {
+    let hang = false;
+    let hooks = 0;
+    const client = await WrpcClient.connect(url, {
+      heartbeat: false,
+      logger: false,
+      connectTimeout: 100,
+      reconnect: { minDelay: 10, maxDelay: 20, jitter: false },
+      authenticate: () => {
+        hooks++;
+        return hang ? never() : undefined;
+      },
+    });
+    t.after(() => void client.close());
+    client.on('error', noop);
+    hang = true;
+    for (const peer of server.rpc.clients) peer.close();
+    // It used to stop here for good: the hook of the first reconnect never
+    // settled, and nothing was left to schedule a second.
+    await waitFor(() => hooks >= 3, { message: 'the cycle goes on past a hung hook', timeout: 5000 });
+    hang = false;
+    await waitFor(() => client.active && server.rpc.clients.size === 1, 'and a later attempt connects');
+  });
+
+  await t.test('a refresh() that never settles gives the call its own refusal back', async () => {
+    const guarded = defineRouter({
+      unit: { secret: procedure({ handler: async () => 'never' }) },
+    });
+    const second = await createServer(guarded);
+    t.after(() => second.server.close());
+    const client = await WrpcClient.connect(`ws://127.0.0.1:${second.port}/api`, {
+      heartbeat: false,
+      reconnect: false,
+      logger: false,
+      connectTimeout: 100,
+      refresh: never,
+    });
+    t.after(() => void client.close());
+    client.on('error', noop);
+    await assert.rejects(client.call('unit/secret', {}), (error) => error.code === 403);
+  });
+});
+
+// --- A timeout is a number a timer can hold -------------------------------------
+
+test("callTimeout and a call's timeout are refused unless a timer can hold them", async (t) => {
+  const { server, port } = await createServer(
+    router({ hang: procedure({ access: 'public', handler: () => new Promise(noop) }) }),
+  );
+  t.after(() => server.close());
+  const url = `ws://127.0.0.1:${port}/api`;
+  // `'300'` is what an environment variable holds. It used to be added to
+  // Date.now() as a string: the call never timed out, and a one-millisecond
+  // timer was re-armed about eight hundred times a second.
+  const quiet = { heartbeat: false, reconnect: false, logger: false };
+  for (const callTimeout of ['300', Infinity, -5, 2 ** 31, {}]) {
+    await assert.rejects(
+      async () => WrpcClient.connect(url, { ...quiet, callTimeout }),
+      /callTimeout must be a number of milliseconds/,
+      `callTimeout: ${String(callTimeout)}`,
+    );
+  }
+  // Nothing set: the default, as before.
+  for (const callTimeout of [undefined, null, 0, false]) {
+    const plain = await WrpcClient.connect(url, { ...quiet, callTimeout });
+    await plain.close();
+  }
+  const client = await WrpcClient.connect(url, { heartbeat: false, reconnect: false, logger: false, callTimeout: 60 });
+  t.after(() => void client.close());
+  client.on('error', noop);
+  await assert.rejects(client.call('test/hang', {}), (error) => error.code === 408);
+  // A bad argument, thrown where the call is made.
+  assert.throws(() => client.call('test/hang', {}, { timeout: '50' }), /timeout must be a number of milliseconds/);
+  assert.throws(() => client.call('test/hang', {}, { timeout: Infinity }), /timeout must be a number of milliseconds/);
+  await assert.rejects(client.call('test/hang', {}, { timeout: 30 }), (error) => error.code === 408);
+});
+
+// --- A call that timed out is cancelled on the server ---------------------------
+
+test("a call that times out tells the server, and its late answer is nobody's error", async (t) => {
+  let aborted = 0;
+  const { server, port } = await createServer(
+    router({
+      slow: procedure({
+        access: 'public',
+        handler: (context) =>
+          new Promise((resolve) => {
+            context.signal.addEventListener('abort', () => aborted++);
+            setTimeout(() => resolve('late'), 150);
+          }),
+      }),
+    }),
+  );
+  t.after(() => server.close());
+  const errors = [];
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    reconnect: false,
+    logger: false,
+    callTimeout: 40,
+  });
+  t.after(() => void client.close());
+  client.on('error', (error) => errors.push(error.message));
+  await assert.rejects(client.call('test/slow', {}), (error) => error.code === 408);
+  // The server used to go on with the call: its handler never heard, and the
+  // answer came back as `Callback <id> not found` on the 'error' event.
+  await waitFor(() => aborted === 1, 'the handler hears the cancel');
+  const [peer] = server.rpc.clients;
+  assert.strictEqual(peer.calls.size, 0, 'the server holds no call for a caller that left');
+  await timers.setTimeout(200);
+  assert.deepStrictEqual(errors, []);
+  assert.strictEqual(await client.call('test/hello', {}), 'hi', 'the connection is fine');
+});
+
+// --- An ask responder's failure is not the asker's to read ----------------------
+
+test('a responder that throws answers its ask without its internals', async (t) => {
+  const { server, port } = await createServer(
+    router({
+      ask: procedure({
+        access: 'public',
+        handler: async (context, { name }) => {
+          try {
+            return await context.client.ask(name, {}, { timeout: 1000 });
+          } catch (error) {
+            return { failed: { message: error.message, code: error.code, details: error.details ?? null } };
+          }
+        },
+      }),
+    }),
+  );
+  t.after(() => server.close());
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, {
+    heartbeat: false,
+    reconnect: false,
+    logger: false,
+  });
+  t.after(() => void client.close());
+  client.on('error', noop);
+  client.respond('bug', async () => {
+    const config = null;
+    return config.secretField;
+  });
+  client.respond('refusal', async () => {
+    throw Object.assign(new Error('Not for you'), { code: 403, details: { why: 'role' } });
+  });
+  client.respond('exposed', async () => {
+    throw Object.assign(new Error('Upstream is down'), { code: 502, expose: true });
+  });
+  // The TypeError's text used to travel to whoever asked.
+  assert.deepStrictEqual(await client.call('test/ask', { name: 'bug' }), {
+    failed: { message: 'Responder failed', code: 500, details: null },
+  });
+  // A 4xx is written for the asker; a 5xx that opts in is too.
+  assert.deepStrictEqual(await client.call('test/ask', { name: 'refusal' }), {
+    failed: { message: 'Not for you', code: 403, details: { why: 'role' } },
+  });
+  assert.strictEqual((await client.call('test/ask', { name: 'exposed' })).failed.message, 'Upstream is down');
+});

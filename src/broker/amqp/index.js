@@ -29,13 +29,19 @@
 const { createLoggerWriter } = require('../../logging.js');
 const { backoffDelay } = require('../../utils.js');
 const { TopicTails } = require('../tail.js');
-const { codedError, toBytes, toHeaders, reasonText, encodeToken } = require('../ids.js');
+const { codedError, toBytes, toHeaders, reasonText, encodeToken, tokenEncoder } = require('../ids.js');
 const { positiveInteger } = require('../retry.js');
 const { withHealth } = require('../port.js');
 const {
   ATTEMPT_HEADER,
   REDELIVERED_HEADER,
   DEAD_REASON_HEADER,
+  attemptOf,
+  producerHeaders,
+  SETTLE_ATTEMPTS,
+  SETTLE_BACKOFF,
+  sleep,
+  reporter,
   TEXT_HEADER,
   DEFAULT_PREFETCH,
   idFactory,
@@ -54,22 +60,16 @@ const OFFSET = /^\d{1,19}$/;
 const STREAM_OFFSET = 'x-stream-offset';
 
 const isFunction = (value) => typeof value === 'function';
-const name = (prefix, kind, value) => `${prefix}.${kind}.${encodeToken(value, { maxLength: 180 })}`;
-const sleep = (ms) =>
-  new Promise((resolve) => {
-    const timer = setTimeout(resolve, ms);
-    if (isFunction(timer.unref)) timer.unref();
-  });
+const token = tokenEncoder({ maxLength: 180 });
+const name = (prefix, kind, value) => `${prefix}.${kind}.${token(value)}`;
 // A consumer's channel is re-opened on this schedule after the server
 // closed it; a lost CONNECTION stops the loop (nothing to re-open on).
 const REOPEN_BACKOFF = Object.freeze({ minDelay: 200, maxDelay: 5000, factor: 2, jitter: true });
 // A settlement that has to PUBLISH (a retry's copy, a dead letter) and was
-// refused is tried again on this schedule; when it still fails, the
-// message goes back to the queue with a requeue — at least once, attempt
-// untouched — rather than being acked away or left unacked on a channel
-// that may close later.
-const SETTLE_ATTEMPTS = 3;
-const SETTLE_BACKOFF = Object.freeze({ minDelay: 100, maxDelay: 1000, factor: 2, jitter: false });
+// refused is tried again (SETTLE_ATTEMPTS in ../adapter.js); when it still
+// fails, the message goes back to the queue with a requeue — at least once,
+// attempt untouched — rather than being acked away or left unacked on a
+// channel that may close later.
 // A catch-up page over a stream queue: a stream reader has no "end", so a
 // page is complete when it reaches the tip read BEFORE the reader started
 // — never when the deliveries merely paused. `RANGE_IDLE` is how long a
@@ -110,7 +110,7 @@ const createAmqpBroker = (options = {}) => {
     throw new TypeError('createAmqpBroker: options.streamMaxBytes must be a non-negative integer (0 for unbounded)');
   }
   const log = createLoggerWriter(logger).child({ component: 'broker', broker: 'amqp' });
-  const report = (event, error, extra = {}) => log.error({ err: error, event, ...extra });
+  const report = reporter(log);
   let closed = false;
   // The injected connection went away: every channel with it, and nothing
   // here can open another — the connection is the caller's to reopen, with
@@ -301,6 +301,7 @@ const createAmqpBroker = (options = {}) => {
       .finally(() => {
         if (chains.get(key) === next) chains.delete(key);
       })
+      // The caller has `next` and its rejection; this branch only tidies the map.
       .catch(() => {});
     return next;
   };
@@ -339,7 +340,7 @@ const createAmqpBroker = (options = {}) => {
       void (async () => {
         try {
           await ensureExchange(exchange, 'direct');
-          await confirmPublish(exchange, encodeToken(channel, { maxLength: 180 }), message, {
+          await confirmPublish(exchange, token(channel), message, {
             contentType: 'application/json',
           });
         } catch (error) {
@@ -349,7 +350,7 @@ const createAmqpBroker = (options = {}) => {
     },
     subscribe(channel, handler) {
       if (!isFunction(handler)) throw new TypeError('amqp backplane.subscribe: handler must be a function');
-      const key = encodeToken(channel, { maxLength: 180 });
+      const key = token(channel);
       let set = handlers.get(key);
       if (set === undefined) {
         set = new Set();
@@ -672,7 +673,7 @@ const createAmqpBroker = (options = {}) => {
   const produce = async (queue, body, { headers = null } = {}) => {
     if (closed || lost) throw codedError(closed ? 'Broker is closed' : 'Broker connection lost', 503);
     const main = await ensureQueue(queue);
-    await confirmPublish('', main, body, { persistent: true, headers: toHeaders(headers) });
+    await confirmPublish('', main, body, { persistent: true, headers: toHeaders(producerHeaders(headers)) });
   };
 
   const consume = async (queue, onDelivery, options = {}) => {
@@ -715,7 +716,7 @@ const createAmqpBroker = (options = {}) => {
         return;
       }
       const headers = headersOf(message);
-      const attempt = Number(headers[ATTEMPT_HEADER] ?? '1') || 1;
+      const attempt = attemptOf(headers);
       let settled = false;
       // `publish`: the copy a settlement writes before it acks (a retry, a
       // dead letter). A refused publish used to be swallowed after one log
@@ -900,7 +901,7 @@ const createAmqpBroker = (options = {}) => {
   // away with its last binding, after which a publish to it is a
   // channel-level 404 on the shared confirm channel, not a basic.return.
   const directExchange = `${prefix}.direct`;
-  const routingKeyOf = (address) => encodeToken(address, { maxLength: 180 });
+  const routingKeyOf = (address) => token(address);
   const groupQueue = (address, group) => `${name(prefix, 'direct', address)}.${encodeToken(group, { maxLength: 60 })}`;
 
   const returned = new Set();
@@ -1023,6 +1024,7 @@ const createAmqpBroker = (options = {}) => {
       // An inbox's own queue is unbound FIRST, so a publish racing this stop
       // gets a basic.return (nobody there) rather than a nack from a queue
       // being deleted under it. A group's queue is shared and stays bound.
+      // A channel that cannot unbind is closing, and its bindings go with it.
       if (!grouped) await live.channel.unbindQueue(live.queue, exchangeName, routingKeyOf(address)).catch(() => {});
       try {
         await live.channel.cancel(live.tag);

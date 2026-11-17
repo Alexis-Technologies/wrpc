@@ -36,6 +36,8 @@ Options:
   --openapi <path>      Also write an OpenAPI 3 document projected from the
                         procedures that declare an 'http' mapping
   --format <cjs|esm>    Module format for --schema (default: cjs)
+  --timeout <ms>        Give up on a server that has not answered in full by
+                        then (default: 30000)
   -h, --help            Show this help
   -v, --version         Show the wrpc version
 ```
@@ -136,6 +138,14 @@ interpolated verbatim: names are JSON-quoted, type names are matched against an
 allowlist, nesting is depth-capped, and anything unrecognised degrades to
 `unknown` with a warning. A hostile server can make the output useless; it
 cannot make it dangerous.
+
+The same holds for the terminal the command runs in. A warning or a failure
+quotes text the server chose — a unit name, a type name, an error message —
+so control characters are printed as their escapes (`\u001b`, `\u000a`) and
+one message is cut at 2,048 characters: nothing a server answers recolours
+the screen or starts a line of its own. The exchange is bounded as well:
+`--timeout` (30 seconds by default) covers the headers and the body, and an
+answer longer than 64 MiB is refused.
 
 ## Determinism
 

@@ -1,13 +1,10 @@
 {
   "name": "@alexify/wrpc",
-  "version": "2.1.0",
+  "version": "2.2.0",
   "description": "wRPC (Web RPC): a fast, zero-dependency RPC protocol for Node.js and browsers - one router over WebSocket, HTTP, SSE, REST, WebTransport and WebRTC, plus message brokers - typed client, subscriptions, rooms, cluster, binary streams, compression and encryption",
   "main": "index.js",
   "browser": {
-    "./index.js": "./browser.js",
-    "./sse.js": "./sse.browser.js",
-    "./webrtc.js": "./webrtc.browser.js",
-    "./encryption.js": "./encryption.browser.js",
+    "./index.js": "./src/index.browser.js",
     "./src/chunks.js": "./src/chunks.browser.js",
     "./src/runtime/node.js": "./src/runtime/browser.js",
     "./src/compression/native.js": "./src/compression/native.browser.js",
@@ -21,98 +18,156 @@
     "#ws": "./src/websocket/ws.js"
   },
   "types": "index.d.ts",
+  "typesVersions": {
+    "*": {
+      "ws": [
+        "./src/websocket/ws.d.ts"
+      ],
+      "engine": [
+        "./src/engine/index.d.ts"
+      ],
+      "uws": [
+        "./src/adapters/uws.d.ts"
+      ],
+      "fastify": [
+        "./src/adapters/fastify.d.ts"
+      ],
+      "express": [
+        "./src/adapters/express.d.ts"
+      ],
+      "scaling": [
+        "./src/scaling/index.d.ts"
+      ],
+      "broker": [
+        "./src/broker/index.d.ts"
+      ],
+      "broker/redis": [
+        "./src/broker/redis/index.d.ts"
+      ],
+      "broker/nats": [
+        "./src/broker/nats/index.d.ts"
+      ],
+      "broker/amqp": [
+        "./src/broker/amqp/index.d.ts"
+      ],
+      "broker/kafka": [
+        "./src/broker/kafka/index.d.ts"
+      ],
+      "sse": [
+        "./src/sse/index.d.ts"
+      ],
+      "query": [
+        "./src/query/index.d.ts"
+      ],
+      "auth": [
+        "./src/auth/index.d.ts"
+      ],
+      "deflate": [
+        "./src/deflate/index.d.ts"
+      ],
+      "encryption": [
+        "./src/encryption/index.d.ts"
+      ],
+      "webrtc": [
+        "./src/webrtc/index.d.ts"
+      ],
+      "wt": [
+        "./src/webtransport/index.d.ts"
+      ]
+    }
+  },
   "exports": {
     ".": {
       "browser": {
-        "types": "./browser.d.ts",
-        "default": "./browser.js"
+        "types": "./src/index.browser.d.ts",
+        "default": "./src/index.browser.js"
       },
       "types": "./index.d.ts",
       "default": "./index.js"
     },
     "./ws": {
-      "types": "./ws.d.ts",
-      "default": "./ws.js"
+      "types": "./src/websocket/ws.d.ts",
+      "default": "./src/websocket/ws.js"
     },
     "./engine": {
-      "types": "./engine.d.ts",
-      "default": "./engine.js"
+      "types": "./src/engine/index.d.ts",
+      "default": "./src/engine/index.js"
     },
     "./uws": {
-      "types": "./uws.d.ts",
-      "default": "./uws.js"
+      "types": "./src/adapters/uws.d.ts",
+      "default": "./src/adapters/uws.js"
     },
     "./fastify": {
-      "types": "./fastify.d.ts",
-      "default": "./fastify.js"
+      "types": "./src/adapters/fastify.d.ts",
+      "default": "./src/adapters/fastify.js"
     },
     "./express": {
-      "types": "./express.d.ts",
-      "default": "./express.js"
+      "types": "./src/adapters/express.d.ts",
+      "default": "./src/adapters/express.js"
     },
     "./scaling": {
-      "types": "./scaling.d.ts",
-      "default": "./scaling.js"
+      "types": "./src/scaling/index.d.ts",
+      "default": "./src/scaling/index.js"
     },
     "./broker": {
-      "types": "./broker.d.ts",
-      "default": "./broker.js"
+      "types": "./src/broker/index.d.ts",
+      "default": "./src/broker/index.js"
     },
     "./broker/redis": {
-      "types": "./broker/redis.d.ts",
-      "default": "./broker/redis.js"
+      "types": "./src/broker/redis/index.d.ts",
+      "default": "./src/broker/redis/index.js"
     },
     "./broker/nats": {
-      "types": "./broker/nats.d.ts",
-      "default": "./broker/nats.js"
+      "types": "./src/broker/nats/index.d.ts",
+      "default": "./src/broker/nats/index.js"
     },
     "./broker/amqp": {
-      "types": "./broker/amqp.d.ts",
-      "default": "./broker/amqp.js"
+      "types": "./src/broker/amqp/index.d.ts",
+      "default": "./src/broker/amqp/index.js"
     },
     "./broker/kafka": {
-      "types": "./broker/kafka.d.ts",
-      "default": "./broker/kafka.js"
+      "types": "./src/broker/kafka/index.d.ts",
+      "default": "./src/broker/kafka/index.js"
     },
     "./sse": {
       "browser": {
-        "types": "./sse.browser.d.ts",
-        "default": "./sse.browser.js"
+        "types": "./src/sse/client.d.ts",
+        "default": "./src/sse/client.js"
       },
-      "types": "./sse.d.ts",
-      "default": "./sse.js"
+      "types": "./src/sse/index.d.ts",
+      "default": "./src/sse/index.js"
     },
     "./query": {
-      "types": "./query.d.ts",
-      "default": "./query.js"
+      "types": "./src/query/index.d.ts",
+      "default": "./src/query/index.js"
     },
     "./auth": {
-      "types": "./auth.d.ts",
-      "default": "./auth.js"
+      "types": "./src/auth/index.d.ts",
+      "default": "./src/auth/index.js"
     },
     "./deflate": {
-      "types": "./deflate.d.ts",
-      "default": "./deflate.js"
+      "types": "./src/deflate/index.d.ts",
+      "default": "./src/deflate/index.js"
     },
     "./encryption": {
       "browser": {
-        "types": "./encryption.browser.d.ts",
-        "default": "./encryption.browser.js"
+        "types": "./src/encryption/browser.d.ts",
+        "default": "./src/encryption/browser.js"
       },
-      "types": "./encryption.d.ts",
-      "default": "./encryption.js"
+      "types": "./src/encryption/index.d.ts",
+      "default": "./src/encryption/index.js"
     },
     "./webrtc": {
       "browser": {
-        "types": "./webrtc.browser.d.ts",
-        "default": "./webrtc.browser.js"
+        "types": "./src/webrtc/browser.d.ts",
+        "default": "./src/webrtc/browser.js"
       },
-      "types": "./webrtc.d.ts",
-      "default": "./webrtc.js"
+      "types": "./src/webrtc/index.d.ts",
+      "default": "./src/webrtc/index.js"
     },
     "./wt": {
-      "types": "./wt.d.ts",
-      "default": "./wt.js"
+      "types": "./src/webtransport/index.d.ts",
+      "default": "./src/webtransport/index.js"
     },
     "./package.json": "./package.json"
   },
@@ -263,51 +318,13 @@
   "files": [
     "index.js",
     "index.d.ts",
-    "client.d.ts",
-    "browser.js",
-    "browser.d.ts",
-    "ws.js",
-    "ws.d.ts",
-    "engine.js",
-    "engine.d.ts",
-    "uws.js",
-    "uws.d.ts",
-    "fastify.js",
-    "fastify.d.ts",
-    "express.js",
-    "express.d.ts",
-    "scaling.js",
-    "scaling.d.ts",
-    "broker.js",
-    "broker.d.ts",
-    "broker/",
-    "sse.js",
-    "sse.browser.js",
-    "sse.d.ts",
-    "sse.browser.d.ts",
-    "query.js",
-    "query.d.ts",
-    "auth.js",
-    "auth.d.ts",
-    "deflate.js",
-    "deflate.d.ts",
-    "encryption.js",
-    "encryption.browser.js",
-    "encryption.d.ts",
-    "encryption.browser.d.ts",
-    "rpc.d.ts",
-    "webrtc.js",
-    "webrtc.browser.js",
-    "webrtc.d.ts",
-    "webrtc.browser.d.ts",
-    "wt.js",
-    "wt.d.ts",
     "bin/",
     "src/",
     "LICENSE",
     "README.md",
     "CHANGELOG.md",
     "SECURITY.md",
-    "package.json"
+    "package.json",
+    "!**/CLAUDE.md"
   ]
 }

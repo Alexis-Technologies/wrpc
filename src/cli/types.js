@@ -21,6 +21,10 @@ const { writeFile } = require('node:fs/promises');
 const DEFAULT_INTERFACE = 'Api';
 const DEFAULT_PACKAGE = '@alexify/wrpc';
 const MARKER = 'SubscriptionContract';
+// How long a server has to answer, headers and body, and how much it may say:
+// an introspection is a few hundred kilobytes for a large API.
+const DEFAULT_TIMEOUT = 30_000;
+const MAX_ANSWER = 64 * 1024 * 1024;
 
 // A descriptor is data, not code: only these names may reach the output, and
 // anything else degrades to `unknown` with a warning. JSON has no Date, so
@@ -55,6 +59,8 @@ Options:
                         procedures that declare an 'http' mapping; '-' writes
                         to stdout (same fetch again)
   --format <cjs|esm>    Module format for --schema (default: cjs)
+  --timeout <ms>        Give up on a server that has not answered in full by
+                        then (default: ${DEFAULT_TIMEOUT})
   -h, --help            Show this help
   -v, --version         Show the wrpc version
 
@@ -66,6 +72,24 @@ Examples:
 
 class CliError extends Error {}
 
+// What goes to the terminal carries text the SERVER chose — a unit name, a
+// type name, an error message — and a terminal obeys what it is sent: an
+// escape sequence recolours, retitles or rewrites what is on screen, a line
+// break starts a line this command never wrote. Control characters are
+// printed as their escapes, and one message is bounded. `lines` keeps the
+// line breaks of a stack trace, which is this process's own text.
+const CONTROL = /\p{Cc}|\u2028|\u2029/gu;
+const MAX_LINE = 2048;
+const escaped = (char) => `\\u${char.charCodeAt(0).toString(16).padStart(4, '0')}`;
+const printable = (text, lines = false) => {
+  const cut = text.length > MAX_LINE ? `${text.slice(0, MAX_LINE)}…` : text;
+  return cut.replace(CONTROL, (char) => (lines && char === '\n' ? char : escaped(char)));
+};
+
+const append = (target, items) => {
+  for (let i = 0; i < items.length; i++) target.push(items[i]);
+};
+
 const fail = (message) => {
   throw new CliError(message);
 };
@@ -73,10 +97,24 @@ const fail = (message) => {
 // ---------------------------------------------------------------------------
 // argv
 
-const FLAGS_WITH_VALUE = new Set(['--out', '--units', '--interface', '--package', '--schema', '--format', '--openapi']);
+const FLAGS_WITH_VALUE = new Set([
+  '--out',
+  '--units',
+  '--interface',
+  '--package',
+  '--schema',
+  '--format',
+  '--openapi',
+  '--timeout',
+]);
 
 const parseArgs = (argv) => {
-  const options = { units: [], interfaceName: DEFAULT_INTERFACE, packageName: DEFAULT_PACKAGE };
+  const options = {
+    units: [],
+    interfaceName: DEFAULT_INTERFACE,
+    packageName: DEFAULT_PACKAGE,
+    timeout: DEFAULT_TIMEOUT,
+  };
   const positional = [];
   for (let i = 0; i < argv.length; i++) {
     const arg = argv[i];
@@ -102,6 +140,7 @@ const parseArgs = (argv) => {
       else if (arg === '--schema') options.schema = value;
       else if (arg === '--openapi') options.openapi = value;
       else if (arg === '--format') options.format = value;
+      else if (arg === '--timeout') options.timeout = Number(value);
       else options.packageName = value;
       continue;
     }
@@ -119,6 +158,10 @@ const parseArgs = (argv) => {
   if (options.units.some((unit) => unit === '')) fail('--units must not contain an empty unit name');
   if (!IDENTIFIER.test(options.interfaceName)) {
     fail(`--interface must be a valid TypeScript identifier, got '${options.interfaceName}'`);
+  }
+  // What setTimeout takes: past 2^31 - 1 it fires at once, with a warning.
+  if (!Number.isInteger(options.timeout) || options.timeout < 1 || options.timeout >= 2 ** 31) {
+    fail('--timeout must be a whole number of milliseconds, 1 or more');
   }
   if (options.format !== undefined) {
     if (options.schema === undefined) fail('--format only applies to --schema');
@@ -342,8 +385,10 @@ const renderTypes = (introspection, options = {}) => {
       const rendered = renderMethod(unitKey, method, info, warn);
       for (let n = 0; n < rendered.length; n++) body.push(rendered[n]);
     }
-    if (methods.emits !== undefined) body.push(...renderEmits(unitKey, methods.emits, warn));
-    if (methods.on !== undefined) body.push(...renderSends(unitKey, methods.on, warn));
+    // Appended one by one, like the methods above: how many events a unit
+    // declares is the server's to say, and a spread is an argument list.
+    if (methods.emits !== undefined) append(body, renderEmits(unitKey, methods.emits, warn));
+    if (methods.on !== undefined) append(body, renderSends(unitKey, methods.on, warn));
     // A unit CAN have no callable methods — one that only declares inbound
     // event handlers (`on: {...}`) introspects as an empty method map. It is
     // still worth emitting: the unit object is an Emitter, which is where its
@@ -362,7 +407,9 @@ const renderTypes = (introspection, options = {}) => {
   // Only imported when something needs it: an unused import is noise in a
   // file the user is told not to edit.
   if (subscriptions > 0) lines.push(`import type { ${MARKER} } from '${packageName}';`, '');
-  lines.push(`export interface ${interfaceName} {`, ...units, '}', '');
+  lines.push(`export interface ${interfaceName} {`);
+  append(lines, units);
+  lines.push('}', '');
   return lines.join('\n');
 };
 
@@ -526,19 +573,61 @@ const renderStatic = (introspection, options = {}) => {
 
 const INTROSPECT = 'system/introspect';
 
-const fetchIntrospection = async (url, units, doFetch) => {
+// The answer, read under a cap: how long it is belongs to whoever answered.
+// A Response with no readable body (a fetch that is not the platform's) is
+// read whole, as before.
+const readAnswer = async (response, url) => {
+  const reader = response.body?.getReader?.();
+  if (reader === undefined) return response.text();
+  const decoder = new TextDecoder();
+  let text = '';
+  let size = 0;
+  for (;;) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    size += value.length;
+    if (size > MAX_ANSWER) {
+      // The cap is what is reported; a cancel that fails changes nothing.
+      await reader.cancel().catch(() => {});
+      fail(`${url} answered more than ${MAX_ANSWER} bytes; that is not an introspection`);
+    }
+    text += decoder.decode(value, { stream: true });
+  }
+  return text + decoder.decode();
+};
+
+const fetchIntrospection = async (url, units, doFetch, timeout = DEFAULT_TIMEOUT) => {
   // `introspect` treats anything but an array as "no filter", which is what an
   // empty object says here — an empty ARRAY would filter every unit away.
   const args = units.length > 0 ? units : {};
   const body = JSON.stringify({ type: 'call', id: '1', method: INTROSPECT, args });
+  // One deadline over the whole exchange — the headers AND the body: a
+  // server that accepts and then says nothing used to hold the command (and
+  // the CI job it runs in) for as long as the socket lived.
+  const signal = AbortSignal.timeout(timeout);
+  const late = (error) => {
+    if (signal.aborted) fail(`${url} did not answer within ${timeout} ms`);
+    fail(`Cannot reach ${url}: ${error?.message ?? error}`);
+  };
   let response = null;
   try {
-    response = await doFetch(url, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body });
+    response = await doFetch(url, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body,
+      signal,
+    });
   } catch (error) {
-    fail(`Cannot reach ${url}: ${error.message}`);
+    late(error);
   }
   if (!response.ok) fail(`${url} answered ${response.status}${response.statusText ? ` ${response.statusText}` : ''}`);
-  const text = await response.text();
+  let text = '';
+  try {
+    text = await readAnswer(response, url);
+  } catch (error) {
+    if (error instanceof CliError) throw error;
+    late(error);
+  }
   let packet = null;
   try {
     packet = JSON.parse(text);
@@ -578,8 +667,8 @@ const main = async (argv, io = {}) => {
       log(version());
       return 0;
     }
-    const introspection = await fetchIntrospection(options.url, options.units, doFetch);
-    const warn = (message) => void error(`wrpc types: ${message}`);
+    const introspection = await fetchIntrospection(options.url, options.units, doFetch, options.timeout);
+    const warn = (message) => void error(`wrpc types: ${printable(message)}`);
     const text = renderTypes(introspection, { ...options, warn });
     const emit = async (target, content) => {
       if (target === '-') return void log(content.replace(/\n$/, ''));
@@ -603,16 +692,18 @@ const main = async (argv, io = {}) => {
     return 0;
   } catch (cause) {
     if (cause instanceof CliError) {
-      error(`wrpc types: ${cause.message}`);
+      error(`wrpc types: ${printable(cause.message)}`);
       return 1;
     }
-    error(`wrpc types: ${cause?.stack ?? cause}`);
+    error(`wrpc types: ${printable(String(cause?.stack ?? cause), true)}`);
     return 1;
   }
 };
 
 module.exports = {
   CliError,
+  DEFAULT_TIMEOUT,
+  MAX_ANSWER,
   MAX_DEPTH,
   TYPE_NAMES,
   USAGE,

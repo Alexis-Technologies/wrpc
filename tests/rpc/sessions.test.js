@@ -489,7 +489,7 @@ test('SessionManager: a write after a logout elsewhere does not resurrect the se
 });
 
 test('sessions: a logout on one connection ends the session on the others of this instance', async (t) => {
-  const { bearerTransport } = require('../../auth.js');
+  const { bearerTransport } = require('../../src/auth/index.js');
   const { bootServer, connectClient } = require('../helpers/server.js');
   const router = defineRouter({
     auth: {
@@ -525,4 +525,47 @@ test('sessions: a logout on one connection ends the session on the others of thi
   // And a fresh connection with the token is refused as before.
   const late = await tab();
   await assert.rejects(late.api.auth.whoami(), (error) => error.code === 403);
+});
+
+test('a token transport whose read() throws answers 500 and leaves no client behind', async (t) => {
+  const { bootServer } = require('../helpers/server.js');
+  const router = defineRouter({ u: { q: procedure({ access: 'public', handler: async () => 'ok' }) } });
+  const transport = {
+    read: ({ headers }) => {
+      if (headers?.authorization === 'Bearer %%%') throw new Error('malformed token');
+      return null;
+    },
+    write: () => null,
+  };
+  const { server, origin } = await bootServer(t, { router, sessions: { transport } });
+  const call = (authorization) =>
+    fetch(origin + server.rpc.basePath, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', ...(authorization ? { authorization } : {}) },
+      body: '{"type":"call","id":"1","method":"u/q","args":{}}',
+    });
+  for (let i = 0; i < 5; i++) assert.strictEqual((await call('Bearer %%%')).status, 500);
+  // Each of them used to stay registered for the life of the process.
+  assert.strictEqual(server.rpc.clients.size, 0);
+  assert.strictEqual((await call()).status, 200, 'the server still answers');
+});
+
+test('session state: deleting a key is saved, like setting one', async () => {
+  const { createProxy } = require('../../src/rpc/sessions.js');
+  const writes = [];
+  const state = createProxy({ a: 1, b: 2 }, (target) => writes.push(JSON.stringify(target)));
+  delete state.a;
+  assert.deepStrictEqual(writes, ['{"b":2}'], 'the removal reached the store');
+  // Nothing to remove, nothing to save.
+  delete state.never;
+  assert.strictEqual(writes.length, 1);
+  assert.strictEqual('a' in state, false);
+
+  const store = new MemorySessionStore();
+  const manager = new SessionManager({ store });
+  const session = manager.create(undefined, { cart: ['x'], user: 'ada' });
+  await settle();
+  delete session.state.cart;
+  await settle();
+  assert.deepStrictEqual(await store.get(session.token), { user: 'ada' });
 });

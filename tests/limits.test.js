@@ -10,7 +10,7 @@ const assert = require('node:assert');
 
 const { checkLimit } = require('../src/utils.js');
 const { RpcServer, WrpcClient, defineRouter, procedure } = require('../index.js');
-const { PeerHost } = require('../webrtc.js');
+const { PeerHost } = require('../src/webrtc/index.js');
 const { bootServer, connectClient } = require('./helpers/server.js');
 const { MIB, bytes } = require('./helpers/streams.js');
 

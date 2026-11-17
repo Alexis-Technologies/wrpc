@@ -17,8 +17,9 @@
 //
 // Paths are resolved LAZILY, inside queryFn/mutationFn rather than when the
 // options are built. That is not an implementation detail: `client.api` only
-// exists after `load()`, and it is rebuilt from scratch on every reconnect —
-// options captured before either would otherwise point at a dead method.
+// exists after `load()`, and a unit's methods are scaffolded again on every
+// reconnect (the unit object stays, so its listeners do; the method does not)
+// — options captured before either would otherwise point at a dead method.
 
 const isFunction = (value) => typeof value === 'function';
 

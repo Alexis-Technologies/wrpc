@@ -4,7 +4,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 const timers = require('node:timers/promises');
 
-const { MemoryBroker, createMemoryBroker, isBroker } = require('../../broker.js');
+const { MemoryBroker, createMemoryBroker, isBroker } = require('../../src/broker/index.js');
 const { runBackplaneContract } = require('./backplaneContract.js');
 const { runLogContract } = require('./logContract.js');
 const { runQueueContract } = require('./queueContract.js');

@@ -227,6 +227,8 @@ const iterate = (sessions) => {
     const reader = sessions.getReader();
     return {
       next: () => reader.read(),
+      // Stopping is best effort: a source that is already closed or errored
+      // has nothing left to cancel.
       stop: () => reader.cancel().catch(() => {}),
     };
   }
@@ -240,6 +242,7 @@ const iterate = (sessions) => {
     stop: () => {
       Promise.resolve()
         .then(() => iterator.return?.())
+        // A source whose return() throws is still a source this stopped reading.
         .catch(() => {});
       return Promise.resolve();
     },

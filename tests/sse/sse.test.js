@@ -5,7 +5,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { Server, WrpcClient, defineRouter, procedure, createEventStream, tracked } = require('../../index.js');
-const { SseParser, CHANNEL_HEADER } = require('../../sse.js');
+const { SseParser, CHANNEL_HEADER } = require('../../src/sse/index.js');
 const { waitFor } = require('../helpers/wait.js');
 const { splitChannelRef } = require('../../src/sse/constants.js');
 
@@ -728,4 +728,53 @@ test('sse: the replay buffer is capped by bytes, not only frames', async (t) => 
   // `count` is the ring's live-entry counter (buffer.length is the ring's
   // preallocated capacity, constant by design).
   assert.ok(held.count < 5, 'older frames were evicted by the byte budget');
+});
+
+test('SseParser: a line that does not end is scanned once, and an event has a cap', async (t) => {
+  await t.test('an open line costs what it weighs, not its square', () => {
+    // Each chunk used to be appended and the whole buffer scanned again from
+    // its start: 2 MiB in 1 KiB chunks took 6.4 s. A ratio, not an absolute.
+    const time = (kib) => {
+      const parser = new SseParser();
+      const chunk = 'x'.repeat(1024);
+      const started = process.hrtime.bigint();
+      for (let i = 0; i < kib; i++) parser.push(chunk);
+      return Number(process.hrtime.bigint() - started);
+    };
+    time(64);
+    const small = Math.max(time(64), 1);
+    const large = time(4096);
+    assert.ok(large / small < 64 * 8, `64× the bytes took ${(large / small).toFixed(0)}× the time`);
+  });
+
+  await t.test('the pieces of a line split across many chunks are one line', () => {
+    const parser = new SseParser();
+    const text = `data: ${'payload-'.repeat(500)}`;
+    for (let i = 0; i < text.length; i += 7) assert.deepStrictEqual(parser.push(text.slice(i, i + 7)), []);
+    assert.deepStrictEqual(parser.push('\n\n'), [{ id: null, event: 'message', data: 'payload-'.repeat(500) }]);
+  });
+
+  await t.test('a CR that ends a chunk ends its line there; the LF behind it is the same line end', () => {
+    const parser = new SseParser();
+    assert.deepStrictEqual(parser.push('data: a\r'), []);
+    assert.deepStrictEqual(parser.push('\ndata: b\r'), []);
+    assert.deepStrictEqual(parser.push('\r'), [{ id: null, event: 'message', data: 'a\nb' }]);
+    // A CR followed by something else is a line end of its own.
+    assert.deepStrictEqual(parser.push('data: c\r'), []);
+    assert.deepStrictEqual(parser.push('data: d\n\n')[0].data, 'c\nd');
+  });
+
+  await t.test('an event over maxMessage is an error, whether it is one line or many', () => {
+    const open = new SseParser({ maxMessage: 1000 });
+    assert.throws(() => {
+      for (let i = 0; i < 20; i++) open.push('x'.repeat(100));
+    }, /SSE event exceeds maxMessage/);
+    const lines = new SseParser({ maxMessage: 1000 });
+    assert.throws(() => {
+      for (let i = 0; i < 20; i++) lines.push(`data: ${'y'.repeat(100)}\n`);
+    }, /SSE event exceeds maxMessage/);
+    // What is dispatched is forgotten: many events under the cap are fine.
+    const fine = new SseParser({ maxMessage: 1000 });
+    for (let i = 0; i < 50; i++) assert.strictEqual(fine.push(`data: ${'z'.repeat(500)}\n\n`).length, 1);
+  });
 });

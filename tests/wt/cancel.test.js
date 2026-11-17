@@ -12,7 +12,7 @@ const { test } = require('node:test');
 const assert = require('node:assert');
 
 const { defineRouter, procedure } = require('../../index.js');
-const { acceptSessions } = require('../../wt.js');
+const { acceptSessions } = require('../../src/webtransport/index.js');
 const { createFakeWt } = require('./fakeWebTransport.js');
 const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 

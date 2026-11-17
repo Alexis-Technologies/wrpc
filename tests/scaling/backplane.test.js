@@ -5,7 +5,7 @@ const assert = require('node:assert');
 
 const { RpcServer } = require('../../index.js');
 const { defineRouter, procedure } = require('../../index.js');
-const { MemoryBackplane } = require('../../scaling.js');
+const { MemoryBackplane } = require('../../src/scaling/index.js');
 
 const noop = () => {};
 const quiet = { log: noop, info: noop, warn: noop, error: noop, debug: noop };

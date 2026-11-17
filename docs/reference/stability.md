@@ -10,11 +10,13 @@ holds for contributors.
 `@alexify/wrpc` and its subpaths (`/ws`, `/engine`, `/uws`, `/fastify`,
 `/express`, `/scaling`, `/sse`, `/query`, `/auth`, `/deflate`, `/webrtc`,
 `/wt`, `/encryption`, `/broker`, `/broker/redis`, `/broker/nats`,
-`/broker/amqp`, `/broker/kafka`), as typed by the hand-maintained root
-`.d.ts` files, is stable under semver — except where a subpath is listed
-under the carve-outs below. Deep imports
-into `src/` are **not** addressable and not supported: the module layout
-may change in any release (and has — `rpc/core.js` split twice already).
+`/broker/amqp`, `/broker/kafka`), as typed by the hand-maintained `.d.ts`
+beside each entry, is stable under semver — except where a subpath is listed
+under the carve-outs below. The entries live under `src/` and `exports`
+names them, but a deep import into `src/` is **not** addressable and not
+supported: the module layout may change in any release (and has —
+`rpc/core.js` split twice already, and in 2.2 every subpath's entry moved
+there from a shim at the package root).
 
 ## Semver, spelled out
 

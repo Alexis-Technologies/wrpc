@@ -98,6 +98,35 @@ test('router REST table', async (t) => {
     assert.deepStrictEqual(router.matchRest('PATCH', ['projects', 'x']).allowed.sort(), ['DELETE', 'GET', 'POST']);
   });
 
+  await t.test('a name that leads nowhere falls back to the parameter at that place', () => {
+    const router = defineRouter({
+      users: {
+        settings: { http: { method: 'GET', path: '/users/me/settings' }, handler: async () => 1 },
+        byId: { http: { method: 'GET', path: '/users/:id' }, handler: async () => 2 },
+        posts: { http: { method: 'GET', path: '/users/:id/posts/:post' }, handler: async () => 3 },
+        latest: { http: { method: 'GET', path: '/users/me/posts/latest/full' }, handler: async () => 4 },
+        replace: { http: { method: 'PUT', path: '/users/:id' }, handler: async () => 5 },
+      },
+    });
+    assert.strictEqual(router.matchRest('GET', ['users', 'me', 'settings']).methodName, 'settings');
+    // `me` is a declared name here, but no GET route ends at it: `:id` does.
+    // This answered null — and the request went on to the conventional mode.
+    const me = router.matchRest('GET', ['users', 'me']);
+    assert.strictEqual(me.methodName, 'byId');
+    assert.deepStrictEqual(me.params, { id: 'me' });
+    assert.strictEqual(router.matchRest('GET', ['users', '42']).methodName, 'byId');
+    // Two levels back: `me/posts/latest` has no route, `:id/posts/:post` has.
+    const post = router.matchRest('GET', ['users', 'me', 'posts', 'latest']);
+    assert.strictEqual(post.methodName, 'posts');
+    assert.deepStrictEqual(post.params, { id: 'me', post: 'latest' });
+    assert.strictEqual(router.matchRest('GET', ['users', 'me', 'posts', 'latest', 'full']).methodName, 'latest');
+    // Nothing continues it under either branch.
+    assert.strictEqual(router.matchRest('GET', ['users', 'me', 'nope']), null);
+    assert.strictEqual(router.matchRest('GET', ['users', 'me', 'settings', 'more']), null);
+    // The other verbs are probed the same way: a 405, not a fall-through.
+    assert.deepStrictEqual(router.matchRest('DELETE', ['users', 'me']).allowed.sort(), ['GET', 'PUT']);
+  });
+
   await t.test('duplicate verb+path and mixed param names in one verb throw at build', () => {
     assert.throws(
       () =>

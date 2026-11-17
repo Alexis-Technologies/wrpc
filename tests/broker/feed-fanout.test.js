@@ -13,7 +13,7 @@ const { brokerFeed } = require('../../src/broker/feed.js');
 const { TopicTails } = require('../../src/broker/tail.js');
 const { openId } = require('../../src/broker/ids.js');
 const { createBrokerSealing } = require('../../src/broker/sealing.js');
-const { generateKey } = require('../../encryption.js');
+const { generateKey } = require('../../src/encryption/index.js');
 const { recorder } = require('../helpers/recorder.js');
 const { waitFor } = require('./support.js');
 

@@ -156,6 +156,7 @@ wss.on('connection', (connection, req) => {
 | `protocols` / `handleProtocols(offered, req)` | — | Subprotocol negotiation; `false` rejects the handshake. |
 | `perMessageDeflate` | off | `true` or `{ threshold, filter, contextTakeover, level, memLevel, async }`. |
 | `coalesce` | `true` | Cork every write of one event-loop turn and flush on the next tick, one `writev` per burst. |
+| `turnBudget` | `true` | What one connection hands over in one turn of the event loop: 512 messages or 256 KiB of them. `{ messages, bytes }` sets the marks, `false` turns it off. See [the turn budget](#turn-budget). |
 | `pingInterval` | `10000` | Protocol-ping interval; a peer that misses one is terminated. |
 | `maxBuffer` | 100 MiB | Largest inbound message — the bytes that crossed the wire, compressed or not. Past it the connection is closed with `1009`. |
 | `maxPayload` | 16 MiB | Largest **inflated** message under [permessage-deflate](#permessage-deflate) — a cap on what a compressed message may become, separate from `maxBuffer` because a compression bomb is a few kilobytes on the wire. A message sent uncompressed is bounded by `maxBuffer` alone. |
@@ -210,6 +211,30 @@ syscalls — the idiom `node:http` uses. The boolean stays honest: a corked
 write still reports the buffered length against the high-water mark, and
 `'drain'` is unchanged. A bare `Connection` defaults to `coalesce: false`,
 so a write is on the socket the moment `send()` returns.
+
+### The turn budget {#turn-budget}
+
+Node reads a socket up to 32 times in one iteration of the event loop, 64 KiB
+each, and every frame in those two megabytes used to be dispatched before a
+timer fired or another connection had a turn. One peer pipelining 40,000 small
+calls held the loop for 0.72 s with `perMessageDeflate` on — each answer is
+deflated synchronously — and 100 frames of 16 KiB that inflate to 16 MiB each
+held it for 216 ms, whatever `async` said: its threshold is the compressed
+size.
+
+Server connections therefore have a **turn budget** (`turnBudget: true`): once
+a connection has handed its listeners 512 messages, or 256 KiB of them
+(counted after inflation), in one turn, its frame loop stops, the socket is
+paused, and both are taken up again on the next turn. What it had already read
+waits in the receive buffer, under `maxBuffer`; nothing is dropped and the
+order is unchanged. Bytes count beside messages because a batch frame carries
+up to `maxBatch` calls.
+
+`turnBudget: { messages, bytes }` sets the marks and `false` turns it off. A
+bare `Connection` defaults to `false`, so a message is delivered inside the
+`'data'` event that carried it. `isPaused` is true while a connection waits
+for its next turn, so the heartbeat does not take a busy peer for a dead one.
+The uWebSockets.js engine dispatches natively and has no such budget.
 
 ### Payload ownership
 

@@ -271,3 +271,32 @@ test('ws compression: a client with a bad option fails at open', async (t) => {
     /compression must be true, false/,
   );
 });
+
+test('ws compression: the Node half says what was agreed — nothing before the pong, the codec after', () => {
+  const { createWsCompression } = require('../../src/client/wsCompression.js');
+  const zlib = require('node:zlib');
+  assert.strictEqual(createWsCompression(false), null);
+  const compression = createWsCompression({ threshold: 1 });
+  assert.deepStrictEqual(JSON.parse(compression.offer), { type: 'ping', enc: ['deflate-raw'] });
+  // Before the server answered: nothing is active and nothing is framed.
+  assert.strictEqual(compression.active, false);
+  assert.strictEqual(compression.id, null);
+  assert.strictEqual(compression.encode('x'.repeat(200)), null);
+  // What is not a pong is not an answer; a pong without `enc` is a no.
+  assert.strictEqual(compression.accept('{"type":"event","name":"a/b"}'), null);
+  assert.strictEqual(compression.accept(new Uint8Array(4)), null);
+  assert.strictEqual(compression.accept('{"type":"pong"}'), false);
+  assert.strictEqual(compression.accept('{"type":"pong","enc":"brotli"}'), false, 'a codec this side never offered');
+  assert.strictEqual(compression.active, false);
+  // The pong names the one codec to send with.
+  assert.strictEqual(compression.accept('{"type":"pong","enc":"deflate-raw"}'), true);
+  assert.strictEqual(compression.active, true);
+  assert.strictEqual(compression.id, 'deflate-raw');
+  const text = 'x'.repeat(200);
+  const packet = compression.encode(text);
+  assert.deepStrictEqual([packet[0], packet[1]], [0, 3], 'a packet under the 0x00 marker, kind 3');
+  assert.strictEqual(zlib.inflateRawSync(packet.subarray(2)).toString(), text);
+  const chunk = compression.encode(Buffer.alloc(200, 7));
+  assert.deepStrictEqual([chunk[0], chunk[1]], [0, 4], 'a chunk is kind 4');
+  assert.strictEqual(compression.encode('{}'), null, 'what does not get smaller leaves as it is');
+});

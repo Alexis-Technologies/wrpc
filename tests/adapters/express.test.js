@@ -6,8 +6,8 @@ const http = require('node:http');
 const { EventEmitter } = require('node:events');
 
 const { WrpcClient, defineRouter, procedure } = require('../../index.js');
-const { createWrpc } = require('../../express.js');
-const { createUwsEngine } = require('../../uws.js');
+const { createWrpc } = require('../../src/adapters/express.js');
+const { createUwsEngine } = require('../../src/adapters/uws.js');
 const { optional, requireUws } = require('./boots.js');
 
 const express = optional('express');
@@ -176,4 +176,24 @@ test('codec.rest: a binary REST body round-trips through the middleware', { skip
   assert.strictEqual(res.status, 201);
   assert.strictEqual(res.headers.get('content-type'), 'application/x-wrpc-bin');
   assert.deepStrictEqual(codec.rest.decode(Buffer.from(await res.arrayBuffer())), { orgId: '9', name: 'Bin' });
+});
+
+test('close({ drain }) lets a call in flight finish before the sockets are closed', { skip: noExpress }, async (t) => {
+  const slow = defineRouter({
+    probe: {
+      slow: procedure({
+        access: 'public',
+        handler: () => new Promise((resolve) => setTimeout(() => resolve('done'), 80)),
+      }),
+    },
+  });
+  const { wrpc, port } = await boot(t, { router: slow });
+  const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`, { heartbeat: false, reconnect: false });
+  t.after(() => void client.close());
+  const answer = client.call('probe/slow', {});
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  // The middleware's close took no drain: a deploy cut every call in flight,
+  // where the Server shell's close({ drain }) lets it finish.
+  await wrpc.close({ drain: 1000 });
+  assert.strictEqual(await answer, 'done');
 });

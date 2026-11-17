@@ -4,8 +4,8 @@ const test = require('node:test');
 const assert = require('node:assert');
 const http = require('node:http');
 
-const { createUwsEngine, UwsSocket, SUCCESS, DROPPED } = require('../../uws.js');
-const { isEngine } = require('../../engine.js');
+const { createUwsEngine, UwsSocket, SUCCESS, DROPPED } = require('../../src/adapters/uws.js');
+const { isEngine } = require('../../src/engine/index.js');
 const { runEngineContract, standaloneHarness } = require('../engine/engineContract.js');
 const { Server, defineRouter, procedure } = require('../../index.js');
 const { ProtocolClient } = require('../websocket/protocolClient.js');

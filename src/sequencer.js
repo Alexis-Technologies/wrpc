@@ -26,9 +26,11 @@ const INFLIGHT_LIMIT = 4;
  * value in push order; `recover` runs with the error when the promise
  * rejected or the thunk threw (send it plain, hang up). A push with
  * nothing in flight and a plain value delivers synchronously — the common
- * path costs no promise — and once something is in flight every later
- * push waits behind it, plain or not, which is what keeps the wire
- * ordered. Errors thrown by deliver/recover go to `onError`.
+ * path costs no promise: 96 M pushes a second against 1.6 M through a
+ * resolved one (bench/message-compression.js, the Sequencer rows) — and
+ * once something is in flight every later push waits behind it, plain or
+ * not, which is what keeps the wire ordered. Errors thrown by
+ * deliver/recover go to `onError`.
  */
 class Sequencer {
   #tail = null;

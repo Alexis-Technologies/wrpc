@@ -15,7 +15,7 @@ const path = require('node:path');
 const vm = require('node:vm');
 
 const next = require('../../index.js');
-require('../../sse.js');
+require('../../src/sse/index.js');
 
 const optional = (name) => {
   try {
@@ -162,7 +162,7 @@ const browserBuild = () => {
   bundled ??= (async () => {
     const esbuild = require('esbuild');
     const result = await esbuild.build({
-      entryPoints: [path.join(__dirname, '..', '..', 'browser.js')],
+      entryPoints: [path.join(__dirname, '..', '..', 'src', 'index.browser.js')],
       bundle: true,
       platform: 'browser',
       format: 'cjs',

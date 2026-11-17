@@ -41,7 +41,9 @@ const {
   parseParams,
   DEFAULT_MAX_BATCH,
   UNKNOWN_TARGET,
+  levelFor,
 } = require('./dispatcher.js');
+const { checkHeader } = require('./rest.js');
 const { createLoggerWriter } = require('../logging.js');
 const { createServerTelemetry } = require('../telemetry/server.js');
 const { TRACEPARENT, TRACESTATE } = require('../telemetry/shared.js');
@@ -80,6 +82,10 @@ const socketTransportFor = (kind) => {
   return ServerWsTransport;
 };
 
+// The REST leg's trace context arrives as REAL HTTP headers (the client's
+// #restCall injects traceparent/tracestate — there is no packet on the wire
+// to carry tp/ts). Mapped onto the synthetic packet's tp/ts fields, the
+// ordinary extract path in the telemetry writer picks them up, so a REST
 // call joins the caller's trace exactly like a packet call does.
 const copyTraceHeaders = (headers, packet) => {
   const parent = headers?.traceparent;
@@ -99,6 +105,32 @@ const DEFAULT_BASE_PATH = '/api';
 // bag through here, so adding a core option cannot be silently dropped by
 // one of the four places that construct an RpcServer.
 // The keys `options.rooms` knows; anything else is a warning (see #initRooms).
+// The keys `options.cors` knows. One of them is the origin allowlist, the
+// only thing between a page anywhere and a WebSocket with the visitor's
+// cookies on it — and a key this list does not hold is read by nothing:
+// `cors: { origin: 'https://app.example' }`, the spelling of the `cors`
+// package and of @fastify/cors, left the allowlist empty without a word.
+const CORS_OPTION_KEYS = ['origins', 'credentials', 'headers', 'metaHeaders', 'methods'];
+const checkCors = (cors, log) => {
+  if (cors === null || cors === undefined) return null;
+  if (typeof cors !== 'object') throw new TypeError('RpcServer: options.cors must be an object');
+  if (Object.hasOwn(cors, 'origin')) {
+    throw new TypeError('RpcServer: options.cors.origin is not an option — the allowlist is `origins`');
+  }
+  const { origins } = cors;
+  const valid =
+    origins === undefined ||
+    origins === null ||
+    typeof origins === 'function' ||
+    typeof origins === 'string' ||
+    (Array.isArray(origins) && origins.every((origin) => typeof origin === 'string'));
+  if (!valid) throw new TypeError('RpcServer: options.cors.origins must be an origin, an array of them or a function');
+  for (const key of Object.keys(cors)) {
+    if (!CORS_OPTION_KEYS.includes(key)) log.warn({ event: 'cors.option', key });
+  }
+  return cors;
+};
+
 const ROOMS_OPTION_KEYS = ['epoch', 'linger', 'maxTracked', 'compression', 'encryption', 'maxMessage'];
 const RPC_OPTION_KEYS = [
   'router',
@@ -168,6 +200,9 @@ class RpcServer extends Emitter {
   #sse = null;
   // The normalized `http.compression` option, or null (off, the default).
   #compression = null;
+  // `http.hsts`: undefined (the default header), a value of the
+  // application's, or false for none — passed to buildHeaders as it is.
+  #hsts = undefined;
   #compressionFailed;
   #httpFailed;
   // The largest inflated client frame accepted on a socket (the Node ws
@@ -289,7 +324,7 @@ class RpcServer extends Emitter {
     if (this.#encryption !== null && this.#sessions.transport.ambient === true) {
       this.#log.warn({ event: 'encryption.ambient-session' });
     }
-    this.#cors = cors;
+    this.#cors = checkCors(cors, this.#log);
     this.#basePath = normalizeBasePath(basePath);
     // Resolved before #instance, because an omitted instanceId is minted BY
     // the generator: a user who injected one gets it used for every id the
@@ -312,6 +347,10 @@ class RpcServer extends Emitter {
     // gzip on packet-mode and REST answers for peers that ask for it — off
     // unless the app turns it on; the SSE half has its own under `sse`.
     this.#compression = normalizeCompression(http.compression, 'RpcServer: options.http');
+    if (http.hsts !== undefined && http.hsts !== false) {
+      checkHeader('Strict-Transport-Security', http.hsts, 'RpcServer: options.http.hsts');
+    }
+    this.#hsts = http.hsts;
     // Two halves, two fields: #codec is the PACKET codec (ws/http/sse/worker
     // frames — a rest-only codec leaves packet mode JSON), #restCodec the
     // REST body codec. The raw option survives for the public getter.
@@ -523,7 +562,10 @@ class RpcServer extends Emitter {
     return {
       count: (room) => this.#rooms.count(room),
       snapshot: () => {
-        const rooms = {};
+        // No prototype: a room is named by whoever joins it, and on a plain
+        // object `rooms['__proto__'] = 1` sets nothing — the room was missing
+        // from every other node's count.
+        const rooms = { __proto__: null };
         for (const room of this.#rooms.list()) rooms[room] = this.#rooms.count(room);
         let clients = 0;
         for (const client of this.#clients) if (client.persistent) clients++;
@@ -839,7 +881,24 @@ class RpcServer extends Emitter {
     // a hook that ran ahead of this assignment awaited the constructor's
     // resolved default and saw session === null. A thunk, not a promise —
     // the restore needs the client this method is what creates.
-    if (restore) client.sessionReady = restore(client);
+    if (restore) {
+      try {
+        client.sessionReady = restore(client);
+      } catch (error) {
+        // The thunk reads the request's token synchronously, through a
+        // transport the application may have injected (`sessions.transport`),
+        // and its `read` threw — on a header it could not parse, say. The
+        // request is answered by whoever called this (a 500), but the client
+        // was registered three lines up and nothing has subscribed to its
+        // transport's 'close' yet: it used to stay in `clients` for the life
+        // of the process, one for every such request.
+        this.#clients.delete(client);
+        this.#byId.delete(client.id);
+        this.#otel.recordConnection(-1, transport.kind, transport.revision);
+        client.destroy();
+        throw error;
+      }
+    }
     // Router-level connection lifecycle hooks. Contained (a throwing hook is
     // logged, never fatal — refusing a connection is verifyClient's job) but
     // ORDERED for dispatch: `client.ready` is session restore plus settled
@@ -1099,7 +1158,7 @@ class RpcServer extends Emitter {
     const kind = bytes[1];
     const active = client.compression;
     if (active === null || (kind !== FRAME_PACKET_COMPRESSED && kind !== FRAME_CHUNK_COMPRESSED)) {
-      client.log.warn({ event: 'frame.refused', kind, negotiated: active !== null });
+      client.log[levelFor(client, 'frame.refused')]({ event: 'frame.refused', kind, negotiated: active !== null });
       client.error(400, { error: new Error('Unexpected framed message'), level: 'debug' });
       return null;
     }
@@ -1110,7 +1169,8 @@ class RpcServer extends Emitter {
     const out = decodeOrNull(active, bytes.subarray(2), this.#maxMessage, (error) => void (cause = error));
     if (out === null) {
       this.#otel.recordCompressionFailure(client.transportKind, 'decode');
-      client.log.warn({ event: 'frame.refused', kind, reason: 'inflate', codec: active.id, code: cause?.code });
+      const level = levelFor(client, 'frame.refused');
+      client.log[level]({ event: 'frame.refused', kind, reason: 'inflate', codec: active.id, code: cause?.code });
       client.error(400, { error: new Error('Framed message does not inflate'), level: 'debug' });
       return null;
     }
@@ -1379,7 +1439,8 @@ class RpcServer extends Emitter {
       this.#otel.recordCall(UNKNOWN_TARGET, 'error', 500);
       if (answered) return;
       try {
-        new ServerHttpTransport(guarded, { headers: buildHeaders(this.#cors, call.headers?.origin) }).error(500);
+        const headers = buildHeaders(this.#cors, call.headers?.origin, 1, this.#hsts);
+        new ServerHttpTransport(guarded, { headers }).error(500);
       } catch {
         // The host cannot write either: nothing more to say.
       }
@@ -1387,7 +1448,7 @@ class RpcServer extends Emitter {
   }
 
   async #routeHttpCall(call) {
-    const headers = buildHeaders(this.#cors, call.headers?.origin, this.revision);
+    const headers = buildHeaders(this.#cors, call.headers?.origin, this.revision, this.#hsts);
     if (call.method === 'OPTIONS') {
       return void call.respond({ status: 200, headers });
     }
@@ -1722,4 +1783,12 @@ const httpReply = (call, method, transport) => ({
   status: (code) => transport.setStatus(code),
 });
 
-module.exports = { RpcServer, Client, Context, rpcOptions, DEFAULT_MAX_SUBSCRIPTIONS, DEFAULT_MAX_CALLS };
+module.exports = {
+  RpcServer,
+  Client,
+  Context,
+  rpcOptions,
+  copyTraceHeaders,
+  DEFAULT_MAX_SUBSCRIPTIONS,
+  DEFAULT_MAX_CALLS,
+};
