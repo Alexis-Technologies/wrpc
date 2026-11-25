@@ -226,9 +226,9 @@ class Mesh extends Emitter {
     this.#ensureAll(members);
   }
 
+  // for...of, as before 2.3: a signaler's roster is any iterable of members.
   #ensureAll(members) {
-    for (let i = 0; i < members.length; i++) {
-      const member = members[i];
+    for (const member of members) {
       this.#ensure(member.id, member.data ?? null, member.instance ?? null);
     }
   }

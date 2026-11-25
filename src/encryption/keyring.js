@@ -54,7 +54,8 @@ const fromProvider = (provider, name) =>
       const kids = typeof provider.kids === 'function' ? provider.kids() : null;
       if (!Array.isArray(kids)) return [this.current];
       const valid = [];
-      for (let i = 0; i < kids.length; i++) if (isKid(kids[i])) valid.push(kids[i]);
+      // A hole of a sparse list is skipped, as `filter` skipped it.
+      for (let i = 0; i < kids.length; i++) if (i in kids && isKid(kids[i])) valid.push(kids[i]);
       return valid;
     },
     get(kid) {

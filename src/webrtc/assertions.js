@@ -135,8 +135,9 @@ const sdpFingerprint = (sdp) => {
 
 const isJwk = (value) => isObject(value) && value.kty === 'EC' && value.crv === 'P-256';
 
+// A hole of a sparse list is skipped, as `every` skipped it, and holds no key.
 const allJwks = (list) => {
-  for (let i = 0; i < list.length; i++) if (!isJwk(list[i])) return false;
+  for (let i = 0; i < list.length; i++) if (i in list && !isJwk(list[i])) return false;
   return true;
 };
 
@@ -228,8 +229,12 @@ const createAssertionVerifier = ({
         throw new ConfigError('assertion keys: expected a non-empty array of EC P-256 JWKs');
       }
       const fresh = new Map();
+      let present = 0;
+      let first = null;
       for (let i = 0; i < list.length; i++) {
+        if (!(i in list)) continue;
         const jwk = list[i];
+        if (present++ === 0) first = jwk;
         const kid = typeof jwk.kid === 'string' ? jwk.kid : '';
         const key = subtle.importKey('jwk', publicJwk(jwk), ES256, false, ['verify']);
         // A JWK the platform refuses rejects here, and nobody awaits it
@@ -237,9 +242,10 @@ const createAssertionVerifier = ({
         key.catch(noop);
         fresh.set(kid, key);
       }
+      if (present === 0) throw new ConfigError('assertion keys: expected a non-empty array of EC P-256 JWKs');
       // Swapped whole, once it loaded: a refresh that fails keeps the set that was.
       imported = fresh;
-      wildcard = list.length === 1 && typeof list[0].kid !== 'string' ? fresh.get('') : null;
+      wildcard = present === 1 && typeof first.kid !== 'string' ? fresh.get('') : null;
       ready = true;
       loadedAt = clock();
       failure = null;

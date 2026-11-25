@@ -55,7 +55,8 @@ const CLOSE_POLICY = 1008;
 const CLOSE_PROTOCOL = 1002;
 
 const isListOf = (value, allowed) => {
-  for (let i = 0; i < value.length; i++) if (!allowed.includes(value[i])) return false;
+  // A hole of a sparse list is skipped, as `every` skipped it.
+  for (let i = 0; i < value.length; i++) if (i in value && !allowed.includes(value[i])) return false;
   return true;
 };
 
@@ -64,7 +65,9 @@ const listOf = (value, allowed, fallback, name) => {
   if (!Array.isArray(value) || value.length === 0 || !isListOf(value, allowed)) {
     throw new ConfigError(`${name} must be a non-empty list of ${allowed.join(', ')}`);
   }
-  return Object.freeze([...new Set(value)]);
+  const unique = new Set();
+  for (let i = 0; i < value.length; i++) if (i in value) unique.add(value[i]);
+  return Object.freeze([...unique]);
 };
 
 /**

@@ -53,15 +53,19 @@ narrower promise — see
   "Unknown error" for a code named `toString`, and `brokerFeed` refuses
   `decode: 'toString'` with a `ConfigError` instead of decoding with
   `Object.prototype.toString`.
-- **A sparse array in an option is refused**, where `.every` used to skip
-  its holes: `retryOn`, a binding's `meta`, the encryption pattern and
-  cipher lists, `declaredHeaders`, a mirror's `allowHeaders`, assertion
-  keys.
-
 ### Fixed
 
 - **`logger: false` silences the Emitter's listener warning**, which
   `globalThis.console.warn` printed whatever the owner's `logger` said.
+- **A sparse array in an option works where a hole broke it.** A hole is
+  skipped, as `every` and `map` skipped it in 2.2 — `retryOn`, a binding's
+  `meta`, `cors.origins`, a mirror's `allowHeaders` and the encryption
+  `ciphers` take a sparse list as they did — and now also where the hole
+  failed further on: `declaredHeaders` and `compression.encodings` (a
+  `TypeError` reading `undefined`), the encryption `patterns` (a
+  `ConfigError` naming `undefined`), and assertion `keys` (accepted, then
+  every verify failed on the first key load). A list of holes only is still
+  refused.
 
 ### Documentation
 

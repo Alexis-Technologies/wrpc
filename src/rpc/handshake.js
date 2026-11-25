@@ -168,6 +168,8 @@ const normalizeDeclaredHeaders = (value, label) => {
   if (!Array.isArray(value)) throw namesError(label);
   const allow = new Set();
   for (let i = 0; i < value.length; i++) {
+    // A hole of a sparse list is skipped, as `every` skipped it.
+    if (!(i in value)) continue;
     const name = value[i];
     if (typeof name !== 'string' || name.length === 0) throw namesError(label);
     const lower = name.toLowerCase();

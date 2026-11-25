@@ -161,7 +161,8 @@ const normalizeCompression = (value, name, { streaming = false, zlib: lib = zlib
   // encoding and a duplicate fails on the entry.
   const label = `${name}: compression.encodings`;
   const encoders = [];
-  for (let i = 0; i < encodings.length; i++) encoders.push(toEncoder(encodings[i], label, lib));
+  // A hole of a sparse list is skipped, as `map` skipped it.
+  for (let i = 0; i < encodings.length; i++) if (i in encodings) encoders.push(toEncoder(encodings[i], label, lib));
   for (let i = 0; i < encoders.length; i++) {
     const { token } = encoders[i];
     if (token === 'identity' || token === '*') throw new ConfigError(`${name}: ${token} is not an encoding to apply`);

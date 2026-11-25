@@ -225,6 +225,8 @@ const injectedHeaders = async (mirror, allow, context, headers) => {
 const lowerNames = (list) => {
   const names = new Set();
   for (let i = 0; i < list.length; i++) {
+    // A hole of a sparse list is skipped, as `every` and `map` skipped it.
+    if (!(i in list)) continue;
     const name = list[i];
     if (typeof name !== 'string' || name.length === 0) return null;
     names.add(name.toLowerCase());

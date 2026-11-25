@@ -23,7 +23,8 @@ const nonNegative = (value) => typeof value === 'number' && Number.isFinite(valu
 
 const statusCodes = (list) => {
   if (!Array.isArray(list)) return false;
-  for (let i = 0; i < list.length; i++) if (!Number.isInteger(list[i])) return false;
+  // A hole of a sparse list is skipped, as `every` skipped it.
+  for (let i = 0; i < list.length; i++) if (i in list && !Number.isInteger(list[i])) return false;
   return true;
 };
 

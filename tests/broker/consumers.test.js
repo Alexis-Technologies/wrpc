@@ -134,6 +134,29 @@ describe('attachConsumers', () => {
     assert.strictEqual(consumers.healthy, false);
   });
 
+  it('should take a sparse meta list, as it did before 2.3: a hole names no header', async (t) => {
+    const metas = [];
+    const meta = [];
+    meta.length = 2;
+    meta[1] = 'X-Tenant';
+    const { broker, rpc } = boot(t, {
+      billing: {
+        consumes: {
+          'orders.created': procedure({
+            access: 'public',
+            consume: { meta, retry: fastRetry },
+            handler: async (ctx) => void metas.push({ ...ctx.callMeta }),
+          }),
+        },
+      },
+    });
+    const consumers = await attachConsumers(rpc, broker);
+    t.after(() => consumers.stop());
+    await broker.queue.produce('orders.created', '{}', { headers: { 'x-tenant': 't1' } });
+    await waitFor(() => metas.length === 1);
+    assert.strictEqual(metas[0]['x-tenant'], 't1');
+  });
+
   it('should keep a consumer procedure unreachable by a call packet', async (t) => {
     const router = defineRouter({
       billing: {

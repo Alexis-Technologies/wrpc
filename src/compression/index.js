@@ -106,7 +106,8 @@ const resolveCodec = (value, async, optional, name) => {
 
 // Whether a list names a platform codec — what `async` applies to.
 const namesPlatform = (list) => {
-  for (let i = 0; i < list.length; i++) if (typeof list[i] === 'string') return true;
+  // A hole of a sparse list is skipped, as `some` skipped it.
+  for (let i = 0; i < list.length; i++) if (i in list && typeof list[i] === 'string') return true;
   return false;
 };
 

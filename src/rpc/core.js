@@ -114,7 +114,8 @@ const DEFAULT_BASE_PATH = '/api';
 const CORS_OPTION_KEYS = new Set(['origins', 'credentials', 'headers', 'metaHeaders', 'methods']);
 
 const isStringList = (list) => {
-  for (let i = 0; i < list.length; i++) if (typeof list[i] !== 'string') return false;
+  // A hole of a sparse list is skipped, as `every` skipped it.
+  for (let i = 0; i < list.length; i++) if (i in list && typeof list[i] !== 'string') return false;
   return true;
 };
 

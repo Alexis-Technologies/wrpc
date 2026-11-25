@@ -118,6 +118,8 @@ const headerNames = (list) => {
   if (!Array.isArray(list)) return null;
   const names = [];
   for (let i = 0; i < list.length; i++) {
+    // A hole of a sparse list is skipped, as `every` and `map` skipped it.
+    if (!(i in list)) continue;
     const name = list[i];
     if (typeof name !== 'string') return null;
     names.push(name.toLowerCase());

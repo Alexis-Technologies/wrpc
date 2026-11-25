@@ -115,6 +115,27 @@ describe('mesh', () => {
     assert.strictEqual(await ab.api.chat.hello(), 'b greets a');
   });
 
+  it('should take a roster that is any iterable, as before 2.3', async (t) => {
+    const { hub, peer } = world(t);
+    const a = peer('a');
+    const ma = a.join('room');
+    await ma.ready();
+    // b's signaler answers its join with a Set instead of an array: b dials
+    // every member the roster holds.
+    const signaler = hub.signaler('b');
+    const join = signaler.join.bind(signaler);
+    signaler.join = async (...args) => new Set(await join(...args));
+    const b = peer('b', { signaler });
+    const dialed = [];
+    const connect = b.connect.bind(b);
+    b.connect = (id, options) => {
+      dialed.push(id);
+      return connect(id, options);
+    };
+    await b.join('room').ready();
+    assert.deepStrictEqual(dialed, ['a']);
+  });
+
   it('should reach every member, present and future, with broadcast, ask and respond', async (t) => {
     const { peer } = world(t);
     const a = peer('a');
