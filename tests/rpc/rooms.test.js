@@ -1,7 +1,7 @@
 'use strict';
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it, before } = require('node:test');
+const assert = require('node:assert/strict');
 
 const { RoomRegistry, Broadcast } = require('../../src/rpc/rooms.js');
 
@@ -31,220 +31,230 @@ const fakeClient = (name, { persistent = true, broken = false } = {}) => ({
 const target = (registry, clients, options = {}) =>
   new Broadcast({ registry, clients: () => clients, log: quiet, ...options });
 
-test('RoomRegistry: join, leave and the reverse index', async (t) => {
-  const registry = new RoomRegistry();
-  const ada = fakeClient('ada');
-  const grace = fakeClient('grace');
+describe('RoomRegistry', () => {
+  describe('join, leave and the reverse index', () => {
+    const registry = new RoomRegistry();
+    const ada = fakeClient('ada');
+    const grace = fakeClient('grace');
 
-  await t.test('join reports whether the membership is new', () => {
-    assert.strictEqual(registry.join(ada, 'chat'), true);
-    assert.strictEqual(registry.join(ada, 'chat'), false, 'joining twice is a no-op');
-    assert.strictEqual(registry.count('chat'), 1);
+    it('should report from join whether the membership is new', () => {
+      assert.strictEqual(registry.join(ada, 'chat'), true);
+      assert.strictEqual(registry.join(ada, 'chat'), false, 'joining twice is a no-op');
+      assert.strictEqual(registry.count('chat'), 1);
+    });
+
+    it('should keep both directions in sync', () => {
+      registry.join(ada, 'lobby');
+      registry.join(grace, 'chat');
+      assert.deepStrictEqual(registry.list().sort(), ['chat', 'lobby']);
+      assert.deepStrictEqual([...registry.roomsOf(ada)].sort(), ['chat', 'lobby']);
+      assert.strictEqual(registry.members('chat').has(grace), true);
+      assert.strictEqual(registry.size, 2);
+    });
+
+    it('should remove the room on leave once it empties', () => {
+      assert.strictEqual(registry.leave(ada, 'lobby'), true);
+      assert.strictEqual(registry.has('lobby'), false, 'an empty room is dropped');
+      assert.strictEqual(registry.leave(ada, 'lobby'), false, 'leaving twice is a no-op');
+      assert.strictEqual(registry.leave(ada, 'never-joined'), false);
+    });
+
+    it('should clear every membership of one client on leaveAll', () => {
+      registry.join(ada, 'a');
+      registry.join(ada, 'b');
+      registry.leaveAll(ada);
+      assert.strictEqual(registry.roomsOf(ada).size, 0);
+      assert.strictEqual(registry.members('chat').has(ada), false);
+      assert.strictEqual(registry.members('chat').has(grace), true, 'other members survive');
+    });
+
+    it('should require a room name to be a non-empty string', () => {
+      assert.throws(() => registry.join(ada, ''), TypeError);
+      assert.throws(() => registry.join(ada, 42), TypeError);
+    });
   });
 
-  await t.test('both directions stay in sync', () => {
-    registry.join(ada, 'lobby');
+  it('should fire the subscribe callbacks on the first and last member', () => {
+    const subscribed = [];
+    const unsubscribed = [];
+    const registry = new RoomRegistry({
+      onSubscribe: (room) => subscribed.push(room),
+      onUnsubscribe: (room) => unsubscribed.push(room),
+    });
+    const ada = fakeClient('ada');
+    const grace = fakeClient('grace');
+
+    registry.join(ada, 'chat');
     registry.join(grace, 'chat');
-    assert.deepStrictEqual(registry.list().sort(), ['chat', 'lobby']);
-    assert.deepStrictEqual([...registry.roomsOf(ada)].sort(), ['chat', 'lobby']);
-    assert.strictEqual(registry.members('chat').has(grace), true);
-    assert.strictEqual(registry.size, 2);
-  });
+    assert.deepStrictEqual(subscribed, ['chat'], 'only the first member subscribes');
 
-  await t.test('leave removes the room once it empties', () => {
-    assert.strictEqual(registry.leave(ada, 'lobby'), true);
-    assert.strictEqual(registry.has('lobby'), false, 'an empty room is dropped');
-    assert.strictEqual(registry.leave(ada, 'lobby'), false, 'leaving twice is a no-op');
-    assert.strictEqual(registry.leave(ada, 'never-joined'), false);
-  });
+    registry.leave(ada, 'chat');
+    assert.deepStrictEqual(unsubscribed, [], 'a room with members stays subscribed');
+    registry.leave(grace, 'chat');
+    assert.deepStrictEqual(unsubscribed, ['chat']);
 
-  await t.test('leaveAll clears every membership of one client', () => {
-    registry.join(ada, 'a');
-    registry.join(ada, 'b');
-    registry.leaveAll(ada);
-    assert.strictEqual(registry.roomsOf(ada).size, 0);
-    assert.strictEqual(registry.members('chat').has(ada), false);
-    assert.strictEqual(registry.members('chat').has(grace), true, 'other members survive');
-  });
-
-  await t.test('a room name must be a non-empty string', () => {
-    assert.throws(() => registry.join(ada, ''), TypeError);
-    assert.throws(() => registry.join(ada, 42), TypeError);
+    registry.join(ada, 'chat');
+    assert.deepStrictEqual(subscribed, ['chat', 'chat'], 'a re-created room subscribes again');
+    registry.clear();
+    assert.deepStrictEqual(unsubscribed, ['chat', 'chat']);
+    assert.strictEqual(registry.size, 0);
   });
 });
 
-test('RoomRegistry: subscribe callbacks fire on the first and last member', () => {
-  const subscribed = [];
-  const unsubscribed = [];
-  const registry = new RoomRegistry({
-    onSubscribe: (room) => subscribed.push(room),
-    onUnsubscribe: (room) => unsubscribed.push(room),
-  });
-  const ada = fakeClient('ada');
-  const grace = fakeClient('grace');
+describe('Broadcast', () => {
+  describe('targeting', () => {
+    const registry = new RoomRegistry();
+    const ada = fakeClient('ada');
+    const grace = fakeClient('grace');
+    const linus = fakeClient('linus');
+    const clients = new Set([ada, grace, linus]);
+    before(() => {
+      registry.join(ada, 'chat');
+      registry.join(grace, 'chat');
+      registry.join(grace, 'lobby');
+      registry.join(linus, 'lobby');
+    });
 
-  registry.join(ada, 'chat');
-  registry.join(grace, 'chat');
-  assert.deepStrictEqual(subscribed, ['chat'], 'only the first member subscribes');
+    it('should reach exactly the members of to(room)', () => {
+      const sent = target(registry, clients).to('chat').emit('msg', { n: 1 });
+      assert.strictEqual(sent, 2);
+      assert.deepStrictEqual(ada.received, [['msg', { n: 1 }]]);
+      assert.deepStrictEqual(linus.received, []);
+    });
 
-  registry.leave(ada, 'chat');
-  assert.deepStrictEqual(unsubscribed, [], 'a room with members stays subscribed');
-  registry.leave(grace, 'chat');
-  assert.deepStrictEqual(unsubscribed, ['chat']);
+    it('should make to() over several rooms a union, each client once', () => {
+      for (const client of clients) client.received.length = 0;
+      const sent = target(registry, clients).to('chat', 'lobby').emit('msg', 2);
+      assert.strictEqual(sent, 3);
+      assert.strictEqual(grace.received.length, 1, 'a member of both rooms gets one copy');
+    });
 
-  registry.join(ada, 'chat');
-  assert.deepStrictEqual(subscribed, ['chat', 'chat'], 'a re-created room subscribes again');
-  registry.clear();
-  assert.deepStrictEqual(unsubscribed, ['chat', 'chat']);
-  assert.strictEqual(registry.size, 0);
-});
+    it('should drop a client from the fan-out with except()', () => {
+      for (const client of clients) client.received.length = 0;
+      const sent = target(registry, clients).to('chat').except(ada).emit('msg', 3);
+      assert.strictEqual(sent, 1);
+      assert.deepStrictEqual(ada.received, []);
+      assert.deepStrictEqual(grace.received, [['msg', 3]]);
+    });
 
-test('Broadcast: targeting', async (t) => {
-  const registry = new RoomRegistry();
-  const ada = fakeClient('ada');
-  const grace = fakeClient('grace');
-  const linus = fakeClient('linus');
-  const clients = new Set([ada, grace, linus]);
-  registry.join(ada, 'chat');
-  registry.join(grace, 'chat');
-  registry.join(grace, 'lobby');
-  registry.join(linus, 'lobby');
+    it('should target every client with no room', () => {
+      for (const client of clients) client.received.length = 0;
+      assert.strictEqual(target(registry, clients).emit('all', 4), 3);
+      assert.strictEqual(target(registry, clients).except(linus).emit('all', 5), 2);
+    });
 
-  await t.test('to(room) reaches exactly its members', () => {
-    const sent = target(registry, clients).to('chat').emit('msg', { n: 1 });
-    assert.strictEqual(sent, 2);
-    assert.deepStrictEqual(ada.received, [['msg', { n: 1 }]]);
-    assert.deepStrictEqual(linus.received, []);
-  });
+    it('should chain immutably: a stored target is not narrowed later', () => {
+      const chat = target(registry, clients).to('chat');
+      const narrowed = chat.except(ada);
+      assert.notStrictEqual(chat, narrowed);
+      assert.deepStrictEqual(chat.rooms, ['chat']);
+      assert.strictEqual(target(registry, clients).rooms, null);
+      for (const client of clients) client.received.length = 0;
+      assert.strictEqual(chat.emit('msg', 6), 2, 'the original still reaches both');
+    });
 
-  await t.test('to() over several rooms is a union, each client once', () => {
-    for (const client of clients) client.received.length = 0;
-    const sent = target(registry, clients).to('chat', 'lobby').emit('msg', 2);
-    assert.strictEqual(sent, 3);
-    assert.strictEqual(grace.received.length, 1, 'a member of both rooms gets one copy');
-  });
+    it('should deliver to nobody for an empty room', () => {
+      assert.strictEqual(target(registry, clients).to('nowhere').emit('msg', 7), 0);
+    });
 
-  await t.test('except() drops a client from the fan-out', () => {
-    for (const client of clients) client.received.length = 0;
-    const sent = target(registry, clients).to('chat').except(ada).emit('msg', 3);
-    assert.strictEqual(sent, 1);
-    assert.deepStrictEqual(ada.received, []);
-    assert.deepStrictEqual(grace.received, [['msg', 3]]);
-  });
+    it('should reach nobody when narrowed to no rooms, not everybody', () => {
+      const published = [];
+      const rooms = []; // e.g. a computed list that came back empty
+      const empty = target(registry, clients, { publish: (e) => published.push(e) }).to(...rooms);
+      assert.deepStrictEqual(empty.rooms, []);
+      assert.strictEqual(empty.emit('msg', 8), 0, 'an empty target must not fall back to everyone');
+      assert.deepStrictEqual(published, [], 'and there is nothing to publish either');
+    });
 
-  await t.test('with no room the target is every client', () => {
-    for (const client of clients) client.received.length = 0;
-    assert.strictEqual(target(registry, clients).emit('all', 4), 3);
-    assert.strictEqual(target(registry, clients).except(linus).emit('all', 5), 2);
-  });
-
-  await t.test('chaining is immutable: a stored target is not narrowed later', () => {
-    const chat = target(registry, clients).to('chat');
-    const narrowed = chat.except(ada);
-    assert.notStrictEqual(chat, narrowed);
-    assert.deepStrictEqual(chat.rooms, ['chat']);
-    assert.strictEqual(target(registry, clients).rooms, null);
-    for (const client of clients) client.received.length = 0;
-    assert.strictEqual(chat.emit('msg', 6), 2, 'the original still reaches both');
+    it('should require the event name to be a non-empty string', () => {
+      assert.throws(() => target(registry, clients).emit(''), TypeError);
+      assert.throws(() => target(registry, clients).emit(null), TypeError);
+    });
   });
 
-  await t.test('an empty room delivers to nobody', () => {
-    assert.strictEqual(target(registry, clients).to('nowhere').emit('msg', 7), 0);
+  it('should count only the live persistent client among non-persistent and broken clients', () => {
+    const registry = new RoomRegistry();
+    const http = fakeClient('http', { persistent: false });
+    const dead = fakeClient('dead', { broken: true });
+    const live = fakeClient('live');
+    const clients = new Set([http, dead, live]);
+    for (const client of clients) registry.join(client, 'chat');
+
+    const errors = [];
+    const log = { ...quiet, error: (error) => errors.push(error) };
+    const sent = new Broadcast({ registry, clients: () => clients, log }).to('chat').emit('msg', 1);
+
+    assert.strictEqual(sent, 1, 'only the live persistent client counts');
+    assert.deepStrictEqual(http.received, [], 'an http client cannot carry events');
+    assert.deepStrictEqual(live.received, [['msg', 1]], 'a throwing peer does not truncate the fan-out');
+    assert.strictEqual(errors.length, 1);
   });
 
-  await t.test('narrowing to no rooms reaches nobody, not everybody', () => {
+  describe('publishing to the backplane', () => {
+    const registry = new RoomRegistry();
+    const ada = fakeClient('ada');
+    const clients = new Set([ada]);
+    before(() => registry.join(ada, 'chat'));
+
     const published = [];
-    const rooms = []; // e.g. a computed list that came back empty
-    const empty = target(registry, clients, { publish: (e) => published.push(e) }).to(...rooms);
-    assert.deepStrictEqual(empty.rooms, []);
-    assert.strictEqual(empty.emit('msg', 8), 0, 'an empty target must not fall back to everyone');
-    assert.deepStrictEqual(published, [], 'and there is nothing to publish either');
-  });
+    const publish = (envelope) => published.push(envelope);
 
-  await t.test('the event name must be a non-empty string', () => {
-    assert.throws(() => target(registry, clients).emit(''), TypeError);
-    assert.throws(() => target(registry, clients).emit(null), TypeError);
-  });
-});
+    it('should publish a normal emit alongside local delivery', () => {
+      target(registry, clients, { publish }).to('chat').emit('msg', { n: 1 });
+      assert.deepStrictEqual(published, [{ rooms: ['chat'], name: 'msg', data: { n: 1 } }]);
+    });
 
-test('Broadcast: non-persistent and broken clients', () => {
-  const registry = new RoomRegistry();
-  const http = fakeClient('http', { persistent: false });
-  const dead = fakeClient('dead', { broken: true });
-  const live = fakeClient('live');
-  const clients = new Set([http, dead, live]);
-  for (const client of clients) registry.join(client, 'chat');
+    it('should publish a broadcast with a null room list', () => {
+      published.length = 0;
+      target(registry, clients, { publish }).emit('all', 2);
+      assert.deepStrictEqual(published, [{ rooms: null, name: 'all', data: 2 }]);
+    });
 
-  const errors = [];
-  const log = { ...quiet, error: (error) => errors.push(error) };
-  const sent = new Broadcast({ registry, clients: () => clients, log }).to('chat').emit('msg', 1);
-
-  assert.strictEqual(sent, 1, 'only the live persistent client counts');
-  assert.deepStrictEqual(http.received, [], 'an http client cannot carry events');
-  assert.deepStrictEqual(live.received, [['msg', 1]], 'a throwing peer does not truncate the fan-out');
-  assert.strictEqual(errors.length, 1);
-});
-
-test('Broadcast: publishing to the backplane', async (t) => {
-  const registry = new RoomRegistry();
-  const ada = fakeClient('ada');
-  const clients = new Set([ada]);
-  registry.join(ada, 'chat');
-
-  const published = [];
-  const publish = (envelope) => published.push(envelope);
-
-  await t.test('a normal emit publishes alongside local delivery', () => {
-    target(registry, clients, { publish }).to('chat').emit('msg', { n: 1 });
-    assert.deepStrictEqual(published, [{ rooms: ['chat'], name: 'msg', data: { n: 1 } }]);
-  });
-
-  await t.test('a broadcast publishes with a null room list', () => {
-    published.length = 0;
-    target(registry, clients, { publish }).emit('all', 2);
-    assert.deepStrictEqual(published, [{ rooms: null, name: 'all', data: 2 }]);
-  });
-
-  await t.test('local() delivers without publishing', () => {
-    published.length = 0;
-    ada.received.length = 0;
-    const sent = target(registry, clients, { publish }).to('chat').local().emit('msg', 3);
-    assert.strictEqual(sent, 1);
-    assert.deepStrictEqual(published, [], 'a replayed event must not be republished');
+    it('should deliver without publishing with local()', () => {
+      published.length = 0;
+      ada.received.length = 0;
+      const sent = target(registry, clients, { publish }).to('chat').local().emit('msg', 3);
+      assert.strictEqual(sent, 1);
+      assert.deepStrictEqual(published, [], 'a replayed event must not be republished');
+    });
   });
 });
 
-test('Broadcast.emit: one shared message object reaches every recipient', async (t) => {
-  const registry = new RoomRegistry();
-  const ada = fakeClient('ada');
-  const grace = fakeClient('grace');
-  registry.join(ada, 'chat');
-  registry.join(grace, 'chat');
+describe('Broadcast.emit', () => {
+  describe('one shared message object reaches every recipient', () => {
+    const registry = new RoomRegistry();
+    const ada = fakeClient('ada');
+    const grace = fakeClient('grace');
+    before(() => {
+      registry.join(ada, 'chat');
+      registry.join(grace, 'chat');
+    });
 
-  await t.test('the same object, serialized once, with the compress flag on by default', () => {
-    target(registry, [ada, grace]).to('chat').emit('hello', { n: 1 });
-    assert.strictEqual(ada.shared, grace.shared, 'recipients share ONE message');
-    assert.strictEqual(ada.shared.frames, null, "the slot is the engine's to claim");
-    assert.strictEqual(ada.shared.compress, true);
-    assert.deepStrictEqual(JSON.parse(ada.shared.text), { type: 'event', name: 'hello', data: { n: 1 } });
-  });
+    it('should share the same object, serialized once, with the compress flag on by default', () => {
+      target(registry, [ada, grace]).to('chat').emit('hello', { n: 1 });
+      assert.strictEqual(ada.shared, grace.shared, 'recipients share ONE message');
+      assert.strictEqual(ada.shared.frames, null, "the slot is the engine's to claim");
+      assert.strictEqual(ada.shared.compress, true);
+      assert.deepStrictEqual(JSON.parse(ada.shared.text), { type: 'event', name: 'hello', data: { n: 1 } });
+    });
 
-  await t.test('compress:false travels on the shared message', () => {
-    target(registry, [ada, grace]).to('chat').emit('bulk', 'x'.repeat(4096), { compress: false });
-    assert.strictEqual(ada.shared.compress, false);
-    assert.strictEqual(grace.shared.compress, false);
-  });
+    it('should carry compress:false on the shared message', () => {
+      target(registry, [ada, grace]).to('chat').emit('bulk', 'x'.repeat(4096), { compress: false });
+      assert.strictEqual(ada.shared.compress, false);
+      assert.strictEqual(grace.shared.compress, false);
+    });
 
-  await t.test('a slot claimed by the first recipient is what the second one sees', () => {
-    const claimer = fakeClient('claimer');
-    claimer.sendShared = function (message) {
-      message.frames = 'claimed';
-      this.shared = message;
-      return this.sendRaw(message.text);
-    };
-    registry.join(claimer, 'shared');
-    registry.join(grace, 'shared');
-    target(registry, [claimer, grace]).to('shared').emit('once', null);
-    assert.strictEqual(grace.shared.frames, 'claimed');
+    it('should show the second recipient the slot the first one claimed', () => {
+      const claimer = fakeClient('claimer');
+      claimer.sendShared = function (message) {
+        message.frames = 'claimed';
+        this.shared = message;
+        return this.sendRaw(message.text);
+      };
+      registry.join(claimer, 'shared');
+      registry.join(grace, 'shared');
+      target(registry, [claimer, grace]).to('shared').emit('once', null);
+      assert.strictEqual(grace.shared.frames, 'claimed');
+    });
   });
 });

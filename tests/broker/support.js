@@ -3,7 +3,7 @@
 // Shared helpers for the broker contract suites. Not a *.test.js: node
 // --test must not run it.
 
-const assert = require('node:assert');
+const assert = require('node:assert/strict');
 const timers = require('node:timers/promises');
 
 const { waitForWithin } = require('../helpers/wait.js');

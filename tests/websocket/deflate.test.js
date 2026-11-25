@@ -1,7 +1,7 @@
 'use strict';
 
-const test = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 const zlib = require('node:zlib');
 
 const { Connection, Frame, FrameParser, RSV1, OPCODES, CLOSE_CODES } = require('#ws');
@@ -17,223 +17,6 @@ const deliverCompressedText = (socket, text) => {
   socket.emit('data', frame.toBuffer());
 };
 
-test('negotiate: plain offer is accepted with both no-context-takeover params', () => {
-  const result = negotiate('permessage-deflate', {});
-  assert.strictEqual(result.response, 'permessage-deflate; server_no_context_takeover; client_no_context_takeover');
-  assert.strictEqual(result.windowBits, 15);
-  assert.strictEqual(result.threshold, 1024);
-});
-
-test('negotiate: honors server_max_window_bits and echoes it back', () => {
-  const result = negotiate('permessage-deflate; server_max_window_bits=10', { threshold: 64 });
-  assert.match(result.response, /server_max_window_bits=10/);
-  assert.strictEqual(result.windowBits, 10);
-  assert.strictEqual(result.threshold, 64);
-});
-
-test('negotiate: skips unusable offers and falls back to the next one', () => {
-  const header = 'permessage-deflate; server_max_window_bits=8, permessage-deflate';
-  const result = negotiate(header, {});
-  assert.ok(result);
-  assert.strictEqual(result.windowBits, 15);
-});
-
-test('negotiate: rejects unknown params, bad window bits, and other extensions', () => {
-  assert.strictEqual(negotiate('permessage-deflate; unknown_param', {}), null);
-  assert.strictEqual(negotiate('permessage-deflate; server_max_window_bits', {}), null);
-  assert.strictEqual(negotiate('permessage-deflate; server_max_window_bits=99', {}), null);
-  assert.strictEqual(negotiate('permessage-deflate; client_max_window_bits=abc', {}), null);
-  assert.strictEqual(negotiate('x-webkit-deflate-frame', {}), null);
-  assert.strictEqual(negotiate('', {}), null);
-});
-
-test('parseExtensions: grammar violations return null, duplicates invalidate the offer', () => {
-  // True grammar violations (RFC 6455 9.1) -> null -> handshake must 400
-  assert.strictEqual(parseExtensions('permessage-deflate; ='), null);
-  assert.strictEqual(parseExtensions('permessage-deflate; a='), null);
-  assert.strictEqual(parseExtensions(',permessage-deflate'), null);
-  // Duplicate params are grammar-valid but make the offer unacceptable
-  // (RFC 7692 7): the offer is declined, not the whole handshake failed
-  const offers = parseExtensions('permessage-deflate; client_no_context_takeover; client_no_context_takeover');
-  assert.strictEqual(offers.length, 1);
-  assert.strictEqual(offers[0].valid, false);
-  assert.strictEqual(negotiate('permessage-deflate; client_no_context_takeover; client_no_context_takeover', {}), null);
-});
-
-test('negotiate: grammar-violating header reports malformed for a 400 handshake failure', () => {
-  assert.deepStrictEqual(negotiate('permessage-deflate; =', {}), { malformed: true });
-  assert.deepStrictEqual(negotiate(',permessage-deflate', {}), { malformed: true });
-});
-
-test('compress/decompress: round-trip with stripped trailer', () => {
-  const source = Buffer.from('data '.repeat(1000));
-  const compressed = compress(source);
-  assert.ok(compressed.length < source.length);
-  const restored = decompress(compressed, 1024 * 1024);
-  assert.deepStrictEqual(restored, source);
-});
-
-test('Connection: inflates a compressed text message', () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
-  const messages = [];
-  conn.on('message', (data, isBinary) => messages.push({ data, isBinary }));
-
-  deliverCompressedText(socket, 'compressed hello');
-
-  assert.strictEqual(messages.length, 1);
-  assert.strictEqual(messages[0].data.toString(), 'compressed hello');
-  assert.strictEqual(messages[0].isBinary, false);
-  conn.terminate();
-});
-
-test('Connection: inflates a fragmented compressed message', () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
-  const messages = [];
-  conn.on('message', (data) => messages.push(data));
-
-  const payload = compress(Buffer.from('fragmented compressed payload'));
-  const half = Math.ceil(payload.length / 2);
-  const first = new Frame(false, OPCODES.TEXT, false, payload.subarray(0, half), null, RSV1);
-  first.maskPayload();
-  socket.emit('data', first.toBuffer());
-  const second = new Frame(true, OPCODES.CONTINUATION, false, payload.subarray(half), null);
-  second.maskPayload();
-  socket.emit('data', second.toBuffer());
-
-  assert.strictEqual(messages.length, 1);
-  assert.strictEqual(messages[0].toString(), 'fragmented compressed payload');
-  conn.terminate();
-});
-
-test('Connection: compresses outgoing messages above the threshold', () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: { ...DEFLATE, threshold: 8 } });
-
-  conn.sendText('a very repetitive payload '.repeat(50));
-
-  const frame = FrameParser.parse(socket.writtenData.at(-1), { allowedRsv: RSV1 }).value.frame;
-  assert.strictEqual(frame.rsv & RSV1, RSV1);
-  const inflated = decompress(frame.payload, 1024 * 1024);
-  assert.strictEqual(inflated.toString(), 'a very repetitive payload '.repeat(50));
-  conn.terminate();
-});
-
-test('Connection: leaves short outgoing messages uncompressed', () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: { ...DEFLATE, threshold: 1024 } });
-
-  conn.sendText('short');
-
-  const frame = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
-  assert.strictEqual(frame.rsv, 0);
-  assert.strictEqual(frame.payload.toString(), 'short');
-  conn.terminate();
-});
-
-test('Connection: invalid deflate stream closes with 1007', () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
-  conn.on('error', () => {});
-
-  const frame = new Frame(true, OPCODES.TEXT, false, Buffer.from('not deflate data'), null, RSV1);
-  frame.maskPayload();
-  socket.emit('data', frame.toBuffer());
-
-  const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
-  assert.strictEqual(close.opcode, OPCODES.CLOSE);
-  assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.INVALID_PAYLOAD);
-});
-
-test('Connection: inflated payload above maxBuffer closes with 1009', () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE, maxBuffer: 1024 });
-  conn.on('error', () => {});
-
-  // 1 MB of zeros deflates to ~1 KB of wire bytes but inflates above maxBuffer
-  const bomb = zlib.deflateRawSync(Buffer.alloc(1024 * 1024), {
-    finishFlush: zlib.constants.Z_SYNC_FLUSH,
-  });
-  const payload = bomb.subarray(0, bomb.length - 4);
-  const frame = new Frame(true, OPCODES.TEXT, false, payload, null, RSV1);
-  frame.maskPayload();
-  socket.emit('data', frame.toBuffer());
-
-  const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
-  assert.strictEqual(close.opcode, OPCODES.CLOSE);
-  assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.MESSAGE_TOO_BIG);
-});
-
-test('Connection: compressed UTF-8 is validated after inflation', () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
-  conn.on('error', () => {});
-
-  const invalid = compress(Buffer.from([0xff, 0xfe, 0xfd]));
-  const frame = new Frame(true, OPCODES.TEXT, false, invalid, null, RSV1);
-  frame.maskPayload();
-  socket.emit('data', frame.toBuffer());
-
-  const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
-  assert.strictEqual(close.opcode, OPCODES.CLOSE);
-  assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.INVALID_PAYLOAD);
-});
-
-test('Connection: RSV1 on a continuation frame is a protocol error', () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
-  conn.on('error', () => {});
-
-  const first = new Frame(false, OPCODES.TEXT, false, compress(Buffer.from('x')), null, RSV1);
-  first.maskPayload();
-  socket.emit('data', first.toBuffer());
-  const bad = new Frame(true, OPCODES.CONTINUATION, false, Buffer.from('y'), null, RSV1);
-  bad.maskPayload();
-  socket.emit('data', bad.toBuffer());
-
-  const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
-  assert.strictEqual(close.opcode, OPCODES.CLOSE);
-  assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.PROTOCOL_ERROR);
-});
-
-test('Connection: RSV1 without negotiated deflate stays a protocol error', () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0));
-  conn.on('error', () => {});
-
-  const frame = new Frame(true, OPCODES.TEXT, false, compress(Buffer.from('x')), null, RSV1);
-  frame.maskPayload();
-  socket.emit('data', frame.toBuffer());
-
-  const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
-  assert.strictEqual(close.opcode, OPCODES.CLOSE);
-  assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.PROTOCOL_ERROR);
-});
-
-test('Connection: a compression bomb is capped by maxPayload, not maxBuffer', () => {
-  const socket = new MockSocket();
-  // A few KB on the wire inflating to ~4 MB; maxPayload of 1 MB must stop
-  // the inflation even though maxBuffer (wire bytes) is far larger.
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE, maxPayload: 1024 * 1024 });
-  const errors = [];
-  const messages = [];
-  conn.on('error', (error) => errors.push(error));
-  conn.on('message', (data) => messages.push(data));
-
-  const bomb = compress(Buffer.alloc(4 * 1024 * 1024, 0x61));
-  assert.ok(bomb.length < 16 * 1024, 'the bomb must be small on the wire');
-  const frame = new Frame(true, OPCODES.TEXT, false, bomb, null, RSV1);
-  frame.maskPayload();
-  socket.emit('data', frame.toBuffer());
-
-  assert.strictEqual(messages.length, 0, 'the inflated payload must never surface');
-  assert.strictEqual(errors.length, 1);
-  const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
-  assert.strictEqual(close.opcode, OPCODES.CLOSE);
-  assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.MESSAGE_TOO_BIG);
-});
-
 // --- Shared (prepared) frames: the fan-out path -------------------------
 
 const { PreparedFrames } = require('../../src/websocket/prepared.js');
@@ -241,137 +24,7 @@ const { PreparedFrames } = require('../../src/websocket/prepared.js');
 const lastFrame = (socket, allowedRsv = RSV1) =>
   FrameParser.parse(socket.writtenData.at(-1), { allowedRsv }).value.frame;
 
-const sharedMessage = (text, compress = true) => ({ text, frames: null, compress });
-
-test('sendPrepared: one message, two windows — deflated once per window, both peers decode it', () => {
-  const wide = new MockSocket();
-  const narrow = new MockSocket();
-  const a = new Connection(wide, Buffer.alloc(0), { deflate: { ...DEFLATE, windowBits: 15 } });
-  const b = new Connection(narrow, Buffer.alloc(0), { deflate: { ...DEFLATE, windowBits: 10 } });
-  // A repeat 2 KB back: a 32 KB window (15) references it, a 1 KB window
-  // (10) cannot — so the two windows must produce different bytes.
-  const chunk = require('node:crypto').randomBytes(1536).toString('base64');
-  const text = JSON.stringify({ type: 'event', name: 'chat/message', data: chunk + chunk });
-  const message = sharedMessage(text);
-
-  assert.strictEqual(a.sendPrepared(message), true);
-  assert.strictEqual(b.sendPrepared(message), true);
-
-  assert.ok(message.frames instanceof PreparedFrames, 'the engine claims the slot with its own cache');
-  const wideFrame = lastFrame(wide);
-  const narrowFrame = lastFrame(narrow);
-  assert.strictEqual(wideFrame.rsv & RSV1, RSV1);
-  assert.strictEqual(narrowFrame.rsv & RSV1, RSV1);
-  assert.strictEqual(decompress(wideFrame.payload, 1 << 20).toString(), text);
-  assert.strictEqual(decompress(narrowFrame.payload, 1 << 20).toString(), text);
-  // Different windows, different bytes — and each window's frame is built
-  // once: the same buffer comes back on every later call.
-  assert.notDeepStrictEqual(message.frames.deflated(15), message.frames.deflated(10));
-  assert.strictEqual(message.frames.deflated(15), message.frames.deflated(15));
-  assert.strictEqual(message.frames.plain(), message.frames.plain());
-  a.terminate();
-  b.terminate();
-});
-
-test('sendPrepared: two connections with the same window receive byte-identical frames', () => {
-  const sockets = [new MockSocket(), new MockSocket()];
-  const conns = sockets.map((socket) => new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE }));
-  const message = sharedMessage('identical bytes '.repeat(64));
-  for (const conn of conns) conn.sendPrepared(message);
-  assert.deepStrictEqual(sockets[0].writtenData.at(-1), sockets[1].writtenData.at(-1));
-  assert.strictEqual(lastFrame(sockets[0]).rsv & RSV1, RSV1);
-  for (const conn of conns) conn.terminate();
-});
-
-test('sendPrepared: the threshold is per connection, the bytes are per window', () => {
-  const eager = new MockSocket();
-  const lazy = new MockSocket();
-  const a = new Connection(eager, Buffer.alloc(0), { deflate: { ...DEFLATE, threshold: 8 } });
-  const b = new Connection(lazy, Buffer.alloc(0), { deflate: { ...DEFLATE, threshold: 1 << 20 } });
-  const message = sharedMessage('over eight bytes, under a megabyte');
-  a.sendPrepared(message);
-  b.sendPrepared(message);
-  assert.strictEqual(lastFrame(eager).rsv & RSV1, RSV1);
-  const plain = lastFrame(lazy);
-  assert.strictEqual(plain.rsv, 0);
-  assert.strictEqual(plain.payload.toString(), message.text);
-  a.terminate();
-  b.terminate();
-});
-
-test('sendPrepared: compress:false on the message sends the plain frame past the threshold', () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
-  const message = sharedMessage('never compressed '.repeat(64), false);
-  conn.sendPrepared(message);
-  const frame = lastFrame(socket);
-  assert.strictEqual(frame.rsv, 0);
-  assert.strictEqual(frame.payload.toString(), message.text);
-  conn.terminate();
-});
-
-test('sendPrepared: a slot claimed by another engine falls back to an ordinary send', () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
-  const foreign = { encoded: true };
-  const message = { text: 'mixed room '.repeat(32), frames: foreign, compress: true };
-  assert.strictEqual(conn.sendPrepared(message), true);
-  assert.strictEqual(message.frames, foreign, 'the foreign cache is left alone');
-  const frame = lastFrame(socket);
-  assert.strictEqual(decompress(frame.payload, 1 << 20).toString(), message.text);
-  conn.terminate();
-});
-
-test('sendPrepared: a fragmenting connection fragments; a client connection masks', () => {
-  const fragmenting = new MockSocket();
-  const a = new Connection(fragmenting, Buffer.alloc(0), { fragmentThreshold: 16 });
-  const message = sharedMessage('x'.repeat(40));
-  a.sendPrepared(message);
-  assert.strictEqual(message.frames, null, 'no shared frame is built for a fragmented send');
-  assert.strictEqual(fragmenting.writtenData.length, 3, '40 bytes at a 16-byte threshold: three fragments');
-  const first = FrameParser.parse(fragmenting.writtenData[0]).value;
-  assert.strictEqual(first.frame.fin, false);
-  assert.strictEqual(first.frame.opcode, OPCODES.TEXT);
-  a.terminate();
-
-  const clientSide = new MockSocket();
-  const b = new Connection(clientSide, Buffer.alloc(0), { isClient: true });
-  const shared = sharedMessage('masked by the client');
-  b.sendPrepared(shared);
-  const frame = FrameParser.parse(clientSide.writtenData.at(-1)).value.frame;
-  assert.strictEqual(frame.masked, true);
-  frame.unmaskPayload();
-  assert.strictEqual(frame.payload.toString(), 'masked by the client');
-  b.terminate();
-});
-
-test('sendPrepared: reports backpressure like send() and refuses after close', () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
-  socket.writeResult = false;
-  assert.strictEqual(conn.sendPrepared(sharedMessage('slow peer')), false);
-  socket.writeResult = true;
-  conn.sendClose(1000, 'bye');
-  assert.strictEqual(conn.sendPrepared(sharedMessage('too late')), false);
-  conn.terminate();
-});
-
-test('send: compress:false is honoured for unicast text and binary', () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: { ...DEFLATE, threshold: 8 } });
-  const text = 'a very repetitive payload '.repeat(50);
-  conn.send(text, { compress: false });
-  const plainText = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
-  assert.strictEqual(plainText.rsv, 0);
-  assert.strictEqual(plainText.payload.toString(), text);
-  conn.sendBinary(Buffer.alloc(4096, 1), { compress: false });
-  const plainBinary = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
-  assert.strictEqual(plainBinary.rsv, 0);
-  assert.strictEqual(plainBinary.payload.length, 4096);
-  conn.sendText(text);
-  assert.strictEqual(lastFrame(socket).rsv & RSV1, RSV1, 'the default still compresses');
-  conn.terminate();
-});
+const sharedMessage = (text, deflated = true) => ({ text, frames: null, compress: deflated });
 
 // --- Context takeover and async deflate (phase 1c) ------------------------
 
@@ -400,29 +53,6 @@ const waitUntil = async (check, ms) => {
     await new Promise((resolve) => setTimeout(resolve, 2));
   }
 };
-
-test('Connection: a deflate that fails on the way out is a ws.deflate line, then a terminate', async (t) => {
-  const permessageDeflate = require('../../src/websocket/permessageDeflate.js');
-  const { recorder } = require('../helpers/recorder.js');
-  const real = permessageDeflate.compressAsync;
-  permessageDeflate.compressAsync = (_payload, _windowBits, cb) => void setImmediate(() => cb(new Error('zlib boom')));
-  t.after(() => {
-    permessageDeflate.compressAsync = real;
-  });
-  const log = recorder();
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC, logger: log.writer });
-  const errors = [];
-  conn.on('error', (error) => errors.push(error));
-  conn.sendText('x'.repeat(200));
-  await tickUntil(() => errors.length === 1);
-  assert.strictEqual(errors[0].message, 'zlib boom');
-  const line = log.find('ws.deflate');
-  assert.ok(line, 'the failure is a line');
-  assert.strictEqual(line.level, 'warn');
-  assert.strictEqual(line.err.message, 'zlib boom');
-  assert.strictEqual(socket.destroyed, true);
-});
 
 // A peer-side inflater with its own live window: what a takeover client does.
 const liveInflater = () => {
@@ -459,126 +89,6 @@ const liveDeflater = () => {
     });
 };
 
-test('negotiate: contextTakeover keeps the context a direction was allowed', () => {
-  const both = negotiate('permessage-deflate', { contextTakeover: true });
-  assert.strictEqual(both.response, 'permessage-deflate');
-  assert.deepStrictEqual([both.serverTakeover, both.clientTakeover], [true, true]);
-  const server = negotiate('permessage-deflate', { contextTakeover: 'server' });
-  assert.strictEqual(server.response, 'permessage-deflate; client_no_context_takeover');
-  assert.deepStrictEqual([server.serverTakeover, server.clientTakeover], [true, false]);
-  const client = negotiate('permessage-deflate', { contextTakeover: 'client' });
-  assert.strictEqual(client.response, 'permessage-deflate; server_no_context_takeover');
-  assert.deepStrictEqual([client.serverTakeover, client.clientTakeover], [false, true]);
-  // The peer's own request wins over the option (RFC 7692 7.1.1.1).
-  const pinned = negotiate('permessage-deflate; server_no_context_takeover; client_no_context_takeover', {
-    contextTakeover: true,
-  });
-  assert.strictEqual(pinned.response, 'permessage-deflate; server_no_context_takeover; client_no_context_takeover');
-  assert.deepStrictEqual([pinned.serverTakeover, pinned.clientTakeover], [false, false]);
-  // The default stays byte-identical, and async is parsed with its default.
-  assert.strictEqual(negotiate('permessage-deflate', {}).async, null);
-  assert.deepStrictEqual(negotiate('permessage-deflate', { async: true }).async, null);
-  assert.deepStrictEqual(negotiate('permessage-deflate', { async: {} }).async, { threshold: 256 * 1024 });
-  assert.deepStrictEqual(negotiate('permessage-deflate', { async: { threshold: 100 } }).async, { threshold: 100 });
-});
-
-test('DeflateContext: the second message references the first, and a bomb is capped', async () => {
-  const context = new DeflateContext({ windowBits: 15 });
-  const text = Buffer.from(require('node:crypto').randomBytes(2048).toString('base64'));
-  const first = await new Promise((resolve, reject) => context.compress(text, (e, b) => (e ? reject(e) : resolve(b))));
-  const second = await new Promise((resolve, reject) => context.compress(text, (e, b) => (e ? reject(e) : resolve(b))));
-  assert.ok(second.length < first.length / 4, `context reused: ${second.length} vs ${first.length}`);
-  const inflate = liveInflater();
-  assert.deepStrictEqual(await inflate(first), text);
-  assert.deepStrictEqual(await inflate(second), text);
-
-  const bomb = compress(Buffer.alloc(1024 * 1024, 0x61));
-  const error = await new Promise((resolve) => context.decompress(bomb, 4096, (e) => resolve(e)));
-  assert.strictEqual(error.code, 'ERR_BUFFER_TOO_LARGE');
-  context.close();
-  assert.strictEqual(context.closed, true);
-});
-
-test('takeover: outbound frames use the context, stay ordered, and the peer inflates them', async () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: TAKEOVER });
-  // Random text: incompressible on its own, so a second copy is small ONLY
-  // when the context still holds the first.
-  const big = require('node:crypto').randomBytes(3000).toString('base64');
-  assert.strictEqual(typeof conn.sendText(big), 'boolean');
-  conn.sendText('tiny'); // under no threshold here (threshold 1) — also compressed, queued behind
-  conn.sendBinary(Buffer.from('bytes'), { compress: false }); // plain, must still wait its turn
-  assert.strictEqual(socket.writtenData.length, 0, 'nothing leaves before the first deflate lands');
-  await waitUntil(() => socket.writtenData.length === 3, 5000);
-  const frames = socket.writtenData.map((buf) => FrameParser.parse(buf, { allowedRsv: RSV1 }).value.frame);
-  assert.deepStrictEqual(
-    frames.map((f) => [f.opcode, f.rsv & RSV1]),
-    [
-      [OPCODES.TEXT, RSV1],
-      [OPCODES.TEXT, RSV1],
-      [OPCODES.BINARY, 0],
-    ],
-  );
-  const inflate = liveInflater();
-  assert.strictEqual((await inflate(frames[0].payload)).toString(), big);
-  assert.strictEqual((await inflate(frames[1].payload)).toString(), 'tiny');
-  assert.strictEqual(frames[2].payload.toString(), 'bytes');
-  // The context is live: a repeat of the first message is far smaller.
-  conn.sendText(big);
-  await waitUntil(() => socket.writtenData.length === 4, 5000);
-  const repeat = FrameParser.parse(socket.writtenData[3], { allowedRsv: RSV1 }).value.frame;
-  assert.ok(repeat.payload.length < frames[0].payload.length / 4);
-  conn.terminate();
-});
-
-test('takeover: inbound messages inflate through the live context, in arrival order', async () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: TAKEOVER });
-  const messages = [];
-  conn.on('message', (data) => messages.push(data.toString()));
-  const deflate = liveDeflater();
-  const text = require('node:crypto').randomBytes(3000).toString('base64');
-  const first = await deflate(Buffer.from(text));
-  const second = await deflate(Buffer.from(text));
-  assert.ok(second.length < first.length / 4, 'the peer used its context');
-  for (const payload of [first, second]) {
-    const frame = new Frame(true, OPCODES.TEXT, false, payload, null, RSV1);
-    frame.maskPayload();
-    socket.emit('data', frame.toBuffer());
-  }
-  // A plain message right behind two in-flight inflates keeps its place.
-  const plain = Frame.text('plain after');
-  plain.maskPayload();
-  socket.emit('data', plain.toBuffer());
-  await waitUntil(() => messages.length === 3, 5000);
-  assert.deepStrictEqual(messages, [text, text, 'plain after']);
-  conn.terminate();
-});
-
-test('takeover: a compression bomb through the context closes with 1009', async () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: TAKEOVER, maxPayload: 64 * 1024 });
-  conn.on('error', () => {});
-  const bomb = compress(Buffer.alloc(4 * 1024 * 1024, 0x61));
-  const frame = new Frame(true, OPCODES.TEXT, false, bomb, null, RSV1);
-  frame.maskPayload();
-  socket.emit('data', frame.toBuffer());
-  await waitUntil(() => socket.writtenData.length > 0, 5000);
-  const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
-  assert.strictEqual(close.opcode, OPCODES.CLOSE);
-  assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.MESSAGE_TOO_BIG);
-});
-
-test('takeover: terminate with a deflate in flight neither throws nor writes afterwards', async () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: TAKEOVER });
-  conn.sendText('x'.repeat(5000));
-  conn.terminate();
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.strictEqual(socket.writtenData.length, 0);
-  assert.strictEqual(socket.destroyed, true);
-});
-
 // --- a graceful close() and the outbound queue --------------------------------
 //
 // `send(x); close()` delivered x without takeover and silently dropped it
@@ -601,163 +111,6 @@ const parsed = (socket) => {
 const closed = (socket) => parsed(socket).some((frame) => frame.opcode === OPCODES.CLOSE);
 const closeCode = (frame) => frame.payload.readUInt16BE(0);
 
-test('takeover: close() after send() delivers the message, then the Close frame', async () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: TAKEOVER });
-  const text = 'bye '.repeat(512);
-  assert.strictEqual(conn.sendText(text), true);
-  conn.close(1001, 'going away');
-  // Accepted, and nothing new is: the connection is closing.
-  assert.strictEqual(conn.sendText('too late'), false);
-  assert.strictEqual(socket.writtenData.length, 0, 'the Close did not overtake the message');
-  await waitUntil(() => closed(socket), 5000);
-  const written = socket.writtenData.length;
-  const [data, close] = parsed(socket);
-  assert.strictEqual(data.opcode, OPCODES.TEXT);
-  assert.strictEqual((await liveInflater()(data.payload)).toString(), text);
-  assert.strictEqual(close.opcode, OPCODES.CLOSE);
-  assert.strictEqual(closeCode(close), 1001);
-  // The peer's Close in answer finishes it — nothing is written after ours.
-  const answer = Frame.close(1001, '');
-  answer.maskPayload();
-  socket.emit('data', answer.toBuffer());
-  await once(socket, 'close');
-  assert.strictEqual(socket.writtenData.length, written);
-  assert.strictEqual(socket.destroyed, true);
-});
-
-test('async: everything accepted before close() leaves in send order, the Close last', async () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC });
-  conn.sendText('a'.repeat(4096)); // deflates off the loop
-  conn.sendText('b'); // a ready frame, queued behind it
-  conn.sendPing(Buffer.from('p')); // a control frame, queued too
-  conn.close(1000, '');
-  // A pong asked for now would leave after the Close: it is not sent.
-  assert.strictEqual(conn.sendPong(Buffer.from('late')), false);
-  await waitUntil(() => closed(socket), 5000);
-  const frames = parsed(socket);
-  assert.deepStrictEqual(
-    frames.map((frame) => frame.opcode),
-    [OPCODES.TEXT, OPCODES.TEXT, OPCODES.PING, OPCODES.CLOSE],
-  );
-  assert.strictEqual(decompress(frames[0].payload, 1 << 20).toString(), 'a'.repeat(4096));
-  assert.strictEqual(decompress(frames[1].payload, 1 << 20).toString(), 'b');
-  assert.strictEqual(closeCode(frames[3]), 1000);
-  conn.terminate();
-});
-
-test('a close() whose queue does not drain within closeTimeout drops it, says so, and closes', async (t) => {
-  const permessageDeflate = require('../../src/websocket/permessageDeflate.js');
-  const { recorder } = require('../helpers/recorder.js');
-  const real = permessageDeflate.compressAsync;
-  permessageDeflate.compressAsync = () => {}; // a deflate that never lands
-  t.after(() => {
-    permessageDeflate.compressAsync = real;
-  });
-  const log = recorder();
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC, closeTimeout: 30, logger: log.writer });
-  conn.sendText('x'.repeat(300));
-  conn.sendText('y');
-  conn.close(1001, '');
-  await once(socket, 'close');
-  // Only the Close reached the wire; the two messages are counted in the line.
-  const frames = parsed(socket);
-  assert.deepStrictEqual(
-    frames.map((frame) => frame.opcode),
-    [OPCODES.CLOSE],
-  );
-  assert.strictEqual(closeCode(frames[0]), 1001);
-  assert.strictEqual(socket.ended, true);
-  const line = log.find('ws.close.dropped');
-  assert.deepStrictEqual([line.level, line.frames], ['warn', 2]);
-  assert.ok(line.bytes >= 300, `the bytes that never left: ${line.bytes}`);
-});
-
-test('a peer that closes while our Close is still queued is answered at once; the queue is dropped', async (t) => {
-  const permessageDeflate = require('../../src/websocket/permessageDeflate.js');
-  const real = permessageDeflate.compressAsync;
-  permessageDeflate.compressAsync = () => {};
-  t.after(() => {
-    permessageDeflate.compressAsync = real;
-  });
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC, closeTimeout: 5_000 });
-  conn.sendText('x'.repeat(300));
-  conn.close(1001, '');
-  const theirs = Frame.close(1000, 'done');
-  theirs.maskPayload();
-  socket.emit('data', theirs.toBuffer());
-  await once(socket, 'close');
-  const frames = parsed(socket);
-  assert.deepStrictEqual(
-    frames.map((frame) => [frame.opcode, closeCode(frame)]),
-    [[OPCODES.CLOSE, 1000]],
-    "the peer's Close is echoed; what was queued is not written after it",
-  );
-  assert.strictEqual(socket.ended, true);
-});
-
-test('async: a message over the threshold deflates off the loop, smaller ones stay in order behind it', async () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC });
-  conn.sendText('a'.repeat(4096)); // >= 64: async
-  conn.sendText('b'); // < 64: sync deflate, but queued behind the async one
-  assert.strictEqual(socket.writtenData.length, 0);
-  await waitUntil(() => socket.writtenData.length === 2, 5000);
-  const frames = socket.writtenData.map((buf) => FrameParser.parse(buf, { allowedRsv: RSV1 }).value.frame);
-  assert.strictEqual(decompress(frames[0].payload, 1 << 20).toString(), 'a'.repeat(4096));
-  assert.strictEqual(decompress(frames[1].payload, 1 << 20).toString(), 'b');
-  // Once the queue is empty, a small send is synchronous again.
-  conn.sendText('c');
-  assert.strictEqual(socket.writtenData.length, 3);
-  conn.terminate();
-});
-
-test('async: inbound over the threshold inflates off the loop, in order with the sync ones', async () => {
-  const socket = new MockSocket();
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC });
-  const messages = [];
-  conn.on('message', (data) => messages.push(data.toString()));
-  const bigText = 'z'.repeat(8192);
-  for (const text of [bigText, 'small']) {
-    const frame = new Frame(true, OPCODES.TEXT, false, compress(Buffer.from(text)), null, RSV1);
-    frame.maskPayload();
-    socket.emit('data', frame.toBuffer());
-  }
-  await waitUntil(() => messages.length === 2, 5000);
-  assert.deepStrictEqual(messages, [bigText, 'small']);
-  conn.terminate();
-});
-
-test('async: a fan-out over the threshold deflates once and every recipient writes the same frame', async () => {
-  const sockets = [new MockSocket(), new MockSocket(), new MockSocket()];
-  const conns = sockets.map((socket) => new Connection(socket, Buffer.alloc(0), { deflate: ASYNC }));
-  const message = sharedMessage('fan-out '.repeat(1000));
-  for (const conn of conns) assert.strictEqual(typeof conn.sendPrepared(message), 'boolean');
-  await waitUntil(() => sockets.every((socket) => socket.writtenData.length === 1), 5000);
-  assert.ok(Buffer.isBuffer(message.frames.deflated(15)), 'the slot holds the one deflated frame');
-  assert.strictEqual(sockets[0].writtenData[0], sockets[1].writtenData[0], 'the SAME buffer, not a copy');
-  assert.strictEqual(sockets[1].writtenData[0], sockets[2].writtenData[0]);
-  const frame = FrameParser.parse(sockets[0].writtenData[0], { allowedRsv: RSV1 }).value.frame;
-  assert.strictEqual(decompress(frame.payload, 1 << 20).toString(), message.text);
-  for (const conn of conns) conn.terminate();
-});
-
-test('async: bufferedAmount counts the queue, and drain follows once it empties', async () => {
-  const socket = new MockSocket();
-  socket.writableHighWaterMark = 1024;
-  const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC });
-  const drained = once(conn, 'drain');
-  assert.strictEqual(conn.sendText('q'.repeat(4096)), false, 'over the mark once queued');
-  assert.ok(conn.bufferedAmount >= 4096);
-  await drained;
-  assert.strictEqual(conn.bufferedAmount, 0);
-  assert.strictEqual(socket.writtenData.length, 1);
-  conn.terminate();
-});
-
 // A burst of compressed frames in ONE segment: the inflate queue is bounded,
 // the socket paused meanwhile, and every message still arrives in order.
 const burst = async (config, count, size) => {
@@ -778,21 +131,6 @@ const burst = async (config, count, size) => {
   }
   return { socket, conn, messages, texts, segment: Buffer.concat(frames) };
 };
-
-test('takeover: a burst of compressed frames pauses the socket at the inflate mark, and arrives whole, in order', async () => {
-  const { socket, conn, messages, texts, segment } = await burst(TAKEOVER, 2000, 200);
-  socket.emit('data', segment);
-  // Held at once: the frame loop stopped at the mark, the rest waits in
-  // the segment queue, and the socket reads no more meanwhile. It used to
-  // start every inflate of the segment at once.
-  assert.strictEqual(socket.paused, true, 'paused for the inflate queue');
-  assert.strictEqual(conn.isPaused, true, 'the heartbeat must not take a held connection for dead');
-  await waitUntil(() => messages.length === texts.length, 5000);
-  assert.deepStrictEqual(messages, texts);
-  assert.strictEqual(socket.paused, false, 'taken up again once it drained');
-  assert.strictEqual(conn.isPaused, false);
-  conn.terminate();
-});
 
 // Plain frames behind a frame that is still inflating: queued in arrival
 // order, and counted — the hold applies to them as to an inflating one.
@@ -817,161 +155,863 @@ const behindOneInflate = async (config, count) => {
   return { socket, conn, messages, texts, frames };
 };
 
-for (const [label, config] of [
-  ['takeover', TAKEOVER],
-  ['async inflate', ASYNC],
-]) {
-  test(`${label}: plain frames behind one inflate are held at the mark too, and arrive in order`, async () => {
-    const { socket, conn, messages, texts, frames } = await behindOneInflate(config, 5000);
-    const ping = Frame.ping(Buffer.from('behind'));
-    ping.maskPayload();
-    socket.emit('data', Buffer.concat([...frames, ping.toBuffer()]));
-    // Nothing has landed: the first message is still inflating. The frame
-    // loop stopped at the mark — it used to queue all five thousand.
-    assert.strictEqual(messages.length, 0);
-    assert.strictEqual(socket.paused, true, 'paused for the queue behind the inflate');
-    assert.strictEqual(conn.isPaused, true);
-    assert.strictEqual(socket.writtenData.length, 0, 'the ping behind the mark waits its turn');
+describe('negotiate', () => {
+  it('should accept a plain offer with both no-context-takeover params', () => {
+    const result = negotiate('permessage-deflate', {});
+    assert.strictEqual(result.response, 'permessage-deflate; server_no_context_takeover; client_no_context_takeover');
+    assert.strictEqual(result.windowBits, 15);
+    assert.strictEqual(result.threshold, 1024);
+  });
+
+  it('should honor server_max_window_bits and echo it back', () => {
+    const result = negotiate('permessage-deflate; server_max_window_bits=10', { threshold: 64 });
+    assert.match(result.response, /server_max_window_bits=10/);
+    assert.strictEqual(result.windowBits, 10);
+    assert.strictEqual(result.threshold, 64);
+  });
+
+  it('should skip unusable offers and fall back to the next one', () => {
+    const header = 'permessage-deflate; server_max_window_bits=8, permessage-deflate';
+    const result = negotiate(header, {});
+    assert.ok(result);
+    assert.strictEqual(result.windowBits, 15);
+  });
+
+  it('should reject unknown params, bad window bits, and other extensions', () => {
+    assert.strictEqual(negotiate('permessage-deflate; unknown_param', {}), null);
+    assert.strictEqual(negotiate('permessage-deflate; server_max_window_bits', {}), null);
+    assert.strictEqual(negotiate('permessage-deflate; server_max_window_bits=99', {}), null);
+    assert.strictEqual(negotiate('permessage-deflate; client_max_window_bits=abc', {}), null);
+    assert.strictEqual(negotiate('x-webkit-deflate-frame', {}), null);
+    assert.strictEqual(negotiate('', {}), null);
+  });
+
+  it('should report a grammar-violating header as malformed for a 400 handshake failure', () => {
+    assert.deepStrictEqual(negotiate('permessage-deflate; =', {}), { malformed: true });
+    assert.deepStrictEqual(negotiate(',permessage-deflate', {}), { malformed: true });
+  });
+
+  it('should keep with contextTakeover the context a direction was allowed', () => {
+    const both = negotiate('permessage-deflate', { contextTakeover: true });
+    assert.strictEqual(both.response, 'permessage-deflate');
+    assert.deepStrictEqual([both.serverTakeover, both.clientTakeover], [true, true]);
+    const server = negotiate('permessage-deflate', { contextTakeover: 'server' });
+    assert.strictEqual(server.response, 'permessage-deflate; client_no_context_takeover');
+    assert.deepStrictEqual([server.serverTakeover, server.clientTakeover], [true, false]);
+    const client = negotiate('permessage-deflate', { contextTakeover: 'client' });
+    assert.strictEqual(client.response, 'permessage-deflate; server_no_context_takeover');
+    assert.deepStrictEqual([client.serverTakeover, client.clientTakeover], [false, true]);
+    // The peer's own request wins over the option (RFC 7692 7.1.1.1).
+    const pinned = negotiate('permessage-deflate; server_no_context_takeover; client_no_context_takeover', {
+      contextTakeover: true,
+    });
+    assert.strictEqual(pinned.response, 'permessage-deflate; server_no_context_takeover; client_no_context_takeover');
+    assert.deepStrictEqual([pinned.serverTakeover, pinned.clientTakeover], [false, false]);
+    // The default stays byte-identical, and async is parsed with its default.
+    assert.strictEqual(negotiate('permessage-deflate', {}).async, null);
+    assert.deepStrictEqual(negotiate('permessage-deflate', { async: true }).async, null);
+    assert.deepStrictEqual(negotiate('permessage-deflate', { async: {} }).async, { threshold: 256 * 1024 });
+    assert.deepStrictEqual(negotiate('permessage-deflate', { async: { threshold: 100 } }).async, { threshold: 100 });
+  });
+});
+
+describe('parseExtensions', () => {
+  it('should return null on grammar violations and invalidate the offer on duplicates', () => {
+    // True grammar violations (RFC 6455 9.1) -> null -> handshake must 400
+    assert.strictEqual(parseExtensions('permessage-deflate; ='), null);
+    assert.strictEqual(parseExtensions('permessage-deflate; a='), null);
+    assert.strictEqual(parseExtensions(',permessage-deflate'), null);
+    // Duplicate params are grammar-valid but make the offer unacceptable
+    // (RFC 7692 7): the offer is declined, not the whole handshake failed
+    const offers = parseExtensions('permessage-deflate; client_no_context_takeover; client_no_context_takeover');
+    assert.strictEqual(offers.length, 1);
+    assert.strictEqual(offers[0].valid, false);
+    assert.strictEqual(
+      negotiate('permessage-deflate; client_no_context_takeover; client_no_context_takeover', {}),
+      null,
+    );
+  });
+});
+
+describe('compress/decompress', () => {
+  it('should round-trip with a stripped trailer', () => {
+    const source = Buffer.from('data '.repeat(1000));
+    const compressed = compress(source);
+    assert.ok(compressed.length < source.length);
+    const restored = decompress(compressed, 1024 * 1024);
+    assert.deepStrictEqual(restored, source);
+  });
+});
+
+describe('Connection', () => {
+  it('should inflate a compressed text message', () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
+    const messages = [];
+    conn.on('message', (data, isBinary) => messages.push({ data, isBinary }));
+
+    deliverCompressedText(socket, 'compressed hello');
+
+    assert.strictEqual(messages.length, 1);
+    assert.strictEqual(messages[0].data.toString(), 'compressed hello');
+    assert.strictEqual(messages[0].isBinary, false);
+    conn.terminate();
+  });
+
+  it('should inflate a fragmented compressed message', () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
+    const messages = [];
+    conn.on('message', (data) => messages.push(data));
+
+    const payload = compress(Buffer.from('fragmented compressed payload'));
+    const half = Math.ceil(payload.length / 2);
+    const first = new Frame(false, OPCODES.TEXT, false, payload.subarray(0, half), null, RSV1);
+    first.maskPayload();
+    socket.emit('data', first.toBuffer());
+    const second = new Frame(true, OPCODES.CONTINUATION, false, payload.subarray(half), null);
+    second.maskPayload();
+    socket.emit('data', second.toBuffer());
+
+    assert.strictEqual(messages.length, 1);
+    assert.strictEqual(messages[0].toString(), 'fragmented compressed payload');
+    conn.terminate();
+  });
+
+  it('should compress outgoing messages above the threshold', () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: { ...DEFLATE, threshold: 8 } });
+
+    conn.sendText('a very repetitive payload '.repeat(50));
+
+    const frame = FrameParser.parse(socket.writtenData.at(-1), { allowedRsv: RSV1 }).value.frame;
+    assert.strictEqual(frame.rsv & RSV1, RSV1);
+    const inflated = decompress(frame.payload, 1024 * 1024);
+    assert.strictEqual(inflated.toString(), 'a very repetitive payload '.repeat(50));
+    conn.terminate();
+  });
+
+  it('should leave short outgoing messages uncompressed', () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: { ...DEFLATE, threshold: 1024 } });
+
+    conn.sendText('short');
+
+    const frame = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+    assert.strictEqual(frame.rsv, 0);
+    assert.strictEqual(frame.payload.toString(), 'short');
+    conn.terminate();
+  });
+
+  it('should close with 1007 on an invalid deflate stream', () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
+    conn.on('error', () => {});
+
+    const frame = new Frame(true, OPCODES.TEXT, false, Buffer.from('not deflate data'), null, RSV1);
+    frame.maskPayload();
+    socket.emit('data', frame.toBuffer());
+
+    const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+    assert.strictEqual(close.opcode, OPCODES.CLOSE);
+    assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.INVALID_PAYLOAD);
+  });
+
+  it('should close with 1009 on an inflated payload above maxBuffer', () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE, maxBuffer: 1024 });
+    conn.on('error', () => {});
+
+    // 1 MB of zeros deflates to ~1 KB of wire bytes but inflates above maxBuffer
+    const bomb = zlib.deflateRawSync(Buffer.alloc(1024 * 1024), {
+      finishFlush: zlib.constants.Z_SYNC_FLUSH,
+    });
+    const payload = bomb.subarray(0, bomb.length - 4);
+    const frame = new Frame(true, OPCODES.TEXT, false, payload, null, RSV1);
+    frame.maskPayload();
+    socket.emit('data', frame.toBuffer());
+
+    const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+    assert.strictEqual(close.opcode, OPCODES.CLOSE);
+    assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.MESSAGE_TOO_BIG);
+  });
+
+  it('should validate compressed UTF-8 after inflation', () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
+    conn.on('error', () => {});
+
+    const invalid = compress(Buffer.from([0xff, 0xfe, 0xfd]));
+    const frame = new Frame(true, OPCODES.TEXT, false, invalid, null, RSV1);
+    frame.maskPayload();
+    socket.emit('data', frame.toBuffer());
+
+    const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+    assert.strictEqual(close.opcode, OPCODES.CLOSE);
+    assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.INVALID_PAYLOAD);
+  });
+
+  it('should treat RSV1 on a continuation frame as a protocol error', () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
+    conn.on('error', () => {});
+
+    const first = new Frame(false, OPCODES.TEXT, false, compress(Buffer.from('x')), null, RSV1);
+    first.maskPayload();
+    socket.emit('data', first.toBuffer());
+    const bad = new Frame(true, OPCODES.CONTINUATION, false, Buffer.from('y'), null, RSV1);
+    bad.maskPayload();
+    socket.emit('data', bad.toBuffer());
+
+    const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+    assert.strictEqual(close.opcode, OPCODES.CLOSE);
+    assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.PROTOCOL_ERROR);
+  });
+
+  it('should keep RSV1 without negotiated deflate a protocol error', () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0));
+    conn.on('error', () => {});
+
+    const frame = new Frame(true, OPCODES.TEXT, false, compress(Buffer.from('x')), null, RSV1);
+    frame.maskPayload();
+    socket.emit('data', frame.toBuffer());
+
+    const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+    assert.strictEqual(close.opcode, OPCODES.CLOSE);
+    assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.PROTOCOL_ERROR);
+  });
+
+  it('should cap a compression bomb by maxPayload, not maxBuffer', () => {
+    const socket = new MockSocket();
+    // A few KB on the wire inflating to ~4 MB; maxPayload of 1 MB must stop
+    // the inflation even though maxBuffer (wire bytes) is far larger.
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE, maxPayload: 1024 * 1024 });
+    const errors = [];
+    const messages = [];
+    conn.on('error', (error) => errors.push(error));
+    conn.on('message', (data) => messages.push(data));
+
+    const bomb = compress(Buffer.alloc(4 * 1024 * 1024, 0x61));
+    assert.ok(bomb.length < 16 * 1024, 'the bomb must be small on the wire');
+    const frame = new Frame(true, OPCODES.TEXT, false, bomb, null, RSV1);
+    frame.maskPayload();
+    socket.emit('data', frame.toBuffer());
+
+    assert.strictEqual(messages.length, 0, 'the inflated payload must never surface');
+    assert.strictEqual(errors.length, 1);
+    const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+    assert.strictEqual(close.opcode, OPCODES.CLOSE);
+    assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.MESSAGE_TOO_BIG);
+  });
+
+  it('should log a deflate that fails on the way out as a ws.deflate line, then terminate', async (t) => {
+    const permessageDeflate = require('../../src/websocket/permessageDeflate.js');
+    const { recorder } = require('../helpers/recorder.js');
+    const real = permessageDeflate.compressAsync;
+    permessageDeflate.compressAsync = (_payload, _windowBits, cb) =>
+      void setImmediate(() => cb(new Error('zlib boom')));
+    t.after(() => {
+      permessageDeflate.compressAsync = real;
+    });
+    const log = recorder();
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC, logger: log.writer });
+    const errors = [];
+    conn.on('error', (error) => errors.push(error));
+    conn.sendText('x'.repeat(200));
+    await tickUntil(() => errors.length === 1);
+    assert.strictEqual(errors[0].message, 'zlib boom');
+    const line = log.find('ws.deflate');
+    assert.ok(line, 'the failure is a line');
+    assert.strictEqual(line.level, 'warn');
+    assert.strictEqual(line.err.message, 'zlib boom');
+    assert.strictEqual(socket.destroyed, true);
+  });
+});
+
+describe('sendPrepared', () => {
+  it('should deflate one message once per window for two windows, and both peers decode it', () => {
+    const wide = new MockSocket();
+    const narrow = new MockSocket();
+    const a = new Connection(wide, Buffer.alloc(0), { deflate: { ...DEFLATE, windowBits: 15 } });
+    const b = new Connection(narrow, Buffer.alloc(0), { deflate: { ...DEFLATE, windowBits: 10 } });
+    // A repeat 2 KB back: a 32 KB window (15) references it, a 1 KB window
+    // (10) cannot — so the two windows must produce different bytes.
+    const chunk = require('node:crypto').randomBytes(1536).toString('base64');
+    const text = JSON.stringify({ type: 'event', name: 'chat/message', data: chunk + chunk });
+    const message = sharedMessage(text);
+
+    assert.strictEqual(a.sendPrepared(message), true);
+    assert.strictEqual(b.sendPrepared(message), true);
+
+    assert.ok(message.frames instanceof PreparedFrames, 'the engine claims the slot with its own cache');
+    const wideFrame = lastFrame(wide);
+    const narrowFrame = lastFrame(narrow);
+    assert.strictEqual(wideFrame.rsv & RSV1, RSV1);
+    assert.strictEqual(narrowFrame.rsv & RSV1, RSV1);
+    assert.strictEqual(decompress(wideFrame.payload, 1 << 20).toString(), text);
+    assert.strictEqual(decompress(narrowFrame.payload, 1 << 20).toString(), text);
+    // Different windows, different bytes — and each window's frame is built
+    // once: the same buffer comes back on every later call.
+    assert.notDeepStrictEqual(message.frames.deflated(15), message.frames.deflated(10));
+    assert.strictEqual(message.frames.deflated(15), message.frames.deflated(15));
+    assert.strictEqual(message.frames.plain(), message.frames.plain());
+    a.terminate();
+    b.terminate();
+  });
+
+  it('should send byte-identical frames to two connections with the same window', () => {
+    const sockets = [new MockSocket(), new MockSocket()];
+    const conns = sockets.map((socket) => new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE }));
+    const message = sharedMessage('identical bytes '.repeat(64));
+    for (const conn of conns) conn.sendPrepared(message);
+    assert.deepStrictEqual(sockets[0].writtenData.at(-1), sockets[1].writtenData.at(-1));
+    assert.strictEqual(lastFrame(sockets[0]).rsv & RSV1, RSV1);
+    for (const conn of conns) conn.terminate();
+  });
+
+  it('should apply the threshold per connection and the bytes per window', () => {
+    const eager = new MockSocket();
+    const lazy = new MockSocket();
+    const a = new Connection(eager, Buffer.alloc(0), { deflate: { ...DEFLATE, threshold: 8 } });
+    const b = new Connection(lazy, Buffer.alloc(0), { deflate: { ...DEFLATE, threshold: 1 << 20 } });
+    const message = sharedMessage('over eight bytes, under a megabyte');
+    a.sendPrepared(message);
+    b.sendPrepared(message);
+    assert.strictEqual(lastFrame(eager).rsv & RSV1, RSV1);
+    const plain = lastFrame(lazy);
+    assert.strictEqual(plain.rsv, 0);
+    assert.strictEqual(plain.payload.toString(), message.text);
+    a.terminate();
+    b.terminate();
+  });
+
+  it('should send the plain frame past the threshold with compress:false on the message', () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
+    const message = sharedMessage('never compressed '.repeat(64), false);
+    conn.sendPrepared(message);
+    const frame = lastFrame(socket);
+    assert.strictEqual(frame.rsv, 0);
+    assert.strictEqual(frame.payload.toString(), message.text);
+    conn.terminate();
+  });
+
+  it('should fall back to an ordinary send when a slot is claimed by another engine', () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
+    const foreign = { encoded: true };
+    const message = { text: 'mixed room '.repeat(32), frames: foreign, compress: true };
+    assert.strictEqual(conn.sendPrepared(message), true);
+    assert.strictEqual(message.frames, foreign, 'the foreign cache is left alone');
+    const frame = lastFrame(socket);
+    assert.strictEqual(decompress(frame.payload, 1 << 20).toString(), message.text);
+    conn.terminate();
+  });
+
+  it('should fragment on a fragmenting connection and mask on a client connection', () => {
+    const fragmenting = new MockSocket();
+    const a = new Connection(fragmenting, Buffer.alloc(0), { fragmentThreshold: 16 });
+    const message = sharedMessage('x'.repeat(40));
+    a.sendPrepared(message);
+    assert.strictEqual(message.frames, null, 'no shared frame is built for a fragmented send');
+    assert.strictEqual(fragmenting.writtenData.length, 3, '40 bytes at a 16-byte threshold: three fragments');
+    const first = FrameParser.parse(fragmenting.writtenData[0]).value;
+    assert.strictEqual(first.frame.fin, false);
+    assert.strictEqual(first.frame.opcode, OPCODES.TEXT);
+    a.terminate();
+
+    const clientSide = new MockSocket();
+    const b = new Connection(clientSide, Buffer.alloc(0), { isClient: true });
+    const shared = sharedMessage('masked by the client');
+    b.sendPrepared(shared);
+    const frame = FrameParser.parse(clientSide.writtenData.at(-1)).value.frame;
+    assert.strictEqual(frame.masked, true);
+    frame.unmaskPayload();
+    assert.strictEqual(frame.payload.toString(), 'masked by the client');
+    b.terminate();
+  });
+
+  it('should report backpressure like send() and refuse after close', () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: DEFLATE });
+    socket.writeResult = false;
+    assert.strictEqual(conn.sendPrepared(sharedMessage('slow peer')), false);
+    socket.writeResult = true;
+    conn.sendClose(1000, 'bye');
+    assert.strictEqual(conn.sendPrepared(sharedMessage('too late')), false);
+    conn.terminate();
+  });
+});
+
+describe('send', () => {
+  it('should honour compress:false for unicast text and binary', () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: { ...DEFLATE, threshold: 8 } });
+    const text = 'a very repetitive payload '.repeat(50);
+    conn.send(text, { compress: false });
+    const plainText = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+    assert.strictEqual(plainText.rsv, 0);
+    assert.strictEqual(plainText.payload.toString(), text);
+    conn.sendBinary(Buffer.alloc(4096, 1), { compress: false });
+    const plainBinary = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+    assert.strictEqual(plainBinary.rsv, 0);
+    assert.strictEqual(plainBinary.payload.length, 4096);
+    conn.sendText(text);
+    assert.strictEqual(lastFrame(socket).rsv & RSV1, RSV1, 'the default still compresses');
+    conn.terminate();
+  });
+});
+
+describe('DeflateContext', () => {
+  it('should reference the first message in the second, and cap a bomb', async () => {
+    const context = new DeflateContext({ windowBits: 15 });
+    const text = Buffer.from(require('node:crypto').randomBytes(2048).toString('base64'));
+    const first = await new Promise((resolve, reject) =>
+      context.compress(text, (e, b) => (e ? reject(e) : resolve(b))),
+    );
+    const second = await new Promise((resolve, reject) =>
+      context.compress(text, (e, b) => (e ? reject(e) : resolve(b))),
+    );
+    assert.ok(second.length < first.length / 4, `context reused: ${second.length} vs ${first.length}`);
+    const inflate = liveInflater();
+    assert.deepStrictEqual(await inflate(first), text);
+    assert.deepStrictEqual(await inflate(second), text);
+
+    const bomb = compress(Buffer.alloc(1024 * 1024, 0x61));
+    const error = await new Promise((resolve) => context.decompress(bomb, 4096, (e) => resolve(e)));
+    assert.strictEqual(error.code, 'ERR_BUFFER_TOO_LARGE');
+    context.close();
+    assert.strictEqual(context.closed, true);
+  });
+});
+
+describe('context takeover', () => {
+  it('should use the context for outbound frames, keep them ordered, and let the peer inflate them', async () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: TAKEOVER });
+    // Random text: incompressible on its own, so a second copy is small ONLY
+    // when the context still holds the first.
+    const big = require('node:crypto').randomBytes(3000).toString('base64');
+    assert.strictEqual(typeof conn.sendText(big), 'boolean');
+    conn.sendText('tiny'); // under no threshold here (threshold 1) — also compressed, queued behind
+    conn.sendBinary(Buffer.from('bytes'), { compress: false }); // plain, must still wait its turn
+    assert.strictEqual(socket.writtenData.length, 0, 'nothing leaves before the first deflate lands');
+    await waitUntil(() => socket.writtenData.length === 3, 5000);
+    const frames = socket.writtenData.map((buf) => FrameParser.parse(buf, { allowedRsv: RSV1 }).value.frame);
+    assert.deepStrictEqual(
+      frames.map((f) => [f.opcode, f.rsv & RSV1]),
+      [
+        [OPCODES.TEXT, RSV1],
+        [OPCODES.TEXT, RSV1],
+        [OPCODES.BINARY, 0],
+      ],
+    );
+    const inflate = liveInflater();
+    assert.strictEqual((await inflate(frames[0].payload)).toString(), big);
+    assert.strictEqual((await inflate(frames[1].payload)).toString(), 'tiny');
+    assert.strictEqual(frames[2].payload.toString(), 'bytes');
+    // The context is live: a repeat of the first message is far smaller.
+    conn.sendText(big);
+    await waitUntil(() => socket.writtenData.length === 4, 5000);
+    const repeat = FrameParser.parse(socket.writtenData[3], { allowedRsv: RSV1 }).value.frame;
+    assert.ok(repeat.payload.length < frames[0].payload.length / 4);
+    conn.terminate();
+  });
+
+  it('should inflate inbound messages through the live context, in arrival order', async () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: TAKEOVER });
+    const messages = [];
+    conn.on('message', (data) => messages.push(data.toString()));
+    const deflate = liveDeflater();
+    const text = require('node:crypto').randomBytes(3000).toString('base64');
+    const first = await deflate(Buffer.from(text));
+    const second = await deflate(Buffer.from(text));
+    assert.ok(second.length < first.length / 4, 'the peer used its context');
+    for (const payload of [first, second]) {
+      const frame = new Frame(true, OPCODES.TEXT, false, payload, null, RSV1);
+      frame.maskPayload();
+      socket.emit('data', frame.toBuffer());
+    }
+    // A plain message right behind two in-flight inflates keeps its place.
+    const plain = Frame.text('plain after');
+    plain.maskPayload();
+    socket.emit('data', plain.toBuffer());
+    await waitUntil(() => messages.length === 3, 5000);
+    assert.deepStrictEqual(messages, [text, text, 'plain after']);
+    conn.terminate();
+  });
+
+  it('should close with 1009 on a compression bomb through the context', async () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: TAKEOVER, maxPayload: 64 * 1024 });
+    conn.on('error', () => {});
+    const bomb = compress(Buffer.alloc(4 * 1024 * 1024, 0x61));
+    const frame = new Frame(true, OPCODES.TEXT, false, bomb, null, RSV1);
+    frame.maskPayload();
+    socket.emit('data', frame.toBuffer());
+    await waitUntil(() => socket.writtenData.length > 0, 5000);
+    const close = FrameParser.parse(socket.writtenData.at(-1)).value.frame;
+    assert.strictEqual(close.opcode, OPCODES.CLOSE);
+    assert.strictEqual(close.payload.readUInt16BE(0), CLOSE_CODES.MESSAGE_TOO_BIG);
+  });
+
+  it('should neither throw nor write afterwards on terminate with a deflate in flight', async () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: TAKEOVER });
+    conn.sendText('x'.repeat(5000));
+    conn.terminate();
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.strictEqual(socket.writtenData.length, 0);
+    assert.strictEqual(socket.destroyed, true);
+  });
+
+  it('should deliver the message, then the Close frame, on close() after send()', async () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: TAKEOVER });
+    const text = 'bye '.repeat(512);
+    assert.strictEqual(conn.sendText(text), true);
+    conn.close(1001, 'going away');
+    // Accepted, and nothing new is: the connection is closing.
+    assert.strictEqual(conn.sendText('too late'), false);
+    assert.strictEqual(socket.writtenData.length, 0, 'the Close did not overtake the message');
+    await waitUntil(() => closed(socket), 5000);
+    const written = socket.writtenData.length;
+    const [data, close] = parsed(socket);
+    assert.strictEqual(data.opcode, OPCODES.TEXT);
+    assert.strictEqual((await liveInflater()(data.payload)).toString(), text);
+    assert.strictEqual(close.opcode, OPCODES.CLOSE);
+    assert.strictEqual(closeCode(close), 1001);
+    // The peer's Close in answer finishes it — nothing is written after ours.
+    const answer = Frame.close(1001, '');
+    answer.maskPayload();
+    socket.emit('data', answer.toBuffer());
+    await once(socket, 'close');
+    assert.strictEqual(socket.writtenData.length, written);
+    assert.strictEqual(socket.destroyed, true);
+  });
+});
+
+describe('async deflate', () => {
+  it('should send everything accepted before close() in send order, the Close last', async () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC });
+    conn.sendText('a'.repeat(4096)); // deflates off the loop
+    conn.sendText('b'); // a ready frame, queued behind it
+    conn.sendPing(Buffer.from('p')); // a control frame, queued too
+    conn.close(1000, '');
+    // A pong asked for now would leave after the Close: it is not sent.
+    assert.strictEqual(conn.sendPong(Buffer.from('late')), false);
+    await waitUntil(() => closed(socket), 5000);
+    const frames = parsed(socket);
+    assert.deepStrictEqual(
+      frames.map((frame) => frame.opcode),
+      [OPCODES.TEXT, OPCODES.TEXT, OPCODES.PING, OPCODES.CLOSE],
+    );
+    assert.strictEqual(decompress(frames[0].payload, 1 << 20).toString(), 'a'.repeat(4096));
+    assert.strictEqual(decompress(frames[1].payload, 1 << 20).toString(), 'b');
+    assert.strictEqual(closeCode(frames[3]), 1000);
+    conn.terminate();
+  });
+
+  it('should deflate a message over the threshold off the loop, and keep smaller ones in order behind it', async () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC });
+    conn.sendText('a'.repeat(4096)); // >= 64: async
+    conn.sendText('b'); // < 64: sync deflate, but queued behind the async one
+    assert.strictEqual(socket.writtenData.length, 0);
+    await waitUntil(() => socket.writtenData.length === 2, 5000);
+    const frames = socket.writtenData.map((buf) => FrameParser.parse(buf, { allowedRsv: RSV1 }).value.frame);
+    assert.strictEqual(decompress(frames[0].payload, 1 << 20).toString(), 'a'.repeat(4096));
+    assert.strictEqual(decompress(frames[1].payload, 1 << 20).toString(), 'b');
+    // Once the queue is empty, a small send is synchronous again.
+    conn.sendText('c');
+    assert.strictEqual(socket.writtenData.length, 3);
+    conn.terminate();
+  });
+
+  it('should inflate inbound over the threshold off the loop, in order with the sync ones', async () => {
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC });
+    const messages = [];
+    conn.on('message', (data) => messages.push(data.toString()));
+    const bigText = 'z'.repeat(8192);
+    for (const text of [bigText, 'small']) {
+      const frame = new Frame(true, OPCODES.TEXT, false, compress(Buffer.from(text)), null, RSV1);
+      frame.maskPayload();
+      socket.emit('data', frame.toBuffer());
+    }
+    await waitUntil(() => messages.length === 2, 5000);
+    assert.deepStrictEqual(messages, [bigText, 'small']);
+    conn.terminate();
+  });
+
+  it('should deflate a fan-out over the threshold once, and every recipient writes the same frame', async () => {
+    const sockets = [new MockSocket(), new MockSocket(), new MockSocket()];
+    const conns = sockets.map((socket) => new Connection(socket, Buffer.alloc(0), { deflate: ASYNC }));
+    const message = sharedMessage('fan-out '.repeat(1000));
+    for (const conn of conns) assert.strictEqual(typeof conn.sendPrepared(message), 'boolean');
+    await waitUntil(() => sockets.every((socket) => socket.writtenData.length === 1), 5000);
+    assert.ok(Buffer.isBuffer(message.frames.deflated(15)), 'the slot holds the one deflated frame');
+    assert.strictEqual(sockets[0].writtenData[0], sockets[1].writtenData[0], 'the SAME buffer, not a copy');
+    assert.strictEqual(sockets[1].writtenData[0], sockets[2].writtenData[0]);
+    const frame = FrameParser.parse(sockets[0].writtenData[0], { allowedRsv: RSV1 }).value.frame;
+    assert.strictEqual(decompress(frame.payload, 1 << 20).toString(), message.text);
+    for (const conn of conns) conn.terminate();
+  });
+
+  it('should count the queue in bufferedAmount, and follow with drain once it empties', async () => {
+    const socket = new MockSocket();
+    socket.writableHighWaterMark = 1024;
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC });
+    const drained = once(conn, 'drain');
+    assert.strictEqual(conn.sendText('q'.repeat(4096)), false, 'over the mark once queued');
+    assert.ok(conn.bufferedAmount >= 4096);
+    await drained;
+    assert.strictEqual(conn.bufferedAmount, 0);
+    assert.strictEqual(socket.writtenData.length, 1);
+    conn.terminate();
+  });
+});
+
+describe('the inflate mark', () => {
+  it('should pause the socket at the inflate mark on a burst of compressed frames (takeover), and deliver them whole, in order', async () => {
+    const { socket, conn, messages, texts, segment } = await burst(TAKEOVER, 2000, 200);
+    socket.emit('data', segment);
+    // Held at once: the frame loop stopped at the mark, the rest waits in
+    // the segment queue, and the socket reads no more meanwhile. It used to
+    // start every inflate of the segment at once.
+    assert.strictEqual(socket.paused, true, 'paused for the inflate queue');
+    assert.strictEqual(conn.isPaused, true, 'the heartbeat must not take a held connection for dead');
     await waitUntil(() => messages.length === texts.length, 5000);
     assert.deepStrictEqual(messages, texts);
     assert.strictEqual(socket.paused, false, 'taken up again once it drained');
-    await waitUntil(() => socket.writtenData.length === 1, 1000);
-    assert.strictEqual(FrameParser.parse(socket.writtenData[0]).value.frame.opcode, OPCODES.PONG);
+    assert.strictEqual(conn.isPaused, false);
     conn.terminate();
   });
-}
 
-test('async inflate: a long run of plain frames behind one inflate is delivered in linear time', async () => {
-  // 2.5 MiB of two-byte frames behind one inflate held the event loop for 44
-  // seconds: all of them in the inbox, taken one shift() at a time. A ratio.
-  const time = async (count) => {
-    const { socket, conn, messages, texts, frames } = await behindOneInflate(ASYNC, count);
-    const started = process.hrtime.bigint();
-    socket.emit('data', Buffer.concat(frames));
-    await waitUntil(() => messages.length === texts.length, 20_000);
-    const elapsed = Number(process.hrtime.bigint() - started);
-    conn.terminate();
-    return elapsed;
-  };
-  await time(4_000);
-  const small = Math.max(await time(4_000), 1);
-  const large = await time(128_000);
-  assert.ok(large / small < 200, `128k took ${(large / small).toFixed(0)}× the time of 4k`);
-});
+  for (const [label, config] of [
+    ['takeover', TAKEOVER],
+    ['async inflate', ASYNC],
+  ]) {
+    it(`should hold plain frames behind one inflate at the mark too (${label}), and deliver them in order`, async () => {
+      const { socket, conn, messages, texts, frames } = await behindOneInflate(config, 5000);
+      const ping = Frame.ping(Buffer.from('behind'));
+      ping.maskPayload();
+      socket.emit('data', Buffer.concat([...frames, ping.toBuffer()]));
+      // Nothing has landed: the first message is still inflating. The frame
+      // loop stopped at the mark — it used to queue all five thousand.
+      assert.strictEqual(messages.length, 0);
+      assert.strictEqual(socket.paused, true, 'paused for the queue behind the inflate');
+      assert.strictEqual(conn.isPaused, true);
+      assert.strictEqual(socket.writtenData.length, 0, 'the ping behind the mark waits its turn');
+      await waitUntil(() => messages.length === texts.length, 5000);
+      assert.deepStrictEqual(messages, texts);
+      assert.strictEqual(socket.paused, false, 'taken up again once it drained');
+      await waitUntil(() => socket.writtenData.length === 1, 1000);
+      assert.strictEqual(FrameParser.parse(socket.writtenData[0]).value.frame.opcode, OPCODES.PONG);
+      conn.terminate();
+    });
+  }
 
-test('a close while the inflate queue is held takes up what the hold left unread', async () => {
-  const { socket, conn, frames } = await behindOneInflate(ASYNC, 200);
-  const closes = [];
-  conn.on('close', (code) => closes.push(code));
-  const peerClose = Frame.close(1000, '');
-  peerClose.maskPayload();
-  socket.emit('data', Buffer.concat([...frames, peerClose.toBuffer()]));
-  assert.strictEqual(socket.paused, true);
-  // A protocol failure on this side while the peer's Close sits behind the
-  // mark: the Close is read on the next tick, not at the next 'data' —
-  // which never comes for bytes already read.
-  conn.sendClose(1000, '');
-  await waitUntil(() => socket.ended === true || socket.destroyed === true, 1000);
-  conn.terminate();
-});
-
-test("async inflate: the threadpool path holds at four in flight; the application's pause() outlives the hold", async () => {
-  const { socket, conn, messages, texts, segment } = await burst(ASYNC, 200, 300);
-  socket.emit('data', segment);
-  assert.strictEqual(socket.paused, true);
-  // The application pauses while the queue is held: once the queue drains
-  // the socket stays paused — that pause is the application's to lift.
-  conn.pause();
-  await waitUntil(() => messages.length >= 4, 1000);
-  await waitUntil(() => messages.length === texts.length, 5000);
-  assert.deepStrictEqual(messages, texts);
-  assert.strictEqual(socket.paused, true, "the application's pause holds");
-  assert.strictEqual(conn.isPaused, true);
-  conn.resume();
-  assert.strictEqual(socket.paused, false);
-  assert.strictEqual(conn.isPaused, false);
-  // And resume() while the queue is still held keeps the socket paused.
-  const again = await burst(ASYNC, 200, 300);
-  again.socket.emit('data', again.segment);
-  assert.strictEqual(again.socket.paused, true);
-  again.conn.pause();
-  again.conn.resume();
-  assert.strictEqual(again.socket.paused, true, 'held for the queue, not for the application');
-  await waitUntil(() => again.messages.length === again.texts.length, 5000);
-  assert.strictEqual(again.socket.paused, false);
-  again.conn.terminate();
-  conn.terminate();
-});
-
-test('a close while the inflate queue holds the socket reads again — the Close that answers it is not left unread', async () => {
-  const { socket, conn, segment } = await burst(ASYNC, 200, 300);
-  socket.emit('data', segment);
-  assert.strictEqual(socket.paused, true, 'held');
-  conn.close(1000, 'bye');
-  // The hold used to outlive the close: the socket stayed paused, the peer's
-  // Close went unread, and the connection ended at closeTimeout as 1006.
-  assert.strictEqual(socket.paused, false, 'reading again for the Close');
-  conn.terminate();
-});
-
-test('level and memLevel apply on the one-shot, fan-out and async paths, and are validated at construction', async () => {
-  const { WebsocketServer } = require('#ws');
-  const text = JSON.stringify({
-    rows: Array.from({ length: 400 }, (_, i) => ({ i, name: `row-${i}`, tags: ['a', 'b'] })),
+  it('should deliver a long run of plain frames behind one inflate in linear time (async inflate)', async () => {
+    // 2.5 MiB of two-byte frames behind one inflate held the event loop for 44
+    // seconds: all of them in the inbox, taken one shift() at a time. A ratio.
+    const time = async (count) => {
+      const { socket, conn, messages, texts, frames } = await behindOneInflate(ASYNC, count);
+      const started = process.hrtime.bigint();
+      socket.emit('data', Buffer.concat(frames));
+      await waitUntil(() => messages.length === texts.length, 20_000);
+      const elapsed = Number(process.hrtime.bigint() - started);
+      conn.terminate();
+      return elapsed;
+    };
+    await time(4_000);
+    const small = Math.max(await time(4_000), 1);
+    const large = await time(128_000);
+    assert.ok(large / small < 200, `128k took ${(large / small).toFixed(0)}× the time of 4k`);
   });
-  const sent = (params) => {
+
+  it("should hold the threadpool path at four in flight, and let the application's pause() outlive the hold (async inflate)", async () => {
+    const { socket, conn, messages, texts, segment } = await burst(ASYNC, 200, 300);
+    socket.emit('data', segment);
+    assert.strictEqual(socket.paused, true);
+    // The application pauses while the queue is held: once the queue drains
+    // the socket stays paused — that pause is the application's to lift.
+    conn.pause();
+    await waitUntil(() => messages.length >= 4, 1000);
+    await waitUntil(() => messages.length === texts.length, 5000);
+    assert.deepStrictEqual(messages, texts);
+    assert.strictEqual(socket.paused, true, "the application's pause holds");
+    assert.strictEqual(conn.isPaused, true);
+    conn.resume();
+    assert.strictEqual(socket.paused, false);
+    assert.strictEqual(conn.isPaused, false);
+    // And resume() while the queue is still held keeps the socket paused.
+    const again = await burst(ASYNC, 200, 300);
+    again.socket.emit('data', again.segment);
+    assert.strictEqual(again.socket.paused, true);
+    again.conn.pause();
+    again.conn.resume();
+    assert.strictEqual(again.socket.paused, true, 'held for the queue, not for the application');
+    await waitUntil(() => again.messages.length === again.texts.length, 5000);
+    assert.strictEqual(again.socket.paused, false);
+    again.conn.terminate();
+    conn.terminate();
+  });
+});
+
+describe('close with a queue', () => {
+  it('should drop a close() queue that does not drain within closeTimeout, say so, and close', async (t) => {
+    const permessageDeflate = require('../../src/websocket/permessageDeflate.js');
+    const { recorder } = require('../helpers/recorder.js');
+    const real = permessageDeflate.compressAsync;
+    permessageDeflate.compressAsync = () => {}; // a deflate that never lands
+    t.after(() => {
+      permessageDeflate.compressAsync = real;
+    });
+    const log = recorder();
     const socket = new MockSocket();
-    const conn = new Connection(socket, Buffer.alloc(0), { deflate: params });
-    conn.sendText(text);
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC, closeTimeout: 30, logger: log.writer });
+    conn.sendText('x'.repeat(300));
+    conn.sendText('y');
+    conn.close(1001, '');
+    await once(socket, 'close');
+    // Only the Close reached the wire; the two messages are counted in the line.
+    const frames = parsed(socket);
+    assert.deepStrictEqual(
+      frames.map((frame) => frame.opcode),
+      [OPCODES.CLOSE],
+    );
+    assert.strictEqual(closeCode(frames[0]), 1001);
+    assert.strictEqual(socket.ended, true);
+    const line = log.find('ws.close.dropped');
+    assert.deepStrictEqual([line.level, line.frames], ['warn', 2]);
+    assert.ok(line.bytes >= 300, `the bytes that never left: ${line.bytes}`);
+  });
+
+  it('should answer a peer that closes while our Close is still queued at once, and drop the queue', async (t) => {
+    const permessageDeflate = require('../../src/websocket/permessageDeflate.js');
+    const real = permessageDeflate.compressAsync;
+    permessageDeflate.compressAsync = () => {};
+    t.after(() => {
+      permessageDeflate.compressAsync = real;
+    });
+    const socket = new MockSocket();
+    const conn = new Connection(socket, Buffer.alloc(0), { deflate: ASYNC, closeTimeout: 5_000 });
+    conn.sendText('x'.repeat(300));
+    conn.close(1001, '');
+    const theirs = Frame.close(1000, 'done');
+    theirs.maskPayload();
+    socket.emit('data', theirs.toBuffer());
+    await once(socket, 'close');
+    const frames = parsed(socket);
+    assert.deepStrictEqual(
+      frames.map((frame) => [frame.opcode, closeCode(frame)]),
+      [[OPCODES.CLOSE, 1000]],
+      "the peer's Close is echoed; what was queued is not written after it",
+    );
+    assert.strictEqual(socket.ended, true);
+  });
+
+  it('should take up what the hold left unread on a close while the inflate queue is held', async () => {
+    const { socket, conn, frames } = await behindOneInflate(ASYNC, 200);
+    const closes = [];
+    conn.on('close', (code) => closes.push(code));
+    const peerClose = Frame.close(1000, '');
+    peerClose.maskPayload();
+    socket.emit('data', Buffer.concat([...frames, peerClose.toBuffer()]));
+    assert.strictEqual(socket.paused, true);
+    // A protocol failure on this side while the peer's Close sits behind the
+    // mark: the Close is read on the next tick, not at the next 'data' —
+    // which never comes for bytes already read.
+    conn.sendClose(1000, '');
+    await waitUntil(() => socket.ended === true || socket.destroyed === true, 1000);
     conn.terminate();
-    return socket.writtenData[0];
-  };
-  // The level reaches the one-shot path: level 1 and level 9 give different
-  // bytes for the same message, and 9 the fewer. A `level` used to reach
-  // the live context only, and a no-takeover connection ignored it.
-  const fast = negotiate('permessage-deflate', { threshold: 1, level: 1 });
-  const small = negotiate('permessage-deflate', { threshold: 1, level: 9 });
-  assert.deepStrictEqual(fast.zlibOptions, { level: 1 });
-  assert.strictEqual(negotiate('permessage-deflate', { threshold: 1 }).zlibOptions, null, 'nothing set: nothing built');
-  const frameFast = sent(fast);
-  const frameSmall = sent(small);
-  // Different bytes is the proof the level reached zlib; which is smaller
-  // is the data's to decide, not a property a level guarantees.
-  assert.notDeepStrictEqual(frameFast, frameSmall);
-  // Fan-out: the prepared frame takes the recipient's level.
-  const viaFanout = sharedMessage(text);
-  const socketFast = new MockSocket();
-  const connFast = new Connection(socketFast, Buffer.alloc(0), { deflate: fast });
-  connFast.sendPrepared(viaFanout);
-  connFast.terminate();
-  assert.deepStrictEqual(socketFast.writtenData[0], frameFast, 'the fan-out frame is the unicast frame at that level');
-  const other = sharedMessage(text);
-  const socketSmall = new MockSocket();
-  const connSmall = new Connection(socketSmall, Buffer.alloc(0), { deflate: small });
-  connSmall.sendPrepared(other);
-  connSmall.terminate();
-  assert.deepStrictEqual(socketSmall.writtenData[0], frameSmall);
-  // The threadpool path too: the same bytes as the synchronous one at that level.
-  const asyncSmall = negotiate('permessage-deflate', { threshold: 1, level: 9, async: { threshold: 64 } });
-  const socketAsync = new MockSocket();
-  const connAsync = new Connection(socketAsync, Buffer.alloc(0), { deflate: asyncSmall });
-  connAsync.sendText(text);
-  await waitUntil(() => socketAsync.writtenData.length === 1, 5000);
-  assert.deepStrictEqual(socketAsync.writtenData[0], frameSmall);
-  connAsync.terminate();
-  const sharedAsync = sharedMessage(text);
-  const socketShared = new MockSocket();
-  const connShared = new Connection(socketShared, Buffer.alloc(0), { deflate: asyncSmall });
-  connShared.sendPrepared(sharedAsync);
-  await waitUntil(() => socketShared.writtenData.length === 1, 5000);
-  assert.deepStrictEqual(socketShared.writtenData[0], frameSmall);
-  connShared.terminate();
-  // Validated where the option is given, not by zlib at the first message.
-  for (const perMessageDeflate of [{ level: 10 }, { level: -2 }, { level: 1.5 }, { memLevel: 0 }, { memLevel: 10 }]) {
-    assert.throws(() => new WebsocketServer({ perMessageDeflate }), TypeError);
-  }
-  for (const perMessageDeflate of [true, { level: -1 }, { level: 9, memLevel: 9 }, { threshold: 4096 }]) {
-    const server = new WebsocketServer({ perMessageDeflate, logger: false });
-    server.close();
-  }
+  });
+
+  it('should read again on a close while the inflate queue holds the socket — the Close that answers it is not left unread', async () => {
+    const { socket, conn, segment } = await burst(ASYNC, 200, 300);
+    socket.emit('data', segment);
+    assert.strictEqual(socket.paused, true, 'held');
+    conn.close(1000, 'bye');
+    // The hold used to outlive the close: the socket stayed paused, the peer's
+    // Close went unread, and the connection ended at closeTimeout as 1006.
+    assert.strictEqual(socket.paused, false, 'reading again for the Close');
+    conn.terminate();
+  });
+});
+
+describe('level and memLevel', () => {
+  it('should apply on the one-shot, fan-out and async paths, and be validated at construction', async () => {
+    const { WebsocketServer } = require('#ws');
+    const text = JSON.stringify({
+      rows: Array.from({ length: 400 }, (_, i) => ({ i, name: `row-${i}`, tags: ['a', 'b'] })),
+    });
+    const sent = (params) => {
+      const socket = new MockSocket();
+      const conn = new Connection(socket, Buffer.alloc(0), { deflate: params });
+      conn.sendText(text);
+      conn.terminate();
+      return socket.writtenData[0];
+    };
+    // The level reaches the one-shot path: level 1 and level 9 give different
+    // bytes for the same message, and 9 the fewer. A `level` used to reach
+    // the live context only, and a no-takeover connection ignored it.
+    const fast = negotiate('permessage-deflate', { threshold: 1, level: 1 });
+    const small = negotiate('permessage-deflate', { threshold: 1, level: 9 });
+    assert.deepStrictEqual(fast.zlibOptions, { level: 1 });
+    assert.strictEqual(
+      negotiate('permessage-deflate', { threshold: 1 }).zlibOptions,
+      null,
+      'nothing set: nothing built',
+    );
+    const frameFast = sent(fast);
+    const frameSmall = sent(small);
+    // Different bytes is the proof the level reached zlib; which is smaller
+    // is the data's to decide, not a property a level guarantees.
+    assert.notDeepStrictEqual(frameFast, frameSmall);
+    // Fan-out: the prepared frame takes the recipient's level.
+    const viaFanout = sharedMessage(text);
+    const socketFast = new MockSocket();
+    const connFast = new Connection(socketFast, Buffer.alloc(0), { deflate: fast });
+    connFast.sendPrepared(viaFanout);
+    connFast.terminate();
+    assert.deepStrictEqual(
+      socketFast.writtenData[0],
+      frameFast,
+      'the fan-out frame is the unicast frame at that level',
+    );
+    const other = sharedMessage(text);
+    const socketSmall = new MockSocket();
+    const connSmall = new Connection(socketSmall, Buffer.alloc(0), { deflate: small });
+    connSmall.sendPrepared(other);
+    connSmall.terminate();
+    assert.deepStrictEqual(socketSmall.writtenData[0], frameSmall);
+    // The threadpool path too: the same bytes as the synchronous one at that level.
+    const asyncSmall = negotiate('permessage-deflate', { threshold: 1, level: 9, async: { threshold: 64 } });
+    const socketAsync = new MockSocket();
+    const connAsync = new Connection(socketAsync, Buffer.alloc(0), { deflate: asyncSmall });
+    connAsync.sendText(text);
+    await waitUntil(() => socketAsync.writtenData.length === 1, 5000);
+    assert.deepStrictEqual(socketAsync.writtenData[0], frameSmall);
+    connAsync.terminate();
+    const sharedAsync = sharedMessage(text);
+    const socketShared = new MockSocket();
+    const connShared = new Connection(socketShared, Buffer.alloc(0), { deflate: asyncSmall });
+    connShared.sendPrepared(sharedAsync);
+    await waitUntil(() => socketShared.writtenData.length === 1, 5000);
+    assert.deepStrictEqual(socketShared.writtenData[0], frameSmall);
+    connShared.terminate();
+    // Validated where the option is given, not by zlib at the first message.
+    for (const perMessageDeflate of [{ level: 10 }, { level: -2 }, { level: 1.5 }, { memLevel: 0 }, { memLevel: 10 }]) {
+      assert.throws(() => new WebsocketServer({ perMessageDeflate }), TypeError);
+    }
+    for (const perMessageDeflate of [true, { level: -1 }, { level: 9, memLevel: 9 }, { threshold: 4096 }]) {
+      const server = new WebsocketServer({ perMessageDeflate, logger: false });
+      server.close();
+    }
+  });
 });

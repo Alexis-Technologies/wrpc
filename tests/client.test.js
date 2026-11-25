@@ -3,8 +3,8 @@
 const http = require('node:http');
 const timers = require('node:timers/promises');
 const { Blob } = require('node:buffer');
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it, before, after, beforeEach, afterEach } = require('node:test');
+const assert = require('node:assert/strict');
 const { randomUUID } = require('node:crypto');
 
 const { jsonParse } = require('../src/utils.js');
@@ -29,7 +29,7 @@ const listen = (httpServer, port) =>
     httpServer.listen(port, (error) => (error ? reject(error) : resolve()));
   });
 
-test('Client / calls', async (t) => {
+describe('Client / calls', () => {
   const api = {
     system: {
       introspect: { handler: async () => api },
@@ -56,44 +56,49 @@ test('Client / calls', async (t) => {
   };
 
   let serverWs = null;
-  const { httpServer, wsServer: mockServer } = createWsServer();
-  await listen(httpServer, 8000);
-  mockServer.on('connection', (ws) => {
-    serverWs = ws;
-    ws.on('message', async (raw) => {
-      const packet = jsonParse(raw.toString()) || {};
-      const { type, id, method } = packet;
-      // Calls only: a client also says `cancel` for a call that timed out.
-      if (type !== 'call') return;
-      const [unit, name] = method.split('/');
-      try {
-        const result = await api[unit][name].handler();
-        ws.send(JSON.stringify({ type: 'callback', id, result }));
-      } catch ({ message }) {
-        const packet = { type: 'callback', id, error: { code: 400, message } };
-        ws.send(JSON.stringify(packet));
-      }
+  let httpServer = null;
+
+  before(async () => {
+    const { httpServer: server, wsServer: mockServer } = createWsServer();
+    httpServer = server;
+    await listen(httpServer, 8000);
+    mockServer.on('connection', (ws) => {
+      serverWs = ws;
+      ws.on('message', async (raw) => {
+        const packet = jsonParse(raw.toString()) || {};
+        const { type, id, method } = packet;
+        // Calls only: a client also says `cancel` for a call that timed out.
+        if (type !== 'call') return;
+        const [unit, name] = method.split('/');
+        try {
+          const result = await api[unit][name].handler();
+          ws.send(JSON.stringify({ type: 'callback', id, result }));
+        } catch ({ message }) {
+          const reply = { type: 'callback', id, error: { code: 400, message } };
+          ws.send(JSON.stringify(reply));
+        }
+      });
     });
   });
 
+  after(() => void httpServer?.close());
+
   let client;
 
-  t.after(() => void httpServer.close());
-
-  t.beforeEach(async () => {
+  beforeEach(async () => {
     const options = { callTimeout: 300 };
     client = await WrpcClient.connect('ws://localhost:8000/', options);
     await client.load('test');
   });
 
-  t.afterEach(() => void client.close());
+  afterEach(() => void client.close());
 
-  await t.test('handles simple api calls', async () => {
+  it('should handle simple api calls', async () => {
     const result = await client.api.test.test();
     assert.deepStrictEqual(result, { success: true });
   });
 
-  await t.test('client.call() reaches a method whose unit was never loaded', async () => {
+  it('should reach a method whose unit was never loaded with client.call()', async () => {
     // No scaffolding involved: the target is addressed by wire string, which
     // is what an authenticate hook uses before load() has built `api`.
     const fresh = await WrpcClient.connect('ws://localhost:8000/', { callTimeout: 300 });
@@ -105,24 +110,24 @@ test('Client / calls', async (t) => {
     }
   });
 
-  await t.test('handles parallel api calls', async () => {
+  it('should handle parallel api calls', async () => {
     const promises = [];
     for (let i = 0; i < 10; i++) promises.push(client.api.test.test());
     const res = await Promise.all(promises);
     for (const r of res) assert.deepStrictEqual(r, { success: true });
   });
 
-  await t.test('handles call timeouts', async () => {
+  it('should handle call timeouts', async () => {
     const promise = client.api.test.timeout();
     // Coded like every client-produced refusal: `error.code` checks work.
     await assert.rejects(promise, (error) => error.message === 'Request timeout' && error.code === 408);
   });
 
-  await t.test('handles api errors', async () => {
+  it('should handle api errors', async () => {
     await assert.rejects(client.api.test.error(), (error) => error.message === 'Error message' && error.code === 400);
   });
 
-  await t.test('emits error when server sends invalid JSON', async () => {
+  it('should emit error when the server sends invalid JSON', async () => {
     const errorPromise = new Promise((resolve) => {
       client.once('error', resolve);
     });
@@ -133,7 +138,7 @@ test('Client / calls', async (t) => {
   });
 });
 
-test('Client / stale callback', async (t) => {
+describe('Client / stale callback', () => {
   const api = {
     system: {
       introspect: { handler: async () => api },
@@ -148,39 +153,44 @@ test('Client / stale callback', async (t) => {
     },
   };
 
-  const { httpServer, wsServer: mockServer } = createWsServer();
-  await listen(httpServer, 8010);
-  mockServer.on('connection', (ws) => {
-    ws.on('message', async (raw) => {
-      const packet = jsonParse(raw.toString()) || {};
-      const { type, id, method } = packet;
-      const [unit, name] = method?.split('/') || [];
-      if (type !== 'call') return;
-      try {
-        const handler = api[unit]?.[name]?.handler;
-        const result = (handler ? await handler() : undefined) ?? { ok: true };
-        ws.send(JSON.stringify({ type: 'callback', id, result }));
-        ws.send(
-          JSON.stringify({
+  let httpServer = null;
+
+  before(async () => {
+    const { httpServer: server, wsServer: mockServer } = createWsServer();
+    httpServer = server;
+    await listen(httpServer, 8010);
+    mockServer.on('connection', (ws) => {
+      ws.on('message', async (raw) => {
+        const packet = jsonParse(raw.toString()) || {};
+        const { type, id, method } = packet;
+        const [unit, name] = method?.split('/') || [];
+        if (type !== 'call') return;
+        try {
+          const handler = api[unit]?.[name]?.handler;
+          const result = (handler ? await handler() : undefined) ?? { ok: true };
+          ws.send(JSON.stringify({ type: 'callback', id, result }));
+          ws.send(
+            JSON.stringify({
+              type: 'callback',
+              id: 'stale-id-not-in-calls',
+              result: null,
+            }),
+          );
+        } catch ({ message }) {
+          const errPacket = {
             type: 'callback',
-            id: 'stale-id-not-in-calls',
-            result: null,
-          }),
-        );
-      } catch ({ message }) {
-        const errPacket = {
-          type: 'callback',
-          id,
-          error: { code: 400, message },
-        };
-        ws.send(JSON.stringify(errPacket));
-      }
+            id,
+            error: { code: 400, message },
+          };
+          ws.send(JSON.stringify(errPacket));
+        }
+      });
     });
   });
 
-  t.after(() => void httpServer.close());
+  after(() => void httpServer?.close());
 
-  await t.test('throws on stale callback for unknown id', async () => {
+  it('should throw on a stale callback for an unknown id', async () => {
     const client = await WrpcClient.connect('ws://localhost:8010/');
     const promise1 = new Promise((resolve) => {
       client.once('error', (error) => {
@@ -201,7 +211,7 @@ test('Client / stale callback', async (t) => {
   });
 });
 
-test('Client / events', async (t) => {
+describe('Client / events', () => {
   const api = {
     system: {
       introspect: { handler: async () => api },
@@ -216,47 +226,52 @@ test('Client / events', async (t) => {
     },
   };
 
-  const { httpServer, wsServer: mockServer } = createWsServer();
-  await listen(httpServer, 8001);
-  mockServer.on('connection', (ws) => {
-    const pingInterval = setInterval(() => {
-      const packet = { type: 'event', name: 'test/ping', data: { ping: true } };
-      ws.send(JSON.stringify(packet));
-    }, 100);
-    ws.on('close', () => void clearInterval(pingInterval));
-    ws.on('message', async (raw) => {
-      const packet = jsonParse(raw.toString()) || {};
-      if (packet.type === 'call' && packet.method === 'system/introspect') {
-        const introspection = { type: 'callback', id: packet.id, result: api };
-        ws.send(JSON.stringify(introspection));
-        return;
-      }
-      const { type, name, data } = packet;
-      if (type !== 'event') return;
-      const [unit, event] = name.split('/');
-      const result = await api[unit][event].handler(data);
-      ws.send(JSON.stringify({ type: 'event', name, data: result }));
+  let httpServer = null;
+
+  before(async () => {
+    const { httpServer: server, wsServer: mockServer } = createWsServer();
+    httpServer = server;
+    await listen(httpServer, 8001);
+    mockServer.on('connection', (ws) => {
+      const pingInterval = setInterval(() => {
+        const packet = { type: 'event', name: 'test/ping', data: { ping: true } };
+        ws.send(JSON.stringify(packet));
+      }, 100);
+      ws.on('close', () => void clearInterval(pingInterval));
+      ws.on('message', async (raw) => {
+        const packet = jsonParse(raw.toString()) || {};
+        if (packet.type === 'call' && packet.method === 'system/introspect') {
+          const introspection = { type: 'callback', id: packet.id, result: api };
+          ws.send(JSON.stringify(introspection));
+          return;
+        }
+        const { type, name, data } = packet;
+        if (type !== 'event') return;
+        const [unit, event] = name.split('/');
+        const result = await api[unit][event].handler(data);
+        ws.send(JSON.stringify({ type: 'event', name, data: result }));
+      });
     });
   });
 
+  after(() => void httpServer?.close());
+
   let client;
 
-  t.after(() => void httpServer.close());
-
-  t.beforeEach(async () => {
+  beforeEach(async () => {
     client = await WrpcClient.connect('ws://localhost:8001/');
     await client.load('test');
   });
 
-  t.afterEach(() => void client.close());
+  afterEach(() => void client.close());
 
-  await t.test('handles events from server', async () => {
+  it('should handle events from the server', async () => {
     const ping = await new Promise((resolve) => client.api.test.on('ping', resolve));
     assert.deepStrictEqual(ping, { ping: true });
   });
 });
 
-test('Client / stream', async (t) => {
+describe('Client / stream', () => {
   const storage = new Map();
 
   const handleBinary = (chunk) => {
@@ -290,10 +305,7 @@ test('Client / stream', async (t) => {
     const valid = typeof name === 'string' && Number.isSafeInteger(size);
     if (!valid) throw new Error('Stream packet structure error');
     if (stream) throw new Error(`Stream ${id} is already initialized`);
-    {
-      const stream = { name, size, data: [], status: 'init' };
-      storage.set(id, stream);
-    }
+    storage.set(id, { name, size, data: [], status: 'init' });
   };
 
   const api = {
@@ -316,43 +328,48 @@ test('Client / stream', async (t) => {
     },
   };
 
-  const { httpServer, wsServer: mockServer } = createWsServer();
-  await listen(httpServer, 8002);
-  mockServer.on('connection', (ws) => {
-    const pingInterval = setInterval(() => {
-      const packet = { type: 'event', name: 'test/ping', data: { ping: true } };
-      ws.send(JSON.stringify(packet));
-    }, 100);
-    ws.on('close', () => void clearInterval(pingInterval));
-    ws.on('message', async (raw, isBinary) => {
-      if (isBinary) return void handleBinary(new Uint8Array(raw));
-      const packet = jsonParse(raw.toString()) || {};
-      if (packet.type === 'call' && packet.method === 'system/introspect') {
-        const introspection = { type: 'callback', id: packet.id, result: api };
-        return void ws.send(JSON.stringify(introspection));
-      }
-      if (packet.type === 'stream') return void handleIncomingStream(packet);
-      const { type, id, method, args } = packet;
-      // Calls only: a client also says `cancel` for a call that timed out.
-      if (type !== 'call') return;
-      const [unit, name] = method.split('/');
-      const result = await api[unit][name].handler(args, ws);
-      ws.send(JSON.stringify({ type: 'callback', id, result }));
+  let httpServer = null;
+
+  before(async () => {
+    const { httpServer: server, wsServer: mockServer } = createWsServer();
+    httpServer = server;
+    await listen(httpServer, 8002);
+    mockServer.on('connection', (ws) => {
+      const pingInterval = setInterval(() => {
+        const packet = { type: 'event', name: 'test/ping', data: { ping: true } };
+        ws.send(JSON.stringify(packet));
+      }, 100);
+      ws.on('close', () => void clearInterval(pingInterval));
+      ws.on('message', async (raw, isBinary) => {
+        if (isBinary) return void handleBinary(new Uint8Array(raw));
+        const packet = jsonParse(raw.toString()) || {};
+        if (packet.type === 'call' && packet.method === 'system/introspect') {
+          const introspection = { type: 'callback', id: packet.id, result: api };
+          return void ws.send(JSON.stringify(introspection));
+        }
+        if (packet.type === 'stream') return void handleIncomingStream(packet);
+        const { type, id, method, args } = packet;
+        // Calls only: a client also says `cancel` for a call that timed out.
+        if (type !== 'call') return;
+        const [unit, name] = method.split('/');
+        const result = await api[unit][name].handler(args, ws);
+        ws.send(JSON.stringify({ type: 'callback', id, result }));
+      });
     });
   });
 
+  after(() => void httpServer?.close());
+
   let client;
 
-  t.after(() => void httpServer.close());
-
-  t.beforeEach(async () => {
+  beforeEach(async () => {
     client = await WrpcClient.connect('ws://localhost:8002/');
     await client.load('test');
   });
 
-  t.afterEach(() => void client.close());
+  afterEach(() => void client.close());
 
-  await t.test('handles file uploads', async () => {
+  it('should handle file uploads', async () => {
     const data = 'Some random data for upload to the server';
     const name = 'upload-stream';
     const blob = new Blob([data]);
@@ -366,7 +383,7 @@ test('Client / stream', async (t) => {
     assert.strictEqual(uploadedFile.status, 'ended');
   });
 
-  await t.test('handles file downloads', async () => {
+  it('should handle file downloads', async () => {
     const name = 'download-stream';
     const { id } = await client.api.test.download({ name });
     const readable = client.getStream(id);
@@ -376,7 +393,7 @@ test('Client / stream', async (t) => {
   });
 });
 
-test('Client / different ID generation strategies', async (t) => {
+describe('Client / different ID generation strategies', () => {
   const api = {
     system: {
       introspect: { handler: async () => api },
@@ -391,28 +408,33 @@ test('Client / different ID generation strategies', async (t) => {
     },
   };
 
-  const { httpServer, wsServer: mockServer } = createWsServer();
-  await listen(httpServer, 8004);
-  mockServer.on('connection', (ws) => {
-    ws.on('message', async (raw) => {
-      const packet = jsonParse(raw.toString()) || {};
-      const { type, id, method } = packet;
-      // Calls only: a client also says `cancel` for a call that timed out.
-      if (type !== 'call') return;
-      const [unit, name] = method.split('/');
-      try {
-        const result = await api[unit][name].handler();
-        ws.send(JSON.stringify({ type: 'callback', id, result }));
-      } catch ({ message }) {
-        const packet = { type: 'callback', id, error: { code: 400, message } };
-        ws.send(JSON.stringify(packet));
-      }
+  let httpServer = null;
+
+  before(async () => {
+    const { httpServer: server, wsServer: mockServer } = createWsServer();
+    httpServer = server;
+    await listen(httpServer, 8004);
+    mockServer.on('connection', (ws) => {
+      ws.on('message', async (raw) => {
+        const packet = jsonParse(raw.toString()) || {};
+        const { type, id, method } = packet;
+        // Calls only: a client also says `cancel` for a call that timed out.
+        if (type !== 'call') return;
+        const [unit, name] = method.split('/');
+        try {
+          const result = await api[unit][name].handler();
+          ws.send(JSON.stringify({ type: 'callback', id, result }));
+        } catch ({ message }) {
+          const reply = { type: 'callback', id, error: { code: 400, message } };
+          ws.send(JSON.stringify(reply));
+        }
+      });
     });
   });
 
-  t.after(() => void httpServer.close());
+  after(() => void httpServer?.close());
 
-  await t.test('works with UUID generation', async () => {
+  it('should work with UUID generation', async () => {
     const client = await WrpcClient.connect('ws://localhost:8004/');
     await client.load('test');
     const result = await client.api.test.test();

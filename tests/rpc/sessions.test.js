@@ -1,7 +1,7 @@
 'use strict';
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 const { setImmediate: settle, setTimeout: delay } = require('node:timers/promises');
 
 const { Session, MemorySessionStore, SessionManager } = require('../../src/rpc/sessions.js');
@@ -25,20 +25,20 @@ const capturingStore = () => {
   };
 };
 
-test('MemorySessionStore', async (t) => {
-  await t.test('get miss returns null', async () => {
+describe('MemorySessionStore', () => {
+  it('should return null on a get miss', async () => {
     const store = new MemorySessionStore();
     assert.strictEqual(await store.get('missing'), null);
   });
 
-  await t.test('set then get returns the stored data', async () => {
+  it('should return the stored data on get after set', async () => {
     const store = new MemorySessionStore();
     const data = { user: 'alex' };
     await store.set('tok', data);
     assert.strictEqual(await store.get('tok'), data);
   });
 
-  await t.test('delete removes the entry', async () => {
+  it('should remove the entry on delete', async () => {
     const store = new MemorySessionStore();
     await store.set('tok', { user: 'alex' });
     await store.delete('tok');
@@ -46,20 +46,20 @@ test('MemorySessionStore', async (t) => {
   });
 });
 
-test('SessionManager create', async (t) => {
-  await t.test('generates a token when omitted', () => {
+describe('SessionManager create', () => {
+  it('should generate a token when omitted', () => {
     const manager = new SessionManager({}, quiet);
     const session = manager.create();
     assert.ok(session instanceof Session);
     assert.match(session.token, /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/);
   });
 
-  await t.test('uses the provided token', () => {
+  it('should use the provided token', () => {
     const manager = new SessionManager({}, quiet);
     assert.strictEqual(manager.create('explicit').token, 'explicit');
   });
 
-  await t.test('persists the initial data to the store', async () => {
+  it('should persist the initial data to the store', async () => {
     const store = capturingStore();
     const manager = new SessionManager({ store }, quiet);
     manager.create('tok', { user: 'alex' });
@@ -67,7 +67,7 @@ test('SessionManager create', async (t) => {
     assert.deepStrictEqual(store.sets, [{ token: 'tok', data: { user: 'alex' } }]);
   });
 
-  await t.test('state proxy auto-saves on property set', async () => {
+  it('should auto-save the state proxy on property set', async () => {
     const store = capturingStore();
     const manager = new SessionManager({ store }, quiet);
     const session = manager.create('tok', { count: 0 });
@@ -82,7 +82,7 @@ test('SessionManager create', async (t) => {
     assert.strictEqual(session.state.name, 'alex');
   });
 
-  await t.test('a store whose set() throws synchronously is a logged save failure, not a crash', async () => {
+  it('should log a save failure, not crash, when the store set() throws synchronously', async () => {
     // sealedStore over a keyring that lost its current key threw from
     // set() before its first await; the flush ran it in a microtask.
     const errors = [];
@@ -116,7 +116,7 @@ test('SessionManager create', async (t) => {
     assert.match(errors[0].err.message, /current key/);
   });
 
-  await t.test('custom generateToken is used for omitted tokens', () => {
+  it('should use a custom generateToken for omitted tokens', () => {
     let n = 0;
     const manager = new SessionManager({ generateToken: () => `tok-${++n}` }, quiet);
     assert.strictEqual(manager.create().token, 'tok-1');
@@ -125,8 +125,8 @@ test('SessionManager create', async (t) => {
   });
 });
 
-test('SessionManager restore and destroy', async (t) => {
-  await t.test('restore returns a session with the stored state', async () => {
+describe('SessionManager restore and destroy', () => {
+  it('should return a session with the stored state on restore', async () => {
     const manager = new SessionManager({}, quiet);
     manager.create('tok', { user: 'alex' });
     await settle();
@@ -136,7 +136,7 @@ test('SessionManager restore and destroy', async (t) => {
     assert.strictEqual(restored.state.user, 'alex');
   });
 
-  await t.test('restored session auto-saves too', async () => {
+  it('should auto-save a restored session too', async () => {
     const store = new MemorySessionStore();
     const manager = new SessionManager({ store }, quiet);
     manager.create('tok', { count: 0 });
@@ -148,12 +148,12 @@ test('SessionManager restore and destroy', async (t) => {
     assert.strictEqual(data.count, 7);
   });
 
-  await t.test('restore miss returns null', async () => {
+  it('should return null on a restore miss', async () => {
     const manager = new SessionManager({}, quiet);
     assert.strictEqual(await manager.restore('missing'), null);
   });
 
-  await t.test('destroy deletes the session from the store', async () => {
+  it('should delete the session from the store on destroy', async () => {
     const manager = new SessionManager({}, quiet);
     manager.create('tok', { user: 'alex' });
     await settle();
@@ -162,8 +162,8 @@ test('SessionManager restore and destroy', async (t) => {
   });
 });
 
-test('SessionManager cookies', async (t) => {
-  await t.test('cookieHeader has the default attributes', () => {
+describe('SessionManager cookies', () => {
+  it('should give cookieHeader the default attributes', () => {
     const manager = new SessionManager({}, quiet);
     const header = manager.cookieHeader('abc123');
     assert.ok(header.startsWith('token=abc123'));
@@ -174,7 +174,7 @@ test('SessionManager cookies', async (t) => {
     assert.ok(!header.includes('Max-Age'));
   });
 
-  await t.test('cookieDeleteHeader expires the cookie', () => {
+  it('should expire the cookie with cookieDeleteHeader', () => {
     const manager = new SessionManager({}, quiet);
     const header = manager.cookieDeleteHeader();
     assert.ok(header.startsWith('token=deleted'));
@@ -183,12 +183,12 @@ test('SessionManager cookies', async (t) => {
     assert.ok(header.includes('HttpOnly'));
   });
 
-  await t.test('maxAge option adds Max-Age', () => {
+  it('should add Max-Age with the maxAge option', () => {
     const manager = new SessionManager({ cookie: { maxAge: 3600 } }, quiet);
     assert.ok(manager.cookieHeader('t').includes('Max-Age=3600'));
   });
 
-  await t.test('custom cookie name is used everywhere', () => {
+  it('should use a custom cookie name everywhere', () => {
     const manager = new SessionManager({ cookie: { name: 'sid' } }, quiet);
     assert.ok(manager.cookieHeader('t').startsWith('sid=t'));
     assert.ok(manager.cookieDeleteHeader().startsWith('sid=deleted'));
@@ -196,52 +196,54 @@ test('SessionManager cookies', async (t) => {
     assert.strictEqual(manager.readToken({ token: 'x' }), null);
   });
 
-  await t.test('readToken reads the token cookie', () => {
+  it('should read the token cookie with readToken', () => {
     const manager = new SessionManager({}, quiet);
     assert.strictEqual(manager.readToken({ token: 'abc' }), 'abc');
     assert.strictEqual(manager.readToken({}), null);
   });
 });
 
-test('SessionManager with a custom async store', async () => {
-  const map = new Map();
-  const store = {
-    async get(token) {
-      await delay(1);
-      return map.get(token) ?? null;
-    },
-    async set(token, data) {
-      await delay(1);
-      map.set(token, { ...data });
-    },
-    async delete(token) {
-      await delay(1);
-      map.delete(token);
-    },
-  };
-  const manager = new SessionManager({ store }, quiet);
-  const session = manager.create('slow', { hits: 0 });
-  await delay(5);
-  assert.deepStrictEqual(map.get('slow'), { hits: 0 });
-  session.state.hits = 1;
-  await delay(5);
-  assert.deepStrictEqual(map.get('slow'), { hits: 1 });
-  const restored = await manager.restore('slow');
-  assert.strictEqual(restored.state.hits, 1);
-  restored.state.hits = 2;
-  await delay(5);
-  assert.deepStrictEqual(map.get('slow'), { hits: 2 });
-  await manager.destroy('slow');
-  assert.strictEqual(await manager.restore('slow'), null);
+describe('SessionManager', () => {
+  it('should work with a custom async store', async () => {
+    const map = new Map();
+    const store = {
+      async get(token) {
+        await delay(1);
+        return map.get(token) ?? null;
+      },
+      async set(token, data) {
+        await delay(1);
+        map.set(token, { ...data });
+      },
+      async delete(token) {
+        await delay(1);
+        map.delete(token);
+      },
+    };
+    const manager = new SessionManager({ store }, quiet);
+    const session = manager.create('slow', { hits: 0 });
+    await delay(5);
+    assert.deepStrictEqual(map.get('slow'), { hits: 0 });
+    session.state.hits = 1;
+    await delay(5);
+    assert.deepStrictEqual(map.get('slow'), { hits: 1 });
+    const restored = await manager.restore('slow');
+    assert.strictEqual(restored.state.hits, 1);
+    restored.state.hits = 2;
+    await delay(5);
+    assert.deepStrictEqual(map.get('slow'), { hits: 2 });
+    await manager.destroy('slow');
+    assert.strictEqual(await manager.restore('slow'), null);
+  });
 });
 
-test('RpcServer session isolation', async (t) => {
+describe('RpcServer session isolation', () => {
   const makeRouter = () =>
     defineRouter({
       unit: { hello: procedure({ access: 'public', handler: async () => 'hi' }) },
     });
 
-  await t.test('default stores are per-server', async () => {
+  it('should keep default stores per-server', async () => {
     const serverA = new RpcServer({ router: makeRouter(), logger: false });
     const serverB = new RpcServer({ router: makeRouter(), logger: false });
     serverA.sessions.create('tokA', { user: 'alex' });
@@ -252,7 +254,7 @@ test('RpcServer session isolation', async (t) => {
     await serverB.close();
   });
 
-  await t.test('a shared store is shared', async () => {
+  it('should share a shared store', async () => {
     const store = new MemorySessionStore();
     const serverA = new RpcServer({ router: makeRouter(), sessions: { store }, logger: false });
     const serverB = new RpcServer({ router: makeRouter(), sessions: { store }, logger: false });
@@ -266,42 +268,44 @@ test('RpcServer session isolation', async (t) => {
   });
 });
 
-test('initializeSession with the same token does not race delete against set', async () => {
-  const { Client } = require('../../src/rpc/core.js');
-  const deletes = [];
-  const map = new Map();
-  const store = {
-    async get(token) {
-      return map.get(token) ?? null;
-    },
-    async set(token, data) {
-      map.set(token, data);
-    },
-    async delete(token) {
-      deletes.push(token);
-      map.delete(token);
-    },
-  };
-  const noop = () => {};
-  const quiet = { log: noop, info: noop, warn: noop, error: noop };
-  const sessions = new SessionManager({ store }, quiet);
-  const transport = { source: 'x', connection: {}, send: noop, error: noop, close: noop, once: noop };
-  const client = new Client(transport, { sessions, logger: false });
+describe('Client.initializeSession', () => {
+  it('should not race delete against set with the same token', async () => {
+    const { Client } = require('../../src/rpc/core.js');
+    const deletes = [];
+    const map = new Map();
+    const store = {
+      async get(token) {
+        return map.get(token) ?? null;
+      },
+      async set(token, data) {
+        map.set(token, data);
+      },
+      async delete(token) {
+        deletes.push(token);
+        map.delete(token);
+      },
+    };
+    const ignore = () => {};
+    const silent = { log: ignore, info: ignore, warn: ignore, error: ignore };
+    const sessions = new SessionManager({ store }, silent);
+    const transport = { source: 'x', connection: {}, send: ignore, error: ignore, close: ignore, once: ignore };
+    const client = new Client(transport, { sessions, logger: false });
 
-  client.initializeSession('same-token', { round: 1 });
-  client.initializeSession('same-token', { round: 2 }); // refresh, no finalize
-  await new Promise((resolve) => setImmediate(resolve));
+    client.initializeSession('same-token', { round: 1 });
+    client.initializeSession('same-token', { round: 2 }); // refresh, no finalize
+    await new Promise((resolve) => setImmediate(resolve));
 
-  assert.deepStrictEqual(deletes, []); // the old delete would race the new set
-  assert.deepStrictEqual(map.get('same-token'), { round: 2 });
+    assert.deepStrictEqual(deletes, []); // the old delete would race the new set
+    assert.deepStrictEqual(map.get('same-token'), { round: 2 });
 
-  client.initializeSession('other-token', { round: 3 }); // different token DOES finalize
-  await new Promise((resolve) => setImmediate(resolve));
-  assert.deepStrictEqual(deletes, ['same-token']);
+    client.initializeSession('other-token', { round: 3 }); // different token DOES finalize
+    await new Promise((resolve) => setImmediate(resolve));
+    assert.deepStrictEqual(deletes, ['same-token']);
+  });
 });
 
-test('MemorySessionStore bounds', async (t) => {
-  await t.test('evicts the least recently used entry past maxSessions', async () => {
+describe('MemorySessionStore bounds', () => {
+  it('should evict the least recently used entry past maxSessions', async () => {
     const store = new MemorySessionStore({ maxSessions: 2 });
     await store.set('a', { n: 1 });
     await store.set('b', { n: 2 });
@@ -313,7 +317,7 @@ test('MemorySessionStore bounds', async (t) => {
     assert.deepStrictEqual(await store.get('c'), { n: 3 });
   });
 
-  await t.test('expires entries past the ttl', async () => {
+  it('should expire entries past the ttl', async () => {
     let clock = 1000;
     const store = new MemorySessionStore({ ttl: 100, now: () => clock });
     await store.set('a', { n: 1 });
@@ -324,7 +328,7 @@ test('MemorySessionStore bounds', async (t) => {
     assert.strictEqual(store.size, 0);
   });
 
-  await t.test('a write sweeps already-expired entries', async () => {
+  it('should sweep already-expired entries on a write', async () => {
     let clock = 0;
     const store = new MemorySessionStore({ ttl: 10, now: () => clock });
     await store.set('old', { n: 1 });
@@ -334,7 +338,7 @@ test('MemorySessionStore bounds', async (t) => {
     assert.deepStrictEqual(await store.get('fresh'), { n: 2 });
   });
 
-  await t.test('ttl 0 and maxSessions 0 disable the bounds', async () => {
+  it('should disable the bounds with ttl 0 and maxSessions 0', async () => {
     const store = new MemorySessionStore({ ttl: 0, maxSessions: 0 });
     for (let i = 0; i < 50; i++) await store.set(`t${i}`, { i });
     assert.strictEqual(store.size, 50);
@@ -342,75 +346,81 @@ test('MemorySessionStore bounds', async (t) => {
   });
 });
 
-test('session state proxy: wire-shaped keys cannot mutate the prototype', async () => {
-  const manager = new SessionManager({ store: capturingStore() }, quiet);
-  const session = manager.create('tok', {});
-  // Built at runtime: the literal member access is what the lint forbids,
-  // and a wire-supplied key is exactly a runtime string.
-  const protoKey = ['__pro', 'to__'].join('');
-  session.state[protoKey] = { polluted: true };
-  assert.strictEqual({}.polluted, undefined, 'Object.prototype must stay untouched');
-  assert.strictEqual(Object.getPrototypeOf(session.state), Object.prototype);
-  assert.strictEqual(session.state[protoKey].polluted, true, 'the value lands as an own property');
+describe('session state proxy', () => {
+  it('should not let wire-shaped keys mutate the prototype', async () => {
+    const manager = new SessionManager({ store: capturingStore() }, quiet);
+    const session = manager.create('tok', {});
+    // Built at runtime: the literal member access is what the lint forbids,
+    // and a wire-supplied key is exactly a runtime string.
+    const protoKey = ['__pro', 'to__'].join('');
+    session.state[protoKey] = { polluted: true };
+    assert.strictEqual({}.polluted, undefined, 'Object.prototype must stay untouched');
+    assert.strictEqual(Object.getPrototypeOf(session.state), Object.prototype);
+    assert.strictEqual(session.state[protoKey].polluted, true, 'the value lands as an own property');
+  });
 });
 
-test('buildCookie: RFC 6265 grammar is enforced', async (t) => {
+describe('buildCookie: RFC 6265 grammar is enforced', () => {
   const { buildCookie } = require('../../src/rpc/sessions.js');
   const options = { path: '/', httpOnly: true, secure: true, sameSite: 'Lax', maxAge: null };
 
-  await t.test('a clean token passes', () => {
+  it('should pass a clean token', () => {
     assert.match(buildCookie('token', 'abc-123', options), /^token=abc-123; /);
   });
 
-  await t.test('a token that smuggles attributes is refused', () => {
+  it('should refuse a token that smuggles attributes', () => {
     assert.throws(() => buildCookie('token', 'x; Domain=evil.example', options), /forbids/);
     assert.throws(() => buildCookie('token', 'x\r\nSet-Cookie: y=z', options), /forbids/);
   });
 
-  await t.test('bad names, paths and sameSite values are refused', () => {
+  it('should refuse bad names, paths and sameSite values', () => {
     assert.throws(() => buildCookie('to ken', 'x', options), /name/);
     assert.throws(() => buildCookie('token', 'x', { ...options, path: '/; Secure' }), /Path/);
     assert.throws(() => buildCookie('token', 'x', { ...options, sameSite: 'Sneaky' }), /sameSite/);
   });
 });
 
-test('MemorySessionStore.touch slides the expiry under active use', async () => {
-  let now = 1000;
-  const store = new MemorySessionStore({ ttl: 100, now: () => now });
-  await store.set('tok', { user: 'ada' });
-  now = 1090; // 10ms before expiry
-  await store.touch('tok');
-  now = 1150; // past the ORIGINAL expiry, inside the touched one
-  assert.deepStrictEqual(await store.get('tok'), { user: 'ada' });
-  now = 1250; // past the touched expiry too
-  assert.strictEqual(await store.get('tok'), null);
+describe('MemorySessionStore.touch', () => {
+  it('should slide the expiry under active use', async () => {
+    let now = 1000;
+    const store = new MemorySessionStore({ ttl: 100, now: () => now });
+    await store.set('tok', { user: 'ada' });
+    now = 1090; // 10ms before expiry
+    await store.touch('tok');
+    now = 1150; // past the ORIGINAL expiry, inside the touched one
+    assert.deepStrictEqual(await store.get('tok'), { user: 'ada' });
+    now = 1250; // past the touched expiry too
+    assert.strictEqual(await store.get('tok'), null);
+  });
 });
 
-test('SessionManager.restore touches the store when it can', async () => {
-  const touched = [];
-  const store = {
-    async get() {
-      return { user: 'ada' };
-    },
-    async set() {},
-    async delete() {},
-    async touch(token) {
-      touched.push(token);
-    },
-  };
-  const manager = new SessionManager({ store }, quiet);
-  const session = await manager.restore('tok');
-  assert.strictEqual(session.state.user, 'ada');
-  await settle();
-  assert.deepStrictEqual(touched, ['tok'], 'restore is active use — the TTL must slide');
+describe('SessionManager.restore', () => {
+  it('should touch the store when it can', async () => {
+    const touched = [];
+    const store = {
+      async get() {
+        return { user: 'ada' };
+      },
+      async set() {},
+      async delete() {},
+      async touch(token) {
+        touched.push(token);
+      },
+    };
+    const manager = new SessionManager({ store }, quiet);
+    const session = await manager.restore('tok');
+    assert.strictEqual(session.state.user, 'ada');
+    await settle();
+    assert.deepStrictEqual(touched, ['tok'], 'restore is active use — the TTL must slide');
+  });
 });
 
-test('token transport: the cookie default and the structural check', async (t) => {
-  const { SessionManager, isTokenTransport } = require('../../src/rpc/sessions.js');
-  const quiet = { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} };
+describe('token transport: the cookie default and the structural check', () => {
+  const { isTokenTransport } = require('../../src/rpc/sessions.js');
+  const silent = { error: () => {}, warn: () => {}, info: () => {}, debug: () => {} };
 
-  await t.test('the default transport IS the cookie behaviour, ambient', () => {
-    const manager = new SessionManager({}, quiet);
+  it('should make the default transport the cookie behaviour, ambient', () => {
+    const manager = new SessionManager({}, silent);
     const { transport } = manager;
     assert.strictEqual(transport.ambient, true);
     assert.strictEqual(transport.read({ headers: { cookie: 'token=abc' } }), 'abc');
@@ -419,153 +429,157 @@ test('token transport: the cookie default and the structural check', async (t) =
     assert.strictEqual(transport.clear(), manager.cookieDeleteHeader());
   });
 
-  await t.test('a malformed injection throws loudly at construction', () => {
-    assert.throws(() => new SessionManager({ transport: { read: () => null } }, quiet), /sessions\.transport/);
-    assert.throws(() => new SessionManager({ transport: 'cookie' }, quiet), /sessions\.transport/);
+  it('should throw loudly at construction on a malformed injection', () => {
+    assert.throws(() => new SessionManager({ transport: { read: () => null } }, silent), /sessions\.transport/);
+    assert.throws(() => new SessionManager({ transport: 'cookie' }, silent), /sessions\.transport/);
   });
 
-  await t.test('isTokenTransport is the structural gate', () => {
+  it('should use isTokenTransport as the structural gate', () => {
     assert.strictEqual(isTokenTransport({ read: () => null, write: () => null }), true);
     assert.strictEqual(isTokenTransport({ read: () => null }), false);
     assert.strictEqual(isTokenTransport(null), false);
   });
 });
 
-test('SessionManager: state writes in one turn coalesce into one store.set, and none after end()', async () => {
-  const store = capturingStore();
-  const manager = new SessionManager({ store }, quiet);
-  const session = manager.create('tok', { a: 0 });
-  assert.strictEqual(store.sets.length, 1, 'the initial state is persisted immediately');
-  session.state.a = 1;
-  session.state.b = 2;
-  session.state.c = 3;
-  assert.strictEqual(store.sets.length, 1, 'nothing written synchronously');
-  await settle();
-  assert.strictEqual(store.sets.length, 2, 'three assignments, one write');
-  assert.deepStrictEqual(store.sets[1].data, { a: 1, b: 2, c: 3 });
-  session.state.d = 4;
-  session.end();
-  assert.strictEqual(session.ended, true);
-  await settle();
-  assert.strictEqual(store.sets.length, 2, 'a write queued before end() does not land');
-  session.state.e = 5;
-  await settle();
-  assert.strictEqual(store.sets.length, 2);
-});
-
-test('SessionManager: a write after a logout elsewhere does not resurrect the session — the memory store answers false', async () => {
-  const warned = [];
-  const logger = {
-    log() {},
-    info() {},
-    debug() {},
-    error() {},
-    warn: (entry) => warned.push(entry),
-    child: () => logger,
-  };
-  const store = new MemorySessionStore();
-  const first = new SessionManager({ store }, logger);
-  const second = new SessionManager({ store }, logger);
-  first.create('tok', { userId: 1 });
-  const restored = await second.restore('tok');
-  // A logout lands on the first connection; the second, still holding the
-  // session, writes to it afterwards. The write used to be an unconditional
-  // set that brought the row back, token and all.
-  await first.destroy('tok');
-  restored.state.role = 'admin';
-  await settle();
-  assert.strictEqual(await store.get('tok'), null, 'not resurrected');
-  assert.strictEqual(restored.ended, true, 'the session that lost its row ended');
-  assert.ok(warned.some((entry) => entry.event === 'session.save' && entry.reason === 'gone'));
-  // And nothing more is written for it.
-  restored.state.again = true;
-  await settle();
-  assert.strictEqual(await store.get('tok'), null);
-  // The store's own contract: an update of a missing or expired row is false.
-  assert.strictEqual(await store.set('fresh', { a: 1 }), true);
-  assert.strictEqual(await store.set('fresh', { a: 2 }, { create: false }), true);
-  assert.strictEqual(await store.set('gone', { a: 1 }, { create: false }), false);
-  assert.strictEqual(await store.get('gone'), null);
-});
-
-test('sessions: a logout on one connection ends the session on the others of this instance', async (t) => {
-  const { bearerTransport } = require('../../src/auth/index.js');
-  const { bootServer, connectClient } = require('../helpers/server.js');
-  const router = defineRouter({
-    auth: {
-      login: procedure({
-        access: 'public',
-        handler: async (context) => {
-          context.client.startSession(undefined, { user: 'alice' });
-          return context.session.token;
-        },
-      }),
-      whoami: procedure({ access: 'session', handler: async (context) => context.session.state.user }),
-      logout: procedure({ access: 'session', handler: async (context) => context.client.finalizeSession() }),
-    },
+describe('SessionManager state writes', () => {
+  it('should coalesce the writes of one turn into one store.set, and none after end()', async () => {
+    const store = capturingStore();
+    const manager = new SessionManager({ store }, quiet);
+    const session = manager.create('tok', { a: 0 });
+    assert.strictEqual(store.sets.length, 1, 'the initial state is persisted immediately');
+    session.state.a = 1;
+    session.state.b = 2;
+    session.state.c = 3;
+    assert.strictEqual(store.sets.length, 1, 'nothing written synchronously');
+    await settle();
+    assert.strictEqual(store.sets.length, 2, 'three assignments, one write');
+    assert.deepStrictEqual(store.sets[1].data, { a: 1, b: 2, c: 3 });
+    session.state.d = 4;
+    session.end();
+    assert.strictEqual(session.ended, true);
+    await settle();
+    assert.strictEqual(store.sets.length, 2, 'a write queued before end() does not land');
+    session.state.e = 5;
+    await settle();
+    assert.strictEqual(store.sets.length, 2);
   });
-  const { url } = await bootServer(t, { router, sessions: { transport: bearerTransport() } });
-  const first = await connectClient(t, url);
-  await first.load('auth');
-  const token = await first.api.auth.login();
-  // Two more connections — two tabs — restored from the same bearer token.
-  const tab = async () => {
-    const client = await connectClient(t, url, { headers: { authorization: `Bearer ${token}` } });
-    await client.load('auth');
-    return client;
-  };
-  const a = await tab();
-  const b = await tab();
-  assert.strictEqual(await a.api.auth.whoami(), 'alice');
-  assert.strictEqual(await b.api.auth.whoami(), 'alice');
-  assert.strictEqual(await a.api.auth.logout(), true);
-  // B used to go on answering `alice` until it reconnected.
-  await assert.rejects(b.api.auth.whoami(), (error) => error.code === 403);
-  await assert.rejects(first.api.auth.whoami(), (error) => error.code === 403);
-  // And a fresh connection with the token is refused as before.
-  const late = await tab();
-  await assert.rejects(late.api.auth.whoami(), (error) => error.code === 403);
+
+  it('should not resurrect the session after a logout elsewhere — the memory store answers false', async () => {
+    const warned = [];
+    const logger = {
+      log() {},
+      info() {},
+      debug() {},
+      error() {},
+      warn: (entry) => warned.push(entry),
+      child: () => logger,
+    };
+    const store = new MemorySessionStore();
+    const first = new SessionManager({ store }, logger);
+    const second = new SessionManager({ store }, logger);
+    first.create('tok', { userId: 1 });
+    const restored = await second.restore('tok');
+    // A logout lands on the first connection; the second, still holding the
+    // session, writes to it afterwards. The write used to be an unconditional
+    // set that brought the row back, token and all.
+    await first.destroy('tok');
+    restored.state.role = 'admin';
+    await settle();
+    assert.strictEqual(await store.get('tok'), null, 'not resurrected');
+    assert.strictEqual(restored.ended, true, 'the session that lost its row ended');
+    assert.ok(warned.some((entry) => entry.event === 'session.save' && entry.reason === 'gone'));
+    // And nothing more is written for it.
+    restored.state.again = true;
+    await settle();
+    assert.strictEqual(await store.get('tok'), null);
+    // The store's own contract: an update of a missing or expired row is false.
+    assert.strictEqual(await store.set('fresh', { a: 1 }), true);
+    assert.strictEqual(await store.set('fresh', { a: 2 }, { create: false }), true);
+    assert.strictEqual(await store.set('gone', { a: 1 }, { create: false }), false);
+    assert.strictEqual(await store.get('gone'), null);
+  });
 });
 
-test('a token transport whose read() throws answers 500 and leaves no client behind', async (t) => {
-  const { bootServer } = require('../helpers/server.js');
-  const router = defineRouter({ u: { q: procedure({ access: 'public', handler: async () => 'ok' }) } });
-  const transport = {
-    read: ({ headers }) => {
-      if (headers?.authorization === 'Bearer %%%') throw new Error('malformed token');
-      return null;
-    },
-    write: () => null,
-  };
-  const { server, origin } = await bootServer(t, { router, sessions: { transport } });
-  const call = (authorization) =>
-    fetch(origin + server.rpc.basePath, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json', ...(authorization ? { authorization } : {}) },
-      body: '{"type":"call","id":"1","method":"u/q","args":{}}',
+describe('sessions', () => {
+  it('should end the session on the other connections of this instance on a logout on one', async (t) => {
+    const { bearerTransport } = require('../../src/auth/index.js');
+    const { bootServer, connectClient } = require('../helpers/server.js');
+    const router = defineRouter({
+      auth: {
+        login: procedure({
+          access: 'public',
+          handler: async (context) => {
+            context.client.startSession(undefined, { user: 'alice' });
+            return context.session.token;
+          },
+        }),
+        whoami: procedure({ access: 'session', handler: async (context) => context.session.state.user }),
+        logout: procedure({ access: 'session', handler: async (context) => context.client.finalizeSession() }),
+      },
     });
-  for (let i = 0; i < 5; i++) assert.strictEqual((await call('Bearer %%%')).status, 500);
-  // Each of them used to stay registered for the life of the process.
-  assert.strictEqual(server.rpc.clients.size, 0);
-  assert.strictEqual((await call()).status, 200, 'the server still answers');
-});
+    const { url } = await bootServer(t, { router, sessions: { transport: bearerTransport() } });
+    const first = await connectClient(t, url);
+    await first.load('auth');
+    const token = await first.api.auth.login();
+    // Two more connections — two tabs — restored from the same bearer token.
+    const tab = async () => {
+      const client = await connectClient(t, url, { headers: { authorization: `Bearer ${token}` } });
+      await client.load('auth');
+      return client;
+    };
+    const a = await tab();
+    const b = await tab();
+    assert.strictEqual(await a.api.auth.whoami(), 'alice');
+    assert.strictEqual(await b.api.auth.whoami(), 'alice');
+    assert.strictEqual(await a.api.auth.logout(), true);
+    // B used to go on answering `alice` until it reconnected.
+    await assert.rejects(b.api.auth.whoami(), (error) => error.code === 403);
+    await assert.rejects(first.api.auth.whoami(), (error) => error.code === 403);
+    // And a fresh connection with the token is refused as before.
+    const late = await tab();
+    await assert.rejects(late.api.auth.whoami(), (error) => error.code === 403);
+  });
 
-test('session state: deleting a key is saved, like setting one', async () => {
-  const { createProxy } = require('../../src/rpc/sessions.js');
-  const writes = [];
-  const state = createProxy({ a: 1, b: 2 }, (target) => writes.push(JSON.stringify(target)));
-  delete state.a;
-  assert.deepStrictEqual(writes, ['{"b":2}'], 'the removal reached the store');
-  // Nothing to remove, nothing to save.
-  delete state.never;
-  assert.strictEqual(writes.length, 1);
-  assert.strictEqual('a' in state, false);
+  it("should answer 500 and leave no client behind when a token transport's read() throws", async (t) => {
+    const { bootServer } = require('../helpers/server.js');
+    const router = defineRouter({ u: { q: procedure({ access: 'public', handler: async () => 'ok' }) } });
+    const transport = {
+      read: ({ headers }) => {
+        if (headers?.authorization === 'Bearer %%%') throw new Error('malformed token');
+        return null;
+      },
+      write: () => null,
+    };
+    const { server, origin } = await bootServer(t, { router, sessions: { transport } });
+    const call = (authorization) =>
+      fetch(origin + server.rpc.basePath, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json', ...(authorization ? { authorization } : {}) },
+        body: '{"type":"call","id":"1","method":"u/q","args":{}}',
+      });
+    for (let i = 0; i < 5; i++) assert.strictEqual((await call('Bearer %%%')).status, 500);
+    // Each of them used to stay registered for the life of the process.
+    assert.strictEqual(server.rpc.clients.size, 0);
+    assert.strictEqual((await call()).status, 200, 'the server still answers');
+  });
 
-  const store = new MemorySessionStore();
-  const manager = new SessionManager({ store });
-  const session = manager.create(undefined, { cart: ['x'], user: 'ada' });
-  await settle();
-  delete session.state.cart;
-  await settle();
-  assert.deepStrictEqual(await store.get(session.token), { user: 'ada' });
+  it('should save deleting a session state key, like setting one', async () => {
+    const { createProxy } = require('../../src/rpc/sessions.js');
+    const writes = [];
+    const state = createProxy({ a: 1, b: 2 }, (target) => writes.push(JSON.stringify(target)));
+    delete state.a;
+    assert.deepStrictEqual(writes, ['{"b":2}'], 'the removal reached the store');
+    // Nothing to remove, nothing to save.
+    delete state.never;
+    assert.strictEqual(writes.length, 1);
+    assert.strictEqual('a' in state, false);
+
+    const store = new MemorySessionStore();
+    const manager = new SessionManager({ store });
+    const session = manager.create(undefined, { cart: ['x'], user: 'ada' });
+    await settle();
+    delete session.state.cart;
+    await settle();
+    assert.deepStrictEqual(await store.get(session.token), { user: 'ada' });
+  });
 });

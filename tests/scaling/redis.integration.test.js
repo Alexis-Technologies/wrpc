@@ -13,8 +13,8 @@
 // a machine with no Redis. `ioredis` is a devDependency used only here: the
 // adapters themselves require nothing and duck-type whatever they are handed.
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 
 const { RpcServer, defineRouter, procedure } = require('../../index.js');
 const { createRedisAdapter, createRedisSessionStore } = require('../../src/scaling/index.js');
@@ -40,7 +40,12 @@ if (REDIS_URL) {
   }
 }
 
-const skip = !REDIS_URL ? 'REDIS_URL is not set' : !Redis ? 'ioredis is not installed' : false;
+const skipReason = () => {
+  if (!REDIS_URL) return 'REDIS_URL is not set';
+  if (!Redis) return 'ioredis is not installed';
+  return false;
+};
+const skip = skipReason();
 
 const router = defineRouter({ test: { ping: procedure({ access: 'public', handler: async () => 'pong' }) } });
 
@@ -114,98 +119,100 @@ const attach = (rpc) => {
   return { socket, client };
 };
 
-test('redis backplane: a room event crosses two independent adapters', { skip }, async (t) => {
-  const keyPrefix = prefix();
-  const first = createNode(t, { instanceId: 'node-1', prefix: keyPrefix });
-  const second = createNode(t, { instanceId: 'node-2', prefix: keyPrefix });
+describe('redis backplane', () => {
+  it('should carry a room event across two independent adapters', { skip }, async (t) => {
+    const keyPrefix = prefix();
+    const first = createNode(t, { instanceId: 'node-1', prefix: keyPrefix });
+    const second = createNode(t, { instanceId: 'node-2', prefix: keyPrefix });
 
-  const here = attach(first);
-  const there = attach(second);
-  here.client.join('chat');
-  there.client.join('chat');
-  // SUBSCRIBE is a round trip: publishing before it lands drops the message.
-  await new Promise((resolve) => setTimeout(resolve, 250));
+    const here = attach(first);
+    const there = attach(second);
+    here.client.join('chat');
+    there.client.join('chat');
+    // SUBSCRIBE is a round trip: publishing before it lands drops the message.
+    await new Promise((resolve) => setTimeout(resolve, 250));
 
-  const sent = first.to('chat').emit('message', { text: 'hi' });
-  assert.strictEqual(sent, 1, 'the local count covers this instance only');
-  assert.deepStrictEqual(here.socket.events, [{ type: 'event', name: 'message', data: { text: 'hi' } }]);
+    const sent = first.to('chat').emit('message', { text: 'hi' });
+    assert.strictEqual(sent, 1, 'the local count covers this instance only');
+    assert.deepStrictEqual(here.socket.events, [{ type: 'event', name: 'message', data: { text: 'hi' } }]);
 
-  await waitFor(() => there.socket.events.length === 1, 'the remote instance to deliver the event');
-  assert.deepStrictEqual(there.socket.events, [{ type: 'event', name: 'message', data: { text: 'hi' } }]);
+    await waitFor(() => there.socket.events.length === 1, 'the remote instance to deliver the event');
+    assert.deepStrictEqual(there.socket.events, [{ type: 'event', name: 'message', data: { text: 'hi' } }]);
 
-  // Echo suppression: the publisher's own subscriber sees its message come
-  // back off the wire and must drop it instead of delivering a second copy.
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.strictEqual(here.socket.events.length, 1, 'the publisher sees exactly one copy');
-});
+    // Echo suppression: the publisher's own subscriber sees its message come
+    // back off the wire and must drop it instead of delivering a second copy.
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.strictEqual(here.socket.events.length, 1, 'the publisher sees exactly one copy');
+  });
 
-test('redis backplane: broadcast reaches an instance holding no rooms', { skip }, async (t) => {
-  const keyPrefix = prefix();
-  const first = createNode(t, { instanceId: 'node-1', prefix: keyPrefix });
-  const second = createNode(t, { instanceId: 'node-2', prefix: keyPrefix });
+  it('should reach an instance holding no rooms with a broadcast', { skip }, async (t) => {
+    const keyPrefix = prefix();
+    const first = createNode(t, { instanceId: 'node-1', prefix: keyPrefix });
+    const second = createNode(t, { instanceId: 'node-2', prefix: keyPrefix });
 
-  const there = attach(second);
-  await new Promise((resolve) => setTimeout(resolve, 250));
+    const there = attach(second);
+    await new Promise((resolve) => setTimeout(resolve, 250));
 
-  first.broadcast('announce', { up: true });
-  await waitFor(() => there.socket.events.length === 1, 'the broadcast to cross');
-  assert.deepStrictEqual(there.socket.events, [{ type: 'event', name: 'announce', data: { up: true } }]);
-});
+    first.broadcast('announce', { up: true });
+    await waitFor(() => there.socket.events.length === 1, 'the broadcast to cross');
+    assert.deepStrictEqual(there.socket.events, [{ type: 'event', name: 'announce', data: { up: true } }]);
+  });
 
-test('redis backplane: a prefix isolates two logically separate deployments', { skip }, async (t) => {
-  const first = createNode(t, { instanceId: 'node-1', prefix: prefix() });
-  const second = createNode(t, { instanceId: 'node-2', prefix: prefix() });
+  it('should isolate two logically separate deployments by a prefix', { skip }, async (t) => {
+    const first = createNode(t, { instanceId: 'node-1', prefix: prefix() });
+    const second = createNode(t, { instanceId: 'node-2', prefix: prefix() });
 
-  const here = attach(first);
-  const there = attach(second);
-  here.client.join('chat');
-  there.client.join('chat');
-  await new Promise((resolve) => setTimeout(resolve, 250));
+    const here = attach(first);
+    const there = attach(second);
+    here.client.join('chat');
+    there.client.join('chat');
+    await new Promise((resolve) => setTimeout(resolve, 250));
 
-  first.to('chat').emit('message', 1);
-  await waitFor(() => here.socket.events.length === 1, 'the local delivery');
-  await new Promise((resolve) => setTimeout(resolve, 250));
-  assert.strictEqual(there.socket.events.length, 0, 'a different prefix is a different deployment');
-});
+    first.to('chat').emit('message', 1);
+    await waitFor(() => here.socket.events.length === 1, 'the local delivery');
+    await new Promise((resolve) => setTimeout(resolve, 250));
+    assert.strictEqual(there.socket.events.length, 0, 'a different prefix is a different deployment');
+  });
 
-// The cluster's replay protection leans on what a real broker does to two
-// channels of one publisher: the counter is one per process, a receiver
-// hears `cluster` and its own inbox, and the window has to take whatever
-// order Redis hands the two over in.
-test('redis backplane: a signed cluster converges, and a copied command does not run twice', { skip }, async (t) => {
-  const keyPrefix = prefix();
-  const cluster = { secret: 'integration-secret', presenceInterval: 200 };
-  const first = createNode(t, { instanceId: 'node-1', prefix: keyPrefix, cluster });
-  const second = createNode(t, { instanceId: 'node-2', prefix: keyPrefix, cluster });
-  const tap = new Redis(REDIS_URL, { maxRetriesPerRequest: 1 });
-  const raw = new Redis(REDIS_URL, { maxRetriesPerRequest: 1 });
-  t.after(() => Promise.all([tap.quit(), raw.quit()]));
-  const inbox = `${keyPrefix}:inst:node-2`;
-  const seen = [];
-  tap.on('message', (_channel, message) => seen.push(message));
-  await tap.subscribe(inbox);
+  // The cluster's replay protection leans on what a real broker does to two
+  // channels of one publisher: the counter is one per process, a receiver
+  // hears `cluster` and its own inbox, and the window has to take whatever
+  // order Redis hands the two over in.
+  it('should converge a signed cluster, and not run a copied command twice', { skip }, async (t) => {
+    const keyPrefix = prefix();
+    const cluster = { secret: 'integration-secret', presenceInterval: 200 };
+    const first = createNode(t, { instanceId: 'node-1', prefix: keyPrefix, cluster });
+    const second = createNode(t, { instanceId: 'node-2', prefix: keyPrefix, cluster });
+    const tap = new Redis(REDIS_URL, { maxRetriesPerRequest: 1 });
+    const raw = new Redis(REDIS_URL, { maxRetriesPerRequest: 1 });
+    t.after(() => Promise.all([tap.quit(), raw.quit()]));
+    const inbox = `${keyPrefix}:inst:node-2`;
+    const seen = [];
+    tap.on('message', (_channel, message) => seen.push(message));
+    await tap.subscribe(inbox);
 
-  const there = attach(second);
-  there.client.join('chat');
-  await waitFor(() => first.cluster.count('chat') === 1, 'presence to replicate under the secret');
-  assert.deepStrictEqual(first.cluster.instances().sort(), ['node-1', 'node-2']);
+    const there = attach(second);
+    there.client.join('chat');
+    await waitFor(() => first.cluster.count('chat') === 1, 'presence to replicate under the secret');
+    assert.deepStrictEqual(first.cluster.instances().sort(), ['node-1', 'node-2']);
 
-  assert.strictEqual(first.sendTo(there.client.id, 'chat/dm', { text: 'once' }), true);
-  await waitFor(() => there.socket.events.length === 1, 'the addressed event to cross');
-  const command = seen.find((message) => message.includes('"op":"event"'));
-  assert.ok(command, 'the tap saw the signed command');
-  await raw.publish(inbox, command);
-  await raw.publish(`${keyPrefix}:cluster`, command);
-  await new Promise((resolve) => setTimeout(resolve, 300));
-  assert.strictEqual(there.socket.events.length, 1, 'the copy is refused on its own channel and on the shared one');
-  // Bytes take the same addressed channel, as a binary envelope signed over
-  // its frame — Redis carries the base64 text of it.
-  assert.strictEqual(first.sendTo(there.client.id, 'chat/file', { blob: Uint8Array.of(1, 2, 3) }), true);
-  await waitFor(() => there.socket.events.length === 2, 'the binary envelope to cross');
-  assert.deepStrictEqual([...there.socket.events[1].data.blob], [1, 2, 3]);
-  assert.ok(seen.some((message) => message.startsWith('wrpc-bin:')));
-  // And the cluster is still whole after a few presence ticks of real traffic.
-  assert.deepStrictEqual(second.cluster.instances().sort(), ['node-1', 'node-2']);
+    assert.strictEqual(first.sendTo(there.client.id, 'chat/dm', { text: 'once' }), true);
+    await waitFor(() => there.socket.events.length === 1, 'the addressed event to cross');
+    const command = seen.find((message) => message.includes('"op":"event"'));
+    assert.ok(command, 'the tap saw the signed command');
+    await raw.publish(inbox, command);
+    await raw.publish(`${keyPrefix}:cluster`, command);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    assert.strictEqual(there.socket.events.length, 1, 'the copy is refused on its own channel and on the shared one');
+    // Bytes take the same addressed channel, as a binary envelope signed over
+    // its frame — Redis carries the base64 text of it.
+    assert.strictEqual(first.sendTo(there.client.id, 'chat/file', { blob: Uint8Array.of(1, 2, 3) }), true);
+    await waitFor(() => there.socket.events.length === 2, 'the binary envelope to cross');
+    assert.deepStrictEqual([...there.socket.events[1].data.blob], [1, 2, 3]);
+    assert.ok(seen.some((message) => message.startsWith('wrpc-bin:')));
+    // And the cluster is still whole after a few presence ticks of real traffic.
+    assert.deepStrictEqual(second.cluster.instances().sort(), ['node-1', 'node-2']);
+  });
 });
 
 // ---------------------------------------------------------------------------
@@ -227,10 +234,8 @@ const connect = (t, keyPrefix) => {
   return client;
 };
 
-test(
-  'redis session store: a row expires, slides on touch, is not brought back by an update, and is deleted',
-  { skip },
-  async (t) => {
+describe('redis session store', () => {
+  it('should expire a row, slide it on touch, not bring it back by an update, and delete it', { skip }, async (t) => {
     const keyPrefix = `${prefix()}:session:`;
     const client = connect(t, keyPrefix);
     const store = createRedisSessionStore({ client, prefix: keyPrefix, ttl: 60_000, logger: false });
@@ -259,42 +264,40 @@ test(
     assert.strictEqual(await store.get(TOKEN), null);
     assert.strictEqual(await store.set(TOKEN, STATE, { create: false }), false);
     assert.strictEqual(await client.exists(key), 0, 'the deleted session stayed deleted');
-  },
-);
-
-test('sealed session store on redis: neither the token nor the state rests in Redis', { skip }, async (t) => {
-  const keyPrefix = `${prefix()}:sealed:`;
-  const client = connect(t, keyPrefix);
-  const inner = createRedisSessionStore({ client, prefix: keyPrefix, ttl: 60_000, logger: false });
-  const store = sealedStore(inner, { keys: generateKey(), logger: false });
-
-  await store.set(TOKEN, STATE);
-  assert.deepStrictEqual(await store.get(TOKEN), STATE);
-
-  const keys = await client.keys(`${keyPrefix}*`);
-  assert.strictEqual(keys.length, 1, 'one row per token');
-  assert.ok(!keys[0].includes(TOKEN), 'the bearer token is not the row key');
-  const raw = await client.get(keys[0]);
-  assert.ok(!raw.includes('ada@example.com') && !raw.includes(TOKEN), 'the state is not readable at rest');
-  const row = JSON.parse(raw);
-  assert.deepStrictEqual(Object.keys(row).sort(), ['kid', 's', 'v']);
-  assert.strictEqual(row.v, 1);
-  assert.ok((await client.pttl(keys[0])) > 50_000, 'the sealed row expires like any other');
-
-  // Sliding expiry reaches the sealed row through its derived key.
-  await client.pexpire(keys[0], 1000);
-  await store.touch(TOKEN);
-  assert.ok((await client.pttl(keys[0])) > 50_000);
-
-  await store.delete(TOKEN);
-  assert.strictEqual(await store.get(TOKEN), null);
-  assert.deepStrictEqual(await client.keys(`${keyPrefix}*`), []);
+  });
 });
 
-test(
-  'sealed session store on redis: a key rotation moves the row on its next read and signs nobody out',
-  { skip },
-  async (t) => {
+describe('sealed session store on redis', () => {
+  it('should rest neither the token nor the state in Redis', { skip }, async (t) => {
+    const keyPrefix = `${prefix()}:sealed:`;
+    const client = connect(t, keyPrefix);
+    const inner = createRedisSessionStore({ client, prefix: keyPrefix, ttl: 60_000, logger: false });
+    const store = sealedStore(inner, { keys: generateKey(), logger: false });
+
+    await store.set(TOKEN, STATE);
+    assert.deepStrictEqual(await store.get(TOKEN), STATE);
+
+    const keys = await client.keys(`${keyPrefix}*`);
+    assert.strictEqual(keys.length, 1, 'one row per token');
+    assert.ok(!keys[0].includes(TOKEN), 'the bearer token is not the row key');
+    const raw = await client.get(keys[0]);
+    assert.ok(!raw.includes('ada@example.com') && !raw.includes(TOKEN), 'the state is not readable at rest');
+    const row = JSON.parse(raw);
+    assert.deepStrictEqual(Object.keys(row).sort(), ['kid', 's', 'v']);
+    assert.strictEqual(row.v, 1);
+    assert.ok((await client.pttl(keys[0])) > 50_000, 'the sealed row expires like any other');
+
+    // Sliding expiry reaches the sealed row through its derived key.
+    await client.pexpire(keys[0], 1000);
+    await store.touch(TOKEN);
+    assert.ok((await client.pttl(keys[0])) > 50_000);
+
+    await store.delete(TOKEN);
+    assert.strictEqual(await store.get(TOKEN), null);
+    assert.deepStrictEqual(await client.keys(`${keyPrefix}*`), []);
+  });
+
+  it('should move the row on its next read after a key rotation and sign nobody out', { skip }, async (t) => {
     const keyPrefix = `${prefix()}:rotate:`;
     const client = connect(t, keyPrefix);
     const inner = createRedisSessionStore({ client, prefix: keyPrefix, ttl: 60_000, logger: false });
@@ -319,5 +322,5 @@ test(
     await before.set(TOKEN, STATE); // an instance still on the old ring writes
     await after.delete(TOKEN);
     assert.deepStrictEqual(await client.keys(`${keyPrefix}*`), []);
-  },
-);
+  });
+});

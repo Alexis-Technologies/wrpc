@@ -1,7 +1,7 @@
 'use strict';
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 const timers = require('node:timers/promises');
 
 const { defineRouter, procedure } = require('../../index.js');
@@ -58,55 +58,57 @@ const assertBytes = (received) => {
   assert.strictEqual(received.nested.parts[1], 'text');
 };
 
-test('backplane bytes: an event whose data holds bytes reaches the members on another instance as bytes', async (t) => {
-  const { a, heard, published } = await pair(t);
-  a.server.rpc.to('lobby').emit('chat/file', event);
-  assertBytes(await heard);
-  const wire = published.find((m) => m.channel.includes('lobby'));
-  assert.ok(wire.message.startsWith(BINARY_PREFIX));
-});
-
-test('backplane bytes: under compression the binary envelope rides beside the compressed ones', async (t) => {
-  const { a, client, heard, published } = await pair(t, { compression: { threshold: 0 } });
-  const texts = [];
-  client.api.chat.on('note', (data) => texts.push(data));
-  a.server.rpc.to('lobby').emit('chat/note', { text: 'plain json' });
-  a.server.rpc.to('lobby').emit('chat/file', event);
-  assertBytes(await heard);
-  await waitFor(() => texts.length === 1);
-  assert.deepStrictEqual(
-    published.filter((m) => m.channel.includes('lobby')).map((m) => m.message.split(':')[0]),
-    ['wrpc-enc', 'wrpc-bin'],
-  );
-});
-
-test('backplane bytes: sealed — what a relay would carry for an end-to-end payload is ciphertext on Redis too', async (t) => {
-  for (const compression of [false, { threshold: 0 }]) {
-    const { a, heard, published } = await pair(t, { encryption: { keys: generateKey() }, compression });
+describe('backplane bytes', () => {
+  it('should deliver an event whose data holds bytes to the members on another instance as bytes', async (t) => {
+    const { a, heard, published } = await pair(t);
     a.server.rpc.to('lobby').emit('chat/file', event);
     assertBytes(await heard);
     const wire = published.find((m) => m.channel.includes('lobby'));
-    assert.ok(wire.message.startsWith('wrpc-sealed:0:'));
-    assert.ok(!wire.message.includes('wrpc-bin'));
-  }
-});
+    assert.ok(wire.message.startsWith(BINARY_PREFIX));
+  });
 
-test('backplane bytes: a malformed binary envelope is dropped; a registry wired without the envelope names the loss', async () => {
-  const warnings = [];
-  const log = { warn: (entry) => warnings.push(entry), error() {}, info() {}, debug() {}, child: () => log };
-  const envelope = createEnvelope({ maxMessage: 1 << 20, name: 'x', layer: 'rooms', event: 'backplane', log });
-  assert.strictEqual(envelope.decode(`${BINARY_PREFIX}AAAA`, 'ch'), null);
-  assert.strictEqual(envelope.decode(`${BINARY_PREFIX}!!!`, 'ch'), null);
-  const round = envelope.decode(envelope.encodeBytes({ v: 1, name: 'x', data: { blob } }, 'ch'), 'ch');
-  assert.deepStrictEqual(Buffer.from(round.data.blob), Buffer.from(blob));
-  // By hand, without what the core injects
-  const backplane = new MemoryBackplane({ logger: false });
-  const published = spied(backplane);
-  const binder = new RoomsBackplane({ backplane, instance: 'i1', log, deliver() {} });
-  binder.publish({ rooms: ['lobby'], name: 'chat/file', data: event, binary: true });
-  assert.deepStrictEqual(warnings, [{ event: 'backplane.bytes', name: 'chat/file' }]);
-  assert.strictEqual(published.length, 0);
-  await backplane.close();
+  it('should carry the binary envelope beside the compressed ones under compression', async (t) => {
+    const { a, client, heard, published } = await pair(t, { compression: { threshold: 0 } });
+    const texts = [];
+    client.api.chat.on('note', (data) => texts.push(data));
+    a.server.rpc.to('lobby').emit('chat/note', { text: 'plain json' });
+    a.server.rpc.to('lobby').emit('chat/file', event);
+    assertBytes(await heard);
+    await waitFor(() => texts.length === 1);
+    assert.deepStrictEqual(
+      published.filter((m) => m.channel.includes('lobby')).map((m) => m.message.split(':')[0]),
+      ['wrpc-enc', 'wrpc-bin'],
+    );
+  });
+
+  it('should put ciphertext on Redis too when sealed — what a relay would carry for an end-to-end payload', async (t) => {
+    for (const compression of [false, { threshold: 0 }]) {
+      const { a, heard, published } = await pair(t, { encryption: { keys: generateKey() }, compression });
+      a.server.rpc.to('lobby').emit('chat/file', event);
+      assertBytes(await heard);
+      const wire = published.find((m) => m.channel.includes('lobby'));
+      assert.ok(wire.message.startsWith('wrpc-sealed:0:'));
+      assert.ok(!wire.message.includes('wrpc-bin'));
+    }
+  });
+
+  it('should drop a malformed binary envelope; a registry wired without the envelope names the loss', async () => {
+    const warnings = [];
+    const log = { warn: (entry) => warnings.push(entry), error() {}, info() {}, debug() {}, child: () => log };
+    const envelope = createEnvelope({ maxMessage: 1 << 20, name: 'x', layer: 'rooms', event: 'backplane', log });
+    assert.strictEqual(envelope.decode(`${BINARY_PREFIX}AAAA`, 'ch'), null);
+    assert.strictEqual(envelope.decode(`${BINARY_PREFIX}!!!`, 'ch'), null);
+    const round = envelope.decode(envelope.encodeBytes({ v: 1, name: 'x', data: { blob } }, 'ch'), 'ch');
+    assert.deepStrictEqual(Buffer.from(round.data.blob), Buffer.from(blob));
+    // By hand, without what the core injects
+    const backplane = new MemoryBackplane({ logger: false });
+    const published = spied(backplane);
+    const binder = new RoomsBackplane({ backplane, instance: 'i1', log, deliver() {} });
+    binder.publish({ rooms: ['lobby'], name: 'chat/file', data: event, binary: true });
+    assert.deepStrictEqual(warnings, [{ event: 'backplane.bytes', name: 'chat/file' }]);
+    assert.strictEqual(published.length, 0);
+    await backplane.close();
+  });
 });
 
 // --- the cluster's own channels ---------------------------------------------
@@ -116,40 +118,45 @@ test('backplane bytes: a malformed binary envelope is dropped; a registry wired 
 
 const SECRET = 'a cluster secret';
 
-for (const [label, cluster, prefix] of [
-  ['plain', {}, 'wrpc-bin:'],
-  ['signed', { secret: SECRET }, 'wrpc-bin:'],
-  ['sealed', { encryption: { keys: generateKey() } }, 'wrpc-sealed:0:'],
-  [
-    'signed, compressed and sealed',
-    { secret: SECRET, compression: { threshold: 0 }, encryption: { keys: generateKey() } },
-    'wrpc-sealed:0:',
-  ],
-]) {
-  test(`cluster bytes (${label}): sendTo reaches a client on another instance as bytes`, async (t) => {
-    const { a, client, heard, published } = await pair(t, {}, cluster);
-    const id = await client.api.chat.whoami({});
-    published.length = 0;
-    assert.strictEqual(a.server.rpc.sendTo(id, 'chat/file', event), true);
-    assertBytes(await heard);
-    const wire = published.filter((m) => m.channel.startsWith('inst:'));
-    assert.strictEqual(wire.length, 1, 'one publish, on the instance the id names');
-    assert.ok(wire[0].message.startsWith(prefix), wire[0].message.slice(0, 16));
-    // Bounded by a room the client is in — and by one it is not.
-    const again = new Promise((resolve) => client.api.chat.on('file', resolve));
-    assert.strictEqual(a.server.rpc.sendTo(id, 'chat/file', { ...event, from: 'grace' }, { room: 'elsewhere' }), true);
-    assert.strictEqual(a.server.rpc.sendTo(id, 'chat/file', event, { room: 'lobby' }), true);
-    assertBytes(await again);
-  });
-}
+describe('cluster bytes', () => {
+  for (const [label, cluster, prefix] of [
+    ['plain', {}, 'wrpc-bin:'],
+    ['signed', { secret: SECRET }, 'wrpc-bin:'],
+    ['sealed', { encryption: { keys: generateKey() } }, 'wrpc-sealed:0:'],
+    [
+      'signed, compressed and sealed',
+      { secret: SECRET, compression: { threshold: 0 }, encryption: { keys: generateKey() } },
+      'wrpc-sealed:0:',
+    ],
+  ]) {
+    it(`should reach a client on another instance as bytes through sendTo (${label})`, async (t) => {
+      const { a, client, heard, published } = await pair(t, {}, cluster);
+      const id = await client.api.chat.whoami({});
+      published.length = 0;
+      assert.strictEqual(a.server.rpc.sendTo(id, 'chat/file', event), true);
+      assertBytes(await heard);
+      const wire = published.filter((m) => m.channel.startsWith('inst:'));
+      assert.strictEqual(wire.length, 1, 'one publish, on the instance the id names');
+      assert.ok(wire[0].message.startsWith(prefix), wire[0].message.slice(0, 16));
+      // Bounded by a room the client is in — and by one it is not.
+      const again = new Promise((resolve) => client.api.chat.on('file', resolve));
+      assert.strictEqual(
+        a.server.rpc.sendTo(id, 'chat/file', { ...event, from: 'grace' }, { room: 'elsewhere' }),
+        true,
+      );
+      assert.strictEqual(a.server.rpc.sendTo(id, 'chat/file', event, { room: 'lobby' }), true);
+      assertBytes(await again);
+    });
+  }
 
-test('cluster bytes: the answers to a broadcast ask come back from another instance as bytes', async (t) => {
-  const { a, client } = await pair(t, {}, { secret: SECRET });
-  client.respond('chat/thumb', async ({ size }) => ({ thumb: new Uint8Array(size).fill(7) }));
-  const result = await a.server.rpc.to('lobby').ask('chat/thumb', { size: 3 }, { timeout: 2_000 });
-  assert.deepStrictEqual(result.errors, []);
-  assert.strictEqual(result.incomplete, false);
-  assert.strictEqual(result.answers.length, 1);
-  assert.ok(result.answers[0].thumb instanceof Uint8Array, 'not the {"0":7,…} object JSON would make of them');
-  assert.deepStrictEqual([...result.answers[0].thumb], [7, 7, 7]);
+  it('should bring the answers to a broadcast ask back from another instance as bytes', async (t) => {
+    const { a, client } = await pair(t, {}, { secret: SECRET });
+    client.respond('chat/thumb', async ({ size }) => ({ thumb: new Uint8Array(size).fill(7) }));
+    const result = await a.server.rpc.to('lobby').ask('chat/thumb', { size: 3 }, { timeout: 2_000 });
+    assert.deepStrictEqual(result.errors, []);
+    assert.strictEqual(result.incomplete, false);
+    assert.strictEqual(result.answers.length, 1);
+    assert.ok(result.answers[0].thumb instanceof Uint8Array, 'not the {"0":7,…} object JSON would make of them');
+    assert.deepStrictEqual([...result.answers[0].thumb], [7, 7, 7]);
+  });
 });

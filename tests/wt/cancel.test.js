@@ -8,8 +8,8 @@
 // the 499 the caller sees) survives the wt framing too.
 
 const timers = require('node:timers/promises');
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 
 const { defineRouter, procedure } = require('../../index.js');
 const { acceptSessions } = require('../../src/webtransport/index.js');
@@ -37,28 +37,30 @@ const routerFor = (state) =>
     },
   });
 
-test('cancellation over WebTransport: an AbortSignal takes a call back', async (t) => {
-  const state = { started: 0, aborted: 0, finished: 0, lastSignal: null };
-  const { server, url } = await bootServer(t, { router: routerFor(state) });
-  const world = createFakeWt();
-  const acceptor = acceptSessions(server, world.sessions);
-  t.after(() => acceptor.stop());
-  const client = await connectClient(t, url, { transport: 'wt', wt: { WebTransport: world.WebTransport } });
-  await client.load('slow');
+describe('cancellation over WebTransport', () => {
+  it('should take a call back with an AbortSignal', async (t) => {
+    const state = { started: 0, aborted: 0, finished: 0, lastSignal: null };
+    const { server, url } = await bootServer(t, { router: routerFor(state) });
+    const world = createFakeWt();
+    const acceptor = acceptSessions(server, world.sessions);
+    t.after(() => acceptor.stop());
+    const client = await connectClient(t, url, { transport: 'wt', wt: { WebTransport: world.WebTransport } });
+    await client.load('slow');
 
-  const controller = new AbortController();
-  const pending = client.api.slow.wait({}, { signal: controller.signal });
-  await waitFor(() => state.started === 1, 'the handler never started');
-  controller.abort();
-  const error = await pending.then(
-    () => null,
-    (failure) => failure,
-  );
-  assert.strictEqual(error.code, 499);
-  assert.match(error.message, /Cancelled/);
-  await waitFor(() => state.aborted === 1, 'ctx.signal never reached the handler');
-  assert.strictEqual(state.lastSignal.aborted, true);
-  assert.strictEqual(state.finished, 0, 'the handler stopped instead of running to completion');
-  const [serverClient] = server.rpc.clients;
-  await waitFor(() => serverClient.calls.size === 0, 'the cancelled call was never released');
+    const controller = new AbortController();
+    const pending = client.api.slow.wait({}, { signal: controller.signal });
+    await waitFor(() => state.started === 1, 'the handler never started');
+    controller.abort();
+    const error = await pending.then(
+      () => null,
+      (failure) => failure,
+    );
+    assert.strictEqual(error.code, 499);
+    assert.match(error.message, /Cancelled/);
+    await waitFor(() => state.aborted === 1, 'ctx.signal never reached the handler');
+    assert.strictEqual(state.lastSignal.aborted, true);
+    assert.strictEqual(state.finished, 0, 'the handler stopped instead of running to completion');
+    const [serverClient] = server.rpc.clients;
+    await waitFor(() => serverClient.calls.size === 0, 'the cancelled call was never released');
+  });
 });

@@ -5,8 +5,8 @@
 // side — a channel it no longer holds, a replay it cannot honour, a POST it
 // refuses — which the end-to-end suite cannot make it give on demand.
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 
 const { ClientSseTransport, CHANNEL_HEADER } = require('../../src/sse/index.js');
 const { waitFor } = require('../helpers/wait.js');
@@ -57,81 +57,6 @@ const listen = (transport) => {
 
 const CALL = JSON.stringify({ type: 'call', id: 'c1', method: 'data/echo', args: {} });
 
-test('sse client: a channel the server no longer holds is forgotten, and a fresh one opened', async () => {
-  const first = eventStream();
-  const second = eventStream();
-  const { fetch, requests } = scripted([first.response, new Response('gone', { status: 409 }), second.response]);
-  const transport = new ClientSseTransport('http://h/api');
-  const seen = listen(transport);
-  const opening = transport.open({ fetch });
-  first.ready('ch-1.secret');
-  await opening;
-  first.push('id: 7\ndata: {"type":"event","name":"data/tick","data":1}\n\n');
-  await waitFor(() => seen.messages.length === 1, 'the event arrived');
-  // The stream dies; the transport remembers its channel and where it stopped.
-  first.end();
-  await waitFor(() => seen.closes === 1, 'the stream closed');
-
-  const reopening = transport.open({ fetch });
-  await waitFor(() => requests.length === 3, 'a 409 was answered with a second attempt');
-  second.ready('ch-2.secret');
-  await reopening;
-  assert.strictEqual(requests[1].headers[CHANNEL_HEADER], 'ch-1.secret', 'the re-attach presents the channel');
-  assert.strictEqual(requests[1].headers['last-event-id'], '7', '…and where it stopped');
-  assert.strictEqual(requests[2].headers[CHANNEL_HEADER], undefined, 'the fresh open presents nothing');
-  assert.strictEqual(requests[2].headers['last-event-id'], undefined);
-  assert.ok(transport.active);
-  transport.close();
-});
-
-test('sse client: a 409 with no channel to forget is a refused stream, not a loop', async () => {
-  const { fetch, requests } = scripted([new Response('no', { status: 409 })]);
-  const transport = new ClientSseTransport('http://h/api');
-  await assert.rejects(transport.open({ fetch }), /SSE stream refused with 409/);
-  assert.strictEqual(requests.length, 1);
-  assert.strictEqual(transport.active, false);
-});
-
-test('sse client: a second 409 in a row is the refusal — one retry, never two', async () => {
-  const first = eventStream();
-  const gone = () => new Response('gone', { status: 409 });
-  const { fetch, requests } = scripted([first.response, gone, gone]);
-  const transport = new ClientSseTransport('http://h/api');
-  const seen = listen(transport);
-  const opening = transport.open({ fetch });
-  first.ready('ch-1.secret');
-  await opening;
-  first.end();
-  await waitFor(() => seen.closes === 1);
-  await assert.rejects(transport.open({ fetch }), /SSE stream refused with 409/);
-  assert.strictEqual(requests.length, 3);
-});
-
-test('sse client: a gap frame is event loss — said, and the channel is dropped with its position', async () => {
-  const first = eventStream();
-  const second = eventStream();
-  const { fetch, requests } = scripted([first.response, second.response]);
-  const transport = new ClientSseTransport('http://h/api');
-  const log = recorder();
-  transport.log = log;
-  const seen = listen(transport);
-  const opening = transport.open({ fetch });
-  first.ready('ch-1.secret');
-  await opening;
-  first.push('id: 3\ndata: {"type":"event","name":"data/tick","data":1}\n\n');
-  first.push('event: gap\ndata: {}\n\n');
-  await waitFor(() => seen.closes === 1, 'the transport closed on the gap');
-  assert.deepStrictEqual(log.lines, [{ event: 'sse.gap' }]);
-  assert.strictEqual(transport.active, false);
-
-  const reopening = transport.open({ fetch });
-  second.ready('ch-2.secret');
-  await reopening;
-  assert.strictEqual(requests[1].headers[CHANNEL_HEADER], undefined, 'nothing of the lost channel is presented');
-  assert.strictEqual(requests[1].headers['last-event-id'], undefined);
-  transport.close();
-});
-
 const opened = async (script) => {
   const stream = eventStream();
   const { fetch, requests } = scripted([stream.response, ...script]);
@@ -143,96 +68,173 @@ const opened = async (script) => {
   return { transport, seen, requests, stream };
 };
 
-test('sse client: a POST answered 202 says nothing; one answered 200 with a body is a message', async () => {
-  const answer = JSON.stringify({ type: 'callback', id: 'c1', result: 1 });
-  const { transport, seen, requests } = await opened([
-    new Response(null, { status: 202 }),
-    new Response(answer, { status: 200 }),
-    new Response('', { status: 200 }),
-  ]);
-  transport.write(CALL);
-  await waitFor(() => requests.length === 2);
-  assert.strictEqual(requests[1].method, 'POST');
-  assert.strictEqual(requests[1].headers[CHANNEL_HEADER], 'ch-1.secret');
-  transport.write(CALL);
-  await waitFor(() => seen.messages.length === 1, 'the body came through');
-  assert.deepStrictEqual(seen.messages, [answer]);
-  transport.write(CALL);
-  await waitFor(() => requests.length === 4);
-  assert.deepStrictEqual(seen.messages, [answer], 'an empty 200 is nothing');
-  assert.deepStrictEqual(seen.errors, []);
-  transport.close();
-});
+describe('sse client transport', () => {
+  it('should forget a channel the server no longer holds, and open a fresh one', async () => {
+    const first = eventStream();
+    const second = eventStream();
+    const { fetch, requests } = scripted([first.response, new Response('gone', { status: 409 }), second.response]);
+    const transport = new ClientSseTransport('http://h/api');
+    const seen = listen(transport);
+    const opening = transport.open({ fetch });
+    first.ready('ch-1.secret');
+    await opening;
+    first.push('id: 7\ndata: {"type":"event","name":"data/tick","data":1}\n\n');
+    await waitFor(() => seen.messages.length === 1, 'the event arrived');
+    // The stream dies; the transport remembers its channel and where it stopped.
+    first.end();
+    await waitFor(() => seen.closes === 1, 'the stream closed');
 
-test('sse client: a POST answered 409 is a channel that died — the transport closes', async () => {
-  const { transport, seen } = await opened([new Response('gone', { status: 409 })]);
-  transport.write(CALL);
-  await waitFor(() => seen.closes === 1, 'the orphaned stream was closed');
-  assert.strictEqual(transport.active, false);
-  assert.deepStrictEqual(seen.errors, [], 'a dead channel is a reconnect, not an error');
-  assert.deepStrictEqual(seen.messages, [], 'and the close settles what was in flight, not a made-up answer');
-});
-
-test('sse client: a refused POST fails the calls it carried at once, with its status', async () => {
-  const { transport, seen } = await opened([new Response('too many', { status: 429 })]);
-  const batch = JSON.stringify([
-    { type: 'call', id: 'a', method: 'data/echo', args: {} },
-    { type: 'event', name: 'data/note', data: 1 },
-    { type: 'call', id: 'b', method: 'data/echo', args: {} },
-  ]);
-  transport.write(batch);
-  await waitFor(() => seen.messages.length === 1, 'the calls were answered');
-  assert.deepStrictEqual(seen.errors, ['SSE post failed with 429: too many']);
-  assert.deepStrictEqual(JSON.parse(seen.messages[0]), [
-    { type: 'callback', id: 'a', error: { message: 'HTTP request failed (429)', code: 429 } },
-    { type: 'callback', id: 'b', error: { message: 'HTTP request failed (429)', code: 429 } },
-  ]);
-  assert.ok(transport.active, 'the channel itself is still there');
-  transport.close();
-});
-
-test('sse client: a POST that never reached the server fails its calls as unavailable', async () => {
-  const { transport, seen } = await opened([
-    () => {
-      throw new TypeError('fetch failed');
-    },
-  ]);
-  transport.write(CALL);
-  await waitFor(() => seen.messages.length === 1);
-  assert.deepStrictEqual(seen.errors, ['fetch failed']);
-  assert.deepStrictEqual(JSON.parse(seen.messages[0]), {
-    type: 'callback',
-    id: 'c1',
-    error: { message: 'HTTP request failed (503)', code: 503 },
+    const reopening = transport.open({ fetch });
+    await waitFor(() => requests.length === 3, 'a 409 was answered with a second attempt');
+    second.ready('ch-2.secret');
+    await reopening;
+    assert.strictEqual(requests[1].headers[CHANNEL_HEADER], 'ch-1.secret', 'the re-attach presents the channel');
+    assert.strictEqual(requests[1].headers['last-event-id'], '7', '…and where it stopped');
+    assert.strictEqual(requests[2].headers[CHANNEL_HEADER], undefined, 'the fresh open presents nothing');
+    assert.strictEqual(requests[2].headers['last-event-id'], undefined);
+    assert.ok(transport.active);
+    transport.close();
   });
-  transport.close();
-});
 
-test('sse client: a stream that ends, or answers without a body, before ready never opened', async () => {
-  const ended = eventStream();
-  const first = scripted([ended.response]);
-  const transport = new ClientSseTransport('http://h/api');
-  const opening = transport.open({ fetch: first.fetch });
-  ended.end();
-  await assert.rejects(opening, /SSE stream ended before ready/);
-  assert.strictEqual(transport.active, false);
+  it('should treat a 409 with no channel to forget as a refused stream, not a loop', async () => {
+    const { fetch, requests } = scripted([new Response('no', { status: 409 })]);
+    const transport = new ClientSseTransport('http://h/api');
+    await assert.rejects(transport.open({ fetch }), /SSE stream refused with 409/);
+    assert.strictEqual(requests.length, 1);
+    assert.strictEqual(transport.active, false);
+  });
 
-  const second = scripted([new Response(null, { status: 200 })]);
-  await assert.rejects(
-    new ClientSseTransport('http://h/api').open({ fetch: second.fetch }),
-    /SSE stream refused with 200/,
-  );
-  const third = scripted([new Response('down', { status: 503 })]);
-  await assert.rejects(
-    new ClientSseTransport('http://h/api').open({ fetch: third.fetch }),
-    /SSE stream refused with 503/,
-  );
-});
+  it('should take a second 409 in a row as the refusal — one retry, never two', async () => {
+    const first = eventStream();
+    const gone = () => new Response('gone', { status: 409 });
+    const { fetch, requests } = scripted([first.response, gone, gone]);
+    const transport = new ClientSseTransport('http://h/api');
+    const seen = listen(transport);
+    const opening = transport.open({ fetch });
+    first.ready('ch-1.secret');
+    await opening;
+    first.end();
+    await waitFor(() => seen.closes === 1);
+    await assert.rejects(transport.open({ fetch }), /SSE stream refused with 409/);
+    assert.strictEqual(requests.length, 3);
+  });
 
-test('sse client: write() before a channel, and bytes on a text carrier, are refused where they are made', async () => {
-  const transport = new ClientSseTransport('http://h/api');
-  assert.throws(() => transport.write(CALL), /Not connected/);
-  const { transport: live } = await opened([]);
-  assert.throws(() => live.write(new Uint8Array(4)), /SSE carries text only/);
-  live.close();
+  it('should treat a gap frame as event loss — said, and the channel is dropped with its position', async () => {
+    const first = eventStream();
+    const second = eventStream();
+    const { fetch, requests } = scripted([first.response, second.response]);
+    const transport = new ClientSseTransport('http://h/api');
+    const log = recorder();
+    transport.log = log;
+    const seen = listen(transport);
+    const opening = transport.open({ fetch });
+    first.ready('ch-1.secret');
+    await opening;
+    first.push('id: 3\ndata: {"type":"event","name":"data/tick","data":1}\n\n');
+    first.push('event: gap\ndata: {}\n\n');
+    await waitFor(() => seen.closes === 1, 'the transport closed on the gap');
+    assert.deepStrictEqual(log.lines, [{ event: 'sse.gap' }]);
+    assert.strictEqual(transport.active, false);
+
+    const reopening = transport.open({ fetch });
+    second.ready('ch-2.secret');
+    await reopening;
+    assert.strictEqual(requests[1].headers[CHANNEL_HEADER], undefined, 'nothing of the lost channel is presented');
+    assert.strictEqual(requests[1].headers['last-event-id'], undefined);
+    transport.close();
+  });
+
+  it('should say nothing for a POST answered 202, and take one answered 200 with a body as a message', async () => {
+    const answer = JSON.stringify({ type: 'callback', id: 'c1', result: 1 });
+    const { transport, seen, requests } = await opened([
+      new Response(null, { status: 202 }),
+      new Response(answer, { status: 200 }),
+      new Response('', { status: 200 }),
+    ]);
+    transport.write(CALL);
+    await waitFor(() => requests.length === 2);
+    assert.strictEqual(requests[1].method, 'POST');
+    assert.strictEqual(requests[1].headers[CHANNEL_HEADER], 'ch-1.secret');
+    transport.write(CALL);
+    await waitFor(() => seen.messages.length === 1, 'the body came through');
+    assert.deepStrictEqual(seen.messages, [answer]);
+    transport.write(CALL);
+    await waitFor(() => requests.length === 4);
+    assert.deepStrictEqual(seen.messages, [answer], 'an empty 200 is nothing');
+    assert.deepStrictEqual(seen.errors, []);
+    transport.close();
+  });
+
+  it('should close the transport on a POST answered 409 — a channel that died', async () => {
+    const { transport, seen } = await opened([new Response('gone', { status: 409 })]);
+    transport.write(CALL);
+    await waitFor(() => seen.closes === 1, 'the orphaned stream was closed');
+    assert.strictEqual(transport.active, false);
+    assert.deepStrictEqual(seen.errors, [], 'a dead channel is a reconnect, not an error');
+    assert.deepStrictEqual(seen.messages, [], 'and the close settles what was in flight, not a made-up answer');
+  });
+
+  it('should fail the calls a refused POST carried at once, with its status', async () => {
+    const { transport, seen } = await opened([new Response('too many', { status: 429 })]);
+    const batch = JSON.stringify([
+      { type: 'call', id: 'a', method: 'data/echo', args: {} },
+      { type: 'event', name: 'data/note', data: 1 },
+      { type: 'call', id: 'b', method: 'data/echo', args: {} },
+    ]);
+    transport.write(batch);
+    await waitFor(() => seen.messages.length === 1, 'the calls were answered');
+    assert.deepStrictEqual(seen.errors, ['SSE post failed with 429: too many']);
+    assert.deepStrictEqual(JSON.parse(seen.messages[0]), [
+      { type: 'callback', id: 'a', error: { message: 'HTTP request failed (429)', code: 429 } },
+      { type: 'callback', id: 'b', error: { message: 'HTTP request failed (429)', code: 429 } },
+    ]);
+    assert.ok(transport.active, 'the channel itself is still there');
+    transport.close();
+  });
+
+  it('should fail the calls of a POST that never reached the server as unavailable', async () => {
+    const { transport, seen } = await opened([
+      () => {
+        throw new TypeError('fetch failed');
+      },
+    ]);
+    transport.write(CALL);
+    await waitFor(() => seen.messages.length === 1);
+    assert.deepStrictEqual(seen.errors, ['fetch failed']);
+    assert.deepStrictEqual(JSON.parse(seen.messages[0]), {
+      type: 'callback',
+      id: 'c1',
+      error: { message: 'HTTP request failed (503)', code: 503 },
+    });
+    transport.close();
+  });
+
+  it('should treat a stream that ends, or answers without a body, before ready as never opened', async () => {
+    const ended = eventStream();
+    const first = scripted([ended.response]);
+    const transport = new ClientSseTransport('http://h/api');
+    const opening = transport.open({ fetch: first.fetch });
+    ended.end();
+    await assert.rejects(opening, /SSE stream ended before ready/);
+    assert.strictEqual(transport.active, false);
+
+    const second = scripted([new Response(null, { status: 200 })]);
+    await assert.rejects(
+      new ClientSseTransport('http://h/api').open({ fetch: second.fetch }),
+      /SSE stream refused with 200/,
+    );
+    const third = scripted([new Response('down', { status: 503 })]);
+    await assert.rejects(
+      new ClientSseTransport('http://h/api').open({ fetch: third.fetch }),
+      /SSE stream refused with 503/,
+    );
+  });
+
+  it('should refuse write() before a channel, and bytes on a text carrier, where they are made', async () => {
+    const transport = new ClientSseTransport('http://h/api');
+    assert.throws(() => transport.write(CALL), /Not connected/);
+    const { transport: live } = await opened([]);
+    assert.throws(() => live.write(new Uint8Array(4)), /SSE carries text only/);
+    live.close();
+  });
 });

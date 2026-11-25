@@ -6,8 +6,8 @@
 // telemetry hooks a host-built client uses (spanKind/spanAttributes,
 // withMessagingSpan, the broker instruments).
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 
 const otelApi = require('@opentelemetry/api');
 const { W3CTraceContextPropagator } = require('@opentelemetry/core');
@@ -80,257 +80,265 @@ const call = async (client, transport, router, method) => {
   return transport.sent[before];
 };
 
-test('attach: a vouched-for session is in place before the onConnect hooks', async () => {
-  const seen = [];
-  const rpc = new RpcServer({ router: routerOf(seen), logger: quiet, sse: false });
-  const transport = new CaptureTransport();
-  const session = { token: 'svc', state: { service: 'billing' } };
-  const client = rpc.attach(transport, { session });
-  await client.ready;
-  assert.deepStrictEqual(seen, [{ service: 'billing' }]);
-  const answer = await call(client, transport, rpc.router, 'acct/whoami');
-  assert.deepStrictEqual(answer.result, { session: { service: 'billing' } });
-  await rpc.close();
-});
-
-test('attach: a request restores a real session through the token carrier', async () => {
-  const seen = [];
-  const rpc = new RpcServer({
-    router: routerOf(seen),
-    logger: quiet,
-    sse: false,
-    sessions: { transport: bearerTransport() },
+describe('attach', () => {
+  it('should have a vouched-for session in place before the onConnect hooks', async () => {
+    const seen = [];
+    const rpc = new RpcServer({ router: routerOf(seen), logger: quiet, sse: false });
+    const transport = new CaptureTransport();
+    const session = { token: 'svc', state: { service: 'billing' } };
+    const client = rpc.attach(transport, { session });
+    await client.ready;
+    assert.deepStrictEqual(seen, [{ service: 'billing' }]);
+    const answer = await call(client, transport, rpc.router, 'acct/whoami');
+    assert.deepStrictEqual(answer.result, { session: { service: 'billing' } });
+    await rpc.close();
   });
-  const created = rpc.sessions.create(undefined, { user: 'ada' });
-  await new Promise((resolve) => setTimeout(resolve, 5));
-  const transport = new CaptureTransport();
-  const client = rpc.attach(transport, {
-    request: { headers: { authorization: `Bearer ${created.token}`, 'x-tenant': 't1' }, url: '/q?x=1' },
+
+  it('should restore a real session for a request through the token carrier', async () => {
+    const seen = [];
+    const rpc = new RpcServer({
+      router: routerOf(seen),
+      logger: quiet,
+      sse: false,
+      sessions: { transport: bearerTransport() },
+    });
+    const created = rpc.sessions.create(undefined, { user: 'ada' });
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    const transport = new CaptureTransport();
+    const client = rpc.attach(transport, {
+      request: { headers: { authorization: `Bearer ${created.token}`, 'x-tenant': 't1' }, url: '/q?x=1' },
+    });
+    await client.ready;
+    assert.deepStrictEqual(seen, [{ user: 'ada' }]);
+    assert.strictEqual(client.meta.headers['x-tenant'], 't1');
+    const answer = await call(client, transport, rpc.router, 'acct/whoami');
+    assert.deepStrictEqual(answer.result, { session: { user: 'ada' } });
+
+    // No token: anonymous, and a session procedure answers 403.
+    const anonymousTransport = new CaptureTransport();
+    const anonymous = rpc.attach(anonymousTransport, { request: {} });
+    await anonymous.ready;
+    const refused = await call(anonymous, anonymousTransport, rpc.router, 'acct/whoami');
+    assert.strictEqual(refused.error.code, 403);
+    await rpc.close();
   });
-  await client.ready;
-  assert.deepStrictEqual(seen, [{ user: 'ada' }]);
-  assert.strictEqual(client.meta.headers['x-tenant'], 't1');
-  const answer = await call(client, transport, rpc.router, 'acct/whoami');
-  assert.deepStrictEqual(answer.result, { session: { user: 'ada' } });
 
-  // No token: anonymous, and a session procedure answers 403.
-  const anonymousTransport = new CaptureTransport();
-  const anonymous = rpc.attach(anonymousTransport, { request: {} });
-  await anonymous.ready;
-  const refused = await call(anonymous, anonymousTransport, rpc.router, 'acct/whoami');
-  assert.strictEqual(refused.error.code, 403);
-  await rpc.close();
-});
-
-test('attach: identity options are validated', () => {
-  const rpc = new RpcServer({ router: routerOf([]), logger: quiet, sse: false });
-  const transport = new CaptureTransport();
-  assert.throws(() => rpc.attach(transport, { session: 'token' }), /session must be an object/);
-  assert.throws(() => rpc.attach(transport, { session: [] }), /session must be an object/);
-  assert.throws(() => rpc.attach(transport, { session: {}, request: {} }), /mutually exclusive/);
-  assert.throws(() => rpc.attach(transport, { request: 'GET /' }), /request must be an object/);
-  assert.throws(() => rpc.attach(transport, { meta: 'x-tenant: t1' }), /meta must be an object/);
-  assert.throws(() => rpc.attach(transport, { meta: [] }), /meta must be an object/);
-  void rpc.close();
-});
-
-test('attach: a meta written by hand is normalized like every other entry point’s', async (t) => {
-  const rpc = new RpcServer({ router: routerOf([]), logger: quiet, sse: false });
-  t.after(() => rpc.close());
-  // Only what the application observed: headers, as a plain object.
-  const headers = { 'x-tenant': 't1' };
-  const partial = rpc.attach(new CaptureTransport(), { meta: { headers } });
-  assert.ok(Object.isFrozen(partial.meta));
-  assert.ok(Object.isFrozen(partial.meta.headers));
-  assert.strictEqual(Object.getPrototypeOf(partial.meta.headers), null, 'a null-prototype bag, as on ws and http');
-  assert.notStrictEqual(partial.meta.headers, headers, 'a copy: the caller’s object is not what the client holds');
-  assert.deepStrictEqual({ ...partial.meta.headers }, { 'x-tenant': 't1' });
-  assert.deepStrictEqual(
-    [
-      { ...partial.meta.data },
-      partial.meta.declared,
-      partial.meta.url,
-      partial.meta.remoteAddress,
-      partial.meta.protocol,
-    ],
-    [{}, [], '', '', ''],
-  );
-  // A full meta — what attachChannel builds — reads the same after it.
-  const full = rpc.attach(new CaptureTransport(), {
-    meta: { headers, data: { device: 'tv' }, url: '/x?y=1', remoteAddress: '10.0.0.7', protocol: 'p', declared: [] },
+  it('should validate the identity options', () => {
+    const rpc = new RpcServer({ router: routerOf([]), logger: quiet, sse: false });
+    const transport = new CaptureTransport();
+    assert.throws(() => rpc.attach(transport, { session: 'token' }), /session must be an object/);
+    assert.throws(() => rpc.attach(transport, { session: [] }), /session must be an object/);
+    assert.throws(() => rpc.attach(transport, { session: {}, request: {} }), /mutually exclusive/);
+    assert.throws(() => rpc.attach(transport, { request: 'GET /' }), /request must be an object/);
+    assert.throws(() => rpc.attach(transport, { meta: 'x-tenant: t1' }), /meta must be an object/);
+    assert.throws(() => rpc.attach(transport, { meta: [] }), /meta must be an object/);
+    void rpc.close();
   });
-  assert.deepStrictEqual(
-    [{ ...full.meta.headers }, full.meta.data, full.meta.url, full.meta.remoteAddress, full.meta.protocol],
-    [{ 'x-tenant': 't1' }, { device: 'tv' }, '/x?y=1', '10.0.0.7', 'p'],
-  );
-  // An explicit meta wins over the one a request would give; the request
-  // still restores the session.
-  const both = rpc.attach(new CaptureTransport(), {
-    meta: { headers: { 'x-observed': '1' } },
-    request: { headers: { 'x-declared': '1' }, url: '/q' },
+
+  it('should normalize a meta written by hand like every other entry point’s', async (t) => {
+    const rpc = new RpcServer({ router: routerOf([]), logger: quiet, sse: false });
+    t.after(() => rpc.close());
+    // Only what the application observed: headers, as a plain object.
+    const headers = { 'x-tenant': 't1' };
+    const partial = rpc.attach(new CaptureTransport(), { meta: { headers } });
+    assert.ok(Object.isFrozen(partial.meta));
+    assert.ok(Object.isFrozen(partial.meta.headers));
+    assert.strictEqual(Object.getPrototypeOf(partial.meta.headers), null, 'a null-prototype bag, as on ws and http');
+    assert.notStrictEqual(partial.meta.headers, headers, 'a copy: the caller’s object is not what the client holds');
+    assert.deepStrictEqual({ ...partial.meta.headers }, { 'x-tenant': 't1' });
+    assert.deepStrictEqual(
+      [
+        { ...partial.meta.data },
+        partial.meta.declared,
+        partial.meta.url,
+        partial.meta.remoteAddress,
+        partial.meta.protocol,
+      ],
+      [{}, [], '', '', ''],
+    );
+    // A full meta — what attachChannel builds — reads the same after it.
+    const full = rpc.attach(new CaptureTransport(), {
+      meta: { headers, data: { device: 'tv' }, url: '/x?y=1', remoteAddress: '10.0.0.7', protocol: 'p', declared: [] },
+    });
+    assert.deepStrictEqual(
+      [{ ...full.meta.headers }, full.meta.data, full.meta.url, full.meta.remoteAddress, full.meta.protocol],
+      [{ 'x-tenant': 't1' }, { device: 'tv' }, '/x?y=1', '10.0.0.7', 'p'],
+    );
+    // An explicit meta wins over the one a request would give; the request
+    // still restores the session.
+    const both = rpc.attach(new CaptureTransport(), {
+      meta: { headers: { 'x-observed': '1' } },
+      request: { headers: { 'x-declared': '1' }, url: '/q' },
+    });
+    await both.ready;
+    assert.deepStrictEqual({ ...both.meta.headers }, { 'x-observed': '1' });
+    // No meta, no request: the empty meta.
+    const bare = rpc.attach(new CaptureTransport());
+    assert.deepStrictEqual([{ ...bare.meta.headers }, bare.meta.url], [{}, '']);
   });
-  await both.ready;
-  assert.deepStrictEqual({ ...both.meta.headers }, { 'x-observed': '1' });
-  // No meta, no request: the empty meta.
-  const bare = rpc.attach(new CaptureTransport());
-  assert.deepStrictEqual([{ ...bare.meta.headers }, bare.meta.url], [{}, '']);
 });
 
-test("drain: 'draining' is announced once, only when draining actually starts", async () => {
-  const rpc = new RpcServer({ router: routerOf([]), logger: quiet, sse: false });
-  let announced = 0;
-  rpc.on('draining', () => announced++);
-  await rpc.drain();
-  assert.strictEqual(announced, 0, 'a no-op drain announces nothing');
-  await rpc.drain(10);
-  await rpc.drain(10);
-  assert.strictEqual(announced, 1);
-  assert.strictEqual(rpc.draining, true);
-  await rpc.close();
+describe('drain', () => {
+  it("should announce 'draining' once, only when draining actually starts", async () => {
+    const rpc = new RpcServer({ router: routerOf([]), logger: quiet, sse: false });
+    let announced = 0;
+    rpc.on('draining', () => announced++);
+    await rpc.drain();
+    assert.strictEqual(announced, 0, 'a no-op drain announces nothing');
+    await rpc.drain(10);
+    await rpc.drain(10);
+    assert.strictEqual(announced, 1);
+    assert.strictEqual(rpc.draining, true);
+    await rpc.close();
+  });
 });
 
-const createTracing = () => {
-  const exporter = new InMemorySpanExporter();
-  const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
-  return { tracer: provider.getTracer(SCOPE_NAME), spans: () => exporter.getFinishedSpans() };
-};
-
-test('telemetry: a host-built client chooses its span kind and adds attributes', async () => {
-  const { tracer, spans } = createTracing();
-  const otel = createServerTelemetry({ tracer });
-  const client = {
-    source: 'broker',
-    persistent: true,
-    transportKind: 'broker',
-    spanKind: SPAN_KIND_CONSUMER,
-    spanAttributes: { 'messaging.system': 'memory', 'messaging.destination.name': 'orders' },
+describe('telemetry', () => {
+  const createTracing = () => {
+    const exporter = new InMemorySpanExporter();
+    const provider = new BasicTracerProvider({ spanProcessors: [new SimpleSpanProcessor(exporter)] });
+    return { tracer: provider.getTracer(SCOPE_NAME), spans: () => exporter.getFinishedSpans() };
   };
-  otel.withSpan({ client, packet: { type: 'call', id: 'p' }, target: 'billing/charge' }, (handle) =>
-    otel.endSpan(handle),
-  );
-  // An explicit kind still wins over the client's.
-  otel.withSpan({ client, packet: { type: 'event' }, target: 'a/b', kind: 2 }, (handle) => otel.endSpan(handle));
-  const [consumed, explicit] = spans();
-  assert.strictEqual(consumed.kind, otelApi.SpanKind.CONSUMER);
-  assert.strictEqual(consumed.attributes['messaging.system'], 'memory');
-  assert.strictEqual(consumed.attributes['messaging.destination.name'], 'orders');
-  assert.strictEqual(explicit.kind, otelApi.SpanKind.CLIENT);
-});
 
-test('telemetry: a messaging span is active for inject and parents on a carrier', async (t) => {
-  const manager = new AsyncLocalStorageContextManager().enable();
-  otelApi.context.setGlobalContextManager(manager);
-  otelApi.propagation.setGlobalPropagator(new W3CTraceContextPropagator());
-  t.after(() => {
-    otelApi.context.disable();
-    otelApi.propagation.disable();
+  it('should let a host-built client choose its span kind and add attributes', async () => {
+    const { tracer, spans } = createTracing();
+    const otel = createServerTelemetry({ tracer });
+    const client = {
+      source: 'broker',
+      persistent: true,
+      transportKind: 'broker',
+      spanKind: SPAN_KIND_CONSUMER,
+      spanAttributes: { 'messaging.system': 'memory', 'messaging.destination.name': 'orders' },
+    };
+    otel.withSpan({ client, packet: { type: 'call', id: 'p' }, target: 'billing/charge' }, (handle) =>
+      otel.endSpan(handle),
+    );
+    // An explicit kind still wins over the client's.
+    otel.withSpan({ client, packet: { type: 'event' }, target: 'a/b', kind: 2 }, (handle) => otel.endSpan(handle));
+    const [consumed, explicit] = spans();
+    assert.strictEqual(consumed.kind, otelApi.SpanKind.CONSUMER);
+    assert.strictEqual(consumed.attributes['messaging.system'], 'memory');
+    assert.strictEqual(consumed.attributes['messaging.destination.name'], 'orders');
+    assert.strictEqual(explicit.kind, otelApi.SpanKind.CLIENT);
   });
-  const { tracer, spans } = createTracing();
-  const otel = createServerTelemetry({ tracer, propagation: otelApi.propagation, context: otelApi.context });
-  const headers = {};
-  otel.withMessagingSpan({ name: 'orders publish', kind: SPAN_KIND_PRODUCER, attributes: { a: 1 } }, (handle) => {
-    otel.inject(headers);
-    otel.endSpan(handle);
+
+  it('should make a messaging span active for inject, and parent on a carrier', async (t) => {
+    const manager = new AsyncLocalStorageContextManager().enable();
+    otelApi.context.setGlobalContextManager(manager);
+    otelApi.propagation.setGlobalPropagator(new W3CTraceContextPropagator());
+    t.after(() => {
+      otelApi.context.disable();
+      otelApi.propagation.disable();
+    });
+    const { tracer, spans } = createTracing();
+    const otel = createServerTelemetry({ tracer, propagation: otelApi.propagation, context: otelApi.context });
+    const headers = {};
+    otel.withMessagingSpan({ name: 'orders publish', kind: SPAN_KIND_PRODUCER, attributes: { a: 1 } }, (handle) => {
+      otel.inject(headers);
+      otel.endSpan(handle);
+    });
+    assert.match(headers.tp, /^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
+    otel.withMessagingSpan({ name: 'orders process', kind: SPAN_KIND_CONSUMER, carrier: headers }, (handle) =>
+      otel.endSpan(handle),
+    );
+    const [produced, consumed] = spans();
+    assert.strictEqual(produced.kind, otelApi.SpanKind.PRODUCER);
+    assert.strictEqual(consumed.parentSpanContext?.spanId ?? consumed.parentSpanId, produced.spanContext().spanId);
+    assert.strictEqual(consumed.spanContext().traceId, produced.spanContext().traceId);
+
+    // Without a tracer the callback still runs, with a null-span handle.
+    const meterOnly = createServerTelemetry({ meter: new MeterProvider().getMeter(SCOPE_NAME) });
+    assert.strictEqual(
+      meterOnly.withMessagingSpan({ name: 'x' }, (handle) => handle.span),
+      null,
+    );
   });
-  assert.match(headers.tp, /^00-[0-9a-f]{32}-[0-9a-f]{16}-0[01]$/);
-  otel.withMessagingSpan({ name: 'orders process', kind: SPAN_KIND_CONSUMER, carrier: headers }, (handle) =>
-    otel.endSpan(handle),
-  );
-  const [produced, consumed] = spans();
-  assert.strictEqual(produced.kind, otelApi.SpanKind.PRODUCER);
-  assert.strictEqual(consumed.parentSpanContext?.spanId ?? consumed.parentSpanId, produced.spanContext().spanId);
-  assert.strictEqual(consumed.spanContext().traceId, produced.spanContext().traceId);
 
-  // Without a tracer the callback still runs, with a null-span handle.
-  const meterOnly = createServerTelemetry({ meter: new MeterProvider().getMeter(SCOPE_NAME) });
-  assert.strictEqual(
-    meterOnly.withMessagingSpan({ name: 'x' }, (handle) => handle.span),
-    null,
-  );
-});
+  it('should count the broker instruments by system and outcome', async () => {
+    const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
+    const reader = new PeriodicExportingMetricReader({ exporter, exportIntervalMillis: 3_600_000 });
+    const provider = new MeterProvider({ readers: [reader] });
+    const otel = createServerTelemetry({ meter: provider.getMeter(SCOPE_NAME) });
+    otel.recordBrokerDelivery('memory', 'ack');
+    otel.recordBrokerDelivery('memory', 'ack');
+    otel.recordBrokerDelivery('memory', 'dead');
+    otel.recordBrokerPublish('memory', 'ok');
+    await reader.forceFlush();
+    const metrics = exporter.getMetrics().flatMap((batch) => batch.scopeMetrics.flatMap((scope) => scope.metrics));
+    const find = (name) => metrics.find((metric) => metric.descriptor.name === name);
+    const deliveries = find('wrpc.broker.deliveries').dataPoints;
+    const ack = deliveries.find((point) => point.attributes['wrpc.broker.outcome'] === 'ack');
+    assert.strictEqual(ack.value, 2);
+    assert.strictEqual(ack.attributes['messaging.system'], 'memory');
+    assert.strictEqual(find('wrpc.broker.published').dataPoints[0].value, 1);
+  });
 
-test('telemetry: broker instruments count by system and outcome', async () => {
-  const exporter = new InMemoryMetricExporter(AggregationTemporality.CUMULATIVE);
-  const reader = new PeriodicExportingMetricReader({ exporter, exportIntervalMillis: 3_600_000 });
-  const provider = new MeterProvider({ readers: [reader] });
-  const otel = createServerTelemetry({ meter: provider.getMeter(SCOPE_NAME) });
-  otel.recordBrokerDelivery('memory', 'ack');
-  otel.recordBrokerDelivery('memory', 'ack');
-  otel.recordBrokerDelivery('memory', 'dead');
-  otel.recordBrokerPublish('memory', 'ok');
-  await reader.forceFlush();
-  const metrics = exporter.getMetrics().flatMap((batch) => batch.scopeMetrics.flatMap((scope) => scope.metrics));
-  const find = (name) => metrics.find((metric) => metric.descriptor.name === name);
-  const deliveries = find('wrpc.broker.deliveries').dataPoints;
-  const ack = deliveries.find((point) => point.attributes['wrpc.broker.outcome'] === 'ack');
-  assert.strictEqual(ack.value, 2);
-  assert.strictEqual(ack.attributes['messaging.system'], 'memory');
-  assert.strictEqual(find('wrpc.broker.published').dataPoints[0].value, 1);
-});
-
-test('telemetry: the disabled writer answers the broker members', async () => {
-  assert.strictEqual(
-    DISABLED.withMessagingSpan({}, (handle) => handle),
-    null,
-  );
-  assert.doesNotThrow(() => DISABLED.recordBrokerDelivery('x', 'ack'));
-  assert.doesNotThrow(() => DISABLED.recordBrokerPublish('x', 'ok'));
-  // A broken meter degrades to no instruments rather than throwing.
-  const broken = createServerTelemetry({
-    meter: {
-      createCounter: () => {
-        throw new Error('meter exploded');
+  it('should answer the broker members from the disabled writer', async () => {
+    assert.strictEqual(
+      DISABLED.withMessagingSpan({}, (handle) => handle),
+      null,
+    );
+    assert.doesNotThrow(() => DISABLED.recordBrokerDelivery('x', 'ack'));
+    assert.doesNotThrow(() => DISABLED.recordBrokerPublish('x', 'ok'));
+    // A broken meter degrades to no instruments rather than throwing.
+    const broken = createServerTelemetry({
+      meter: {
+        createCounter: () => {
+          throw new Error('meter exploded');
+        },
+        createHistogram: () => ({ record() {} }),
       },
-      createHistogram: () => ({ record() {} }),
-    },
+    });
+    assert.doesNotThrow(() => broken.recordBrokerDelivery('x', 'ack'));
   });
-  assert.doesNotThrow(() => broken.recordBrokerDelivery('x', 'ack'));
 });
 
-test('attach: the transport contract is checked whole — write, send, error, close, on, once, off', () => {
-  const rpc = new RpcServer({ router: routerOf([]), logger: quiet, sse: false });
-  // What the dispatcher calls on the first packet that needs it: refused
-  // here instead, and named.
-  const bare = { write() {}, close() {}, on() {}, once() {}, off() {}, connection: true };
-  assert.throws(() => rpc.attach(bare), /write\/send\/error\/close\/on\/once\/off/);
-  assert.throws(() => rpc.attach(bare, { persistent: false }), /write\/send\/error\/close\/on\/once\/off/);
-  const noOff = { ...bare, send() {}, error() {}, off: undefined };
-  assert.throws(() => rpc.attach(noOff), TypeError);
-  // Persistent needs `connection`; a request carrier does not.
-  const whole = { ...bare, send() {}, error() {}, connection: null };
-  assert.throws(() => rpc.attach(whole), /connection set/);
-  const attached = rpc.attach({ ...whole }, { persistent: false });
-  assert.strictEqual(attached.persistent, false);
-  void rpc.close();
-});
+describe('attach: the transport', () => {
+  it('should check the transport contract whole — write, send, error, close, on, once, off', () => {
+    const rpc = new RpcServer({ router: routerOf([]), logger: quiet, sse: false });
+    // What the dispatcher calls on the first packet that needs it: refused
+    // here instead, and named.
+    const bare = { write() {}, close() {}, on() {}, once() {}, off() {}, connection: true };
+    assert.throws(() => rpc.attach(bare), /write\/send\/error\/close\/on\/once\/off/);
+    assert.throws(() => rpc.attach(bare, { persistent: false }), /write\/send\/error\/close\/on\/once\/off/);
+    const noOff = { ...bare, send() {}, error() {}, off: undefined };
+    assert.throws(() => rpc.attach(noOff), TypeError);
+    // Persistent needs `connection`; a request carrier does not.
+    const whole = { ...bare, send() {}, error() {}, connection: null };
+    assert.throws(() => rpc.attach(whole), /connection set/);
+    const attached = rpc.attach({ ...whole }, { persistent: false });
+    assert.strictEqual(attached.persistent, false);
+    void rpc.close();
+  });
 
-test('attach: what a packet or chunk handler throws is contained, never an unhandled rejection', async (t) => {
-  const unhandled = [];
-  const onUnhandled = (reason) => unhandled.push(reason);
-  process.on('unhandledRejection', onUnhandled);
-  t.after(() => process.off('unhandledRejection', onUnhandled));
-  const warned = [];
-  const logger = { ...quiet, warn: (entry) => warned.push(entry), child: () => logger };
-  const rpc = new RpcServer({ router: routerOf([]), logger, sse: false });
-  t.after(() => rpc.close());
-  // A transport whose error() and send() throw: the 400 for a chunk of a
-  // stream the client never opened used to reject handleBinary with
-  // nobody to catch it; a pong that could not be sent used to reject the
-  // transport's emit().
-  class Throwing extends CaptureTransport {
-    error() {
-      throw new Error('error() broke');
+  it('should contain what a packet or chunk handler throws, never an unhandled rejection', async (t) => {
+    const unhandled = [];
+    const onUnhandled = (reason) => unhandled.push(reason);
+    process.on('unhandledRejection', onUnhandled);
+    t.after(() => process.off('unhandledRejection', onUnhandled));
+    const warned = [];
+    const logger = { ...quiet, warn: (entry) => warned.push(entry), child: () => logger };
+    const rpc = new RpcServer({ router: routerOf([]), logger, sse: false });
+    t.after(() => rpc.close());
+    // A transport whose error() and send() throw: the 400 for a chunk of a
+    // stream the client never opened used to reject handleBinary with
+    // nobody to catch it; a pong that could not be sent used to reject the
+    // transport's emit().
+    class Throwing extends CaptureTransport {
+      error() {
+        throw new Error('error() broke');
+      }
+      send() {
+        throw new Error('send() broke');
+      }
     }
-    send() {
-      throw new Error('send() broke');
-    }
-  }
-  const transport = new Throwing();
-  rpc.attach(transport);
-  const { chunkEncode } = require('../../src/chunks.js');
-  await transport.emit('chunk', chunkEncode('never-opened', new Uint8Array([1])));
-  await transport.emit('packet', '{"type":"ping"}');
-  await new Promise((resolve) => setTimeout(resolve, 20));
-  assert.deepStrictEqual(unhandled, []);
-  assert.ok(warned.length >= 2, `contained and logged: ${warned.length}`);
+    const transport = new Throwing();
+    rpc.attach(transport);
+    const { chunkEncode } = require('../../src/chunks.js');
+    await transport.emit('chunk', chunkEncode('never-opened', new Uint8Array([1])));
+    await transport.emit('packet', '{"type":"ping"}');
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    assert.deepStrictEqual(unhandled, []);
+    assert.ok(warned.length >= 2, `contained and logged: ${warned.length}`);
+  });
 });

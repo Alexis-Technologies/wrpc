@@ -13,7 +13,8 @@
 // Passing a bare createEngine function keeps the hosted (node http server)
 // harness, which is what a hosted engine wants.
 
-const assert = require('node:assert');
+const { it } = require('node:test');
+const assert = require('node:assert/strict');
 const http = require('node:http');
 
 const { ProtocolClient } = require('../websocket/protocolClient.js');
@@ -55,22 +56,22 @@ const openPeer = (port) =>
     peer.on('close', () => reject(new Error('handshake rejected')));
   });
 
-// `t` is a node:test context; `harness` is either a createEngine function
-// (hosted) or a full harness object.
-const runEngineContract = async (harness, t) => {
+// Registers the contract's cases in the caller's `describe`; `harness` is
+// either a createEngine function (hosted) or a full harness object.
+const runEngineContract = (harness) => {
   const { createEngine, boot: bootEngine } = typeof harness === 'function' ? hostedHarness(harness) : harness;
 
-  // `sub` is the subtest context: teardown is registered as an after-hook
-  // so a failing assertion cannot leave a listening engine behind and wedge
-  // the whole run (a standalone engine holds a native listen socket).
-  const boot = async (sub, attachOptions) => {
+  // `t` is the case's context: teardown is registered as an after-hook so a
+  // failing assertion cannot leave a listening engine behind and wedge the
+  // whole run (a standalone engine holds a native listen socket).
+  const boot = async (t, attachOptions) => {
     const engine = createEngine();
     const booted = await bootEngine(engine, attachOptions);
-    sub.after(() => booted.teardown());
+    t.after(() => booted.teardown());
     return { engine, ...booted };
   };
 
-  await t.test('engine shape: name, capabilities, attach, close', async () => {
+  it('should have the engine shape: name, capabilities, attach, close', async () => {
     const engine = createEngine();
     assert.strictEqual(typeof engine.name, 'string');
     assert.strictEqual(typeof engine.attach, 'function');
@@ -84,8 +85,8 @@ const runEngineContract = async (harness, t) => {
     engine.close(); // an engine that owns native resources must not be leaked
   });
 
-  await t.test('connection event delivers a WrpcSocket and the upgrade request', async (sub) => {
-    const { source, port } = await boot(sub);
+  it('should deliver a WrpcSocket and the upgrade request on the connection event', async (t) => {
+    const { source, port } = await boot(t);
     const connected = new Promise((resolve) => source.once('connection', (socket, req) => resolve({ socket, req })));
     const peer = await openPeer(port);
     const { socket, req } = await connected;
@@ -101,8 +102,8 @@ const runEngineContract = async (harness, t) => {
     peer.close();
   });
 
-  await t.test('echo: text and binary round-trip, send returns a boolean', async (sub) => {
-    const { source, port } = await boot(sub);
+  it('should round-trip text and binary on echo, send returning a boolean', async (t) => {
+    const { source, port } = await boot(t);
     source.on('connection', (socket) => {
       socket.on('message', (data, isBinary) => {
         const accepted = isBinary ? socket.send(Buffer.from(data)) : socket.send(data.toString());
@@ -127,11 +128,11 @@ const runEngineContract = async (harness, t) => {
     peer.close();
   });
 
-  await t.test('message payloads survive the callback that delivered them', async (sub) => {
+  it('should keep message payloads past the callback that delivered them', async (t) => {
     // Engines that expose their receive buffer (or a neutered ArrayBuffer,
     // as uws does) must copy before handing the payload to the RPC core,
     // which consumes stream chunks asynchronously.
-    const { source, port } = await boot(sub);
+    const { source, port } = await boot(t);
     const retained = new Promise((resolve) => {
       source.once('connection', (socket) => {
         socket.on('message', (data) => {
@@ -146,8 +147,8 @@ const runEngineContract = async (harness, t) => {
     peer.close();
   });
 
-  await t.test('close(code, reason) reaches the peer', async (sub) => {
-    const { source, port } = await boot(sub);
+  it('should bring close(code, reason) to the peer', async (t) => {
+    const { source, port } = await boot(t);
     source.on('connection', (socket) => socket.close(4001, 'contract bye'));
     // The close frame may arrive in the same TCP segment as the 101
     // response — the listener must be attached before the handshake
@@ -159,8 +160,8 @@ const runEngineContract = async (harness, t) => {
     assert.strictEqual(closed.reason.toString(), 'contract bye');
   });
 
-  await t.test('terminate() drops the peer without a close frame', async (sub) => {
-    const { source, port } = await boot(sub);
+  it('should drop the peer without a close frame on terminate()', async (t) => {
+    const { source, port } = await boot(t);
     source.on('connection', (socket) => socket.terminate());
     // Not openPeer: a fast engine can terminate before the peer finished
     // processing the 101, and waiting for 'open' would race that.
@@ -168,8 +169,8 @@ const runEngineContract = async (harness, t) => {
     await new Promise((resolve) => peer.socket.once('close', resolve));
   });
 
-  await t.test('peer close surfaces as a close event with code and reason', async (sub) => {
-    const { source, port } = await boot(sub);
+  it('should surface a peer close as a close event with code and reason', async (t) => {
+    const { source, port } = await boot(t);
     const socketClosed = new Promise((resolve) => {
       source.once('connection', (socket) => {
         socket.on('close', (code, reason) => resolve({ code, reason }));
@@ -182,8 +183,8 @@ const runEngineContract = async (harness, t) => {
     assert.strictEqual(String(reason), 'peer leaving');
   });
 
-  await t.test('a closed socket reports no buffer and refuses sends', async (sub) => {
-    const { source, port } = await boot(sub);
+  it('should report no buffer and refuse sends on a closed socket', async (t) => {
+    const { source, port } = await boot(t);
     const gone = new Promise((resolve) => {
       source.once('connection', (socket) => {
         socket.on('close', () => resolve(socket));
@@ -199,8 +200,8 @@ const runEngineContract = async (harness, t) => {
     socket.terminate();
   });
 
-  await t.test('verifyClient rejection blocks the upgrade', async (sub) => {
-    const { port } = await boot(sub, { verifyClient: () => false });
+  it('should block the upgrade on a verifyClient rejection', async (t) => {
+    const { port } = await boot(t, { verifyClient: () => false });
     const res = await ProtocolClient.attemptHandshake({
       host: '127.0.0.1',
       port,
@@ -216,8 +217,8 @@ const runEngineContract = async (harness, t) => {
     assert.strictEqual(parseInt(res.statusLine.split(' ')[1], 10), 403);
   });
 
-  await t.test('subprotocol negotiation echoes the selected protocol', async (sub) => {
-    const { source, port } = await boot(sub, { protocols: ['wrpc'] });
+  it('should echo the selected protocol on subprotocol negotiation', async (t) => {
+    const { source, port } = await boot(t, { protocols: ['wrpc'] });
     const connected = new Promise((resolve) => source.once('connection', resolve));
     const res = await ProtocolClient.attemptHandshake({
       host: '127.0.0.1',
@@ -238,7 +239,7 @@ const runEngineContract = async (harness, t) => {
     assert.strictEqual(socket.protocol, 'wrpc');
   });
 
-  await t.test('carrier tokens are hidden from handleProtocols and never echoed', async (sub) => {
+  it('should hide carrier tokens from handleProtocols and never echo them', async (t) => {
     // wrpc.h./wrpc.m./wrpc.bearer. offers are DATA riding the header: every
     // engine drops them from the offer an application selects from, and
     // refuses to reflect one into the response.
@@ -247,7 +248,7 @@ const runEngineContract = async (harness, t) => {
       seen = offered;
       return req.headers['sec-websocket-protocol'].includes('reflect') ? 'wrpc.bearer.secret' : offered.at(-1);
     };
-    const { port } = await boot(sub, { handleProtocols });
+    const { port } = await boot(t, { handleProtocols });
     const handshake = (offer) =>
       ProtocolClient.attemptHandshake({
         host: '127.0.0.1',
@@ -271,11 +272,11 @@ const runEngineContract = async (harness, t) => {
     assert.strictEqual(reflected.headers['sec-websocket-protocol'], undefined);
   });
 
-  await t.test('with no app configuration the newest wrpc revision offered is selected', async (sub) => {
+  it('should select the newest wrpc revision offered with no app configuration', async (t) => {
     // A 2.x client offers both revisions and a 1.0 client `wrpc.v1` alone:
     // every engine answers the newest one it was offered, wherever it sits
     // in the list, and nothing when no revision was offered at all.
-    const { source, port } = await boot(sub);
+    const { source, port } = await boot(t);
     // The selection is load-bearing on the socket too: the core reads
     // `socket.protocol` for the revision (a missing one is revision 1).
     const sockets = [];
@@ -308,14 +309,14 @@ const runEngineContract = async (harness, t) => {
     assert.strictEqual(await selected('chat'), undefined);
   });
 
-  await t.test('sendPrepared (when present) delivers one shared message to two peers like send(text)', async (sub) => {
-    const { engine, source, port } = await boot(sub);
-    if (!engine.capabilities.prepared) return void sub.skip('engine has no prepared-frame path');
+  it('should deliver one shared message to two peers like send(text) with sendPrepared (when present)', async (t) => {
+    const { engine, source, port } = await boot(t);
+    if (!engine.capabilities.prepared) return void t.skip('engine has no prepared-frame path');
     const sockets = [];
     source.on('connection', (socket) => sockets.push(socket));
     const first = await openPeer(port);
     const second = await openPeer(port);
-    sub.after(() => {
+    t.after(() => {
       first.close();
       second.close();
     });
@@ -334,19 +335,19 @@ const runEngineContract = async (harness, t) => {
     assert.deepStrictEqual(texts, ['shared across peers', 'shared across peers']);
   });
 
-  await t.test('stopListening (when present) refuses new peers while accepted ones keep working', async (sub) => {
+  it('should refuse new peers on stopListening (when present) while accepted ones keep working', async (t) => {
     const probe = createEngine();
     // Optional capability, standalone-shaped: hosted engines have no
     // listener of their own to stop. Skipped, never failed, elsewhere.
     if (typeof probe.stopListening !== 'function') {
       probe.close?.();
-      return void sub.skip('engine has no stopListening');
+      return void t.skip('engine has no stopListening');
     }
     probe.close?.();
-    const { engine, source, port } = await boot(sub, {});
+    const { engine, source, port } = await boot(t, {});
     const connected = new Promise((resolve) => source.once('connection', resolve));
     const peer = await openPeer(port);
-    sub.after(() => peer.close());
+    t.after(() => peer.close());
     const socket = await connected;
     engine.stopListening();
     // The accepted socket still echoes...

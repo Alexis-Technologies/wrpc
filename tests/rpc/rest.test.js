@@ -4,11 +4,12 @@
 // router's per-verb route table, the shell's trie dispatch with plain-result
 // bodies, and the client's REST leg over the http transport.
 
-const test = require('node:test');
-const assert = require('node:assert');
+const { describe, it, before, after } = require('node:test');
+const assert = require('node:assert/strict');
 
 const { defineRouter, procedure, effectiveSchema } = require('../../index.js');
 const { bootServer, connectClient } = require('../helpers/server.js');
+const { suiteScope } = require('../helpers/scope.js');
 
 const api = () =>
   defineRouter({
@@ -46,31 +47,31 @@ const api = () =>
     },
   });
 
-test('procedure({ http }) option validation', async (t) => {
+describe('procedure({ http }) option validation', () => {
   const handler = async () => 1;
 
-  await t.test('rejects unknown verbs, bad paths and bad statuses', () => {
+  it('should reject unknown verbs, bad paths and bad statuses', () => {
     assert.throws(() => procedure({ handler, http: { method: 'FETCH', path: '/x' } }), /http\.method/);
     assert.throws(() => procedure({ handler, http: { method: 'GET', path: 'x' } }), /http\.path/);
     assert.throws(() => procedure({ handler, http: { method: 'GET', path: '/a/*' } }), /invalid segment/);
     assert.throws(() => procedure({ handler, http: { method: 'GET', path: '/x', status: 42 } }), /http\.status/);
   });
 
-  await t.test('refused on subscriptions', () => {
+  it('should be refused on subscriptions', () => {
     assert.throws(
       () => procedure({ handler: async function* () {}, http: { method: 'GET', path: '/x' } }),
       /does not support http/,
     );
   });
 
-  await t.test('schema and input/output are mutually exclusive', () => {
+  it('should keep schema and input/output mutually exclusive', () => {
     assert.throws(
       () => procedure({ handler, schema: { body: { type: 'object' } }, input: () => {} }),
       /mutually exclusive/,
     );
   });
 
-  await t.test('query and querystring are interchangeable; both-and-different throws', () => {
+  it('should accept query and querystring interchangeably and throw on both-and-different', () => {
     const q = { type: 'object' };
     assert.deepStrictEqual(procedure({ handler, schema: { query: q } }).schema, { querystring: q });
     assert.deepStrictEqual(procedure({ handler, schema: { querystring: q } }).schema, { querystring: q });
@@ -79,8 +80,8 @@ test('procedure({ http }) option validation', async (t) => {
   });
 });
 
-test('router REST table', async (t) => {
-  await t.test('per-verb trees: same position, different param names, different verbs', () => {
+describe('router REST table', () => {
+  it('should keep per-verb trees: same position, different param names, different verbs', () => {
     const router = defineRouter({
       projects: {
         create: { access: 'public', http: { method: 'POST', path: '/projects/:orgId' }, handler: async () => 1 },
@@ -91,14 +92,14 @@ test('router REST table', async (t) => {
     assert.deepStrictEqual(router.matchRest('GET', ['projects', '7']).params, { id: '7' });
   });
 
-  await t.test('static beats param; unknown path answers null; wrong verb answers allowed', () => {
+  it('should prefer static to param, answer null for an unknown path and the allowed verbs for a wrong verb', () => {
     const router = api();
     assert.strictEqual(router.matchRest('GET', ['projects', 'x']).methodName, 'findById');
     assert.strictEqual(router.matchRest('GET', ['nope']), null);
     assert.deepStrictEqual(router.matchRest('PATCH', ['projects', 'x']).allowed.sort(), ['DELETE', 'GET', 'POST']);
   });
 
-  await t.test('a name that leads nowhere falls back to the parameter at that place', () => {
+  it('should fall back to the parameter at that place when a name leads nowhere', () => {
     const router = defineRouter({
       users: {
         settings: { http: { method: 'GET', path: '/users/me/settings' }, handler: async () => 1 },
@@ -127,7 +128,7 @@ test('router REST table', async (t) => {
     assert.deepStrictEqual(router.matchRest('DELETE', ['users', 'me']).allowed.sort(), ['GET', 'PUT']);
   });
 
-  await t.test('duplicate verb+path and mixed param names in one verb throw at build', () => {
+  it('should throw at build on a duplicate verb+path and on mixed param names in one verb', () => {
     assert.throws(
       () =>
         defineRouter({
@@ -148,20 +149,20 @@ test('router REST table', async (t) => {
     );
   });
 
-  await t.test('merge() carries the REST table', () => {
+  it('should carry the REST table through merge()', () => {
     const merged = api().merge(defineRouter({ extra: { ping: { access: 'public', handler: async () => 1 } } }));
     assert.strictEqual(merged.matchRest('POST', ['projects', '1']).methodName, 'create');
   });
 
-  await t.test('introspection exposes the mapping', () => {
+  it('should expose the mapping in introspection', () => {
     const info = api().introspect().projects;
     assert.deepStrictEqual(info.create.http, { method: 'POST', path: '/projects/:orgId', status: 201 });
     assert.strictEqual('http' in info.plain, false);
   });
 });
 
-test('effectiveSchema: default wrpc error responses with user override', async (t) => {
-  await t.test('derived from the procedure options', () => {
+describe('effectiveSchema: default wrpc error responses with user override', () => {
+  it('should derive them from the procedure options', () => {
     const proc = procedure({
       handler: async () => 1,
       timeout: 50,
@@ -171,12 +172,12 @@ test('effectiveSchema: default wrpc error responses with user override', async (
     assert.deepStrictEqual(codes, ['200', '400', '403', '408', '429', '500', '503']);
   });
 
-  await t.test('a public, schemaless, untimed call documents only the always-set', () => {
+  it('should document only the always-set for a public, schemaless, untimed call', () => {
     const proc = procedure({ access: 'public', handler: async () => 1 });
     assert.deepStrictEqual(Object.keys(effectiveSchema(proc).response).sort(), ['429', '500', '503']);
   });
 
-  await t.test('response[code] overrides; false removes', () => {
+  it('should let response[code] override and false remove', () => {
     const mine = { type: 'object', properties: { custom: { type: 'string' } } };
     const proc = procedure({
       access: 'public',
@@ -189,8 +190,8 @@ test('effectiveSchema: default wrpc error responses with user override', async (
   });
 });
 
-test('invokeBare keeps queue/timeout semantics without hooks or validators', async (t) => {
-  await t.test('timeout answers 408', async () => {
+describe('invokeBare keeps queue/timeout semantics without hooks or validators', () => {
+  it('should answer 408 on timeout', async () => {
     const proc = procedure({
       access: 'public',
       timeout: 20,
@@ -199,7 +200,7 @@ test('invokeBare keeps queue/timeout semantics without hooks or validators', asy
     await assert.rejects(proc.invokeBare({ signal: null }, {}), (error) => error.code === 408);
   });
 
-  await t.test('queue overflow answers 503; the slot is held until the handler settles', async () => {
+  it('should answer 503 on queue overflow and hold the slot until the handler settles', async () => {
     let release;
     const gate = new Promise((resolve) => {
       release = resolve;
@@ -215,7 +216,7 @@ test('invokeBare keeps queue/timeout semantics without hooks or validators', asy
     assert.strictEqual(await first, 42);
   });
 
-  await t.test('skips input validators and hooks by contract', async () => {
+  it('should skip input validators and hooks by contract', async () => {
     const proc = procedure({
       access: 'public',
       input: () => {
@@ -230,11 +231,16 @@ test('invokeBare keeps queue/timeout semantics without hooks or validators', asy
   });
 });
 
-test('shell REST dispatch: trie hits answer plain results', async (t) => {
-  const { server, port } = await bootServer(t, { router: api() });
-  const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+describe('shell REST dispatch: trie hits answer plain results', () => {
+  const scope = suiteScope();
+  after(() => scope.close());
+  let base = '';
+  before(async () => {
+    const { server, port } = await bootServer(scope, { router: api() });
+    base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+  });
 
-  await t.test('POST with params, query and body; status from http.status', async () => {
+  it('should take a POST with params, query and body, the status from http.status', async () => {
     const res = await fetch(`${base}/projects/42?x=1`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -244,33 +250,33 @@ test('shell REST dispatch: trie hits answer plain results', async (t) => {
     assert.deepStrictEqual(await res.json(), { orgId: '42', name: 'Alpha', q: { x: '1' } });
   });
 
-  await t.test('204 discards the result body', async () => {
+  it('should discard the result body on 204', async () => {
     const res = await fetch(`${base}/projects/42`, { method: 'DELETE' });
     assert.strictEqual(res.status, 204);
     assert.strictEqual(await res.text(), '');
   });
 
-  await t.test('a known path with the wrong verb answers 405 with Allow, in REST shape', async () => {
+  it('should answer 405 with Allow, in REST shape, for a known path with the wrong verb', async () => {
     const res = await fetch(`${base}/projects/42`, { method: 'PATCH' });
     assert.strictEqual(res.status, 405);
     assert.deepStrictEqual(res.headers.get('allow').split(', ').sort(), ['DELETE', 'GET', 'POST']);
     assert.deepStrictEqual(await res.json(), { message: 'Method Not Allowed', code: 405 });
   });
 
-  await t.test('errors answer the wire error object, details included', async () => {
+  it('should answer errors with the wire error object, details included', async () => {
     const res = await fetch(`${base}/projects/1/boom`);
     assert.strictEqual(res.status, 404);
     assert.deepStrictEqual(await res.json(), { message: 'gone', code: 404, details: { why: 'archived' } });
   });
 
-  await t.test('path params are percent-decoded; malformed escapes answer 400', async () => {
+  it('should percent-decode path params and answer 400 on malformed escapes', async () => {
     const res = await fetch(`${base}/projects/a%2Fb`);
     assert.deepStrictEqual((await res.json()).id, 'a/b');
     const bad = await fetch(`${base}/projects/%ZZ`);
     assert.strictEqual(bad.status, 400);
   });
 
-  await t.test('the conventional /:unit/:method mode still answers callback packets', async () => {
+  it('should still answer callback packets in the conventional /:unit/:method mode', async () => {
     const res = await fetch(`${base}/misc/plain?x=1`);
     assert.strictEqual(res.status, 200);
     const packet = await res.json();
@@ -279,26 +285,35 @@ test('shell REST dispatch: trie hits answer plain results', async (t) => {
   });
 });
 
-test('injected querystring codec parses REST queries', async (t) => {
-  const seen = [];
-  const querystring = {
-    parse: (text) => {
-      seen.push(text);
-      return { parsed: text };
-    },
-  };
-  const { server, port } = await bootServer(t, { router: api(), querystring });
-  const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
-  const res = await fetch(`${base}/projects/9?a[0]=1`);
-  assert.deepStrictEqual((await res.json()).q, { parsed: 'a[0]=1' });
-  assert.ok(seen.length > 0);
+describe('injected querystring codec', () => {
+  it('should parse REST queries', async (t) => {
+    const seen = [];
+    const querystring = {
+      parse: (text) => {
+        seen.push(text);
+        return { parsed: text };
+      },
+    };
+    const { server, port } = await bootServer(t, { router: api(), querystring });
+    const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+    const res = await fetch(`${base}/projects/9?a[0]=1`);
+    assert.deepStrictEqual((await res.json()).q, { parsed: 'a[0]=1' });
+    assert.ok(seen.length > 0);
+  });
 });
 
-test('client REST leg: mapped procedures travel as real REST requests', async (t) => {
-  const { server, port } = await bootServer(t, { router: api() });
-  const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+describe('client REST leg: mapped procedures travel as real REST requests', () => {
+  const scope = suiteScope();
+  after(() => scope.close());
+  let server = null;
+  let port = 0;
+  let base = '';
+  before(async () => {
+    ({ server, port } = await bootServer(scope, { router: api() }));
+    base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+  });
 
-  await t.test('same args shape, plain result, status honoured', async () => {
+  it('should keep the same args shape and a plain result, honouring the status', async (t) => {
     const client = await connectClient(t, base, { transport: 'http' });
     await client.load('projects');
     const created = await client.api.projects.create({
@@ -310,7 +325,7 @@ test('client REST leg: mapped procedures travel as real REST requests', async (t
     assert.strictEqual(await client.api.projects.remove({ params: { id: '7' } }), undefined);
   });
 
-  await t.test('a wire error rejects with WrpcError carrying code and details', async () => {
+  it('should reject a wire error with WrpcError carrying code and details', async (t) => {
     const client = await connectClient(t, base, { transport: 'http' });
     await client.load('projects');
     await assert.rejects(client.api.projects.boom({ params: { id: '1' } }), (error) => {
@@ -321,19 +336,19 @@ test('client REST leg: mapped procedures travel as real REST requests', async (t
     });
   });
 
-  await t.test('a missing path param fails locally with 400', async () => {
+  it('should fail a missing path param locally with 400', async (t) => {
     const client = await connectClient(t, base, { transport: 'http' });
     await client.load('projects');
     await assert.rejects(client.api.projects.findById({ query: {} }), (error) => error.code === 400);
   });
 
-  await t.test('unmapped procedures keep packet mode', async () => {
+  it('should keep packet mode for unmapped procedures', async (t) => {
     const client = await connectClient(t, base, { transport: 'http' });
     await client.load('projects');
     assert.deepStrictEqual(await client.api.projects.plain({ n: 1 }), { plain: true, args: { n: 1 } });
   });
 
-  await t.test('the injected client querystring serializer builds the query', async () => {
+  it('should build the query with the injected client querystring serializer', async (t) => {
     const client = await connectClient(t, base, {
       transport: 'http',
       querystring: { stringify: () => 'x=custom' },
@@ -343,7 +358,7 @@ test('client REST leg: mapped procedures travel as real REST requests', async (t
     assert.deepStrictEqual(found.q, { x: 'custom' });
   });
 
-  await t.test('a ws client passes the same shape through packet mode', async () => {
+  it('should pass the same shape through packet mode from a ws client', async (t) => {
     const client = await connectClient(t, `ws://127.0.0.1:${port}${server.rpc.basePath}`);
     await client.load('projects');
     const created = await client.api.projects.create({ params: { orgId: '9' }, query: {}, body: { name: 'C' } });
@@ -374,8 +389,8 @@ const fakeAjv = (log = []) => ({
   },
 });
 
-test('injected validation: compile-once, per-part issues, details', async (t) => {
-  await t.test('compiles each declared part exactly once, at build', () => {
+describe('injected validation: compile-once, per-part issues, details', () => {
+  it('should compile each declared part exactly once, at build', () => {
     const compiled = [];
     defineRouter(
       {
@@ -392,7 +407,7 @@ test('injected validation: compile-once, per-part issues, details', async (t) =>
     assert.deepStrictEqual(compiled.map((s) => s.id).sort(), [1, 2, 3, 4]);
   });
 
-  await t.test('a failing part rejects 400 with part-prefixed issue paths', async () => {
+  it('should reject a failing part with 400 and part-prefixed issue paths', async () => {
     const router = defineRouter(
       {
         p: {
@@ -415,7 +430,7 @@ test('injected validation: compile-once, per-part issues, details', async (t) =>
     });
   });
 
-  await t.test('schema.headers validates the CONNECTION headers, issues prefixed /headers', async () => {
+  it('should validate the CONNECTION headers with schema.headers, issues prefixed /headers', async () => {
     const router = defineRouter(
       {
         p: {
@@ -443,7 +458,7 @@ test('injected validation: compile-once, per-part issues, details', async (t) =>
     assert.strictEqual(await proc.invoke(ok, {}, undefined, compiled), '3');
   });
 
-  await t.test('a coercing ajv cannot corrupt the frozen headers snapshot', async () => {
+  it('should not let a coercing ajv corrupt the frozen headers snapshot', async () => {
     // An ajv compiled with coerceTypes writes coerced values back into the
     // object it validates — compiled validators are strict-mode code, so on
     // the frozen client.meta.headers that write would THROW. The router
@@ -469,7 +484,7 @@ test('injected validation: compile-once, per-part issues, details', async (t) =>
     assert.strictEqual(headers.coerced, undefined, 'the frozen snapshot stayed untouched');
   });
 
-  await t.test('a schema with parts and no injected ajv throws at build, naming the procedure', () => {
+  it('should throw at build, naming the procedure, for a schema with parts and no injected ajv', () => {
     assert.throws(
       () =>
         defineRouter({
@@ -488,7 +503,7 @@ test('injected validation: compile-once, per-part issues, details', async (t) =>
     );
   });
 
-  await t.test('merge recompiles against the surviving compilers', () => {
+  it('should recompile against the surviving compilers on merge', () => {
     const compiled = [];
     const withAjv = defineRouter({}, { validation: { ajv: fakeAjv(compiled) } });
     const other = defineRouter({}, { validation: { ajv: fakeAjv() } });
@@ -500,7 +515,7 @@ test('injected validation: compile-once, per-part issues, details', async (t) =>
   });
 });
 
-test('injected serializer: the compiled fast path feeds the wire', async (t) => {
+describe('injected serializer: the compiled fast path feeds the wire', () => {
   const serializer = {
     compile: (schema) => (value) => JSON.stringify({ ...value, serialized: true }),
   };
@@ -530,13 +545,18 @@ test('injected serializer: the compiled fast path feeds the wire', async (t) => 
     },
     { validation: { ajv: fakeAjv(), serializer } },
   );
-  assert.strictEqual(router.hasSerializers, true);
 
   const { bootServer: boot } = require('../helpers/server.js');
-  const { server, port } = await boot(t, { router });
-  const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+  const scope = suiteScope();
+  after(() => scope.close());
+  let base = '';
+  before(async () => {
+    assert.strictEqual(router.hasSerializers, true);
+    const { server, port } = await boot(scope, { router });
+    base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+  });
 
-  await t.test('the serialized text is what arrives', async () => {
+  it('should deliver the serialized text', async () => {
     const res = await fetch(`${base}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -546,7 +566,7 @@ test('injected serializer: the compiled fast path feeds the wire', async (t) => 
     assert.deepStrictEqual(packet.result, { n: 1, serialized: true });
   });
 
-  await t.test('an onSend hook takes the slow path — the mutated packet wins', async () => {
+  it('should take the slow path with an onSend hook — the mutated packet wins', async () => {
     const res = await fetch(`${base}`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
@@ -558,7 +578,7 @@ test('injected serializer: the compiled fast path feeds the wire', async (t) => 
   });
 });
 
-test('introspection carries input schema parts; client prevalidates with injected ajv', async (t) => {
+describe('introspection carries input schema parts; client prevalidates with injected ajv', () => {
   const routerWithSchemas = () =>
     defineRouter(
       {
@@ -573,17 +593,17 @@ test('introspection carries input schema parts; client prevalidates with injecte
       { validation: { ajv: fakeAjv() } },
     );
 
-  await t.test('info.schema holds the input parts only', () => {
+  it('should hold the input parts only in info.schema', () => {
     const info = routerWithSchemas().introspect().p.make;
     assert.deepStrictEqual(info.schema, { body: { required: ['name'] } });
   });
 
-  await t.test('introspection option { schemas: false } strips them', () => {
+  it('should strip them with the introspection option { schemas: false }', () => {
     const info = routerWithSchemas().introspect(null, { schemas: false }).p.make;
     assert.strictEqual('schema' in info, false);
   });
 
-  await t.test('the client rejects locally, no request made', async () => {
+  it('should reject locally in the client, no request made', async (t) => {
     const { server, port } = await bootServer(t, { router: routerWithSchemas() });
     const client = await connectClient(t, `ws://127.0.0.1:${port}${server.rpc.basePath}`, {
       validation: { ajv: fakeAjv() },
@@ -603,7 +623,7 @@ test('introspection carries input schema parts; client prevalidates with injecte
     assert.deepStrictEqual(await client.api.p.make({ body: { name: 'x' } }), { made: 'x' });
   });
 
-  await t.test('without injected ajv the client sends and the server answers 400', async () => {
+  it('should send from the client and answer 400 from the server without injected ajv', async (t) => {
     const { server, port } = await bootServer(t, { router: routerWithSchemas() });
     const client = await connectClient(t, `ws://127.0.0.1:${port}${server.rpc.basePath}`);
     await client.load('p');
@@ -640,144 +660,158 @@ const versionedApi = (rest = { version: 'path' }) =>
     { rest },
   );
 
-test('rest.version option validation', () => {
-  assert.throws(() => defineRouter({}, { rest: 'path' }), /rest must be an options object/);
-  assert.throws(() => defineRouter({}, { rest: { version: 'header' } }), /rest\.version must be 'path' or a function/);
-  assert.ok(defineRouter({}, { rest: {} }) instanceof Object, 'an empty rest object configures nothing');
-  assert.throws(
-    () => versionedApi({ version: () => 'no-slash' }).restRoutes(),
-    /must produce a path starting with '\/'/,
-  );
-});
-
-test('rest.version at the router: trie, restRoutes, introspection', async (t) => {
-  await t.test('the same declared path diverges by version before the conflict check', () => {
-    const router = versionedApi();
-    assert.deepStrictEqual(
-      router
-        .restRoutes()
-        .map((route) => `${route.http.method} ${route.http.path}`)
-        .sort(),
-      ['GET /v1', 'POST /auth/signIn', 'POST /v1/auth/signIn'],
+describe('rest.version', () => {
+  it('should validate the option', () => {
+    assert.throws(() => defineRouter({}, { rest: 'path' }), /rest must be an options object/);
+    assert.throws(
+      () => defineRouter({}, { rest: { version: 'header' } }),
+      /rest\.version must be 'path' or a function/,
+    );
+    assert.ok(defineRouter({}, { rest: {} }) instanceof Object, 'an empty rest object configures nothing');
+    assert.throws(
+      () => versionedApi({ version: () => 'no-slash' }).restRoutes(),
+      /must produce a path starting with '\/'/,
     );
   });
 
-  await t.test('proc.http is the declaration and never mutates', () => {
-    const router = versionedApi();
-    router.restRoutes();
-    router.introspect();
-    assert.strictEqual(router.getProcedure('auth', 'v1', 'signIn').http.path, '/auth/signIn');
+  describe('at the router: trie, restRoutes, introspection', () => {
+    it('should diverge the same declared path by version before the conflict check', () => {
+      const router = versionedApi();
+      assert.deepStrictEqual(
+        router
+          .restRoutes()
+          .map((route) => `${route.http.method} ${route.http.path}`)
+          .sort(),
+        ['GET /v1', 'POST /auth/signIn', 'POST /v1/auth/signIn'],
+      );
+    });
+
+    it('should keep proc.http as the declaration, never mutated', () => {
+      const router = versionedApi();
+      router.restRoutes();
+      router.introspect();
+      assert.strictEqual(router.getProcedure('auth', 'v1', 'signIn').http.path, '/auth/signIn');
+    });
+
+    it('should pass the vN token and the declared path to the function form', () => {
+      const seen = [];
+      const router = versionedApi({
+        version: (version, path) => {
+          seen.push([version, path]);
+          return `/${version}-api${path === '/' ? '' : path}`;
+        },
+      });
+      const paths = router
+        .restRoutes()
+        .map((route) => route.http.path)
+        .sort();
+      assert.deepStrictEqual(paths, ['/auth/signIn', '/v1-api', '/v1-api/auth/signIn']);
+      assert.ok(seen.every(([version]) => version === 'v1'));
+    });
+
+    it('should let the declared paths collide loudly without the option, as before', () => {
+      assert.throws(() => versionedApi({}).restRoutes(), /REST route conflict/);
+    });
+
+    it('should carry the strategy through merge either way (receiver wins)', () => {
+      const carried = versionedApi().merge(defineRouter({}));
+      assert.ok(carried.restRoutes().some((route) => route.http.path === '/v1/auth/signIn'));
+      const adopted = defineRouter({}).merge(versionedApi());
+      assert.ok(adopted.restRoutes().some((route) => route.http.path === '/v1/auth/signIn'));
+    });
   });
 
-  await t.test('the function form receives the vN token and the declared path', () => {
-    const seen = [];
-    const router = versionedApi({
-      version: (version, path) => {
-        seen.push([version, path]);
-        return `/${version}-api${path === '/' ? '' : path}`;
+  describe('end to end: shell dispatch, introspection, client REST leg', () => {
+    const router = versionedApi();
+    const scope = suiteScope();
+    after(() => scope.close());
+    let server = null;
+    let base = '';
+    before(async () => {
+      const booted = await bootServer(scope, { router });
+      server = booted.server;
+      base = `http://127.0.0.1:${booted.port}${server.rpc.basePath}`;
+    });
+
+    it('should dispatch both versions of one declared path to their own procedure', async () => {
+      // The server's router is the MERGED one (#withIntrospection), so this
+      // also proves the strategy survived the merge every boot performs.
+      const v1 = await fetch(`${base}/v1/auth/signIn`, { method: 'POST' });
+      assert.strictEqual(v1.status, 200);
+      assert.deepStrictEqual(await v1.json(), { version: 'v1' });
+      const def = await fetch(`${base}/auth/signIn`, { method: 'POST' });
+      assert.deepStrictEqual(await def.json(), { version: 'default' });
+    });
+
+    it("should turn a versioned path '/' into /v1", async () => {
+      const res = await fetch(`${base}/v1`);
+      assert.deepStrictEqual(await res.json(), { root: 'v1' });
+    });
+
+    it('should still answer packets in the conventional /auth.v1/signIn mode', async () => {
+      const res = await fetch(`${base}/auth.v1/signIn`, { method: 'POST', body: '' });
+      assert.strictEqual(res.status, 200);
+      const packet = await res.json();
+      assert.strictEqual(packet.type, 'callback');
+      assert.deepStrictEqual(packet.result, { version: 'v1' });
+    });
+
+    it('should ship the prefixed path in introspection, so the client REST leg calls it', async (t) => {
+      const info = server.rpc.router.introspect()['auth.v1'];
+      assert.strictEqual(info.signIn.http.method, 'POST');
+      assert.strictEqual(info.signIn.http.path, '/v1/auth/signIn');
+      const client = await connectClient(t, base, { transport: 'http' });
+      await client.load('auth.v1');
+      // Hitting the UNprefixed path would answer { version: 'default' } — the
+      // assertion below is exactly the versioned-URL proof.
+      assert.deepStrictEqual(await client.api['auth.v1'].signIn({}), { version: 'v1' });
+    });
+  });
+});
+
+describe('withMeta', () => {
+  it('should reach callMeta over the mapped REST leg, in both metaFormats', async (t) => {
+    const router = defineRouter({
+      orders: {
+        create: procedure({
+          access: 'public',
+          http: { method: 'POST', path: '/orders' },
+          handler: async (context) => ({ ...context.callMeta }),
+        }),
       },
     });
-    const paths = router
-      .restRoutes()
-      .map((route) => route.http.path)
-      .sort();
-    assert.deepStrictEqual(paths, ['/auth/signIn', '/v1-api', '/v1-api/auth/signIn']);
-    assert.ok(seen.every(([version]) => version === 'v1'));
+    const { origin } = await bootServer(t, { router });
+
+    const over = async (metaFormat) => {
+      const client = await connectClient(t, `${origin}/api`, {
+        transport: ['http'],
+        metaFormat,
+        meta: { tenant: 'acme', traceId: 'connection' },
+      });
+      await client.load('orders');
+      return client.api.orders.create;
+    };
+
+    for (const metaFormat of ['json', 'prefixed']) {
+      const create = await over(metaFormat);
+
+      // The gap this closes: #restCall used to destructure `signal` only, so
+      // withMeta on a mapped procedure was silently dropped.
+      const stamped = await create.withMeta({ idem: '9f3c' })({ body: {} });
+      assert.strictEqual(stamped.idem, '9f3c', `withMeta was dropped in ${metaFormat} mode`);
+
+      // On REST there is no packet, so the two channels are one: connection
+      // meta rides every request and the per-call half is layered over it.
+      assert.strictEqual(stamped.tenant, 'acme', 'connection meta must survive alongside the call meta');
+
+      // ...and wins a key collision, because it is the more specific of the two.
+      const shadowed = await create.withMeta({ traceId: 'per-call' })({ body: {} });
+      assert.strictEqual(shadowed['trace-id'], 'per-call', `per-call meta lost the collision in ${metaFormat} mode`);
+
+      // A call with no meta of its own still sees the connection bag.
+      assert.deepStrictEqual(await create({ body: {} }), { tenant: 'acme', 'trace-id': 'connection' });
+    }
   });
-
-  await t.test('without the option the declared paths collide loudly, as before', () => {
-    assert.throws(() => versionedApi({}).restRoutes(), /REST route conflict/);
-  });
-
-  await t.test('merge carries the strategy either way (receiver wins)', () => {
-    const carried = versionedApi().merge(defineRouter({}));
-    assert.ok(carried.restRoutes().some((route) => route.http.path === '/v1/auth/signIn'));
-    const adopted = defineRouter({}).merge(versionedApi());
-    assert.ok(adopted.restRoutes().some((route) => route.http.path === '/v1/auth/signIn'));
-  });
-});
-
-test('rest.version end to end: shell dispatch, introspection, client REST leg', async (t) => {
-  const router = versionedApi();
-  const { server, port } = await bootServer(t, { router });
-  const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
-
-  await t.test('both versions of one declared path dispatch to their own procedure', async () => {
-    // The server's router is the MERGED one (#withIntrospection), so this
-    // also proves the strategy survived the merge every boot performs.
-    const v1 = await fetch(`${base}/v1/auth/signIn`, { method: 'POST' });
-    assert.strictEqual(v1.status, 200);
-    assert.deepStrictEqual(await v1.json(), { version: 'v1' });
-    const def = await fetch(`${base}/auth/signIn`, { method: 'POST' });
-    assert.deepStrictEqual(await def.json(), { version: 'default' });
-  });
-
-  await t.test("a versioned path: '/' becomes /v1", async () => {
-    const res = await fetch(`${base}/v1`);
-    assert.deepStrictEqual(await res.json(), { root: 'v1' });
-  });
-
-  await t.test('the conventional /auth.v1/signIn mode still answers packets', async () => {
-    const res = await fetch(`${base}/auth.v1/signIn`, { method: 'POST', body: '' });
-    assert.strictEqual(res.status, 200);
-    const packet = await res.json();
-    assert.strictEqual(packet.type, 'callback');
-    assert.deepStrictEqual(packet.result, { version: 'v1' });
-  });
-
-  await t.test('introspection ships the prefixed path, so the client REST leg calls it', async () => {
-    const info = server.rpc.router.introspect()['auth.v1'];
-    assert.strictEqual(info.signIn.http.method, 'POST');
-    assert.strictEqual(info.signIn.http.path, '/v1/auth/signIn');
-    const client = await connectClient(t, base, { transport: 'http' });
-    await client.load('auth.v1');
-    // Hitting the UNprefixed path would answer { version: 'default' } — the
-    // assertion below is exactly the versioned-URL proof.
-    assert.deepStrictEqual(await client.api['auth.v1'].signIn({}), { version: 'v1' });
-  });
-});
-
-test('withMeta reaches callMeta over the mapped REST leg, in both metaFormats', async (t) => {
-  const router = defineRouter({
-    orders: {
-      create: procedure({
-        access: 'public',
-        http: { method: 'POST', path: '/orders' },
-        handler: async (context) => ({ ...context.callMeta }),
-      }),
-    },
-  });
-  const { origin } = await bootServer(t, { router });
-
-  const over = async (metaFormat) => {
-    const client = await connectClient(t, `${origin}/api`, {
-      transport: ['http'],
-      metaFormat,
-      meta: { tenant: 'acme', traceId: 'connection' },
-    });
-    await client.load('orders');
-    return client.api.orders.create;
-  };
-
-  for (const metaFormat of ['json', 'prefixed']) {
-    const create = await over(metaFormat);
-
-    // The gap this closes: #restCall used to destructure `signal` only, so
-    // withMeta on a mapped procedure was silently dropped.
-    const stamped = await create.withMeta({ idem: '9f3c' })({ body: {} });
-    assert.strictEqual(stamped.idem, '9f3c', `withMeta was dropped in ${metaFormat} mode`);
-
-    // On REST there is no packet, so the two channels are one: connection
-    // meta rides every request and the per-call half is layered over it.
-    assert.strictEqual(stamped.tenant, 'acme', 'connection meta must survive alongside the call meta');
-
-    // ...and wins a key collision, because it is the more specific of the two.
-    const shadowed = await create.withMeta({ traceId: 'per-call' })({ body: {} });
-    assert.strictEqual(shadowed['trace-id'], 'per-call', `per-call meta lost the collision in ${metaFormat} mode`);
-
-    // A call with no meta of its own still sees the connection bag.
-    assert.deepStrictEqual(await create({ body: {} }), { tenant: 'acme', 'trace-id': 'connection' });
-  }
 });
 
 // --- Response headers, context.http and the cache policy (phase 2) ---------
@@ -852,128 +886,130 @@ const cacheApi = () =>
     },
   });
 
-test('http.headers and http.cache are validated when the procedure is built', () => {
-  const handler = async () => 1;
-  assert.throws(
-    () => procedure({ handler, http: { method: 'GET', path: '/x', headers: { 'Content-Length': '3' } } }),
-    /the transport owns it/,
-  );
-  assert.throws(
-    () => procedure({ handler, http: { method: 'GET', path: '/x', headers: { 'X-A': 1 } } }),
-    /must be a string/,
-  );
-  assert.throws(
-    () => procedure({ handler, http: { method: 'POST', path: '/x', cache: { maxAge: 1 } } }),
-    /only valid on GET and HEAD/,
-  );
-  assert.throws(
-    () => procedure({ handler, http: { method: 'GET', path: '/x', cache: { maxAge: -1 } } }),
-    /maxAge must be an integer/,
-  );
-  assert.throws(
-    () => procedure({ handler, http: { method: 'GET', path: '/x', cache: {} } }),
-    /maxAge must be an integer/,
-  );
-  const proc = procedure({
-    handler,
-    http: { method: 'GET', path: '/x', cache: { maxAge: 10 }, headers: { 'X-A': 'b' } },
-  });
-  assert.deepStrictEqual(proc.http.cache, { maxAge: 10, public: false, staleWhileRevalidate: null, etag: true });
-  assert.deepStrictEqual(proc.http.headers, { 'X-A': 'b' });
-});
-
-test('REST response seam: static headers, context.http, status(), and null off HTTP', async (t) => {
-  const { server, port, url } = await bootServer(t, { router: cacheApi() });
-  const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
-  const res = await fetch(`${base}/pages/7`);
-  assert.strictEqual(res.status, 202);
-  assert.strictEqual(res.headers.get('x-static'), 'yes');
-  assert.strictEqual(res.headers.get('x-dynamic'), 'GET');
-  assert.deepStrictEqual(await res.json(), { id: '7', seam: true, url: `${server.rpc.basePath}/pages/7` });
-
-  const reserved = await fetch(`${base}/pages/reserved`);
-  assert.strictEqual(reserved.status, 500, 'a reserved header name is a handler error');
-  // A value with a line break would split the response on an engine that
-  // writes what it is given, and hang the request on node, which refuses
-  // to write it: refused at the seam instead, as a handler error.
-  const split = await fetch(`${base}/pages/split`);
-  assert.strictEqual(split.status, 500, 'a header value with CR/LF is a handler error');
-  assert.strictEqual(split.headers.get('x-injected'), null);
-  assert.strictEqual(split.headers.get('x-note'), null);
-  const badName = await fetch(`${base}/pages/split?name=bad`);
-  assert.strictEqual(badName.status, 500, 'a header name that is no token is a handler error');
-  // And at definition time, for a static header.
-  const declared = (headers) =>
-    defineRouter({
-      p: { x: procedure({ access: 'public', http: { method: 'GET', path: '/x', headers }, handler: async () => 1 }) },
+describe('http.headers and http.cache', () => {
+  it('should validate http.headers and http.cache when the procedure is built', () => {
+    const handler = async () => 1;
+    assert.throws(
+      () => procedure({ handler, http: { method: 'GET', path: '/x', headers: { 'Content-Length': '3' } } }),
+      /the transport owns it/,
+    );
+    assert.throws(
+      () => procedure({ handler, http: { method: 'GET', path: '/x', headers: { 'X-A': 1 } } }),
+      /must be a string/,
+    );
+    assert.throws(
+      () => procedure({ handler, http: { method: 'POST', path: '/x', cache: { maxAge: 1 } } }),
+      /only valid on GET and HEAD/,
+    );
+    assert.throws(
+      () => procedure({ handler, http: { method: 'GET', path: '/x', cache: { maxAge: -1 } } }),
+      /maxAge must be an integer/,
+    );
+    assert.throws(
+      () => procedure({ handler, http: { method: 'GET', path: '/x', cache: {} } }),
+      /maxAge must be an integer/,
+    );
+    const proc = procedure({
+      handler,
+      http: { method: 'GET', path: '/x', cache: { maxAge: 10 }, headers: { 'X-A': 'b' } },
     });
-  assert.throws(() => declared({ 'X-A': 'a\nb' }), /holds a character a header cannot carry/);
-  assert.throws(() => declared({ 'X A': 'a' }), /is not a header name/);
-
-  const client = await connectClient(t, url);
-  await client.load('pages');
-  assert.deepStrictEqual(await client.api.pages.seam(), { http: null });
-
-  const introspection = server.rpc.router.introspect();
-  assert.deepStrictEqual(introspection.pages.catalog.http.cache, {
-    maxAge: 60,
-    public: true,
-    staleWhileRevalidate: 30,
-    etag: true,
+    assert.deepStrictEqual(proc.http.cache, { maxAge: 10, public: false, staleWhileRevalidate: null, etag: true });
+    assert.deepStrictEqual(proc.http.headers, { 'X-A': 'b' });
   });
-  assert.deepStrictEqual(introspection.pages.show.http.headers, { 'X-Static': 'yes' });
-});
 
-test('http.cache: Cache-Control, a weak ETag, 304 on If-None-Match, HEAD parity', async (t) => {
-  const { server, port } = await bootServer(t, { router: cacheApi() });
-  const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
-  const first = await fetch(`${base}/catalog`);
-  assert.strictEqual(first.status, 200);
-  assert.strictEqual(first.headers.get('cache-control'), 'public, max-age=60, stale-while-revalidate=30');
-  const etag = first.headers.get('etag');
-  assert.match(etag, /^W\/"[A-Za-z0-9_-]+"$/);
-  assert.deepStrictEqual(await first.json(), { items: [1, 2, 3] });
+  it('should give the REST response seam static headers, context.http, status(), and null off HTTP', async (t) => {
+    const { server, port, url } = await bootServer(t, { router: cacheApi() });
+    const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+    const res = await fetch(`${base}/pages/7`);
+    assert.strictEqual(res.status, 202);
+    assert.strictEqual(res.headers.get('x-static'), 'yes');
+    assert.strictEqual(res.headers.get('x-dynamic'), 'GET');
+    assert.deepStrictEqual(await res.json(), { id: '7', seam: true, url: `${server.rpc.basePath}/pages/7` });
 
-  const again = await fetch(`${base}/catalog`, { headers: { 'If-None-Match': etag } });
-  assert.strictEqual(again.status, 304);
-  assert.strictEqual(again.headers.get('etag'), etag);
-  assert.strictEqual(again.headers.get('cache-control'), 'public, max-age=60, stale-while-revalidate=30');
-  assert.strictEqual((await again.text()).length, 0);
+    const reserved = await fetch(`${base}/pages/reserved`);
+    assert.strictEqual(reserved.status, 500, 'a reserved header name is a handler error');
+    // A value with a line break would split the response on an engine that
+    // writes what it is given, and hang the request on node, which refuses
+    // to write it: refused at the seam instead, as a handler error.
+    const split = await fetch(`${base}/pages/split`);
+    assert.strictEqual(split.status, 500, 'a header value with CR/LF is a handler error');
+    assert.strictEqual(split.headers.get('x-injected'), null);
+    assert.strictEqual(split.headers.get('x-note'), null);
+    const badName = await fetch(`${base}/pages/split?name=bad`);
+    assert.strictEqual(badName.status, 500, 'a header name that is no token is a handler error');
+    // And at definition time, for a static header.
+    const declared = (headers) =>
+      defineRouter({
+        p: { x: procedure({ access: 'public', http: { method: 'GET', path: '/x', headers }, handler: async () => 1 }) },
+      });
+    assert.throws(() => declared({ 'X-A': 'a\nb' }), /holds a character a header cannot carry/);
+    assert.throws(() => declared({ 'X A': 'a' }), /is not a header name/);
 
-  const strong = await fetch(`${base}/catalog`, { headers: { 'If-None-Match': `"other", ${etag.slice(2)}` } });
-  assert.strictEqual(strong.status, 304, 'a list with the bare tag matches too');
+    const client = await connectClient(t, url);
+    await client.load('pages');
+    assert.deepStrictEqual(await client.api.pages.seam(), { http: null });
 
-  const head = await fetch(`${base}/catalog`, { method: 'HEAD' });
-  assert.strictEqual(head.status, 200);
-  assert.strictEqual(head.headers.get('etag'), etag);
+    const introspection = server.rpc.router.introspect();
+    assert.deepStrictEqual(introspection.pages.catalog.http.cache, {
+      maxAge: 60,
+      public: true,
+      staleWhileRevalidate: 30,
+      etag: true,
+    });
+    assert.deepStrictEqual(introspection.pages.show.http.headers, { 'X-Static': 'yes' });
+  });
 
-  const plain = await fetch(`${base}/catalog/plain`);
-  assert.strictEqual(plain.headers.get('cache-control'), 'private, max-age=5');
-  assert.strictEqual(plain.headers.get('etag'), null, 'etag: false');
-});
+  it('should answer http.cache with Cache-Control, a weak ETag, 304 on If-None-Match, HEAD parity', async (t) => {
+    const { server, port } = await bootServer(t, { router: cacheApi() });
+    const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+    const first = await fetch(`${base}/catalog`);
+    assert.strictEqual(first.status, 200);
+    assert.strictEqual(first.headers.get('cache-control'), 'public, max-age=60, stale-while-revalidate=30');
+    const etag = first.headers.get('etag');
+    assert.match(etag, /^W\/"[A-Za-z0-9_-]+"$/);
+    assert.deepStrictEqual(await first.json(), { items: [1, 2, 3] });
 
-test('http.cache: a session-bearing response is private, no-store whatever the route asked', async (t) => {
-  const { server, port } = await bootServer(t, { router: cacheApi() });
-  const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
-  // A public read that starts a session sets a cookie: never cacheable.
-  const greet = await fetch(`${base}/greet`);
-  assert.strictEqual(greet.status, 200);
-  assert.ok(greet.headers.get('set-cookie'));
-  assert.strictEqual(greet.headers.get('cache-control'), 'private, no-store');
-  assert.strictEqual(greet.headers.get('etag'), null);
+    const again = await fetch(`${base}/catalog`, { headers: { 'If-None-Match': etag } });
+    assert.strictEqual(again.status, 304);
+    assert.strictEqual(again.headers.get('etag'), etag);
+    assert.strictEqual(again.headers.get('cache-control'), 'public, max-age=60, stale-while-revalidate=30');
+    assert.strictEqual((await again.text()).length, 0);
 
-  const login = await fetch(`${base}/login`, { method: 'POST' });
-  const cookie = login.headers.get('set-cookie').split(';')[0];
-  const mine = await fetch(`${base}/mine`, { headers: { cookie } });
-  assert.strictEqual(mine.status, 200);
-  assert.deepStrictEqual(await mine.json(), { user: 'grace' });
-  assert.strictEqual(mine.headers.get('cache-control'), 'private, no-store');
+    const strong = await fetch(`${base}/catalog`, { headers: { 'If-None-Match': `"other", ${etag.slice(2)}` } });
+    assert.strictEqual(strong.status, 304, 'a list with the bare tag matches too');
 
-  // The same public catalog, requested WITH a session: no public caching.
-  const catalog = await fetch(`${base}/catalog`, { headers: { cookie } });
-  assert.strictEqual(catalog.headers.get('cache-control'), 'private, no-store');
-  // Errors carry no cache policy at all.
-  const missing = await fetch(`${base}/mine`);
-  assert.strictEqual(missing.status, 403);
-  assert.strictEqual(missing.headers.get('cache-control'), null);
+    const head = await fetch(`${base}/catalog`, { method: 'HEAD' });
+    assert.strictEqual(head.status, 200);
+    assert.strictEqual(head.headers.get('etag'), etag);
+
+    const plain = await fetch(`${base}/catalog/plain`);
+    assert.strictEqual(plain.headers.get('cache-control'), 'private, max-age=5');
+    assert.strictEqual(plain.headers.get('etag'), null, 'etag: false');
+  });
+
+  it('should make a session-bearing http.cache response private, no-store whatever the route asked', async (t) => {
+    const { server, port } = await bootServer(t, { router: cacheApi() });
+    const base = `http://127.0.0.1:${port}${server.rpc.basePath}`;
+    // A public read that starts a session sets a cookie: never cacheable.
+    const greet = await fetch(`${base}/greet`);
+    assert.strictEqual(greet.status, 200);
+    assert.ok(greet.headers.get('set-cookie'));
+    assert.strictEqual(greet.headers.get('cache-control'), 'private, no-store');
+    assert.strictEqual(greet.headers.get('etag'), null);
+
+    const login = await fetch(`${base}/login`, { method: 'POST' });
+    const cookie = login.headers.get('set-cookie').split(';')[0];
+    const mine = await fetch(`${base}/mine`, { headers: { cookie } });
+    assert.strictEqual(mine.status, 200);
+    assert.deepStrictEqual(await mine.json(), { user: 'grace' });
+    assert.strictEqual(mine.headers.get('cache-control'), 'private, no-store');
+
+    // The same public catalog, requested WITH a session: no public caching.
+    const catalog = await fetch(`${base}/catalog`, { headers: { cookie } });
+    assert.strictEqual(catalog.headers.get('cache-control'), 'private, no-store');
+    // Errors carry no cache policy at all.
+    const missing = await fetch(`${base}/mine`);
+    assert.strictEqual(missing.status, 403);
+    assert.strictEqual(missing.headers.get('cache-control'), null);
+  });
 });

@@ -36,6 +36,7 @@ class FakeRedisServer {
       }, ms);
       const wake = () => {
         clearTimeout(timer);
+        // oxlint-disable-next-line promise/no-multiple-resolved -- the timer or wake() settles it, never both
         resolve();
       };
       this.#waiters.add(wake);

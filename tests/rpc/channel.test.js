@@ -7,8 +7,8 @@
 // this level does its own signaling; a factory-driven reconnect resumes a
 // subscription across channels.
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 const timers = require('node:timers/promises');
 
 const { RpcServer } = require('../../src/rpc/core.js');
@@ -140,234 +140,238 @@ const boot = async (t, { attach = {}, client: clientOptions = {}, logger = quiet
   return { rpc, served, pair, attached, client };
 };
 
-test('attachChannel: a persistent webrtc client that answers calls and carries events both ways', async (t) => {
-  const seen = [];
-  const { rpc, pair, attached, client } = await boot(t, { attach: { peer: 'browser' }, seen });
-  assert.strictEqual(attached.persistent, true);
-  assert.strictEqual(attached.binary, true);
-  assert.strictEqual(attached.source, 'browser');
-  assert.strictEqual(attached.transportKind, 'webrtc');
-  assert.strictEqual(rpc.getClient(attached.id), attached);
-  assert.strictEqual(await client.api.calc.add({ a: 2, b: 3 }), 5);
+describe('attachChannel', () => {
+  it('should make a persistent webrtc client that answers calls and carries events both ways', async (t) => {
+    const seen = [];
+    const { rpc, pair, attached, client } = await boot(t, { attach: { peer: 'browser' }, seen });
+    assert.strictEqual(attached.persistent, true);
+    assert.strictEqual(attached.binary, true);
+    assert.strictEqual(attached.source, 'browser');
+    assert.strictEqual(attached.transportKind, 'webrtc');
+    assert.strictEqual(rpc.getClient(attached.id), attached);
+    assert.strictEqual(await client.api.calc.add({ a: 2, b: 3 }), 5);
 
-  const notes = [];
-  client.api.calc.on('note', (data) => notes.push(data));
-  await client.api.calc.note('hello');
-  client.sendEvent('calc/ping', { from: 'browser' });
-  await waitFor(() => notes.length === 1 && seen.length === 1, 'events both ways');
-  assert.deepStrictEqual(notes, [{ echo: 'hello' }]);
-  assert.deepStrictEqual(seen, [['browser', { from: 'browser' }]]);
-  assert.strictEqual(pair.b.binaryType, 'arraybuffer');
-});
-
-test('attachChannel: no session at attach — the default access refuses, public answers; observed meta lands', async (t) => {
-  const { client } = await boot(t, {
-    attach: { headers: { 'x-tenant': 't1' }, data: { user: 'u1' }, remoteAddress: '203.0.113.9' },
+    const notes = [];
+    client.api.calc.on('note', (data) => notes.push(data));
+    await client.api.calc.note('hello');
+    client.sendEvent('calc/ping', { from: 'browser' });
+    await waitFor(() => notes.length === 1 && seen.length === 1, 'events both ways');
+    assert.deepStrictEqual(notes, [{ echo: 'hello' }]);
+    assert.deepStrictEqual(seen, [['browser', { from: 'browser' }]]);
+    assert.strictEqual(pair.b.binaryType, 'arraybuffer');
   });
-  await assert.rejects(client.api.calc.secret(), (error) => error.code === 403);
-  const meta = await client.api.calc.meta();
-  assert.strictEqual(meta.kind, 'webrtc');
-  assert.deepStrictEqual(meta.headers, { 'x-tenant': 't1' });
-  assert.deepStrictEqual(meta.data, { user: 'u1' });
-  assert.strictEqual(meta.remoteAddress, '203.0.113.9');
-  assert.strictEqual(meta.session, null);
-});
 
-test('attachChannel: without observations the meta is empty and the source is the channel label', async (t) => {
-  const { attached, client } = await boot(t);
-  assert.strictEqual(attached.source, 'wrpc');
-  const meta = await client.api.calc.meta();
-  assert.deepStrictEqual(meta.headers, {});
-  assert.deepStrictEqual(meta.data, {});
-  assert.strictEqual(meta.remoteAddress, '');
-});
-
-test('attachChannel: connection hooks run, and closing the channel detaches the client', async (t) => {
-  const events = [];
-  const { rpc, pair, attached, client } = await boot(t, { attach: { peer: 'p1' }, events });
-  assert.strictEqual(await client.api.calc.add({ a: 1, b: 1 }), 2, 'dispatch waited for the hook');
-  assert.deepStrictEqual(events, [['connect', 'p1']]);
-  assert.ok(attached.rooms.has('hooked'));
-  assert.ok(rpc.clients.has(attached));
-  const closed = onceEvent(client, 'close');
-  pair.a.close();
-  await within(closed, 'the client saw the close');
-  await waitFor(() => events.length === 2, 'onDisconnect');
-  assert.deepStrictEqual(events[1], ['disconnect', 'p1', ['hooked']]);
-  assert.ok(!rpc.clients.has(attached));
-  assert.strictEqual(rpc.getClient(attached.id), undefined);
-});
-
-test('attachChannel: uploads and downloads cross the fragmenting channel', async (t) => {
-  const { client } = await boot(t, { attach: { maxMessageSize: 16 * 1024 }, client: { maxMessageSize: 16 * 1024 } });
-  const size = 1024 * 1024;
-  const payload = new Uint8Array(size);
-  let sum = 0;
-  for (let i = 0; i < size; i++) {
-    payload[i] = i % 256;
-    sum = (sum + payload[i]) % 251;
-  }
-  const stream = client.createStream('blob', size);
-  const receiving = client.api.calc.readUpload({ id: stream.id });
-  const drained = () => new Promise((resolve) => stream.once('drain', resolve));
-  for (let offset = 0; offset < size; offset += 64 * 1024) {
-    if (!stream.write(payload.subarray(offset, offset + 64 * 1024))) await drained();
-  }
-  stream.end();
-  assert.deepStrictEqual(await within(receiving, 'upload read'), { total: size, sum });
-
-  const { id } = await client.api.calc.download({ size: 100 * 1024 });
-  const readable = client.getStream(id);
-  let got = 0;
-  for await (const chunk of readable) got += chunk.length;
-  assert.strictEqual(got, 100 * 1024);
-});
-
-test('attachChannel: a factory reconnects the client on a fresh channel and the subscription resumes', async (t) => {
-  const served = routerOf();
-  const rpc = new RpcServer({ router: served.router, logger: quiet });
-  t.after(() => rpc.close());
-  const first = await rawChannelPair(t);
-  const attached = [attachChannel(rpc, first.b, { peer: 'p' })];
-  let calls = 0;
-  const client = await WrpcClient.connect('webrtc:server', {
-    transport: 'webrtc',
-    // The application's own recovery: every re-open negotiates a new pair
-    // and attaches its far end — what a real one would do over its signaling.
-    channel: async () => {
-      calls++;
-      if (calls === 1) return first.a;
-      const pair = await rawChannelPair(t, { world: first.world });
-      attached.push(attachChannel(rpc, pair.b, { peer: 'p' }));
-      return pair.a;
-    },
-    heartbeat: false,
-    reconnect: { minDelay: 5, maxDelay: 20, jitter: false },
+  it('should refuse with the default access and answer public without a session at attach, landing the observed meta', async (t) => {
+    const { client } = await boot(t, {
+      attach: { headers: { 'x-tenant': 't1' }, data: { user: 'u1' }, remoteAddress: '203.0.113.9' },
+    });
+    await assert.rejects(client.api.calc.secret(), (error) => error.code === 403);
+    const meta = await client.api.calc.meta();
+    assert.strictEqual(meta.kind, 'webrtc');
+    assert.deepStrictEqual(meta.headers, { 'x-tenant': 't1' });
+    assert.deepStrictEqual(meta.data, { user: 'u1' });
+    assert.strictEqual(meta.remoteAddress, '203.0.113.9');
+    assert.strictEqual(meta.session, null);
   });
-  t.after(() => client.close());
-  await client.load('calc');
-  const got = [];
-  const handle = client.api.calc.feed.subscribe({}, { onData: (value) => got.push(value) });
-  await waitFor(() => served.feed.streams.size === 1, 'the handler is live');
-  served.push('one');
-  served.push('two');
-  await waitFor(() => got.length === 2, 'two values');
-  assert.match(handle.lastEventId, /\.1$/, 'the log labels every value');
 
-  const reconnected = onceEvent(client, 'reconnect');
-  first.b.close(); // the server side's channel dies
-  await within(reconnected, 'reconnected');
-  assert.strictEqual(calls, 2);
-  assert.strictEqual(attached.length, 2);
-  await waitFor(() => !rpc.clients.has(attached[0]) && rpc.clients.has(attached[1]), 'old client gone, new one in');
-  await waitFor(() => served.feed.streams.size === 1, 'the handler is live again');
-  served.push('three');
-  await waitFor(() => got.length === 3, 'resumed value');
-  assert.deepStrictEqual(got, ['one', 'two', 'three']);
-  assert.strictEqual(await client.api.calc.add({ a: 1, b: 1 }), 2);
-});
-
-test('attachChannel: a static channel cannot come back — reconnect: false ends it cleanly', async (t) => {
-  const { pair, client } = await boot(t);
-  const failed = onceEvent(client, 'reconnect-failed');
-  pair.b.close();
-  await within(failed, 'reconnect-failed');
-  assert.strictEqual(client.active, false);
-});
-
-test('attachChannel: under encryption.required a data channel is served as DTLS — unless told it is not', async (t) => {
-  const { generateKey } = require('../../src/encryption/index.js');
-  const served = routerOf({});
-  const rpc = new RpcServer({
-    router: served.router,
-    logger: quiet,
-    encryption: { keys: generateKey(), required: true },
+  it('should leave the meta empty and take the channel label as the source without observations', async (t) => {
+    const { attached, client } = await boot(t);
+    assert.strictEqual(attached.source, 'wrpc');
+    const meta = await client.api.calc.meta();
+    assert.deepStrictEqual(meta.headers, {});
+    assert.deepStrictEqual(meta.data, {});
+    assert.strictEqual(meta.remoteAddress, '');
   });
-  t.after(() => rpc.close());
-  const pair = await rawChannelPair(t);
-  const attached = attachChannel(rpc, pair.b, { peer: 'dtls' });
-  assert.strictEqual(rpc.getClient(attached.id), attached, 'vouched for by default: an RTCDataChannel is DTLS');
-  const client = await WrpcClient.connect('webrtc:server', {
-    transport: 'webrtc',
-    channel: pair.a,
-    heartbeat: false,
-    reconnect: false,
+
+  it('should run the connection hooks, and detach the client when the channel closes', async (t) => {
+    const events = [];
+    const { rpc, pair, attached, client } = await boot(t, { attach: { peer: 'p1' }, events });
+    assert.strictEqual(await client.api.calc.add({ a: 1, b: 1 }), 2, 'dispatch waited for the hook');
+    assert.deepStrictEqual(events, [['connect', 'p1']]);
+    assert.ok(attached.rooms.has('hooked'));
+    assert.ok(rpc.clients.has(attached));
+    const closed = onceEvent(client, 'close');
+    pair.a.close();
+    await within(closed, 'the client saw the close');
+    await waitFor(() => events.length === 2, 'onDisconnect');
+    assert.deepStrictEqual(events[1], ['disconnect', 'p1', ['hooked']]);
+    assert.ok(!rpc.clients.has(attached));
+    assert.strictEqual(rpc.getClient(attached.id), undefined);
   });
-  t.after(() => client.close());
-  await client.load('calc');
-  assert.strictEqual(await client.api.calc.add({ a: 1, b: 1 }), 2);
-  // A channel the application knows to be relayed in the clear is refused.
-  const relayed = await rawChannelPair(t);
-  assert.throws(() => attachChannel(rpc, relayed.b, { encrypted: false }), /encryption is required/);
+
+  it('should carry uploads and downloads across the fragmenting channel', async (t) => {
+    const { client } = await boot(t, { attach: { maxMessageSize: 16 * 1024 }, client: { maxMessageSize: 16 * 1024 } });
+    const size = 1024 * 1024;
+    const payload = new Uint8Array(size);
+    let sum = 0;
+    for (let i = 0; i < size; i++) {
+      payload[i] = i % 256;
+      sum = (sum + payload[i]) % 251;
+    }
+    const stream = client.createStream('blob', size);
+    const receiving = client.api.calc.readUpload({ id: stream.id });
+    const drained = () => new Promise((resolve) => stream.once('drain', resolve));
+    for (let offset = 0; offset < size; offset += 64 * 1024) {
+      if (!stream.write(payload.subarray(offset, offset + 64 * 1024))) await drained();
+    }
+    stream.end();
+    assert.deepStrictEqual(await within(receiving, 'upload read'), { total: size, sum });
+
+    const { id } = await client.api.calc.download({ size: 100 * 1024 });
+    const readable = client.getStream(id);
+    let got = 0;
+    for await (const chunk of readable) got += chunk.length;
+    assert.strictEqual(got, 100 * 1024);
+  });
+
+  it('should reconnect the client on a fresh channel from a factory and resume the subscription', async (t) => {
+    const served = routerOf();
+    const rpc = new RpcServer({ router: served.router, logger: quiet });
+    t.after(() => rpc.close());
+    const first = await rawChannelPair(t);
+    const attached = [attachChannel(rpc, first.b, { peer: 'p' })];
+    let calls = 0;
+    const client = await WrpcClient.connect('webrtc:server', {
+      transport: 'webrtc',
+      // The application's own recovery: every re-open negotiates a new pair
+      // and attaches its far end — what a real one would do over its signaling.
+      channel: async () => {
+        calls++;
+        if (calls === 1) return first.a;
+        const pair = await rawChannelPair(t, { world: first.world });
+        attached.push(attachChannel(rpc, pair.b, { peer: 'p' }));
+        return pair.a;
+      },
+      heartbeat: false,
+      reconnect: { minDelay: 5, maxDelay: 20, jitter: false },
+    });
+    t.after(() => client.close());
+    await client.load('calc');
+    const got = [];
+    const handle = client.api.calc.feed.subscribe({}, { onData: (value) => got.push(value) });
+    await waitFor(() => served.feed.streams.size === 1, 'the handler is live');
+    served.push('one');
+    served.push('two');
+    await waitFor(() => got.length === 2, 'two values');
+    assert.match(handle.lastEventId, /\.1$/, 'the log labels every value');
+
+    const reconnected = onceEvent(client, 'reconnect');
+    first.b.close(); // the server side's channel dies
+    await within(reconnected, 'reconnected');
+    assert.strictEqual(calls, 2);
+    assert.strictEqual(attached.length, 2);
+    await waitFor(() => !rpc.clients.has(attached[0]) && rpc.clients.has(attached[1]), 'old client gone, new one in');
+    await waitFor(() => served.feed.streams.size === 1, 'the handler is live again');
+    served.push('three');
+    await waitFor(() => got.length === 3, 'resumed value');
+    assert.deepStrictEqual(got, ['one', 'two', 'three']);
+    assert.strictEqual(await client.api.calc.add({ a: 1, b: 1 }), 2);
+  });
+
+  it('should end a static channel cleanly with reconnect: false — it cannot come back', async (t) => {
+    const { pair, client } = await boot(t);
+    const failed = onceEvent(client, 'reconnect-failed');
+    pair.b.close();
+    await within(failed, 'reconnect-failed');
+    assert.strictEqual(client.active, false);
+  });
+
+  it('should serve a data channel as DTLS under encryption.required — unless told it is not', async (t) => {
+    const { generateKey } = require('../../src/encryption/index.js');
+    const served = routerOf({});
+    const rpc = new RpcServer({
+      router: served.router,
+      logger: quiet,
+      encryption: { keys: generateKey(), required: true },
+    });
+    t.after(() => rpc.close());
+    const pair = await rawChannelPair(t);
+    const attached = attachChannel(rpc, pair.b, { peer: 'dtls' });
+    assert.strictEqual(rpc.getClient(attached.id), attached, 'vouched for by default: an RTCDataChannel is DTLS');
+    const client = await WrpcClient.connect('webrtc:server', {
+      transport: 'webrtc',
+      channel: pair.a,
+      heartbeat: false,
+      reconnect: false,
+    });
+    t.after(() => client.close());
+    await client.load('calc');
+    assert.strictEqual(await client.api.calc.add({ a: 1, b: 1 }), 2);
+    // A channel the application knows to be relayed in the clear is refused.
+    const relayed = await rawChannelPair(t);
+    assert.throws(() => attachChannel(rpc, relayed.b, { encrypted: false }), /encryption is required/);
+  });
+
+  it('should log a framing error from the client and close the channel', async (t) => {
+    const warnings = [];
+    const logger = { ...quiet, warn: (entry) => warnings.push(entry), child: () => logger };
+    const { rpc, pair, attached } = await boot(t, { logger, attach: { peer: 'bad' } });
+    pair.a.send(new Uint8Array([0b11111111, 1]));
+    await waitFor(() => !rpc.clients.has(attached), 'detached');
+    const warned = warnings.find((entry) => entry.event === 'rtc.channel.error');
+    assert.ok(warned, `expected an rtc.channel.error warning: ${JSON.stringify(warnings)}`);
+    assert.strictEqual(warned.peer, 'bad');
+    assert.strictEqual(warned.err.name, 'FramingError');
+    // 'closing' first: the close completes a turn after the client is gone.
+    await waitFor(() => pair.b.readyState === 'closed', 'the channel closed');
+  });
+
+  it('should take an empty continuation fragment for a framing error too', async (t) => {
+    const warnings = [];
+    const logger = { ...quiet, warn: (entry) => warnings.push(entry), child: () => logger };
+    const { rpc, pair, attached } = await boot(t, { logger, attach: { peer: 'bad' } });
+    // KIND_BINARY without FIN and without a payload byte.
+    pair.a.send(new Uint8Array([0b01]));
+    await waitFor(() => !rpc.clients.has(attached), 'detached');
+    const warned = warnings.find((entry) => entry.event === 'rtc.channel.error');
+    assert.strictEqual(warned?.err.code, 'empty', `expected the empty-fragment refusal: ${JSON.stringify(warnings)}`);
+    await waitFor(() => pair.b.readyState === 'closed', 'the channel closed');
+  });
 });
 
-test('attachChannel: a framing error from the client is logged and closes the channel', async (t) => {
-  const warnings = [];
-  const logger = { ...quiet, warn: (entry) => warnings.push(entry), child: () => logger };
-  const { rpc, pair, attached } = await boot(t, { logger, attach: { peer: 'bad' } });
-  pair.a.send(new Uint8Array([0b11111111, 1]));
-  await waitFor(() => !rpc.clients.has(attached), 'detached');
-  const warned = warnings.find((entry) => entry.event === 'rtc.channel.error');
-  assert.ok(warned, `expected an rtc.channel.error warning: ${JSON.stringify(warnings)}`);
-  assert.strictEqual(warned.peer, 'bad');
-  assert.strictEqual(warned.err.name, 'FramingError');
-  // 'closing' first: the close completes a turn after the client is gone.
-  await waitFor(() => pair.b.readyState === 'closed', 'the channel closed');
-});
+describe('attach', () => {
+  it('should make a client of any persistent transport announcing packet/chunk, and refuse a non-persistent one', async (t) => {
+    const served = routerOf();
+    const rpc = new RpcServer({ router: served.router, logger: quiet });
+    t.after(() => rpc.close());
+    class FakeTransport extends Emitter {
+      kind = 'custom';
+      source = 'custom-peer';
+      connection = this;
+      written = [];
+      write(data) {
+        this.written.push(data);
+        return true;
+      }
+      send(obj) {
+        return this.write(JSON.stringify(obj));
+      }
+      error(code, { id = '' } = {}) {
+        return this.send({ type: 'callback', id, error: { code } });
+      }
+      close() {
+        void this.emit('close');
+      }
+    }
+    const transport = new FakeTransport();
+    const client = rpc.attach(transport);
+    assert.strictEqual(client.persistent, true);
+    assert.strictEqual(client.transportKind, 'custom');
+    assert.strictEqual(client.source, 'custom-peer');
+    void transport.emit('packet', JSON.stringify({ type: 'call', id: 'c1', method: 'calc/add', args: { a: 1, b: 2 } }));
+    await waitFor(() => transport.written.length === 1, 'the answer');
+    assert.deepStrictEqual(JSON.parse(transport.written[0]), { type: 'callback', id: 'c1', result: 3 });
+    // A chunk for a stream nobody opened is dropped, never a crash.
+    void transport.emit('chunk', chunkEncode('nope', new Uint8Array([1])));
+    await timers.setTimeout(5);
+    transport.close();
+    await waitFor(() => !rpc.clients.has(client), 'detached');
+    assert.throws(() => rpc.attach({ write() {}, close() {}, on() {}, once() {} }), /persistent transport/);
+    assert.throws(() => rpc.attach(null), TypeError);
+  });
 
-test('attachChannel: an empty continuation fragment is a framing error too', async (t) => {
-  const warnings = [];
-  const logger = { ...quiet, warn: (entry) => warnings.push(entry), child: () => logger };
-  const { rpc, pair, attached } = await boot(t, { logger, attach: { peer: 'bad' } });
-  // KIND_BINARY without FIN and without a payload byte.
-  pair.a.send(new Uint8Array([0b01]));
-  await waitFor(() => !rpc.clients.has(attached), 'detached');
-  const warned = warnings.find((entry) => entry.event === 'rtc.channel.error');
-  assert.strictEqual(warned?.err.code, 'empty', `expected the empty-fragment refusal: ${JSON.stringify(warnings)}`);
-  await waitFor(() => pair.b.readyState === 'closed', 'the channel closed');
-});
-
-test('attach: any persistent transport announcing packet/chunk is a client; a non-persistent one is refused', async (t) => {
-  const served = routerOf();
-  const rpc = new RpcServer({ router: served.router, logger: quiet });
-  t.after(() => rpc.close());
-  class FakeTransport extends Emitter {
-    kind = 'custom';
-    source = 'custom-peer';
-    connection = this;
-    written = [];
-    write(data) {
-      this.written.push(data);
-      return true;
-    }
-    send(obj) {
-      return this.write(JSON.stringify(obj));
-    }
-    error(code, { id = '' } = {}) {
-      return this.send({ type: 'callback', id, error: { code } });
-    }
-    close() {
-      void this.emit('close');
-    }
-  }
-  const transport = new FakeTransport();
-  const client = rpc.attach(transport);
-  assert.strictEqual(client.persistent, true);
-  assert.strictEqual(client.transportKind, 'custom');
-  assert.strictEqual(client.source, 'custom-peer');
-  void transport.emit('packet', JSON.stringify({ type: 'call', id: 'c1', method: 'calc/add', args: { a: 1, b: 2 } }));
-  await waitFor(() => transport.written.length === 1, 'the answer');
-  assert.deepStrictEqual(JSON.parse(transport.written[0]), { type: 'callback', id: 'c1', result: 3 });
-  // A chunk for a stream nobody opened is dropped, never a crash.
-  void transport.emit('chunk', chunkEncode('nope', new Uint8Array([1])));
-  await timers.setTimeout(5);
-  transport.close();
-  await waitFor(() => !rpc.clients.has(client), 'detached');
-  assert.throws(() => rpc.attach({ write() {}, close() {}, on() {}, once() {} }), /persistent transport/);
-  assert.throws(() => rpc.attach(null), TypeError);
-});
-
-test('attach: the transport registered under the webrtc name is the one the client picks', () => {
-  assert.strictEqual(WrpcClient.transport.webrtc, ClientRtcTransport);
-  assert.throws(() => attachChannel({}, {}), /server with attach/);
+  it('should have the client pick the transport registered under the webrtc name', () => {
+    assert.strictEqual(WrpcClient.transport.webrtc, ClientRtcTransport);
+    assert.throws(() => attachChannel({}, {}), /server with attach/);
+  });
 });

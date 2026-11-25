@@ -6,8 +6,8 @@
 // properties on a unit Emitter), and that a subscription opened through the
 // bridge really delivers server values into the cache.
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 
 const { Server, connect, defineRouter, procedure, tracked } = require('../../index.js');
 const { createQueryUtils } = require('../../src/query/index.js');
@@ -76,67 +76,69 @@ const boot = async (t) => {
   return { server, client };
 };
 
-test('query integration: queryFn and mutationFn call through a real client', async (t) => {
-  const { client } = await boot(t);
-  const wq = createQueryUtils(client);
+describe('./query with a real client', () => {
+  it('should call queryFn and mutationFn through a real client', async (t) => {
+    const { client } = await boot(t);
+    const wq = createQueryUtils(client);
 
-  const list = wq.queryOptions(['chat', 'list'], { room: 'a' });
-  assert.deepStrictEqual(await list.queryFn(), [{ id: '1', room: 'a' }]);
-  assert.deepStrictEqual(list.queryKey, ['chat', 'list', { room: 'a' }]);
+    const list = wq.queryOptions(['chat', 'list'], { room: 'a' });
+    assert.deepStrictEqual(await list.queryFn(), [{ id: '1', room: 'a' }]);
+    assert.deepStrictEqual(list.queryKey, ['chat', 'list', { room: 'a' }]);
 
-  const send = wq.mutationOptions(['chat', 'send']);
-  assert.deepStrictEqual(await send.mutationFn({ text: 'hi' }), { id: 'id-hi' });
-});
+    const send = wq.mutationOptions(['chat', 'send']);
+    assert.deepStrictEqual(await send.mutationFn({ text: 'hi' }), { id: 'id-hi' });
+  });
 
-test('query integration: the AbortSignal TanStack passes reaches the server', async (t) => {
-  const { client } = await boot(t);
-  const wq = createQueryUtils(client);
-  const controller = new AbortController();
-  const pending = wq.queryOptions(['chat', 'slow']).queryFn({ signal: controller.signal });
-  controller.abort();
-  // 499 is the wire code for "the caller took it back" — proof the signal was
-  // forwarded rather than dropped into the args object.
-  await assert.rejects(
-    () => pending,
-    (error) => error.code === 499,
-  );
-});
-
-test('query integration: Emitter methods on a real unit are not procedures', async (t) => {
-  const { client } = await boot(t);
-  const wq = createQueryUtils(client);
-  // `on` really is a function on the real unit object's prototype: without the
-  // own-property check this would call Emitter.prototype.on as a procedure.
-  assert.strictEqual(typeof client.api.chat.on, 'function');
-  await assert.rejects(() => wq.queryOptions(['chat', 'on']).queryFn(), /has no method 'on'/);
-  await assert.rejects(() => wq.queryOptions(['chat', 'nope']).queryFn(), /has no method 'nope'/);
-});
-
-test('query integration: a subscription lands in the cache', async (t) => {
-  const { client } = await boot(t);
-  const queryClient = cache();
-  const wq = createQueryUtils(client, { queryClient });
-
-  const key = ['messages', 'a'];
-  const ended = new Promise((resolve) => {
-    wq.subscriptionHandler(
-      ['chat', 'onMessage'],
-      { room: 'a' },
-      {
-        queryKey: key,
-        update: (previous, data) => [...(previous ?? []), data.text],
-        onEnd: resolve,
-      },
+  it('should bring the AbortSignal TanStack passes to the server', async (t) => {
+    const { client } = await boot(t);
+    const wq = createQueryUtils(client);
+    const controller = new AbortController();
+    const pending = wq.queryOptions(['chat', 'slow']).queryFn({ signal: controller.signal });
+    controller.abort();
+    // 499 is the wire code for "the caller took it back" — proof the signal was
+    // forwarded rather than dropped into the args object.
+    await assert.rejects(
+      () => pending,
+      (error) => error.code === 499,
     );
   });
-  await ended;
 
-  assert.deepStrictEqual(queryClient.read(key), ['one', 'two']);
-});
+  it('should not take Emitter methods on a real unit for procedures', async (t) => {
+    const { client } = await boot(t);
+    const wq = createQueryUtils(client);
+    // `on` really is a function on the real unit object's prototype: without the
+    // own-property check this would call Emitter.prototype.on as a procedure.
+    assert.strictEqual(typeof client.api.chat.on, 'function');
+    await assert.rejects(() => wq.queryOptions(['chat', 'on']).queryFn(), /has no method 'on'/);
+    await assert.rejects(() => wq.queryOptions(['chat', 'nope']).queryFn(), /has no method 'nope'/);
+  });
 
-test('query integration: a subscription path is refused as a query, and vice versa', async (t) => {
-  const { client } = await boot(t);
-  const wq = createQueryUtils(client, { queryClient: cache() });
-  await assert.rejects(() => wq.queryOptions(['chat', 'onMessage']).queryFn(), /is a subscription/);
-  assert.throws(() => wq.subscriptionHandler(['chat', 'list']), /is a call/);
+  it('should land a subscription in the cache', async (t) => {
+    const { client } = await boot(t);
+    const queryClient = cache();
+    const wq = createQueryUtils(client, { queryClient });
+
+    const key = ['messages', 'a'];
+    const ended = new Promise((resolve) => {
+      wq.subscriptionHandler(
+        ['chat', 'onMessage'],
+        { room: 'a' },
+        {
+          queryKey: key,
+          update: (previous, data) => [...(previous ?? []), data.text],
+          onEnd: resolve,
+        },
+      );
+    });
+    await ended;
+
+    assert.deepStrictEqual(queryClient.read(key), ['one', 'two']);
+  });
+
+  it('should refuse a subscription path as a query, and vice versa', async (t) => {
+    const { client } = await boot(t);
+    const wq = createQueryUtils(client, { queryClient: cache() });
+    await assert.rejects(() => wq.queryOptions(['chat', 'onMessage']).queryFn(), /is a subscription/);
+    assert.throws(() => wq.subscriptionHandler(['chat', 'list']), /is a call/);
+  });
 });

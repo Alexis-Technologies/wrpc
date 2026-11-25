@@ -12,8 +12,8 @@
 //
 //   node scripts/wt-cert.js certs && WRPC_WT=fails node --test tests/wt/fails.integration.test.js
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 
@@ -24,11 +24,12 @@ const { bootServer, connectClient, waitFor } = require('../helpers/server.js');
 
 const enabled = process.env.WRPC_WT === 'fails';
 const certsDir = path.resolve(process.env.WRPC_WT_CERTS ?? 'certs');
-const skip = !enabled
-  ? 'set WRPC_WT=fails'
-  : !fs.existsSync(path.join(certsDir, 'wt-cert.pem'))
-    ? `no certificate: node scripts/wt-cert.js ${certsDir}`
-    : false;
+const skipReason = () => {
+  if (!enabled) return 'set WRPC_WT=fails';
+  if (!fs.existsSync(path.join(certsDir, 'wt-cert.pem'))) return `no certificate: node scripts/wt-cert.js ${certsDir}`;
+  return false;
+};
+const skip = skipReason();
 
 const boot = async (t, options = {}) => {
   const { Http3Server, WebTransport, quicheLoaded } = await import('@fails-components/webtransport');
@@ -91,50 +92,52 @@ const boot = async (t, options = {}) => {
   return { server, errors, url, wt };
 };
 
-test('wt fails: calls, subscriptions and binary streams over a real HTTP/3 session', { skip }, async (t) => {
-  const { server, errors, url, wt } = await boot(t);
-  const client = await connectClient(t, url, { transport: 'wt', wt, headers: { 'x-device': 'node' } });
-  await client.load('chat');
-  assert.strictEqual(await client.api.chat.hello({ name: 'ann' }), 'hi ann over wt');
-  await waitFor(() => server.rpc.clients.size === 1, 'attached');
-  const [attached] = server.rpc.clients;
-  assert.strictEqual(attached.transportKind, 'wt');
-  assert.strictEqual(attached.meta.headers['x-device'], 'node');
-  assert.ok(attached.meta.remoteAddress, 'the peer address is observed');
-  const seen = [];
-  for await (const value of client.api.chat.ticks.iterate({})) {
-    seen.push(value.i);
-    if (seen.length === 3) break;
-  }
-  assert.deepStrictEqual(seen, [0, 1, 2]);
-  const upload = client.createStream('blob', 1_000_000);
-  upload.write(new Uint8Array(1_000_000));
-  upload.end();
-  const back = await client.api.chat.echo({ stream: upload.id });
-  let received = 0;
-  for await (const chunk of client.getStream(back)) received += chunk.length;
-  assert.strictEqual(received, 1_000_000);
-  assert.deepStrictEqual(errors, []);
-  client.close();
-  await waitFor(() => server.rpc.clients.size === 0, 'detached');
-});
-
-test('wt fails: a bearer session survives a reconnect over HTTP/3', { skip }, async (t) => {
-  const { server, url, wt } = await boot(t, { sessions: { transport: bearerTransport() } });
-  const store = memoryStore();
-  const client = await connectClient(t, url, {
-    transport: 'wt',
-    wt,
-    reconnect: { minDelay: 5, maxDelay: 20, jitter: false, retries: 5 },
-    ...bearerAuth({ store, signIn: (c) => c.call('chat/login', { user: 'ann' }) }),
+describe('wt fails', () => {
+  it('should carry calls, subscriptions and binary streams over a real HTTP/3 session', { skip }, async (t) => {
+    const { server, errors, url, wt } = await boot(t);
+    const client = await connectClient(t, url, { transport: 'wt', wt, headers: { 'x-device': 'node' } });
+    await client.load('chat');
+    assert.strictEqual(await client.api.chat.hello({ name: 'ann' }), 'hi ann over wt');
+    await waitFor(() => server.rpc.clients.size === 1, 'attached');
+    const [attached] = server.rpc.clients;
+    assert.strictEqual(attached.transportKind, 'wt');
+    assert.strictEqual(attached.meta.headers['x-device'], 'node');
+    assert.ok(attached.meta.remoteAddress, 'the peer address is observed');
+    const seen = [];
+    for await (const value of client.api.chat.ticks.iterate({})) {
+      seen.push(value.i);
+      if (seen.length === 3) break;
+    }
+    assert.deepStrictEqual(seen, [0, 1, 2]);
+    const upload = client.createStream('blob', 1_000_000);
+    upload.write(new Uint8Array(1_000_000));
+    upload.end();
+    const back = await client.api.chat.echo({ stream: upload.id });
+    let received = 0;
+    for await (const chunk of client.getStream(back)) received += chunk.length;
+    assert.strictEqual(received, 1_000_000);
+    assert.deepStrictEqual(errors, []);
+    client.close();
+    await waitFor(() => server.rpc.clients.size === 0, 'detached');
   });
-  await client.load('chat');
-  assert.strictEqual(await client.api.chat.whoami({}), 'ann');
-  const reconnected = new Promise((resolve) => client.once('reconnect', resolve));
-  // The server drops the connection (1001); the client comes back over a
-  // fresh HTTP/3 session and presents the stored token again.
-  const [attached] = server.rpc.clients;
-  attached.close();
-  await reconnected;
-  assert.strictEqual(await client.api.chat.whoami({}), 'ann');
+
+  it('should keep a bearer session across a reconnect over HTTP/3', { skip }, async (t) => {
+    const { server, url, wt } = await boot(t, { sessions: { transport: bearerTransport() } });
+    const store = memoryStore();
+    const client = await connectClient(t, url, {
+      transport: 'wt',
+      wt,
+      reconnect: { minDelay: 5, maxDelay: 20, jitter: false, retries: 5 },
+      ...bearerAuth({ store, signIn: (c) => c.call('chat/login', { user: 'ann' }) }),
+    });
+    await client.load('chat');
+    assert.strictEqual(await client.api.chat.whoami({}), 'ann');
+    const reconnected = new Promise((resolve) => client.once('reconnect', resolve));
+    // The server drops the connection (1001); the client comes back over a
+    // fresh HTTP/3 session and presents the stored token again.
+    const [attached] = server.rpc.clients;
+    attached.close();
+    await reconnected;
+    assert.strictEqual(await client.api.chat.whoami({}), 'ann');
+  });
 });

@@ -7,12 +7,17 @@
 //
 //   harness.createAdapter()  -> an RtcAdapter (fresh world per call)
 //   harness.configuration?   -> the RTCConfiguration to pass (default {})
+//   options.skip?            -> a skip reason given to every case (default none)
+//
+// Call it inside the caller's `describe`: it registers one `it` per case
+// there, synchronously, the same cases whether or not they are skipped.
 //
 // The suite does its own loopback signaling — offer/answer through
 // setLocalDescription() and trickle candidates both ways — so an
 // implementation is exercised through the exact calls the link makes.
 
-const assert = require('node:assert');
+const { it } = require('node:test');
+const assert = require('node:assert/strict');
 const timers = require('node:timers/promises');
 
 const { isRtcAdapter, isRtcPeerConnection, isRtcDataChannel } = require('../../src/webrtc/port.js');
@@ -71,18 +76,18 @@ const connectPair = async (a, b) => {
   await flushB();
 };
 
-const runRtcPortContract = async (harness, t) => {
+const runRtcPortContract = (harness, { skip = false } = {}) => {
   const { createAdapter, configuration = {} } = typeof harness === 'function' ? { createAdapter: harness } : harness;
 
   // Two peers with both negotiated channels created BEFORE the offer (an
   // m=application section needs at least one channel to exist), connected
-  // through loopback signaling. Teardown is a sub.after hook so a failed
-  // assertion never leaves a native peer connection behind.
-  const pair = async (sub) => {
+  // through loopback signaling. Teardown is a t.after hook of the case so a
+  // failed assertion never leaves a native peer connection behind.
+  const pair = async (t) => {
     const adapter = createAdapter();
     const a = adapter.createPeerConnection(configuration);
     const b = adapter.createPeerConnection(configuration);
-    sub.after(() => {
+    t.after(() => {
       a.close();
       b.close();
       adapter.world?.close?.();
@@ -104,19 +109,19 @@ const runRtcPortContract = async (harness, t) => {
     return { adapter, a, b, channels };
   };
 
-  const connected = async (sub) => {
-    const booted = await pair(sub);
+  const connected = async (t) => {
+    const booted = await pair(t);
     await connectPair(booted.a, booted.b);
     const { a: ca, b: cb } = booted.channels;
     await within(Promise.all([opened(ca.client), opened(ca.host), opened(cb.client), opened(cb.host)]), 'channels');
     return booted;
   };
 
-  await t.test('adapter and peer connection satisfy the port shape', async (sub) => {
+  it('should satisfy the port shape with the adapter and the peer connection', { skip }, async (t) => {
     const adapter = createAdapter();
     assert.strictEqual(isRtcAdapter(adapter), true);
     const fresh = adapter.createPeerConnection(configuration);
-    sub.after(() => {
+    t.after(() => {
       fresh.close();
       adapter.world?.close?.();
     });
@@ -131,8 +136,8 @@ const runRtcPortContract = async (harness, t) => {
     assert.ok(['stable', 'have-local-offer'].includes(fresh.signalingState), fresh.signalingState);
   });
 
-  await t.test('negotiated channels open on both ends after one offer/answer', async (sub) => {
-    const { a, b, channels } = await connected(sub);
+  it('should open negotiated channels on both ends after one offer/answer', { skip }, async (t) => {
+    const { a, b, channels } = await connected(t);
     for (const channel of [channels.a.client, channels.a.host, channels.b.client, channels.b.host]) {
       assert.strictEqual(isRtcDataChannel(channel), true);
       assert.strictEqual(channel.readyState, 'open');
@@ -147,15 +152,15 @@ const runRtcPortContract = async (harness, t) => {
     assert.strictEqual(b.signalingState, 'stable');
   });
 
-  await t.test('sctp reports a positive maxMessageSize once connected, or is null', async (sub) => {
-    const { a } = await connected(sub);
+  it('should report a positive sctp maxMessageSize once connected, or a null sctp', { skip }, async (t) => {
+    const { a } = await connected(t);
     if (a.sctp === null) return;
     assert.strictEqual(typeof a.sctp.maxMessageSize, 'number');
     assert.ok(a.sctp.maxMessageSize > 0, 'maxMessageSize must be positive');
   });
 
-  await t.test('text, ArrayBuffer and Uint8Array messages arrive in order on the paired channel', async (sub) => {
-    const { channels } = await connected(sub);
+  it('should deliver text, ArrayBuffer and Uint8Array messages in order on the paired channel', { skip }, async (t) => {
+    const { channels } = await connected(t);
     const received = [];
     channels.b.client.addEventListener('message', ({ data }) => received.push(data));
     channels.a.client.send('one');
@@ -176,8 +181,8 @@ const runRtcPortContract = async (harness, t) => {
   // a view of it, overwritten by the next. An implementation — or a wrapper
   // around one — that keeps the view, or sends the whole ArrayBuffer under
   // it, delivers the last fragment over and over.
-  await t.test("send() copies before it returns and honours the view's offset and length", async (sub) => {
-    const { channels } = await connected(sub);
+  it("should copy in send() before it returns and honour the view's offset and length", { skip }, async (t) => {
+    const { channels } = await connected(t);
     const received = [];
     channels.b.client.addEventListener('message', ({ data }) => received.push(new Uint8Array(data)));
     const scratch = new Uint8Array(64);
@@ -194,8 +199,8 @@ const runRtcPortContract = async (harness, t) => {
     assert.deepStrictEqual(received[1], new Uint8Array(16).fill(2), 'its own length, not the buffer under it');
   });
 
-  await t.test('the other channel is independent: host traffic never crosses into client', async (sub) => {
-    const { channels } = await connected(sub);
+  it('should keep the other channel independent: host traffic never crosses into client', { skip }, async (t) => {
+    const { channels } = await connected(t);
     const onClient = [];
     const onHost = [];
     channels.b.client.addEventListener('message', ({ data }) => onClient.push(data));
@@ -210,8 +215,8 @@ const runRtcPortContract = async (harness, t) => {
     assert.deepStrictEqual(onHost, ['h']);
   });
 
-  await t.test('bufferedAmount counts what is in flight and drains to zero', async (sub) => {
-    const { channels } = await connected(sub);
+  it('should count what is in flight in bufferedAmount and drain it to zero', { skip }, async (t) => {
+    const { channels } = await connected(t);
     const payload = new Uint8Array(1024);
     channels.a.client.send(payload);
     assert.ok(channels.a.client.bufferedAmount >= 0);
@@ -222,14 +227,14 @@ const runRtcPortContract = async (harness, t) => {
     assert.strictEqual(typeof channels.a.client.bufferedAmountLowThreshold, 'number');
   });
 
-  await t.test('send() on a channel that is not open throws', async (sub) => {
-    const { channels } = await pair(sub);
+  it('should throw from send() on a channel that is not open', { skip }, async (t) => {
+    const { channels } = await pair(t);
     assert.strictEqual(channels.a.client.readyState, 'connecting');
     assert.throws(() => channels.a.client.send('early'));
   });
 
-  await t.test('closing a channel closes its pair; closing the connection closes everything', async (sub) => {
-    const { a, b, channels } = await connected(sub);
+  it('should close the pair of a closed channel, and everything when the connection closes', { skip }, async (t) => {
+    const { a, b, channels } = await connected(t);
     const bClientClosed = once(channels.b.client, 'close');
     channels.a.client.close();
     await within(bClientClosed, "the pair's close");
@@ -251,8 +256,8 @@ const runRtcPortContract = async (harness, t) => {
     b.close();
   });
 
-  await t.test('addIceCandidate before a remote description rejects', async (sub) => {
-    const { a } = await pair(sub);
+  it('should reject addIceCandidate before a remote description', { skip }, async (t) => {
+    const { a } = await pair(t);
     await assert.rejects(a.addIceCandidate({ candidate: 'candidate:x 1 udp 1 192.0.2.9 1 typ host', sdpMid: '0' }));
   });
 };

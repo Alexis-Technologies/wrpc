@@ -5,15 +5,15 @@
 // over its in-repo ioredis-shaped fake. The same suite runs against a real
 // Redis in tests/broker/redis.integration.test.js.
 
-const { test } = require('node:test');
+const { describe } = require('node:test');
 
 const { MemoryBackplane, createRedisAdapter } = require('../../src/scaling/index.js');
 const { runBackplaneContract } = require('../broker/backplaneContract.js');
 const { quiet } = require('../broker/support.js');
 const { FakeRedis } = require('./fakeRedis.js');
 
-test('MemoryBackplane: backplane contract', async (t) => {
-  await runBackplaneContract(t, 'memory backplane', {
+describe('MemoryBackplane', () => {
+  runBackplaneContract('backplane contract', {
     open: async () => {
       const backplane = new MemoryBackplane({ logger: quiet });
       return [backplane, backplane];
@@ -22,8 +22,8 @@ test('MemoryBackplane: backplane contract', async (t) => {
   });
 });
 
-test('createRedisAdapter (fake): backplane contract', async (t) => {
-  await runBackplaneContract(t, 'redis adapter over the fake', {
+describe('createRedisAdapter (fake)', () => {
+  runBackplaneContract('backplane contract', {
     open: async () => {
       const pub = new FakeRedis();
       return [createRedisAdapter({ pub, logger: quiet }), createRedisAdapter({ pub: pub.duplicate(), logger: quiet })];

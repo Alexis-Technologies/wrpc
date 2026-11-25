@@ -1,7 +1,7 @@
 'use strict';
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 const path = require('node:path');
 const os = require('node:os');
 const { mkdtemp, readFile, rm } = require('node:fs/promises');
@@ -52,519 +52,667 @@ const answer = (packet, overrides = {}) => ({
   ...overrides,
 });
 
-// ---------------------------------------------------------------------------
-// argv
+describe('CLI parseArgs', () => {
+  // ---------------------------------------------------------------------------
+  // argv
 
-test('CLI parseArgs: the happy paths', () => {
-  const parsed = parseArgs(['types', 'http://h/api', '--out', 'api.d.ts']);
-  assert.strictEqual(parsed.url, 'http://h/api');
-  assert.strictEqual(parsed.out, 'api.d.ts');
-  assert.strictEqual(parsed.interfaceName, 'Api');
-  assert.strictEqual(parsed.packageName, '@alexify/wrpc');
-  assert.deepStrictEqual(parsed.units, []);
+  it('should parse the happy paths', () => {
+    const parsed = parseArgs(['types', 'http://h/api', '--out', 'api.d.ts']);
+    assert.strictEqual(parsed.url, 'http://h/api');
+    assert.strictEqual(parsed.out, 'api.d.ts');
+    assert.strictEqual(parsed.interfaceName, 'Api');
+    assert.strictEqual(parsed.packageName, '@alexify/wrpc');
+    assert.deepStrictEqual(parsed.units, []);
 
-  const full = parseArgs([
-    'types',
-    'http://h/api',
-    '--out',
-    '-',
-    '--units',
-    'chat, auth.v1',
-    '--units',
-    'presence',
-    '--interface',
-    'Contract',
-    '--package',
-    '../wrpc',
-  ]);
-  assert.strictEqual(full.out, '-');
-  assert.deepStrictEqual(full.units, ['chat', 'auth.v1', 'presence']);
-  assert.strictEqual(full.interfaceName, 'Contract');
-  assert.strictEqual(full.packageName, '../wrpc');
+    const full = parseArgs([
+      'types',
+      'http://h/api',
+      '--out',
+      '-',
+      '--units',
+      'chat, auth.v1',
+      '--units',
+      'presence',
+      '--interface',
+      'Contract',
+      '--package',
+      '../wrpc',
+    ]);
+    assert.strictEqual(full.out, '-');
+    assert.deepStrictEqual(full.units, ['chat', 'auth.v1', 'presence']);
+    assert.strictEqual(full.interfaceName, 'Contract');
+    assert.strictEqual(full.packageName, '../wrpc');
 
-  assert.deepStrictEqual(parseArgs(['--help']), { help: true });
-  assert.deepStrictEqual(parseArgs(['-h']), { help: true });
-  assert.deepStrictEqual(parseArgs(['--version']), { version: true });
-  assert.deepStrictEqual(parseArgs(['-v']), { version: true });
-  // --help wins wherever it appears, even after a broken argument list
-  assert.deepStrictEqual(parseArgs(['types', '--help']), { help: true });
-});
+    assert.deepStrictEqual(parseArgs(['--help']), { help: true });
+    assert.deepStrictEqual(parseArgs(['-h']), { help: true });
+    assert.deepStrictEqual(parseArgs(['--version']), { version: true });
+    assert.deepStrictEqual(parseArgs(['-v']), { version: true });
+    // --help wins wherever it appears, even after a broken argument list
+    assert.deepStrictEqual(parseArgs(['types', '--help']), { help: true });
+  });
 
-test("CLI parseArgs: '--' ends option parsing", () => {
-  const parsed = parseArgs(['--out', 'api.d.ts', '--', 'types', 'http://h/api']);
-  assert.strictEqual(parsed.url, 'http://h/api');
-  // ...so a URL that looks like a flag is still a URL
-  const dashed = parseArgs(['--out', '-', '--', 'types', '--weird-host/api']);
-  assert.strictEqual(dashed.url, '--weird-host/api');
-});
+  it("should end option parsing at '--'", () => {
+    const parsed = parseArgs(['--out', 'api.d.ts', '--', 'types', 'http://h/api']);
+    assert.strictEqual(parsed.url, 'http://h/api');
+    // ...so a URL that looks like a flag is still a URL
+    const dashed = parseArgs(['--out', '-', '--', 'types', '--weird-host/api']);
+    assert.strictEqual(dashed.url, '--weird-host/api');
+  });
 
-test('CLI parseArgs: rejects every malformed invocation', () => {
-  const rejects = (argv, needle) => {
-    assert.throws(
-      () => parseArgs(argv),
-      (error) => {
-        assert.ok(error instanceof CliError, `${needle}: expected a CliError, got ${error}`);
-        assert.match(error.message, needle);
-        return true;
-      },
-      `expected ${JSON.stringify(argv)} to be rejected`,
+  it('should reject every malformed invocation', () => {
+    const rejects = (argv, needle) => {
+      assert.throws(
+        () => parseArgs(argv),
+        (error) => {
+          assert.ok(error instanceof CliError, `${needle}: expected a CliError, got ${error}`);
+          assert.match(error.message, needle);
+          return true;
+        },
+        `expected ${JSON.stringify(argv)} to be rejected`,
+      );
+    };
+
+    rejects([], /Missing command/);
+    rejects(['serve', 'http://h', '--out', 'x'], /Unknown command 'serve'/);
+    rejects(['types'], /Missing <url>/);
+    rejects(['types', 'http://h'], /Missing --out/);
+    rejects(['types', 'http://h', 'extra', '--out', 'x'], /Unexpected argument 'extra'/);
+    rejects(['types', 'http://h', '--nope'], /Unknown option --nope/);
+    // A flag with no value must not swallow the next flag
+    rejects(['types', 'http://h', '--out'], /--out requires a value/);
+    rejects(['types', 'http://h', '--out', '--units', 'chat'], /--out requires a value/);
+    rejects(['types', 'http://h', '--units'], /--units requires a value/);
+    rejects(['types', 'http://h', '--out', 'x', '--units', 'chat,,auth'], /must not contain an empty unit/);
+    rejects(['types', 'http://h', '--out', 'x', '--interface', 'not an identifier'], /valid TypeScript identifier/);
+    rejects(['types', 'http://h', '--out', 'x', '--interface', '1Api'], /valid TypeScript identifier/);
+  });
+
+  // ---------------------------------------------------------------------------
+  // --schema: the static introspection artifact
+
+  it('should parse --schema and --format', () => {
+    const parsed = parseArgs(['types', 'http://h/api', '--out', 'api.d.ts', '--schema', 'api.static.js']);
+    assert.strictEqual(parsed.schema, 'api.static.js');
+    assert.strictEqual(parsed.format, 'cjs', 'cjs is the default format');
+    const esm = parseArgs(['types', 'http://h/api', '--out', '-', '--schema', 'api.static.js', '--format', 'esm']);
+    assert.strictEqual(esm.format, 'esm');
+
+    const rejects = (argv, needle) => {
+      assert.throws(
+        () => parseArgs(argv),
+        (error) => {
+          assert.ok(error instanceof CliError, `${needle}: expected a CliError, got ${error}`);
+          assert.match(error.message, needle);
+          return true;
+        },
+      );
+    };
+    rejects(['types', 'http://h', '--out', 'x', '--format', 'esm'], /--format only applies to --schema/);
+    rejects(
+      ['types', 'http://h', '--out', 'x', '--schema', 's.js', '--format', 'umd'],
+      /--format must be 'cjs' or 'esm'/,
     );
-  };
+    rejects(
+      ['types', 'http://h', '--out', '-', '--schema', '-'],
+      /one of --out, --schema and --openapi may write to stdout/,
+    );
+    rejects(['types', 'http://h', '--out', 'x', '--schema'], /--schema requires a value/);
+  });
 
-  rejects([], /Missing command/);
-  rejects(['serve', 'http://h', '--out', 'x'], /Unknown command 'serve'/);
-  rejects(['types'], /Missing <url>/);
-  rejects(['types', 'http://h'], /Missing --out/);
-  rejects(['types', 'http://h', 'extra', '--out', 'x'], /Unexpected argument 'extra'/);
-  rejects(['types', 'http://h', '--nope'], /Unknown option --nope/);
-  // A flag with no value must not swallow the next flag
-  rejects(['types', 'http://h', '--out'], /--out requires a value/);
-  rejects(['types', 'http://h', '--out', '--units', 'chat'], /--out requires a value/);
-  rejects(['types', 'http://h', '--units'], /--units requires a value/);
-  rejects(['types', 'http://h', '--out', 'x', '--units', 'chat,,auth'], /must not contain an empty unit/);
-  rejects(['types', 'http://h', '--out', 'x', '--interface', 'not an identifier'], /valid TypeScript identifier/);
-  rejects(['types', 'http://h', '--out', 'x', '--interface', '1Api'], /valid TypeScript identifier/);
+  it('should let --openapi ride along, one stdout at most', () => {
+    const options = parseArgs(['types', 'http://x/api', '--out', 'api.d.ts', '--openapi', 'openapi.json']);
+    assert.strictEqual(options.openapi, 'openapi.json');
+    assert.throws(() => parseArgs(['types', 'http://x/api', '--out', '-', '--openapi', '-']), /one of/);
+  });
+
+  it('should take --timeout as a whole number of milliseconds', () => {
+    const base = ['types', 'http://h/api', '--out', 'x'];
+    assert.strictEqual(parseArgs(base).timeout, 30_000);
+    assert.strictEqual(parseArgs([...base, '--timeout', '1500']).timeout, 1500);
+    for (const bad of ['0', '1.5', 'soon', '1e400', String(2 ** 31)]) {
+      assert.throws(() => parseArgs([...base, '--timeout', bad]), /--timeout must be a whole number/, bad);
+    }
+    assert.throws(() => parseArgs([...base, '--timeout']), /--timeout requires a value/);
+    assert.match(USAGE, /--timeout <ms>/);
+  });
 });
 
-// ---------------------------------------------------------------------------
-// rendering
+describe('CLI quoteKey', () => {
+  // ---------------------------------------------------------------------------
+  // rendering
 
-test('CLI quoteKey: bare identifiers, safely quoted everything else', () => {
-  assert.strictEqual(quoteKey('chat'), 'chat');
-  assert.strictEqual(quoteKey('_$x0'), '_$x0');
-  assert.strictEqual(quoteKey('auth.v1'), "'auth.v1'");
-  assert.strictEqual(quoteKey('weird-name'), "'weird-name'");
-  assert.strictEqual(quoteKey('1st'), "'1st'");
-  // Anything that needed escaping keeps JSON's quoting, which is what makes it safe
-  assert.strictEqual(quoteKey('a\nb'), '"a\\nb"');
-  assert.strictEqual(quoteKey('x"y'), '"x\\"y"');
-  assert.strictEqual(quoteKey('back\\slash'), '"back\\\\slash"');
-  assert.strictEqual(quoteKey("it's"), '"it\'s"');
+  it('should leave bare identifiers bare, and quote everything else safely', () => {
+    assert.strictEqual(quoteKey('chat'), 'chat');
+    assert.strictEqual(quoteKey('_$x0'), '_$x0');
+    assert.strictEqual(quoteKey('auth.v1'), "'auth.v1'");
+    assert.strictEqual(quoteKey('weird-name'), "'weird-name'");
+    assert.strictEqual(quoteKey('1st'), "'1st'");
+    // Anything that needed escaping keeps JSON's quoting, which is what makes it safe
+    assert.strictEqual(quoteKey('a\nb'), '"a\\nb"');
+    assert.strictEqual(quoteKey('x"y'), '"x\\"y"');
+    assert.strictEqual(quoteKey('back\\slash'), '"back\\\\slash"');
+    assert.strictEqual(quoteKey("it's"), '"it\'s"');
+  });
 });
 
-test('CLI renderType: type names, arrays and unions', () => {
-  const warn = warner();
-  assert.strictEqual(renderType('string', warn), 'string');
-  assert.strictEqual(renderType('number[]', warn), 'number[]');
-  assert.strictEqual(renderType('boolean[][]', warn), 'boolean[][]');
-  assert.strictEqual(renderType('string|number', warn), 'string | number');
-  assert.strictEqual(renderType(' string | null ', warn), 'string | null');
-  assert.strictEqual(renderType(['string'], warn), 'Array<string>');
-  assert.strictEqual(renderType([{ id: 'string' }], warn), 'Array<{ id: string }>');
-  assert.deepStrictEqual(warn.warnings, []);
+describe('CLI renderType', () => {
+  it('should render type names, arrays and unions', () => {
+    const warn = warner();
+    assert.strictEqual(renderType('string', warn), 'string');
+    assert.strictEqual(renderType('number[]', warn), 'number[]');
+    assert.strictEqual(renderType('boolean[][]', warn), 'boolean[][]');
+    assert.strictEqual(renderType('string|number', warn), 'string | number');
+    assert.strictEqual(renderType(' string | null ', warn), 'string | null');
+    assert.strictEqual(renderType(['string'], warn), 'Array<string>');
+    assert.strictEqual(renderType([{ id: 'string' }], warn), 'Array<{ id: string }>');
+    assert.deepStrictEqual(warn.warnings, []);
+  });
+
+  it('should degrade an unknown type name to unknown and say so', () => {
+    const warn = warner();
+    // The allowlist is the whole defence: a descriptor is data, and this is
+    // where a hostile one would otherwise become code.
+    assert.strictEqual(renderType('string; export const boom = 1; type Z = ', warn), 'unknown');
+    assert.strictEqual(renderType('Date', warn), 'unknown');
+    assert.strictEqual(renderType('string|', warn), 'unknown');
+    assert.strictEqual(renderType('str ing', warn), 'unknown');
+    assert.strictEqual(renderType('string[', warn), 'unknown');
+    assert.strictEqual(warn.matching('unknown type').length, 5);
+  });
+
+  it('should render field maps, optional keys, empty cases', () => {
+    const warn = warner();
+    assert.strictEqual(renderType({ a: 'string', 'b?': 'number' }, warn), '{ a: string; b?: number }');
+    assert.strictEqual(renderType({ 'weird-key': 'string' }, warn), "{ 'weird-key': string }");
+    // No fields declared means exactly that; 'object' is how you say "unspecified"
+    assert.strictEqual(renderType({}, warn), 'Record<string, never>');
+    assert.strictEqual(renderType('object', warn), 'object');
+    assert.deepStrictEqual(warn.warnings, []);
+
+    assert.strictEqual(renderType({ '?': 'string' }, warn), 'Record<string, never>');
+    assert.strictEqual(warn.matching('empty name').length, 1);
+  });
+
+  it('should refuse shapes it cannot mean', () => {
+    const warn = warner();
+    // An array describes an array OF one shape, so a tuple is not a descriptor
+    assert.strictEqual(renderType(['string', 'number'], warn), 'unknown');
+    assert.strictEqual(renderType([], warn), 'unknown');
+    assert.strictEqual(warn.matching('exactly one entry').length, 2);
+    assert.strictEqual(renderType(42, warn), 'unknown');
+    assert.strictEqual(renderType(null, warn), 'unknown');
+    assert.strictEqual(renderType(true, warn), 'unknown');
+    assert.strictEqual(warn.matching('must be a type name').length, 3);
+  });
+
+  it('should cap nesting', () => {
+    const warn = warner();
+    const deep = (depth) => (depth === 0 ? 'string' : { nested: deep(depth - 1) });
+    const rendered = renderType(deep(MAX_DEPTH + 4), warn);
+    assert.strictEqual(warn.matching(`deeper than ${MAX_DEPTH}`).length, 1);
+    // Capped, not truncated silently: the innermost level says 'unknown'
+    assert.match(rendered, /unknown/);
+    assert.strictEqual(warner().warnings.length, 0);
+    const shallow = warner();
+    assert.strictEqual(renderType(deep(1), shallow), '{ nested: string }');
+    assert.deepStrictEqual(shallow.warnings, []);
+  });
 });
 
-test('CLI renderType: an unknown type name degrades to unknown and says so', () => {
-  const warn = warner();
-  // The allowlist is the whole defence: a descriptor is data, and this is
-  // where a hostile one would otherwise become code.
-  assert.strictEqual(renderType('string; export const boom = 1; type Z = ', warn), 'unknown');
-  assert.strictEqual(renderType('Date', warn), 'unknown');
-  assert.strictEqual(renderType('string|', warn), 'unknown');
-  assert.strictEqual(renderType('str ing', warn), 'unknown');
-  assert.strictEqual(renderType('string[', warn), 'unknown');
-  assert.strictEqual(warn.matching('unknown type').length, 5);
-});
-
-test('CLI renderType: field maps, optional keys, empty cases', () => {
-  const warn = warner();
-  assert.strictEqual(renderType({ a: 'string', 'b?': 'number' }, warn), '{ a: string; b?: number }');
-  assert.strictEqual(renderType({ 'weird-key': 'string' }, warn), "{ 'weird-key': string }");
-  // No fields declared means exactly that; 'object' is how you say "unspecified"
-  assert.strictEqual(renderType({}, warn), 'Record<string, never>');
-  assert.strictEqual(renderType('object', warn), 'object');
-  assert.deepStrictEqual(warn.warnings, []);
-
-  assert.strictEqual(renderType({ '?': 'string' }, warn), 'Record<string, never>');
-  assert.strictEqual(warn.matching('empty name').length, 1);
-});
-
-test('CLI renderType: refuses shapes it cannot mean', () => {
-  const warn = warner();
-  // An array describes an array OF one shape, so a tuple is not a descriptor
-  assert.strictEqual(renderType(['string', 'number'], warn), 'unknown');
-  assert.strictEqual(renderType([], warn), 'unknown');
-  assert.strictEqual(warn.matching('exactly one entry').length, 2);
-  assert.strictEqual(renderType(42, warn), 'unknown');
-  assert.strictEqual(renderType(null, warn), 'unknown');
-  assert.strictEqual(renderType(true, warn), 'unknown');
-  assert.strictEqual(warn.matching('must be a type name').length, 3);
-});
-
-test('CLI renderType: nesting is capped', () => {
-  const warn = warner();
-  const deep = (depth) => (depth === 0 ? 'string' : { nested: deep(depth - 1) });
-  const rendered = renderType(deep(MAX_DEPTH + 4), warn);
-  assert.strictEqual(warn.matching(`deeper than ${MAX_DEPTH}`).length, 1);
-  // Capped, not truncated silently: the innermost level says 'unknown'
-  assert.match(rendered, /unknown/);
-  assert.strictEqual(warner().warnings.length, 0);
-  const shallow = warner();
-  assert.strictEqual(renderType(deep(1), shallow), '{ nested: string }');
-  assert.deepStrictEqual(shallow.warnings, []);
-});
-
-test('CLI renderTypes: a whole introspection becomes a contract interface', () => {
-  const warn = warner();
-  const text = renderTypes(
-    {
-      chat: {
-        send: {
-          access: 'public',
-          meta: { description: 'Post a message' },
-          signature: { args: { text: 'string', 'replyTo?': 'string' }, returns: { id: 'string' } },
+describe('CLI renderTypes', () => {
+  it('should turn a whole introspection into a contract interface', () => {
+    const warn = warner();
+    const text = renderTypes(
+      {
+        chat: {
+          send: {
+            access: 'public',
+            meta: { description: 'Post a message' },
+            signature: { args: { text: 'string', 'replyTo?': 'string' }, returns: { id: 'string' } },
+          },
+          ping: { access: 'public' },
+          onMessage: {
+            access: 'public',
+            kind: 'subscription',
+            signature: { args: { room: 'string' }, data: { text: 'string' } },
+          },
         },
-        ping: { access: 'public' },
-        onMessage: {
-          access: 'public',
-          kind: 'subscription',
-          signature: { args: { room: 'string' }, data: { text: 'string' } },
+        'auth.v1': { signIn: { access: 'public', signature: { args: { login: 'string' } } } },
+      },
+      { url: 'http://127.0.0.1:8000/api', warn },
+    );
+
+    assert.deepStrictEqual(warn.warnings, []);
+    assert.strictEqual(
+      text,
+      [
+        '// Generated by `wrpc types`. Do not edit — re-run the command instead.',
+        '// Source: http://127.0.0.1:8000/api',
+        '',
+        "import type { SubscriptionContract } from '@alexify/wrpc';",
+        '',
+        'export interface Api {',
+        "  'auth.v1': {",
+        '    signIn(args: { login: string }): Promise<unknown>;',
+        '  };',
+        '  chat: {',
+        '    onMessage: SubscriptionContract<{ room: string }, { text: string }>;',
+        '    ping(args?: unknown): Promise<unknown>;',
+        '    /** Post a message */',
+        '    send(args: { text: string; replyTo?: string }): Promise<{ id: string }>;',
+        '  };',
+        '}',
+        '',
+      ].join('\n'),
+    );
+  });
+
+  it('should import nothing without subscriptions, and take a configurable name', () => {
+    const text = renderTypes(
+      { chat: { ping: { access: 'public' } } },
+      {
+        url: 'http://h/api',
+        interfaceName: 'Contract',
+        packageName: '../../index.js',
+      },
+    );
+    assert.ok(!text.includes('import type'), 'an unused import is noise in a generated file');
+    assert.match(text, /export interface Contract \{/);
+
+    const withSub = renderTypes({ feed: { onTick: { kind: 'subscription' } } }, { packageName: '../../index.js' });
+    assert.match(withSub, /import type \{ SubscriptionContract \} from '\.\.\/\.\.\/index\.js';/);
+    // Undeclared subscription args stay callable both ways: `any`, not `unknown`
+    assert.match(withSub, /onTick: SubscriptionContract<any, unknown>;/);
+  });
+
+  it('should not let hostile names and values escape into code', () => {
+    const warn = warner();
+    // The real path is JSON.parse, where '__proto__' is an OWN property rather
+    // than the prototype setter an object literal would hit.
+    const introspection = JSON.parse(
+      JSON.stringify({
+        '*/ export const pwned = 1; /*': { m: { access: 'public' } },
+        'line\nbreak': { m: { access: 'public' } },
+        evil: {
+          m: {
+            access: 'public',
+            meta: { description: 'closes */ the comment' },
+            // Backticks and template syntax in a field name must stay inert text.
+            // eslint-disable-next-line no-template-curly-in-string
+            signature: { args: { '`tpl`': 'string', '${p}': 'number' } },
+          },
+        },
+      }),
+    );
+    introspection.__proto__ = { m: { access: 'public' } }; // eslint-disable-line no-proto
+    const text = renderTypes(introspection, { url: 'http://h/api', warn });
+
+    // The hostile name survives as DATA — a quoted key — and never as code:
+    // no generated line begins with it, so nothing it contains is a statement.
+    assert.match(text, /^ {2}'\*\/ export const pwned = 1; \/\*': \{$/m);
+    assert.ok(
+      !text.split('\n').some((line) => line.trim().startsWith('export const pwned')),
+      'a unit name must never become a statement',
+    );
+    assert.match(text, /"line\\nbreak": \{/);
+    assert.ok(!text.split('\n').some((line) => line.trim() === 'break": {'), 'a newline must not reach the output');
+    assert.match(text, /\/\*\* closes \* \/ the comment \*\//);
+    assert.match(text, /'`tpl`': string; '\$\{p\}': number/);
+    assert.strictEqual(Object.prototype.m, undefined, 'nothing may be written through __proto__');
+
+    // ...and the whole thing still parses as TypeScript-shaped text: every
+    // generated line is a declaration, a brace, a comment or an import.
+    for (const line of text.split('\n')) {
+      if (line.trim() === '') continue;
+      assert.match(
+        line,
+        /^(\/\/|\s*\/\*\*|import type |export interface |\s*[$\w'"[]|\s*\};?$|\})/,
+        `stray line: ${line}`,
+      );
+    }
+  });
+
+  it('should skip loudly what it cannot describe', () => {
+    const warn = warner();
+    const text = renderTypes(
+      {
+        broken: 'not an object',
+        unit: { notAMethod: 7, ok: { access: 'public' } },
+        // A unit whose only declarations are inbound events has no methods at all
+        eventsOnly: {},
+        mixed: {
+          call: { access: 'public', signature: { data: 'string' } },
+          feed: { kind: 'subscription', signature: { returns: 'string', data: 'string' } },
+          bad: { access: 'public', signature: 'nope' },
         },
       },
-      'auth.v1': { signIn: { access: 'public', signature: { args: { login: 'string' } } } },
-    },
-    { url: 'http://127.0.0.1:8000/api', warn },
-  );
+      { warn },
+    );
 
-  assert.deepStrictEqual(warn.warnings, []);
-  assert.strictEqual(
-    text,
-    [
-      '// Generated by `wrpc types`. Do not edit — re-run the command instead.',
-      '// Source: http://127.0.0.1:8000/api',
-      '',
-      "import type { SubscriptionContract } from '@alexify/wrpc';",
-      '',
-      'export interface Api {',
-      "  'auth.v1': {",
-      '    signIn(args: { login: string }): Promise<unknown>;',
-      '  };',
-      '  chat: {',
-      '    onMessage: SubscriptionContract<{ room: string }, { text: string }>;',
-      '    ping(args?: unknown): Promise<unknown>;',
-      '    /** Post a message */',
-      '    send(args: { text: string; replyTo?: string }): Promise<{ id: string }>;',
-      '  };',
-      '}',
-      '',
-    ].join('\n'),
-  );
-});
+    assert.strictEqual(warn.matching("unit 'broken' is not an object").length, 1);
+    assert.strictEqual(warn.matching('unit/notAMethod is not a method descriptor').length, 1);
+    assert.strictEqual(warn.matching("mixed/call: 'data' means nothing for a call").length, 1);
+    assert.strictEqual(warn.matching("mixed/feed: 'returns' means nothing for a subscription").length, 1);
+    assert.strictEqual(warn.matching('mixed/bad: signature must be an object').length, 1);
+    assert.ok(!text.includes('broken'));
+    assert.match(text, /eventsOnly: Record<string, never>;/);
+    assert.match(text, /ok\(args\?: unknown\): Promise<unknown>;/);
+  });
 
-test('CLI renderTypes: no subscriptions means no import, and the name is configurable', () => {
-  const text = renderTypes(
-    { chat: { ping: { access: 'public' } } },
-    {
-      url: 'http://h/api',
-      interfaceName: 'Contract',
-      packageName: '../../index.js',
-    },
-  );
-  assert.ok(!text.includes('import type'), 'an unused import is noise in a generated file');
-  assert.match(text, /export interface Contract \{/);
+  it('should fail on an introspection that is not an object, not write an empty file', () => {
+    assert.throws(() => renderTypes(null), CliError);
+    assert.throws(() => renderTypes('nope'), /did not answer introspection with an object/);
+  });
 
-  const withSub = renderTypes({ feed: { onTick: { kind: 'subscription' } } }, { packageName: '../../index.js' });
-  assert.match(withSub, /import type \{ SubscriptionContract \} from '\.\.\/\.\.\/index\.js';/);
-  // Undeclared subscription args stay callable both ways: `any`, not `unknown`
-  assert.match(withSub, /onTick: SubscriptionContract<any, unknown>;/);
-});
+  it('should treat diagnostics as optional — no warn means no crash', () => {
+    // Anything worth warning about must still render, whether anyone is
+    // listening or not: renderTypes is used by the CLI, which passes a warn,
+    // and directly by tests and tooling, which need not.
+    const text = renderTypes({ broken: 'not an object', ok: { m: { access: 'public', signature: { args: 'Date' } } } });
+    assert.match(text, /m\(args: unknown\): Promise<unknown>;/);
+    assert.ok(!text.includes('broken'));
+  });
 
-test('CLI renderTypes: hostile names and values cannot escape into code', () => {
-  const warn = warner();
-  // The real path is JSON.parse, where '__proto__' is an OWN property rather
-  // than the prototype setter an object literal would hit.
-  const introspection = JSON.parse(
-    JSON.stringify({
-      '*/ export const pwned = 1; /*': { m: { access: 'public' } },
-      'line\nbreak': { m: { access: 'public' } },
-      evil: {
-        m: {
-          access: 'public',
-          meta: { description: 'closes */ the comment' },
-          // Backticks and template syntax in a field name must stay inert text.
-          // eslint-disable-next-line no-template-curly-in-string
-          signature: { args: { '`tpl`': 'string', '${p}': 'number' } },
-        },
-      },
-    }),
-  );
-  introspection.__proto__ = { m: { access: 'public' } }; // eslint-disable-line no-proto
-  const text = renderTypes(introspection, { url: 'http://h/api', warn });
-
-  // The hostile name survives as DATA — a quoted key — and never as code:
-  // no generated line begins with it, so nothing it contains is a statement.
-  assert.match(text, /^ {2}'\*\/ export const pwned = 1; \/\*': \{$/m);
-  assert.ok(
-    !text.split('\n').some((line) => line.trim().startsWith('export const pwned')),
-    'a unit name must never become a statement',
-  );
-  assert.match(text, /"line\\nbreak": \{/);
-  assert.ok(!text.split('\n').some((line) => line.trim() === 'break": {'), 'a newline must not reach the output');
-  assert.match(text, /\/\*\* closes \* \/ the comment \*\//);
-  assert.match(text, /'`tpl`': string; '\$\{p\}': number/);
-  assert.strictEqual(Object.prototype.m, undefined, 'nothing may be written through __proto__');
-
-  // ...and the whole thing still parses as TypeScript-shaped text: every
-  // generated line is a declaration, a brace, a comment or an import.
-  for (const line of text.split('\n')) {
-    if (line.trim() === '') continue;
+  it('should drop credentials, query strings and junk from the source comment', () => {
     assert.match(
-      line,
-      /^(\/\/|\s*\/\*\*|import type |export interface |\s*[$\w'"[]|\s*\};?$|\})/,
-      `stray line: ${line}`,
+      renderTypes({}, { url: 'http://user:pw@h:8000/api?token=secret' }),
+      /\/\/ Source: http:\/\/h:8000\/api$/m,
     );
-  }
-});
+    // Not a URL at all: kept verbatim, but still sanitised
+    assert.match(renderTypes({}, { url: 'not a url' }), /\/\/ Source: not a url$/m);
+    assert.match(renderTypes({}, { url: 'a\nb' }), /\/\/ Source: a b$/m);
+    assert.match(renderTypes({}), /\/\/ Source: $/m);
+  });
 
-test('CLI renderTypes: skips what it cannot describe, loudly', () => {
-  const warn = warner();
-  const text = renderTypes(
-    {
-      broken: 'not an object',
-      unit: { notAMethod: 7, ok: { access: 'public' } },
-      // A unit whose only declarations are inbound events has no methods at all
-      eventsOnly: {},
-      mixed: {
-        call: { access: 'public', signature: { data: 'string' } },
-        feed: { kind: 'subscription', signature: { returns: 'string', data: 'string' } },
-        bad: { access: 'public', signature: 'nope' },
+  it('should render typed-event blocks — `on` becomes `sends`, `emits` becomes `events`', () => {
+    const warnings = [];
+    const text = renderTypes(
+      {
+        chat: {
+          send: { access: 'public', signature: { args: { text: 'string' }, returns: { id: 'string' } } },
+          on: {
+            typing: { access: 'session', signature: { args: { on: 'boolean' } } },
+            bare: { access: 'public' },
+          },
+          emits: {
+            message: { data: { text: 'string', from: 'string' } },
+            confirm: { data: { id: 'string' }, returns: 'boolean' },
+          },
+        },
       },
-    },
-    { warn },
-  );
-
-  assert.strictEqual(warn.matching("unit 'broken' is not an object").length, 1);
-  assert.strictEqual(warn.matching('unit/notAMethod is not a method descriptor').length, 1);
-  assert.strictEqual(warn.matching("mixed/call: 'data' means nothing for a call").length, 1);
-  assert.strictEqual(warn.matching("mixed/feed: 'returns' means nothing for a subscription").length, 1);
-  assert.strictEqual(warn.matching('mixed/bad: signature must be an object').length, 1);
-  assert.ok(!text.includes('broken'));
-  assert.match(text, /eventsOnly: Record<string, never>;/);
-  assert.match(text, /ok\(args\?: unknown\): Promise<unknown>;/);
-});
-
-test('CLI renderTypes: an introspection that is not an object is a failure, not an empty file', () => {
-  assert.throws(() => renderTypes(null), CliError);
-  assert.throws(() => renderTypes('nope'), /did not answer introspection with an object/);
-});
-
-test('CLI renderTypes: diagnostics are optional — no warn means no crash', () => {
-  // Anything worth warning about must still render, whether anyone is
-  // listening or not: renderTypes is used by the CLI, which passes a warn,
-  // and directly by tests and tooling, which need not.
-  const text = renderTypes({ broken: 'not an object', ok: { m: { access: 'public', signature: { args: 'Date' } } } });
-  assert.match(text, /m\(args: unknown\): Promise<unknown>;/);
-  assert.ok(!text.includes('broken'));
-});
-
-test('CLI renderTypes: the source comment drops credentials, query strings and junk', () => {
-  assert.match(
-    renderTypes({}, { url: 'http://user:pw@h:8000/api?token=secret' }),
-    /\/\/ Source: http:\/\/h:8000\/api$/m,
-  );
-  // Not a URL at all: kept verbatim, but still sanitised
-  assert.match(renderTypes({}, { url: 'not a url' }), /\/\/ Source: not a url$/m);
-  assert.match(renderTypes({}, { url: 'a\nb' }), /\/\/ Source: a b$/m);
-  assert.match(renderTypes({}), /\/\/ Source: $/m);
-});
-
-// ---------------------------------------------------------------------------
-// talking to a server
-
-test('CLI fetchIntrospection: sends a call packet and returns the result', async () => {
-  const calls = [];
-  const doFetch = async (url, options) => {
-    calls.push({ url, options });
-    return answer({ type: 'callback', id: '1', result: { chat: {} } });
-  };
-  assert.deepStrictEqual(await fetchIntrospection('http://h/api', [], doFetch), { chat: {} });
-  assert.strictEqual(calls[0].url, 'http://h/api');
-  assert.strictEqual(calls[0].options.method, 'POST');
-  assert.strictEqual(calls[0].options.headers['Content-Type'], 'application/json');
-  const sent = JSON.parse(calls[0].options.body);
-  assert.strictEqual(sent.method, 'system/introspect');
-  // No filter must NOT be an empty array: introspect() would filter every unit
-  // away and answer with nothing.
-  assert.deepStrictEqual(sent.args, {});
-
-  await fetchIntrospection('http://h/api', ['chat'], doFetch);
-  assert.deepStrictEqual(JSON.parse(calls[1].options.body).args, ['chat']);
-});
-
-test('CLI fetchIntrospection: every way the server can disappoint', async () => {
-  const rejects = async (doFetch, needle) => {
-    await assert.rejects(
-      () => fetchIntrospection('http://h/api', [], doFetch),
-      (error) => {
-        assert.ok(error instanceof CliError, `${needle}: expected a CliError, got ${error}`);
-        assert.match(error.message, needle);
-        return true;
-      },
+      { warn: (message) => warnings.push(message) },
     );
-  };
+    assert.match(text, /sends: \{/);
+    assert.match(text, /typing: \{on: boolean\}|typing: \{ on: boolean \}/);
+    assert.match(text, /bare: unknown;/);
+    assert.match(text, /events: \{/);
+    assert.match(text, /message: \(data: \{.*text: string.*\}\) => void;/s);
+    assert.match(text, /confirm: \(data: \{.*id: string.*\}\) => boolean;/s);
+    // Neither reserved block leaks as a callable method.
+    assert.ok(!/\bon\(/.test(text));
+    assert.ok(!/\bemits\(/.test(text));
+    assert.deepStrictEqual(warnings, []);
+  });
 
-  await rejects(async () => {
-    throw new Error('ECONNREFUSED');
-  }, /Cannot reach http:\/\/h\/api: ECONNREFUSED/);
-  await rejects(async () => ({ ok: false, status: 404, statusText: 'Not Found' }), /answered 404 Not Found/);
-  await rejects(async () => ({ ok: false, status: 500, statusText: '' }), /answered 500$/);
-  await rejects(async () => answer(null, { text: async () => 'not json' }), /answered something that is not JSON/);
-  await rejects(
-    async () => answer({ type: 'callback', id: '1', error: { message: 'forbidden', code: 403 } }),
-    /refused with 403: forbidden/,
-  );
-  await rejects(async () => answer({ type: 'callback', id: '1', error: {} }), /refused with 500: unknown error/);
-  await rejects(async () => answer({ type: 'end', id: '1' }), /answered 'end' instead of a callback/);
+  it('should let a unit declare more events than a call takes arguments', () => {
+    // 200,000 entries used to be spread into one push(): a RangeError.
+    const emits = {};
+    const on = {};
+    for (let i = 0; i < 200_000; i++) {
+      emits[`e${i}`] = { data: 'string' };
+      on[`h${i}`] = {};
+    }
+    const text = renderTypes({ feed: { emits, on } });
+    assert.ok(text.includes('e199999'));
+    assert.ok(text.includes('h199999'));
+    // …and a server more units than that.
+    const units = {};
+    for (let i = 0; i < 200_000; i++) units[`u${i}`] = {};
+    assert.ok(renderTypes(units).includes('u199999'));
+  });
 });
 
-// ---------------------------------------------------------------------------
-// the command
+describe('CLI fetchIntrospection', () => {
+  // ---------------------------------------------------------------------------
+  // talking to a server
 
-test('CLI main: --help and --version answer on stdout with code 0', async () => {
-  const log = collect();
-  assert.strictEqual(await main(['--help'], { log }), 0);
-  assert.strictEqual(log.text(), USAGE);
+  it('should send a call packet and return the result', async () => {
+    const calls = [];
+    const doFetch = async (url, options) => {
+      calls.push({ url, options });
+      return answer({ type: 'callback', id: '1', result: { chat: {} } });
+    };
+    assert.deepStrictEqual(await fetchIntrospection('http://h/api', [], doFetch), { chat: {} });
+    assert.strictEqual(calls[0].url, 'http://h/api');
+    assert.strictEqual(calls[0].options.method, 'POST');
+    assert.strictEqual(calls[0].options.headers['Content-Type'], 'application/json');
+    const sent = JSON.parse(calls[0].options.body);
+    assert.strictEqual(sent.method, 'system/introspect');
+    // No filter must NOT be an empty array: introspect() would filter every unit
+    // away and answer with nothing.
+    assert.deepStrictEqual(sent.args, {});
 
-  const versionLog = collect();
-  assert.strictEqual(await main(['--version'], { log: versionLog, version: () => '9.9.9' }), 0);
-  assert.strictEqual(versionLog.text(), '9.9.9');
+    await fetchIntrospection('http://h/api', ['chat'], doFetch);
+    assert.deepStrictEqual(JSON.parse(calls[1].options.body).args, ['chat']);
+  });
+
+  it('should handle every way the server can disappoint', async () => {
+    const rejects = async (doFetch, needle) => {
+      await assert.rejects(
+        () => fetchIntrospection('http://h/api', [], doFetch),
+        (error) => {
+          assert.ok(error instanceof CliError, `${needle}: expected a CliError, got ${error}`);
+          assert.match(error.message, needle);
+          return true;
+        },
+      );
+    };
+
+    await rejects(async () => {
+      throw new Error('ECONNREFUSED');
+    }, /Cannot reach http:\/\/h\/api: ECONNREFUSED/);
+    await rejects(async () => ({ ok: false, status: 404, statusText: 'Not Found' }), /answered 404 Not Found/);
+    await rejects(async () => ({ ok: false, status: 500, statusText: '' }), /answered 500$/);
+    await rejects(async () => answer(null, { text: async () => 'not json' }), /answered something that is not JSON/);
+    await rejects(
+      async () => answer({ type: 'callback', id: '1', error: { message: 'forbidden', code: 403 } }),
+      /refused with 403: forbidden/,
+    );
+    await rejects(async () => answer({ type: 'callback', id: '1', error: {} }), /refused with 500: unknown error/);
+    await rejects(async () => answer({ type: 'end', id: '1' }), /answered 'end' instead of a callback/);
+  });
+
+  it('should read an answer under a cap, and decode a streamed one whole', async () => {
+    // Split inside a multi-byte character: what a real body does.
+    const bytes = new TextEncoder().encode(JSON.stringify({ type: 'callback', id: '1', result: { чат: {} } }));
+    const split = bytes.indexOf(0xd1) + 1;
+    const streamed = async () =>
+      answer(
+        {},
+        {
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(bytes.subarray(0, split));
+              controller.enqueue(bytes.subarray(split));
+              controller.close();
+            },
+          }),
+        },
+      );
+    assert.deepStrictEqual(await fetchIntrospection('http://h/api', [], streamed), { чат: {} });
+
+    let cancelled = false;
+    let pulled = 0;
+    const chunk = new Uint8Array(8 * 1024 * 1024);
+    const endless = async () =>
+      answer(
+        {},
+        {
+          body: new ReadableStream({
+            pull(controller) {
+              pulled++;
+              controller.enqueue(chunk);
+            },
+            cancel() {
+              cancelled = true;
+            },
+          }),
+        },
+      );
+    await assert.rejects(fetchIntrospection('http://h/api', [], endless), (error) => {
+      assert.ok(error instanceof CliError);
+      assert.match(error.message, new RegExp(`answered more than ${MAX_ANSWER} bytes`));
+      return true;
+    });
+    assert.ok(cancelled, 'the rest of the body is let go of');
+    assert.ok(pulled <= MAX_ANSWER / chunk.length + 3, `${pulled} chunks were read`);
+  });
 });
 
-test('CLI main: --version with no injected reader reports the package version', async () => {
-  // Covers the default `version` and `log`: both are resolved at call time,
-  // so swapping console.log is enough to keep the run quiet.
-  const { version } = require('../../package.json');
-  const lines = [];
-  const original = console.log;
-  console.log = (text) => void lines.push(String(text));
-  try {
+describe('CLI main', () => {
+  // ---------------------------------------------------------------------------
+  // the command
+
+  it('should answer --help and --version on stdout with code 0', async () => {
+    const log = collect();
+    assert.strictEqual(await main(['--help'], { log }), 0);
+    assert.strictEqual(log.text(), USAGE);
+
+    const versionLog = collect();
+    assert.strictEqual(await main(['--version'], { log: versionLog, version: () => '9.9.9' }), 0);
+    assert.strictEqual(versionLog.text(), '9.9.9');
+  });
+
+  it('should report the package version for --version with no injected reader', async (t) => {
+    // Covers the default `version` and `log`: both are resolved at call time,
+    // so mocking the console's `log` is enough to keep the run quiet.
+    const { version } = require('../../package.json');
+    const log = t.mock.method(console, 'log', () => {});
     assert.strictEqual(await main(['--version']), 0);
-  } finally {
-    console.log = original;
-  }
-  assert.deepStrictEqual(lines, [version]);
-});
-
-test('CLI main: writes the declaration file', async () => {
-  const written = [];
-  const doFetch = async () => answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } });
-  const code = await main(['types', 'http://h/api', '--out', 'api.d.ts'], {
-    log: collect(),
-    error: collect(),
-    fetch: doFetch,
-    write: async (file, text) => void written.push({ file, text }),
+    assert.deepStrictEqual(
+      log.mock.calls.map((call) => String(call.arguments[0])),
+      [version],
+    );
   });
-  assert.strictEqual(code, 0);
-  assert.strictEqual(written.length, 1);
-  assert.strictEqual(written[0].file, 'api.d.ts');
-  assert.match(written[0].text, /export interface Api \{/);
-  assert.ok(written[0].text.endsWith('\n'), 'a generated file ends with a newline');
-});
 
-test("CLI main: '--out -' writes to stdout instead of a file", async () => {
-  const log = collect();
-  const doFetch = async () => answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } });
-  const code = await main(['types', 'http://h/api', '--out', '-'], {
-    log,
-    error: collect(),
-    fetch: doFetch,
-    write: async () => assert.fail('nothing may be written when --out is -'),
-  });
-  assert.strictEqual(code, 0);
-  assert.match(log.text(), /export interface Api \{/);
-  assert.ok(!log.text().endsWith('\n'), 'console.log adds the trailing newline itself');
-});
-
-test('CLI main: the real fs writer', async () => {
-  // Covers the default `write`, which is node:fs/promises.writeFile.
-  const dir = await mkdtemp(path.join(os.tmpdir(), 'wrpc-cli-'));
-  const file = path.join(dir, 'api.d.ts');
-  try {
+  it('should write the declaration file', async () => {
+    const written = [];
     const doFetch = async () => answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } });
-    const code = await main(['types', 'http://h/api', '--out', file], {
+    const code = await main(['types', 'http://h/api', '--out', 'api.d.ts'], {
       log: collect(),
       error: collect(),
       fetch: doFetch,
+      write: async (file, text) => void written.push({ file, text }),
     });
     assert.strictEqual(code, 0);
-    assert.match(await readFile(file, 'utf8'), /ping\(args\?: unknown\): Promise<unknown>;/);
-  } finally {
-    await rm(dir, { recursive: true, force: true });
-  }
-});
+    assert.strictEqual(written.length, 1);
+    assert.strictEqual(written[0].file, 'api.d.ts');
+    assert.match(written[0].text, /export interface Api \{/);
+    assert.ok(written[0].text.endsWith('\n'), 'a generated file ends with a newline');
+  });
 
-test('CLI main: warnings go to stderr and do not fail the run', async () => {
-  const error = collect();
-  const doFetch = async () =>
-    answer({
-      type: 'callback',
-      id: '1',
-      result: { chat: { ping: { access: 'public', signature: { args: 'Date' } } } },
+  it("should write to stdout instead of a file with '--out -'", async () => {
+    const log = collect();
+    const doFetch = async () => answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } });
+    const code = await main(['types', 'http://h/api', '--out', '-'], {
+      log,
+      error: collect(),
+      fetch: doFetch,
+      write: async () => assert.fail('nothing may be written when --out is -'),
     });
-  const code = await main(['types', 'http://h/api', '--out', '-'], {
-    log: collect(),
-    error,
-    fetch: doFetch,
-    write: async () => {},
+    assert.strictEqual(code, 0);
+    assert.match(log.text(), /export interface Api \{/);
+    assert.ok(!log.text().endsWith('\n'), 'console.log adds the trailing newline itself');
   });
-  assert.strictEqual(code, 0);
-  assert.match(error.text(), /wrpc types: unknown type 'Date'/);
-});
 
-test('CLI main: failures answer 1 with a one-line message', async () => {
-  const error = collect();
-  assert.strictEqual(await main(['types', 'http://h/api'], { log: collect(), error }), 1);
-  assert.deepStrictEqual(error.lines, ["wrpc types: Missing --out <path>. Use '--out -' to write to stdout."]);
-
-  const unreachable = collect();
-  const code = await main(['types', 'http://h/api', '--out', 'x'], {
-    log: collect(),
-    error: unreachable,
-    fetch: async () => {
-      throw new Error('ECONNREFUSED');
-    },
+  it('should use the real fs writer', async () => {
+    // Covers the default `write`, which is node:fs/promises.writeFile.
+    const dir = await mkdtemp(path.join(os.tmpdir(), 'wrpc-cli-'));
+    const file = path.join(dir, 'api.d.ts');
+    try {
+      const doFetch = async () =>
+        answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } });
+      const code = await main(['types', 'http://h/api', '--out', file], {
+        log: collect(),
+        error: collect(),
+        fetch: doFetch,
+      });
+      assert.strictEqual(code, 0);
+      assert.match(await readFile(file, 'utf8'), /ping\(args\?: unknown\): Promise<unknown>;/);
+    } finally {
+      await rm(dir, { recursive: true, force: true });
+    }
   });
-  assert.strictEqual(code, 1);
-  assert.match(unreachable.text(), /Cannot reach http:\/\/h\/api/);
-});
 
-test('CLI main: a path it cannot write to is a message, not a stack', async () => {
-  // The commonest real failure — a mistyped --out — must not answer with ENOENT
-  // and a stack trace.
-  const error = collect();
-  const code = await main(['types', 'http://h/api', '--out', 'no/such/dir/api.d.ts'], {
-    log: collect(),
-    error,
-    fetch: async () => answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } }),
+  it('should send warnings to stderr and not fail the run', async () => {
+    const error = collect();
+    const doFetch = async () =>
+      answer({
+        type: 'callback',
+        id: '1',
+        result: { chat: { ping: { access: 'public', signature: { args: 'Date' } } } },
+      });
+    const code = await main(['types', 'http://h/api', '--out', '-'], {
+      log: collect(),
+      error,
+      fetch: doFetch,
+      write: async () => {},
+    });
+    assert.strictEqual(code, 0);
+    assert.match(error.text(), /wrpc types: unknown type 'Date'/);
   });
-  assert.strictEqual(code, 1);
-  assert.match(error.text(), /^wrpc types: Cannot write no\/such\/dir\/api\.d\.ts: /);
-  assert.ok(!error.text().includes('    at '), 'an expected failure must not print a stack');
-});
 
-test('CLI main: an unexpected failure reports its stack rather than pretending to succeed', async () => {
-  const error = collect();
-  const code = await main(['types', 'http://h/api', '--out', '-'], {
-    error,
-    fetch: async () => answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } }),
-    // Writing to a closed stdout is the realistic version of this: nothing
-    // downstream expects it, so the last-resort handler has to say what broke.
-    log: () => {
-      throw new TypeError('EPIPE');
-    },
+  it('should answer failures with 1 and a one-line message', async () => {
+    const error = collect();
+    assert.strictEqual(await main(['types', 'http://h/api'], { log: collect(), error }), 1);
+    assert.deepStrictEqual(error.lines, ["wrpc types: Missing --out <path>. Use '--out -' to write to stdout."]);
+
+    const unreachable = collect();
+    const code = await main(['types', 'http://h/api', '--out', 'x'], {
+      log: collect(),
+      error: unreachable,
+      fetch: async () => {
+        throw new Error('ECONNREFUSED');
+      },
+    });
+    assert.strictEqual(code, 1);
+    assert.match(unreachable.text(), /Cannot reach http:\/\/h\/api/);
   });
-  assert.strictEqual(code, 1);
-  assert.match(error.text(), /TypeError: EPIPE/);
-  assert.match(error.text(), /at /, 'an unexpected failure keeps its stack');
-});
 
-test('CLI main: a thrown non-Error still reports on the default stderr', async () => {
-  // Covers the default `error` writer and the stackless branch of the last
-  // resort handler — something thrown that is not an Error has no `.stack`.
-  const lines = [];
-  const original = console.error;
-  console.error = (text) => void lines.push(String(text));
-  try {
+  it('should report a path it cannot write to as a message, not a stack', async () => {
+    // The commonest real failure — a mistyped --out — must not answer with ENOENT
+    // and a stack trace.
+    const error = collect();
+    const code = await main(['types', 'http://h/api', '--out', 'no/such/dir/api.d.ts'], {
+      log: collect(),
+      error,
+      fetch: async () => answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } }),
+    });
+    assert.strictEqual(code, 1);
+    assert.match(error.text(), /^wrpc types: Cannot write no\/such\/dir\/api\.d\.ts: /);
+    assert.ok(!error.text().includes('    at '), 'an expected failure must not print a stack');
+  });
+
+  it("should report an unexpected failure's stack rather than pretend to succeed", async () => {
+    const error = collect();
+    const code = await main(['types', 'http://h/api', '--out', '-'], {
+      error,
+      fetch: async () => answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } }),
+      // Writing to a closed stdout is the realistic version of this: nothing
+      // downstream expects it, so the last-resort handler has to say what broke.
+      log: () => {
+        throw new TypeError('EPIPE');
+      },
+    });
+    assert.strictEqual(code, 1);
+    assert.match(error.text(), /TypeError: EPIPE/);
+    assert.match(error.text(), /at /, 'an unexpected failure keeps its stack');
+  });
+
+  it('should still report a thrown non-Error on the default stderr', async (t) => {
+    // Covers the default `error` writer and the stackless branch of the last
+    // resort handler — something thrown that is not an Error has no `.stack`.
+    const error = t.mock.method(console, 'error', () => {});
     const code = await main(['types', 'http://h/api', '--out', '-'], {
       fetch: async () => answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } }),
       log: () => {
@@ -572,389 +720,252 @@ test('CLI main: a thrown non-Error still reports on the default stderr', async (
       },
     });
     assert.strictEqual(code, 1);
-  } finally {
-    console.error = original;
-  }
-  assert.deepStrictEqual(lines, ['wrpc types: just a string']);
-});
-
-test('CLI main: a write that fails with a non-Error still says what it was doing', async () => {
-  const error = collect();
-  const code = await main(['types', 'http://h/api', '--out', 'x'], {
-    log: collect(),
-    error,
-    fetch: async () => answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } }),
-    write: async () => {
-      throw 'disk on fire'; // eslint-disable-line no-throw-literal
-    },
-  });
-  assert.strictEqual(code, 1);
-  assert.deepStrictEqual(error.lines, ['wrpc types: Cannot write x: disk on fire']);
-});
-
-// ---------------------------------------------------------------------------
-// --schema: the static introspection artifact
-
-test('CLI parseArgs: --schema and --format', () => {
-  const parsed = parseArgs(['types', 'http://h/api', '--out', 'api.d.ts', '--schema', 'api.static.js']);
-  assert.strictEqual(parsed.schema, 'api.static.js');
-  assert.strictEqual(parsed.format, 'cjs', 'cjs is the default format');
-  const esm = parseArgs(['types', 'http://h/api', '--out', '-', '--schema', 'api.static.js', '--format', 'esm']);
-  assert.strictEqual(esm.format, 'esm');
-
-  const rejects = (argv, needle) => {
-    assert.throws(
-      () => parseArgs(argv),
-      (error) => {
-        assert.ok(error instanceof CliError, `${needle}: expected a CliError, got ${error}`);
-        assert.match(error.message, needle);
-        return true;
-      },
+    assert.deepStrictEqual(
+      error.mock.calls.map((call) => String(call.arguments[0])),
+      ['wrpc types: just a string'],
     );
-  };
-  rejects(['types', 'http://h', '--out', 'x', '--format', 'esm'], /--format only applies to --schema/);
-  rejects(
-    ['types', 'http://h', '--out', 'x', '--schema', 's.js', '--format', 'umd'],
-    /--format must be 'cjs' or 'esm'/,
-  );
-  rejects(
-    ['types', 'http://h', '--out', '-', '--schema', '-'],
-    /one of --out, --schema and --openapi may write to stdout/,
-  );
-  rejects(['types', 'http://h', '--out', 'x', '--schema'], /--schema requires a value/);
-});
-
-test('renderStatic: a sorted, verbatim introspection module', () => {
-  const introspection = {
-    zeta: { b: { access: 'public' }, a: { access: 'public', kind: 'subscription' } },
-    alpha: { m: { access: 'public', schema: { body: { type: 'object' } } } },
-  };
-  const cjs = renderStatic(introspection, { url: 'http://h/api?token=secret' });
-  assert.ok(cjs.startsWith("'use strict';\n"), 'cjs opens with use strict');
-  assert.match(cjs, /^module\.exports = \{$/m);
-  assert.match(cjs, /\/\/ Source: http:\/\/h\/api$/m, 'credentials and query never reach the file');
-  assert.ok(cjs.endsWith(';\n'), 'the artifact ends with a newline');
-  // Deterministic: unit and method keys are sorted whatever order they came in
-  assert.ok(cjs.indexOf('"alpha"') < cjs.indexOf('"zeta"'));
-  assert.ok(cjs.indexOf('"a"') < cjs.indexOf('"b"'));
-  const again = renderStatic(
-    { alpha: { m: introspection.alpha.m }, zeta: { a: introspection.zeta.a, b: introspection.zeta.b } },
-    { url: 'http://h/api?token=secret' },
-  );
-  assert.strictEqual(cjs, again, 'byte-identical across runs and key orders');
-  // The payload survives verbatim: require()-equivalent shape via JSON
-  const literal = cjs.slice(cjs.indexOf('module.exports = ') + 'module.exports = '.length, -2);
-  assert.deepStrictEqual(JSON.parse(literal), {
-    alpha: { m: { access: 'public', schema: { body: { type: 'object' } } } },
-    zeta: { a: { access: 'public', kind: 'subscription' }, b: { access: 'public' } },
   });
 
-  const esm = renderStatic(introspection, { url: 'http://h/api', format: 'esm' });
-  assert.ok(!esm.includes('use strict'));
-  assert.match(esm, /^export default \{$/m);
-
-  const warn = warner();
-  const skipped = renderStatic({ ok: { m: { access: 'public' } }, broken: 42 }, { warn });
-  assert.strictEqual(warn.matching("unit 'broken'").length, 1);
-  assert.ok(!skipped.includes('broken'));
-});
-
-test("renderStatic: a '__proto__' unit lands as data, not as a prototype", () => {
-  const introspection = JSON.parse('{"__proto__": {"m": {"access": "public"}}, "chat": {}}');
-  const cjs = renderStatic(introspection, {});
-  assert.match(cjs, /"__proto__"/, 'the key is emitted as a plain property');
-});
-
-test('CLI main: --schema writes both artifacts from one fetch', async () => {
-  const written = [];
-  let fetches = 0;
-  const doFetch = async () => {
-    fetches++;
-    return answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } });
-  };
-  const code = await main(['types', 'http://h/api', '--out', 'api.d.ts', '--schema', 'api.static.js'], {
-    log: collect(),
-    error: collect(),
-    fetch: doFetch,
-    write: async (file, text) => void written.push({ file, text }),
-  });
-  assert.strictEqual(code, 0);
-  assert.strictEqual(fetches, 1, 'one fetch feeds both artifacts');
-  assert.strictEqual(written.length, 2);
-  assert.strictEqual(written[0].file, 'api.d.ts');
-  assert.match(written[0].text, /export interface Api \{/);
-  assert.strictEqual(written[1].file, 'api.static.js');
-  assert.match(written[1].text, /module\.exports = \{/);
-  assert.match(written[1].text, /"ping"/);
-});
-
-test("CLI main: '--schema -' streams the module to stdout while --out writes the file", async () => {
-  const log = collect();
-  const written = [];
-  const doFetch = async () => answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } });
-  const code = await main(['types', 'http://h/api', '--out', 'api.d.ts', '--schema', '-', '--format', 'esm'], {
-    log,
-    error: collect(),
-    fetch: doFetch,
-    write: async (file, text) => void written.push({ file, text }),
-  });
-  assert.strictEqual(code, 0);
-  assert.strictEqual(written.length, 1, 'only the types artifact hit the filesystem');
-  assert.match(log.text(), /export default \{/);
-});
-
-test('CLI renderTypes: typed-event blocks — `on` becomes `sends`, `emits` becomes `events`', () => {
-  const warnings = [];
-  const text = renderTypes(
-    {
-      chat: {
-        send: { access: 'public', signature: { args: { text: 'string' }, returns: { id: 'string' } } },
-        on: {
-          typing: { access: 'session', signature: { args: { on: 'boolean' } } },
-          bare: { access: 'public' },
-        },
-        emits: {
-          message: { data: { text: 'string', from: 'string' } },
-          confirm: { data: { id: 'string' }, returns: 'boolean' },
-        },
+  it('should still say what it was doing on a write that fails with a non-Error', async () => {
+    const error = collect();
+    const code = await main(['types', 'http://h/api', '--out', 'x'], {
+      log: collect(),
+      error,
+      fetch: async () => answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } }),
+      write: async () => {
+        throw 'disk on fire'; // eslint-disable-line no-throw-literal
       },
-    },
-    { warn: (message) => warnings.push(message) },
-  );
-  assert.match(text, /sends: \{/);
-  assert.match(text, /typing: \{on: boolean\}|typing: \{ on: boolean \}/);
-  assert.match(text, /bare: unknown;/);
-  assert.match(text, /events: \{/);
-  assert.match(text, /message: \(data: \{.*text: string.*\}\) => void;/s);
-  assert.match(text, /confirm: \(data: \{.*id: string.*\}\) => boolean;/s);
-  // Neither reserved block leaks as a callable method.
-  assert.ok(!/\bon\(/.test(text));
-  assert.ok(!/\bemits\(/.test(text));
-  assert.deepStrictEqual(warnings, []);
-});
-
-test('CLI renderOpenApi: http-mapped procedures project to an OpenAPI 3 document', () => {
-  const warnings = [];
-  const doc = JSON.parse(
-    renderOpenApi(
-      {
-        orders: {
-          get: {
-            access: 'public',
-            http: { method: 'GET', path: '/v1/orders/:id' },
-            schema: {
-              params: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
-              querystring: { type: 'object', properties: { expand: { type: 'boolean' } } },
-            },
-          },
-          create: {
-            access: 'session',
-            http: { method: 'POST', path: '/v1/orders', status: 201 },
-            schema: { body: { type: 'object', properties: { sku: { type: 'string' } }, required: ['sku'] } },
-            meta: { description: 'Creates an order' },
-          },
-          // No http mapping: not a REST endpoint, absent from the document.
-          internal: { access: 'public' },
-          on: { ping: { access: 'public' } },
-        },
-      },
-      { url: 'http://x/api', warn: (message) => warnings.push(message) },
-    ),
-  );
-  assert.strictEqual(doc.openapi, '3.0.3');
-  assert.deepStrictEqual(Object.keys(doc.paths).sort(), ['/v1/orders', '/v1/orders/{id}']);
-  const get = doc.paths['/v1/orders/{id}'].get;
-  assert.strictEqual(get.operationId, 'orders/get');
-  assert.deepStrictEqual(
-    get.parameters.map((p) => [p.name, p.in, p.required]),
-    [
-      ['id', 'path', true],
-      ['expand', 'query', false],
-    ],
-  );
-  const post = doc.paths['/v1/orders'].post;
-  assert.strictEqual(post.summary, 'Creates an order');
-  assert.ok(post.responses['201']);
-  assert.ok(post.responses.default.content['application/json'].schema.properties.code);
-  assert.strictEqual(post.requestBody.content['application/json'].schema.required[0], 'sku');
-  assert.deepStrictEqual(warnings, []);
-});
-
-test('CLI parseArgs: --openapi rides along, one stdout at most', () => {
-  const options = parseArgs(['types', 'http://x/api', '--out', 'api.d.ts', '--openapi', 'openapi.json']);
-  assert.strictEqual(options.openapi, 'openapi.json');
-  assert.throws(() => parseArgs(['types', 'http://x/api', '--out', '-', '--openapi', '-']), /one of/);
-});
-
-// ---------------------------------------------------------------------------
-// what the server chose, on the user's terminal
-
-test('CLI main: text from the wire reaches the terminal with its control characters escaped', async () => {
-  const ESC = String.fromCharCode(27);
-  const BEL = String.fromCharCode(7);
-  const hostile = `chat${ESC}]0;owned${BEL}${ESC}[2J\nwrpc types: wrote api.d.ts`;
-  const error = collect();
-  const code = await main(['types', 'http://h/api', '--out', '-'], {
-    log: collect(),
-    error,
-    fetch: async () => answer({ type: 'callback', id: '1', result: { [hostile]: 'not a unit', ok: { ping: {} } } }),
-  });
-  assert.strictEqual(code, 0);
-  assert.strictEqual(error.lines.length, 1, 'one warning is one line');
-  assert.ok(!error.text().includes(ESC) && !error.text().includes(BEL) && !error.text().includes('\n'));
-  assert.match(error.text(), /chat\\u001b\]0;owned\\u0007\\u001b\[2J\\u000awrpc types: wrote/);
-
-  // The refusal's message is the server's text too.
-  const refused = collect();
-  const failed = await main(['types', 'http://h/api', '--out', '-'], {
-    log: collect(),
-    error: refused,
-    fetch: async () => answer({ type: 'callback', id: '1', error: { code: 403, message: `no${ESC}[31m\r\nnext` } }),
-  });
-  assert.strictEqual(failed, 1);
-  assert.deepStrictEqual(refused.lines, [
-    'wrpc types: system/introspect was refused with 403: no\\u001b[31m\\u000d\\u000anext',
-  ]);
-
-  // And one message is bounded, whatever was put in it.
-  const long = collect();
-  await main(['types', 'http://h/api', '--out', '-'], {
-    log: collect(),
-    error: long,
-    fetch: async () => answer({ type: 'callback', id: '1', result: { ['u'.repeat(100_000)]: 1, ok: { ping: {} } } }),
-  });
-  assert.ok(long.lines[0].length < 2200, `a warning of ${long.lines[0].length} characters`);
-  assert.ok(long.lines[0].endsWith('…'));
-});
-
-test('CLI main: an unexpected failure keeps the lines of its stack and escapes the rest', async () => {
-  const ESC = String.fromCharCode(27);
-  const error = collect();
-  const code = await main(['types', 'http://h/api', '--out', '-'], {
-    error,
-    fetch: async () => answer({ type: 'callback', id: '1', result: { chat: { ping: {} } } }),
-    log: () => {
-      throw new TypeError(`EPIPE${ESC}[2J`);
-    },
-  });
-  assert.strictEqual(code, 1);
-  assert.ok(!error.text().includes(ESC));
-  assert.match(error.text(), /TypeError: EPIPE\\u001b\[2J\n\s+at /);
-});
-
-test('CLI parseArgs: --timeout is a whole number of milliseconds', () => {
-  const base = ['types', 'http://h/api', '--out', 'x'];
-  assert.strictEqual(parseArgs(base).timeout, 30_000);
-  assert.strictEqual(parseArgs([...base, '--timeout', '1500']).timeout, 1500);
-  for (const bad of ['0', '1.5', 'soon', '1e400', String(2 ** 31)]) {
-    assert.throws(() => parseArgs([...base, '--timeout', bad]), /--timeout must be a whole number/, bad);
-  }
-  assert.throws(() => parseArgs([...base, '--timeout']), /--timeout requires a value/);
-  assert.match(USAGE, /--timeout <ms>/);
-});
-
-test('CLI main: a server that accepts and never answers is given up on', async () => {
-  const signals = [];
-  const silent = (_url, init) =>
-    new Promise((resolve, reject) => {
-      signals.push(init.signal);
-      init.signal.addEventListener('abort', () => reject(init.signal.reason));
     });
-  const error = collect();
-  const started = Date.now();
-  const code = await main(['types', 'http://h/api', '--out', 'x', '--timeout', '50'], {
-    log: collect(),
-    error,
-    fetch: silent,
+    assert.strictEqual(code, 1);
+    assert.deepStrictEqual(error.lines, ['wrpc types: Cannot write x: disk on fire']);
   });
-  assert.strictEqual(code, 1);
-  assert.ok(Date.now() - started < 5000);
-  assert.deepStrictEqual(error.lines, ['wrpc types: http://h/api did not answer within 50 ms']);
-  assert.ok(signals[0] instanceof AbortSignal, 'the fetch is handed the deadline');
+
+  it('should write both artifacts from one fetch with --schema', async () => {
+    const written = [];
+    let fetches = 0;
+    const doFetch = async () => {
+      fetches++;
+      return answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } });
+    };
+    const code = await main(['types', 'http://h/api', '--out', 'api.d.ts', '--schema', 'api.static.js'], {
+      log: collect(),
+      error: collect(),
+      fetch: doFetch,
+      write: async (file, text) => void written.push({ file, text }),
+    });
+    assert.strictEqual(code, 0);
+    assert.strictEqual(fetches, 1, 'one fetch feeds both artifacts');
+    assert.strictEqual(written.length, 2);
+    assert.strictEqual(written[0].file, 'api.d.ts');
+    assert.match(written[0].text, /export interface Api \{/);
+    assert.strictEqual(written[1].file, 'api.static.js');
+    assert.match(written[1].text, /module\.exports = \{/);
+    assert.match(written[1].text, /"ping"/);
+  });
+
+  it("should stream the module to stdout with '--schema -' while --out writes the file", async () => {
+    const log = collect();
+    const written = [];
+    const doFetch = async () => answer({ type: 'callback', id: '1', result: { chat: { ping: { access: 'public' } } } });
+    const code = await main(['types', 'http://h/api', '--out', 'api.d.ts', '--schema', '-', '--format', 'esm'], {
+      log,
+      error: collect(),
+      fetch: doFetch,
+      write: async (file, text) => void written.push({ file, text }),
+    });
+    assert.strictEqual(code, 0);
+    assert.strictEqual(written.length, 1, 'only the types artifact hit the filesystem');
+    assert.match(log.text(), /export default \{/);
+  });
+
+  // ---------------------------------------------------------------------------
+  // what the server chose, on the user's terminal
+
+  it('should escape the control characters of text from the wire before it reaches the terminal', async () => {
+    const ESC = String.fromCharCode(27);
+    const BEL = String.fromCharCode(7);
+    const hostile = `chat${ESC}]0;owned${BEL}${ESC}[2J\nwrpc types: wrote api.d.ts`;
+    const error = collect();
+    const code = await main(['types', 'http://h/api', '--out', '-'], {
+      log: collect(),
+      error,
+      fetch: async () => answer({ type: 'callback', id: '1', result: { [hostile]: 'not a unit', ok: { ping: {} } } }),
+    });
+    assert.strictEqual(code, 0);
+    assert.strictEqual(error.lines.length, 1, 'one warning is one line');
+    assert.ok(!error.text().includes(ESC) && !error.text().includes(BEL) && !error.text().includes('\n'));
+    assert.match(error.text(), /chat\\u001b\]0;owned\\u0007\\u001b\[2J\\u000awrpc types: wrote/);
+
+    // The refusal's message is the server's text too.
+    const refused = collect();
+    const failed = await main(['types', 'http://h/api', '--out', '-'], {
+      log: collect(),
+      error: refused,
+      fetch: async () => answer({ type: 'callback', id: '1', error: { code: 403, message: `no${ESC}[31m\r\nnext` } }),
+    });
+    assert.strictEqual(failed, 1);
+    assert.deepStrictEqual(refused.lines, [
+      'wrpc types: system/introspect was refused with 403: no\\u001b[31m\\u000d\\u000anext',
+    ]);
+
+    // And one message is bounded, whatever was put in it.
+    const long = collect();
+    await main(['types', 'http://h/api', '--out', '-'], {
+      log: collect(),
+      error: long,
+      fetch: async () => answer({ type: 'callback', id: '1', result: { ['u'.repeat(100_000)]: 1, ok: { ping: {} } } }),
+    });
+    assert.ok(long.lines[0].length < 2200, `a warning of ${long.lines[0].length} characters`);
+    assert.ok(long.lines[0].endsWith('…'));
+  });
+
+  it("should keep the lines of an unexpected failure's stack and escape the rest", async () => {
+    const ESC = String.fromCharCode(27);
+    const error = collect();
+    const code = await main(['types', 'http://h/api', '--out', '-'], {
+      error,
+      fetch: async () => answer({ type: 'callback', id: '1', result: { chat: { ping: {} } } }),
+      log: () => {
+        throw new TypeError(`EPIPE${ESC}[2J`);
+      },
+    });
+    assert.strictEqual(code, 1);
+    assert.ok(!error.text().includes(ESC));
+    assert.match(error.text(), /TypeError: EPIPE\\u001b\[2J\n\s+at /);
+  });
+
+  it('should give up on a server that accepts and never answers', async () => {
+    const signals = [];
+    const silent = (_url, init) =>
+      new Promise((resolve, reject) => {
+        signals.push(init.signal);
+        init.signal.addEventListener('abort', () => reject(init.signal.reason));
+      });
+    const error = collect();
+    const started = Date.now();
+    const code = await main(['types', 'http://h/api', '--out', 'x', '--timeout', '50'], {
+      log: collect(),
+      error,
+      fetch: silent,
+    });
+    assert.strictEqual(code, 1);
+    assert.ok(Date.now() - started < 5000);
+    assert.deepStrictEqual(error.lines, ['wrpc types: http://h/api did not answer within 50 ms']);
+    assert.ok(signals[0] instanceof AbortSignal, 'the fetch is handed the deadline');
+  });
+
+  it('should cover a body that stops arriving with the deadline', async () => {
+    const stalled = async (_url, init) =>
+      answer(
+        {},
+        {
+          body: new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"type":"callback",'));
+              init.signal.addEventListener('abort', () => controller.error(init.signal.reason));
+            },
+          }),
+        },
+      );
+    const error = collect();
+    const code = await main(['types', 'http://h/api', '--out', 'x', '--timeout', '50'], {
+      log: collect(),
+      error,
+      fetch: stalled,
+    });
+    assert.strictEqual(code, 1);
+    assert.deepStrictEqual(error.lines, ['wrpc types: http://h/api did not answer within 50 ms']);
+  });
 });
 
-test('CLI main: the deadline covers a body that stops arriving', async () => {
-  const stalled = async (_url, init) =>
-    answer(
-      {},
-      {
-        body: new ReadableStream({
-          start(controller) {
-            controller.enqueue(new TextEncoder().encode('{"type":"callback",'));
-            init.signal.addEventListener('abort', () => controller.error(init.signal.reason));
-          },
-        }),
-      },
+describe('CLI renderStatic', () => {
+  it('should write a sorted, verbatim introspection module', () => {
+    const introspection = {
+      zeta: { b: { access: 'public' }, a: { access: 'public', kind: 'subscription' } },
+      alpha: { m: { access: 'public', schema: { body: { type: 'object' } } } },
+    };
+    const cjs = renderStatic(introspection, { url: 'http://h/api?token=secret' });
+    assert.ok(cjs.startsWith("'use strict';\n"), 'cjs opens with use strict');
+    assert.match(cjs, /^module\.exports = \{$/m);
+    assert.match(cjs, /\/\/ Source: http:\/\/h\/api$/m, 'credentials and query never reach the file');
+    assert.ok(cjs.endsWith(';\n'), 'the artifact ends with a newline');
+    // Deterministic: unit and method keys are sorted whatever order they came in
+    assert.ok(cjs.indexOf('"alpha"') < cjs.indexOf('"zeta"'));
+    assert.ok(cjs.indexOf('"a"') < cjs.indexOf('"b"'));
+    const again = renderStatic(
+      { alpha: { m: introspection.alpha.m }, zeta: { a: introspection.zeta.a, b: introspection.zeta.b } },
+      { url: 'http://h/api?token=secret' },
     );
-  const error = collect();
-  const code = await main(['types', 'http://h/api', '--out', 'x', '--timeout', '50'], {
-    log: collect(),
-    error,
-    fetch: stalled,
+    assert.strictEqual(cjs, again, 'byte-identical across runs and key orders');
+    // The payload survives verbatim: require()-equivalent shape via JSON
+    const literal = cjs.slice(cjs.indexOf('module.exports = ') + 'module.exports = '.length, -2);
+    assert.deepStrictEqual(JSON.parse(literal), {
+      alpha: { m: { access: 'public', schema: { body: { type: 'object' } } } },
+      zeta: { a: { access: 'public', kind: 'subscription' }, b: { access: 'public' } },
+    });
+
+    const esm = renderStatic(introspection, { url: 'http://h/api', format: 'esm' });
+    assert.ok(!esm.includes('use strict'));
+    assert.match(esm, /^export default \{$/m);
+
+    const warn = warner();
+    const skipped = renderStatic({ ok: { m: { access: 'public' } }, broken: 42 }, { warn });
+    assert.strictEqual(warn.matching("unit 'broken'").length, 1);
+    assert.ok(!skipped.includes('broken'));
   });
-  assert.strictEqual(code, 1);
-  assert.deepStrictEqual(error.lines, ['wrpc types: http://h/api did not answer within 50 ms']);
+
+  it("should land a '__proto__' unit as data, not as a prototype", () => {
+    const introspection = JSON.parse('{"__proto__": {"m": {"access": "public"}}, "chat": {}}');
+    const cjs = renderStatic(introspection, {});
+    assert.match(cjs, /"__proto__"/, 'the key is emitted as a plain property');
+  });
 });
 
-test('CLI fetchIntrospection: an answer is read under a cap, and a streamed one decodes whole', async () => {
-  // Split inside a multi-byte character: what a real body does.
-  const bytes = new TextEncoder().encode(JSON.stringify({ type: 'callback', id: '1', result: { чат: {} } }));
-  const split = bytes.indexOf(0xd1) + 1;
-  const streamed = async () =>
-    answer(
-      {},
-      {
-        body: new ReadableStream({
-          start(controller) {
-            controller.enqueue(bytes.subarray(0, split));
-            controller.enqueue(bytes.subarray(split));
-            controller.close();
+describe('CLI renderOpenApi', () => {
+  it('should project http-mapped procedures to an OpenAPI 3 document', () => {
+    const warnings = [];
+    const doc = JSON.parse(
+      renderOpenApi(
+        {
+          orders: {
+            get: {
+              access: 'public',
+              http: { method: 'GET', path: '/v1/orders/:id' },
+              schema: {
+                params: { type: 'object', properties: { id: { type: 'string' } }, required: ['id'] },
+                querystring: { type: 'object', properties: { expand: { type: 'boolean' } } },
+              },
+            },
+            create: {
+              access: 'session',
+              http: { method: 'POST', path: '/v1/orders', status: 201 },
+              schema: { body: { type: 'object', properties: { sku: { type: 'string' } }, required: ['sku'] } },
+              meta: { description: 'Creates an order' },
+            },
+            // No http mapping: not a REST endpoint, absent from the document.
+            internal: { access: 'public' },
+            on: { ping: { access: 'public' } },
           },
-        }),
-      },
+        },
+        { url: 'http://x/api', warn: (message) => warnings.push(message) },
+      ),
     );
-  assert.deepStrictEqual(await fetchIntrospection('http://h/api', [], streamed), { чат: {} });
-
-  let cancelled = false;
-  let pulled = 0;
-  const chunk = new Uint8Array(8 * 1024 * 1024);
-  const endless = async () =>
-    answer(
-      {},
-      {
-        body: new ReadableStream({
-          pull(controller) {
-            pulled++;
-            controller.enqueue(chunk);
-          },
-          cancel() {
-            cancelled = true;
-          },
-        }),
-      },
+    assert.strictEqual(doc.openapi, '3.0.3');
+    assert.deepStrictEqual(Object.keys(doc.paths).sort(), ['/v1/orders', '/v1/orders/{id}']);
+    const get = doc.paths['/v1/orders/{id}'].get;
+    assert.strictEqual(get.operationId, 'orders/get');
+    assert.deepStrictEqual(
+      get.parameters.map((p) => [p.name, p.in, p.required]),
+      [
+        ['id', 'path', true],
+        ['expand', 'query', false],
+      ],
     );
-  await assert.rejects(fetchIntrospection('http://h/api', [], endless), (error) => {
-    assert.ok(error instanceof CliError);
-    assert.match(error.message, new RegExp(`answered more than ${MAX_ANSWER} bytes`));
-    return true;
+    const post = doc.paths['/v1/orders'].post;
+    assert.strictEqual(post.summary, 'Creates an order');
+    assert.ok(post.responses['201']);
+    assert.ok(post.responses.default.content['application/json'].schema.properties.code);
+    assert.strictEqual(post.requestBody.content['application/json'].schema.required[0], 'sku');
+    assert.deepStrictEqual(warnings, []);
   });
-  assert.ok(cancelled, 'the rest of the body is let go of');
-  assert.ok(pulled <= MAX_ANSWER / chunk.length + 3, `${pulled} chunks were read`);
-});
-
-test('CLI renderTypes: a unit may declare more events than a call takes arguments', () => {
-  // 200,000 entries used to be spread into one push(): a RangeError.
-  const emits = {};
-  const on = {};
-  for (let i = 0; i < 200_000; i++) {
-    emits[`e${i}`] = { data: 'string' };
-    on[`h${i}`] = {};
-  }
-  const text = renderTypes({ feed: { emits, on } });
-  assert.ok(text.includes('e199999'));
-  assert.ok(text.includes('h199999'));
-  // …and a server more units than that.
-  const units = {};
-  for (let i = 0; i < 200_000; i++) units[`u${i}`] = {};
-  assert.ok(renderTypes(units).includes('u199999'));
 });

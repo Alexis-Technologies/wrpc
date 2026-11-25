@@ -12,8 +12,8 @@
 const path = require('node:path');
 const fs = require('node:fs');
 const { tmpdir } = require('node:os');
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 
 const ROOT = path.join(__dirname, '..', '..');
 const pkg = require('../../package.json');
@@ -44,30 +44,32 @@ const MODES = {
   },
 };
 
-test('the types of every subpath resolve under node10, node16 and bundler, and the browser half under browser', (t) => {
-  const { dir, file } = consumer();
-  t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
-  let checked = 0;
-  for (const [mode, options] of Object.entries(MODES)) {
-    for (const key of subpaths) {
-      const entry = pkg.exports[key];
-      const expected = mode === 'bundler + browser' && entry.browser ? entry.browser.types : entry.types;
-      const { resolvedModule } = ts.resolveModuleName(specifier(key), file, { ...options, noEmit: true }, ts.sys);
-      assert.ok(resolvedModule, `${mode}: ${specifier(key)} does not resolve`);
-      assert.strictEqual(
-        fs.realpathSync(resolvedModule.resolvedFileName),
-        fs.realpathSync(absolute(expected)),
-        `${mode}: ${specifier(key)}`,
-      );
-      checked++;
+describe('package resolution', () => {
+  it('should resolve the types of every subpath under node10, node16 and bundler, and the browser half under browser', (t) => {
+    const { dir, file } = consumer();
+    t.after(() => fs.rmSync(dir, { recursive: true, force: true }));
+    let checked = 0;
+    for (const [mode, options] of Object.entries(MODES)) {
+      for (const key of subpaths) {
+        const entry = pkg.exports[key];
+        const expected = mode === 'bundler + browser' && entry.browser ? entry.browser.types : entry.types;
+        const { resolvedModule } = ts.resolveModuleName(specifier(key), file, { ...options, noEmit: true }, ts.sys);
+        assert.ok(resolvedModule, `${mode}: ${specifier(key)} does not resolve`);
+        assert.strictEqual(
+          fs.realpathSync(resolvedModule.resolvedFileName),
+          fs.realpathSync(absolute(expected)),
+          `${mode}: ${specifier(key)}`,
+        );
+        checked++;
+      }
     }
-  }
-  assert.strictEqual(checked, subpaths.length * Object.keys(MODES).length);
-});
+    assert.strictEqual(checked, subpaths.length * Object.keys(MODES).length);
+  });
 
-test('every subpath resolves at runtime, by the package name, to its entry under src/', () => {
-  for (const key of subpaths) {
-    const resolved = require.resolve(specifier(key));
-    assert.strictEqual(resolved, absolute(pkg.exports[key].default), specifier(key));
-  }
+  it('should resolve every subpath at runtime, by the package name, to its entry under src/', () => {
+    for (const key of subpaths) {
+      const resolved = require.resolve(specifier(key));
+      assert.strictEqual(resolved, absolute(pkg.exports[key].default), specifier(key));
+    }
+  });
 });

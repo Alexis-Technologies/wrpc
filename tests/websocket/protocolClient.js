@@ -7,12 +7,12 @@ const crypto = require('crypto');
 
 const TWO_32 = 4294967296;
 
-function parseStatusCode(statusLine) {
+const parseStatusCode = (statusLine) => {
   if (!statusLine) return null;
   const parts = statusLine.split(' ');
   const code = parseInt(parts[1], 10);
   return Number.isFinite(code) ? code : null;
-}
+};
 
 // Minimal low-level client for protocol tests.
 // Events: 'open', 'message'(Buffer), 'frame'(opcode, Buffer), 'ping'(Buffer),
@@ -21,6 +21,10 @@ function parseStatusCode(statusLine) {
 // sendText, sendBinary, ping, close
 class ProtocolClient extends EventEmitter {
   #handlers;
+  #buffer = Buffer.alloc(0);
+  #opened = false;
+  #closeSent = false;
+  #fragments = null; // { opcode, chunks: Buffer[] }
   // `headers` are extra request headers for the upgrade — how a test
   // offers `Sec-WebSocket-Extensions: permessage-deflate`.
   constructor(url, { headers = {} } = {}) {
@@ -29,11 +33,6 @@ class ProtocolClient extends EventEmitter {
     const port = u.port || 80;
     const host = u.hostname || 'localhost';
     this.handshakeHeaders = {};
-
-    this._buffer = Buffer.alloc(0);
-    this._opened = false;
-    this._closeSent = false;
-    this._fragments = null; // { opcode, chunks: Buffer[] }
 
     // Handlers dispatch map: { [opcode]: handler }
     this.#handlers = {
@@ -76,8 +75,8 @@ class ProtocolClient extends EventEmitter {
 
   #attachSocketListeners() {
     this.socket.on('data', (chunk) => {
-      this._buffer = Buffer.concat([this._buffer, chunk]);
-      if (!this._opened && !this.#consumeHandshake()) return;
+      this.#buffer = Buffer.concat([this.#buffer, chunk]);
+      if (!this.#opened && !this.#consumeHandshake()) return;
       this.#consumeFrames();
     });
 
@@ -93,9 +92,9 @@ class ProtocolClient extends EventEmitter {
   }
 
   #consumeHandshake() {
-    const idx = this._buffer.indexOf('\r\n\r\n');
+    const idx = this.#buffer.indexOf('\r\n\r\n');
     if (idx === -1) return false;
-    const header = this._buffer.subarray(0, idx).toString();
+    const header = this.#buffer.subarray(0, idx).toString();
     const lines = header.split('\r\n');
     const statusLine = lines[0] || '';
     const code = parseStatusCode(statusLine);
@@ -109,16 +108,16 @@ class ProtocolClient extends EventEmitter {
       if (colon <= 0) continue;
       this.handshakeHeaders[lines[i].slice(0, colon).trim().toLowerCase()] = lines[i].slice(colon + 1).trim();
     }
-    this._opened = true;
-    this._buffer = this._buffer.subarray(idx + 4);
+    this.#opened = true;
+    this.#buffer = this.#buffer.subarray(idx + 4);
     this.emit('open');
     return true;
   }
 
   #consumeFrames() {
-    while (this._buffer.length >= 2) {
-      const b0 = this._buffer[0];
-      const b1 = this._buffer[1];
+    while (this.#buffer.length >= 2) {
+      const b0 = this.#buffer[0];
+      const b1 = this.#buffer[1];
       const fin = (b0 & 0x80) !== 0;
       const rsv = b0 & 0x70;
       const opcode = b0 & 0x0f;
@@ -127,29 +126,29 @@ class ProtocolClient extends EventEmitter {
       let offset = 2;
 
       if (len === 126) {
-        if (this._buffer.length < offset + 2) break;
-        len = this._buffer.readUInt16BE(offset);
+        if (this.#buffer.length < offset + 2) break;
+        len = this.#buffer.readUInt16BE(offset);
         offset += 2;
       } else if (len === 127) {
-        if (this._buffer.length < offset + 8) break;
-        const high = this._buffer.readUInt32BE(offset);
-        const low = this._buffer.readUInt32BE(offset + 4);
+        if (this.#buffer.length < offset + 8) break;
+        const high = this.#buffer.readUInt32BE(offset);
+        const low = this.#buffer.readUInt32BE(offset + 4);
         len = high * TWO_32 + low;
         offset += 8;
       }
 
       const maskLen = masked ? 4 : 0;
-      if (this._buffer.length < offset + maskLen + len) break;
+      if (this.#buffer.length < offset + maskLen + len) break;
 
-      const payload = this._buffer.subarray(offset + maskLen, offset + maskLen + len);
+      const payload = this.#buffer.subarray(offset + maskLen, offset + maskLen + len);
       if (masked) {
-        const mask = this._buffer.subarray(offset, offset + 4);
+        const mask = this.#buffer.subarray(offset, offset + 4);
         for (let i = 0; i < payload.length; i++) {
           payload[i] ^= mask[i & 0x03];
         }
       }
 
-      this._buffer = this._buffer.subarray(offset + maskLen + len);
+      this.#buffer = this.#buffer.subarray(offset + maskLen + len);
 
       this.#dispatchFrame({ opcode, fin, masked, rsv, payload });
     }
@@ -166,12 +165,12 @@ class ProtocolClient extends EventEmitter {
   }
 
   #handleContinuation({ fin, masked, payload }) {
-    if (this._fragments) {
-      this._fragments.chunks.push(payload);
+    if (this.#fragments) {
+      this.#fragments.chunks.push(payload);
       if (fin) {
-        const full = Buffer.concat(this._fragments.chunks);
-        const startOpcode = this._fragments.opcode;
-        this._fragments = null;
+        const full = Buffer.concat(this.#fragments.chunks);
+        const startOpcode = this.#fragments.opcode;
+        this.#fragments = null;
         this.emit('frame', startOpcode, full, { fin, masked });
         if (startOpcode === 0x1) this.emit('message', full);
       }
@@ -180,7 +179,7 @@ class ProtocolClient extends EventEmitter {
 
   #handleText({ opcode, fin, masked, rsv, payload }) {
     if (!fin) {
-      this._fragments = { opcode, chunks: [payload] };
+      this.#fragments = { opcode, chunks: [payload] };
       return;
     }
     this.emit('frame', opcode, payload, { fin, masked, rsv });
@@ -189,7 +188,7 @@ class ProtocolClient extends EventEmitter {
 
   #handleBinary({ opcode, fin, masked, rsv, payload }) {
     if (!fin) {
-      this._fragments = { opcode, chunks: [payload] };
+      this.#fragments = { opcode, chunks: [payload] };
       return;
     }
     this.emit('frame', opcode, payload, { fin, masked, rsv });
@@ -217,7 +216,7 @@ class ProtocolClient extends EventEmitter {
     this.emit('close', code, reason);
   }
 
-  _sendFrame(opcode, payload, { fin = true, mask = true } = {}) {
+  #sendFrame(opcode, payload, { fin = true, mask = true } = {}) {
     const finOp = (fin ? 0x80 : 0x00) | (opcode & 0x0f);
     const payloadBuf = Buffer.from(payload || '');
     const len = payloadBuf.length;
@@ -258,19 +257,19 @@ class ProtocolClient extends EventEmitter {
   }
 
   sendFrame(opcode, payload, opts) {
-    this._sendFrame(opcode, payload, opts);
+    this.#sendFrame(opcode, payload, opts);
   }
 
   sendText(str, opts) {
-    this._sendFrame(0x1, Buffer.from(String(str)), opts);
+    this.#sendFrame(0x1, Buffer.from(String(str)), opts);
   }
 
   sendBinary(buf, opts) {
-    this._sendFrame(0x2, Buffer.from(buf || Buffer.alloc(0)), opts);
+    this.#sendFrame(0x2, Buffer.from(buf || Buffer.alloc(0)), opts);
   }
 
   ping(payload = Buffer.alloc(0), opts) {
-    this._sendFrame(0x9, Buffer.from(payload), opts);
+    this.#sendFrame(0x9, Buffer.from(payload), opts);
   }
 
   // Convenience: send string as text, Buffer/TypedArray/ArrayBuffer as binary;
@@ -289,13 +288,13 @@ class ProtocolClient extends EventEmitter {
   }
 
   close(code = 1000, reason = '') {
-    if (this.socket.destroyed || this._closeSent) return;
+    if (this.socket.destroyed || this.#closeSent) return;
     const reasonBuf = Buffer.from(String(reason));
     const payload = Buffer.alloc(2 + reasonBuf.length);
     payload.writeUInt16BE(code, 0);
     reasonBuf.copy(payload, 2);
-    this._sendFrame(0x8, payload);
-    this._closeSent = true;
+    this.#sendFrame(0x8, payload);
+    this.#closeSent = true;
     this.socket.end();
   }
 

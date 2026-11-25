@@ -1,8 +1,8 @@
 'use strict';
 
 const timers = require('node:timers/promises');
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 
 const { Emitter } = require('../src/utils.js');
 const { WrpcClient, WrpcError } = require('../src/client.js');
@@ -45,8 +45,8 @@ const makeClient = () => {
   return { client, transport };
 };
 
-test('WrpcClient packet handling', async (t) => {
-  await t.test('#handleStream rejects a duplicate stream id', async () => {
+describe('WrpcClient packet handling', () => {
+  it('should reject a duplicate stream id in #handleStream', async () => {
     const { client, transport } = makeClient();
     const id = 'dup-1';
     transport.emit('message', JSON.stringify({ type: 'stream', id, name: 'a', size: 3 }));
@@ -57,7 +57,7 @@ test('WrpcClient packet handling', async (t) => {
     assert.match(error.message, /already initialized/);
   });
 
-  await t.test('#handleStream errors on a status update for an unknown stream', async () => {
+  it('should error in #handleStream on a status update for an unknown stream', async () => {
     const { client, transport } = makeClient();
     const errorPromise = new Promise((resolve) => client.once('error', resolve));
     transport.emit('message', JSON.stringify({ type: 'stream', id: 'missing', status: 'end' }));
@@ -65,7 +65,7 @@ test('WrpcClient packet handling', async (t) => {
     assert.match(error.message, /is not initialized/);
   });
 
-  await t.test('#handleBinary errors for a chunk addressed to an unknown stream (ArrayBuffer input)', async () => {
+  it('should error in #handleBinary for a chunk addressed to an unknown stream (ArrayBuffer input)', async () => {
     const { client, transport } = makeClient();
     const chunk = chunkEncode('missing', new Uint8Array([1, 2, 3]));
     const arrayBuffer = chunk.buffer.slice(chunk.byteOffset, chunk.byteOffset + chunk.byteLength);
@@ -75,7 +75,7 @@ test('WrpcClient packet handling', async (t) => {
     assert.match(error.message, /is not initialized/);
   });
 
-  await t.test('#handlePacket rejects invalid JSON and structurally invalid packets', async () => {
+  it('should reject invalid JSON and structurally invalid packets in #handlePacket', async () => {
     const { client, transport } = makeClient();
     const invalidJson = new Promise((resolve) => client.once('error', resolve));
     transport.emit('message', 'not json');
@@ -86,7 +86,7 @@ test('WrpcClient packet handling', async (t) => {
     assert.match((await noId).message, /Packet structure error/);
   });
 
-  await t.test('#handlePacket resolves pending calls via introspection', async () => {
+  it('should resolve pending calls via introspection in #handlePacket', async () => {
     const { client, transport } = makeClient();
     transport.active = true;
     const loadPromise = client.load('greeting');
@@ -101,7 +101,7 @@ test('WrpcClient packet handling', async (t) => {
     assert.strictEqual(typeof client.api.greeting.hello, 'function');
   });
 
-  await t.test('#handlePacket rejects pending calls with a WrpcError', async () => {
+  it('should reject pending calls with a WrpcError in #handlePacket', async () => {
     const { client, transport } = makeClient();
     transport.active = true;
     const loadPromise = client.load('greeting');
@@ -114,7 +114,7 @@ test('WrpcClient packet handling', async (t) => {
     await assert.rejects(loadPromise, (error) => error instanceof WrpcError && error.code === 500);
   });
 
-  await t.test('#handlePacket carries wire error details onto the WrpcError', async () => {
+  it('should carry wire error details onto the WrpcError in #handlePacket', async () => {
     const { client, transport } = makeClient();
     transport.active = true;
     const loadPromise = client.load('greeting');
@@ -133,14 +133,14 @@ test('WrpcClient packet handling', async (t) => {
     });
   });
 
-  await t.test('WrpcError leaves details absent when the wire carried none', () => {
+  it('should leave WrpcError details absent when the wire carried none', () => {
     const error = new WrpcError({ message: 'nope', code: 404 });
     assert.strictEqual('details' in error, false);
   });
 });
 
-test('WrpcClient static online/offline/initialize', async (t) => {
-  await t.test('online()/offline() notify tracked transports', async () => {
+describe('WrpcClient static online/offline/initialize', () => {
+  it('should notify tracked transports on online()/offline()', async () => {
     const { client, transport } = makeClient();
     await client.open();
     let onlineCalls = 0;
@@ -159,7 +159,7 @@ test('WrpcClient static online/offline/initialize', async (t) => {
     client.close();
   });
 
-  await t.test('online() reopens inactive connections and surfaces open() failures', async () => {
+  it('should reopen inactive connections on online() and surface open() failures', async () => {
     const { client, transport } = makeClient();
     await client.open();
     transport.active = false;
@@ -176,7 +176,7 @@ test('WrpcClient static online/offline/initialize', async (t) => {
     WrpcClient.connections.delete(client);
   });
 
-  await t.test('initialize() wires window online/offline listeners when window exists', () => {
+  it('should wire window online/offline listeners in initialize() when window exists', () => {
     const listeners = {};
     globalThis.window = { addEventListener: (type, fn) => (listeners[type] = fn) };
     try {
@@ -188,7 +188,7 @@ test('WrpcClient static online/offline/initialize', async (t) => {
     }
   });
 
-  await t.test('initialize() wires self online/offline listeners when only self exists', () => {
+  it('should wire self online/offline listeners in initialize() when only self exists', () => {
     const listeners = {};
     globalThis.self = { addEventListener: (type, fn) => (listeners[type] = fn) };
     try {
@@ -201,20 +201,20 @@ test('WrpcClient static online/offline/initialize', async (t) => {
   });
 });
 
-test('WrpcClient.connect with a Service Worker (event transport)', async (t) => {
-  await t.test('getInstance (deprecated) still returns a shared singleton', () => {
+describe('WrpcClient.connect with a Service Worker (event transport)', () => {
+  it('should still return a shared singleton from getInstance (deprecated)', () => {
     const first = WrpcClient.transport.event.getInstance('worker://app');
     const second = WrpcClient.transport.event.getInstance('worker://other');
     assert.strictEqual(first, second);
   });
 
-  await t.test('a fresh instance requires a worker to open', async () => {
+  it('should require a worker to open a fresh instance', async () => {
     const EventTransport = WrpcClient.transport.event;
     const transport = new EventTransport('worker://fresh');
     await assert.rejects(transport.open({}), /Worker not provided/);
   });
 
-  await t.test('connect() opens its own transport, forwards online/offline, and closes cleanly', async () => {
+  it('should open its own transport on connect(), forward online/offline, and close cleanly', async () => {
     const sent = [];
     const worker = { postMessage: (msg) => sent.push(msg) };
 
@@ -258,7 +258,7 @@ test('WrpcClient.connect with a Service Worker (event transport)', async (t) => 
     return worker;
   };
 
-  await t.test('one page, two workers: each connect() gets its own channel', async (t) => {
+  it('should give each connect() its own channel with one page and two workers', async (t) => {
     const workerA = fakeWorker('A');
     const workerB = fakeWorker('B');
     const a = await WrpcClient.connect('local:a', { worker: workerA });
@@ -288,7 +288,7 @@ test('WrpcClient.connect with a Service Worker (event transport)', async (t) => 
     assert.strictEqual(await b.call('unit/method'), 'B:0');
   });
 
-  await t.test('two clients, one worker: two channels, and close() is per client', async (t) => {
+  it('should open two channels for two clients of one worker, and close() per client', async (t) => {
     const worker = fakeWorker('W');
     const first = await WrpcClient.connect('local:w', { worker });
     const second = await WrpcClient.connect('local:w', { worker });
@@ -308,7 +308,7 @@ test('WrpcClient.connect with a Service Worker (event transport)', async (t) => 
     assert.strictEqual(await second.call('unit/method'), 'W:1');
   });
 
-  await t.test('a SharedWorker is reached through its port', async () => {
+  it('should reach a SharedWorker through its port', async () => {
     const sent = [];
     const worker = { port: { postMessage: (msg) => sent.push(msg) } };
     const EventTransport = WrpcClient.transport.event;
@@ -329,7 +329,7 @@ test('WrpcClient.connect with a Service Worker (event transport)', async (t) => 
     transport.close();
   });
 
-  await t.test('close() is idempotent and safe before open()', async () => {
+  it('should make close() idempotent and safe before open()', async () => {
     const EventTransport = WrpcClient.transport.event;
     const transport = new EventTransport('worker://idle');
     assert.doesNotThrow(() => transport.close());
@@ -344,13 +344,13 @@ test('WrpcClient.connect with a Service Worker (event transport)', async (t) => 
 // ---------------------------------------------------------------------------
 // Static introspection: use()
 
-test('use(): static introspection without wire traffic', async (t) => {
+describe('use(): static introspection without wire traffic', () => {
   const artifact = () => ({
     greeting: { hello: { access: 'public' } },
     feed: { ticks: { access: 'public', kind: 'subscription' } },
   });
 
-  await t.test('scaffolds synchronously, before open(), with zero wire traffic', () => {
+  it('should scaffold synchronously, before open(), with zero wire traffic', () => {
     const { client, transport } = makeClient();
     const result = client.use(artifact());
     assert.strictEqual(result, client, 'use() returns this');
@@ -359,7 +359,7 @@ test('use(): static introspection without wire traffic', async (t) => {
     assert.strictEqual(transport.sent.length, 0, 'nothing went over the wire');
   });
 
-  await t.test('a use() unit is a real Emitter: server events land on it', async () => {
+  it('should make a use() unit a real Emitter: server events land on it', async () => {
     const { client, transport } = makeClient();
     client.use(artifact());
     const seen = [];
@@ -369,7 +369,7 @@ test('use(): static introspection without wire traffic', async (t) => {
     assert.deepStrictEqual(seen, [{ at: 1 }]);
   });
 
-  await t.test('load() after use() flips the unit to dynamic: it reloads on reconnect', async (t) => {
+  it('should flip the unit to dynamic on load() after use(): it reloads on reconnect', async (t) => {
     const transport = new FakeTransport('fake://x');
     const client = new WrpcClient('fake://x', transport, {
       heartbeat: false,
@@ -396,7 +396,7 @@ test('use(): static introspection without wire traffic', async (t) => {
     transport.emit('message', JSON.stringify({ type: 'callback', id: packet.id, result: { greeting: { wave: {} } } }));
   });
 
-  await t.test('use() after load() is a no-op for that unit (dynamic wins)', async () => {
+  it('should do nothing on use() after load() for that unit (dynamic wins)', async () => {
     const { client, transport } = makeClient();
     transport.active = true;
     const loadPromise = client.load('greeting');
@@ -410,7 +410,7 @@ test('use(): static introspection without wire traffic', async (t) => {
     assert.strictEqual(typeof client.api.feed.ticks.subscribe, 'function', 'other units still scaffold');
   });
 
-  await t.test('bad shapes throw a TypeError', () => {
+  it('should throw a TypeError on bad shapes', () => {
     const { client } = makeClient();
     assert.throws(() => client.use(null), TypeError);
     assert.throws(() => client.use([]), TypeError);
@@ -424,7 +424,7 @@ test('use(): static introspection without wire traffic', async (t) => {
 // flow-control signal has to pass through it — both the write() boolean
 // and the 'drain' that releases the producer. A WebSocket in a browser
 // reports nothing (undefined counts as accepted); an RTCDataChannel does.
-test('WrpcClient backpressure passthrough', async (t) => {
+describe('WrpcClient backpressure passthrough', () => {
   class ThrottledTransport extends FakeTransport {
     accept = true;
     write(data) {
@@ -433,7 +433,7 @@ test('WrpcClient backpressure passthrough', async (t) => {
     }
   }
 
-  await t.test('write() returns the transport signal and createStream parks on drain', async () => {
+  it('should return the transport signal from write() and park createStream on drain', async (t) => {
     const transport = new ThrottledTransport('fake://x');
     const client = new WrpcClient('fake://x', transport);
     await client.open();
@@ -454,7 +454,7 @@ test('WrpcClient backpressure passthrough', async (t) => {
     assert.strictEqual(stream.write(new Uint8Array([4, 5, 6])), true);
   });
 
-  await t.test('a transport that reports nothing counts as accepted', async () => {
+  it('should count a transport that reports nothing as accepted', async (t) => {
     const { client, transport } = makeClient();
     await client.open();
     t.after(() => client.close());
@@ -466,151 +466,155 @@ test('WrpcClient backpressure passthrough', async (t) => {
   });
 });
 
-test('createBlobUploader: paced by the transport, a 503 on a close mid-way, a terminate on a failing source', async (t) => {
-  // A transport that answers false to every chunk: the uploader must wait
-  // for the stream's 'drain' between chunks — it used to write the whole
-  // blob whatever the answer.
-  class Slow extends FakeTransport {
-    chunks = 0;
-    write(data) {
-      this.sent.push(data);
-      if (typeof data === 'string') return true;
-      this.chunks++;
-      return false;
+describe('createBlobUploader', () => {
+  it('should be paced by the transport, answer a 503 on a close mid-way, and terminate on a failing source', async (t) => {
+    // A transport that answers false to every chunk: the uploader must wait
+    // for the stream's 'drain' between chunks — it used to write the whole
+    // blob whatever the answer.
+    class Slow extends FakeTransport {
+      chunks = 0;
+      write(data) {
+        this.sent.push(data);
+        if (typeof data === 'string') return true;
+        this.chunks++;
+        return false;
+      }
     }
-  }
-  const transport = new Slow('fake://x');
-  const client = new WrpcClient('fake://x', transport);
-  await transport.open();
-  // Three chunks from the source, whatever a Blob's own chunking would be.
-  const blob = {
-    name: 'paced',
-    size: 3 * 65536,
-    stream: () =>
-      (async function* () {
-        for (let i = 0; i < 3; i++) yield new Uint8Array(65536).fill(i);
-      })(),
-  };
-  const uploader = client.createBlobUploader(blob);
-  const done = uploader.upload();
-  let settled = false;
-  done.then(
-    () => (settled = true),
-    () => (settled = true),
-  );
-  await timers.setTimeout(10);
-  assert.strictEqual(transport.chunks, 1, 'one chunk, then a wait for drain');
-  // The writable listens for the TRANSPORT's drain after a false.
-  transport.emit('drain');
-  await timers.setTimeout(10);
-  assert.strictEqual(transport.chunks, 2, 'the next chunk after the drain');
-  assert.strictEqual(settled, false);
-  // The connection closes with a chunk still to go: the upload rejects
-  // 503 like a call would, instead of resolving.
-  transport.close();
-  await assert.rejects(done, (error) => error instanceof WrpcError && error.code === 503);
-  const last = JSON.parse(transport.sent.findLast((data) => typeof data === 'string'));
-  assert.notStrictEqual(last.status, 'end', 'no end packet for a stream that did not finish');
+    const transport = new Slow('fake://x');
+    const client = new WrpcClient('fake://x', transport);
+    await transport.open();
+    // Three chunks from the source, whatever a Blob's own chunking would be.
+    const blob = {
+      name: 'paced',
+      size: 3 * 65536,
+      stream: () =>
+        (async function* () {
+          for (let i = 0; i < 3; i++) yield new Uint8Array(65536).fill(i);
+        })(),
+    };
+    const uploader = client.createBlobUploader(blob);
+    const done = uploader.upload();
+    let settled = false;
+    done.then(
+      () => (settled = true),
+      () => (settled = true),
+    );
+    await timers.setTimeout(10);
+    assert.strictEqual(transport.chunks, 1, 'one chunk, then a wait for drain');
+    // The writable listens for the TRANSPORT's drain after a false.
+    transport.emit('drain');
+    await timers.setTimeout(10);
+    assert.strictEqual(transport.chunks, 2, 'the next chunk after the drain');
+    assert.strictEqual(settled, false);
+    // The connection closes with a chunk still to go: the upload rejects
+    // 503 like a call would, instead of resolving.
+    transport.close();
+    await assert.rejects(done, (error) => error instanceof WrpcError && error.code === 503);
+    const last = JSON.parse(transport.sent.findLast((data) => typeof data === 'string'));
+    assert.notStrictEqual(last.status, 'end', 'no end packet for a stream that did not finish');
 
-  // A source that fails: the stream is terminated on the server, and the
-  // failure is the caller's.
-  const fresh = new FakeTransport('fake://y');
-  const other = new WrpcClient('fake://y', fresh);
-  await fresh.open();
-  const failing = {
-    name: 'broken',
-    size: 10,
-    stream: () =>
-      (async function* () {
-        yield new Uint8Array(5);
-        throw new Error('disk');
-      })(),
-  };
-  const broken = other.createBlobUploader(failing);
-  await assert.rejects(broken.upload(), /disk/);
-  const packets = fresh.sent.filter((data) => typeof data === 'string').map((data) => JSON.parse(data));
-  assert.deepStrictEqual(packets.at(-1), { type: 'stream', id: broken.id, status: 'terminate' });
-  t.diagnostic('uploader paced and failed as designed');
-});
-
-test('createBlobUploader: upload() runs once — a second call rejects at once instead of hanging', async () => {
-  const transport = new FakeTransport('fake://once');
-  const client = new WrpcClient('fake://once', transport);
-  await transport.open();
-  const blob = {
-    name: 'once',
-    size: 4,
-    stream: () =>
-      (async function* () {
-        yield new Uint8Array(4).fill(1);
-      })(),
-  };
-  const uploader = client.createBlobUploader(blob);
-  await uploader.upload();
-  // It used to write into the ended stream and wait for a drain forever.
-  const again = await Promise.race([
-    uploader.upload().then(
-      () => 'resolved',
-      (error) => error,
-    ),
-    timers.setTimeout(500, 'pending'),
-  ]);
-  assert.ok(again instanceof Error, `rejected, not ${again}`);
-  assert.match(again.message, /runs once/);
-  const ends = transport.sent.filter((data) => typeof data === 'string' && JSON.parse(data).status === 'end');
-  assert.strictEqual(ends.length, 1, 'one end packet');
-});
-
-// --- A procedure named like an Emitter member ---------------------------------
-
-test('a unit whose procedures are named like Emitter members still delivers its events', async (t) => {
-  const { Server, defineRouter, procedure, WrpcClient: Client } = require('../index.js');
-  const router = defineRouter({
-    chat: {
-      send: procedure({
-        access: 'public',
-        handler: async (context) => {
-          context.client.sendEvent('chat/message', { text: 'hi' });
-          return 'sent';
-        },
-      }),
-      // Honest names for procedures — and members of the unit's Emitter.
-      listenerCount: procedure({ access: 'public', handler: async () => 7 }),
-      emit: procedure({ access: 'public', handler: async () => 'the procedure' }),
-      clear: procedure({ access: 'public', handler: async () => 'cleared on the server' }),
-    },
+    // A source that fails: the stream is terminated on the server, and the
+    // failure is the caller's.
+    const fresh = new FakeTransport('fake://y');
+    const other = new WrpcClient('fake://y', fresh);
+    await fresh.open();
+    const failing = {
+      name: 'broken',
+      size: 10,
+      stream: () =>
+        (async function* () {
+          yield new Uint8Array(5);
+          throw new Error('disk');
+        })(),
+    };
+    const broken = other.createBlobUploader(failing);
+    await assert.rejects(broken.upload(), /disk/);
+    const packets = fresh.sent.filter((data) => typeof data === 'string').map((data) => JSON.parse(data));
+    assert.deepStrictEqual(packets.at(-1), { type: 'stream', id: broken.id, status: 'terminate' });
+    t.diagnostic('uploader paced and failed as designed');
   });
-  const server = new Server({ host: '127.0.0.1', port: 0, protocol: 'http', logger: false, router });
-  await server.listen();
-  t.after(() => server.close());
-  const { port } = server.address();
-  const client = await Client.connect(`ws://127.0.0.1:${port}${server.rpc.basePath}`, {
-    heartbeat: false,
-    reconnect: false,
-    logger: false,
+
+  it('should run upload() once — a second call rejects at once instead of hanging', async () => {
+    const transport = new FakeTransport('fake://once');
+    const client = new WrpcClient('fake://once', transport);
+    await transport.open();
+    const blob = {
+      name: 'once',
+      size: 4,
+      stream: () =>
+        (async function* () {
+          yield new Uint8Array(4).fill(1);
+        })(),
+    };
+    const uploader = client.createBlobUploader(blob);
+    await uploader.upload();
+    // It used to write into the ended stream and wait for a drain forever.
+    const again = await Promise.race([
+      uploader.upload().then(
+        () => 'resolved',
+        (error) => error,
+      ),
+      timers.setTimeout(500, 'pending'),
+    ]);
+    assert.ok(again instanceof Error, `rejected, not ${again}`);
+    assert.match(again.message, /runs once/);
+    const ends = transport.sent.filter((data) => typeof data === 'string' && JSON.parse(data).status === 'end');
+    assert.strictEqual(ends.length, 1, 'one end packet');
   });
-  t.after(() => void client.close());
-  const unhandled = [];
-  client.on('unhandled-event', (event) => unhandled.push(event.name));
-  await client.load('chat');
-  const heard = [];
-  client.api.chat.on('message', (data) => heard.push(data));
-  assert.strictEqual(await client.api.chat.send({}), 'sent');
-  await new Promise((resolve) => setTimeout(resolve, 50));
-  // With `listenerCount` the event was unhandled; with `emit` the client
-  // called the server's procedure for every event that arrived.
-  assert.deepStrictEqual(heard, [{ text: 'hi' }]);
-  assert.deepStrictEqual(unhandled, []);
-  // And the procedures are still the procedures.
-  assert.strictEqual(await client.api.chat.emit({}), 'the procedure');
-  assert.strictEqual(await client.api.chat.listenerCount({}), 7);
-  assert.strictEqual(await client.api.chat.clear({}), 'cleared on the server');
 });
 
-test('use(): a method named __proto__ does not replace the prototype of its unit', () => {
-  const { Emitter } = require('../index.js');
-  const { client } = makeClient();
-  client.use(JSON.parse('{"evil":{"__proto__":{"signature":{}},"ping":{"signature":{}}}}'));
-  assert.ok(client.api.evil instanceof Emitter, 'still an Emitter');
-  assert.strictEqual(typeof client.api.evil.ping, 'function');
+describe('units whose procedure names collide with object members', () => {
+  // --- A procedure named like an Emitter member ---------------------------------
+
+  it('should still deliver the events of a unit whose procedures are named like Emitter members', async (t) => {
+    const { Server, defineRouter, procedure, WrpcClient: Client } = require('../index.js');
+    const router = defineRouter({
+      chat: {
+        send: procedure({
+          access: 'public',
+          handler: async (context) => {
+            context.client.sendEvent('chat/message', { text: 'hi' });
+            return 'sent';
+          },
+        }),
+        // Honest names for procedures — and members of the unit's Emitter.
+        listenerCount: procedure({ access: 'public', handler: async () => 7 }),
+        emit: procedure({ access: 'public', handler: async () => 'the procedure' }),
+        clear: procedure({ access: 'public', handler: async () => 'cleared on the server' }),
+      },
+    });
+    const server = new Server({ host: '127.0.0.1', port: 0, protocol: 'http', logger: false, router });
+    await server.listen();
+    t.after(() => server.close());
+    const { port } = server.address();
+    const client = await Client.connect(`ws://127.0.0.1:${port}${server.rpc.basePath}`, {
+      heartbeat: false,
+      reconnect: false,
+      logger: false,
+    });
+    t.after(() => void client.close());
+    const unhandled = [];
+    client.on('unhandled-event', (event) => unhandled.push(event.name));
+    await client.load('chat');
+    const heard = [];
+    client.api.chat.on('message', (data) => heard.push(data));
+    assert.strictEqual(await client.api.chat.send({}), 'sent');
+    await new Promise((resolve) => setTimeout(resolve, 50));
+    // With `listenerCount` the event was unhandled; with `emit` the client
+    // called the server's procedure for every event that arrived.
+    assert.deepStrictEqual(heard, [{ text: 'hi' }]);
+    assert.deepStrictEqual(unhandled, []);
+    // And the procedures are still the procedures.
+    assert.strictEqual(await client.api.chat.emit({}), 'the procedure');
+    assert.strictEqual(await client.api.chat.listenerCount({}), 7);
+    assert.strictEqual(await client.api.chat.clear({}), 'cleared on the server');
+  });
+
+  it('should not replace the prototype of a unit through a use() method named __proto__', () => {
+    const { Emitter: PublicEmitter } = require('../index.js');
+    const { client } = makeClient();
+    client.use(JSON.parse('{"evil":{"__proto__":{"signature":{}},"ping":{"signature":{}}}}'));
+    assert.ok(client.api.evil instanceof PublicEmitter, 'still an Emitter');
+    assert.strictEqual(typeof client.api.evil.ping, 'function');
+  });
 });

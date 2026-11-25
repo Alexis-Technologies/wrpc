@@ -6,8 +6,8 @@
 //   docker compose up -d kafka
 //   KAFKA_BROKERS=127.0.0.1:9092 node --test tests/broker/kafka.integration.test.js
 
-const { test, before } = require('node:test');
-const assert = require('node:assert');
+const { describe, it, before, after } = require('node:test');
+const assert = require('node:assert/strict');
 const timers = require('node:timers/promises');
 
 const { createKafkaBroker, decodeVector, encodeVector } = require('../../src/broker/kafka/index.js');
@@ -33,12 +33,12 @@ if (brokers.length > 0) {
   }
 }
 
-const options =
-  brokers.length === 0
-    ? { skip: 'set KAFKA_BROKERS to run the Kafka integration suite' }
-    : clients.length === 0
-      ? { skip: 'no KafkaJS-shaped client is installed' }
-      : { skip: false };
+const skipReason = () => {
+  if (brokers.length === 0) return 'set KAFKA_BROKERS to run the Kafka integration suite';
+  if (clients.length === 0) return 'no KafkaJS-shaped client is installed';
+  return false;
+};
+const options = { skip: skipReason() };
 if (options.skip && brokers.length > 0 && process.env.WRPC_INTEGRATION_STRICT) {
   throw new Error(`${options.skip} (WRPC_INTEGRATION_STRICT is set)`);
 }
@@ -88,76 +88,85 @@ const warmUp = async () => {
 };
 if (!options.skip) before(warmUp, { timeout: 2 * WARM_TIMEOUT + 3 * WARM_PAUSE });
 
-for (const client of clients.length > 0 ? clients : [{ flavor: 'none', lib: null }]) {
-  const prefix = () => `wrpc${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
+describe('kafka (real)', () => {
+  for (const client of clients.length > 0 ? clients : [{ flavor: 'none', lib: null }]) {
+    // One namespace per contract suite, shared by its cases.
+    const prefix = () => `wrpc${Date.now().toString(36)}${Math.random().toString(36).slice(2, 6)}`;
 
-  test(`kafka (real, ${client.flavor}): backplane contract`, options, async (t) => {
-    const namespace = prefix();
-    await runBackplaneContract(t, `kafka/${client.flavor}`, {
-      open: async () => [
-        create(client, { prefix: namespace, backplane: { partitions: 1 } }).backplane,
-        create(client, { prefix: namespace, backplane: { partitions: 1 } }).backplane,
-      ],
-      close: async () => {},
-      // A fresh consumer group is deaf until it has joined.
-      settle: 1500,
-      timeout: 20_000,
-    });
-  });
-
-  test(`kafka (real, ${client.flavor}): log contract`, options, async (t) => {
-    const namespace = prefix();
-    await runLogContract(t, `kafka/${client.flavor}`, {
-      open: async () => {
-        const broker = create(client, { prefix: namespace });
-        const peer = create(client, { prefix: namespace });
-        return {
-          log: broker.log,
-          peer: peer.log,
-          close: async () => {},
-          beyondTip: (_topic, id) => {
-            const cursor = decodeVector(id);
-            for (const partition of Object.keys(cursor)) cursor[partition] += 1000;
-            return encodeVector(cursor);
-          },
-        };
+    const backplaneNamespace = prefix();
+    runBackplaneContract(
+      `backplane contract (${client.flavor})`,
+      {
+        open: async () => [
+          create(client, { prefix: backplaneNamespace, backplane: { partitions: 1 } }).backplane,
+          create(client, { prefix: backplaneNamespace, backplane: { partitions: 1 } }).backplane,
+        ],
+        close: async () => {},
+        // A fresh consumer group is deaf until it has joined.
+        settle: 1500,
+        timeout: 20_000,
       },
-      timeout: 30_000,
-    });
-  });
+      options,
+    );
 
-  test(`kafka (real, ${client.flavor}): queue contract`, options, async (t) => {
-    const namespace = prefix();
-    await runQueueContract(t, `kafka/${client.flavor}`, {
-      open: async () => {
-        const broker = create(client, { prefix: namespace });
-        const peer = create(client, { prefix: namespace });
-        return { queue: broker.queue, peer: peer.queue, close: async () => {} };
+    const logNamespace = prefix();
+    runLogContract(
+      `log contract (${client.flavor})`,
+      {
+        open: async () => {
+          const broker = create(client, { prefix: logNamespace });
+          const peer = create(client, { prefix: logNamespace });
+          return {
+            log: broker.log,
+            peer: peer.log,
+            close: async () => {},
+            beyondTip: (_topic, id) => {
+              const cursor = decodeVector(id);
+              for (const partition of Object.keys(cursor)) cursor[partition] += 1000;
+              return encodeVector(cursor);
+            },
+          };
+        },
+        timeout: 30_000,
       },
-      timeout: 30_000,
-      redelivery: 10_000,
-      settle: 1000,
-      ackWindow: 11_000,
-    });
-  });
-}
+      options,
+    );
 
-test('kafka (real): a durable feed resumes on another instance', options, async (t) => {
-  const client = clients[0];
-  const namespace = `wrpc${Date.now().toString(36)}`;
-  const producer = create(client, { prefix: namespace });
-  const reader = create(client, { prefix: namespace });
-  const topic = unique('feed');
-  const first = await producer.log.append(topic, 'one');
-  await producer.log.append(topic, 'two');
-  const entries = await collect(reader.log.read(topic, { after: first }), 1, { timeout: 30_000 });
-  assert.deepStrictEqual(
-    entries.map((entry) => entry.value),
-    ['two'],
-  );
-  void t;
+    const queueNamespace = prefix();
+    runQueueContract(
+      `queue contract (${client.flavor})`,
+      {
+        open: async () => {
+          const broker = create(client, { prefix: queueNamespace });
+          const peer = create(client, { prefix: queueNamespace });
+          return { queue: broker.queue, peer: peer.queue, close: async () => {} };
+        },
+        timeout: 30_000,
+        redelivery: 10_000,
+        settle: 1000,
+        ackWindow: 11_000,
+      },
+      options,
+    );
+  }
+
+  it('should resume a durable feed on another instance', options, async (t) => {
+    const client = clients[0];
+    const namespace = `wrpc${Date.now().toString(36)}`;
+    const producer = create(client, { prefix: namespace });
+    const reader = create(client, { prefix: namespace });
+    const topic = unique('feed');
+    const first = await producer.log.append(topic, 'one');
+    await producer.log.append(topic, 'two');
+    const entries = await collect(reader.log.read(topic, { after: first }), 1, { timeout: 30_000 });
+    assert.deepStrictEqual(
+      entries.map((entry) => entry.value),
+      ['two'],
+    );
+    void t;
+  });
 });
 
-test.after(async () => {
+after(async () => {
   for (const broker of made) await broker.close().catch(() => {});
 });

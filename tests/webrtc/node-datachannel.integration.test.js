@@ -9,8 +9,8 @@
 //
 //   WRPC_RTC=node-datachannel node --test tests/webrtc/node-datachannel.integration.test.js
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it, after } = require('node:test');
+const assert = require('node:assert/strict');
 
 const { createW3cAdapter } = require('../../src/webrtc/port.js');
 const { runRtcPortContract } = require('./portContract.js');
@@ -26,28 +26,26 @@ if (MODULE) {
     w3c = null;
   }
 }
+const skip = !w3c && 'set WRPC_RTC=node-datachannel';
 
-test(
-  'webrtc port: a real implementation satisfies the shared contract',
-  { skip: !w3c && 'set WRPC_RTC=node-datachannel' },
-  async (t) => {
+describe('webrtc port', () => {
+  describe('the shared contract over a real implementation', () => {
     // Loopback only: no STUN, so the pair connects over host candidates.
-    await runRtcPortContract({ createAdapter: () => createW3cAdapter(w3c), configuration: { iceServers: [] } }, t);
+    runRtcPortContract({ createAdapter: () => createW3cAdapter(w3c), configuration: { iceServers: [] } }, { skip });
     // node-datachannel keeps a worker thread alive; release it so the runner exits.
-    t.after(() => {
+    after(() => {
+      if (!w3c) return;
       try {
         require('node-datachannel').cleanup();
       } catch {
         // not node-datachannel, nothing to release
       }
     });
-  },
-);
+  });
+});
 
-test(
-  'webrtc assertions: a real implementation declares a certificate fingerprint in its SDP',
-  { skip: !w3c && 'set WRPC_RTC=node-datachannel' },
-  async (t) => {
+describe('webrtc assertions', () => {
+  it('should have a real implementation declare a certificate fingerprint in its SDP', { skip }, async (t) => {
     const { sdpFingerprint, normalizeFingerprint } = require('../../src/webrtc/assertions.js');
     const adapter = createW3cAdapter(w3c);
     const pc = adapter.createPeerConnection({ iceServers: [] });
@@ -60,13 +58,11 @@ test(
     assert.strictEqual(typeof fingerprint, 'string');
     assert.match(fingerprint, /^sha-256 (?:[0-9A-F]{2}:){31}[0-9A-F]{2}$/);
     assert.strictEqual(normalizeFingerprint(fingerprint), fingerprint);
-  },
-);
+  });
+});
 
-test(
-  'webrtc raw channel: attachChannel over a real implementation',
-  { skip: !w3c && 'set WRPC_RTC=node-datachannel' },
-  async (t) => {
+describe('webrtc raw channel', () => {
+  it('should carry attachChannel over a real implementation', { skip }, async (t) => {
     const { RpcServer } = require('../../src/rpc/core.js');
     const { defineRouter, procedure } = require('../../src/rpc/router.js');
     const { WrpcClient } = require('../../src/client/core.js');
@@ -101,5 +97,5 @@ test(
     await client.load('calc');
     assert.strictEqual(await client.api.calc.add({ x: 2, y: 2 }), 4);
     assert.strictEqual(attached.transportKind, 'webrtc');
-  },
-);
+  });
+});

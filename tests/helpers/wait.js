@@ -8,7 +8,7 @@
 // Require-free of the library on purpose: a suite that boots nothing (a
 // unit test, a contract helper) waits the same way as one that does.
 
-const assert = require('node:assert');
+const assert = require('node:assert/strict');
 const timers = require('node:timers/promises');
 
 // A slow machine raises every wait at once; a wait that passes never

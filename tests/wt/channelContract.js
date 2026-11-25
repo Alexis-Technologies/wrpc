@@ -6,14 +6,18 @@
 // The two are mirror copies of one another's send path, which is how a fix
 // used to land on one end and skip the other. Not a *.test.js.
 //
-//   harness.open(sub, options) -> { world, end, peer }
+// Call it inside the caller's `describe`: it registers one `it` per case
+// there, synchronously.
+//
+//   harness.open(t, options) -> { world, end, peer }   (t: the case's context)
 //     end   { session, send(data, options?) -> boolean, stream(packet),
 //             on(event, listener), bufferedAmount, compression, terminate() }
 //     peer  peerEnd(session, stream): the other end of the control stream,
 //           by hand — `received` (kinds and data past the capabilities),
 //           `caps(text)` (its capabilities message), `session`.
 
-const assert = require('node:assert');
+const { it } = require('node:test');
+const assert = require('node:assert/strict');
 const timers = require('node:timers/promises');
 const zlib = require('node:zlib');
 
@@ -86,7 +90,7 @@ const peerEnd = (session, stream) => {
 
 const text = (entry) => (entry.kind === KIND_TEXT_COMPRESSED ? zlib.inflateRawSync(entry.data).toString() : entry.data);
 
-const runChannelContract = async (t, name, harness) => {
+const runChannelContract = (harness) => {
   const marks = { highWaterMark: 100, lowWaterMark: 20 };
   const drainsOf = (end) => {
     const drains = [];
@@ -94,8 +98,8 @@ const runChannelContract = async (t, name, harness) => {
     return drains;
   };
 
-  await t.test(`${name}: a false on the control stream is followed by exactly one drain`, async (sub) => {
-    const { world, end, peer } = await harness.open(sub, marks);
+  it('should follow a false on the control stream with exactly one drain', async (t) => {
+    const { world, end, peer } = await harness.open(t, marks);
     const release = world.hold();
     const drains = drainsOf(end);
     assert.strictEqual(end.send('x'.repeat(50)), true);
@@ -112,8 +116,8 @@ const runChannelContract = async (t, name, harness) => {
     assert.strictEqual(drains.length, 1, 'one drain, not one per settled write');
   });
 
-  await t.test(`${name}: a false from a side stream is followed by a drain`, async (sub) => {
-    const { world, end, peer } = await harness.open(sub, marks);
+  it('should follow a false from a side stream with a drain', async (t) => {
+    const { world, end, peer } = await harness.open(t, marks);
     await peer.caps('{"streams":true}');
     end.stream({ type: 'stream', id: 'up', name: 'blob', size: 300 });
     await waitFor(() => end.session.uniOpened === 1, 'the chunks have a stream of their own');
@@ -129,8 +133,8 @@ const runChannelContract = async (t, name, harness) => {
     assert.strictEqual(end.bufferedAmount, 0);
   });
 
-  await t.test(`${name}: chunks held for a stream still opening count, and drain once it flushes`, async (sub) => {
-    const { world, end, peer } = await harness.open(sub, marks);
+  it('should count chunks held for a stream still opening, and drain once it flushes', async (t) => {
+    const { world, end, peer } = await harness.open(t, marks);
     await peer.caps('{"streams":true}');
     world.uniQuota = 'hang';
     end.stream({ type: 'stream', id: 'held', name: 'blob', size: 300 });
@@ -147,30 +151,27 @@ const runChannelContract = async (t, name, harness) => {
     assert.strictEqual(end.bufferedAmount, 0, 'counted once, not again when routed');
   });
 
-  await t.test(
-    `${name}: a compress in flight and a frame queued behind it answer false, then one drain`,
-    async (sub) => {
-      const { end, peer } = await harness.open(sub, { ...marks, compression: { codec: slowCodec(5) } });
-      await peer.caps(JSON.stringify({ streams: true, enc: [DEFLATE] }));
-      await waitFor(() => end.compression !== null, 'negotiated');
-      const drains = drainsOf(end);
-      const big = 'a'.repeat(2000);
-      assert.strictEqual(end.send(big), false, 'in flight past the mark');
-      assert.strictEqual(end.send('{"type":"ping"}'), false, 'queued behind it');
-      await waitFor(() => peer.received.length === 2, 'both delivered');
-      await waitFor(() => drains.length === 1, 'drain');
-      await timers.setTimeout(10);
-      assert.strictEqual(drains.length, 1);
-      assert.strictEqual(end.bufferedAmount, 0);
-      assert.deepStrictEqual(
-        peer.received.map((entry) => entry.kind),
-        [KIND_TEXT_COMPRESSED, KIND_TEXT],
-      );
-    },
-  );
+  it('should answer false for a compress in flight and a frame queued behind it, then drain once', async (t) => {
+    const { end, peer } = await harness.open(t, { ...marks, compression: { codec: slowCodec(5) } });
+    await peer.caps(JSON.stringify({ streams: true, enc: [DEFLATE] }));
+    await waitFor(() => end.compression !== null, 'negotiated');
+    const drains = drainsOf(end);
+    const big = 'a'.repeat(2000);
+    assert.strictEqual(end.send(big), false, 'in flight past the mark');
+    assert.strictEqual(end.send('{"type":"ping"}'), false, 'queued behind it');
+    await waitFor(() => peer.received.length === 2, 'both delivered');
+    await waitFor(() => drains.length === 1, 'drain');
+    await timers.setTimeout(10);
+    assert.strictEqual(drains.length, 1);
+    assert.strictEqual(end.bufferedAmount, 0);
+    assert.deepStrictEqual(
+      peer.received.map((entry) => entry.kind),
+      [KIND_TEXT_COMPRESSED, KIND_TEXT],
+    );
+  });
 
-  await t.test(`${name}: an asynchronous codec keeps the wire in order`, async (sub) => {
-    const { end, peer } = await harness.open(sub, { compression: { codec: slowCodec(3) } });
+  it('should keep the wire in order with an asynchronous codec', async (t) => {
+    const { end, peer } = await harness.open(t, { compression: { codec: slowCodec(3) } });
     await peer.caps(JSON.stringify({ streams: true, enc: [DEFLATE] }));
     await waitFor(() => end.compression !== null, 'negotiated');
     const sent = ['b'.repeat(500), '{"n":1}', 'c'.repeat(500), '{"n":2}', 'd'.repeat(500)];
@@ -183,8 +184,8 @@ const runChannelContract = async (t, name, harness) => {
     assert.deepStrictEqual(peer.received.map(text), sent);
   });
 
-  await t.test(`${name}: what the peer sent before its FIN arrives, inflated by an asynchronous codec`, async (sub) => {
-    const { end, peer } = await harness.open(sub, { compression: { codec: slowCodec(15) } });
+  it('should deliver what the peer sent before its FIN, inflated by an asynchronous codec', async (t) => {
+    const { end, peer } = await harness.open(t, { compression: { codec: slowCodec(15) } });
     const received = [];
     end.on('message', (data, isBinary) => {
       if (isBinary !== true) received.push(String(data));
@@ -207,66 +208,60 @@ const runChannelContract = async (t, name, harness) => {
     assert.deepStrictEqual(received, sent);
   });
 
-  await t.test(
-    `${name}: past maxBackpressure the session is terminated; one frame past the cap on an empty queue is not`,
-    async (sub) => {
-      const { world, end, peer } = await harness.open(sub, { ...marks, maxBackpressure: 200 });
-      const release = world.hold();
-      const errors = [];
-      const closes = [];
-      end.on('error', (error) => errors.push(error));
-      end.on('close', () => closes.push(1));
-      // Checked before the frame is queued, as the WebSocket engine counts
-      // it: the first frame goes whatever its size, the next finds the queue
-      // past the cap.
-      assert.strictEqual(end.send('x'.repeat(300)), false, 'past the high mark, and sent');
-      assert.strictEqual(closes.length, 0, 'one frame past the cap on an empty queue is not a fault');
-      assert.strictEqual(end.send('y'), false, 'the queue is past the cap: terminated');
-      await waitFor(() => closes.length === 1, 'terminated');
-      await timers.setImmediate();
-      assert.strictEqual(errors.length, 1);
-      assert.strictEqual(errors[0].code, 'backpressure');
-      assert.match(errors[0].message, /Backpressure limit exceeded/);
-      assert.strictEqual(end.bufferedAmount, 0);
-      release();
-      await peer.session.closed;
-      // Off: nothing is ever terminated for its queue.
-      const open = await harness.open(sub, { ...marks, maxBackpressure: 0 });
-      const hold = open.world.hold();
-      const ended = [];
-      open.end.on('close', () => ended.push(1));
-      for (let i = 0; i < 20; i++) open.end.send('z'.repeat(100));
-      assert.strictEqual(ended.length, 0);
-      hold();
-    },
-  );
+  it('should terminate the session past maxBackpressure, but not for one frame past the cap on an empty queue', async (t) => {
+    const { world, end, peer } = await harness.open(t, { ...marks, maxBackpressure: 200 });
+    const release = world.hold();
+    const errors = [];
+    const closes = [];
+    end.on('error', (error) => errors.push(error));
+    end.on('close', () => closes.push(1));
+    // Checked before the frame is queued, as the WebSocket engine counts
+    // it: the first frame goes whatever its size, the next finds the queue
+    // past the cap.
+    assert.strictEqual(end.send('x'.repeat(300)), false, 'past the high mark, and sent');
+    assert.strictEqual(closes.length, 0, 'one frame past the cap on an empty queue is not a fault');
+    assert.strictEqual(end.send('y'), false, 'the queue is past the cap: terminated');
+    await waitFor(() => closes.length === 1, 'terminated');
+    await timers.setImmediate();
+    assert.strictEqual(errors.length, 1);
+    assert.strictEqual(errors[0].code, 'backpressure');
+    assert.match(errors[0].message, /Backpressure limit exceeded/);
+    assert.strictEqual(end.bufferedAmount, 0);
+    release();
+    await peer.session.closed;
+    // Off: nothing is ever terminated for its queue.
+    const open = await harness.open(t, { ...marks, maxBackpressure: 0 });
+    const hold = open.world.hold();
+    const ended = [];
+    open.end.on('close', () => ended.push(1));
+    for (let i = 0; i < 20; i++) open.end.send('z'.repeat(100));
+    assert.strictEqual(ended.length, 0);
+    hold();
+  });
 
-  await t.test(`${name}: maxBackpressure is validated at construction`, async (sub) => {
+  it('should validate maxBackpressure at construction', async (t) => {
     for (const maxBackpressure of [-1, 1.5, '64mb']) {
-      await assert.rejects(harness.open(sub, { maxBackpressure }), /maxBackpressure must be a non-negative integer/);
+      await assert.rejects(harness.open(t, { maxBackpressure }), /maxBackpressure must be a non-negative integer/);
     }
   });
 
-  await t.test(
-    `${name}: bufferedAmount is 0 after terminate(), and a write settling late does not take it below`,
-    async (sub) => {
-      const { world, end, peer } = await harness.open(sub, marks);
-      const release = world.hold();
-      const drains = drainsOf(end);
-      const closes = [];
-      end.on('close', () => closes.push(1));
-      assert.strictEqual(end.send('x'.repeat(50)), true);
-      assert.ok(end.bufferedAmount >= 50, 'the frame is counted while the write is held');
-      end.terminate();
-      assert.strictEqual(end.bufferedAmount, 0);
-      release();
-      await timers.setTimeout(10);
-      assert.strictEqual(end.bufferedAmount, 0, 'never negative');
-      assert.deepStrictEqual(drains, [], 'no drain after the end');
-      assert.strictEqual(closes.length, 1, 'one close');
-      await peer.session.closed;
-    },
-  );
+  it('should read bufferedAmount 0 after terminate(), a write settling late not taking it below', async (t) => {
+    const { world, end, peer } = await harness.open(t, marks);
+    const release = world.hold();
+    const drains = drainsOf(end);
+    const closes = [];
+    end.on('close', () => closes.push(1));
+    assert.strictEqual(end.send('x'.repeat(50)), true);
+    assert.ok(end.bufferedAmount >= 50, 'the frame is counted while the write is held');
+    end.terminate();
+    assert.strictEqual(end.bufferedAmount, 0);
+    release();
+    await timers.setTimeout(10);
+    assert.strictEqual(end.bufferedAmount, 0, 'never negative');
+    assert.deepStrictEqual(drains, [], 'no drain after the end');
+    assert.strictEqual(closes.length, 1, 'one close');
+    await peer.session.closed;
+  });
 };
 
 module.exports = { runChannelContract, peerEnd, slowCodec };

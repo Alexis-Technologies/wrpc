@@ -1,7 +1,7 @@
 'use strict';
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it, before, after } = require('node:test');
+const assert = require('node:assert/strict');
 const zlib = require('node:zlib');
 
 const { RpcServer } = require('../../src/rpc/core.js');
@@ -9,6 +9,7 @@ const { defineRouter, procedure, WrpcClient, tracked } = require('../../index.js
 const { MemoryBroker, attachBrokerRpc } = require('../../src/broker/index.js');
 const { HEADER_ENC, HEADER_KIND, KIND } = require('../../src/broker/rpc/frames.js');
 const { quiet, waitFor } = require('./support.js');
+const { suiteScope } = require('../helpers/scope.js');
 
 const DEFLATE = 'deflate-raw';
 
@@ -85,251 +86,281 @@ const connect = (t, broker, options = {}) =>
 
 const encodedFrames = (sent) => sent.filter((m) => m.headers[HEADER_ENC] !== undefined);
 
-test('broker compression: off by default — no header anywhere, bodies as they are', async (t) => {
-  const { broker, sent } = await boot(t);
-  const client = await connect(t, broker, { mode: 'session' });
-  await client.load('calc');
-  const rows = await client.api.calc.big({ rows: 300 });
-  assert.strictEqual(rows.length, 300);
-  assert.strictEqual(encodedFrames(sent).length, 0);
-  const stateless = await connect(t, broker);
-  await stateless.load('calc');
-  assert.strictEqual((await stateless.api.calc.big({ rows: 300 })).length, 300);
-  assert.strictEqual(encodedFrames(sent).length, 0);
-});
-
-test('broker compression (session): negotiated on hello/welcome, applied past the threshold both ways', async (t) => {
-  const { broker, sent } = await boot(t, { compression: true });
-  const client = await connect(t, broker, { mode: 'session', compression: true });
-  const hello = sent.find((m) => m.headers[HEADER_KIND] === KIND.HELLO);
-  const welcome = sent.find((m) => m.headers[HEADER_KIND] === KIND.WELCOME);
-  assert.strictEqual(hello.headers[HEADER_ENC], DEFLATE, 'the client names its codec');
-  assert.strictEqual(welcome.headers[HEADER_ENC], DEFLATE, 'the server agrees');
-
-  await t.test('a large answer comes back compressed, a small one plain', async () => {
+describe('broker compression', () => {
+  it('should be off by default — no header anywhere, bodies as they are', async (t) => {
+    const { broker, sent } = await boot(t);
+    const client = await connect(t, broker, { mode: 'session' });
     await client.load('calc');
-    sent.length = 0;
-    const rows = await client.api.calc.big({ rows: 400 });
-    assert.strictEqual(rows.length, 400);
-    const answer = sent.find((m) => m.headers[HEADER_KIND] === KIND.PACKET && m.headers[HEADER_ENC]);
-    assert.ok(answer, 'the callback frame carried the header');
-    assert.ok(answer.size < 2000, `${answer.size} B on the wire for a ~9 KB answer`);
-    sent.length = 0;
-    assert.strictEqual(await client.api.calc.add({ a: 1, b: 2 }), 3);
-    assert.strictEqual(encodedFrames(sent).length, 0, 'under the threshold, plain');
+    const rows = await client.api.calc.big({ rows: 300 });
+    assert.strictEqual(rows.length, 300);
+    assert.strictEqual(encodedFrames(sent).length, 0);
+    const stateless = await connect(t, broker);
+    await stateless.load('calc');
+    assert.strictEqual((await stateless.api.calc.big({ rows: 300 })).length, 300);
+    assert.strictEqual(encodedFrames(sent).length, 0);
   });
 
-  await t.test('a large argument goes up compressed', async () => {
+  describe('session mode: negotiated on hello/welcome, applied past the threshold both ways', () => {
+    const scope = suiteScope();
+    let sent = null;
+    let client = null;
+
+    before(async () => {
+      const booted = await boot(scope, { compression: true });
+      sent = booted.sent;
+      client = await connect(scope, booted.broker, { mode: 'session', compression: true });
+    });
+
+    after(() => scope.close());
+
+    it('should negotiate the codec on hello/welcome', () => {
+      const hello = sent.find((m) => m.headers[HEADER_KIND] === KIND.HELLO);
+      const welcome = sent.find((m) => m.headers[HEADER_KIND] === KIND.WELCOME);
+      assert.strictEqual(hello.headers[HEADER_ENC], DEFLATE, 'the client names its codec');
+      assert.strictEqual(welcome.headers[HEADER_ENC], DEFLATE, 'the server agrees');
+    });
+
+    it('should send a large answer back compressed, a small one plain', async () => {
+      await client.load('calc');
+      sent.length = 0;
+      const rows = await client.api.calc.big({ rows: 400 });
+      assert.strictEqual(rows.length, 400);
+      const answer = sent.find((m) => m.headers[HEADER_KIND] === KIND.PACKET && m.headers[HEADER_ENC]);
+      assert.ok(answer, 'the callback frame carried the header');
+      assert.ok(answer.size < 2000, `${answer.size} B on the wire for a ~9 KB answer`);
+      sent.length = 0;
+      assert.strictEqual(await client.api.calc.add({ a: 1, b: 2 }), 3);
+      assert.strictEqual(encodedFrames(sent).length, 0, 'under the threshold, plain');
+    });
+
+    it('should send a large argument up compressed', async () => {
+      sent.length = 0;
+      const echoed = await client.api.calc.echo({ text: 'y'.repeat(20_000) });
+      assert.strictEqual(echoed.text.length, 20_000);
+      const up = sent.find((m) => m.headers[HEADER_KIND] === KIND.PACKET && m.headers[HEADER_ENC]);
+      assert.ok(up && up.size < 1000, `${up?.size} B up for a 20 KB argument`);
+    });
+
+    it('should carry events, subscriptions and stream chunks on the same session', async () => {
+      const notes = [];
+      client.api.calc.on('note', (data) => notes.push(data));
+      await client.api.calc.notify({ rows: 3000 });
+      await waitFor(() => notes.length === 1);
+      assert.strictEqual(notes[0].rows.length, 3000);
+      const seen = [];
+      client.api.calc.ticks.subscribe({ count: 4 }, { onData: (v) => seen.push(v.i) });
+      await waitFor(() => seen.length === 4);
+      assert.deepStrictEqual(seen, [0, 1, 2, 3]);
+      sent.length = 0;
+      const up = client.createStream('blob', 30_000);
+      const call = client.api.calc.upload({ stream: up.id });
+      up.write(new Uint8Array(30_000).fill(7));
+      up.end();
+      assert.strictEqual(await call, 30_000);
+      const chunk = sent.find((m) => m.headers[HEADER_KIND] === KIND.CHUNK);
+      assert.ok(chunk && chunk.headers[HEADER_ENC] === DEFLATE && chunk.size < 500, `chunk ${chunk?.size} B`);
+    });
+  });
+
+  it('should name the codec on a stateless request and compress only the answer', async (t) => {
+    const { broker, sent } = await boot(t, { compression: true });
+    const client = await connect(t, broker, { compression: true });
+    await client.load('calc');
     sent.length = 0;
     const echoed = await client.api.calc.echo({ text: 'y'.repeat(20_000) });
     assert.strictEqual(echoed.text.length, 20_000);
-    const up = sent.find((m) => m.headers[HEADER_KIND] === KIND.PACKET && m.headers[HEADER_ENC]);
-    assert.ok(up && up.size < 1000, `${up?.size} B up for a 20 KB argument`);
-  });
-
-  await t.test('events, subscriptions and stream chunks ride the same session', async () => {
-    const notes = [];
-    client.api.calc.on('note', (data) => notes.push(data));
-    await client.api.calc.notify({ rows: 3000 });
-    await waitFor(() => notes.length === 1);
-    assert.strictEqual(notes[0].rows.length, 3000);
-    const seen = [];
-    client.api.calc.ticks.subscribe({ count: 4 }, { onData: (v) => seen.push(v.i) });
-    await waitFor(() => seen.length === 4);
-    assert.deepStrictEqual(seen, [0, 1, 2, 3]);
-    sent.length = 0;
-    const up = client.createStream('blob', 30_000);
-    const call = client.api.calc.upload({ stream: up.id });
-    up.write(new Uint8Array(30_000).fill(7));
-    up.end();
-    assert.strictEqual(await call, 30_000);
-    const chunk = sent.find((m) => m.headers[HEADER_KIND] === KIND.CHUNK);
-    assert.ok(chunk && chunk.headers[HEADER_ENC] === DEFLATE && chunk.size < 500, `chunk ${chunk?.size} B`);
-  });
-});
-
-test('broker compression (stateless): the request names the codec, only the answer is compressed', async (t) => {
-  const { broker, sent } = await boot(t, { compression: true });
-  const client = await connect(t, broker, { compression: true });
-  await client.load('calc');
-  sent.length = 0;
-  const echoed = await client.api.calc.echo({ text: 'y'.repeat(20_000) });
-  assert.strictEqual(echoed.text.length, 20_000);
-  const request = sent.find((m) => m.headers[HEADER_KIND] === KIND.REQUEST);
-  const response = sent.find((m) => m.headers[HEADER_KIND] === KIND.RESPONSE);
-  assert.strictEqual(request.headers[HEADER_ENC], DEFLATE, 'accepts');
-  assert.ok(request.size > 20_000, 'the request itself travels plain');
-  assert.strictEqual(response.headers[HEADER_ENC], DEFLATE);
-  assert.ok(response.size < 1000, `${response.size} B answer`);
-});
-
-test('broker compression (list): each direction takes the sender’s first codec the other end holds', async (t) => {
-  const { broker, sent } = await boot(t, { compression: { codec: ['brotli', 'deflate-raw'], threshold: 256 } });
-  const mine = { id: 'mine', encode: (b) => zlib.deflateRawSync(b), decode: (b) => zlib.inflateRawSync(b) };
-  const client = await connect(t, broker, {
-    mode: 'session',
-    compression: { codec: [mine, 'deflate-raw', 'brotli'], threshold: 256 },
-  });
-  const hello = sent.find((m) => m.headers[HEADER_KIND] === KIND.HELLO);
-  const welcome = sent.find((m) => m.headers[HEADER_KIND] === KIND.WELCOME);
-  assert.strictEqual(hello.headers[HEADER_ENC], 'mine,deflate-raw,brotli', 'the client’s list, in its order');
-  assert.strictEqual(welcome.headers[HEADER_ENC], 'brotli,deflate-raw', 'the server’s, in its own');
-  await client.load('calc');
-  sent.length = 0;
-  const echoed = await client.api.calc.echo({ text: 'y'.repeat(20_000) });
-  assert.strictEqual(echoed.text.length, 20_000);
-  const frames = sent.filter((m) => m.headers[HEADER_KIND] === KIND.PACKET && m.headers[HEADER_ENC]);
-  // Up: the client's first codec the server holds (its own `mine` is not). Down: the server's first.
-  assert.deepStrictEqual(frames.map((m) => m.headers[HEADER_ENC]).sort(), ['brotli', 'deflate-raw']);
-
-  await t.test('stateless: the answer comes back in the server’s first codec the request listed', async () => {
-    const stateless = await connect(t, broker, { compression: { codec: [mine, 'deflate-raw'] } });
-    await stateless.load('calc');
-    sent.length = 0;
-    assert.strictEqual((await stateless.api.calc.big({ rows: 400 })).length, 400);
     const request = sent.find((m) => m.headers[HEADER_KIND] === KIND.REQUEST);
     const response = sent.find((m) => m.headers[HEADER_KIND] === KIND.RESPONSE);
-    assert.strictEqual(request.headers[HEADER_ENC], 'mine,deflate-raw');
-    assert.strictEqual(
-      response.headers[HEADER_ENC],
-      'deflate-raw',
-      'brotli is the server’s first, but not on this list',
-    );
+    assert.strictEqual(request.headers[HEADER_ENC], DEFLATE, 'accepts');
+    assert.ok(request.size > 20_000, 'the request itself travels plain');
+    assert.strictEqual(response.headers[HEADER_ENC], DEFLATE);
+    assert.ok(response.size < 1000, `${response.size} B answer`);
   });
 
-  await t.test('nothing in common: plain both ways, and everything still answers', async () => {
-    const other = await connect(t, broker, { mode: 'session', compression: { codec: mine } });
-    await other.load('calc');
-    sent.length = 0;
-    assert.strictEqual((await other.api.calc.big({ rows: 400 })).length, 400);
+  describe('a codec list: each direction takes the sender’s first codec the other end holds', () => {
+    const scope = suiteScope();
+    const mine = { id: 'mine', encode: (b) => zlib.deflateRawSync(b), decode: (b) => zlib.inflateRawSync(b) };
+    let broker = null;
+    let sent = null;
+    let client = null;
+
+    before(async () => {
+      const booted = await boot(scope, { compression: { codec: ['brotli', 'deflate-raw'], threshold: 256 } });
+      ({ broker, sent } = booted);
+      client = await connect(scope, broker, {
+        mode: 'session',
+        compression: { codec: [mine, 'deflate-raw', 'brotli'], threshold: 256 },
+      });
+    });
+
+    after(() => scope.close());
+
+    it('should take, in a session, the sender’s first codec the other end holds in each direction', async () => {
+      const hello = sent.find((m) => m.headers[HEADER_KIND] === KIND.HELLO);
+      const welcome = sent.find((m) => m.headers[HEADER_KIND] === KIND.WELCOME);
+      assert.strictEqual(hello.headers[HEADER_ENC], 'mine,deflate-raw,brotli', 'the client’s list, in its order');
+      assert.strictEqual(welcome.headers[HEADER_ENC], 'brotli,deflate-raw', 'the server’s, in its own');
+      await client.load('calc');
+      sent.length = 0;
+      const echoed = await client.api.calc.echo({ text: 'y'.repeat(20_000) });
+      assert.strictEqual(echoed.text.length, 20_000);
+      const frames = sent.filter((m) => m.headers[HEADER_KIND] === KIND.PACKET && m.headers[HEADER_ENC]);
+      // Up: the client's first codec the server holds (its own `mine` is not). Down: the server's first.
+      assert.deepStrictEqual(frames.map((m) => m.headers[HEADER_ENC]).sort(), ['brotli', 'deflate-raw']);
+    });
+
+    it('should answer a stateless call in the server’s first codec the request listed', async (t) => {
+      const stateless = await connect(t, broker, { compression: { codec: [mine, 'deflate-raw'] } });
+      await stateless.load('calc');
+      sent.length = 0;
+      assert.strictEqual((await stateless.api.calc.big({ rows: 400 })).length, 400);
+      const request = sent.find((m) => m.headers[HEADER_KIND] === KIND.REQUEST);
+      const response = sent.find((m) => m.headers[HEADER_KIND] === KIND.RESPONSE);
+      assert.strictEqual(request.headers[HEADER_ENC], 'mine,deflate-raw');
+      assert.strictEqual(
+        response.headers[HEADER_ENC],
+        'deflate-raw',
+        'brotli is the server’s first, but not on this list',
+      );
+    });
+
+    it('should go plain both ways with nothing in common, and everything still answers', async (t) => {
+      const other = await connect(t, broker, { mode: 'session', compression: { codec: mine } });
+      await other.load('calc');
+      sent.length = 0;
+      assert.strictEqual((await other.api.calc.big({ rows: 400 })).length, 400);
+      assert.strictEqual(encodedFrames(sent).length, 0);
+    });
+  });
+
+  it('should go plain with one side on and the other off, and everything still answers', async (t) => {
+    const { broker, sent } = await boot(t, { compression: true });
+    const client = await connect(t, broker, { mode: 'session' });
+    await client.load('calc');
+    assert.strictEqual((await client.api.calc.big({ rows: 400 })).length, 400);
     assert.strictEqual(encodedFrames(sent).length, 0);
+    const other = await boot(t);
+    const eager = await connect(t, other.broker, { mode: 'session', compression: true });
+    await eager.load('calc');
+    assert.strictEqual((await eager.api.calc.big({ rows: 400 })).length, 400);
+    const welcome = other.sent.find((m) => m.headers[HEADER_KIND] === KIND.WELCOME);
+    assert.strictEqual(welcome.headers[HEADER_ENC], undefined, 'the server agreed to nothing');
+    assert.strictEqual(encodedFrames(other.sent).filter((m) => m.headers[HEADER_KIND] !== KIND.HELLO).length, 0);
   });
-});
 
-test('broker compression: one side on, the other off — plain, and everything still answers', async (t) => {
-  const { broker, sent } = await boot(t, { compression: true });
-  const client = await connect(t, broker, { mode: 'session' });
-  await client.load('calc');
-  assert.strictEqual((await client.api.calc.big({ rows: 400 })).length, 400);
-  assert.strictEqual(encodedFrames(sent).length, 0);
-  const other = await boot(t);
-  const eager = await connect(t, other.broker, { mode: 'session', compression: true });
-  await eager.load('calc');
-  assert.strictEqual((await eager.api.calc.big({ rows: 400 })).length, 400);
-  const welcome = other.sent.find((m) => m.headers[HEADER_KIND] === KIND.WELCOME);
-  assert.strictEqual(welcome.headers[HEADER_ENC], undefined, 'the server agreed to nothing');
-  assert.strictEqual(encodedFrames(other.sent).filter((m) => m.headers[HEADER_KIND] !== KIND.HELLO).length, 0);
-});
-
-test('broker compression: an undecodable frame ends the session like a sequence gap', async (t) => {
-  const { broker, rpc, handle } = await boot(t, { compression: true, maxMessage: 4096 });
-  const client = await connect(t, broker, { mode: 'session', compression: true });
-  await client.load('calc');
-  assert.strictEqual(handle.sessions, 1);
-  // A frame the server cannot inflate under its cap: 200 KB of one byte.
-  const closed = new Promise((resolve) => client.once('close', resolve));
-  await assert.rejects(client.api.calc.echo({ text: 'z'.repeat(200_000) }));
-  await closed;
-  await waitFor(() => handle.sessions === 0);
-  assert.ok(rpc);
-});
-
-test('broker compression: the option is validated, and an asynchronous codec is refused here', async (t) => {
-  const broker = new MemoryBroker({ logger: quiet });
-  t.after(() => broker.close());
-  const rpc = new RpcServer({ router, logger: false, sse: false });
-  t.after(() => rpc.close());
-  await assert.rejects(
-    attachBrokerRpc(rpc, broker, { service: 'x', compression: 'lz4' }),
-    /compression must be true, false or an options object/,
-  );
-  const asyncCodec = { id: DEFLATE, encode: async (b) => b, decode: async (b) => b };
-  await assert.rejects(
-    attachBrokerRpc(rpc, broker, { service: 'x', compression: { codec: asyncCodec } }),
-    /must answer synchronously/,
-  );
-  // The platform codec's threadpool threshold is a socket-carrier option: a
-  // frame sequence has no ordering queue to hide a promise behind.
-  await assert.rejects(
-    attachBrokerRpc(rpc, broker, { service: 'x', compression: { async: true } }),
-    /declares async — this carrier has no ordering queue/,
-  );
-  await assert.rejects(attachBrokerRpc(rpc, broker, { service: 'x', maxMessage: 0 }), /maxMessage/);
-  await assert.rejects(
-    WrpcClient.connect('broker://x', { transport: 'broker', broker, compression: { threshold: -1 }, logger: false }),
-    /threshold/,
-  );
-  // A synchronous injected codec works, and it is the one named on the wire.
-  const mine = {
-    id: 'mine',
-    threshold: 16,
-    encode: (b) => zlib.deflateRawSync(b),
-    decode: (b, max) => zlib.inflateRawSync(b, { maxOutputLength: max }),
-  };
-  const { sent, broker: spiedBroker } = spied(broker);
-  const handle = await attachBrokerRpc(rpc, spiedBroker, { service: 'x', compression: { codec: mine }, logger: quiet });
-  t.after(() => handle.stop());
-  const client = await WrpcClient.connect('broker://x', {
-    transport: 'broker',
-    broker: spiedBroker,
-    mode: 'session',
-    compression: { codec: mine },
-    heartbeat: false,
-    reconnect: false,
-    logger: false,
+  it('should end the session on an undecodable frame like a sequence gap', async (t) => {
+    const { broker, rpc, handle } = await boot(t, { compression: true, maxMessage: 4096 });
+    const client = await connect(t, broker, { mode: 'session', compression: true });
+    await client.load('calc');
+    assert.strictEqual(handle.sessions, 1);
+    // A frame the server cannot inflate under its cap: 200 KB of one byte.
+    const closed = new Promise((resolve) => client.once('close', resolve));
+    await assert.rejects(client.api.calc.echo({ text: 'z'.repeat(200_000) }));
+    await closed;
+    await waitFor(() => handle.sessions === 0);
+    assert.ok(rpc);
   });
-  t.after(() => void client.close());
-  await client.load('calc');
-  assert.strictEqual((await client.api.calc.big({ rows: 100 })).length, 100);
-  assert.ok(sent.some((m) => m.headers[HEADER_ENC] === 'mine'));
-});
 
-test('broker compression: a codec that throws sends the frame plain and refuses the one it cannot read — said once each way', async (t) => {
-  const { recorder } = require('../helpers/recorder.js');
-  const log = recorder();
-  // The same id as the platform codec, so the two ends agree on it — and a
-  // server half that, once the binding is up (the option is probed when it
-  // is built), fails at both jobs.
-  let armed = false;
-  const zlib = require('node:zlib');
-  const broken = {
-    id: DEFLATE,
-    encode: (bytes) => {
-      if (armed) throw new Error('deflate broke');
-      return zlib.deflateRawSync(bytes);
-    },
-    decode: (bytes) => {
-      if (armed) throw Object.assign(new Error('inflate broke'), { code: 'Z_DATA_ERROR' });
-      return zlib.inflateRawSync(bytes);
-    },
-  };
-  const spy = spied(new MemoryBroker({ logger: quiet }));
-  const rpc = new RpcServer({ router, logger: log.writer, sse: false });
-  const handle = await attachBrokerRpc(rpc, spy.broker, {
-    service: 'calc',
-    logger: quiet,
-    compression: { codec: broken },
+  it('should validate the option and refuse an asynchronous codec here', async (t) => {
+    const broker = new MemoryBroker({ logger: quiet });
+    t.after(() => broker.close());
+    const rpc = new RpcServer({ router, logger: false, sse: false });
+    t.after(() => rpc.close());
+    await assert.rejects(
+      attachBrokerRpc(rpc, broker, { service: 'x', compression: 'lz4' }),
+      /compression must be true, false or an options object/,
+    );
+    const asyncCodec = { id: DEFLATE, encode: async (b) => b, decode: async (b) => b };
+    await assert.rejects(
+      attachBrokerRpc(rpc, broker, { service: 'x', compression: { codec: asyncCodec } }),
+      /must answer synchronously/,
+    );
+    // The platform codec's threadpool threshold is a socket-carrier option: a
+    // frame sequence has no ordering queue to hide a promise behind.
+    await assert.rejects(
+      attachBrokerRpc(rpc, broker, { service: 'x', compression: { async: true } }),
+      /declares async — this carrier has no ordering queue/,
+    );
+    await assert.rejects(attachBrokerRpc(rpc, broker, { service: 'x', maxMessage: 0 }), /maxMessage/);
+    await assert.rejects(
+      WrpcClient.connect('broker://x', { transport: 'broker', broker, compression: { threshold: -1 }, logger: false }),
+      /threshold/,
+    );
+    // A synchronous injected codec works, and it is the one named on the wire.
+    const mine = {
+      id: 'mine',
+      threshold: 16,
+      encode: (b) => zlib.deflateRawSync(b),
+      decode: (b, max) => zlib.inflateRawSync(b, { maxOutputLength: max }),
+    };
+    const { sent, broker: spiedBroker } = spied(broker);
+    const handle = await attachBrokerRpc(rpc, spiedBroker, {
+      service: 'x',
+      compression: { codec: mine },
+      logger: quiet,
+    });
+    t.after(() => handle.stop());
+    const client = await WrpcClient.connect('broker://x', {
+      transport: 'broker',
+      broker: spiedBroker,
+      mode: 'session',
+      compression: { codec: mine },
+      heartbeat: false,
+      reconnect: false,
+      logger: false,
+    });
+    t.after(() => void client.close());
+    await client.load('calc');
+    assert.strictEqual((await client.api.calc.big({ rows: 100 })).length, 100);
+    assert.ok(sent.some((m) => m.headers[HEADER_ENC] === 'mine'));
   });
-  t.after(async () => {
-    await handle.stop();
-    await rpc.close();
-    spy.broker.close();
+
+  it('should send the frame plain when a codec throws and refuse the one it cannot read — said once each way', async (t) => {
+    const { recorder } = require('../helpers/recorder.js');
+    const log = recorder();
+    // The same id as the platform codec, so the two ends agree on it — and a
+    // server half that, once the binding is up (the option is probed when it
+    // is built), fails at both jobs.
+    let armed = false;
+    const broken = {
+      id: DEFLATE,
+      encode: (bytes) => {
+        if (armed) throw new Error('deflate broke');
+        return zlib.deflateRawSync(bytes);
+      },
+      decode: (bytes) => {
+        if (armed) throw Object.assign(new Error('inflate broke'), { code: 'Z_DATA_ERROR' });
+        return zlib.inflateRawSync(bytes);
+      },
+    };
+    const spy = spied(new MemoryBroker({ logger: quiet }));
+    const rpc = new RpcServer({ router, logger: log.writer, sse: false });
+    const handle = await attachBrokerRpc(rpc, spy.broker, {
+      service: 'calc',
+      logger: quiet,
+      compression: { codec: broken },
+    });
+    t.after(async () => {
+      await handle.stop();
+      await rpc.close();
+      spy.broker.close();
+    });
+    armed = true;
+    // Stateless: the answers leave plain, twice — one line.
+    const stateless = await connect(t, spy.broker, { compression: true });
+    await stateless.load('calc');
+    assert.strictEqual((await stateless.api.calc.big({ rows: 300 })).length, 300);
+    assert.strictEqual((await stateless.api.calc.big({ rows: 300 })).length, 300);
+    assert.ok(spy.sent.filter((m) => m.headers[HEADER_KIND] === KIND.RESPONSE).every((m) => !m.headers[HEADER_ENC]));
+    // A session: what the client compressed, this server cannot inflate.
+    const session = await connect(t, spy.broker, { mode: 'session', compression: true, callTimeout: 200 });
+    await assert.rejects(session.call('calc/echo', { text: 'y'.repeat(20_000) }));
+    const lines = log
+      .all('compression.failed')
+      .map(({ carrier, direction, codec, err }) => [carrier, direction, codec, err.message]);
+    assert.deepStrictEqual(lines, [
+      ['broker', 'encode', DEFLATE, 'deflate broke'],
+      ['broker', 'decode', DEFLATE, 'inflate broke'],
+    ]);
   });
-  armed = true;
-  // Stateless: the answers leave plain, twice — one line.
-  const stateless = await connect(t, spy.broker, { compression: true });
-  await stateless.load('calc');
-  assert.strictEqual((await stateless.api.calc.big({ rows: 300 })).length, 300);
-  assert.strictEqual((await stateless.api.calc.big({ rows: 300 })).length, 300);
-  assert.ok(spy.sent.filter((m) => m.headers[HEADER_KIND] === KIND.RESPONSE).every((m) => !m.headers[HEADER_ENC]));
-  // A session: what the client compressed, this server cannot inflate.
-  const session = await connect(t, spy.broker, { mode: 'session', compression: true, callTimeout: 200 });
-  await assert.rejects(session.call('calc/echo', { text: 'y'.repeat(20_000) }));
-  const lines = log
-    .all('compression.failed')
-    .map(({ carrier, direction, codec, err }) => [carrier, direction, codec, err.message]);
-  assert.deepStrictEqual(lines, [
-    ['broker', 'encode', DEFLATE, 'deflate broke'],
-    ['broker', 'decode', DEFLATE, 'inflate broke'],
-  ]);
 });

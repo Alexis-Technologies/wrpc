@@ -2,8 +2,8 @@
 
 const timers = require('node:timers/promises');
 const { randomUUID } = require('node:crypto');
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 
 const { Server } = require('../src/server.js');
 const { Client } = require('../src/rpc/core.js');
@@ -73,18 +73,18 @@ const recordingStore = () => {
   };
 };
 
-test('Client over HTTP transport', async (t) => {
-  await t.test('emit (non-close) throws: HTTP has no persistent connection', () => {
+describe('Client over HTTP transport', () => {
+  it('should throw from emit (non-close): HTTP has no persistent connection', () => {
     const client = createClient(fakeHttpTransport());
     assert.throws(() => client.sendEvent('ping', {}), /Can't send wrpc event to http transport/);
   });
 
-  await t.test('emit("close") does not throw', () => {
+  it('should not throw from emit("close")', () => {
     const client = createClient(fakeHttpTransport());
     assert.doesNotThrow(() => client.emit('close'));
   });
 
-  await t.test('emit is the LOCAL Emitter emit; sendEvent owns the wire', async () => {
+  it('should keep emit the LOCAL Emitter emit; sendEvent owns the wire', async () => {
     const closing = createClient(fakeHttpTransport()).emit('close');
     assert.ok(closing instanceof Promise);
     await closing;
@@ -102,17 +102,17 @@ test('Client over HTTP transport', async (t) => {
     assert.deepStrictEqual(transport.sent, [{ type: 'event', name: 'room/event', data: { x: 2 } }]);
   });
 
-  await t.test('getStream throws over HTTP', () => {
+  it('should throw from getStream over HTTP', () => {
     const client = createClient(fakeHttpTransport());
     assert.throws(() => client.getStream('id'), /Can't receive stream from http transport/);
   });
 
-  await t.test('createStream throws over HTTP', () => {
+  it('should throw from createStream over HTTP', () => {
     const client = createClient(fakeHttpTransport());
     assert.throws(() => client.createStream('name', 10), /Can't send wrpc streams to http transport/);
   });
 
-  await t.test('startSession sends a session cookie via sendSessionCookie', async () => {
+  it('should send a session cookie from startSession via sendSessionCookie', async () => {
     const transport = fakeHttpTransport();
     const client = createClient(transport);
     const token = randomUUID();
@@ -124,8 +124,8 @@ test('Client over HTTP transport', async (t) => {
   });
 });
 
-test('Client over WS transport', async (t) => {
-  await t.test('createStream validates name and size', () => {
+describe('Client over WS transport', () => {
+  it('should validate name and size in createStream', () => {
     const client = createClient(fakeWsTransport());
     assert.throws(() => client.createStream('', 10), /createStream: name must be a non-empty string/);
     assert.throws(() => client.createStream('name'), /createStream: size must be a non-negative integer/);
@@ -135,7 +135,7 @@ test('Client over WS transport', async (t) => {
     assert.doesNotThrow(() => client.createStream('name', 0));
   });
 
-  await t.test('createStream sends the init packet and keeps the writable out of streams', () => {
+  it('should send the init packet from createStream and keep the writable out of streams', () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     const stream = client.createStream('upload', 10);
@@ -147,19 +147,19 @@ test('Client over WS transport', async (t) => {
     assert.throws(() => client.getStream(stream.id), /is not initialized/);
   });
 
-  await t.test('getStream throws for an unknown id', () => {
+  it('should throw from getStream for an unknown id', () => {
     const client = createClient(fakeWsTransport());
     assert.throws(() => client.getStream('missing'), /Stream missing is not initialized/);
   });
 
-  await t.test('startSession does not send a cookie (persistent connection)', async () => {
+  it('should not send a cookie from startSession (persistent connection)', async () => {
     const client = createClient(fakeWsTransport());
     const token = randomUUID();
     assert.doesNotThrow(() => client.startSession(token, {}));
     await client.finalizeSession();
   });
 
-  await t.test('session lifecycle: initialize, restore, finalize', async () => {
+  it('should run the session lifecycle: initialize, restore, finalize', async () => {
     const sessions = new SessionManager({}, quiet);
     const owner = createClient(fakeWsTransport(), sessions);
     const token = randomUUID();
@@ -179,7 +179,7 @@ test('Client over WS transport', async (t) => {
     assert.strictEqual(await restorer.restoreSession(token), false);
   });
 
-  await t.test('session state changes are persisted through the store', async () => {
+  it('should persist session state changes through the store', async () => {
     const store = recordingStore();
     const sessions = new SessionManager({ store }, quiet);
     const client = createClient(fakeWsTransport(), sessions);
@@ -193,7 +193,7 @@ test('Client over WS transport', async (t) => {
     assert.deepStrictEqual(await store.get(token), { role: 'admin' });
   });
 
-  await t.test('destroy fails open streams but keeps the stored session', async () => {
+  it('should fail open streams on destroy but keep the stored session', async () => {
     const errors = [];
     const log = { ...quiet, error: (error) => errors.push(error) };
     const sessions = new SessionManager({}, quiet);
@@ -268,15 +268,15 @@ const router = defineRouter({
   },
 });
 
-test('RPC dispatcher', async (t) => {
-  await t.test('handleRpc dispatches a call and sends a callback', async () => {
+describe('RPC dispatcher', () => {
+  it('should dispatch a call in handleRpc and send a callback', async () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     await handleRpc(client, { type: 'call', id: '1', method: 'math/add', args: { a: 2, b: 3 } }, router);
     assert.deepStrictEqual(transport.sent, [{ type: 'callback', id: '1', result: 5 }]);
   });
 
-  await t.test('handleRpc resolves versioned units from the method name', async () => {
+  it('should resolve versioned units from the method name in handleRpc', async () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     await handleRpc(client, { type: 'call', id: '2', method: 'calc.v1/double', args: { x: 21 } }, router);
@@ -285,14 +285,14 @@ test('RPC dispatcher', async (t) => {
     assert.deepStrictEqual(transport.errors, [{ code: 404, id: '3', error: null }]);
   });
 
-  await t.test('handleRpc: unknown method yields 404', async () => {
+  it('should answer 404 in handleRpc for an unknown method', async () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     await handleRpc(client, { type: 'call', id: '4', method: 'nope/nothing', args: {} }, router);
     assert.deepStrictEqual(transport.errors, [{ code: 404, id: '4', error: null }]);
   });
 
-  await t.test('handleRpc: a multi-dot unit name misses instead of truncating the version', async () => {
+  it('should miss in handleRpc on a multi-dot unit name instead of truncating the version', async () => {
     // 'calc.v1.2/double' must look up version 'v1.2' (a miss), never fall
     // back to the registered 'calc.v1'
     const transport = fakeWsTransport();
@@ -302,14 +302,14 @@ test('RPC dispatcher', async (t) => {
     assert.deepStrictEqual(transport.sent, []);
   });
 
-  await t.test('handleRpc: session-access method without a session yields 403', async () => {
+  it('should answer 403 in handleRpc for a session-access method without a session', async () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     await handleRpc(client, { type: 'call', id: '5', method: 'secure/whoami', args: {} }, router);
     assert.deepStrictEqual(transport.errors, [{ code: 403, id: '5', error: null }]);
   });
 
-  await t.test('handleRpc: session-access method works once a session exists', async () => {
+  it('should run a session-access method in handleRpc once a session exists', async () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     const token = randomUUID();
@@ -318,7 +318,7 @@ test('RPC dispatcher', async (t) => {
     assert.deepStrictEqual(transport.sent, [{ type: 'callback', id: '6', result: token }]);
   });
 
-  await t.test('handleRpc awaits sessionReady before the access check', async () => {
+  it('should await sessionReady in handleRpc before the access check', async () => {
     const sessions = new SessionManager({}, quiet);
     const owner = createClient(fakeWsTransport(), sessions);
     const token = randomUUID();
@@ -331,7 +331,7 @@ test('RPC dispatcher', async (t) => {
     assert.deepStrictEqual(transport.sent, [{ type: 'callback', id: '7', result: token }]);
   });
 
-  await t.test('handleRpc: Error-shaped results are surfaced as protocol errors', async () => {
+  it('should surface Error-shaped results of handleRpc as protocol errors', async () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     await handleRpc(client, { type: 'call', id: '8', method: 'fail/boom', args: {} }, router);
@@ -342,7 +342,7 @@ test('RPC dispatcher', async (t) => {
     assert.match(error.message, /domain failure/);
   });
 
-  await t.test('handleRpc: thrown errors map to 500 by default', async () => {
+  it('should map errors thrown in handleRpc to 500 by default', async () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     await handleRpc(client, { type: 'call', id: '9', method: 'fail/crash', args: {} }, router);
@@ -351,7 +351,7 @@ test('RPC dispatcher', async (t) => {
     assert.match(error.message, /kaput/);
   });
 
-  await t.test('handleRpc: numeric error codes pass through, ETIMEOUT maps to 408', async () => {
+  it('should pass numeric error codes through handleRpc and map ETIMEOUT to 408', async () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     await handleRpc(client, { type: 'call', id: '10', method: 'fail/teapot', args: {} }, router);
@@ -360,7 +360,7 @@ test('RPC dispatcher', async (t) => {
     assert.strictEqual(transport.errors[1].code, 408);
   });
 
-  await t.test('handleMessage: unrecognized packet shape yields a structure error', async () => {
+  it('should answer a structure error in handleMessage for an unrecognized packet shape', async () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     handleMessage(client, JSON.stringify({ nonsense: true }), router);
@@ -373,7 +373,7 @@ test('RPC dispatcher', async (t) => {
     }
   });
 
-  await t.test('handleMessage routes a valid call packet to handleRpc', async () => {
+  it('should route a valid call packet from handleMessage to handleRpc', async () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     handleMessage(client, JSON.stringify({ type: 'call', id: '12', method: 'math/add', args: { a: 1, b: 1 } }), router);
@@ -381,7 +381,7 @@ test('RPC dispatcher', async (t) => {
     assert.deepStrictEqual(transport.sent, [{ type: 'callback', id: '12', result: 2 }]);
   });
 
-  await t.test('handleStream: rejects an already-initialized stream id', async () => {
+  it('should reject an already-initialized stream id in handleStream', async () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     const id = randomUUID();
@@ -396,7 +396,7 @@ test('RPC dispatcher', async (t) => {
     assert.match(error.message, /already initialized/);
   });
 
-  await t.test('handleStream: malformed stream packet yields a structure error', async () => {
+  it('should answer a structure error in handleStream for a malformed stream packet', async () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     handleMessage(client, JSON.stringify({ type: 'stream', id: 'x', name: 'up', size: 'nope' }), router);
@@ -406,7 +406,7 @@ test('RPC dispatcher', async (t) => {
     assert.match(error.message, /Stream packet structure error/);
   });
 
-  await t.test('handleBinary: chunk for an unknown stream id yields an error', async () => {
+  it('should answer an error in handleBinary for a chunk of an unknown stream id', async () => {
     const transport = fakeWsTransport();
     const client = createClient(transport);
     await handleBinary(client, chunkEncode('missing-stream', new Uint8Array([1, 2, 3])));
@@ -432,8 +432,8 @@ const createServer = async (options = {}) => {
   return { server, port };
 };
 
-test('Server internals', async (t) => {
-  await t.test('REST-style RPC via /api/unit/method?params', async (t) => {
+describe('Server internals', () => {
+  it('should serve REST-style RPC via /api/unit/method?params', async (t) => {
     const { server, port } = await createServer();
     t.after(() => server.close());
 
@@ -442,7 +442,7 @@ test('Server internals', async (t) => {
     assert.strictEqual(body.result, 5);
   });
 
-  await t.test('listen: retries on EADDRINUSE and eventually rejects when exhausted', async (t) => {
+  it('should retry listen on EADDRINUSE and reject once the retries are exhausted', async (t) => {
     const blocker = await createServer();
     t.after(() => blocker.server.close());
 

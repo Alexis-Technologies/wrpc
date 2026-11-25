@@ -6,8 +6,8 @@
 // the internal module before it has an entry of its own. The main browser
 // entry is pinned by tests/index.browser.test.js and the size budget.
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 const path = require('node:path');
 
 const esbuild = require('esbuild');
@@ -38,12 +38,14 @@ const bundles = async (entry) => {
   return result.outputFiles[0].text;
 };
 
-test('browser-safe: the dispatcher bundles without node built-ins', async () => {
-  const text = await bundles('src/rpc/dispatcher.js');
-  assert.ok(text.length > 0);
-});
+describe('browser-safe', () => {
+  it('should bundle the dispatcher without node built-ins', async () => {
+    const text = await bundles('src/rpc/dispatcher.js');
+    assert.ok(text.length > 0);
+  });
 
-test('browser-safe: the per-connection Client bundles without node built-ins', async () => {
-  const text = await bundles('src/rpc/client.js');
-  assert.ok(text.length > 0);
+  it('should bundle the per-connection Client without node built-ins', async () => {
+    const text = await bundles('src/rpc/client.js');
+    assert.ok(text.length > 0);
+  });
 });

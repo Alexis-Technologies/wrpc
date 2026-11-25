@@ -14,8 +14,8 @@ const { existsSync } = require('node:fs');
 const { mkdtemp, writeFile } = require('node:fs/promises');
 const { tmpdir } = require('node:os');
 const { execFile } = require('node:child_process');
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 
 const ROOT = path.join(__dirname, '..', '..');
 const TSC = path.join(ROOT, 'node_modules', '.bin', 'tsc');
@@ -110,11 +110,13 @@ const TSCONFIG = {
   include: ['./browser-types.fixture.ts'],
 };
 
-test('the browser d.ts compiles without @types/node and hides the server surface', async (t) => {
-  if (!existsSync(TSC)) return void t.skip('typescript is not installed');
-  const dir = await mkdtemp(path.join(tmpdir(), 'wrpc-browser-types-'));
-  await writeFile(path.join(dir, 'browser-types.fixture.ts'), FIXTURE);
-  await writeFile(path.join(dir, 'tsconfig.json'), JSON.stringify(TSCONFIG, null, 2));
-  const checked = await run(TSC, ['-p', path.join(dir, 'tsconfig.json')], { cwd: dir });
-  assert.strictEqual(checked.code, 0, `tsc rejected the browser type surface:\n${checked.stdout}${checked.stderr}`);
+describe('browser types', () => {
+  it('should compile the browser d.ts without @types/node and hide the server surface', async (t) => {
+    if (!existsSync(TSC)) return void t.skip('typescript is not installed');
+    const dir = await mkdtemp(path.join(tmpdir(), 'wrpc-browser-types-'));
+    await writeFile(path.join(dir, 'browser-types.fixture.ts'), FIXTURE);
+    await writeFile(path.join(dir, 'tsconfig.json'), JSON.stringify(TSCONFIG, null, 2));
+    const checked = await run(TSC, ['-p', path.join(dir, 'tsconfig.json')], { cwd: dir });
+    assert.strictEqual(checked.code, 0, `tsc rejected the browser type surface:\n${checked.stdout}${checked.stderr}`);
+  });
 });

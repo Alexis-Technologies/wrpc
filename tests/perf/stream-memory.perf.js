@@ -113,6 +113,7 @@ const main = async () => {
   const peakDelta = peakRss - baselineRss;
   const rate = (TOTAL_BYTES / MIB / seconds).toFixed(0);
   const deltaMib = (peakDelta / MIB).toFixed(1);
+  // oxlint-disable-next-line no-console -- a guard run by hand (pnpm test:perf): the measurement it prints is its report
   console.log(
     `stream-memory: ${socket.payloadBytes} bytes in ${seconds.toFixed(2)} s ` +
       `(${rate} MB/s), peak RSS delta ${deltaMib} MiB, drain waits: ${drainWaits}`,
@@ -134,11 +135,13 @@ const main = async () => {
   if (peakDelta > RSS_LIMIT) {
     failures.push(`peak RSS delta ${peakDelta} bytes exceeds the ${RSS_LIMIT} bytes budget`);
   }
+  // oxlint-disable-next-line no-console -- the failures of a hand-run guard are read off its output, beside the exit code
   for (const failure of failures) console.error(`stream-memory FAIL: ${failure}`);
   if (failures.length > 0) process.exitCode = 1;
 };
 
 main().catch((error) => {
+  // oxlint-disable-next-line no-console -- the failures of a hand-run guard are read off its output, beside the exit code
   console.error('stream-memory FAIL:', error);
   process.exitCode = 1;
 });

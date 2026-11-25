@@ -16,8 +16,8 @@
 //
 // `public/` is skipped: it holds the page and the bundle build.js writes.
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 const fs = require('node:fs');
 const path = require('node:path');
 const vm = require('node:vm');
@@ -38,48 +38,53 @@ const scripts = (dir, out = []) => {
 
 const files = scripts(EXAMPLES);
 
-test('examples: there is something to check', () => {
-  assert.ok(files.length >= 7, `found ${files.length} example scripts`);
-});
+describe('examples', () => {
+  it('should find something to check', () => {
+    assert.ok(files.length >= 7, `found ${files.length} example scripts`);
+  });
 
-test('examples: every script compiles', () => {
-  for (const file of files) {
-    const source = fs.readFileSync(file, 'utf8');
-    assert.doesNotThrow(
-      () => new vm.Script(Module.wrap(source), { filename: file }),
-      `${path.relative(ROOT, file)} does not compile`,
-    );
-  }
-});
-
-// `const { a, b: c, d = 1 } = require('@alexify/wrpc/<entry>')` and
-// `...require('@alexify/wrpc/<entry>')`: the two ways an example reaches
-// the package. An example may not reach into the tree by a relative path.
-const NAME = String.raw`@alexify\/wrpc(?:\/[\w/]+)?`;
-const DESTRUCTURED = new RegExp(String.raw`const\s*\{([^}]*)\}\s*=\s*require\('(${NAME})'\)`, 'g');
-const REQUIRED = new RegExp(String.raw`require\('(${NAME})'\)`, 'g');
-const RELATIVE = /require\('(\.\.\/[^']+)'\)/g;
-
-test('examples: every entry an example requires exists, and exports the names taken from it', () => {
-  let checked = 0;
-  for (const file of files) {
-    const source = fs.readFileSync(file, 'utf8');
-    const label = path.relative(ROOT, file);
-    for (const match of source.matchAll(RELATIVE)) {
-      assert.fail(`${label} requires ${match[1]}; an example reaches the package by its name`);
+  it('should compile every script', () => {
+    for (const file of files) {
+      const source = fs.readFileSync(file, 'utf8');
+      assert.doesNotThrow(
+        () => new vm.Script(Module.wrap(source), { filename: file }),
+        `${path.relative(ROOT, file)} does not compile`,
+      );
     }
-    for (const match of source.matchAll(REQUIRED)) {
-      assert.doesNotThrow(() => require.resolve(match[1]), `${label} requires ${match[1]}, which does not resolve`);
-    }
-    for (const match of source.matchAll(DESTRUCTURED)) {
-      const entry = require(match[2]);
-      for (const part of match[1].split(',')) {
-        const name = part.split(/[:=]/)[0].trim();
-        if (name === '' || name.startsWith('...')) continue;
-        assert.ok(Object.hasOwn(entry, name), `${label} takes \`${name}\` from ${match[2]}, which does not export it`);
-        checked++;
+  });
+
+  // `const { a, b: c, d = 1 } = require('@alexify/wrpc/<entry>')` and
+  // `...require('@alexify/wrpc/<entry>')`: the two ways an example reaches
+  // the package. An example may not reach into the tree by a relative path.
+  const NAME = String.raw`@alexify\/wrpc(?:\/[\w/]+)?`;
+  const DESTRUCTURED = new RegExp(String.raw`const\s*\{([^}]*)\}\s*=\s*require\('(${NAME})'\)`, 'g');
+  const REQUIRED = new RegExp(String.raw`require\('(${NAME})'\)`, 'g');
+  const RELATIVE = /require\('(\.\.\/[^']+)'\)/g;
+
+  it('should require only entries that exist and that export the names taken from them', () => {
+    let checked = 0;
+    for (const file of files) {
+      const source = fs.readFileSync(file, 'utf8');
+      const label = path.relative(ROOT, file);
+      for (const match of source.matchAll(RELATIVE)) {
+        assert.fail(`${label} requires ${match[1]}; an example reaches the package by its name`);
+      }
+      for (const match of source.matchAll(REQUIRED)) {
+        assert.doesNotThrow(() => require.resolve(match[1]), `${label} requires ${match[1]}, which does not resolve`);
+      }
+      for (const match of source.matchAll(DESTRUCTURED)) {
+        const entry = require(match[2]);
+        for (const part of match[1].split(',')) {
+          const name = part.split(/[:=]/)[0].trim();
+          if (name === '' || name.startsWith('...')) continue;
+          assert.ok(
+            Object.hasOwn(entry, name),
+            `${label} takes \`${name}\` from ${match[2]}, which does not export it`,
+          );
+          checked++;
+        }
       }
     }
-  }
-  assert.ok(checked >= 8, `only ${checked} imported names were checked — the pattern stopped matching`);
+    assert.ok(checked >= 8, `only ${checked} imported names were checked — the pattern stopped matching`);
+  });
 });

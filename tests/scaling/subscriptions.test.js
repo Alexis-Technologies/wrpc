@@ -1,8 +1,8 @@
 'use strict';
 
 const timers = require('node:timers/promises');
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it, before, after } = require('node:test');
+const assert = require('node:assert/strict');
 
 const {
   Server,
@@ -81,56 +81,68 @@ const createInstance = async (backplane, instanceId) => {
   return { server, port: server.address().port, live, log };
 };
 
-test('subscriptions: a feed spans instances through the backplane', async (t) => {
-  const backplane = new MemoryBackplane();
-  const first = await createInstance(backplane, 'node-1');
-  const second = await createInstance(backplane, 'node-2');
-  t.after(async () => {
-    await first.server.close();
-    await second.server.close();
-    backplane.close();
-  });
+describe('subscriptions', () => {
+  describe('a feed that spans instances through the backplane', () => {
+    const backplane = new MemoryBackplane();
+    const clients = [];
+    const seenHere = [];
+    const seenThere = [];
+    let first = null;
+    let second = null;
+    let here = null;
+    let there = null;
+    let remote = null;
 
-  const connect = async (port) => {
-    const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, { heartbeat: false });
-    t.after(() => void client.close());
-    await client.load('feed');
-    return client;
-  };
-  const here = await connect(first.port);
-  const there = await connect(second.port);
+    const connect = async (port) => {
+      const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/api`, { heartbeat: false });
+      clients.push(client);
+      await client.load('feed');
+      return client;
+    };
 
-  const seenHere = [];
-  const seenThere = [];
-  here.api.feed.messages.subscribe({}, { onData: (data) => seenHere.push(data) });
-  const remote = there.api.feed.messages.subscribe({}, { onData: (data) => seenThere.push(data) });
-  await waitFor(() => first.live.size === 1 && second.live.size === 1, 'the subscriptions never opened');
+    before(async () => {
+      first = await createInstance(backplane, 'node-1');
+      second = await createInstance(backplane, 'node-2');
+      here = await connect(first.port);
+      there = await connect(second.port);
+      here.api.feed.messages.subscribe({}, { onData: (data) => seenHere.push(data) });
+      remote = there.api.feed.messages.subscribe({}, { onData: (data) => seenThere.push(data) });
+      await waitFor(() => first.live.size === 1 && second.live.size === 1, 'the subscriptions never opened');
+    });
 
-  await t.test('a value published on one instance reaches the other', async () => {
-    await here.api.feed.say({ text: 'hello' });
-    await waitFor(() => seenThere.length === 1, 'the value never crossed instances');
-    assert.deepStrictEqual(seenThere, ['hello']);
-  });
+    after(async () => {
+      for (const client of clients) void client.close();
+      await first?.server.close();
+      await second?.server.close();
+      backplane.close();
+    });
 
-  await t.test('and it reaches the publishing instance exactly once', async () => {
-    await waitFor(() => seenHere.length === 1, 'the local subscriber missed it');
-    await timers.setTimeout(40);
-    assert.deepStrictEqual(seenHere, ['hello'], 'echo suppression kept it from arriving twice');
-  });
+    it('should deliver a value published on one instance to the other', async () => {
+      await here.api.feed.say({ text: 'hello' });
+      await waitFor(() => seenThere.length === 1, 'the value never crossed instances');
+      assert.deepStrictEqual(seenThere, ['hello']);
+    });
 
-  await t.test('the remote subscriber can resume from its own eventId', async () => {
-    assert.strictEqual(remote.lastEventId, 'e.0');
-    remote.unsubscribe();
-    await waitFor(() => second.live.size === 0, 'the unsubscribe never landed');
+    it('should deliver it to the publishing instance exactly once', async () => {
+      await waitFor(() => seenHere.length === 1, 'the local subscriber missed it');
+      await timers.setTimeout(40);
+      assert.deepStrictEqual(seenHere, ['hello'], 'echo suppression kept it from arriving twice');
+    });
 
-    // Two more while that subscriber is away.
-    await here.api.feed.say({ text: 'second' });
-    await here.api.feed.say({ text: 'third' });
-    await waitFor(() => second.log.length === 3, 'the instance did not keep receiving');
+    it('should let the remote subscriber resume from its own eventId', async () => {
+      assert.strictEqual(remote.lastEventId, 'e.0');
+      remote.unsubscribe();
+      await waitFor(() => second.live.size === 0, 'the unsubscribe never landed');
 
-    const resumed = [];
-    there.api.feed.messages.subscribe({}, { lastEventId: 'e.0', onData: (data) => resumed.push(data) });
-    await waitFor(() => resumed.length === 2, `only ${resumed.length} replayed`);
-    assert.deepStrictEqual(resumed, ['second', 'third'], 'exactly what it missed');
+      // Two more while that subscriber is away.
+      await here.api.feed.say({ text: 'second' });
+      await here.api.feed.say({ text: 'third' });
+      await waitFor(() => second.log.length === 3, 'the instance did not keep receiving');
+
+      const resumed = [];
+      there.api.feed.messages.subscribe({}, { lastEventId: 'e.0', onData: (data) => resumed.push(data) });
+      await waitFor(() => resumed.length === 2, `only ${resumed.length} replayed`);
+      assert.deepStrictEqual(resumed, ['second', 'third'], 'exactly what it missed');
+    });
   });
 });

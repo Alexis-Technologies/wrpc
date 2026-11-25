@@ -1,7 +1,7 @@
 'use strict';
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 
 const { ServerTransport, buildHeaders, parseCookies } = require('../src/transport.js');
 const { Emitter } = require('../src/utils.js');
@@ -44,8 +44,8 @@ const fakeCall = (overrides = {}) => {
   };
 };
 
-test('buildHeaders', async (t) => {
-  await t.test('defaults to a wildcard origin without a cors option', () => {
+describe('buildHeaders', () => {
+  it('should default to a wildcard origin without a cors option', () => {
     const defaults = buildHeaders();
     assert.strictEqual(defaults['Access-Control-Allow-Origin'], '*');
     assert.strictEqual(defaults['Access-Control-Allow-Methods'], 'POST, GET, OPTIONS');
@@ -62,7 +62,7 @@ test('buildHeaders', async (t) => {
     assert.strictEqual(withoutOrigins['Access-Control-Allow-Origin'], '*');
   });
 
-  await t.test('origins list: allowed origin is echoed with Vary: Origin', () => {
+  it('should echo an origin an origins list allows, with Vary: Origin', () => {
     const cors = { origins: ['https://a.com', 'https://b.com'] };
     const allowed = buildHeaders(cors, 'https://a.com');
     assert.strictEqual(allowed['Access-Control-Allow-Origin'], 'https://a.com');
@@ -70,7 +70,7 @@ test('buildHeaders', async (t) => {
     assert.strictEqual(allowed['Access-Control-Allow-Credentials'], undefined);
   });
 
-  await t.test('origins list: disallowed origin gets no ACAO header', () => {
+  it('should send no ACAO header to an origin an origins list disallows', () => {
     const cors = { origins: ['https://a.com'] };
     const denied = buildHeaders(cors, 'https://evil.com');
     assert.strictEqual(denied['Access-Control-Allow-Origin'], undefined);
@@ -79,7 +79,7 @@ test('buildHeaders', async (t) => {
     assert.strictEqual(missing['Access-Control-Allow-Origin'], undefined);
   });
 
-  await t.test('origins as a predicate function', () => {
+  it('should take origins as a predicate function', () => {
     const cors = { origins: (origin) => origin.endsWith('.good.com') };
     assert.strictEqual(
       buildHeaders(cors, 'https://app.good.com')['Access-Control-Allow-Origin'],
@@ -89,7 +89,7 @@ test('buildHeaders', async (t) => {
     assert.strictEqual(buildHeaders(cors, undefined)['Access-Control-Allow-Origin'], undefined);
   });
 
-  await t.test('credentials are echoed only for allowed origins', () => {
+  it('should echo credentials only for allowed origins', () => {
     const cors = { origins: ['https://a.com'], credentials: true };
     const allowed = buildHeaders(cors, 'https://a.com');
     assert.strictEqual(allowed['Access-Control-Allow-Credentials'], 'true');
@@ -97,15 +97,15 @@ test('buildHeaders', async (t) => {
     assert.strictEqual(denied['Access-Control-Allow-Credentials'], undefined);
   });
 
-  await t.test('methods and headers overrides', () => {
+  it('should take methods and headers overrides', () => {
     const headers = buildHeaders({ methods: 'PUT, PATCH', headers: 'Content-Type, X-Token' });
     assert.strictEqual(headers['Access-Control-Allow-Methods'], 'PUT, PATCH');
     assert.strictEqual(headers['Access-Control-Allow-Headers'], 'Content-Type, X-Token');
   });
 });
 
-test('ServerHttpTransport', async (t) => {
-  await t.test('write responds exactly once and emits close after the write', () => {
+describe('ServerHttpTransport', () => {
+  it('should respond exactly once on write and emit close after the write', () => {
     const call = fakeCall();
     const transport = new ServerHttpTransport(call);
     const events = [];
@@ -127,7 +127,7 @@ test('ServerHttpTransport', async (t) => {
     assert.strictEqual(call.responses.length, 1);
   });
 
-  await t.test('write passes an existing Buffer through unchanged', () => {
+  it('should pass an existing Buffer through write unchanged', () => {
     const call = fakeCall();
     const transport = new ServerHttpTransport(call);
     const buf = Buffer.from('already a buffer');
@@ -135,7 +135,7 @@ test('ServerHttpTransport', async (t) => {
     assert.strictEqual(call.responses[0].body, buf);
   });
 
-  await t.test('custom headers from options are used for the response', () => {
+  it('should use custom headers from options for the response', () => {
     const call = fakeCall();
     const transport = new ServerHttpTransport(call, { headers: { 'X-Custom': 'yes' } });
     transport.write('data');
@@ -143,7 +143,7 @@ test('ServerHttpTransport', async (t) => {
     assert.strictEqual(headers['X-Custom'], 'yes');
   });
 
-  await t.test('error() sends a callback packet with the HTTP status text', () => {
+  it('should send a callback packet with the HTTP status text from error()', () => {
     const call = fakeCall();
     const transport = new ServerHttpTransport(call);
     transport.error(500);
@@ -157,7 +157,7 @@ test('ServerHttpTransport', async (t) => {
     });
   });
 
-  await t.test('error() falls back to "Unknown error" for an unknown status code', () => {
+  it('should fall back to "Unknown error" in error() for an unknown status code', () => {
     const call = fakeCall();
     const transport = new ServerHttpTransport(call);
     transport.error(999);
@@ -165,7 +165,7 @@ test('ServerHttpTransport', async (t) => {
     assert.strictEqual(packet.error.message, 'Unknown error');
   });
 
-  await t.test('error() prefers the given error message and keeps the packet id', () => {
+  it('should prefer the given error message in error() and keep the packet id', () => {
     const call = fakeCall();
     const transport = new ServerHttpTransport(call);
     transport.error(422, { id: '42', error: new Error('domain failure') });
@@ -173,7 +173,7 @@ test('ServerHttpTransport', async (t) => {
     assert.deepStrictEqual(packet, { type: 'callback', id: '42', error: { message: 'domain failure', code: 422 } });
   });
 
-  await t.test('error() carries details on a 4xx', () => {
+  it('should carry details on a 4xx from error()', () => {
     const call = fakeCall();
     const transport = new ServerHttpTransport(call);
     const error = new Error('invalid');
@@ -187,7 +187,7 @@ test('ServerHttpTransport', async (t) => {
     });
   });
 
-  await t.test('error() strips details from a 5xx', () => {
+  it('should strip details from a 5xx in error()', () => {
     const call = fakeCall();
     const transport = new ServerHttpTransport(call);
     const error = new Error('secret internals');
@@ -198,7 +198,7 @@ test('ServerHttpTransport', async (t) => {
     assert.strictEqual('details' in packet.error, false);
   });
 
-  await t.test('error() keeps 5xx details when the error opts in with expose', () => {
+  it('should keep 5xx details in error() when the error opts in with expose', () => {
     const call = fakeCall();
     const transport = new ServerHttpTransport(call);
     const error = new Error('queue full');
@@ -209,7 +209,7 @@ test('ServerHttpTransport', async (t) => {
     assert.deepStrictEqual(packet.error, { message: 'queue full', code: 503, details: { waiting: 100 } });
   });
 
-  await t.test('error() omits the details key entirely when there are none', () => {
+  it('should omit the details key from error() entirely when there are none', () => {
     const call = fakeCall();
     const transport = new ServerHttpTransport(call);
     transport.error(404, { id: '1', error: new Error('nope') });
@@ -217,24 +217,24 @@ test('ServerHttpTransport', async (t) => {
     assert.strictEqual('details' in packet.error, false);
   });
 
-  await t.test('getCookies returns {} when there is no cookie header', () => {
+  it('should return {} from getCookies when there is no cookie header', () => {
     const transport = new ServerHttpTransport(fakeCall());
     assert.deepStrictEqual(transport.getCookies(), {});
   });
 
-  await t.test('getCookies parses the cookie header', () => {
+  it('should parse the cookie header in getCookies', () => {
     const call = fakeCall({ headers: { cookie: 'token=abc123; other=value' } });
     const transport = new ServerHttpTransport(call);
     assert.deepStrictEqual(transport.getCookies(), { token: 'abc123', other: 'value' });
   });
 
-  await t.test('getCookies treats a valueless cookie item as an empty string', () => {
+  it('should treat a valueless cookie item as an empty string in getCookies', () => {
     const call = fakeCall({ headers: { cookie: 'flag' } });
     const transport = new ServerHttpTransport(call);
     assert.deepStrictEqual(transport.getCookies(), { flag: '' });
   });
 
-  await t.test('sendSessionCookie accumulates Set-Cookie headers for the response', () => {
+  it('should accumulate Set-Cookie headers for the response from sendSessionCookie', () => {
     const call = fakeCall();
     const transport = new ServerHttpTransport(call);
     transport.sendSessionCookie('token=abc; Path=/; HttpOnly');
@@ -244,14 +244,14 @@ test('ServerHttpTransport', async (t) => {
     assert.deepStrictEqual(headers['Set-Cookie'], ['token=abc; Path=/; HttpOnly', 'theme=dark; Path=/']);
   });
 
-  await t.test('no Set-Cookie header when no cookie was sent', () => {
+  it('should send no Set-Cookie header when no cookie was sent', () => {
     const call = fakeCall();
     const transport = new ServerHttpTransport(call);
     transport.send({ ok: true });
     assert.strictEqual('Set-Cookie' in call.responses[0].headers, false);
   });
 
-  await t.test('close() responds with a 503 error packet', () => {
+  it('should respond with a 503 error packet on close()', () => {
     const call = fakeCall();
     const transport = new ServerHttpTransport(call);
     transport.close();
@@ -262,14 +262,14 @@ test('ServerHttpTransport', async (t) => {
     assert.strictEqual(packet.error.message, 'Service Unavailable');
   });
 
-  await t.test('source comes from the call remoteAddress', () => {
+  it('should take source from the call remoteAddress', () => {
     assert.strictEqual(new ServerHttpTransport(fakeCall()).source, '127.0.0.1');
     assert.strictEqual(new ServerHttpTransport(fakeCall({ remoteAddress: undefined })).source, '');
   });
 });
 
-test('ServerWsTransport', async (t) => {
-  await t.test('source prefers meta.remoteAddress, falls back to the connection', () => {
+describe('ServerWsTransport', () => {
+  it('should take source from meta.remoteAddress first, then from the connection', () => {
     const connection = new FakeConnection();
     assert.strictEqual(new ServerWsTransport(connection, { remoteAddress: '192.168.0.7' }).source, '192.168.0.7');
     assert.strictEqual(new ServerWsTransport(new FakeConnection()).source, '10.0.0.1');
@@ -278,7 +278,7 @@ test('ServerWsTransport', async (t) => {
     assert.strictEqual(new ServerWsTransport(anonymous).source, '');
   });
 
-  await t.test('forwards close and drain from the connection', async () => {
+  it('should forward close and drain from the connection', async () => {
     const connection = new FakeConnection();
     const transport = new ServerWsTransport(connection, {});
     const events = [];
@@ -289,7 +289,7 @@ test('ServerWsTransport', async (t) => {
     assert.deepStrictEqual(events, ['drain', 'close']);
   });
 
-  await t.test('write() passes the connection backpressure boolean through', () => {
+  it('should pass the connection backpressure boolean through write()', () => {
     const connection = new FakeConnection();
     const transport = new ServerWsTransport(connection, {});
     assert.strictEqual(transport.write('fits'), true);
@@ -298,7 +298,7 @@ test('ServerWsTransport', async (t) => {
     assert.deepStrictEqual(connection.sent, ['fits', 'stalls']);
   });
 
-  await t.test('write() converts typed arrays to Buffers, keeps strings and Buffers', () => {
+  it('should convert typed arrays to Buffers in write(), and keep strings and Buffers', () => {
     const connection = new FakeConnection();
     const transport = new ServerWsTransport(connection, {});
     const buf = Buffer.from('as-is');
@@ -309,7 +309,7 @@ test('ServerWsTransport', async (t) => {
     assert.deepStrictEqual(connection.sent[1], Buffer.from([1, 2, 3]));
   });
 
-  await t.test('close() terminates the connection', () => {
+  it('should terminate the connection on close()', () => {
     const connection = new FakeConnection();
     const transport = new ServerWsTransport(connection, {});
     transport.close();
@@ -317,8 +317,8 @@ test('ServerWsTransport', async (t) => {
   });
 });
 
-test('ServerEventTransport', async (t) => {
-  await t.test('writes post messages to the port and closes it', () => {
+describe('ServerEventTransport', () => {
+  it('should post writes to the port as messages and close it', () => {
     const listeners = {};
     const sent = [];
     let portClosed = false;
@@ -334,14 +334,14 @@ test('ServerEventTransport', async (t) => {
     assert.strictEqual(portClosed, true);
   });
 
-  await t.test('is persistent: a port stays open, so events and streams are admitted', () => {
+  it('should be persistent: a port stays open, so events and streams are admitted', () => {
     const port = { on: () => {}, postMessage: () => {}, close: () => {} };
     const transport = new ServerEventTransport(port);
     assert.strictEqual(Boolean(transport.connection), true);
     assert.strictEqual(new Client(transport, { log: quietLog }).persistent, true);
   });
 
-  await t.test('forwards port close as a transport close event', () => {
+  it('should forward the port close as a transport close event', () => {
     const listeners = {};
     const port = { on: (event, fn) => (listeners[event] = fn), postMessage: () => {}, close: () => {} };
     const transport = new ServerEventTransport(port);
@@ -352,8 +352,8 @@ test('ServerEventTransport', async (t) => {
   });
 });
 
-test('parseCookies', async (t) => {
-  await t.test('a name that comes twice keeps its first value', () => {
+describe('parseCookies', () => {
+  it('should keep the first value of a name that comes twice', () => {
     // What a browser sends when a sibling subdomain set `token` for the
     // parent domain: the site's own cookie first, the tossed one behind it.
     const cookies = parseCookies('token=victim; other=1; token=attacker');
@@ -362,7 +362,7 @@ test('parseCookies', async (t) => {
     assert.strictEqual(Object.hasOwn(parseCookies('__proto__=x; a=1'), '__proto__'), true);
   });
 
-  await t.test('splits pairs on the first "=" only — values may contain "="', () => {
+  it('should split pairs on the first "=" only — values may contain "="', () => {
     const cookies = parseCookies('token=YWJjZGVm==; other=1');
     assert.strictEqual(cookies.token, 'YWJjZGVm==');
     assert.strictEqual(cookies.other, '1');
@@ -371,64 +371,64 @@ test('parseCookies', async (t) => {
     assert.strictEqual(jwt.x, 'y=z');
   });
 
-  await t.test('tolerates malformed items', () => {
+  it('should tolerate malformed items', () => {
     const cookies = parseCookies('lonely; =value;  spaced = padded ');
     assert.strictEqual(cookies.lonely, '');
     assert.strictEqual(cookies.spaced, 'padded');
   });
 });
 
-test('buildHeaders: cors.metaHeaders names the per-key meta headers CORS cannot wildcard', () => {
-  const { buildHeaders } = require('../src/transport.js');
-  const allow = (cors) => buildHeaders(cors, 'http://app.example')['Access-Control-Allow-Headers'];
+describe('buildHeaders: the cors and HSTS options', () => {
+  it('should name the per-key meta headers CORS cannot wildcard from cors.metaHeaders', () => {
+    const allow = (cors) => buildHeaders(cors, 'http://app.example')['Access-Control-Allow-Headers'];
 
-  // Appended to the default, never replacing it: dropping x-wrpc-channel
-  // here would silently disable cross-origin SSE.
-  assert.strictEqual(
-    allow({ metaHeaders: ['locale'] }),
-    'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta, x-wrpc-meta-locale',
-  );
+    // Appended to the default, never replacing it: dropping x-wrpc-channel
+    // here would silently disable cross-origin SSE.
+    assert.strictEqual(
+      allow({ metaHeaders: ['locale'] }),
+      'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta, x-wrpc-meta-locale',
+    );
 
-  // Normalized with the SAME rule the client uses, so a config written in
-  // camelCase still grants the name that will actually arrive.
-  assert.strictEqual(allow({ metaHeaders: ['userId'] }).endsWith(', x-wrpc-meta-user-id'), true);
+    // Normalized with the SAME rule the client uses, so a config written in
+    // camelCase still grants the name that will actually arrive.
+    assert.strictEqual(allow({ metaHeaders: ['userId'] }).endsWith(', x-wrpc-meta-user-id'), true);
 
-  // An explicit list composes with metaHeaders rather than fighting it.
-  assert.strictEqual(
-    allow({ headers: 'Content-Type', metaHeaders: ['userId', 'traceId'] }),
-    'Content-Type, x-wrpc-meta-user-id, x-wrpc-meta-trace-id',
-  );
+    // An explicit list composes with metaHeaders rather than fighting it.
+    assert.strictEqual(
+      allow({ headers: 'Content-Type', metaHeaders: ['userId', 'traceId'] }),
+      'Content-Type, x-wrpc-meta-user-id, x-wrpc-meta-trace-id',
+    );
 
-  // The array form of `headers` is the same value, spelled as a list.
-  assert.strictEqual(allow({ headers: ['Content-Type', 'X-Token'] }), 'Content-Type, X-Token');
+    // The array form of `headers` is the same value, spelled as a list.
+    assert.strictEqual(allow({ headers: ['Content-Type', 'X-Token'] }), 'Content-Type, X-Token');
 
-  // Absent or empty changes nothing.
-  assert.strictEqual(allow({ metaHeaders: [] }), 'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta');
-});
+    // Absent or empty changes nothing.
+    assert.strictEqual(allow({ metaHeaders: [] }), 'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta');
+  });
 
-test('buildHeaders: HSTS is for the answering host by default, and the application may replace or drop it', () => {
-  const { buildHeaders } = require('../src/transport.js');
-  const name = 'Strict-Transport-Security';
-  // Not `includeSubDomains; preload`: that commits a whole domain tree, and
-  // it is not a library's to say.
-  assert.strictEqual(buildHeaders()[name], 'max-age=31536000');
-  assert.strictEqual(
-    buildHeaders(null, undefined, 1, 'max-age=63072000; includeSubDomains; preload')[name].includes('preload'),
-    true,
-  );
-  assert.strictEqual(Object.hasOwn(buildHeaders(null, undefined, 1, false), name), false);
-  assert.strictEqual(buildHeaders(null, undefined, 1, false)['X-Content-Type-Options'], 'nosniff');
-});
+  it('should send HSTS for the answering host by default, and let the application replace or drop it', () => {
+    const name = 'Strict-Transport-Security';
+    // Not `includeSubDomains; preload`: that commits a whole domain tree, and
+    // it is not a library's to say.
+    assert.strictEqual(buildHeaders()[name], 'max-age=31536000');
+    assert.strictEqual(
+      buildHeaders(null, undefined, 1, 'max-age=63072000; includeSubDomains; preload')[name].includes('preload'),
+      true,
+    );
+    assert.strictEqual(Object.hasOwn(buildHeaders(null, undefined, 1, false), name), false);
+    assert.strictEqual(buildHeaders(null, undefined, 1, false)['X-Content-Type-Options'], 'nosniff');
+  });
 
-test('cors.origins as one string is that origin, compared whole', () => {
-  const { buildHeaders, isOriginAllowed } = require('../src/transport.js');
-  const cors = { origins: 'https://app.example.com' };
-  assert.strictEqual(isOriginAllowed(cors, 'https://app.example.com'), true);
-  // A substring of the configured origin — and a domain anybody can buy.
-  assert.strictEqual(isOriginAllowed(cors, 'https://app.example.co'), false);
-  assert.strictEqual(buildHeaders(cors, 'https://app.example.co')['Access-Control-Allow-Origin'], undefined);
-  assert.strictEqual(
-    buildHeaders(cors, 'https://app.example.com')['Access-Control-Allow-Origin'],
-    'https://app.example.com',
-  );
+  it('should take cors.origins as one string to be that origin, compared whole', () => {
+    const { isOriginAllowed } = require('../src/transport.js');
+    const cors = { origins: 'https://app.example.com' };
+    assert.strictEqual(isOriginAllowed(cors, 'https://app.example.com'), true);
+    // A substring of the configured origin — and a domain anybody can buy.
+    assert.strictEqual(isOriginAllowed(cors, 'https://app.example.co'), false);
+    assert.strictEqual(buildHeaders(cors, 'https://app.example.co')['Access-Control-Allow-Origin'], undefined);
+    assert.strictEqual(
+      buildHeaders(cors, 'https://app.example.com')['Access-Control-Allow-Origin'],
+      'https://app.example.com',
+    );
+  });
 });

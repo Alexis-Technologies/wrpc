@@ -2,8 +2,8 @@
 
 const timers = require('node:timers/promises');
 const { Blob } = require('node:buffer');
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it, before, after } = require('node:test');
+const assert = require('node:assert/strict');
 
 const { Server, WrpcClient, connect, defineRouter, procedure } = require('../index.js');
 
@@ -27,7 +27,7 @@ const createServer = async (router) => {
   return { server, port };
 };
 
-test('Integration / WrpcClient with Server', async (t) => {
+describe('Integration / WrpcClient with Server', () => {
   const router = defineRouter({
     test: {
       hello: procedure({
@@ -84,12 +84,18 @@ test('Integration / WrpcClient with Server', async (t) => {
     },
   });
 
-  const { server, port } = await createServer(router);
-  t.after(async () => {
-    await server.close();
+  let server = null;
+  let port = 0;
+
+  before(async () => {
+    ({ server, port } = await createServer(router));
   });
 
-  await t.test('WS RPC: load and call public method', async (sub) => {
+  after(async () => {
+    await server?.close();
+  });
+
+  it('should load and call a public method over WS RPC', async (sub) => {
     const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
     sub.after(() => void client.close());
     await client.load('test');
@@ -97,7 +103,7 @@ test('Integration / WrpcClient with Server', async (t) => {
     assert.strictEqual(result, 'Hello, Max');
   });
 
-  await t.test('HTTP RPC: load and call public method', async (sub) => {
+  it('should load and call a public method over HTTP RPC', async (sub) => {
     const client = await WrpcClient.connect(`http://127.0.0.1:${port}/api`);
     sub.after(() => void client.close());
     await client.load('test');
@@ -105,21 +111,21 @@ test('Integration / WrpcClient with Server', async (t) => {
     assert.strictEqual(result, 'Hello, Ada');
   });
 
-  await t.test('WS RPC: propagates method errors', async (sub) => {
+  it('should propagate method errors over WS RPC', async (sub) => {
     const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
     sub.after(() => void client.close());
     await client.load('test');
     await assert.rejects(client.api.test.fail(), (error) => error.message === 'Boom' && error.code === 400);
   });
 
-  await t.test('WS RPC: rejects session-only method without session', async (sub) => {
+  it('should reject a session-only method without a session over WS RPC', async (sub) => {
     const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
     sub.after(() => void client.close());
     await client.load('test');
     await assert.rejects(client.api.test.secret(), (error) => error.code === 403);
   });
 
-  await t.test('WS events: server emit reaches client unit', async (sub) => {
+  it('should bring a server emit to the client unit over WS events', async (sub) => {
     const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
     sub.after(() => void client.close());
     await client.load('test');
@@ -129,7 +135,7 @@ test('Integration / WrpcClient with Server', async (t) => {
     assert.deepStrictEqual(await ping, { ping: true });
   });
 
-  await t.test('WS streams: client upload is readable on server', async (sub) => {
+  it('should make a client upload readable on the server over WS streams', async (sub) => {
     const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
     sub.after(() => void client.close());
     await client.load('test');
@@ -145,7 +151,7 @@ test('Integration / WrpcClient with Server', async (t) => {
     assert.strictEqual(uploaded.data, data);
   });
 
-  await t.test('WS streams: upload before the reading call does not deadlock', async (sub) => {
+  it('should not deadlock on an upload sent before the reading call over WS streams', async (sub) => {
     // Regression: all chunks (past the 32-chunk high-water mark) arrive
     // before the call that starts the consumer. The receive-side pause
     // used to deadlock here: pushes blocked on the high-water mark, the
@@ -164,7 +170,7 @@ test('Integration / WrpcClient with Server', async (t) => {
     assert.strictEqual(uploaded.data, chunk.repeat(chunkCount));
   });
 
-  await t.test('WS streams: server download readable on client', async (sub) => {
+  it('should make a server download readable on the client over WS streams', async (sub) => {
     const client = await WrpcClient.connect(`ws://127.0.0.1:${port}/`);
     sub.after(() => void client.close());
     await client.load('test');
@@ -177,7 +183,7 @@ test('Integration / WrpcClient with Server', async (t) => {
   // The typed-client entry point. `connect` exists so a contract type has a
   // natural place to go (`connect<Api>(url)`); at runtime it must be the very
   // same call, options and all.
-  await t.test('connect() is WrpcClient.connect', async (sub) => {
+  it('should make connect() WrpcClient.connect', async (sub) => {
     const client = await connect(`ws://127.0.0.1:${port}/`, { callTimeout: 3000 });
     sub.after(() => void client.close());
     assert.ok(client instanceof WrpcClient);

@@ -1,12 +1,13 @@
 'use strict';
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it, before, after } = require('node:test');
+const assert = require('node:assert/strict');
 const crypto = require('node:crypto');
 const { EventEmitter } = require('node:events');
 
 const { Server, defineRouter, procedure } = require('../../index.js');
 const { ProtocolClient } = require('../websocket/protocolClient.js');
+const { suiteScope } = require('../helpers/scope.js');
 
 const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const COOKIE_RE = /^token=([^;]+); Path=\/; HttpOnly; Secure; SameSite=Lax$/;
@@ -67,237 +68,243 @@ const login = async (origin, base, user) => {
   return match[1];
 };
 
-test('basePath default /api: packet POST endpoint', async (t) => {
-  const { origin } = await startServer(t);
-  const res = await postPacket(`${origin}/api`, 'echo/args', { a: 1, b: 'two' });
-  assert.strictEqual(res.status, 200);
-  assert.strictEqual(res.headers.get('content-type'), 'application/json');
-  const packet = await res.json();
-  assert.deepStrictEqual(packet, { type: 'callback', id: '1', result: { a: 1, b: 'two' } });
-});
+describe('HTTP endpoints', () => {
+  it('should serve the packet POST endpoint at the default basePath /api', async (t) => {
+    const { origin } = await startServer(t);
+    const res = await postPacket(`${origin}/api`, 'echo/args', { a: 1, b: 'two' });
+    assert.strictEqual(res.status, 200);
+    assert.strictEqual(res.headers.get('content-type'), 'application/json');
+    const packet = await res.json();
+    assert.deepStrictEqual(packet, { type: 'callback', id: '1', result: { a: 1, b: 'two' } });
+  });
 
-test('packet id: a string of at most 255 characters or a number, anything else an id-less refusal', async (t) => {
-  const { origin } = await startServer(t);
-  const post = async (body) => {
-    const res = await fetch(`${origin}/api`, {
+  it('should take a packet id that is a string of at most 255 characters or a number, anything else an id-less refusal', async (t) => {
+    const { origin } = await startServer(t);
+    const post = async (body) => {
+      const res = await fetch(`${origin}/api`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body,
+        signal: AbortSignal.timeout(5000),
+      });
+      return { status: res.status, packet: await res.json() };
+    };
+    const nested = (depth) => '['.repeat(depth) + ']'.repeat(depth);
+    // An id nested 10 000 deep used to be echoed into the answer, where
+    // JSON.stringify ran out of stack: an unhandled rejection and a request
+    // nobody answered. 1000 deep was answered — with the array as its id.
+    for (const [label, id, type] of [
+      ['an array nested 10 000 deep', nested(10_000), 'subscribe'],
+      ['an array nested 1000 deep', nested(1000), 'call'],
+      ['an object', '{"a":1}', 'call'],
+      ['a string past 255 characters', JSON.stringify('x'.repeat(256)), 'call'],
+      ['an empty string', '""', 'call'],
+    ]) {
+      const { status, packet } = await post(`{"type":"${type}","id":${id},"method":"echo/args","args":{}}`);
+      assert.strictEqual(status, 500, label);
+      assert.strictEqual(packet.id, '', `${label}: never echoed`);
+    }
+    // What 1.0 clients send — a counter's numbers included — is answered on.
+    const longest = 'x'.repeat(255);
+    assert.strictEqual(
+      (await post(`{"type":"call","id":"${longest}","method":"echo/args","args":{}}`)).packet.id,
+      longest,
+    );
+    const numeric = await post('{"type":"call","id":7,"method":"echo/args","args":{"a":1}}');
+    assert.deepStrictEqual(numeric.packet, { type: 'callback', id: 7, result: { a: 1 } });
+  });
+
+  it('should serve REST GET with query args at the default basePath /api', async (t) => {
+    const { origin } = await startServer(t);
+    const res = await fetch(`${origin}/api/echo/args?a=1&b=two`);
+    assert.strictEqual(res.status, 200);
+    const packet = await res.json();
+    assert.strictEqual(packet.type, 'callback');
+    assert.match(packet.id, UUID_RE);
+    assert.deepStrictEqual(packet.result, { a: '1', b: 'two' });
+  });
+
+  it('should answer 404 to a path outside the default basePath /api', async (t) => {
+    const { origin } = await startServer(t);
+    const res = await fetch(`${origin}/nope`);
+    assert.strictEqual(res.status, 404);
+    const packet = await res.json();
+    assert.deepStrictEqual(packet, {
+      type: 'callback',
+      id: '',
+      error: { message: 'Not Found', code: 404 },
+    });
+  });
+
+  it('should move packet and REST to a custom basePath /rpc, /api becoming 404', async (t) => {
+    const { origin } = await startServer(t, { basePath: '/rpc' });
+
+    const packetRes = await postPacket(`${origin}/rpc`, 'echo/args', { x: 1 });
+    assert.strictEqual(packetRes.status, 200);
+    assert.deepStrictEqual((await packetRes.json()).result, { x: 1 });
+
+    const restRes = await fetch(`${origin}/rpc/echo/args?x=2`);
+    assert.strictEqual(restRes.status, 200);
+    assert.deepStrictEqual((await restRes.json()).result, { x: '2' });
+
+    const missRes = await postPacket(`${origin}/api`, 'echo/args', { x: 3 });
+    assert.strictEqual(missRes.status, 404);
+  });
+
+  it("should serve the packet at / and REST at /unit/method with basePath ''", async (t) => {
+    const { origin } = await startServer(t, { basePath: '' });
+
+    const packetRes = await postPacket(`${origin}/`, 'echo/args', { q: 1 });
+    assert.strictEqual(packetRes.status, 200);
+    assert.deepStrictEqual((await packetRes.json()).result, { q: 1 });
+
+    const restRes = await fetch(`${origin}/echo/args?q=2`);
+    assert.strictEqual(restRes.status, 200);
+    assert.deepStrictEqual((await restRes.json()).result, { q: '2' });
+  });
+
+  it('should answer 403 to a non-POST method on the packet endpoint', async (t) => {
+    const { origin } = await startServer(t);
+    const res = await fetch(`${origin}/api`);
+    assert.strictEqual(res.status, 403);
+    const packet = await res.json();
+    assert.deepStrictEqual(packet, {
+      type: 'callback',
+      id: '',
+      error: { message: 'Forbidden', code: 403 },
+    });
+  });
+
+  describe('CORS', () => {
+    it('should answer an OPTIONS preflight 200 with CORS headers, no body processing', async (t) => {
+      const { origin } = await startServer(t);
+      const res = await fetch(`${origin}/api`, { method: 'OPTIONS', body: 'not-json-at-all' });
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.headers.get('access-control-allow-origin'), '*');
+      assert.strictEqual(res.headers.get('access-control-allow-methods'), 'POST, GET, OPTIONS');
+      assert.strictEqual(
+        res.headers.get('access-control-allow-headers'),
+        'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta',
+        'the SSE transport sends two headers a preflight has to name explicitly',
+      );
+      assert.strictEqual(await res.text(), '');
+
+      const anywhere = await fetch(`${origin}/definitely/not/an/api/path`, { method: 'OPTIONS' });
+      assert.strictEqual(anywhere.status, 200);
+      assert.strictEqual(anywhere.headers.get('access-control-allow-origin'), '*');
+    });
+
+    it('should answer a wildcard ACAO without a cors option', async (t) => {
+      const { origin } = await startServer(t);
+      const res = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://anything.example' });
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.headers.get('access-control-allow-origin'), '*');
+      // No Origin in it: only the Accept a frame-or-JSON answer is chosen by.
+      assert.strictEqual(res.headers.get('vary'), 'Accept');
+    });
+
+    it('should echo an allowed origin of the origins list with Vary and give a disallowed one no ACAO', async (t) => {
+      const { origin } = await startServer(t, { cors: { origins: ['http://app.example'] } });
+
+      const allowed = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://app.example' });
+      assert.strictEqual(allowed.status, 200);
+      assert.strictEqual(allowed.headers.get('access-control-allow-origin'), 'http://app.example');
+      assert.strictEqual(allowed.headers.get('vary'), 'Origin, Accept');
+
+      // Refused outright, not merely denied the header: the page could not read
+      // the answer either way, but the call itself must not run cross-site.
+      const denied = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://evil.example' });
+      assert.strictEqual(denied.status, 403);
+      assert.strictEqual(denied.headers.get('access-control-allow-origin'), null);
+      assert.strictEqual(denied.headers.get('vary'), 'Origin');
+    });
+
+    it('should let an origins function decide per origin', async (t) => {
+      const origins = (origin) => origin.endsWith('.good.example');
+      const { origin } = await startServer(t, { cors: { origins } });
+
+      const allowed = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://a.good.example' });
+      assert.strictEqual(allowed.headers.get('access-control-allow-origin'), 'http://a.good.example');
+
+      const denied = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://bad.example' });
+      assert.strictEqual(denied.headers.get('access-control-allow-origin'), null);
+    });
+
+    it('should send ACAC true with credentials only for allowed origins', async (t) => {
+      const cors = { origins: ['http://app.example'], credentials: true };
+      const { origin } = await startServer(t, { cors });
+
+      const allowed = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://app.example' });
+      assert.strictEqual(allowed.headers.get('access-control-allow-credentials'), 'true');
+
+      const denied = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://evil.example' });
+      assert.strictEqual(denied.headers.get('access-control-allow-credentials'), null);
+      assert.strictEqual(denied.headers.get('access-control-allow-origin'), null);
+    });
+
+    it('should use custom headers and methods strings verbatim', async (t) => {
+      const cors = { headers: 'Content-Type, X-Custom', methods: 'POST, OPTIONS' };
+      const { origin } = await startServer(t, { cors });
+      const res = await fetch(`${origin}/api`, { method: 'OPTIONS' });
+      assert.strictEqual(res.status, 200);
+      assert.strictEqual(res.headers.get('access-control-allow-headers'), 'Content-Type, X-Custom');
+      assert.strictEqual(res.headers.get('access-control-allow-methods'), 'POST, OPTIONS');
+      assert.strictEqual(res.headers.get('access-control-allow-origin'), '*');
+    });
+  });
+
+  it('should merge REST query params with the JSON body, the body winning', async (t) => {
+    const { origin } = await startServer(t);
+    const res = await fetch(`${origin}/api/echo/args?a=1&b=query`, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
-      body,
-      signal: AbortSignal.timeout(5000),
+      body: JSON.stringify({ b: 'body', c: 3 }),
     });
-    return { status: res.status, packet: await res.json() };
-  };
-  const nested = (depth) => '['.repeat(depth) + ']'.repeat(depth);
-  // An id nested 10 000 deep used to be echoed into the answer, where
-  // JSON.stringify ran out of stack: an unhandled rejection and a request
-  // nobody answered. 1000 deep was answered — with the array as its id.
-  for (const [label, id, type] of [
-    ['an array nested 10 000 deep', nested(10_000), 'subscribe'],
-    ['an array nested 1000 deep', nested(1000), 'call'],
-    ['an object', '{"a":1}', 'call'],
-    ['a string past 255 characters', JSON.stringify('x'.repeat(256)), 'call'],
-    ['an empty string', '""', 'call'],
-  ]) {
-    const { status, packet } = await post(`{"type":"${type}","id":${id},"method":"echo/args","args":{}}`);
-    assert.strictEqual(status, 500, label);
-    assert.strictEqual(packet.id, '', `${label}: never echoed`);
-  }
-  // What 1.0 clients send — a counter's numbers included — is answered on.
-  const longest = 'x'.repeat(255);
-  assert.strictEqual(
-    (await post(`{"type":"call","id":"${longest}","method":"echo/args","args":{}}`)).packet.id,
-    longest,
-  );
-  const numeric = await post('{"type":"call","id":7,"method":"echo/args","args":{"a":1}}');
-  assert.deepStrictEqual(numeric.packet, { type: 'callback', id: 7, result: { a: 1 } });
-});
-
-test('basePath default /api: REST GET with query args', async (t) => {
-  const { origin } = await startServer(t);
-  const res = await fetch(`${origin}/api/echo/args?a=1&b=two`);
-  assert.strictEqual(res.status, 200);
-  const packet = await res.json();
-  assert.strictEqual(packet.type, 'callback');
-  assert.match(packet.id, UUID_RE);
-  assert.deepStrictEqual(packet.result, { a: '1', b: 'two' });
-});
-
-test('basePath default /api: path outside basePath is 404', async (t) => {
-  const { origin } = await startServer(t);
-  const res = await fetch(`${origin}/nope`);
-  assert.strictEqual(res.status, 404);
-  const packet = await res.json();
-  assert.deepStrictEqual(packet, {
-    type: 'callback',
-    id: '',
-    error: { message: 'Not Found', code: 404 },
+    assert.strictEqual(res.status, 200);
+    const packet = await res.json();
+    assert.deepStrictEqual(packet.result, { a: '1', b: 'body', c: 3 });
   });
 });
 
-test('custom basePath /rpc: packet and REST move, /api becomes 404', async (t) => {
-  const { origin } = await startServer(t, { basePath: '/rpc' });
+describe('sessions over HTTP', () => {
+  it('should set a cookie on login, restore from it, and invalidate on finalize (e2e)', async (t) => {
+    const { origin } = await startServer(t);
+    const token = await login(origin, '/api', 'alice');
+    assert.match(token, UUID_RE);
 
-  const packetRes = await postPacket(`${origin}/rpc`, 'echo/args', { x: 1 });
-  assert.strictEqual(packetRes.status, 200);
-  assert.deepStrictEqual((await packetRes.json()).result, { x: 1 });
+    const denied = await postPacket(`${origin}/api`, 'auth/whoami', {});
+    assert.strictEqual(denied.status, 403);
 
-  const restRes = await fetch(`${origin}/rpc/echo/args?x=2`);
-  assert.strictEqual(restRes.status, 200);
-  assert.deepStrictEqual((await restRes.json()).result, { x: '2' });
+    const whoRes = await postPacket(`${origin}/api`, 'auth/whoami', {}, { Cookie: `token=${token}` });
+    assert.strictEqual(whoRes.status, 200);
+    assert.deepStrictEqual((await whoRes.json()).result, { user: 'alice' });
 
-  const missRes = await postPacket(`${origin}/api`, 'echo/args', { x: 3 });
-  assert.strictEqual(missRes.status, 404);
-});
+    const logoutRes = await postPacket(`${origin}/api`, 'auth/logout', {}, { Cookie: `token=${token}` });
+    assert.strictEqual(logoutRes.status, 200);
+    assert.deepStrictEqual((await logoutRes.json()).result, { ok: true });
 
-test("basePath '': packet at / and REST at /unit/method", async (t) => {
-  const { origin } = await startServer(t, { basePath: '' });
-
-  const packetRes = await postPacket(`${origin}/`, 'echo/args', { q: 1 });
-  assert.strictEqual(packetRes.status, 200);
-  assert.deepStrictEqual((await packetRes.json()).result, { q: 1 });
-
-  const restRes = await fetch(`${origin}/echo/args?q=2`);
-  assert.strictEqual(restRes.status, 200);
-  assert.deepStrictEqual((await restRes.json()).result, { q: '2' });
-});
-
-test('packet endpoint: non-POST method is 403', async (t) => {
-  const { origin } = await startServer(t);
-  const res = await fetch(`${origin}/api`);
-  assert.strictEqual(res.status, 403);
-  const packet = await res.json();
-  assert.deepStrictEqual(packet, {
-    type: 'callback',
-    id: '',
-    error: { message: 'Forbidden', code: 403 },
+    const stale = await postPacket(`${origin}/api`, 'auth/whoami', {}, { Cookie: `token=${token}` });
+    assert.strictEqual(stale.status, 403);
   });
-});
 
-test('OPTIONS preflight: 200 with CORS headers, no body processing', async (t) => {
-  const { origin } = await startServer(t);
-  const res = await fetch(`${origin}/api`, { method: 'OPTIONS', body: 'not-json-at-all' });
-  assert.strictEqual(res.status, 200);
-  assert.strictEqual(res.headers.get('access-control-allow-origin'), '*');
-  assert.strictEqual(res.headers.get('access-control-allow-methods'), 'POST, GET, OPTIONS');
-  assert.strictEqual(
-    res.headers.get('access-control-allow-headers'),
-    'Content-Type, x-wrpc-channel, last-event-id, x-wrpc-meta',
-    'the SSE transport sends two headers a preflight has to name explicitly',
-  );
-  assert.strictEqual(await res.text(), '');
+  it('should set and restore a custom cookie name from the sessions option', async (t) => {
+    const { origin } = await startServer(t, { sessions: { cookie: { name: 'sid' } } });
 
-  const anywhere = await fetch(`${origin}/definitely/not/an/api/path`, { method: 'OPTIONS' });
-  assert.strictEqual(anywhere.status, 200);
-  assert.strictEqual(anywhere.headers.get('access-control-allow-origin'), '*');
-});
+    const loginRes = await postPacket(`${origin}/api`, 'auth/login', { user: 'carol' });
+    assert.strictEqual(loginRes.status, 200);
+    const cookies = loginRes.headers.getSetCookie();
+    assert.strictEqual(cookies.length, 1);
+    const match = cookies[0].match(/^sid=([^;]+); Path=\/; HttpOnly; Secure; SameSite=Lax$/);
+    assert.ok(match, `Unexpected session cookie: ${cookies[0]}`);
+    const token = match[1];
 
-test('cors: no cors option means wildcard ACAO on responses', async (t) => {
-  const { origin } = await startServer(t);
-  const res = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://anything.example' });
-  assert.strictEqual(res.status, 200);
-  assert.strictEqual(res.headers.get('access-control-allow-origin'), '*');
-  // No Origin in it: only the Accept a frame-or-JSON answer is chosen by.
-  assert.strictEqual(res.headers.get('vary'), 'Accept');
-});
+    const whoRes = await postPacket(`${origin}/api`, 'auth/whoami', {}, { Cookie: `sid=${token}` });
+    assert.strictEqual(whoRes.status, 200);
+    assert.deepStrictEqual((await whoRes.json()).result, { user: 'carol' });
 
-test('cors origins list: allowed origin echoed with Vary, disallowed gets no ACAO', async (t) => {
-  const { origin } = await startServer(t, { cors: { origins: ['http://app.example'] } });
-
-  const allowed = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://app.example' });
-  assert.strictEqual(allowed.status, 200);
-  assert.strictEqual(allowed.headers.get('access-control-allow-origin'), 'http://app.example');
-  assert.strictEqual(allowed.headers.get('vary'), 'Origin, Accept');
-
-  // Refused outright, not merely denied the header: the page could not read
-  // the answer either way, but the call itself must not run cross-site.
-  const denied = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://evil.example' });
-  assert.strictEqual(denied.status, 403);
-  assert.strictEqual(denied.headers.get('access-control-allow-origin'), null);
-  assert.strictEqual(denied.headers.get('vary'), 'Origin');
-});
-
-test('cors origins function decides per origin', async (t) => {
-  const origins = (origin) => origin.endsWith('.good.example');
-  const { origin } = await startServer(t, { cors: { origins } });
-
-  const allowed = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://a.good.example' });
-  assert.strictEqual(allowed.headers.get('access-control-allow-origin'), 'http://a.good.example');
-
-  const denied = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://bad.example' });
-  assert.strictEqual(denied.headers.get('access-control-allow-origin'), null);
-});
-
-test('cors credentials: ACAC true only for allowed origins', async (t) => {
-  const cors = { origins: ['http://app.example'], credentials: true };
-  const { origin } = await startServer(t, { cors });
-
-  const allowed = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://app.example' });
-  assert.strictEqual(allowed.headers.get('access-control-allow-credentials'), 'true');
-
-  const denied = await postPacket(`${origin}/api`, 'echo/args', {}, { Origin: 'http://evil.example' });
-  assert.strictEqual(denied.headers.get('access-control-allow-credentials'), null);
-  assert.strictEqual(denied.headers.get('access-control-allow-origin'), null);
-});
-
-test('cors: custom headers and methods strings are used verbatim', async (t) => {
-  const cors = { headers: 'Content-Type, X-Custom', methods: 'POST, OPTIONS' };
-  const { origin } = await startServer(t, { cors });
-  const res = await fetch(`${origin}/api`, { method: 'OPTIONS' });
-  assert.strictEqual(res.status, 200);
-  assert.strictEqual(res.headers.get('access-control-allow-headers'), 'Content-Type, X-Custom');
-  assert.strictEqual(res.headers.get('access-control-allow-methods'), 'POST, OPTIONS');
-  assert.strictEqual(res.headers.get('access-control-allow-origin'), '*');
-});
-
-test('REST args: query params merged with JSON body, body wins', async (t) => {
-  const { origin } = await startServer(t);
-  const res = await fetch(`${origin}/api/echo/args?a=1&b=query`, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ b: 'body', c: 3 }),
+    const wrongName = await postPacket(`${origin}/api`, 'auth/whoami', {}, { Cookie: `token=${token}` });
+    assert.strictEqual(wrongName.status, 403);
   });
-  assert.strictEqual(res.status, 200);
-  const packet = await res.json();
-  assert.deepStrictEqual(packet.result, { a: '1', b: 'body', c: 3 });
-});
-
-test('http session e2e: login sets cookie, cookie restores, finalize invalidates', async (t) => {
-  const { origin } = await startServer(t);
-  const token = await login(origin, '/api', 'alice');
-  assert.match(token, UUID_RE);
-
-  const denied = await postPacket(`${origin}/api`, 'auth/whoami', {});
-  assert.strictEqual(denied.status, 403);
-
-  const whoRes = await postPacket(`${origin}/api`, 'auth/whoami', {}, { Cookie: `token=${token}` });
-  assert.strictEqual(whoRes.status, 200);
-  assert.deepStrictEqual((await whoRes.json()).result, { user: 'alice' });
-
-  const logoutRes = await postPacket(`${origin}/api`, 'auth/logout', {}, { Cookie: `token=${token}` });
-  assert.strictEqual(logoutRes.status, 200);
-  assert.deepStrictEqual((await logoutRes.json()).result, { ok: true });
-
-  const stale = await postPacket(`${origin}/api`, 'auth/whoami', {}, { Cookie: `token=${token}` });
-  assert.strictEqual(stale.status, 403);
-});
-
-test('sessions option: custom cookie name is set and restored', async (t) => {
-  const { origin } = await startServer(t, { sessions: { cookie: { name: 'sid' } } });
-
-  const loginRes = await postPacket(`${origin}/api`, 'auth/login', { user: 'carol' });
-  assert.strictEqual(loginRes.status, 200);
-  const cookies = loginRes.headers.getSetCookie();
-  assert.strictEqual(cookies.length, 1);
-  const match = cookies[0].match(/^sid=([^;]+); Path=\/; HttpOnly; Secure; SameSite=Lax$/);
-  assert.ok(match, `Unexpected session cookie: ${cookies[0]}`);
-  const token = match[1];
-
-  const whoRes = await postPacket(`${origin}/api`, 'auth/whoami', {}, { Cookie: `sid=${token}` });
-  assert.strictEqual(whoRes.status, 200);
-  assert.deepStrictEqual((await whoRes.json()).result, { user: 'carol' });
-
-  const wrongName = await postPacket(`${origin}/api`, 'auth/whoami', {}, { Cookie: `token=${token}` });
-  assert.strictEqual(wrongName.status, 403);
 });
 
 // WrpcSocket-shaped fake: enough surface for RpcServer.attachSocket and
@@ -325,216 +332,220 @@ class FakeWsSocket extends EventEmitter {
   }
 }
 
-test('ws attach: cookie in upgrade headers restores the http-started session', async (t) => {
-  const { server, origin } = await startServer(t);
-  const token = await login(origin, '/api', 'bob');
-
-  const socket = new FakeWsSocket();
-  const client = server.rpc.attachSocket(socket, { headers: { cookie: `token=${token}` } });
-  const restored = await client.sessionReady;
-  assert.strictEqual(restored, true);
-  assert.ok(client.session);
-  assert.strictEqual(client.session.token, token);
-  assert.strictEqual(client.session.state.user, 'bob');
-
-  const call = { type: 'call', id: '7', method: 'auth/whoami', args: {} };
-  socket.emit('message', Buffer.from(JSON.stringify(call)), false);
-  const reply = JSON.parse(await socket.nextSent());
-  assert.deepStrictEqual(reply, { type: 'callback', id: '7', result: { user: 'bob' } });
-});
-
-test('ws attach: no cookie means no session, session-access call gets 403', async (t) => {
-  const { server } = await startServer(t);
-  const socket = new FakeWsSocket();
-  const client = server.rpc.attachSocket(socket, { headers: {} });
-  const restored = await client.sessionReady;
-  assert.strictEqual(restored, false);
-  assert.strictEqual(client.session, null);
-
-  const call = { type: 'call', id: '8', method: 'auth/whoami', args: {} };
-  socket.emit('message', Buffer.from(JSON.stringify(call)), false);
-  const reply = JSON.parse(await socket.nextSent());
-  assert.deepStrictEqual(reply, {
-    type: 'callback',
-    id: '8',
-    error: { message: 'Forbidden', code: 403 },
-  });
-});
-
-test('ws attach: client.meta snapshots the upgrade (frozen, null-proto headers)', async (t) => {
-  const { server } = await startServer(t);
-  const socket = new FakeWsSocket();
-  const client = server.rpc.attachSocket(socket, {
-    headers: { 'x-app-version': '2.1.0', cookie: 'token=nope' },
-    url: '/api?x=1',
-    remoteAddress: '10.0.0.7',
-  });
-  assert.strictEqual(client.meta.url, '/api?x=1');
-  assert.strictEqual(client.meta.remoteAddress, '10.0.0.7');
-  assert.strictEqual(client.meta.headers['x-app-version'], '2.1.0');
-  assert.ok(Object.isFrozen(client.meta) && Object.isFrozen(client.meta.headers) && Object.isFrozen(client.meta.data));
-  // Null-prototyped: a header named like an Object.prototype member must
-  // answer undefined, not a function.
-  assert.strictEqual(client.meta.headers.toString, undefined);
-  assert.strictEqual(Object.getPrototypeOf(client.meta.headers), null);
-  // A bare attach still carries the complete (empty) shape.
-  const bare = server.rpc.attachSocket(new FakeWsSocket(), {});
-  assert.strictEqual(bare.meta.url, '');
-  assert.strictEqual(bare.meta.remoteAddress, '127.0.0.1');
-  assert.strictEqual(bare.meta.protocol, '');
-  assert.deepStrictEqual(Object.keys(bare.meta.headers), []);
-  assert.deepStrictEqual(Object.keys(bare.meta.data), []);
-});
-
 const wrpcH = (value) => `wrpc_h=${encodeURIComponent(JSON.stringify(value))}`;
 
-test('ws attach: declared headers (wrpc_h) merge UNDER the observed ones', async (t) => {
-  const { server } = await startServer(t);
-  const declared = {
-    'X-App-Version': '1.2.3', // lowercased on the way in
-    'x-thing': 'declared', // observed value must win
-    cookie: 'token=forged', // reserved: cannot be spoofed through the URL
-    'x-wrpc-channel': 'forged', // reserved prefix
-    'Sec-Fetch-Site': 'same-origin', // reserved prefix
-    'X-Forwarded-For': '10.0.0.1', // reserved: the caller's address is never declared
-    'x-real-ip': '10.0.0.1', // reserved
-    num: 5, // not a string: dropped
-    nested: { a: 1 }, // not a string: dropped
-    __proto__: { polluted: 1 }, // never carried over
-  };
-  const socket = new FakeWsSocket();
-  const client = server.rpc.attachSocket(socket, {
-    headers: { cookie: 'token=real', 'x-thing': 'observed' },
-    url: `/api?${wrpcH(declared)}`,
-  });
-  assert.strictEqual(client.meta.headers['x-app-version'], '1.2.3');
-  assert.strictEqual(client.meta.headers['x-thing'], 'observed');
-  assert.strictEqual(client.meta.headers.cookie, 'token=real');
-  assert.strictEqual(client.meta.headers['x-wrpc-channel'], undefined);
-  assert.strictEqual(client.meta.headers['sec-fetch-site'], undefined);
-  assert.strictEqual(client.meta.headers['x-forwarded-for'], undefined);
-  assert.strictEqual(client.meta.headers['x-real-ip'], undefined);
-  assert.strictEqual(client.meta.headers.num, undefined);
-  assert.strictEqual(client.meta.headers.nested, undefined);
-  assert.strictEqual({}.polluted, undefined, 'Object.prototype survived');
-  assert.strictEqual(Object.hasOwn(client.meta.headers, '__proto__'), false);
-});
+describe('ws attach', () => {
+  it('should restore the http-started session from a cookie in the upgrade headers', async (t) => {
+    const { server, origin } = await startServer(t);
+    const token = await login(origin, '/api', 'bob');
 
-test('ws attach: malformed or oversize wrpc_h is refused, never fatal', async (t) => {
-  const { server } = await startServer(t, { metaMaxBytes: 64 });
-  const attach = (url) => server.rpc.attachSocket(new FakeWsSocket(), { headers: { 'x-obs': 'kept' }, url });
-  const cases = [
-    `/api?${wrpcH({ pad: 'x'.repeat(200) })}`, // over the cap (encoded length)
-    '/api?wrpc_h=not-json', // malformed JSON
-    `/api?${wrpcH(['a', 'b'])}`, // an array
-    `/api?${wrpcH(7)}`, // a bare number
-    '/api?wrpc_h=%', // a broken percent sequence
-    '/api?other=1', // no parameter at all
-  ];
-  for (const url of cases) {
-    const client = attach(url);
-    // The label is refused; the connection and the observed headers are not.
-    assert.strictEqual(client.meta.headers['x-obs'], 'kept', url);
-    assert.deepStrictEqual(Object.keys(client.meta.headers), ['x-obs'], `nothing declared survives for ${url}`);
-  }
-});
-
-test('onConnect: client.sessionReady is assigned before the hooks run (and awaiting it does not deadlock)', async (t) => {
-  const seen = [];
-  const router = createRouter();
-  router.addHook('onConnect', async (client) => {
-    // The documented recipe: the hook awaits the restore. Before the fix it
-    // awaited the constructor's resolved default and saw session === null.
+    const socket = new FakeWsSocket();
+    const client = server.rpc.attachSocket(socket, { headers: { cookie: `token=${token}` } });
     const restored = await client.sessionReady;
-    seen.push([restored, client.session?.state?.user ?? null]);
-  });
-  const { server, origin } = await startServer(t, { router });
-  const token = await login(origin, '/api', 'dana');
+    assert.strictEqual(restored, true);
+    assert.ok(client.session);
+    assert.strictEqual(client.session.token, token);
+    assert.strictEqual(client.session.state.user, 'bob');
 
-  const socket = new FakeWsSocket();
-  const client = server.rpc.attachSocket(socket, { headers: { cookie: `token=${token}` } });
-  await client.ready;
-  // onConnect fires for the login POST's per-request client too; the ws
-  // attach is the last entry, and it must see the restored session.
-  assert.deepStrictEqual(seen.at(-1), [true, 'dana']);
+    const call = { type: 'call', id: '7', method: 'auth/whoami', args: {} };
+    socket.emit('message', Buffer.from(JSON.stringify(call)), false);
+    const reply = JSON.parse(await socket.nextSent());
+    assert.deepStrictEqual(reply, { type: 'callback', id: '7', result: { user: 'bob' } });
+  });
+
+  it('should give no session without a cookie, a session-access call getting 403', async (t) => {
+    const { server } = await startServer(t);
+    const socket = new FakeWsSocket();
+    const client = server.rpc.attachSocket(socket, { headers: {} });
+    const restored = await client.sessionReady;
+    assert.strictEqual(restored, false);
+    assert.strictEqual(client.session, null);
+
+    const call = { type: 'call', id: '8', method: 'auth/whoami', args: {} };
+    socket.emit('message', Buffer.from(JSON.stringify(call)), false);
+    const reply = JSON.parse(await socket.nextSent());
+    assert.deepStrictEqual(reply, {
+      type: 'callback',
+      id: '8',
+      error: { message: 'Forbidden', code: 403 },
+    });
+  });
+
+  it('should snapshot the upgrade in client.meta (frozen, null-proto headers)', async (t) => {
+    const { server } = await startServer(t);
+    const socket = new FakeWsSocket();
+    const client = server.rpc.attachSocket(socket, {
+      headers: { 'x-app-version': '2.1.0', cookie: 'token=nope' },
+      url: '/api?x=1',
+      remoteAddress: '10.0.0.7',
+    });
+    assert.strictEqual(client.meta.url, '/api?x=1');
+    assert.strictEqual(client.meta.remoteAddress, '10.0.0.7');
+    assert.strictEqual(client.meta.headers['x-app-version'], '2.1.0');
+    assert.ok(
+      Object.isFrozen(client.meta) && Object.isFrozen(client.meta.headers) && Object.isFrozen(client.meta.data),
+    );
+    // Null-prototyped: a header named like an Object.prototype member must
+    // answer undefined, not a function.
+    assert.strictEqual(client.meta.headers.toString, undefined);
+    assert.strictEqual(Object.getPrototypeOf(client.meta.headers), null);
+    // A bare attach still carries the complete (empty) shape.
+    const bare = server.rpc.attachSocket(new FakeWsSocket(), {});
+    assert.strictEqual(bare.meta.url, '');
+    assert.strictEqual(bare.meta.remoteAddress, '127.0.0.1');
+    assert.strictEqual(bare.meta.protocol, '');
+    assert.deepStrictEqual(Object.keys(bare.meta.headers), []);
+    assert.deepStrictEqual(Object.keys(bare.meta.data), []);
+  });
+
+  it('should merge declared headers (wrpc_h) UNDER the observed ones', async (t) => {
+    const { server } = await startServer(t);
+    const declared = {
+      'X-App-Version': '1.2.3', // lowercased on the way in
+      'x-thing': 'declared', // observed value must win
+      cookie: 'token=forged', // reserved: cannot be spoofed through the URL
+      'x-wrpc-channel': 'forged', // reserved prefix
+      'Sec-Fetch-Site': 'same-origin', // reserved prefix
+      'X-Forwarded-For': '10.0.0.1', // reserved: the caller's address is never declared
+      'x-real-ip': '10.0.0.1', // reserved
+      num: 5, // not a string: dropped
+      nested: { a: 1 }, // not a string: dropped
+      __proto__: { polluted: 1 }, // never carried over
+    };
+    const socket = new FakeWsSocket();
+    const client = server.rpc.attachSocket(socket, {
+      headers: { cookie: 'token=real', 'x-thing': 'observed' },
+      url: `/api?${wrpcH(declared)}`,
+    });
+    assert.strictEqual(client.meta.headers['x-app-version'], '1.2.3');
+    assert.strictEqual(client.meta.headers['x-thing'], 'observed');
+    assert.strictEqual(client.meta.headers.cookie, 'token=real');
+    assert.strictEqual(client.meta.headers['x-wrpc-channel'], undefined);
+    assert.strictEqual(client.meta.headers['sec-fetch-site'], undefined);
+    assert.strictEqual(client.meta.headers['x-forwarded-for'], undefined);
+    assert.strictEqual(client.meta.headers['x-real-ip'], undefined);
+    assert.strictEqual(client.meta.headers.num, undefined);
+    assert.strictEqual(client.meta.headers.nested, undefined);
+    assert.strictEqual({}.polluted, undefined, 'Object.prototype survived');
+    assert.strictEqual(Object.hasOwn(client.meta.headers, '__proto__'), false);
+  });
+
+  it('should refuse a malformed or oversize wrpc_h, never fatally', async (t) => {
+    const { server } = await startServer(t, { metaMaxBytes: 64 });
+    const attach = (url) => server.rpc.attachSocket(new FakeWsSocket(), { headers: { 'x-obs': 'kept' }, url });
+    const cases = [
+      `/api?${wrpcH({ pad: 'x'.repeat(200) })}`, // over the cap (encoded length)
+      '/api?wrpc_h=not-json', // malformed JSON
+      `/api?${wrpcH(['a', 'b'])}`, // an array
+      `/api?${wrpcH(7)}`, // a bare number
+      '/api?wrpc_h=%', // a broken percent sequence
+      '/api?other=1', // no parameter at all
+    ];
+    for (const url of cases) {
+      const client = attach(url);
+      // The label is refused; the connection and the observed headers are not.
+      assert.strictEqual(client.meta.headers['x-obs'], 'kept', url);
+      assert.deepStrictEqual(Object.keys(client.meta.headers), ['x-obs'], `nothing declared survives for ${url}`);
+    }
+  });
+
+  it('should assign client.sessionReady before the onConnect hooks run (and awaiting it does not deadlock)', async (t) => {
+    const seen = [];
+    const router = createRouter();
+    router.addHook('onConnect', async (client) => {
+      // The documented recipe: the hook awaits the restore. Before the fix it
+      // awaited the constructor's resolved default and saw session === null.
+      const restored = await client.sessionReady;
+      seen.push([restored, client.session?.state?.user ?? null]);
+    });
+    const { server, origin } = await startServer(t, { router });
+    const token = await login(origin, '/api', 'dana');
+
+    const socket = new FakeWsSocket();
+    const client = server.rpc.attachSocket(socket, { headers: { cookie: `token=${token}` } });
+    await client.ready;
+    // onConnect fires for the login POST's per-request client too; the ws
+    // attach is the last entry, and it must see the restored session.
+    assert.deepStrictEqual(seen.at(-1), [true, 'dana']);
+  });
+
+  it('should dispatch a call racing onConnect only after the hooks settled', async (t) => {
+    const router = defineRouter({
+      probe: {
+        rooms: procedure({ access: 'public', handler: async (context) => [...context.client.rooms] }),
+      },
+    });
+    router.addHook('onConnect', async (client) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      client.join('lobby');
+    });
+    const { server } = await startServer(t, { router });
+    const socket = new FakeWsSocket();
+    server.rpc.attachSocket(socket, { headers: {} });
+    // Sent in the same tick as the attach — the exact race client.ready closes.
+    const call = { type: 'call', id: '9', method: 'probe/rooms', args: {} };
+    socket.emit('message', Buffer.from(JSON.stringify(call)), false);
+    const reply = JSON.parse(await socket.nextSent());
+    assert.deepStrictEqual(reply, { type: 'callback', id: '9', result: ['lobby'] });
+  });
+
+  it('should make a packet POST dispatch wait for client.ready (session restore plus onConnect hooks)', async (t) => {
+    const router = defineRouter({
+      probe: {
+        stamp: procedure({ access: 'public', handler: async (context) => context.client.data.stamp ?? null }),
+      },
+    });
+    router.addHook('onConnect', async (client) => {
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      client.data.stamp = 'hooked';
+    });
+    const { origin } = await startServer(t, { router });
+    const res = await postPacket(`${origin}/api`, 'probe/stamp', {});
+    const packet = await res.json();
+    assert.deepStrictEqual(packet, { type: 'callback', id: '1', result: 'hooked' });
+  });
+
+  const wsHeaders = (extra = {}) => ({
+    Upgrade: 'websocket',
+    Connection: 'Upgrade',
+    'Sec-WebSocket-Key': crypto.randomBytes(16).toString('base64'),
+    'Sec-WebSocket-Version': '13',
+    ...extra,
+  });
+
+  const statusOf = (result) => parseInt(result.statusLine.split(' ')[1], 10);
+
+  it('should gate the ws upgrade handshake by the cors origins', async (t) => {
+    const { port } = await startServer(t, { cors: { origins: ['http://ok.example'] } });
+
+    const denied = await ProtocolClient.attemptHandshake({
+      host: '127.0.0.1',
+      port,
+      path: '/api',
+      headers: wsHeaders({ Origin: 'http://evil.example' }),
+    });
+    assert.strictEqual(statusOf(denied), 403);
+
+    const allowed = await ProtocolClient.attemptHandshake({
+      host: '127.0.0.1',
+      port,
+      path: '/api',
+      headers: wsHeaders({ Origin: 'http://ok.example' }),
+    });
+    assert.strictEqual(statusOf(allowed), 101);
+
+    const anonymous = await ProtocolClient.attemptHandshake({
+      host: '127.0.0.1',
+      port,
+      path: '/api',
+      headers: wsHeaders(),
+    });
+    assert.strictEqual(statusOf(anonymous), 101);
+  });
 });
 
-test('ws attach: a call racing onConnect is dispatched only after the hooks settled', async (t) => {
-  const router = defineRouter({
-    probe: {
-      rooms: procedure({ access: 'public', handler: async (context) => [...context.client.rooms] }),
-    },
-  });
-  router.addHook('onConnect', async (client) => {
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    client.join('lobby');
-  });
-  const { server } = await startServer(t, { router });
-  const socket = new FakeWsSocket();
-  server.rpc.attachSocket(socket, { headers: {} });
-  // Sent in the same tick as the attach — the exact race client.ready closes.
-  const call = { type: 'call', id: '9', method: 'probe/rooms', args: {} };
-  socket.emit('message', Buffer.from(JSON.stringify(call)), false);
-  const reply = JSON.parse(await socket.nextSent());
-  assert.deepStrictEqual(reply, { type: 'callback', id: '9', result: ['lobby'] });
-});
-
-test('packet POST: dispatch waits for client.ready (session restore plus onConnect hooks)', async (t) => {
-  const router = defineRouter({
-    probe: {
-      stamp: procedure({ access: 'public', handler: async (context) => context.client.data.stamp ?? null }),
-    },
-  });
-  router.addHook('onConnect', async (client) => {
-    await new Promise((resolve) => setTimeout(resolve, 20));
-    client.data.stamp = 'hooked';
-  });
-  const { origin } = await startServer(t, { router });
-  const res = await postPacket(`${origin}/api`, 'probe/stamp', {});
-  const packet = await res.json();
-  assert.deepStrictEqual(packet, { type: 'callback', id: '1', result: 'hooked' });
-});
-
-const wsHeaders = (extra = {}) => ({
-  Upgrade: 'websocket',
-  Connection: 'Upgrade',
-  'Sec-WebSocket-Key': crypto.randomBytes(16).toString('base64'),
-  'Sec-WebSocket-Version': '13',
-  ...extra,
-});
-
-const statusOf = (result) => parseInt(result.statusLine.split(' ')[1], 10);
-
-test('ws upgrade: cors origins gate the handshake', async (t) => {
-  const { port } = await startServer(t, { cors: { origins: ['http://ok.example'] } });
-
-  const denied = await ProtocolClient.attemptHandshake({
-    host: '127.0.0.1',
-    port,
-    path: '/api',
-    headers: wsHeaders({ Origin: 'http://evil.example' }),
-  });
-  assert.strictEqual(statusOf(denied), 403);
-
-  const allowed = await ProtocolClient.attemptHandshake({
-    host: '127.0.0.1',
-    port,
-    path: '/api',
-    headers: wsHeaders({ Origin: 'http://ok.example' }),
-  });
-  assert.strictEqual(statusOf(allowed), 101);
-
-  const anonymous = await ProtocolClient.attemptHandshake({
-    host: '127.0.0.1',
-    port,
-    path: '/api',
-    headers: wsHeaders(),
-  });
-  assert.strictEqual(statusOf(anonymous), 101);
-});
-
-test('security regressions: CSRF gate, request cleanup, HTTP stream rejection', async (t) => {
-  await t.test('cross-site GET does not get the cookie session (CSRF)', async (sub) => {
+describe('security regressions: CSRF gate, request cleanup, HTTP stream rejection', () => {
+  it('should not give a cross-site GET the cookie session (CSRF)', async (sub) => {
     const { origin } = await startServer(sub);
     const token = await login(origin, '/api', 'victim');
     const cookie = `token=${token}`;
@@ -563,7 +574,7 @@ test('security regressions: CSRF gate, request cleanup, HTTP stream rejection', 
     assert.deepStrictEqual((await post.json()).result, { user: 'victim' });
   });
 
-  await t.test('stream packets over HTTP are rejected instead of hanging', async (sub) => {
+  it('should reject stream packets over HTTP instead of hanging', async (sub) => {
     const { server, origin } = await startServer(sub);
     const res = await fetch(`${origin}/api`, {
       method: 'POST',
@@ -577,7 +588,7 @@ test('security regressions: CSRF gate, request cleanup, HTTP stream rejection', 
     assert.strictEqual(server.rpc.clients.size, 0);
   });
 
-  await t.test('an aborted request evicts its client', async (sub) => {
+  it('should evict the client of an aborted request', async (sub) => {
     const { server, origin } = await startServer(sub, {
       router: defineRouter({
         slow: {
@@ -599,279 +610,291 @@ test('security regressions: CSRF gate, request cleanup, HTTP stream rejection', 
   });
 });
 
-test('maxBodySize on the built-in Server refuses an oversized body', async (t) => {
-  const { origin } = await startServer(t, { maxBodySize: 256 });
-  const res = await postPacket(`${origin}/api`, 'echo/args', { blob: 'x'.repeat(1024) });
-  assert.strictEqual(res.status, 400);
-  const body = await res.json();
-  assert.match(body.error.message, /Body size limit exceeded/);
+describe('Server options', () => {
+  it('should refuse an oversized body past maxBodySize on the built-in Server', async (t) => {
+    const { origin } = await startServer(t, { maxBodySize: 256 });
+    const res = await postPacket(`${origin}/api`, 'echo/args', { blob: 'x'.repeat(1024) });
+    assert.strictEqual(res.status, 400);
+    const body = await res.json();
+    assert.match(body.error.message, /Body size limit exceeded/);
+  });
+
+  describe('introspection option', () => {
+    const probe = (origin) =>
+      postPacket(`${origin}/api`, 'system/introspect', ['echo']).then(async (res) => (await res.json()).error?.code);
+
+    it('should leave the API surface unadvertised when false', async (t) => {
+      const { origin } = await startServer(t, { introspection: false });
+      assert.strictEqual(await probe(origin), 404);
+    });
+
+    it("should gate it behind a session when 'session'", async (t) => {
+      const { origin } = await startServer(t, { introspection: 'session' });
+      assert.strictEqual(await probe(origin), 403);
+    });
+
+    it('should keep it public when true (the default)', async (t) => {
+      const { origin } = await startServer(t);
+      assert.strictEqual(await probe(origin), undefined);
+    });
+  });
 });
 
-test('introspection option', async (t) => {
-  const probe = (origin) =>
-    postPacket(`${origin}/api`, 'system/introspect', ['echo']).then(async (res) => (await res.json()).error?.code);
-
-  await t.test('false leaves the API surface unadvertised', async () => {
-    const { origin } = await startServer(t, { introspection: false });
-    assert.strictEqual(await probe(origin), 404);
-  });
-
-  await t.test("'session' gates it behind a session", async () => {
-    const { origin } = await startServer(t, { introspection: 'session' });
-    assert.strictEqual(await probe(origin), 403);
-  });
-
-  await t.test('true (the default) keeps it public', async () => {
-    const { origin } = await startServer(t);
-    assert.strictEqual(await probe(origin), undefined);
-  });
-});
-
-test('x-wrpc-meta: a REST caller passes per-request meta; connection meta.data doubles as callMeta', async (t) => {
-  const router = defineRouter({
-    probe: {
-      peek: procedure({
-        access: 'public',
-        handler: async (context) => ({ call: { ...context.callMeta }, data: { ...context.meta.data } }),
-      }),
-    },
-  });
-  const { origin } = await startServer(t, { router });
-  const meta = encodeURIComponent(JSON.stringify({ idem: '9f3c', v: '1.2.3' }));
-  // The conventional REST mode: one GET, the header carries the meta.
-  const res = await fetch(`${origin}/api/probe/peek`, { headers: { 'x-wrpc-meta': meta } });
-  const { result } = await res.json();
-  assert.deepStrictEqual(result.call, { idem: '9f3c', v: '1.2.3' });
-  assert.deepStrictEqual(result.data, { idem: '9f3c', v: '1.2.3' });
-  // Without the header both bags read empty, not null.
-  const bare = await fetch(`${origin}/api/probe/peek`);
-  const { result: none } = await bare.json();
-  assert.deepStrictEqual(none, { call: {}, data: {} });
-});
-
-test('ws attach: the wrpc_meta query lands on client.meta.data', async (t) => {
-  const { server } = await startServer(t);
-  const declared = encodeURIComponent(JSON.stringify({ v: '2.0', locale: 'de-CH' }));
-  const socket = new FakeWsSocket();
-  const client = server.rpc.attachSocket(socket, { headers: {}, url: `/api?wrpc_meta=${declared}` });
-  assert.deepStrictEqual({ ...client.meta.data }, { v: '2.0', locale: 'de-CH' });
-  assert.ok(Object.isFrozen(client.meta.data));
-});
-
-test('sessions.transport: a bearer strategy restores from Authorization and skips the CSRF rule', async (t) => {
-  const bearer = {
-    ambient: false,
-    read: ({ headers }) => {
-      const value = headers?.authorization;
-      return typeof value === 'string' && value.startsWith('Bearer ') ? value.slice(7) : null;
-    },
-    write: () => null, // a server cannot SEND Authorization: the handler returns tokens
-  };
-  const router = defineRouter({
-    auth: {
-      login: procedure({
-        access: 'public',
-        handler: async (context) => {
-          context.client.startSession(undefined, { user: 'bea' });
-          return { token: context.session.token };
-        },
-      }),
-      whoami: procedure({ access: 'session', handler: async (context) => ({ user: context.session.state.user }) }),
-    },
-  });
-  const { server, origin } = await startServer(t, { router, sessions: { transport: bearer } });
-
-  const res = await postPacket(`${origin}/api`, 'auth/login', {});
-  assert.strictEqual(res.status, 200);
-  // write() answered null, so no Set-Cookie is stamped — the token travels
-  // in the handler's own result instead.
-  assert.deepStrictEqual(res.headers.getSetCookie(), []);
-  const { token } = (await res.json()).result;
-  assert.ok(token);
-
-  // A safe-method REST call with NO same-origin fetch header: under the
-  // cookie default this runs sessionless (ambient authority, CSRF); a
-  // bearer credential is script-attached, so it restores.
-  const who = await fetch(`${origin}/api/auth/whoami`, { headers: { authorization: `Bearer ${token}` } });
-  assert.strictEqual(who.status, 200);
-  assert.deepStrictEqual((await who.json()).result, { user: 'bea' });
-
-  // The same header on a ws upgrade restores the session for the socket.
-  const socket = new FakeWsSocket();
-  const client = server.rpc.attachSocket(socket, { headers: { authorization: `Bearer ${token}` } });
-  assert.strictEqual(await client.sessionReady, true);
-  assert.strictEqual(client.session.state.user, 'bea');
-
-  // A wrong token is nobody.
-  const miss = await fetch(`${origin}/api/auth/whoami`, { headers: { authorization: 'Bearer nope' } });
-  assert.strictEqual(miss.status, 403);
-});
-
-test('x-wrpc-meta-*: prefixed headers are the curl-friendly spelling (strings, JSON header wins)', async (t) => {
-  const router = defineRouter({
-    probe: {
-      peek: procedure({
-        access: 'public',
-        handler: async (context) => ({ call: { ...context.callMeta }, data: { ...context.meta.data } }),
-      }),
-    },
-  });
-  const { origin } = await startServer(t, { router, metaMaxBytes: 128 });
-
-  // The S3 x-amz-meta-* idiom: one header per key, no encoding needed.
-  const res = await fetch(`${origin}/api/probe/peek`, {
-    headers: { 'x-wrpc-meta-idem': '9f3c', 'x-wrpc-meta-locale': 'de-CH' },
-  });
-  const { result } = await res.json();
-  assert.deepStrictEqual(result.call, { idem: '9f3c', locale: 'de-CH' });
-  assert.deepStrictEqual(result.data, { idem: '9f3c', locale: 'de-CH' });
-
-  // On a key collision the canonical JSON header wins — it is the
-  // type-faithful channel the wrpc client emits.
-  const canonical = encodeURIComponent(JSON.stringify({ idem: 'json-wins', retries: 3 }));
-  const both = await fetch(`${origin}/api/probe/peek`, {
-    headers: { 'x-wrpc-meta': canonical, 'x-wrpc-meta-idem': 'prefixed', 'x-wrpc-meta-extra': 'kept' },
-  });
-  const merged = (await both.json()).result.call;
-  assert.deepStrictEqual(merged, { idem: 'json-wins', retries: 3, extra: 'kept' });
-
-  // Refusals: a bare prefix, a __proto__ key, and the size cap.
-  const bad = await fetch(`${origin}/api/probe/peek`, {
-    headers: { 'x-wrpc-meta-': 'nameless', 'x-wrpc-meta-__proto__': 'nope' },
-  });
-  assert.deepStrictEqual((await bad.json()).result.call, {});
-  assert.strictEqual({}.polluted, undefined);
-  const over = await fetch(`${origin}/api/probe/peek`, {
-    headers: { 'x-wrpc-meta-pad': 'x'.repeat(200) },
-  });
-  assert.deepStrictEqual((await over.json()).result.call, {}, 'over the cap the whole label is refused');
-
-  // A malformed canonical header does not take the prefixed ones with it.
-  const mixed = await fetch(`${origin}/api/probe/peek`, {
-    headers: { 'x-wrpc-meta': '%not-json', 'x-wrpc-meta-idem': 'survives' },
-  });
-  assert.deepStrictEqual((await mixed.json()).result.call, { idem: 'survives' });
-});
-
-test('kebab: declared header and meta keys normalize to one casing convention', async (t) => {
-  const { server, origin } = await startServer(t, {
-    router: defineRouter({
+describe('request carriers: meta, declared headers, tokens', () => {
+  it('should let a REST caller pass per-request meta in x-wrpc-meta, connection meta.data doubling as callMeta', async (t) => {
+    const router = defineRouter({
       probe: {
         peek: procedure({
           access: 'public',
-          handler: async (context) => ({ ...context.meta.data }),
+          handler: async (context) => ({ call: { ...context.callMeta }, data: { ...context.meta.data } }),
         }),
       },
-    }),
-  });
-
-  await t.test('wrpc_h: a camelCase name becomes kebab, not a run-on word', () => {
-    const client = server.rpc.attachSocket(new FakeWsSocket(), {
-      headers: {},
-      url: `/api?${wrpcH({ xAppVersion: '2', XMLHttpRequest: 'x', alreadyKebab: 'y', 'x-plain': 'z' })}`,
     });
-    // Before kebab-normalization this landed as `xappversion` — a key nobody
-    // would write in a schema.headers, which is the whole point.
-    assert.strictEqual(client.meta.headers['x-app-version'], '2');
-    assert.strictEqual(client.meta.headers.xappversion, undefined);
-    assert.strictEqual(client.meta.headers['xml-http-request'], 'x');
-    assert.strictEqual(client.meta.headers['already-kebab'], 'y');
-    assert.strictEqual(client.meta.headers['x-plain'], 'z', 'an already-kebab name is untouched');
+    const { origin } = await startServer(t, { router });
+    const meta = encodeURIComponent(JSON.stringify({ idem: '9f3c', v: '1.2.3' }));
+    // The conventional REST mode: one GET, the header carries the meta.
+    const res = await fetch(`${origin}/api/probe/peek`, { headers: { 'x-wrpc-meta': meta } });
+    const { result } = await res.json();
+    assert.deepStrictEqual(result.call, { idem: '9f3c', v: '1.2.3' });
+    assert.deepStrictEqual(result.data, { idem: '9f3c', v: '1.2.3' });
+    // Without the header both bags read empty, not null.
+    const bare = await fetch(`${origin}/api/probe/peek`);
+    const { result: none } = await bare.json();
+    assert.deepStrictEqual(none, { call: {}, data: {} });
   });
 
-  await t.test('wrpc_h: the reserved deny list still applies to the normalized name', () => {
-    const client = server.rpc.attachSocket(new FakeWsSocket(), {
-      headers: {},
-      url: `/api?${wrpcH({ xWrpcChannel: 'forged', secFetchSite: 'forged', Cookie: 'forged' })}`,
+  it('should land the wrpc_meta query of a ws attach on client.meta.data', async (t) => {
+    const { server } = await startServer(t);
+    const declared = encodeURIComponent(JSON.stringify({ v: '2.0', locale: 'de-CH' }));
+    const socket = new FakeWsSocket();
+    const client = server.rpc.attachSocket(socket, { headers: {}, url: `/api?wrpc_meta=${declared}` });
+    assert.deepStrictEqual({ ...client.meta.data }, { v: '2.0', locale: 'de-CH' });
+    assert.ok(Object.isFrozen(client.meta.data));
+  });
+
+  it('should restore a sessions.transport bearer strategy from Authorization and skip the CSRF rule', async (t) => {
+    const bearer = {
+      ambient: false,
+      read: ({ headers }) => {
+        const value = headers?.authorization;
+        return typeof value === 'string' && value.startsWith('Bearer ') ? value.slice(7) : null;
+      },
+      write: () => null, // a server cannot SEND Authorization: the handler returns tokens
+    };
+    const router = defineRouter({
+      auth: {
+        login: procedure({
+          access: 'public',
+          handler: async (context) => {
+            context.client.startSession(undefined, { user: 'bea' });
+            return { token: context.session.token };
+          },
+        }),
+        whoami: procedure({ access: 'session', handler: async (context) => ({ user: context.session.state.user }) }),
+      },
     });
-    assert.strictEqual(client.meta.headers['x-wrpc-channel'], undefined);
-    assert.strictEqual(client.meta.headers['sec-fetch-site'], undefined);
-    assert.strictEqual(client.meta.headers.cookie, undefined);
+    const { server, origin } = await startServer(t, { router, sessions: { transport: bearer } });
+
+    const res = await postPacket(`${origin}/api`, 'auth/login', {});
+    assert.strictEqual(res.status, 200);
+    // write() answered null, so no Set-Cookie is stamped — the token travels
+    // in the handler's own result instead.
+    assert.deepStrictEqual(res.headers.getSetCookie(), []);
+    const { token } = (await res.json()).result;
+    assert.ok(token);
+
+    // A safe-method REST call with NO same-origin fetch header: under the
+    // cookie default this runs sessionless (ambient authority, CSRF); a
+    // bearer credential is script-attached, so it restores.
+    const who = await fetch(`${origin}/api/auth/whoami`, { headers: { authorization: `Bearer ${token}` } });
+    assert.strictEqual(who.status, 200);
+    assert.deepStrictEqual((await who.json()).result, { user: 'bea' });
+
+    // The same header on a ws upgrade restores the session for the socket.
+    const socket = new FakeWsSocket();
+    const client = server.rpc.attachSocket(socket, { headers: { authorization: `Bearer ${token}` } });
+    assert.strictEqual(await client.sessionReady, true);
+    assert.strictEqual(client.session.state.user, 'bea');
+
+    // A wrong token is nobody.
+    const miss = await fetch(`${origin}/api/auth/whoami`, { headers: { authorization: 'Bearer nope' } });
+    assert.strictEqual(miss.status, 403);
   });
 
-  await t.test('prefixed meta headers normalize the same way', async () => {
+  it('should take x-wrpc-meta-* prefixed headers as the curl-friendly spelling (strings, JSON header wins)', async (t) => {
+    const router = defineRouter({
+      probe: {
+        peek: procedure({
+          access: 'public',
+          handler: async (context) => ({ call: { ...context.callMeta }, data: { ...context.meta.data } }),
+        }),
+      },
+    });
+    const { origin } = await startServer(t, { router, metaMaxBytes: 128 });
+
+    // The S3 x-amz-meta-* idiom: one header per key, no encoding needed.
     const res = await fetch(`${origin}/api/probe/peek`, {
-      headers: { 'x-wrpc-meta-user-id': '7', 'x-wrpc-meta-locale': 'de-CH' },
+      headers: { 'x-wrpc-meta-idem': '9f3c', 'x-wrpc-meta-locale': 'de-CH' },
     });
-    assert.deepStrictEqual((await res.json()).result, { 'user-id': '7', locale: 'de-CH' });
+    const { result } = await res.json();
+    assert.deepStrictEqual(result.call, { idem: '9f3c', locale: 'de-CH' });
+    assert.deepStrictEqual(result.data, { idem: '9f3c', locale: 'de-CH' });
+
+    // On a key collision the canonical JSON header wins — it is the
+    // type-faithful channel the wrpc client emits.
+    const canonical = encodeURIComponent(JSON.stringify({ idem: 'json-wins', retries: 3 }));
+    const both = await fetch(`${origin}/api/probe/peek`, {
+      headers: { 'x-wrpc-meta': canonical, 'x-wrpc-meta-idem': 'prefixed', 'x-wrpc-meta-extra': 'kept' },
+    });
+    const merged = (await both.json()).result.call;
+    assert.deepStrictEqual(merged, { idem: 'json-wins', retries: 3, extra: 'kept' });
+
+    // Refusals: a bare prefix, a __proto__ key, and the size cap.
+    const bad = await fetch(`${origin}/api/probe/peek`, {
+      headers: { 'x-wrpc-meta-': 'nameless', 'x-wrpc-meta-__proto__': 'nope' },
+    });
+    assert.deepStrictEqual((await bad.json()).result.call, {});
+    assert.strictEqual({}.polluted, undefined);
+    const over = await fetch(`${origin}/api/probe/peek`, {
+      headers: { 'x-wrpc-meta-pad': 'x'.repeat(200) },
+    });
+    assert.deepStrictEqual((await over.json()).result.call, {}, 'over the cap the whole label is refused');
+
+    // A malformed canonical header does not take the prefixed ones with it.
+    const mixed = await fetch(`${origin}/api/probe/peek`, {
+      headers: { 'x-wrpc-meta': '%not-json', 'x-wrpc-meta-idem': 'survives' },
+    });
+    assert.deepStrictEqual((await mixed.json()).result.call, { idem: 'survives' });
   });
 
-  await t.test('the canonical JSON header is normalized too, and still wins a collision', async () => {
-    const canonical = encodeURIComponent(JSON.stringify({ userId: 'json-wins', traceId: 'abc' }));
-    const res = await fetch(`${origin}/api/probe/peek`, {
-      headers: { 'x-wrpc-meta': canonical, 'x-wrpc-meta-user-id': 'prefixed' },
+  describe('kebab: declared header and meta keys normalize to one casing convention', () => {
+    const scope = suiteScope();
+    let server = null;
+    let origin = '';
+    after(() => scope.close());
+    before(async () => {
+      ({ server, origin } = await startServer(scope, {
+        router: defineRouter({
+          probe: {
+            peek: procedure({
+              access: 'public',
+              handler: async (context) => ({ ...context.meta.data }),
+            }),
+          },
+        }),
+      }));
     });
-    // Both spellings reduce to `user-id`, so the collision is REAL and the
-    // canonical header is the one that survives it.
-    assert.deepStrictEqual((await res.json()).result, { 'user-id': 'json-wins', 'trace-id': 'abc' });
+
+    it('should turn a camelCase wrpc_h name kebab, not a run-on word', () => {
+      const client = server.rpc.attachSocket(new FakeWsSocket(), {
+        headers: {},
+        url: `/api?${wrpcH({ xAppVersion: '2', XMLHttpRequest: 'x', alreadyKebab: 'y', 'x-plain': 'z' })}`,
+      });
+      // Before kebab-normalization this landed as `xappversion` — a key nobody
+      // would write in a schema.headers, which is the whole point.
+      assert.strictEqual(client.meta.headers['x-app-version'], '2');
+      assert.strictEqual(client.meta.headers.xappversion, undefined);
+      assert.strictEqual(client.meta.headers['xml-http-request'], 'x');
+      assert.strictEqual(client.meta.headers['already-kebab'], 'y');
+      assert.strictEqual(client.meta.headers['x-plain'], 'z', 'an already-kebab name is untouched');
+    });
+
+    it('should still apply the reserved deny list to the normalized wrpc_h name', () => {
+      const client = server.rpc.attachSocket(new FakeWsSocket(), {
+        headers: {},
+        url: `/api?${wrpcH({ xWrpcChannel: 'forged', secFetchSite: 'forged', Cookie: 'forged' })}`,
+      });
+      assert.strictEqual(client.meta.headers['x-wrpc-channel'], undefined);
+      assert.strictEqual(client.meta.headers['sec-fetch-site'], undefined);
+      assert.strictEqual(client.meta.headers.cookie, undefined);
+    });
+
+    it('should normalize prefixed meta headers the same way', async () => {
+      const res = await fetch(`${origin}/api/probe/peek`, {
+        headers: { 'x-wrpc-meta-user-id': '7', 'x-wrpc-meta-locale': 'de-CH' },
+      });
+      assert.deepStrictEqual((await res.json()).result, { 'user-id': '7', locale: 'de-CH' });
+    });
+
+    it('should normalize the canonical JSON header too, which still wins a collision', async () => {
+      const canonical = encodeURIComponent(JSON.stringify({ userId: 'json-wins', traceId: 'abc' }));
+      const res = await fetch(`${origin}/api/probe/peek`, {
+        headers: { 'x-wrpc-meta': canonical, 'x-wrpc-meta-user-id': 'prefixed' },
+      });
+      // Both spellings reduce to `user-id`, so the collision is REAL and the
+      // canonical header is the one that survives it.
+      assert.deepStrictEqual((await res.json()).result, { 'user-id': 'json-wins', 'trace-id': 'abc' });
+    });
+  });
+
+  it('should land the same bag on client.meta.data from every carrier (metaFormat)', async (t) => {
+    const { origin, server } = await startServer(t, {
+      router: defineRouter({
+        probe: { peek: procedure({ access: 'public', handler: async (ctx) => ({ ...ctx.meta.data }) }) },
+      }),
+    });
+    const { connect } = require('../../index.js');
+    const declared = { userId: 7, traceId: 'abc' };
+
+    const seen = async (options) => {
+      const client = await connect(`${origin}/api`, { ...options, heartbeat: false, logger: false, meta: declared });
+      t.after(() => void client.close());
+      await client.load('probe');
+      return client.api.probe.peek();
+    };
+
+    // The whole point of the kebab rule: whatever carried it, ONE spelling
+    // addresses the value. ws keeps JSON types; a header carrier cannot.
+    const ws = await seen({});
+    const httpJson = await seen({ transport: ['http'] });
+    const httpPrefixed = await seen({ transport: ['http'], metaFormat: 'prefixed' });
+
+    const keys = (bag) => Object.keys(bag).sort();
+    assert.deepStrictEqual(keys(ws), ['trace-id', 'user-id']);
+    assert.deepStrictEqual(keys(httpJson), ['trace-id', 'user-id'], 'http json disagreed with ws on keys');
+    assert.deepStrictEqual(keys(httpPrefixed), ['trace-id', 'user-id'], 'the prefixed carrier disagreed on keys');
+
+    assert.deepStrictEqual(ws, { 'user-id': 7, 'trace-id': 'abc' });
+    assert.deepStrictEqual(httpJson, { 'user-id': 7, 'trace-id': 'abc' });
+    // Values are the documented difference, and the ONLY one.
+    assert.deepStrictEqual(httpPrefixed, { 'user-id': '7', 'trace-id': 'abc' });
+    assert.ok(server);
+  });
+
+  it('should name each prefixed meta header in the preflight (cors.metaHeaders)', async (t) => {
+    const { origin } = await startServer(t, {
+      cors: { origins: ['http://app.example'], metaHeaders: ['userId', 'locale'] },
+    });
+    const res = await fetch(`${origin}/api`, { method: 'OPTIONS', headers: { Origin: 'http://app.example' } });
+    assert.strictEqual(res.status, 200);
+    const allow = res.headers.get('access-control-allow-headers');
+    assert.ok(allow.includes('x-wrpc-meta-user-id'), allow);
+    assert.ok(allow.includes('x-wrpc-meta-locale'), allow);
+    // The defaults survive: replacing them would disable cross-origin SSE.
+    assert.ok(allow.includes('x-wrpc-channel') && allow.includes('last-event-id'), allow);
   });
 });
 
-test('metaFormat: every carrier lands the same bag on client.meta.data', async (t) => {
-  const { origin, server } = await startServer(t, {
-    router: defineRouter({
-      probe: { peek: procedure({ access: 'public', handler: async (ctx) => ({ ...ctx.meta.data }) }) },
-    }),
+describe('http.hsts', () => {
+  it('should send the default header, a value of the application, or none', async (t) => {
+    const { bootServer } = require('../helpers/server.js');
+    const { defineRouter: define, procedure: proc } = require('../../index.js');
+    const hstsRouter = define({ u: { q: proc({ access: 'public', handler: async () => 'ok' }) } });
+    const answer = async (http) => {
+      const { server, origin } = await bootServer(t, { router: hstsRouter, ...(http ? { http } : {}) });
+      const response = await fetch(origin + server.rpc.basePath, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: '{"type":"call","id":"1","method":"u/q","args":{}}',
+      });
+      await response.text();
+      return response.headers.get('strict-transport-security');
+    };
+    assert.strictEqual(await answer(null), 'max-age=31536000');
+    assert.strictEqual(await answer({ hsts: 'max-age=600; includeSubDomains' }), 'max-age=600; includeSubDomains');
+    assert.strictEqual(await answer({ hsts: false }), null);
+    const { RpcServer } = require('../../src/rpc/core.js');
+    assert.throws(() => new RpcServer({ router: hstsRouter, logger: false, http: { hsts: 'x\r\ny' } }), /http\.hsts/);
+    assert.throws(() => new RpcServer({ router: hstsRouter, logger: false, http: { hsts: true } }), /http\.hsts/);
   });
-  const { connect } = require('../../index.js');
-  const declared = { userId: 7, traceId: 'abc' };
-
-  const seen = async (options) => {
-    const client = await connect(`${origin}/api`, { ...options, heartbeat: false, logger: false, meta: declared });
-    t.after(() => void client.close());
-    await client.load('probe');
-    return client.api.probe.peek();
-  };
-
-  // The whole point of the kebab rule: whatever carried it, ONE spelling
-  // addresses the value. ws keeps JSON types; a header carrier cannot.
-  const ws = await seen({});
-  const httpJson = await seen({ transport: ['http'] });
-  const httpPrefixed = await seen({ transport: ['http'], metaFormat: 'prefixed' });
-
-  const keys = (bag) => Object.keys(bag).sort();
-  assert.deepStrictEqual(keys(ws), ['trace-id', 'user-id']);
-  assert.deepStrictEqual(keys(httpJson), ['trace-id', 'user-id'], 'http json disagreed with ws on keys');
-  assert.deepStrictEqual(keys(httpPrefixed), ['trace-id', 'user-id'], 'the prefixed carrier disagreed on keys');
-
-  assert.deepStrictEqual(ws, { 'user-id': 7, 'trace-id': 'abc' });
-  assert.deepStrictEqual(httpJson, { 'user-id': 7, 'trace-id': 'abc' });
-  // Values are the documented difference, and the ONLY one.
-  assert.deepStrictEqual(httpPrefixed, { 'user-id': '7', 'trace-id': 'abc' });
-  assert.ok(server);
-});
-
-test('cors.metaHeaders: the preflight names each prefixed meta header', async (t) => {
-  const { origin } = await startServer(t, {
-    cors: { origins: ['http://app.example'], metaHeaders: ['userId', 'locale'] },
-  });
-  const res = await fetch(`${origin}/api`, { method: 'OPTIONS', headers: { Origin: 'http://app.example' } });
-  assert.strictEqual(res.status, 200);
-  const allow = res.headers.get('access-control-allow-headers');
-  assert.ok(allow.includes('x-wrpc-meta-user-id'), allow);
-  assert.ok(allow.includes('x-wrpc-meta-locale'), allow);
-  // The defaults survive: replacing them would disable cross-origin SSE.
-  assert.ok(allow.includes('x-wrpc-channel') && allow.includes('last-event-id'), allow);
-});
-
-test('http.hsts: the default header, a value of the application, or none', async (t) => {
-  const { bootServer } = require('../helpers/server.js');
-  const { defineRouter: define, procedure: proc } = require('../../index.js');
-  const hstsRouter = define({ u: { q: proc({ access: 'public', handler: async () => 'ok' }) } });
-  const answer = async (http) => {
-    const { server, origin } = await bootServer(t, { router: hstsRouter, ...(http ? { http } : {}) });
-    const response = await fetch(origin + server.rpc.basePath, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: '{"type":"call","id":"1","method":"u/q","args":{}}',
-    });
-    await response.text();
-    return response.headers.get('strict-transport-security');
-  };
-  assert.strictEqual(await answer(null), 'max-age=31536000');
-  assert.strictEqual(await answer({ hsts: 'max-age=600; includeSubDomains' }), 'max-age=600; includeSubDomains');
-  assert.strictEqual(await answer({ hsts: false }), null);
-  const { RpcServer } = require('../../src/rpc/core.js');
-  assert.throws(() => new RpcServer({ router: hstsRouter, logger: false, http: { hsts: 'x\r\ny' } }), /http\.hsts/);
-  assert.throws(() => new RpcServer({ router: hstsRouter, logger: false, http: { hsts: true } }), /http\.hsts/);
 });

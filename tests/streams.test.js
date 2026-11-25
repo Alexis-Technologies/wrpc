@@ -2,8 +2,8 @@
 
 const { Readable } = require('node:stream');
 const { randomUUID } = require('node:crypto');
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 
 const random = (max) => Math.floor(Math.random() * (max + 1));
 const { WrpcReadable, WrpcWritable } = require('../src/streams.js');
@@ -49,8 +49,8 @@ const populateStream = (stream) => ({
       .on('end', () => stream.stop()),
 });
 
-test('Chunk / encode / decode', async (t) => {
-  await t.test('round-trip', () => {
+describe('Chunk / encode / decode', () => {
+  it('should round-trip', () => {
     const { id } = generatePacket();
     const dataView = generateDataView();
     const chunkView = chunkEncode(id, dataView);
@@ -61,7 +61,7 @@ test('Chunk / encode / decode', async (t) => {
     assert.deepStrictEqual(decoded.payload, dataView);
   });
 
-  await t.test('with different ID lengths', () => {
+  it('should round-trip with different ID lengths', () => {
     const testCases = [
       'short',
       'medium_length_id',
@@ -81,7 +81,7 @@ test('Chunk / encode / decode', async (t) => {
     }
   });
 
-  await t.test('validation for ID length limit', () => {
+  it('should validate the ID length limit', () => {
     const maxId = 'a'.repeat(255);
     const dataView = generateDataView();
 
@@ -99,8 +99,8 @@ test('Chunk / encode / decode', async (t) => {
   });
 });
 
-test('WrpcWritable', async (t) => {
-  await t.test('constructor', () => {
+describe('WrpcWritable', () => {
+  it('should send the stream packet from its constructor', () => {
     const { id, name, size } = generatePacket();
     const [, writeBuffer] = createWritable(id, name, size);
     assert.strictEqual(writeBuffer.length, 1);
@@ -113,7 +113,7 @@ test('WrpcWritable', async (t) => {
     assert.strictEqual(parsed.size, size);
   });
 
-  await t.test('end: should send packet with "end" status', () => {
+  it('should send a packet with "end" status on end', () => {
     const { id, name, size } = generatePacket();
     const [writable, writeBuffer] = createWritable(id, name, size);
     assert.strictEqual(writeBuffer.length, 1);
@@ -127,7 +127,7 @@ test('WrpcWritable', async (t) => {
     assert.strictEqual(parsed.status, 'end');
   });
 
-  await t.test('terminate: sends packet with "terminate" status', () => {
+  it('should send a packet with "terminate" status on terminate', () => {
     const { id, name, size } = generatePacket();
     const [writable, writeBuffer] = createWritable(id, name, size);
     assert.strictEqual(writeBuffer.length, 1);
@@ -141,7 +141,7 @@ test('WrpcWritable', async (t) => {
     assert.strictEqual(parsed.status, 'terminate');
   });
 
-  await t.test('write: should send encoded packet', () => {
+  it('should send an encoded packet on write', () => {
     const { id, name, size } = generatePacket();
     const [writable, writeBuffer] = createWritable(id, name, size);
     const dataView = generateDataView();
@@ -158,8 +158,8 @@ test('WrpcWritable', async (t) => {
   });
 });
 
-test('WrpcReadable', async (t) => {
-  await t.test('iterates stream', async () => {
+describe('WrpcReadable', () => {
+  it('should iterate the stream', async () => {
     const dataView = generateDataView();
     const { id, name } = generatePacket();
     const size = dataView.buffer.byteLength;
@@ -172,7 +172,7 @@ test('WrpcReadable', async (t) => {
     assert.deepStrictEqual(received, buffer);
   });
 
-  await t.test('toBlob', async () => {
+  it('should collect the stream with toBlob', async () => {
     const dataView = generateDataView();
     const { id, name } = generatePacket();
     const size = dataView.buffer.byteLength;

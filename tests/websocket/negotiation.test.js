@@ -1,7 +1,7 @@
 'use strict';
 
-const test = require('node:test');
-const assert = require('node:assert');
+const { describe, it, before, after } = require('node:test');
+const assert = require('node:assert/strict');
 const http = require('node:http');
 
 const { WebsocketServer } = require('#ws');
@@ -26,8 +26,8 @@ const parseStatusCode = (statusLine) => parseInt(statusLine.split(' ')[1], 10);
 // file's lifetime keeps the runner from calling that a failure — without it
 // the first test aborts and the other nine cascade as cancelledByParent.
 let loopHold = null;
-test.before(() => void (loopHold = setInterval(() => {}, 1000)));
-test.after(() => clearInterval(loopHold));
+before(() => void (loopHold = setInterval(() => {}, 1000)));
+after(() => clearInterval(loopHold));
 
 const withServer = async (options, run) => {
   const httpServer = http.createServer();
@@ -47,226 +47,232 @@ const withServer = async (options, run) => {
   }
 };
 
-test('subprotocol: server picks the first client-offered protocol it supports', async () => {
-  await withServer({ protocols: ['wrpc.v2', 'wrpc.v1'] }, async ({ port, wsServer }) => {
-    const connectionProtocol = new Promise((resolve) => {
-      wsServer.once('connection', (ws) => resolve(ws.protocol));
+describe('subprotocol', () => {
+  it('should pick the first client-offered protocol the server supports', async () => {
+    await withServer({ protocols: ['wrpc.v2', 'wrpc.v1'] }, async ({ port, wsServer }) => {
+      const connectionProtocol = new Promise((resolve) => {
+        wsServer.once('connection', (ws) => resolve(ws.protocol));
+      });
+      const res = await ProtocolClient.attemptHandshake({
+        host: 'localhost',
+        port,
+        path: '/',
+        headers: { ...BASE_HEADERS, 'Sec-WebSocket-Protocol': 'other, wrpc.v1, wrpc.v2' },
+        timeoutMs: 600,
+      });
+      assert.strictEqual(parseStatusCode(res.statusLine), 101);
+      assert.strictEqual(res.headers['sec-websocket-protocol'], 'wrpc.v1');
+      assert.strictEqual(await connectionProtocol, 'wrpc.v1');
     });
-    const res = await ProtocolClient.attemptHandshake({
-      host: 'localhost',
-      port,
-      path: '/',
-      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Protocol': 'other, wrpc.v1, wrpc.v2' },
-      timeoutMs: 600,
+  });
+
+  it('should connect without a protocol when nothing matches', async () => {
+    await withServer({ protocols: ['wrpc.v1'] }, async ({ port }) => {
+      const res = await ProtocolClient.attemptHandshake({
+        host: 'localhost',
+        port,
+        path: '/',
+        headers: { ...BASE_HEADERS, 'Sec-WebSocket-Protocol': 'other' },
+        timeoutMs: 600,
+      });
+      assert.strictEqual(parseStatusCode(res.statusLine), 101);
+      assert.strictEqual(res.headers['sec-websocket-protocol'], undefined);
     });
-    assert.strictEqual(parseStatusCode(res.statusLine), 101);
-    assert.strictEqual(res.headers['sec-websocket-protocol'], 'wrpc.v1');
-    assert.strictEqual(await connectionProtocol, 'wrpc.v1');
+  });
+
+  it('should let handleProtocols drive the selection', async () => {
+    await withServer({ handleProtocols: (offered) => offered.at(-1) }, async ({ port }) => {
+      const res = await ProtocolClient.attemptHandshake({
+        host: 'localhost',
+        port,
+        path: '/',
+        headers: { ...BASE_HEADERS, 'Sec-WebSocket-Protocol': 'a, b, c' },
+        timeoutMs: 600,
+      });
+      assert.strictEqual(parseStatusCode(res.statusLine), 101);
+      assert.strictEqual(res.headers['sec-websocket-protocol'], 'c');
+    });
+  });
+
+  it('should reject the handshake when handleProtocols returns false', async () => {
+    await withServer({ handleProtocols: () => false }, async ({ port }) => {
+      const res = await ProtocolClient.attemptHandshake({
+        host: 'localhost',
+        port,
+        path: '/',
+        headers: { ...BASE_HEADERS, 'Sec-WebSocket-Protocol': 'a' },
+        timeoutMs: 600,
+      });
+      assert.strictEqual(parseStatusCode(res.statusLine), 400);
+    });
+  });
+
+  it('should treat carrier tokens as data — hidden from the application, never echoed', async () => {
+    const offer = 'wrpc.h.eyJhIjoiMSJ9, wrpc.v1, wrpc.bearer.secret, wrpc.m.e30';
+    const handshake = (port) =>
+      ProtocolClient.attemptHandshake({
+        host: 'localhost',
+        port,
+        path: '/',
+        headers: { ...BASE_HEADERS, 'Sec-WebSocket-Protocol': offer },
+        timeoutMs: 600,
+      });
+    // The default negotiation answers the revision, whatever rides next to it.
+    await withServer({}, async ({ port }) => {
+      const res = await handshake(port);
+      assert.strictEqual(parseStatusCode(res.statusLine), 101);
+      assert.strictEqual(res.headers['sec-websocket-protocol'], 'wrpc.v1');
+    });
+    // handleProtocols sees the offer without them; the raw header stays on req.
+    let seen = null;
+    let raw = null;
+    const pickLast = (offered, req) => {
+      seen = offered;
+      raw = req.headers['sec-websocket-protocol'];
+      return offered.at(-1);
+    };
+    await withServer({ handleProtocols: pickLast }, async ({ port }) => {
+      const res = await handshake(port);
+      assert.deepStrictEqual(seen, ['wrpc.v1']);
+      assert.strictEqual(raw, offer);
+      assert.strictEqual(res.headers['sec-websocket-protocol'], 'wrpc.v1');
+    });
+    // A selector that reaches into the raw header cannot reflect a credential.
+    const reflect = (_offered, req) => req.headers['sec-websocket-protocol'].split(', ')[2];
+    await withServer({ handleProtocols: reflect }, async ({ port }) => {
+      const res = await handshake(port);
+      assert.strictEqual(parseStatusCode(res.statusLine), 101);
+      assert.strictEqual(res.headers['sec-websocket-protocol'], undefined);
+    });
+    // An application list cannot select one either.
+    await withServer({ protocols: ['wrpc.bearer.secret', 'chat'] }, async ({ port }) => {
+      const res = await handshake(port);
+      assert.strictEqual(res.headers['sec-websocket-protocol'], undefined);
+    });
   });
 });
 
-test('subprotocol: no match connects without a protocol', async () => {
-  await withServer({ protocols: ['wrpc.v1'] }, async ({ port }) => {
-    const res = await ProtocolClient.attemptHandshake({
-      host: 'localhost',
-      port,
-      path: '/',
-      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Protocol': 'other' },
-      timeoutMs: 600,
+describe('permessage-deflate negotiation', () => {
+  it('should accept a permessage-deflate offer with a no-context-takeover response', async () => {
+    await withServer({ perMessageDeflate: true }, async ({ port }) => {
+      const res = await ProtocolClient.attemptHandshake({
+        host: 'localhost',
+        port,
+        path: '/',
+        headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate; client_max_window_bits' },
+        timeoutMs: 600,
+      });
+      assert.strictEqual(parseStatusCode(res.statusLine), 101);
+      assert.strictEqual(
+        res.headers['sec-websocket-extensions'],
+        'permessage-deflate; server_no_context_takeover; client_no_context_takeover',
+      );
     });
-    assert.strictEqual(parseStatusCode(res.statusLine), 101);
-    assert.strictEqual(res.headers['sec-websocket-protocol'], undefined);
+  });
+
+  it('should fail the handshake with 400 on a grammar-violating extensions header', async () => {
+    await withServer({ perMessageDeflate: true }, async ({ port }) => {
+      const res = await ProtocolClient.attemptHandshake({
+        host: 'localhost',
+        port,
+        path: '/',
+        headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate; =' },
+        timeoutMs: 600,
+      });
+      assert.strictEqual(parseStatusCode(res.statusLine), 400);
+    });
+  });
+
+  it('should decline, not fail, an unacceptable but well-formed offer', async () => {
+    await withServer({ perMessageDeflate: true }, async ({ port }) => {
+      const res = await ProtocolClient.attemptHandshake({
+        host: 'localhost',
+        port,
+        path: '/',
+        headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate; unknown_param' },
+        timeoutMs: 600,
+      });
+      assert.strictEqual(parseStatusCode(res.statusLine), 101);
+      assert.strictEqual(res.headers['sec-websocket-extensions'], undefined);
+    });
+  });
+
+  it('should ignore the offer on a disabled server', async () => {
+    await withServer({}, async ({ port }) => {
+      const res = await ProtocolClient.attemptHandshake({
+        host: 'localhost',
+        port,
+        path: '/',
+        headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate' },
+        timeoutMs: 600,
+      });
+      assert.strictEqual(parseStatusCode(res.statusLine), 101);
+      assert.strictEqual(res.headers['sec-websocket-extensions'], undefined);
+    });
+  });
+
+  it('should let filter(req) decide per connection whether the offer is accepted', async () => {
+    const filter = (req) => req.headers['x-slow-link'] === 'yes';
+    await withServer({ perMessageDeflate: { filter } }, async ({ port }) => {
+      const declined = await ProtocolClient.attemptHandshake({
+        host: 'localhost',
+        port,
+        path: '/',
+        headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate' },
+        timeoutMs: 600,
+      });
+      assert.strictEqual(parseStatusCode(declined.statusLine), 101);
+      assert.strictEqual(declined.headers['sec-websocket-extensions'], undefined);
+
+      const accepted = await ProtocolClient.attemptHandshake({
+        host: 'localhost',
+        port,
+        path: '/',
+        headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate', 'X-Slow-Link': 'yes' },
+        timeoutMs: 600,
+      });
+      assert.strictEqual(parseStatusCode(accepted.statusLine), 101);
+      assert.match(accepted.headers['sec-websocket-extensions'], /^permessage-deflate/);
+    });
   });
 });
 
-test('subprotocol: handleProtocols drives the selection', async () => {
-  await withServer({ handleProtocols: (offered) => offered.at(-1) }, async ({ port }) => {
-    const res = await ProtocolClient.attemptHandshake({
-      host: 'localhost',
-      port,
-      path: '/',
-      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Protocol': 'a, b, c' },
-      timeoutMs: 600,
+describe('WebsocketServer', () => {
+  it('should notify peers on close() and reject new upgrades', async () => {
+    await withServer({}, async ({ port, wsServer }) => {
+      const peer = new ProtocolClient(`ws://localhost:${port}`);
+      await new Promise((resolve) => peer.on('open', resolve));
+      assert.strictEqual(wsServer.connections.size, 1);
+
+      const closed = new Promise((resolve) => peer.on('close', (code, reason) => resolve({ code, reason })));
+      wsServer.close({ code: 1001, reason: 'maintenance' });
+      const { code, reason } = await closed;
+      assert.strictEqual(code, 1001);
+      assert.strictEqual(reason.toString(), 'maintenance');
+      assert.strictEqual(wsServer.connections.size, 0);
+
+      const res = await ProtocolClient.attemptHandshake({
+        host: 'localhost',
+        port,
+        path: '/',
+        headers: { ...BASE_HEADERS },
+        timeoutMs: 600,
+      });
+      assert.strictEqual(parseStatusCode(res.statusLine), 503);
+
+      // idempotent
+      assert.doesNotThrow(() => wsServer.close());
     });
-    assert.strictEqual(parseStatusCode(res.statusLine), 101);
-    assert.strictEqual(res.headers['sec-websocket-protocol'], 'c');
   });
-});
 
-test('subprotocol: handleProtocols returning false rejects the handshake', async () => {
-  await withServer({ handleProtocols: () => false }, async ({ port }) => {
-    const res = await ProtocolClient.attemptHandshake({
-      host: 'localhost',
-      port,
-      path: '/',
-      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Protocol': 'a' },
-      timeoutMs: 600,
+  it('should return a snapshot from the connections getter', async () => {
+    await withServer({}, async ({ port, wsServer }) => {
+      const peer = new ProtocolClient(`ws://localhost:${port}`);
+      await new Promise((resolve) => peer.on('open', resolve));
+      const snapshot = wsServer.connections;
+      snapshot.clear(); // mutating the snapshot must not affect the server
+      assert.strictEqual(wsServer.connections.size, 1);
+      peer.close();
     });
-    assert.strictEqual(parseStatusCode(res.statusLine), 400);
-  });
-});
-
-test('subprotocol: carrier tokens are data — hidden from the application, never echoed', async () => {
-  const offer = 'wrpc.h.eyJhIjoiMSJ9, wrpc.v1, wrpc.bearer.secret, wrpc.m.e30';
-  const handshake = (port) =>
-    ProtocolClient.attemptHandshake({
-      host: 'localhost',
-      port,
-      path: '/',
-      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Protocol': offer },
-      timeoutMs: 600,
-    });
-  // The default negotiation answers the revision, whatever rides next to it.
-  await withServer({}, async ({ port }) => {
-    const res = await handshake(port);
-    assert.strictEqual(parseStatusCode(res.statusLine), 101);
-    assert.strictEqual(res.headers['sec-websocket-protocol'], 'wrpc.v1');
-  });
-  // handleProtocols sees the offer without them; the raw header stays on req.
-  let seen = null;
-  let raw = null;
-  const pickLast = (offered, req) => {
-    seen = offered;
-    raw = req.headers['sec-websocket-protocol'];
-    return offered.at(-1);
-  };
-  await withServer({ handleProtocols: pickLast }, async ({ port }) => {
-    const res = await handshake(port);
-    assert.deepStrictEqual(seen, ['wrpc.v1']);
-    assert.strictEqual(raw, offer);
-    assert.strictEqual(res.headers['sec-websocket-protocol'], 'wrpc.v1');
-  });
-  // A selector that reaches into the raw header cannot reflect a credential.
-  const reflect = (_offered, req) => req.headers['sec-websocket-protocol'].split(', ')[2];
-  await withServer({ handleProtocols: reflect }, async ({ port }) => {
-    const res = await handshake(port);
-    assert.strictEqual(parseStatusCode(res.statusLine), 101);
-    assert.strictEqual(res.headers['sec-websocket-protocol'], undefined);
-  });
-  // An application list cannot select one either.
-  await withServer({ protocols: ['wrpc.bearer.secret', 'chat'] }, async ({ port }) => {
-    const res = await handshake(port);
-    assert.strictEqual(res.headers['sec-websocket-protocol'], undefined);
-  });
-});
-
-test('deflate: server accepts a permessage-deflate offer with no-context-takeover response', async () => {
-  await withServer({ perMessageDeflate: true }, async ({ port }) => {
-    const res = await ProtocolClient.attemptHandshake({
-      host: 'localhost',
-      port,
-      path: '/',
-      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate; client_max_window_bits' },
-      timeoutMs: 600,
-    });
-    assert.strictEqual(parseStatusCode(res.statusLine), 101);
-    assert.strictEqual(
-      res.headers['sec-websocket-extensions'],
-      'permessage-deflate; server_no_context_takeover; client_no_context_takeover',
-    );
-  });
-});
-
-test('deflate: grammar-violating extensions header fails the handshake with 400', async () => {
-  await withServer({ perMessageDeflate: true }, async ({ port }) => {
-    const res = await ProtocolClient.attemptHandshake({
-      host: 'localhost',
-      port,
-      path: '/',
-      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate; =' },
-      timeoutMs: 600,
-    });
-    assert.strictEqual(parseStatusCode(res.statusLine), 400);
-  });
-});
-
-test('deflate: unacceptable but well-formed offer is declined, not failed', async () => {
-  await withServer({ perMessageDeflate: true }, async ({ port }) => {
-    const res = await ProtocolClient.attemptHandshake({
-      host: 'localhost',
-      port,
-      path: '/',
-      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate; unknown_param' },
-      timeoutMs: 600,
-    });
-    assert.strictEqual(parseStatusCode(res.statusLine), 101);
-    assert.strictEqual(res.headers['sec-websocket-extensions'], undefined);
-  });
-});
-
-test('deflate: disabled server ignores the offer', async () => {
-  await withServer({}, async ({ port }) => {
-    const res = await ProtocolClient.attemptHandshake({
-      host: 'localhost',
-      port,
-      path: '/',
-      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate' },
-      timeoutMs: 600,
-    });
-    assert.strictEqual(parseStatusCode(res.statusLine), 101);
-    assert.strictEqual(res.headers['sec-websocket-extensions'], undefined);
-  });
-});
-
-test('WebsocketServer: close() notifies peers and rejects new upgrades', async () => {
-  await withServer({}, async ({ port, wsServer }) => {
-    const peer = new ProtocolClient(`ws://localhost:${port}`);
-    await new Promise((resolve) => peer.on('open', resolve));
-    assert.strictEqual(wsServer.connections.size, 1);
-
-    const closed = new Promise((resolve) => peer.on('close', (code, reason) => resolve({ code, reason })));
-    wsServer.close({ code: 1001, reason: 'maintenance' });
-    const { code, reason } = await closed;
-    assert.strictEqual(code, 1001);
-    assert.strictEqual(reason.toString(), 'maintenance');
-    assert.strictEqual(wsServer.connections.size, 0);
-
-    const res = await ProtocolClient.attemptHandshake({
-      host: 'localhost',
-      port,
-      path: '/',
-      headers: { ...BASE_HEADERS },
-      timeoutMs: 600,
-    });
-    assert.strictEqual(parseStatusCode(res.statusLine), 503);
-
-    // idempotent
-    assert.doesNotThrow(() => wsServer.close());
-  });
-});
-
-test('WebsocketServer: connections getter returns a snapshot', async () => {
-  await withServer({}, async ({ port, wsServer }) => {
-    const peer = new ProtocolClient(`ws://localhost:${port}`);
-    await new Promise((resolve) => peer.on('open', resolve));
-    const snapshot = wsServer.connections;
-    snapshot.clear(); // mutating the snapshot must not affect the server
-    assert.strictEqual(wsServer.connections.size, 1);
-    peer.close();
-  });
-});
-
-test('deflate: filter(req) decides per connection whether the offer is accepted', async () => {
-  const filter = (req) => req.headers['x-slow-link'] === 'yes';
-  await withServer({ perMessageDeflate: { filter } }, async ({ port }) => {
-    const declined = await ProtocolClient.attemptHandshake({
-      host: 'localhost',
-      port,
-      path: '/',
-      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate' },
-      timeoutMs: 600,
-    });
-    assert.strictEqual(parseStatusCode(declined.statusLine), 101);
-    assert.strictEqual(declined.headers['sec-websocket-extensions'], undefined);
-
-    const accepted = await ProtocolClient.attemptHandshake({
-      host: 'localhost',
-      port,
-      path: '/',
-      headers: { ...BASE_HEADERS, 'Sec-WebSocket-Extensions': 'permessage-deflate', 'X-Slow-Link': 'yes' },
-      timeoutMs: 600,
-    });
-    assert.strictEqual(parseStatusCode(accepted.statusLine), 101);
-    assert.match(accepted.headers['sec-websocket-extensions'], /^permessage-deflate/);
   });
 });

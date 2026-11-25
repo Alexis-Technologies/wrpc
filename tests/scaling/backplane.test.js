@@ -1,7 +1,7 @@
 'use strict';
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 
 const { RpcServer } = require('../../index.js');
 const { defineRouter, procedure } = require('../../index.js');
@@ -69,201 +69,203 @@ const createPair = (backplane) => {
   return { first, second };
 };
 
-test('backplane: a room event crosses instances', async (t) => {
-  const backplane = new MemoryBackplane();
-  const { first, second } = createPair(backplane);
-  t.after(async () => {
-    await first.close();
-    await second.close();
-    backplane.close();
+describe('backplane', () => {
+  it('should carry a room event across instances', async (t) => {
+    const backplane = new MemoryBackplane();
+    const { first, second } = createPair(backplane);
+    t.after(async () => {
+      await first.close();
+      await second.close();
+      backplane.close();
+    });
+
+    const here = attach(first);
+    const there = attach(second);
+    here.client.join('chat');
+    there.client.join('chat');
+    await settle(); // the room's channel subscription lands asynchronously
+
+    const sent = first.to('chat').emit('message', { text: 'hi' });
+    assert.strictEqual(sent, 1, 'the local count covers this instance only');
+    assert.deepStrictEqual(here.socket.events, [{ type: 'event', name: 'message', data: { text: 'hi' } }]);
+
+    await settle();
+    assert.deepStrictEqual(
+      there.socket.events,
+      [{ type: 'event', name: 'message', data: { text: 'hi' } }],
+      'the remote instance delivered it to its own member',
+    );
   });
 
-  const here = attach(first);
-  const there = attach(second);
-  here.client.join('chat');
-  there.client.join('chat');
-  await settle(); // the room's channel subscription lands asynchronously
+  it('should keep the publisher from re-delivering by echo suppression', async (t) => {
+    const backplane = new MemoryBackplane();
+    const { first, second } = createPair(backplane);
+    t.after(async () => {
+      await first.close();
+      await second.close();
+      backplane.close();
+    });
 
-  const sent = first.to('chat').emit('message', { text: 'hi' });
-  assert.strictEqual(sent, 1, 'the local count covers this instance only');
-  assert.deepStrictEqual(here.socket.events, [{ type: 'event', name: 'message', data: { text: 'hi' } }]);
+    const here = attach(first);
+    here.client.join('chat');
+    attach(second).client.join('chat');
+    await settle();
 
-  await settle();
-  assert.deepStrictEqual(
-    there.socket.events,
-    [{ type: 'event', name: 'message', data: { text: 'hi' } }],
-    'the remote instance delivered it to its own member',
-  );
-});
-
-test('backplane: echo suppression keeps the publisher from re-delivering', async (t) => {
-  const backplane = new MemoryBackplane();
-  const { first, second } = createPair(backplane);
-  t.after(async () => {
-    await first.close();
-    await second.close();
-    backplane.close();
+    first.to('chat').emit('message', 1);
+    await settle();
+    assert.strictEqual(here.socket.events.length, 1, 'the publisher sees exactly one copy');
   });
 
-  const here = attach(first);
-  here.client.join('chat');
-  attach(second).client.join('chat');
-  await settle();
+  it('should give a client in two targeted rooms one copy on every instance', async (t) => {
+    const backplane = new MemoryBackplane();
+    const { first, second } = createPair(backplane);
+    t.after(async () => {
+      await first.close();
+      await second.close();
+      backplane.close();
+    });
 
-  first.to('chat').emit('message', 1);
-  await settle();
-  assert.strictEqual(here.socket.events.length, 1, 'the publisher sees exactly one copy');
-});
+    const there = attach(second);
+    there.client.join('chat');
+    there.client.join('lobby');
+    await settle();
 
-test('backplane: a client in two targeted rooms gets one copy on every instance', async (t) => {
-  const backplane = new MemoryBackplane();
-  const { first, second } = createPair(backplane);
-  t.after(async () => {
-    await first.close();
-    await second.close();
-    backplane.close();
+    first.to('chat', 'lobby').emit('message', 1);
+    await settle();
+    assert.strictEqual(there.socket.events.length, 1, 'a multi-room emit is deduplicated remotely too');
   });
 
-  const there = attach(second);
-  there.client.join('chat');
-  there.client.join('lobby');
-  await settle();
+  it('should reach every instance with a broadcast', async (t) => {
+    const backplane = new MemoryBackplane();
+    const { first, second } = createPair(backplane);
+    t.after(async () => {
+      await first.close();
+      await second.close();
+      backplane.close();
+    });
 
-  first.to('chat', 'lobby').emit('message', 1);
-  await settle();
-  assert.strictEqual(there.socket.events.length, 1, 'a multi-room emit is deduplicated remotely too');
-});
+    const there = attach(second); // no rooms at all
+    await settle();
 
-test('backplane: broadcast reaches every instance', async (t) => {
-  const backplane = new MemoryBackplane();
-  const { first, second } = createPair(backplane);
-  t.after(async () => {
-    await first.close();
-    await second.close();
-    backplane.close();
+    first.broadcast('announce', { up: true });
+    await settle();
+    assert.deepStrictEqual(there.socket.events, [{ type: 'event', name: 'announce', data: { up: true } }]);
   });
 
-  const there = attach(second); // no rooms at all
-  await settle();
+  it('should not reach an instance without members of the room', async (t) => {
+    const backplane = new MemoryBackplane();
+    const { first, second } = createPair(backplane);
+    t.after(async () => {
+      await first.close();
+      await second.close();
+      backplane.close();
+    });
 
-  first.broadcast('announce', { up: true });
-  await settle();
-  assert.deepStrictEqual(there.socket.events, [{ type: 'event', name: 'announce', data: { up: true } }]);
-});
+    const there = attach(second);
+    there.client.join('other');
+    await settle();
 
-test('backplane: an instance without members of the room is not reached', async (t) => {
-  const backplane = new MemoryBackplane();
-  const { first, second } = createPair(backplane);
-  t.after(async () => {
-    await first.close();
-    await second.close();
-    backplane.close();
+    first.to('chat').emit('message', 1);
+    await settle();
+    assert.deepStrictEqual(there.socket.events, []);
   });
 
-  const there = attach(second);
-  there.client.join('other');
-  await settle();
+  it('should release the room and its channel on a disconnect', async (t) => {
+    const backplane = new MemoryBackplane();
+    const { first, second } = createPair(backplane);
+    t.after(async () => {
+      await first.close();
+      await second.close();
+      backplane.close();
+    });
 
-  first.to('chat').emit('message', 1);
-  await settle();
-  assert.deepStrictEqual(there.socket.events, []);
-});
+    const there = attach(second);
+    there.client.join('chat');
+    await settle();
+    assert.strictEqual(second.rooms.count('chat'), 1);
 
-test('backplane: a disconnect releases the room and its channel', async (t) => {
-  const backplane = new MemoryBackplane();
-  const { first, second } = createPair(backplane);
-  t.after(async () => {
-    await first.close();
-    await second.close();
-    backplane.close();
+    there.socket.emit('close');
+    await settle();
+    assert.strictEqual(second.rooms.has('chat'), false, 'the empty room is gone');
+
+    // With nobody subscribed to the room channel the publish reaches nobody,
+    // and — the point of the assertion — nothing throws on the way.
+    assert.doesNotThrow(() => first.to('chat').emit('message', 1));
+    await settle();
+    assert.deepStrictEqual(there.socket.events, []);
   });
 
-  const there = attach(second);
-  there.client.join('chat');
-  await settle();
-  assert.strictEqual(second.rooms.count('chat'), 1);
+  it('should never break local delivery over a broken backplane', async (t) => {
+    const errors = [];
+    const broken = {
+      publish() {
+        throw new Error('backplane is down');
+      },
+      subscribe() {
+        return () => {};
+      },
+      close: noop,
+    };
+    const rpc = new RpcServer({
+      router,
+      backplane: broken,
+      logger: { ...quiet, error: (error) => errors.push(error) },
+    });
+    t.after(() => rpc.close());
 
-  there.socket.emit('close');
-  await settle();
-  assert.strictEqual(second.rooms.has('chat'), false, 'the empty room is gone');
+    const { socket, client } = attach(rpc);
+    client.join('chat');
+    const sent = rpc.to('chat').emit('message', { text: 'hi' });
 
-  // With nobody subscribed to the room channel the publish reaches nobody,
-  // and — the point of the assertion — nothing throws on the way.
-  assert.doesNotThrow(() => first.to('chat').emit('message', 1));
-  await settle();
-  assert.deepStrictEqual(there.socket.events, []);
-});
-
-test('backplane: a broken backplane never breaks local delivery', async (t) => {
-  const errors = [];
-  const broken = {
-    publish() {
-      throw new Error('backplane is down');
-    },
-    subscribe() {
-      return () => {};
-    },
-    close: noop,
-  };
-  const rpc = new RpcServer({
-    router,
-    backplane: broken,
-    logger: { ...quiet, error: (error) => errors.push(error) },
-  });
-  t.after(() => rpc.close());
-
-  const { socket, client } = attach(rpc);
-  client.join('chat');
-  const sent = rpc.to('chat').emit('message', { text: 'hi' });
-
-  assert.strictEqual(sent, 1, 'local delivery is unaffected');
-  assert.deepStrictEqual(socket.events, [{ type: 'event', name: 'message', data: { text: 'hi' } }]);
-  // At least the room publish failed and was reported; the cluster's own
-  // presence traffic (hello, join delta) fails through the same path.
-  assert.ok(errors.length >= 1, 'the failure is reported');
-});
-
-test('backplane: malformed envelopes are ignored', async (t) => {
-  const backplane = new MemoryBackplane();
-  const rpc = new RpcServer({ router, logger: false, backplane, instanceId: 'node-1' });
-  t.after(async () => {
-    await rpc.close();
-    backplane.close();
+    assert.strictEqual(sent, 1, 'local delivery is unaffected');
+    assert.deepStrictEqual(socket.events, [{ type: 'event', name: 'message', data: { text: 'hi' } }]);
+    // At least the room publish failed and was reported; the cluster's own
+    // presence traffic (hello, join delta) fails through the same path.
+    assert.ok(errors.length >= 1, 'the failure is reported');
   });
 
-  const { socket, client } = attach(rpc);
-  client.join('chat');
-  await settle();
+  it('should ignore malformed envelopes', async (t) => {
+    const backplane = new MemoryBackplane();
+    const rpc = new RpcServer({ router, logger: false, backplane, instanceId: 'node-1' });
+    t.after(async () => {
+      await rpc.close();
+      backplane.close();
+    });
 
-  for (const message of [
-    'not json',
-    'null',
-    '[]',
-    JSON.stringify({ instance: 'node-2' }), // no name
-    JSON.stringify({ instance: 'node-2', name: '', rooms: ['chat'] }),
-    JSON.stringify({ instance: 'node-2', name: 'x', rooms: 'chat' }), // rooms not an array
-  ]) {
-    backplane.publish('room:chat', message);
-    backplane.publish('broadcast', message);
-  }
-  await settle();
-  assert.deepStrictEqual(socket.events, []);
-});
+    const { socket, client } = attach(rpc);
+    client.join('chat');
+    await settle();
 
-test('backplane: a non-conforming backplane is rejected at construction', () => {
-  assert.throws(() => new RpcServer({ router, logger: false, backplane: { publish: noop } }), TypeError);
-});
+    for (const message of [
+      'not json',
+      'null',
+      '[]',
+      JSON.stringify({ instance: 'node-2' }), // no name
+      JSON.stringify({ instance: 'node-2', name: '', rooms: ['chat'] }),
+      JSON.stringify({ instance: 'node-2', name: 'x', rooms: 'chat' }), // rooms not an array
+    ]) {
+      backplane.publish('room:chat', message);
+      backplane.publish('broadcast', message);
+    }
+    await settle();
+    assert.deepStrictEqual(socket.events, []);
+  });
 
-test('backplane: rooms work identically without one', async (t) => {
-  const rpc = new RpcServer({ router, logger: false });
-  t.after(() => rpc.close());
-  const a = attach(rpc);
-  const b = attach(rpc);
-  a.client.join('chat');
-  b.client.join('chat');
+  it('should reject a non-conforming backplane at construction', () => {
+    assert.throws(() => new RpcServer({ router, logger: false, backplane: { publish: noop } }), TypeError);
+  });
 
-  assert.strictEqual(rpc.to('chat').except(b.client).emit('message', 1), 1);
-  assert.strictEqual(a.socket.events.length, 1);
-  assert.strictEqual(b.socket.events.length, 0);
-  assert.strictEqual(rpc.instanceId.length > 0, true, 'an instance id exists even with no backplane');
+  it('should run rooms identically without one', async (t) => {
+    const rpc = new RpcServer({ router, logger: false });
+    t.after(() => rpc.close());
+    const a = attach(rpc);
+    const b = attach(rpc);
+    a.client.join('chat');
+    b.client.join('chat');
+
+    assert.strictEqual(rpc.to('chat').except(b.client).emit('message', 1), 1);
+    assert.strictEqual(a.socket.events.length, 1);
+    assert.strictEqual(b.socket.events.length, 0);
+    assert.strictEqual(rpc.instanceId.length > 0, true, 'an instance id exists even with no backplane');
+  });
 });

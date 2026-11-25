@@ -12,11 +12,13 @@
 // Not a *.test.js — imported by the adapter tests.
 //
 // Cleanup discipline: every boot registers its close through `t.after` the
-// moment it resolves, never as a trailing await. A standalone (uws) engine
-// holds a native listen socket, and an assertion failing before an un-hooked
-// close would wedge the whole run instead of failing it.
+// moment it resolves, never as a trailing await, and the instance the cases
+// share is closed by the suite's `after` hook. A standalone (uws) engine holds
+// a native listen socket, and an assertion failing before an un-hooked close
+// would wedge the whole run instead of failing it.
 
-const assert = require('node:assert');
+const { it, before, after } = require('node:test');
+const assert = require('node:assert/strict');
 const http = require('node:http');
 const zlib = require('node:zlib');
 const { randomUUID } = require('node:crypto');
@@ -307,19 +309,29 @@ const login = async (base, user) => {
   return { token, cookie: `token=${token}` };
 };
 
-const runAdapterSpec = async (entry, t) => {
-  const boot = async (options) => {
+// Registers the specification's cases in the caller's `describe`, one per
+// behavior, against the instance `entry.boot()` stands up.
+const runAdapterSpec = (entry) => {
+  // A case's own instance, closed when that case ends.
+  const boot = async (t, options) => {
     const instance = await entry.boot({ router, ...options });
     // Registered immediately: a later assertion failure must not leak a listener.
     t.after(() => instance.close());
     return instance;
   };
 
-  const main = await boot({});
-  const origin = `http://127.0.0.1:${main.port}`;
-  const base = `${origin}/api`;
+  // The instance every case shares, closed when the suite ends.
+  let main = null;
+  let origin = '';
+  let base = '';
+  before(async () => {
+    main = await entry.boot({ router });
+    origin = `http://127.0.0.1:${main.port}`;
+    base = `${origin}/api`;
+  });
+  after(() => main?.close());
 
-  await t.test('packet endpoint: a call packet is answered with its callback', async () => {
+  it('should answer a call packet with its callback on the packet endpoint', async () => {
     const { res, body, id } = await rpcPost(base, 'test/hello', { name: 'Ada' });
     assert.strictEqual(res.status, 200);
     assert.strictEqual(body.type, 'callback');
@@ -327,7 +339,7 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(body.result, 'Hello, Ada');
   });
 
-  await t.test('packet endpoint: system/introspect is public', async () => {
+  it('should keep system/introspect public on the packet endpoint', async () => {
     const { res, body } = await rpcPost(base, 'system/introspect', {});
     assert.strictEqual(res.status, 200);
     assert.ok(body.result.test, 'introspection exposes the test unit');
@@ -335,33 +347,30 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(body.result.test.whoami.access, 'session');
   });
 
-  await t.test(
-    'http: the revision is announced, and bytes travel as bytes once the client has seen it',
-    async (sub) => {
-      // Every host answers `wrpc-version: 2`, exposed to script on another
-      // origin; a client that read it sends a call holding bytes as a frame
-      // (`application/octet-stream` — the body a host must hand over raw), and
-      // asked with Accept, is answered with one.
-      const probe = await rpcPost(base, 'test/hello', { name: 'Ada' });
-      assert.strictEqual(probe.res.headers.get('wrpc-version'), '2');
-      assert.strictEqual(probe.res.headers.get('access-control-expose-headers'), 'wrpc-version');
-      const client = await WrpcClient.connect(base, { reconnect: false });
-      sub.after(() => void client.close());
-      await client.load('test');
-      assert.strictEqual(client.revision, 2);
-      const echoed = await client.api.test.echo({ blob: Uint8Array.of(1, 2, 3) });
-      assert.ok(echoed.blob instanceof Uint8Array, 'a frame went up, and a frame came back');
-      assert.deepStrictEqual([...echoed.blob], [1, 2, 3]);
-    },
-  );
+  it('should announce the revision over http, and let bytes travel as bytes once the client has seen it', async (t) => {
+    // Every host answers `wrpc-version: 2`, exposed to script on another
+    // origin; a client that read it sends a call holding bytes as a frame
+    // (`application/octet-stream` — the body a host must hand over raw), and
+    // asked with Accept, is answered with one.
+    const probe = await rpcPost(base, 'test/hello', { name: 'Ada' });
+    assert.strictEqual(probe.res.headers.get('wrpc-version'), '2');
+    assert.strictEqual(probe.res.headers.get('access-control-expose-headers'), 'wrpc-version');
+    const client = await WrpcClient.connect(base, { reconnect: false });
+    t.after(() => void client.close());
+    await client.load('test');
+    assert.strictEqual(client.revision, 2);
+    const echoed = await client.api.test.echo({ blob: Uint8Array.of(1, 2, 3) });
+    assert.ok(echoed.blob instanceof Uint8Array, 'a frame went up, and a frame came back');
+    assert.deepStrictEqual([...echoed.blob], [1, 2, 3]);
+  });
 
-  await t.test('REST mode: GET takes its args from the query as strings', async () => {
+  it("should take a GET's args from the query as strings in REST mode", async () => {
     const { res, body } = await rpcGet(`${base}/test/echo?a=1&b=two`);
     assert.strictEqual(res.status, 200);
     assert.deepStrictEqual(body.result, { a: '1', b: 'two' });
   });
 
-  await t.test('REST mode: POST merges query params with the body, body wins', async () => {
+  it('should merge query params with the body in a REST mode POST, the body winning', async () => {
     const res = await fetch(`${base}/test/echo?a=1&b=query`, {
       method: 'POST',
       headers: JSON_HEADERS,
@@ -372,7 +381,7 @@ const runAdapterSpec = async (entry, t) => {
     assert.deepStrictEqual(body.result, { a: '1', b: 'body', c: 3 });
   });
 
-  await t.test('a declarative REST route answers a plain result with its own status', async () => {
+  it('should answer a plain result of a declarative REST route with its own status', async () => {
     const res = await fetch(`${base}/things/42?x=1`, {
       method: 'POST',
       headers: JSON_HEADERS,
@@ -382,7 +391,7 @@ const runAdapterSpec = async (entry, t) => {
     assert.deepStrictEqual(await res.json(), { thingId: '42', q: { x: '1' }, name: 'Alpha' });
   });
 
-  await t.test('a header value that would split the response is refused, never written', async () => {
+  it('should refuse a header value that would split the response, never write it', async () => {
     const res = await fetch(`${base}/split`);
     assert.strictEqual(res.status, 500, 'the handler threw at the seam');
     assert.strictEqual(res.headers.get('x-injected'), null, 'nothing of the value reached the wire');
@@ -396,7 +405,7 @@ const runAdapterSpec = async (entry, t) => {
     await spelled.text();
   });
 
-  await t.test('an unknown method is a 404 error packet', async () => {
+  it('should answer an unknown method with a 404 error packet', async () => {
     const { res, body, id } = await rpcPost(base, 'test/nothing', {});
     assert.strictEqual(res.status, 404);
     assert.strictEqual(body.type, 'callback');
@@ -404,17 +413,17 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(body.error.code, 404);
   });
 
-  await t.test('a handler error propagates its own code', async () => {
+  it("should propagate a handler error's own code", async () => {
     const { res, body } = await rpcPost(base, 'test/fail', {});
     assert.strictEqual(res.status, 418);
     assert.strictEqual(body.error.code, 418);
     assert.strictEqual(body.error.message, 'Boom');
   });
 
-  await t.test('what throws while a request is routed is answered 500, never left hanging', async () => {
+  it('should answer 500 to what throws while a request is routed, never leave it hanging', async (t) => {
     // An injected query parser that throws stands for any input nothing
     // refused first: every host used to drop the rejection on the floor.
-    const failing = await boot({
+    const failing = await boot(t, {
       querystring: {
         parse() {
           throw new Error('parser bug');
@@ -431,13 +440,13 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(next.result, 'Hello, again', 'and the server goes on');
   });
 
-  await t.test('access control: a session procedure without a session is 403', async () => {
+  it('should answer 403 to a session procedure without a session (access control)', async () => {
     const { res, body } = await rpcPost(base, 'test/whoami', {});
     assert.strictEqual(res.status, 403);
     assert.strictEqual(body.error.code, 403);
   });
 
-  await t.test('sessions over HTTP: login sets a cookie, the cookie restores it, logout kills it', async () => {
+  it('should set a cookie on login over HTTP, restore the session by the cookie, and kill it on logout', async () => {
     const { cookie } = await login(base, 'grace');
 
     const restored = await rpcPost(base, 'test/whoami', {}, { cookie });
@@ -453,7 +462,7 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(revoked.body.error.code, 403);
   });
 
-  await t.test('CSRF gate: a cross-site GET gets no ambient session', async () => {
+  it('should give a cross-site GET no ambient session (CSRF gate)', async () => {
     const { cookie } = await login(base, 'ada');
     const url = `${base}/test/whoami`;
 
@@ -471,11 +480,11 @@ const runAdapterSpec = async (entry, t) => {
     assert.deepStrictEqual(bare.body.result, { user: 'ada' });
   });
 
-  await t.test('http.compression: a gzip-accepting request past the threshold is answered gzip', async () => {
+  it('should answer gzip to a gzip-accepting request past the http.compression threshold', async (t) => {
     // Every host hands the encoded Buffer through unchanged — fastify
     // derives its own Content-Length from it, uws from end(), express
     // writes it as is.
-    const encoded = await boot({ http: { compression: { encodings: ['br', 'gzip'] } } });
+    const encoded = await boot(t, { http: { compression: { encodings: ['br', 'gzip'] } } });
     const url = `http://127.0.0.1:${encoded.port}/api`;
     const packet = callPacket('test/echo', { pad: 'x'.repeat(4096) });
     const { res, bytes } = await rawPost(url, JSON.stringify(packet), { 'Accept-Encoding': 'gzip' });
@@ -499,7 +508,7 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(plain.res.headers['content-encoding'], undefined, 'off by default');
   });
 
-  await t.test('a path outside basePath is 404', async () => {
+  it('should answer 404 to a path outside basePath', async () => {
     const res = await fetch(`${origin}/nowhere`);
     const text = await res.text();
     assert.strictEqual(res.status, 404);
@@ -511,9 +520,9 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(packet.error.code, 404);
   });
 
-  await t.test('CORS: an allowed origin is echoed with Vary, a disallowed one is not', async () => {
+  it('should echo an allowed CORS origin with Vary, and not a disallowed one', async (t) => {
     const cors = { origins: ['https://allowed.example'], credentials: true };
-    const server = await boot({ cors });
+    const server = await boot(t, { cors });
     const corsBase = `http://127.0.0.1:${server.port}/api`;
 
     const allowed = await rpcPost(corsBase, 'test/hello', { name: 'CORS' }, { origin: 'https://allowed.example' });
@@ -539,8 +548,8 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(preflight.headers.get('access-control-allow-methods'), 'POST, GET, OPTIONS');
   });
 
-  await t.test('basePath: both endpoints move together', async () => {
-    const server = await boot({ basePath: '/rpc' });
+  it('should move both endpoints together with basePath', async (t) => {
+    const server = await boot(t, { basePath: '/rpc' });
     const moved = `http://127.0.0.1:${server.port}/rpc`;
 
     const packet = await rpcPost(moved, 'test/hello', { name: 'Moved' });
@@ -560,7 +569,7 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(old.status, 404, 'the default base path no longer answers');
   });
 
-  await t.test('client.meta: no host drops the request url or headers', async (sub) => {
+  it('should let no host drop the request url or headers from client.meta', async (t) => {
     // The packet endpoint: a per-request client still sees url + headers —
     // including a client-declared one carried as a REAL request header.
     const { res, body } = await rpcPost(base, 'test/peekMeta', {}, { 'x-app-version': '9.9' });
@@ -579,7 +588,7 @@ const runAdapterSpec = async (entry, t) => {
         headers: { 'X-App-Version': '8.8', authorization: 'Bearer spec-token' },
         meta: { deviceId: 'd-1', build: 42 },
       });
-      sub.after(() => void client.close());
+      t.after(() => void client.close());
       const meta = await client.call('test/peekMeta');
       assert.ok(meta.url.includes('/api'), `ws ${carrier}: the upgrade url survived (got '${meta.url}')`);
       assert.strictEqual(meta.hasHeaders, true, `ws ${carrier}: the upgrade headers survived`);
@@ -596,9 +605,9 @@ const runAdapterSpec = async (entry, t) => {
     }
   });
 
-  await t.test('WebSocket: load, call, event and streams over one connection', async (sub) => {
+  it('should carry load, call, event and streams over one WebSocket connection', async (t) => {
     const client = await WrpcClient.connect(`ws://127.0.0.1:${main.port}/api`);
-    sub.after(() => void client.close());
+    t.after(() => void client.close());
 
     // load() goes through system/introspect
     await client.load('test');
@@ -636,13 +645,13 @@ const runAdapterSpec = async (entry, t) => {
   // one that cannot (uWebSockets.js) has nothing to hold it with, so the
   // stream FAILS at `maxStreamBuffer` — the handler and the sender both told.
   // What no boot may do is what uws did: read 75 of 100 MiB and never answer.
-  await t.test('streams: a sink that stalls gets every byte or a failed stream, never a hole', async (sub) => {
+  it('should give a sink that stalls every byte or a failed stream, never a hole', async (t) => {
     if (!entry.streams) return;
     const MIB = 1024 * 1024;
-    const small = await boot({ maxStreamBuffer: MIB });
+    const small = await boot(t, { maxStreamBuffer: MIB });
     const url = `ws://127.0.0.1:${small.port}/api`;
     const [client, other] = await Promise.all([WrpcClient.connect(url), WrpcClient.connect(url)]);
-    sub.after(() => {
+    t.after(() => {
       client.close();
       other.close();
     });
@@ -678,7 +687,7 @@ const runAdapterSpec = async (entry, t) => {
     }
   });
 
-  await t.test('closing the host tells an open socket it is going away (1001), not an abnormal close', async () => {
+  it('should tell an open socket the host is going away (1001) on close, not an abnormal close', async (t) => {
     const instance = await entry.boot({ router });
     let closed = false;
     const close = async () => {
@@ -698,10 +707,10 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(await ended, 1001);
   });
 
-  await t.test('rooms and inbound events over two connections', async (sub) => {
+  it('should carry rooms and inbound events over two connections', async (t) => {
     const url = `ws://127.0.0.1:${main.port}/api`;
     const [ada, grace] = await Promise.all([WrpcClient.connect(url), WrpcClient.connect(url)]);
-    sub.after(() => {
+    t.after(() => {
       ada.close();
       grace.close();
     });
@@ -752,9 +761,9 @@ const runAdapterSpec = async (entry, t) => {
     await waitFor(() => main.rpc.rooms.has('lobby') === false, 'the last member disconnecting must drop the room');
   });
 
-  await t.test('subscriptions, resume and cancellation over one connection', async (sub) => {
+  it('should carry subscriptions, resume and cancellation over one connection', async (t) => {
     const client = await WrpcClient.connect(`ws://127.0.0.1:${main.port}/api`);
-    sub.after(() => void client.close());
+    t.after(() => void client.close());
     await client.load('chat');
 
     // subscribe -> data* -> end
@@ -779,19 +788,19 @@ const runAdapterSpec = async (entry, t) => {
     assert.strictEqual(handle.lastEventId, '3');
 
     // for await, and breaking out of it, reaches the server
-    const before = liveSubscriptions.size;
+    const openBefore = liveSubscriptions.size;
     for await (const value of client.api.chat.forever.iterate()) {
       assert.deepStrictEqual(value, { tick: true });
       break;
     }
-    await waitFor(() => liveSubscriptions.size === before, 'breaking the loop never released the generator');
+    await waitFor(() => liveSubscriptions.size === openBefore, 'breaking the loop never released the generator');
 
     // A dropped connection releases whatever is still running.
     const handle2 = client.api.chat.forever.subscribe();
-    await waitFor(() => liveSubscriptions.size === before + 1, 'the subscription never opened');
+    await waitFor(() => liveSubscriptions.size === openBefore + 1, 'the subscription never opened');
     assert.strictEqual(handle2.closed, false);
     client.close();
-    await waitFor(() => liveSubscriptions.size === before, 'a disconnect left a generator running');
+    await waitFor(() => liveSubscriptions.size === openBefore, 'a disconnect left a generator running');
   });
 };
 

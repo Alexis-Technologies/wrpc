@@ -1,47 +1,47 @@
 'use strict';
 
 const { MessageChannel } = require('node:worker_threads');
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it, after, afterEach } = require('node:test');
+const assert = require('node:assert/strict');
 
 class MockWebSocket {
   static last = null;
   // The subprotocol the mocked server selects: none unless a test says so —
   // 'wrpc.v2' is a 2.x server, 'wrpc.v1' a 1.0 one.
   static protocol = '';
+  #listeners = new Map();
 
   constructor(url) {
     MockWebSocket.last = this;
     this.url = url;
     this.protocol = MockWebSocket.protocol;
-    this._listeners = new Map();
-    queueMicrotask(() => this._emit('open'));
+    queueMicrotask(() => this.#emit('open'));
   }
 
   addEventListener(type, fn) {
-    if (!this._listeners.has(type)) this._listeners.set(type, []);
-    this._listeners.get(type).push(fn);
+    if (!this.#listeners.has(type)) this.#listeners.set(type, []);
+    this.#listeners.get(type).push(fn);
   }
 
-  _emit(type, payload) {
-    for (const fn of this._listeners.get(type) || []) {
+  #emit(type, payload) {
+    for (const fn of this.#listeners.get(type) || []) {
       if (type === 'message') fn({ data: payload });
       else fn(payload);
     }
   }
 
   dispatchMessage(data) {
-    this._emit('message', data);
+    this.#emit('message', data);
   }
 
   send(data) {
     this.sentData ??= [];
     this.sentData.push(data);
-    this._emit('send');
+    this.#emit('send');
   }
 
   close() {
-    this._emit('close');
+    this.#emit('close');
   }
 }
 
@@ -60,7 +60,7 @@ process.emitWarning = (warning, type, ...args) => {
 const createSwEnv = () => {
   const listeners = [];
   return {
-    _listeners: listeners,
+    listeners,
     addEventListener(type, fn) {
       listeners.push({ type, fn });
     },
@@ -82,14 +82,14 @@ const until = async (predicate) => {
   assert.ok(predicate(), 'never arrived');
 };
 
-test('WrpcClientProxy', async (t) => {
+describe('WrpcClientProxy', () => {
   let savedSelf;
 
-  t.after(() => {
+  after(() => {
     delete globalThis.self;
   });
 
-  t.afterEach(() => {
+  afterEach(() => {
     if (savedSelf !== undefined) {
       globalThis.self = savedSelf;
     } else {
@@ -97,19 +97,19 @@ test('WrpcClientProxy', async (t) => {
     }
   });
 
-  await t.test('Throws when not in Service Worker context', () => {
+  it('should throw when not in a Service Worker context', () => {
     savedSelf = globalThis.self;
     delete globalThis.self;
     assert.throws(() => new WrpcClientProxy(), /WrpcClientProxy must run in a worker context/);
   });
 
-  await t.test('Constructs when self is defined', () => {
+  it('should construct when self is defined', () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     assert.doesNotThrow(() => new WrpcClientProxy());
   });
 
-  await t.test('Handle event: wrpc:connect', () => {
+  it('should handle the wrpc:connect event', () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -123,7 +123,7 @@ test('WrpcClientProxy', async (t) => {
     port2.close();
   });
 
-  await t.test('Broadcast to all ports', async () => {
+  it('should broadcast to all ports', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -155,7 +155,7 @@ test('WrpcClientProxy', async (t) => {
     ch2.port2.close();
   });
 
-  await t.test('Handle event: wrpc:online', () => {
+  it('should handle the wrpc:online event', () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -170,7 +170,7 @@ test('WrpcClientProxy', async (t) => {
     proxy.close();
   });
 
-  await t.test('Handle event: wrpc:offline', () => {
+  it('should handle the wrpc:offline event', () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -185,7 +185,7 @@ test('WrpcClientProxy', async (t) => {
     proxy.close();
   });
 
-  await t.test('Handle event: unknown wrpc event type throws', () => {
+  it('should throw on an unknown wrpc event type', () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -193,7 +193,7 @@ test('WrpcClientProxy', async (t) => {
     proxy.close();
   });
 
-  await t.test('open() reuses the existing connection on subsequent calls', async () => {
+  it('should reuse the existing connection on subsequent open() calls', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -202,7 +202,7 @@ test('WrpcClientProxy', async (t) => {
     proxy.close();
   });
 
-  await t.test('open() skips reopening while the connection is active', async () => {
+  it('should skip reopening in open() while the connection is active', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -222,7 +222,7 @@ test('WrpcClientProxy', async (t) => {
     proxy.close();
   });
 
-  await t.test('#handleMessage forwards port calls and #proxyPacket routes responses back', async () => {
+  it('should forward port calls in #handleMessage and route responses back in #proxyPacket', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -262,7 +262,7 @@ test('WrpcClientProxy', async (t) => {
     port2.close();
   });
 
-  await t.test('SharedWorker: wrpc:connect over the connection port, then a round trip', async () => {
+  it('should take a SharedWorker wrpc:connect over the connection port, then a round trip', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -294,7 +294,7 @@ test('WrpcClientProxy', async (t) => {
     conn.port1.close();
   });
 
-  await t.test('SharedWorker: online/offline over the connection port', async () => {
+  it('should take SharedWorker online/offline over the connection port', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -317,7 +317,7 @@ test('WrpcClientProxy', async (t) => {
     conn.port1.close();
   });
 
-  await t.test('SharedWorker: junk on the connection port is ignored', async () => {
+  it('should ignore junk on a SharedWorker connection port', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -343,7 +343,7 @@ test('WrpcClientProxy', async (t) => {
     conn.port1.close();
   });
 
-  await t.test('url option overrides the location-derived one', async () => {
+  it('should let the url option override the location-derived one', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const derived = new WrpcClientProxy();
@@ -356,7 +356,7 @@ test('WrpcClientProxy', async (t) => {
     explicit.close();
   });
 
-  await t.test('a page closing its port releases the port and its pending answers', async () => {
+  it('should release the port and its pending answers when a page closes its port', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -397,63 +397,60 @@ test('WrpcClientProxy', async (t) => {
     ch2.port1.close();
   });
 
-  await t.test(
-    "a page's subscriptions are unsubscribed on its goodbye; an upstream close forgets every id",
-    async () => {
-      savedSelf = globalThis.self;
-      globalThis.self = createSwEnv();
-      const proxy = new WrpcClientProxy();
-      const ch1 = new MessageChannel();
-      const ch2 = new MessageChannel();
-      globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [ch1.port2] });
-      globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [ch2.port2] });
-      await proxy.open();
-      const received = [];
-      ch1.port1.onmessage = (e) => received.push({ port: 1, data: e.data });
-      ch2.port1.onmessage = (e) => received.push({ port: 2, data: e.data });
-      ch1.port1.start();
-      ch2.port1.start();
-      ch1.port1.postMessage(JSON.stringify({ type: 'subscribe', id: 'feed', method: 'x/ticks', args: {} }));
-      ch1.port1.postMessage(JSON.stringify({ type: 'call', id: 'c1', method: 'x/y', args: {} }));
-      await tick();
-      // The page's transport says goodbye (`wrpc:close`) before closing its
-      // port — what an engine that never fires MessagePort close still hears.
-      ch1.port1.postMessage({ type: 'wrpc:close' });
-      await tick();
-      const sent = MockWebSocket.last.sentData.slice(-2).map((data) => JSON.parse(data));
-      assert.deepStrictEqual(
-        sent.sort((a, b) => a.type.localeCompare(b.type)),
-        [
-          { type: 'cancel', id: 'c1' },
-          { type: 'unsubscribe', id: 'feed' },
-        ],
-      );
-      // Data for the feed arriving late is nobody's.
-      MockWebSocket.last.dispatchMessage(JSON.stringify({ type: 'data', id: 'feed', data: 1 }));
-      await tick();
-      assert.deepStrictEqual(received, []);
-      // Page 2 subscribes; the upstream connection closes: nothing is
-      // remembered for it, and its answer after the reconnect is dropped.
-      ch2.port1.postMessage(JSON.stringify({ type: 'subscribe', id: 'feed2', method: 'x/ticks', args: {} }));
-      await tick();
-      MockWebSocket.last.close();
-      await tick();
-      await tick();
-      MockWebSocket.last.dispatchMessage(JSON.stringify({ type: 'data', id: 'feed2', data: 1 }));
-      await tick();
-      assert.deepStrictEqual(
-        received.filter((r) => r.port === 2 && JSON.parse(r.data).type === 'data'),
-        [],
-      );
-      proxy.close();
-      ch1.port1.close();
-      ch2.port1.close();
-      ch1.port2.close();
-      ch2.port2.close();
-    },
-  );
+  it("should unsubscribe a page's subscriptions on its goodbye, and forget every id on an upstream close", async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const proxy = new WrpcClientProxy();
+    const ch1 = new MessageChannel();
+    const ch2 = new MessageChannel();
+    globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [ch1.port2] });
+    globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [ch2.port2] });
+    await proxy.open();
+    const received = [];
+    ch1.port1.onmessage = (e) => received.push({ port: 1, data: e.data });
+    ch2.port1.onmessage = (e) => received.push({ port: 2, data: e.data });
+    ch1.port1.start();
+    ch2.port1.start();
+    ch1.port1.postMessage(JSON.stringify({ type: 'subscribe', id: 'feed', method: 'x/ticks', args: {} }));
+    ch1.port1.postMessage(JSON.stringify({ type: 'call', id: 'c1', method: 'x/y', args: {} }));
+    await tick();
+    // The page's transport says goodbye (`wrpc:close`) before closing its
+    // port — what an engine that never fires MessagePort close still hears.
+    ch1.port1.postMessage({ type: 'wrpc:close' });
+    await tick();
+    const sent = MockWebSocket.last.sentData.slice(-2).map((data) => JSON.parse(data));
+    assert.deepStrictEqual(
+      sent.sort((a, b) => a.type.localeCompare(b.type)),
+      [
+        { type: 'cancel', id: 'c1' },
+        { type: 'unsubscribe', id: 'feed' },
+      ],
+    );
+    // Data for the feed arriving late is nobody's.
+    MockWebSocket.last.dispatchMessage(JSON.stringify({ type: 'data', id: 'feed', data: 1 }));
+    await tick();
+    assert.deepStrictEqual(received, []);
+    // Page 2 subscribes; the upstream connection closes: nothing is
+    // remembered for it, and its answer after the reconnect is dropped.
+    ch2.port1.postMessage(JSON.stringify({ type: 'subscribe', id: 'feed2', method: 'x/ticks', args: {} }));
+    await tick();
+    MockWebSocket.last.close();
+    await tick();
+    await tick();
+    MockWebSocket.last.dispatchMessage(JSON.stringify({ type: 'data', id: 'feed2', data: 1 }));
+    await tick();
+    assert.deepStrictEqual(
+      received.filter((r) => r.port === 2 && JSON.parse(r.data).type === 'data'),
+      [],
+    );
+    proxy.close();
+    ch1.port1.close();
+    ch2.port1.close();
+    ch1.port2.close();
+    ch2.port2.close();
+  });
 
-  await t.test('an attachments frame crosses the port both ways, routed by the packet it carries', async () => {
+  it('should carry an attachments frame across the port both ways, routed by the packet it carries', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     // Revision 2 end to end: the server selected `wrpc.v2`, and each page
@@ -528,7 +525,7 @@ test('WrpcClientProxy', async (t) => {
     ch2.port2.close();
   });
 
-  await t.test('a page that named no revision is a 1.0 page: a frame from upstream reaches it as JSON', async () => {
+  it('should treat a page that named no revision as a 1.0 page: a frame from upstream reaches it as JSON', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     MockWebSocket.protocol = 'wrpc.v2';
@@ -576,7 +573,7 @@ test('WrpcClientProxy', async (t) => {
     for (const port of [old.port1, old.port2, modern.port1, modern.port2]) port.close();
   });
 
-  await t.test('upstream of the proxy is a 1.0 server: a page’s frame leaves as the JSON of its packet', async () => {
+  it('should send a page’s frame as the JSON of its packet when upstream of the proxy is a 1.0 server', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     MockWebSocket.protocol = 'wrpc.v1';
@@ -598,58 +595,53 @@ test('WrpcClientProxy', async (t) => {
     page.port2.close();
   });
 
-  await t.test(
-    'a call the proxy cannot forward is answered with a coded error, never an unhandled rejection',
-    async () => {
-      savedSelf = globalThis.self;
-      globalThis.self = createSwEnv();
-      const unhandled = [];
-      const onUnhandled = (error) => unhandled.push(error);
-      process.on('unhandledRejection', onUnhandled);
-      const originalConnect = WrpcClient.connect;
-      WrpcClient.connect = async () => {
-        throw Object.assign(new Error('upstream refused'), { code: 502 });
-      };
-      const proxy = new WrpcClientProxy();
-      const { port1, port2 } = new MessageChannel();
-      try {
-        globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
-        const received = [];
-        port1.onmessage = (e) => received.push(e.data);
-        port1.start();
-        port1.postMessage(JSON.stringify({ type: 'call', id: 'c-1', method: 'x/y', args: {} }));
-        port1.postMessage(
-          encodeAttachments({ type: 'call', id: 'c-2', method: 'x/y', args: { b: new Uint8Array(1) } }),
-        );
-        // Not packets at all: nothing to answer, nothing to blow up on.
-        port1.postMessage('not json');
-        port1.postMessage(new Uint8Array([1, 2, 3]));
-        port1.postMessage(JSON.stringify({ type: 'event', name: 'x/y', data: 1 }));
-        await until(() => received.length === 2);
-        await tick();
-        assert.deepStrictEqual(
-          received.map((text) => JSON.parse(text)),
-          [
-            { type: 'callback', id: 'c-1', error: { message: 'upstream refused', code: 502 } },
-            { type: 'callback', id: 'c-2', error: { message: 'upstream refused', code: 502 } },
-          ],
-        );
-        // A heartbeat is answered without a connection at all.
-        port1.postMessage(JSON.stringify({ type: 'ping' }));
-        await until(() => received.length === 3);
-        assert.deepStrictEqual(JSON.parse(received.at(-1)), { type: 'pong' });
-      } finally {
-        // Closed whatever happened above: an open port keeps the process alive.
-        proxy.close();
-        port1.close();
-        port2.close();
-        WrpcClient.connect = originalConnect;
-        process.off('unhandledRejection', onUnhandled);
-      }
-      assert.deepStrictEqual(unhandled, []);
-    },
-  );
-  await t.test('pages whose first calls arrive together share one upstream, and hear its loss at once', async () => {
+  it('should answer a call it cannot forward with a coded error, never an unhandled rejection', async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const unhandled = [];
+    const onUnhandled = (error) => unhandled.push(error);
+    process.on('unhandledRejection', onUnhandled);
+    const originalConnect = WrpcClient.connect;
+    WrpcClient.connect = async () => {
+      throw Object.assign(new Error('upstream refused'), { code: 502 });
+    };
+    const proxy = new WrpcClientProxy();
+    const { port1, port2 } = new MessageChannel();
+    try {
+      globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
+      const received = [];
+      port1.onmessage = (e) => received.push(e.data);
+      port1.start();
+      port1.postMessage(JSON.stringify({ type: 'call', id: 'c-1', method: 'x/y', args: {} }));
+      port1.postMessage(encodeAttachments({ type: 'call', id: 'c-2', method: 'x/y', args: { b: new Uint8Array(1) } }));
+      // Not packets at all: nothing to answer, nothing to blow up on.
+      port1.postMessage('not json');
+      port1.postMessage(new Uint8Array([1, 2, 3]));
+      port1.postMessage(JSON.stringify({ type: 'event', name: 'x/y', data: 1 }));
+      await until(() => received.length === 2);
+      await tick();
+      assert.deepStrictEqual(
+        received.map((text) => JSON.parse(text)),
+        [
+          { type: 'callback', id: 'c-1', error: { message: 'upstream refused', code: 502 } },
+          { type: 'callback', id: 'c-2', error: { message: 'upstream refused', code: 502 } },
+        ],
+      );
+      // A heartbeat is answered without a connection at all.
+      port1.postMessage(JSON.stringify({ type: 'ping' }));
+      await until(() => received.length === 3);
+      assert.deepStrictEqual(JSON.parse(received.at(-1)), { type: 'pong' });
+    } finally {
+      // Closed whatever happened above: an open port keeps the process alive.
+      proxy.close();
+      port1.close();
+      port2.close();
+      WrpcClient.connect = originalConnect;
+      process.off('unhandledRejection', onUnhandled);
+    }
+    assert.deepStrictEqual(unhandled, []);
+  });
+  it('should give pages whose first calls arrive together one upstream, and tell them of its loss at once', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const originalConnect = WrpcClient.connect;
@@ -700,7 +692,7 @@ test('WrpcClientProxy', async (t) => {
   // server empty and a server's download reaches the page empty.
   const bytesOf = (data) => new Uint8Array(data instanceof ArrayBuffer ? data : (data.buffer ?? data));
 
-  await t.test('a server-opened stream reaches the pages: its chunks follow its announcement', async () => {
+  it('should bring a server-opened stream to the pages: its chunks follow its announcement', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -749,7 +741,7 @@ test('WrpcClientProxy', async (t) => {
     }
   });
 
-  await t.test("a page's upload reaches the server: its chunks go up between its packets", async () => {
+  it("should bring a page's upload to the server: its chunks go up between its packets", async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -795,7 +787,7 @@ test('WrpcClientProxy', async (t) => {
     }
   });
 
-  await t.test('a page that leaves mid-upload terminates its stream upstream', async () => {
+  it('should terminate the stream upstream of a page that leaves mid-upload', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -822,7 +814,7 @@ test('WrpcClientProxy', async (t) => {
   // The receiver's word on a stream — a `callback` error on the stream's
   // id — crosses the worker both ways: down to the page that announced the
   // upload, up from the page that let go of a download.
-  await t.test("the server's word on an upload reaches the page that announced it, and no other", async () => {
+  it("should bring the server's word on an upload to the page that announced it, and no other", async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -867,58 +859,55 @@ test('WrpcClientProxy', async (t) => {
     }
   });
 
-  await t.test(
-    "a page that lets go of a server stream says so upstream, and the stream's terminate reaches every page",
-    async () => {
-      savedSelf = globalThis.self;
-      globalThis.self = createSwEnv();
-      const proxy = new WrpcClientProxy();
-      const pages = [new MessageChannel(), new MessageChannel()];
-      const got = pages.map(() => []);
-      try {
-        pages.forEach(({ port1, port2 }, i) => {
-          globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
-          port1.onmessage = (e) => got[i].push(e.data);
-          port1.start();
-        });
-        await proxy.open();
-        const upstream = MockWebSocket.last;
-        upstream.dispatchMessage(
-          JSON.stringify({ type: 'stream', id: 's-3', name: 'live.bin', size: 1024, cancel: true }),
-        );
-        await until(() => got.every((messages) => messages.length === 1));
-        // Every page was handed the announcement as the server wrote it.
-        for (const messages of got) assert.strictEqual(JSON.parse(messages[0]).cancel, true);
-        const cancel = {
-          type: 'callback',
-          id: 's-3',
-          error: { message: 'Stream live.bin is no longer read', code: 499 },
-        };
-        pages[0].port1.postMessage(JSON.stringify(cancel));
-        await until(() => upstream.sentData?.length === 1);
-        assert.deepStrictEqual(JSON.parse(upstream.sentData[0]), cancel);
-        // The server's answer is the stream's terminate — for every page that
-        // holds the stream, not for the one that spoke: its callback took no
-        // slot for the id.
-        upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 's-3', status: 'terminate' }));
-        await until(() => got.every((messages) => messages.length === 2));
-        for (const messages of got) {
-          assert.deepStrictEqual(JSON.parse(messages[1]), { type: 'stream', id: 's-3', status: 'terminate' });
-        }
-      } finally {
-        proxy.close();
-        for (const { port1, port2 } of pages) {
-          port1.close();
-          port2.close();
-        }
+  it("should say upstream that a page let go of a server stream, and bring the stream's terminate to every page", async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const proxy = new WrpcClientProxy();
+    const pages = [new MessageChannel(), new MessageChannel()];
+    const got = pages.map(() => []);
+    try {
+      pages.forEach(({ port1, port2 }, i) => {
+        globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
+        port1.onmessage = (e) => got[i].push(e.data);
+        port1.start();
+      });
+      await proxy.open();
+      const upstream = MockWebSocket.last;
+      upstream.dispatchMessage(
+        JSON.stringify({ type: 'stream', id: 's-3', name: 'live.bin', size: 1024, cancel: true }),
+      );
+      await until(() => got.every((messages) => messages.length === 1));
+      // Every page was handed the announcement as the server wrote it.
+      for (const messages of got) assert.strictEqual(JSON.parse(messages[0]).cancel, true);
+      const cancel = {
+        type: 'callback',
+        id: 's-3',
+        error: { message: 'Stream live.bin is no longer read', code: 499 },
+      };
+      pages[0].port1.postMessage(JSON.stringify(cancel));
+      await until(() => upstream.sentData?.length === 1);
+      assert.deepStrictEqual(JSON.parse(upstream.sentData[0]), cancel);
+      // The server's answer is the stream's terminate — for every page that
+      // holds the stream, not for the one that spoke: its callback took no
+      // slot for the id.
+      upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 's-3', status: 'terminate' }));
+      await until(() => got.every((messages) => messages.length === 2));
+      for (const messages of got) {
+        assert.deepStrictEqual(JSON.parse(messages[1]), { type: 'stream', id: 's-3', status: 'terminate' });
       }
-    },
-  );
+    } finally {
+      proxy.close();
+      for (const { port1, port2 } of pages) {
+        port1.close();
+        port2.close();
+      }
+    }
+  });
 
   // A server stream goes to the pages that were there when it was announced,
   // and the worker knows which of them are left. It forwarded every chunk to
   // nobody, for as long as the server liked to send, once its pages had gone.
-  await t.test('a server stream nobody is left to read is cancelled upstream, once, by the worker', async () => {
+  it('should cancel upstream, once, from the worker, a server stream nobody is left to read', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -970,86 +959,80 @@ test('WrpcClientProxy', async (t) => {
     }
   });
 
-  await t.test(
-    'a server stream announced to no page is cancelled at once; a sender that did not ask hears nothing',
-    async () => {
-      savedSelf = globalThis.self;
-      globalThis.self = createSwEnv();
-      const proxy = new WrpcClientProxy();
-      try {
-        await proxy.open();
-        const upstream = MockWebSocket.last;
-        const sentUp = () => (upstream.sentData ?? []).filter((data) => typeof data === 'string').map(JSON.parse);
-        upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 'd-2', name: 'a.bin', size: 8, cancel: true }));
-        await until(() => sentUp().length === 1);
-        assert.deepStrictEqual(sentUp()[0].error, { message: 'Stream is no longer read', code: 499 });
-        assert.strictEqual(sentUp()[0].id, 'd-2');
-        // 2.0.1 and 1.0 announce without `cancel`: they would log an answer nobody waited for.
-        upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 'd-3', name: 'b.bin', size: 8 }));
-        await tick();
-        await tick();
-        assert.strictEqual(sentUp().length, 1);
-      } finally {
-        proxy.close();
-      }
-    },
-  );
-
-  await t.test(
-    "a page's events and its batched calls go upstream, and each answer of a batch to its own page",
-    async () => {
-      savedSelf = globalThis.self;
-      globalThis.self = createSwEnv();
-      const proxy = new WrpcClientProxy();
-      const ch1 = new MessageChannel();
-      const ch2 = new MessageChannel();
-      for (const { port2 } of [ch1, ch2]) globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
-      const received = [];
-      ch1.port1.onmessage = (e) => received.push({ port: 1, data: e.data });
-      ch2.port1.onmessage = (e) => received.push({ port: 2, data: e.data });
-      ch1.port1.start();
-      ch2.port1.start();
+  it('should cancel at once a server stream announced to no page, and say nothing to a sender that did not ask', async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const proxy = new WrpcClientProxy();
+    try {
       await proxy.open();
       const upstream = MockWebSocket.last;
-      upstream.sentData = [];
-      // An event has no id, by protocol; a batch is an array. Both stopped at
-      // the proxy's id check: the event never reached the server, and every
-      // call of the batch waited out its callTimeout.
-      const event = JSON.stringify({ type: 'event', name: 'chat/typing', data: { on: true } });
-      const batch = JSON.stringify([
-        { type: 'call', id: 'b1', method: 'x/y', args: {} },
-        { type: 'call', id: 'b2', method: 'x/y', args: {} },
-      ]);
-      ch1.port1.postMessage(event);
-      ch1.port1.postMessage(batch);
-      ch2.port1.postMessage(JSON.stringify({ type: 'call', id: 'other', method: 'x/y', args: {} }));
-      await until(() => upstream.sentData.length === 3);
-      assert.deepStrictEqual(upstream.sentData.slice(0, 2), [event, batch], 'forwarded as the page wrote them');
-      // The answers, alone or in one frame (a request/response uplink sends the
-      // batch's back as an array): each to the page that asked.
-      upstream.dispatchMessage(JSON.stringify({ type: 'callback', id: 'b1', result: 1 }));
-      upstream.dispatchMessage(
-        JSON.stringify([
-          { type: 'callback', id: 'b2', result: 2 },
-          { type: 'callback', id: 'other', result: 3 },
-        ]),
-      );
-      await until(() => received.length === 3);
+      const sentUp = () => (upstream.sentData ?? []).filter((data) => typeof data === 'string').map(JSON.parse);
+      upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 'd-2', name: 'a.bin', size: 8, cancel: true }));
+      await until(() => sentUp().length === 1);
+      assert.deepStrictEqual(sentUp()[0].error, { message: 'Stream is no longer read', code: 499 });
+      assert.strictEqual(sentUp()[0].id, 'd-2');
+      // 2.0.1 and 1.0 announce without `cancel`: they would log an answer nobody waited for.
+      upstream.dispatchMessage(JSON.stringify({ type: 'stream', id: 'd-3', name: 'b.bin', size: 8 }));
       await tick();
-      assert.deepStrictEqual(received.map((r) => [r.port, JSON.parse(r.data).id]).sort(), [
-        [1, 'b1'],
-        [1, 'b2'],
-        [2, 'other'],
-      ]);
+      await tick();
+      assert.strictEqual(sentUp().length, 1);
+    } finally {
       proxy.close();
-      for (const { port1, port2 } of [ch1, ch2]) {
-        port1.close();
-        port2.close();
-      }
-    },
-  );
+    }
+  });
 
-  await t.test('a batch the proxy cannot forward answers each of its calls', async () => {
+  it("should send a page's events and its batched calls upstream, and each answer of a batch to its own page", async () => {
+    savedSelf = globalThis.self;
+    globalThis.self = createSwEnv();
+    const proxy = new WrpcClientProxy();
+    const ch1 = new MessageChannel();
+    const ch2 = new MessageChannel();
+    for (const { port2 } of [ch1, ch2]) globalThis.self.dispatch({ data: { type: 'wrpc:connect' }, ports: [port2] });
+    const received = [];
+    ch1.port1.onmessage = (e) => received.push({ port: 1, data: e.data });
+    ch2.port1.onmessage = (e) => received.push({ port: 2, data: e.data });
+    ch1.port1.start();
+    ch2.port1.start();
+    await proxy.open();
+    const upstream = MockWebSocket.last;
+    upstream.sentData = [];
+    // An event has no id, by protocol; a batch is an array. Both stopped at
+    // the proxy's id check: the event never reached the server, and every
+    // call of the batch waited out its callTimeout.
+    const event = JSON.stringify({ type: 'event', name: 'chat/typing', data: { on: true } });
+    const batch = JSON.stringify([
+      { type: 'call', id: 'b1', method: 'x/y', args: {} },
+      { type: 'call', id: 'b2', method: 'x/y', args: {} },
+    ]);
+    ch1.port1.postMessage(event);
+    ch1.port1.postMessage(batch);
+    ch2.port1.postMessage(JSON.stringify({ type: 'call', id: 'other', method: 'x/y', args: {} }));
+    await until(() => upstream.sentData.length === 3);
+    assert.deepStrictEqual(upstream.sentData.slice(0, 2), [event, batch], 'forwarded as the page wrote them');
+    // The answers, alone or in one frame (a request/response uplink sends the
+    // batch's back as an array): each to the page that asked.
+    upstream.dispatchMessage(JSON.stringify({ type: 'callback', id: 'b1', result: 1 }));
+    upstream.dispatchMessage(
+      JSON.stringify([
+        { type: 'callback', id: 'b2', result: 2 },
+        { type: 'callback', id: 'other', result: 3 },
+      ]),
+    );
+    await until(() => received.length === 3);
+    await tick();
+    assert.deepStrictEqual(received.map((r) => [r.port, JSON.parse(r.data).id]).sort(), [
+      [1, 'b1'],
+      [1, 'b2'],
+      [2, 'other'],
+    ]);
+    proxy.close();
+    for (const { port1, port2 } of [ch1, ch2]) {
+      port1.close();
+      port2.close();
+    }
+  });
+
+  it('should answer each call of a batch it cannot forward', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -1080,7 +1063,7 @@ test('WrpcClientProxy', async (t) => {
     ch.port2.close();
   });
 
-  await t.test('a page that connects after a stream was announced is sent none of it', async () => {
+  it('should send none of a stream to a page that connects after it was announced', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -1114,7 +1097,7 @@ test('WrpcClientProxy', async (t) => {
   // that asked reads it. The copy on another page is that page's to drop —
   // swept, or past its cap — and its drop is nobody else's business: said to
   // the server, it ended the stream for the page that was reading it.
-  await t.test('a page that drops a copy it never read does not end the stream for the page reading it', async () => {
+  it('should not end the stream for the page reading it when another page drops a copy it never read', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -1166,7 +1149,7 @@ test('WrpcClientProxy', async (t) => {
   // Every stream the server announces and does not end is an entry in the
   // worker, and a message to every page: two hundred thousand of them were
   // 48 MiB there. The worker holds as many as a page does, and no more.
-  await t.test('the server streams the worker holds open are capped, and the rest refused upstream', async () => {
+  it('should cap the server streams the worker holds open, and refuse the rest upstream', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy();
@@ -1212,7 +1195,7 @@ test('WrpcClientProxy', async (t) => {
     }
   });
 
-  await t.test('a lost upstream ends the server streams the pages were reading', async () => {
+  it('should end the server streams the pages were reading when upstream is lost', async () => {
     savedSelf = globalThis.self;
     globalThis.self = createSwEnv();
     const proxy = new WrpcClientProxy({ reconnect: false });

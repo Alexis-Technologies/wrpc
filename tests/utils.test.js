@@ -1,22 +1,22 @@
 'use strict';
 
-const { test } = require('node:test');
-const assert = require('node:assert');
+const { describe, it } = require('node:test');
+const assert = require('node:assert/strict');
 
 const { Emitter, jsonParse, Semaphore, toKebab } = require('../src/utils.js');
 
-test('Emitter', async (t) => {
-  await t.test('emit resolves without listeners for non-error events', async () => {
+describe('Emitter', () => {
+  it('should resolve emit without listeners for a non-error event', async () => {
     const emitter = new Emitter();
     await assert.doesNotReject(emitter.emit('idle'));
   });
 
-  await t.test('emit throws Unhandled error when no error listeners', () => {
+  it('should throw Unhandled error from emit when an error event has no listener', () => {
     const emitter = new Emitter();
     assert.throws(() => emitter.emit('error', new Error('boom')), /Unhandled error/);
   });
 
-  await t.test('on/emit calls all listeners with the value', async () => {
+  it('should call every listener with the value on emit', async () => {
     const emitter = new Emitter();
     const received = [];
     emitter.on('data', (value) => received.push(value));
@@ -25,7 +25,7 @@ test('Emitter', async (t) => {
     assert.deepStrictEqual(received, [5, 10]);
   });
 
-  await t.test('once listener fires only a single time', async () => {
+  it('should fire a once listener only a single time', async () => {
     const emitter = new Emitter();
     let calls = 0;
     emitter.once('tick', () => calls++);
@@ -34,7 +34,7 @@ test('Emitter', async (t) => {
     assert.strictEqual(calls, 1);
   });
 
-  await t.test('once alongside a persistent listener keeps the persistent one', async () => {
+  it('should keep a persistent listener registered alongside a once one', async () => {
     const emitter = new Emitter();
     let onceCalls = 0;
     let onCalls = 0;
@@ -46,14 +46,14 @@ test('Emitter', async (t) => {
     assert.strictEqual(onCalls, 2);
   });
 
-  await t.test('addListener throws on duplicate listener registration', () => {
+  it('should throw from addListener on a duplicate listener registration', () => {
     const emitter = new Emitter();
     const listener = () => {};
     emitter.on('data', listener);
     assert.throws(() => emitter.on('data', listener), /Duplicate listeners detected/);
   });
 
-  await t.test('addListener warns past maxListeners instead of throwing', () => {
+  it('should warn from addListener past maxListeners instead of throwing', () => {
     const emitter = new Emitter({ maxListeners: 1 });
     emitter.on('data', () => {});
     const warnings = [];
@@ -68,7 +68,7 @@ test('Emitter', async (t) => {
     assert.ok(warnings.some((message) => /MaxListenersExceededWarning/.test(message)));
   });
 
-  await t.test('the warning goes where warn says, and nowhere for null', () => {
+  it('should send the warning where warn says, and nowhere for null', () => {
     const warnings = [];
     const routed = new Emitter({ maxListeners: 1, warn: (message) => warnings.push(message) });
     routed.on('data', () => {});
@@ -88,7 +88,7 @@ test('Emitter', async (t) => {
     assert.deepStrictEqual(printed, []);
   });
 
-  await t.test('an owner with logger: false is silent, and one with a logger warns through it', () => {
+  it('should stay silent for an owner with logger: false, and warn through the logger of one that has one', () => {
     const { RpcServer, defineRouter } = require('../index.js');
     const printed = [];
     const originalWarn = globalThis.console.warn;
@@ -107,7 +107,7 @@ test('Emitter', async (t) => {
     assert.ok(lines.some((args) => args.some((part) => /MaxListenersExceededWarning/.test(String(part)))));
   });
 
-  await t.test('off removes a specific listener', async () => {
+  it('should remove a specific listener with off', async () => {
     const emitter = new Emitter();
     let calls = 0;
     const listener = () => calls++;
@@ -117,7 +117,7 @@ test('Emitter', async (t) => {
     assert.strictEqual(calls, 0);
   });
 
-  await t.test('off without a listener removes the whole event', async () => {
+  it('should remove the whole event with off without a listener', async () => {
     const emitter = new Emitter();
     let calls = 0;
     emitter.on('data', () => calls++);
@@ -126,12 +126,12 @@ test('Emitter', async (t) => {
     assert.strictEqual(calls, 0);
   });
 
-  await t.test('off on an unknown event is a no-op', () => {
+  it('should do nothing on off for an unknown event', () => {
     const emitter = new Emitter();
     assert.doesNotThrow(() => emitter.off('unknown', () => {}));
   });
 
-  await t.test('clear removes a single event', async () => {
+  it('should remove a single event with clear', async () => {
     const emitter = new Emitter();
     let calls = 0;
     emitter.on('data', () => calls++);
@@ -140,7 +140,7 @@ test('Emitter', async (t) => {
     assert.strictEqual(calls, 0);
   });
 
-  await t.test('clear with no argument removes every event', async () => {
+  it('should remove every event with clear and no argument', async () => {
     const emitter = new Emitter();
     let calls = 0;
     emitter.on('data', () => calls++);
@@ -149,7 +149,7 @@ test('Emitter', async (t) => {
     assert.deepStrictEqual(emitter.eventNames(), []);
   });
 
-  await t.test('listeners returns the registered handlers', () => {
+  it('should return the registered handlers from listeners', () => {
     const emitter = new Emitter();
     const listener = () => {};
     emitter.on('data', listener);
@@ -157,12 +157,12 @@ test('Emitter', async (t) => {
     assert.deepStrictEqual(emitter.listeners('unknown'), []);
   });
 
-  await t.test('listeners throws without an eventName', () => {
+  it('should throw from listeners without an eventName', () => {
     const emitter = new Emitter();
     assert.throws(() => emitter.listeners(), /Expected eventName/);
   });
 
-  await t.test('listenerCount reports the number of handlers', () => {
+  it('should report the number of handlers from listenerCount', () => {
     const emitter = new Emitter();
     emitter.on('data', () => {});
     emitter.on('data', () => {});
@@ -170,12 +170,12 @@ test('Emitter', async (t) => {
     assert.strictEqual(emitter.listenerCount('unknown'), 0);
   });
 
-  await t.test('listenerCount throws without an eventName', () => {
+  it('should throw from listenerCount without an eventName', () => {
     const emitter = new Emitter();
     assert.throws(() => emitter.listenerCount(), /Expected eventName/);
   });
 
-  await t.test('eventNames lists every registered event', () => {
+  it('should list every registered event from eventNames', () => {
     const emitter = new Emitter();
     emitter.on('data', () => {});
     emitter.on('close', () => {});
@@ -186,7 +186,7 @@ test('Emitter', async (t) => {
   // `void emitter.emit('close')` is the house style: a listener's SYNCHRONOUS
   // throw has to surface as a rejection, never as a throw escaping into a
   // socket handler. Written against the pre-fast-path implementation.
-  await t.test('a synchronously throwing listener rejects instead of throwing', async () => {
+  it('should reject instead of throwing when a listener throws synchronously', async () => {
     const emitter = new Emitter();
     emitter.on('boom', () => {
       throw new Error('sync boom');
@@ -202,7 +202,7 @@ test('Emitter', async (t) => {
     await assert.rejects(promise, /sync boom/);
   });
 
-  await t.test('a throwing listener does not stop the listeners after it', async () => {
+  it('should still call the listeners after one that throws', async () => {
     const emitter = new Emitter();
     const ran = [];
     emitter.on('boom', () => {
@@ -214,7 +214,7 @@ test('Emitter', async (t) => {
     assert.deepStrictEqual(ran, ['a', 'b']);
   });
 
-  await t.test('an async listener rejection surfaces on the emit promise', async () => {
+  it('should surface an async listener rejection on the emit promise', async () => {
     const emitter = new Emitter();
     emitter.on('boom', async () => {
       throw new Error('async boom');
@@ -222,7 +222,7 @@ test('Emitter', async (t) => {
     await assert.rejects(emitter.emit('boom'), /async boom/);
   });
 
-  await t.test('emit resolves to undefined whatever a listener returns', async () => {
+  it('should resolve emit to undefined whatever a listener returns', async () => {
     const emitter = new Emitter();
     emitter.on('value', () => 42);
     assert.strictEqual(await emitter.emit('value'), undefined);
@@ -231,7 +231,7 @@ test('Emitter', async (t) => {
     assert.strictEqual(await asyncEmitter.emit('value'), undefined);
   });
 
-  await t.test('emit awaits an async listener before resolving', async () => {
+  it('should await an async listener before emit resolves', async () => {
     const emitter = new Emitter();
     let done = false;
     emitter.on('slow', async () => {
@@ -244,7 +244,7 @@ test('Emitter', async (t) => {
 
   // off() splices without deleting an emptied record, so an event with a live
   // entry and zero listeners is reachable and must still resolve.
-  await t.test('emit on an event emptied by off resolves', async () => {
+  it('should resolve emit on an event emptied by off', async () => {
     const emitter = new Emitter();
     const listener = () => {};
     emitter.on('data', listener);
@@ -253,7 +253,7 @@ test('Emitter', async (t) => {
     await assert.doesNotReject(emitter.emit('data', 1));
   });
 
-  await t.test('a lone once listener fires exactly once and clears the event', async () => {
+  it('should fire a lone once listener exactly once and clear the event', async () => {
     const emitter = new Emitter();
     let calls = 0;
     emitter.once('tick', () => calls++);
@@ -263,7 +263,7 @@ test('Emitter', async (t) => {
     assert.deepStrictEqual(emitter.eventNames(), []);
   });
 
-  await t.test('a once listener that throws still rejects and is still removed', async () => {
+  it('should still reject and remove a once listener that throws', async () => {
     const emitter = new Emitter();
     let calls = 0;
     emitter.once('boom', () => {
@@ -275,7 +275,7 @@ test('Emitter', async (t) => {
     assert.strictEqual(calls, 1);
   });
 
-  await t.test('an error event with a listener does not throw', async () => {
+  it('should not throw for an error event with a listener', async () => {
     const emitter = new Emitter();
     const seen = [];
     emitter.on('error', (error) => seen.push(error.message));
@@ -284,14 +284,16 @@ test('Emitter', async (t) => {
   });
 });
 
-test('jsonParse', () => {
-  assert.deepStrictEqual(jsonParse('{"a":1}'), { a: 1 });
-  assert.strictEqual(jsonParse(null), null);
-  assert.strictEqual(jsonParse('not json'), null);
+describe('jsonParse', () => {
+  it('should parse JSON, and answer null for null and for what is not JSON', () => {
+    assert.deepStrictEqual(jsonParse('{"a":1}'), { a: 1 });
+    assert.strictEqual(jsonParse(null), null);
+    assert.strictEqual(jsonParse('not json'), null);
+  });
 });
 
-test('Semaphore', async (t) => {
-  await t.test('grants slots up to concurrency without waiting', async () => {
+describe('Semaphore', () => {
+  it('should grant slots up to concurrency without waiting', async () => {
     const semaphore = new Semaphore({ concurrency: 2 });
     await semaphore.enter();
     await semaphore.enter();
@@ -301,7 +303,7 @@ test('Semaphore', async (t) => {
     assert.strictEqual(semaphore.empty, true);
   });
 
-  await t.test('queues waiters and wakes them on leave in FIFO order', async () => {
+  it('should queue waiters and wake them on leave in FIFO order', async () => {
     const semaphore = new Semaphore({ concurrency: 1, size: 2 });
     await semaphore.enter();
     const order = [];
@@ -315,14 +317,14 @@ test('Semaphore', async (t) => {
     semaphore.leave();
   });
 
-  await t.test('rejects when the queue is full', async () => {
+  it('should reject when the queue is full', async () => {
     const semaphore = new Semaphore({ concurrency: 1, size: 0 });
     await semaphore.enter();
     await assert.rejects(semaphore.enter(), /Semaphore queue is full/);
     semaphore.leave();
   });
 
-  await t.test('rejects a queued waiter after the timeout', async () => {
+  it('should reject a queued waiter after the timeout', async () => {
     const semaphore = new Semaphore({ concurrency: 1, size: 1, timeout: 20 });
     await semaphore.enter();
     await assert.rejects(semaphore.enter(), /Semaphore timeout/);
@@ -332,7 +334,7 @@ test('Semaphore', async (t) => {
     semaphore.leave();
   });
 
-  await t.test('leave without waiters restores capacity, never above concurrency', async () => {
+  it('should restore capacity on leave without waiters, never above concurrency', async () => {
     const semaphore = new Semaphore({ concurrency: 1 });
     semaphore.leave();
     semaphore.leave();
@@ -343,7 +345,7 @@ test('Semaphore', async (t) => {
   });
 });
 
-test('toKebab', async (t) => {
+describe('toKebab', () => {
   // The contract table. Both ends of the wire run this exact function, so a
   // change here is a change to what `schema.headers` must be written against.
   const cases = [
@@ -359,18 +361,18 @@ test('toKebab', async (t) => {
     ['authorization', 'authorization'],
     ['', ''],
   ];
-  await t.test('the contract table', () => {
+  it('should hold the contract table', () => {
     for (const [input, expected] of cases) assert.strictEqual(toKebab(input), expected, input);
   });
 
-  await t.test('idempotent: the server may normalize what the client already did', () => {
+  it('should be idempotent: the server may normalize what the client already did', () => {
     for (const [input] of cases) {
       const once = toKebab(input);
       assert.strictEqual(toKebab(once), once, input);
     }
   });
 
-  await t.test('output is always lowercase, so a second pass can never split again', () => {
+  it('should always output lowercase, so a second pass can never split again', () => {
     for (const [input] of cases) assert.strictEqual(toKebab(input), toKebab(input).toLowerCase(), input);
   });
 });

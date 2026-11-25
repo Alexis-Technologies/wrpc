@@ -7,15 +7,14 @@
 // `connect()` constructs against, so a third-party registrant that would die
 // at runtime dies here instead.
 
-const assert = require('node:assert');
+const { it } = require('node:test');
+const assert = require('node:assert/strict');
 
 const { isClientTransport } = require('../../src/client.js');
 
-// Awaited, and awaited by its caller: a subtest a synchronous parent never
-// waits for is CANCELLED rather than run on Node 22 (Node 24's runner waits),
-// which is how this suite reported `cancelledByParent` for every case there.
-const runTransportContract = async (t, name, Transport) => {
-  await t.test(`${name}: satisfies the ClientTransport contract`, () => {
+// Registers one `it` per clause in the caller's `describe`.
+const runTransportContract = (name, Transport) => {
+  it(`should satisfy the ClientTransport contract (${name})`, () => {
     assert.strictEqual(isClientTransport(Transport), true);
     const proto = Transport.prototype;
     for (const method of ['open', 'close', 'write', 'terminate', 'send', 'on', 'off', 'online', 'offline']) {
@@ -23,7 +22,7 @@ const runTransportContract = async (t, name, Transport) => {
     }
   });
 
-  await t.test(`${name}: instance flags and url`, () => {
+  it(`should start with its instance flags and url (${name})`, () => {
     const instance = new Transport(`x://host/${name}`);
     assert.strictEqual(instance.url, `x://host/${name}`);
     assert.strictEqual(typeof instance.active, 'boolean');
@@ -36,7 +35,7 @@ const runTransportContract = async (t, name, Transport) => {
   // true — a session transport, which sets `encryption` before it says
   // 'open'; 'request' — sealed per request, needs the option's `fetch`;
   // 'keys' — a keyring over a shared carrier; absent or false — refused.
-  await t.test(`${name}: declares how it carries encryption, or that it does not`, () => {
+  it(`should declare how it carries encryption, or that it does not (${name})`, () => {
     assert.ok([undefined, false, true, 'request', 'keys'].includes(Transport.encrypts), String(Transport.encrypts));
     if (Transport.encrypts !== true) return;
     const instance = new Transport(`x://host/${name}`);
