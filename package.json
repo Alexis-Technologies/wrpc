@@ -197,7 +197,8 @@
     "docs:dev": "vitepress dev docs",
     "docs:build": "vitepress build docs",
     "docs:preview": "vitepress preview docs",
-    "prepare": "alexiskills claude"
+    "prepare": "alexiskills claude",
+    "prepublishOnly": "pnpm run lint && pnpm run format:check && pnpm run test:ci && pnpm run test:coverage:floors && pnpm run test:types && pnpm run size && pnpm run docs:build"
   },
   "tsd": {
     "directory": "tests"

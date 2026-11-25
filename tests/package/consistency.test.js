@@ -576,15 +576,55 @@ test('every **Breaking entry of [Unreleased] sits under ### Changed (breaking)',
       `"### ${heading}" holds a **Breaking entry; move it to "### Changed (breaking)"`,
     );
   }
-  // The migration block belongs to a breaking section that HAS entries: a
-  // reader who lands on "what broke" finds "what to do" right under it. The
-  // fresh, empty section a release opens needs none.
+  // The migration guide belongs to a breaking section that HAS entries: a
+  // reader who lands on "what broke" finds "what to do" in the section after
+  // it. The fresh, empty section a release opens needs none.
   if (breaking.some((line) => line.startsWith('- '))) {
     assert.ok(
-      breaking.some((line) => line.startsWith('#### Migrating from ')),
-      'a breaking section with entries must carry a "#### Migrating from <version>" block',
+      Array.from(sections.keys()).some((heading) => heading.startsWith('Upgrading from ')),
+      'a breaking section with entries must come with an "### Upgrading from <version>" section',
     );
   }
+});
+
+// Keep a Changelog, as every Alexis library writes it: `## [X.Y.Z] - date`
+// newest first, the six headings plus the four of alexiskills, and a link
+// for every version in the block at the bottom.
+const HEADINGS = new Set([
+  'Added',
+  'Changed',
+  'Deprecated',
+  'Removed',
+  'Fixed',
+  'Security',
+  'Changed (breaking)',
+  'Documentation',
+  'Tooling',
+]);
+
+test('the CHANGELOG uses the headings of Keep a Changelog and links every version', () => {
+  const changelog = read('CHANGELOG.md');
+  const versions = [];
+  for (const line of changelog.split('\n')) {
+    const version = /^## \[([^\]]+)\]/.exec(line);
+    if (version) versions.push(version[1]);
+    else if (line.startsWith('## ')) assert.fail(`a version heading is "## [X.Y.Z] - YYYY-MM-DD": ${line}`);
+    if (!line.startsWith('### ')) continue;
+    const heading = line.slice(4).trim();
+    assert.ok(
+      HEADINGS.has(heading) || /^Upgrading from \d+\.\d+$/.test(heading),
+      `a heading Keep a Changelog has not: ${line}`,
+    );
+  }
+  assert.equal(versions[0], 'Unreleased');
+  for (const version of versions) {
+    assert.match(
+      changelog,
+      new RegExp(`^\\[${version.replaceAll('.', '\\.')}\\]: https://github\\.com/`, 'm'),
+      `no link for [${version}]`,
+    );
+  }
+  assert.doesNotMatch(changelog, /^#### /m, 'a level-4 heading: write the section at level 3');
 });
 
 // The 1.x deprecation notes promised that "2.0 makes it a TypeError"; 2.0
@@ -1060,7 +1100,8 @@ test('the two CLAUDE.md files every task reads stay small, and every source fold
 
 // `files` ships src/ and bin/ whole, and the guidance lives next to the code
 // it is about: what keeps it out of the tarball is the `!**/CLAUDE.md` entry.
-// Asked of npm itself — the packing list — not of the pattern.
+// Asked of pnpm itself — the packing list of what `pnpm publish` ships — not of
+// the pattern.
 test('no CLAUDE.md ships in the tarball', () => {
   const { spawnSync } = require('node:child_process');
   assert.ok(pkg.files.includes('!**/CLAUDE.md'), 'the files allowlist ends with the CLAUDE.md exclusion');
@@ -1068,10 +1109,11 @@ test('no CLAUDE.md ships in the tarball', () => {
     guidanceFiles().some((file) => file.startsWith('src/')),
     'there are CLAUDE.md files under src/ to keep out',
   );
-  const packed = spawnSync('npm', ['pack', '--dry-run', '--json', '--ignore-scripts'], { cwd: ROOT, encoding: 'utf8' });
+  const args = ['--config.ignore-scripts=true', 'pack', '--dry-run', '--json'];
+  const packed = spawnSync('pnpm', args, { cwd: ROOT, encoding: 'utf8' });
   assert.strictEqual(packed.status, 0, packed.stderr);
-  const shippedFiles = JSON.parse(packed.stdout)[0].files.map((entry) => entry.path);
-  assert.ok(shippedFiles.length > 150, `npm lists only ${shippedFiles.length} files`);
+  const shippedFiles = JSON.parse(packed.stdout).files.map((entry) => entry.path);
+  assert.ok(shippedFiles.length > 150, `pnpm lists only ${shippedFiles.length} files`);
   assert.deepStrictEqual(
     shippedFiles.filter((file) => /(^|\/)CLAUDE\.md$/i.test(file) || file.startsWith('.claude/')),
     [],

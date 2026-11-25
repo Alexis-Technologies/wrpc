@@ -67,10 +67,15 @@ until every peer is upgraded. A `##` section the previous major did not have
 carries a `since N.0` badge (`tests/package/consistency.test.js` holds the
 list of the sections that need none).
 
-**Style** is enforced by oxlint/oxfmt: 2-space indent, single quotes,
-semicolons, 120-column lines. The `correctness` category is intentionally off,
-and `no-void` is intentionally not enabled — `return void fn()` is the idiom
-this codebase uses for explicit fire-and-forget.
+**Style** is the `js-conventions` skill of
+[alexiskills](https://alexiskills.vercel.app) (a devDependency, linked into
+`.claude/skills` by `pnpm install`), with what wRPC does differently in the
+"Conventions" of `CLAUDE.md`. It is enforced by oxlint/oxfmt: 2-space indent,
+single quotes, semicolons, 120-column lines; the `correctness` and
+`suspicious` categories are errors, `src/` iterates with loops (no
+`map`/`filter`/`forEach`…), and `no-void` is off — `return void fn()` is the
+idiom for explicit fire-and-forget. Tests are `describe`/`it('should …')`
+with `node:assert/strict`.
 
 ### Tests
 
@@ -106,7 +111,8 @@ a change in; cover the new branch instead.
 Three always-on jobs and four service jobs (`.github/workflows/ci.yml`):
 
 - **lint** (Node 22) — `lint`, `format:check`, `size`
-- **test** (Node 22, 24 and 26, installed without build scripts) —
+- **test** (Node 22.0.0 — the floor of `engines` exactly — 22, 24 and 26,
+  installed without build scripts) —
   `test:ci` (`test:coverage` with
   `--test-timeout=300000 --test-force-exit`: a file that outlives its tests
   fails in minutes instead of hanging to the job's timeout),
@@ -121,6 +127,9 @@ Three always-on jobs and four service jobs (`.github/workflows/ci.yml`):
   `WRPC_INTEGRATION_STRICT=1`: there a missing client package fails the job
   instead of skipping it green. Locally, `pnpm brokers:up` starts the same
   four and each suite skips itself without its env var.
+- **ci-success** — the one job branch protection requires: it fails when any
+  job above failed, was cancelled or was **skipped** (a skipped job is not a
+  passed one).
 
 Lint and format target `src tests scripts bench bin examples` — the examples'
 scripts, not their pages or READMEs — and deliberately not `docs/`. The
@@ -198,13 +207,15 @@ Releases are **manual**. Nothing in the tooling bumps a version, tags, or
 publishes.
 
 1. **Green everything** on the release commit — what CI's three always-on
-   jobs run, chained so a gate that fails stops the chain:
+   jobs run, chained so a gate that fails stops the chain. It is the
+   `prepublishOnly` script, which `pnpm publish` runs again by itself:
    ```bash
-   pnpm lint && pnpm format:check && pnpm test:ci && pnpm test:coverage:floors && pnpm test:types && pnpm size && pnpm docs:build
+   pnpm run prepublishOnly
    ```
+   (`pnpm lint && pnpm format:check && pnpm test:ci && pnpm test:coverage:floors && pnpm test:types && pnpm size && pnpm docs:build`).
    `test:coverage:floors` reads what `test:ci` left in `coverage/tmp`, so it
-   runs right after it. CI's `test` job is a matrix of Node 22, 24 and 26, and
-   they differ (Node 22's runner cancels a file whose event loop goes empty):
+   runs right after it. CI's `test` job is a matrix of Node 22.0.0 (the floor
+   of `engines`, exactly), 22, 24 and 26, and they differ (Node 22's runner cancels a file whose event loop goes empty):
    run the suite on each before calling it green. Then the suites CI
    deliberately does not run — the list under [Tests](#tests): Autobahn in
    both modes, `pnpm test:perf`, the WebRTC and WebTransport integration
@@ -219,30 +230,35 @@ publishes.
    non-empty one is a major, whatever the other sections say, and the same
    test fails the build if an entry marked `**Breaking` sits anywhere else
    (an "Added" feature that a 1.x peer cannot ignore is breaking too). A
-   non-empty breaking section also carries a `#### Migrating from <version>`
-   block — the order of upgrade and the flags that keep an old peer working.
+   non-empty breaking section also comes with an `### Upgrading from <version>`
+   section — the order of upgrade and the flags that keep an old peer working.
+   The headings are Keep a Changelog's six plus `Changed (breaking)`,
+   `Documentation`, `Upgrading from X.Y` and `Tooling`, and the new version
+   gets its line in the link block at the bottom (`[X.Y.Z]: …/compare/vA...vX.Y.Z`,
+   `[Unreleased]` moved on to compare from the new tag); the same test holds
+   both.
 3. **Bump `version` in `package.json`, and confirm it differs from what npm
    already has.** Semver against the **JavaScript API**; the wire protocol has
    [its own promise](./docs/reference/protocol.md#stability). Run
-   `npm view @alexify/wrpc version` and make sure the bumped value doesn't
-   match it (`npm view @alexify/wrpc versions` lists every one, 1.0.0
+   `pnpm view @alexify/wrpc version` and make sure the bumped value doesn't
+   match it (`pnpm view @alexify/wrpc versions` lists every one, 1.0.0
    included) — publishing an already-used version is a rejected
-   `npm publish`, not a warning.
+   `pnpm publish`, not a warning.
 4. **Check what would ship.** `files` in `package.json` is an explicit
    allowlist — the main entry, `bin/`, `src/` and the four documents — so a
    root file that was not added to it silently disappears from the tarball:
    ```bash
-   npm publish --dry-run
+   pnpm pack --dry-run
    ```
    Verify the file list contains `index.js`, `index.d.ts`, `bin/` and `src/`
    with every `.d.ts` in it, **no** `CLAUDE.md` (`!**/CLAUDE.md` keeps the
-   agents' files out; a test asks npm's own packing list), and **not**
+   agents' files out; a test asks pnpm's own packing list), and **not**
    `docs/`, `tests/`, `bench/`, `scripts/`, `examples/` or `coverage/`.
-5. **Verify the tarball resolves**, CommonJS and ESM alike. In a scratch
-   directory:
+5. **Verify the tarball resolves**, CommonJS and ESM alike. Pack it in the
+   repository with `pnpm pack`, then install it into a temporary consumer in
+   a scratch directory — the one place npm is used, as a consumer would:
    ```bash
-   npm pack
-   npm install ./alexify-wrpc-<version>.tgz
+   npm install /path/to/alexify-wrpc-<version>.tgz
    node -e "require('@alexify/wrpc'); require('@alexify/wrpc/engine'); require('@alexify/wrpc/query')"
    node --input-type=module -e "import { Server, connect } from '@alexify/wrpc'; import { createNodeEngine } from '@alexify/wrpc/engine'; void Server; void connect; void createNodeEngine;"
    npx wrpc --version
@@ -263,7 +279,9 @@ publishes.
    `typesVersions` that serves it on TypeScript ≤ 6 is checked in every mode
    by `tests/package/resolution.test.js`, with tsd's TypeScript (5.9).
 6. **Commit, tag, push**: `git tag v<version> && git push --follow-tags`.
-7. **Publish**: `npm publish` (`publishConfig.access` is already `public`).
+7. **Publish**: `pnpm publish` (`publishConfig.access` is already `public`),
+   which runs `prepublishOnly` — step 1's gates — before anything leaves.
+   The release commit is `chore(release): X.Y.Z`.
 8. **Release notes** on GitHub from the CHANGELOG entry.
 9. **The docs site deploys from `main` through Vercel** (`vercel.json` pins
    the build command and output directory) — no separate step, but confirm it

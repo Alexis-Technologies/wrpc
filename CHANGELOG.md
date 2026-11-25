@@ -2375,7 +2375,7 @@ narrower promise — see
   logger as `event: 'options.generateId'` and fell back to uuid v4, with
   the note that 2.0 would throw. That log event is gone with the fallback.
 
-#### Migrating from 1.0
+### Upgrading from 1.0
 
 Clients and servers upgrade **in any order, with no flag**: the protocol
 revision is negotiated, and a 2.x end speaks revision 1 to a 1.0 peer —
@@ -5168,3 +5168,10 @@ only by adapter tests; never a runtime dependency).
 - `CONTRIBUTING.md` added: development workflow, house rules not visible in
   the code (zero dependencies, `.d.ts`/`tsd` pairing, the uws teardown trap
   that wedges `node --test`), and the manual release checklist.
+
+[Unreleased]: https://github.com/Alexis-Technologies/wrpc/compare/v2.2.0...HEAD
+[2.2.0]: https://github.com/Alexis-Technologies/wrpc/compare/v2.1.0...v2.2.0
+[2.1.0]: https://github.com/Alexis-Technologies/wrpc/compare/v2.0.1...v2.1.0
+[2.0.1]: https://github.com/Alexis-Technologies/wrpc/compare/v2.0.0...v2.0.1
+[2.0.0]: https://github.com/Alexis-Technologies/wrpc/compare/v1.0.0...v2.0.0
+[1.0.0]: https://github.com/Alexis-Technologies/wrpc/releases/tag/v1.0.0

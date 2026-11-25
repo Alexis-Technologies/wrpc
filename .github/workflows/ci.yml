@@ -35,9 +35,11 @@ jobs:
     timeout-minutes: 20
     strategy:
       matrix:
-        # Every LTS line `engines` admits: 22 and 24, and 26 since it went
+        # The floor of `engines` written exactly (`>=22` admits 22.0.0, and
+        # `22` alone is the newest 22.x, which proves nothing about it), then
+        # every LTS line `engines` admits: 22 and 24, and 26 since it went
         # LTS — the one Vercel and `>=22` pick by default now.
-        node-version: [22, 24, 26]
+        node-version: ['22.0.0', 22, 24, 26]
     steps:
       - uses: actions/checkout@v4
       - uses: pnpm/action-setup@v4
@@ -205,3 +207,17 @@ jobs:
       - run: pnpm install --frozen-lockfile --ignore-scripts
       # A broken docs build (including dead links) should fail the PR, not the deploy.
       - run: pnpm run docs:build
+
+  # The one job branch protection requires: it fails when any job it needs
+  # failed, was cancelled or was skipped — a skipped job is not a passed one,
+  # and a new matrix leg is required without a change to the protection.
+  ci-success:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    needs: [lint, test, redis, nats, rabbitmq, kafka, docs]
+    if: always()
+    steps:
+      - name: Fail when a needed job failed, was cancelled or was skipped
+        if: contains(needs.*.result, 'failure') || contains(needs.*.result, 'cancelled') || contains(needs.*.result, 'skipped')
+        run: exit 1
+      - run: echo "All CI jobs passed"
