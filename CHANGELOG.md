@@ -13,6 +13,99 @@ narrower promise — see
 
 ### Changed (breaking)
 
+### Added
+
+- **`ConfigError` and `ArgumentError`, with `ALX_ERR_` codes.** The 501
+  refusals of an option, a definition or an argument that threw a bare
+  `TypeError` throw wRPC's own classes now, as every Alexis library does:
+  `ConfigError` (`code: 'ALX_ERR_CONFIG'`) for an option, a router, a
+  procedure, a binding table or an injected host, at construction or
+  definition; `ArgumentError` (`'ALX_ERR_ARGUMENT'`) for an argument of a
+  call made while running — `createStream`, `setHeader`, `sendTo`,
+  `respond`, the arguments a peer gives a signaling procedure. Both extend
+  `TypeError`, so `instanceof TypeError` holds, and both are exported from
+  `@alexify/wrpc` (and its browser entry). The `ErrorCode` union and the
+  table in the errors reference list every code; a test holds the source,
+  the types and the table equal.
+- **`FramingErrorCode`, `DeflateErrorCode` and `ParseErrorCode`** unions
+  type the `code` of the errors a peer's bytes raise.
+- **`new Emitter({ warn })`**: where the `MaxListenersExceededWarning`
+  goes — the console when it is not given, nowhere for `null`.
+
+### Changed
+
+- **An error's `name` is its class's.** A refusal used to read
+  `TypeError: …`; it reads `ConfigError: …` or `ArgumentError: …` now.
+  Code that matched `error.name === 'TypeError'` should test
+  `instanceof TypeError` or the `code`.
+- **One `FramingError`** for the WebTransport and the WebRTC framings
+  (`src/errors.js`): an error of one is `instanceof` the class the other
+  exports. Its codes are unchanged.
+- **`CliError`** (the `wrpc` command's) carries `code: 'ALX_ERR_CLI'`.
+- **The router's "failed to compile" errors carry their `cause`**, the
+  error the injected compiler threw.
+- **The listener warning goes through the logger.** An `RpcServer`,
+  `Server`, `WrpcClient` or server-side `Client` given a `logger` writes
+  the `MaxListenersExceededWarning` there, as the `emitter.listeners`
+  event; without one it still goes to `console.warn`. A `PeerHost` and a
+  `WrpcPeer`, whose `logger` is `false` unless given, stay silent.
+- **Tables keyed by input have no prototype.** `STATUS_CODES` answers
+  "Unknown error" for a code named `toString`, and `brokerFeed` refuses
+  `decode: 'toString'` with a `ConfigError` instead of decoding with
+  `Object.prototype.toString`.
+- **A sparse array in an option is refused**, where `.every` used to skip
+  its holes: `retryOn`, a binding's `meta`, the encryption pattern and
+  cipher lists, `declaredHeaders`, a mirror's `allowHeaders`, assertion
+  keys.
+
+### Fixed
+
+- **`logger: false` silences the Emitter's listener warning**, which
+  `globalThis.console.warn` printed whatever the owner's `logger` said.
+
+### Documentation
+
+- **The errors reference** has the table of the codes wRPC throws, and
+  says which string codes keep their 2.x spelling until 3.0: `FramingError`,
+  `DeflateError`, `ParseError`, `AssertionError`, `OpenError`,
+  `EncryptionRefusedError` and `backpressure`. The numeric `code` stays
+  wRPC's wire status.
+- **The logging guide** catalogues `emitter.listeners`.
+- **CONTRIBUTING** releases with `pnpm publish`, behind `prepublishOnly`,
+  and checks the packing list with `pnpm pack --dry-run`; the tarball
+  smoke keeps npm in its temporary consumer.
+
+### Tooling
+
+- **The skills are alexiskills 1.1** (`@alexify/metaskills`, a
+  devDependency), linked into `.claude/skills` by the `prepare` script, in
+  place of the six metarhia 1.0.5 copies the repository kept; what they
+  said of wRPC alone is in `CLAUDE.md` ("Conventions", "Release process").
+- **The lint is alexiskills' reference**: the `correctness` and
+  `suspicious` categories as errors (four of their rules off, each with
+  its reason in `CLAUDE.md`), `eqeqeq` with `null` included,
+  `func-style: expression`, `max-depth` 4, `no-nested-ternary`,
+  `no-console`, and in `src/` every array iteration method banned, the
+  unicorn rules and `max-lines-per-function` 80 as a warning; a stale
+  `oxlint-disable` is an error.
+- **`src/` follows it**, with no change of behaviour beyond the lines
+  above: loops in one pass instead of array iteration methods, no array
+  destructuring, every `let` with a value, template literals for
+  `String()`, `Object.keys` for `Object.entries`, instance methods for
+  arrow fields. `new Array(n)` and `for...in` stay where a benchmark in
+  `bench/` measured them. The browser entries grow by 134 to 424 B
+  min+gzip; the webrtc entry's budget goes from 62 to 63 KB.
+- **The tests are `describe` and `it('should …')`**, asserted with
+  `node:assert/strict`. The contract suites register their cases in the
+  caller's `describe`, and an integration suite run without its server
+  lists every case as skipped instead of one parent test.
+- **CI** runs the test job on the exact `engines` floor, Node 22.0.0,
+  besides 22, 24 and 26, and a `ci-success` job fails when any other job
+  failed, was cancelled or was skipped.
+- **`prepublishOnly`** chains every gate CI's always-on jobs run.
+- **The CHANGELOG** has a link block for every version, and the 2.0
+  "Migrating from 1.0" block is the section `Upgrading from 1.0`.
+
 ## [2.2.0] - 2026-11-18
 
 ### Added

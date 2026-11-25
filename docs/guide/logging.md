@@ -296,7 +296,7 @@ one — and bound to the remote `peer`.
 | `hook.error` | warn | An observational router hook — `onResponse`, `onError`, `onDisconnect` and the like — threw (`phase`, `err`): reported and contained, what it observed is unaffected |
 | `onConnect.stalled` | warn | An `onConnect` hook has not settled within the stall window (`peer`, `ms`): the client's calls are waiting on it |
 | `listener.close`, `listener.attach`, `listener.detach` | error | An application listener of a client's `close`, or of a peer host's `attach`/`detach`, threw |
-| `emitter.listeners` | warn | `MaxListenersExceededWarning`: one event of a server, a client, a connection or a peer has more listeners than its `maxListeners` — usually a leak, never a throw. Without a `logger` option it goes to `console.warn`, the one line wRPC prints unasked; a peer host and a peer, whose `logger` is `false` unless given, stay silent |
+| `emitter.listeners` | warn | `MaxListenersExceededWarning`: one event of a server, a client, a connection or a peer has more listeners than its `maxListeners` — usually a leak, never a throw. Without a `logger` option it goes to `console.warn`; a peer host and a peer, whose `logger` is `false` unless given, stay silent |
 
 ### Client events
 
@@ -407,7 +407,7 @@ Silent — not "writes to a sink that discards", but never called at all. The
 disabled writer is a frozen no-op singleton whose `child()` returns itself, so
 the per-connection and per-call bindings cost nothing when logging is off.
 `logger: false` silences the `emitter.listeners` warning too, which an
-instance without a `logger` option prints to `console.warn`.
+instance without a `logger` option prints with `console.warn`.
 
 ## Fastify
 

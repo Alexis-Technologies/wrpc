@@ -160,8 +160,7 @@ const createLoggerWriter = (logger) => {
 
 // Where an Emitter owned by a class that takes a `logger` sends its listener
 // warning: the console when the option was not given (the Emitter's own
-// default, the one line wRPC prints unasked), nowhere for `logger: false`,
-// else through the logger.
+// default), nowhere for `logger: false`, else through the logger.
 const emitterWarning = (logger) => {
   if (logger === undefined) return undefined;
   const writer = createLoggerWriter(logger);

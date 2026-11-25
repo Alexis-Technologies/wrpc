@@ -133,7 +133,7 @@ then gzipped):
 
 | Entry | min | min+gzip | budget |
 | ----- | ---:| --------:| ------:|
-| `@alexify/wrpc` — browser (client, streams, chunks) | 90.0 KB | **30.3 KB** | 31.0 KB |
+| `@alexify/wrpc` — browser (client, streams, chunks) | 90.9 KB | **30.7 KB** | 31.0 KB |
 | `@alexify/wrpc` — node (client + server) | 316.8 KB | 106.7 KB | — |
 | `@alexify/wrpc/ws` (WebSocket engine) | 35.4 KB | 12.4 KB | — |
 | `@alexify/wrpc/engine` (engine port) | 35.9 KB | 12.6 KB | — |
@@ -146,14 +146,14 @@ then gzipped):
 | `@alexify/wrpc/broker/nats` | 34.4 KB | 13.0 KB | — |
 | `@alexify/wrpc/broker/amqp` | 38.2 KB | 14.1 KB | — |
 | `@alexify/wrpc/broker/kafka` | 32.5 KB | 12.2 KB | — |
-| `@alexify/wrpc/sse` — browser (client transport) | 93.7 KB | **31.5 KB** | 32.0 KB |
+| `@alexify/wrpc/sse` — browser (client transport) | 94.5 KB | **31.9 KB** | 32.0 KB |
 | `@alexify/wrpc/sse` — node | 156.7 KB | 52.9 KB | — |
-| `@alexify/wrpc/query` (TanStack bindings) | 2.7 KB | **1.1 KB** | 2.0 KB |
-| `@alexify/wrpc/auth` (token strategies) | 3.9 KB | **1.8 KB** | 2.0 KB |
-| `@alexify/wrpc/deflate` (pure-JS DEFLATE codec) | 10.7 KB | **4.4 KB** | 5.0 KB |
-| `@alexify/wrpc/encryption` — browser (primitives, sessions, HPKE, E2EE) | 31.8 KB | **11.6 KB** | 12.0 KB |
+| `@alexify/wrpc/query` (TanStack bindings) | 3.0 KB | **1.2 KB** | 2.0 KB |
+| `@alexify/wrpc/auth` (token strategies) | 4.2 KB | **1.9 KB** | 2.0 KB |
+| `@alexify/wrpc/deflate` (pure-JS DEFLATE codec) | 11.1 KB | **4.5 KB** | 5.0 KB |
+| `@alexify/wrpc/encryption` — browser (primitives, sessions, HPKE, E2EE) | 32.3 KB | **11.9 KB** | 12.0 KB |
 | `@alexify/wrpc/encryption` — node | 45.3 KB | 16.6 KB | — |
-| `@alexify/wrpc/webrtc` — browser (peer, link, mesh, assertions) | 189.1 KB | **62.2 KB** | 63.0 KB |
+| `@alexify/wrpc/webrtc` — browser (peer, link, mesh, assertions) | 191.4 KB | **63.0 KB** | 63.0 KB |
 | `@alexify/wrpc/webrtc` — node | 203.3 KB | 66.4 KB | — |
 | `@alexify/wrpc/wt` (WebTransport server half) | 64.3 KB | 22.8 KB | — |
 

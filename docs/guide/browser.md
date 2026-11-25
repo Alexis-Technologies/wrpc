@@ -78,13 +78,13 @@ the run — it is a ratchet, and it runs in CI's lint job.
 
 | Entry | min | min+gzip | budget |
 | --- | ---: | ---: | ---: |
-| `@alexify/wrpc` — browser | 90.0 KB | **30.3 KB** | 31.0 KB |
-| `@alexify/wrpc/sse` — browser | 93.7 KB | **31.5 KB** | 32.0 KB |
-| `@alexify/wrpc/query` | 2.7 KB | **1.1 KB** | 2.0 KB |
-| `@alexify/wrpc/auth` | 3.9 KB | **1.8 KB** | 2.0 KB |
-| `@alexify/wrpc/deflate` | 10.7 KB | **4.4 KB** | 5.0 KB |
-| `@alexify/wrpc/encryption` — browser | 31.8 KB | **11.6 KB** | 12.0 KB |
-| `@alexify/wrpc/webrtc` — browser | 189.1 KB | **62.2 KB** | 63.0 KB |
+| `@alexify/wrpc` — browser | 90.9 KB | **30.7 KB** | 31.0 KB |
+| `@alexify/wrpc/sse` — browser | 94.5 KB | **31.9 KB** | 32.0 KB |
+| `@alexify/wrpc/query` | 3.0 KB | **1.2 KB** | 2.0 KB |
+| `@alexify/wrpc/auth` | 4.2 KB | **1.9 KB** | 2.0 KB |
+| `@alexify/wrpc/deflate` | 11.1 KB | **4.5 KB** | 5.0 KB |
+| `@alexify/wrpc/encryption` — browser | 32.3 KB | **11.9 KB** | 12.0 KB |
+| `@alexify/wrpc/webrtc` — browser | 191.4 KB | **63.0 KB** | 63.0 KB |
 | `@alexify/wrpc` — node | 316.8 KB | 106.7 KB | — |
 
 The Node-only entries carry no budget because their gzip size is not a shipping
