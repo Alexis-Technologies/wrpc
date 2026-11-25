@@ -13,6 +13,18 @@ narrower promise — see
 
 ### Changed (breaking)
 
+- **An error's `name` is its class's.** A refused option or argument read
+  `TypeError: …`; it reads `ConfigError: …` or `ArgumentError: …` now. The
+  class still extends `TypeError`, so `instanceof TypeError` holds, but code
+  that matched `error.name === 'TypeError'` no longer matches.
+
+### Upgrading from 2.2
+
+- Code that matched `error.name === 'TypeError'` on a refusal of wRPC checks
+  `error instanceof TypeError`, or the code — `error.code === 'ALX_ERR_CONFIG'`
+  for an option or a definition, `'ALX_ERR_ARGUMENT'` for an argument of a
+  call.
+
 ### Added
 
 - **`ConfigError` and `ArgumentError`, with `ALX_ERR_` codes.** The 501
@@ -34,10 +46,6 @@ narrower promise — see
 
 ### Changed
 
-- **An error's `name` is its class's.** A refusal used to read
-  `TypeError: …`; it reads `ConfigError: …` or `ArgumentError: …` now.
-  Code that matched `error.name === 'TypeError'` should test
-  `instanceof TypeError` or the `code`.
 - **One `FramingError`** for the WebTransport and the WebRTC framings
   (`src/errors.js`): an error of one is `instanceof` the class the other
   exports. Its codes are unchanged.
