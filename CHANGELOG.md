@@ -77,7 +77,7 @@ narrower promise — see
 
 ### Tooling
 
-- **The skills are alexiskills 1.1** (`@alexify/metaskills`, a
+- **The skills are alexiskills 1.1.2** (`@alexify/metaskills`, a
   devDependency), linked into `.claude/skills` by the `prepare` script, in
   place of the six metarhia 1.0.5 copies the repository kept; what they
   said of wRPC alone is in `CLAUDE.md` ("Conventions", "Release process").
@@ -92,8 +92,9 @@ narrower promise — see
   above: loops in one pass instead of array iteration methods, no array
   destructuring, every `let` with a value, template literals for
   `String()`, `Object.keys` for `Object.entries`, instance methods for
-  arrow fields. `new Array(n)` and `for...in` stay where a benchmark in
-  `bench/` measured them. The browser entries grow by 134 to 424 B
+  arrow fields. `new Array(n)` stays where a benchmark in `bench/`
+  measured it; `for...of` and `for...in` stay where they were, as 1.1.2
+  allows, and a hot path keeps the loop its benchmark picks. The browser entries grow by 134 to 424 B
   min+gzip; the webrtc entry's budget goes from 62 to 63 KB.
 - **The tests are `describe` and `it('should …')`**, asserted with
   `node:assert/strict`. The contract suites register their cases in the

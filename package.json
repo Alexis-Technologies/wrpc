@@ -264,7 +264,7 @@
   },
   "homepage": "https://wrpc.vercel.app",
   "devDependencies": {
-    "@alexify/metaskills": "^1.1.0",
+    "@alexify/metaskills": "^1.1.2",
     "@confluentinc/kafka-javascript": "^1.10.1",
     "@fails-components/webtransport": "^1.6.8",
     "@fails-components/webtransport-transport-http3-quiche": "^1.6.8",
