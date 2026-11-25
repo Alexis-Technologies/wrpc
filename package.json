@@ -190,7 +190,7 @@
     "redis:down": "docker compose down",
     "brokers:up": "docker compose up -d",
     "brokers:down": "docker compose down",
-    "lint": "oxlint src tests scripts bench bin examples",
+    "lint": "oxlint --report-unused-disable-directives-severity=error src tests scripts bench bin examples",
     "format": "oxfmt src tests scripts bench bin examples",
     "format:check": "oxfmt --check src tests scripts bench bin examples",
     "size": "node scripts/size.js",

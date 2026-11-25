@@ -6,7 +6,8 @@
     "import"
   ],
   "categories": {
-    "correctness": "off"
+    "correctness": "error",
+    "suspicious": "error"
   },
   "env": {
     "builtin": true,
@@ -63,10 +64,7 @@
     "default-case-last": "error",
     "eqeqeq": [
       "error",
-      "always",
-      {
-        "null": "ignore"
-      }
+      "always"
     ],
     "new-cap": [
       "error",
@@ -247,6 +245,120 @@
     ],
     "node/no-exports-assign": "error",
     "node/no-new-require": "error",
-    "node/no-path-concat": "error"
-  }
+    "node/no-path-concat": "error",
+    "func-style": [
+      "error",
+      "expression"
+    ],
+    "max-depth": [
+      "error",
+      {
+        "max": 4
+      }
+    ],
+    "no-nested-ternary": "error",
+    "no-console": "error",
+    "promise/always-return": "off",
+    "promise/no-promise-in-callback": "off",
+    "import/no-unassigned-import": "off"
+  },
+  "overrides": [
+    {
+      "files": [
+        "src/**"
+      ],
+      "plugins": [
+        "unicorn"
+      ],
+      "rules": {
+        "no-restricted-properties": [
+          "error",
+          {
+            "property": "forEach",
+            "message": "src/ iterates with loops in one pass (CLAUDE.md, Conventions)."
+          },
+          {
+            "property": "map",
+            "message": "src/ iterates with loops in one pass (CLAUDE.md, Conventions)."
+          },
+          {
+            "property": "filter",
+            "message": "src/ iterates with loops in one pass (CLAUDE.md, Conventions)."
+          },
+          {
+            "property": "some",
+            "message": "src/ iterates with loops in one pass (CLAUDE.md, Conventions)."
+          },
+          {
+            "property": "every",
+            "message": "src/ iterates with loops in one pass (CLAUDE.md, Conventions)."
+          },
+          {
+            "property": "find",
+            "message": "src/ iterates with loops in one pass (CLAUDE.md, Conventions)."
+          },
+          {
+            "property": "findIndex",
+            "message": "src/ iterates with loops in one pass (CLAUDE.md, Conventions)."
+          },
+          {
+            "property": "findLast",
+            "message": "src/ iterates with loops in one pass (CLAUDE.md, Conventions)."
+          },
+          {
+            "property": "findLastIndex",
+            "message": "src/ iterates with loops in one pass (CLAUDE.md, Conventions)."
+          },
+          {
+            "property": "reduce",
+            "message": "src/ iterates with loops in one pass (CLAUDE.md, Conventions)."
+          },
+          {
+            "property": "reduceRight",
+            "message": "src/ iterates with loops in one pass (CLAUDE.md, Conventions)."
+          },
+          {
+            "property": "flatMap",
+            "message": "src/ iterates with loops in one pass (CLAUDE.md, Conventions)."
+          }
+        ],
+        "max-lines-per-function": [
+          "warn",
+          {
+            "max": 80,
+            "skipBlankLines": true,
+            "skipComments": true
+          }
+        ],
+        "unicorn/no-array-for-each": "error",
+        "unicorn/no-array-reduce": "error",
+        "unicorn/no-useless-spread": "error",
+        "unicorn/prefer-set-has": "error",
+        "unicorn/require-post-message-target-origin": "off"
+      }
+    },
+    {
+      "files": [
+        "src/**/tests/**",
+        "src/**/*.test.*",
+        "src/**/*.spec.*"
+      ],
+      "rules": {
+        "no-restricted-properties": "off",
+        "unicorn/no-array-for-each": "off",
+        "unicorn/no-array-reduce": "off"
+      }
+    },
+    {
+      "files": [
+        "bin/**",
+        "scripts/**",
+        "bench/**",
+        "examples/**"
+      ],
+      "rules": {
+        "no-console": "off"
+      }
+    }
+  ]
 }
