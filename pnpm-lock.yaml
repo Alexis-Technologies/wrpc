@@ -8,6 +8,9 @@ importers:
 
   .:
     devDependencies:
+      '@alexify/metaskills':
+        specifier: ^1.1.0
+        version: 1.1.0
       '@confluentinc/kafka-javascript':
         specifier: ^1.10.1
         version: 1.10.1
@@ -145,6 +148,11 @@ importers:
         version: 8.21.3
 
 packages:
+
+  '@alexify/metaskills@1.1.0':
+    resolution: {integrity: sha512-DS4dV/NjSs8dm9sbYvULbFulVkUFy+Y6k8GNE1D1qfPCErteLMn0i5t+k5Y3rkX3cZY6cuGh7KRzXK6rZVVOhA==}
+    engines: {node: '>=18.0.0'}
+    hasBin: true
 
   '@alexify/wrpc@1.0.0':
     resolution: {integrity: sha512-aFfPWCVgui1i8RPjxZLNFj3v3bUvymcvge2TSIFn+bL4CiSsC6aGFtXcitU+OBTKZ+4+tv+7Ve8rgSkI6+KQxA==}
@@ -3747,6 +3755,8 @@ packages:
     resolution: {integrity: sha512-bXE4cR/kVZhKZX/RjPEflHaKVhUVl85noU3v6b8apfQEc1x4A+zBxjZ4lN8LqGd6WZ3dl98pY4o717VFmoPp+A==}
 
 snapshots:
+
+  '@alexify/metaskills@1.1.0': {}
 
   '@alexify/wrpc@1.0.0': {}
 

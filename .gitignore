@@ -136,3 +136,6 @@ examples/wt/public/wrpc.browser.js
 
 # node scripts/wt-cert.js output (short-lived WebTransport dev certificates)
 certs/
+
+# The alexiskills skills: a symlink into node_modules that `prepare` makes (CLAUDE.md, Skills).
+.claude/skills
