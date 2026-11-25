@@ -26,7 +26,7 @@
 // application's, in hooks, from `context.meta.data.peer`.
 
 const { Emitter, isCodec, resolveGenerateId, checkLimit } = require('../utils.js');
-const { createLoggerWriter } = require('../logging.js');
+const { createLoggerWriter, emitterWarning } = require('../logging.js');
 const { createServerTelemetry } = require('../telemetry/server.js');
 const { defineRouter, procedure, runHooksSafe } = require('../rpc/router.js');
 const { RoomRegistry, Broadcast } = require('../rpc/rooms.js');
@@ -81,7 +81,8 @@ class PeerHost extends Emitter {
     telemetry = null,
     attachments = true,
   } = {}) {
-    super();
+    // `logger` is false unless given, so a host's listener warning is too.
+    super({ warn: emitterWarning(logger) });
     if (!router || typeof router.getProcedure !== 'function') {
       throw new ConfigError('PeerHost: options.router (a Router from defineRouter) is required');
     }

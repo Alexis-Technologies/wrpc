@@ -68,6 +68,45 @@ test('Emitter', async (t) => {
     assert.ok(warnings.some((message) => /MaxListenersExceededWarning/.test(message)));
   });
 
+  await t.test('the warning goes where warn says, and nowhere for null', () => {
+    const warnings = [];
+    const routed = new Emitter({ maxListeners: 1, warn: (message) => warnings.push(message) });
+    routed.on('data', () => {});
+    routed.on('data', () => {});
+    assert.strictEqual(warnings.length, 1);
+    assert.match(warnings[0], /MaxListenersExceededWarning: Possible data memory leak/);
+    const printed = [];
+    const originalWarn = globalThis.console.warn;
+    globalThis.console.warn = (message) => printed.push(message);
+    try {
+      const silent = new Emitter({ maxListeners: 1, warn: null });
+      silent.on('data', () => {});
+      silent.on('data', () => {});
+    } finally {
+      globalThis.console.warn = originalWarn;
+    }
+    assert.deepStrictEqual(printed, []);
+  });
+
+  await t.test('an owner with logger: false is silent, and one with a logger warns through it', () => {
+    const { RpcServer, defineRouter } = require('../index.js');
+    const printed = [];
+    const originalWarn = globalThis.console.warn;
+    globalThis.console.warn = (message) => printed.push(message);
+    const lines = [];
+    const logger = { warn: (...args) => lines.push(args), error() {}, info() {}, debug() {}, log() {} };
+    try {
+      const quiet = new RpcServer({ router: defineRouter({}), logger: false });
+      for (let i = 0; i < 12; i++) quiet.on('data', () => {});
+      const rpc = new RpcServer({ router: defineRouter({}), logger });
+      for (let i = 0; i < 12; i++) rpc.on('data', () => {});
+    } finally {
+      globalThis.console.warn = originalWarn;
+    }
+    assert.deepStrictEqual(printed, []);
+    assert.ok(lines.some((args) => args.some((part) => /MaxListenersExceededWarning/.test(String(part)))));
+  });
+
   await t.test('off removes a specific listener', async () => {
     const emitter = new Emitter();
     let calls = 0;

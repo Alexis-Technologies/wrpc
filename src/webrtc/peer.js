@@ -21,7 +21,7 @@
 // and callable all the same.
 
 const { Emitter } = require('../utils.js');
-const { createLoggerWriter } = require('../logging.js');
+const { createLoggerWriter, emitterWarning } = require('../logging.js');
 const { createServerTelemetry } = require('../telemetry/server.js');
 const { isRtcAdapter, createW3cAdapter } = require('./port.js');
 const { RtcLink, DEFAULT_CHANNELS, normalizeChannels } = require('./link.js');
@@ -83,7 +83,8 @@ class WrpcPeer extends Emitter {
   #onReplaced = (event) => void this.#replaced(event);
 
   constructor(options = {}) {
-    super();
+    // `logger` is false unless given, so a peer's listener warning is too.
+    super({ warn: emitterWarning(options.logger ?? false) });
     const {
       router = null,
       signaler,

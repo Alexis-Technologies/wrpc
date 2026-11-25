@@ -17,7 +17,7 @@ const {
 } = require('../streams.js');
 const { RoomRegistry } = require('./rooms.js');
 const { DEFAULT_META_MAX } = require('./meta.js');
-const { createLoggerWriter } = require('../logging.js');
+const { createLoggerWriter, emitterWarning } = require('../logging.js');
 const { clip } = require('./errors.js');
 // The disabled shape only: a Client without an injected writer (a peer
 // host, a standalone Client) must not pull the whole server facade into a
@@ -178,7 +178,7 @@ class Client extends Emitter {
   encryption = null;
 
   constructor(transport, options = {}) {
-    super();
+    super({ warn: emitterWarning(options.log) });
     const {
       sessions,
       rooms,

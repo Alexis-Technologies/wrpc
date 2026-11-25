@@ -12,12 +12,19 @@ const { ConfigError } = require('./errors.js');
 // 4.0 -> 14.3 M emit/s awaited, 4.8 -> 63.9 M fire-and-forget; bench/emitter.js.
 const RESOLVED = Promise.resolve();
 
+const consoleWarn = (message) => void globalThis.console.warn(message);
+
 class Emitter {
   #events = new Map();
   #maxListeners = 10;
+  #warn = null;
 
+  // `warn` is where the listener warning goes: the console when it is not
+  // given, `null` for nowhere. An owner that takes a `logger` passes
+  // emitterWarning(logger) from logging.js, so `logger: false` silences it.
   constructor(options = {}) {
     this.#maxListeners = options.maxListeners ?? 10;
+    this.#warn = options.warn === undefined ? consoleWarn : options.warn;
   }
 
   emit(eventName, value) {
@@ -81,8 +88,8 @@ class Emitter {
     // A warning, not a throw: exceeding the cap usually signals a leak,
     // but killing legitimate fan-out (many streams awaiting one 'drain')
     // is worse than a noisy console (cross-platform, so no process API).
-    if (event.on.length > this.#maxListeners) {
-      globalThis.console.warn(
+    if (event.on.length > this.#maxListeners && this.#warn !== null) {
+      this.#warn(
         `MaxListenersExceededWarning: Possible ${String(eventName)} memory leak. ` +
           `${event.on.length} listeners added, current maxListeners is ${this.#maxListeners}.`,
       );

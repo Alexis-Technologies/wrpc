@@ -44,7 +44,7 @@ const {
   levelFor,
 } = require('./dispatcher.js');
 const { checkHeader } = require('./rest.js');
-const { createLoggerWriter } = require('../logging.js');
+const { createLoggerWriter, emitterWarning } = require('../logging.js');
 const { createServerTelemetry } = require('../telemetry/server.js');
 const { TRACEPARENT, TRACESTATE } = require('../telemetry/shared.js');
 const {
@@ -232,7 +232,7 @@ class RpcServer extends Emitter {
   #byId = new Map();
 
   constructor(options = {}) {
-    super();
+    super({ warn: emitterWarning(options.logger) });
     const {
       router,
       sessions,

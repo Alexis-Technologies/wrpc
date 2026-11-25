@@ -19,7 +19,12 @@ export interface WritableLike {
 }
 
 export declare class Emitter {
-  constructor(options?: { maxListeners?: number });
+  /**
+   * `warn` takes the warning printed past `maxListeners`: the console when it
+   * is not given, nowhere for `null`. A class that takes a `logger` routes it
+   * there, and `logger: false` silences it.
+   */
+  constructor(options?: { maxListeners?: number; warn?: ((message: string) => void) | null });
   emit(eventName: PropertyKey, value?: unknown): Promise<void>;
   on(eventName: PropertyKey, listener: (value: any) => void): void;
   once(eventName: PropertyKey, listener: (value: any) => void): void;

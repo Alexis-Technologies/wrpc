@@ -15,7 +15,7 @@ const {
   respondBodyError,
   MAX_BODY_SIZE,
 } = require('./adapters/common.js');
-const { createLoggerWriter } = require('./logging.js');
+const { createLoggerWriter, emitterWarning } = require('./logging.js');
 const { ConfigError } = require('./errors.js');
 
 const DEFAULT_LISTEN_RETRY = 3;
@@ -39,7 +39,7 @@ class Server extends Emitter {
   #address = null;
 
   constructor(options = {}) {
-    super();
+    super({ warn: emitterWarning(options.logger) });
     const { cors = null, logger = globalThis.console, engine = createNodeEngine(), ws = {} } = options;
     if (!isEngine(engine)) {
       throw new ConfigError('Server: options.engine does not implement the Engine contract');

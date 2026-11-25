@@ -46,7 +46,7 @@ const {
   MAX_STREAMS,
   MAX_STREAM_BUFFER,
 } = require('../streams.js');
-const { createLoggerWriter } = require('../logging.js');
+const { createLoggerWriter, emitterWarning } = require('../logging.js');
 const { createClientTelemetry } = require('../telemetry/client.js');
 const { META_HEADER, META_PREFIX, HEADERS_PARAM, META_PARAM, WRPC_V1, WRPC_V2 } = require('../wire.js');
 const { ConfigError, ArgumentError } = require('../errors.js');
@@ -573,7 +573,7 @@ class WrpcClient extends Emitter {
   }
 
   constructor(url, transport, options = {}) {
-    super();
+    super({ warn: emitterWarning(options.logger) });
     const { callTimeout, proxy, random, generateId, logger, telemetry, querystring, validation, codec } = options;
     const { authenticate } = options;
     // Presents this connection's credential: awaited inside open() on the
